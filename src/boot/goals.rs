@@ -127,12 +127,15 @@ pub fn completion_claim(status_text: &str) -> Option<(usize, usize)> {
         if *ch != '/' {
             continue;
         }
-        let left: Vec<char> = chars[..index]
+        // The numerator sits immediately before the '/'. Walk back to the start
+        // of its digit run, then read it forwards: collecting the run backwards
+        // and handing it to digits_to_usize transposes multi-digit values, so
+        // `24/26` parsed as 42 — and a single-digit fixture cannot catch that.
+        let left_start = chars[..index]
             .iter()
-            .rev()
-            .take_while(|c| c.is_ascii_digit())
-            .copied()
-            .collect();
+            .rposition(|c| !c.is_ascii_digit())
+            .map_or(0, |i| i + 1);
+        let left: Vec<char> = chars[left_start..index].to_vec();
         let right: Vec<char> = chars[index + 1..]
             .iter()
             .take_while(|c| c.is_ascii_digit())
