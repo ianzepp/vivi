@@ -1,6 +1,6 @@
 [package]
 name = "vivi"
-version = "10.0.0"
+version = "10.1.0"
 edition = "2024"
 description = "Local-first project mailspace for LLM agents"
 autobins = false
