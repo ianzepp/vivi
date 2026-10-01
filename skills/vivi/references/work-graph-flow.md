@@ -74,12 +74,11 @@ anything that needs the code depend on that task.
 - A merge that fails is not closed. Report through the handle and file the
   repair; the dependents stay blocked, which is the point.
 
-### 2b. Starting a dependent from a base lane (when available)
+### 2b. Starting a dependent from a base lane
 
-*Not released yet: this arrives with the next `hand-packet` release (the lane
-tool of the Faber workspace, not part of Vivi). Until the coordinator confirms
-it has landed, treat everything in this subsection as planned and use the merge
-gate above.*
+*Available in the Faber workspace's `hand-packet` (the lane tool, not part of
+Vivi) since the HP-1 release. It is the uncommon case: the merge gate above is
+the default.*
 
 `hand-packet init <lane> --base-lane <other>` creates a lane for a dependent
 unit whose repositories start at the tip of another lane's branch instead of
