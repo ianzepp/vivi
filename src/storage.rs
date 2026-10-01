@@ -134,8 +134,8 @@ pub struct MailspaceEvent {
 pub struct Storage {
     mail_root: PathBuf,
     conn: Connection,
-    /// Cached short-handle map, cleared on any write.
-    handle_cache: RefCell<Option<HashMap<String, String>>>,
+    /// Cached handle index, cleared on any write.
+    handle_index: RefCell<Option<handles::HandleIndex>>,
 }
 
 impl Storage {
@@ -171,13 +171,13 @@ impl Storage {
         Ok(Self {
             mail_root: mail_root.to_path_buf(),
             conn,
-            handle_cache: RefCell::new(None),
+            handle_index: RefCell::new(None),
         })
     }
 
-    /// Clear the cached short-handle map after any write that affects messages.
-    fn invalidate_handle_cache(&self) {
-        *self.handle_cache.borrow_mut() = None;
+    /// Clear the cached handle index after any write that affects messages.
+    fn invalidate_handle_index(&self) {
+        *self.handle_index.borrow_mut() = None;
     }
 }
 
@@ -287,7 +287,21 @@ fn opaque_message_id(seed: &str) -> String {
 /// SHA-256 digest), so this is 32 bits of that digest. The expected number of
 /// colliding pairs across a 74k-message mailbox is 0.6; see
 /// [`short_handle_map`] for what a collision costs.
-const SHORT_HANDLE_LEN: usize = 8;
+pub(crate) const SHORT_HANDLE_LEN: usize = 8;
+
+/// Short display handle of one message id.
+///
+/// A handle is a fixed-width prefix of the id's basis (the id without its
+/// `msg_` prefix). Ids without the prefix are their own handle.
+fn short_handle(message_id: &str) -> String {
+    match message_id.strip_prefix("msg_") {
+        None => message_id.to_string(),
+        Some(basis) => {
+            let len = usize::min(SHORT_HANDLE_LEN, basis.len());
+            basis[..len].to_string()
+        }
+    }
+}
 
 /// Short display handles for the given message ids.
 ///
@@ -308,16 +322,7 @@ const SHORT_HANDLE_LEN: usize = 8;
 fn short_handle_map(message_ids: &[String]) -> HashMap<String, String> {
     message_ids
         .iter()
-        .map(|message_id| {
-            let handle = match message_id.strip_prefix("msg_") {
-                None => message_id.clone(),
-                Some(basis) => {
-                    let len = usize::min(SHORT_HANDLE_LEN, basis.len());
-                    basis[..len].to_string()
-                }
-            };
-            (message_id.clone(), handle)
-        })
+        .map(|message_id| (message_id.clone(), short_handle(message_id)))
         .collect()
 }
 

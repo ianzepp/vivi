@@ -66,7 +66,7 @@ impl Storage {
             )
             .map_err(|e| VivariumError::Other(format!("failed to absorb message: {e}")))?;
         if changed > 0 {
-            self.invalidate_handle_cache();
+            self.invalidate_handle_index();
             return Ok(true);
         }
         let absorbed_at: Option<String> = self
@@ -123,7 +123,7 @@ impl Storage {
         tx.commit().map_err(|e| {
             VivariumError::Other(format!("failed to commit lifecycle transaction: {e}"))
         })?;
-        self.invalidate_handle_cache();
+        self.invalidate_handle_index();
         Ok(replies)
     }
 
@@ -155,7 +155,7 @@ impl Storage {
                 "message not found for {account}: {message_id}"
             )));
         }
-        self.invalidate_handle_cache();
+        self.invalidate_handle_index();
         Ok(())
     }
 
@@ -199,7 +199,7 @@ impl Storage {
             )
             .map_err(|e| VivariumError::Other(format!("failed to update message flags: {e}")))?;
         if changed > 0 {
-            self.invalidate_handle_cache();
+            self.invalidate_handle_index();
         }
         Ok(changed > 0)
     }
@@ -229,7 +229,7 @@ impl Storage {
             )
             .map_err(|e| VivariumError::Other(format!("failed to set local read state: {e}")))?;
         if changed > 0 {
-            self.invalidate_handle_cache();
+            self.invalidate_handle_index();
         }
         Ok(changed > 0)
     }
@@ -255,7 +255,7 @@ impl Storage {
             )
             .map_err(|e| VivariumError::Other(format!("failed to mark message deleted: {e}")))?;
         if changed > 0 {
-            self.invalidate_handle_cache();
+            self.invalidate_handle_index();
         }
         Ok(changed > 0)
     }

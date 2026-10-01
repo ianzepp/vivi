@@ -1,10 +1,17 @@
+//! Communication trace: captured reply links, lifecycle-event links, and
+//! inferred citation/thread links, walked outward from one handle.
+//!
+//! Edge building is index-based. Every candidate lookup that used to scan the
+//! whole mailbox is a map hit, bodies are read once in a single pass, and only
+//! the nodes the walk includes are materialized for output.
+
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 
 use super::{Mailspace, kind::effective_kind};
 use crate::error::VivariumError;
-use crate::storage::{MailspaceEvent, MailspaceLink, Storage, StoredMessageView};
+use crate::storage::{MailspaceEvent, SHORT_HANDLE_LEN, Storage, StoredMessageView};
 
 /// Print a trace graph for the given handle.
 ///
@@ -78,7 +85,7 @@ fn kind_for_node(node: &TraceNode) -> String {
 /// Print a trace graph as JSON.
 ///
 /// # Errors
-/// Returns an error if JSON serialization fails.
+/// Returns JSON serialization errors.
 pub fn print_trace_json(graph: &TraceGraph) -> Result<(), VivariumError> {
     println!(
         "{}",
@@ -125,20 +132,135 @@ pub struct TraceGraph {
     pub nodes: Vec<TraceNode>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct TraceGraphState {
-    nodes: HashMap<String, TraceNodeState>,
-    adjacency: HashMap<String, Vec<(String, String, String)>>,
-}
-
-#[derive(Debug, Clone)]
-struct TraceNodeState {
+/// One logical message: the metadata every copy shares, plus the copies.
+struct TraceContent {
     content_id: String,
+    /// Message id of the primary copy: earliest date, then lowest id.
+    message_id: String,
     handle: String,
-    messages: Vec<TraceMessageRef>,
     date: String,
     subject: String,
-    body: String,
+    participants: BTreeSet<String>,
+    /// Blob path of the content, from the listing.
+    blob_relpath: String,
+    /// Every copy in date order, for the node's copy list.
+    copies: Vec<StoredMessageView>,
+}
+
+/// Lifecycle events, plus the index the node views need.
+struct EventIndex {
+    events: Vec<MailspaceEvent>,
+    by_message: HashMap<String, Vec<usize>>,
+}
+
+impl EventIndex {
+    fn load(storage: &Storage) -> Result<Self, VivariumError> {
+        let events = storage.list_mailspace_events_after(0)?;
+        let mut by_message: HashMap<String, Vec<usize>> = HashMap::new();
+        for (position, event) in events.iter().enumerate() {
+            by_message
+                .entry(event.message_id.clone())
+                .or_default()
+                .push(position);
+        }
+        Ok(Self { events, by_message })
+    }
+
+    /// Events of one message, for kind resolution.
+    fn of_message(&self, message_id: &str) -> Vec<MailspaceEvent> {
+        self.by_message
+            .get(message_id)
+            .into_iter()
+            .flatten()
+            .map(|position| self.events[*position].clone())
+            .collect()
+    }
+}
+
+/// Every lookup edge building needs, built without reading a body.
+struct TraceIndex {
+    contents: Vec<TraceContent>,
+    by_content: HashMap<String, usize>,
+    /// Primary handle -> contents carrying it.
+    by_handle: HashMap<String, Vec<usize>>,
+    /// `message_id` -> content id, for full-id references in event notes.
+    content_of_message: HashMap<String, String>,
+    /// Message-body citation targets, keyed two ways: an 8-byte window for
+    /// fixed-width handles, and exact strings for every other shape.
+    windows: HashMap<u64, Vec<usize>>,
+    odd_handles: Vec<(String, usize)>,
+    /// (reply-stripped subject, participants) -> contents, oldest first.
+    threads: HashMap<(String, BTreeSet<String>), Vec<usize>>,
+    /// Content id -> captured reply edges. Captured links are symmetric.
+    links: HashMap<String, Vec<TraceEdge>>,
+    events: EventIndex,
+}
+
+impl TraceIndex {
+    fn build(storage: &Storage) -> Result<Self, VivariumError> {
+        let (contents, content_of_message) = group_contents(storage)?;
+        let by_content = contents
+            .iter()
+            .enumerate()
+            .map(|(index, content)| (content.content_id.clone(), index))
+            .collect();
+        let handles = HandleIndexes::build(&contents);
+        Ok(Self {
+            by_content,
+            by_handle: handles.by_handle,
+            windows: handles.windows,
+            odd_handles: handles.odd_handles,
+            threads: build_threads(&contents),
+            links: build_links(storage)?,
+            events: EventIndex::load(storage)?,
+            content_of_message,
+            contents,
+        })
+    }
+
+    /// Content id for a handle or a full message id written into an event
+    /// note. Ambiguous handles resolve to nothing, as in token resolution.
+    fn content_for_token(&self, token: &str) -> Option<String> {
+        if let Some(matches) = self.by_handle.get(token) {
+            return match matches.as_slice() {
+                [only] => Some(self.contents[*only].content_id.clone()),
+                _ => None,
+            };
+        }
+        self.content_of_message.get(token).cloned()
+    }
+
+    /// Newest content cited by `body` that is not newer than `child`.
+    ///
+    /// Ties on date are broken by content id, so a body citing two contents
+    /// stamped in the same second always resolves to the same parent.
+    fn cited_parent(&self, child: usize, body: &str) -> Option<usize> {
+        let child_date = self.contents[child].date.as_str();
+        citing_contents(body, &self.windows, &self.odd_handles)
+            .into_iter()
+            .filter(|cited| *cited != child && self.contents[*cited].date.as_str() <= child_date)
+            .max_by(|left, right| {
+                self.contents[*left]
+                    .date
+                    .cmp(&self.contents[*right].date)
+                    .then_with(|| {
+                        self.contents[*right]
+                            .content_id
+                            .cmp(&self.contents[*left].content_id)
+                    })
+            })
+    }
+
+    /// Newest content sharing the child's reply-stripped subject and
+    /// participants that is not newer than the child.
+    fn thread_parent(&self, child: usize) -> Option<usize> {
+        let content = &self.contents[child];
+        let key = (
+            strip_reply_prefix(&content.subject),
+            content.participants.clone(),
+        );
+        thread_candidate(&self.contents, self.threads.get(&key)?, child)
+    }
 }
 
 impl Mailspace {
@@ -165,19 +287,10 @@ impl Mailspace {
             .ok_or_else(|| VivariumError::Message(format!("message not found: {handle}")))?;
         let seed_content_id = seed.content_id.clone();
 
-        let all_messages = storage.list_messages()?;
-        let by_content = group_by_content_id(all_messages);
-        let events = storage.list_mailspace_events_after(0)?;
-        let links = storage.list_mailspace_links()?;
-
-        let mut state = TraceGraphState::default();
-        build_nodes(&storage, &by_content, &mut state)?;
-        add_link_edges(&links, &mut state);
-        add_event_edges(&events, &storage, &mut state);
-        add_inferred_edges(&by_content, &storage, &mut state)?;
-
-        let included = walk_from_seed(&seed_content_id, max_depth, limit, &state);
-        let nodes = assemble_graph(&seed_content_id, &included, &state);
+        let index = TraceIndex::build(&storage)?;
+        let adjacency = build_adjacency(&index, &storage)?;
+        let included = walk_from_seed(&seed_content_id, max_depth, limit, &adjacency);
+        let nodes = assemble_graph(&index, &storage, &adjacency, &seed_content_id, &included)?;
         Ok(TraceGraph {
             seed: seed_content_id,
             nodes,
@@ -185,102 +298,202 @@ impl Mailspace {
     }
 }
 
-fn group_by_content_id(
-    messages: Vec<StoredMessageView>,
-) -> HashMap<String, Vec<StoredMessageView>> {
-    let mut map: HashMap<String, Vec<StoredMessageView>> = HashMap::new();
-    for view in messages {
-        map.entry(view.content_id.clone()).or_default().push(view);
+/// Load every active message and group it into its logical content.
+fn group_contents(
+    storage: &Storage,
+) -> Result<(Vec<TraceContent>, HashMap<String, String>), VivariumError> {
+    let mut grouped: HashMap<String, Vec<StoredMessageView>> = HashMap::new();
+    let mut content_of_message = HashMap::new();
+    for view in storage.list_messages()? {
+        content_of_message.insert(view.message_id.clone(), view.content_id.clone());
+        grouped
+            .entry(view.content_id.clone())
+            .or_default()
+            .push(view);
     }
-    map
+    let mut contents: Vec<TraceContent> = grouped
+        .into_iter()
+        .filter_map(|(content_id, mut copies)| {
+            copies.sort_by(|left, right| {
+                left.date
+                    .cmp(&right.date)
+                    .then_with(|| left.message_id.cmp(&right.message_id))
+            });
+            let primary = copies.first()?;
+            let message_id = primary.message_id.clone();
+            let handle = primary.handle.clone();
+            let date = primary.date.clone();
+            let subject = primary.subject.clone();
+            let people = participants(&primary.from_addr, &primary.to_addr, &primary.cc_addr);
+            let blob_relpath = primary.blob_relpath.clone();
+            Some(TraceContent {
+                content_id,
+                message_id,
+                handle,
+                date,
+                subject,
+                participants: people,
+                blob_relpath,
+                copies,
+            })
+        })
+        .collect();
+    // Content order drives every tie-break, so keep it deterministic.
+    contents.sort_by(|left, right| left.content_id.cmp(&right.content_id));
+    Ok((contents, content_of_message))
 }
 
-fn build_nodes(
-    storage: &Storage,
-    by_content: &HashMap<String, Vec<StoredMessageView>>,
-    state: &mut TraceGraphState,
-) -> Result<(), VivariumError> {
-    let events_by_message = events_by_message(storage)?;
-    for (content_id, messages) in by_content {
-        let mut messages = messages.clone();
-        messages.sort_by(|left, right| {
-            left.date
-                .cmp(&right.date)
-                .then_with(|| left.message_id.cmp(&right.message_id))
+/// Content handles, keyed for exact lookup and for body citation scans.
+struct HandleIndexes {
+    by_handle: HashMap<String, Vec<usize>>,
+    windows: HashMap<u64, Vec<usize>>,
+    odd_handles: Vec<(String, usize)>,
+}
+
+impl HandleIndexes {
+    fn build(contents: &[TraceContent]) -> Self {
+        let mut by_handle: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut windows: HashMap<u64, Vec<usize>> = HashMap::new();
+        let mut odd_handles = Vec::new();
+        for (position, content) in contents.iter().enumerate() {
+            by_handle
+                .entry(content.handle.clone())
+                .or_default()
+                .push(position);
+            match handle_window(&content.handle) {
+                Some(key) => windows.entry(key).or_default().push(position),
+                None => odd_handles.push((content.handle.clone(), position)),
+            }
+        }
+        Self {
+            by_handle,
+            windows,
+            odd_handles,
+        }
+    }
+}
+
+/// Contents whose handle appears anywhere in `body`.
+///
+/// Fixed-width handles are found with a sliding byte window, so a handle that
+/// is embedded in a longer token is still found; handles of any other shape
+/// fall back to an exact substring test.
+fn citing_contents(
+    body: &str,
+    windows: &HashMap<u64, Vec<usize>>,
+    odd_handles: &[(String, usize)],
+) -> Vec<usize> {
+    let mut found = Vec::new();
+    if !windows.is_empty() {
+        let bytes = body.as_bytes();
+        let mut run = 0usize;
+        for (position, byte) in bytes.iter().enumerate() {
+            if !is_lower_hex(*byte) {
+                run = 0;
+                continue;
+            }
+            run += 1;
+            if run < SHORT_HANDLE_LEN {
+                continue;
+            }
+            let start = position + 1 - SHORT_HANDLE_LEN;
+            let mut window = [0u8; SHORT_HANDLE_LEN];
+            window.copy_from_slice(&bytes[start..start + SHORT_HANDLE_LEN]);
+            if let Some(matches) = windows.get(&u64::from_be_bytes(window)) {
+                found.extend(matches.iter().copied());
+            }
+        }
+    }
+    for (handle, position) in odd_handles {
+        if body.contains(handle.as_str()) {
+            found.push(*position);
+        }
+    }
+    found
+}
+
+/// Group contents into reply-thread buckets, oldest first.
+fn build_threads(contents: &[TraceContent]) -> HashMap<(String, BTreeSet<String>), Vec<usize>> {
+    let mut threads: HashMap<(String, BTreeSet<String>), Vec<usize>> = HashMap::new();
+    for (position, content) in contents.iter().enumerate() {
+        threads
+            .entry((
+                strip_reply_prefix(&content.subject),
+                content.participants.clone(),
+            ))
+            .or_default()
+            .push(position);
+    }
+    for bucket in threads.values_mut() {
+        bucket.sort_by(|left, right| {
+            contents[*left]
+                .date
+                .cmp(&contents[*right].date)
+                .then_with(|| contents[*left].content_id.cmp(&contents[*right].content_id))
         });
-        let primary = messages
-            .first()
-            .cloned()
-            .ok_or_else(|| VivariumError::Message("empty message group".into()))?;
-        let data = storage.read_message(&primary.message_id)?;
-        let events = events_by_message
-            .get(&primary.message_id)
-            .cloned()
-            .unwrap_or_default();
-        let body = text_body(&data);
+    }
+    threads
+}
 
-        let refs: Vec<TraceMessageRef> = messages
-            .iter()
-            .map(|view| TraceMessageRef {
-                message_id: view.message_id.clone(),
-                handle: view.handle.clone(),
-                account: view.account.clone(),
-                role: view.local_role.clone(),
-                kind: effective_kind(&view.local_role, &data, &events),
-                date: view.date.clone(),
-                from: view.from_addr.clone(),
-                to: view.to_addr.clone(),
-                subject: view.subject.clone(),
-            })
-            .collect();
+/// Newest bucket entry that is not the child itself and not newer than it.
+///
+/// Buckets are ordered oldest first, so the first hit from the end is the
+/// newest eligible parent.
+fn thread_candidate(contents: &[TraceContent], bucket: &[usize], child: usize) -> Option<usize> {
+    let child_date = contents[child].date.as_str();
+    bucket
+        .iter()
+        .rev()
+        .copied()
+        .find(|candidate| *candidate != child && contents[*candidate].date.as_str() <= child_date)
+}
 
-        state.nodes.insert(
-            content_id.clone(),
-            TraceNodeState {
-                content_id: content_id.clone(),
-                handle: primary.handle.clone(),
-                messages: refs,
-                date: primary.date.clone(),
-                subject: primary.subject.clone(),
-                body,
+/// Captured reply links, indexed by the content on each end.
+fn build_links(storage: &Storage) -> Result<HashMap<String, Vec<TraceEdge>>, VivariumError> {
+    let mut links: HashMap<String, Vec<TraceEdge>> = HashMap::new();
+    for link in storage.list_mailspace_links()? {
+        push_edge(
+            &mut links,
+            &link.parent_content_id,
+            TraceEdge {
+                target: link.child_content_id.clone(),
+                source: link.source.clone(),
+                direction: "descendant".into(),
+            },
+        );
+        push_edge(
+            &mut links,
+            &link.child_content_id,
+            TraceEdge {
+                target: link.parent_content_id,
+                source: link.source,
+                direction: "ancestor".into(),
             },
         );
     }
-    Ok(())
+    Ok(links)
 }
 
-fn events_by_message(
+/// Every edge in the mailspace: captured links, then lifecycle events, then
+/// inferred parents. That order is the order a node reports its edges in.
+fn build_adjacency(
+    index: &TraceIndex,
     storage: &Storage,
-) -> Result<HashMap<String, Vec<MailspaceEvent>>, VivariumError> {
-    let all_events = storage.list_mailspace_events_after(0)?;
-    let mut map: HashMap<String, Vec<MailspaceEvent>> = HashMap::new();
-    for event in all_events {
-        map.entry(event.message_id.clone()).or_default().push(event);
+) -> Result<HashMap<String, Vec<TraceEdge>>, VivariumError> {
+    let mut adjacency: HashMap<String, Vec<TraceEdge>> = HashMap::new();
+    for (content_id, edges) in &index.links {
+        for edge in edges {
+            push_edge(&mut adjacency, content_id, edge.clone());
+        }
     }
-    Ok(map)
+    add_event_edges(&mut adjacency, index);
+    add_inferred_edges(&mut adjacency, index, storage)?;
+    Ok(adjacency)
 }
 
-fn add_link_edges(links: &[MailspaceLink], state: &mut TraceGraphState) {
-    for link in links {
-        add_adjacency(
-            state,
-            &link.parent_content_id,
-            &link.child_content_id,
-            &link.source,
-            "descendant",
-        );
-        add_adjacency(
-            state,
-            &link.child_content_id,
-            &link.parent_content_id,
-            &link.source,
-            "ancestor",
-        );
-    }
-}
-
-fn add_event_edges(events: &[MailspaceEvent], storage: &Storage, state: &mut TraceGraphState) {
-    for event in events {
+/// `task from` events link the sourced item to every item tasked from it.
+fn add_event_edges(adjacency: &mut HashMap<String, Vec<TraceEdge>>, index: &TraceIndex) {
+    for event in &index.events.events {
         if event.command != "task from" || event.event_type != "tasked" {
             continue;
         }
@@ -288,32 +501,179 @@ fn add_event_edges(events: &[MailspaceEvent], storage: &Storage, state: &mut Tra
             continue;
         };
         for handle in parse_task_handles(note) {
-            let task_id = storage.resolve_message_token(&handle).ok();
-            let task_content_id = task_id.and_then(|id| message_content_id(storage, &id));
-            let Some(task_content_id) = task_content_id else {
+            let Some(task_content_id) = index.content_for_token(&handle) else {
                 continue;
             };
-            add_adjacency(
-                state,
+            push_edge(
+                adjacency,
                 &event.content_id,
-                &task_content_id,
-                "event",
-                "descendant",
+                TraceEdge {
+                    target: task_content_id.clone(),
+                    source: "event".into(),
+                    direction: "descendant".into(),
+                },
             );
-            add_adjacency(
-                state,
+            push_edge(
+                adjacency,
                 &task_content_id,
-                &event.content_id,
-                "event",
-                "ancestor",
+                TraceEdge {
+                    target: event.content_id.clone(),
+                    source: "event".into(),
+                    direction: "ancestor".into(),
+                },
             );
         }
     }
-    // `moved` events intentionally do not add cross-content edges here.
-    // A move preserves the same content_id and is represented by copy
-    // collapse (multiple role/account copies on one node). Moves that
-    // include a note reply create a separate message linked by a captured
-    // reply edge, which is already added in `add_link_edges`.
+}
+
+/// Inferred parent links, one body read per content: the citation pass needs
+/// the text, the thread pass only the subject and participants.
+fn add_inferred_edges(
+    adjacency: &mut HashMap<String, Vec<TraceEdge>>,
+    index: &TraceIndex,
+    storage: &Storage,
+) -> Result<(), VivariumError> {
+    for position in 0..index.contents.len() {
+        let content = &index.contents[position];
+        let data = storage.read_listed_blob(&content.blob_relpath)?;
+        let body = text_body(&data);
+        let parent = index
+            .cited_parent(position, &body)
+            .or_else(|| index.thread_parent(position));
+        let Some(parent) = parent else {
+            continue;
+        };
+        let parent_id = index.contents[parent].content_id.clone();
+        push_edge(
+            adjacency,
+            &parent_id,
+            TraceEdge {
+                target: content.content_id.clone(),
+                source: "inferred".into(),
+                direction: "descendant".into(),
+            },
+        );
+        push_edge(
+            adjacency,
+            &content.content_id,
+            TraceEdge {
+                target: parent_id,
+                source: "inferred".into(),
+                direction: "ancestor".into(),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn push_edge(adjacency: &mut HashMap<String, Vec<TraceEdge>>, from: &str, edge: TraceEdge) {
+    if edge.target == from {
+        return;
+    }
+    adjacency.entry(from.to_string()).or_default().push(edge);
+}
+
+/// Contents reachable from the seed within `max_depth` and `limit`.
+fn walk_from_seed(
+    seed: &str,
+    max_depth: usize,
+    limit: usize,
+    adjacency: &HashMap<String, Vec<TraceEdge>>,
+) -> HashSet<String> {
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back((seed.to_string(), 0usize));
+    visited.insert(seed.to_string());
+
+    while let Some((content_id, depth)) = queue.pop_front() {
+        if depth >= max_depth || visited.len() >= limit {
+            continue;
+        }
+        let targets: Vec<String> = adjacency
+            .get(&content_id)
+            .into_iter()
+            .flatten()
+            .map(|edge| edge.target.clone())
+            .collect();
+        for target in targets {
+            if visited.insert(target.clone()) {
+                queue.push_back((target, depth + 1));
+            }
+        }
+    }
+    visited
+}
+
+/// Materialize the included contents and their edges into output nodes.
+fn assemble_graph(
+    index: &TraceIndex,
+    storage: &Storage,
+    adjacency: &HashMap<String, Vec<TraceEdge>>,
+    seed: &str,
+    included: &HashSet<String>,
+) -> Result<Vec<TraceNode>, VivariumError> {
+    let mut nodes = Vec::with_capacity(included.len());
+    for content_id in included {
+        let Some(&position) = index.by_content.get(content_id) else {
+            continue;
+        };
+        nodes.push(node_view(index, storage, adjacency, position, included)?);
+    }
+    nodes.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| left.content_id.cmp(&right.content_id))
+    });
+    // Ensure seed is first.
+    if let Some(seed_index) = nodes.iter().position(|node| node.content_id == seed)
+        && seed_index > 0
+    {
+        nodes.swap(0, seed_index);
+    }
+    Ok(nodes)
+}
+
+fn node_view(
+    index: &TraceIndex,
+    storage: &Storage,
+    adjacency: &HashMap<String, Vec<TraceEdge>>,
+    position: usize,
+    included: &HashSet<String>,
+) -> Result<TraceNode, VivariumError> {
+    let content = &index.contents[position];
+    let body = storage.read_listed_blob(&content.blob_relpath)?;
+    let events = index.events.of_message(&content.message_id);
+    let messages = content
+        .copies
+        .iter()
+        .map(|view| TraceMessageRef {
+            message_id: view.message_id.clone(),
+            handle: view.handle.clone(),
+            account: view.account.clone(),
+            role: view.local_role.clone(),
+            kind: effective_kind(&view.local_role, &body, &events),
+            date: view.date.clone(),
+            from: view.from_addr.clone(),
+            to: view.to_addr.clone(),
+            subject: view.subject.clone(),
+        })
+        .collect();
+    let edges = adjacency
+        .get(&content.content_id)
+        .into_iter()
+        .flatten()
+        .filter(|edge| included.contains(&edge.target))
+        .cloned()
+        .collect();
+    Ok(TraceNode {
+        content_id: content.content_id.clone(),
+        handle: content.handle.clone(),
+        messages,
+        date: content.date.clone(),
+        subject: content.subject.clone(),
+        body: text_body(&body),
+        edges,
+    })
 }
 
 fn parse_task_handles(note: &str) -> Vec<String> {
@@ -326,201 +686,26 @@ fn parse_task_handles(note: &str) -> Vec<String> {
     rest.split(',').map(|s| s.trim().to_string()).collect()
 }
 
-fn message_content_id(storage: &Storage, message_id: &str) -> Option<String> {
-    storage
-        .message_by_id(message_id)
-        .ok()
-        .flatten()
-        .map(|view| view.content_id)
-}
-
-fn add_inferred_edges(
-    by_content: &HashMap<String, Vec<StoredMessageView>>,
-    storage: &Storage,
-    state: &mut TraceGraphState,
-) -> Result<(), VivariumError> {
-    let candidates = build_inference_candidates(by_content, storage)?;
-    for child in &candidates {
-        let Some(parent) = infer_parent(child, &candidates) else {
-            continue;
-        };
-        add_adjacency(
-            state,
-            &parent.content_id,
-            &child.content_id,
-            "inferred",
-            "descendant",
-        );
-        add_adjacency(
-            state,
-            &child.content_id,
-            &parent.content_id,
-            "inferred",
-            "ancestor",
-        );
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct InferenceCandidate {
-    content_id: String,
-    handle: String,
-    date: String,
-    subject: String,
-    body: String,
-    from_addr: String,
-    to_addr: String,
-    cc_addr: String,
-}
-
-fn build_inference_candidates(
-    by_content: &HashMap<String, Vec<StoredMessageView>>,
-    storage: &Storage,
-) -> Result<Vec<InferenceCandidate>, VivariumError> {
-    let mut candidates = Vec::new();
-    for (content_id, messages) in by_content {
-        let primary = messages
-            .first()
-            .ok_or_else(|| VivariumError::Message("empty message group".into()))?;
-        let data = storage.read_message(&primary.message_id)?;
-        candidates.push(InferenceCandidate {
-            content_id: content_id.clone(),
-            handle: primary.handle.clone(),
-            date: primary.date.clone(),
-            subject: primary.subject.clone(),
-            body: text_body(&data),
-            from_addr: primary.from_addr.clone(),
-            to_addr: primary.to_addr.clone(),
-            cc_addr: primary.cc_addr.clone(),
-        });
-    }
-    Ok(candidates)
-}
-
-fn infer_parent<'a>(
-    child: &'a InferenceCandidate,
-    candidates: &'a [InferenceCandidate],
-) -> Option<&'a InferenceCandidate> {
-    let cited = candidates
-        .iter()
-        .filter(|candidate| candidate.content_id != child.content_id)
-        .filter(|candidate| candidate.date <= child.date)
-        .filter(|candidate| child.body.contains(&candidate.handle))
-        .max_by(|left, right| left.date.cmp(&right.date));
-    if cited.is_some() {
-        return cited;
-    }
-    let subject = strip_reply_prefix(&child.subject);
-    let subject_match = candidates
-        .iter()
-        .filter(|candidate| candidate.content_id != child.content_id)
-        .filter(|candidate| strip_reply_prefix(&candidate.subject) == subject)
-        .filter(|candidate| candidate.date <= child.date)
-        .filter(|candidate| same_participants(candidate, child))
-        .max_by(|left, right| left.date.cmp(&right.date));
-    if subject_match.is_some() {
-        return subject_match;
-    }
-    None
-}
-
-fn same_participants(left: &InferenceCandidate, right: &InferenceCandidate) -> bool {
-    participants(left) == participants(right)
-}
-
-fn participants(candidate: &InferenceCandidate) -> BTreeSet<String> {
-    let mut set = BTreeSet::from([candidate.from_addr.to_ascii_lowercase()]);
-    set.extend(candidate.to_addr.split(", ").map(str::to_ascii_lowercase));
-    set.extend(candidate.cc_addr.split(", ").map(str::to_ascii_lowercase));
+fn participants(from_addr: &str, to_addr: &str, cc_addr: &str) -> BTreeSet<String> {
+    let mut set = BTreeSet::from([from_addr.to_ascii_lowercase()]);
+    set.extend(to_addr.split(", ").map(str::to_ascii_lowercase));
+    set.extend(cc_addr.split(", ").map(str::to_ascii_lowercase));
     set
 }
 
-fn add_adjacency(state: &mut TraceGraphState, from: &str, to: &str, source: &str, direction: &str) {
-    if from == to {
-        return;
+/// Big-endian window key for an 8-character lowercase-hex handle.
+fn handle_window(handle: &str) -> Option<u64> {
+    let bytes = handle.as_bytes();
+    if bytes.len() != SHORT_HANDLE_LEN || !bytes.iter().all(|byte| is_lower_hex(*byte)) {
+        return None;
     }
-    state.adjacency.entry(from.into()).or_default().push((
-        to.into(),
-        source.into(),
-        direction.into(),
-    ));
+    let mut window = [0u8; SHORT_HANDLE_LEN];
+    window.copy_from_slice(bytes);
+    Some(u64::from_be_bytes(window))
 }
 
-fn walk_from_seed(
-    seed: &str,
-    max_depth: usize,
-    limit: usize,
-    state: &TraceGraphState,
-) -> HashSet<String> {
-    let mut visited = HashSet::new();
-    let mut queue = VecDeque::new();
-    queue.push_back((seed.to_string(), 0usize));
-    visited.insert(seed.to_string());
-
-    while let Some((content_id, depth)) = queue.pop_front() {
-        if depth >= max_depth || visited.len() >= limit {
-            continue;
-        }
-        let neighbors = state
-            .adjacency
-            .get(&content_id)
-            .cloned()
-            .unwrap_or_default();
-        for (target, _source, _direction) in neighbors {
-            if visited.insert(target.clone()) {
-                queue.push_back((target, depth + 1));
-            }
-        }
-    }
-    visited
-}
-
-fn assemble_graph(
-    seed: &str,
-    included: &HashSet<String>,
-    state: &TraceGraphState,
-) -> Vec<TraceNode> {
-    let mut nodes: Vec<TraceNode> = included
-        .iter()
-        .filter_map(|content_id| state.nodes.get(content_id))
-        .map(|node_state| {
-            let edges: Vec<TraceEdge> = state
-                .adjacency
-                .get(&node_state.content_id)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(target, _source, _direction)| included.contains(target))
-                .map(|(target, source, direction)| TraceEdge {
-                    target,
-                    source,
-                    direction,
-                })
-                .collect();
-            TraceNode {
-                content_id: node_state.content_id.clone(),
-                handle: node_state.handle.clone(),
-                messages: node_state.messages.clone(),
-                date: node_state.date.clone(),
-                subject: node_state.subject.clone(),
-                body: node_state.body.clone(),
-                edges,
-            }
-        })
-        .collect();
-    nodes.sort_by(|left, right| {
-        left.date
-            .cmp(&right.date)
-            .then_with(|| left.content_id.cmp(&right.content_id))
-    });
-    // Ensure seed is first.
-    if let Some(seed_index) = nodes.iter().position(|n| n.content_id == seed)
-        && seed_index > 0
-    {
-        nodes.swap(0, seed_index);
-    }
-    nodes
+fn is_lower_hex(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
 
 fn strip_reply_prefix(subject: &str) -> String {
@@ -552,3 +737,7 @@ fn text_body(data: &[u8]) -> String {
         .and_then(|parsed| parsed.body_text(0).map(|body| body.to_string()))
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "trace_test.rs"]
+mod tests;

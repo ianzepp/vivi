@@ -36,7 +36,7 @@ impl Storage {
         tx.commit().map_err(|e| {
             VivariumError::Other(format!("failed to commit storage transaction: {e}"))
         })?;
-        self.invalidate_handle_cache();
+        self.invalidate_handle_index();
         Ok(StoredMessage {
             message_id,
             content_id,
@@ -165,7 +165,7 @@ impl Storage {
         tx.commit().map_err(|e| {
             VivariumError::Other(format!("failed to commit delivery transaction: {e}"))
         })?;
-        self.invalidate_handle_cache();
+        self.invalidate_handle_index();
         Ok(stored)
     }
 }

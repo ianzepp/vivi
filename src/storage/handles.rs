@@ -1,8 +1,59 @@
+use std::cell::Ref;
+
 use super::{
-    HashMap, OptionalExtension, Storage, StoredMessageView, VivariumError, params, short_handle_map,
+    HashMap, OptionalExtension, Storage, StoredMessageView, VivariumError, params, short_handle,
+    short_handle_map,
 };
 
+/// Every active message's id and short handle, built in one pass.
+///
+/// Handle resolution, handle decoration, and the token prefix scan are
+/// repeated many times per command — `vivi step` resolves one token per ready
+/// node. Building this once per [`Storage`] keeps those calls out of the
+/// `messages` table, whose scan cost grows with the whole mailbox.
+pub(super) struct HandleIndex {
+    /// Active message ids in `message_id` order.
+    ids: Vec<String>,
+    /// `message_id` -> short handle.
+    by_message_id: HashMap<String, String>,
+    /// short handle -> every message id carrying it.
+    by_handle: HashMap<String, Vec<String>>,
+}
+
+impl HandleIndex {
+    fn new(ids: Vec<String>) -> Self {
+        let mut by_message_id = HashMap::with_capacity(ids.len());
+        let mut by_handle: HashMap<String, Vec<String>> = HashMap::new();
+        for message_id in &ids {
+            let handle = short_handle(message_id);
+            by_handle
+                .entry(handle.clone())
+                .or_default()
+                .push(message_id.clone());
+            by_message_id.insert(message_id.clone(), handle);
+        }
+        Self {
+            ids,
+            by_message_id,
+            by_handle,
+        }
+    }
+}
+
 impl Storage {
+    /// Cached handle index, built on first use and cleared by any write.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the active-message-ids query fails.
+    fn handle_index(&self) -> Result<Ref<'_, HandleIndex>, VivariumError> {
+        if self.handle_index.borrow().is_none() {
+            let ids = self.active_message_ids()?;
+            *self.handle_index.borrow_mut() = Some(HandleIndex::new(ids));
+        }
+        Ref::filter_map(self.handle_index.borrow(), Option::as_ref)
+            .map_err(|_| VivariumError::Other("handle index is not available".into()))
+    }
+
     /// Resolve a message token (full ID, short handle, or ID prefix) to a
     /// canonical message ID.
     ///
@@ -13,34 +64,30 @@ impl Storage {
         if self.message_by_id_exact(token)?.is_some() {
             return Ok(token.to_string());
         }
-        let message_ids = self.active_message_ids()?;
-        let handle_map = short_handle_map(&message_ids);
-        let handle_matches: Vec<_> = handle_map
-            .iter()
-            .filter_map(|(message_id, handle)| (handle == token).then_some(message_id.clone()))
-            .collect();
-        match handle_matches.len() {
-            1 => return Ok(handle_matches[0].clone()),
-            n if n > 1 => {
-                return Err(VivariumError::Message(format!(
-                    "ambiguous handle '{token}'; matches {n} messages"
-                )));
-            }
-            _ => {}
+        let index = self.handle_index()?;
+        if let Some(matches) = index.by_handle.get(token) {
+            return match matches.as_slice() {
+                [only] => Ok(only.clone()),
+                many => Err(VivariumError::Message(format!(
+                    "ambiguous handle '{token}'; matches {} messages",
+                    many.len()
+                ))),
+            };
         }
-        let id_prefix_matches: Vec<_> = message_ids
+        let id_prefix_matches: Vec<&String> = index
+            .ids
             .iter()
             .filter(|message_id| message_id.starts_with(token))
-            .cloned()
             .collect();
-        match id_prefix_matches.len() {
-            1 => return Ok(id_prefix_matches[0].clone()),
-            n if n > 1 => {
+        match id_prefix_matches.as_slice() {
+            [only] => return Ok((*only).clone()),
+            [] => {}
+            many => {
                 return Err(VivariumError::Message(format!(
-                    "ambiguous message_id prefix '{token}'; matches {n} messages"
+                    "ambiguous message_id prefix '{token}'; matches {} messages",
+                    many.len()
                 )));
             }
-            _ => {}
         }
         let content_matches = self.content_prefix_matches(token)?;
         match content_matches.len() {
@@ -56,25 +103,16 @@ impl Storage {
 
     /// Compute a short display handle for a single message.
     ///
-    /// Results are cached on `Storage` to avoid repeated full table scans of
-    /// all active message IDs. The cache is invalidated on any write that
-    /// affects messages (ingest, move, flag update, delete).
+    /// Results come from the cached handle index, so repeated decoration does
+    /// not rescan the `messages` table. The index is invalidated on any write
+    /// that affects messages (ingest, move, flag update, delete).
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if the active-message-ids query fails.
-    ///
-    /// # Panics
-    /// Panics if the internal handle cache is in an inconsistent state
-    /// (unreachable in normal operation).
     pub fn display_handle(&self, message_id: &str) -> Result<String, VivariumError> {
-        let mut cache = self.handle_cache.borrow_mut();
-        if cache.is_none() {
-            let message_ids = self.active_message_ids()?;
-            *cache = Some(short_handle_map(&message_ids));
-        }
-        Ok(cache
-            .as_ref()
-            .unwrap()
+        let index = self.handle_index()?;
+        Ok(index
+            .by_message_id
             .get(message_id)
             .cloned()
             .unwrap_or_else(|| message_id.to_string()))
@@ -377,15 +415,10 @@ impl Storage {
         &self,
         mut messages: Vec<StoredMessageView>,
     ) -> Result<Vec<StoredMessageView>, VivariumError> {
-        // Use the same cached handle map as display_handle
-        let mut cache = self.handle_cache.borrow_mut();
-        if cache.is_none() {
-            let message_ids = self.active_message_ids()?;
-            *cache = Some(short_handle_map(&message_ids));
-        }
-        let handle_map = cache.as_ref().unwrap();
+        let index = self.handle_index()?;
         for message in &mut messages {
-            message.handle = handle_map
+            message.handle = index
+                .by_message_id
                 .get(&message.message_id)
                 .cloned()
                 .unwrap_or_else(|| message.message_id.clone());

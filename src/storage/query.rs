@@ -23,6 +23,17 @@ impl Storage {
         fs::read(self.mail_root.join(relpath)).map_err(Into::into)
     }
 
+    /// Read raw bytes from the blob store by the path a listing reported.
+    ///
+    /// A listing already carries the path, so this skips the query and
+    /// statement preparation [`Storage::read_blob`] pays on every call.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the blob cannot be read.
+    pub fn read_listed_blob(&self, blob_relpath: &str) -> Result<Vec<u8>, VivariumError> {
+        fs::read(self.mail_root.join(blob_relpath)).map_err(Into::into)
+    }
+
     /// Check whether a blob exists by content hash.
     ///
     /// # Errors
