@@ -292,6 +292,33 @@ silently skip node minting entirely (observed with an old Homebrew 8.1.0 on
 PATH): `mailspace status` prints the running binary's version — check it
 when nodes go missing, and keep one vivi on PATH.
 
+### Work-graph flow (dispatching ordered work)
+
+The procedure for turning a delivery document into ordered, dispatched work
+lives in [`references/work-graph-flow.md`](references/work-graph-flow.md): read
+it before lowering a multi-unit delivery. The load-bearing rules:
+
+- Every unit is its own task send with its own handle; the send mints the node.
+  Cite prerequisites with `--depends-on`; an unknown handle fails the send.
+- `done` means the worker closed the handle. It does not mean the code is on
+  main, and Vivi has no merged state. "On main" is a **merge task** filed with
+  `--depends-on <unit>`; anything that needs the code `--depends-on` the merge
+  task, not the unit.
+- `vivi step` dispatches a ready node only if a line of its body begins with
+  `done_when:` (a `write_scope:` line is reported, not required). One-line
+  compressed forms, bullets, and bold labels do not match.
+- Per unit, in order: file with `--depends-on` and a valid body, `need bind`
+  the need to its units (and their merge tasks), claim the lane, `graph
+  activate <handle> --task <handle>`, spawn the seat, and after it closes run
+  `step --apply <handle>`. A merge landing closes the merge task and turns its
+  dependents ready.
+- Do not stack units on one handle: stacked units are not separate nodes and
+  one handle holds one lane lock.
+- `graph audit --repair` fixes missing nodes, kind drift, and node/folder state
+  drift (folder wins); read the audit first, because `node_state` repairs can
+  reverse a hand completion. The reference file lists exactly what each finding
+  repairs.
+
 ### Judgment provider (optional, off by default)
 
 A user-level `[judgment]` section enables System One receipt screens on
