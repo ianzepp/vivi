@@ -41,6 +41,11 @@ URL must pass it too.
 
 ## Railway deploy
 
+- Production deploys come from the `release` branch, not `main`: a push to
+  `main` does not redeploy. To deploy, fast-forward `release` to a `main`
+  commit that has passed `cargo test` and `scripts/two-checkout-smoke.sh`
+  (`git push origin <main-sha>:release`), then run the smoke against the
+  deployed URL.
 - A volume mounted at `/data` is required — rooms are persistent and
   `DATA_DIR` must survive restarts.
 - The lockfile must keep the `vivi` git source

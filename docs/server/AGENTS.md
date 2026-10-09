@@ -17,6 +17,20 @@ Standing authorization from the repo owner for agent development:
   If `main` has moved, merge it into the branch, re-run the checks, then
   fast-forward.
 
+## Deploy
+
+Railway deploys from the `release` branch. A push to `main` does not
+redeploy.
+
+Advancing `release` is a production deploy and is **not** covered by the
+standing authorization above: do it only when the repo owner asks. When
+asked, fast-forward only, from a `main` commit that has passed the checks
+below and the smoke, then run the smoke against the deployed URL:
+
+```sh
+git push origin <main-sha>:release
+```
+
 ## Checks
 
 Run before merging:
