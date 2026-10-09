@@ -216,7 +216,10 @@ fn status_bucket_is_the_leading_word() {
 fn completion_claim_reads_the_numerator_and_denominator() {
     assert_eq!(completion_claim("active — 7/26 delivered"), Some((7, 26)));
     assert_eq!(completion_claim("active — 24/26 delivered"), Some((24, 26)));
-    assert_eq!(completion_claim("done — 137/200 delivered"), Some((137, 200)));
+    assert_eq!(
+        completion_claim("done — 137/200 delivered"),
+        Some((137, 200))
+    );
     assert_eq!(completion_claim("no numbers here"), None);
 }
 
