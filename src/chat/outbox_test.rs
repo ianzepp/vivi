@@ -9,6 +9,7 @@ use std::sync::mpsc;
 use super::*;
 use crate::chat::state::ChatState;
 use crate::chat::{b64, chat_dir, ensure_chat_dir};
+use crate::storage::is_traveling_id;
 use ed25519_dalek::{Signature, Verifier};
 use serde_json::{Value, json};
 
@@ -199,6 +200,11 @@ fn send_happy_path_mints_bearer_and_posts_envelope() {
         Some(identity.short_wire_fingerprint().as_str())
     );
     assert_eq!(header(head, "message-id"), Some(report.message_id.as_str()));
+    assert!(
+        is_traveling_id(&report.message_id),
+        "the wire Message-ID is the traveling id: {}",
+        report.message_id
+    );
     let payload: Value = serde_json::from_str(body).expect("send body json");
     assert_eq!(payload["to"], "seat-b");
     assert_eq!(payload["subject"], "hello");
@@ -379,4 +385,54 @@ fn send_requires_a_joined_room() {
     )
     .expect_err("not joined");
     assert!(error.to_string().contains("not joined"));
+}
+
+#[test]
+fn composed_ids_are_distinct_traveling_ids() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = chat_dir(tmp.path());
+    let identity = identity_with_seed(&dir, 7);
+
+    let (first, envelope) = compose_message(Some("seat-b"), None, "one", &identity);
+    let (second, _) = compose_message(Some("seat-b"), None, "two", &identity);
+
+    assert!(is_traveling_id(&first), "{first}");
+    assert!(is_traveling_id(&second), "{second}");
+    assert_ne!(first, second);
+    assert_eq!(envelope["message_id"], first.as_str());
+}
+
+#[test]
+fn queued_send_keeps_its_traveling_id_when_flushed_later() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = chat_dir(tmp.path());
+    let identity = identity_with_seed(&dir, 7);
+    let state = ChatState::open(&dir).expect("state");
+    state.join_room(ROOM, 2, "burgus/vivi").expect("joined");
+
+    let report = send_message(
+        "http://127.0.0.1:1",
+        &state,
+        &identity,
+        ROOM,
+        None,
+        None,
+        "offline body",
+    )
+    .expect("send enqueues");
+    assert!(!report.delivered);
+    assert!(is_traveling_id(&report.message_id), "{}", report.message_id);
+    let pending = state.pending_outbox().expect("pending");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message_id, report.message_id);
+
+    let (server, rx) = stub_server(3, handler_flow("tok-5"));
+    deliver_all(&server, &state, &identity).expect("flush");
+    let requests: Vec<Request> = rx.try_iter().collect();
+    let (_, _, _, head) = &requests[2];
+    assert_eq!(
+        header(head, "message-id"),
+        Some(report.message_id.as_str()),
+        "the flush re-sends the minted id; nothing re-mints"
+    );
 }

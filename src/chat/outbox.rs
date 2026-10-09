@@ -1,6 +1,6 @@
-//! Outbox operations: compose with a client Message-ID, enqueue
-//! transactionally, deliver at-least-once with fresh per-invocation bearers,
-//! and poll since the stored cursor.
+//! Outbox operations: compose with a traveling id, enqueue transactionally,
+//! deliver at-least-once with fresh per-invocation bearers, and poll since
+//! the stored cursor.
 
 use std::collections::HashMap;
 
@@ -11,6 +11,7 @@ use crate::chat::client::{self, ChatMessage};
 use crate::chat::identity::ChatIdentity;
 use crate::chat::state::ChatState;
 use crate::error::VivariumError;
+use crate::storage::mint_traveling_id;
 
 /// Server body cap (contract: sends over 64 KiB are rejected 413).
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -56,8 +57,12 @@ pub struct ReadPage {
     pub advanced: bool,
 }
 
-/// Compose an outbox envelope with a fresh client Message-ID (idempotency
-/// key; the server dedups replays by it).
+/// Compose an outbox envelope with a fresh traveling id.
+///
+/// The id is minted here, once, and is both the wire `Message-ID` (the
+/// server's idempotency key) and the mailspace message id other stores
+/// import at ingest: one namespace, so a message keeps one short handle on
+/// every machine. Retries re-send the stored id; nothing downstream re-mints.
 #[must_use]
 pub fn compose_message(
     to: Option<&str>,
@@ -65,9 +70,9 @@ pub fn compose_message(
     body: &str,
     identity: &ChatIdentity,
 ) -> (String, Value) {
-    let mut raw = [0u8; 16];
-    OsRng.fill_bytes(&mut raw);
-    let message_id = format!("{}@{}", hex::encode(raw), identity.short_wire_fingerprint());
+    let mut entropy = [0u8; 16];
+    OsRng.fill_bytes(&mut entropy);
+    let message_id = mint_traveling_id(&identity.short_wire_fingerprint(), &entropy);
     let envelope = json!({
         "message_id": message_id,
         "to": to,

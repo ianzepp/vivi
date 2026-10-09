@@ -394,9 +394,10 @@ as the sender's durable identity.
 Offline semantics are honest: `send` enqueues transactionally and then
 attempts immediate delivery, printing `sent` or `queued` for what
 actually happened. Every chat command flushes opportunistically first;
-`vivi chat flush` retries explicitly. Delivery is at-least-once — the
-server deduplicates by Message-ID, so a replayed flush is a no-op rather
-than a duplicate message.
+`vivi chat flush` retries explicitly. Delivery is at-least-once — each
+send mints one traveling id (`msg_` plus 24 hex characters) at creation
+and every retry re-sends that same id; the server deduplicates by it, so
+a replayed flush is a no-op rather than a duplicate message.
 
 The board badge is one bounded line appended to `vivi board` when rooms
 are joined and the server is reachable (`chat: N unread in <room>` or
