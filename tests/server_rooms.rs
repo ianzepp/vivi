@@ -132,7 +132,7 @@ fn assert_is_wal(db: &Path) {
 #[tokio::test]
 async fn create_room_handler_validates_capacity_and_mints_dir() {
     let data_dir = scratch_data_dir("create-handler");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
 
     let (status, body) = send(&app, post_rooms(Some(&creator_payload(6, 7, "creator-a")))).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -164,7 +164,7 @@ async fn create_room_handler_validates_capacity_and_mints_dir() {
 #[tokio::test]
 async fn room_metadata_endpoint_reports_and_distinguishes_errors() {
     let data_dir = scratch_data_dir("meta-handler");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
 
     let (_, created) = send(&app, post_rooms(Some(&creator_payload(4, 9, "creator-b")))).await;
     let room_id = created["room_id"].as_str().unwrap().to_owned();

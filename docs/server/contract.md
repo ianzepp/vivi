@@ -122,7 +122,8 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
 | --- | --- | --- |
 | 400 | `invalid_request` | malformed JSON, bad seat range, bad query |
 | 400 | `invalid_room_id` | id not canonical Crockford-base32 |
-| 401 | `unauthorized` | missing/invalid/expired bearer or moderation token |
+| 401 | `unauthorized` | missing/invalid/expired bearer |
+| 403 | `moderator_unauthorized` | missing/invalid moderation token on `/v1/_health` (R6) |
 | 401 | `challenge_failed` | unknown/expired challenge_id, or bad signature |
 | 403 | `seat_full` | no open seat |
 | 404 | `room_not_found` | unknown room id |
@@ -136,7 +137,7 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
 | Var | Meaning | Default |
 | --- | --- | --- |
 | `PORT` | listen port | `8080` |
-| `DATA_DIR` | room storage root (`DATA_DIR/rooms/<id>/mailspace/`) | `data` |
+| `DATA_DIR` | room storage root (`DATA_DIR/rooms/<id>/.vivi/`, per R2) | `data` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key material for at-rest bodies | required before rooms open (U5 verifier; boot exits on mismatch/unreadable store) |
 | `MODERATION_TOKEN` | bearer for `/v1/_health` | unset disables `/v1/_health` |
 
@@ -186,3 +187,19 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   `.` `-` `_` (plus the existing length and uniqueness rules); anything
   else is `400 invalid_label` at join/create. The client default label is
   `<short-host>.<project-dir>` (sanitized).
+
+- **R5 (with VC-9, 2026-10-09): room-create request shape.** The create
+  endpoint requires the creator's `public_key_pem` (plus `seats`, `label`);
+  the response carries `room_id`, `seat` (1 for the creator), `label`,
+  `token`, `token_expires_at`, `fingerprint`. This makes explicit what R1
+  announced; the § `POST /v1/rooms` body text is authoritative here.
+
+- **R6 (with VC-5, 2026-10-09): moderation health auth.** `/v1/_health`
+  failures are `403 moderator_unauthorized` (constant-time compare), and
+  the route is absent (404) when `MODERATION_TOKEN` is unset. Message
+  content is sealed at rest under `STORE_ENCRYPTION_KEY` (AES-256-GCM,
+  per-record nonces; sealed canary verifier; boot exits on missing or
+  mismatched key once a store is sealed; fresh keyless boot warns and
+  refuses message ops). Railway deploys must attach a volume at `/data`
+  (`railway volume add --mount-path /data`) — the schema cannot declare
+  it.

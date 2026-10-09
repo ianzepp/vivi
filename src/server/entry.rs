@@ -56,14 +56,36 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    if config.store_encryption_key.is_none() {
+    // Boot-time key verifier (U5): an invalid key, a sealed store met with a
+    // missing or wrong key, or an unreadable verifier exits the process
+    // before any listener binds.
+    let cipher = match config.store_encryption_key.as_deref() {
+        Some(raw) => match vivi_server::crypto::StoreCipher::from_base64(raw) {
+            Ok(cipher) => Some(std::sync::Arc::new(cipher)),
+            Err(err) => {
+                eprintln!("vivi-server: {err}; exiting");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    if let Err(err) = vivi_server::crypto::verify_store(&config.data_dir, cipher.as_deref()) {
+        eprintln!("vivi-server: {err}; exiting");
+        std::process::exit(1);
+    }
+    if cipher.is_none() {
         tracing::warn!("STORE_ENCRYPTION_KEY not set; room storage will refuse to open (U5)");
     }
     if config.moderation_token.is_none() {
         tracing::warn!("MODERATION_TOKEN not set; /v1/_health disabled (U3)");
     }
 
-    let app = vivi_server::api_router(config.data_dir.clone()).route("/healthz", get(healthz));
+    let app = vivi_server::api_router(
+        config.data_dir.clone(),
+        config.store_encryption_key.clone(),
+        config.moderation_token.clone(),
+    )
+    .route("/healthz", get(healthz));
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
     tracing::info!(

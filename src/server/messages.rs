@@ -19,6 +19,7 @@ use vivi::mailspace::{Mailspace, SendRequest};
 
 use crate::AppState;
 use crate::auth::rfc3339;
+use crate::crypto::{StoreCipher, set_owner_only};
 use crate::rooms::{RoomError, error_response, map_room_error};
 use crate::safety::body_over_cap;
 use crate::seats::SeatRecord;
@@ -28,7 +29,7 @@ pub const MAX_WAIT_SECS: u64 = 25;
 const POLL_TICK: Duration = Duration::from_millis(250);
 const MAX_MESSAGE_ID_LEN: usize = 256;
 
-/// One delivered chat message as served by poll and indexed for dedup.
+/// One delivered chat message as served by poll (content already decrypted).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRecord {
     pub cursor: u64,
@@ -41,10 +42,39 @@ pub struct ChatRecord {
     pub created_at: String,
 }
 
+/// Content fields sealed into `enc` at rest (VC-5). The vivi mailspace mail
+/// item keeps headers/metadata only; its body field carries the same sealed
+/// blob so no plaintext content lands in mail.sqlite either.
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredContent {
+    to: Option<String>,
+    subject: String,
+    body: String,
+}
+
+/// On-disk sidecar row: metadata in the clear, content sealed as `enc`
+/// (base64 nonce||ciphertext over `StoredContent`, AES-256-GCM). Rows
+/// written before VC-5 carry plaintext content and no `enc` field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredRecord {
+    cursor: u64,
+    message_id: String,
+    from: String,
+    fingerprint: String,
+    created_at: String,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enc: Option<String>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ChatIndex {
-    #[serde(default)]
-    records: Vec<ChatRecord>,
+    records: Vec<StoredRecord>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,8 +113,55 @@ fn read_index(room_dir: &Path) -> Result<ChatIndex, RoomError> {
 fn write_index(room_dir: &Path, index: &ChatIndex) -> Result<(), RoomError> {
     let bytes = serde_json::to_vec(index)
         .map_err(|e| RoomError::Storage(format!("failed to encode messages.json: {e}")))?;
-    std::fs::write(index_path(room_dir), &bytes)
-        .map_err(|e| RoomError::Storage(format!("failed to write messages.json: {e}")))
+    let path = index_path(room_dir);
+    std::fs::write(&path, &bytes)
+        .map_err(|e| RoomError::Storage(format!("failed to write messages.json: {e}")))?;
+    set_owner_only(&path);
+    Ok(())
+}
+
+/// Decrypt one stored row into the served record. Encrypted rows require the
+/// cipher; legacy plaintext rows (no `enc`) pass through untouched.
+fn decode_record(
+    stored: StoredRecord,
+    cipher: Option<&StoreCipher>,
+) -> Result<ChatRecord, RoomError> {
+    match stored.enc {
+        Some(token) => {
+            let cipher = cipher.ok_or_else(|| {
+                RoomError::Storage(
+                    "messages.json holds encrypted records but STORE_ENCRYPTION_KEY is not set"
+                        .to_owned(),
+                )
+            })?;
+            let plain = cipher
+                .decrypt(&token)
+                .map_err(|e| RoomError::Storage(format!("message decrypt failed: {e}")))?;
+            let content: StoredContent = serde_json::from_slice(&plain).map_err(|e| {
+                RoomError::Storage(format!("sealed message content malformed: {e}"))
+            })?;
+            Ok(ChatRecord {
+                cursor: stored.cursor,
+                message_id: stored.message_id,
+                from: stored.from,
+                fingerprint: stored.fingerprint,
+                to: content.to,
+                subject: content.subject,
+                body: content.body,
+                created_at: stored.created_at,
+            })
+        }
+        None => Ok(ChatRecord {
+            cursor: stored.cursor,
+            message_id: stored.message_id,
+            from: stored.from,
+            fingerprint: stored.fingerprint,
+            to: stored.to,
+            subject: stored.subject,
+            body: stored.body,
+            created_at: stored.created_at,
+        }),
+    }
 }
 
 fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -212,23 +289,40 @@ fn store_message(
     let _guard = messages_lock();
     let index = read_index(room_dir)?;
     if let Some(id) = client_message_id.as_deref() {
-        if let Some(record) = index.records.iter().find(|r| r.message_id == id) {
-            return Ok((record.clone(), true));
+        if let Some(stored) = index.records.iter().find(|r| r.message_id == id) {
+            let record = decode_record(stored.clone(), state.store_cipher.as_deref())?;
+            return Ok((record, true));
         }
     }
+    let cipher = state.store_cipher.as_deref().ok_or_else(|| {
+        RoomError::Storage(
+            "STORE_ENCRYPTION_KEY is not set; refusing to open room storage (U5)".to_owned(),
+        )
+    })?;
     let recipients = recipients_for(state, room_id, seat, req.to.as_deref())?;
     let mut labels = vec![seat.label.clone()];
     labels.extend(recipients.iter().cloned());
     let mailspace = provision_mailspace(room_dir, &labels)?;
     let subject = req.subject.unwrap_or_default();
+    let content = serde_json::to_vec(&StoredContent {
+        to: req.to.clone(),
+        subject: subject.clone(),
+        body: req.body.clone(),
+    })
+    .map_err(|e| RoomError::Storage(format!("failed to encode message content: {e}")))?;
+    let sealed = cipher
+        .encrypt(&content)
+        .map_err(|e| RoomError::Storage(format!("failed to seal message content: {e}")))?;
+    // The mailspace item keeps headers/metadata; its body carries the sealed
+    // blob so mail.sqlite holds no plaintext content either.
     mailspace
         .send(SendRequest {
             from: seat.label.clone(),
             to: recipients.clone(),
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: subject.clone(),
-            body: req.body.clone(),
+            subject: String::new(),
+            body: sealed.clone(),
             role: "inbox".into(),
             kind: None,
             reply_to: None,
@@ -247,7 +341,17 @@ fn store_message(
         created_at: rfc3339(Utc::now()),
     };
     let mut index = index;
-    index.records.push(record.clone());
+    index.records.push(StoredRecord {
+        cursor: record.cursor,
+        message_id: record.message_id.clone(),
+        from: record.from.clone(),
+        fingerprint: record.fingerprint.clone(),
+        created_at: record.created_at.clone(),
+        to: None,
+        subject: String::new(),
+        body: String::new(),
+        enc: Some(sealed),
+    });
     write_index(room_dir, &index)?;
     Ok((record, false))
 }
@@ -294,6 +398,8 @@ fn provision_mailspace(room_dir: &Path, labels: &[String]) -> Result<Mailspace, 
             })?;
         }
     }
+    // Sqlite stores, identities, and sidecars stay owner-only (VC-5).
+    crate::crypto::harden_tree(room_dir);
     Ok(mailspace)
 }
 
@@ -324,10 +430,12 @@ pub async fn poll_handler(
     let since = params.since.unwrap_or(0);
     let wait = params.wait.unwrap_or(0).min(MAX_WAIT_SECS);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait);
+    let cipher = state.store_cipher.clone();
     loop {
         let snapshot = tokio::task::spawn_blocking({
             let dir = dir.clone();
-            move || read_after(&dir, since)
+            let cipher = cipher.clone();
+            move || read_after(&dir, since, cipher.as_deref())
         })
         .await
         .unwrap_or_else(|e| Err(RoomError::Storage(format!("poll task failed: {e}"))));
@@ -353,11 +461,21 @@ pub async fn poll_handler(
     }
 }
 
-fn read_after(room_dir: &Path, since: u64) -> Result<Vec<ChatRecord>, RoomError> {
+fn read_after(
+    room_dir: &Path,
+    since: u64,
+    cipher: Option<&StoreCipher>,
+) -> Result<Vec<ChatRecord>, RoomError> {
     let index = read_index(room_dir)?;
-    Ok(index
+    index
         .records
         .into_iter()
-        .filter(|record| record.cursor > since)
-        .collect())
+        .map(|stored| decode_record(stored, cipher))
+        .filter(|result| {
+            result
+                .as_ref()
+                .map(|record| record.cursor > since)
+                .unwrap_or(true)
+        })
+        .collect()
 }

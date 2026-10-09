@@ -75,6 +75,9 @@ impl RoomStore {
                 .map_err(|e| RoomError::Storage(format!("failed to encode room.json: {e}")))?;
             std::fs::write(room_dir.join("room.json"), &bytes)
                 .map_err(|e| RoomError::Storage(format!("failed to write room.json: {e}")))?;
+            // Room files (room.json, mailspace sqlite, identities) stay
+            // owner-only (VC-5).
+            crate::crypto::harden_tree(&room_dir);
             return Ok(meta);
         }
         Err(RoomError::Storage("room id mint retries exhausted".into()))
@@ -98,6 +101,26 @@ impl RoomStore {
         let meta = self.room_meta(raw_id)?;
         let dir = self.rooms_root.join(&meta.room_id);
         Mailspace::init(Some(&dir)).map_err(|e| RoomError::Storage(e.to_string()))
+    }
+
+    /// Number of provisioned rooms (directories holding `room.json`).
+    pub fn room_count(&self) -> usize {
+        std::fs::read_dir(&self.rooms_root)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.path().join("room.json").is_file())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Storage state for `/v1/_health`: `ok` when the rooms root exists or
+    /// can be created, otherwise a short error description.
+    pub fn storage_state(&self) -> String {
+        std::fs::create_dir_all(&self.rooms_root)
+            .map(|_| "ok".to_owned())
+            .unwrap_or_else(|e| format!("error: {e}"))
     }
 }
 

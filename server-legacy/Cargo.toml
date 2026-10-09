@@ -6,6 +6,7 @@ description = "Public chat substrate server hosting persistent vivi mailspace ro
 
 [dependencies]
 axum = "0.8"
+aes-gcm = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

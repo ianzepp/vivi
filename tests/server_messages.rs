@@ -25,6 +25,11 @@ fn test_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
+/// Valid `STORE_ENCRYPTION_KEY` (standard base64 of 32 bytes) for routers.
+fn store_key() -> String {
+    STANDARD.encode([0x42u8; 32])
+}
+
 fn spki_pem(key: &SigningKey) -> String {
     const ED25519_SPKI_PREFIX: &[u8] = &[
         0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
@@ -134,7 +139,7 @@ impl Seat {
 
 async fn setup_two_seats(name: &str) -> (Router, PathBuf, String, Seat, Seat) {
     let data_dir = scratch_data_dir(name);
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(store_key()), None);
     let (status, room) = create_room(&app, &test_key(1), 4, "creator").await;
     assert_eq!(status, StatusCode::CREATED, "{room}");
     let (status, joined) = join(
@@ -157,6 +162,111 @@ async fn setup_two_seats(name: &str) -> (Router, PathBuf, String, Seat, Seat) {
         fingerprint: joined["fingerprint"].as_str().unwrap().to_owned(),
     };
     (app, data_dir, room_id, creator, joiner)
+}
+
+#[tokio::test]
+async fn content_is_encrypted_at_rest_and_decrypts_for_pollers() {
+    let (app, data_dir, room_id, creator, joiner) = setup_two_seats("at-rest").await;
+    let body_text = "secret plaintext body";
+    let subject_text = "hush subject";
+
+    let (status, sent) = send_req(
+        &app,
+        "POST",
+        &format!("/v1/rooms/{room_id}/messages"),
+        creator.headers(None),
+        Some(json!({ "subject": subject_text, "body": body_text })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{sent}");
+
+    // The sidecar index carries no plaintext content.
+    let sidecar =
+        std::fs::read_to_string(data_dir.join("rooms").join(&room_id).join("messages.json"))
+            .unwrap();
+    assert!(!sidecar.contains(body_text), "body plaintext on disk");
+    assert!(!sidecar.contains(subject_text), "subject plaintext on disk");
+    assert!(sidecar.contains("\"enc\""), "content sealed as enc");
+
+    // No file under the room tree (mail.sqlite included) holds the plaintext.
+    let room_dir = data_dir.join("rooms").join(&room_id);
+    let mut stack = vec![room_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_some_and(|e| e == "sqlite-shm") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(
+                !windows_contains(&bytes, body_text.as_bytes()),
+                "plaintext body found in {}",
+                path.display()
+            );
+        }
+    }
+
+    // An authorized bearer gets transparent decryption.
+    let (status, poll) = send_req(
+        &app,
+        "GET",
+        &format!("/v1/rooms/{room_id}/messages?since=0"),
+        joiner.headers(None),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{poll}");
+    let messages = poll["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["body"], body_text);
+    assert_eq!(messages[0]["subject"], subject_text);
+
+    // Dedup replay also decrypts the stored record.
+    let (status, replay) = send_req(
+        &app,
+        "POST",
+        &format!("/v1/rooms/{room_id}/messages"),
+        creator.headers(Some(sent["message_id"].as_str().unwrap())),
+        Some(json!({ "subject": subject_text, "body": body_text })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["duplicate"], true);
+}
+
+/// Naive substring scan over raw bytes (no std helper for that).
+fn windows_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+#[tokio::test]
+async fn sends_without_encryption_key_are_refused() {
+    let data_dir = scratch_data_dir("no-key");
+    let app = api_router(data_dir.clone(), None, None);
+    let (status, room) = create_room(&app, &test_key(1), 4, "creator").await;
+    assert_eq!(status, StatusCode::CREATED, "{room}");
+    let room_id = room["room_id"].as_str().unwrap().to_owned();
+    let creator = Seat {
+        token: room["token"].as_str().unwrap().to_owned(),
+        label: room["label"].as_str().unwrap().to_owned(),
+        fingerprint: room["fingerprint"].as_str().unwrap().to_owned(),
+    };
+    let (status, body) = send_req(
+        &app,
+        "POST",
+        &format!("/v1/rooms/{room_id}/messages"),
+        creator.headers(None),
+        Some(json!({ "body": "should refuse" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["error"]["code"], "internal");
 }
 
 #[tokio::test]

@@ -116,7 +116,7 @@ fn seats_json(data_dir: &PathBuf, room_id: &str) -> String {
 #[tokio::test]
 async fn creator_binds_seat_1_and_token_is_digest_only_at_rest() {
     let data_dir = scratch_data_dir("creator");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
     let key = test_key(1);
 
     let (status, body) = create_room(&app, &key, 4, "creator-seat").await;
@@ -142,7 +142,7 @@ async fn creator_binds_seat_1_and_token_is_digest_only_at_rest() {
 #[tokio::test]
 async fn two_keys_bind_two_seats_and_third_is_refused_at_capacity() {
     let data_dir = scratch_data_dir("capacity-full");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
     let creator = test_key(1);
     let (status, room) = create_room(&app, &creator, 2, "creator").await;
     assert_eq!(status, StatusCode::CREATED);
@@ -166,7 +166,7 @@ async fn two_keys_bind_two_seats_and_third_is_refused_at_capacity() {
 #[tokio::test]
 async fn rebind_held_seat_keeps_seat_and_mints_new_token() {
     let data_dir = scratch_data_dir("rebind");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
     let creator = test_key(1);
     let (_, room) = create_room(&app, &creator, 4, "creator").await;
     let room_id = room["room_id"].as_str().unwrap().to_owned();
@@ -205,7 +205,7 @@ async fn rebind_held_seat_keeps_seat_and_mints_new_token() {
 #[tokio::test]
 async fn challenges_are_single_use_and_signatures_fail_closed() {
     let data_dir = scratch_data_dir("single-use");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
     let key = test_key(1);
     let other = test_key(9);
     let (_, room) = create_room(&app, &key, 4, "creator").await;
@@ -281,7 +281,7 @@ async fn challenges_are_single_use_and_signatures_fail_closed() {
 #[tokio::test]
 async fn token_refresh_re_signs_stored_key_and_keeps_old_tokens_valid() {
     let data_dir = scratch_data_dir("refresh");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
     let key = test_key(1);
     let (_, room) = create_room(&app, &key, 4, "creator").await;
     let room_id = room["room_id"].as_str().unwrap().to_owned();
@@ -367,7 +367,7 @@ async fn token_refresh_re_signs_stored_key_and_keeps_old_tokens_valid() {
 #[tokio::test]
 async fn label_collision_conflicts_and_overlong_labels_rejected() {
     let data_dir = scratch_data_dir("labels");
-    let app = api_router(data_dir.clone());
+    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
     let creator = test_key(1);
     let (_, room) = create_room(&app, &creator, 4, "creator").await;
     let room_id = room["room_id"].as_str().unwrap().to_owned();
