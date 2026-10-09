@@ -848,3 +848,136 @@ fn delivery_batch_refuses_one_presented_id_for_two_recipients() {
     assert_ne!(stored[1].message_id, TRAVELING_ID);
     assert_eq!(storage.message_count().unwrap(), 2);
 }
+
+#[test]
+fn ingest_if_absent_inserts_once_and_leaves_existing_rows_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("sync@example.com", "body");
+    let request = request_in(
+        "acct",
+        "needs",
+        "s",
+        Some(TRAVELING_ID),
+        Some(room_binding(3)),
+    );
+    let event = IngestEvent {
+        command: "chat pull",
+        event_type: "delivered",
+        subject: "subject",
+        note: Some("room x"),
+    };
+
+    let (first, stored) = storage
+        .ingest_if_absent(&request, &raw, Some(&event))
+        .unwrap();
+    assert_eq!(first, IngestOutcome::Inserted);
+    assert_eq!(stored.message_id, TRAVELING_ID);
+    storage
+        .move_message_to_role("acct", TRAVELING_ID, "done")
+        .unwrap();
+
+    let (second, _) = storage
+        .ingest_if_absent(&request, &raw, Some(&event))
+        .unwrap();
+    assert_eq!(second, IngestOutcome::Existing);
+    let held = storage.message_by_id(TRAVELING_ID).unwrap().unwrap();
+    assert_eq!(held.local_role, "done", "a replay must not reopen the item");
+    assert_eq!(storage.remote_binding_count().unwrap(), 1);
+    let events = storage.list_mailspace_events(TRAVELING_ID).unwrap();
+    assert_eq!(events.len(), 1, "only the insert logs a delivery");
+    assert_eq!(events[0].to_role.as_deref(), Some("needs"));
+    assert_eq!(events[0].note.as_deref(), Some("room x"));
+}
+
+#[test]
+fn ingest_if_absent_refuses_different_content_under_a_held_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
+    storage
+        .ingest_if_absent(
+            &request,
+            &message_bytes("one@example.com", "original"),
+            None,
+        )
+        .unwrap();
+
+    let error = storage
+        .ingest_if_absent(&request, &message_bytes("two@example.com", "foreign"), None)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("already names different content"), "{error}");
+    let held = storage.list_messages().unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(
+        held[0].content_id,
+        sha256_hex(&message_bytes("one@example.com", "original"))
+    );
+}
+
+#[test]
+fn evicted_items_restore_in_place_with_their_blob_and_local_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("evict@example.com", "body");
+    let request = request_in(
+        "acct",
+        "inbox",
+        "s",
+        Some(TRAVELING_ID),
+        Some(room_binding(4)),
+    );
+    let (_, stored) = storage.ingest_if_absent(&request, &raw, None).unwrap();
+    storage
+        .set_local_read_state("acct", TRAVELING_ID, true)
+        .unwrap();
+    let blob = tmp.path().join(&stored.blob_relpath);
+    assert!(blob.exists());
+
+    let evicted = storage.evict_messages(&[TRAVELING_ID.to_string()]).unwrap();
+
+    assert_eq!(evicted, 1);
+    assert!(!blob.exists(), "an unreferenced blob is dropped");
+    assert!(storage.list_messages().unwrap().is_empty());
+    assert!(storage.resolve_message_token(TRAVELING_ID).is_err());
+
+    let (outcome, restored) = storage.ingest_if_absent(&request, &raw, None).unwrap();
+
+    assert_eq!(outcome, IngestOutcome::Restored);
+    assert_eq!(restored.content_id, stored.content_id);
+    assert_eq!(std::fs::read(&blob).unwrap(), raw, "byte-identical blob");
+    let held = storage.message_by_id(TRAVELING_ID).unwrap().unwrap();
+    assert!(held.read_state, "local state survives eviction");
+    assert_eq!(storage.remote_binding_count().unwrap(), 1);
+}
+
+#[test]
+fn a_shared_blob_survives_until_its_last_live_row_is_evicted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("shared@example.com", "body");
+    let other_id = "msg_aaaaaaaaaaaaaaaaaaaaaaaa";
+    let (_, stored) = storage
+        .ingest_if_absent(
+            &request_in("a", "inbox", "s", Some(TRAVELING_ID), None),
+            &raw,
+            None,
+        )
+        .unwrap();
+    storage
+        .ingest_if_absent(
+            &request_in("b", "inbox", "s", Some(other_id), None),
+            &raw,
+            None,
+        )
+        .unwrap();
+    let blob = tmp.path().join(&stored.blob_relpath);
+
+    storage.evict_messages(&[TRAVELING_ID.to_string()]).unwrap();
+    assert!(blob.exists(), "another live row still needs the blob");
+
+    storage.evict_messages(&[other_id.to_string()]).unwrap();
+    assert!(!blob.exists());
+}

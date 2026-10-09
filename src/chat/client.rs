@@ -70,6 +70,15 @@ pub struct ChatMessage {
     pub subject: String,
     pub body: String,
     pub created_at: String,
+    /// `need`, `task`, or `want` for work items; absent for plain chat (R8).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Message-ID this item answers (R7). Never resolved server-side.
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    /// Message-IDs this item cites (R7).
+    #[serde(default)]
+    pub refs: Vec<String>,
 }
 
 /// One poll page: messages after the cursor plus the following cursor.

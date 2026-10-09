@@ -70,6 +70,10 @@ impl ChatState {
                 room_id TEXT PRIMARY KEY,
                 cursor TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS sync_cursors (
+                room_id TEXT PRIMARY KEY,
+                cursor TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 room_id TEXT NOT NULL,
@@ -163,6 +167,12 @@ impl ChatState {
         self.conn
             .execute("DELETE FROM cursors WHERE room_id = ?1", params![room_id])
             .map_err(sql_err)?;
+        self.conn
+            .execute(
+                "DELETE FROM sync_cursors WHERE room_id = ?1",
+                params![room_id],
+            )
+            .map_err(sql_err)?;
         let removed = self
             .conn
             .execute("DELETE FROM rooms WHERE room_id = ?1", params![room_id])
@@ -193,6 +203,38 @@ impl ChatState {
         self.conn
             .query_row(
                 "SELECT cursor FROM cursors WHERE room_id = ?1",
+                params![room_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sql_err)
+    }
+
+    /// Set the down-sync cursor for a room. It is independent of the read
+    /// cursor: `vivi chat read` and the board badge track what a human has
+    /// seen, this tracks what has been filed into the mailspace.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn set_sync_cursor(&self, room_id: &str, cursor: &str) -> Result<(), VivariumError> {
+        self.conn
+            .execute(
+                "INSERT INTO sync_cursors (room_id, cursor) VALUES (?1, ?2)
+                 ON CONFLICT(room_id) DO UPDATE SET cursor = excluded.cursor",
+                params![room_id, cursor],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Stored down-sync cursor for a room, if any.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn sync_cursor(&self, room_id: &str) -> Result<Option<String>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT cursor FROM sync_cursors WHERE room_id = ?1",
                 params![room_id],
                 |row| row.get::<_, String>(0),
             )

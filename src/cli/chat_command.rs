@@ -86,6 +86,15 @@ pub enum ChatSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Pull room items into the mailspace: needs, tasks, and wants file by
+    /// kind under their traveling ids (requires [chat] recipient)
+    Pull {
+        /// Room id (defaults to every joined room)
+        room_id: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Leave a joined room (local unjoin; the server seat stays)
     Leave {
         /// Room id (5 groups of Crockford base32)

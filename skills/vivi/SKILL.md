@@ -372,6 +372,7 @@ vivi chat send <room> [--to <label>] [--subject <s>] (--body <b> | --body-file <
 vivi chat read [room]               # messages since the cursor, with origins
 vivi chat watch [room]              # long-poll and print arrivals
 vivi chat flush                     # deliver pending outbox messages
+vivi chat pull [room]               # file room items into the mailspace
 vivi chat leave <room>              # local unjoin; the server seat stays
 vivi chat status                    # fingerprint, server, rooms, outbox depth
 ```
@@ -383,6 +384,7 @@ Configuration is the `[chat]` table in the project's `mailspace.toml`:
 server  = "https://vivi-server-production.up.railway.app"
 notify  = true   # board may show the unread-chat badge (default)
 name    = "pharos/vivi"  # seat label override; default <short-host>/<project>
+recipient = "mind"  # local role that receives room items on `chat pull`
 ```
 
 Identity is transparent: one ED25519 keypair per mailspace, minted on
@@ -398,6 +400,23 @@ actually happened. Every chat command flushes opportunistically first;
 send mints one traveling id (`msg_` plus 24 hex characters) at creation
 and every retry re-sends that same id; the server deduplicates by it, so
 a replayed flush is a no-op rather than a duplicate message.
+
+`vivi chat pull` is the down-sync: it polls each room since its own sync
+cursor and files what arrived into the mailspace as real mail items for
+the `[chat] recipient` role (required — pull refuses without it, and chat
+stays print-only until it is set). Needs, tasks, and wants land in the
+`needs`/`tasks`/`wants` folders with a backlog node like a locally sent
+item; plain chat lands in `inbox`; the seat's own sends come back as
+`sent` copies. Each item keeps its traveling id (`msg_` plus 24 hex), so
+the short handle is the same on every machine and a citation like
+"supersedes `abcd1234`" resolves wherever the item exists; a reference to
+an item this mailspace has not seen stays unresolved rather than failing.
+Pull is idempotent and never resets local state: a need you closed stays
+closed when the room replays. The server shows every seat the whole room,
+so items addressed to another seat are skipped and counted. Ids from
+before phase 02 are not traveling ids; those items file under a
+store-local id and the summary says so. The sync cursor is separate from
+the read cursor, so `chat read --mark-read` never makes pull skip items.
 
 The board badge is one bounded line appended to `vivi board` when rooms
 are joined and the server is reachable (`chat: N unread in <room>` or

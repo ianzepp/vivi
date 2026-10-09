@@ -372,7 +372,7 @@ pub(super) fn upsert_message_row(
     .map_err(|e| VivariumError::Other(format!("failed to upsert message row: {e}")))
 }
 
-fn upsert_remote_binding(
+pub(super) fn upsert_remote_binding(
     tx: &Transaction<'_>,
     message_id: &str,
     remote: Option<&RemoteBindingInput>,

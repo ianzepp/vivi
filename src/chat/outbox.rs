@@ -261,16 +261,25 @@ pub fn read_room(
 }
 
 /// Render one message: cursor, timestamp, origin label, short fingerprint.
+/// A work item (need/task/want) also shows its kind before the subject;
+/// plain chat renders exactly as before.
 #[must_use]
 pub fn render_message(message: &ChatMessage) -> String {
     let to = message.to.as_deref().unwrap_or("all");
+    let kind = message
+        .kind
+        .as_deref()
+        .filter(|kind| !kind.is_empty())
+        .map(|kind| format!("[{kind}] "))
+        .unwrap_or_default();
     format!(
-        "[{}] {} {} <{}> -> {}: {}\n  {}",
+        "[{}] {} {} <{}> -> {}: {}{}\n  {}",
         message.cursor,
         message.created_at,
         message.from,
         message.fingerprint,
         to,
+        kind,
         message.subject,
         message.body
     )

@@ -28,6 +28,7 @@ mod metadata;
 mod mutate;
 mod query;
 mod schema;
+mod sync;
 #[cfg(test)]
 mod tests;
 
@@ -42,6 +43,7 @@ pub use links::MailspaceLink;
 use metadata::parse_metadata;
 pub use mutate::MailspaceMoveWithReply;
 use schema::{ensure_schema, message_query};
+pub use sync::{IngestEvent, IngestOutcome};
 
 const MAILSPACE_DB_FILENAME: &str = "mail.sqlite";
 const BLOBS_DIR: &str = "blobs";
@@ -331,7 +333,7 @@ pub(crate) const SHORT_HANDLE_LEN: usize = 8;
 ///
 /// A handle is a fixed-width prefix of the id's basis (the id without its
 /// `msg_` prefix). Ids without the prefix are their own handle.
-fn short_handle(message_id: &str) -> String {
+pub(crate) fn short_handle(message_id: &str) -> String {
     match message_id.strip_prefix("msg_") {
         None => message_id.to_string(),
         Some(basis) => {

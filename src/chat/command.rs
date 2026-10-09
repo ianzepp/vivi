@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::chat::identity::ChatIdentity;
 use crate::chat::state::ChatState;
-use crate::chat::{chat_dir, client, outbox, watch};
+use crate::chat::{chat_dir, client, outbox, sync, watch};
 use crate::cli::{ChatSubcommand, RoomSubcommand};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -48,6 +48,9 @@ pub fn dispatch(command: &ChatSubcommand) -> Result<(), VivariumError> {
             once,
             project,
         } => watch_command(room_id.as_deref(), *once, project.as_deref()),
+        ChatSubcommand::Pull { room_id, project } => {
+            pull_command(room_id.as_deref(), project.as_deref())
+        }
         ChatSubcommand::Leave { room_id, project } => leave(room_id, project.as_deref()),
         ChatSubcommand::Room { command } => match command {
             RoomSubcommand::Create {
@@ -297,6 +300,27 @@ pub fn watch_command(
     try_flush(&mailspace);
     let rooms = watch::resolve_rooms(&state, room_id)?;
     watch::run(&server, &state, &identity, &rooms, once)
+}
+
+/// `vivi chat pull`: file new room items into the mailspace. One room's
+/// failure is reported and the others still run; the first error is returned.
+pub fn pull_command(room_id: Option<&str>, project: Option<&Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let server = server_of(&mailspace)?;
+    sync::resolve_recipient(&mailspace)?;
+    let (state, identity) = chat_parts(&mailspace)?;
+    try_flush(&mailspace);
+    let mut failure = None;
+    for room in watch::resolve_rooms(&state, room_id)? {
+        match sync::pull(&server, &mailspace, &state, &identity, &room, false) {
+            Ok(report) => println!("{}", report.summary()),
+            Err(error) => {
+                eprintln!("pull {}: {error}", room.room_id);
+                failure.get_or_insert(error);
+            }
+        }
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 /// `vivi chat leave`: local unjoin (drops the room row and its cursor; the

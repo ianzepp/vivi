@@ -246,7 +246,7 @@ impl Storage {
         .collect()
     }
 
-    fn list_messages_by_query(
+    pub(super) fn list_messages_by_query(
         &self,
         where_clause: &str,
         params: impl rusqlite::Params,

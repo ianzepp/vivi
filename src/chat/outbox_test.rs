@@ -436,3 +436,27 @@ fn queued_send_keeps_its_traveling_id_when_flushed_later() {
         "the flush re-sends the minted id; nothing re-mints"
     );
 }
+
+#[test]
+fn work_items_render_their_kind_and_plain_chat_is_unchanged() {
+    let mut message = ChatMessage {
+        message_id: "msg_000000000000000000000001".into(),
+        cursor: 3,
+        from: "alpha.checkout-a".into(),
+        fingerprint: "0123456789abcdef".into(),
+        to: None,
+        subject: "ship it".into(),
+        body: "please".into(),
+        created_at: "2026-10-09T18:00:00Z".into(),
+        kind: None,
+        in_reply_to: None,
+        refs: Vec::new(),
+    };
+    assert_eq!(
+        render_message(&message),
+        "[3] 2026-10-09T18:00:00Z alpha.checkout-a <0123456789abcdef> -> all: ship it\n  please"
+    );
+
+    message.kind = Some("need".into());
+    assert!(render_message(&message).contains("-> all: [need] ship it"));
+}

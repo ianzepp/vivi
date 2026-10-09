@@ -6,8 +6,10 @@ pub mod board_probe;
 pub mod client;
 pub mod command;
 pub mod identity;
+pub mod item;
 pub mod outbox;
 pub mod state;
+pub mod sync;
 pub mod watch;
 
 use std::fs;
@@ -32,6 +34,10 @@ pub struct ChatConfig {
     /// Seat label override (default is `<short-host>/<project>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Local role that receives room items on `vivi chat pull` and
+    /// `resync`. Required for down-sync; unset keeps chat print-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
 }
 
 fn default_notify() -> bool {
