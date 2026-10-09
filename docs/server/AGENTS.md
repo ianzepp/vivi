@@ -19,13 +19,25 @@ Standing authorization from the repo owner for agent development:
 
 ## Deploy
 
-Railway deploys from the `release` branch. A push to `main` does not
-redeploy.
+Two Railway services, one per branch:
+
+- **Staging** (`vivi-server-main`) deploys `main` at
+  `https://vivi-server-main-production.up.railway.app`. Every fast-forward of
+  `main` redeploys it. After merging, wait for the deploy, then run the smoke
+  against it and report the result:
+
+  ```sh
+  SERVER_URL=https://vivi-server-main-production.up.railway.app scripts/two-checkout-smoke.sh
+  ```
+
+- **Production** deploys `release` at
+  `https://vivi-server-production.up.railway.app`. A push to `main` does not
+  redeploy it.
 
 Advancing `release` is a production deploy and is **not** covered by the
 standing authorization above: do it only when the repo owner asks. When
 asked, fast-forward only, from a `main` commit that has passed the checks
-below and the smoke, then run the smoke against the deployed URL:
+below and the staging smoke, then run the smoke against production:
 
 ```sh
 git push origin <main-sha>:release

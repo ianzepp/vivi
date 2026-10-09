@@ -36,16 +36,37 @@ curl http://localhost:8080/healthz   # -> ok
 
 `scripts/two-checkout-smoke.sh` is the end-to-end gate: two vivi
 checkouts, a locally spawned server, create → join → send → badge →
-watch → offline queue → flush. It is the deploy acceptance; the deployed
-URL must pass it too.
+watch → offline queue → flush, then a phase 02 kinded-send probe. It is the
+deploy acceptance; the deployed URLs must pass it too.
+
+```sh
+# local: boots target/debug/vivi-server itself
+VIVI_REPO=../vivi scripts/two-checkout-smoke.sh
+# deployed: same legs against a running server
+SERVER_URL=https://vivi-server-main-production.up.railway.app scripts/two-checkout-smoke.sh
+```
+
+Against a deployed server the offline queue → flush leg is skipped (it has to
+restart the server) and reported as `SKIP`; the exit status is non-zero on any
+`FAIL`. Each deployed run leaves one throwaway room behind. `SRV`,
+`VIVI_REPO`, `VIVI` and `PORT` override the paths and port; see the script
+header.
 
 ## Railway deploy
 
-- Production deploys come from the `release` branch, not `main`: a push to
-  `main` does not redeploy. To deploy, fast-forward `release` to a `main`
-  commit that has passed `cargo test` and `scripts/two-checkout-smoke.sh`
-  (`git push origin <main-sha>:release`), then run the smoke against the
-  deployed URL.
+- Two Railway services, one per branch:
+  - **Production** deploys the `release` branch at
+    <https://vivi-server-production.up.railway.app>. A push to `main` does
+    not redeploy it. To release, fast-forward `release` to a `main` commit
+    that has passed `cargo test` and the smoke
+    (`git push origin <main-sha>:release`), then run the smoke against
+    production.
+  - **Staging** (`vivi-server-main`) deploys `main` at
+    <https://vivi-server-main-production.up.railway.app>, so every merge
+    to `main` is built and can be smoked before a release.
+- Each service needs its own `/data` volume, `STORE_ENCRYPTION_KEY` and
+  `MODERATION_TOKEN`. Never share a volume or reuse the production key: the
+  boot verifier exits on a key mismatch with an existing sealed store.
 - A volume mounted at `/data` is required — rooms are persistent and
   `DATA_DIR` must survive restarts.
 - The lockfile must keep the `vivi` git source

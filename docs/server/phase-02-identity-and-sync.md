@@ -158,7 +158,9 @@ A files a need citing a prior local handle; sync; checkout B pulls it and
 `vivi task show <handle>` resolves to the same handle A sees; B closes it;
 the receipt lands on A and threads to the original. Plus a prune-and-resync
 leg: B prunes, resyncs from cursor 0, byte-identical replica. The deployed
-URL gate keeps running the whole script.
+URL gate (`SERVER_URL=… scripts/two-checkout-smoke.sh`, against staging and
+then production) runs every leg except offline queue/flush, which has to
+restart the server and so stays a local-mode leg.
 
 ## Open questions
 
