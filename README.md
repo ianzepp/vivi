@@ -609,6 +609,14 @@ Rules:
 `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`, `cycle`,
 `trace`, `graph`, `step`.
 
+The `chat` family joins that list with the chat substrate
+(release-prep for 10.2.0): `vivi chat room create`, `join`, `rooms`, `send`,
+`read`, `watch`, `flush`, `leave`, and `status` connect two vivi checkouts
+anywhere on the internet through a public rendezvous server — rooms are
+real mailspaces, identity is a transparent per-project ED25519 key, offline
+sends queue and flush on reconnect, and the board appends an unread-chat
+line. The server is a sibling repository, `vivi-server`.
+
 Everything Vivi does is project-scoped, so `--project <root>` is accepted either
 before or after the subcommand and every command resolves the same mailspace.
 The mailspace section above is the command reference; the most common entry

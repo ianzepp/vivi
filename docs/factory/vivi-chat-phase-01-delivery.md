@@ -305,3 +305,40 @@ sanity: doc link scan
 - Contract revision R1 (with VC-2): `GET /v1/rooms/:id` added to the frozen
   contract (omitted at U1 freeze); metadata-only, documented under
   vivi-server `docs/contract.md` § Revisions.
+
+## Outcome Record
+
+All units landed (commit hashes read from git log on 2026-10-09):
+
+| Unit | Repo | Commit |
+| --- | --- | --- |
+| VC-1 skeleton + frozen contract | vivi-server | `2844dae` |
+| VC-2 room store + R1 | vivi-server | `7885120` |
+| VC-3 seats + auth | vivi-server | `486a93b` |
+| VC-4 messages + R2 | vivi-server | `cccc65a` |
+| VC-4B room storage root unify (R2) | vivi-server | `b0693bd` |
+| VC-5 at-rest encryption + hardening (R5/R6) | vivi-server | `2ae1bc4` |
+| VC-6 client foundation | vivi | `79ccb0b` |
+| VC-7 join/rooms/status | vivi | `fc7baf0` |
+| VC-8 send/outbox/read (+R3/R4) | vivi | `2d147fc` |
+| VC-9 watch/leave/room-create | vivi | `1aaaaa8` |
+| VC-10 board badge | vivi | `3d864c8` |
+| VC-11 cross-repo e2e gate | vivi-server | `349da84` |
+| lockfile pins the vivi git source | vivi-server | `133c557` |
+| VC-12 docs + skill updates | vivi | this pass (no-commit unit) |
+
+Contract revisions R1–R6 are recorded in vivi-server `docs/contract.md`
+§ Revisions. Measured baselines: vivi `cargo test` ≈5.5 s warm (full
+suite, 318 tests); vivi-server `cargo test` 30 tests ≈1 s warm, release
+build ≈6 s warm local / several minutes cold remote. Deployed at
+<https://vivi-server-production.up.railway.app> (Railway default domain;
+custom hostname open).
+
+Open items carried forward:
+
+- Custom hostname for the production deployment (until then the client
+  `[chat]` server placeholder is `https://vivi-chat.example` and the live
+  default domain is the Railway URL above).
+- Failed-creator room-dir cleanup on the server.
+- `vivi chat watch` Ctrl-C handler.
+- Sidecar non-transactional write in the room mailspace path.

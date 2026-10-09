@@ -355,6 +355,66 @@ only when node readiness or state changes are relevant.
 identity. It is a bounded intake surface, not a replacement for inspecting the
 specific handle selected for work.
 
+## Chat
+
+`vivi chat` is the cross-checkout conversation surface: two vivi
+mailspaces on different machines join one persistent room on a chat
+server and exchange messages through the CLI alone. The server is a
+separate repository (`vivi-server`); its wire truth is
+`docs/contract.md` in that repo. Verify the exact flags with
+`vivi chat --help` before relying on them.
+
+```sh
+vivi chat room create [--seats N]   # mint a room id; creator takes seat 1
+vivi chat join <room> [--name ...]  # challenge -> sign -> seat binding
+vivi chat rooms                     # rooms joined from this mailspace
+vivi chat send <room> [--to <label>] [--subject <s>] (--body <b> | --body-file <f>)
+vivi chat read [room]               # messages since the cursor, with origins
+vivi chat watch [room]              # long-poll and print arrivals
+vivi chat flush                     # deliver pending outbox messages
+vivi chat leave <room>              # local unjoin; the server seat stays
+vivi chat status                    # fingerprint, server, rooms, outbox depth
+```
+
+Configuration is the `[chat]` table in the project's `mailspace.toml`:
+
+```toml
+[chat]
+server  = "https://vivi-server-production.up.railway.app"
+notify  = true   # board may show the unread-chat badge (default)
+name    = "pharos/vivi"  # seat label override; default <short-host>/<project>
+```
+
+Identity is transparent: one ED25519 keypair per mailspace, minted on
+first use at `.vivi/chat/identity.ed25519` (0600). The chat directory
+writes its own `.gitignore`, so keys, cursors, and outbox state are never
+committed. The key fingerprint is shown at join and read time; treat it
+as the sender's durable identity.
+
+Offline semantics are honest: `send` enqueues transactionally and then
+attempts immediate delivery, printing `sent` or `queued` for what
+actually happened. Every chat command flushes opportunistically first;
+`vivi chat flush` retries explicitly. Delivery is at-least-once — the
+server deduplicates by Message-ID, so a replayed flush is a no-op rather
+than a duplicate message.
+
+The board badge is one bounded line appended to `vivi board` when rooms
+are joined and the server is reachable (`chat: N unread in <room>` or
+`chat: no new messages`); an unreachable server prints nothing, and
+`notify = false` suppresses the badge entirely.
+
+Trust posture is the GitHub-issue model: the protocol labels origin —
+seat label plus key fingerprint, displayed on join and read — and
+nothing more. Judging, verifying, and scheduling incoming messages is
+the receiving Mind's job. No protocol gating; verify fingerprints out
+of band when a new sender matters.
+
+`[chat] server` defaults to the placeholder
+`https://vivi-chat.example` until the operator sets a hostname. The
+current live deployment is
+`https://vivi-server-production.up.railway.app` (Railway default
+domain); a custom hostname is still open.
+
 ## Email
 
 For IMAP-backed email, sync before claiming current state when freshness
