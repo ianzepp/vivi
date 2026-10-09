@@ -50,6 +50,28 @@ fn handle_chat_command(command: &ChatSubcommand) -> Result<(), VivariumError> {
             project,
         } => chat_join(room_id, label.as_deref(), project.as_deref()),
         ChatSubcommand::Rooms { project } => chat_rooms(project.as_deref()),
+        ChatSubcommand::Send {
+            room_id,
+            to,
+            subject,
+            body,
+            body_file,
+            project,
+        } => vivi::chat::command::send(
+            room_id,
+            to.as_deref(),
+            subject.as_deref(),
+            body.as_deref(),
+            body_file.as_deref(),
+            project.as_deref(),
+        ),
+        ChatSubcommand::Flush { project } => vivi::chat::command::flush(project.as_deref()),
+        ChatSubcommand::Read {
+            room_id,
+            mark_read,
+            all,
+            project,
+        } => vivi::chat::command::read(room_id.as_deref(), *mark_read, *all, project.as_deref()),
     }
 }
 
@@ -73,6 +95,7 @@ fn chat_join(
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    vivi::chat::command::try_flush(&mailspace);
     let server = chat_server(&mailspace)?;
     let label = label
         .map(str::to_string)
@@ -100,6 +123,7 @@ fn chat_join(
 
 fn chat_rooms(project: Option<&std::path::Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    vivi::chat::command::try_flush(&mailspace);
     let server = mailspace
         .config
         .chat
@@ -119,6 +143,7 @@ fn chat_rooms(project: Option<&std::path::Path>) -> Result<(), VivariumError> {
 
 fn chat_status(project: Option<&std::path::Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    vivi::chat::command::try_flush(&mailspace);
     let chat_dir = vivi::chat::chat_dir(&mailspace.dir);
     let identity = vivi::chat::identity::ChatIdentity::ensure(&chat_dir)?;
     let state = vivi::chat::state::ChatState::open(&chat_dir)?;

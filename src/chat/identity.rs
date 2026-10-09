@@ -79,17 +79,37 @@ impl ChatIdentity {
         self.signing_key.sign(message).to_bytes()
     }
 
-    /// Public key as an SPKI PEM (openssl `BEGIN PUBLIC KEY` shape), matching
-    /// the frozen wire contract. ED25519 SPKI DER is a fixed 12-byte prefix
-    /// followed by the 32-byte key.
+    /// Canonical SPKI DER bytes for the public key (the form the server
+    /// fingerprints and persists per seat).
     #[must_use]
-    pub fn public_key_pem(&self) -> String {
+    pub fn spki_der(&self) -> Vec<u8> {
         const ED25519_SPKI_PREFIX: &[u8] = &[
             0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
         ];
         let mut der = ED25519_SPKI_PREFIX.to_vec();
         der.extend_from_slice(self.signing_key.verifying_key().as_bytes());
-        let body = crate::chat::b64::encode(&der);
+        der
+    }
+
+    /// Wire fingerprint: lowercase hex SHA-256 over the hex-encoded SPKI DER
+    /// string, matching the server's canonical seat fingerprint (64 chars).
+    #[must_use]
+    pub fn wire_fingerprint(&self) -> String {
+        let hex_der = hex::encode(self.spki_der());
+        hex::encode(Sha256::digest(hex_der.as_bytes()))
+    }
+
+    /// Short wire fingerprint (first 16 hex chars) used in origin headers.
+    #[must_use]
+    pub fn short_wire_fingerprint(&self) -> String {
+        self.wire_fingerprint()[..FINGERPRINT_LEN].to_string()
+    }
+
+    /// Public key as an SPKI PEM (openssl `BEGIN PUBLIC KEY` shape), matching
+    /// the frozen wire contract.
+    #[must_use]
+    pub fn public_key_pem(&self) -> String {
+        let body = crate::chat::b64::encode(&self.spki_der());
         format!("-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----")
     }
 

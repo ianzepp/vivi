@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier};
 use serde_json::{Value, json};
 
 use super::*;
@@ -162,9 +162,9 @@ fn join_signs_challenge_bytes_and_stores_room() {
     });
     drop(rx);
 
-    let receipt = join_room(&server, ROOM, &identity, "burgus/myproj").expect("join");
+    let receipt = join_room(&server, ROOM, &identity, "burgus.myproj").expect("join");
     assert_eq!(receipt.seat, 2);
-    assert_eq!(receipt.label, "burgus/myproj");
+    assert_eq!(receipt.label, "burgus.myproj");
 
     let requests = captured.lock().expect("sink");
     assert_eq!(requests.len(), 2, "challenge then join");
@@ -182,7 +182,7 @@ fn join_signs_challenge_bytes_and_stores_room() {
     );
     let join_body: Value = serde_json::from_str(&requests[1].2).expect("join body json");
     assert_eq!(join_body["challenge_id"], "ch-1");
-    assert_eq!(join_body["label"], "burgus/myproj");
+    assert_eq!(join_body["label"], "burgus.myproj");
 
     let state = ChatState::open(&chat_dir).expect("state");
     state
@@ -190,7 +190,7 @@ fn join_signs_challenge_bytes_and_stores_room() {
         .expect("record join");
     let room = state.room(ROOM).expect("room row").expect("stored");
     assert_eq!(room.seat, 2);
-    assert_eq!(room.label, "burgus/myproj");
+    assert_eq!(room.label, "burgus.myproj");
     assert!(!room.joined_at.is_empty());
 }
 
@@ -235,10 +235,10 @@ fn join_rejects_non_canonical_room_ids() {
 #[test]
 fn default_label_uses_short_host_and_project_dir() {
     let label = default_label(Path::new("/Users/ianzepp/work/myproj"));
-    let (host, project) = label.split_once('/').expect("host/project shape");
+    let (host, project) = label.rsplit_once('.').expect("host.project shape");
     assert_eq!(project, "myproj");
     assert!(
-        !host.is_empty() && !host.contains('.'),
-        "short host: {label}"
+        !host.is_empty() && !host.contains('/'),
+        "short host, no path separators: {label}"
     );
 }

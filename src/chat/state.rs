@@ -23,6 +23,15 @@ pub struct JoinedRoom {
     pub joined_at: String,
 }
 
+/// One undelivered outbox row.
+#[derive(Debug, Clone)]
+pub struct PendingMessage {
+    pub id: i64,
+    pub room_id: String,
+    pub message_id: String,
+    pub payload_json: String,
+}
+
 /// Local chat state store. Offline sends enqueue here and flush
 /// at-least-once on later commands.
 pub struct ChatState {
@@ -223,6 +232,31 @@ impl ChatState {
             )
             .map(|n| n as usize)
             .map_err(sql_err)
+    }
+
+    /// Undelivered outbox rows, oldest first.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn pending_outbox(&self) -> Result<Vec<PendingMessage>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, room_id, message_id, payload_json FROM outbox
+                 WHERE flushed_at IS NULL ORDER BY id",
+            )
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PendingMessage {
+                    id: row.get(0)?,
+                    room_id: row.get(1)?,
+                    message_id: row.get(2)?,
+                    payload_json: row.get(3)?,
+                })
+            })
+            .map_err(sql_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
     }
 
     #[cfg(unix)]

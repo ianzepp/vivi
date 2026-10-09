@@ -3,7 +3,9 @@
 
 pub mod b64;
 pub mod client;
+pub mod command;
 pub mod identity;
+pub mod outbox;
 pub mod state;
 
 use std::fs;
