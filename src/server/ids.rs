@@ -38,7 +38,11 @@ pub fn normalize_room_id(raw: &str) -> Result<String, RoomIdError> {
             return Err(RoomIdError::Invalid);
         }
     }
-    let lowered: String = raw.chars().filter(|c| *c != '-').map(|c| c.to_ascii_lowercase()).collect();
+    let lowered: String = raw
+        .chars()
+        .filter(|c| *c != '-')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
     if lowered.chars().count() != ROOM_ID_LEN {
         return Err(RoomIdError::Invalid);
     }
@@ -92,7 +96,10 @@ mod tests {
             let id = mint_room_id().unwrap();
             let groups: Vec<&str> = id.split('-').collect();
             assert_eq!(groups.len(), 5, "id {id} must have five groups");
-            assert!(groups.iter().all(|g| g.len() == 5), "id {id} groups of five");
+            assert!(
+                groups.iter().all(|g| g.len() == 5),
+                "id {id} groups of five"
+            );
             for c in id.chars().filter(|c| *c != '-') {
                 assert!(CANONICAL_ALPHABET.contains(&(c as u8)), "id {id} char {c}");
             }
@@ -118,9 +125,18 @@ mod tests {
     fn normalize_rejects_bad_ids() {
         assert_eq!(normalize_room_id("u").unwrap_err(), RoomIdError::Invalid);
         assert_eq!(normalize_room_id("U").unwrap_err(), RoomIdError::Invalid);
-        assert_eq!(normalize_room_id("2222-22222-22222-22222-22222").unwrap_err(), RoomIdError::Invalid);
+        assert_eq!(
+            normalize_room_id("2222-22222-22222-22222-22222").unwrap_err(),
+            RoomIdError::Invalid
+        );
         let id = mint_room_id().unwrap();
-        assert_eq!(normalize_room_id(&id[..id.len() - 1]).unwrap_err(), RoomIdError::Invalid);
-        assert_eq!(normalize_room_id("zzzzz!zzzz-zzzzz-zzzzz-zzzzz").unwrap_err(), RoomIdError::Invalid);
+        assert_eq!(
+            normalize_room_id(&id[..id.len() - 1]).unwrap_err(),
+            RoomIdError::Invalid
+        );
+        assert_eq!(
+            normalize_room_id("zzzzz!zzzz-zzzzz-zzzzz-zzzzz").unwrap_err(),
+            RoomIdError::Invalid
+        );
     }
 }

@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::routing::get;
 use axum::Json;
+use axum::routing::get;
 use serde_json::json;
 
 /// Environment-derived configuration. The process refuses to boot without the
@@ -66,7 +66,10 @@ async fn main() {
     let app = vivi_server::api_router(config.data_dir.clone()).route("/healthz", get(healthz));
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
-    tracing::info!("vivi-server listening on {addr} (data dir {})", config.data_dir.display());
+    tracing::info!(
+        "vivi-server listening on {addr} (data dir {})",
+        config.data_dir.display()
+    );
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await

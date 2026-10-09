@@ -4,16 +4,19 @@
 
 use std::path::{Path, PathBuf};
 
+use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{State, Path as AxumPath};
+use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use vivi::storage::Storage;
 
+use crate::AppState;
+use crate::auth::map_auth_error;
 use crate::ids::{mint_room_id, normalize_room_id};
+use crate::seats::JoinError;
 
 pub const MIN_CAPACITY: u32 = 2;
 pub const MAX_CAPACITY: u32 = 8;
@@ -46,7 +49,9 @@ pub struct RoomStore {
 
 impl RoomStore {
     pub fn new(data_dir: &Path) -> Self {
-        Self { rooms_root: data_dir.join("rooms") }
+        Self {
+            rooms_root: data_dir.join("rooms"),
+        }
     }
 
     /// Mint a collision-retried room id and create its mailspace.
@@ -97,57 +102,107 @@ impl RoomStore {
 #[derive(Debug, Default, Deserialize)]
 pub struct CreateRoomRequest {
     pub seats: Option<u32>,
+    pub label: Option<String>,
+    /// Creator identity per contract; the creator auto-binds seat 1.
+    pub public_key_pem: String,
 }
 
-fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
-    (status, Json(json!({ "error": { "code": code, "message": message } }))).into_response()
+pub(crate) fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(json!({ "error": { "code": code, "message": message } })),
+    )
+        .into_response()
 }
 
-fn map_room_error(err: RoomError) -> Response {
+pub(crate) fn map_room_error(err: RoomError) -> Response {
     match err {
         RoomError::Capacity(n) => error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             &format!("seats must be {MIN_CAPACITY}..{MAX_CAPACITY}, got {n}"),
         ),
-        RoomError::InvalidRoomId => {
-            error_response(StatusCode::BAD_REQUEST, "invalid_room_id", "id not canonical Crockford-base32")
+        RoomError::InvalidRoomId => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_room_id",
+            "id not canonical Crockford-base32",
+        ),
+        RoomError::RoomNotFound => {
+            error_response(StatusCode::NOT_FOUND, "room_not_found", "unknown room id")
         }
-        RoomError::RoomNotFound => error_response(StatusCode::NOT_FOUND, "room_not_found", "unknown room id"),
         RoomError::Storage(msg) => {
             tracing::error!("room storage failure: {msg}");
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", "storage failure")
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "storage failure",
+            )
         }
     }
 }
 
-/// `POST /v1/rooms` — create a room. VC-2 returns the shareable id; the
-/// seat/token fields of the contract response land with VC-3.
+/// `POST /v1/rooms` — create a room. The creator auto-binds seat 1 and the
+/// response carries the contract seat/label/token/fingerprint fields.
 pub async fn create_room_handler(
-    State(store): State<RoomStore>,
+    State(state): State<AppState>,
     payload: Result<Json<CreateRoomRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match payload {
         Ok(body) => body,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid_request", "malformed JSON body"),
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "malformed JSON body",
+            );
+        }
     };
+    if req.public_key_pem.trim().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "public_key_pem required",
+        );
+    }
     let capacity = req.seats.unwrap_or(DEFAULT_CAPACITY);
-    let result = tokio::task::spawn_blocking(move || store.create_room(capacity))
-        .await
-        .unwrap_or_else(|e| Err(RoomError::Storage(format!("create task failed: {e}"))));
+    let result = tokio::task::spawn_blocking(move || {
+        let meta = state.rooms.create_room(capacity)?;
+        state
+            .seats
+            .bind_creator(&meta.room_id, &req.public_key_pem, req.label.clone())
+            .map(|outcome| (meta, outcome))
+    })
+    .await
+    .unwrap_or_else(|e| Err(JoinError::Storage(format!("create task failed: {e}"))));
     match result {
-        Ok(meta) => (StatusCode::CREATED, Json(json!({ "room_id": meta.room_id }))).into_response(),
-        Err(err) => map_room_error(err),
+        Ok((meta, outcome)) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "room_id": meta.room_id,
+                "seat": outcome.seat,
+                "label": outcome.label,
+                "token": outcome.token,
+                "token_expires_at": outcome.expires_at,
+                "fingerprint": outcome.fingerprint,
+            })),
+        )
+            .into_response(),
+        Err(err) => map_auth_error(err),
     }
 }
 
 /// `GET /v1/rooms/:id` — room metadata.
-pub async fn room_meta_handler(State(store): State<RoomStore>, AxumPath(id): AxumPath<String>) -> Response {
-    match tokio::task::spawn_blocking(move || store.room_meta(&id))
+pub async fn room_meta_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    match tokio::task::spawn_blocking(move || state.rooms.room_meta(&id))
         .await
         .unwrap_or_else(|e| Err(RoomError::Storage(format!("metadata task failed: {e}"))))
     {
-        Ok(meta) => Json(json!({ "room_id": meta.room_id, "capacity": meta.capacity })).into_response(),
+        Ok(meta) => {
+            Json(json!({ "room_id": meta.room_id, "capacity": meta.capacity })).into_response()
+        }
         Err(err) => map_room_error(err),
     }
 }
