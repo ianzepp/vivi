@@ -9,8 +9,22 @@ DATA=/tmp/vc8-data
 A=/tmp/vc8-a
 B=/tmp/vc8-b
 PASS=0; FAIL=0
+# per-run throwaway key (VC-5: server validates base64 and refuses to boot without it)
+SRVKEY=$(openssl rand -base64 32)
 ok() { echo "PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL: $1"; FAIL=$((FAIL+1)); }
+# server drains up to 10s on SIGTERM; wait for the port to actually free
+port_free() {
+  for _ in $(seq 1 24); do
+    curl -s -m 1 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 || return 0
+    sleep 0.5
+  done
+  return 1
+}
+clear_port() {
+  lsof -ti tcp:$PORT 2>/dev/null | xargs kill 2>/dev/null
+  port_free || { echo "FAIL: port $PORT still busy"; exit 1; }
+}
 
 cd /Users/ianzepp/work/ianzepp/vivi
 cargo build --bin vivi 2>&1 | tail -1 || { echo "build failed"; exit 1; }
@@ -19,7 +33,8 @@ rm -rf "$DATA" "$A" "$B" 2>/dev/null
 mkdir -p "$DATA" "$A" "$B"
 
 # boot server
-PORT=$PORT DATA_DIR="$DATA" "$SRV/target/debug/vivi-server" >/tmp/vc8-server.log 2>&1 &
+clear_port
+PORT=$PORT DATA_DIR="$DATA" STORE_ENCRYPTION_KEY="$SRVKEY" "$SRV/target/debug/vivi-server" >/tmp/vc8-server.log 2>&1 &
 echo $! > /tmp/vc8-server.pid
 sleep 1
 curl -s -m 3 "http://127.0.0.1:$PORT/healthz" | grep -q '"ok"' && ok "server up" || bad "server up"
@@ -50,16 +65,23 @@ done
 # send + read round-trip
 "$VIVI" chat send "$ROOM" --body "hello from A" --project "$A" >/tmp/vc8-send1.log 2>&1
 grep -q 'sent' /tmp/vc8-send1.log && ! grep -q 'queued' /tmp/vc8-send1.log && ok "A send (sent)" || { bad "A send"; cat /tmp/vc8-send1.log; }
+# unread badge (VC-10) — must be checked before B's --mark-read read clears it
+"$VIVI" board --project "$B" >/tmp/vc8-board1.log 2>&1
+grep -q '^chat: .* unread in' /tmp/vc8-board1.log && ok "B board shows chat unread badge" || { bad "B board chat badge"; cat /tmp/vc8-board1.log; }
+# fail-fast single-cycle watch renders the pending message
+"$VIVI" chat watch "$ROOM" --once --project "$B" >/tmp/vc8-watch1.log 2>&1
+grep -q 'hello from A' /tmp/vc8-watch1.log && ok "B watch --once renders pending message" || { bad "B watch --once"; cat /tmp/vc8-watch1.log; }
+# watch consumes (cursors advance every cycle); send a fresh message for the read assertions
+"$VIVI" chat send "$ROOM" --body "hello again from A" --project "$A" >/tmp/vc8-send1b.log 2>&1
 "$VIVI" chat read "$ROOM" --mark-read --project "$B" >/tmp/vc8-read1.log 2>&1
-grep -q 'hello from A' /tmp/vc8-read1.log && ok "B read sees message" || { bad "B read"; cat /tmp/vc8-read1.log; }
+grep -q 'hello again from A' /tmp/vc8-read1.log && ok "B read sees message" || { bad "B read"; cat /tmp/vc8-read1.log; }
 grep -q 'alpha.checkout-a' /tmp/vc8-read1.log && ok "origin label rendered" || bad "origin label rendered"
 
 # offline queue -> restart -> flush
-kill $(cat /tmp/vc8-server.pid) 2>/dev/null; sleep 1
-curl -s -m 1 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && { echo "FAIL: server still up after kill"; exit 1; }
+kill $(cat /tmp/vc8-server.pid) 2>/dev/null; clear_port
 "$VIVI" chat send "$ROOM" --body "offline message" --project "$A" >/tmp/vc8-send2.log 2>&1
 grep -q 'queued' /tmp/vc8-send2.log && ok "offline send queued" || { bad "offline send queued"; cat /tmp/vc8-send2.log; }
-PORT=$PORT DATA_DIR="$DATA" "$SRV/target/debug/vivi-server" >>/tmp/vc8-server.log 2>&1 &
+PORT=$PORT DATA_DIR="$DATA" STORE_ENCRYPTION_KEY="$SRVKEY" "$SRV/target/debug/vivi-server" >>/tmp/vc8-server.log 2>&1 &
 echo $! > /tmp/vc8-server.pid
 sleep 1
 "$VIVI" chat flush --project "$A" >/tmp/vc8-flush.log 2>&1
