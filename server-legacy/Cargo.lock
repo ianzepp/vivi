@@ -599,6 +599,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "subtle",
@@ -2335,15 +2336,17 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vivi"
 version = "10.1.0"
-source = "git+https://github.com/ianzepp/vivi?branch=main#7e323ba371a5b7841b2134bd03de2ed1fc8fbc61"
+source = "git+https://github.com/ianzepp/vivi?branch=main#ad8206f45513be11bb9b47dccc89abf07b86e8d5"
 dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "ed25519-dalek",
  "hex",
  "lettre",
  "mail-builder",
  "mail-parser",
+ "rand_core 0.6.4",
  "reqwest",
  "rusqlite",
  "serde",
