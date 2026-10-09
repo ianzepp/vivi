@@ -11,8 +11,9 @@ RUN apt-get update \
 COPY --from=build /src/target/release/vivi-server /usr/local/bin/vivi-server
 # Env plumbing; STORE_ENCRYPTION_KEY and MODERATION_TOKEN come from the
 # platform secret store (Railway variables), never baked into the image.
+# NOTE: no Docker VOLUME directive — Railway rejects it; the /data volume is
+# attached on the platform (railway add --volume --mount-path /data).
 ENV PORT=8080 \
     DATA_DIR=/data
-VOLUME /data
 EXPOSE 8080
 CMD ["vivi-server"]
