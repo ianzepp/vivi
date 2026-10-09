@@ -7,6 +7,7 @@
 //! `vivi` binary.
 
 pub mod boot;
+pub mod chat;
 pub mod cli;
 pub mod duration;
 pub mod error;

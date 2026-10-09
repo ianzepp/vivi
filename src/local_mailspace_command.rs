@@ -1,7 +1,7 @@
 use vivi::VivariumError;
 use vivi::cli::{
-    Command, CycleCommand, LocalSendCommand, MailAbsorbStatus, MailCommand, MailDumpCommand,
-    MailListCommand, MailReplyCommand, MailspaceCommand, MailspaceIdentityCommand,
+    ChatSubcommand, Command, CycleCommand, LocalSendCommand, MailAbsorbStatus, MailCommand,
+    MailDumpCommand, MailListCommand, MailReplyCommand, MailspaceCommand, MailspaceIdentityCommand,
     MailspaceImportCommand, MemoCommand, TaskCommand, TaskSendCommand, TraceCommand,
 };
 use vivi::mailspace::{
@@ -15,6 +15,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
     match command {
         Command::Mailspace { command } => handle_mailspace_command(command),
         Command::Board(command) => crate::local_board_command::handle_board_command(command),
+        Command::Chat { command } => handle_chat_command(command),
         Command::Boot { project } => {
             crate::local_boot_command::handle_boot_command(project.as_deref())
         }
@@ -38,6 +39,25 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
             *json,
         ),
     }
+}
+
+fn handle_chat_command(command: &ChatSubcommand) -> Result<(), VivariumError> {
+    let ChatSubcommand::Status { project } = command;
+    let mailspace = Mailspace::discover(project.as_deref())?;
+    let chat_dir = vivi::chat::chat_dir(&mailspace.dir);
+    let identity = vivi::chat::identity::ChatIdentity::ensure(&chat_dir)?;
+    let state = vivi::chat::state::ChatState::open(&chat_dir)?;
+    let server = mailspace
+        .config
+        .chat
+        .as_ref()
+        .and_then(|chat| chat.server.clone())
+        .unwrap_or_else(|| vivi::chat::DEFAULT_SERVER.to_string());
+    println!("chat identity: {}", identity.fingerprint());
+    println!("chat server: {server}");
+    println!("chat rooms joined: {}", state.joined_room_count()?);
+    println!("chat outbox depth: {}", state.outbox_depth()?);
+    Ok(())
 }
 
 fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumError> {
