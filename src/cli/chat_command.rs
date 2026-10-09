@@ -18,4 +18,21 @@ pub enum ChatSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Join a chat room: challenge -> sign -> seat binding
+    Join {
+        /// Room id (5 groups of Crockford base32)
+        room_id: String,
+        /// Seat label (default <short-host>/<project>, or [chat] name)
+        #[arg(long)]
+        label: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// List rooms joined from this mailspace
+    Rooms {
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }

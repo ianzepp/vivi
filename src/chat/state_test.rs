@@ -26,6 +26,23 @@ fn rooms_cursors_and_outbox_round_trip() {
 }
 
 #[test]
+fn rooms_listing_and_lookup() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = ChatState::open(tmp.path()).expect("open chat state");
+    state.join_room("room-a", 1, "a/x").expect("join a");
+    state.join_room("room-b", 3, "b/y").expect("join b");
+    let rooms = state.rooms().expect("rooms");
+    assert_eq!(rooms.len(), 2);
+    assert_eq!(rooms[0].room_id, "room-a");
+    assert_eq!(rooms[0].seat, 1);
+    assert_eq!(rooms[0].label, "a/x");
+    assert!(!rooms[1].joined_at.is_empty());
+    let found = state.room("room-b").expect("lookup").expect("present");
+    assert_eq!((found.seat, found.label.as_str()), (3, "b/y"));
+    assert!(state.room("room-z").expect("lookup").is_none());
+}
+
+#[test]
 fn state_reopen_keeps_rows() {
     let tmp = tempfile::tempdir().expect("tempdir");
     {

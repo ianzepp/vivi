@@ -71,6 +71,28 @@ impl ChatIdentity {
         hex::encode(digest)[..FINGERPRINT_LEN].to_string()
     }
 
+    /// Sign an exact byte string (the issued challenge bytes) and return the
+    /// raw 64-byte signature.
+    #[must_use]
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        use ed25519_dalek::Signer;
+        self.signing_key.sign(message).to_bytes()
+    }
+
+    /// Public key as an SPKI PEM (openssl `BEGIN PUBLIC KEY` shape), matching
+    /// the frozen wire contract. ED25519 SPKI DER is a fixed 12-byte prefix
+    /// followed by the 32-byte key.
+    #[must_use]
+    pub fn public_key_pem(&self) -> String {
+        const ED25519_SPKI_PREFIX: &[u8] = &[
+            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+        ];
+        let mut der = ED25519_SPKI_PREFIX.to_vec();
+        der.extend_from_slice(self.signing_key.verifying_key().as_bytes());
+        let body = crate::chat::b64::encode(&der);
+        format!("-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----")
+    }
+
     #[cfg(unix)]
     fn restrict_mode(path: &Path) -> Result<(), VivariumError> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;

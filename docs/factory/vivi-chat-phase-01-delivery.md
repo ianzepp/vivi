@@ -302,3 +302,6 @@ sanity: doc link scan
   GitHub issues — known senders assumed valid, unknown senders verified and
   scheduled by the receiving Mind. The protocol's only duty is honest
   origin labels.
+- Contract revision R1 (with VC-2): `GET /v1/rooms/:id` added to the frozen
+  contract (omitted at U1 freeze); metadata-only, documented under
+  vivi-server `docs/contract.md` § Revisions.

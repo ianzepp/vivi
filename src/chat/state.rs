@@ -14,6 +14,15 @@ use crate::error::VivariumError;
 
 const STATE_FILE: &str = "state.sqlite";
 
+/// A locally recorded joined room.
+#[derive(Debug, Clone)]
+pub struct JoinedRoom {
+    pub room_id: String,
+    pub seat: u32,
+    pub label: String,
+    pub joined_at: String,
+}
+
 /// Local chat state store. Offline sends enqueue here and flush
 /// at-least-once on later commands.
 pub struct ChatState {
@@ -89,6 +98,50 @@ impl ChatState {
         self.conn
             .query_row("SELECT COUNT(*) FROM rooms", [], |row| row.get::<_, i64>(0))
             .map(|n| n as usize)
+            .map_err(sql_err)
+    }
+
+    /// Joined rooms in join order.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn rooms(&self) -> Result<Vec<JoinedRoom>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT room_id, seat, label, joined_at FROM rooms ORDER BY joined_at")
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(JoinedRoom {
+                    room_id: row.get(0)?,
+                    seat: row.get::<_, i64>(1)? as u32,
+                    label: row.get(2)?,
+                    joined_at: row.get(3)?,
+                })
+            })
+            .map_err(sql_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
+    }
+
+    /// One joined room by id, if present.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn room(&self, room_id: &str) -> Result<Option<JoinedRoom>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT room_id, seat, label, joined_at FROM rooms WHERE room_id = ?1",
+                params![room_id],
+                |row| {
+                    Ok(JoinedRoom {
+                        room_id: row.get(0)?,
+                        seat: row.get::<_, i64>(1)? as u32,
+                        label: row.get(2)?,
+                        joined_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
             .map_err(sql_err)
     }
 

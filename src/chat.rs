@@ -1,6 +1,8 @@
 //! Chat client foundation: the `[chat]` config table, identity mint, and the
 //! local state store under `<project>/.vivi/chat/`.
 
+pub mod b64;
+pub mod client;
 pub mod identity;
 pub mod state;
 

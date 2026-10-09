@@ -42,8 +42,83 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
 }
 
 fn handle_chat_command(command: &ChatSubcommand) -> Result<(), VivariumError> {
-    let ChatSubcommand::Status { project } = command;
-    let mailspace = Mailspace::discover(project.as_deref())?;
+    match command {
+        ChatSubcommand::Status { project } => chat_status(project.as_deref()),
+        ChatSubcommand::Join {
+            room_id,
+            label,
+            project,
+        } => chat_join(room_id, label.as_deref(), project.as_deref()),
+        ChatSubcommand::Rooms { project } => chat_rooms(project.as_deref()),
+    }
+}
+
+fn chat_server(mailspace: &Mailspace) -> Result<String, VivariumError> {
+    mailspace
+        .config
+        .chat
+        .as_ref()
+        .and_then(|chat| chat.server.clone())
+        .filter(|server| !server.trim().is_empty())
+        .ok_or_else(|| {
+            VivariumError::Config(
+                "no chat server configured; set [chat] server in mailspace.toml".into(),
+            )
+        })
+}
+
+fn chat_join(
+    room_id: &str,
+    label: Option<&str>,
+    project: Option<&std::path::Path>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let server = chat_server(&mailspace)?;
+    let label = label
+        .map(str::to_string)
+        .or_else(|| {
+            mailspace
+                .config
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.name.clone())
+        })
+        .unwrap_or_else(|| vivi::chat::client::default_label(&mailspace.root));
+    let chat_dir = vivi::chat::chat_dir(&mailspace.dir);
+    let identity = vivi::chat::identity::ChatIdentity::ensure(&chat_dir)?;
+    let receipt = vivi::chat::client::join_room(&server, room_id, &identity, &label)?;
+    let state = vivi::chat::state::ChatState::open(&chat_dir)?;
+    state.join_room(&receipt.room_id, receipt.seat, &receipt.label)?;
+    println!(
+        "joined {} seat {} as {}",
+        receipt.room_id, receipt.seat, receipt.label
+    );
+    println!("fingerprint {}", receipt.fingerprint);
+    println!("token expires {}", receipt.token_expires_at);
+    Ok(())
+}
+
+fn chat_rooms(project: Option<&std::path::Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let server = mailspace
+        .config
+        .chat
+        .as_ref()
+        .and_then(|chat| chat.server.clone())
+        .unwrap_or_else(|| vivi::chat::DEFAULT_SERVER.to_string());
+    let chat_dir = vivi::chat::chat_dir(&mailspace.dir);
+    let state = vivi::chat::state::ChatState::open(&chat_dir)?;
+    for room in state.rooms()? {
+        println!(
+            "{}  seat {}  {}  {}",
+            room.room_id, room.seat, room.label, server
+        );
+    }
+    Ok(())
+}
+
+fn chat_status(project: Option<&std::path::Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
     let chat_dir = vivi::chat::chat_dir(&mailspace.dir);
     let identity = vivi::chat::identity::ChatIdentity::ensure(&chat_dir)?;
     let state = vivi::chat::state::ChatState::open(&chat_dir)?;
@@ -56,6 +131,12 @@ fn handle_chat_command(command: &ChatSubcommand) -> Result<(), VivariumError> {
     println!("chat identity: {}", identity.fingerprint());
     println!("chat server: {server}");
     println!("chat rooms joined: {}", state.joined_room_count()?);
+    for room in state.rooms()? {
+        println!(
+            "  room {}  seat {}  {}",
+            room.room_id, room.seat, room.label
+        );
+    }
     println!("chat outbox depth: {}", state.outbox_depth()?);
     Ok(())
 }
