@@ -242,3 +242,41 @@ fn default_label_uses_short_host_and_project_dir() {
         "short host, no path separators: {label}"
     );
 }
+
+#[test]
+fn create_room_posts_contract_shape_and_binds_seat_1() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let identity = identity_with_seed(&chat_dir(tmp.path()), 5);
+
+    let (server, rx) = stub_server(1, |_line, path, _body| {
+        assert_eq!(path, "/v1/rooms", "room create posts the collection root");
+        (
+            201,
+            json!({
+                "room_id": ROOM,
+                "seat": 1,
+                "label": "burgus/vivi",
+                "token": "tok-create",
+                "token_expires_at": "2026-10-09T21:00:00Z",
+                "fingerprint": "fedcba9876543210",
+            })
+            .to_string(),
+        )
+    });
+    let receipt = create_room(&server, Some(6), Some("burgus/vivi"), &identity).expect("create");
+
+    let requests: Vec<Request> = rx.try_iter().collect();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "POST");
+    let body: Value = serde_json::from_str(&requests[0].2).expect("create body json");
+    assert_eq!(body["seats"], 6);
+    assert_eq!(body["label"], "burgus/vivi");
+    assert_eq!(
+        body["public_key_pem"].as_str().expect("pem"),
+        identity.public_key_pem(),
+        "creator key rides the create request"
+    );
+    assert_eq!(receipt.room_id, ROOM, "shareable grouped room id");
+    assert_eq!(receipt.seat, 1, "creator takes seat 1");
+    assert_eq!(receipt.fingerprint, "fedcba9876543210");
+}

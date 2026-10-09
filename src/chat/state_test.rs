@@ -54,3 +54,19 @@ fn state_reopen_keeps_rows() {
     assert!(tmp.path().join(STATE_FILE).exists());
     assert!(tmp.path().join(".gitignore").exists());
 }
+
+#[test]
+fn leave_room_removes_row_and_cursor() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = ChatState::open(tmp.path()).expect("open chat state");
+    state.join_room("room-a", 1, "a/x").expect("join");
+    state.set_cursor("room-a", "9").expect("cursor");
+
+    assert!(state.leave_room("room-a").expect("leave"), "row removed");
+    assert!(state.room("room-a").expect("lookup").is_none());
+    assert_eq!(state.cursor("room-a").expect("cursor"), None);
+    assert!(
+        !state.leave_room("room-a").expect("leave again"),
+        "idempotent"
+    );
+}

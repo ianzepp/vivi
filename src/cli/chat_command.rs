@@ -75,4 +75,44 @@ pub enum ChatSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Long-poll joined rooms and print arrivals live (Ctrl-C to exit)
+    Watch {
+        /// Room id (defaults to every joined room)
+        room_id: Option<String>,
+        /// Exit after the first poll cycle
+        #[arg(long)]
+        once: bool,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Leave a joined room (local unjoin; the server seat stays)
+    Leave {
+        /// Room id (5 groups of Crockford base32)
+        room_id: String,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Room lifecycle (create)
+    Room {
+        #[command(subcommand)]
+        command: RoomSubcommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RoomSubcommand {
+    /// Create a room on the chat server; the creator auto-joins seat 1
+    Create {
+        /// Seat capacity 2..8 (server default 4)
+        #[arg(long)]
+        seats: Option<u32>,
+        /// Creator seat label (default <short-host>.<project>, or [chat] name)
+        #[arg(long)]
+        label: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }

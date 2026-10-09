@@ -154,6 +154,22 @@ impl ChatState {
             .map_err(sql_err)
     }
 
+    /// Remove a joined room (local unjoin) and its read cursor. Returns
+    /// whether a room row was actually removed.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn leave_room(&self, room_id: &str) -> Result<bool, VivariumError> {
+        self.conn
+            .execute("DELETE FROM cursors WHERE room_id = ?1", params![room_id])
+            .map_err(sql_err)?;
+        let removed = self
+            .conn
+            .execute("DELETE FROM rooms WHERE room_id = ?1", params![room_id])
+            .map_err(sql_err)?;
+        Ok(removed > 0)
+    }
+
     /// Set the read cursor for a room.
     ///
     /// # Errors

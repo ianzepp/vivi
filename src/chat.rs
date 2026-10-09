@@ -7,6 +7,7 @@ pub mod command;
 pub mod identity;
 pub mod outbox;
 pub mod state;
+pub mod watch;
 
 use std::fs;
 use std::path::{Path, PathBuf};

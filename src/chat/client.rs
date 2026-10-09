@@ -197,6 +197,54 @@ fn sign_challenge(identity: &ChatIdentity, challenge_b64: &str) -> Result<String
     Ok(b64::encode(&identity.sign(&bytes)))
 }
 
+/// Create a room via `POST /v1/rooms`; the creator key auto-binds seat 1.
+///
+/// # Errors
+/// Returns a friendly error when the server is unreachable, rejects the
+/// capacity (2..8), or cannot bind the creator seat.
+pub fn create_room(
+    server: &str,
+    seats: Option<u32>,
+    label: Option<&str>,
+    identity: &ChatIdentity,
+) -> Result<JoinReceipt, VivariumError> {
+    let base = server.trim_end_matches('/');
+    let (status, body) = post_json(
+        &format!("{base}/v1/rooms"),
+        &json!({
+            "seats": seats,
+            "label": label,
+            "public_key_pem": identity.public_key_pem(),
+        }),
+    )?;
+    let code = error_code(&body);
+    if status != 200 && status != 201 {
+        return Err(join_error(
+            status,
+            &code,
+            &body,
+            "new room",
+            label.unwrap_or_default(),
+        ));
+    }
+    #[derive(Deserialize)]
+    struct CreateResponse {
+        room_id: String,
+        seat: i64,
+        label: String,
+        token_expires_at: String,
+        fingerprint: String,
+    }
+    let created: CreateResponse = parse_body(&body)?;
+    Ok(JoinReceipt {
+        room_id: created.room_id,
+        seat: created.seat as u32,
+        label: created.label,
+        token_expires_at: created.token_expires_at,
+        fingerprint: created.fingerprint,
+    })
+}
+
 /// Mint a fresh per-seat bearer: fingerprint challenge → sign → auth/token.
 /// The raw token exists only for the current invocation.
 ///
@@ -279,14 +327,17 @@ pub fn poll_messages(
     label: &str,
     fingerprint_short: &str,
     since: u64,
+    wait_secs: u64,
 ) -> Result<PollPage, VivariumError> {
     let room_id = normalize_room_id(raw_room_id)?;
     let url = format!(
-        "{}/v1/rooms/{room_id}/messages?since={since}&wait=0",
+        "{}/v1/rooms/{room_id}/messages?since={since}&wait={wait_secs}",
         server.trim_end_matches('/')
     );
     let headers = origin_headers(token, label, fingerprint_short, None);
-    let (status, body) = request_json("GET", &url, None, &headers)?;
+    // The long-poll hold may outlive the default request timeout.
+    let timeout = Duration::from_secs(wait_secs + 10);
+    let (status, body) = request_json_with_timeout("GET", &url, None, &headers, timeout)?;
     let code = error_code(&body);
     if status != 200 {
         return Err(send_error(status, &code, &body));
@@ -407,6 +458,18 @@ fn request_json(
     payload: Option<&Value>,
     headers: &[(&'static str, String)],
 ) -> Result<(u16, Value), VivariumError> {
+    request_json_with_timeout(method, url, payload, headers, TIMEOUT)
+}
+
+/// `request_json` with a caller-chosen timeout (long-poll holds exceed the
+/// default).
+fn request_json_with_timeout(
+    method: &str,
+    url: &str,
+    payload: Option<&Value>,
+    headers: &[(&'static str, String)],
+    timeout: Duration,
+) -> Result<(u16, Value), VivariumError> {
     let url = url.to_string();
     let payload = payload.cloned();
     let method = method.to_string();
@@ -418,7 +481,7 @@ fn request_json(
             .map_err(|e| VivariumError::Other(format!("failed to build runtime: {e}")))?;
         runtime.block_on(async move {
             let client = reqwest::Client::builder()
-                .timeout(TIMEOUT)
+                .timeout(timeout)
                 .build()
                 .map_err(|e| VivariumError::Other(format!("failed to build client: {e}")))?;
             let method = reqwest::Method::from_bytes(method.as_bytes())

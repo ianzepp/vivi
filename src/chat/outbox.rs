@@ -241,6 +241,7 @@ pub fn read_room(
         &room.label,
         &identity.short_wire_fingerprint(),
         since,
+        0,
     )?;
     let advanced = !all && mark_read;
     if advanced {

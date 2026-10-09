@@ -1,14 +1,63 @@
-//! Chat CLI handlers for send/flush/read. Dispatched from the binary's
-//! chat command family; every command flushes the outbox opportunistically
+//! Chat CLI handlers for the whole `vivi chat` command family, dispatched
+//! from the binary. Every command flushes the outbox opportunistically
 //! first.
 
 use std::path::Path;
 
 use crate::chat::identity::ChatIdentity;
 use crate::chat::state::ChatState;
-use crate::chat::{chat_dir, client, outbox};
+use crate::chat::{chat_dir, client, outbox, watch};
+use crate::cli::{ChatSubcommand, RoomSubcommand};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+
+/// Dispatch one `vivi chat` subcommand.
+pub fn dispatch(command: &ChatSubcommand) -> Result<(), VivariumError> {
+    match command {
+        ChatSubcommand::Status { project } => status(project.as_deref()),
+        ChatSubcommand::Join {
+            room_id,
+            label,
+            project,
+        } => join(room_id, label.as_deref(), project.as_deref()),
+        ChatSubcommand::Rooms { project } => rooms(project.as_deref()),
+        ChatSubcommand::Send {
+            room_id,
+            to,
+            subject,
+            body,
+            body_file,
+            project,
+        } => send(
+            room_id,
+            to.as_deref(),
+            subject.as_deref(),
+            body.as_deref(),
+            body_file.as_deref(),
+            project.as_deref(),
+        ),
+        ChatSubcommand::Flush { project } => flush(project.as_deref()),
+        ChatSubcommand::Read {
+            room_id,
+            mark_read,
+            all,
+            project,
+        } => read(room_id.as_deref(), *mark_read, *all, project.as_deref()),
+        ChatSubcommand::Watch {
+            room_id,
+            once,
+            project,
+        } => watch_command(room_id.as_deref(), *once, project.as_deref()),
+        ChatSubcommand::Leave { room_id, project } => leave(room_id, project.as_deref()),
+        ChatSubcommand::Room { command } => match command {
+            RoomSubcommand::Create {
+                seats,
+                label,
+                project,
+            } => room_create(*seats, label.clone(), project.as_deref()),
+        },
+    }
+}
 
 fn server_of(mailspace: &Mailspace) -> Result<String, VivariumError> {
     mailspace
@@ -155,4 +204,141 @@ pub fn try_flush(mailspace: &Mailspace) {
             println!("flushed {} queued message(s)", summary.sent);
         }
     }
+}
+
+/// `vivi chat join`: challenge → sign → seat binding, recorded locally.
+pub fn join(
+    room_id: &str,
+    label: Option<&str>,
+    project: Option<&Path>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    try_flush(&mailspace);
+    let server = server_of(&mailspace)?;
+    let label = label
+        .map(str::to_string)
+        .or_else(|| {
+            mailspace
+                .config
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.name.clone())
+        })
+        .unwrap_or_else(|| client::default_label(&mailspace.root));
+    let chat_dir = chat_dir(&mailspace.dir);
+    let identity = ChatIdentity::ensure(&chat_dir)?;
+    let receipt = client::join_room(&server, room_id, &identity, &label)?;
+    let state = ChatState::open(&chat_dir)?;
+    state.join_room(&receipt.room_id, receipt.seat, &receipt.label)?;
+    println!(
+        "joined {} seat {} as {}",
+        receipt.room_id, receipt.seat, receipt.label
+    );
+    println!("fingerprint {}", receipt.fingerprint);
+    println!("token expires {}", receipt.token_expires_at);
+    Ok(())
+}
+
+/// `vivi chat rooms`: list locally joined rooms.
+pub fn rooms(project: Option<&Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    try_flush(&mailspace);
+    let server = mailspace
+        .config
+        .chat
+        .as_ref()
+        .and_then(|chat| chat.server.clone())
+        .unwrap_or_else(|| crate::chat::DEFAULT_SERVER.to_string());
+    let state = ChatState::open(&chat_dir(&mailspace.dir))?;
+    for room in state.rooms()? {
+        println!(
+            "{}  seat {}  {}  {}",
+            room.room_id, room.seat, room.label, server
+        );
+    }
+    Ok(())
+}
+
+/// `vivi chat status`: identity, server, joined rooms, outbox depth.
+pub fn status(project: Option<&Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    try_flush(&mailspace);
+    let chat_dir = chat_dir(&mailspace.dir);
+    let identity = ChatIdentity::ensure(&chat_dir)?;
+    let state = ChatState::open(&chat_dir)?;
+    let server = mailspace
+        .config
+        .chat
+        .as_ref()
+        .and_then(|chat| chat.server.clone())
+        .unwrap_or_else(|| crate::chat::DEFAULT_SERVER.to_string());
+    println!("chat identity: {}", identity.fingerprint());
+    println!("chat server: {server}");
+    println!("chat rooms joined: {}", state.joined_room_count()?);
+    for room in state.rooms()? {
+        println!(
+            "  room {}  seat {}  {}",
+            room.room_id, room.seat, room.label
+        );
+    }
+    println!("chat outbox depth: {}", state.outbox_depth()?);
+    Ok(())
+}
+
+/// `vivi chat watch`: long-poll arrivals in one or every joined room.
+pub fn watch_command(
+    room_id: Option<&str>,
+    once: bool,
+    project: Option<&Path>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let server = server_of(&mailspace)?;
+    let (state, identity) = chat_parts(&mailspace)?;
+    try_flush(&mailspace);
+    let rooms = watch::resolve_rooms(&state, room_id)?;
+    watch::run(&server, &state, &identity, &rooms, once)
+}
+
+/// `vivi chat leave`: local unjoin (drops the room row and its cursor; the
+/// server seat stays bound).
+pub fn leave(room_id: &str, project: Option<&Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    try_flush(&mailspace);
+    let (state, _identity) = chat_parts(&mailspace)?;
+    let room_id = client::normalize_room_id(room_id)?;
+    if state.leave_room(&room_id)? {
+        println!("left {room_id}");
+    } else {
+        println!("room {room_id} was not joined");
+    }
+    Ok(())
+}
+
+/// `vivi chat room create`: mint a room on the server; the creator key
+/// auto-binds seat 1, which is stored locally for immediate send/watch.
+pub fn room_create(
+    seats: Option<u32>,
+    label: Option<String>,
+    project: Option<&Path>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let server = server_of(&mailspace)?;
+    try_flush(&mailspace);
+    let (state, identity) = chat_parts(&mailspace)?;
+    let label = label
+        .or_else(|| {
+            mailspace
+                .config
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.name.clone())
+        })
+        .unwrap_or_else(|| client::default_label(&mailspace.root));
+    let receipt = client::create_room(&server, seats, Some(&label), &identity)?;
+    state.join_room(&receipt.room_id, receipt.seat, &receipt.label)?;
+    println!("created {}", receipt.room_id);
+    println!("seat {} label {}", receipt.seat, receipt.label);
+    println!("fingerprint {}", receipt.fingerprint);
+    println!("share the room id above to invite seats");
+    Ok(())
 }
