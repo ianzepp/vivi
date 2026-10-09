@@ -147,3 +147,13 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
 - Token: SHA-256 digest only at rest, 1 h TTL, constant-time digest compare.
 - Send rate: 30/min/seat; body cap 64 KiB.
 - Boot with key mismatch or unreadable store → process exits, never serves.
+
+## Revisions
+
+- **R1 (with VC-2, 2026-10-09): `GET /v1/rooms/:id`.** The U1 freeze omitted
+  a room-metadata read. Shape (implemented): `GET /v1/rooms/:id` →
+  `200 {"room_id": "<grouped>", "capacity": <2..8>}`; errors `invalid_room_id`
+  400, `room_not_found` 404, `internal` 500. Metadata only, no auth in v1;
+  seat/token fields remain VC-3. `POST /v1/rooms` returns `{"room_id": …}`
+  until VC-3 adds creator seat-1 binding and the creator token to the
+  response.

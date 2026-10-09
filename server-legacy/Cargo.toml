@@ -11,4 +11,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+getrandom = "0.4"
 vivi = { git = "https://github.com/ianzepp/vivi", branch = "main" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

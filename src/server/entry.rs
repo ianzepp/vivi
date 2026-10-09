@@ -1,12 +1,12 @@
 //! vivi-server: public chat substrate hosting persistent vivi mailspace rooms.
-//! Phase 01 skeleton: env config, axum router, GET /healthz. Wire contract in
-//! docs/contract.md.
+//! Phase 01: env config, axum router, health + room endpoints. Wire contract
+//! in docs/contract.md.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
 use serde_json::json;
 
 /// Environment-derived configuration. The process refuses to boot without the
@@ -63,7 +63,7 @@ async fn main() {
         tracing::warn!("MODERATION_TOKEN not set; /v1/_health disabled (U3)");
     }
 
-    let app = Router::new().route("/healthz", get(healthz));
+    let app = vivi_server::api_router(config.data_dir.clone()).route("/healthz", get(healthz));
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
     tracing::info!("vivi-server listening on {addr} (data dir {})", config.data_dir.display());
