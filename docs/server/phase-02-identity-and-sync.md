@@ -1,8 +1,7 @@
 # Phase 02 — Traveling identity and cross-mailspace sync
 
-Status: **IN PROGRESS** — design settled 2026-10-09. The vivi-server units
-P2-3 and P2-4 are implemented (R7/R8 below); the vivi-crate units run in a
-separate session against the wire shape recorded here.
+Status: **DELIVERED** 2026-10-09, with P2-8 (optional) deferred. See
+[Outcome](#outcome) for commits, verification, and what is carried forward.
 This doc is the phase delivery home: contract revisions for this phase are
 recorded here, per the phase-01 contract's revision rule.
 
@@ -162,14 +161,66 @@ URL gate (`SERVER_URL=… scripts/two-checkout-smoke.sh`, against staging and
 then production) runs every leg except offline queue/flush, which has to
 restart the server and so stays a local-mode leg.
 
-## Open questions
+## Outcome
 
-- Prune default: keep-all vs a size/age cap.
-- Lazy fetch from room history for dangling refs: build now or after
-  labeled absence ships.
-- Whether `kind` also becomes a mail header when the crate's header path
-  lands (R2's deferral), or stays sealed-content-only permanently.
-- Multi-room local stores: flat shared segment vs per-room partitioning.
+| Unit | Repo | Commit |
+| --- | --- | --- |
+| P2-1 ingest honors a presented traveling id | vivi | `24c446e` |
+| P2-2 the chat Message-ID is minted as a traveling id | vivi | `dcc0a76` |
+| P2-3, P2-4 sealed fields, `kind` pass-through, placement (R7/R8) | vivi-server | `be98c4e` |
+| P2-5 `chat pull` down-sync | vivi | `6a1a081` |
+| P2-6 `chat send --kind/--reply-to/--ref` | vivi | `438050d` |
+| P2-7 `chat prune` / `chat resync` | vivi | `4a4b764` |
+| P2-9 acceptance legs in the smoke script | vivi-server | `2bdc777` |
+| P2-8 fold the sidecar into mailspace reads | vivi-server | deferred |
+
+The client decisions and their reasons are recorded in vivi's
+[`docs/factory/vivi-chat-phase-02-delivery.md`](https://github.com/ianzepp/vivi/blob/main/docs/factory/vivi-chat-phase-02-delivery.md);
+this doc does not restate them.
+
+**Verified.** 35 server tests. `scripts/two-checkout-smoke.sh` passes 29 of 29
+locally, and 24 passed, 0 failed, 1 skipped (the local-only offline leg)
+against the staging service running `main` at `2bdc777`. The phase 02 legs
+cover a need crossing the room under one handle with an identical content hash,
+a replay filing nothing new, a closed need staying closed, a receipt threading
+to the original, a task for another seat being skipped, and prune plus resync
+restoring the blob set byte-for-byte. Production runs `release` at `c8bc1e7`,
+which predates the vivi `3b45ebd` pin; the extended smoke has not been run
+against it.
+
+**Carried forward** (the full client list is in the vivi record):
+
+- A direct message is not private. The server returns every record in a room to
+  every seat; the client skips items addressed to another seat, but `to` is a
+  routing label, not access control. This is the phase 01 contract, unchanged.
+- P2-8 stays deferred. The room mailspace is still written but not read, and
+  the sidecar index is the read path. Folding them would need one item per
+  message in the room store: vivi refuses to give one presented id to two
+  recipients in a single delivery, so a broadcast cannot reuse the traveling id
+  for every recipient copy.
+- There is no automatic receipt: closing a received need does not tell the
+  sender. The acceptance receipt is a reply sent by hand with
+  `chat send --reply-to`.
+- A dangling reference stays unresolved rather than rendering as labeled
+  absence (D3), and lazy fetch from room history is not built.
+- Pre-phase-02 items do not share handles across machines, and sync is manual
+  (`chat pull`); nothing pulls in the background.
+- A queued send the server permanently rejects blocks the outbox behind it.
+- The offline queue/flush leg stays local-only. Prune's smallest cutoff is `1m`,
+  so the full smoke takes about two minutes, and every deployed run leaves one
+  throwaway room behind.
+
+## Open questions (resolved)
+
+- Prune default: keep-all. Nothing prunes on its own; `chat prune` is explicit
+  and never touches open needs, tasks, or wants.
+- Lazy fetch from room history for dangling refs: not built; unresolved refs
+  stay unresolved.
+- Whether `kind` also becomes a mail header: on the wire it is a JSON field,
+  sealed at rest by the server. The client writes it as a local `X-Vivi-Kind`
+  header on the rendered item.
+- Multi-room local stores: one shared mailspace per project, with the room id
+  as each item's remote-binding mailbox, so prune can filter by room.
 
 ## Out of scope
 
