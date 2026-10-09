@@ -1,6 +1,7 @@
 //! Room store and v1 room endpoints: one persistent vivi mailspace per room
-//! under `DATA_DIR/rooms/<room_id>/mailspace/`, opened through
-//! `vivi::storage::Storage::open_mailspace`. Seats/auth land in VC-3.
+//! at `DATA_DIR/rooms/<room_id>/.vivi/` (contract R2), provisioned through
+//! `vivi::mailspace::Mailspace::init` — the same root the message endpoints
+//! use. Seats/auth land in VC-3.
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use vivi::storage::Storage;
+use vivi::mailspace::Mailspace;
 
 use crate::AppState;
 use crate::auth::map_auth_error;
@@ -68,8 +69,7 @@ impl RoomStore {
             if room_dir.exists() {
                 continue;
             }
-            let mailspace = room_dir.join("mailspace");
-            Storage::open_mailspace(&mailspace).map_err(|e| RoomError::Storage(e.to_string()))?;
+            Mailspace::init(Some(&room_dir)).map_err(|e| RoomError::Storage(e.to_string()))?;
             let meta = RoomMeta { room_id, capacity };
             let bytes = serde_json::to_vec(&meta)
                 .map_err(|e| RoomError::Storage(format!("failed to encode room.json: {e}")))?;
@@ -93,11 +93,11 @@ impl RoomStore {
         serde_json::from_slice(&bytes).map_err(|e| RoomError::Storage(e.to_string()))
     }
 
-    /// Reopen a room's mailspace storage.
-    pub fn open_mailspace(&self, raw_id: &str) -> Result<Storage, RoomError> {
+    /// Reopen a room's mailspace at its `.vivi` root.
+    pub fn open_mailspace(&self, raw_id: &str) -> Result<Mailspace, RoomError> {
         let meta = self.room_meta(raw_id)?;
-        let mailspace = self.rooms_root.join(&meta.room_id).join("mailspace");
-        Storage::open_mailspace(&mailspace).map_err(|e| RoomError::Storage(e.to_string()))
+        let dir = self.rooms_root.join(&meta.room_id);
+        Mailspace::init(Some(&dir)).map_err(|e| RoomError::Storage(e.to_string()))
     }
 }
 

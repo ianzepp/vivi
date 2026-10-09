@@ -170,3 +170,12 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   seat does not hold) rejects `401 unauthorized`. Accepted v1 limits:
   sidecar index write is not transactional with the mailspace send; the
   rate limiter is in-memory (single-process deployment).
+
+- **R3 (with VC-8, 2026-10-09): canonical fingerprint derivation.** The
+  implemented canonical form is `sha256( hex_string( spki_der ) )` — the
+  digest runs over the lowercase-hex encoding of the SPKI DER bytes, then
+  hex-encoded; short display form is its first 16 hex chars. This amends
+  the Conventions wording ("SHA-256 over SPKI DER"); client and server
+  agree on this form (vivi `wire_fingerprint`). Known v1 limit: a failed
+  creator-binding after room provisioning leaves the room dir behind
+  (inert; ids are 125-bit random) — cleanup deferred.

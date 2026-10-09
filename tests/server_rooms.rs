@@ -71,19 +71,50 @@ async fn two_rooms_get_distinct_ids_and_wal_mailspaces() {
     assert_ne!(first.room_id, second.room_id, "two mints must differ");
 
     for meta in [&first, &second] {
-        let mailspace = data_dir.join("rooms").join(&meta.room_id).join("mailspace");
+        let room_dir = data_dir.join("rooms").join(&meta.room_id);
         assert!(
-            mailspace.is_dir(),
-            "mailspace dir missing for {}",
+            room_dir.join(".vivi").is_dir(),
+            ".vivi mailspace dir missing for {}",
             meta.room_id
         );
-        let db = mailspace.join("mail.sqlite");
-        assert!(db.is_file(), "mail.sqlite missing for {}", meta.room_id);
-        assert_is_wal(&db);
+        assert!(
+            !room_dir.join("mailspace").exists(),
+            "stray U1 mailspace dir for {}",
+            meta.room_id
+        );
+        // Contract R2: exactly one sqlite store, under the .vivi root.
+        let dbs = sqlite_files(&room_dir);
+        assert_eq!(
+            dbs.len(),
+            1,
+            "expected one sqlite under rooms/{}, got {dbs:?}",
+            meta.room_id
+        );
+        assert_eq!(
+            dbs[0],
+            room_dir.join(".vivi").join("mail.sqlite"),
+            "sqlite not at the .vivi root for {}",
+            meta.room_id
+        );
+        assert_is_wal(&dbs[0]);
     }
     store
         .open_mailspace(&first.room_id)
         .expect("room mailspace reopens");
+}
+
+/// Every `*.sqlite` file under `dir`, recursively.
+fn sqlite_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(sqlite_files(&path));
+        } else if path.extension().is_some_and(|e| e == "sqlite") {
+            out.push(path);
+        }
+    }
+    out
 }
 
 /// SQLite persists the journal mode in the header: read/write version bytes
@@ -112,8 +143,9 @@ async fn create_room_handler_validates_capacity_and_mints_dir() {
         body["token"].as_str().is_some(),
         "creator token in response"
     );
-    let mailspace = data_dir.join("rooms").join(&room_id).join("mailspace");
-    assert!(mailspace.join("mail.sqlite").is_file());
+    let room_dir = data_dir.join("rooms").join(&room_id);
+    assert!(room_dir.join(".vivi").join("mail.sqlite").is_file());
+    assert_eq!(sqlite_files(&room_dir).len(), 1);
 
     for bad in [r#"{"seats":9}"#, r#"{"seats":1}"#, r#"{"seats":0}"#] {
         let (status, body) = send(&app, post_rooms(Some(bad))).await;
