@@ -380,6 +380,14 @@ async fn label_collision_conflicts_and_overlong_labels_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "invalid_request");
 
+    // Contract R4: labels double as vivi identity local-parts — charset is
+    // letters, digits, dot, dash, underscore; a slash must be rejected.
+    for bad in ["host/project", "seat 1", "læbel"] {
+        let (status, body) = join(&app, &room_id, &test_key(2), Some(bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "label {bad:?}: {body}");
+        assert_eq!(body["error"]["code"], "invalid_request");
+    }
+
     let (status, body) = join(&app, &room_id, &test_key(2), Some("second")).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["seat"], 2);

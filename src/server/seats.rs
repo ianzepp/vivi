@@ -95,6 +95,14 @@ fn validate_label(
     if trimmed.is_empty() || trimmed.len() > MAX_LABEL_LEN {
         return Err(JoinError::InvalidLabel);
     }
+    // Labels double as vivi identity local-parts when the room mailspace
+    // provisions per-seat senders (contract R4): keep to that charset.
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err(JoinError::InvalidLabel);
+    }
     let taken = seats
         .iter()
         .any(|s| Some(s.seat) != except_seat && s.label == trimmed);

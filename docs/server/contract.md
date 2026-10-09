@@ -179,3 +179,10 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   agree on this form (vivi `wire_fingerprint`). Known v1 limit: a failed
   creator-binding after room provisioning leaves the room dir behind
   (inert; ids are 125-bit random) — cleanup deferred.
+
+- **R4 (VC-8 integration, 2026-10-09): label charset.** Seat labels double
+  as vivi identity local-parts when the room mailspace provisions per-seat
+  senders, so labels are constrained to ASCII letters, digits, and
+  `.` `-` `_` (plus the existing length and uniqueness rules); anything
+  else is `400 invalid_label` at join/create. The client default label is
+  `<short-host>.<project-dir>` (sanitized).
