@@ -486,3 +486,239 @@ async fn wrong_fingerprint_is_rejected() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     assert_eq!(body["error"]["code"], "unauthorized");
 }
+
+// ---- Phase 02 (R7/R8): traveling id, threading, and kind ----
+
+const NEED_ID: &str = "msg_0123456789abcdef01234567";
+const PARENT_ID: &str = "msg_aaaaaaaaaaaaaaaaaaaaaaaa";
+const CITED_ID: &str = "msg_bbbbbbbbbbbbbbbbbbbbbbbb";
+
+async fn post_message(
+    app: &Router,
+    room_id: &str,
+    seat: &Seat,
+    message_id: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    send_req(
+        app,
+        "POST",
+        &format!("/v1/rooms/{room_id}/messages"),
+        seat.headers(message_id),
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn kinded_send_carries_kind_and_threading_and_files_by_role() {
+    let (app, data_dir, room_id, creator, joiner) = setup_two_seats("p2-kinded").await;
+
+    let (status, sent) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        Some(NEED_ID),
+        json!({
+            "kind": "need",
+            "subject": "ship the thing",
+            "body": "we need the thing",
+            "in_reply_to": PARENT_ID,
+            "refs": [CITED_ID, "legacy-1"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{sent}");
+    assert_eq!(sent["message_id"], NEED_ID, "the traveling id is kept");
+
+    // A plain chat message after it, to prove the extras stay off the wire.
+    let (status, plain) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        None,
+        json!({ "body": "just chat" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{plain}");
+
+    let (status, poll) = send_req(
+        &app,
+        "GET",
+        &format!("/v1/rooms/{room_id}/messages?since=0"),
+        joiner.headers(None),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{poll}");
+    let messages = poll["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["message_id"], NEED_ID);
+    assert_eq!(messages[0]["kind"], "need");
+    assert_eq!(messages[0]["in_reply_to"], PARENT_ID);
+    assert_eq!(messages[0]["refs"], json!([CITED_ID, "legacy-1"]));
+    assert_eq!(messages[0]["body"], "we need the thing");
+    for key in ["kind", "in_reply_to", "refs"] {
+        assert!(
+            messages[1].get(key).is_none(),
+            "plain chat must not grow a `{key}` field: {}",
+            messages[1]
+        );
+    }
+
+    // Kind-aware placement: the need is filed under `needs` for the
+    // recipient and the plain chat stays in `inbox`.
+    let mailspace =
+        vivi::mailspace::Mailspace::open_root(data_dir.join("rooms").join(&room_id)).unwrap();
+    assert_eq!(mailspace.list("joiner", "needs").unwrap().len(), 1);
+    assert_eq!(mailspace.list("joiner", "inbox").unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn traveling_fields_are_sealed_at_rest() {
+    let (app, data_dir, room_id, creator, _joiner) = setup_two_seats("p2-sealed").await;
+    let (status, sent) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        Some(NEED_ID),
+        json!({
+            "kind": "task",
+            "body": "sealed body",
+            "in_reply_to": PARENT_ID,
+            "refs": [CITED_ID],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{sent}");
+
+    let sidecar =
+        std::fs::read_to_string(data_dir.join("rooms").join(&room_id).join("messages.json"))
+            .unwrap();
+    assert!(!sidecar.contains(PARENT_ID), "in_reply_to must be sealed");
+    assert!(!sidecar.contains(CITED_ID), "refs must be sealed");
+    assert!(!sidecar.contains("\"kind\""), "kind must be sealed");
+
+    // The sealed blob itself carries the traveling identity (R7).
+    let index: Value = serde_json::from_str(&sidecar).unwrap();
+    let enc = index["records"][0]["enc"].as_str().unwrap();
+    let cipher = vivi_server::crypto::StoreCipher::from_base64(&store_key()).unwrap();
+    let plain: Value = serde_json::from_slice(&cipher.decrypt(enc).unwrap()).unwrap();
+    assert_eq!(plain["message_id"], NEED_ID);
+    assert_eq!(plain["kind"], "task");
+    assert_eq!(plain["in_reply_to"], PARENT_ID);
+    assert_eq!(plain["refs"], json!([CITED_ID]));
+}
+
+#[tokio::test]
+async fn kinded_send_requires_a_canonical_traveling_message_id() {
+    let (app, _dir, room_id, creator, _joiner) = setup_two_seats("p2-id-rule").await;
+    for bad in [
+        None,
+        Some("m1"),
+        Some("msg_short"),
+        Some("msg_0123456789ABCDEF01234567"),
+        Some("msg_0123456789abcdef0123456789"),
+    ] {
+        let (status, body) = post_message(
+            &app,
+            &room_id,
+            &creator,
+            bad,
+            json!({ "kind": "want", "body": "x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+        assert_eq!(body["error"]["code"], "invalid_request");
+    }
+    // Plain chat still accepts any client Message-ID.
+    let (status, body) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        Some("legacy-id-1"),
+        json!({ "body": "x" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test]
+async fn unsupported_kind_and_oversized_refs_are_rejected() {
+    let (app, _dir, room_id, creator, joiner) = setup_two_seats("p2-bad-extras").await;
+    let (status, body) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        Some(NEED_ID),
+        json!({ "kind": "memo", "body": "x" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_request");
+
+    let too_many: Vec<String> = (0..33).map(|n| format!("ref-{n}")).collect();
+    let (status, body) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        None,
+        json!({ "body": "x", "refs": too_many }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        None,
+        json!({ "body": "x", "in_reply_to": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // `mail` is the explicit plain kind: accepted, normalized away.
+    let (status, body) = post_message(
+        &app,
+        &room_id,
+        &creator,
+        None,
+        json!({ "kind": "Mail", "body": "plain" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (_, poll) = send_req(
+        &app,
+        "GET",
+        &format!("/v1/rooms/{room_id}/messages?since=0"),
+        joiner.headers(None),
+        None,
+    )
+    .await;
+    let messages = poll["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1, "rejected sends store nothing");
+    assert!(messages[0].get("kind").is_none());
+}
+
+#[tokio::test]
+async fn kinded_replay_is_a_duplicate_and_stores_once() {
+    let (app, _dir, room_id, creator, joiner) = setup_two_seats("p2-replay").await;
+    let body = json!({ "kind": "need", "body": "once", "refs": [CITED_ID] });
+    let (status, first) = post_message(&app, &room_id, &creator, Some(NEED_ID), body.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let (status, replay) = post_message(&app, &room_id, &creator, Some(NEED_ID), body).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["duplicate"], true);
+    assert_eq!(replay["cursor"], first["cursor"]);
+
+    let (_, poll) = send_req(
+        &app,
+        "GET",
+        &format!("/v1/rooms/{room_id}/messages?since=0"),
+        joiner.headers(None),
+        None,
+    )
+    .await;
+    assert_eq!(poll["messages"].as_array().unwrap().len(), 1);
+}

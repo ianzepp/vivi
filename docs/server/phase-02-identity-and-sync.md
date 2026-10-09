@@ -1,6 +1,8 @@
 # Phase 02 — Traveling identity and cross-mailspace sync
 
-Status: **PROPOSED** — design settled 2026-10-09, not yet scheduled.
+Status: **IN PROGRESS** — design settled 2026-10-09. The vivi-server units
+P2-3 and P2-4 are implemented (R7/R8 below); the vivi-crate units run in a
+separate session against the wire shape recorded here.
 This doc is the phase delivery home: contract revisions for this phase are
 recorded here, per the phase-01 contract's revision rule.
 
@@ -79,10 +81,58 @@ must survive that crossing.
 
 ## Wire contract impact (additive)
 
-- **R7** — sealed `StoredContent` grows `message_id`, `in_reply_to`, `refs`.
-  Wire responses already carry `message_id`; no response shape changes.
+- **R7** — sealed `StoredContent` grows `message_id`, `in_reply_to`, `refs`
+  (and `kind`, below). Wire responses already carry `message_id`.
 - **R8** — send request grows optional `kind`; server passes it through to
   the stored mail item. Absent `kind` behaves as today (plain chat message).
+
+### R7/R8 as implemented (vivi-server P2-3, P2-4)
+
+This is the wire the vivi client units build against.
+
+**Send** — `POST /v1/rooms/:id/messages` body gains three optional fields:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `kind` | string | `need`, `task`, or `want` (case-insensitive, stored lowercase). `mail`, empty, or absent is a plain chat message. Anything else is `400 invalid_request`. |
+| `in_reply_to` | string | Message-ID this item answers. Non-empty, at most 256 bytes. |
+| `refs` | string[] | Message-IDs this item cites. At most 32 entries, each non-empty and at most 256 bytes. |
+
+- **Traveling id (D1).** A send with a `kind` must carry a `Message-ID`
+  header of exactly `msg_` + 24 lowercase hex (`msg_[0-9a-f]{24}`), else
+  `400 invalid_request`. The id is minted client-side once and the server
+  stores it verbatim. Plain chat keeps accepting any client `Message-ID`
+  (up to 256 bytes) or none, so existing clients are unaffected.
+- **Dedup** is unchanged: a replayed `Message-ID` returns the original with
+  `"duplicate": true` and stores nothing.
+- `in_reply_to` and `refs` are never resolved server-side (D3). A ref to an
+  item the room has not seen stays a ref.
+- Validation runs before the rate limiter, so a malformed send does not
+  spend a rate-limit slot.
+
+**Poll** — `GET /v1/rooms/:id/messages` message objects gain `kind`,
+`in_reply_to`, `refs`. Each is **omitted** when absent or empty, so a plain
+chat message serializes byte-for-byte as in phase 01. (The proposal said no
+response shape changes; the down-sync unit P2-5 cannot file pulled items by
+kind without `kind` on the wire, so the response grows these three additive
+fields.)
+
+**At rest.** The sealed `StoredContent` carries `message_id`, `kind`,
+`in_reply_to`, `refs`, all defaulted, so records sealed before phase 02 still
+decode. The sidecar index is unchanged and holds none of them in the clear.
+
+**Placement (D6).** `need` / `task` / `want` file into the recipient's
+`needs` / `tasks` / `wants` folder with the matching mail kind; plain chat
+stays in `inbox`. Because role and kind match, the crate also mints a
+`backlog` node per delivered item in the room mailspace.
+
+**Deviation from the proposal: `reply_to` / `depends_on` stay empty.** The
+crate resolves both against the room mailspace and errors on a handle it has
+not stored (`resolve_reply_parent`, `backlog_validate_deps`), which is the
+dangling case D3 says must degrade rather than fail. Threading therefore
+rides in the sealed content as `in_reply_to` / `refs`. Populating the
+crate-level fields is deferred until traveling ids exist in the room store
+(P2-1/P2-2) and the target is known to be present.
 
 ## Work units (two repos; vivi crate ships first, server bumps the lockfile)
 

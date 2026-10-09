@@ -28,8 +28,12 @@ use crate::seats::SeatRecord;
 pub const MAX_WAIT_SECS: u64 = 25;
 const POLL_TICK: Duration = Duration::from_millis(250);
 const MAX_MESSAGE_ID_LEN: usize = 256;
+/// Phase 02 (R7): cap on `refs` entries per send.
+const MAX_REFS: usize = 32;
 
 /// One delivered chat message as served by poll (content already decrypted).
+/// `kind`, `in_reply_to`, and `refs` are the Phase 02 additive fields (R7/R8);
+/// they are omitted from the wire when absent so plain chat is unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRecord {
     pub cursor: u64,
@@ -40,16 +44,34 @@ pub struct ChatRecord {
     pub subject: String,
     pub body: String,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
 }
 
 /// Content fields sealed into `enc` at rest (VC-5). The vivi mailspace mail
 /// item keeps headers/metadata only; its body field carries the same sealed
 /// blob so no plaintext content lands in mail.sqlite either.
+///
+/// Phase 02 (R7) adds the traveling identity (`message_id`) and threading
+/// (`in_reply_to`, `refs`) plus the work `kind`. Every new field defaults, so
+/// records sealed before Phase 02 still decode.
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredContent {
     to: Option<String>,
     subject: String,
     body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    in_reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    refs: Vec<String>,
 }
 
 /// On-disk sidecar row: metadata in the clear, content sealed as `enc`
@@ -82,6 +104,17 @@ pub struct SendMessageBody {
     pub to: Option<String>,
     pub subject: Option<String>,
     pub body: String,
+    /// R8: `need` | `task` | `want` files the item by kind; absent or `mail`
+    /// is a plain chat message.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// R7: Message-ID of the item this one answers.
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    /// R7: Message-IDs this item cites. Never resolved server-side; a ref to
+    /// an item the room has not seen stays a ref (D3).
+    #[serde(default)]
+    pub refs: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -149,6 +182,9 @@ fn decode_record(
                 subject: content.subject,
                 body: content.body,
                 created_at: stored.created_at,
+                kind: content.kind,
+                in_reply_to: content.in_reply_to,
+                refs: content.refs,
             })
         }
         None => Ok(ChatRecord {
@@ -160,6 +196,9 @@ fn decode_record(
             subject: stored.subject,
             body: stored.body,
             created_at: stored.created_at,
+            kind: None,
+            in_reply_to: None,
+            refs: Vec::new(),
         }),
     }
 }
@@ -241,6 +280,12 @@ pub async fn send_handler(
             "body over 64 KiB",
         );
     }
+    let client_message_id = header_value(&headers, "message-id")
+        .filter(|v| !v.is_empty() && v.len() <= MAX_MESSAGE_ID_LEN);
+    let mut req = req;
+    if let Err(message) = normalize_extras(&mut req, client_message_id.as_deref()) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", &message);
+    }
     if !state.limiter.allow_send(&room_id, seat.seat) {
         return error_response(
             StatusCode::TOO_MANY_REQUESTS,
@@ -248,8 +293,6 @@ pub async fn send_handler(
             "over 30 sends/min/seat",
         );
     }
-    let client_message_id = header_value(&headers, "message-id")
-        .filter(|v| !v.is_empty() && v.len() <= MAX_MESSAGE_ID_LEN);
     let result = tokio::task::spawn_blocking(move || {
         store_message(&state, &dir, &room_id, &seat, req, client_message_id)
     })
@@ -273,6 +316,65 @@ pub async fn send_handler(
             (status, Json(body)).into_response()
         }
         Err(err) => map_room_error(err),
+    }
+}
+
+/// True for the traveling-id shape `msg_` + 24 lowercase hex (Phase 02 D1).
+fn is_traveling_id(id: &str) -> bool {
+    id.strip_prefix("msg_").is_some_and(|basis| {
+        basis.len() == 24
+            && basis
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// Validate and normalize the Phase 02 send extras (R7/R8) in place.
+///
+/// - `kind`: `need` | `task` | `want` (case-insensitive) is kept lowercased;
+///   `mail` or absent is a plain chat message and normalizes to `None`;
+///   anything else is rejected.
+/// - A kinded send travels between stores, so it must carry a canonical
+///   traveling `Message-ID` (D1); plain chat keeps accepting any id.
+/// - `in_reply_to` / `refs` are free-form Message-IDs bounded in size and
+///   count. They are never resolved here (D3).
+fn normalize_extras(req: &mut SendMessageBody, message_id: Option<&str>) -> Result<(), String> {
+    req.kind = match req.kind.take().map(|k| k.trim().to_ascii_lowercase()) {
+        None => None,
+        Some(k) if k.is_empty() || k == "mail" => None,
+        Some(k) if matches!(k.as_str(), "need" | "task" | "want") => Some(k),
+        Some(k) => {
+            return Err(format!(
+                "unsupported kind '{k}'; expected need, task, want, or mail"
+            ));
+        }
+    };
+    if req.kind.is_some() && !message_id.is_some_and(is_traveling_id) {
+        return Err(
+            "a kinded send needs a Message-ID header of the form msg_ plus 24 lowercase hex"
+                .to_owned(),
+        );
+    }
+    let valid_ref = |r: &String| !r.is_empty() && r.len() <= MAX_MESSAGE_ID_LEN;
+    if req.in_reply_to.as_ref().is_some_and(|r| !valid_ref(r)) {
+        return Err("in_reply_to must be a non-empty Message-ID of at most 256 bytes".to_owned());
+    }
+    if req.refs.len() > MAX_REFS || !req.refs.iter().all(valid_ref) {
+        return Err(format!(
+            "refs must hold at most {MAX_REFS} non-empty Message-IDs of at most 256 bytes"
+        ));
+    }
+    Ok(())
+}
+
+/// Kind-aware placement (D6): the mailspace role and kind a send files under.
+/// Plain chat stays in `inbox` with no kind, exactly as before Phase 02.
+fn placement(kind: Option<&str>) -> (&'static str, Option<&'static str>) {
+    match kind {
+        Some("need") => ("needs", Some("need")),
+        Some("task") => ("tasks", Some("task")),
+        Some("want") => ("wants", Some("want")),
+        _ => ("inbox", None),
     }
 }
 
@@ -304,17 +406,28 @@ fn store_message(
     labels.extend(recipients.iter().cloned());
     let mailspace = provision_mailspace(room_dir, &labels)?;
     let subject = req.subject.unwrap_or_default();
+    let cursor = index.records.last().map(|r| r.cursor + 1).unwrap_or(1);
+    let message_id = client_message_id.unwrap_or_else(|| format!("m{cursor}"));
     let content = serde_json::to_vec(&StoredContent {
         to: req.to.clone(),
         subject: subject.clone(),
         body: req.body.clone(),
+        message_id: Some(message_id.clone()),
+        kind: req.kind.clone(),
+        in_reply_to: req.in_reply_to.clone(),
+        refs: req.refs.clone(),
     })
     .map_err(|e| RoomError::Storage(format!("failed to encode message content: {e}")))?;
     let sealed = cipher
         .encrypt(&content)
         .map_err(|e| RoomError::Storage(format!("failed to seal message content: {e}")))?;
     // The mailspace item keeps headers/metadata; its body carries the sealed
-    // blob so mail.sqlite holds no plaintext content either.
+    // blob so mail.sqlite holds no plaintext content either. `reply_to` and
+    // `depends_on` stay empty on purpose: the crate resolves both against the
+    // room mailspace and errors on a handle it has not stored, which is
+    // exactly the dangling case D3 says must degrade, not fail. Threading
+    // rides in the sealed content (`in_reply_to`, `refs`) instead.
+    let (role, mail_kind) = placement(req.kind.as_deref());
     mailspace
         .send(SendRequest {
             from: seat.label.clone(),
@@ -323,22 +436,24 @@ fn store_message(
             bcc: Vec::new(),
             subject: String::new(),
             body: sealed.clone(),
-            role: "inbox".into(),
-            kind: None,
+            role: role.into(),
+            kind: mail_kind.map(str::to_owned),
             reply_to: None,
             depends_on: Vec::new(),
         })
         .map_err(|e| RoomError::Storage(format!("mailspace send failed: {e}")))?;
-    let cursor = index.records.last().map(|r| r.cursor + 1).unwrap_or(1);
     let record = ChatRecord {
         cursor,
-        message_id: client_message_id.unwrap_or_else(|| format!("m{cursor}")),
+        message_id,
         from: seat.label.clone(),
         fingerprint: seat.fingerprint.chars().take(16).collect(),
         to: req.to,
         subject,
         body: req.body,
         created_at: rfc3339(Utc::now()),
+        kind: req.kind,
+        in_reply_to: req.in_reply_to,
+        refs: req.refs,
     };
     let mut index = index;
     index.records.push(StoredRecord {

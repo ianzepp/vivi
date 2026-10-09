@@ -203,3 +203,8 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   refuses message ops). Railway deploys must attach a volume at `/data`
   (`railway volume add --mount-path /data`) — the schema cannot declare
   it.
+
+- **R7, R8 (phase 02):** additive send/poll fields (`kind`, `in_reply_to`,
+  `refs`) and the traveling-id rule for kinded sends. Recorded in
+  [`phase-02-identity-and-sync.md`](phase-02-identity-and-sync.md), the
+  phase 02 delivery home.
