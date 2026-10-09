@@ -140,6 +140,23 @@ as risk increases:
 For documentation-only edits, at least inspect links or run a small local
 Markdown link scan when the touched file contains links.
 
+## Git Workflow
+
+Standing authorization from the repo owner for agent development:
+
+- Develop on a branch, not directly on `main`. Commit per unit of work.
+- Once satisfied — the Validation checks above all pass — fast-forward
+  `main` to the branch yourself. No PR and no human review is required for
+  normal development.
+- Fast-forward only: never force-push, never rewrite history on `main`. If
+  `main` has moved, merge it into the branch, re-run the checks, then
+  fast-forward.
+- Report each merge to the user afterward; do not ask first.
+- Ask first before: version bumps and `v*` tags (the only CI is the
+  tag-triggered release build, so nothing else gates `main`), wire-contract
+  changes shared with `vivi-server`, and anything destructive or hard to
+  reverse.
+
 ## Dependency Policy
 
 Use the dependencies already in `Cargo.toml` when possible. Important current
