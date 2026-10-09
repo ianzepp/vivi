@@ -2,6 +2,7 @@
 //! local state store under `<project>/.vivi/chat/`.
 
 pub mod b64;
+pub mod board_probe;
 pub mod client;
 pub mod command;
 pub mod identity;
