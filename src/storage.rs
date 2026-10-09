@@ -60,7 +60,14 @@ pub struct MessageIngestRequest {
     pub local_role: String,
     pub read_state: bool,
     pub starred: bool,
+    /// Trusted local override: the caller already owns this exact id
+    /// (mailspace merge, drafts). Unvalidated; wins over every other source.
     pub message_id_hint: Option<String>,
+    /// A traveling id presented by another store or the creator. Foreign
+    /// input: it must pass [`is_traveling_id`] and wins over the
+    /// namespace-seeded mints below, so every store files the item under
+    /// the same id (and therefore the same short handle).
+    pub presented_id: Option<String>,
     pub seed_hint: String,
     pub remote: Option<RemoteBindingInput>,
 }
@@ -278,7 +285,38 @@ fn fallback_message_id(request: &MessageIngestRequest, content_id: &str) -> Stri
 
 fn opaque_message_id(seed: &str) -> String {
     let hash = sha256_hex(seed.as_bytes());
-    format!("msg_{}", &hash[..24])
+    format!("msg_{}", &hash[..TRAVELING_ID_BASIS_LEN])
+}
+
+const TRAVELING_ID_PREFIX: &str = "msg_";
+const TRAVELING_ID_BASIS_LEN: usize = 24;
+
+/// Whether `id` has the traveling-id shape: `msg_` plus exactly 24 lowercase
+/// hex characters (the 96-bit basis [`opaque_message_id`] emits).
+///
+/// This is the only shape ingest accepts as a presented id. It is strict on
+/// purpose: ids arrive from other stores, and a lenient parse would let two
+/// spellings of one id file as two items.
+#[must_use]
+pub fn is_traveling_id(id: &str) -> bool {
+    id.strip_prefix(TRAVELING_ID_PREFIX).is_some_and(|basis| {
+        basis.len() == TRAVELING_ID_BASIS_LEN
+            && basis
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// Mint a traveling id once, at creation.
+///
+/// Uses the same digest machinery as the namespace-seeded mints but excludes
+/// every store-local seed component (`account`, `local_role`, `seed_hint`),
+/// so the result means the same thing in every store it is presented to.
+/// `origin` names the creator (it travels with the item) and `entropy` makes
+/// the id unique; the caller owns the randomness, which keeps this pure.
+#[must_use]
+pub fn mint_traveling_id(origin: &str, entropy: &[u8]) -> String {
+    opaque_message_id(&format!("travel\0{origin}\0{}", hex::encode(entropy)))
 }
 
 /// Short-handle width in characters of the message id's basis.

@@ -1,6 +1,9 @@
 use rusqlite::OptionalExtension;
 
-use super::ingest::{ingest_message_id, upsert_blob_row, upsert_message_row, upsert_metadata_row};
+use super::ingest::{
+    ensure_presented_id_unclaimed, ingest_message_id, upsert_blob_row, upsert_message_row,
+    upsert_metadata_row,
+};
 use super::{
     MailspaceEventInput, MessageIngestRequest, Path, Storage, StoredMessage, Utc, VivariumError,
     blob_relpath, metadata, params, parse_metadata, sha256_hex, write_blob_if_absent,
@@ -323,7 +326,8 @@ fn ingest_reply_rows(
     upsert_metadata_row(tx, &reply.content_id, &reply.metadata)?;
     let mut replies = Vec::new();
     for request in requests {
-        let message_id = ingest_message_id(request, &reply.content_id);
+        let message_id = ingest_message_id(request, &reply.content_id)?;
+        ensure_presented_id_unclaimed(tx, request, &message_id, &reply.content_id)?;
         upsert_message_row(tx, request, &message_id, &reply.content_id, &reply.now)?;
         replies.push(StoredMessage {
             message_id,

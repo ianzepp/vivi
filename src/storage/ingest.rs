@@ -1,9 +1,9 @@
 use super::events::append_event_tx;
 use super::metadata::ParsedMetadata;
 use super::{
-    MailspaceEventInput, MessageIngestRequest, RemoteBindingInput, Storage, StoredMessage, Utc,
-    VivariumError, blob_relpath, fallback_message_id, params, parse_metadata,
-    remote_bound_message_id, sha256_hex, write_blob_if_absent,
+    MailspaceEventInput, MessageIngestRequest, OptionalExtension, RemoteBindingInput, Storage,
+    StoredMessage, Utc, VivariumError, blob_relpath, fallback_message_id, is_traveling_id, params,
+    parse_metadata, remote_bound_message_id, sha256_hex, write_blob_if_absent,
 };
 use rusqlite::Transaction;
 
@@ -20,17 +20,18 @@ impl Storage {
         data: &[u8],
     ) -> Result<StoredMessage, VivariumError> {
         let content_id = sha256_hex(data);
+        let message_id = ingest_message_id(request, &content_id)?;
         let blob_relpath = blob_relpath(&content_id);
         let blob_abspath = self.mail_root.join(&blob_relpath);
         let created_blob = write_blob_if_absent(&blob_abspath, data)?;
         let metadata = parse_metadata(data);
-        let message_id = ingest_message_id(request, &content_id);
         let now = Utc::now().to_rfc3339();
         let tx = self.conn.transaction().map_err(|e| {
             VivariumError::Other(format!("failed to open storage transaction: {e}"))
         })?;
         upsert_blob_row(&tx, &content_id, &blob_relpath, data.len(), &metadata, &now)?;
         upsert_metadata_row(&tx, &content_id, &metadata)?;
+        ensure_presented_id_unclaimed(&tx, request, &message_id, &content_id)?;
         upsert_message_row(&tx, request, &message_id, &content_id, &now)?;
         upsert_remote_binding(&tx, &message_id, request.remote.as_ref(), &now)?;
         tx.commit().map_err(|e| {
@@ -120,6 +121,7 @@ impl Storage {
         fail_after: Option<usize>,
     ) -> Result<Vec<StoredMessage>, VivariumError> {
         let content_id = sha256_hex(data);
+        let message_ids = batch_message_ids(requests, &content_id)?;
         let blob_relpath = blob_relpath(&content_id);
         let blob_abspath = self.mail_root.join(&blob_relpath);
         let created_blob = write_blob_if_absent(&blob_abspath, data)?;
@@ -131,29 +133,21 @@ impl Storage {
         upsert_blob_row(&tx, &content_id, &blob_relpath, data.len(), &metadata, &now)?;
         upsert_metadata_row(&tx, &content_id, &metadata)?;
         let mut stored = Vec::with_capacity(requests.len());
-        for (index, request) in requests.iter().enumerate() {
+        for (index, (request, message_id)) in requests.iter().zip(message_ids).enumerate() {
             if fail_after.is_some_and(|n| index >= n) {
                 return Err(VivariumError::Other(
                     "injected batch failure for testing".into(),
                 ));
             }
-            let message_id = ingest_message_id(request, &content_id);
+            ensure_presented_id_unclaimed(&tx, request, &message_id, &content_id)?;
             upsert_message_row(&tx, request, &message_id, &content_id, &now)?;
             upsert_remote_binding(&tx, &message_id, request.remote.as_ref(), &now)?;
-            let event = MailspaceEventInput {
-                command: event_command.into(),
-                event_type: event_type.into(),
-                actor_identity: None,
-                account: request.account.clone(),
-                message_id: message_id.clone(),
-                content_id: content_id.clone(),
-                from_role: None,
-                to_role: Some(event_to_role.into()),
-                from_identity: None,
-                to_identity: Some(request.account.clone()),
-                subject: event_subject.into(),
-                note: None,
-            };
+            let event = delivery_event(
+                request,
+                &message_id,
+                &content_id,
+                [event_command, event_type, event_to_role, event_subject],
+            );
             append_event_tx(&tx, &event, &now)?;
             stored.push(StoredMessage {
                 message_id,
@@ -170,15 +164,119 @@ impl Storage {
     }
 }
 
-pub(super) fn ingest_message_id(request: &MessageIngestRequest, content_id: &str) -> String {
-    request.message_id_hint.clone().unwrap_or_else(|| {
-        request.remote.as_ref().map_or_else(
-            || fallback_message_id(request, content_id),
-            |remote| {
-                remote_bound_message_id(&request.account, &request.local_role, content_id, remote)
-            },
+/// Resolve the message id for one request. Precedence: trusted local hint,
+/// then a validated presented traveling id, then the namespace-seeded mints
+/// (remote-bound, then local fallback).
+///
+/// # Errors
+/// Returns a [`VivariumError`] when a presented id is not a traveling id.
+/// A malformed id is rejected rather than replaced by a seeded mint: a silent
+/// fallback would file the item under a store-local id and break the
+/// same-id-in-every-store guarantee.
+pub(super) fn ingest_message_id(
+    request: &MessageIngestRequest,
+    content_id: &str,
+) -> Result<String, VivariumError> {
+    if let Some(hint) = &request.message_id_hint {
+        return Ok(hint.clone());
+    }
+    if let Some(presented) = &request.presented_id {
+        return validated_presented_id(presented);
+    }
+    Ok(request.remote.as_ref().map_or_else(
+        || fallback_message_id(request, content_id),
+        |remote| remote_bound_message_id(&request.account, &request.local_role, content_id, remote),
+    ))
+}
+
+fn validated_presented_id(presented: &str) -> Result<String, VivariumError> {
+    if is_traveling_id(presented) {
+        return Ok(presented.to_string());
+    }
+    // Foreign input: bound what an error message can echo back.
+    let shown: String = presented.chars().take(64).collect();
+    Err(VivariumError::Message(format!(
+        "presented id {shown:?} is not a traveling id (expected msg_ plus 24 lowercase hex characters)"
+    )))
+}
+
+/// Resolve every request's id before any side effect, and refuse a batch that
+/// would give one presented id to two recipients: a presented id names a
+/// single item, and the second upsert would silently re-home the first row.
+fn batch_message_ids(
+    requests: &[MessageIngestRequest],
+    content_id: &str,
+) -> Result<Vec<String>, VivariumError> {
+    let mut presented = std::collections::HashSet::new();
+    let mut ids = Vec::with_capacity(requests.len());
+    for request in requests {
+        let id = ingest_message_id(request, content_id)?;
+        if is_presented(request) && !presented.insert(id.clone()) {
+            return Err(VivariumError::Message(format!(
+                "presented id {id} appears more than once in one delivery batch"
+            )));
+        }
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+/// Whether the request's id came from its presented id (a trusted hint wins
+/// over it, see [`ingest_message_id`]).
+fn is_presented(request: &MessageIngestRequest) -> bool {
+    request.message_id_hint.is_none() && request.presented_id.is_some()
+}
+
+/// A presented id names one immutable item. Refuse to file different content
+/// under an id this mailspace already holds: the upsert would otherwise swap
+/// the existing message's content for foreign input. Same content is an
+/// idempotent re-ingest.
+pub(super) fn ensure_presented_id_unclaimed(
+    tx: &Transaction<'_>,
+    request: &MessageIngestRequest,
+    message_id: &str,
+    content_id: &str,
+) -> Result<(), VivariumError> {
+    if !is_presented(request) {
+        return Ok(());
+    }
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT content_id FROM messages WHERE message_id = ?1",
+            params![message_id],
+            |row| row.get(0),
         )
-    })
+        .optional()
+        .map_err(|e| VivariumError::Other(format!("failed to check presented id: {e}")))?;
+    match existing {
+        Some(held) if held != content_id => Err(VivariumError::Message(format!(
+            "presented id {message_id} already names different content in this mailspace"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// The delivery event for one recipient; `[command, type, to_role, subject]`.
+fn delivery_event(
+    request: &MessageIngestRequest,
+    message_id: &str,
+    content_id: &str,
+    [command, event_type, to_role, subject]: [&str; 4],
+) -> MailspaceEventInput {
+    MailspaceEventInput {
+        command: command.into(),
+        event_type: event_type.into(),
+        actor_identity: None,
+        account: request.account.clone(),
+        message_id: message_id.into(),
+        content_id: content_id.into(),
+        from_role: None,
+        to_role: Some(to_role.into()),
+        from_identity: None,
+        to_identity: Some(request.account.clone()),
+        subject: subject.into(),
+        note: None,
+    }
 }
 
 pub(super) fn upsert_blob_row(

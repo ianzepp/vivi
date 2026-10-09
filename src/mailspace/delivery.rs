@@ -120,6 +120,7 @@ impl Mailspace {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: format!("memo-save\0{seed}\0{identity}"),
                 remote: None,
             },
@@ -198,18 +199,7 @@ impl Mailspace {
             ));
         }
         let role = canonical_local_role(folder)?;
-        let requests: Vec<MessageIngestRequest> = recipients
-            .iter()
-            .map(|recipient| MessageIngestRequest {
-                account: recipient.clone(),
-                local_role: role.clone(),
-                read_state: false,
-                starred: false,
-                message_id_hint: None,
-                seed_hint: format!("raw-delivery\0{recipient}\0{}", data.len()),
-                remote: None,
-            })
-            .collect();
+        let requests = raw_delivery_requests(&recipients, &role, data.len());
         let subject = parsed.subject().unwrap_or_default().to_string();
         let mut storage = self.storage()?;
         let stored = storage.deliver_raw_batch(
@@ -615,6 +605,27 @@ pub(super) fn add_header(eml: &str, name: &str, value: &str) -> Result<String, V
     ))
 }
 
+/// One local-only request per resolved recipient for a raw delivery.
+fn raw_delivery_requests(
+    recipients: &[String],
+    role: &str,
+    data_len: usize,
+) -> Vec<MessageIngestRequest> {
+    recipients
+        .iter()
+        .map(|recipient| MessageIngestRequest {
+            account: recipient.clone(),
+            local_role: role.to_string(),
+            read_state: false,
+            starred: false,
+            message_id_hint: None,
+            presented_id: None,
+            seed_hint: format!("raw-delivery\0{recipient}\0{data_len}"),
+            remote: None,
+        })
+        .collect()
+}
+
 fn ingest_for_recipients(
     storage: &mut Storage,
     recipients: BTreeSet<String>,
@@ -631,6 +642,7 @@ fn ingest_for_recipients(
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: format!("local-delivery\0{seed}\0{recipient}"),
                 remote: None,
             },
@@ -673,6 +685,7 @@ fn ingest_sent_copy(
             read_state: true,
             starred: false,
             message_id_hint: None,
+            presented_id: None,
             seed_hint: format!("local-sent\0{seed}"),
             remote: None,
         },

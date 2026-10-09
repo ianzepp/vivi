@@ -738,6 +738,7 @@ Subject: rollback\r\n\r\nbody";
             read_state: false,
             starred: false,
             message_id_hint: None,
+            presented_id: None,
             seed_hint: format!("raw-delivery\0{r}\0{}", eml.len()),
             remote: None,
         })
@@ -797,6 +798,7 @@ Subject: batch\r\n\r\nbody";
             read_state: false,
             starred: false,
             message_id_hint: None,
+            presented_id: None,
             seed_hint: format!("raw-delivery\0{r}\0{}", eml.len()),
             remote: None,
         })

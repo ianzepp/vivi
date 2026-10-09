@@ -150,6 +150,7 @@ fn fallback_message_ids_are_stable_for_unbound_entries() {
         read_state: false,
         starred: false,
         message_id_hint: Some("draft-handle".into()),
+        presented_id: None,
         seed_hint: "draft-handle".into(),
         remote: None,
     };
@@ -172,6 +173,7 @@ fn direct_ingest_api_supports_clean_break_sync_target() {
         read_state: false,
         starred: false,
         message_id_hint: None,
+        presented_id: None,
         seed_hint: "uid:99".into(),
         remote: Some(RemoteBindingInput {
             account: "acct".into(),
@@ -204,6 +206,7 @@ fn short_handles_resolve_uniquely_for_storage_native_ids() {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: "remote_uid:1".into(),
                 remote: Some(RemoteBindingInput {
                     account: "acct".into(),
@@ -224,6 +227,7 @@ fn short_handles_resolve_uniquely_for_storage_native_ids() {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: "remote_uid:2".into(),
                 remote: Some(RemoteBindingInput {
                     account: "acct".into(),
@@ -300,6 +304,7 @@ fn ingest_hinted(storage: &mut Storage, message_id: &str, remote_uid: u32) -> St
                 read_state: false,
                 starred: false,
                 message_id_hint: Some(message_id.to_string()),
+                presented_id: None,
                 seed_hint: format!("remote_uid:{remote_uid}"),
                 remote: Some(RemoteBindingInput {
                     account: "acct".into(),
@@ -328,6 +333,7 @@ fn content_id_prefix_can_resolve_message() {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: "remote_uid:3".into(),
                 remote: Some(RemoteBindingInput {
                     account: "acct".into(),
@@ -361,6 +367,7 @@ fn local_size_fallback_uses_remote_uid_shape_for_storage_rows() {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: "remote_uid:7".into(),
                 remote: Some(RemoteBindingInput {
                     account: "acct".into(),
@@ -493,6 +500,7 @@ fn ingest_dated(
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: seed.into(),
                 remote: None,
             },
@@ -520,6 +528,7 @@ fn bound_request(handle: &str, mailbox: &str, uid: u32) -> MessageIngestRequest 
         read_state: false,
         starred: false,
         message_id_hint: Some(handle.into()),
+        presented_id: None,
         seed_hint: handle.into(),
         remote: Some(RemoteBindingInput {
             account: "acct".into(),
@@ -544,6 +553,7 @@ fn move_message_to_role_rejects_wrong_account() {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: "remote_uid:5".into(),
                 remote: Some(RemoteBindingInput {
                     account: "acct".into(),
@@ -580,6 +590,7 @@ fn mark_message_deleted_is_idempotent() {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: "remote_uid:6".into(),
                 remote: Some(RemoteBindingInput {
                     account: "acct".into(),
@@ -641,4 +652,199 @@ impl Storage {
             .query_row("SELECT COUNT(*) FROM remote_bindings", [], |row| row.get(0))
             .map_err(|e| VivariumError::Other(format!("failed to count remote bindings: {e}")))
     }
+}
+
+const TRAVELING_ID: &str = "msg_0123456789abcdef01234567";
+
+fn request_in(
+    account: &str,
+    role: &str,
+    seed_hint: &str,
+    presented: Option<&str>,
+    remote: Option<RemoteBindingInput>,
+) -> MessageIngestRequest {
+    MessageIngestRequest {
+        account: account.into(),
+        local_role: role.into(),
+        read_state: false,
+        starred: false,
+        message_id_hint: None,
+        presented_id: presented.map(String::from),
+        seed_hint: seed_hint.into(),
+        remote,
+    }
+}
+
+fn room_binding(cursor: u32) -> RemoteBindingInput {
+    RemoteBindingInput {
+        account: "acct-b".into(),
+        provider: "vivi-room".into(),
+        remote_mailbox: "room-x".into(),
+        remote_uid: cursor,
+        remote_uidvalidity: 1,
+    }
+}
+
+#[test]
+fn traveling_id_shape_is_strict() {
+    assert!(is_traveling_id(TRAVELING_ID));
+    for bad in [
+        "",
+        "msg_",
+        "msg_0123456789abcdef0123456",   // 23 hex
+        "msg_0123456789abcdef012345678", // 25 hex
+        "msg_0123456789ABCDEF01234567",  // uppercase
+        "msg_0123456789abcdef0123456g",  // non-hex
+        "0123456789abcdef01234567",      // no prefix
+        " msg_0123456789abcdef01234567",
+        "msg_0123456789abcdef01234567\n",
+        "draft-handle",
+    ] {
+        assert!(!is_traveling_id(bad), "{bad:?} must not be a traveling id");
+    }
+}
+
+#[test]
+fn minted_traveling_ids_have_the_shape_and_no_store_local_seed() {
+    let id = mint_traveling_id("origin-fp", &[7u8; 16]);
+    assert!(is_traveling_id(&id), "{id}");
+    assert_eq!(id, mint_traveling_id("origin-fp", &[7u8; 16]));
+    assert_ne!(id, mint_traveling_id("origin-fp", &[8u8; 16]));
+    assert_ne!(id, mint_traveling_id("other-fp", &[7u8; 16]));
+}
+
+#[test]
+fn presented_id_wins_over_seeded_mints_and_agrees_across_stores() {
+    let raw = message_bytes("travel@example.com", "a need");
+    let content_id = sha256_hex(&raw);
+    let local = request_in("acct-a", "inbox", "seed-a", None, None);
+    let bound = request_in("acct-b", "needs", "seed-b", None, Some(room_binding(5)));
+    // The failure this exists to fix: namespace seeds give two ids.
+    let seeded_local = ingest::ingest_message_id(&local, &content_id).unwrap();
+    let seeded_bound = ingest::ingest_message_id(&bound, &content_id).unwrap();
+    assert_ne!(seeded_local, seeded_bound);
+
+    let tmp_a = tempfile::tempdir().unwrap();
+    let tmp_b = tempfile::tempdir().unwrap();
+    let mut store_a = Storage::open_mailspace(tmp_a.path()).unwrap();
+    let mut store_b = Storage::open_mailspace(tmp_b.path()).unwrap();
+    let id_a = store_a
+        .ingest_message(
+            &request_in("acct-a", "inbox", "seed-a", Some(TRAVELING_ID), None),
+            &raw,
+        )
+        .unwrap()
+        .message_id;
+    let id_b = store_b
+        .ingest_message(
+            &request_in(
+                "acct-b",
+                "needs",
+                "seed-b",
+                Some(TRAVELING_ID),
+                Some(room_binding(5)),
+            ),
+            &raw,
+        )
+        .unwrap()
+        .message_id;
+
+    assert_eq!(id_a, TRAVELING_ID);
+    assert_eq!(id_b, TRAVELING_ID);
+    assert_eq!(store_b.remote_binding_count().unwrap(), 1);
+    // D2: same id, same handle, in every store.
+    assert_eq!(store_a.display_handle(&id_a).unwrap(), "01234567");
+    assert_eq!(store_b.display_handle(&id_b).unwrap(), "01234567");
+    assert_eq!(store_a.resolve_message_token("01234567").unwrap(), id_a);
+    assert_eq!(store_b.resolve_message_token("01234567").unwrap(), id_b);
+}
+
+#[test]
+fn local_only_ingest_keeps_namespace_seeded_ids() {
+    let raw = message_bytes("local@example.com", "body");
+    let content_id = sha256_hex(&raw);
+    let local = request_in("acct", "inbox", "uid:1", None, None);
+    let bound = request_in("acct", "inbox", "uid:1", None, Some(room_binding(1)));
+
+    assert_eq!(
+        ingest::ingest_message_id(&local, &content_id).unwrap(),
+        fallback_message_id(&local, &content_id)
+    );
+    assert_eq!(
+        ingest::ingest_message_id(&bound, &content_id).unwrap(),
+        remote_bound_message_id("acct", "inbox", &content_id, &room_binding(1))
+    );
+}
+
+#[test]
+fn malformed_presented_id_is_rejected_before_any_side_effect() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("bad@example.com", "body");
+    for bad in [
+        "",
+        "msg_short",
+        "MSG_0123456789abcdef01234567",
+        "draft-handle",
+    ] {
+        let error = storage
+            .ingest_message(&request_in("acct", "inbox", "s", Some(bad), None), &raw)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a traveling id"), "{bad:?}: {error}");
+    }
+    assert_eq!(storage.blob_count().unwrap(), 0);
+    assert_eq!(storage.message_count().unwrap(), 0);
+    // The rejected blob was never written to disk either.
+    let blob = tmp.path().join(blob_relpath(&sha256_hex(&raw)));
+    assert!(!blob.exists());
+}
+
+#[test]
+fn presented_id_is_idempotent_but_never_swaps_existing_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let original = message_bytes("one@example.com", "original");
+    let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
+
+    storage.ingest_message(&request, &original).unwrap();
+    storage.ingest_message(&request, &original).unwrap();
+    assert_eq!(storage.message_count().unwrap(), 1);
+
+    let other = message_bytes("two@example.com", "foreign");
+    let error = storage
+        .ingest_message(&request, &other)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("already names different content"), "{error}");
+    let held = storage.list_messages().unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].content_id, sha256_hex(&original));
+}
+
+#[test]
+fn delivery_batch_refuses_one_presented_id_for_two_recipients() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("batch@example.com", "body");
+    let deliver = |storage: &mut Storage, requests: &[MessageIngestRequest]| {
+        storage.deliver_raw_batch(requests, &raw, "send", "delivered", "inbox", "subject")
+    };
+
+    let clash = [
+        request_in("acct-a", "inbox", "s", Some(TRAVELING_ID), None),
+        request_in("acct-b", "inbox", "s", Some(TRAVELING_ID), None),
+    ];
+    let error = deliver(&mut storage, &clash).unwrap_err().to_string();
+    assert!(error.contains("more than once"), "{error}");
+    assert_eq!(storage.message_count().unwrap(), 0);
+
+    let mixed = [
+        request_in("acct-a", "inbox", "s", Some(TRAVELING_ID), None),
+        request_in("acct-b", "inbox", "s", None, None),
+    ];
+    let stored = deliver(&mut storage, &mixed).unwrap();
+    assert_eq!(stored[0].message_id, TRAVELING_ID);
+    assert_ne!(stored[1].message_id, TRAVELING_ID);
+    assert_eq!(storage.message_count().unwrap(), 2);
 }

@@ -91,6 +91,7 @@ impl Mailspace {
                 read_state: false,
                 starred: false,
                 message_id_hint: None,
+                presented_id: None,
                 seed_hint: format!("lifecycle-note\0{}\0{}", parent.content_id, note),
                 remote: None,
             })
@@ -101,6 +102,7 @@ impl Mailspace {
             read_state: true,
             starred: false,
             message_id_hint: None,
+            presented_id: None,
             seed_hint: format!("lifecycle-note-sent\0{}\0{}", parent.content_id, note),
             remote: None,
         });

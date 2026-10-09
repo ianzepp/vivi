@@ -184,6 +184,7 @@ fn ingest_request(source_message: &StoredMessageView) -> crate::storage::Message
         read_state: source_message.read_state,
         starred: source_message.starred,
         message_id_hint: Some(source_message.message_id.clone()),
+        presented_id: None,
         seed_hint: source_message.message_id.clone(),
         remote: source_message.remote.clone(),
     }
