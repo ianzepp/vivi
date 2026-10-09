@@ -184,9 +184,9 @@ against the staging service running `main` at `2bdc777`. The phase 02 legs
 cover a need crossing the room under one handle with an identical content hash,
 a replay filing nothing new, a closed need staying closed, a receipt threading
 to the original, a task for another seat being skipped, and prune plus resync
-restoring the blob set byte-for-byte. Production runs `release` at `c8bc1e7`,
-which predates the vivi `3b45ebd` pin; the extended smoke has not been run
-against it.
+restoring the blob set byte-for-byte. Production passed the same run (24
+passed, 0 failed, 1 skipped) after `release` advanced to `b47e972`; a health
+probe every 5 seconds across the swap saw only HTTP 200.
 
 **Carried forward** (the full client list is in the vivi record):
 
