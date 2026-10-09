@@ -313,6 +313,35 @@ impl SeatRegistry {
         None
     }
 
+    /// The full seat record a presented bearer resolves to (VC-4 origin
+    /// verification needs the label and fingerprint, not just the number).
+    pub fn bearer_seat(&self, room_id: &str, presented: &str) -> Option<SeatRecord> {
+        let _guard = self.lock();
+        let digest = sha256_hex(presented.as_bytes());
+        self.load(room_id).seats.into_iter().find(|seat| {
+            seat.tokens
+                .iter()
+                .any(|record| not_expired(record) && constant_time_eq(&digest, &record.digest))
+        })
+    }
+
+    /// Whether `label` is a bound seat label (direct-send validation).
+    pub fn has_label(&self, room_id: &str, label: &str) -> bool {
+        let _guard = self.lock();
+        self.load(room_id).seats.iter().any(|s| s.label == label)
+    }
+
+    /// Labels of every bound seat except the given seat (broadcast targets).
+    pub fn labels_except(&self, room_id: &str, seat: u32) -> Vec<String> {
+        let _guard = self.lock();
+        self.load(room_id)
+            .seats
+            .iter()
+            .filter(|s| s.seat != seat)
+            .map(|s| s.label.clone())
+            .collect()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
         self.lock.lock().unwrap_or_else(|e| e.into_inner())
     }

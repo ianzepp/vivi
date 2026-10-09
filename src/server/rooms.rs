@@ -30,6 +30,8 @@ pub enum RoomError {
     InvalidRoomId,
     /// Unknown room id.
     RoomNotFound,
+    /// Malformed request payload reached storage validation.
+    BadRequest(String),
     /// Storage or IO failure.
     Storage(String),
 }
@@ -130,6 +132,11 @@ pub(crate) fn map_room_error(err: RoomError) -> Response {
         RoomError::RoomNotFound => {
             error_response(StatusCode::NOT_FOUND, "room_not_found", "unknown room id")
         }
+        RoomError::BadRequest(msg) => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            &format!("invalid_request: {msg}"),
+        ),
         RoomError::Storage(msg) => {
             tracing::error!("room storage failure: {msg}");
             error_response(

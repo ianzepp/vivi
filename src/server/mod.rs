@@ -4,6 +4,7 @@
 
 pub mod auth;
 pub mod ids;
+pub mod messages;
 pub mod rooms;
 pub mod safety;
 pub mod seats;
@@ -41,5 +42,9 @@ pub fn api_router(data_dir: PathBuf) -> Router {
         .route("/v1/rooms/{id}/challenge", post(auth::challenge_handler))
         .route("/v1/rooms/{id}/join", post(auth::join_handler))
         .route("/v1/rooms/{id}/auth/token", post(auth::token_handler))
+        .route(
+            "/v1/rooms/{id}/messages",
+            post(messages::send_handler).get(messages::poll_handler),
+        )
         .with_state(state)
 }

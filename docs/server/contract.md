@@ -5,8 +5,8 @@ build against this document; any change after U1 integration is an explicit
 recorded revision in the phase delivery doc.
 
 All bodies are JSON (`application/json`). All v1 routes live under `/v1/`.
-Storage per room is a real mailspace at `DATA_DIR/rooms/<room_id>/mailspace/`,
-opened through `vivi::storage::open_mailspace`; messages are mail items sent
+Storage per room is a real mailspace at `DATA_DIR/rooms/<room_id>/.vivi/`
+(R2), opened through the vivi crate; messages are mail items sent
 via `Mailspace::send`.
 
 ## Conventions
@@ -157,3 +157,16 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   seat/token fields remain VC-3. `POST /v1/rooms` returns `{"room_id": …}`
   until VC-3 adds creator seat-1 binding and the creator token to the
   response.
+
+- **R2 (with VC-4, 2026-10-09): storage root + origin representation.**
+  The room mailspace root is `DATA_DIR/rooms/<room_id>/.vivi/` (the vivi
+  crate's own layout, provisioned via `Mailspace::init` with per-seat-label
+  identities); the U1-freeze root `rooms/<id>/mailspace/` is removed by the
+  unification unit. Origin labels in v1: the poll response and sidecar
+  message index carry seat label + fingerprint, and the mail `From` address
+  encodes the seat identity; `X-Vivi-Chat-*` headers *inside* the stored
+  mail item are deferred to Phase 02 (the crate's `SendRequest` has no
+  custom-header path). Origin mismatch (a send claiming a label the bearer
+  seat does not hold) rejects `401 unauthorized`. Accepted v1 limits:
+  sidecar index write is not transactional with the mailspace send; the
+  rate limiter is in-memory (single-process deployment).
