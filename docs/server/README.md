@@ -36,8 +36,14 @@ curl http://localhost:8080/healthz   # -> ok
 
 `scripts/two-checkout-smoke.sh` is the end-to-end gate: two vivi
 checkouts, a locally spawned server, create → join → send → badge →
-watch → offline queue → flush, then a phase 02 kinded-send probe. It is the
-deploy acceptance; the deployed URLs must pass it too.
+watch → offline queue → flush, plus the phase 02 legs: a need that crosses
+the room and files on the far side under the same handle and the same bytes,
+close and receipt, a task for another seat that is skipped rather than filed,
+prune and resync restoring the replica byte-for-byte, and a raw kinded-send
+probe. It is the deploy acceptance; the deployed URLs must pass it too. It
+needs a vivi build with `chat pull` (vivi `3b45ebd` or later) and takes about
+two minutes: prune's smallest cutoff is `1m`, so the prune leg waits for the
+need to age.
 
 ```sh
 # local: boots target/debug/vivi-server itself

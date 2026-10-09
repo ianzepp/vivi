@@ -1,7 +1,9 @@
 #!/bin/bash
 # Two-checkout smoke: two vivi checkouts against a live server — create, join,
-# send, board badge, watch, read, offline queue/flush — plus a phase-02 kinded
-# send probe. This is the end-to-end acceptance gate (see README).
+# send, board badge, watch, read, offline queue/flush — plus the phase 02
+# traveling-identity legs (a need crossing the room under one handle, closing
+# and receipts, a task for another seat, prune and resync) and a raw kinded-send
+# probe. This is the end-to-end acceptance gate (see README).
 #
 # Local (default): boots target/debug/vivi-server from this repo on $PORT.
 # Deployed: SERVER_URL=https://host scripts/two-checkout-smoke.sh runs the same
@@ -90,7 +92,10 @@ echo "room: $ROOM"
 # two checkouts
 for D in "$A" "$B"; do
   "$VIVI" mailspace init --project "$D" >/dev/null 2>&1
-  printf '\n[chat]\nserver = "%s"\n' "$BASE" >> "$D/.vivi/mailspace.toml"
+  # `mind` receives room items on `chat pull` (phase 02 down-sync is opt-in via
+  # [chat] recipient). [chat] is the last table, so the key lands inside it.
+  "$VIVI" role add mind --kind mind --project "$D" >/dev/null 2>&1
+  printf '\n[chat]\nserver = "%s"\nrecipient = "mind"\n' "$BASE" >> "$D/.vivi/mailspace.toml"
 done
 
 "$VIVI" chat join "$ROOM" --label "alpha.checkout-a" --project "$A" >/tmp/vc8-join-a.log 2>&1 && ok "A joined" || { bad "A joined"; cat /tmp/vc8-join-a.log; }
@@ -112,6 +117,38 @@ grep -q 'hello again from A' /tmp/vc8-read1.log && ok "B read sees message" || {
 grep -q 'alpha.checkout-a' /tmp/vc8-read1.log && ok "origin label rendered" || bad "origin label rendered"
 [ "$(grep -c 'hello again from A' /tmp/vc8-read1.log)" -eq 1 ] && ok "message read exactly once" || bad "message read more than once"
 
+# Phase 02 traveling identity (P2-1/2/5/6): a need minted on A crosses the room
+# and files on B under the same handle and the same bytes. Counts in `chat pull`
+# summaries are not asserted (earlier legs left traffic in the room); outcomes
+# are, through the mailspace itself.
+open_has() { "$VIVI" "$1" list --for mind --status open --project "$2" 2>&1 | grep -q "$3"; }
+content_of() { "$VIVI" need show "$1" --project "$2" 2>&1 | grep -m1 '^Content:'; }
+PRIOR=$("$VIVI" need send --from mind --to mind --subject "prior local need" --body "an earlier local item" --project "$A" 2>/dev/null | awk '/^created/ {print $3}')
+[ -n "$PRIOR" ] && ok "A filed a prior local need ($PRIOR)" || bad "A prior local need"
+"$VIVI" chat send "$ROOM" --kind need --subject "cross-room need" --body "supersedes $PRIOR; please do the thing" --ref "$PRIOR" --project "$A" >/tmp/vc8-need-send.log 2>&1
+NEED=$(awk '/^handle / {print $2}' /tmp/vc8-need-send.log)
+echo "$NEED" | grep -qE '^[0-9a-f]{8}$' && grep -q '^sent' /tmp/vc8-need-send.log && ok "A sends a need citing $PRIOR (handle $NEED)" || { bad "A need send"; cat /tmp/vc8-need-send.log; }
+"$VIVI" chat pull --project "$A" >/tmp/vc8-pull-a1.log 2>&1
+"$VIVI" chat pull --project "$B" >/tmp/vc8-pull-b1.log 2>&1
+open_has need "$B" "$NEED" && ok "the need files on B under the same handle ($NEED)" || { bad "need did not reach B under handle $NEED"; cat /tmp/vc8-pull-b1.log; }
+HA=$(content_of "$NEED" "$A"); HB=$(content_of "$NEED" "$B")
+[ -n "$HA" ] && [ "$HA" = "$HB" ] && ok "same content hash on both stores" || bad "content hash differs: A=[$HA] B=[$HB]"
+"$VIVI" chat pull --project "$B" >/tmp/vc8-pull-b2.log 2>&1
+grep -q ' 0 new' /tmp/vc8-pull-b2.log && ok "a replayed pull files nothing new" || { bad "replayed pull filed new items"; cat /tmp/vc8-pull-b2.log; }
+"$VIVI" need done "$NEED" --for mind --project "$B" >/tmp/vc8-need-done.log 2>&1
+"$VIVI" chat pull --project "$B" >/dev/null 2>&1
+grep -q "^done $NEED" /tmp/vc8-need-done.log && ! open_has need "$B" "$NEED" && ok "B closes the need and it stays closed after a pull" || { bad "closed need reopened or did not close"; cat /tmp/vc8-need-done.log; }
+# No automatic receipt yet (vivi open item 2): the receipt is a reply sent by hand.
+"$VIVI" chat send "$ROOM" --reply-to "$NEED" --subject "done" --body "closed $NEED" --project "$B" >/tmp/vc8-receipt.log 2>&1
+"$VIVI" chat pull --project "$A" >/tmp/vc8-pull-a2.log 2>&1
+grep -q 'reply link' /tmp/vc8-pull-a2.log && "$VIVI" need show "$NEED" --project "$A" 2>&1 | grep -qE '^Thread \(([2-9]|[0-9]{2,}) message' \
+  && ok "the receipt lands on A and threads to the original" || { bad "receipt did not thread to the original"; cat /tmp/vc8-pull-a2.log; }
+# The server shows every seat the whole room; the client files only what is for it.
+"$VIVI" chat send "$ROOM" --kind task --to smoke-creator --subject "not for B" --body "directed elsewhere" --project "$A" >/tmp/vc8-dtask.log 2>&1
+DTASK=$(awk '/^handle / {print $2}' /tmp/vc8-dtask.log)
+"$VIVI" chat pull --project "$B" >/tmp/vc8-pull-b3.log 2>&1
+[ -n "$DTASK" ] && grep -q 'for other seats' /tmp/vc8-pull-b3.log && ! open_has task "$B" "$DTASK" && ok "a task addressed to another seat is skipped, not filed" || { bad "a task for another seat was filed on B"; cat /tmp/vc8-pull-b3.log; }
+
 # offline queue -> restart -> flush (needs to stop the server: local mode only)
 if [ "$LOCAL" = 1 ]; then
   kill "$(cat /tmp/vc8-server.pid)" 2>/dev/null; clear_port
@@ -129,6 +166,32 @@ if [ "$LOCAL" = 1 ]; then
 else
   skip "offline queue/flush (needs a server restart; local mode only)"
 fi
+
+# Phase 02 cache lifecycle (P2-7): the room is the durable log, the mailspace a
+# replica. Prune evicts the closed need and drops its blob; resync restores it
+# byte-for-byte without reopening it. Prune's smallest cutoff is 1m and it compares
+# the item's own (server) date, so poll the dry run until the need is old enough
+# instead of sleeping a fixed time (also immune to client/server clock skew).
+blob_set() { find "$B/.vivi/blobs" -type f -exec sha256sum {} + 2>/dev/null | sort; }
+"$VIVI" chat pull --project "$B" >/dev/null 2>&1   # B must be caught up before the snapshot
+echo "waiting for the need to age past the 1m prune cutoff (polling the dry run)"
+for _ in $(seq 1 18); do
+  "$VIVI" chat prune --older-than 1m --dry-run --project "$B" 2>&1 | grep -q "$NEED" && break
+  sleep 10
+done
+BEFORE=$(blob_set); NBEFORE=$(echo "$BEFORE" | wc -l)
+"$VIVI" chat prune --older-than 1m --project "$B" >/tmp/vc8-prune.log 2>&1
+AFTER=$(blob_set); NAFTER=$(echo "$AFTER" | wc -l)
+grep -q '^evicted' /tmp/vc8-prune.log && grep -q "$NEED" /tmp/vc8-prune.log && [ "$NAFTER" -lt "$NBEFORE" ] \
+  && ok "prune evicts the closed need and drops its blob ($NBEFORE -> $NAFTER blobs)" || { bad "prune did not evict the closed need"; cat /tmp/vc8-prune.log; }
+"$VIVI" chat resync --project "$B" >/tmp/vc8-resync1.log 2>&1
+grep -q 'restored' /tmp/vc8-resync1.log && [ "$(blob_set)" = "$BEFORE" ] \
+  && ok "resync restores the evicted items; the blob set is byte-identical" || { bad "resync did not restore the blob set"; cat /tmp/vc8-resync1.log; }
+HB2=$(content_of "$NEED" "$B")
+! open_has need "$B" "$NEED" && [ "$HB2" = "$HB" ] && ok "the closed need stays closed and unchanged after resync" || bad "need reopened or changed after resync: before=[$HB] after=[$HB2]"
+"$VIVI" chat resync --project "$B" >/tmp/vc8-resync2.log 2>&1
+grep -q ' 0 new' /tmp/vc8-resync2.log && ! grep -q 'restored' /tmp/vc8-resync2.log && [ "$(blob_set)" = "$BEFORE" ] \
+  && ok "a second resync is a no-op" || { bad "second resync changed something"; cat /tmp/vc8-resync2.log; }
 
 # Phase 02 wire (R7/R8): a kinded send round-trips with kind, in_reply_to, and
 # refs echoed. A pre-phase-02 server silently drops unknown fields, so a missing
