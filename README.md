@@ -611,12 +611,14 @@ Rules:
 
 The `chat` family joins that list with the chat substrate
 (release-prep for 10.2.0): `vivi chat room create`, `join`, `rooms`, `send`,
-`read`, `watch`, `flush`, `pull`, `leave`, and `status` connect two vivi checkouts
-anywhere on the internet through a public rendezvous server — rooms are
-real mailspaces, identity is a transparent per-project ED25519 key, offline
-sends queue and flush on reconnect, `pull` files room needs, tasks, and
-wants into the mailspace under traveling ids that keep one handle on every
-machine, and the board appends an unread-chat line. The server is a sibling repository, `vivi-server`.
+`read`, `watch`, `flush`, `pull`, `leave`, and `status` connect two vivi
+checkouts anywhere on the internet through a public rendezvous server — rooms
+are real mailspaces, identity is a transparent per-project ED25519 key, offline
+sends queue and flush on reconnect, and the board appends an unread-chat line.
+`send --kind need|task|want` crosses a work item to another seat, and `pull`
+files room needs, tasks, and wants into the mailspace under traveling ids that
+keep one handle on every machine. The server is a sibling repository,
+`vivi-server`.
 
 Everything Vivi does is project-scoped, so `--project <root>` is accepted either
 before or after the subcommand and every command resolves the same mailspace.

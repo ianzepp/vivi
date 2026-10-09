@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::chat::client::{self, ChatMessage};
 use crate::chat::identity::ChatIdentity;
+use crate::chat::item::work_kind;
 use crate::chat::state::ChatState;
 use crate::error::VivariumError;
 use crate::storage::mint_traveling_id;
@@ -57,28 +58,104 @@ pub struct ReadPage {
     pub advanced: bool,
 }
 
+/// Server cap on a cited Message-ID (contract R8: non-empty, <= 256 bytes).
+const MAX_ID_BYTES: usize = 256;
+
+/// Server cap on `refs` entries (contract R8).
+const MAX_REFS: usize = 32;
+
+/// One message to send: addressing, content, and the work-item kind and
+/// threading that ride with it (contract R7/R8).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Draft<'a> {
+    pub to: Option<&'a str>,
+    pub subject: Option<&'a str>,
+    pub body: &'a str,
+    /// `need`, `task`, or `want`; `None` is plain chat.
+    pub kind: Option<&'a str>,
+    /// Message-ID this item answers.
+    pub in_reply_to: Option<&'a str>,
+    /// Message-IDs this item cites.
+    pub refs: &'a [String],
+}
+
+impl<'a> Draft<'a> {
+    /// A plain chat message: no kind, no threading.
+    #[must_use]
+    pub fn chat(to: Option<&'a str>, subject: Option<&'a str>, body: &'a str) -> Self {
+        Self {
+            to,
+            subject,
+            body,
+            ..Self::default()
+        }
+    }
+
+    /// Check the draft against the server's rules so a bad send is refused
+    /// here, before it is enqueued, instead of sitting in the outbox as a
+    /// row the server will never accept.
+    ///
+    /// # Errors
+    /// Returns an error naming the first rule the draft breaks.
+    pub fn validate(&self) -> Result<(), VivariumError> {
+        if let Some(kind) = self.kind
+            && work_kind(Some(kind)).is_none()
+        {
+            return Err(VivariumError::Message(format!(
+                "unsupported kind '{kind}'; expected need, task, or want"
+            )));
+        }
+        if let Some(parent) = self.in_reply_to {
+            check_id("reply target", parent)?;
+        }
+        if self.refs.len() > MAX_REFS {
+            return Err(VivariumError::Message(format!(
+                "{} refs is over the {MAX_REFS} ref limit",
+                self.refs.len()
+            )));
+        }
+        self.refs.iter().try_for_each(|id| check_id("ref", id))
+    }
+}
+
+fn check_id(what: &str, id: &str) -> Result<(), VivariumError> {
+    if id.is_empty() || id.len() > MAX_ID_BYTES {
+        return Err(VivariumError::Message(format!(
+            "a {what} must be 1 to {MAX_ID_BYTES} bytes, got {}",
+            id.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Compose an outbox envelope with a fresh traveling id.
 ///
 /// The id is minted here, once, and is both the wire `Message-ID` (the
 /// server's idempotency key) and the mailspace message id other stores
 /// import at ingest: one namespace, so a message keeps one short handle on
 /// every machine. Retries re-send the stored id; nothing downstream re-mints.
+/// `kind`, `in_reply_to`, and `refs` are stored only when set, so a plain
+/// chat envelope is unchanged from phase 01.
 #[must_use]
-pub fn compose_message(
-    to: Option<&str>,
-    subject: Option<&str>,
-    body: &str,
-    identity: &ChatIdentity,
-) -> (String, Value) {
+pub fn compose_message(draft: &Draft<'_>, identity: &ChatIdentity) -> (String, Value) {
     let mut entropy = [0u8; 16];
     OsRng.fill_bytes(&mut entropy);
     let message_id = mint_traveling_id(&identity.short_wire_fingerprint(), &entropy);
-    let envelope = json!({
+    let mut envelope = json!({
         "message_id": message_id,
-        "to": to,
-        "subject": subject,
-        "body": body,
+        "to": draft.to,
+        "subject": draft.subject,
+        "body": draft.body,
     });
+    if let Some(kind) = work_kind(draft.kind) {
+        envelope["kind"] = json!(kind);
+    }
+    if let Some(parent) = draft.in_reply_to {
+        envelope["in_reply_to"] = json!(parent);
+    }
+    if !draft.refs.is_empty() {
+        envelope["refs"] = json!(draft.refs);
+    }
     (message_id, envelope)
 }
 
@@ -86,30 +163,30 @@ pub fn compose_message(
 /// the whole outbox. Failure to deliver leaves the row queued (at-least-once).
 ///
 /// # Errors
-/// Returns an error when the room is not joined, the body is over the cap,
-/// or the state store fails; never for a mere delivery failure.
+/// Returns an error when the room is not joined, the draft breaks a server
+/// rule or the body cap, or the state store fails; never for a mere delivery
+/// failure.
 pub fn send_message(
     server: &str,
     state: &ChatState,
     identity: &ChatIdentity,
     room_id: &str,
-    to: Option<&str>,
-    subject: Option<&str>,
-    body: &str,
+    draft: &Draft<'_>,
 ) -> Result<SendReport, VivariumError> {
     if state.room(room_id)?.is_none() {
         return Err(VivariumError::Message(format!(
             "room '{room_id}' is not joined; run vivi chat join first"
         )));
     }
-    if body.len() > MAX_BODY_BYTES {
+    if draft.body.len() > MAX_BODY_BYTES {
         return Err(VivariumError::Message(format!(
             "body is {} bytes over the {} byte chat cap",
-            body.len() - MAX_BODY_BYTES,
+            draft.body.len() - MAX_BODY_BYTES,
             MAX_BODY_BYTES
         )));
     }
-    let (message_id, envelope) = compose_message(to, subject, body, identity);
+    draft.validate()?;
+    let (message_id, envelope) = compose_message(draft, identity);
     state.enqueue(room_id, &message_id, &envelope.to_string())?;
     let summary = deliver_all(server, state, identity)?;
     let delivered = summary.sent_ids.iter().any(|id| id == &message_id);
@@ -193,11 +270,16 @@ fn post_row(
 ) -> Result<bool, VivariumError> {
     let envelope: Value = serde_json::from_str(&row.payload_json)
         .map_err(|_| VivariumError::Message("outbox row holds invalid json".into()))?;
-    let payload = json!({
+    let mut payload = json!({
         "to": envelope.get("to").cloned().unwrap_or(Value::Null),
         "subject": envelope.get("subject").cloned().unwrap_or(Value::Null),
         "body": envelope.get("body").cloned().unwrap_or(Value::Null),
     });
+    for field in ["kind", "in_reply_to", "refs"] {
+        if let Some(value) = envelope.get(field) {
+            payload[field] = value.clone();
+        }
+    }
     let ack = client::post_message(
         server,
         &row.room_id,

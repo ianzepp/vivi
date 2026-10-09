@@ -5,11 +5,13 @@
 use std::path::Path;
 
 use crate::chat::identity::ChatIdentity;
+use crate::chat::outbox::Draft;
 use crate::chat::state::ChatState;
 use crate::chat::{chat_dir, client, outbox, sync, watch};
 use crate::cli::{ChatSubcommand, RoomSubcommand};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
+use crate::storage::{is_traveling_id, short_handle};
 
 /// Dispatch one `vivi chat` subcommand.
 pub fn dispatch(command: &ChatSubcommand) -> Result<(), VivariumError> {
@@ -27,15 +29,21 @@ pub fn dispatch(command: &ChatSubcommand) -> Result<(), VivariumError> {
             subject,
             body,
             body_file,
+            kind,
+            reply_to,
+            refs,
             project,
-        } => send(
+        } => send(&SendArgs {
             room_id,
-            to.as_deref(),
-            subject.as_deref(),
-            body.as_deref(),
-            body_file.as_deref(),
-            project.as_deref(),
-        ),
+            to: to.as_deref(),
+            subject: subject.as_deref(),
+            body: body.as_deref(),
+            body_file: body_file.as_deref(),
+            kind: kind.as_deref(),
+            reply_to: reply_to.as_deref(),
+            refs,
+            project: project.as_deref(),
+        }),
         ChatSubcommand::Flush { project } => flush(project.as_deref()),
         ChatSubcommand::Read {
             room_id,
@@ -83,23 +91,29 @@ fn chat_parts(mailspace: &Mailspace) -> Result<(ChatState, ChatIdentity), Vivari
     Ok((state, identity))
 }
 
+/// Arguments of one `vivi chat send`.
+pub struct SendArgs<'a> {
+    pub room_id: &'a str,
+    pub to: Option<&'a str>,
+    pub subject: Option<&'a str>,
+    pub body: Option<&'a str>,
+    pub body_file: Option<&'a Path>,
+    pub kind: Option<&'a str>,
+    pub reply_to: Option<&'a str>,
+    pub refs: &'a [String],
+    pub project: Option<&'a Path>,
+}
+
 /// `vivi chat send`: compose, enqueue transactionally, then attempt an
 /// immediate flush. Prints `sent` or `queued` honestly; a queued message
 /// retries on the next chat command or `vivi chat flush`.
-pub fn send(
-    room_id: &str,
-    to: Option<&str>,
-    subject: Option<&str>,
-    body: Option<&str>,
-    body_file: Option<&Path>,
-    project: Option<&Path>,
-) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
+pub fn send(args: &SendArgs<'_>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(args.project)?;
     let server = server_of(&mailspace)?;
     let (state, identity) = chat_parts(&mailspace)?;
     try_flush(&mailspace);
-    let room_id = client::normalize_room_id(room_id)?;
-    let body = match (body, body_file) {
+    let room_id = client::normalize_room_id(args.room_id)?;
+    let body = match (args.body, args.body_file) {
         (Some(text), _) => text.to_string(),
         (None, Some(path)) => std::fs::read_to_string(path)?,
         (None, None) => {
@@ -108,7 +122,24 @@ pub fn send(
             ));
         }
     };
-    let report = outbox::send_message(&server, &state, &identity, &room_id, to, subject, &body)?;
+    let reply_to = args
+        .reply_to
+        .map(|token| resolve_citation(&mailspace, token))
+        .transpose()?;
+    let refs = args
+        .refs
+        .iter()
+        .map(|token| resolve_citation(&mailspace, token))
+        .collect::<Result<Vec<_>, _>>()?;
+    let draft = Draft {
+        to: args.to,
+        subject: args.subject,
+        body: &body,
+        kind: args.kind,
+        in_reply_to: reply_to.as_deref(),
+        refs: &refs,
+    };
+    let report = outbox::send_message(&server, &state, &identity, &room_id, &draft)?;
     if report.delivered {
         println!("sent {} to {}", report.message_id, room_id);
     } else {
@@ -122,7 +153,25 @@ pub fn send(
                 .unwrap_or("not acknowledged")
         );
     }
+    println!("handle {}", short_handle(&report.message_id));
     Ok(())
+}
+
+/// Turn a handle or id the operator typed into the full id a send cites. A
+/// full traveling id passes through even when this mailspace has not seen it
+/// (a reference may name an item that lives elsewhere); anything else must
+/// resolve here.
+fn resolve_citation(mailspace: &Mailspace, token: &str) -> Result<String, VivariumError> {
+    if is_traveling_id(token) {
+        return Ok(token.to_string());
+    }
+    let id = mailspace.storage()?.resolve_message_token(token)?;
+    if !is_traveling_id(&id) {
+        return Err(VivariumError::Message(format!(
+            "'{token}' has no citable id in this mailspace"
+        )));
+    }
+    Ok(id)
 }
 
 /// `vivi chat flush`: deliver every pending outbox row.

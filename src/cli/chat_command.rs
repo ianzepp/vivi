@@ -51,6 +51,16 @@ pub enum ChatSubcommand {
         /// Read the message body from this file
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// Send as a work item that files into the recipient's
+        /// needs/tasks/wants (default is plain chat)
+        #[arg(long, value_parser = ["need", "task", "want"])]
+        kind: Option<String>,
+        /// Item this answers: a local handle or a full msg_ id
+        #[arg(long)]
+        reply_to: Option<String>,
+        /// Item this cites (repeatable): a local handle or a full msg_ id
+        #[arg(long = "ref")]
+        refs: Vec<String>,
         /// Project root that owns .vivi/
         #[arg(long)]
         project: Option<PathBuf>,

@@ -369,6 +369,7 @@ vivi chat room create [--seats N]   # mint a room id; creator takes seat 1
 vivi chat join <room> [--name ...]  # challenge -> sign -> seat binding
 vivi chat rooms                     # rooms joined from this mailspace
 vivi chat send <room> [--to <label>] [--subject <s>] (--body <b> | --body-file <f>)
+                    [--kind need|task|want] [--reply-to <handle|id>] [--ref <handle|id>]...
 vivi chat read [room]               # messages since the cursor, with origins
 vivi chat watch [room]              # long-poll and print arrivals
 vivi chat flush                     # deliver pending outbox messages
@@ -400,6 +401,17 @@ actually happened. Every chat command flushes opportunistically first;
 send mints one traveling id (`msg_` plus 24 hex characters) at creation
 and every retry re-sends that same id; the server deduplicates by it, so
 a replayed flush is a no-op rather than a duplicate message.
+
+`--kind need|task|want` sends a work item instead of plain chat: it files
+into the recipient's `needs`/`tasks`/`wants` when they pull. `--reply-to`
+and `--ref` thread it (a receipt is just a reply to the original) and
+accept a local handle or a full `msg_` id; a full id is passed through
+even when this mailspace has not seen it. Send prints `handle <8 hex>` —
+the same handle the recipient sees, so cite it in the body freely. The
+send is validated against the server's limits (kind, at most 32 refs, ids
+of 1-256 bytes) before it is queued, so a bad send fails at the prompt
+instead of sitting in the outbox. A queued work item retries with its
+kind and threading intact, under the same id.
 
 `vivi chat pull` is the down-sync: it polls each room since its own sync
 cursor and files what arrived into the mailspace as real mail items for

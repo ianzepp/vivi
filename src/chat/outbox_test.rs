@@ -163,9 +163,7 @@ fn send_happy_path_mints_bearer_and_posts_envelope() {
         &state,
         &identity,
         ROOM,
-        Some("seat-b"),
-        Some("hello"),
-        "body text",
+        &Draft::chat(Some("seat-b"), Some("hello"), "body text"),
     )
     .expect("send");
 
@@ -213,6 +211,9 @@ fn send_happy_path_mints_bearer_and_posts_envelope() {
         payload.get("message_id").is_none(),
         "Message-ID rides the header, not the body"
     );
+    for field in ["kind", "in_reply_to", "refs"] {
+        assert!(payload.get(field).is_none(), "plain chat omits {field}");
+    }
 }
 
 #[test]
@@ -228,9 +229,7 @@ fn server_down_enqueues_then_flush_after_restart_delivers() {
         &state,
         &identity,
         ROOM,
-        None,
-        None,
-        "offline body",
+        &Draft::chat(None, None, "offline body"),
     )
     .expect("send enqueues");
     assert!(!report.delivered, "server down must not deliver");
@@ -289,7 +288,8 @@ fn duplicate_ack_still_marks_flushed() {
         }
     });
     drop(rx);
-    let (message_id, envelope) = compose_message(None, Some("again"), "retry body", &identity);
+    let (message_id, envelope) =
+        compose_message(&Draft::chat(None, Some("again"), "retry body"), &identity);
     state
         .enqueue(ROOM, &message_id, &envelope.to_string())
         .expect("enqueue");
@@ -379,9 +379,7 @@ fn send_requires_a_joined_room() {
         &state,
         &identity,
         ROOM,
-        None,
-        None,
-        "x",
+        &Draft::chat(None, None, "x"),
     )
     .expect_err("not joined");
     assert!(error.to_string().contains("not joined"));
@@ -393,8 +391,8 @@ fn composed_ids_are_distinct_traveling_ids() {
     let dir = chat_dir(tmp.path());
     let identity = identity_with_seed(&dir, 7);
 
-    let (first, envelope) = compose_message(Some("seat-b"), None, "one", &identity);
-    let (second, _) = compose_message(Some("seat-b"), None, "two", &identity);
+    let (first, envelope) = compose_message(&Draft::chat(Some("seat-b"), None, "one"), &identity);
+    let (second, _) = compose_message(&Draft::chat(Some("seat-b"), None, "two"), &identity);
 
     assert!(is_traveling_id(&first), "{first}");
     assert!(is_traveling_id(&second), "{second}");
@@ -415,9 +413,7 @@ fn queued_send_keeps_its_traveling_id_when_flushed_later() {
         &state,
         &identity,
         ROOM,
-        None,
-        None,
-        "offline body",
+        &Draft::chat(None, None, "offline body"),
     )
     .expect("send enqueues");
     assert!(!report.delivered);
@@ -459,4 +455,139 @@ fn work_items_render_their_kind_and_plain_chat_is_unchanged() {
 
     message.kind = Some("need".into());
     assert!(render_message(&message).contains("-> all: [need] ship it"));
+}
+
+const PARENT: &str = "msg_fedcba9876543210fedcba98";
+const CITED: &str = "msg_0123456789abcdef01234567";
+
+fn joined(seed: u8) -> (tempfile::TempDir, ChatIdentity, ChatState) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = chat_dir(tmp.path());
+    let identity = identity_with_seed(&dir, seed);
+    let state = ChatState::open(&dir).expect("state");
+    state.join_room(ROOM, 2, "burgus/vivi").expect("joined");
+    (tmp, identity, state)
+}
+
+fn work_draft<'a>(kind: &'a str, refs: &'a [String]) -> Draft<'a> {
+    Draft {
+        to: Some("seat-b"),
+        subject: Some("ship it"),
+        body: "please",
+        kind: Some(kind),
+        in_reply_to: Some(PARENT),
+        refs,
+    }
+}
+
+fn posted_payload(requests: &[Request]) -> Value {
+    let (_, path, body, _) = requests.last().expect("a send request");
+    assert!(
+        path.ends_with(&format!("/v1/rooms/{ROOM}/messages")),
+        "{path}"
+    );
+    serde_json::from_str(body).expect("send body json")
+}
+
+#[test]
+fn kinded_send_carries_kind_and_threading_on_the_wire() {
+    let (_tmp, identity, state) = joined(7);
+    let (server, rx) = stub_server(3, handler_flow("tok-6"));
+    let refs = [CITED.to_string()];
+
+    let report =
+        send_message(&server, &state, &identity, ROOM, &work_draft("NEED", &refs)).expect("send");
+
+    assert!(report.delivered, "{:?}", report.summary.error);
+    let requests: Vec<Request> = rx.try_iter().collect();
+    let payload = posted_payload(&requests);
+    assert_eq!(payload["kind"], "need", "kind is normalized to lowercase");
+    assert_eq!(payload["in_reply_to"], PARENT);
+    assert_eq!(payload["refs"], json!([CITED]));
+    let (_, _, _, head) = requests.last().unwrap();
+    assert_eq!(header(head, "message-id"), Some(report.message_id.as_str()));
+    assert!(
+        is_traveling_id(&report.message_id),
+        "the server requires a traveling id on kinded sends"
+    );
+}
+
+#[test]
+fn invalid_drafts_are_refused_before_anything_is_enqueued() {
+    let (_tmp, identity, state) = joined(7);
+    let too_long = "x".repeat(257);
+    let many: Vec<String> = (0..33).map(|n| format!("msg_{n:024x}")).collect();
+    let empty = [String::new()];
+    let long = [too_long.clone()];
+
+    let cases: Vec<(Draft<'_>, &str)> = vec![
+        (work_draft("proposal", &[]), "unsupported kind"),
+        (work_draft("mail", &[]), "unsupported kind"),
+        (work_draft("need", &many), "ref limit"),
+        (work_draft("need", &empty), "1 to 256 bytes"),
+        (work_draft("need", &long), "1 to 256 bytes"),
+        (
+            Draft {
+                in_reply_to: Some(&too_long),
+                ..work_draft("need", &[])
+            },
+            "1 to 256 bytes",
+        ),
+        (
+            Draft {
+                in_reply_to: Some(""),
+                ..work_draft("need", &[])
+            },
+            "1 to 256 bytes",
+        ),
+    ];
+    for (draft, expected) in cases {
+        let error = send_message("http://127.0.0.1:1", &state, &identity, ROOM, &draft)
+            .expect_err("refused")
+            .to_string();
+        assert!(error.contains(expected), "{expected}: {error}");
+    }
+    assert_eq!(state.outbox_depth().expect("depth"), 0, "nothing queued");
+}
+
+#[test]
+fn draft_limits_sit_exactly_on_the_server_contract() {
+    let at_limit = ["x".repeat(256)];
+    let thirty_two: Vec<String> = (0..32).map(|n| format!("msg_{n:024x}")).collect();
+
+    assert!(work_draft("need", &at_limit).validate().is_ok());
+    assert!(work_draft("task", &thirty_two).validate().is_ok());
+    assert!(work_draft("want", &[]).validate().is_ok());
+    assert!(Draft::chat(None, None, "hi").validate().is_ok());
+}
+
+#[test]
+fn queued_work_item_keeps_kind_and_threading_across_the_retry() {
+    let (_tmp, identity, state) = joined(7);
+    let refs = [CITED.to_string()];
+
+    let report = send_message(
+        "http://127.0.0.1:1",
+        &state,
+        &identity,
+        ROOM,
+        &work_draft("task", &refs),
+    )
+    .expect("send enqueues");
+    assert!(!report.delivered);
+    let pending = state.pending_outbox().expect("pending");
+    let stored: Value = serde_json::from_str(&pending[0].payload_json).expect("envelope");
+    assert_eq!(stored["kind"], "task");
+    assert_eq!(stored["in_reply_to"], PARENT);
+    assert_eq!(stored["refs"], json!([CITED]));
+
+    let (server, rx) = stub_server(3, handler_flow("tok-7"));
+    deliver_all(&server, &state, &identity).expect("flush");
+    let requests: Vec<Request> = rx.try_iter().collect();
+    let payload = posted_payload(&requests);
+    assert_eq!(payload["kind"], "task");
+    assert_eq!(payload["in_reply_to"], PARENT);
+    assert_eq!(payload["refs"], json!([CITED]));
+    let (_, _, _, head) = requests.last().unwrap();
+    assert_eq!(header(head, "message-id"), Some(report.message_id.as_str()));
 }
