@@ -40,6 +40,9 @@ pub struct PullReport {
     pub local_ids: usize,
     /// Reply links recorded against a parent already in the mailspace.
     pub linked: usize,
+    /// Ids this mailspace already holds with different bytes. The newcomer
+    /// is refused, never swapped in, and the pull carries on.
+    pub conflicts: Vec<String>,
     pub next_cursor: u64,
 }
 
@@ -59,6 +62,10 @@ impl PullReport {
             (self.malformed, "malformed (skipped)"),
             (self.local_ids, "under store-local ids"),
             (self.linked, "reply link(s)"),
+            (
+                self.conflicts.len(),
+                "refused (id already held with different content)",
+            ),
         ] {
             if count > 0 {
                 parts.push(format!("{count} {what}"));
@@ -234,6 +241,10 @@ fn ingest_one(
         }
         IngestOutcome::Restored => report.restored += 1,
         IngestOutcome::Existing => report.existing += 1,
+        IngestOutcome::Conflict => {
+            report.conflicts.push(stored.message_id);
+            return Ok(());
+        }
     }
     if link_reply(storage, message, &stored)? {
         report.linked += 1;

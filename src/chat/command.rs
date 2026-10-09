@@ -7,8 +7,8 @@ use std::path::Path;
 use crate::chat::identity::ChatIdentity;
 use crate::chat::outbox::Draft;
 use crate::chat::state::ChatState;
-use crate::chat::{chat_dir, client, outbox, sync, watch};
-use crate::cli::{ChatSubcommand, RoomSubcommand};
+use crate::chat::{chat_dir, client, outbox, prune, sync, watch};
+use crate::cli::{ChatSendCommand, ChatSubcommand, RoomSubcommand};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::{is_traveling_id, short_handle};
@@ -23,27 +23,7 @@ pub fn dispatch(command: &ChatSubcommand) -> Result<(), VivariumError> {
             project,
         } => join(room_id, label.as_deref(), project.as_deref()),
         ChatSubcommand::Rooms { project } => rooms(project.as_deref()),
-        ChatSubcommand::Send {
-            room_id,
-            to,
-            subject,
-            body,
-            body_file,
-            kind,
-            reply_to,
-            refs,
-            project,
-        } => send(&SendArgs {
-            room_id,
-            to: to.as_deref(),
-            subject: subject.as_deref(),
-            body: body.as_deref(),
-            body_file: body_file.as_deref(),
-            kind: kind.as_deref(),
-            reply_to: reply_to.as_deref(),
-            refs,
-            project: project.as_deref(),
-        }),
+        ChatSubcommand::Send(args) => send(args),
         ChatSubcommand::Flush { project } => flush(project.as_deref()),
         ChatSubcommand::Read {
             room_id,
@@ -57,8 +37,17 @@ pub fn dispatch(command: &ChatSubcommand) -> Result<(), VivariumError> {
             project,
         } => watch_command(room_id.as_deref(), *once, project.as_deref()),
         ChatSubcommand::Pull { room_id, project } => {
-            pull_command(room_id.as_deref(), project.as_deref())
+            pull_command(room_id.as_deref(), project.as_deref(), false)
         }
+        ChatSubcommand::Resync { room_id, project } => {
+            pull_command(room_id.as_deref(), project.as_deref(), true)
+        }
+        ChatSubcommand::Prune {
+            room_id,
+            older_than,
+            dry_run,
+            project,
+        } => prune_command(room_id.as_deref(), older_than, *dry_run, project.as_deref()),
         ChatSubcommand::Leave { room_id, project } => leave(room_id, project.as_deref()),
         ChatSubcommand::Room { command } => match command {
             RoomSubcommand::Create {
@@ -91,29 +80,16 @@ fn chat_parts(mailspace: &Mailspace) -> Result<(ChatState, ChatIdentity), Vivari
     Ok((state, identity))
 }
 
-/// Arguments of one `vivi chat send`.
-pub struct SendArgs<'a> {
-    pub room_id: &'a str,
-    pub to: Option<&'a str>,
-    pub subject: Option<&'a str>,
-    pub body: Option<&'a str>,
-    pub body_file: Option<&'a Path>,
-    pub kind: Option<&'a str>,
-    pub reply_to: Option<&'a str>,
-    pub refs: &'a [String],
-    pub project: Option<&'a Path>,
-}
-
 /// `vivi chat send`: compose, enqueue transactionally, then attempt an
 /// immediate flush. Prints `sent` or `queued` honestly; a queued message
 /// retries on the next chat command or `vivi chat flush`.
-pub fn send(args: &SendArgs<'_>) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(args.project)?;
+pub fn send(args: &ChatSendCommand) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(args.project.as_deref())?;
     let server = server_of(&mailspace)?;
     let (state, identity) = chat_parts(&mailspace)?;
     try_flush(&mailspace);
-    let room_id = client::normalize_room_id(args.room_id)?;
-    let body = match (args.body, args.body_file) {
+    let room_id = client::normalize_room_id(&args.room_id)?;
+    let body = match (args.body.as_deref(), args.body_file.as_deref()) {
         (Some(text), _) => text.to_string(),
         (None, Some(path)) => std::fs::read_to_string(path)?,
         (None, None) => {
@@ -124,6 +100,7 @@ pub fn send(args: &SendArgs<'_>) -> Result<(), VivariumError> {
     };
     let reply_to = args
         .reply_to
+        .as_deref()
         .map(|token| resolve_citation(&mailspace, token))
         .transpose()?;
     let refs = args
@@ -132,10 +109,10 @@ pub fn send(args: &SendArgs<'_>) -> Result<(), VivariumError> {
         .map(|token| resolve_citation(&mailspace, token))
         .collect::<Result<Vec<_>, _>>()?;
     let draft = Draft {
-        to: args.to,
-        subject: args.subject,
+        to: args.to.as_deref(),
+        subject: args.subject.as_deref(),
         body: &body,
-        kind: args.kind,
+        kind: args.kind.as_deref(),
         in_reply_to: reply_to.as_deref(),
         refs: &refs,
     };
@@ -351,9 +328,18 @@ pub fn watch_command(
     watch::run(&server, &state, &identity, &rooms, once)
 }
 
-/// `vivi chat pull`: file new room items into the mailspace. One room's
-/// failure is reported and the others still run; the first error is returned.
-pub fn pull_command(room_id: Option<&str>, project: Option<&Path>) -> Result<(), VivariumError> {
+/// `vivi chat pull` (and `resync`, which replays from cursor zero): file room
+/// items into the mailspace. One room's failure is reported and the others
+/// still run; the first error is returned.
+///
+/// # Errors
+/// Returns an error when no server or `[chat] recipient` is configured, a
+/// named room is not joined, or any room's pull fails.
+pub fn pull_command(
+    room_id: Option<&str>,
+    project: Option<&Path>,
+    from_zero: bool,
+) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let server = server_of(&mailspace)?;
     sync::resolve_recipient(&mailspace)?;
@@ -361,8 +347,11 @@ pub fn pull_command(room_id: Option<&str>, project: Option<&Path>) -> Result<(),
     try_flush(&mailspace);
     let mut failure = None;
     for room in watch::resolve_rooms(&state, room_id)? {
-        match sync::pull(&server, &mailspace, &state, &identity, &room, false) {
-            Ok(report) => println!("{}", report.summary()),
+        match sync::pull(&server, &mailspace, &state, &identity, &room, from_zero) {
+            Ok(report) => {
+                println!("{}", report.summary());
+                warn_conflicts(&report);
+            }
             Err(error) => {
                 eprintln!("pull {}: {error}", room.room_id);
                 failure.get_or_insert(error);
@@ -370,6 +359,65 @@ pub fn pull_command(room_id: Option<&str>, project: Option<&Path>) -> Result<(),
         }
     }
     failure.map_or(Ok(()), Err)
+}
+
+/// `vivi chat prune`: evict old room items from the local cache. Purely
+/// local: it needs neither the server nor a configured recipient.
+///
+/// # Errors
+/// Returns an error for an unusable age or room id, or a storage failure.
+pub fn prune_command(
+    room_id: Option<&str>,
+    older_than: &str,
+    dry_run: bool,
+    project: Option<&Path>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let age = prune::parse_age(older_than)?;
+    let report = prune::prune(&mailspace, room_id, age, chrono::Utc::now(), dry_run)?;
+    let verb = if dry_run { "would evict" } else { "evicted" };
+    println!(
+        "{verb} {} item(s) dated before {} (open needs/tasks/wants, starred, absorbed, and local mail are kept)",
+        if dry_run {
+            report.items.len()
+        } else {
+            report.evicted
+        },
+        report.cutoff
+    );
+    for item in report.items.iter().take(PRUNE_LISTING) {
+        println!(
+            "  {} {} {} {}",
+            item.handle, item.role, item.date, item.subject
+        );
+    }
+    if report.items.len() > PRUNE_LISTING {
+        println!("  ... and {} more", report.items.len() - PRUNE_LISTING);
+    }
+    if dry_run {
+        println!("dry run: nothing changed");
+    } else if report.evicted > 0 {
+        println!("vivi chat resync restores evicted items from the room");
+    }
+    Ok(())
+}
+
+/// Lines of the eviction listing shown before summarizing the rest.
+const PRUNE_LISTING: usize = 20;
+
+/// Name the ids a pull refused, so a divergent or hostile item is seen.
+fn warn_conflicts(report: &sync::PullReport) {
+    if report.conflicts.is_empty() {
+        return;
+    }
+    let shown = report.conflicts.iter().take(5).cloned().collect::<Vec<_>>();
+    eprintln!(
+        "warning: room {} sent {} item(s) reusing an id this mailspace already holds with \
+         different content; refused: {}",
+        report.room_id,
+        report.conflicts.len(),
+        shown.join(", ")
+    );
 }
 
 /// `vivi chat leave`: local unjoin (drops the room row and its cursor; the

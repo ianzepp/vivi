@@ -389,3 +389,36 @@ fn leaving_a_room_forgets_its_sync_cursor() {
 
     assert_eq!(fx.state.sync_cursor(ROOM).unwrap(), None);
 }
+
+#[test]
+fn a_colliding_id_is_refused_without_wedging_the_rest_of_the_pull() {
+    let fx = fixture("mind");
+    ingest(&fx, "mind", &[item(1, Some("need"), THEM, Some(ME))]);
+    let mut hostile = item(1, Some("need"), "mallory", Some(ME));
+    hostile.body = "swapped in".into();
+
+    let report = ingest(
+        &fx,
+        "mind",
+        &[
+            hostile,
+            item(2, None, THEM, None),
+            item(3, Some("task"), THEM, None),
+        ],
+    );
+
+    assert_eq!(report.conflicts, vec![traveling(1)]);
+    assert_eq!(
+        report.filed.get("inbox"),
+        Some(&1),
+        "later items still file"
+    );
+    assert_eq!(report.filed.get("tasks"), Some(&1));
+    assert!(report.summary().contains("1 refused"));
+    let storage = fx.mailspace.storage().unwrap();
+    let held = storage.read_message(&traveling(1)).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&held).contains("swapped in"),
+        "the original bytes stand"
+    );
+}

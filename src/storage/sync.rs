@@ -29,6 +29,18 @@ pub enum IngestOutcome {
     Restored,
     /// A live row already held this id; nothing changed.
     Existing,
+    /// A row holds this id with different bytes. Nothing was written: an id
+    /// names one immutable item, so the newcomer is refused rather than
+    /// swapped in (D5).
+    Conflict,
+}
+
+impl IngestOutcome {
+    /// Whether this outcome wrote anything.
+    #[must_use]
+    pub fn wrote(self) -> bool {
+        matches!(self, Self::Inserted | Self::Restored)
+    }
 }
 
 /// The delivery event to append atomically with an insert or restore. The
@@ -67,16 +79,12 @@ impl Storage {
             .map_err(|e| VivariumError::Other(format!("failed to open sync transaction: {e}")))?;
         let outcome = match held_row(&tx, &message_id)? {
             None => IngestOutcome::Inserted,
-            Some((held, _)) if held != content_id => {
-                return Err(VivariumError::Message(format!(
-                    "id {message_id} already names different content in this mailspace"
-                )));
-            }
+            Some((held, _)) if held != content_id => IngestOutcome::Conflict,
             Some((_, None)) => IngestOutcome::Existing,
             Some((_, Some(_))) => IngestOutcome::Restored,
         };
         let mut created_blob = false;
-        if outcome != IngestOutcome::Existing {
+        if outcome.wrote() {
             created_blob = write_blob_if_absent(&self.mail_root.join(&blob_relpath), data)?;
             let metadata = parse_metadata(data);
             let now = Utc::now().to_rfc3339();
@@ -95,7 +103,7 @@ impl Storage {
         }
         tx.commit()
             .map_err(|e| VivariumError::Other(format!("failed to commit sync transaction: {e}")))?;
-        if outcome != IngestOutcome::Existing {
+        if outcome.wrote() {
             self.invalidate_handle_index();
         }
         let stored = StoredMessage {

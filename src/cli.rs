@@ -10,7 +10,7 @@ mod mailspace_command;
 mod role_command;
 
 pub use board_command::BoardCommand;
-pub use chat_command::{ChatCommand, ChatSubcommand, RoomSubcommand};
+pub use chat_command::{ChatCommand, ChatSendCommand, ChatSubcommand, RoomSubcommand};
 pub use mailspace_command::{
     AbsorbCommand, CycleCommand, GoalCommand, GraphActivateCommand, GraphApplyCommand,
     GraphAuditCommand, GraphCommand, GraphCompleteCommand, GraphConnectCommand,

@@ -891,30 +891,32 @@ fn ingest_if_absent_inserts_once_and_leaves_existing_rows_alone() {
 }
 
 #[test]
-fn ingest_if_absent_refuses_different_content_under_a_held_id() {
+fn ingest_if_absent_reports_a_conflict_for_different_content_under_a_held_id() {
     let tmp = tempfile::tempdir().unwrap();
     let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
     let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
-    storage
-        .ingest_if_absent(
-            &request,
-            &message_bytes("one@example.com", "original"),
-            None,
-        )
-        .unwrap();
+    let original = message_bytes("one@example.com", "original");
+    let foreign = message_bytes("two@example.com", "foreign");
+    storage.ingest_if_absent(&request, &original, None).unwrap();
 
-    let error = storage
-        .ingest_if_absent(&request, &message_bytes("two@example.com", "foreign"), None)
-        .unwrap_err()
-        .to_string();
+    let (outcome, refused) = storage.ingest_if_absent(&request, &foreign, None).unwrap();
 
-    assert!(error.contains("already names different content"), "{error}");
+    assert_eq!(outcome, IngestOutcome::Conflict);
+    assert!(!outcome.wrote());
+    assert_eq!(
+        refused.content_id,
+        sha256_hex(&foreign),
+        "names the newcomer"
+    );
     let held = storage.list_messages().unwrap();
     assert_eq!(held.len(), 1);
+    assert_eq!(held[0].content_id, sha256_hex(&original));
     assert_eq!(
-        held[0].content_id,
-        sha256_hex(&message_bytes("one@example.com", "original"))
+        storage.blob_count().unwrap(),
+        1,
+        "the foreign blob is not kept"
     );
+    assert!(!tmp.path().join(&refused.blob_relpath).exists());
 }
 
 #[test]

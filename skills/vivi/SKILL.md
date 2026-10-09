@@ -374,6 +374,8 @@ vivi chat read [room]               # messages since the cursor, with origins
 vivi chat watch [room]              # long-poll and print arrivals
 vivi chat flush                     # deliver pending outbox messages
 vivi chat pull [room]               # file room items into the mailspace
+vivi chat resync [room]             # replay from cursor 0; restores pruned items
+vivi chat prune --older-than 30d [--dry-run] [room]   # evict old cached items
 vivi chat leave <room>              # local unjoin; the server seat stays
 vivi chat status                    # fingerprint, server, rooms, outbox depth
 ```
@@ -429,6 +431,20 @@ so items addressed to another seat are skipped and counted. Ids from
 before phase 02 are not traveling ids; those items file under a
 store-local id and the summary says so. The sync cursor is separate from
 the read cursor, so `chat read --mark-read` never makes pull skip items.
+
+A room is the durable log and the mailspace holds a replica, so the cache
+can be shed and rebuilt. `vivi chat prune --older-than <age>` (`30d`,
+`12h`, `90m`) evicts room items dated before the cutoff and drops their
+blobs; `--dry-run` previews the same selection. The default is keep-all:
+nothing ever prunes on its own. Prune never touches open needs, tasks, or
+wants (however old), starred or absorbed items, or local-origin mail, and
+it needs neither the server nor `recipient`. `vivi chat resync` replays the
+room from cursor zero through the same ingest as `pull`: evicted items come
+back byte-identically under the same ids, and local state (a need you
+closed, a read flag) is left exactly as it was. Resync is the only thing
+that restores; a plain `pull` resumes at its cursor. If an id the room
+sends is already held here with different content, that one item is
+refused and named on stderr, and the pull carries on.
 
 The board badge is one bounded line appended to `vivi board` when rooms
 are joined and the server is reachable (`chat: N unread in <room>` or

@@ -8,6 +8,7 @@ pub mod command;
 pub mod identity;
 pub mod item;
 pub mod outbox;
+pub mod prune;
 pub mod state;
 pub mod sync;
 pub mod watch;
