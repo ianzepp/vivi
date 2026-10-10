@@ -4,9 +4,12 @@ Status: **DRAFT**, recorded 2026-10-10 from a design conversation with the repo
 owner. Nothing here is built or scheduled. Admission by introduction and the
 reserved `postmaster` identity were decided in a follow-up conversation the
 same day. Each item is marked **Decided**, **Proposed** (an idea the owner
-has not confirmed), or **Open** (deliberately undecided). Until this phase is
-built, the room-based wire contract in [`contract.md`](contract.md) is the
-shipped behavior.
+has not confirmed), or **Open** (deliberately undecided). Build work from
+this draft is tracked as needs and wants in the project mailspace
+(`.vivi/`, roles `mind` and `hand`); this document is the design record
+and the rulings, and the backlog holds the live state. Until this phase
+is built, the room-based wire contract in [`contract.md`](contract.md) is
+the shipped behavior.
 
 ## Why this phase exists
 

@@ -193,7 +193,9 @@ restoring the blob set byte-for-byte. Production passed the same run (24
 passed, 0 failed, 1 skipped) after `release` advanced to `b47e972`; a health
 probe every 5 seconds across the swap saw only HTTP 200.
 
-**Carried forward** (the full client list is in the vivi record):
+**Carried forward** (the full client list is in the vivi record; items
+still live are tracked as wants in the project mailspace, and the phase-03
+draft retires most of this list by design):
 
 - A direct message is not private. The server returns every record in a room to
   every seat; the client skips items addressed to another seat, but `to` is a
