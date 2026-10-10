@@ -10,6 +10,7 @@ pub mod ids;
 pub mod messages;
 pub mod project_wake;
 pub mod projects;
+pub mod projects_api;
 pub mod rooms;
 pub mod safety;
 pub mod seats;
@@ -22,6 +23,8 @@ use axum::routing::{get, post};
 
 use auth::ChallengeBook;
 use crypto::StoreCipher;
+use identities::IdentityRegistry;
+use projects::ProjectStore;
 use rooms::RoomStore;
 use safety::RateLimiter;
 use seats::SeatRegistry;
@@ -32,6 +35,8 @@ use seats::SeatRegistry;
 pub struct AppState {
     pub rooms: RoomStore,
     pub seats: SeatRegistry,
+    pub projects: ProjectStore,
+    pub identities: IdentityRegistry,
     pub challenges: ChallengeBook,
     pub limiter: RateLimiter,
     pub store_cipher: Option<Arc<StoreCipher>>,
@@ -59,6 +64,8 @@ pub fn api_router(
     let state = AppState {
         rooms: RoomStore::new(&data_dir),
         seats: SeatRegistry::new(&data_dir),
+        projects: ProjectStore::new(&data_dir),
+        identities: IdentityRegistry::new(&data_dir),
         challenges: ChallengeBook::default(),
         limiter: RateLimiter::default(),
         store_cipher,
@@ -67,6 +74,16 @@ pub fn api_router(
             .map(Arc::from),
     };
     let mut router = Router::new()
+        .route("/v1/projects", post(projects_api::create_project_handler))
+        .route(
+            "/v1/projects/{id}/identities/challenge",
+            post(projects_api::challenge_handler),
+        )
+        .route(
+            "/v1/projects/{id}/identities",
+            post(projects_api::register_handler),
+        )
+        .route("/v1/projects/{id}/items", get(projects_api::items_handler))
         .route("/v1/rooms", post(rooms::create_room_handler))
         .route("/v1/rooms/{id}", get(rooms::room_meta_handler))
         .route("/v1/rooms/{id}/challenge", post(auth::challenge_handler))
