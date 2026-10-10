@@ -567,7 +567,11 @@ impl Mailspace {
 fn role_implies_kind(role: &str, kind: &str) -> bool {
     matches!(
         (role, kind),
-        ("tasks", "task") | ("needs", "need") | ("wants", "want") | ("memos", "memo")
+        ("tasks", "task")
+            | ("needs", "need")
+            | ("wants", "want")
+            | ("memos", "memo")
+            | ("rules", "rule")
     )
 }
 

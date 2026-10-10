@@ -618,6 +618,9 @@ Rules:
 `chat`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`,
 `cycle`, `trace`, `graph`, `step`.
 
+After 10.2.0 the tree also has `rule`: project rules every seat can read.
+`--local` marks a rule that a later sync should skip. Nothing syncs rules yet.
+
 `chat` is new in 10.2.0: `vivi chat room create`, `join`, `rooms`, `send`,
 `read`, `watch`, `flush`, `pull`, `resync`, `prune`, `leave`, and `status`
 connect two vivi checkouts anywhere on the internet through a public

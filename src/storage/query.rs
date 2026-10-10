@@ -356,7 +356,7 @@ impl Storage {
             ""
         };
         let absorb_clause = match local_role {
-            "inbox" | "tasks" | "needs" | "wants" | "memos" => " AND absorbed_at IS NULL",
+            "inbox" | "tasks" | "needs" | "wants" | "memos" | "rules" => " AND absorbed_at IS NULL",
             _ => "",
         };
         let sql = format!(

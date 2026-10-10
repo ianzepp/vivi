@@ -29,6 +29,7 @@ pub fn to_text(report: &BootReport) -> String {
     unabsorbed(&mut out, report);
     handles(&mut out, report);
     goals(&mut out, report);
+    rules(&mut out, report);
     memos(&mut out, report);
     charters(&mut out, report);
     triage(&mut out, report);
@@ -185,6 +186,22 @@ fn frontier_line(row: &GoalRow) -> String {
         .map(|unit| format!("{} {}", unit.unit, unit.status))
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+fn rules(out: &mut String, report: &BootReport) {
+    if report.rules.is_empty() {
+        return;
+    }
+    heading(out, "rules: project rules");
+    for row in &report.rules {
+        line(
+            out,
+            format!(
+                "  {}  {:<4} {:<7} {}",
+                row.handle, row.age, row.scope, row.subject
+            ),
+        );
+    }
 }
 
 fn memos(out: &mut String, report: &BootReport) {

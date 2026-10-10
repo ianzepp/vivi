@@ -40,7 +40,8 @@ use handles::{HandleRow, TriageSlice, Verdict};
 use probe::{ProbeOutput, ProbeRun, ProbeSection};
 pub use truncate::Truncation;
 use truncate::{
-    CAP_CHARTER_LINES, CAP_CHARTERS, CAP_GOALS, CAP_LOOPS, CAP_MEMOS, CAP_SEATS, CAP_UNABSORBED,
+    CAP_CHARTER_LINES, CAP_CHARTERS, CAP_GOALS, CAP_LOOPS, CAP_MEMOS, CAP_RULES, CAP_SEATS,
+    CAP_UNABSORBED,
 };
 
 /// One role's seat binding against its observed process state.
@@ -90,6 +91,15 @@ pub struct GoalRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claim_mismatch: Option<String>,
     pub frontier: Vec<goals::FrontierUnit>,
+}
+
+/// One active project rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleRow {
+    pub handle: String,
+    pub age: String,
+    pub scope: String,
+    pub subject: String,
 }
 
 /// One durable role memo.
@@ -146,6 +156,8 @@ pub struct BootReport {
     pub handles: Vec<HandleRow>,
     /// Registered goal documents with register tallies.
     pub goals: Vec<GoalRow>,
+    /// Active project rules, shared by every seat.
+    pub rules: Vec<RuleRow>,
     /// Durable role memos.
     pub memos: Vec<MemoRow>,
     /// Opening lines of the charters for roles holding open work.
@@ -184,6 +196,7 @@ impl BootReport {
         let loops = collect_loops(mailspace, &storage, &views, &mut truncations);
         let unabsorbed = collect_unabsorbed(mailspace, now, &mut truncations)?;
         let goals = collect_goals(mailspace, &mut truncations);
+        let rules = collect_rule_rows(mailspace, now, &mut truncations)?;
         let memos = collect_memos(mailspace, now, &mut truncations)?;
         let charters = collect_charters(&views, &handles);
         let triage = handles::triage_slices(&handles);
@@ -200,6 +213,7 @@ impl BootReport {
             unabsorbed,
             handles,
             goals,
+            rules,
             memos,
             charters,
             triage,
@@ -530,6 +544,24 @@ fn goal_read(mailspace: &Mailspace, path: &str) -> GoalRead {
         Ok(text) => goals::read_goal(&text),
         Err(_) => goals::read_goal(""),
     }
+}
+
+fn collect_rule_rows(
+    mailspace: &Mailspace,
+    now: DateTime<Utc>,
+    truncations: &mut Vec<Truncation>,
+) -> Result<Vec<RuleRow>, VivariumError> {
+    let rules = mailspace.list_rules(None, false)?;
+    let rows = rules
+        .into_iter()
+        .map(|rule| RuleRow {
+            handle: rule.handle,
+            age: age_label(&rule.date, now),
+            scope: rule.scope,
+            subject: one_line(&rule.subject, 72),
+        })
+        .collect();
+    Ok(truncate::capped(rows, CAP_RULES, "rules", truncations))
 }
 
 fn collect_memos(

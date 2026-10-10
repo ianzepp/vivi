@@ -19,6 +19,7 @@ pub const CAP_WANTS: usize = 20;
 pub const CAP_GOALS: usize = 12;
 pub const CAP_FRONTIER: usize = 8;
 pub const CAP_MEMOS: usize = 10;
+pub const CAP_RULES: usize = 10;
 pub const CAP_CHARTERS: usize = 8;
 pub const CAP_CHARTER_LINES: usize = 6;
 pub const CAP_PROBE_LINES: usize = 60;

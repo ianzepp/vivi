@@ -34,6 +34,7 @@ consistently:
 | `want` | Deferred work or an idea whose precondition is not yet met |
 | `mail` | Question, report, decision, or handoff communication |
 | `memo` | Private durable context for one role; not work or communication |
+| `rule` | Project rule shared by every seat; not work and not a private memo |
 
 The board aggregates open work. Kind-specific `list` commands orient within one
 queue. `show` loads one handle. Use `dump` only for bounded audits or recovery;
@@ -61,8 +62,9 @@ vivi task show --project <root> <handle>
 
 `vivi boot` prints the whole project frame in one read: seat bindings against
 observed process state, declared cadences and their silence, unabsorbed mail,
-open handles with verdicts, registered goals with register tallies, memos,
-charter heads, and the backlog sliced into seat-sized groups. It is read-only,
+open handles with verdicts, registered goals with register tallies, active
+project rules, memos, charter heads, and the backlog sliced into
+seat-sized groups. It is read-only,
 stateless, and idempotent, so it serves a cold boot and a post-compaction warm
 boot alike, and two runs are comparable.
 
@@ -190,13 +192,52 @@ and drop. They do not change graph readiness, `vivi step`, or `need bind`.
 They stay in this mailspace; nothing syncs them.
 
 Memos preserve durable role context. They are not routing, assignment, or
-completion evidence. Delete superseded unsealed memos; absorb memos that should
-be retained as immutable history.
+completion evidence. Standing project rules belong in `vivi rule`. Delete
+superseded unsealed memos; absorb memos that should be retained as immutable
+history.
 
 When a mailspace has a configured archive, absorption exports one Markdown
 record to that dedicated Git repository. Vivi does not stage or commit the
 archive. Use the archive commands and `--help`; do not write exported files by
 hand.
+
+## Rules
+
+A rule is the project's shared rule set. Every seat reads the active set with
+`vivi rule list` and, when any are active, in `vivi boot`. The boot section
+is capped at 10, ordered by subject then handle, and omitted when empty. A
+rule is not work: it has no backlog node, and `vivi step` does not dispatch
+it.
+
+```sh
+vivi rule save --for <identity> --subject <s> (--body <b> | --body-file <f>) [--local]
+vivi rule list [--for <identity>] [--all] [--json]
+vivi rule show <handle> [--json]
+vivi rule search <query> [--for <identity>] [--subject] [--all] [--json]
+vivi rule supersede <handle> --for <identity> --subject <s> (--body <b> | --body-file <f>) [--local]
+vivi rule retire <handle> --for <identity> [--note]
+vivi rule absorb <handle> --for <identity> [--note]
+```
+
+The bytes are written once. There is no edit and no delete. `supersede`
+saves a new rule and drops the old one from the active set. `show` still
+reads the old rule and names the successor. `retire` withdraws a rule. A
+second retire prints `{handle} already retired` and appends nothing.
+`absorb` seals a rule. An absorbed rule refuses a later retire or
+supersede. Absorbing a retired or superseded rule is allowed; superseded
+still outranks retired, and retired still outranks absorbed. Any mailspace
+identity may retire, supersede, or absorb. `--for` records who acted.
+
+`--local` writes `X-Vivi-Rule-Scope: local` on that rule. Without it the
+scope is `project`. Scope is fixed when the rule is saved. A superseding
+rule has its own scope. Nothing syncs rules yet. The header is the mark a
+later sync will use to skip a local rule.
+
+List, search, and boot show the active set. `--all` includes retired,
+superseded, and absorbed rules. `--for` on list and search keeps rules that
+identity wrote, including names it used before a rename. Duplicate subjects
+are allowed. Search matches subject and body, case-insensitively.
+`--subject` matches the subject only.
 
 ## Work Graphs
 

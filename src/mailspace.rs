@@ -28,6 +28,7 @@ mod marks;
 mod merge;
 mod mermaid;
 mod reply;
+mod rules;
 mod step;
 #[cfg(test)]
 mod tests;
@@ -60,6 +61,7 @@ pub use lifecycle::{
 pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate_marks_filter};
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
+pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
 pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};
 pub use thread::{MailspaceThreadMessage, print_thread};
 pub use trace::{print_trace, print_trace_json};
@@ -401,9 +403,10 @@ pub fn canonical_local_role(role: &str) -> Result<String, VivariumError> {
         "need" | "needs" => Ok("needs".into()),
         "want" | "wants" => Ok("wants".into()),
         "memo" | "memos" => Ok("memos".into()),
+        "rule" | "rules" => Ok("rules".into()),
         "done" | "closed" => Ok("done".into()),
         _ => Err(VivariumError::Message(format!(
-            "unsupported local folder '{role}'; expected inbox, archive, trash, sent, drafts, tasks, needs, wants, memos, or done"
+            "unsupported local folder '{role}'; expected inbox, archive, trash, sent, drafts, tasks, needs, wants, memos, rules, or done"
         ))),
     }
 }

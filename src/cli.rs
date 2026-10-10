@@ -19,9 +19,10 @@ pub use mailspace_command::{
     LocalSendCommand, MailAbsorbStatus, MailCommand, MailDumpCommand, MailListCommand,
     MailReplyCommand, MailThreadCommand, MailspaceArchiveCommand, MailspaceCommand,
     MailspaceIdentityCommand, MailspaceImportCommand, MailspaceWatchCommand, MarkCommand,
-    MemoCommand, NeedCommand, NeedSendCommand, TaskCommand, TaskDumpCommand, TaskDumpStatusArg,
-    TaskFromCommand, TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand,
-    WantStatus, WatchCommon,
+    MemoCommand, NeedCommand, NeedSendCommand, RuleCommand, RuleRetireCommand, RuleSaveCommand,
+    RuleSupersedeCommand, TaskCommand, TaskDumpCommand, TaskDumpStatusArg, TaskFromCommand,
+    TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand, WantStatus,
+    WatchCommon,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 
@@ -97,6 +98,12 @@ pub enum Command {
     Memo {
         #[command(subcommand)]
         command: MemoCommand,
+    },
+
+    /// Save and inspect project rules shared by every seat
+    Rule {
+        #[command(subcommand)]
+        command: RuleCommand,
     },
 
     /// Register goal document paths the Mind should keep monitoring

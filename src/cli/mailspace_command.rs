@@ -3,12 +3,14 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Parser, Subcommand};
 
 mod graph_command;
+mod rule_command;
 mod work_command;
 pub use graph_command::{
     GraphActivateCommand, GraphApplyCommand, GraphAuditCommand, GraphCommand, GraphCompleteCommand,
     GraphConnectCommand, GraphEdgeAddCommand, GraphEdgeCommand, GraphExportCommand,
     GraphImportCommand, GraphNodeAddCommand, GraphNodeCommand, GraphReadyCommand, GraphShowCommand,
 };
+pub use rule_command::{RuleCommand, RuleRetireCommand, RuleSaveCommand, RuleSupersedeCommand};
 pub use work_command::{
     AbsorbCommand, GoalCommand, MailDumpCommand, MarkCommand, MemoCommand, NeedCommand,
     TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand, WantStatus,

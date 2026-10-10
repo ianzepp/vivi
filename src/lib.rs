@@ -3,7 +3,7 @@
 //! Project mailspace for Vivi.
 //!
 //! This crate owns durable per-project coordination state — tasks, needs,
-//! wants, mail, memos, goals, roles, and executable work graphs — plus the
+//! wants, mail, memos, rules, goals, roles, and executable work graphs — plus the
 //! `vivi` binary.
 
 pub mod boot;
