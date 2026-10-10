@@ -34,9 +34,9 @@ what has actually been completed.
 
 ## Install
 
-Current release: **10.1.0**
+Current release: **10.2.0**
 ([GitHub releases](https://github.com/ianzepp/vivi/releases),
-[notes](docs/release-v10.1.0.md)).
+[notes](docs/release-v10.2.0.md)).
 
 Release binaries are published as assets on this repository's GitHub releases,
 and that is the only distribution channel — there is no package-manager formula
@@ -594,28 +594,31 @@ Everything Vivi owns lives under the project's `.vivi/` directory:
 
 ```
 myproject/.vivi/
-├── mailspace.toml         # name, description, identities, archive, probes, judgment
+├── mailspace.toml         # name, description, identities, archive, probes, judgment, chat
 ├── mail.sqlite            # items, events, goals, local links, and the work graphs
 ├── blobs/                 # content-addressed message payloads
+├── chat/                  # chat identity, room cursors, and the outbox; the directory gitignores itself
 └── judgment-corpus.jsonl  # shadow-screen answers, appended by `vivi step --apply`
 ```
 
 Rules:
 
 - `mail.sqlite` is the store; there is no separate index to rebuild
-- Message handles are short prefixes of Vivi-local `message_id` values, and are
-  stable within a mailspace
-- Nothing here is a cache: deleting `.vivi/` deletes that project's coordination
-  state and its local mail
+- Message handles are the first eight characters of the id. A chat item keeps
+  that id, and so that handle, on every checkout that pulls it. Any other
+  item's id is store-local, and its handle is stable inside that mailspace
+- Room items filed by `vivi chat pull` are a replica of the room. `chat prune`
+  can drop old ones, and `chat resync` rebuilds them
+- Deleting `.vivi/` deletes that project's coordination state, its local mail,
+  and the chat replica
 
 ## Commands
 
-`vivi --help` is the live top-level list. In 10.1.0 that is: `board`, `boot`,
-`mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`, `cycle`,
-`trace`, `graph`, `step`.
+`vivi --help` is the live top-level list. In 10.2.0 that is: `board`, `boot`,
+`chat`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`,
+`cycle`, `trace`, `graph`, `step`.
 
-The `chat` family joins that list with the chat substrate
-(release-prep for 10.2.0): `vivi chat room create`, `join`, `rooms`, `send`,
+`chat` is new in 10.2.0: `vivi chat room create`, `join`, `rooms`, `send`,
 `read`, `watch`, `flush`, `pull`, `resync`, `prune`, `leave`, and `status`
 connect two vivi checkouts anywhere on the internet through a public
 rendezvous server — rooms are real mailspaces, identity is a transparent

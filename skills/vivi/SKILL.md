@@ -377,7 +377,7 @@ separate repository (`vivi-server`); its wire truth is
 
 ```sh
 vivi chat room create [--seats N]   # mint a room id; creator takes seat 1
-vivi chat join <room> [--name ...]  # challenge -> sign -> seat binding
+vivi chat join <room> [--label ...]  # challenge -> sign -> seat binding
 vivi chat rooms                     # rooms joined from this mailspace
 vivi chat send <room> [--to <label>] [--subject <s>] (--body <b> | --body-file <f>)
                     [--kind need|task|want] [--reply-to <handle|id>] [--ref <handle|id>]...
