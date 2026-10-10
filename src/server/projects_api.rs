@@ -251,6 +251,75 @@ pub async fn register_handler(
     }
 }
 
+pub async fn directory_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let projects = state.projects.clone();
+    let project_id = id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let dir = projects.project_dir(&project_id)?;
+        if dir.join("project.json").is_file() {
+            Ok(())
+        } else {
+            Err(ProjectError::ProjectNotFound)
+        }
+    })
+    .await
+    {
+        Ok(Ok(())) => (),
+        Ok(Err(err)) => return project_error(err),
+        Err(err) => {
+            return project_error(ProjectError::Storage(format!(
+                "project lookup failed: {err}"
+            )));
+        }
+    }
+
+    let Some(token) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    };
+    let identities = state.identities.clone();
+    let token = token.to_owned();
+    let project_id = id.clone();
+    match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token)).await {
+        Ok(Some(_)) => (),
+        Ok(None) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "invalid bearer token",
+            );
+        }
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "identity lookup failed",
+            );
+        }
+    }
+
+    let identities = state.identities.clone();
+    match tokio::task::spawn_blocking(move || identities.list(&id)).await {
+        Ok(members) => Json(json!({"members": members})).into_response(),
+        Err(_) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "identity lookup failed",
+        ),
+    }
+}
+
 pub async fn items_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,

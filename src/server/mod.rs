@@ -84,6 +84,10 @@ pub fn api_router(
             "/v1/projects/{id}/identities",
             post(projects_api::register_handler),
         )
+        .route(
+            "/v1/projects/{id}/directory",
+            get(projects_api::directory_handler),
+        )
         .route("/v1/projects/{id}/items", get(projects_api::items_handler))
         .route("/v1/rooms", post(rooms::create_room_handler))
         .route("/v1/rooms/{id}", get(rooms::room_meta_handler))

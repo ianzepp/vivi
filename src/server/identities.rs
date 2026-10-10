@@ -47,6 +47,12 @@ pub enum RegisterError {
 }
 
 /// Identity binding outcome returned to the client once.
+#[derive(Debug, Clone, Serialize)]
+pub struct IdentitySummary {
+    pub name: String,
+    pub fingerprint: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RegisterOutcome {
     pub name: String,
@@ -177,6 +183,22 @@ impl IdentityRegistry {
             expires_at,
             fingerprint,
         })
+    }
+
+    /// List registered identities without exposing persisted public-key or token data.
+    pub fn list(&self, project_id: &str) -> Vec<IdentitySummary> {
+        let _guard = self.lock();
+        let mut identities: Vec<_> = self
+            .load(project_id)
+            .identities
+            .into_iter()
+            .map(|identity| IdentitySummary {
+                name: identity.name,
+                fingerprint: identity.fingerprint,
+            })
+            .collect();
+        identities.sort_by(|a, b| a.name.cmp(&b.name));
+        identities
     }
 
     /// Resolve a presented bearer to its identity record. Digest comparison
