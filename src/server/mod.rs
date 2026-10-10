@@ -5,6 +5,7 @@
 pub mod admin;
 pub mod auth;
 pub mod crypto;
+pub mod identities;
 pub mod ids;
 pub mod messages;
 pub mod project_wake;
