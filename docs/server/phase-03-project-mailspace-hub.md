@@ -1,10 +1,12 @@
 # Phase 03 — Project mailspace hub
 
 Status: **DRAFT**, recorded 2026-10-10 from a design conversation with the repo
-owner. Nothing here is built or scheduled. Each item is marked **Decided**,
-**Proposed** (an idea the owner has not confirmed), or **Open** (deliberately
-undecided). Until this phase is built, the room-based wire contract in
-[`contract.md`](contract.md) is the shipped behavior.
+owner. Nothing here is built or scheduled. Admission by introduction and the
+reserved `postmaster` identity were decided in a follow-up conversation the
+same day. Each item is marked **Decided**, **Proposed** (an idea the owner
+has not confirmed), or **Open** (deliberately undecided). Until this phase is
+built, the room-based wire contract in [`contract.md`](contract.md) is the
+shipped behavior.
 
 ## Why this phase exists
 
@@ -68,6 +70,18 @@ who the tenant is, what travels, and where the truth lives.
      private from the server. There is no end-to-end encryption.
    - Handles in a mail resolve for its recipient because every member holds every
      work item.
+8. **Admission is by introduction.** A public key becomes admissible when a
+   member of the project says so: the member's signed statement carries the
+   candidate key (and, proposed below, the identity name it may register),
+   and the server treats that key as admissible from then on. Knowing the
+   project id grants nothing; access requires a signature from a key a member
+   vouched for. The new developer's key reaches the vouching member out of
+   band first.
+9. **`postmaster` is a reserved identity.** It exists in every project,
+   cannot be registered by a client, and is the administrative addressee of
+   the mailspace. A server-side LLM that interprets mail addressed to it is a
+   future phase (see below); nothing about the loop is needed to build this
+   phase.
 
 ## What carries over from phases 01 and 02
 
@@ -117,14 +131,57 @@ who the tenant is, what travels, and where the truth lives.
   a rename is a new identity.
 - A directory call lists a project's members and roles.
 - A connecting client sees the inboxes of every identity bound to its key.
+- Any admitted member may vouch for a new key, so trust is transitive one hop
+  at a time; the who-admitted-whom chain in the log is the accountability
+  record.
+- The vouch pins the identity name along with the key ("this key is
+  `alice-external`"), so the human judgment at admission covers who the person
+  is.
+- The vouching member verifies the key fingerprint with the new developer
+  through a second channel (voice works), because a key swapped in transit
+  gets the wrong party admitted.
+- The project creator's key is admitted at creation — the first key has no
+  introducer.
+- Revocation and re-keying share the vouching privilege and are themselves
+  append events.
+- The vouch travels on the wire as structured mail to `postmaster`, processed
+  deterministically at submit: a fixed format, a privilege check, the
+  admission appended, and an ack in the submit response. A dedicated CLI
+  verb, if wanted, is client-side sugar that composes and sends the same
+  mail. Free-form prose waits for the postmaster loop.
+- Governance mail (admissions, revocations, re-keys) is visible to every
+  member — a scoped exception to mail's recipient-only visibility — because
+  the vouching chain is the accountability record.
+
+## Future phase: the postmaster loop
+
+Deferred by the owner on 2026-10-10. When it is built, the guardrails settled
+in the design conversation apply:
+
+- The model extracts a typed operation (`admit key K as name N`, `revoke K`,
+  `re-key N to K'`); authorization and execution stay in deterministic code.
+- Quoted and forwarded content is data. Operation parameters come from the
+  authenticated sender's own words and attachments; a public key found inside
+  a forwarded quote is inert.
+- The structured deterministic path remains the ground truth; CI and the
+  smoke script never depend on an LLM, an API key, or a budget.
+- Postmaster replies mean the server authors mail and mints ids — a scoped,
+  attributed exception to decided item 5. The confirmation gate on
+  irreversible operations is the main reason to allow it.
+- Interpretation runs as an async loop over the append-only inbox: an outage
+  or a budget cap means mail waits, and execution is idempotent per item id.
+- Open when the phase starts: model and provider, in-process versus a sidecar
+  process, cost ceilings, and which operations are confirmation-gated.
 
 ## Open
 
-- **Joining a project.** Deliberately undecided. Note the stakes: membership is
-  read access to the whole backlog, so a model where knowing an id is enough
-  would leak all of it.
-- Lost keys, releasing or re-keying a name, and name squatting under first-come
-  registration. These are the same question as joining.
+- **The vouch's shape.** Structured mail to `postmaster` versus a dedicated
+  `vivi` command. The recommended layering is recorded in Proposed: mail on
+  the wire, command as sugar.
+- Key lifecycle details: lost keys and re-keying (a new key admitted by
+  another member, and whether the name and history follow it), name release,
+  and name squatting if a vouch ever names nothing. Admission settles the
+  front door; recovery stays open.
 - Retention and deletion on a server that is the source of truth.
 - How an assigned work item is represented to members who are not the assignee
   (the item plus assignee metadata, or per-recipient delivered copies).
