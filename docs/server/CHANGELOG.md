@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — phase 03 core (2026-10-10)
+
+The project, not the room, is the tenant: `/v1/projects` is the new wire,
+additive alongside the frozen rooms contract. One sealed vivi mailspace per
+project is the store and the read path (deferred P2-8 closed — no sidecar
+content index); clients mint every id (`msg_` + 24 hex) and the server
+ingests under presented ids, refusing an id that already names different
+bytes. Flat identity names bind to ED25519 keys through challenge/sign
+registration gated on admission; admission is by introduction — a member's
+structured vouch mail to the reserved `postmaster` identity admits a new
+key deterministically at submit, and the creator bootstraps at project
+creation. Reads are sequence-cursored with per-identity visibility (work
+items and governance mail member-visible; mail recipient/sender only), a
+directory lists members with fingerprints, and a per-project wake registry
+grounds a future long-poll. Design and wire record:
+`docs/phase-03-project-mailspace-hub.md`.
+
 ## v0.1.0 — 2026-10-09
 
 First light. The chat substrate is alive and serving production traffic at

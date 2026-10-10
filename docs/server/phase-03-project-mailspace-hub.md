@@ -1,15 +1,19 @@
 # Phase 03 — Project mailspace hub
 
-Status: **DRAFT**, recorded 2026-10-10 from a design conversation with the repo
-owner. Nothing here is built or scheduled. Admission by introduction and the
-reserved `postmaster` identity were decided in a follow-up conversation the
-same day. Each item is marked **Decided**, **Proposed** (an idea the owner
-has not confirmed), or **Open** (deliberately undecided). Build work from
-this draft is tracked as needs and wants in the project mailspace
-(`.vivi/`, roles `mind` and `hand`); this document is the design record
-and the rulings, and the backlog holds the live state. Until this phase
-is built, the room-based wire contract in [`contract.md`](contract.md) is
-the shipped behavior.
+Status: **CORE BUILT 2026-10-10** (Speedboat, 8 hand units: project store
+and sync, identity registration, admission by introduction, governance
+mail, visibility scoping, directory, the append endpoint). The wire as
+built is recorded at the end of this document; the postmaster LLM loop
+remains a future phase. Until clients speak it, the room-based wire
+contract in [`contract.md`](contract.md) is the shipped behavior, and the
+rooms API stays alongside (migration is the open want `b4d07a2a`).
+Recorded 2026-10-10 from a design conversation with the repo owner;
+admission by introduction and the reserved `postmaster` identity were
+decided in a follow-up conversation the same day. Each item is marked
+**Decided**, **Proposed** (an idea the owner has not confirmed), or
+**Open** (deliberately undecided). Build work is tracked as needs and
+wants in the project mailspace (`.vivi/`, roles `mind` and `hand`); this
+document is the design record and the rulings.
 
 ## Why this phase exists
 
@@ -206,3 +210,59 @@ in the design conversation apply:
 - **P2-8** becomes the core of the phase.
 - The vivi client's one-room-per-mailspace and `watch` discussion is moot: a
   local mailspace maps to one project.
+
+## Wire contract as built (2026-10-10)
+
+Endpoints under `/v1/projects`, additive alongside the frozen rooms
+contract. Authentication is per-identity ED25519 challenge/sign with digest
+bearer tokens, mirroring the rooms flow. All item content is sealed at rest
+with the server key; the project mailspace under `DATA_DIR/projects/<id>/`
+is the store and the read path (P2-8 closed); `items.json` beside it holds
+only the sequence counter and replay digests — transport state, never
+content.
+
+- `POST /v1/projects` `{public_key_pem, creator_name}` → 201
+  `{project_id, admission: {name, fingerprint}}`. The creator's key is the
+  founding admission (bootstrap).
+- `POST /v1/projects/{id}/identities/challenge` `{public_key_pem}` →
+  `{challenge_id, challenge, expires_in}`, keyed to the project and key
+  fingerprint.
+- `POST /v1/projects/{id}/identities` `{name, public_key_pem,
+  challenge_id, signature_base64}` → 201 `{name, token,
+  token_expires_at, fingerprint}`. The name must be admitted for exactly
+  the presented key (canonical SPKI match), else 409 `admission_required`.
+- `GET /v1/projects/{id}/directory` (bearer) → `{members: [{name,
+  fingerprint}]}`, sorted by name.
+- `POST /v1/projects/{id}/items` (bearer) with a required `Message-ID`
+  header of `msg_` + 24 lowercase hex — clients mint every id (decided
+  item 5); there is no server-minted form. Body `{to, subject, body,
+  kind, in_reply_to, refs}`; `from` is always the authenticated identity.
+  Kinds `need`/`task`/`want` file by kind; `mail` or absent is plain.
+  Body cap 64 KiB (413); 30 sends/min per project and member (429). → 201
+  `{message_id, sequence}`; a replay of the same id and bytes → 200 with
+  `duplicate: true`. An item addressed `to: postmaster` is a governance
+  vouch with body `{"vouch": {"name", "public_key_pem"}}`, processed
+  deterministically at submit: the admission is written first, then the
+  item ingests; a malformed vouch or unknown voucher is 400 with nothing
+  stored; the same name for a different key is 409.
+- `GET /v1/projects/{id}/items?since=N` (bearer) → `{records:
+  [{sequence, message_id, from, to, kind, in_reply_to, refs, body,
+  raw_eml}], next_cursor}`. Visibility per decided item 7: work items and
+  postmaster governance mail are member-visible; other mail is visible
+  only to its recipient and sender. Sequences are transport cursors and
+  never part of item identity; filtered items do not advance
+  `next_cursor`.
+
+### Carried forward from the build
+
+- Identity tokens have no refresh endpoint; re-registering a taken name is
+  refused. A refresh or re-auth path is future work.
+- The append rate limiter folds the identity name into the limiter's u32
+  seat slot (`DefaultHasher`); a theoretical name collision shares one
+  bucket. True string keying wants a `safety.rs` variant.
+- Revocation and re-key events share the vouch privilege by design but are
+  not built; the registry admits only.
+- Per-project wake exists in the store (`ProjectWake`) with no long-poll
+  endpoint wired yet; the items read is a plain poll.
+- The smoke script has no project-API legs yet (tracked as a want; the
+  vivi client speaking the project API is its precondition).
