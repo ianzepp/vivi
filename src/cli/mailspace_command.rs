@@ -10,8 +10,8 @@ pub use graph_command::{
     GraphImportCommand, GraphNodeAddCommand, GraphNodeCommand, GraphReadyCommand, GraphShowCommand,
 };
 pub use work_command::{
-    AbsorbCommand, GoalCommand, MailDumpCommand, MemoCommand, NeedCommand, TaskDumpCommand,
-    TaskDumpStatusArg, TaskStatus, WantCommand, WantStatus,
+    AbsorbCommand, GoalCommand, MailDumpCommand, MarkCommand, MemoCommand, NeedCommand,
+    TaskDumpCommand, TaskDumpStatusArg, TaskStatus, WantCommand, WantStatus,
 };
 
 #[derive(Debug, Subcommand)]

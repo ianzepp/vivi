@@ -24,12 +24,15 @@ pub struct MailspaceThreadMessage {
     pub parent_content_id: Option<String>,
     pub link_source: Option<String>,
     pub inferred: bool,
+    /// Folded mark slugs, sorted. Empty when the item has none.
+    pub marks: Vec<String>,
 }
 
 struct ThreadCandidate {
     view: StoredMessageView,
     body: String,
     kind: Option<String>,
+    marks: Vec<String>,
 }
 
 /// Print a thread of messages by handle.
@@ -147,7 +150,13 @@ fn load_candidate(
     let events = storage.list_mailspace_events(&view.message_id)?;
     let body = text_body(&data);
     let kind = effective_kind(&view.local_role, &data, &events);
-    Ok(ThreadCandidate { view, body, kind })
+    let marks = super::marks::folded_marks(&events);
+    Ok(ThreadCandidate {
+        view,
+        body,
+        kind,
+        marks,
+    })
 }
 
 fn connected_content_ids(
@@ -263,6 +272,7 @@ fn thread_message(
         parent_content_id: link.map(|link| link.parent_content_id.clone()),
         link_source: link.map(|link| link.source.clone()),
         inferred: link.is_some_and(|link| link.source == "inferred"),
+        marks: candidate.marks.clone(),
     }
 }
 
@@ -288,7 +298,11 @@ fn print_text_thread(messages: &[MailspaceThreadMessage]) {
         println!("From: {}", message.from);
         println!("To: {}", message.to);
         println!("Content: {}", message.content_id);
-        println!("Subject: {}\n", message.subject);
+        println!("Subject: {}", message.subject);
+        if !message.marks.is_empty() {
+            println!("Marks: {}", message.marks.join(" "));
+        }
+        println!();
         println!("{}", message.body.trim());
     }
 }

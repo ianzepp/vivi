@@ -24,6 +24,7 @@ mod graph_mutate;
 mod identity;
 mod kind;
 mod lifecycle;
+mod marks;
 mod merge;
 mod mermaid;
 mod reply;
@@ -56,6 +57,7 @@ pub use lifecycle::{
     CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult, WantListOptions,
     WantListRecord, WantMetadataUpdate,
 };
+pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate_marks_filter};
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
 pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};

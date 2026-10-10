@@ -53,6 +53,33 @@ impl Storage {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Append every event in one transaction, sharing one timestamp.
+    ///
+    /// An empty slice writes nothing. `event_id` order is the insertion order,
+    /// which keeps a same-timestamp batch in the caller's sequence.
+    ///
+    /// # Errors
+    /// Returns an error if the transaction cannot be opened or any insert
+    /// fails. A failure leaves the log unchanged.
+    pub fn append_mailspace_events(
+        &mut self,
+        events: &[MailspaceEventInput],
+    ) -> Result<(), VivariumError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction().map_err(|error| {
+            VivariumError::Other(format!("failed to open event transaction: {error}"))
+        })?;
+        let occurred_at = Utc::now().to_rfc3339();
+        for event in events {
+            append_event_tx(&tx, event, &occurred_at)?;
+        }
+        tx.commit().map_err(|error| {
+            VivariumError::Other(format!("failed to commit event transaction: {error}"))
+        })
+    }
+
     /// Check whether an identical event already exists at the given timestamp.
     ///
     /// # Errors

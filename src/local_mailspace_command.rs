@@ -578,6 +578,7 @@ fn list_tasks(
         "task",
         from,
         to,
+        &[],
         json,
     )
 }

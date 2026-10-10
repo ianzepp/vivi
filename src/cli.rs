@@ -18,10 +18,10 @@ pub use mailspace_command::{
     GraphNodeAddCommand, GraphNodeCommand, GraphReadyCommand, GraphShowCommand, KindWatchCommand,
     LocalSendCommand, MailAbsorbStatus, MailCommand, MailDumpCommand, MailListCommand,
     MailReplyCommand, MailThreadCommand, MailspaceArchiveCommand, MailspaceCommand,
-    MailspaceIdentityCommand, MailspaceImportCommand, MailspaceWatchCommand, MemoCommand,
-    NeedCommand, NeedSendCommand, TaskCommand, TaskDumpCommand, TaskDumpStatusArg, TaskFromCommand,
-    TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand, WantStatus,
-    WatchCommon,
+    MailspaceIdentityCommand, MailspaceImportCommand, MailspaceWatchCommand, MarkCommand,
+    MemoCommand, NeedCommand, NeedSendCommand, TaskCommand, TaskDumpCommand, TaskDumpStatusArg,
+    TaskFromCommand, TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand,
+    WantStatus, WatchCommon,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 

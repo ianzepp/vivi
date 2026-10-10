@@ -13,6 +13,7 @@ struct WorkListItem {
     from: String,
     to: String,
     subject: String,
+    marks: Vec<String>,
     last_event: Option<WorkListEvent>,
 }
 
@@ -32,6 +33,7 @@ pub(crate) fn print_work_lists(
     kind: &str,
     from: Option<&str>,
     to: Option<&str>,
+    marks: &[String],
     json: bool,
 ) -> Result<(), VivariumError> {
     let storage = mailspace.storage()?;
@@ -68,6 +70,7 @@ pub(crate) fn print_work_lists(
                 .map_or([].as_slice(), Vec::as_slice);
             work_list_item(message, kind, events)
         })
+        .filter(|item| vivi::mailspace::marks_include(&item.marks, marks))
         .collect::<Vec<_>>();
     if json {
         print_json(&items)
@@ -91,6 +94,7 @@ fn work_list_item(
         from: message.from_addr,
         to: message.to_addr,
         subject: message.subject,
+        marks: vivi::mailspace::folded_marks(events),
         last_event: events.last().map(work_list_event),
     }
 }

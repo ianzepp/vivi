@@ -62,6 +62,8 @@ pub struct WantListRecord {
     pub to: String,
     pub subject: String,
     pub metadata: BTreeMap<String, String>,
+    /// Folded mark slugs, sorted.
+    pub marks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,33 +228,22 @@ impl Mailspace {
         options: WantListOptions,
     ) -> Result<Vec<WantListRecord>, VivariumError> {
         let storage = self.storage()?;
+        let wants = wants_for_roles(self, identity, roles)?;
+        let ids = wants
+            .iter()
+            .map(|want| want.message_id.clone())
+            .collect::<Vec<_>>();
+        let events = storage.list_mailspace_events_for_messages(&ids)?;
         let mut records = Vec::new();
-        for role in roles {
-            for want in self.list_kind(identity, role, "want")? {
-                if want.absorbed_at.is_some() && *role == "wants" && !roles.contains(&"done") {
-                    continue;
-                }
-                let metadata = storage.item_metadata(&want.message_id)?;
-                if !metadata_matches(&metadata, &options) {
-                    continue;
-                }
-                records.push(WantListRecord {
-                    metadata,
-                    handle: want.handle,
-                    kind: "want".into(),
-                    status: if want.local_role == "done" {
-                        "done"
-                    } else {
-                        "open"
-                    }
-                    .into(),
-                    role: want.local_role,
-                    date: want.date,
-                    from: want.from_addr,
-                    to: want.to_addr,
-                    subject: want.subject,
-                });
+        for want in wants {
+            let metadata = storage.item_metadata(&want.message_id)?;
+            if !metadata_matches(&metadata, &options) {
+                continue;
             }
+            let marks = super::marks::folded_marks(
+                events.get(&want.message_id).map_or(&[][..], Vec::as_slice),
+            );
+            records.push(want_record(want, metadata, marks));
         }
         sort_wants(&mut records, &options.sort);
         Ok(records)
@@ -326,7 +317,7 @@ impl Mailspace {
         Ok(records)
     }
 
-    fn resolve_owned_message(
+    pub(super) fn resolve_owned_message(
         &self,
         identity: &str,
         handle: &str,
@@ -401,6 +392,47 @@ impl Mailspace {
 fn insert_optional(map: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {
     if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
         map.insert(key.into(), value);
+    }
+}
+
+fn wants_for_roles(
+    mailspace: &Mailspace,
+    identity: Option<&str>,
+    roles: &[&str],
+) -> Result<Vec<StoredMessageView>, VivariumError> {
+    let mut wants = Vec::new();
+    for role in roles {
+        for want in mailspace.list_kind(identity, role, "want")? {
+            if want.absorbed_at.is_some() && *role == "wants" && !roles.contains(&"done") {
+                continue;
+            }
+            wants.push(want);
+        }
+    }
+    Ok(wants)
+}
+
+fn want_record(
+    want: StoredMessageView,
+    metadata: BTreeMap<String, String>,
+    marks: Vec<String>,
+) -> WantListRecord {
+    WantListRecord {
+        status: if want.local_role == "done" {
+            "done"
+        } else {
+            "open"
+        }
+        .into(),
+        handle: want.handle,
+        kind: "want".into(),
+        role: want.local_role,
+        date: want.date,
+        from: want.from_addr,
+        to: want.to_addr,
+        subject: want.subject,
+        metadata,
+        marks,
     }
 }
 

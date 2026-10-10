@@ -1,6 +1,6 @@
 # Goal: Marks on needs and wants
 
-**Status**: pending — 0/3 delivered
+**Status**: done — 3/3 delivered
 
 ## Summary
 
@@ -125,9 +125,9 @@ vivi need list --for mind --mark bug --mark regression
 
 | Unit | Status |
 | --- | --- |
-| mark-commands | pending |
-| mark-read | pending |
-| mark-docs | pending |
+| mark-commands | done |
+| mark-read | done |
+| mark-docs | done |
 
 `mark-commands` is the four commands, the event append, the fold, the
 receipts, the holder check, the absorb refusal, the slug check, and CLI
@@ -135,6 +135,10 @@ tests for those paths. `mark-read` is the show line, the show JSON array,
 the list filter, the list JSON array, and tests that a mark survives promote
 and that `step` and `bind` ignore it. `mark-docs` is `skills/vivi/SKILL.md`
 and the needs-and-wants example in `README.md`.
+
+Delivered 2026-10-10. Fold tests live in `src/mailspace/marks_test.rs`.
+Command, show, list, promote, step, bind, and absorb coverage lives in
+`tests/marks_cli.rs`.
 
 ## Non-goals
 

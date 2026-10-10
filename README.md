@@ -415,7 +415,9 @@ Watch graph lifecycle with `--kinds graph --events node_ready` (also
 Needs and wants are also local messages with stable handles. Wants are parked in
 `Wants` for later prioritization. Promoting a want moves it to `Needs`, where it
 becomes first-cycle review material for the owner. Completing a need moves it
-to `Done` without mixing it into completed task listings.
+to `Done` without mixing it into completed task listings. A mark is an
+append-only slug on a need or a want (`mark` / `unmark`). `show` prints the
+folded set, and `list --mark` keeps items that carry every named slug.
 
 ```sh
 vivi want send --from ceo --to ceo \
@@ -428,6 +430,9 @@ vivi want list --for ceo --repo app --lane correctness \
   --sort priority,rank,created --json
 vivi want promote <handle> --for ceo --note "Prioritize next cycle"
 vivi need list --for ceo
+vivi need mark <handle> bug regression --for ceo
+vivi need list --for ceo --mark bug
+vivi need unmark <handle> bug --for ceo
 vivi need done <handle> --for ceo --note "Delegated and completed"
 vivi need list --for ceo --status done --json
 vivi want done <handle> --for ceo --note "No longer relevant"

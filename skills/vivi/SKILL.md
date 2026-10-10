@@ -174,9 +174,20 @@ task associations are read from — the work graph holds the dependency chains.
 A want carries no list of tasks created from it.
 
 `absorb` seals a record. After absorption it cannot be changed, reopened,
-promoted, dropped, reprioritized, or deleted. A later reply or derived task is
-a new record. Absorb only when the identity is finished with the item and its
-state should remain frozen.
+promoted, dropped, reprioritized, marked, or deleted. A later reply or derived
+task is a new record. Absorb only when the identity is finished with the item
+and its state should remain frozen.
+
+A need or a want can carry marks: free slugs such as `bug`. A mark is an
+event on the item, not a rewrite of the message. `need mark` / `need unmark`
+and the same pair on `want` each take the handle, one or more slugs, and
+`--for` the holder. Each slug is its own event. Repeating a slug that is
+already in that state changes nothing. `show` prints `Marks: bug regression`
+when any are present, sorted. `list --mark` is repeatable and keeps an item
+only when it carries every named slug. The slug is letters, numbers, dot,
+dash, and underscore, compared exactly. Marks survive promote, done, reopen,
+and drop. They do not change graph readiness, `vivi step`, or `need bind`.
+They stay in this mailspace; nothing syncs them.
 
 Memos preserve durable role context. They are not routing, assignment, or
 completion evidence. Delete superseded unsealed memos; absorb memos that should

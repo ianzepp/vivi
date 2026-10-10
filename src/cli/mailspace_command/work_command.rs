@@ -4,6 +4,25 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use super::MailAbsorbStatus;
 
+/// Add or remove marks on a need or a want.
+#[derive(Debug, Clone, Args)]
+pub struct MarkCommand {
+    /// Need or want handle or unambiguous prefix
+    pub handle: String,
+
+    /// Mark slug. Repeat to write one event per slug.
+    #[arg(required = true, value_name = "SLUG")]
+    pub slugs: Vec<String>,
+
+    /// Identity that holds the item
+    #[arg(long = "for")]
+    pub for_identity: String,
+
+    /// Project root to use
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
 /// Seal a mailspace record. Once absorbed, it can no longer be changed.
 #[derive(Debug, Clone, Args)]
 pub struct AbsorbCommand {
@@ -181,6 +200,10 @@ pub enum NeedCommand {
         #[arg(long, default_value = "open")]
         status: TaskStatus,
 
+        /// Keep needs that carry every named mark
+        #[arg(long = "mark")]
+        marks: Vec<String>,
+
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -258,6 +281,12 @@ pub enum NeedCommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+
+    /// Add marks to a need. Each slug is its own event.
+    Mark(MarkCommand),
+
+    /// Remove marks from a need. Each slug is its own event.
+    Unmark(MarkCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -299,6 +328,10 @@ pub enum WantCommand {
         /// Filter by lane metadata
         #[arg(long)]
         lane: Option<String>,
+
+        /// Keep wants that carry every named mark
+        #[arg(long = "mark")]
+        marks: Vec<String>,
 
         /// Sort by comma-separated fields: priority,rank,created
         #[arg(long, default_value = "created")]
@@ -424,6 +457,12 @@ pub enum WantCommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+
+    /// Add marks to a want. Each slug is its own event.
+    Mark(MarkCommand),
+
+    /// Remove marks from a want. Each slug is its own event.
+    Unmark(MarkCommand),
 }
 
 #[derive(Debug, Clone, ValueEnum)]

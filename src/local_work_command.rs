@@ -24,9 +24,11 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             from,
             to,
             status,
+            marks,
             json,
             project,
         } => {
+            vivi::mailspace::validate_marks_filter(marks)?;
             let mailspace = Mailspace::discover(project.as_deref())?;
             crate::local_work_list::print_work_lists(
                 &mailspace,
@@ -35,6 +37,7 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
                 "need",
                 from.as_deref(),
                 to.as_deref(),
+                marks,
                 *json,
             )?;
         }
@@ -84,6 +87,8 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             mailspace.backlog_bind_units(handle, units)?;
             println!("bound {handle}");
         }
+        NeedCommand::Mark(command) => mark_item(command, "need", true)?,
+        NeedCommand::Unmark(command) => mark_item(command, "need", false)?,
     }
     Ok(())
 }
@@ -107,6 +112,7 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
             status,
             repo,
             lane,
+            marks,
             sort,
             json,
             project,
@@ -120,6 +126,7 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
                 lane: lane.clone(),
                 sort: sort.clone(),
             },
+            marks,
             *json,
             project.as_deref(),
         )?,
@@ -151,8 +158,37 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
             note,
             project,
         } => close_want_drop(handle, for_identity, note.as_ref(), project.as_deref())?,
+        WantCommand::Mark(command) => mark_item(command, "want", true)?,
+        WantCommand::Unmark(command) => mark_item(command, "want", false)?,
     }
     Ok(())
+}
+
+fn mark_item(command: &vivi::cli::MarkCommand, kind: &str, add: bool) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(command.project.as_deref())?;
+    let writes = mailspace.set_marks(
+        &command.for_identity,
+        &command.handle,
+        kind,
+        add,
+        &command.slugs,
+    )?;
+    for write in writes {
+        print_mark(&write.handle, &write.slug, add, write.changed);
+    }
+    Ok(())
+}
+
+fn print_mark(handle: &str, slug: &str, add: bool, changed: bool) {
+    if add && changed {
+        println!("marked {handle} {slug}");
+    } else if add {
+        println!("{handle} already marked {slug}");
+    } else if changed {
+        println!("unmarked {handle} {slug}");
+    } else {
+        println!("{handle} already unmarked {slug}");
+    }
 }
 
 fn promote_want(
@@ -210,9 +246,11 @@ fn list_wants(
     to: Option<&str>,
     status: &WantStatus,
     options: WantListOptions,
+    marks: &[String],
     json: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
+    vivi::mailspace::validate_marks_filter(marks)?;
     let mailspace = Mailspace::discover(project)?;
     let from = crate::local_mail_list::resolve_list_header(&mailspace, from);
     let to = crate::local_mail_list::resolve_list_header(&mailspace, to);
@@ -226,7 +264,7 @@ fn list_wants(
                 "",
                 from.as_deref(),
                 to.as_deref(),
-            )
+            ) && vivi::mailspace::marks_include(&record.marks, marks)
         })
         .collect::<Vec<_>>();
     if json {
