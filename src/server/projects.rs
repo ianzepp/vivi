@@ -10,7 +10,7 @@
 //! persisted in the project sidecar; appends are serialized under a mutex.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ use vivi::storage::{MessageIngestRequest, is_traveling_id};
 
 use crate::crypto::{StoreCipher, set_owner_only};
 use crate::ids::{mint_room_id, normalize_room_id};
+use crate::project_wake::ProjectWake;
 
 /// Fixed ingest account: server-filed items belong to the project itself.
 const ACCOUNT: &str = "project";
@@ -71,9 +72,29 @@ pub struct AppendOutcome {
     pub duplicate: bool,
 }
 
+/// One mailspace item returned by the project read path.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ProjectRecord {
+    pub sequence: u64,
+    pub message_id: String,
+    pub kind: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub refs: Vec<String>,
+    pub body: String,
+    /// Exact content-addressed `.eml` bytes, suitable for replica ingestion.
+    pub raw_eml: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReadAfter {
+    pub records: Vec<ProjectRecord>,
+    /// Cursor for the last record returned, or the supplied cursor if empty.
+    pub next_cursor: u64,
+}
+
 /// Content sealed at rest, same shape and sealing as room sends
 /// (`messages::StoredContent`).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct StoredContent {
     subject: String,
     body: String,
@@ -108,6 +129,7 @@ struct ItemIndex {
 #[derive(Debug, Clone)]
 pub struct ProjectStore {
     projects_root: PathBuf,
+    wake: Arc<ProjectWake>,
 }
 
 fn append_lock() -> MutexGuard<'static, ()> {
@@ -231,7 +253,13 @@ impl ProjectStore {
     pub fn new(data_dir: &Path) -> Self {
         Self {
             projects_root: data_dir.join("projects"),
+            wake: Arc::new(ProjectWake::default()),
         }
+    }
+
+    /// Per-project wake registry; fires on every fresh append.
+    pub fn wake(&self) -> &ProjectWake {
+        &self.wake
     }
 
     /// Mint a collision-retried project id and create its mailspace.
@@ -380,10 +408,96 @@ impl ProjectStore {
             content_sha256,
         });
         write_index(&dir, &index)?;
+        // Fresh state arrived: wake long-poll waiters on this project.
+        // Duplicates change nothing and wake nothing.
+        self.wake.notify(&project_id);
         Ok(AppendOutcome {
             item_id: item.id.clone(),
             sequence,
             duplicate: false,
+        })
+    }
+
+    /// Read project items after a transport cursor. Ordering and bytes come
+    /// from the project mailspace; the sequence is the one-based position in
+    /// that insertion-ordered stream and does not expose sidecar state.
+    pub fn read_after(
+        &self,
+        cipher: &StoreCipher,
+        raw_id: &str,
+        since: u64,
+    ) -> Result<ReadAfter, ProjectError> {
+        let dir = self.project_dir(raw_id)?;
+        if !dir.join("project.json").is_file() {
+            return Err(ProjectError::ProjectNotFound);
+        }
+        let storage = Mailspace::init(Some(&dir))
+            .map_err(|e| ProjectError::Storage(format!("failed to open project mailspace: {e}")))?
+            .storage()
+            .map_err(|e| ProjectError::Storage(format!("failed to open project storage: {e}")))?;
+        // Item order comes from the sequence counter table (the transport
+        // cursor, decided item 6): the listing API exposes no insertion
+        // order, and date+id sorts can diverge from append order on ties.
+        // Content still comes from the mailspace alone.
+        let index = read_index(&dir)?;
+        let mut rows: Vec<&StoredRow> = index
+            .records
+            .iter()
+            .filter(|row| row.sequence > since)
+            .collect();
+        rows.sort_by_key(|row| row.sequence);
+        let messages = storage
+            .list_messages()
+            .map_err(|e| ProjectError::Storage(format!("failed to list project items: {e}")))?;
+        let by_id: std::collections::HashMap<&str, &str> = messages
+            .iter()
+            .filter(|message| message.account == ACCOUNT)
+            .map(|message| (message.message_id.as_str(), message.blob_relpath.as_str()))
+            .collect();
+        let mut records = Vec::new();
+        let mut next_cursor = since;
+        for row in rows {
+            let Some(blob_relpath) = by_id.get(row.item_id.as_str()) else {
+                // The counter row and the store disagree: never serve a
+                // sequence the store cannot back.
+                return Err(ProjectError::Storage(format!(
+                    "sequence {} names item {} absent from the mailspace",
+                    row.sequence, row.item_id
+                )));
+            };
+            let raw_eml = storage
+                .read_listed_blob(blob_relpath)
+                .map_err(|e| ProjectError::Storage(format!("failed to read project blob: {e}")))?;
+            let body_start = raw_eml
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|position| position + 2)
+                .ok_or_else(|| {
+                    ProjectError::Storage("stored project item has no header/body separator".into())
+                })?;
+            let sealed_body = std::str::from_utf8(&raw_eml[body_start..]).map_err(|e| {
+                ProjectError::Storage(format!("stored project item is not UTF-8: {e}"))
+            })?;
+            let plaintext = cipher.decrypt(sealed_body).map_err(|e| {
+                ProjectError::Storage(format!("failed to unseal project item: {e}"))
+            })?;
+            let content: StoredContent = serde_json::from_slice(&plaintext).map_err(|e| {
+                ProjectError::Storage(format!("failed to decode project item: {e}"))
+            })?;
+            next_cursor = row.sequence;
+            records.push(ProjectRecord {
+                sequence: row.sequence,
+                message_id: row.item_id.clone(),
+                kind: content.kind,
+                in_reply_to: content.in_reply_to,
+                refs: content.refs,
+                body: content.body,
+                raw_eml,
+            });
+        }
+        Ok(ReadAfter {
+            records,
+            next_cursor,
         })
     }
 }
