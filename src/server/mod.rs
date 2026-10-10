@@ -7,6 +7,7 @@ pub mod auth;
 pub mod crypto;
 pub mod ids;
 pub mod messages;
+pub mod projects;
 pub mod rooms;
 pub mod safety;
 pub mod seats;
