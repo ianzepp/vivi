@@ -1,3 +1,8 @@
 /target
 /.cargo
 /data
+
+# Vivi runtime state (charters and mailspace.toml are committed)
+/.vivi/blobs/
+/.vivi/mail.sqlite*
+/.vivi/logs/

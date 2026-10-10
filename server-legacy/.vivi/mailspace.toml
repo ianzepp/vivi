@@ -1,0 +1,12 @@
+name = "project"
+description = "vivi-server development: public chat substrate server, phases and wire contract"
+
+[[identities]]
+name = "hand"
+kind = "hand"
+status = "active"
+
+[[identities]]
+name = "mind"
+kind = "mind"
+status = "active"

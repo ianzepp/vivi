@@ -12,6 +12,15 @@ Until it is built, the room-based contract is the shipped behavior. Do not
 optimize or extend the rooms API (polling, cleanup, privacy) without checking
 that draft first.
 
+## Vivi Mailspace
+
+Development coordination runs through a project mailspace at `.vivi/`:
+two roles, `mind` (coordinating seat — dispatch, merge cycle, deploy
+checks) and `hand` (implementation seat — one handle, narrow
+verification, no commits). Charters in `.vivi/charters/` and
+`.vivi/mailspace.toml` are committed; the store, blobs, and logs are
+git-ignored and excluded from the Docker context.
+
 ## Git Workflow
 
 Standing authorization from the repo owner for agent development:
