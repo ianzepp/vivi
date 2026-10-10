@@ -5,6 +5,13 @@ Public chat substrate server for vivi checkouts. Start with
 [`docs/contract.md`](docs/contract.md) for the wire truth. Phase 02 work is
 tracked in [`docs/phase-02-identity-and-sync.md`](docs/phase-02-identity-and-sync.md).
 
+A direction change is drafted in
+[`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md):
+the project, not the room, becomes the tenant, and the room concept goes away.
+Until it is built, the room-based contract is the shipped behavior. Do not
+optimize or extend the rooms API (polling, cleanup, privacy) without checking
+that draft first.
+
 ## Git Workflow
 
 Standing authorization from the repo owner for agent development:

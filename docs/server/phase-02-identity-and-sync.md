@@ -5,6 +5,11 @@ Status: **DELIVERED** 2026-10-09, with P2-8 (optional) deferred. See
 This doc is the phase delivery home: contract revisions for this phase are
 recorded here, per the phase-01 contract's revision rule.
 
+**Direction change:** a later design conversation moved the tenant from the room
+to the project and removed the room concept. See the
+[Phase 03 draft](phase-03-project-mailspace-hub.md). Phase 02 stays the record of
+what shipped.
+
 ## The problem
 
 Handles are per-store. A short handle is a pure function of a message id
