@@ -9,12 +9,15 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::json;
+use std::hash::{Hash, Hasher};
+use vivi::storage::is_traveling_id;
 
 use crate::AppState;
 use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
 use crate::identities::RegisterError;
-use crate::projects::ProjectError;
+use crate::projects::{AppendItem, ProjectError};
 use crate::rooms::error_response;
+use crate::safety::body_over_cap;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateProjectRequest {
@@ -39,6 +42,23 @@ pub struct RegisterRequest {
 pub struct ItemsQuery {
     #[serde(default)]
     since: u64,
+}
+
+/// Append body, mirroring the room-send shape. `from` is never client
+/// input: it is always the bearer identity's name.
+#[derive(Debug, Deserialize)]
+pub struct AppendRequest {
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    body: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    in_reply_to: Option<String>,
+    #[serde(default)]
+    refs: Vec<String>,
 }
 
 fn project_error(err: ProjectError) -> Response {
@@ -469,6 +489,135 @@ pub async fn items_handler(
         Ok(Err(err)) => project_error(err),
         Err(err) => project_error(ProjectError::Storage(format!(
             "project read task failed: {err}"
+        ))),
+    }
+}
+
+/// `POST /v1/projects/:id/items` — append one item under its client-minted
+/// traveling Message-ID (bearer). The sender is always the authenticated
+/// identity; a vouch addressed to postmaster is admitted at submit.
+pub async fn append_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    payload: Result<Json<AppendRequest>, JsonRejection>,
+) -> Response {
+    let Some(token) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    };
+    let identities = state.identities.clone();
+    let token = token.to_owned();
+    let project_id = id.clone();
+    let viewer =
+        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
+            .await
+        {
+            Ok(Some(identity)) => identity.name,
+            Ok(None) => {
+                return error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "invalid bearer token",
+                );
+            }
+            Err(_) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "identity lookup failed",
+                );
+            }
+        };
+    let Some(cipher) = state.store_cipher else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "storage encryption unavailable",
+        );
+    };
+    let req = match json_body(payload) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    if body_over_cap(req.body.len()) {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_too_large",
+            "body over 64 KiB",
+        );
+    }
+    // Clients mint every id: a traveling Message-ID header is required for
+    // every append, plain or kinded.
+    let message_id = headers
+        .get("message-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if !is_traveling_id(message_id) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "a Message-ID header of the form msg_ plus 24 lowercase hex is required",
+        );
+    }
+    // Kind rules mirror messages::normalize_extras (R8).
+    let kind = match req.kind.as_deref().map(|k| k.trim().to_ascii_lowercase()) {
+        None => None,
+        Some(k) if k.is_empty() || k == "mail" => None,
+        Some(k) if matches!(k.as_str(), "need" | "task" | "want") => Some(k),
+        Some(k) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("unsupported kind '{k}'; expected need, task, want, or mail"),
+            );
+        }
+    };
+    // The limiter keys on (room, u32 seat); fold the identity name into the
+    // seat slot so the bucket stays per project plus member.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    viewer.hash(&mut hasher);
+    let member_key = hasher.finish() as u32;
+    if !state.limiter.allow_send(&id, member_key) {
+        return error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "over 30 sends/min/identity",
+        );
+    }
+    let item = AppendItem {
+        id: message_id.to_owned(),
+        from: viewer,
+        to: req.to,
+        subject: req.subject.unwrap_or_default(),
+        body: req.body,
+        kind,
+        in_reply_to: req.in_reply_to,
+        refs: req.refs,
+    };
+    let projects = state.projects.clone();
+    match tokio::task::spawn_blocking(move || projects.append(&cipher, &id, &item)).await {
+        Ok(Ok(outcome)) => {
+            let mut body = json!({
+                "message_id": outcome.item_id,
+                "sequence": outcome.sequence,
+            });
+            if outcome.duplicate {
+                body["duplicate"] = json!(true);
+                return (StatusCode::OK, Json(body)).into_response();
+            }
+            (StatusCode::CREATED, Json(body)).into_response()
+        }
+        Ok(Err(err)) => project_error(err),
+        Err(err) => project_error(ProjectError::Storage(format!(
+            "project append task failed: {err}"
         ))),
     }
 }

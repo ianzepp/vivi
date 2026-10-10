@@ -62,6 +62,37 @@ async fn send(
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
+/// POST one project item with an optional Message-ID header (the shared
+/// `send` helper cannot set it).
+async fn post_item(
+    app: &Router,
+    uri: &str,
+    body: Value,
+    token: &str,
+    message_id: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(id) = message_id {
+        builder = builder.header("message-id", id);
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            builder
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
 async fn register(
     app: &Router,
     project: &str,
@@ -298,4 +329,135 @@ async fn project_directory_lists_authenticated_members_sorted_by_name() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{unknown_project}");
+}
+
+#[tokio::test]
+async fn project_items_append_endpoint_wire() {
+    let dir = data_dir();
+    let app = api_router(dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
+    let creator_key = key(31);
+    let (status, project) = send(
+        &app,
+        "POST",
+        "/v1/projects",
+        Some(json!({"public_key_pem": spki_pem(&creator_key), "creator_name": "creator"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{project}");
+    let project_id = project["project_id"].as_str().unwrap().to_owned();
+    let (status, creator) = register(&app, &project_id, &creator_key, "creator").await;
+    assert_eq!(status, StatusCode::CREATED, "{creator}");
+    let token = creator["token"].as_str().unwrap().to_owned();
+    let items_path = format!("/v1/projects/{project_id}/items");
+
+    // No token is 401.
+    let (status, no_token) =
+        send(&app, "POST", &items_path, Some(json!({"body": "hi"})), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{no_token}");
+
+    // A member posts a work item with a valid Message-ID: 201 plus sequence
+    // (kind "TASK" exercises the lowercasing).
+    let work_item = json!({"subject": "task one", "body": "do the thing", "kind": "TASK"});
+    let (status, created) = post_item(
+        &app,
+        &items_path,
+        work_item.clone(),
+        &token,
+        Some("msg_00000000000000000000a001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["message_id"], "msg_00000000000000000000a001");
+    assert_eq!(created["sequence"], 1);
+
+    // Replaying the same id and bytes: 200 duplicate true, nothing new.
+    let (status, duplicate) = post_item(
+        &app,
+        &items_path,
+        work_item,
+        &token,
+        Some("msg_00000000000000000000a001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{duplicate}");
+    assert_eq!(duplicate["duplicate"], true);
+    assert_eq!(duplicate["sequence"], 1);
+
+    // No Message-ID header is 400.
+    let (status, no_id) = post_item(&app, &items_path, json!({"body": "hi"}), &token, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{no_id}");
+    assert_eq!(no_id["error"]["code"], "invalid_request");
+
+    // A kinded item with a non-traveling id is 400.
+    let (status, plain_id) = post_item(
+        &app,
+        &items_path,
+        json!({"body": "hi", "kind": "task"}),
+        &token,
+        Some("plain-1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{plain_id}");
+
+    // A body over 64 KiB is 413.
+    let (status, too_big) = post_item(
+        &app,
+        &items_path,
+        json!({"body": "x".repeat(64 * 1024 + 1)}),
+        &token,
+        Some("msg_00000000000000000000a002"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{too_big}");
+
+    // A malformed vouch body is 400 with nothing appended (the valid vouch
+    // below still lands at sequence 2).
+    let (status, bad_vouch) = post_item(
+        &app,
+        &items_path,
+        json!({"to": "postmaster", "body": "not a vouch"}),
+        &token,
+        Some("msg_00000000000000000000a003"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_vouch}");
+
+    // A vouch to postmaster from the creator lands as an item.
+    let builder_key = key(32);
+    let (status, vouched) = post_item(
+        &app,
+        &items_path,
+        json!({
+            "to": "postmaster",
+            "subject": "vouch",
+            "body": json!({"vouch": {"name": "builder", "public_key_pem": spki_pem(&builder_key)}}).to_string()
+        }),
+        &token,
+        Some("msg_00000000000000000000a004"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vouched}");
+    assert_eq!(vouched["sequence"], 2);
+
+    // The vouched key can register afterward and the directory lists both.
+    let (status, identity) = register(&app, &project_id, &builder_key, "builder").await;
+    assert_eq!(status, StatusCode::CREATED, "{identity}");
+    let (status, directory) = send(
+        &app,
+        "GET",
+        &format!("/v1/projects/{project_id}/directory"),
+        None,
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{directory}");
+    let names: Vec<&str> = directory["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"creator"), "{directory}");
+    assert!(names.contains(&"builder"), "{directory}");
 }
