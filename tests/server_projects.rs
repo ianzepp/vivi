@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use ed25519_dalek::SigningKey;
 use vivi::mailspace::Mailspace;
 use vivi::storage::MessageIngestRequest;
 
@@ -32,11 +33,36 @@ fn traveling(n: u64) -> String {
     format!("msg_{n:08x}{:016x}", 0)
 }
 
-fn item(id: &str, body: &str) -> AppendItem {
+fn spki_pem(seed: u8) -> String {
+    const ED25519_SPKI_PREFIX: &[u8] = &[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    let mut der = ED25519_SPKI_PREFIX.to_vec();
+    der.extend_from_slice(
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .as_bytes(),
+    );
+    format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+        STANDARD.encode(der)
+    )
+}
+
+/// Governance vouch body for `to: postmaster` mail, mirroring the shape
+/// `parse_vouch` requires.
+fn vouch_body(name: &str, seed: u8) -> String {
+    format!(
+        "{{\"vouch\":{{\"name\":\"{name}\",\"public_key_pem\":{}}}}}",
+        serde_json::to_string(&spki_pem(seed)).unwrap()
+    )
+}
+
+fn item(id: &str, body: &str, to: Option<&str>) -> AppendItem {
     AppendItem {
         id: id.to_owned(),
         from: "hand".to_owned(),
-        to: None,
+        to: to.map(|t| t.to_owned()),
         subject: "spec the thing".to_owned(),
         body: body.to_owned(),
         kind: Some("need".to_owned()),
@@ -71,7 +97,11 @@ fn kinded_append_assigns_sequence_and_lands_in_store() {
     let meta = store.create_project().unwrap();
     let id = traveling(1);
     let outcome = store
-        .append(&cipher(), &meta.project_id, &item(&id, "do the thing"))
+        .append(
+            &cipher(),
+            &meta.project_id,
+            &item(&id, "do the thing", None),
+        )
         .unwrap();
     assert_eq!(outcome.sequence, 1);
     assert!(!outcome.duplicate);
@@ -98,10 +128,10 @@ fn replay_same_id_same_bytes_is_duplicate_noop() {
     let meta = store.create_project().unwrap();
     let id = traveling(2);
     let first = store
-        .append(&cipher(), &meta.project_id, &item(&id, "same body"))
+        .append(&cipher(), &meta.project_id, &item(&id, "same body", None))
         .unwrap();
     let replay = store
-        .append(&cipher(), &meta.project_id, &item(&id, "same body"))
+        .append(&cipher(), &meta.project_id, &item(&id, "same body", None))
         .unwrap();
     assert!(replay.duplicate);
     assert_eq!(replay.sequence, first.sequence);
@@ -110,7 +140,11 @@ fn replay_same_id_same_bytes_is_duplicate_noop() {
     assert_eq!(storage.list_messages().unwrap().len(), 1);
     // And the sequence counter did not advance past the duplicate.
     let other = store
-        .append(&cipher(), &meta.project_id, &item(&traveling(3), "next"))
+        .append(
+            &cipher(),
+            &meta.project_id,
+            &item(&traveling(3), "next", None),
+        )
         .unwrap();
     assert_eq!(other.sequence, first.sequence + 1);
 }
@@ -122,12 +156,20 @@ fn same_id_different_bytes_is_refused() {
     let meta = store.create_project().unwrap();
     let id = traveling(4);
     store
-        .append(&cipher(), &meta.project_id, &item(&id, "original body"))
+        .append(
+            &cipher(),
+            &meta.project_id,
+            &item(&id, "original body", None),
+        )
         .unwrap();
     let storage = open_storage(&data_dir, &meta.project_id);
     let before = storage.read_message(&id).unwrap();
     let err = store
-        .append(&cipher(), &meta.project_id, &item(&id, "tampered body"))
+        .append(
+            &cipher(),
+            &meta.project_id,
+            &item(&id, "tampered body", None),
+        )
         .unwrap_err();
     assert!(matches!(err, ProjectError::Conflict(_)), "got {err:?}");
     // The held item is untouched.
@@ -141,7 +183,7 @@ fn read_after_returns_suffix_and_replica_bytes_preserve_identity() {
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
     for n in 10..13 {
-        let mut entry = item(&traveling(n), &format!("body-{n}"));
+        let mut entry = item(&traveling(n), &format!("body-{n}"), None);
         entry.in_reply_to = Some(traveling(9));
         entry.refs = vec![traveling(8)];
         store.append(&cipher(), &meta.project_id, &entry).unwrap();
@@ -236,7 +278,11 @@ fn sequence_stays_monotonic_after_close_and_reopen() {
     let meta = store.create_project().unwrap();
     assert_eq!(
         store
-            .append(&cipher(), &meta.project_id, &item(&traveling(5), "one"))
+            .append(
+                &cipher(),
+                &meta.project_id,
+                &item(&traveling(5), "one", None)
+            )
             .unwrap()
             .sequence,
         1
@@ -245,14 +291,22 @@ fn sequence_stays_monotonic_after_close_and_reopen() {
     let reopened = ProjectStore::new(&data_dir);
     assert_eq!(
         reopened
-            .append(&cipher(), &meta.project_id, &item(&traveling(6), "two"))
+            .append(
+                &cipher(),
+                &meta.project_id,
+                &item(&traveling(6), "two", None)
+            )
             .unwrap()
             .sequence,
         2
     );
     // The pre-restart id still dedups to its stored sequence.
     let replay = reopened
-        .append(&cipher(), &meta.project_id, &item(&traveling(5), "one"))
+        .append(
+            &cipher(),
+            &meta.project_id,
+            &item(&traveling(5), "one", None),
+        )
         .unwrap();
     assert!(replay.duplicate);
     assert_eq!(replay.sequence, 1);
@@ -267,10 +321,18 @@ fn read_order_follows_append_order_not_id_order() {
     let meta = store.create_project().unwrap();
     let cipher = cipher();
     store
-        .append(&cipher, &meta.project_id, &item(&traveling(2), "first in"))
+        .append(
+            &cipher,
+            &meta.project_id,
+            &item(&traveling(2), "first in", None),
+        )
         .unwrap();
     store
-        .append(&cipher, &meta.project_id, &item(&traveling(1), "second in"))
+        .append(
+            &cipher,
+            &meta.project_id,
+            &item(&traveling(1), "second in", None),
+        )
         .unwrap();
     let read = store.read_after(&cipher, &meta.project_id, 0).unwrap();
     let first = traveling(2);
@@ -282,6 +344,105 @@ fn read_order_follows_append_order_not_id_order() {
         .collect();
     assert_eq!(ids, vec![first.as_str(), second.as_str()]);
     assert_eq!(read.next_cursor, 2);
+}
+
+/// Scoped read (decided item 7 plus the governance carve-out): private mail
+/// reaches only its sender and recipient, work items and postmaster
+/// governance mail reach every member, and sequences/next_cursor keep
+/// read_after's shape — a filtered-out item does not advance the cursor.
+#[test]
+fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
+    let data_dir = scratch_data_dir("scoped");
+    let store = ProjectStore::new(&data_dir);
+    let cipher = cipher();
+    // The creator is "hand", matching item()'s default sender, so the
+    // governance vouch below passes the admitted-sender check.
+    let meta = store
+        .create_project_with_creator(&spki_pem(1), "hand")
+        .unwrap();
+
+    // seq 1: plain mail alice -> bob.
+    let mut first = item(&traveling(20), "for bob only", Some("bob"));
+    first.from = "alice".to_owned();
+    first.kind = None;
+    store.append(&cipher, &meta.project_id, &first).unwrap();
+    // seq 2: unaddressed work item, member-visible by kind.
+    store
+        .append(
+            &cipher,
+            &meta.project_id,
+            &item(&traveling(21), "a need", None),
+        )
+        .unwrap();
+    // seq 3: plain governance mail to postmaster, member-visible by
+    // the carve-out.
+    let mut gov = item(&traveling(22), &vouch_body("bob", 2), Some("postmaster"));
+    gov.kind = None;
+    store.append(&cipher, &meta.project_id, &gov).unwrap();
+    // seq 4: plain mail alice -> bob again.
+    let mut second = item(&traveling(23), "again for bob", Some("bob"));
+    second.from = "alice".to_owned();
+    second.kind = None;
+    store.append(&cipher, &meta.project_id, &second).unwrap();
+
+    // Recipient B sees the mail addressed to them plus all shared items.
+    let bob = store
+        .read_after_scoped(&cipher, &meta.project_id, 0, "bob")
+        .unwrap();
+    let bob_ids: Vec<&str> = bob
+        .records
+        .iter()
+        .map(|record| record.message_id.as_str())
+        .collect();
+    assert_eq!(
+        bob_ids,
+        vec![
+            traveling(20).as_str(),
+            traveling(21).as_str(),
+            traveling(22).as_str(),
+            traveling(23).as_str()
+        ]
+    );
+    assert_eq!(bob.records[0].from, "alice");
+    assert_eq!(bob.records[0].to.as_deref(), Some("bob"));
+    assert_eq!(bob.next_cursor, 4);
+
+    // Member A (carol) sees the work item and governance mail but neither
+    // private mail; hidden items keep their sequences and the cursor only
+    // reflects returned records (3, not 4).
+    let carol = store
+        .read_after_scoped(&cipher, &meta.project_id, 0, "carol")
+        .unwrap();
+    let carol_ids: Vec<&str> = carol
+        .records
+        .iter()
+        .map(|record| record.message_id.as_str())
+        .collect();
+    assert_eq!(
+        carol_ids,
+        vec![traveling(21).as_str(), traveling(22).as_str()]
+    );
+    assert_eq!(carol.records[0].sequence, 2);
+    assert_eq!(carol.next_cursor, 3);
+
+    // The sender still sees their own sent mail.
+    let alice = store
+        .read_after_scoped(&cipher, &meta.project_id, 0, "alice")
+        .unwrap();
+    assert_eq!(alice.records.len(), 4);
+
+    // Resuming after the last returned record: the remaining item is hidden
+    // from carol, so the result is empty and the cursor stays put.
+    let carol_tail = store
+        .read_after_scoped(&cipher, &meta.project_id, 3, "carol")
+        .unwrap();
+    assert!(carol_tail.records.is_empty());
+    assert_eq!(carol_tail.next_cursor, 3);
+
+    // The unscoped escape hatch still returns every item.
+    let all = store.read_after(&cipher, &meta.project_id, 0).unwrap();
+    assert_eq!(all.records.len(), 4);
+    assert_eq!(all.next_cursor, 4);
 }
 
 /// A fresh append wakes a waiter on that project; a duplicate does not.
@@ -305,7 +466,11 @@ async fn append_wakes_waiter_and_duplicate_does_not() {
     };
     tokio::task::yield_now().await;
     tokio::task::spawn_blocking(move || {
-        store.append(&cipher, &meta.project_id, &item(&traveling(9), "wake"))
+        store.append(
+            &cipher,
+            &meta.project_id,
+            &item(&traveling(9), "wake", None),
+        )
     })
     .await
     .unwrap()

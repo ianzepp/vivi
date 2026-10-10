@@ -84,6 +84,10 @@ pub struct AppendOutcome {
 pub struct ProjectRecord {
     pub sequence: u64,
     pub message_id: String,
+    /// Sender identity, from the sealed content.
+    pub from: String,
+    /// Recipient name; `None` files to the project account.
+    pub to: Option<String>,
     pub kind: Option<String>,
     pub in_reply_to: Option<String>,
     pub refs: Vec<String>,
@@ -106,6 +110,8 @@ struct StoredContent {
     subject: String,
     body: String,
     message_id: String,
+    #[serde(default)]
+    from: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,6 +190,23 @@ fn placement(kind: Option<&str>) -> (&'static str, Option<&'static str>) {
 
 fn valid_ref(id: &str) -> bool {
     !id.is_empty() && id.len() <= MAX_ID_LEN
+}
+
+/// Scoped-read visibility (decided item 7 plus the governance carve-out):
+/// work items and mail addressed to postmaster are member-visible; every
+/// other item only to its sender or recipient.
+fn scoped_visible(content: &StoredContent, viewer: &str) -> bool {
+    match content.kind.as_deref() {
+        Some("need" | "task" | "want") => true,
+        _ => {
+            content
+                .to
+                .as_deref()
+                .is_some_and(|to| to.eq_ignore_ascii_case(POSTMASTER))
+                || content.from == viewer
+                || content.to.as_deref() == Some(viewer)
+        }
+    }
 }
 
 /// Header-safe `<local@domain>` form of a Message-ID, mirroring the vivi
@@ -444,6 +467,7 @@ impl ProjectStore {
             subject: item.subject.clone(),
             body: item.body.clone(),
             message_id: item.id.clone(),
+            from: item.from.clone(),
             to: item.to.clone(),
             kind: kind.clone(),
             in_reply_to: item.in_reply_to.clone(),
@@ -516,11 +540,38 @@ impl ProjectStore {
     /// Read project items after a transport cursor. Ordering and bytes come
     /// from the project mailspace; the sequence is the one-based position in
     /// that insertion-ordered stream and does not expose sidecar state.
+    /// Unscoped: returns every item; internal escape hatch.
     pub fn read_after(
         &self,
         cipher: &StoreCipher,
         raw_id: &str,
         since: u64,
+    ) -> Result<ReadAfter, ProjectError> {
+        self.read_records(cipher, raw_id, since, None)
+    }
+
+    /// Read project items after a transport cursor, scoped to `viewer`
+    /// (decided item 7 plus the governance carve-out): work items
+    /// (need/task/want) and mail addressed to postmaster are member-visible;
+    /// every other item only to its sender or recipient. Sequences keep
+    /// read_after's transport meaning — a filtered-out item still holds its
+    /// sequence, and `next_cursor` only reflects returned records.
+    pub fn read_after_scoped(
+        &self,
+        cipher: &StoreCipher,
+        raw_id: &str,
+        since: u64,
+        viewer: &str,
+    ) -> Result<ReadAfter, ProjectError> {
+        self.read_records(cipher, raw_id, since, Some(viewer))
+    }
+
+    fn read_records(
+        &self,
+        cipher: &StoreCipher,
+        raw_id: &str,
+        since: u64,
+        viewer: Option<&str>,
     ) -> Result<ReadAfter, ProjectError> {
         let dir = self.project_dir(raw_id)?;
         if !dir.join("project.json").is_file() {
@@ -579,10 +630,17 @@ impl ProjectStore {
             let content: StoredContent = serde_json::from_slice(&plaintext).map_err(|e| {
                 ProjectError::Storage(format!("failed to decode project item: {e}"))
             })?;
+            if let Some(viewer) = viewer {
+                if !scoped_visible(&content, viewer) {
+                    continue;
+                }
+            }
             next_cursor = row.sequence;
             records.push(ProjectRecord {
                 sequence: row.sequence,
                 message_id: row.item_id.clone(),
+                from: content.from,
+                to: content.to,
                 kind: content.kind,
                 in_reply_to: content.in_reply_to,
                 refs: content.refs,
