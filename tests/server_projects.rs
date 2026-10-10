@@ -36,6 +36,7 @@ fn item(id: &str, body: &str) -> AppendItem {
     AppendItem {
         id: id.to_owned(),
         from: "hand".to_owned(),
+        to: None,
         subject: "spec the thing".to_owned(),
         body: body.to_owned(),
         kind: Some("need".to_owned()),

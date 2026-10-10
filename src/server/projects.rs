@@ -18,12 +18,16 @@ use sha2::{Digest, Sha256};
 use vivi::mailspace::Mailspace;
 use vivi::storage::{MessageIngestRequest, is_traveling_id};
 
+use crate::admissions::{AdmissionError, AdmissionRegistry};
 use crate::crypto::{StoreCipher, set_owner_only};
 use crate::ids::{mint_room_id, normalize_room_id};
 use crate::project_wake::ProjectWake;
 
 /// Fixed ingest account: server-filed items belong to the project itself.
 const ACCOUNT: &str = "project";
+/// Reserved administrative addressee (phase-03 item 9); a vouch travels as
+/// mail addressed to it.
+const POSTMASTER: &str = "postmaster";
 /// Sidecar beside `project.json` holding the sequence counter and per-id
 /// content digests (digests only, no plaintext).
 const INDEX_FILE: &str = "items.json";
@@ -56,6 +60,9 @@ pub struct ProjectMeta {
 pub struct AppendItem {
     pub id: String,
     pub from: String,
+    /// Recipient name; `None` (or empty) files to the project account.
+    /// `postmaster` marks governance mail (vouch processing).
+    pub to: Option<String>,
     pub subject: String,
     pub body: String,
     pub kind: Option<String>,
@@ -100,6 +107,8 @@ struct StoredContent {
     body: String,
     message_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     in_reply_to: Option<String>,
@@ -129,6 +138,7 @@ struct ItemIndex {
 #[derive(Debug, Clone)]
 pub struct ProjectStore {
     projects_root: PathBuf,
+    admissions: AdmissionRegistry,
     wake: Arc<ProjectWake>,
 }
 
@@ -215,9 +225,14 @@ fn address_local(label: &str) -> String {
 /// content as the body so no plaintext reaches mail.sqlite or the blob store.
 fn render_eml(project_id: &str, item: &AppendItem, kind: Option<&str>, sealed: &str) -> String {
     let domain = format!("{project_id}.vivi-project");
+    let to = item
+        .to
+        .as_deref()
+        .filter(|to| !to.is_empty())
+        .unwrap_or(ACCOUNT);
     let mut headers = vec![
         format!("From: {}@{domain}", address_local(&item.from)),
-        format!("To: {ACCOUNT}@{domain}"),
+        format!("To: {}@{domain}", address_local(to)),
         format!("Subject: {}", single_line(&item.subject)),
         format!("Date: {}", Utc::now().to_rfc2822()),
         format!("Message-ID: {}", id_header(&item.id, &domain)),
@@ -249,10 +264,50 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A governance vouch body: `{"vouch": {"name": ..., "public_key_pem": ...}}`.
+#[derive(Deserialize)]
+struct Vouch {
+    name: String,
+    public_key_pem: String,
+}
+
+fn parse_vouch(body: &str) -> Result<Vouch, ProjectError> {
+    #[derive(Deserialize)]
+    struct VouchBody {
+        vouch: Vouch,
+    }
+    serde_json::from_str::<VouchBody>(body)
+        .map(|parsed| parsed.vouch)
+        .map_err(|_| {
+            ProjectError::BadRequest(
+            "vouch body must be a JSON object {\"vouch\":{\"name\":...,\"public_key_pem\":...}}"
+                .to_owned(),
+        )
+        })
+}
+
+fn admission_error(err: AdmissionError) -> ProjectError {
+    match err {
+        AdmissionError::InvalidKey => {
+            ProjectError::BadRequest("vouch carries an unparsable public key".to_owned())
+        }
+        AdmissionError::InvalidName => ProjectError::BadRequest(
+            "vouched name must be 1-64 chars of letters, digits, dot, dash, or underscore"
+                .to_owned(),
+        ),
+        AdmissionError::ReservedName => {
+            ProjectError::BadRequest("the name postmaster is reserved".to_owned())
+        }
+        AdmissionError::Conflict(message) => ProjectError::Conflict(message),
+        AdmissionError::Storage(message) => ProjectError::Storage(message),
+    }
+}
+
 impl ProjectStore {
     pub fn new(data_dir: &Path) -> Self {
         Self {
             projects_root: data_dir.join("projects"),
+            admissions: AdmissionRegistry::new(data_dir),
             wake: Arc::new(ProjectWake::default()),
         }
     }
@@ -260,6 +315,11 @@ impl ProjectStore {
     /// Per-project wake registry; fires on every fresh append.
     pub fn wake(&self) -> &ProjectWake {
         &self.wake
+    }
+
+    /// Admission registry for this store's data directory.
+    pub fn admissions(&self) -> &AdmissionRegistry {
+        &self.admissions
     }
 
     /// Mint a collision-retried project id and create its mailspace.
@@ -288,6 +348,20 @@ impl ProjectStore {
         Err(ProjectError::Storage(
             "project id mint retries exhausted".into(),
         ))
+    }
+
+    /// Create a project and admit its creator as the first member (decided
+    /// item 8: the first key has no introducer).
+    pub fn create_project_with_creator(
+        &self,
+        public_key_pem: &str,
+        creator_name: &str,
+    ) -> Result<ProjectMeta, ProjectError> {
+        let meta = self.create_project()?;
+        self.admissions
+            .admit(&meta.project_id, creator_name, public_key_pem, "creator")
+            .map_err(admission_error)?;
+        Ok(meta)
     }
 
     /// Canonical project directory for a raw id.
@@ -346,10 +420,31 @@ impl ProjectStore {
                 "refs must hold at most {MAX_REFS} non-empty ids of at most 256 bytes"
             )));
         }
+        // Governance vouch (decided item 8): mail addressed to postmaster
+        // carries an admission. Validate and write the admission FIRST, then
+        // ingest the item — both idempotent, so a crash between them converges
+        // on replay.
+        if item
+            .to
+            .as_deref()
+            .is_some_and(|to| to.eq_ignore_ascii_case(POSTMASTER))
+        {
+            let vouch = parse_vouch(&item.body)?;
+            if !self.admissions.is_admitted(&project_id, &item.from) {
+                return Err(ProjectError::BadRequest(format!(
+                    "vouch from '{}': not an admitted member of this project",
+                    item.from
+                )));
+            }
+            self.admissions
+                .admit(&project_id, &vouch.name, &vouch.public_key_pem, &item.from)
+                .map_err(admission_error)?;
+        }
         let content = serde_json::to_vec(&StoredContent {
             subject: item.subject.clone(),
             body: item.body.clone(),
             message_id: item.id.clone(),
+            to: item.to.clone(),
             kind: kind.clone(),
             in_reply_to: item.in_reply_to.clone(),
             refs: item.refs.clone(),

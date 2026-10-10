@@ -3,6 +3,7 @@
 //! (frozen at U1; auth hardening summary authoritative for VC-3).
 
 pub mod admin;
+pub mod admissions;
 pub mod auth;
 pub mod crypto;
 pub mod identities;
