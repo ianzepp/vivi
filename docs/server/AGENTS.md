@@ -96,6 +96,11 @@ cargo fmt --check
 cargo test
 ```
 
+Measured baselines (burgus, 18-core Mac, 2026-10-10, warm target):
+`cargo fmt --check` under 1 s, `cargo test` about 8 s. Cold builds are
+unmeasured; the smoke script takes about two minutes (the prune leg waits
+for a 1 m cutoff).
+
 `scripts/two-checkout-smoke.sh` is the end-to-end acceptance (see the README);
 run it for changes that touch the wire or the `vivi` dependency.
 
