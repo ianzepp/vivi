@@ -11,10 +11,16 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::AppState;
-use crate::auth::{self, AuthError, parse_verifying_key};
+use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
 use crate::identities::RegisterError;
 use crate::projects::ProjectError;
 use crate::rooms::error_response;
+
+#[derive(Debug, Deserialize)]
+pub struct CreateProjectRequest {
+    public_key_pem: String,
+    creator_name: String,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ChallengeRequest {
@@ -99,11 +105,48 @@ fn json_body<T: for<'de> Deserialize<'de>>(
     })
 }
 
-pub async fn create_project_handler(State(state): State<AppState>) -> Response {
-    match tokio::task::spawn_blocking(move || state.projects.create_project()).await {
+pub async fn create_project_handler(
+    State(state): State<AppState>,
+    payload: Result<Json<CreateProjectRequest>, JsonRejection>,
+) -> Response {
+    let req = match json_body(payload) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    let key = match parse_verifying_key(&req.public_key_pem) {
+        Ok(key) => key,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid public_key_pem",
+            );
+        }
+    };
+    let fingerprint = match auth::key_fingerprint(&key) {
+        Ok(fp) => fp,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid public_key_pem",
+            );
+        }
+    };
+    let creator_name = req.creator_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        state
+            .projects
+            .create_project_with_creator(&req.public_key_pem, &req.creator_name)
+    })
+    .await
+    {
         Ok(Ok(meta)) => (
             StatusCode::CREATED,
-            Json(json!({"project_id": meta.project_id})),
+            Json(json!({
+                "project_id": meta.project_id,
+                "admission": {"name": creator_name, "fingerprint": fingerprint}
+            })),
         )
             .into_response(),
         Ok(Err(err)) => project_error(err),
@@ -227,6 +270,36 @@ pub async fn register_handler(
             "invalid challenge signature",
         );
     }
+    let presented_spki = match canonical_spki_hex(&key) {
+        Ok(spki) => spki,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid public_key_pem",
+            );
+        }
+    };
+    let admissions = state.projects.admissions().clone();
+    let project_id = id.clone();
+    let name = req.name.clone();
+    let admitted_spki =
+        tokio::task::spawn_blocking(move || admissions.admitted_spki(&project_id, &name)).await;
+    match admitted_spki {
+        Ok(Some(admitted)) if admitted == presented_spki => {}
+        Ok(_) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "admission_required",
+                "identity name and public key are not admitted for this project",
+            );
+        }
+        Err(err) => {
+            return register_error(RegisterError::Storage(format!(
+                "admission lookup failed: {err}"
+            )));
+        }
+    }
     let identities = state.identities.clone();
     let project_id = id;
     match tokio::task::spawn_blocking(move || {
@@ -340,23 +413,26 @@ pub async fn items_handler(
     let identities = state.identities.clone();
     let token = token.to_owned();
     let project_id = id.clone();
-    match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token)).await {
-        Ok(Some(_)) => (),
-        Ok(None) => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "invalid bearer token",
-            );
-        }
-        Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "identity lookup failed",
-            );
-        }
-    }
+    let viewer =
+        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
+            .await
+        {
+            Ok(Some(identity)) => identity.name,
+            Ok(None) => {
+                return error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "invalid bearer token",
+                );
+            }
+            Err(_) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "identity lookup failed",
+                );
+            }
+        };
     let Some(cipher) = state.store_cipher else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -365,7 +441,10 @@ pub async fn items_handler(
         );
     };
     let projects = state.projects.clone();
-    match tokio::task::spawn_blocking(move || projects.read_after(&cipher, &id, query.since)).await
+    match tokio::task::spawn_blocking(move || {
+        projects.read_after_scoped(&cipher, &id, query.since, &viewer)
+    })
+    .await
     {
         Ok(Ok(page)) => {
             let records: Vec<_> = page
@@ -375,6 +454,8 @@ pub async fn items_handler(
                     json!({
                         "sequence": record.sequence,
                         "message_id": record.message_id,
+                        "from": record.from,
+                        "to": record.to,
                         "kind": record.kind,
                         "in_reply_to": record.in_reply_to,
                         "refs": record.refs,

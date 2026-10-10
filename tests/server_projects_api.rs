@@ -100,17 +100,57 @@ async fn register(
 async fn project_identity_auth_and_items_wire() {
     let dir = data_dir();
     let app = api_router(dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
-    let (status, project) = send(&app, "POST", "/v1/projects", None, None).await;
+    let creator_key = key(1);
+    let (status, project) = send(
+        &app,
+        "POST",
+        "/v1/projects",
+        Some(json!({"public_key_pem": spki_pem(&creator_key), "creator_name": "founder"})),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{project}");
+    assert_eq!(project["admission"]["name"], "founder");
+    assert_eq!(
+        project["admission"]["fingerprint"].as_str().unwrap().len(),
+        64
+    );
     let project_id = project["project_id"].as_str().unwrap();
 
-    let (status, postmaster) = register(&app, project_id, &key(1), "postmaster").await;
-    assert_eq!(status, StatusCode::CONFLICT, "{postmaster}");
+    let (status, creator) = register(&app, project_id, &creator_key, "founder").await;
+    assert_eq!(status, StatusCode::CREATED, "{creator}");
+    let (status, unadmitted) = register(&app, project_id, &key(2), "builder").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{unadmitted}");
+    assert_eq!(unadmitted["error"]["code"], "admission_required");
+
+    let cipher = StoreCipher::from_base64(&STANDARD.encode([0x42u8; 32])).unwrap();
+    let store = ProjectStore::new(&dir);
+    store
+        .append(
+            &cipher,
+            project_id,
+            &AppendItem {
+                id: "msg_000000000000000000000099".into(),
+                from: "founder".into(),
+                to: Some("postmaster".into()),
+                subject: "vouch".into(),
+                body: json!({"vouch": {"name": "builder", "public_key_pem": spki_pem(&key(2))}})
+                    .to_string(),
+                kind: None,
+                in_reply_to: None,
+                refs: vec![],
+            },
+        )
+        .unwrap();
     let (status, identity) = register(&app, project_id, &key(2), "builder").await;
     assert_eq!(status, StatusCode::CREATED, "{identity}");
     let token = identity["token"].as_str().unwrap();
-    let (status, duplicate) = register(&app, project_id, &key(3), "builder").await;
-    assert_eq!(status, StatusCode::CONFLICT, "{duplicate}");
+    let (status, wrong_key) = register(&app, project_id, &key(3), "builder").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{wrong_key}");
+    assert_eq!(wrong_key["error"]["code"], "admission_required");
+    let (status, another_unadmitted) = register(&app, project_id, &key(4), "guest").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{another_unadmitted}");
+    assert_eq!(another_unadmitted["error"]["code"], "admission_required");
 
     let cipher = StoreCipher::from_base64(&STANDARD.encode([0x42u8; 32])).unwrap();
     let store = ProjectStore::new(&dir);
@@ -156,25 +196,55 @@ async fn project_identity_auth_and_items_wire() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{items}");
-    assert_eq!(items["next_cursor"], 2);
-    assert_eq!(items["records"][0]["sequence"], 1);
-    assert_eq!(items["records"][0]["body"], "body 0");
+    assert_eq!(items["next_cursor"], 3);
+    assert_eq!(
+        items["records"][0]["body"],
+        json!({"vouch": {"name": "builder", "public_key_pem": spki_pem(&key(2))}}).to_string()
+    );
     assert_eq!(items["records"][1]["sequence"], 2);
-    assert_eq!(items["records"][1]["body"], "body 1");
+    assert_eq!(items["records"][1]["body"], "body 0");
+    assert_eq!(items["records"][2]["sequence"], 3);
+    assert_eq!(items["records"][2]["body"], "body 1");
 }
 
 #[tokio::test]
 async fn project_directory_lists_authenticated_members_sorted_by_name() {
     let dir = data_dir();
-    let app = api_router(dir, Some(STANDARD.encode([0x42u8; 32])), None);
-    let (status, project) = send(&app, "POST", "/v1/projects", None, None).await;
+    let app = api_router(dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
+    let alpha_key = key(21);
+    let (status, project) = send(
+        &app,
+        "POST",
+        "/v1/projects",
+        Some(json!({"public_key_pem": spki_pem(&alpha_key), "creator_name": "alpha"})),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{project}");
     let project_id = project["project_id"].as_str().unwrap();
 
+    let (status, alpha) = register(&app, project_id, &alpha_key, "alpha").await;
+    assert_eq!(status, StatusCode::CREATED, "{alpha}");
+    let cipher = StoreCipher::from_base64(&STANDARD.encode([0x42u8; 32])).unwrap();
+    ProjectStore::new(&dir)
+        .append(
+            &cipher,
+            project_id,
+            &AppendItem {
+                id: "msg_000000000000000000000098".into(),
+                from: "alpha".into(),
+                to: Some("postmaster".into()),
+                subject: "vouch".into(),
+                body: json!({"vouch": {"name": "zulu", "public_key_pem": spki_pem(&key(20))}})
+                    .to_string(),
+                kind: None,
+                in_reply_to: None,
+                refs: vec![],
+            },
+        )
+        .unwrap();
     let (status, zulu) = register(&app, project_id, &key(20), "zulu").await;
     assert_eq!(status, StatusCode::CREATED, "{zulu}");
-    let (status, alpha) = register(&app, project_id, &key(21), "alpha").await;
-    assert_eq!(status, StatusCode::CREATED, "{alpha}");
     let token = alpha["token"].as_str().unwrap();
 
     let (status, missing_auth) = send(

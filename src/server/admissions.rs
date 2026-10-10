@@ -103,6 +103,16 @@ impl AdmissionRegistry {
             .any(|record| record.name == name)
     }
 
+    /// Canonical SPKI DER hex for an admitted name in this project.
+    pub fn admitted_spki(&self, project_id: &str, name: &str) -> Option<String> {
+        let _guard = self.lock();
+        self.load(project_id)
+            .admissions
+            .into_iter()
+            .find(|record| record.name == name)
+            .map(|record| record.spki_der)
+    }
+
     /// Admit `name` bound to `public_key_pem`, attributed to `voucher`.
     /// Same name plus same key is an idempotent no-op; the same name with a
     /// different key conflicts; one key may hold several names.
