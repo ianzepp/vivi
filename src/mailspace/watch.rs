@@ -330,13 +330,22 @@ fn watch_event(
     })
 }
 
+/// The item kind an event is about: the first word of the command that wrote
+/// it (`need send`, `task done`). A letter filed by a sync pull records the
+/// command `sync pull`, which names no kind, so its kind is the one its
+/// delivery role files under (`needs` is a need, `inbox` is mail).
 fn event_kind(event: &MailspaceEvent) -> String {
-    event
-        .command
-        .split_whitespace()
-        .next()
-        .unwrap_or("mail")
-        .to_string()
+    let word = event.command.split_whitespace().next().unwrap_or("mail");
+    if word != "sync" {
+        return word.to_string();
+    }
+    match event.to_role.as_deref() {
+        Some("needs") => "need",
+        Some("tasks") => "task",
+        Some("wants") => "want",
+        _ => "mail",
+    }
+    .to_string()
 }
 
 fn event_status(event: &MailspaceEvent) -> String {

@@ -154,5 +154,9 @@ mod flow;
 mod windows;
 
 #[cfg(test)]
+#[path = "sync/watch_test.rs"]
+mod watch;
+
+#[cfg(test)]
 #[path = "sync/sync_test.rs"]
 mod tests;
