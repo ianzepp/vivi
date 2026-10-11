@@ -5,11 +5,12 @@ use crate::pool::slot::{META_CLAIMED, META_TASK};
 fn config() -> PoolConfig {
     toml::from_str(
         r#"
-app = "a"
 repo = "o/r"
 slots = 2
 image = "debian:12"
 build_dir = "target"
+[fly]
+app = "a"
 [github]
 app_id = 1
 private_key = "k.pem"

@@ -18,6 +18,19 @@ pub enum PoolSubcommand {
     Wait(PoolWaitCommand),
     /// Collect finished dispatches, stop overdue ones, free their slots
     Reconcile(PoolReconcileCommand),
+    /// Check the pool, its provider and its repository; read-only, names the fix for each finding
+    Doctor(PoolDoctorCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct PoolDoctorCommand {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

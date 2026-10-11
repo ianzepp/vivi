@@ -522,8 +522,10 @@ vivi cycle intake --project /path/to/project --for mind \
 
 ### Remote lane pool
 
-`vivi pool` manages preseeded remote machines on Fly so agent work can start in
-seconds against a warm build, and hands a Vivi task to one of them.
+`vivi pool` manages preseeded remote machines so agent work can start in
+seconds against a warm build, and hands a Vivi task to one of them. The pool
+runs on Fly today; `[pool.fly]` is the provider-specific part of the config, and
+no other provider exists yet.
 
 ```
 vivi pool create [--slots N] [--base <commit>]   # make the app if missing, create + seed slots, wait until free
@@ -532,7 +534,24 @@ vivi pool destroy (--slot <name> | --all) --yes
 vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>] [--allow-default-branch]
 vivi pool wait [<task>...] [--timeout <secs>]    # block until a dispatch finishes; collect it
 vivi pool reconcile                              # collect finished, stop overdue, free slots
+vivi pool doctor [--json]                        # read-only checks; each finding names its fix
 ```
+
+`doctor` checks three sides under their own headings: the provider (Fly: `fly`
+installed and logged in, an API token, the app, the harness secrets), the
+repository (GitHub: `openssl`, the App key, a token, the default branch and its
+protection), and the pool itself (config, slot count, each slot's state and how
+far its seeded base trails the default branch, leaked runners, orphaned
+dispatches, stale claims, overdue slots). It changes nothing, prints a `fix:`
+line under every `warn` or `fail`, and exits nonzero when any check fails.
+Run it at orchestrator boot and whenever something looks stuck.
+
+A slot can only fetch what the remote repository already has, so push the base
+before dispatching. `--model` is resolved by the caller in the harness's own
+vocabulary; Vivi only checks it against the allowed list. The usual order:
+`doctor`, push the base, `dispatch`, `wait` in the background, read the receipt
+with `task show`, integrate the pushed branch, delete the remote branch, close
+the task. Neither `wait` nor `reconcile` closes the task.
 
 A slot is `free`, `seeding`, `busy` (a task holds it and the machine runs),
 `finished-uncollected` (a task holds it and the machine stopped, its result
@@ -557,13 +576,15 @@ a running slot that no task holds.
 
 Slots are discovered from Fly machine metadata (`vivi_pool*`); Vivi keeps no
 local slot records. The Fly app defaults to the pool name (itself the mailspace
-name) and `create` makes it in `organization` (default `personal`) when it does
-not exist. Model keys are app secrets: `create` and `dispatch` list the app's
+name) and `create` makes it in `[pool.fly].organization` (default `personal`)
+when it does not exist. Model keys are app secrets: `create` and `dispatch` list the app's
 secret names, never values, and warn about harness `env` names without one
 (vivi does not set secrets). Configure with a `[pool]` table in
-`.vivi/mailspace.toml` (optional app and organization, repo, slots, image, setup/seed commands, `build_dir`, a GitHub App id and
-key path, `[pool.harness]` with `run`, `models`, `env` and `rules`, and
-`[pool.committer]`); see `skills/vivi/SKILL.md` for the full table. Nothing in
+`.vivi/mailspace.toml` (repo, slots, image, setup/seed commands, `build_dir`),
+`[pool.fly]` (optional app, organization, region, size, memory, tmpfs),
+`[pool.github]` (App id and key path), `[pool.harness]` with `run`, `models`,
+`env` and `rules`, and `[pool.committer]`; Fly keys left in `[pool]` are
+rejected with a message naming `[pool.fly]`. See `skills/vivi/SKILL.md` for the full table. Nothing in
 the pool is specific to a language, a repository, or an agent harness. The
 GitHub App key is read by `openssl` when minting a one-hour, single-repo token;
 Vivi never stores or prints it, and the token is not in the agent's
@@ -667,7 +688,7 @@ Rules:
 `chat`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`,
 `cycle`, `trace`, `graph`, `step`.
 
-After 10.2.0 the tree also has `pool` (remote lane pool: create, status, destroy, dispatch, wait, reconcile) and `rule`: project rules every seat can read.
+After 10.2.0 the tree also has `pool` (remote lane pool: create, status, destroy, dispatch, wait, reconcile, doctor) and `rule`: project rules every seat can read.
 `--local` marks a rule that a later sync should skip. Nothing syncs rules yet.
 
 `chat` is new in 10.2.0: `vivi chat room create`, `join`, `rooms`, `send`,

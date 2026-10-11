@@ -22,11 +22,15 @@ pub mod claim;
 pub mod collect;
 pub mod config;
 pub mod dispatch;
+pub mod doctor;
+pub mod doctor_pool;
+pub mod doctor_repo;
 #[cfg(test)]
 #[path = "pool/fake_provider_test.rs"]
 pub(crate) mod fake_provider;
 pub mod fly;
 pub mod fly_api;
+pub mod fly_doctor;
 pub mod fly_token;
 pub mod github;
 pub mod job;

@@ -46,7 +46,7 @@ pub fn slot_env(config: &PoolConfig, token: &Secret, base: &str) -> BTreeMap<Str
         ("BASE".to_string(), base.to_string()),
         ("GH_TOKEN".to_string(), token.expose().to_string()),
         ("BUILD_DIR".to_string(), config.build_dir.clone()),
-        ("TMPFS_SIZE".to_string(), config.tmpfs.clone()),
+        ("TMPFS_SIZE".to_string(), config.fly.tmpfs.clone()),
     ])
 }
 

@@ -18,7 +18,7 @@ const DEFAULT_SIZE: &str = "performance-8x";
 const DEFAULT_MEMORY_MB: u32 = 32768;
 const DEFAULT_TMPFS: &str = "16g";
 
-/// Remote lane pool settings.
+/// Remote lane pool settings. Machine-host settings live in [`PoolFly`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
     /// Pool name; defaults to the mailspace name. Marks the pool's machines.
@@ -27,29 +27,10 @@ pub struct PoolConfig {
     /// Machine host. Only `fly` exists.
     #[serde(default = "default_provider")]
     pub provider: String,
-    /// Provider application that holds the machines. Default: the pool name.
-    /// `create` makes it when it does not exist.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app: Option<String>,
-    /// Provider organization that owns a newly created application.
-    /// Default: `personal`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub organization: Option<String>,
-    #[serde(default = "default_region")]
-    pub region: String,
     /// Source repository, `owner/name`.
     pub repo: String,
     /// Maximum pool size.
     pub slots: u32,
-    /// Provider machine size (CPU class).
-    #[serde(default = "default_size")]
-    pub size: String,
-    /// Machine memory in MB.
-    #[serde(default = "default_memory")]
-    pub memory: u32,
-    /// Size of the memory disk mounted over the build output, e.g. `16g`.
-    #[serde(default = "default_tmpfs")]
-    pub tmpfs: String,
     /// Container image the machines run.
     pub image: String,
     /// Shell commands run once as root at seed time, before the checkout.
@@ -60,6 +41,9 @@ pub struct PoolConfig {
     pub seed: Vec<String>,
     /// Build output directory relative to the repo; gets the memory disk and the pack.
     pub build_dir: String,
+    /// Settings that belong to the `fly` machine host.
+    #[serde(default)]
+    pub fly: PoolFly,
     /// GitHub App used to mint the fetch token.
     pub github: PoolGithub,
     /// Agent harness description; `dispatch` needs it.
@@ -70,6 +54,46 @@ pub struct PoolConfig {
     pub committer: Option<PoolCommitter>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
+}
+
+/// The `[pool.fly]` table: the settings only the `fly` machine host has.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PoolFly {
+    /// Provider application that holds the machines. Default: the pool name.
+    /// `create` makes it when it does not exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// Provider organization that owns a newly created application.
+    /// Default: `personal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    #[serde(default = "default_region")]
+    pub region: String,
+    /// Provider machine size (CPU class).
+    #[serde(default = "default_size")]
+    pub size: String,
+    /// Machine memory in MB.
+    #[serde(default = "default_memory")]
+    pub memory: u32,
+    /// Size of the memory disk mounted over the build output, e.g. `16g`.
+    #[serde(default = "default_tmpfs")]
+    pub tmpfs: String,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, toml::Value>,
+}
+
+impl Default for PoolFly {
+    fn default() -> Self {
+        Self {
+            app: None,
+            organization: None,
+            region: default_region(),
+            size: default_size(),
+            memory: default_memory(),
+            tmpfs: default_tmpfs(),
+            unknown: BTreeMap::new(),
+        }
+    }
 }
 
 /// GitHub App credentials for the fetch token.
@@ -147,7 +171,8 @@ impl PoolConfig {
     /// The provider application: explicit, else the pool name.
     #[must_use]
     pub fn app_name(&self, mailspace_name: &str) -> String {
-        self.app
+        self.fly
+            .app
             .clone()
             .unwrap_or_else(|| self.pool_name(mailspace_name))
     }
@@ -155,7 +180,10 @@ impl PoolConfig {
     /// The organization a new application is created in.
     #[must_use]
     pub fn organization_name(&self) -> &str {
-        self.organization.as_deref().unwrap_or(DEFAULT_ORGANIZATION)
+        self.fly
+            .organization
+            .as_deref()
+            .unwrap_or(DEFAULT_ORGANIZATION)
     }
 
     /// The private key path with a leading `~` expanded.
@@ -185,7 +213,9 @@ impl PoolConfig {
         if let Some(committer) = &self.committer {
             committer.validate()?;
         }
-        reject_unknown("pool", &self.unknown)
+        reject_moved_keys(&self.unknown)?;
+        reject_unknown("pool", &self.unknown)?;
+        reject_unknown("pool.fly", &self.fly.unknown)
     }
 
     fn validate_identity(&self, mailspace_name: &str) -> Result<(), VivariumError> {
@@ -203,7 +233,7 @@ impl PoolConfig {
         for (field, value) in [
             ("app", &app),
             ("organization", &org),
-            ("region", &self.region),
+            ("region", &self.fly.region),
         ] {
             if !is_slug(value) {
                 return Err(bad(format!(
@@ -222,15 +252,15 @@ impl PoolConfig {
         if self.slots == 0 {
             return Err(bad("slots must be at least 1"));
         }
-        if self.memory == 0 {
+        if self.fly.memory == 0 {
             return Err(bad("memory must be positive (MB)"));
         }
-        for (field, value) in [("size", &self.size), ("image", &self.image)] {
+        for (field, value) in [("size", &self.fly.size), ("image", &self.image)] {
             if value.trim().is_empty() || value.chars().any(char::is_whitespace) {
                 return Err(bad(format!("{field} must be a single word")));
             }
         }
-        if !is_tmpfs_size(&self.tmpfs) {
+        if !is_tmpfs_size(&self.fly.tmpfs) {
             return Err(bad("tmpfs must look like 16g, 512m, or 4096k"));
         }
         validate_build_dir(&self.build_dir)
@@ -364,6 +394,18 @@ fn is_tmpfs_size(value: &str) -> bool {
         && !digits.is_empty()
         && digits.chars().all(|c| c.is_ascii_digit())
         && digits.parse::<u64>().is_ok_and(|n| n > 0)
+}
+
+/// Provider settings that used to sit directly in `[pool]`.
+const MOVED_TO_FLY: [&str; 6] = ["app", "organization", "region", "size", "memory", "tmpfs"];
+
+fn reject_moved_keys(unknown: &BTreeMap<String, toml::Value>) -> Result<(), VivariumError> {
+    match MOVED_TO_FLY.iter().find(|key| unknown.contains_key(**key)) {
+        Some(key) => Err(bad(format!(
+            "\"{key}\" is a provider setting and now belongs in [pool.fly]; move it there"
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn reject_unknown(

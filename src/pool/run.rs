@@ -223,10 +223,10 @@ fn slot_spec(
 ) -> CreateSpec {
     CreateSpec {
         name: slot::slot_name(pool, index),
-        region: config.region.clone(),
+        region: config.fly.region.clone(),
         image: config.image.clone(),
-        vm_size: config.size.clone(),
-        memory_mb: config.memory,
+        vm_size: config.fly.size.clone(),
+        memory_mb: config.fly.memory,
         metadata: slot::slot_metadata(pool, index, base),
         env: bootscript::slot_env(config, token, base),
         files: bootscript::slot_files(config),

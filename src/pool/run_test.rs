@@ -8,11 +8,12 @@ use crate::pool::slot::{META_BASE, META_STATE, STATE_READY};
 fn config(slots: u32) -> PoolConfig {
     toml::from_str(&format!(
         r#"
-app = "a"
 repo = "o/r"
 slots = {slots}
 image = "debian:12"
 build_dir = "target"
+[fly]
+app = "a"
 [github]
 app_id = 1
 private_key = "k.pem"

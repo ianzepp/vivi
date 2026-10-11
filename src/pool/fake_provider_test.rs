@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
+use super::doctor::Check;
 use super::provider::{CreateSpec, ExecOutput, Lease, MachineRecord, PoolProvider};
 use super::slot::{META_BASE, META_POOL, META_SLOT, META_STATE, META_TASK, STATE_READY};
 use crate::error::VivariumError;
@@ -39,6 +40,8 @@ pub struct Fake {
     pub apps_created: RefCell<Vec<String>>,
     /// The app's secret names.
     pub secrets: RefCell<Vec<String>>,
+    /// What `doctor` reports for the provider.
+    pub doctor_checks: RefCell<Vec<Check>>,
     /// The next this-many `exec` calls fail (the provider is unreachable).
     pub exec_fails: Cell<u32>,
     /// The next this-many `machine` reads fail.
@@ -130,6 +133,10 @@ impl PoolProvider for Fake {
             .borrow_mut()
             .push(organization.to_string());
         Ok(true)
+    }
+
+    fn doctor(&self, _harness_env: &[String]) -> Vec<Check> {
+        self.doctor_checks.borrow().clone()
     }
 
     fn secret_names(&self) -> Result<Vec<String>, VivariumError> {

@@ -1,6 +1,6 @@
 ---
 name: vivi
-description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, local email search and drafts, queues, and explicitly authorized email mutations.
+description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, the remote lane pool (`vivi pool`: preseeded remote machines that run a task and push a branch), local email search and drafts, queues, and explicitly authorized email mutations.
 ---
 
 # Vivi
@@ -398,9 +398,10 @@ not only verdict flags.
 
 ## Remote lane pool
 
-`vivi pool` manages a pool of preseeded remote machines ("slots") on Fly and
-hands a Vivi task to one of them. In-place reseed, a second provider, and
-overflow machines do not exist; do not invent them.
+`vivi pool` manages a pool of preseeded remote machines ("slots") and hands a
+Vivi task to one of them. The pool runs on Fly today: `[pool.fly]` holds the
+provider-specific settings, and no other provider exists yet. In-place reseed,
+a second provider, and overflow machines do not exist; do not invent them.
 
 ```sh
 vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS]
@@ -409,7 +410,35 @@ vivi pool destroy (--slot <name-or-id> | --all) --yes
 vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch]
 vivi pool wait [<task>...] [--timeout SECS]
 vivi pool reconcile
+vivi pool doctor [--json]
 ```
+
+### doctor
+
+`vivi pool doctor [--json]` is read-only: it creates, starts, stops, marks and
+pushes nothing, and repairs nothing. It prints one line per check (`ok`, `warn`,
+`fail`, or `skipped` when an earlier check it depends on failed) under three
+headings, so you can tell which side a problem is on, and each `warn` or `fail`
+carries a `fix:` line naming the command that fixes it. Exit code is nonzero
+when any check fails; warnings alone exit zero. `--json` gives the same data
+(`ok`, `counts`, and `checks` with `group`, `name`, `status`, `detail`, `fix`).
+
+- **Provider (Fly)**: `fly` is installed and logged in, an API token can be
+  obtained, the app exists, and every `[pool.harness].env` name is an app
+  secret (names only; a name the image provides can be ignored).
+- **Repository (GitHub)**: `openssl` is present, the App key file is readable, a
+  one-hour token mints for the repo (never printed), the default branch
+  resolves, and whether it is protected (whether the App may bypass the
+  protection is not checked).
+- **Pool (Vivi)**: `[pool]` validates; slot count against `slots`; each slot's
+  state, seeded base, and how many commits that base is behind the default
+  branch tip; a running slot with no open dispatch (leak); an open dispatch
+  whose machine is gone (orphan); a held slot with no dispatch (stale claim)
+  and its age; a busy slot past its budget (overdue). Slots on an older boot
+  script are not detectable and are not checked.
+
+Run it at orchestrator boot and whenever something looks stuck (a dispatch that
+never finishes, a slot that will not free, an unexpected bill).
 
 ### Slot states
 
@@ -447,19 +476,34 @@ never claimed.
 - `--base` takes a commit, branch, or tag, resolved to a full hash through
   GitHub. Default: the repo's default branch tip.
 - `create` does not return until a fresh listing shows each new slot `free`.
-- The Fly app is `[pool].app`, else the pool name (which defaults to the
+- The Fly app is `[pool.fly].app`, else the pool name (which defaults to the
   mailspace name). `create` makes the app when it does not exist, in
-  `[pool].organization` (default `personal`). Model keys are app secrets:
+  `[pool.fly].organization` (default `personal`). Model keys are app secrets:
   `create` and `dispatch` list the app's secret NAMES and warn, naming the
   harness `env` entries with no secret and the command shape
   `fly secrets set -a <app> NAME=<value>`. Vivi never reads or sets a secret
   value; a name the image itself provides can be ignored.
 - `destroy` requires `--yes` and only touches this pool's slots.
+- A slot can only fetch what the remote repository already has: push the base
+  (the commit or branch passed as `from`) before dispatching.
+- `--model` is resolved by the caller, in the harness's own vocabulary; Vivi
+  only checks it against `[pool.harness].models`.
 - Slots made by the first iteration (before dispatch existed) lack the seed
   mark and the new boot script: destroy and re-create them.
 - Requires `fly` (flyctl, logged in; or `FLY_API_TOKEN`) and `openssl` on PATH,
   and a GitHub App with contents access to the repo. Tokens are one hour,
   narrowed to the one repo, and never printed.
+
+### Using the pool (orchestrator procedure)
+
+1. `vivi pool doctor`; fix what it names.
+2. Push the base commit or branch to the remote.
+3. `vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>]`.
+4. Run `vivi pool wait <task>` in the background.
+5. When it returns, read the receipt with `vivi task show <task>`.
+6. Integrate the pushed branch.
+7. Delete the remote branch.
+8. Close the task (`wait` and `reconcile` never do).
 
 ### dispatch
 
@@ -537,22 +581,29 @@ minutes so `wait` can collect without a restart; a boot with nothing to run
 stops itself after 60 seconds; the job directory survives a
 stop and start until the next dispatch replaces it.
 
-Config is a `[pool]` table in `.vivi/mailspace.toml`:
+Config is a `[pool]` table in `.vivi/mailspace.toml`. Everything provider
+neutral sits in `[pool]`; the Fly settings sit in `[pool.fly]`. A Fly key left
+directly in `[pool]` (`app`, `organization`, `region`, `size`, `memory`,
+`tmpfs`) is rejected with a message naming `[pool.fly]`.
 
 ```toml
 [pool]
-# app = "my-fly-app"          # default: the pool name; created by `pool create` if missing
-# organization = "personal"   # owner of a newly created app; default personal
-# provider = "fly" is the default
-region = "iad"                # default iad
+# provider = "fly" is the default (the only one)
 repo = "owner/name"           # required
 slots = 4                     # required; maximum pool size
 image = "rust:1.97-bookworm"  # required; Debian-based (needs apt for zstd/git)
-size = "performance-8x"       # default; memory = 32768 (MB), tmpfs = "16g"
 setup = ["npm install -g some-harness"]   # root, once, before the checkout
 seed = ["cargo build"]                    # in the checkout, once, warms build_dir
 build_dir = "target"          # required; relative to the repo
 # name = "lanes"              # defaults to the mailspace name; marks the machines
+
+[pool.fly]                    # provider-specific; every key optional
+# app = "my-fly-app"          # default: the pool name; created by `pool create` if missing
+# organization = "personal"   # owner of a newly created app; default personal
+# region = "iad"              # default iad
+# size = "performance-8x"     # default
+# memory = 32768              # MB; default 32768
+# tmpfs = "16g"               # memory disk over build_dir; default 16g
 
 [pool.github]
 app_id = 123456
@@ -738,3 +789,10 @@ or place passwords in shell history.
 - Do not infer a source repository or account when the user has not identified
   it.
 - Report whether an operation was local, queued, or executed remotely.
+- `vivi pool dispatch` launches an agent that can push to the repository; read
+  the branch it was given before dispatching.
+- `vivi pool destroy` is permanent: it removes the slots and their seeded disks.
+- A busy slot bills by the second, and a leaked running slot is a cost; run
+  `vivi pool doctor` when anything looks stuck.
+- `vivi pool doctor` is read-only; `vivi pool reconcile` is the command that
+  acts.

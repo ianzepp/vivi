@@ -18,6 +18,7 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
         PoolSubcommand::Dispatch(c) => work::dispatch(c),
         PoolSubcommand::Wait(c) => work::wait(c),
         PoolSubcommand::Reconcile(c) => work::reconcile(c),
+        PoolSubcommand::Doctor(c) => crate::local_pool_doctor_command::doctor(c),
     }
 }
 

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::doctor::Check;
 use crate::error::VivariumError;
 
 /// A held lease on one machine: the proof of an exclusive claim window.
@@ -70,6 +71,12 @@ pub trait PoolProvider {
     /// # Errors
     /// Returns an error if the provider cannot list or create applications.
     fn ensure_app(&self, organization: &str) -> Result<bool, VivariumError>;
+
+    /// The provider's own health checks for `vivi pool doctor`: read-only,
+    /// under the provider's own heading, each failure naming its fix. The
+    /// harness environment names are the ones the application must hold as
+    /// secrets.
+    fn doctor(&self, harness_env: &[String]) -> Vec<Check>;
 
     /// The names (never the values) of the application's secrets.
     ///

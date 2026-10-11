@@ -5,14 +5,15 @@ use crate::pool::{collect, job};
 fn config() -> PoolConfig {
     toml::from_str(
         r#"
-app = "a"
 repo = "acme/widgets"
 slots = 2
 image = "debian:12"
 build_dir = "out/cache"
-tmpfs = "8g"
 setup = ["apt-get install -y make", "echo done"]
 seed = ["make warm"]
+[fly]
+app = "a"
+tmpfs = "8g"
 [github]
 app_id = 1
 private_key = "k.pem"

@@ -6,11 +6,13 @@ use std::process::{Command, Output};
 
 const POOL: &str = r#"
 [pool]
-app = "no-such-app"
 repo = "acme/widgets"
 slots = 1
 image = "debian:12"
 build_dir = "target"
+
+[pool.fly]
+app = "no-such-app"
 
 [pool.github]
 app_id = 1
@@ -181,5 +183,59 @@ fn wait_with_nothing_dispatched_says_so() {
         text(&wait).contains("no open dispatches"),
         "{}",
         text(&wait)
+    );
+}
+
+#[test]
+fn doctor_reports_each_side_and_exits_nonzero_when_a_check_fails() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    setup(project.path());
+    // An empty PATH makes the machine-host tool unfindable, and the App key
+    // does not exist: both sides fail without touching a network.
+    let empty = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .env("PATH", empty.path())
+        .args(["pool", "doctor", "--json", "--project", root])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["ok"], false);
+    let status = |name: &str| {
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .map(|c| c["status"].as_str().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(status("flyctl"), "fail");
+    assert_eq!(status("login"), "skipped");
+    assert_eq!(status("app key"), "fail");
+    assert_eq!(status("token"), "skipped");
+    assert_eq!(status("config"), "ok");
+    assert_eq!(status("slots"), "skipped");
+    assert!(text(&out).contains("check(s) failed"));
+}
+
+#[test]
+fn old_style_provider_keys_in_pool_are_refused_with_the_new_location() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    setup(project.path());
+    let config = project.path().join(".vivi/mailspace.toml");
+    let text_in = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace("[pool.fly]\napp = \"no-such-app\"\n", "")
+        .replace("[pool]\n", "[pool]\nregion = \"iad\"\n");
+    std::fs::write(&config, text_in).unwrap();
+    let out = vivi(["pool", "status", "--project", root]);
+    assert!(!out.status.success());
+    let said = text(&out);
+    assert!(
+        said.contains("region") && said.contains("[pool.fly]"),
+        "{said}"
     );
 }

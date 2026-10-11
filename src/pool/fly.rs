@@ -7,6 +7,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+use super::doctor::Check;
 use super::fly_api::FlyApi;
 use super::provider::{CreateSpec, ExecOutput, Lease, MachineRecord, PoolProvider};
 use crate::error::VivariumError;
@@ -16,7 +17,7 @@ use crate::error::VivariumError;
 #[derive(Debug, Clone)]
 pub struct FlyctlProvider {
     bin: String,
-    app: String,
+    pub(super) app: String,
     api: FlyApi,
 }
 
@@ -30,7 +31,11 @@ impl FlyctlProvider {
         }
     }
 
-    fn run(&self, args: &[String], secrets: &[&str]) -> Result<(String, String), VivariumError> {
+    pub(super) fn run(
+        &self,
+        args: &[String],
+        secrets: &[&str],
+    ) -> Result<(String, String), VivariumError> {
         let output = Command::new(&self.bin).args(args).output().map_err(|e| {
             VivariumError::Message(format!(
                 "failed to run `{}` (is flyctl installed and on PATH?): {e}",
@@ -60,6 +65,10 @@ impl PoolProvider for FlyctlProvider {
         }
         let args = ["apps", "create", &self.app, "--org", organization].map(str::to_string);
         self.run(&args, &[]).map(|_| true)
+    }
+
+    fn doctor(&self, harness_env: &[String]) -> Vec<Check> {
+        self.doctor_checks(harness_env)
     }
 
     fn secret_names(&self) -> Result<Vec<String>, VivariumError> {

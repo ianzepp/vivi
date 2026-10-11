@@ -2,17 +2,19 @@ use super::*;
 
 const FULL: &str = r#"
 name = "main"
-app = "lane-pool"
-region = "iad"
 repo = "acme/widgets"
 slots = 4
-size = "performance-8x"
-memory = 32768
-tmpfs = "16g"
 image = "rust:1.97-bookworm"
 setup = ["apt-get install -y nodejs"]
 seed = ["cargo build"]
 build_dir = "target"
+
+[fly]
+app = "lane-pool"
+region = "iad"
+size = "performance-8x"
+memory = 32768
+tmpfs = "16g"
 
 [github]
 app_id = 42
@@ -48,11 +50,12 @@ fn parses_a_full_table() {
 fn defaults_fill_optional_fields() {
     let minimal: PoolConfig = toml::from_str(
         r#"
-app = "a"
 repo = "o/r"
 slots = 1
 image = "debian:12"
 build_dir = "out"
+[fly]
+app = "a"
 [github]
 app_id = 1
 private_key = "k.pem"
@@ -61,10 +64,10 @@ private_key = "k.pem"
     .unwrap();
     minimal.validate("space").unwrap();
     assert_eq!(minimal.provider, "fly");
-    assert_eq!(minimal.region, "iad");
-    assert_eq!(minimal.size, "performance-8x");
-    assert_eq!(minimal.memory, 32768);
-    assert_eq!(minimal.tmpfs, "16g");
+    assert_eq!(minimal.fly.region, "iad");
+    assert_eq!(minimal.fly.size, "performance-8x");
+    assert_eq!(minimal.fly.memory, 32768);
+    assert_eq!(minimal.fly.tmpfs, "16g");
     assert!(minimal.setup.is_empty() && minimal.harness.is_none());
 }
 
@@ -103,7 +106,7 @@ fn rejects_escaping_build_dir() {
 #[test]
 fn rejects_bad_tmpfs_and_empty_commands() {
     let mut config = full();
-    config.tmpfs = "16".into();
+    config.fly.tmpfs = "16".into();
     assert!(err(&config).contains("tmpfs"));
     let mut config = full();
     config.seed = vec!["  ".into()];
@@ -232,15 +235,15 @@ fn committer_must_be_single_line_text() {
 #[test]
 fn app_defaults_to_the_pool_name_and_organization_to_personal() {
     let mut config = full();
-    config.app = None;
+    config.fly.app = None;
     config.name = None;
     config.validate("My Project").unwrap();
     assert_eq!(config.app_name("My Project"), "my-project");
     assert_eq!(config.organization_name(), "personal");
     config.name = Some("lanes".into());
     assert_eq!(config.app_name("My Project"), "lanes");
-    config.app = Some("shared".into());
-    config.organization = Some("acme".into());
+    config.fly.app = Some("shared".into());
+    config.fly.organization = Some("acme".into());
     assert_eq!(config.app_name("My Project"), "shared");
     assert_eq!(config.organization_name(), "acme");
 }
@@ -248,10 +251,10 @@ fn app_defaults_to_the_pool_name_and_organization_to_personal() {
 #[test]
 fn app_and_organization_must_be_slugs() {
     let mut config = full();
-    config.app = Some("Bad App".into());
+    config.fly.app = Some("Bad App".into());
     assert!(err(&config).contains("app"));
     let mut config = full();
-    config.organization = Some("Acme Inc".into());
+    config.fly.organization = Some("Acme Inc".into());
     assert!(err(&config).contains("organization"));
 }
 
@@ -259,5 +262,34 @@ fn app_and_organization_must_be_slugs() {
 fn a_table_without_app_parses() {
     let config: PoolConfig = toml::from_str(&FULL.replace("app = \"lane-pool\"\n", "")).unwrap();
     config.validate("space").unwrap();
-    assert!(config.app.is_none());
+    assert!(config.fly.app.is_none());
+}
+
+#[test]
+fn old_style_provider_keys_in_pool_name_the_new_location() {
+    for (key, line) in [
+        ("app", "app = \"x\""),
+        ("organization", "organization = \"x\""),
+        ("region", "region = \"iad\""),
+        ("size", "size = \"shared-cpu-1x\""),
+        ("memory", "memory = 1024"),
+        ("tmpfs", "tmpfs = \"1g\""),
+    ] {
+        let old = FULL.replace("slots = 4", &format!("slots = 4\n{line}"));
+        let config: PoolConfig = toml::from_str(&old).unwrap();
+        let message = err(&config);
+        assert!(message.contains(key), "{key}: {message}");
+        assert!(message.contains("[pool.fly]"), "{key}: {message}");
+    }
+}
+
+#[test]
+fn unknown_keys_in_the_fly_table_are_rejected() {
+    let text = FULL.replace("[fly]\n", "[fly]\nregon = \"iad\"\n");
+    let config: PoolConfig = toml::from_str(&text).unwrap();
+    let message = err(&config);
+    assert!(
+        message.contains("regon") && message.contains("[pool.fly]"),
+        "{message}"
+    );
 }

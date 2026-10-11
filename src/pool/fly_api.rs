@@ -325,7 +325,7 @@ pub fn drop_env_names(config: &mut Value, names: &[&str]) {
     }
 }
 
-fn fetch_token() -> Result<Secret, VivariumError> {
+pub(super) fn fetch_token() -> Result<Secret, VivariumError> {
     for var in ["FLY_API_TOKEN", "FLY_ACCESS_TOKEN"] {
         if let Ok(value) = std::env::var(var)
             && !value.trim().is_empty()

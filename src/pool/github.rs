@@ -180,6 +180,48 @@ pub fn default_branch(token: &Secret, repo: &str) -> Result<String, VivariumErro
         .ok_or_else(|| VivariumError::Message(format!("no default branch for {repo}")))
 }
 
+/// Whether GitHub reports `branch` as protected. A read; the answer does not
+/// say whether the App itself may bypass the protection.
+///
+/// # Errors
+/// Returns an error if GitHub is unreachable or the branch is unknown.
+pub fn branch_protected(token: &Secret, repo: &str, branch: &str) -> Result<bool, VivariumError> {
+    check_ref(branch)?;
+    let info = request(
+        "GET",
+        &format!("{API}/repos/{repo}/branches/{branch}"),
+        token,
+        None,
+    )?;
+    info["protected"].as_bool().ok_or_else(|| {
+        VivariumError::Message(format!("GitHub did not say whether {branch} is protected"))
+    })
+}
+
+/// How many commits `head` is ahead of `base` (so: how far `base` is behind).
+///
+/// # Errors
+/// Returns an error if either ref is malformed or unknown, or GitHub is
+/// unreachable.
+pub fn commits_ahead(
+    token: &Secret,
+    repo: &str,
+    base: &str,
+    head: &str,
+) -> Result<u64, VivariumError> {
+    check_ref(base)?;
+    check_ref(head)?;
+    let cmp = request(
+        "GET",
+        &format!("{API}/repos/{repo}/compare/{base}...{head}"),
+        token,
+        None,
+    )?;
+    cmp["ahead_by"].as_u64().ok_or_else(|| {
+        VivariumError::Message(format!("GitHub gave no commit count for {base}...{head}"))
+    })
+}
+
 fn check_ref(reference: &str) -> Result<(), VivariumError> {
     let ok = !reference.is_empty()
         && reference
