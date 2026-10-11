@@ -486,17 +486,20 @@ this endpoint an identity is locked out after an hour.
   delivered copy, and goes on the next push. A reply is addressed to the
   original `From`, so replying to a remote sender routes with no extra
   configuration.
-- Pull filing, for each record not already held:
-  1. Own letter (envelope `from` is this checkout's name): filed `sent`
-     under the `From` address's role.
-  2. Otherwise one row per `To`/`Cc` address whose domain is this
-     mailspace's, under that local role. A role this mailspace does not have
-     is filed under the name anyway and reported, so adding the role later
-     shows it.
-  3. A letter addressed to no role of this mailspace (a need, task, or want
-     for another mailspace's role) is held under its first `To` address
-     verbatim, so every member holds every work item without it landing in
-     a local role's queue.
+- Pull filing, for each record not already held. Filing is by address and
+  additive; it never depends on who authored the letter, because a letter can
+  come back from another place that acts as this mailspace (a restore, a
+  remote slot):
+  1. One row per `To`/`Cc` address whose domain is this mailspace's, under
+     that local role, with the role folder chosen by kind as for any
+     delivered letter. A role this mailspace does not have is filed under
+     the name anyway and reported, so adding the role later shows it.
+  2. If the `From` address's domain is this mailspace's, also one `sent`
+     row under the `From` role, exactly what a local send would have
+     written.
+  3. A letter with neither (a need, task, or want for another mailspace's
+     role) is held under its first `To` address verbatim, so every member
+     holds every work item without it landing in a local role's queue.
 - Not synced: memos, drafts, trash, and local state (closing a need,
   marks). Closing a need as an appended record is a later unit.
 - Out of this layer, by design: long-poll, and a reply to a letter minted
