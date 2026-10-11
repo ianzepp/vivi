@@ -9,12 +9,12 @@
 
 use serde::Serialize;
 
-use super::config::PoolConfig;
+use super::config::{PoolConfig, RepoAccess};
 use super::doctor_pool::{self, PoolFacts};
 use super::doctor_repo::{self, GithubView};
 use super::provider::PoolProvider;
 use super::record::OpenDispatch;
-use super::slot::{self, SlotStatus};
+use super::slot::{self, PoolId, SlotStatus};
 use crate::error::VivariumError;
 
 /// The outcome of one check.
@@ -43,6 +43,8 @@ impl Status {
 /// One line of the report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
+    /// The pool the check is about (empty until a report stamps it).
+    pub pool: String,
     pub group: String,
     pub name: String,
     pub status: Status,
@@ -58,6 +60,7 @@ pub struct Check {
 impl Check {
     fn new(group: &str, name: &str, status: Status, detail: String, fix: Option<String>) -> Self {
         Self {
+            pool: String::new(),
             group: group.to_string(),
             name: name.to_string(),
             status,
@@ -65,6 +68,13 @@ impl Check {
             fix,
             millis: None,
         }
+    }
+
+    /// The same check, about the pool `pool`.
+    #[must_use]
+    pub fn in_pool(mut self, pool: &str) -> Self {
+        self.pool = pool.to_string();
+        self
     }
 
     /// A timed step of the live test.
@@ -128,6 +138,19 @@ struct JsonReport<'a> {
 }
 
 impl Report {
+    /// The checks about one pool, as a report of their own.
+    #[must_use]
+    pub fn of_pool(&self, pool: &str) -> Report {
+        Report {
+            checks: self
+                .checks
+                .iter()
+                .filter(|c| c.pool == pool)
+                .cloned()
+                .collect(),
+        }
+    }
+
     #[must_use]
     pub fn counts(&self) -> Counts {
         let mut counts = Counts::default();
@@ -178,14 +201,19 @@ impl Report {
     pub fn render(&self) -> String {
         let width = self.checks.iter().map(|c| c.name.len()).max().unwrap_or(0);
         let mut lines: Vec<String> = Vec::new();
-        let mut group = "";
+        let mut heading = String::new();
         for check in &self.checks {
-            if check.group != group {
+            let this = if check.pool.is_empty() {
+                check.group.clone()
+            } else {
+                format!("{}  (pool {})", check.group, check.pool)
+            };
+            if this != heading {
                 if !lines.is_empty() {
                     lines.push(String::new());
                 }
-                lines.push(check.group.clone());
-                group = &check.group;
+                lines.push(this.clone());
+                heading = this;
             }
             #[allow(clippy::cast_precision_loss)]
             let took = check
@@ -217,10 +245,10 @@ impl Report {
 pub struct Inputs<'a> {
     pub provider: &'a dyn PoolProvider,
     pub config: &'a PoolConfig,
-    pub mailspace_name: &'a str,
+    pub id: &'a PoolId,
     pub open: &'a [OpenDispatch],
     pub now: u64,
-    pub github: &'a dyn Fn(&PoolConfig, &[String]) -> GithubView,
+    pub github: &'a dyn Fn(&RepoAccess, &[String]) -> GithubView,
 }
 
 /// Run every check. Read-only.
@@ -236,27 +264,37 @@ pub fn run(inputs: &Inputs) -> Report {
     let provider_failed = checks.iter().any(|c| c.status == Status::Fail);
     let slots = (!provider_failed).then(|| list_slots(inputs));
     let bases = slots.as_ref().map(distinct_bases).unwrap_or_default();
-    let view = (inputs.github)(config, &bases);
-    checks.extend(doctor_repo::checks(&config.repo, &view));
+    let view = if let Some(access) = config.repo_access() {
+        let view = (inputs.github)(&access, &bases);
+        checks.extend(doctor_repo::checks(access.repo, &view));
+        view
+    } else {
+        checks.push(doctor_repo::absent_check());
+        GithubView {
+            absent: true,
+            ..GithubView::default()
+        }
+    };
     checks.extend(doctor_pool::checks(&PoolFacts {
-        config: config
-            .validate(inputs.mailspace_name)
-            .map_err(|e| e.to_string()),
+        pool: &inputs.id.pool,
+        config: config.validate(inputs.id).map_err(|e| e.to_string()),
         max: config.slots,
         slots,
         open: inputs.open,
         now: inputs.now,
         github: &view,
     }));
-    Report { checks }
+    let checks = checks.into_iter().map(|c| c.in_pool(&inputs.id.pool));
+    Report {
+        checks: checks.collect(),
+    }
 }
 
 fn list_slots(inputs: &Inputs) -> Result<Vec<SlotStatus>, String> {
-    let pool = inputs.config.pool_name(inputs.mailspace_name);
     inputs
         .provider
         .list()
-        .map(|machines| slot::pool_slots(&pool, &machines))
+        .map(|machines| slot::pool_slots(inputs.id, &machines))
         .map_err(|e| e.to_string())
 }
 

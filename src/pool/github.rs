@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use super::config::PoolConfig;
+use super::config::RepoAccess;
 use crate::chat::b64;
 use crate::error::VivariumError;
 
@@ -112,21 +112,21 @@ fn app_jwt(app_id: u64, key: &Path) -> Result<Secret, VivariumError> {
 ///
 /// # Errors
 /// Returns an error if signing, the HTTP calls, or the response shape fail.
-pub fn mint_token(config: &PoolConfig) -> Result<Secret, VivariumError> {
-    let jwt = app_jwt(config.github.app_id, &config.private_key_path())?;
+pub fn mint_token(access: &RepoAccess) -> Result<Secret, VivariumError> {
+    let (repo, github) = (access.repo, access.github);
+    let jwt = app_jwt(github.app_id, &github.private_key_path())?;
     let install = request(
         "GET",
-        &format!("{API}/repos/{}/installation", config.repo),
+        &format!("{API}/repos/{repo}/installation"),
         &jwt,
         None,
     )?;
     let id = install["id"].as_u64().ok_or_else(|| {
         VivariumError::Message(format!(
-            "GitHub App is not installed on {} (no installation id)",
-            config.repo
+            "GitHub App is not installed on {repo} (no installation id)"
         ))
     })?;
-    let name = config.repo.rsplit('/').next().unwrap_or_default();
+    let name = repo.rsplit('/').next().unwrap_or_default();
     let body = json!({"repositories": [name], "permissions": {"contents": "write"}});
     let url = format!("{API}/app/installations/{id}/access_tokens");
     let reply = request("POST", &url, &jwt, Some(body))?;

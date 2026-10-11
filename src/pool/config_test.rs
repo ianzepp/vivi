@@ -1,7 +1,6 @@
 use super::*;
 
 const FULL: &str = r#"
-name = "main"
 repo = "acme/widgets"
 slots = 4
 image = "rust:1.97-bookworm"
@@ -30,17 +29,22 @@ fn full() -> PoolConfig {
     toml::from_str(FULL).unwrap()
 }
 
+/// The identity every test pool has: pool `main` of mailspace `space`.
+fn id() -> PoolId {
+    PoolId::new("space", "main")
+}
+
 fn err(config: &PoolConfig) -> String {
-    config.validate("space").unwrap_err().to_string()
+    config.validate(&id()).unwrap_err().to_string()
 }
 
 #[test]
 fn parses_a_full_table() {
     let config = full();
-    config.validate("space").unwrap();
-    assert_eq!(config.repo, "acme/widgets");
+    config.validate(&id()).unwrap();
+    assert_eq!(config.repo.as_deref(), Some("acme/widgets"));
     assert_eq!(config.slots, 4);
-    assert_eq!(config.github.app_id, 42);
+    assert_eq!(config.github.as_ref().unwrap().app_id, 42);
     let harness = config.harness.as_ref().unwrap();
     assert_eq!(harness.name, "pi");
     assert_eq!(harness.models.len(), 2);
@@ -62,7 +66,7 @@ private_key = "k.pem"
 "#,
     )
     .unwrap();
-    minimal.validate("space").unwrap();
+    minimal.validate(&id()).unwrap();
     assert_eq!(minimal.provider, "fly");
     assert_eq!(minimal.fly.region, "iad");
     assert_eq!(minimal.fly.size, "performance-8x");
@@ -87,7 +91,7 @@ fn rejects_unknown_provider() {
 #[test]
 fn rejects_bad_repo_and_zero_slots() {
     let mut config = full();
-    config.repo = "widgets".into();
+    config.repo = Some("widgets".into());
     assert!(err(&config).contains("owner/name"));
     let mut config = full();
     config.slots = 0;
@@ -120,7 +124,7 @@ fn rejects_unknown_keys_at_every_level() {
     assert!(err(&config).contains("slotz"));
     let nested = FULL.replace("app_id = 42", "app_id = 42\ntoken = \"x\"");
     let config: PoolConfig = toml::from_str(&nested).unwrap();
-    assert!(err(&config).contains("[pool.github]"));
+    assert!(err(&config).contains("[pools.main.github]"));
 }
 
 #[test]
@@ -139,17 +143,48 @@ fn validates_harness() {
 }
 
 #[test]
-fn pool_name_prefers_explicit_then_mailspace() {
+fn every_message_names_the_pool() {
     let mut config = full();
-    assert_eq!(config.pool_name("ignored"), "main");
-    config.name = None;
-    assert_eq!(config.pool_name("Faber Lang!"), "faber-lang");
+    config.provider = "aws".into();
+    assert!(
+        err(&config).starts_with("configuration error: [pools.main] ")
+            || err(&config).contains("[pools.main] ")
+    );
+}
+
+#[test]
+fn pool_names_are_slugs_that_start_and_end_with_a_letter_or_digit() {
+    let config = full();
+    for good in ["local", "lanes-2", "a", "9"] {
+        config.validate(&PoolId::new("space", good)).unwrap();
+    }
+    for bad in ["", "Local", "has space", "-x", "x-", "a_b", "a.b", "a/b"] {
+        let said = config
+            .validate(&PoolId::new("space", bad))
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("pool name"), "{bad:?}: {said}");
+    }
+    let said = config
+        .validate(&PoolId::new("space", "local-doctor"))
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("-doctor"), "{said}");
+}
+
+#[test]
+fn a_mailspace_name_with_no_letter_or_digit_is_refused() {
+    let said = full()
+        .validate(&PoolId::new("!!!", "main"))
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("mailspace name"), "{said}");
 }
 
 #[test]
 fn private_key_path_expands_home() {
     let config = full();
-    let path = config.private_key_path();
+    let path = config.github.unwrap().private_key_path();
     assert!(path.ends_with("keys/app.pem"));
     assert!(!path.to_string_lossy().starts_with('~'));
 }
@@ -159,7 +194,7 @@ fn mailspace_config_roundtrips_pool() {
     let config = full();
     let text = toml::to_string(&config).unwrap();
     let again: PoolConfig = toml::from_str(&text).unwrap();
-    again.validate("space").unwrap();
+    again.validate(&id()).unwrap();
     assert_eq!(again.build_dir, config.build_dir);
 }
 
@@ -173,7 +208,7 @@ fn harness_env_rules_and_committer_parse() {
         email: "bot@example.com".into(),
         unknown: BTreeMap::new(),
     });
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
     let rules = config
         .harness
         .as_ref()
@@ -189,7 +224,7 @@ fn harness_toml_accepts_the_new_keys() {
         "env = [\"KEY_ONE\"]\nrules = \"r.md\"\nmodels = [",
     );
     let config: PoolConfig = toml::from_str(&text).unwrap();
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
     assert_eq!(config.harness.unwrap().env, ["KEY_ONE"]);
     assert_eq!(config.committer.unwrap().email, "b@x.io");
 }
@@ -209,7 +244,7 @@ fn harness_run_rejects_unknown_placeholders_but_not_shell_expansion() {
     config.harness.as_mut().unwrap().run = "tool --model {modle} {brief}".into();
     assert!(err(&config).contains("{modle}"));
     config.harness.as_mut().unwrap().run = "tool --model {model} -x ${home} {rules}".into();
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
 }
 
 #[test]
@@ -233,26 +268,28 @@ fn committer_must_be_single_line_text() {
 }
 
 #[test]
-fn app_defaults_to_the_pool_name_and_an_explicit_app_wins() {
+fn a_fly_pool_requires_an_app_with_no_default() {
     let mut config = full();
     config.fly.app = None;
-    config.name = None;
-    config.validate("My Project").unwrap();
-    assert_eq!(config.app_name("My Project"), "my-project");
-    config.name = Some("lanes".into());
-    assert_eq!(config.app_name("My Project"), "lanes");
+    let said = err(&config);
+    assert!(
+        said.contains("fly.app is required") && said.contains("[pools.main]"),
+        "{said}"
+    );
+    let text = FULL.replace("app = \"lane-pool\"\n", "");
+    let parsed: PoolConfig = toml::from_str(&text).unwrap();
+    assert!(err(&parsed).contains("fly.app is required"));
+    // Only a fly pool needs one.
+    let mut config = docker();
+    config.fly.app = None;
+    config.validate(&id()).unwrap();
+}
+
+#[test]
+fn the_organization_is_the_one_a_new_app_is_made_in() {
+    let mut config = full();
+    assert_eq!(config.organization_name(), "personal");
     config.fly.organization = Some("acme".into());
-    assert_eq!(
-        config.app_name("My Project"),
-        "lanes",
-        "the organization is not part of it"
-    );
-    config.fly.app = Some("shared".into());
-    assert_eq!(
-        config.app_name("My Project"),
-        "shared",
-        "an explicit app wins"
-    );
     assert_eq!(config.organization_name(), "acme");
 }
 
@@ -267,28 +304,21 @@ fn app_and_organization_must_be_slugs() {
 }
 
 #[test]
-fn a_table_without_app_parses() {
-    let config: PoolConfig = toml::from_str(&FULL.replace("app = \"lane-pool\"\n", "")).unwrap();
-    config.validate("space").unwrap();
-    assert!(config.fly.app.is_none());
-}
-
-#[test]
-fn old_style_provider_keys_in_pool_name_the_new_location() {
-    for (key, line) in [
-        ("app", "app = \"x\""),
-        ("organization", "organization = \"x\""),
-        ("region", "region = \"iad\""),
-        ("size", "size = \"shared-cpu-1x\""),
-        ("memory", "memory = 1024"),
-        ("tmpfs", "tmpfs = \"1g\""),
-    ] {
-        let old = FULL.replace("slots = 4", &format!("slots = 4\n{line}"));
+fn old_style_provider_keys_at_the_pool_level_are_unknown_fields() {
+    for key in ["app", "organization", "region", "size", "memory", "tmpfs"] {
+        let old = FULL.replace("slots = 4", &format!("slots = 4\n{key} = \"x\""));
         let config: PoolConfig = toml::from_str(&old).unwrap();
         let message = err(&config);
         assert!(message.contains(key), "{key}: {message}");
-        assert!(message.contains("[pool.fly]"), "{key}: {message}");
+        assert!(message.contains("unknown field"), "{key}: {message}");
     }
+}
+
+#[test]
+fn the_name_setting_is_gone() {
+    let config: PoolConfig =
+        toml::from_str(&FULL.replace("slots = 4", "slots = 4\nname = \"x\"")).unwrap();
+    assert!(err(&config).contains("unknown field \"name\""));
 }
 
 #[test]
@@ -297,7 +327,7 @@ fn unknown_keys_in_the_fly_table_are_rejected() {
     let config: PoolConfig = toml::from_str(&text).unwrap();
     let message = err(&config);
     assert!(
-        message.contains("regon") && message.contains("[pool.fly]"),
+        message.contains("regon") && message.contains("[pools.main.fly]"),
         "{message}"
     );
 }
@@ -314,7 +344,7 @@ fn a_repo_name_means_github_and_an_embedded_source_replaces_it() {
         ..EmbeddedSource::default()
     });
     assert_eq!(config.remote_address(), "file:///work/remote.git");
-    assert!(config.validate("space").is_ok());
+    assert!(config.validate(&id()).is_ok());
 }
 
 #[test]
@@ -350,7 +380,7 @@ fn docker() -> PoolConfig {
 #[test]
 fn a_docker_table_parses_and_validates() {
     let config = docker();
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
     assert_eq!(config.docker.host.as_deref(), Some("ssh://ci@build-box"));
     assert_eq!(config.docker.memory, "8g");
     assert_eq!(config.docker.cpus, Some(2.5));
@@ -361,7 +391,7 @@ fn a_docker_table_parses_and_validates() {
 fn docker_settings_have_sensible_defaults_and_the_local_daemon_is_the_default() {
     let mut config = docker();
     config.docker = PoolDocker::default();
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
     assert_eq!(config.docker.host, None);
     assert_eq!(config.docker.memory, "4g");
     assert_eq!(config.docker.cpus, None);
@@ -371,7 +401,7 @@ fn docker_settings_have_sensible_defaults_and_the_local_daemon_is_the_default() 
         "",
     ))
     .unwrap();
-    bare.validate("space").unwrap();
+    bare.validate(&id()).unwrap();
     assert_eq!(bare.tmpfs_size(), "2g");
 }
 
@@ -396,7 +426,7 @@ fn bad_docker_settings_are_refused_by_name() {
     }
     let config: PoolConfig =
         toml::from_str(&DOCKER.replace("cpus = 2.5", "cpus = 2.5\nswap = 1")).unwrap();
-    assert!(err(&config).contains("unknown field \"swap\" in [pool.docker]"));
+    assert!(err(&config).contains("unknown field \"swap\" in [pools.main.docker]"));
 }
 
 #[test]
@@ -404,10 +434,10 @@ fn the_fly_settings_are_not_checked_against_a_docker_pool_and_back() {
     let mut config = docker();
     config.fly.region = "Not A Slug".into();
     config.fly.memory = 0;
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
     let mut config = full();
     config.docker.memory = "eight".into();
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
 }
 
 #[test]
@@ -443,7 +473,7 @@ fn ssh() -> PoolConfig {
 #[test]
 fn an_ssh_table_parses_and_validates_with_no_image() {
     let config = ssh();
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
     assert_eq!(config.ssh.host.as_deref(), Some("ci@build-box"));
     assert_eq!(config.ssh.root_or_default(), "~/lanes");
     assert_eq!(config.image, "");
@@ -454,7 +484,7 @@ fn an_ssh_table_parses_and_validates_with_no_image() {
 fn the_ssh_root_defaults_under_the_remote_home() {
     let mut config = ssh();
     config.ssh.root = None;
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
     assert_eq!(config.ssh.root_or_default(), "~/vivi-pool");
 }
 
@@ -493,7 +523,7 @@ fn the_ssh_host_is_required_and_cannot_be_an_option() {
         config.ssh.host = Some(host.to_string());
         if host == "user@" {
             // Syntactically plain; `ssh` itself refuses it at connect time.
-            config.validate("space").unwrap();
+            config.validate(&id()).unwrap();
             continue;
         }
         assert!(err(&config).contains("ssh.host must be"), "{host:?}");
@@ -501,7 +531,7 @@ fn the_ssh_host_is_required_and_cannot_be_an_option() {
     for host in ["pharos", "me@server.example.com", "me@[::1]", "10.0.0.7"] {
         let mut config = ssh();
         config.ssh.host = Some(host.to_string());
-        config.validate("space").unwrap();
+        config.validate(&id()).unwrap();
     }
 }
 
@@ -529,15 +559,69 @@ fn the_ssh_root_must_be_a_directory_of_its_own() {
     for root in ["~/vivi-pool", "/srv/lanes", "/home/me/a.b/c_d-e"] {
         let mut config = ssh();
         config.ssh.root = Some(root.to_string());
-        config.validate("space").unwrap();
+        config.validate(&id()).unwrap();
     }
 }
 
 #[test]
 fn ssh_tables_are_checked_for_unknown_keys_and_only_for_ssh() {
     let config: PoolConfig = toml::from_str(&SSH.replace("root = ", "port = 22\nroot = ")).unwrap();
-    assert!(err(&config).contains("unknown field \"port\" in [pool.ssh]"));
+    assert!(err(&config).contains("unknown field \"port\" in [pools.main.ssh]"));
     let mut config = docker();
     config.ssh.host = Some("-bad".into());
-    config.validate("space").unwrap();
+    config.validate(&id()).unwrap();
+}
+
+const PROVIDER_ONLY: &str = r#"
+provider = "docker"
+slots = 2
+image = "ubuntu:24.04"
+
+[docker]
+memory = "1g"
+"#;
+
+#[test]
+fn a_pool_with_only_its_provider_settings_validates() {
+    let config: PoolConfig = toml::from_str(PROVIDER_ONLY).unwrap();
+    config.validate(&id()).unwrap();
+    assert!(config.repo.is_none() && config.github.is_none());
+    assert!(config.repo_access().is_none());
+    assert_eq!(config.build_dir, "target");
+    assert_eq!(config.remote_address(), "");
+    let ssh: PoolConfig =
+        toml::from_str("provider = \"ssh\"\nslots = 1\n[ssh]\nhost = \"box\"\n").unwrap();
+    ssh.validate(&id()).unwrap();
+}
+
+#[test]
+fn the_commands_that_need_a_repository_name_the_missing_setting() {
+    let config: PoolConfig = toml::from_str(PROVIDER_ONLY).unwrap();
+    for what in ["create slots", "dispatch"] {
+        let said = config.require_repo("main", what).unwrap_err().to_string();
+        assert!(
+            said.contains("[pools.main] repo is required to") && said.contains(what),
+            "{said}"
+        );
+    }
+    let repo_only: PoolConfig = toml::from_str(
+        &format!("{PROVIDER_ONLY}\n").replace("slots = 2", "slots = 2\nrepo = \"o/r\""),
+    )
+    .unwrap();
+    let said = repo_only
+        .require_repo("main", "dispatch")
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("github is required"), "{said}");
+    assert!(full().require_repo("main", "dispatch").is_ok());
+}
+
+#[test]
+fn repo_and_github_are_set_together_or_not_at_all() {
+    let mut config = full();
+    config.github = None;
+    assert!(err(&config).contains("github is required when repo is set"));
+    let mut config = full();
+    config.repo = None;
+    assert!(err(&config).contains("repo is required when github is set"));
 }

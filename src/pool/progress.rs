@@ -77,6 +77,8 @@ impl Beat {
 /// A problem that occurred while a wait was running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Issue {
+    /// The pool it concerned, when it concerned one.
+    pub pool: Option<String>,
     /// What went wrong, as a word (`poll-error`, `list-error`).
     pub kind: &'static str,
     /// The task it concerned, when it concerned one.

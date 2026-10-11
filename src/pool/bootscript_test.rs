@@ -161,7 +161,7 @@ fn job_runner_has_valid_bash_syntax() {
 }
 
 fn embedded(config: &PoolConfig) -> PoolConfig {
-    crate::pool::selftest_source::test_config(config, "p-doctor")
+    crate::pool::selftest_source::test_config(config)
 }
 
 #[test]

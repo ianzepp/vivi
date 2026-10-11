@@ -12,6 +12,10 @@ use crate::mailspace::PoolEventRow;
 /// The machine-readable record of a dispatch, as written to the task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchRecord {
+    /// The pool the slot belongs to. A record made before pools were named
+    /// has none (empty) and reads as a pool that no longer exists.
+    #[serde(default)]
+    pub pool: String,
     pub slot: String,
     pub machine: String,
     pub job: String,
@@ -42,8 +46,9 @@ pub fn dispatch_note(record: &DispatchRecord) -> String {
 #[must_use]
 pub fn dispatch_text(record: &DispatchRecord) -> String {
     format!(
-        "pool dispatch {job}\nslot {slot}  model {model}  budget {budget}s\nfrom {from} ({start})  branch {branch}",
+        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s\nfrom {from} ({start})  branch {branch}",
         job = record.job,
+        pool = record.pool,
         slot = record.slot,
         model = record.model,
         budget = record.budget,
@@ -79,6 +84,7 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
     let record = &dispatch.record;
     let mut note = serde_json::json!({
         "job": record.job,
+        "pool": record.pool,
         "slot": record.slot,
         "outcome": outcome.word(),
     });
@@ -95,9 +101,10 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
 pub fn collected_text(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
     let record = &dispatch.record;
     let mut text = format!(
-        "pool result {job}: {word}\nslot {slot}  model {model}\nfrom {from}  branch {branch}",
+        "pool result {job}: {word}\npool {pool}  slot {slot}  model {model}\nfrom {from}  branch {branch}",
         job = record.job,
         word = outcome.word(),
+        pool = record.pool,
         slot = record.slot,
         model = record.model,
         from = record.from,

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use super::config::PoolConfig;
+use super::config::{PoolGithub, RepoAccess};
 use super::doctor::Check;
 use super::github;
 
@@ -14,6 +14,8 @@ pub const GROUP: &str = "Repository (GitHub)";
 /// an earlier one failed.
 #[derive(Debug, Clone, Default)]
 pub struct GithubView {
+    /// True when the pool has no repository configured: nothing was looked at.
+    pub absent: bool,
     /// `openssl` version line.
     pub openssl: Option<Result<String, String>>,
     /// The key path, when the file is readable.
@@ -30,17 +32,17 @@ pub struct GithubView {
 /// Look at GitHub for real. Every step after the token needs the token, so a
 /// failed token ends the walk. Nothing is written anywhere.
 #[must_use]
-pub fn gather(config: &PoolConfig, bases: &[String]) -> GithubView {
+pub fn gather(access: &RepoAccess, bases: &[String]) -> GithubView {
     let mut view = GithubView {
         openssl: Some(openssl_version()),
-        key: Some(key_readable(config)),
+        key: Some(key_readable(access.github)),
         ..GithubView::default()
     };
     let signs = matches!(view.openssl, Some(Ok(_))) && matches!(view.key, Some(Ok(_)));
     if !signs {
         return view;
     }
-    let token = match github::mint_token(config) {
+    let token = match github::mint_token(access) {
         Ok(token) => token,
         Err(e) => {
             view.token = Some(Err(e.to_string()));
@@ -48,12 +50,12 @@ pub fn gather(config: &PoolConfig, bases: &[String]) -> GithubView {
         }
     };
     view.token = Some(Ok(()));
-    let branch = github::default_branch(&token, &config.repo).map_err(|e| e.to_string());
+    let branch = github::default_branch(&token, access.repo).map_err(|e| e.to_string());
     if let Ok(name) = &branch {
         view.protection =
-            Some(github::branch_protected(&token, &config.repo, name).map_err(|e| e.to_string()));
+            Some(github::branch_protected(&token, access.repo, name).map_err(|e| e.to_string()));
         for base in bases {
-            let ahead = github::commits_ahead(&token, &config.repo, base, name);
+            let ahead = github::commits_ahead(&token, access.repo, base, name);
             view.behind
                 .insert(base.clone(), ahead.map_err(|e| e.to_string()));
         }
@@ -73,11 +75,21 @@ fn openssl_version() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn key_readable(config: &PoolConfig) -> Result<String, String> {
-    let path = config.private_key_path();
+fn key_readable(github: &PoolGithub) -> Result<String, String> {
+    let path = github.private_key_path();
     std::fs::File::open(&path)
         .map(|_| path.display().to_string())
         .map_err(|e| format!("cannot read {}: {e}", path.display()))
+}
+
+/// The one line for a pool with no repository configured.
+#[must_use]
+pub fn absent_check() -> Check {
+    Check::skipped(
+        GROUP,
+        "repository",
+        "no repository configured for this pool",
+    )
 }
 
 /// Turn what was seen into checks.
@@ -97,7 +109,7 @@ pub fn checks(repo: &str, view: &GithubView) -> Vec<Check> {
         step(
             "app key",
             view.key.as_ref(),
-            "set [pool.github].private_key to a readable PEM file",
+            "set [github] private_key to a readable PEM file",
             "",
         ),
         token_check(repo, view),
@@ -141,7 +153,7 @@ fn token_check(repo: &str, view: &GithubView) -> Check {
             "token",
             e.clone(),
             format!(
-                "check [pool.github].app_id and that the App is installed on {repo} with contents access"
+                "check [github] app_id and that the App is installed on {repo} with contents access"
             ),
         ),
         None => Check::skipped(GROUP, "token", "needs openssl and a readable App key"),

@@ -8,7 +8,7 @@
 //! job is running or finished and uncollected.
 
 use super::provider::{Hold, PoolProvider};
-use super::slot::{self, SlotStatus};
+use super::slot::{self, PoolId, SlotStatus};
 use crate::error::VivariumError;
 
 /// How long a lease-based provider holds the claim window while it marks and
@@ -29,11 +29,11 @@ pub struct Claim {
 /// is doing), or the provider fails mid-claim; a half-made claim is undone.
 pub fn claim_slot(
     provider: &dyn PoolProvider,
-    pool: &str,
+    id: &PoolId,
     task: &str,
     now: u64,
 ) -> Result<Claim, VivariumError> {
-    let slots = slot::pool_slots(pool, &provider.list()?);
+    let slots = slot::pool_slots(id, &provider.list()?);
     for candidate in slots.iter().filter(|s| s.state == "free") {
         if let Some(hold) = provider.claim(&candidate.id, task, now)? {
             return Ok(Claim {
@@ -42,7 +42,7 @@ pub fn claim_slot(
             });
         }
     }
-    Err(no_free_slot(pool, &slots))
+    Err(no_free_slot(&id.pool, &slots))
 }
 
 /// Undo a claim: drop the marks and end the claim window. Every step is attempted; a
@@ -58,7 +58,9 @@ pub fn unclaim(provider: &dyn PoolProvider, claim: &Claim) -> Result<(), Vivariu
 
 fn no_free_slot(pool: &str, slots: &[SlotStatus]) -> VivariumError {
     if slots.is_empty() {
-        return VivariumError::Message(format!("pool {pool} has no slots; run `vivi pool create`"));
+        return VivariumError::Message(format!(
+            "pool {pool} has no slots; run `vivi pool create --pool {pool}`"
+        ));
     }
     let states = slots
         .iter()

@@ -1,5 +1,5 @@
-//! Remote lane pool: `[pool]` config, slot discovery, and the create, status,
-//! destroy, dispatch, wait and reconcile commands.
+//! Remote lane pools: `[pools.<name>]` config, slot discovery, and the create,
+//! status, destroy, scale, dispatch, wait and reconcile commands.
 //!
 //! A pool is a set of preseeded remote machines ("slots"). A slot is created
 //! once, seeds itself (tools, a shallow checkout at a base commit, a warmed
@@ -9,7 +9,8 @@
 //! configuration.
 //!
 //! Slot state lives in the provider, never in local files: slots are found by
-//! machine metadata (see [`slot`]). A slot is `free`, `seeding`, `busy` (a
+//! machine metadata (see [`slot`]); a slot belongs to a mailspace AND a pool,
+//! and both marks must match before a pool sees or touches it. A slot is `free`, `seeding`, `busy` (a
 //! task holds it and the machine runs), or `finished-uncollected` (a task
 //! holds it and the machine stopped, its result still on the disk). A dispatch
 //! claims a slot atomically (see [`claim`]), delivers one job archive, and is
@@ -41,11 +42,13 @@ pub mod fly_doctor;
 pub mod fly_token;
 pub mod github;
 pub mod job;
+pub mod pools;
 pub mod porcelain;
 pub mod progress;
 pub mod provider;
 pub mod record;
 pub mod run;
+pub mod scale;
 pub mod selftest;
 pub mod selftest_source;
 pub mod selftest_steps;
@@ -61,15 +64,15 @@ pub mod work;
 pub use config::{PoolCommitter, PoolConfig, PoolGithub, PoolHarness};
 pub use provider::PoolProvider;
 
-/// The machine host `config` names, ready to use. `mailspace_name` is the
-/// mailspace's own name (the default pool name, and with it the default Fly app).
+/// The machine host `config` names, ready to use. A `fly` pool without an
+/// `app` gets an empty one here; validation rejects it before anything acts.
 #[must_use]
-pub fn open_provider(config: &PoolConfig, mailspace_name: &str) -> Box<dyn PoolProvider> {
+pub fn open_provider(config: &PoolConfig) -> Box<dyn PoolProvider> {
     match config.provider.as_str() {
         "docker" => Box::new(docker::DockerProvider::new(config)),
         "ssh" => Box::new(ssh::SshProvider::new(config)),
         _ => Box::new(fly::FlyctlProvider::new(
-            &config.app_name(mailspace_name),
+            config.fly.app.as_deref().unwrap_or_default(),
             &config.fly,
         )),
     }

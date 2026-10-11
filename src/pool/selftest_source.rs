@@ -10,8 +10,6 @@ use std::collections::BTreeMap;
 use super::bootscript::SOURCE_DIR;
 use super::config::{EmbeddedSource, PoolCommitter, PoolConfig, PoolHarness};
 
-/// Suffix that keeps the test pool apart from the real pool.
-pub const POOL_SUFFIX: &str = "-doctor";
 /// The model slug the stand-in harness accepts.
 pub const MODEL: &str = "standin";
 /// The branch the embedded source starts on; also the seed base.
@@ -36,12 +34,6 @@ pub const SOURCE_FILES: [(&str, &str); 3] = [
     (".gitignore", "build/\n"),
 ];
 
-/// The test pool's name for a real pool.
-#[must_use]
-pub fn pool_name(real_pool: &str) -> String {
-    format!("{real_pool}{POOL_SUFFIX}")
-}
-
 /// The stand-in harness: append a line to a file in the checkout and print a
 /// one-line receipt, after sleeping `sleep_secs`.
 #[must_use]
@@ -59,9 +51,8 @@ pub fn harness_command(sleep_secs: u64) -> String {
 /// The config the test runs under: the real pool's machine host, region and
 /// image, with everything else replaced so no project setting is used.
 #[must_use]
-pub fn test_config(real: &PoolConfig, pool: &str) -> PoolConfig {
+pub fn test_config(real: &PoolConfig) -> PoolConfig {
     let mut config = real.clone();
-    config.name = Some(pool.to_string());
     config.slots = 2;
     config.setup = Vec::new();
     config.seed = vec!["true".to_string()];

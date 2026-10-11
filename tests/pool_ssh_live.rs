@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use vivi::pool::PoolConfig;
 use vivi::pool::provider::{CreateSpec, PoolProvider};
-use vivi::pool::slot::{self, META_STATE, STATE_READY};
+use vivi::pool::slot::{self, META_STATE, PoolId, STATE_READY};
 use vivi::pool::ssh::SshProvider;
 
 /// Each test has a pool of its own, so tests may run side by side.
@@ -43,9 +43,9 @@ fn config() -> PoolConfig {
 /// A slot whose boot script is `boot`, not the real one.
 fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
     CreateSpec {
-        name: slot::slot_name(pool, index),
+        name: PoolId::new("livetest", pool).slot_name(index),
         image: String::new(),
-        metadata: slot::slot_metadata(pool, index, "main"),
+        metadata: slot::slot_metadata(&PoolId::new("livetest", pool), index, "main"),
         env: Default::default(),
         once_env: Default::default(),
         passthrough_env: Vec::new(),
@@ -57,7 +57,7 @@ fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
 }
 
 fn id_of(pool: &str, index: u32) -> String {
-    format!("{pool}/slot-{index}")
+    format!("livetest/{pool}/slot-{index}")
 }
 
 /// Removes what the test made, whatever happens.

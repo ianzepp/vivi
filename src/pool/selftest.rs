@@ -3,7 +3,8 @@
 //! Vivi's own pool machinery working (steps under the Vivi heading)?
 //!
 //! The test depends on nothing of the project: it runs a throwaway pool of two
-//! small slots under its own name (`<pool>-doctor`) in the real pool's machine
+//! small slots under its own name (`<pool>-doctor`, in the real pool's
+//! mailspace) in the real pool's machine
 //! host application, delivers an embedded source tree to each slot (see
 //! [`selftest_source`](super::selftest_source)), and runs a stand-in harness
 //! against it. Its dispatch records live in a temporary mailspace. Cleanup
@@ -19,6 +20,7 @@ use super::provider::PoolProvider;
 use super::run;
 use super::selftest_steps::{self as steps, StepResult};
 use super::selftest_world::{Timing, World};
+use super::slot::PoolId;
 
 /// Heading of the machine-host steps.
 pub const PROVIDER_GROUP: &str = "Live test: provider";
@@ -138,14 +140,14 @@ fn outcome(step: &Step, result: StepResult, took: std::time::Duration) -> Check 
 /// Slots left by an earlier run that was killed: remove them first.
 fn clear_earlier(world: &World) -> Option<Check> {
     // A provider that cannot list fails the first step with its own error.
-    let Ok(found) = run::pool_status(world.provider, &world.pool) else {
+    let Ok(found) = run::pool_status(world.provider, &world.id) else {
         return None;
     };
     if found.is_empty() {
         return None;
     }
     let names = World::describe(&found);
-    let check = match run::destroy_slots(world.provider, &world.pool, &run::DestroyTarget::All) {
+    let check = match run::destroy_slots(world.provider, &world.id, &run::DestroyTarget::All) {
         Ok(_) => Check::warn(
             PROVIDER_GROUP,
             "earlier test slots",
@@ -167,13 +169,13 @@ fn clear_earlier(world: &World) -> Option<Check> {
 pub fn run_test(
     provider: &dyn PoolProvider,
     real: &PoolConfig,
-    real_pool: &str,
+    real_id: &PoolId,
     options: &TestOptions,
 ) -> Vec<Check> {
     let mut world = match World::new(
         provider,
         real,
-        real_pool,
+        real_id,
         options.timing.clone(),
         options.cancelled,
         options.detail,

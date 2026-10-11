@@ -168,7 +168,7 @@ pub fn check_model(model: &str, allowed: &[String]) -> Result<(), VivariumError>
         allowed.join(", ")
     };
     Err(VivariumError::Message(format!(
-        "model \"{model}\" is not in [pool.harness].models ({list})"
+        "model \"{model}\" is not in [harness].models of the pool ({list})"
     )))
 }
 

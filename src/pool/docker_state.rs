@@ -2,7 +2,7 @@
 //! pool's [`MachineRecord`].
 //!
 //! A slot's facts come from three places, because container labels cannot
-//! change after creation: fixed facts (pool, index, base, architecture) are
+//! change after creation: fixed facts (mailspace, pool, index, base, architecture) are
 //! labels; the seed mark is a file on the slot's own disk (see
 //! [`MARKS_DIR`]); the task and claim time are the labels of a separate claim
 //! container whose existence is the claim (see `docker.rs`).

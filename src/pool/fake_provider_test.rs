@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, HashMap};
 use super::doctor::Check;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
 use super::slot::{
-    META_BASE, META_CLAIMED, META_POOL, META_SLOT, META_STATE, META_TASK, STATE_READY,
+    META_BASE, META_CLAIMED, META_MAILSPACE, META_POOL, META_SLOT, META_STATE, META_TASK, PoolId,
+    STATE_READY,
 };
 use crate::error::VivariumError;
 
@@ -125,7 +126,15 @@ fn take_one(n: &Cell<u32>) -> bool {
     left > 0
 }
 
-/// A seeded pool slot.
+/// The mailspace the fake's slots belong to.
+pub const SPACE: &str = "ms";
+
+/// The identity of pool `pool` in the fake's mailspace.
+pub fn pid(pool: &str) -> PoolId {
+    PoolId::new(SPACE, pool)
+}
+
+/// A seeded pool slot of the fake's mailspace.
 pub fn slot(id: &str, name: &str, state: &str, pool: &str, index: u32) -> MachineRecord {
     MachineRecord {
         id: id.into(),
@@ -134,6 +143,7 @@ pub fn slot(id: &str, name: &str, state: &str, pool: &str, index: u32) -> Machin
         region: "iad".into(),
         created_at: "then".into(),
         metadata: BTreeMap::from([
+            (META_MAILSPACE.to_string(), SPACE.to_string()),
             (META_POOL.to_string(), pool.to_string()),
             (META_SLOT.to_string(), index.to_string()),
             (META_BASE.to_string(), "a".repeat(40)),

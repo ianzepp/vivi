@@ -13,12 +13,13 @@ use super::config::PoolConfig;
 use super::dispatch::{self, DispatchFlags};
 use super::github::Secret;
 use super::job;
+use super::pools::PoolSet;
 use super::progress::{Beat, HEARTBEAT, Progress};
 use super::provider::PoolProvider;
 use super::record::DispatchRecord;
 use super::run::{self, CreateOptions};
 use super::selftest_source::{self as source, harness_command};
-use super::slot::SlotStatus;
+use super::slot::{PoolId, SlotStatus};
 use super::work::{self, WaitOptions, Waited};
 use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, SendRequest};
@@ -114,7 +115,8 @@ pub struct Job {
 pub struct World<'a> {
     pub provider: &'a dyn PoolProvider,
     pub config: PoolConfig,
-    pub pool: String,
+    /// The self-test pool: `<pool>-doctor` of the same mailspace.
+    pub id: PoolId,
     pub timing: Timing,
     pub cancelled: &'a dyn Fn() -> bool,
     /// Where the lines of a running step go: its start lines and heartbeats.
@@ -128,15 +130,16 @@ pub struct World<'a> {
 }
 
 impl<'a> World<'a> {
-    /// Build the world for `real`'s pool: a temporary mailspace and the
-    /// isolated config.
+    /// Build the world for the real pool `real_id`: a temporary mailspace and
+    /// the isolated config. The test slots belong to `real_id`'s mailspace and
+    /// to its `-doctor` pool.
     ///
     /// # Errors
     /// Returns an error if the temporary mailspace cannot be created.
     pub fn new(
         provider: &'a dyn PoolProvider,
         real: &PoolConfig,
-        real_pool: &str,
+        real_id: &PoolId,
         timing: Timing,
         cancelled: &'a dyn Fn() -> bool,
         progress: &'a Progress,
@@ -145,11 +148,10 @@ impl<'a> World<'a> {
         let mut space = Mailspace::init(Some(dir.path()))?;
         space.add_identity("mind")?;
         space.add_identity("hand")?;
-        let pool = source::pool_name(real_pool);
         Ok(Self {
             provider,
-            config: source::test_config(real, &pool),
-            pool,
+            config: source::test_config(real),
+            id: real_id.doctor(),
             timing,
             cancelled,
             progress,
@@ -166,7 +168,7 @@ impl<'a> World<'a> {
     /// # Errors
     /// Returns the provider's error as text.
     pub fn slots(&self) -> Result<Vec<SlotStatus>, String> {
-        run::pool_status(self.provider, &self.pool).map_err(|e| e.to_string())
+        run::pool_status(self.provider, &self.id).map_err(|e| e.to_string())
     }
 
     /// `name=state` for each slot, for an observed-text.
@@ -265,6 +267,7 @@ impl<'a> World<'a> {
         let id = dispatch::new_job_id(&task, u128::from(self.counter), std::process::id());
         let plan = dispatch::plan_job(
             &config,
+            &self.id.pool,
             (&task, label, ""),
             &flags,
             job::DEFAULT_RULES.to_string(),
@@ -275,7 +278,7 @@ impl<'a> World<'a> {
         let record = work::submit(
             &self.space,
             self.provider,
-            &self.pool,
+            &self.id,
             &plan,
             &token,
             start,
@@ -320,14 +323,8 @@ impl<'a> World<'a> {
         };
         let mut say = |line: &str| self.progress.say(line);
         let mut watch = ErrorWatch::default();
-        match work::wait(
-            &self.space,
-            self.provider,
-            &[task],
-            &options,
-            &mut watch,
-            &mut say,
-        ) {
+        let set = PoolSet::single(&self.id, self.provider);
+        match work::wait(&self.space, &set, &[task], &options, &mut watch, &mut say) {
             Ok(Waited::Settled(mut lines)) => lines
                 .pop()
                 .ok_or_else(|| "wait settled with no line".to_string()),
@@ -361,8 +358,8 @@ impl<'a> World<'a> {
     /// # Errors
     /// Returns an error text if the round could not run.
     pub fn reconcile(&self) -> Result<work::ReconcileReport, String> {
-        work::reconcile(&self.space, self.provider, &self.pool, &self.timing.pacing)
-            .map_err(|e| e.to_string())
+        let set = PoolSet::single(&self.id, self.provider);
+        work::reconcile(&self.space, &set, &self.timing.pacing).map_err(|e| e.to_string())
     }
 
     /// True when the task of `label` still has an open dispatch.

@@ -314,6 +314,7 @@ fn spec() -> CreateSpec {
         image: "ubuntu:24.04".into(),
         metadata: BTreeMap::from([
             ("vivi_pool".into(), "lane".into()),
+            ("vivi_pool_mailspace".into(), "ms".into()),
             ("vivi_pool_slot".into(), "1".into()),
             ("vivi_pool_base".into(), "abc".into()),
             ("vivi_pool_state".into(), "seeding".into()),
@@ -440,7 +441,8 @@ fn list_and_machine_fold_marks_and_the_claim_into_one_record() {
     assert_eq!(rec.region, "ssh://ci@box");
     assert_eq!(rec.metadata["vivi_pool_arch"], "arm64");
     assert_eq!(crate::pool::slot::slot_state(rec), "free");
-    let slots = crate::pool::slot::pool_slots("lane", &listed);
+    let slots =
+        crate::pool::slot::pool_slots(&crate::pool::slot::PoolId::new("ms", "lane"), &listed);
     assert_eq!(slots[0].arch.as_deref(), Some("arm64"));
     assert_eq!(provider.machine(&id).unwrap(), *rec);
     assert_eq!(provider.machine("deadbeef0000").unwrap().state, "destroyed");

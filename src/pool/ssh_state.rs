@@ -16,35 +16,37 @@ const SLOT_MARKER: &str = "@@slot ";
 /// The directory name of slot `index` inside its pool directory.
 const SLOT_DIR_PREFIX: &str = "slot-";
 
-/// The id of a slot: its path below the root, `<pool>/slot-<index>`.
+/// The id of a slot: its path below the root,
+/// `<mailspace>/<pool>/slot-<index>`.
 #[must_use]
-pub fn slot_id(pool: &str, index: &str) -> String {
-    format!("{pool}/{SLOT_DIR_PREFIX}{index}")
+pub fn slot_id(mailspace: &str, pool: &str, index: &str) -> String {
+    format!("{mailspace}/{pool}/{SLOT_DIR_PREFIX}{index}")
 }
 
-/// What the pool calls slot `id`: `<pool>-slot-<index>`.
+/// What the pool calls slot `id`: `<mailspace>-<pool>-slot-<index>`.
 #[must_use]
 pub fn name_of(id: &str) -> String {
-    id.replacen(
-        &format!("/{SLOT_DIR_PREFIX}"),
-        &format!("-{SLOT_DIR_PREFIX}"),
-        1,
-    )
+    id.replace('/', "-")
 }
 
-/// True for `<pool>/slot-<digits>` with a pool of lowercase letters, digits
-/// and dashes: the only ids the remote script accepts.
+/// True for `<mailspace>/<pool>/slot-<digits>` with a mailspace and a pool of
+/// lowercase letters, digits and dashes (not starting with a dash): the only
+/// ids the remote script accepts.
 #[must_use]
 pub fn is_slot_id(id: &str) -> bool {
-    let Some((pool, slot)) = id.split_once('/') else {
+    let parts: Vec<&str> = id.split('/').collect();
+    let [mailspace, pool, slot] = parts.as_slice() else {
         return false;
     };
+    let word = |w: &str| {
+        !w.starts_with('-')
+            && !w.is_empty()
+            && w.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
     let index = slot.strip_prefix(SLOT_DIR_PREFIX);
-    !pool.starts_with('-')
-        && !pool.is_empty()
-        && pool
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    word(mailspace)
+        && word(pool)
         && index.is_some_and(|i| !i.is_empty() && i.chars().all(|c| c.is_ascii_digit()))
 }
 

@@ -399,26 +399,113 @@ not only verdict flags.
 ## Remote lane pool
 
 `vivi pool` manages a pool of preseeded remote machines ("slots") and hands a
-Vivi task to one of them. Three machine hosts exist, chosen by
-`[pool].provider`: `fly` (the default; Fly Machines, billed by the second),
+Vivi task to one of them. A mailspace holds any number of **named pools**
+(`[pools.<name>]` in `.vivi/mailspace.toml`); each is complete on its own.
+Three machine hosts exist, chosen by each pool's `provider`: `fly` (the default; Fly Machines, billed by the second),
 `docker` (containers on a Docker daemon: the local one, or a remote one over
 SSH; see "Docker provider" below) and `ssh` (a plain Linux host reached over
 SSH, each slot a directory, no isolation; a minimal form, not the recommended
-one; see "SSH provider" below). `[pool.fly]`, `[pool.docker]` and `[pool.ssh]`
-hold the host-specific settings. Everything else in this section works the same
-on all three. In-place reseed, other hosts, several named pools, and overflow
-machines do not exist; do not invent them.
+one; see "SSH provider" below). `[pools.<name>.fly]`, `[pools.<name>.docker]`
+and `[pools.<name>.ssh]` hold the host-specific settings. Everything else in
+this section works the same on all three. In-place reseed, other hosts,
+routing work to a pool by role, a default pool, and shared defaults between
+pools do not exist; do not invent them. Which work goes to which pool is the
+orchestrator's call; Vivi has no opinion.
 
 ```sh
-vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS] [--porcelain]
-vivi pool status [--json | --porcelain]
-vivi pool destroy (--slot <name-or-id> | --all) --yes
-vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--porcelain]
-vivi pool wait [<task>...] [--timeout SECS] [--porcelain]
-vivi pool reconcile [--porcelain]
-vivi pool doctor [--json | --porcelain]
-vivi pool doctor --test [--long] [--json | --porcelain]
+vivi pool create --pool <name> [--slots N] [--base <commit|branch>] [--timeout SECS] [--porcelain]
+vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SECS] [--porcelain]
+vivi pool status [--pool <name>] [--json | --porcelain]
+vivi pool destroy --pool <name> (--slot <name-or-id> | --all) --yes
+vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--porcelain]
+vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
+vivi pool reconcile [--pool <name>] [--porcelain]
+vivi pool doctor [--pool <name>] [--json | --porcelain]
+vivi pool doctor --pool <name> --test [--long] [--json | --porcelain]
 ```
+
+#### Named pools and `--pool`
+
+- A pool is a `[pools.<name>]` table. The name is the table key: lowercase
+  letters, digits and dashes, starting and ending with a letter or digit, and
+  not ending in `-doctor` (the self-test pool is `<pool>-doctor`). There is no
+  `name` setting. The old top-level `[pool]` table is gone (a clean break):
+  a mailspace that still has one gets an error naming `[pools.<name>]` on the
+  first `vivi pool` command; nothing is rewritten.
+- Every pool table is complete on its own. There are no defaults shared between
+  pools and no inheritance: write `repo`, `github`, `harness` and `committer`
+  again in each pool that needs them.
+- `--pool <name>` is on every pool command. With exactly one pool it may be
+  omitted everywhere. With several: `create`, `destroy`, `dispatch`, `scale` and
+  `doctor --test` require it (the error lists the pool names); `status`,
+  `doctor` (without `--test`), `wait` and `reconcile` cover **all** pools when it
+  is not given and one pool when it is. An unknown name lists the known ones.
+- Each dispatch record carries its pool, so `wait` and `reconcile` find the right
+  host. A record whose pool is no longer in the config is reported (`wait`
+  prints an issue and leaves it open) and `reconcile` closes it as `lost`; so is
+  a record made before pools were named.
+- **`scale --pool <name> <N>`** brings a pool to N slots. Up: creates and seeds
+  the missing ones (like `create --slots N`; it needs the pool's repository).
+  Down: destroys **free** slots only, highest index first, and requires `--yes`;
+  a busy, seeding, finished-uncollected or unseeded slot is never destroyed and
+  is printed as `skipped` with its state, so the pool may end above N (run it
+  again once they are free; the exit code is still 0). N above the pool's
+  configured `slots` is refused. `scale 0` empties the pool of free slots.
+- **Slot identity belongs to the mailspace and the pool.** Marks and labels
+  carry both the mailspace's slug and the pool name, and discovery, claim,
+  status, destroy and the self-test filter on both: two mailspaces may each have
+  a pool called `local` on one Docker daemon, SSH host or Fly app without seeing
+  each other's slots. Names: `<mailspace>-<pool>-slot-<n>` (Fly machine,
+  Docker container) and `<root>/<mailspace>/<pool>/slot-<n>/` (SSH; the slot id
+  is `<mailspace>/<pool>/slot-<n>`). The mailspace slug is the name lowercased
+  with every other character turned into a dash. The SSH destroy guard checks
+  the pool mark and the mailspace mark.
+- **A pool with only provider settings.** `repo`, `github`, `harness` and
+  `committer` are optional in a pool table (`github` goes with `repo`). Such a
+  pool is for testing the provider: `status`, `destroy`, `reconcile`, `wait`,
+  `doctor` and `doctor --test` work (`doctor` prints one `skipped` Repository
+  line, "no repository configured for this pool"). `create`, `scale` (when it
+  would create) and `dispatch` fail naming the missing setting, and `dispatch`
+  also needs `harness` and `committer`.
+
+Example: a small local pool for everyday work and a larger rented pool to scale
+up for a big push and back down afterwards.
+
+```toml
+[pools.local]
+provider = "docker"
+repo = "owner/name"
+slots = 4
+image = "rust:1.97-bookworm"
+build_dir = "target"
+seed = ["cargo build"]
+[pools.local.docker]
+memory = "8g"
+[pools.local.github]
+app_id = 123456
+private_key = "~/secrets/app.private-key.pem"
+[pools.local.harness]
+run = "pi -p --model {model} @{brief}"
+models = ["zai/glm-5.3-flash"]
+env = ["MODEL_API_KEY"]
+[pools.local.committer]
+name = "lane-bot"
+email = "lane-bot@users.noreply.github.com"
+
+[pools.lanes]
+provider = "fly"
+repo = "owner/name"
+slots = 32
+image = "rust:1.97-bookworm"
+build_dir = "target"
+seed = ["cargo build"]
+[pools.lanes.fly]
+app = "my-unique-app"
+# ...[pools.lanes.github], [pools.lanes.harness], [pools.lanes.committer] written out again
+```
+
+`vivi pool scale --pool lanes 32 --porcelain` before the push, then
+`vivi pool scale --pool lanes 0 --yes --porcelain` after.
 
 **Agents: pass `--porcelain` to every pool command you run, especially a
 background `vivi pool wait`.** Output of a background command is read back into
@@ -442,49 +529,66 @@ three minutes (about ten with `--long`).
 One line per result; fields separated by single spaces, in this order; `-` for
 an absent field; a value that is empty, holds whitespace, a quote or a
 backslash, or is itself `-` is double-quoted with `\"`, `\\`, `\n`, `\r`, `\t`,
-`\u{hex}` escapes; times are epoch seconds.
+`\u{hex}` escapes; times are epoch seconds. `POOL` is the pool's name: the
+first field after the line kind, except on the lines that lead with `TASK`
+(`dispatched`, `collected`, `reconciled`), where it follows `TASK`.
 
 ```
-create     home TEXT                                          only when the app was made
-           created NAME ID STATE SECONDS EXIT OUTCOME ERROR   OUTCOME: seeded|timeout|failed|unmarked
-           exists POOL COUNT                                  nothing to create
-           issue KIND SUBJECT MESSAGE FIRST CLEARED           KIND list-error, SUBJECT -
-status     slot NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED
-dispatch   dispatched TASK SLOT JOB MODEL FROM START BRANCH BUDGET
-wait       collected TASK SLOT STATE DETAIL                   STATE: finished|timeout|lost
-           nothing-open                                       already collected
-           issue KIND SUBJECT MESSAGE FIRST CLEARED           KIND poll-error, SUBJECT the task
-reconcile  reconciled TASK SLOT STATE DETAIL                  STATE: running|finished|timeout|lost|error|stale-claim|orphan-stopped
-           nothing-open                                       no dispatch was open
-doctor     check STATUS GROUP NAME DETAIL FIX MILLIS          STATUS: ok|warn|fail|skipped
-           summary OK WARN FAIL SKIPPED
+create     home POOL TEXT                                          only when the app was made
+           created POOL NAME ID STATE SECONDS EXIT OUTCOME ERROR   OUTCOME: seeded|timeout|failed|unmarked
+           exists POOL COUNT                                       nothing to create
+           issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND list-error, SUBJECT -
+scale      created ... | home ... | exists ... | issue ...         as create
+           destroyed POOL NAME ID
+           skipped POOL NAME ID STATE TASK                         not free, so kept
+           scaled POOL TARGET COUNT                                COUNT: slots the pool holds now
+status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED
+dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET
+wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
+           nothing-open                                            already collected
+           issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND poll-error, SUBJECT the task
+reconcile  reconciled TASK POOL SLOT STATE DETAIL                  STATE: running|finished|timeout|lost|error|stale-claim|orphan-stopped
+           nothing-open                                            no dispatch was open
+doctor     check POOL STATUS GROUP NAME DETAIL FIX MILLIS          STATUS: ok|warn|fail|skipped
+           summary POOL OK WARN FAIL SKIPPED                       one per pool
 ```
 
-Examples: `collected 3f2a p-slot-2 finished "pushed work/x 0123456789"`,
-`created p-slot-1 m1 stopped 42 0 seeded -`,
-`issue poll-error 3f2a "Fly unreachable" 1760000000 1760000090` (CLEARED `-`:
+**Changed from the single-pool formats:** every line gained `POOL`. `home`,
+`created`, `slot`, `issue`, `check` and `summary` carry it as the first field
+after the kind; `dispatched`, `collected` and `reconciled` carry it right after
+`TASK`; `exists` already led with the pool name. `POOL` is `-` only where it is
+not known (a dispatch recorded before pools were named). `scale` adds
+`destroyed`, `skipped` and `scaled`. Slot names (`NAME`, `SLOT`) now include the
+mailspace. In `--json`, each slot of `status` and each check of `doctor` gained
+`pool`. Human output names the pool on each slot or result line as well.
+
+Examples: `collected 3f2a lanes ms-lanes-slot-2 finished "pushed work/x 0123456789"`,
+`created local ms-local-slot-1 m1 stopped 42 0 seeded -`,
+`scaled lanes 0 0`,
+`issue lanes poll-error 3f2a "Fly unreachable" 1760000000 1760000090` (CLEARED `-`:
 the problem lasted to the end). `wait` and `create` print their `issue` lines
 even when they then fail, so a slow wait explains itself. Warnings (such as
 missing harness environment) stay on standard error.
 
 ### doctor
 
-`vivi pool doctor [--json]` is read-only: it creates, starts, stops, marks and
+`vivi pool doctor [--pool <name>] [--json]` checks every pool (or the one named),
+each under headings that name it, and is read-only: it creates, starts, stops, marks and
 pushes nothing, and repairs nothing. It prints one line per check (`ok`, `warn`,
 `fail`, or `skipped` when an earlier check it depends on failed) under three
 headings, so you can tell which side a problem is on, and each `warn` or `fail`
 carries a `fix:` line naming the command that fixes it. Exit code is nonzero
 when any check fails; warnings alone exit zero. `--json` gives the same data
-(`ok`, `counts`, and `checks` with `group`, `name`, `status`, `detail`, `fix`).
+(`ok`, `counts`, and `checks` with `pool`, `group`, `name`, `status`, `detail`, `fix`).
 
 - **Provider (Fly)**: `fly` is installed and logged in, an API token can be
-  obtained, the app exists, and every `[pool.harness].env` name is an app
+  obtained, the app exists, and every `harness.env` name is an app
   secret (names only; a name the image provides can be ignored).
 - **Provider (Docker)**: the `docker` binary runs; the daemon (local, or
-  `[pool.docker].host`) answers, with its version and platform; the image is
+  `[pools.<name>.docker].host`) answers, with its version and platform; the image is
   present or the registry has it (nothing is pulled by `doctor`); the daemon
   has at least as much memory as one slot may use (`warn` otherwise); every
-  `[pool.harness].env` name is set in this process's environment (`warn` names
+  `harness.env` name is set in this process's environment (`warn` names
   the unset ones: slots created now would lack them).
 - **Provider (SSH)**: the local `ssh` client runs; the host answers without a
   prompt (`BatchMode=yes`; a key in an agent, a known host key, a POSIX login
@@ -492,13 +596,13 @@ when any check fails; warnings alone exit zero. `--json` gives the same data
   `ps` (a missing tool is a `fail` naming it; nothing is installed for you); the
   root exists and is writable or can be created under a writable directory;
   free disk space is reported (`warn` under 5 GiB); the architecture is
-  reported; every `[pool.harness].env` name is set in the login environment of
+  reported; every `harness.env` name is set in the login environment of
   the host (`warn` names the unset ones). Nothing is created on the host.
 - **Repository (GitHub)**: `openssl` is present, the App key file is readable, a
   one-hour token mints for the repo (never printed), the default branch
   resolves, and whether it is protected (whether the App may bypass the
   protection is not checked).
-- **Pool (Vivi)**: `[pool]` validates; slot count against `slots`; each slot's
+- **Pool (Vivi)**: `[pools.<name>]` validates; slot count against `slots`; each slot's
   state, seeded base, and how many commits that base is behind the default
   branch tip; a running slot with no open dispatch (leak); an open dispatch
   whose machine is gone (orphan); a held slot with no dispatch (stale claim)
@@ -521,14 +625,14 @@ checks fail; the Repository checks are shown but never block it.
 - It creates a throwaway pool `<pool>-doctor` of two of the smallest machines
   on the same host (the same Fly app, the same Docker daemon, or the same SSH
   host and root), seed command
-  `true`, no setup commands. It never touches the real pool's slots. **On Fly
+  `true`, no setup commands. It never touches the real pool's slots (nor another pool's or another mailspace's). **On Fly
   it creates billable machines for a few minutes** (about 3 minutes; `--long`
   adds about 7 more). **On Docker it costs nothing**: two containers on your
   daemon, removed afterwards, about 1.5 minutes with a local daemon and an
   image that is present (`--long` adds about 7 more, the job really sleeps past
   six minutes). On a local Docker daemon it is the free check to run after any
   change to the pool code, whichever host the real pool uses. **On SSH it
-  makes two slot directories** under `<root>/<pool>-doctor/` and removes them
+  makes two slot directories** under `<root>/<mailspace>/<pool>-doctor/` and removes them
   (with the root, if Vivi made it): about 1 minute (`--long` adds about 7).
 - Source: a tiny tree carried in the vivi binary, turned into a bare Git remote
   on each slot's own disk (`file://`). Jobs fetch from and push to that remote.
@@ -606,13 +710,13 @@ never claimed.
 - `--base` takes a commit, branch, or tag, resolved to a full hash through
   GitHub. Default: the repo's default branch tip.
 - `create` does not return until a fresh listing shows each new slot `free`.
-- The Fly app is `[pool.fly].app`, else the pool name (which defaults to the
-  mailspace name); there is no prefix or suffix. Fly app names are unique
-  across ALL Fly accounts and Vivi does not try to make the name unique: if Fly
-  says it is taken, pick another (`[pool] name` or `[pool.fly] app`).
+- The Fly app is `[pools.<name>.fly] app`, which is **required** (no default;
+  there is no prefix or suffix). Fly app names are unique across ALL Fly
+  accounts and Vivi does not try to make the name unique. Several pools and
+  mailspaces may share one app: machine names and marks keep them apart.
   `create` makes the app when it does not exist, in
-  `[pool.fly].organization` (default `personal`). If Fly says the name is
-  taken, `create` says so and names the lines to set. Model keys are app secrets:
+  `[pools.<name>.fly].organization` (default `personal`). If Fly says the name
+  is taken, `create` says so and names the setting to change. Model keys are app secrets:
   `create` and `dispatch` list the app's secret NAMES and warn, naming the
   harness `env` entries with no secret and the command shape
   `fly secrets set -a <app> NAME=<value>`. Vivi never reads or sets a secret
@@ -621,7 +725,7 @@ never claimed.
 - A slot can only fetch what the remote repository already has: push the base
   (the commit or branch passed as `from`) before dispatching.
 - `--model` is resolved by the caller, in the harness's own vocabulary; Vivi
-  only checks it against `[pool.harness].models`.
+  only checks it against the pool's `[harness].models`.
 - Slots made by the first iteration (before dispatch existed) lack the seed
   mark and the new boot script: destroy and re-create them.
 - Requires `fly` (flyctl, logged in; or `FLY_API_TOKEN`) and `openssl` on PATH,
@@ -632,10 +736,10 @@ never claimed.
 
 `provider = "docker"` runs each slot as a container. Use the `docker` CLI; no
 client library is involved, so a local and a remote daemon go through the same
-code: `[pool.docker] host = "ssh://user@server"` is passed to the CLI as
+code: `[pools.<name>.docker] host = "ssh://user@server"` is passed to the CLI as
 `DOCKER_HOST`; omit it for the local daemon (or whatever your own
 `DOCKER_HOST` names). (A plain SSH host without Docker is the separate `ssh`
-provider below; to use Docker on a remote host, set `[pool.docker].host`.)
+provider below; to use Docker on a remote host, set `[pools.<name>.docker].host`.)
 
 - A slot is a container. A stopped container is a slot at rest and its writable
   layer is the persistent disk; its main process is the boot script, so it
@@ -646,7 +750,7 @@ provider below; to use Docker on a remote host, set `[pool.docker].host`.)
   mount without privileges. The boot script skips its own mount when
   `BUILD_MOUNTED` is set. The tmpfs counts against the container's memory limit.
 - Labels cannot change after creation, so they hold only fixed facts:
-  `vivi_pool` (pool name), `vivi_pool_slot`, `vivi_pool_base`,
+  `vivi_pool` (pool name), `vivi_pool_mailspace` (mailspace slug), `vivi_pool_slot`, `vivi_pool_base`,
   `vivi_pool_role=slot`. The architecture and the seed mark (`vivi_pool_state`)
   are small files under `/work/vivi-marks/` on the slot's disk, written and
   read with `docker cp` (which works on stopped containers).
@@ -669,7 +773,7 @@ provider below; to use Docker on a remote host, set `[pool.docker].host`.)
   it. Collecting execs into the container while it runs, and copies the result
   files out of the stopped container otherwise (no restart; the Fly path starts
   a stopped slot to read it).
-- Harness environment: the names in `[pool.harness].env` reach the container
+- Harness environment: the names in the pool's `harness.env` reach the container
   with their values taken from the environment of the `vivi` process at
   `create` time (`docker create -e NAME`; no value on a command line, none in
   the config or the mailspace). A name unset then is left out; `create` warns
@@ -687,21 +791,21 @@ provider below; to use Docker on a remote host, set `[pool.docker].host`.)
   hardware, not money); all slots share the daemon's cores and memory, so a
   full pool of heavy builds competes (size `memory`, `cpus` and `slots` to the
   daemon; `doctor` warns when one slot's `memory` exceeds the daemon's); no
-  provider secret store; the pool name is the only namespace on a daemon, so
-  two mailspaces with the same pool name on one daemon share slots (set
-  distinct `[pool].name`s). The image needs `bash`; the boot script installs
+  provider secret store; slots are namespaced by mailspace and pool, so two
+  mailspaces with the same pool name on one daemon do not see each other's
+  slots. The image needs `bash`; the boot script installs
   `git`, `zstd` and `curl` with `apt-get` when they are missing, which needs
   network. With those tools already in the image, the whole pool, `doctor
   --test` included, runs offline.
 - Slot ids are the first twelve hex digits of the container id; slot names are
-  the container names (`<pool>-slot-<n>`). `destroy` removes the containers,
+  the container names (`<mailspace>-<pool>-slot-<n>`). `destroy` removes the containers,
   their claims and anonymous volumes.
 
 ### Using the pool (orchestrator procedure)
 
-1. `vivi pool doctor --porcelain`; fix what it names.
+1. `vivi pool doctor --porcelain` (add `--pool <name>` to check one); fix what it names.
 2. Push the base commit or branch to the remote.
-3. `vivi pool dispatch --porcelain <task> --model <slug> [--from <ref>] [--branch <name>]`.
+3. `vivi pool dispatch --porcelain --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>]`.
 4. Run `vivi pool wait --porcelain <task>` in the background.
 5. When it returns, read the receipt with `vivi task show <task>`.
 6. Integrate the pushed branch.
@@ -710,11 +814,11 @@ provider below; to use Docker on a remote host, set `[pool.docker].host`.)
 
 ### dispatch
 
-`vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>]
+`vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>]
 [--budget SECS]` hands an open task to a free slot and returns at once.
 
 - The brief is the task body, read from the mailspace. `--model` is required,
-  has no default, and must be one of `[pool.harness].models`; it is checked
+  has no default, and must be one of the pool's `[harness].models`; it is checked
   before any machine is touched.
 - `from` is what to start from (a commit or a branch); `branch` is where to
   push. Each comes from its flag, else from a `from: <ref>` / `branch: <name>`
@@ -741,12 +845,12 @@ provider below; to use Docker on a remote host, set `[pool.docker].host`.)
 
 ### wait and reconcile
 
-- `vivi pool wait [<task>...] [--timeout SECS]` blocks until at least one open
+- `vivi pool wait [--pool <name>] [<task>...] [--timeout SECS]` blocks until at least one open
   dispatch (the named ones, or all) has finished, collects each finished one,
-  prints one line per task (`<task>  <state>  <slot>  <detail>`; with `--porcelain` the `collected` line above), and exits
+  prints one line per task (`<task>  <pool>  <state>  <slot>  <detail>`; with `--porcelain` the `collected` line above), and exits
   0. On timeout (default 3600) it exits nonzero and says nothing finished.
   Run it in the background to be woken.
-- `vivi pool reconcile` handles every open dispatch once: finished ones are
+- `vivi pool reconcile [--pool <name>]` handles every open dispatch once: finished ones are
   collected and their slots freed; one still running past its budget plus a
   15-minute grace is stopped and recorded as a timeout; one whose machine
   stopped without a result, or no longer exists at all, is recorded as lost
@@ -778,7 +882,7 @@ provider below; to use Docker on a remote host, set `[pool.docker].host`.)
 A generic runner, embedded in the binary and delivered with each job, returns
 the checkout to a clean tree at `from`, runs the harness as the unprivileged
 user `hand` with a clean environment (only `HOME`, `PATH`, and the names in
-`[pool.harness].env`; the Git token is never among them and is readable only by
+the pool's `harness.env`; the Git token is never among them and is readable only by
 root), then commits what changed as the configured bot identity, with a
 `Pool-Run:` trailer recording slot, model, start ref, exit code, and duration,
 and pushes without force. The harness's standard output is the receipt;
@@ -795,14 +899,14 @@ is **not the recommended host**: pick Docker or Fly unless a bare SSH host is
 all there is.
 
 ```toml
-[pool]
+[pools.box]
 provider = "ssh"
 # repo, slots, setup, seed, build_dir as for the other hosts; NO `image`
 # (setting one is an error: a slot is a directory, not a container)
 
-[pool.ssh]
+[pools.box.ssh]
 host = "user@server"          # required; anything `ssh` accepts, including a Host alias
-# root = "~/vivi-pool"        # default; each pool gets <root>/<pool>/slot-<n>/
+# root = "~/vivi-pool"        # default; each slot is <root>/<mailspace>/<pool>/slot-<n>/
 ```
 
 - **Needs on the host**: SSH without a prompt (`BatchMode=yes`, connect timeout
@@ -814,12 +918,15 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
   as the SSH login user with that user's access to everything it can reach, and
   the Git token of a job is deleted once read but the agent is the same user. No
   image. Slots share the host's cores, memory and disk with each other and with
-  everything else there. `[pool].setup` commands run once per slot **as the
+  everything else there. `setup` commands run once per slot **as the
   login user, not root**, so they cannot install packages; the toolchain must
   already be on the host.
-- **Mapping.** A slot is the directory `<root>/<pool>/slot-<n>/` holding the
-  checkout, build directory, job directory, boot log and marks (files in
-  `marks/`). The slot id in `status --json` is `<pool>/slot-<n>`. `/work` in the
+- **Mapping.** A slot is the directory `<root>/<mailspace>/<pool>/slot-<n>/`
+  holding the checkout, build directory, job directory, boot log and marks
+  (files in `marks/`, which carry the pool and the mailspace). The slot id in
+  `status --json` is `<mailspace>/<pool>/slot-<n>`. The `created` time that
+  `status` shows is a `created` file written when the slot is made (slots made
+  by an older Vivi show it empty). `/work` in the
   scripts means that directory (`WORK`). The build directory is a plain
   directory that persists: no memory disk, nothing packed or restored; a seeded
   slot keeps its warm build, and the runner's `git clean` spares `build_dir`.
@@ -836,69 +943,69 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
 - **Delivery and results.** The job archive is copied over SSH into the slot and
   unpacked by the boot script; results are read as files over SSH whether or not
   the slot runs (no restart).
-- **Harness environment.** The `[pool.harness].env` names take their values from
+- **Harness environment.** The `harness.env` names take their values from
   the remote login user's environment at job time (a login shell: put
   `export NAME=...` in `~/.profile`). Values never pass through Vivi or the
   mailspace. `doctor`, `create` and `dispatch` name the ones unset on the host.
 - **Destroy** removes the slot directory and is guarded on the host: only
-  `<pool>/slot-<n>`, only a plain directory inside the root, only with Vivi's
-  own mark naming the pool, never with an empty or `/` root; anything else is
-  refused with a message. A root Vivi made is removed with its last slot.
+  `<mailspace>/<pool>/slot-<n>`, only a plain directory inside the root, only
+  with Vivi's own marks naming the pool **and** the mailspace, never with an empty or `/` root; anything else is
+  refused with a message. A pool directory, a mailspace directory and a root Vivi made are removed
+  with their last slot.
 - **Connection.** Calls share one SSH connection (a private control socket in
   the temporary directory, removed at exit); about 40 ms per call once warm,
   and a fresh connection costs one ordinary SSH login.
-- Slots of one root are shared by every mailspace using it; give distinct
-  `[pool].name`s. `cargo test --test pool_ssh_live -- --ignored` with
+- Several mailspaces and pools may share one root: each has its own directory
+  and marks and never sees the others'. `cargo test --test pool_ssh_live -- --ignored` with
   `VIVI_SSH_TEST_HOST` set proves the process handling and the claim.
 
-Config is a `[pool]` table in `.vivi/mailspace.toml`. Everything provider
-neutral sits in `[pool]`; the Fly settings sit in `[pool.fly]`, the Docker
-settings in `[pool.docker]` and the SSH settings in `[pool.ssh]`. A Fly key left directly in `[pool]` (`app`,
-`organization`, `region`, `size`, `memory`, `tmpfs`) is rejected with a message
-naming `[pool.fly]`. Only the table of the chosen `provider` is used and
-checked beyond its key names.
+Config is one `[pools.<name>]` table per pool in `.vivi/mailspace.toml`.
+Everything provider neutral sits in the pool table; the Fly settings sit in
+`[pools.<name>.fly]`, the Docker settings in `[pools.<name>.docker]` and the SSH
+settings in `[pools.<name>.ssh]`. Only the table of the chosen `provider` is
+used and checked beyond its key names. A top-level `[pool]` table is rejected.
+Everything below is per pool and nothing is inherited:
 
 ```toml
-[pool]
+[pools.lanes]
 # provider = "fly"            # default; or "docker", or "ssh"
-repo = "owner/name"           # required
+repo = "owner/name"           # optional for a provider-only test pool; needed by create/scale-up/dispatch (with [github])
 slots = 4                     # required; maximum pool size
 image = "rust:1.97-bookworm"  # required on fly and docker (Debian-based: needs apt for zstd/git); an error on ssh
 setup = ["npm install -g some-harness"]   # root, once, before the checkout (login user on ssh)
 seed = ["cargo build"]                    # in the checkout, once, warms build_dir
-build_dir = "target"          # required; relative to the repo
-# name = "lanes"              # defaults to the mailspace name; marks the machines
+build_dir = "target"          # relative to the repo; default target
 
-[pool.fly]                    # provider-specific; every key optional
-# app = "my-fly-app"          # default: the pool name; created by `pool create` if missing; a taken name is for you to change
+[pools.lanes.fly]
+app = "my-fly-app"            # REQUIRED, no default; created by `pool create` if missing; a taken name is for you to change
 # organization = "personal"   # owner of a newly created app; default personal
 # region = "iad"              # default iad
 # size = "performance-8x"     # default
 # memory = 32768              # MB; default 32768
 # tmpfs = "16g"               # memory disk over build_dir; default 16g
 
-[pool.docker]                 # only with provider = "docker"; every key optional
+# [pools.lanes.docker]        # only with provider = "docker"; every key optional
 # host = "ssh://user@server"  # a remote daemon; omit for the local one
 # memory = "4g"               # per-slot limit (includes the memory disk); default 4g
 # cpus = 4                    # per-slot CPU limit; default none
 # tmpfs = "2g"                # memory disk over build_dir; default 2g
 
-[pool.ssh]                    # only with provider = "ssh"
+# [pools.lanes.ssh]           # only with provider = "ssh"
 # host = "user@server"        # required
-# root = "~/vivi-pool"        # slot directories live in <root>/<pool>/; default ~/vivi-pool
+# root = "~/vivi-pool"        # slot directories live in <root>/<mailspace>/<pool>/; default ~/vivi-pool
 
-[pool.github]
+[pools.lanes.github]          # with repo
 app_id = 123456
 private_key = "~/secrets/app.private-key.pem"
 
-[pool.harness]                # required to dispatch
+[pools.lanes.harness]         # required to dispatch; not needed to test
 name = "pi"
 run = "pi -p --model {model} --append-system-prompt {rules} @{brief}"
 models = ["zai/glm-5.3-flash"]            # --model must be one of these
 env = ["MODEL_API_KEY"]       # names only; values come from the machine's environment
 # rules = "docs/worker-rules.md"          # default: a short embedded rules file
 
-[pool.committer]              # required to dispatch
+[pools.lanes.committer]       # required to dispatch; not needed to test
 name = "lane-bot"
 email = "lane-bot@users.noreply.github.com"
 ```

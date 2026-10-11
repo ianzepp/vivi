@@ -250,7 +250,7 @@ fn name_taken(app: &str, error: VivariumError) -> VivariumError {
         return error;
     }
     VivariumError::Message(format!(
-        "the Fly app name \"{app}\" is already taken (Fly app names are unique across all Fly accounts). Choose another name in .vivi/mailspace.toml: set `[pool] name = \"<another-name>\"`, or `[pool.fly] app = \"<your-unique-app-name>\"`"
+        "the Fly app name \"{app}\" is already taken (Fly app names are unique across all Fly accounts). Choose another name in .vivi/mailspace.toml: set `app = \"<your-unique-app-name>\"` in the pool's `[pools.<pool>.fly]` table"
     ))
 }
 

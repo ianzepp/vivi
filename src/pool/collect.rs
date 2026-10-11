@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use super::pools::PoolSet;
 use super::progress::Issue;
 use super::provider::{MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
@@ -450,6 +451,7 @@ impl ErrorWatch {
                     ));
                     self.live.insert(line.task.clone(), self.issues.len());
                     self.issues.push(Issue {
+                        pool: Some(line.pool.clone()),
                         kind: "poll-error",
                         subject: Some(line.task.clone()),
                         message: line.detail.clone(),
@@ -491,6 +493,8 @@ impl ErrorWatch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundLine {
     pub task: String,
+    /// The pool the dispatch went to.
+    pub pool: String,
     pub slot: String,
     /// `running`, `finished`, `timeout`, `lost`, or `error`.
     pub state: &'static str,
@@ -505,30 +509,59 @@ impl RoundLine {
     }
 }
 
-/// Poll every open dispatch once. A settled one is recorded through `record`
-/// first, and only then is its slot freed. `record` returns `false` when the
-/// dispatch was already closed elsewhere: then nothing is freed and no line is
-/// reported. One dispatch failing to poll does not stop the others; a failing
-/// `record` stops the round with the slot left as it was, so the next round
-/// retries.
+/// What a round does with a dispatch whose pool is no longer in the config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    /// Report it as a problem and leave it open (`wait`).
+    Report,
+    /// Record it as lost and close it (`reconcile`).
+    Close,
+}
+
+/// Why a dispatch cannot be polled: its pool is not configured.
+#[must_use]
+pub fn missing_pool_text(pool: &str) -> String {
+    if pool.is_empty() {
+        "the dispatch records no pool (it was made before pools were named)".to_string()
+    } else {
+        format!("pool \"{pool}\" is not in .vivi/mailspace.toml")
+    }
+}
+
+/// Poll every open dispatch once, each against its own pool's machine host
+/// (`set`). A settled one is recorded through `record` first, and only then
+/// is its slot freed. `record` returns `false` when the dispatch was already
+/// closed elsewhere: then nothing is freed and no line is reported. One
+/// dispatch failing to poll does not stop the others; a failing `record` stops
+/// the round with the slot left as it was, so the next round retries. A
+/// dispatch whose pool is gone is handled as `missing` says.
 ///
 /// # Errors
 /// Returns the error `record` returns.
 pub fn run_round(
-    provider: &dyn PoolProvider,
+    set: &PoolSet,
     open: &[OpenDispatch],
     now: u64,
     pacing: &Pacing,
+    missing: Missing,
     record: &mut dyn FnMut(&OpenDispatch, &Outcome) -> Result<bool, VivariumError>,
 ) -> Result<Vec<RoundLine>, VivariumError> {
     let mut lines = Vec::new();
     for dispatch in open {
         let line = |state, detail: String| RoundLine {
             task: dispatch.task.clone(),
+            pool: dispatch.record.pool.clone(),
             slot: dispatch.record.slot.clone(),
             state,
             detail,
         };
+        let Some(member) = set.find(&dispatch.record.pool) else {
+            if set.covers(&dispatch.record.pool) {
+                lines.extend(gone_pool_line(dispatch, missing, record, &line)?);
+            }
+            continue;
+        };
+        let provider = member.provider;
         match poll(provider, dispatch, now, pacing) {
             Err(e) => lines.push(line("error", e.to_string())),
             Ok(None) => {
@@ -537,34 +570,68 @@ pub fn run_round(
                 lines.push(line("running", detail));
             }
             Ok(Some(outcome)) => {
-                if !record(dispatch, &outcome)? {
-                    // Closed elsewhere. This poll may have started the slot
-                    // after its holder freed it: never leave it running. A
-                    // slot still marked is the holder's to free.
-                    let stopped = provider
-                        .machine(&dispatch.record.machine)
-                        .and_then(|m| stop_unclaimed(provider, &m, pacing));
-                    if let Err(e) = stopped {
-                        eprintln!("warning: could not stop slot {}: {e}", dispatch.record.slot);
-                    }
-                    continue;
+                let round = (provider, pacing);
+                if let Some((state, detail)) = settle(round, dispatch, &outcome, record)? {
+                    lines.push(line(state, detail));
                 }
-                let mut detail = match &outcome {
-                    Outcome::Finished(done) => done.result.push_line(),
-                    Outcome::Timeout => "no result; slot stopped".to_string(),
-                    Outcome::Lost => "slot ended without a result".to_string(),
-                };
-                // The result is recorded; a slot that would not free is
-                // retried by `reconcile`, and must not hide this result.
-                if let Err(e) = release(provider, &dispatch.record.machine, &dispatch.task, pacing)
-                {
-                    detail = format!("{detail}; slot not freed yet ({e})");
-                }
-                lines.push(line(outcome.word(), detail));
             }
         }
     }
     Ok(lines)
+}
+
+/// Record a settled dispatch, then free its slot: the state word and detail
+/// of its line, or `None` when it was already closed elsewhere (then nothing
+/// is reported and nothing is freed).
+fn settle(
+    (provider, pacing): (&dyn PoolProvider, &Pacing),
+    dispatch: &OpenDispatch,
+    outcome: &Outcome,
+    record: &mut dyn FnMut(&OpenDispatch, &Outcome) -> Result<bool, VivariumError>,
+) -> Result<Option<(&'static str, String)>, VivariumError> {
+    if !record(dispatch, outcome)? {
+        // Closed elsewhere. This poll may have started the slot after its
+        // holder freed it: never leave it running. A slot still marked is the
+        // holder's to free.
+        let stopped = provider
+            .machine(&dispatch.record.machine)
+            .and_then(|m| stop_unclaimed(provider, &m, pacing));
+        if let Err(e) = stopped {
+            eprintln!("warning: could not stop slot {}: {e}", dispatch.record.slot);
+        }
+        return Ok(None);
+    }
+    let mut detail = match outcome {
+        Outcome::Finished(done) => done.result.push_line(),
+        Outcome::Timeout => "no result; slot stopped".to_string(),
+        Outcome::Lost => "slot ended without a result".to_string(),
+    };
+    // The result is recorded; a slot that would not free is retried by
+    // `reconcile`, and must not hide this result.
+    if let Err(e) = release(provider, &dispatch.record.machine, &dispatch.task, pacing) {
+        detail = format!("{detail}; slot not freed yet ({e})");
+    }
+    Ok(Some((outcome.word(), detail)))
+}
+
+/// The line for a dispatch whose pool is not configured: an error to report,
+/// or (for `reconcile`) the dispatch recorded as lost and closed. There is no
+/// machine host to free a slot on.
+fn gone_pool_line(
+    dispatch: &OpenDispatch,
+    missing: Missing,
+    record: &mut dyn FnMut(&OpenDispatch, &Outcome) -> Result<bool, VivariumError>,
+    line: &dyn Fn(&'static str, String) -> RoundLine,
+) -> Result<Option<RoundLine>, VivariumError> {
+    let why = missing_pool_text(&dispatch.record.pool);
+    Ok(match missing {
+        Missing::Report => Some(line(
+            "error",
+            format!("{why}; `vivi pool reconcile` closes it as lost"),
+        )),
+        Missing::Close => record(dispatch, &Outcome::Lost)?
+            .then(|| line("lost", format!("{why}; closed as lost, no slot to free"))),
+    })
 }
 
 #[cfg(test)]

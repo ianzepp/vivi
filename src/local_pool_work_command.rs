@@ -9,12 +9,11 @@ use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::dispatch::{self, DispatchFlags};
+use vivi::pool::pools::{self, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::{HEARTBEAT, Progress};
 use vivi::pool::work::{self, WaitOptions, Waited};
 use vivi::pool::{PoolConfig, github, job, run};
-
-use crate::local_pool_command::open_pool_space;
 
 const WAIT_POLL: Duration = Duration::from_secs(8);
 
@@ -34,7 +33,9 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
 
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
     let progress = Progress::stderr(command.porcelain, "");
-    let (space, config, pool, provider) = open_pool_space(command.project.as_deref())?;
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let handle = pools::open_one(&space, command.pool.as_deref())?;
+    let (config, id, provider) = (&handle.config, &handle.id, handle.provider.as_ref());
     let task = space.pool_task(&command.task)?;
     if work::open_dispatches(&space)?
         .iter()
@@ -56,27 +57,32 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         allow_default_branch: command.allow_default_branch,
     };
     let job_id = dispatch::new_job_id(&task.handle, nanos, std::process::id());
-    let rules = load_rules(&config, &space)?;
+    let rules = load_rules(config, &space)?;
     let plan = dispatch::plan_job(
-        &config,
+        config,
+        &id.pool,
         (&task.handle, &task.subject, &task.body),
         &flags,
         rules,
         job_id,
     )?;
-    progress.say("getting a GitHub token");
-    let token = github::mint_token(&config)?;
+    let access = config.require_repo(&id.pool, "dispatch")?;
+    progress.say(&format!("{}: getting a GitHub token", id.pool));
+    let token = github::mint_token(&access)?;
     progress.say("checking the push target");
-    let default = github::default_branch(&token, &config.repo)?;
+    let default = github::default_branch(&token, access.repo)?;
     dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
-    warn_missing_env(provider.as_ref(), &config);
+    warn_missing_env(provider, config);
     progress.say(&format!("resolving {}", plan.refs.from));
-    let start = github::resolve_base(&token, &config.repo, Some(&plan.refs.from))?;
-    progress.say("claiming a free slot and starting the job");
+    let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
+    progress.say(&format!(
+        "{}: claiming a free slot and starting the job",
+        id.pool
+    ));
     let made = work::submit(
         &space,
-        provider.as_ref(),
-        &pool,
+        provider,
+        id,
         &plan,
         &token,
         &start,
@@ -87,8 +93,9 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         return Ok(());
     }
     println!(
-        "dispatched {}  {}  job {}  model {}  from {} ({})  branch {}  budget {}s",
+        "dispatched {}  {}  {}  job {}  model {}  from {} ({})  branch {}  budget {}s",
         task.handle,
+        made.pool,
         made.slot,
         made.job,
         made.model,
@@ -112,7 +119,9 @@ fn warn_missing_env(provider: &dyn vivi::pool::PoolProvider, config: &PoolConfig
 
 pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
     let progress = Progress::stderr(command.porcelain, "");
-    let (space, _, _, provider) = open_pool_space(command.project.as_deref())?;
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let handles = pools::open_for_collect(&space, command.pool.as_deref())?;
+    let set = PoolSet::of(&handles, command.pool.is_none());
     let wanted = command
         .tasks
         .iter()
@@ -126,14 +135,9 @@ pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
         cancelled: &|| false,
     };
     let mut watch = ErrorWatch::default();
-    let waited = work::wait(
-        &space,
-        provider.as_ref(),
-        &wanted,
-        &options,
-        &mut watch,
-        &mut |n| progress.say(n),
-    );
+    let waited = work::wait(&space, &set, &wanted, &options, &mut watch, &mut |n| {
+        progress.say(n);
+    });
     if command.porcelain {
         watch
             .issues()
@@ -156,9 +160,11 @@ pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
 
 pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumError> {
     let progress = Progress::stderr(command.porcelain, "");
-    let (space, _, pool, provider) = open_pool_space(command.project.as_deref())?;
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let handles = pools::open_for_collect(&space, command.pool.as_deref())?;
+    let set = PoolSet::of(&handles, command.pool.is_none());
     progress.say("polling the open dispatches and freeing stale slots");
-    let report = work::reconcile(&space, provider.as_ref(), &pool, &Pacing::default())?;
+    let report = work::reconcile(&space, &set, &Pacing::default())?;
     if command.porcelain {
         report
             .items

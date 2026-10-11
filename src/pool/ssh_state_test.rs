@@ -70,29 +70,34 @@ fn a_mark_with_no_value_is_no_mark() {
 }
 
 #[test]
-fn slot_ids_are_pool_slash_slot_number_and_nothing_else() {
-    assert_eq!(slot_id("lanes", "3"), "lanes/slot-3");
-    assert_eq!(name_of("lanes/slot-3"), "lanes-slot-3");
-    for good in ["a/slot-1", "my-pool-2/slot-12", "9/slot-0"] {
+fn slot_ids_are_mailspace_slash_pool_slash_slot_number_and_nothing_else() {
+    assert_eq!(slot_id("space", "lanes", "3"), "space/lanes/slot-3");
+    assert_eq!(name_of("space/lanes/slot-3"), "space-lanes-slot-3");
+    for good in ["s/a/slot-1", "my-space/my-pool-2/slot-12", "9/9/slot-0"] {
         assert!(is_slot_id(good), "{good}");
     }
     for bad in [
         "",
         "slot-1",
-        "a/slot-",
-        "a/slot-x",
-        "a/slot-1/",
-        "a/slot-1/x",
-        "../slot-1",
-        "A/slot-1",
-        "-a/slot-1",
-        "a b/slot-1",
-        "/slot-1",
-        "a/../slot-1",
-        "a/slot-1;rm",
-        "a//slot-1",
-        "a/Slot-1",
-        "a/slot-1\n",
+        "a/slot-1",
+        "s/a/slot-",
+        "s/a/slot-x",
+        "s/a/slot-1/",
+        "s/a/slot-1/x",
+        "s/../slot-1",
+        "../a/slot-1",
+        "S/a/slot-1",
+        "s/A/slot-1",
+        "-s/a/slot-1",
+        "s/-a/slot-1",
+        "s/a b/slot-1",
+        "/a/slot-1",
+        "s//slot-1",
+        "s/a/../slot-1",
+        "s/a/slot-1;rm",
+        "s/a//slot-1",
+        "s/a/Slot-1",
+        "s/a/slot-1\n",
     ] {
         assert!(!is_slot_id(bad), "{bad:?}");
     }

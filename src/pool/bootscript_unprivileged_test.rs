@@ -84,7 +84,7 @@ fn embedded_config(seed: &str) -> PoolConfig {
         "repo = \"o/r\"\nslots = 1\nbuild_dir = \"target\"\nprovider = \"ssh\"\n[ssh]\nhost = \"h\"\n[github]\napp_id = 1\nprivate_key = \"k.pem\"\n",
     )
     .unwrap();
-    let mut config = source::test_config(&real, "p-doctor");
+    let mut config = source::test_config(&real);
     config.seed = vec![seed.to_string()];
     config
 }
@@ -195,6 +195,7 @@ fn a_job_runs_unprivileged_pushes_and_leaves_the_warm_build_in_place() {
     assert!(boot(&slot).status.success());
     let plan = dispatch::plan_job(
         &config,
+        "p",
         ("task-1", "subject", ""),
         &DispatchFlags {
             model: source::MODEL.to_string(),
@@ -277,6 +278,7 @@ fn a_second_job_starts_from_a_clean_tree_but_keeps_an_unignored_build_directory(
 fn one_job_archive(config: &PoolConfig, id: &str) -> Vec<u8> {
     let plan = dispatch::plan_job(
         config,
+        "p",
         ("task-2", "subject", ""),
         &DispatchFlags {
             model: source::MODEL.to_string(),

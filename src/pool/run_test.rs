@@ -4,8 +4,9 @@ use std::rc::Rc;
 
 use super::*;
 use crate::pool::PoolHarness;
-use crate::pool::fake_provider::Fake;
-use crate::pool::slot::{META_BASE, META_STATE, STATE_READY};
+use crate::pool::fake_provider::{Fake, pid};
+use crate::pool::pools::PoolSet;
+use crate::pool::slot::{META_BASE, META_STATE, PoolId, STATE_READY};
 
 fn config(slots: u32) -> PoolConfig {
     toml::from_str(&format!(
@@ -54,11 +55,18 @@ fn create_makes_missing_slots_and_waits_for_stopped() {
         metadata: BTreeMap::new(),
         ..existing("slot-quad-1", "foreign", "stopped", "p", 1)
     });
-    let report =
-        create_slots(&fake, &config(3), "p", &fast(), &Progress::silent(), inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(3),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert_eq!(report.existing.len(), 1);
     let names: Vec<&str> = report.created.iter().map(|o| o.name.as_str()).collect();
-    assert_eq!(names, ["p-slot-1", "p-slot-3"]);
+    assert_eq!(names, ["ms-p-slot-1", "ms-p-slot-3"]);
     assert!(report.created.iter().all(SlotOutcome::seeded));
     let specs = fake.created.borrow();
     assert_eq!(specs[0].metadata[META_BASE], "c".repeat(40));
@@ -83,9 +91,14 @@ fn create_with_full_pool_does_nothing_and_skips_token_minting() {
     fake.machines
         .borrow_mut()
         .push(existing("p-slot-1", "o1", "stopped", "p", 1));
-    let report = create_slots(&fake, &config(1), "p", &fast(), &Progress::silent(), || {
-        Err(VivariumError::Other("must not mint".into()))
-    })
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        || Err(VivariumError::Other("must not mint".into())),
+    )
     .unwrap();
     assert!(report.created.is_empty());
     assert!(fake.created.borrow().is_empty());
@@ -101,7 +114,7 @@ fn create_refuses_more_than_the_configured_maximum() {
     let err = create_slots(
         &fake,
         &config(3),
-        "p",
+        &pid("p"),
         &options,
         &Progress::silent(),
         inputs,
@@ -124,7 +137,7 @@ fn create_to_a_smaller_target_creates_fewer() {
     let report = create_slots(
         &fake,
         &config(4),
-        "p",
+        &pid("p"),
         &options,
         &Progress::silent(),
         inputs,
@@ -146,7 +159,7 @@ fn create_reports_timeouts_without_destroying() {
     let report = create_slots(
         &fake,
         &config(1),
-        "p",
+        &pid("p"),
         &options,
         &Progress::silent(),
         inputs,
@@ -160,6 +173,7 @@ fn create_reports_timeouts_without_destroying() {
 #[test]
 fn nonzero_exit_is_not_a_clean_seed() {
     let outcome = SlotOutcome {
+        pool: "p".into(),
         name: "n".into(),
         id: "i".into(),
         state: "stopped".into(),
@@ -183,12 +197,13 @@ fn destroy_touches_only_pool_slots() {
             ..existing("slot-quad-1", "q1", "stopped", "p", 1)
         });
     }
-    let one = destroy_slots(&fake, "p", &DestroyTarget::Slot("p-slot-2".into())).unwrap();
+    let one = destroy_slots(&fake, &pid("p"), &DestroyTarget::Slot("p-slot-2".into())).unwrap();
     assert_eq!(one.len(), 1);
     assert_eq!(*fake.destroyed.borrow(), ["m2"]);
-    let err = destroy_slots(&fake, "p", &DestroyTarget::Slot("slot-quad-1".into())).unwrap_err();
+    let err =
+        destroy_slots(&fake, &pid("p"), &DestroyTarget::Slot("slot-quad-1".into())).unwrap_err();
     assert!(err.to_string().contains("no slot"));
-    let all = destroy_slots(&fake, "p", &DestroyTarget::All).unwrap();
+    let all = destroy_slots(&fake, &pid("p"), &DestroyTarget::All).unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(*fake.destroyed.borrow(), ["m2", "m1"]);
     assert!(fake.machines.borrow().iter().any(|m| m.id == "q1"));
@@ -200,21 +215,28 @@ fn status_lists_pool_slots_from_the_provider() {
     fake.machines
         .borrow_mut()
         .push(existing("p-slot-1", "m1", "stopped", "p", 1));
-    let slots = pool_status(&fake, "p").unwrap();
+    let slots = pool_status(&fake, &pid("p")).unwrap();
     assert_eq!(slots[0].state, "free");
 }
 
 #[test]
 fn a_clean_seed_clears_the_fetch_token_then_marks_the_slot_ready() {
     let fake = Fake::default();
-    let report =
-        create_slots(&fake, &config(1), "p", &fast(), &Progress::silent(), inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert!(report.created[0].seeded());
     let cleared = fake.env_cleared.borrow();
     assert_eq!(cleared.len(), 1);
     assert_eq!(cleared[0].1, ["GH_TOKEN"]);
     assert_eq!(
-        fake.meta("id-p-slot-1", META_STATE).as_deref(),
+        fake.meta("id-ms-p-slot-1", META_STATE).as_deref(),
         Some(STATE_READY)
     );
     assert_eq!(
@@ -237,13 +259,13 @@ fn a_new_slot_starts_unmarked_so_status_tells_seeding_from_busy() {
     create_slots(
         &fake,
         &config(1),
-        "p",
+        &pid("p"),
         &options,
         &Progress::silent(),
         inputs,
     )
     .unwrap();
-    let slots = pool_status(&fake, "p").unwrap();
+    let slots = pool_status(&fake, &pid("p")).unwrap();
     assert_eq!(slots[0].state, "seeding");
     assert!(
         fake.env_cleared.borrow().is_empty(),
@@ -262,8 +284,15 @@ fn an_interrupted_create_is_finished_by_the_next_one() {
     failed.metadata.insert(META_STATE.into(), "seeding".into());
     failed.exit_code = Some(3);
     fake.add(failed);
-    let report =
-        create_slots(&fake, &config(2), "p", &fast(), &Progress::silent(), inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(2),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert!(report.created.is_empty());
     assert_eq!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
     assert_eq!(fake.meta("m2", META_STATE).as_deref(), Some("seeding"));
@@ -328,7 +357,7 @@ fn create_does_not_return_until_a_fresh_listing_shows_the_slot_free() {
     let report = create_slots(
         &fake,
         &config(1),
-        "p",
+        &pid("p"),
         &options,
         &Progress::silent(),
         inputs,
@@ -350,7 +379,7 @@ fn a_slot_that_never_reads_free_is_reported_not_called_seeded() {
     let report = create_slots(
         &fake,
         &config(1),
-        "p",
+        &pid("p"),
         &options,
         &Progress::silent(),
         inputs,
@@ -370,10 +399,11 @@ fn a_slot_that_never_reads_free_is_reported_not_called_seeded() {
 fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
     use crate::pool::record::{DispatchRecord, OpenDispatch};
     let busy = crate::pool::fake_provider::claimed("m1", "p-slot-1", "started", "p", "aaaa1111");
-    let mut slots = slot::pool_slots("p", &[busy]);
+    let mut slots = slot::pool_slots(&pid("p"), &[busy]);
     let open = OpenDispatch {
         task: "aaaa1111".into(),
         record: DispatchRecord {
+            pool: "p".into(),
             slot: "p-slot-1".into(),
             machine: "m1".into(),
             job: "j".into(),
@@ -412,16 +442,16 @@ fn create_says_each_phase_and_beats_while_seeds_run() {
         ..fast()
     };
     let (progress, lines) = capture();
-    create_slots(&fake, &config(1), "p", &options, &progress, inputs).unwrap();
+    create_slots(&fake, &config(1), &pid("p"), &options, &progress, inputs).unwrap();
     let said = lines.borrow();
     assert_eq!(said[0], "checking the pool's existing slots");
-    assert_eq!(said[1], "creating p-slot-1");
+    assert_eq!(said[1], "creating ms-p-slot-1");
     assert_eq!(said[2], "seeding 1 slot(s)");
     let beat = said
         .iter()
         .find(|l| l.starts_with("waiting  "))
         .expect("a heartbeat");
-    assert!(beat.starts_with("waiting  seeding p-slot-1 "), "{beat}");
+    assert!(beat.starts_with("waiting  seeding ms-p-slot-1 "), "{beat}");
     assert!(beat.ends_with("(gives up at 0s)"), "{beat}");
 }
 
@@ -429,11 +459,11 @@ fn create_says_each_phase_and_beats_while_seeds_run() {
 fn a_short_create_wait_prints_no_heartbeat() {
     let fake = Fake::default();
     let (progress, lines) = capture();
-    create_slots(&fake, &config(1), "p", &fast(), &progress, inputs).unwrap();
+    create_slots(&fake, &config(1), &pid("p"), &fast(), &progress, inputs).unwrap();
     let said = lines.borrow();
     assert!(said.iter().all(|l| !l.starts_with("waiting")), "{said:?}");
     assert!(
-        said.iter().any(|l| l == "marking p-slot-1 ready"),
+        said.iter().any(|l| l == "marking ms-p-slot-1 ready"),
         "{said:?}"
     );
 }
@@ -453,6 +483,127 @@ fn a_quiet_progress_says_nothing_during_create() {
     let lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let sink = Rc::clone(&lines);
     let quiet = Progress::to(true, move |l| sink.borrow_mut().push(l.to_string()));
-    create_slots(&fake, &config(1), "p", &options, &quiet, inputs).unwrap();
+    create_slots(&fake, &config(1), &pid("p"), &options, &quiet, inputs).unwrap();
     assert!(lines.borrow().is_empty());
+}
+
+#[test]
+fn status_covers_every_pool_of_the_set_each_slot_naming_its_pool() {
+    let (a, b) = (Fake::default(), Fake::default());
+    a.add(existing("ms-a-slot-1", "ma1", "stopped", "a", 1));
+    a.add(existing("ms-a-slot-2", "ma2", "stopped", "a", 2));
+    b.add(existing("ms-b-slot-1", "mb1", "stopped", "b", 1));
+    let (ia, ib) = (pid("a"), pid("b"));
+    let set = PoolSet {
+        members: vec![
+            crate::pool::pools::Member {
+                id: &ia,
+                provider: &a,
+            },
+            crate::pool::pools::Member {
+                id: &ib,
+                provider: &b,
+            },
+        ],
+        all: true,
+    };
+    let report = status_of(&set, &[], 1000);
+    let seen: Vec<(&str, &str)> = report
+        .slots
+        .iter()
+        .map(|s| (s.pool.as_str(), s.name.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("a", "ms-a-slot-1"),
+            ("a", "ms-a-slot-2"),
+            ("b", "ms-b-slot-1")
+        ]
+    );
+    assert_eq!(report.pools, [("a".to_string(), 2), ("b".to_string(), 1)]);
+    assert!(report.failures.is_empty());
+    let one = status_of(&PoolSet::single(&ib, &b), &[], 1000);
+    assert_eq!(one.slots.len(), 1);
+    assert_eq!(
+        a.lists.take(),
+        1,
+        "pool a was listed once, by the first call only"
+    );
+}
+
+#[test]
+fn a_pool_with_no_slots_still_shows_in_status() {
+    let a = Fake::default();
+    let ia = pid("a");
+    let report = status_of(&PoolSet::single(&ia, &a), &[], 0);
+    assert_eq!(report.pools, [("a".to_string(), 0)]);
+}
+
+#[test]
+fn two_mailspaces_with_one_pool_name_on_one_host_never_see_each_other() {
+    let host = Fake::default();
+    let mine = PoolId::new("ms", "local");
+    let theirs = PoolId::new("other", "local");
+    let seed = || Ok((Secret::new("t".into()), "c".repeat(40)));
+    create_slots(&host, &config(2), &mine, &fast(), &Progress::silent(), seed).unwrap();
+    create_slots(
+        &host,
+        &config(1),
+        &theirs,
+        &fast(),
+        &Progress::silent(),
+        seed,
+    )
+    .unwrap();
+    assert_eq!(pool_status(&host, &mine).unwrap().len(), 2);
+    assert_eq!(pool_status(&host, &theirs).unwrap().len(), 1);
+    let names: Vec<String> = pool_status(&host, &theirs)
+        .unwrap()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(names, ["other-local-slot-1"]);
+    // `create` for one mailspace counts only its own slots.
+    let again = create_slots(
+        &host,
+        &config(2),
+        &theirs,
+        &fast(),
+        &Progress::silent(),
+        seed,
+    )
+    .unwrap();
+    assert_eq!(again.existing.len(), 1);
+    assert_eq!(again.created.len(), 1);
+    // Destroying all of one mailspace's pool leaves the other's alone.
+    let gone = destroy_slots(&host, &mine, &DestroyTarget::All).unwrap();
+    assert_eq!(gone.len(), 2);
+    assert_eq!(pool_status(&host, &theirs).unwrap().len(), 2);
+    // Another mailspace's slot cannot be named through this pool.
+    let err = destroy_slots(
+        &host,
+        &mine,
+        &DestroyTarget::Slot("other-local-slot-1".into()),
+    );
+    assert!(err.is_err());
+    assert_eq!(pool_status(&host, &theirs).unwrap().len(), 2);
+}
+
+#[test]
+fn the_self_test_pool_of_one_pool_is_not_that_pool() {
+    let host = Fake::default();
+    let real = pid("local");
+    let seed = || Ok((Secret::new("t".into()), "c".repeat(40)));
+    create_slots(
+        &host,
+        &config(1),
+        &real.doctor(),
+        &fast(),
+        &Progress::silent(),
+        seed,
+    )
+    .unwrap();
+    assert!(pool_status(&host, &real).unwrap().is_empty());
+    assert_eq!(pool_status(&host, &real.doctor()).unwrap().len(), 1);
 }

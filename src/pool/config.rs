@@ -1,4 +1,8 @@
-//! The `[pool]` table in `.vivi/mailspace.toml`.
+//! The `[pools.<name>]` tables in `.vivi/mailspace.toml`.
+//!
+//! A mailspace holds any number of named pools. Each table is complete on its
+//! own: nothing is inherited from another pool and there are no shared
+//! defaults. The pool's name is the table key.
 //!
 //! Parsing never fails a mailspace on a bad pool table beyond TOML shape;
 //! [`PoolConfig::validate`] runs when a `vivi pool` command starts, and also
@@ -9,11 +13,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::slot::{DOCTOR_SUFFIX, PoolId};
 use crate::error::VivariumError;
 
 /// Machine hosts the pool can run on.
 pub const PROVIDERS: [&str; 3] = ["fly", "docker", "ssh"];
 const DEFAULT_PROVIDER: &str = "fly";
+const DEFAULT_BUILD_DIR: &str = "target";
 const DEFAULT_REGION: &str = "iad";
 const DEFAULT_ORGANIZATION: &str = "personal";
 const DEFAULT_SIZE: &str = "performance-8x";
@@ -24,18 +30,18 @@ const DEFAULT_DOCKER_TMPFS: &str = "2g";
 /// Where an `ssh` pool keeps its slot directories when `root` is not set.
 pub const DEFAULT_SSH_ROOT: &str = "~/vivi-pool";
 
-/// Remote lane pool settings. Machine-host settings live in [`PoolFly`],
-/// [`PoolDocker`] and [`PoolSsh`].
+/// Remote lane pool settings: one `[pools.<name>]` table. Machine-host
+/// settings live in [`PoolFly`], [`PoolDocker`] and [`PoolSsh`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
-    /// Pool name; defaults to the mailspace name. Marks the pool's machines.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
     /// Machine host: `fly`, `docker` or `ssh`.
     #[serde(default = "default_provider")]
     pub provider: String,
-    /// Source repository, `owner/name`.
-    pub repo: String,
+    /// Source repository, `owner/name`. Optional: a pool can be defined with
+    /// only its provider settings (for testing). `create`, `scale` (when it
+    /// creates) and `dispatch` need it, together with `github`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     /// Maximum pool size.
     pub slots: u32,
     /// Container image the machines run. Required by `fly` and `docker`;
@@ -50,6 +56,8 @@ pub struct PoolConfig {
     #[serde(default)]
     pub seed: Vec<String>,
     /// Build output directory relative to the repo; gets the memory disk and the pack.
+    /// Default: `target`.
+    #[serde(default = "default_build_dir")]
     pub build_dir: String,
     /// Settings that belong to the `fly` machine host.
     #[serde(default)]
@@ -60,8 +68,10 @@ pub struct PoolConfig {
     /// Settings that belong to the `ssh` machine host.
     #[serde(default)]
     pub ssh: PoolSsh,
-    /// GitHub App used to mint the fetch token.
-    pub github: PoolGithub,
+    /// GitHub App used to mint the fetch token. Optional, and required
+    /// together with `repo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<PoolGithub>,
     /// Agent harness description; `dispatch` needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<PoolHarness>,
@@ -89,13 +99,14 @@ pub struct EmbeddedSource {
     pub env: BTreeMap<String, String>,
 }
 
-/// The `[pool.fly]` table: the settings only the `fly` machine host has.
+/// The `[pools.<name>.fly]` table: the settings only the `fly` machine host
+/// has.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolFly {
-    /// Provider application that holds the machines. Default: the pool name
-    /// plus a short suffix derived from the organization (app names are
-    /// unique across all Fly accounts). `create` makes it when it does not
-    /// exist.
+    /// Provider application that holds the machines. Required for a `fly`
+    /// pool and without a default: Fly app names are unique across all Fly
+    /// accounts, and a pool name is a short word that would collide. `create`
+    /// makes the application when it does not exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Provider organization that owns a newly created application.
@@ -131,7 +142,7 @@ impl Default for PoolFly {
     }
 }
 
-/// The `[pool.docker]` table: the settings only the `docker` machine host has.
+/// The `[pools.<name>.docker]` table: the settings only the `docker` machine host has.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolDocker {
     /// Docker daemon address, e.g. `ssh://user@server`. Omit for the local
@@ -164,7 +175,7 @@ impl Default for PoolDocker {
     }
 }
 
-/// The `[pool.ssh]` table: the settings only the `ssh` machine host has. A
+/// The `[pools.<name>.ssh]` table: the settings only the `ssh` machine host has. A
 /// slot is a directory on that host and the agent runs as the login user.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PoolSsh {
@@ -172,8 +183,9 @@ pub struct PoolSsh {
     /// alias from `~/.ssh/config`. Required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    /// Directory on the host that holds the pools: `<root>/<pool>/slot-<n>/`.
-    /// `~/` means the login user's home. Default: `~/vivi-pool`.
+    /// Directory on the host that holds the pools:
+    /// `<root>/<mailspace>/<pool>/slot-<n>/`. `~/` means the login user's
+    /// home. Default: `~/vivi-pool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
     #[serde(flatten)]
@@ -196,6 +208,14 @@ impl PoolFly {
     }
 }
 
+/// A pool's repository with the GitHub App that reads it: both are set, or
+/// neither is.
+#[derive(Debug, Clone, Copy)]
+pub struct RepoAccess<'a> {
+    pub repo: &'a str,
+    pub github: &'a PoolGithub,
+}
+
 /// GitHub App credentials for the fetch token.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolGithub {
@@ -206,7 +226,7 @@ pub struct PoolGithub {
     pub unknown: BTreeMap<String, toml::Value>,
 }
 
-/// The `[pool.committer]` table: the Git identity of remote commits.
+/// The `[pools.<name>.committer]` table: the Git identity of remote commits.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolCommitter {
     pub name: String,
@@ -215,7 +235,7 @@ pub struct PoolCommitter {
     pub unknown: BTreeMap<String, toml::Value>,
 }
 
-/// The `[pool.harness]` table.
+/// The `[pools.<name>.harness]` table.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolHarness {
     pub name: String,
@@ -238,6 +258,9 @@ pub struct PoolHarness {
     pub unknown: BTreeMap<String, toml::Value>,
 }
 
+fn default_build_dir() -> String {
+    DEFAULT_BUILD_DIR.to_string()
+}
 fn default_provider() -> String {
     DEFAULT_PROVIDER.to_string()
 }
@@ -261,30 +284,6 @@ fn default_docker_tmpfs() -> String {
 }
 
 impl PoolConfig {
-    /// The pool name: explicit, else the mailspace name, normalised to
-    /// lowercase letters, digits, and dashes.
-    #[must_use]
-    pub fn pool_name(&self, mailspace_name: &str) -> String {
-        let raw = self.name.as_deref().unwrap_or(mailspace_name);
-        let mapped: String = raw
-            .to_lowercase()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        mapped.trim_matches('-').to_string()
-    }
-
-    /// The Fly application: explicit, else the pool name. Fly app names are
-    /// unique across all Fly accounts; Vivi does not try to make the name
-    /// unique, and `create` says plainly when it is taken.
-    #[must_use]
-    pub fn app_name(&self, mailspace_name: &str) -> String {
-        self.fly
-            .app
-            .clone()
-            .unwrap_or_else(|| self.pool_name(mailspace_name))
-    }
-
     /// Size of the memory disk over the build output, from the active host.
     #[must_use]
     pub fn tmpfs_size(&self) -> &str {
@@ -298,12 +297,40 @@ impl PoolConfig {
 
     /// The full Git address jobs and the seed fetch from and push to:
     /// GitHub for `repo = "owner/name"`, or the embedded source's own remote.
+    /// Empty for a pool with neither (commands that need one check first with
+    /// [`PoolConfig::require_repo`]).
     #[must_use]
     pub fn remote_address(&self) -> String {
-        match &self.embedded {
-            Some(source) => source.remote.clone(),
-            None => format!("https://github.com/{}.git", self.repo),
+        match (&self.embedded, &self.repo) {
+            (Some(source), _) => source.remote.clone(),
+            (None, Some(repo)) => format!("https://github.com/{repo}.git"),
+            (None, None) => String::new(),
         }
+    }
+
+    /// The repository and its GitHub App, when the pool has them.
+    #[must_use]
+    pub fn repo_access(&self) -> Option<RepoAccess<'_>> {
+        Some(RepoAccess {
+            repo: self.repo.as_deref()?,
+            github: self.github.as_ref()?,
+        })
+    }
+
+    /// The repository and its GitHub App for a command that needs them
+    /// (`what` says which command).
+    ///
+    /// # Errors
+    /// Returns a configuration error naming the missing setting.
+    pub fn require_repo(&self, pool: &str, what: &str) -> Result<RepoAccess<'_>, VivariumError> {
+        let missing = |setting: &str| {
+            VivariumError::Config(format!(
+                "[pools.{pool}] {setting} is required to {what} (a pool defined with only its provider settings can be checked, listed, waited on, reconciled and destroyed, but not created or dispatched to)"
+            ))
+        };
+        let repo = self.repo.as_deref().ok_or_else(|| missing("repo"))?;
+        let github = self.github.as_ref().ok_or_else(|| missing("github"))?;
+        Ok(RepoAccess { repo, github })
     }
 
     /// The organization a new application is created in.
@@ -312,65 +339,83 @@ impl PoolConfig {
         self.fly.organization_name()
     }
 
-    /// The private key path with a leading `~` expanded.
-    #[must_use]
-    pub fn private_key_path(&self) -> PathBuf {
-        match self.github.private_key.strip_prefix("~/") {
-            Some(rest) => dirs::home_dir().map_or_else(
-                || PathBuf::from(&self.github.private_key),
-                |home| home.join(rest),
-            ),
-            None => PathBuf::from(&self.github.private_key),
-        }
-    }
-
-    /// Check the table before any command acts on it.
+    /// Check the table before any command acts on it. `id` is the pool's
+    /// identity: its name is the table key, and the mailspace slug is part of
+    /// every mark and machine name. Every message names the pool.
     ///
     /// # Errors
     /// Returns a configuration error naming the first bad field.
-    pub fn validate(&self, mailspace_name: &str) -> Result<(), VivariumError> {
-        self.validate_identity(mailspace_name)?;
+    pub fn validate(&self, id: &PoolId) -> Result<(), VivariumError> {
+        self.validate_fields(id).map_err(|e| match e {
+            VivariumError::Config(message) => {
+                VivariumError::Config(format!("[pools.{}] {message}", id.pool))
+            }
+            other => other,
+        })
+    }
+
+    fn validate_fields(&self, id: &PoolId) -> Result<(), VivariumError> {
+        self.validate_identity(id)?;
         self.validate_machine()?;
         self.validate_commands()?;
         self.validate_github()?;
+        let pool = id.pool.as_str();
         if let Some(harness) = &self.harness {
-            harness.validate()?;
+            harness.validate(pool)?;
         }
         if let Some(committer) = &self.committer {
-            committer.validate()?;
+            committer.validate(pool)?;
         }
-        reject_moved_keys(&self.unknown)?;
-        reject_unknown("pool", &self.unknown)?;
-        reject_unknown("pool.fly", &self.fly.unknown)?;
-        reject_unknown("pool.docker", &self.docker.unknown)?;
-        reject_unknown("pool.ssh", &self.ssh.unknown)
+        reject_unknown(pool, "", &self.unknown)?;
+        reject_unknown(pool, ".fly", &self.fly.unknown)?;
+        reject_unknown(pool, ".docker", &self.docker.unknown)?;
+        reject_unknown(pool, ".ssh", &self.ssh.unknown)?;
+        match &self.github {
+            Some(github) => reject_unknown(pool, ".github", &github.unknown),
+            None => Ok(()),
+        }
     }
 
-    fn validate_identity(&self, mailspace_name: &str) -> Result<(), VivariumError> {
+    fn validate_identity(&self, id: &PoolId) -> Result<(), VivariumError> {
         if !PROVIDERS.contains(&self.provider.as_str()) {
             return Err(bad(format!(
                 "provider \"{}\" is not supported (use \"fly\", \"docker\" or \"ssh\")",
                 self.provider
             )));
         }
-        if self.pool_name(mailspace_name).is_empty() {
-            return Err(bad("name resolves to an empty pool name"));
+        check_pool_name(&id.pool)?;
+        if id.mailspace.is_empty() {
+            return Err(bad(
+                "the mailspace name has no letter or digit, so it cannot name machines; rename the mailspace in .vivi/mailspace.toml",
+            ));
         }
         if self.provider == "fly" {
-            self.validate_fly_names(mailspace_name)?;
+            self.validate_fly_names()?;
         }
-        let mut parts = self.repo.split('/');
+        match (&self.repo, &self.github) {
+            (Some(_), None) => return Err(bad("github is required when repo is set")),
+            (None, Some(_)) => return Err(bad("repo is required when github is set")),
+            _ => {}
+        }
+        let Some(repo) = &self.repo else {
+            return Ok(());
+        };
+        let mut parts = repo.split('/');
         match (parts.next(), parts.next(), parts.next()) {
             (Some(owner), Some(name), None) if is_repo_part(owner) && is_repo_part(name) => Ok(()),
             _ => Err(bad("repo must be owner/name")),
         }
     }
 
-    fn validate_fly_names(&self, mailspace_name: &str) -> Result<(), VivariumError> {
-        let app = self.app_name(mailspace_name);
+    fn validate_fly_names(&self) -> Result<(), VivariumError> {
+        let Some(app) = &self.fly.app else {
+            return Err(bad(
+                "fly.app is required for a fly pool and has no default (Fly app names are unique across all Fly accounts); set `app = \"<your-unique-app-name>\"` in [fly]",
+            ));
+        };
         let org = self.organization_name().to_string();
         for (field, value) in [
-            ("app", &app),
+            ("app", app),
             ("organization", &org),
             ("region", &self.fly.region),
         ] {
@@ -436,13 +481,16 @@ impl PoolConfig {
     }
 
     fn validate_github(&self) -> Result<(), VivariumError> {
-        if self.github.app_id == 0 {
+        let Some(github) = &self.github else {
+            return Ok(());
+        };
+        if github.app_id == 0 {
             return Err(bad("github.app_id must be nonzero"));
         }
-        if self.github.private_key.trim().is_empty() {
+        if github.private_key.trim().is_empty() {
             return Err(bad("github.private_key must name a key file"));
         }
-        reject_unknown("pool.github", &self.github.unknown)
+        Ok(())
     }
 }
 
@@ -522,14 +570,26 @@ pub fn check_ssh_root(root: &str) -> Result<(), String> {
     }
 }
 
+impl PoolGithub {
+    /// The private key path with a leading `~` expanded.
+    #[must_use]
+    pub fn private_key_path(&self) -> PathBuf {
+        match self.private_key.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir()
+                .map_or_else(|| PathBuf::from(&self.private_key), |home| home.join(rest)),
+            None => PathBuf::from(&self.private_key),
+        }
+    }
+}
+
 impl PoolCommitter {
-    fn validate(&self) -> Result<(), VivariumError> {
+    fn validate(&self, pool: &str) -> Result<(), VivariumError> {
         for (field, value) in [("name", &self.name), ("email", &self.email)] {
             if value.trim().is_empty() || value.chars().any(char::is_control) {
                 return Err(bad(format!("committer.{field} must be a single line")));
             }
         }
-        reject_unknown("pool.committer", &self.unknown)
+        reject_unknown(pool, ".committer", &self.unknown)
     }
 }
 
@@ -545,7 +605,7 @@ impl PoolHarness {
         })
     }
 
-    fn validate(&self) -> Result<(), VivariumError> {
+    fn validate(&self, pool: &str) -> Result<(), VivariumError> {
         if self.name.trim().is_empty() {
             return Err(bad("harness.name must not be empty"));
         }
@@ -575,7 +635,7 @@ impl PoolHarness {
         if seen.len() != self.models.len() {
             return Err(bad("harness.models holds a duplicate slug"));
         }
-        reject_unknown("pool.harness", &self.unknown)
+        reject_unknown(pool, ".harness", &self.unknown)
     }
 }
 
@@ -640,30 +700,43 @@ fn is_tmpfs_size(value: &str) -> bool {
         && digits.parse::<u64>().is_ok_and(|n| n > 0)
 }
 
-/// Provider settings that used to sit directly in `[pool]`.
-const MOVED_TO_FLY: [&str; 6] = ["app", "organization", "region", "size", "memory", "tmpfs"];
+/// Check a pool's name: the key of its `[pools.<name>]` table. It becomes part
+/// of machine names, marks and directories, so it is a slug that starts and
+/// ends with a letter or digit, and it never ends with the suffix that names
+/// the pool's self-test pool.
+///
+/// # Errors
+/// Returns a configuration error saying what the name must look like.
+pub fn check_pool_name(name: &str) -> Result<(), VivariumError> {
+    let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    if !is_slug(name) || !edge(name.chars().next()) || !edge(name.chars().last()) {
+        return Err(bad(
+            "the pool name (the key of its table) must be lowercase letters, digits and dashes, starting and ending with a letter or digit",
+        ));
+    }
+    if name.ends_with(DOCTOR_SUFFIX) {
+        return Err(bad(format!(
+            "the pool name must not end with \"{DOCTOR_SUFFIX}\" (that names the self-test pool of another pool)"
+        )));
+    }
+    Ok(())
+}
 
-fn reject_moved_keys(unknown: &BTreeMap<String, toml::Value>) -> Result<(), VivariumError> {
-    match MOVED_TO_FLY.iter().find(|key| unknown.contains_key(**key)) {
+fn reject_unknown(
+    pool: &str,
+    table: &str,
+    unknown: &BTreeMap<String, toml::Value>,
+) -> Result<(), VivariumError> {
+    match unknown.keys().next() {
         Some(key) => Err(bad(format!(
-            "\"{key}\" is a provider setting and now belongs in [pool.fly]; move it there"
+            "unknown field \"{key}\" in [pools.{pool}{table}]"
         ))),
         None => Ok(()),
     }
 }
 
-fn reject_unknown(
-    table: &str,
-    unknown: &BTreeMap<String, toml::Value>,
-) -> Result<(), VivariumError> {
-    match unknown.keys().next() {
-        Some(key) => Err(bad(format!("unknown field \"{key}\" in [{table}]"))),
-        None => Ok(()),
-    }
-}
-
 fn bad(message: impl Into<String>) -> VivariumError {
-    VivariumError::Config(format!("[pool] {}", message.into()))
+    VivariumError::Config(message.into())
 }
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ pub(super) fn create_slots(w: &mut World) -> StepResult {
     let report = run::create_slots(
         w.provider,
         &w.config,
-        &w.pool,
+        &w.id,
         &w.timing.create,
         w.progress,
         seed,
@@ -378,7 +378,7 @@ pub(super) fn long_wait(w: &mut World) -> StepResult {
 
 /// Provider: destroy every slot of the test pool. Runs even after a failure.
 pub(super) fn destroy_slots(w: &mut World) -> StepResult {
-    let gone = run::destroy_slots(w.provider, &w.pool, &run::DestroyTarget::All)
+    let gone = run::destroy_slots(w.provider, &w.id, &run::DestroyTarget::All)
         .map_err(|e| observed("every test slot destroyed", e))?;
     Ok(format!("destroyed {} slot(s)", gone.len()))
 }
@@ -394,7 +394,7 @@ pub(super) fn nothing_left(w: &mut World) -> StepResult {
         },
     );
     if left.is_ok() {
-        return Ok(format!("no machine of pool {} remains", w.pool));
+        return Ok(format!("no machine of pool {} remains", w.id.pool));
     }
     let slots = w.slots()?;
     let commands: Vec<String> = slots

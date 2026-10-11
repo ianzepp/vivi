@@ -3,7 +3,6 @@ use super::*;
 fn real() -> PoolConfig {
     toml::from_str(
         r#"
-name = "main"
 repo = "acme/widgets"
 slots = 8
 image = "debian:12"
@@ -33,14 +32,18 @@ email = "real@example.com"
 }
 
 #[test]
-fn the_test_pool_has_its_own_name() {
-    assert_eq!(pool_name("main"), "main-doctor");
+fn the_test_pool_is_the_doctor_pool_of_the_same_mailspace() {
+    let real = crate::pool::slot::PoolId::new("Space", "main");
+    let test = real.doctor();
+    assert_eq!(
+        (test.mailspace.as_str(), test.pool.as_str()),
+        ("space", "main-doctor")
+    );
 }
 
 #[test]
 fn the_test_config_replaces_every_project_setting_but_keeps_the_host() {
-    let config = test_config(&real(), "main-doctor");
-    assert_eq!(config.pool_name("x"), "main-doctor");
+    let config = test_config(&real());
     assert_eq!(config.slots, 2);
     assert!(config.setup.is_empty());
     assert_eq!(config.seed, ["true"]);
@@ -65,7 +68,11 @@ fn the_test_config_replaces_every_project_setting_but_keeps_the_host() {
         "pool-test@localhost"
     );
     assert_eq!(config.remote_address(), REMOTE);
-    assert!(config.validate("main").is_ok());
+    assert!(
+        config
+            .validate(&crate::pool::slot::PoolId::new("ms", "main"))
+            .is_ok()
+    );
 }
 
 #[test]

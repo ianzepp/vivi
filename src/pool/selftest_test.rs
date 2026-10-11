@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::pool::doctor::{Report, Status};
-use crate::pool::fake_provider::{Fake, slot};
+use crate::pool::fake_provider::{Fake, pid, slot};
 use crate::pool::progress::Progress;
 use crate::pool::slot::META_TASK;
 
@@ -144,7 +144,7 @@ fn run_with(fake: &Fake, long: bool, cancelled: &dyn Fn() -> bool) -> Vec<Check>
         starting: &|_| {},
         detail: &Progress::silent(),
     };
-    run_test(fake, &real_config(), "p", &options)
+    run_test(fake, &real_config(), &pid("p"), &options)
 }
 
 fn by_name<'a>(checks: &'a [Check], name: &str) -> &'a Check {
@@ -243,8 +243,9 @@ fn the_test_pool_is_isolated_from_the_project() {
     let specs = fake.created.borrow();
     assert_eq!(specs.len(), 2);
     for spec in specs.iter() {
-        assert!(spec.name.starts_with("p-doctor-slot-"), "{}", spec.name);
+        assert!(spec.name.starts_with("ms-p-doctor-slot-"), "{}", spec.name);
         assert_eq!(spec.metadata["vivi_pool"], "p-doctor");
+        assert_eq!(spec.metadata["vivi_pool_mailspace"], "ms");
         assert_eq!(spec.env["REMOTE"], "file:///work/remote.git");
         assert!(
             !spec.env.contains_key("GH_TOKEN"),
@@ -391,17 +392,17 @@ fn leftovers_are_named_with_the_command_that_removes_them() {
     let left = by_name(&checks, "nothing of the test pool remains");
     assert_eq!(left.status, Status::Fail);
     assert!(
-        left.detail.contains("p-doctor-slot-1=free"),
+        left.detail.contains("ms-p-doctor-slot-1=free"),
         "{}",
         left.detail
     );
     assert!(
-        left.detail.contains("fake destroy id-p-doctor-slot-1"),
+        left.detail.contains("fake destroy id-ms-p-doctor-slot-1"),
         "{}",
         left.detail
     );
     assert!(
-        left.detail.contains("fake destroy id-p-doctor-slot-2"),
+        left.detail.contains("fake destroy id-ms-p-doctor-slot-2"),
         "{}",
         left.detail
     );
@@ -410,11 +411,17 @@ fn leftovers_are_named_with_the_command_that_removes_them() {
 #[test]
 fn slots_left_by_an_earlier_run_are_removed_first_and_reported() {
     let fake = world_fake(false);
-    fake.add(slot("old-1", "p-doctor-slot-1", "stopped", "p-doctor", 1));
+    fake.add(slot(
+        "old-1",
+        "ms-p-doctor-slot-1",
+        "stopped",
+        "p-doctor",
+        1,
+    ));
     let checks = run_with(&fake, false, &|| false);
     let earlier = by_name(&checks, "earlier test slots");
     assert_eq!(earlier.status, Status::Warn);
-    assert!(earlier.detail.contains("p-doctor-slot-1"));
+    assert!(earlier.detail.contains("ms-p-doctor-slot-1"));
     assert!(fake.destroyed.borrow().contains(&"old-1".to_string()));
     assert_eq!(failures(&checks), Vec::<String>::new());
 }
@@ -462,7 +469,7 @@ fn every_step_announces_itself_before_it_runs_and_a_quiet_detail_says_nothing() 
         starting: &|name| started.borrow_mut().push(name.to_string()),
         detail: &detail,
     };
-    run_test(&fake, &real_config(), "p", &options);
+    run_test(&fake, &real_config(), &pid("p"), &options);
     assert_eq!(
         started.borrow().first().map(String::as_str),
         Some("create two slots")
@@ -491,12 +498,12 @@ fn the_steps_of_a_wait_say_when_they_start_and_beat_while_they_wait() {
         starting: &|_| {},
         detail: &detail,
     };
-    run_test(&fake, &real_config(), "p", &options);
+    run_test(&fake, &real_config(), &pid("p"), &options);
     let lines = heard.borrow();
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with("creating p-doctor-slot-1")),
+            .any(|l| l.starts_with("creating ms-p-doctor-slot-1")),
         "{lines:?}"
     );
     assert!(
@@ -504,5 +511,32 @@ fn the_steps_of_a_wait_say_when_they_start_and_beat_while_they_wait() {
             .iter()
             .any(|l| l.starts_with("waiting for 1 dispatch(es):")),
         "{lines:?}"
+    );
+}
+
+#[test]
+fn the_live_test_runs_for_a_pool_with_only_its_provider_settings() {
+    let fake = world_fake(false);
+    let bare: PoolConfig =
+        toml::from_str("provider = \"docker\"\nslots = 2\nimage = \"debian:12\"\n").unwrap();
+    assert!(bare.repo.is_none() && bare.github.is_none());
+    assert!(bare.harness.is_none() && bare.committer.is_none());
+    let options = TestOptions {
+        long: false,
+        timing: Timing::instant(),
+        cancelled: &|| false,
+        progress: &|_| {},
+        starting: &|_| {},
+        detail: &Progress::silent(),
+    };
+    let checks = run_test(&fake, &bare, &pid("p"), &options);
+    assert_eq!(failures(&checks), Vec::<String>::new());
+    assert!(
+        checks.iter().all(|c| c.status != Status::Skipped),
+        "{checks:#?}"
+    );
+    assert_eq!(
+        by_name(&checks, "destroy the test slots").status,
+        Status::Ok
     );
 }

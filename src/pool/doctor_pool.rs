@@ -9,12 +9,12 @@ use super::run::annotate_running;
 use super::slot::SlotStatus;
 
 pub const GROUP: &str = "Pool (Vivi)";
-const RECONCILE: &str = "vivi pool reconcile";
-const CREATE: &str = "vivi pool create";
 
 /// What the pool checks read.
 pub struct PoolFacts<'a> {
-    /// The `[pool]` validation result.
+    /// The pool's name, for the commands the fixes name.
+    pub pool: &'a str,
+    /// The `[pools.<name>]` validation result.
     pub config: Result<(), String>,
     pub max: u32,
     /// The pool's slots; `None` when the provider checks failed first.
@@ -27,7 +27,7 @@ pub struct PoolFacts<'a> {
 /// Turn the facts into checks.
 #[must_use]
 pub fn checks(f: &PoolFacts) -> Vec<Check> {
-    let mut out = vec![config_check(&f.config)];
+    let mut out = vec![config_check(f.pool, &f.config)];
     match &f.slots {
         None => out.push(Check::skipped(
             GROUP,
@@ -45,14 +45,14 @@ pub fn checks(f: &PoolFacts) -> Vec<Check> {
     out
 }
 
-fn config_check(config: &Result<(), String>) -> Check {
+fn config_check(pool: &str, config: &Result<(), String>) -> Check {
     match config {
-        Ok(()) => Check::ok(GROUP, "config", "[pool] is valid"),
+        Ok(()) => Check::ok(GROUP, "config", format!("[pools.{pool}] is valid")),
         Err(e) => Check::fail(
             GROUP,
             "config",
             e.clone(),
-            "edit [pool] in .vivi/mailspace.toml",
+            format!("edit [pools.{pool}] in .vivi/mailspace.toml"),
         ),
     }
 }
@@ -60,50 +60,60 @@ fn config_check(config: &Result<(), String>) -> Check {
 fn slot_checks(f: &PoolFacts, slots: &[SlotStatus]) -> Vec<Check> {
     let mut slots = slots.to_vec();
     annotate_running(&mut slots, f.open, f.now);
-    let mut out = vec![count_check(f.max, &slots)];
+    let mut out = vec![count_check(f.pool, f.max, &slots)];
     out.extend(slots.iter().map(|s| slot_check(f, s)));
     out.push(leak_check(f, &slots));
     out.push(orphan_check(f, &slots));
     out.push(stale_check(f, &slots));
-    out.push(overdue_check(&slots));
+    out.push(overdue_check(f.pool, &slots));
     out
 }
 
-fn count_check(max: u32, slots: &[SlotStatus]) -> Check {
+fn count_check(pool: &str, max: u32, slots: &[SlotStatus]) -> Check {
     let have = u32::try_from(slots.len()).unwrap_or(u32::MAX);
     let detail = format!("{have} of {max}");
     match have.cmp(&max) {
         std::cmp::Ordering::Equal => Check::ok(GROUP, "slot count", detail),
-        std::cmp::Ordering::Less => Check::warn(GROUP, "slot count", detail, CREATE),
+        std::cmp::Ordering::Less => Check::warn(GROUP, "slot count", detail, create(pool)),
         std::cmp::Ordering::Greater => Check::warn(
             GROUP,
             "slot count",
             format!("{detail} (more than the configured maximum)"),
-            "vivi pool destroy --slot <name> --yes (for the extra slots), or raise `slots` in [pool]",
+            format!(
+                "vivi pool destroy --pool {pool} --slot <name> --yes (for the extra slots), or raise `slots` in [pools.{pool}]"
+            ),
         ),
     }
 }
 
-fn slot_check(f: &PoolFacts, slot: &SlotStatus) -> Check {
-    let name = format!("slot {}", slot.name);
-    let base = slot.base.as_deref().map_or_else(
+/// `base abcdef012345, 3 commits behind the default branch tip`, or just the
+/// base for a pool with no repository to compare against.
+fn base_text(f: &PoolFacts, slot: &SlotStatus) -> String {
+    slot.base.as_deref().map_or_else(
         || "base unknown".to_string(),
         |b| {
-            format!(
-                "base {}, {}",
-                &b[..12.min(b.len())],
-                behind_text(f.github, b)
-            )
+            let short = &b[..12.min(b.len())];
+            if f.github.absent {
+                format!("base {short}")
+            } else {
+                format!("base {short}, {}", behind_text(f.github, b))
+            }
         },
-    );
+    )
+}
+
+fn slot_check(f: &PoolFacts, slot: &SlotStatus) -> Check {
+    let name = format!("slot {}", slot.name);
+    let base = base_text(f, slot);
     let arch = slot
         .arch
         .as_deref()
         .map_or(String::new(), |a| format!(", arch {a}"));
     let detail = format!("{}, {base}{arch}", slot.state);
+    let (create, reconcile) = (create(f.pool), reconcile(f.pool));
     let reseed = format!(
-        "vivi pool destroy --slot {} --yes, then {CREATE}",
-        slot.name
+        "vivi pool destroy --pool {} --slot {} --yes, then {create}",
+        f.pool, slot.name
     );
     match slot.state.as_str() {
         "free" => Check::ok(GROUP, &name, detail),
@@ -121,25 +131,25 @@ fn slot_check(f: &PoolFacts, slot: &SlotStatus) -> Check {
             GROUP,
             &name,
             format!("{detail}, running with no open dispatch"),
-            RECONCILE,
+            reconcile,
         ),
         "finished-uncollected" => Check::warn(
             GROUP,
             &name,
             format!("{detail}, a result is waiting on its disk"),
-            RECONCILE,
+            reconcile,
         ),
         "seeding" => Check::warn(
             GROUP,
             &name,
             format!("{detail}, a `vivi pool create` may still be running"),
-            format!("{CREATE} (waits for it and adopts a clean seed)"),
+            format!("{create} (waits for it and adopts a clean seed)"),
         ),
         "unseeded" => Check::fail(
             GROUP,
             &name,
             format!("{detail}, the seed failed or was interrupted"),
-            format!("{CREATE} (adopts a clean seed); if it stays unseeded: {reseed}"),
+            format!("{create} (adopts a clean seed); if it stays unseeded: {reseed}"),
         ),
         _ => Check::warn(GROUP, &name, detail, reseed),
     }
@@ -169,7 +179,7 @@ fn leak_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
             "{} running with no open dispatch (holding a machine, and billed by the second on Fly)",
             leaked.join(", ")
         ),
-        RECONCILE,
+        reconcile(f.pool),
     )
 }
 
@@ -193,7 +203,8 @@ fn orphan_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
         "orphaned dispatches",
         format!("open dispatch with no machine: {}", orphans.join(", ")),
         format!(
-            "{RECONCILE} (records each as lost and closes it; a destroyed machine has no result to collect)"
+            "{} (records each as lost and closes it; a destroyed machine has no result to collect)",
+            reconcile(f.pool)
         ),
     )
 }
@@ -221,11 +232,11 @@ fn stale_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
         GROUP,
         "stale claims",
         format!("held with no open dispatch: {}", parts.join(", ")),
-        RECONCILE,
+        reconcile(f.pool),
     )
 }
 
-fn overdue_check(slots: &[SlotStatus]) -> Check {
+fn overdue_check(pool: &str, slots: &[SlotStatus]) -> Check {
     let late: Vec<String> = slots
         .iter()
         .filter(|s| s.state == "busy")
@@ -240,8 +251,19 @@ fn overdue_check(slots: &[SlotStatus]) -> Check {
         GROUP,
         "overdue",
         format!("past its budget: {}", late.join(", ")),
-        format!("{RECONCILE} (stops a slot once the grace after its budget has passed)"),
+        format!(
+            "{} (stops a slot once the grace after its budget has passed)",
+            reconcile(pool)
+        ),
     )
+}
+
+fn create(pool: &str) -> String {
+    format!("vivi pool create --pool {pool}")
+}
+
+fn reconcile(pool: &str) -> String {
+    format!("vivi pool reconcile --pool {pool}")
 }
 
 fn age_text(secs: u64) -> String {

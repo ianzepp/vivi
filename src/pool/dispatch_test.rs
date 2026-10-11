@@ -1,5 +1,5 @@
 use super::*;
-use crate::pool::fake_provider::{Fake, claimed, slot};
+use crate::pool::fake_provider::{Fake, claimed, pid, slot};
 use crate::pool::slot::{META_CLAIMED, META_TASK};
 
 fn config() -> PoolConfig {
@@ -40,6 +40,7 @@ fn flags(model: &str) -> DispatchFlags {
 fn plan(flags: &DispatchFlags) -> Result<JobPlan, VivariumError> {
     plan_job(
         &config(),
+        "p",
         ("abcd1234", "Subject line", "body text"),
         flags,
         "rules".into(),
@@ -69,7 +70,7 @@ fn a_valid_request_plans_a_job() {
 #[test]
 fn an_unlisted_model_is_refused() {
     let err = plan(&flags("m/nope")).unwrap_err().to_string();
-    assert!(err.contains("not in [pool.harness].models"), "{err}");
+    assert!(err.contains("not in [harness].models"), "{err}");
     assert!(err.contains("m/ok, m/other"), "{err}");
 }
 
@@ -81,6 +82,7 @@ fn from_and_branch_default_to_the_body() {
     };
     let p = plan_job(
         &config(),
+        "p",
         ("t", "s", "do it\nfrom: main\nbranch: factory/body"),
         &no_flags,
         "r".into(),
@@ -120,12 +122,34 @@ fn budget_is_bounded() {
 fn harness_and_committer_are_required() {
     let mut c = config();
     c.harness = None;
-    let err = plan_job(&c, ("t", "s", "b"), &flags("m/ok"), "r".into(), "j".into());
-    assert!(err.unwrap_err().to_string().contains("[pool.harness]"));
+    let err = plan_job(
+        &c,
+        "lanes",
+        ("t", "s", "b"),
+        &flags("m/ok"),
+        "r".into(),
+        "j".into(),
+    );
+    assert!(
+        err.unwrap_err()
+            .to_string()
+            .contains("[pools.lanes.harness]")
+    );
     let mut c = config();
     c.committer = None;
-    let err = plan_job(&c, ("t", "s", "b"), &flags("m/ok"), "r".into(), "j".into());
-    assert!(err.unwrap_err().to_string().contains("[pool.committer]"));
+    let err = plan_job(
+        &c,
+        "lanes",
+        ("t", "s", "b"),
+        &flags("m/ok"),
+        "r".into(),
+        "j".into(),
+    );
+    assert!(
+        err.unwrap_err()
+            .to_string()
+            .contains("[pools.lanes.committer]")
+    );
 }
 
 #[test]
@@ -143,7 +167,16 @@ fn dispatch_claims_delivers_one_archive_and_starts() {
     fake.add(slot("m2", "p-slot-2", "stopped", "p", 2));
     let token = Secret::new("tok-secret-value".into());
     let p = plan(&flags("m/ok")).unwrap();
-    let record = dispatch(&fake, "p", &p, &token, &"c".repeat(40), 5000, &pacing()).unwrap();
+    let record = dispatch(
+        &fake,
+        &pid("p"),
+        &p,
+        &token,
+        &"c".repeat(40),
+        5000,
+        &pacing(),
+    )
+    .unwrap();
     assert_eq!(record.slot, "p-slot-2");
     assert_eq!(record.machine, "m2");
     assert_eq!(record.at, 5000);
@@ -168,7 +201,16 @@ fn dispatch_with_no_free_slot_touches_no_machine() {
     let fake = Fake::default();
     fake.add(claimed("m1", "p-slot-1", "stopped", "p", "oldtask1"));
     let p = plan(&flags("m/ok")).unwrap();
-    let err = dispatch(&fake, "p", &p, &Secret::new("t".into()), "s", 1, &pacing()).unwrap_err();
+    let err = dispatch(
+        &fake,
+        &pid("p"),
+        &p,
+        &Secret::new("t".into()),
+        "s",
+        1,
+        &pacing(),
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("no free slot"));
     assert!(fake.files.borrow().is_empty());
     assert_eq!(fake.calls_to("start"), 0);
@@ -180,7 +222,15 @@ fn a_failed_start_undoes_the_claim() {
     fake.add(slot("m1", "p-slot-1", "stopped", "p", 1));
     fake.fail_start.set(true);
     let p = plan(&flags("m/ok")).unwrap();
-    let err = dispatch(&fake, "p", &p, &Secret::new("t".into()), "s", 1, &pacing());
+    let err = dispatch(
+        &fake,
+        &pid("p"),
+        &p,
+        &Secret::new("t".into()),
+        "s",
+        1,
+        &pacing(),
+    );
     assert!(err.is_err());
     assert!(fake.meta("m1", META_TASK).is_none());
     assert!(fake.meta("m1", META_CLAIMED).is_none());
@@ -197,4 +247,74 @@ fn the_default_branch_is_refused_unless_allowed() {
     check_push_target("main", "main", true).unwrap();
     check_push_target("factory/x", "main", false).unwrap();
     check_push_target("main", "trunk", false).unwrap();
+}
+
+#[test]
+fn the_dispatch_record_names_its_pool() {
+    let fake = Fake::default();
+    fake.add(slot("m1", "ms-p-slot-1", "stopped", "p", 1));
+    let p = plan(&flags("m/ok")).unwrap();
+    let id = pid("p");
+    let record = dispatch(&fake, &id, &p, &Secret::new("t".into()), "s", 1, &pacing()).unwrap();
+    assert_eq!(record.pool, "p");
+}
+
+#[test]
+fn a_dispatch_never_claims_a_free_slot_of_another_pool_or_mailspace() {
+    let fake = Fake::default();
+    fake.add(slot("m1", "ms-q-slot-1", "stopped", "q", 1));
+    let mut elsewhere = slot("m2", "other-p-slot-1", "stopped", "p", 1);
+    elsewhere
+        .metadata
+        .insert(crate::pool::slot::META_MAILSPACE.into(), "other".into());
+    fake.add(elsewhere);
+    let p = plan(&flags("m/ok")).unwrap();
+    let err = dispatch(
+        &fake,
+        &pid("p"),
+        &p,
+        &Secret::new("t".into()),
+        "s",
+        1,
+        &pacing(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("pool p has no slots"), "{err}");
+    assert!(fake.meta("m1", META_TASK).is_none());
+    assert!(fake.meta("m2", META_TASK).is_none());
+}
+
+#[test]
+fn a_pool_with_no_repository_refuses_to_dispatch_and_names_the_setting() {
+    let mut c = config();
+    c.repo = None;
+    c.github = None;
+    let err = plan_job(
+        &c,
+        "lanes",
+        ("t", "s", "b\nfrom: a\nbranch: b"),
+        &flags("m/ok"),
+        "r".into(),
+        "j".into(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("[pools.lanes] repo is required to dispatch"),
+        "{err}"
+    );
+    // The self-test brings its own source tree and needs no repository.
+    c.embedded = Some(crate::pool::config::EmbeddedSource {
+        remote: "file:///work/remote.git".into(),
+        ..Default::default()
+    });
+    plan_job(
+        &c,
+        "lanes",
+        ("t", "s", "b"),
+        &flags("m/ok"),
+        "r".into(),
+        "j".into(),
+    )
+    .unwrap();
 }

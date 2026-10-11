@@ -5,6 +5,7 @@ use crate::pool::collect::{Collected, JobResult};
 
 fn record(job: &str) -> DispatchRecord {
     DispatchRecord {
+        pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: "m1".into(),
         job: job.into(),

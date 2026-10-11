@@ -4,6 +4,7 @@ use crate::pool::doctor::Status;
 fn round_line(task: &str, state: &'static str, detail: &str) -> RoundLine {
     RoundLine {
         task: task.into(),
+        pool: "p".into(),
         slot: "p-slot-2".into(),
         state,
         detail: detail.into(),
@@ -12,6 +13,7 @@ fn round_line(task: &str, state: &'static str, detail: &str) -> RoundLine {
 
 fn outcome() -> SlotOutcome {
     SlotOutcome {
+        pool: "p".into(),
         name: "p-slot-1".into(),
         id: "m1".into(),
         state: "stopped".into(),
@@ -41,6 +43,7 @@ fn a_plain_word_is_bare_and_anything_else_is_quoted() {
 #[test]
 fn dispatched_line() {
     let made = DispatchRecord {
+        pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: "m1".into(),
         job: "0123456789ab".into(),
@@ -54,7 +57,7 @@ fn dispatched_line() {
     assert_eq!(
         dispatched("3f2a", &made),
         format!(
-            "dispatched 3f2a p-slot-1 0123456789ab sonnet main {} work/x 1800",
+            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} work/x 1800",
             "a".repeat(40)
         )
     );
@@ -64,32 +67,36 @@ fn dispatched_line() {
 fn create_lines() {
     assert_eq!(
         created(&outcome()),
-        "created p-slot-1 m1 stopped 42 0 seeded -"
+        "created p p-slot-1 m1 stopped 42 0 seeded -"
     );
     let mut late = outcome();
     late.timed_out = true;
     late.state = "started".into();
     late.exit_code = None;
-    assert_eq!(created(&late), "created p-slot-1 m1 started 42 - timeout -");
+    assert_eq!(
+        created(&late),
+        "created p p-slot-1 m1 started 42 - timeout -"
+    );
     let mut bad = outcome();
     bad.exit_code = Some(3);
-    assert_eq!(created(&bad), "created p-slot-1 m1 stopped 42 3 failed -");
+    assert_eq!(created(&bad), "created p p-slot-1 m1 stopped 42 3 failed -");
     let mut unmarked = outcome();
     unmarked.error = Some("could not seal: no".into());
     assert_eq!(
         created(&unmarked),
-        r#"created p-slot-1 m1 stopped 42 0 unmarked "could not seal: no""#
+        r#"created p p-slot-1 m1 stopped 42 0 unmarked "could not seal: no""#
     );
     assert_eq!(exists("lanes", 2), "exists lanes 2");
     assert_eq!(
-        home("created app lanes-1 in organization personal"),
-        r#"home "created app lanes-1 in organization personal""#
+        home("lanes", "created app lanes-1 in organization personal"),
+        r#"home lanes "created app lanes-1 in organization personal""#
     );
 }
 
 #[test]
 fn status_lines() {
     let mut busy = SlotStatus {
+        pool: "p".into(),
         name: "p-slot-1".into(),
         id: "m1".into(),
         state: "busy".into(),
@@ -106,7 +113,7 @@ fn status_lines() {
     };
     assert_eq!(
         slot(&busy),
-        "slot p-slot-1 m1 busy 3f2a 95 1800 abc arm64 2026-10-11T10:00:00Z"
+        "slot p p-slot-1 m1 busy 3f2a 95 1800 abc arm64 2026-10-11T10:00:00Z"
     );
     busy.state = "free".into();
     busy.task = None;
@@ -116,7 +123,7 @@ fn status_lines() {
     busy.arch = None;
     assert_eq!(
         slot(&busy),
-        "slot p-slot-1 m1 free - - - - - 2026-10-11T10:00:00Z"
+        "slot p p-slot-1 m1 free - - - - - 2026-10-11T10:00:00Z"
     );
 }
 
@@ -125,11 +132,11 @@ fn wait_and_reconcile_lines() {
     let done = round_line("3f2a", "finished", "pushed work/x 0123456789");
     assert_eq!(
         collected(&done),
-        r#"collected 3f2a p-slot-2 finished "pushed work/x 0123456789""#
+        r#"collected 3f2a p p-slot-2 finished "pushed work/x 0123456789""#
     );
     assert_eq!(
         reconciled(&round_line("3f2a", "running", "150s of 1800s")),
-        r#"reconciled 3f2a p-slot-2 running "150s of 1800s""#
+        r#"reconciled 3f2a p p-slot-2 running "150s of 1800s""#
     );
     assert_eq!(
         reconciled(&round_line(
@@ -137,7 +144,7 @@ fn wait_and_reconcile_lines() {
             "orphan-stopped",
             "stopped (running with no task)"
         )),
-        r#"reconciled - p-slot-2 orphan-stopped "stopped (running with no task)""#
+        r#"reconciled - p p-slot-2 orphan-stopped "stopped (running with no task)""#
     );
     assert_eq!(nothing_open(), "nothing-open");
 }
@@ -145,6 +152,7 @@ fn wait_and_reconcile_lines() {
 #[test]
 fn issue_lines() {
     let mut seen = Issue {
+        pool: Some("p".into()),
         kind: "poll-error",
         subject: Some("3f2a".into()),
         message: "Fly unreachable".into(),
@@ -153,22 +161,27 @@ fn issue_lines() {
     };
     assert_eq!(
         issue(&seen),
-        r#"issue poll-error 3f2a "Fly unreachable" 1760000000 1760000090"#
+        r#"issue p poll-error 3f2a "Fly unreachable" 1760000000 1760000090"#
     );
     seen.cleared = None;
     seen.subject = None;
     assert_eq!(
         issue(&seen),
-        r#"issue poll-error - "Fly unreachable" 1760000000 -"#
+        r#"issue p poll-error - "Fly unreachable" 1760000000 -"#
+    );
+    seen.pool = None;
+    assert_eq!(
+        issue(&seen),
+        r#"issue - poll-error - "Fly unreachable" 1760000000 -"#
     );
 }
 
 #[test]
 fn doctor_lines() {
-    let mut ok = Check::ok("Provider (Docker)", "daemon", "reachable");
+    let mut ok = Check::ok("Provider (Docker)", "daemon", "reachable").in_pool("p");
     assert_eq!(
         check(&ok),
-        r#"check ok "Provider (Docker)" daemon reachable - -"#
+        r#"check p ok "Provider (Docker)" daemon reachable - -"#
     );
     ok = Check::fail(
         "Live test: Vivi",
@@ -176,11 +189,12 @@ fn doctor_lines() {
         "expected two",
         "run it again",
     )
+    .in_pool("p")
     .timed(std::time::Duration::from_millis(5120));
     assert_eq!(ok.status, Status::Fail);
     assert_eq!(
         check(&ok),
-        r#"check fail "Live test: Vivi" "dispatch two at once" "expected two" "run it again" 5120"#
+        r#"check p fail "Live test: Vivi" "dispatch two at once" "expected two" "run it again" 5120"#
     );
     let counts = Counts {
         ok: 11,
@@ -188,5 +202,41 @@ fn doctor_lines() {
         fail: 0,
         skipped: 2,
     };
-    assert_eq!(summary(&counts), "summary 11 1 0 2");
+    assert_eq!(summary("p", &counts), "summary p 11 1 0 2");
+}
+
+#[test]
+fn a_dispatch_with_no_recorded_pool_reads_as_an_absent_field() {
+    let mut line = round_line("3f2a", "error", "no pool");
+    line.pool = String::new();
+    assert_eq!(
+        collected(&line),
+        r#"collected 3f2a - p-slot-2 error "no pool""#
+    );
+}
+
+#[test]
+fn scale_lines() {
+    let mut s = SlotStatus {
+        pool: "p".into(),
+        name: "ms-p-slot-4".into(),
+        id: "m4".into(),
+        state: "busy".into(),
+        provider_state: "started".into(),
+        index: Some(4),
+        base: None,
+        task: Some("3f2a".into()),
+        claimed_at: None,
+        running_secs: None,
+        budget_secs: None,
+        created_at: String::new(),
+        region: String::new(),
+        arch: None,
+    };
+    assert_eq!(skipped(&s), "skipped p ms-p-slot-4 m4 busy 3f2a");
+    s.task = None;
+    s.state = "seeding".into();
+    assert_eq!(skipped(&s), "skipped p ms-p-slot-4 m4 seeding -");
+    assert_eq!(destroyed(&s), "destroyed p ms-p-slot-4 m4");
+    assert_eq!(scaled("p", 0, 1), "scaled p 0 1");
 }

@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 
 use super::*;
-use crate::pool::fake_provider::{Fake, claimed, slot};
+use crate::pool::fake_provider::{Fake, claimed, pid, slot};
+use crate::pool::pools::PoolSet;
 use crate::pool::record::DispatchRecord;
-use crate::pool::slot::META_CLAIMED;
+use crate::pool::slot::{META_CLAIMED, PoolId};
 
 const RESULT_OK: &str = "@@vivi-pool result\njob=j1\nstate=done\npush=pushed\nbranch=factory/a\nsha=0123456789abcdef0123456789abcdef01234567\nstart=fedcba9876543210\nagent_rc=0\nagent_s=12\njob_s=30\nmodel=m/x\nslot=p-slot-1\n@@vivi-pool receipt\nall done\nsecond line\n\n@@vivi-pool stderr\n\n@@vivi-pool log\nfrom main at fedcba987654\n\n";
 
@@ -11,6 +12,7 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
     OpenDispatch {
         task: task.into(),
         record: DispatchRecord {
+            pool: "p".into(),
             slot: "p-slot-1".into(),
             machine: "m1".into(),
             job: job.into(),
@@ -237,10 +239,11 @@ fn a_round_records_before_it_frees_the_slot() {
         Ok(true)
     };
     let lines = run_round(
-        &fake,
+        &PoolSet::single(&pid("p"), &fake),
         &[open("aaaa1111", "j1", 1000)],
         1100,
         &pacing(),
+        Missing::Report,
         &mut record,
     )
     .unwrap();
@@ -260,10 +263,11 @@ fn a_failed_record_leaves_the_slot_for_the_next_round() {
     let mut record =
         |_: &OpenDispatch, _: &Outcome| Err(VivariumError::Message("db locked".into()));
     let result = run_round(
-        &fake,
+        &PoolSet::single(&pid("p"), &fake),
         &[open("aaaa1111", "j1", 1000)],
         1100,
         &pacing(),
+        Missing::Report,
         &mut record,
     );
     assert!(result.is_err());
@@ -276,10 +280,11 @@ fn a_dispatch_closed_elsewhere_is_neither_reported_nor_freed() {
     let fake = fake_with("started", RESULT_OK);
     let mut record = |_: &OpenDispatch, _: &Outcome| Ok(false);
     let lines = run_round(
-        &fake,
+        &PoolSet::single(&pid("p"), &fake),
         &[open("aaaa1111", "j1", 1000)],
         1100,
         &pacing(),
+        Missing::Report,
         &mut record,
     )
     .unwrap();
@@ -292,10 +297,11 @@ fn a_running_dispatch_reports_its_age_and_is_left_alone() {
     let fake = fake_with("started", "");
     let mut record = |_: &OpenDispatch, _: &Outcome| Ok(true);
     let lines = run_round(
-        &fake,
+        &PoolSet::single(&pid("p"), &fake),
         &[open("aaaa1111", "j1", 1000)],
         1090,
         &pacing(),
+        Missing::Report,
         &mut record,
     )
     .unwrap();
@@ -314,10 +320,11 @@ fn a_timeout_is_recorded_and_the_slot_stopped() {
     };
     let late = 1000 + 600 + TIMEOUT_GRACE_SECS + 5;
     let lines = run_round(
-        &fake,
+        &PoolSet::single(&pid("p"), &fake),
         &[open("aaaa1111", "j1", 1000)],
         late,
         &pacing(),
+        Missing::Report,
         &mut record,
     )
     .unwrap();
@@ -335,7 +342,7 @@ fn stale_claims_need_no_dispatch_and_enough_age() {
     recent.metadata.insert(META_CLAIMED.into(), "1900".into());
     let mut live = claimed("m3", "p-slot-3", "started", "p", "aaaa1111");
     live.metadata.insert(META_CLAIMED.into(), "100".into());
-    let slots = crate::pool::slot::pool_slots("p", &[old, recent, live]);
+    let slots = crate::pool::slot::pool_slots(&pid("p"), &[old, recent, live]);
     let mut dispatch = open("aaaa1111", "j1", 100);
     dispatch.record.machine = "m3".into();
     let stale = stale_claims(&slots, &[dispatch], 2000);
@@ -393,10 +400,11 @@ fn a_transitional_machine_state_is_looked_at_again_next_round() {
 fn round(fake: &Fake, now: u64) -> Result<Vec<RoundLine>, VivariumError> {
     let mut record = |_: &OpenDispatch, _: &Outcome| Ok(true);
     run_round(
-        fake,
+        &PoolSet::single(&pid("p"), fake),
         &[open("aaaa1111", "j1", 1000)],
         now,
         &pacing(),
+        Missing::Report,
         &mut record,
     )
 }
@@ -429,6 +437,7 @@ fn a_provider_that_fails_for_a_while_then_recovers_is_reported_then_collected() 
 fn error_line(task: &str, detail: &str) -> RoundLine {
     RoundLine {
         task: task.into(),
+        pool: "p".into(),
         slot: "s".into(),
         state: "error",
         detail: detail.into(),
@@ -438,6 +447,7 @@ fn error_line(task: &str, detail: &str) -> RoundLine {
 fn running_line(task: &str) -> RoundLine {
     RoundLine {
         task: task.into(),
+        pool: "p".into(),
         slot: "s".into(),
         state: "running",
         detail: "1s of 2s".into(),
@@ -514,10 +524,11 @@ fn a_result_is_reported_even_when_the_slot_would_not_free() {
         ..pacing()
     };
     let lines = run_round(
-        &fake,
+        &PoolSet::single(&pid("p"), &fake),
         &[open("aaaa1111", "j1", 1000)],
         1100,
         &quick,
+        Missing::Report,
         &mut record,
     )
     .unwrap();
@@ -538,10 +549,11 @@ fn a_dispatch_closed_elsewhere_stops_a_slot_this_poll_started_unmarked() {
     // Overdue, so the running slot yields an outcome without a result.
     let late = 1000 + 600 + TIMEOUT_GRACE_SECS + 1;
     let lines = run_round(
-        &fake,
+        &PoolSet::single(&pid("p"), &fake),
         &[open("aaaa1111", "j1", 1000)],
         late,
         &pacing(),
+        Missing::Report,
         &mut record,
     )
     .unwrap();
@@ -581,7 +593,7 @@ fn orphan_runners_are_running_unmarked_slots_with_no_dispatch() {
     let idle = slot("m3", "p-slot-3", "stopped", "p", 3);
     let mut busy = slot("m4", "p-slot-4", "started", "p", 4);
     busy.id = "m4".into();
-    let slots = crate::pool::slot::pool_slots("p", &[marked, orphan, idle, busy]);
+    let slots = crate::pool::slot::pool_slots(&pid("p"), &[marked, orphan, idle, busy]);
     let mut dispatch = open("bbbb2222", "j2", 100);
     dispatch.record.machine = "m4".into();
     let names: Vec<&str> = orphan_runners(&slots, &[dispatch])
@@ -601,7 +613,15 @@ fn a_machine_the_provider_no_longer_knows_is_lost_and_closed_not_an_error_foreve
         seen.borrow_mut().push((d.task.clone(), outcome.word()));
         Ok(true)
     };
-    let lines = run_round(&fake, &[dispatch], 1100, &pacing(), &mut record).unwrap();
+    let lines = run_round(
+        &PoolSet::single(&pid("p"), &fake),
+        &[dispatch],
+        1100,
+        &pacing(),
+        Missing::Report,
+        &mut record,
+    )
+    .unwrap();
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].state, "lost", "{lines:?}");
     assert!(lines[0].settled());
@@ -656,4 +676,95 @@ fn the_watch_keeps_each_problem_with_when_it_began_and_cleared() {
             ),
         ]
     );
+}
+
+fn set_with_no_p<'a>(id: &'a PoolId, fake: &'a Fake) -> PoolSet<'a> {
+    PoolSet {
+        members: PoolSet::single(id, fake).members,
+        all: true,
+    }
+}
+
+fn gone_pool_dispatch() -> OpenDispatch {
+    let mut gone = open("bbbb2222", "j9", 1000);
+    gone.record.pool = "removed".into();
+    gone
+}
+
+#[test]
+fn a_dispatch_of_a_removed_pool_is_reported_not_polled_and_left_open() {
+    let fake = fake_with("started", RESULT_OK);
+    let other = pid("other");
+    let set = set_with_no_p(&other, &fake);
+    let mut record = |_: &OpenDispatch, _: &Outcome| Ok(true);
+    let lines = run_round(
+        &set,
+        &[gone_pool_dispatch()],
+        1100,
+        &pacing(),
+        Missing::Report,
+        &mut record,
+    )
+    .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].state, "error");
+    assert_eq!(lines[0].pool, "removed");
+    assert!(
+        lines[0]
+            .detail
+            .contains("pool \"removed\" is not in .vivi/mailspace.toml")
+    );
+    assert!(lines[0].detail.contains("reconcile"));
+    assert_eq!(fake.calls_to("exec"), 0, "no machine host was asked");
+}
+
+#[test]
+fn reconcile_closes_a_dispatch_of_a_removed_pool_as_lost() {
+    let fake = fake_with("started", RESULT_OK);
+    let other = pid("other");
+    let set = set_with_no_p(&other, &fake);
+    let seen = RefCell::new(Vec::new());
+    let mut record = |d: &OpenDispatch, o: &Outcome| {
+        seen.borrow_mut().push(format!("{} {}", d.task, o.word()));
+        Ok(true)
+    };
+    let lines = run_round(
+        &set,
+        &[gone_pool_dispatch()],
+        1100,
+        &pacing(),
+        Missing::Close,
+        &mut record,
+    )
+    .unwrap();
+    assert_eq!(*seen.borrow(), ["bbbb2222 lost"]);
+    assert_eq!(lines[0].state, "lost");
+    assert!(lines[0].detail.contains("closed as lost"));
+    assert!(lines[0].settled());
+}
+
+#[test]
+fn a_set_for_one_pool_leaves_the_dispatches_of_other_pools_alone() {
+    let fake = fake_with("started", "");
+    let id = pid("p");
+    let set = PoolSet::single(&id, &fake);
+    let mut record = |_: &OpenDispatch, _: &Outcome| Ok(true);
+    let lines = run_round(
+        &set,
+        &[gone_pool_dispatch()],
+        1100,
+        &pacing(),
+        Missing::Close,
+        &mut record,
+    )
+    .unwrap();
+    assert!(
+        lines.is_empty(),
+        "an explicit --pool does not close other pools' dispatches"
+    );
+}
+
+#[test]
+fn a_dispatch_recorded_without_a_pool_reads_as_made_before_pools_were_named() {
+    assert!(missing_pool_text("").contains("before pools were named"));
 }

@@ -8,8 +8,8 @@
 //!
 //! What a container cannot do after creation shapes the rest:
 //!
-//! - Labels are fixed, so they hold only fixed facts: pool, index, base,
-//!   architecture.
+//! - Labels are fixed, so they hold only fixed facts: mailspace, pool, index,
+//!   base, architecture.
 //! - The seed mark changes while the container is stopped, so it is a small
 //!   file on the slot's own disk, read and written with `docker cp` (which
 //!   works on stopped containers). See [`MARKS_DIR`].
@@ -35,7 +35,7 @@ use super::docker_state::{
 use super::docker_tar as tar;
 use super::doctor::Check;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
-use super::slot::{self, META_ARCH, META_CLAIMED, META_POOL, META_TASK};
+use super::slot::{self, META_ARCH, META_CLAIMED, META_MAILSPACE, META_POOL, META_TASK};
 use crate::error::VivariumError;
 
 /// Seconds a stopping container gets before the daemon kills it.
@@ -507,10 +507,11 @@ impl PoolProvider for DockerProvider {
         let Some(slot) = found.iter().find(|c| c.role() == ROLE_SLOT) else {
             return Err(VivariumError::Message(format!("slot {id} is gone")));
         };
-        let pool = slot.labels.get(META_POOL).map_or("", String::as_str);
+        let label = |key: &str| slot.labels.get(key).cloned().unwrap_or_default();
         let name = state::claim_name(&slot.id);
         let labels = [
-            (META_POOL, pool.to_string()),
+            (META_MAILSPACE, label(META_MAILSPACE)),
+            (META_POOL, label(META_POOL)),
             (LABEL_ROLE, ROLE_CLAIM.to_string()),
             (LABEL_CLAIM_OF, slot.id.clone()),
             (META_TASK, task.to_string()),

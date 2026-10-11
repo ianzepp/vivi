@@ -1,22 +1,24 @@
 use std::time::Duration;
 
+use crate::local_pool_scale_command as scale;
 use crate::local_pool_work_command as work;
 use vivi::VivariumError;
 use vivi::cli::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::pool::github;
+use vivi::pool::pools::{self, Need, PoolHandle, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::Progress;
-use vivi::pool::run::{self, CreateOptions, DestroyTarget, SlotOutcome};
+use vivi::pool::run::{self, CreateOptions, CreateReport, DestroyTarget, SlotOutcome};
 use vivi::pool::slot::SlotStatus;
 use vivi::pool::work as engine;
-use vivi::pool::{PoolConfig, PoolProvider, open_provider};
 
 pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), VivariumError> {
     match command {
         PoolSubcommand::Create(c) => create(c),
         PoolSubcommand::Status(c) => status(c),
         PoolSubcommand::Destroy(c) => destroy(c),
+        PoolSubcommand::Scale(c) => scale::scale(c),
         PoolSubcommand::Dispatch(c) => work::dispatch(c),
         PoolSubcommand::Wait(c) => work::wait(c),
         PoolSubcommand::Reconcile(c) => work::reconcile(c),
@@ -24,75 +26,80 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
     }
 }
 
-/// Load, validate, and name the pool: `(config, pool name, provider)`.
-fn open_pool(
-    project: Option<&std::path::Path>,
-) -> Result<(PoolConfig, String, Box<dyn PoolProvider>), VivariumError> {
-    let (_, config, pool, provider) = open_pool_space(project)?;
-    Ok((config, pool, provider))
-}
-
-/// [`open_pool`] plus the mailspace the pool is configured in.
-pub(crate) fn open_pool_space(
-    project: Option<&std::path::Path>,
-) -> Result<(Mailspace, PoolConfig, String, Box<dyn PoolProvider>), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
-    let Some(config) = mailspace.config.pool.clone() else {
-        return Err(VivariumError::Config(
-            "no [pool] table in .vivi/mailspace.toml".into(),
-        ));
-    };
-    config.validate(&mailspace.config.name)?;
-    let pool = config.pool_name(&mailspace.config.name);
-    let provider = open_provider(&config, &mailspace.config.name);
-    Ok((mailspace, config, pool, provider))
-}
-
 fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
     let progress = Progress::stderr(command.porcelain, "");
-    let (_, config, pool, provider) = open_pool_space(command.project.as_deref())?;
-    let provider = provider.as_ref();
-    progress.say("preparing the pool's home");
-    let ready = run::prepare_home(provider, &config)?;
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let handle = pools::open_one(&space, command.pool.as_deref())?;
+    let options = CreateOptions {
+        slots: command.slots,
+        timeout: Duration::from_secs(command.timeout),
+        ..CreateOptions::default()
+    };
+    let seed = SeedAt {
+        base: command.base.as_deref(),
+        porcelain: command.porcelain,
+    };
+    create_into(&handle, &options, &seed, &progress).map(drop)
+}
+
+/// How new slots are seeded and how their results are printed.
+pub(crate) struct SeedAt<'a> {
+    pub base: Option<&'a str>,
+    pub porcelain: bool,
+}
+
+/// Make the pool's home, create and seed the missing slots up to
+/// `options.slots`, and print one line per new slot. Shared by `create` and
+/// `scale`; both need the pool's repository.
+pub(crate) fn create_into(
+    handle: &PoolHandle,
+    options: &CreateOptions,
+    seed: &SeedAt,
+    progress: &Progress,
+) -> Result<CreateReport, VivariumError> {
+    let (id, config) = (&handle.id, &handle.config);
+    let provider = handle.provider.as_ref();
+    let access = config.require_repo(&id.pool, "create slots")?;
+    progress.say(&format!("{}: preparing the pool's home", id.pool));
+    let ready = run::prepare_home(provider, config)?;
     if let Some(made) = &ready.created {
         println!(
             "{}",
-            if command.porcelain {
-                porcelain::home(made)
+            if seed.porcelain {
+                porcelain::home(&id.pool, made)
             } else {
-                made.clone()
+                format!("{}  {made}", id.pool)
             }
         );
     }
     if let Some(warning) = run::env_warning(provider, &ready.missing_env) {
         eprintln!("{warning}");
     }
-    let options = CreateOptions {
-        slots: command.slots,
-        timeout: Duration::from_secs(command.timeout),
-        ..CreateOptions::default()
-    };
-    let report = run::create_slots(provider, &config, &pool, &options, &progress, || {
-        progress.say("getting a GitHub token and the base commit");
-        let token = github::mint_token(&config)?;
-        let base = github::resolve_base(&token, &config.repo, command.base.as_deref())?;
+    let report = run::create_slots(provider, config, id, options, progress, || {
+        progress.say(&format!(
+            "{}: getting a GitHub token and the base commit",
+            id.pool
+        ));
+        let token = github::mint_token(&access)?;
+        let base = github::resolve_base(&token, access.repo, seed.base)?;
         progress.say(&format!("seeding at {}", &base[..12.min(base.len())]));
         Ok((token, base))
     })?;
-    print_created(command.porcelain, &pool, &report);
+    print_created(seed.porcelain, &id.pool, &report);
     let failed = report.created.iter().filter(|o| !o.seeded()).count();
     if failed > 0 {
         return Err(VivariumError::Message(format!(
-            "{failed} of {} new slot(s) did not seed cleanly",
-            report.created.len()
+            "{failed} of {} new slot(s) in pool {} did not seed cleanly",
+            report.created.len(),
+            id.pool
         )));
     }
-    Ok(())
+    Ok(report)
 }
 
 /// The results of `create`: one line per new slot (and per problem met while
 /// waiting, in porcelain), or the note that nothing was missing.
-fn print_created(porcelain: bool, pool: &str, report: &run::CreateReport) {
+fn print_created(porcelain: bool, pool: &str, report: &CreateReport) {
     if report.created.is_empty() {
         if porcelain {
             println!("{}", porcelain::exists(pool, report.existing.len()));
@@ -129,35 +136,55 @@ fn outcome_line(outcome: &SlotOutcome) -> String {
         }
     };
     format!(
-        "{}  {}  {}  seed {}s{note}",
-        outcome.name, outcome.id, outcome.state, outcome.seconds
+        "{}  {}  {}  {}  seed {}s{note}",
+        outcome.pool, outcome.name, outcome.id, outcome.state, outcome.seconds
     )
 }
 
 fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
-    let (space, _, pool, provider) = open_pool_space(command.project.as_deref())?;
-    let mut slots = run::pool_status(provider.as_ref(), &pool)?;
-    run::annotate_running(
-        &mut slots,
-        &engine::open_dispatches(&space)?,
-        engine::epoch_secs(),
-    );
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let handles = pools::open(&space, command.pool.as_deref(), Need::Any)?;
+    let set = PoolSet::of(&handles, command.pool.is_none());
+    let open = engine::open_dispatches(&space)?;
+    let report = run::status_of(&set, &open, engine::epoch_secs());
     if command.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&slots)
+            serde_json::to_string_pretty(&report.slots)
                 .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
         );
-        return Ok(());
-    }
-    if command.porcelain {
-        slots
+    } else if command.porcelain {
+        report
+            .slots
             .iter()
             .for_each(|s| println!("{}", porcelain::slot(s)));
-        return Ok(());
+    } else {
+        for handle in &handles {
+            if !report.pools.iter().any(|(pool, _)| *pool == handle.id.pool) {
+                continue;
+            }
+            let slots: Vec<&SlotStatus> = report
+                .slots
+                .iter()
+                .filter(|s| s.pool == handle.id.pool)
+                .collect();
+            print_slots(handle, &slots);
+        }
     }
-    print_slots(&pool, &slots);
-    Ok(())
+    match report.failures.is_empty() {
+        true => Ok(()),
+        false => {
+            let said: Vec<String> = report
+                .failures
+                .iter()
+                .map(|(pool, e)| format!("pool {pool}: {e}"))
+                .collect();
+            Err(VivariumError::Message(format!(
+                "cannot list: {}",
+                said.join("; ")
+            )))
+        }
+    }
 }
 
 /// `running 95s of 1800s` for a slot with an open dispatch.
@@ -169,8 +196,13 @@ fn running_text(slot: &SlotStatus) -> String {
     }
 }
 
-fn print_slots(pool: &str, slots: &[SlotStatus]) {
-    println!("pool {pool}  {} slot(s)", slots.len());
+fn print_slots(handle: &PoolHandle, slots: &[&SlotStatus]) {
+    println!(
+        "pool {}  {}  {} slot(s)",
+        handle.id.pool,
+        handle.config.provider,
+        slots.len()
+    );
     for slot in slots {
         let task = slot
             .task
@@ -181,7 +213,8 @@ fn print_slots(pool: &str, slots: &[SlotStatus]) {
             .as_deref()
             .map_or(String::new(), |a| format!("  arch {a}"));
         println!(
-            "  {}  {}  {}{task}{}  base {}{arch}  created {}",
+            "  {}  {}  {}  {}{task}{}  base {}{arch}  created {}",
+            slot.pool,
             slot.name,
             slot.id,
             slot.state,
@@ -200,15 +233,20 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
             "destroy removes machines and their seeded disks; pass --yes to confirm".into(),
         ));
     }
-    let (_, pool, provider) = open_pool(command.project.as_deref())?;
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let handle = pools::open_one(&space, command.pool.as_deref())?;
     let target = match &command.slot {
         Some(selector) => DestroyTarget::Slot(selector.clone()),
         None => DestroyTarget::All,
     };
-    let destroyed = run::destroy_slots(provider.as_ref(), &pool, &target)?;
+    let destroyed = run::destroy_slots(handle.provider.as_ref(), &handle.id, &target)?;
     for slot in &destroyed {
-        println!("destroyed {}  {}", slot.name, slot.id);
+        println!("destroyed {}  {}  {}", slot.pool, slot.name, slot.id);
     }
-    println!("{} slot(s) destroyed", destroyed.len());
+    println!(
+        "{} slot(s) destroyed in pool {}",
+        destroyed.len(),
+        handle.id.pool
+    );
     Ok(())
 }

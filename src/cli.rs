@@ -27,7 +27,7 @@ pub use mailspace_command::{
 };
 pub use pool_command::{
     PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand,
-    PoolReconcileCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
+    PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 

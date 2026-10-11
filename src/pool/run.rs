@@ -5,10 +5,11 @@ use std::time::{Duration, Instant};
 use super::bootscript;
 use super::config::PoolConfig;
 use super::github::Secret;
+use super::pools::PoolSet;
 use super::progress::{Beat, HEARTBEAT, Issue, Progress};
 use super::provider::{CreateSpec, MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
-use super::slot::{self, META_STATE, STATE_READY, SlotStatus};
+use super::slot::{self, META_STATE, PoolId, STATE_READY, SlotStatus};
 
 /// Environment names the seed needs once; they never stay on a ready slot.
 pub const ONCE_ENV: [&str; 1] = ["GH_TOKEN"];
@@ -49,6 +50,8 @@ impl Default for CreateOptions {
 /// How one new slot ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotOutcome {
+    /// The pool the slot was made for.
+    pub pool: String,
     pub name: String,
     pub id: String,
     /// Provider state word at the last look.
@@ -94,7 +97,7 @@ pub struct CreateReport {
 pub fn create_slots(
     provider: &dyn PoolProvider,
     config: &PoolConfig,
-    pool: &str,
+    id: &PoolId,
     options: &CreateOptions,
     progress: &Progress,
     seed_inputs: impl FnOnce() -> Result<(Secret, String), VivariumError>,
@@ -108,10 +111,10 @@ pub fn create_slots(
     }
     progress.say("checking the pool's existing slots");
     let mut machines = provider.list()?;
-    if adopt_finished_seeds(provider, pool, &machines) {
+    if adopt_finished_seeds(provider, id, &machines) {
         machines = provider.list()?;
     }
-    let existing = slot::pool_slots(pool, &machines);
+    let existing = slot::pool_slots(id, &machines);
     let missing = slot::missing_indices(&existing, target);
     let mut report = CreateReport {
         existing,
@@ -122,9 +125,9 @@ pub fn create_slots(
     }
     let (token, base) = seed_inputs()?;
     let seed = (&token, base.as_str());
-    let started = launch_all(provider, config, pool, &missing, seed, options, progress)?;
+    let started = launch_all(provider, config, id, &missing, seed, options, progress)?;
     progress.say(&format!("seeding {} slot(s)", started.len()));
-    (report.created, report.issues) = wait_for_seeds(provider, &started, options, progress);
+    (report.created, report.issues) = wait_for_seeds(provider, id, &started, options, progress);
     for outcome in &mut report.created {
         if outcome.seeded() {
             progress.say(&format!("marking {} ready", outcome.name));
@@ -175,15 +178,12 @@ fn confirm_free(
 /// slot unmarked, so it shows as `unseeded`. True when any slot was touched.
 fn adopt_finished_seeds(
     provider: &dyn PoolProvider,
-    pool: &str,
+    id: &PoolId,
     machines: &[MachineRecord],
 ) -> bool {
     let mut touched = false;
     for machine in machines {
-        let ours = machine
-            .metadata
-            .get(slot::META_POOL)
-            .is_some_and(|p| p == pool);
+        let ours = id.owns(machine);
         let marked = machine.metadata.get(META_STATE).map(String::as_str) == Some(STATE_READY);
         if ours && !marked && machine.state == "stopped" && machine.exit_code == Some(0) {
             if let Err(e) = finalize_slot(provider, &machine.id) {
@@ -203,7 +203,7 @@ struct Launched {
 fn launch_all(
     provider: &dyn PoolProvider,
     config: &PoolConfig,
-    pool: &str,
+    id: &PoolId,
     indices: &[u32],
     seed: (&Secret, &str),
     options: &CreateOptions,
@@ -214,7 +214,7 @@ fn launch_all(
         if n > 0 {
             std::thread::sleep(options.spacing);
         }
-        let spec = slot_spec(config, pool, *index, seed, provider);
+        let spec = slot_spec(config, id, *index, seed, provider);
         progress.say(&format!("creating {}", spec.name));
         let at = Instant::now();
         match provider.create(&spec) {
@@ -232,7 +232,7 @@ fn launch_all(
 
 fn slot_spec(
     config: &PoolConfig,
-    pool: &str,
+    id: &PoolId,
     index: u32,
     (token, base): (&Secret, &str),
     provider: &dyn PoolProvider,
@@ -248,9 +248,9 @@ fn slot_spec(
         .filter_map(|name| Some((name.to_string(), env.remove(*name)?)))
         .collect();
     CreateSpec {
-        name: slot::slot_name(pool, index),
+        name: id.slot_name(index),
         image: config.image.clone(),
-        metadata: slot::slot_metadata(pool, index, base),
+        metadata: slot::slot_metadata(id, index, base),
         env,
         once_env,
         passthrough_env: config
@@ -267,6 +267,7 @@ fn slot_spec(
 
 fn wait_for_seeds(
     provider: &dyn PoolProvider,
+    id: &PoolId,
     launched: &[Launched],
     options: &CreateOptions,
     progress: &Progress,
@@ -279,16 +280,16 @@ fn wait_for_seeds(
         // A failed listing is a warning, not the end of a long create: the
         // slots keep seeding, and the per-slot timeout still ends the wait.
         let listing = provider.list().map_err(|e| e.to_string());
-        seen.observe(listing.as_ref().err(), progress);
+        seen.observe(&id.pool, listing.as_ref().err(), progress);
         for (slot, done) in launched.iter().zip(outcomes.iter_mut()) {
             if done.is_none() {
                 *done = match &listing {
                     Ok(machines) => settled(
-                        slot,
+                        (id, slot),
                         machines.iter().find(|m| m.id == slot.id),
                         options.timeout,
                     ),
-                    Err(_) => unseen(slot, options.timeout),
+                    Err(_) => unseen((id, slot), options.timeout),
                 };
             }
         }
@@ -332,7 +333,7 @@ struct ListingErrors {
 }
 
 impl ListingErrors {
-    fn observe(&mut self, error: Option<&String>, progress: &Progress) {
+    fn observe(&mut self, pool: &str, error: Option<&String>, progress: &Progress) {
         let now = super::work::epoch_secs();
         match (error, self.open) {
             (Some(message), open) => {
@@ -344,6 +345,7 @@ impl ListingErrors {
                 progress.say(&format!("warning: cannot list machines yet: {message}"));
                 self.open = Some(self.issues.len());
                 self.issues.push(Issue {
+                    pool: Some(pool.to_string()),
                     kind: "list-error",
                     subject: None,
                     message: message.clone(),
@@ -364,9 +366,10 @@ impl ListingErrors {
 }
 
 /// The outcome for a slot that could not be looked at for the whole timeout.
-fn unseen(slot: &Launched, timeout: Duration) -> Option<SlotOutcome> {
+fn unseen((id, slot): (&PoolId, &Launched), timeout: Duration) -> Option<SlotOutcome> {
     let elapsed = slot.at.elapsed();
     (elapsed >= timeout).then(|| SlotOutcome {
+        pool: id.pool.clone(),
         name: slot.name.clone(),
         id: slot.id.clone(),
         state: "unknown".to_string(),
@@ -379,7 +382,7 @@ fn unseen(slot: &Launched, timeout: Duration) -> Option<SlotOutcome> {
 
 /// The outcome for one slot once it has stopped, vanished, or timed out.
 fn settled(
-    slot: &Launched,
+    (id, slot): (&PoolId, &Launched),
     record: Option<&MachineRecord>,
     timeout: Duration,
 ) -> Option<SlotOutcome> {
@@ -390,6 +393,7 @@ fn settled(
     let finished = matches!(state, "stopped" | "destroyed" | "failed") || gone;
     let timed_out = !finished && elapsed >= timeout;
     (finished || timed_out).then(|| SlotOutcome {
+        pool: id.pool.clone(),
         name: slot.name.clone(),
         id: slot.id.clone(),
         state: state.to_string(),
@@ -468,9 +472,41 @@ pub fn env_warning(provider: &dyn PoolProvider, missing: &[String]) -> Option<St
 /// Returns an error if the provider cannot list machines.
 pub fn pool_status(
     provider: &dyn PoolProvider,
-    pool: &str,
+    id: &PoolId,
 ) -> Result<Vec<SlotStatus>, VivariumError> {
-    Ok(slot::pool_slots(pool, &provider.list()?))
+    Ok(slot::pool_slots(id, &provider.list()?))
+}
+
+/// The slots of every pool in a set, each with its open dispatch's running
+/// time, and the pools that could not be listed.
+#[derive(Debug, Clone, Default)]
+pub struct StatusReport {
+    /// Slots of the pools that listed, in pool order.
+    pub slots: Vec<SlotStatus>,
+    /// `(pool, slots)` for each pool that listed, so an empty pool still shows.
+    pub pools: Vec<(String, usize)>,
+    /// `(pool, error)` for each pool whose host could not be listed.
+    pub failures: Vec<(String, String)>,
+}
+
+/// The status of every pool in `set`. One pool's host failing does not hide
+/// the others.
+#[must_use]
+pub fn status_of(set: &PoolSet, open: &[OpenDispatch], now: u64) -> StatusReport {
+    let mut report = StatusReport::default();
+    for member in &set.members {
+        match pool_status(member.provider, member.id) {
+            Ok(mut slots) => {
+                annotate_running(&mut slots, open, now);
+                report.pools.push((member.id.pool.clone(), slots.len()));
+                report.slots.extend(slots);
+            }
+            Err(e) => report
+                .failures
+                .push((member.id.pool.clone(), e.to_string())),
+        }
+    }
+    report
 }
 
 /// Fill in how long each slot's open dispatch has run and its budget.
@@ -491,21 +527,22 @@ pub enum DestroyTarget {
     All,
 }
 
-/// Destroy pool slots; machines outside the pool are never touched.
+/// Destroy pool slots; machines outside the pool (another pool, or another
+/// mailspace's pool of the same name) are never touched.
 ///
 /// # Errors
 /// Returns an error if a named slot is not in the pool, or a destroy fails.
 pub fn destroy_slots(
     provider: &dyn PoolProvider,
-    pool: &str,
+    id: &PoolId,
     target: &DestroyTarget,
 ) -> Result<Vec<SlotStatus>, VivariumError> {
-    let slots = slot::pool_slots(pool, &provider.list()?);
+    let slots = slot::pool_slots(id, &provider.list()?);
     let doomed: Vec<SlotStatus> = match target {
         DestroyTarget::All => slots,
         DestroyTarget::Slot(selector) => {
             let Some(found) = slot::find_slot(&slots, selector) else {
-                return Err(unknown_slot(pool, selector, &slots));
+                return Err(unknown_slot(&id.pool, selector, &slots));
             };
             vec![found.clone()]
         }

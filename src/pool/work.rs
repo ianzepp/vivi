@@ -8,15 +8,16 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::collect::{self, Outcome, Pacing, RoundLine};
+use super::collect::{self, Missing, Outcome, Pacing, RoundLine};
 use super::dispatch;
 use super::github::Secret;
 use super::job::JobPlan;
+use super::pools::PoolSet;
 use super::progress::Beat;
 use super::provider::PoolProvider;
 use super::record::{self, DispatchRecord, OpenDispatch};
 use super::run;
-use super::slot::SlotStatus;
+use super::slot::{PoolId, SlotStatus};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 
@@ -36,7 +37,19 @@ pub fn open_dispatches(space: &Mailspace) -> Result<Vec<OpenDispatch>, VivariumE
     Ok(record::fold_open(&space.pool_events()?))
 }
 
-/// Claim a free slot, start `plan` on it, and record the dispatch on its
+/// The open dispatches that are `set`'s business: those of its pools, and
+/// (when no `--pool` was given) those of pools no longer configured.
+///
+/// # Errors
+/// Returns an error if the event log cannot be read.
+pub fn scoped_open(space: &Mailspace, set: &PoolSet) -> Result<Vec<OpenDispatch>, VivariumError> {
+    Ok(open_dispatches(space)?
+        .into_iter()
+        .filter(|d| set.covers(&d.record.pool))
+        .collect())
+}
+
+/// Claim a free slot of the pool `id`, start `plan` on it, and record the dispatch on its
 /// task. When the record cannot be written the slot is freed again.
 ///
 /// # Errors
@@ -45,13 +58,13 @@ pub fn open_dispatches(space: &Mailspace) -> Result<Vec<OpenDispatch>, VivariumE
 pub fn submit(
     space: &Mailspace,
     provider: &dyn PoolProvider,
-    pool: &str,
+    id: &PoolId,
     plan: &JobPlan,
     token: &Secret,
     start: &str,
     pacing: &Pacing,
 ) -> Result<DispatchRecord, VivariumError> {
-    let made = dispatch::dispatch(provider, pool, plan, token, start, epoch_secs(), pacing)?;
+    let made = dispatch::dispatch(provider, id, plan, token, start, epoch_secs(), pacing)?;
     let note = record::dispatch_note(&made);
     let text = record::dispatch_text(&made);
     if let Err(e) = space.record_pool_note(&plan.task, "pool_dispatched", &note, &text) {
@@ -91,8 +104,8 @@ pub fn recorder(
 #[must_use]
 pub fn line_text(line: &RoundLine) -> String {
     format!(
-        "{}  {}  {}  {}",
-        line.task, line.state, line.slot, line.detail
+        "{}  {}  {}  {}  {}",
+        line.task, line.state, line.pool, line.slot, line.detail
     )
 }
 
@@ -157,19 +170,19 @@ pub enum Waited {
 /// could not be written.
 pub fn wait(
     space: &Mailspace,
-    provider: &dyn PoolProvider,
+    set: &PoolSet,
     wanted: &[String],
     options: &WaitOptions,
     watch: &mut collect::ErrorWatch,
     notice: &mut dyn FnMut(&str),
 ) -> Result<Waited, VivariumError> {
-    check_wanted(space, wanted)?;
+    check_wanted(space, set, wanted)?;
     let started = Instant::now();
     let mut beat = Beat::new(options.heartbeat);
     let mut last_error = None;
     let mut announced = false;
     loop {
-        let open = wanted_open(space, wanted)?;
+        let open = wanted_open(space, set, wanted)?;
         if open.is_empty() {
             return Ok(Waited::NothingOpen);
         }
@@ -179,7 +192,8 @@ pub fn wait(
         }
         let mut record = recorder(space);
         let pacing = &options.pacing;
-        let lines = collect::run_round(provider, &open, epoch_secs(), pacing, &mut record)?;
+        let missing = Missing::Report;
+        let lines = collect::run_round(set, &open, epoch_secs(), pacing, missing, &mut record)?;
         watch
             .observe(&lines, epoch_secs())
             .iter()
@@ -213,8 +227,12 @@ fn timeout_error(seconds: u64, last_error: Option<&RoundLine>) -> VivariumError 
     VivariumError::Message(format!("nothing finished within {seconds}s{tail}"))
 }
 
-fn wanted_open(space: &Mailspace, wanted: &[String]) -> Result<Vec<OpenDispatch>, VivariumError> {
-    Ok(open_dispatches(space)?
+fn wanted_open(
+    space: &Mailspace,
+    set: &PoolSet,
+    wanted: &[String],
+) -> Result<Vec<OpenDispatch>, VivariumError> {
+    Ok(scoped_open(space, set)?
         .into_iter()
         .filter(|d| wanted.is_empty() || wanted.contains(&d.task))
         .collect())
@@ -222,8 +240,8 @@ fn wanted_open(space: &Mailspace, wanted: &[String]) -> Result<Vec<OpenDispatch>
 
 /// Named tasks must have an open dispatch now; with none named, something
 /// must be open.
-fn check_wanted(space: &Mailspace, wanted: &[String]) -> Result<(), VivariumError> {
-    let open = open_dispatches(space)?;
+fn check_wanted(space: &Mailspace, set: &PoolSet, wanted: &[String]) -> Result<(), VivariumError> {
+    let open = scoped_open(space, set)?;
     if wanted.is_empty() && open.is_empty() {
         return Err(VivariumError::Message(
             "no open dispatches to wait for".into(),
@@ -285,21 +303,21 @@ impl ReconcileReport {
 }
 
 /// Collect finished dispatches, free stale claims, and stop running slots
-/// that no task holds.
+/// that no task holds, in every pool of `set`. A dispatch whose pool is no
+/// longer configured is closed as lost. One pool that cannot be listed is a
+/// problem to report; the others are still reconciled.
 ///
 /// # Errors
-/// Returns an error if the provider cannot list the pool or a record cannot
-/// be written.
+/// Returns an error if a record cannot be written.
 pub fn reconcile(
     space: &Mailspace,
-    provider: &dyn PoolProvider,
-    pool: &str,
+    set: &PoolSet,
     pacing: &Pacing,
 ) -> Result<ReconcileReport, VivariumError> {
-    let open = open_dispatches(space)?;
+    let open = scoped_open(space, set)?;
     let now = epoch_secs();
-    let lines = collect::run_round(provider, &open, now, pacing, &mut recorder(space))?;
-    let slots = run::pool_status(provider, pool)?;
+    let missing = Missing::Close;
+    let lines = collect::run_round(set, &open, now, pacing, missing, &mut recorder(space))?;
     let mut report = ReconcileReport {
         out: lines.iter().map(line_text).collect(),
         items: lines.clone(),
@@ -310,8 +328,26 @@ pub fn reconcile(
             .map(|l| l.detail.clone()),
         ..ReconcileReport::default()
     };
-    free_stale_claims(provider, &slots, &open, now, pacing, &mut report);
-    stop_orphans(provider, &slots, &open, pacing, &mut report);
+    for member in &set.members {
+        let here: Vec<OpenDispatch> = open
+            .iter()
+            .filter(|d| d.record.pool == member.id.pool)
+            .cloned()
+            .collect();
+        match run::pool_status(member.provider, member.id) {
+            Ok(slots) => {
+                free_stale_claims(member.provider, &slots, &here, now, pacing, &mut report);
+                stop_orphans(member.provider, &slots, &here, pacing, &mut report);
+            }
+            Err(e) => {
+                report.failures += 1;
+                report.first_error.get_or_insert_with(|| e.to_string());
+                report
+                    .warnings
+                    .push(format!("warning: cannot list pool {}: {e}", member.id.pool));
+            }
+        }
+    }
     if lines.is_empty() {
         report.out.push("no open dispatches".into());
         report.idle = true;
@@ -332,6 +368,7 @@ fn free_stale_claims(
         match collect::release(provider, &slot.id, task, pacing) {
             Ok(()) => report.add(RoundLine {
                 task: task.to_string(),
+                pool: slot.pool.clone(),
                 slot: slot.name.clone(),
                 state: "stale-claim",
                 detail: "freed (no open dispatch)".to_string(),
@@ -361,6 +398,7 @@ fn stop_orphans(
         {
             Ok(()) => report.add(RoundLine {
                 task: "-".to_string(),
+                pool: slot.pool.clone(),
                 slot: slot.name.clone(),
                 state: "orphan-stopped",
                 detail: "stopped (running with no task)".to_string(),

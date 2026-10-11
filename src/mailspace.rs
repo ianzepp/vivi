@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -104,9 +105,15 @@ pub struct MailspaceConfig {
     /// Chat client settings. Absent means chat defaults apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<ChatConfig>,
-    /// Remote lane pool settings. Absent means no pool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pool: Option<PoolConfig>,
+    /// Remote lane pools, by name: one `[pools.<name>]` table each. Absent
+    /// means no pool.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pools: BTreeMap<String, PoolConfig>,
+    /// The retired single `[pool]` table. Kept only so a `vivi pool` command
+    /// can reject it with a message naming `[pools.<name>]`, and so a config
+    /// rewrite does not erase it.
+    #[serde(default, rename = "pool", skip_serializing_if = "Option::is_none")]
+    pub retired_pool: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,7 +208,8 @@ impl Mailspace {
             probes: Vec::new(),
             judgment: None,
             chat: None,
-            pool: None,
+            pools: BTreeMap::new(),
+            retired_pool: None,
         };
         write_config(&path, &config)?;
         Storage::open_mailspace(&dir)?;

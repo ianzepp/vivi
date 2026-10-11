@@ -10,6 +10,7 @@ fn machine(
     let mut metadata = BTreeMap::new();
     if let Some(pool) = pool {
         metadata.insert(META_POOL.to_string(), pool.to_string());
+        metadata.insert(META_MAILSPACE.to_string(), "ms".to_string());
     }
     if let Some(index) = index {
         metadata.insert(META_SLOT.to_string(), index.to_string());
@@ -26,10 +27,17 @@ fn machine(
     }
 }
 
+fn pid(pool: &str) -> PoolId {
+    PoolId::new("ms", pool)
+}
+
 #[test]
 fn names_and_metadata() {
-    assert_eq!(slot_name("faber", 3), "faber-slot-3");
-    let meta = slot_metadata("faber", 3, "abc");
+    let id = PoolId::new("My Project", "faber");
+    assert_eq!(id.mailspace, "my-project");
+    assert_eq!(id.slot_name(3), "my-project-faber-slot-3");
+    let meta = slot_metadata(&id, 3, "abc");
+    assert_eq!(meta[META_MAILSPACE], "my-project");
     assert_eq!(meta[META_POOL], "faber");
     assert_eq!(meta[META_SLOT], "3");
     assert_eq!(meta[META_BASE], "abc");
@@ -42,7 +50,7 @@ fn claim_marks_show_in_status() {
     m.metadata.insert(META_STATE.into(), STATE_READY.into());
     m.metadata.insert(META_TASK.into(), "abcd1234".into());
     m.metadata.insert(META_CLAIMED.into(), "1700000000".into());
-    let slots = pool_slots("p", &[m]);
+    let slots = pool_slots(&pid("p"), &[m]);
     assert_eq!(slots[0].state, "finished-uncollected");
     assert_eq!(slots[0].task.as_deref(), Some("abcd1234"));
     assert_eq!(slots[0].claimed_at, Some(1_700_000_000));
@@ -93,7 +101,7 @@ fn only_pool_members_are_slots_in_index_order() {
         machine("m1", "faber-slot-1", "started", Some("faber"), Some(1)),
         machine("mx", "other-slot-1", "stopped", Some("other"), Some(1)),
     ];
-    let slots = pool_slots("faber", &machines);
+    let slots = pool_slots(&pid("faber"), &machines);
     let names: Vec<&str> = slots.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["faber-slot-1", "faber-slot-3"]);
     assert_eq!(slots[0].state, "seeding");
@@ -107,7 +115,7 @@ fn missing_indices_fill_gaps_first() {
         machine("m1", "p-slot-1", "stopped", Some("p"), Some(1)),
         machine("m3", "p-slot-3", "stopped", Some("p"), Some(3)),
     ];
-    let slots = pool_slots("p", &machines);
+    let slots = pool_slots(&pid("p"), &machines);
     assert_eq!(missing_indices(&slots, 4), [2, 4]);
     assert_eq!(missing_indices(&slots, 3), [2]);
     assert!(missing_indices(&slots, 2).is_empty());
@@ -118,8 +126,36 @@ fn missing_indices_fill_gaps_first() {
 #[test]
 fn find_slot_by_name_or_id() {
     let machines = vec![machine("m1", "p-slot-1", "stopped", Some("p"), Some(1))];
-    let slots = pool_slots("p", &machines);
+    let slots = pool_slots(&pid("p"), &machines);
     assert!(find_slot(&slots, "p-slot-1").is_some());
     assert!(find_slot(&slots, "m1").is_some());
     assert!(find_slot(&slots, "slot-quad-1").is_none());
+}
+
+#[test]
+fn a_pool_of_the_same_name_in_another_mailspace_is_not_a_member() {
+    let mine = machine("m1", "ms-p-slot-1", "stopped", Some("p"), Some(1));
+    let mut theirs = machine("m2", "other-p-slot-1", "stopped", Some("p"), Some(1));
+    theirs
+        .metadata
+        .insert(META_MAILSPACE.into(), "other".into());
+    let mut unmarked = machine("m3", "x-p-slot-1", "stopped", Some("p"), Some(1));
+    unmarked.metadata.remove(META_MAILSPACE);
+    let machines = [mine, theirs, unmarked];
+    let ours = pool_slots(&pid("p"), &machines);
+    assert_eq!(ours.len(), 1);
+    assert_eq!(ours[0].id, "m1");
+    assert_eq!(ours[0].pool, "p");
+    let other = pool_slots(&PoolId::new("other", "p"), &machines);
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[0].id, "m2");
+}
+
+#[test]
+fn the_self_test_pool_is_the_doctor_pool_of_the_same_mailspace() {
+    let id = pid("lanes").doctor();
+    assert_eq!(
+        (id.mailspace.as_str(), id.pool.as_str()),
+        ("ms", "lanes-doctor")
+    );
 }

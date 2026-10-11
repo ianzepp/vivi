@@ -2,9 +2,12 @@
 # provider sends this text, after assignments of ROOT, VERB and A1..A4, as the
 # script of one `bash -c` on the host, once per call.
 #
-# A slot is the directory $R/<pool>/slot-<n>/ ($R is ROOT with a leading `~/`
-# made the login user's home). Everything about a slot sits in that directory:
-#   marks/<name>   one small file per mark (pool, slot, base, state, arch)
+# A slot is the directory $R/<mailspace>/<pool>/slot-<n>/ ($R is ROOT with a
+# leading `~/` made the login user's home). Everything about a slot sits in
+# that directory:
+#   marks/<name>   one small file per mark (mailspace, pool, slot, base, state,
+#                  arch)
+#   created        the time the slot was made, UTC, written once at creation
 #   claim          exists while a task holds the slot; written whole, then
 #                  hard-linked into place, so it appears complete or not at all
 #   boot.pid       process id of the slot's boot wrapper (start writes it)
@@ -39,8 +42,8 @@ case "$ROOT" in
   *) R=$ROOT ;;
 esac
 
-# A slot id is <pool>/slot-<n> and nothing else.
-slot_ok() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*/slot-[0-9]+$ ]]; }
+# A slot id is <mailspace>/<pool>/slot-<n> and nothing else.
+slot_ok() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*/slot-[0-9]+$ ]]; }
 need_slot() {
   slot_ok "$1" || fail "not a slot id: $1"
   D=$(cd "$R/$1" 2>/dev/null && pwd -P) || D="$R/$1"
@@ -69,9 +72,6 @@ slot_pids() {
   } | sort -un | tr '\n' ' '
 }
 
-stat_time() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
-iso_time() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; }
-
 emit() {
   local id=$1 d f state=stopped
   d=$(cd "$R/$id" && pwd -P) || return 0
@@ -79,7 +79,7 @@ emit() {
   alive "$d" && state=started
   echo "state=$state"
   [ "$state" = stopped ] && [ -f "$d/exit_code" ] && echo "exit=$(head -n1 "$d/exit_code")"
-  echo "created=$(iso_time "$(stat_time "$d/marks/vivi_pool")")"
+  echo "created=$(head -n1 "$d/created" 2>/dev/null)"
   for f in "$d"/marks/*; do
     [ -f "$f" ] && printf 'mark.%s=%s\n' "${f##*/}" "$(head -n1 "$f")"
   done
@@ -92,7 +92,7 @@ emit() {
 list_slots() {
   local m id
   [ -d "$R" ] || return 0
-  for m in "$R"/*/slot-*/marks/vivi_pool; do
+  for m in "$R"/*/*/slot-*/marks/vivi_pool; do
     [ -f "$m" ] || continue
     id=${m#"$R"/}; id=${id%/marks/vivi_pool}
     slot_ok "$id" && emit "$id"
@@ -109,6 +109,8 @@ create_slot() {
   mkdir -p "$R/$pool" || fail "cannot create $ROOT/$pool"
   part="$R/$pool/.partial-${A1##*/}.$$"
   mkdir "$part" && tar -xf - -C "$part" || { rm -rf "$part"; fail "could not unpack the new slot"; }
+  # The tar stream carries no useful times, so the slot's age is recorded here.
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$part/created"
   [ ! -f "$part/once.env" ] || chmod 600 "$part/once.env"
   case $(uname -m) in
     x86_64) echo amd64 ;;
@@ -203,28 +205,32 @@ read_files() {
 # Deleting is the one dangerous act here, so it asks four things: the id is a
 # slot id; the root is a real directory of its own; the slot directory is a
 # plain directory (not a link) that really lies inside the root; and it holds
-# Vivi's own mark naming this pool.
+# Vivi's own marks naming this pool AND this mailspace.
 destroy_slot() {
-  local pool real root
+  local pool space real root
   slot_ok "$A1" || refuse "not a slot id: $A1"
   case "$R" in ''|/) refuse "the root is empty or /" ;; /*) ;; *) refuse "the root is not absolute: $R" ;; esac
   root=$(cd "$R" 2>/dev/null && pwd -P) || { echo gone; return 0; }
   case "$root" in /|"$(cd "$HOME" 2>/dev/null && pwd -P)") refuse "the root is / or the home directory: $root" ;; esac
   [ -e "$R/$A1" ] || { echo gone; tidy "$root" "${A1%/*}"; return 0; }
   [ ! -L "$R/$A1" ] && [ -d "$R/$A1" ] || refuse "$A1 is not a plain directory"
-  pool=${A1%/*}
+  space=${A1%%/*}
+  pool=${A1#*/}; pool=${pool%/*}
   [ "$(head -n1 "$R/$A1/marks/vivi_pool" 2>/dev/null)" = "$pool" ] || refuse "$A1 carries no Vivi mark for pool $pool"
+  [ "$(head -n1 "$R/$A1/marks/vivi_pool_mailspace" 2>/dev/null)" = "$space" ] || refuse "$A1 carries no Vivi mark for mailspace $space"
   real=$(cd "$R/$A1" && pwd -P)
-  case "$real" in "$root"/*/slot-*) ;; *) refuse "$real is outside $root" ;; esac
+  case "$real" in "$root"/*/*/slot-*) ;; *) refuse "$real is outside $root" ;; esac
   stop_slot
   rm -rf -- "$real" || fail "could not delete $A1"
-  tidy "$root" "$pool"
+  tidy "$root" "${A1%/*}"
   echo destroyed
 }
 
-# Remove the pool directory and, if Vivi made it, the root, once they are empty.
+# Remove the pool directory, the mailspace directory and, if Vivi made it, the
+# root, as each becomes empty. $2 is <mailspace>/<pool>.
 tidy() {
   rmdir "$1/$2" 2>/dev/null
+  rmdir "$1/${2%/*}" 2>/dev/null
   if [ -f "$1/.vivi-root" ] && [ "$(ls -A "$1")" = ".vivi-root" ]; then
     rm -f "$1/.vivi-root" && rmdir "$1"
   fi

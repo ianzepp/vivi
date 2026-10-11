@@ -1,5 +1,5 @@
 use super::*;
-use crate::pool::fake_provider::{Fake, claimed, slot};
+use crate::pool::fake_provider::{Fake, claimed, pid, slot};
 use crate::pool::slot::{META_CLAIMED, META_STATE, META_TASK};
 
 fn pool_of(fake: &Fake, states: &[&str]) {
@@ -19,7 +19,7 @@ fn pool_of(fake: &Fake, states: &[&str]) {
 fn claim_takes_the_first_free_slot_and_marks_it() {
     let fake = Fake::default();
     pool_of(&fake, &["started", "stopped", "stopped"]);
-    let claim = claim_slot(&fake, "p", "abcd1234", 1000).unwrap();
+    let claim = claim_slot(&fake, &pid("p"), "abcd1234", 1000).unwrap();
     assert_eq!(claim.slot.name, "p-slot-2");
     assert_eq!(fake.meta("m2", META_TASK).as_deref(), Some("abcd1234"));
     assert_eq!(fake.meta("m2", META_CLAIMED).as_deref(), Some("1000"));
@@ -32,7 +32,7 @@ fn a_slot_with_an_uncollected_result_is_never_claimed() {
     let fake = Fake::default();
     fake.add(claimed("m1", "p-slot-1", "stopped", "p", "oldtask1"));
     pool_of_extra(&fake);
-    let err = claim_slot(&fake, "p", "newtask1", 1)
+    let err = claim_slot(&fake, &pid("p"), "newtask1", 1)
         .unwrap_err()
         .to_string();
     assert!(err.contains("no free slot"), "{err}");
@@ -50,7 +50,7 @@ fn pool_of_extra(fake: &Fake) {
 
 #[test]
 fn an_empty_pool_says_so() {
-    let err = claim_slot(&Fake::default(), "p", "t", 1)
+    let err = claim_slot(&Fake::default(), &pid("p"), "t", 1)
         .unwrap_err()
         .to_string();
     assert!(err.contains("no slots"), "{err}");
@@ -63,7 +63,7 @@ fn a_held_lease_skips_to_the_next_slot() {
     fake.leases
         .borrow_mut()
         .insert("m1".into(), "someone".into());
-    let claim = claim_slot(&fake, "p", "t1", 1).unwrap();
+    let claim = claim_slot(&fake, &pid("p"), "t1", 1).unwrap();
     assert_eq!(claim.slot.name, "p-slot-2");
     assert!(fake.meta("m1", META_TASK).is_none());
 }
@@ -72,9 +72,9 @@ fn a_held_lease_skips_to_the_next_slot() {
 fn successive_claims_get_different_slots() {
     let fake = Fake::default();
     pool_of(&fake, &["stopped", "stopped"]);
-    let a = claim_slot(&fake, "p", "taskaaaa", 1).unwrap();
+    let a = claim_slot(&fake, &pid("p"), "taskaaaa", 1).unwrap();
     fake.release(&a.slot.id, &a.hold).unwrap();
-    let b = claim_slot(&fake, "p", "taskbbbb", 2).unwrap();
+    let b = claim_slot(&fake, &pid("p"), "taskbbbb", 2).unwrap();
     assert_eq!(a.slot.name, "p-slot-1");
     assert_eq!(b.slot.name, "p-slot-2");
 }
@@ -91,7 +91,7 @@ fn a_slot_claimed_between_list_and_lease_is_skipped_on_the_reread() {
             f.set_metadata("m1", META_TASK, "rival123").unwrap();
         }
     }));
-    let claim = claim_slot(&fake, "p", "mine1234", 1).unwrap();
+    let claim = claim_slot(&fake, &pid("p"), "mine1234", 1).unwrap();
     assert_eq!(claim.slot.name, "p-slot-2");
     assert_eq!(fake.meta("m1", META_TASK).as_deref(), Some("rival123"));
     assert!(
@@ -104,7 +104,7 @@ fn a_slot_claimed_between_list_and_lease_is_skipped_on_the_reread() {
 fn unclaim_drops_marks_and_hold() {
     let fake = Fake::default();
     pool_of(&fake, &["stopped"]);
-    let claim = claim_slot(&fake, "p", "t", 1).unwrap();
+    let claim = claim_slot(&fake, &pid("p"), "t", 1).unwrap();
     unclaim(&fake, &claim);
     assert!(fake.meta("m1", META_TASK).is_none());
     assert!(fake.meta("m1", META_CLAIMED).is_none());

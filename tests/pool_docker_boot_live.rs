@@ -13,7 +13,7 @@ use vivi::pool::docker::DockerProvider;
 use vivi::pool::github::Secret;
 use vivi::pool::provider::{CreateSpec, PoolProvider};
 use vivi::pool::selftest_source::test_config;
-use vivi::pool::slot;
+use vivi::pool::slot::{self, PoolId};
 
 const POOL: &str = "vivi-livetest-boot";
 const TOKEN: &str = "ghs_live_test_token_value";
@@ -40,7 +40,7 @@ fn a_booted_slot_consumes_its_secret_file_and_leaves_the_mount_to_the_provider()
     // SAFETY: this test binary holds one test, so nothing reads the
     // environment while it is set.
     unsafe { std::env::set_var("VIVI_LIVE_PROBE", "probe-value") };
-    let config = test_config(&real(), POOL);
+    let config = test_config(&real());
     let provider = DockerProvider::new(&config);
     let mut env = slot_env(
         &config,
@@ -53,9 +53,9 @@ fn a_booted_slot_consumes_its_secret_file_and_leaves_the_mount_to_the_provider()
     );
     let once = env.remove("GH_TOKEN").unwrap();
     let spec = CreateSpec {
-        name: slot::slot_name(POOL, 1),
+        name: PoolId::new("livetest", POOL).slot_name(1),
         image: config.image.clone(),
-        metadata: slot::slot_metadata(POOL, 1, "main"),
+        metadata: slot::slot_metadata(&PoolId::new("livetest", POOL), 1, "main"),
         env,
         once_env: [("GH_TOKEN".to_string(), once)].into(),
         passthrough_env: vec!["VIVI_LIVE_PROBE".into(), "VIVI_LIVE_UNSET".into()],

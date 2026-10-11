@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::pool::fake_provider::{Fake, claimed, slot};
+use crate::pool::config::RepoAccess;
+use crate::pool::fake_provider::{Fake, claimed, pid, slot};
 use crate::pool::record::DispatchRecord;
 use crate::pool::slot::{META_CLAIMED, META_STATE};
 
@@ -27,6 +28,7 @@ private_key = "k.pem"
 
 fn view_ok() -> GithubView {
     GithubView {
+        absent: false,
         openssl: Some(Ok("OpenSSL 3".into())),
         key: Some(Ok("k.pem".into())),
         token: Some(Ok(())),
@@ -40,6 +42,7 @@ fn open_dispatch(task: &str, machine: &str, at: u64, budget: u64) -> OpenDispatc
     OpenDispatch {
         task: task.into(),
         record: DispatchRecord {
+            pool: "p".into(),
             slot: "p-slot-1".into(),
             machine: machine.into(),
             job: "j1".into(),
@@ -64,11 +67,11 @@ fn fake_with(machines: Vec<crate::pool::provider::MachineRecord>) -> Fake {
 }
 
 fn report(fake: &Fake, cfg: &PoolConfig, open: &[OpenDispatch], view: GithubView) -> Report {
-    let github = move |_: &PoolConfig, _: &[String]| view.clone();
+    let github = move |_: &RepoAccess, _: &[String]| view.clone();
     run(&Inputs {
         provider: fake,
         config: cfg,
-        mailspace_name: "p",
+        id: &pid("p"),
         open,
         now: NOW,
         github: &github,
@@ -115,7 +118,7 @@ fn an_empty_pool_warns_with_the_create_command_and_still_passes() {
     let r = report(&fake, &config(2), &[], view_ok());
     let count = find(&r, "slot count");
     assert_eq!(count.status, Status::Warn);
-    assert_eq!(count.fix.as_deref(), Some("vivi pool create"));
+    assert_eq!(count.fix.as_deref(), Some("vivi pool create --pool p"));
     assert!(r.passed());
 }
 
@@ -156,6 +159,7 @@ fn a_listing_failure_is_a_fail_not_a_skip() {
     let r = {
         // The Fake cannot fail a listing, so the pool checks take the `Err`.
         let facts = doctor_pool::PoolFacts {
+            pool: "p",
             config: Ok(()),
             max: 1,
             slots: Some(Err("boom".into())),
@@ -232,7 +236,7 @@ fn a_running_slot_with_no_dispatch_is_a_leak_and_nothing_is_repaired() {
     let r = report(&fake, &config(1), &[], view_ok());
     let leak = find(&r, "leaked runners");
     assert_eq!(leak.status, Status::Fail);
-    assert_eq!(leak.fix.as_deref(), Some("vivi pool reconcile"));
+    assert_eq!(leak.fix.as_deref(), Some("vivi pool reconcile --pool p"));
     assert!(leak.detail.contains("p-slot-1"));
     assert!(!r.passed());
     assert_read_only(&fake);
@@ -274,7 +278,7 @@ fn an_open_dispatch_whose_machine_is_gone_is_an_orphan() {
     assert_eq!(orphan.status, Status::Fail);
     assert!(orphan.detail.contains("t9") && orphan.detail.contains("m-gone"));
     let fix = orphan.fix.as_deref().unwrap();
-    assert!(fix.starts_with("vivi pool reconcile"), "{fix}");
+    assert!(fix.starts_with("vivi pool reconcile --pool p"), "{fix}");
     assert!(fix.contains("records each as lost and closes it"), "{fix}");
 }
 
@@ -318,7 +322,7 @@ fn a_claim_with_no_dispatch_is_stale_and_its_age_is_shown() {
     let stale = find(&r, "stale claims");
     assert_eq!(stale.status, Status::Warn);
     assert!(stale.detail.contains("t1") && stale.detail.contains("60m ago"));
-    assert_eq!(stale.fix.as_deref(), Some("vivi pool reconcile"));
+    assert_eq!(stale.fix.as_deref(), Some("vivi pool reconcile --pool p"));
     assert!(r.passed());
 }
 
@@ -355,18 +359,18 @@ fn slot_states_map_to_outcomes_with_fixes() {
         bad.fix
             .as_deref()
             .unwrap()
-            .contains("vivi pool destroy --slot p-slot-1 --yes")
+            .contains("vivi pool destroy --pool p --slot p-slot-1 --yes")
     );
     assert_eq!(find(&r, "slot p-slot-2").status, Status::Warn);
     let waiting = find(&r, "slot p-slot-3");
     assert_eq!(waiting.status, Status::Warn);
-    assert_eq!(waiting.fix.as_deref(), Some("vivi pool reconcile"));
+    assert_eq!(waiting.fix.as_deref(), Some("vivi pool reconcile --pool p"));
 }
 
 #[test]
 fn an_invalid_config_fails_its_check_and_the_rest_still_runs() {
     let mut cfg = config(1);
-    cfg.repo = "widgets".into();
+    cfg.repo = Some("widgets".into());
     let r = report(&fake_with(vec![]), &cfg, &[], view_ok());
     let check = find(&r, "config");
     assert_eq!(check.status, Status::Fail);
@@ -406,7 +410,7 @@ fn json_has_the_status_counts_and_one_entry_per_check() {
         .unwrap();
     assert_eq!(leak["group"], "Pool (Vivi)");
     assert_eq!(leak["status"], "fail");
-    assert_eq!(leak["fix"], "vivi pool reconcile");
+    assert_eq!(leak["fix"], "vivi pool reconcile --pool p");
     let login = checks.iter().find(|c| c["name"] == "login").unwrap();
     assert_eq!(login["status"], "ok");
     assert!(login.get("fix").is_none());
@@ -464,4 +468,73 @@ fn behind_text_covers_every_case() {
     );
     assert!(doctor_repo::behind_text(&view, "d").contains("HTTP 404"));
     assert!(doctor_repo::behind_text(&view, "e").contains("unknown"));
+}
+
+fn provider_only() -> PoolConfig {
+    toml::from_str("provider = \"docker\"\nslots = 2\nimage = \"debian:12\"\n").unwrap()
+}
+
+#[test]
+fn a_pool_with_no_repository_skips_the_repository_group_in_one_line() {
+    let calls = std::cell::Cell::new(0);
+    let fake = fake_with(vec![]);
+    let github = |_: &RepoAccess, _: &[String]| {
+        calls.set(calls.get() + 1);
+        view_ok()
+    };
+    let r = run(&Inputs {
+        provider: &fake,
+        config: &provider_only(),
+        id: &pid("p"),
+        open: &[],
+        now: NOW,
+        github: &github,
+    });
+    assert_eq!(calls.get(), 0, "GitHub was not asked");
+    let repo: Vec<&Check> = r
+        .checks
+        .iter()
+        .filter(|c| c.group == doctor_repo::GROUP)
+        .collect();
+    assert_eq!(repo.len(), 1, "{repo:?}");
+    assert_eq!(repo[0].status, Status::Skipped);
+    assert_eq!(repo[0].detail, "no repository configured for this pool");
+    assert_eq!(find(&r, "config").status, Status::Ok);
+    assert!(r.passed(), "{:#?}", r.checks);
+}
+
+#[test]
+fn slot_lines_of_a_pool_with_no_repository_do_not_guess_how_far_behind_they_are() {
+    let fake = fake_with(vec![slot("m1", "ms-p-slot-1", "stopped", "p", 1)]);
+    let github = |_: &RepoAccess, _: &[String]| view_ok();
+    let r = run(&Inputs {
+        provider: &fake,
+        config: &provider_only(),
+        id: &pid("p"),
+        open: &[],
+        now: NOW,
+        github: &github,
+    });
+    let detail = &find(&r, "slot ms-p-slot-1").detail;
+    assert!(!detail.contains("behind"), "{detail}");
+    assert!(detail.contains("base aaaaaaaaaaaa"), "{detail}");
+}
+
+#[test]
+fn a_pool_with_a_repository_still_runs_the_repository_checks() {
+    let r = report(&fake_with(vec![]), &config(1), &[], view_ok());
+    assert_eq!(find(&r, "token").status, Status::Ok);
+    assert!(r.checks.iter().all(|c| c.name != "repository"));
+}
+
+#[test]
+fn every_check_is_stamped_with_its_pool_and_reports_split_by_pool() {
+    let r = report(&fake_with(vec![]), &config(1), &[], view_ok());
+    assert!(r.checks.iter().all(|c| c.pool == "p"));
+    assert_eq!(r.of_pool("p").checks.len(), r.checks.len());
+    assert!(r.of_pool("q").checks.is_empty());
+    let text = r.render();
+    assert!(text.contains("(pool p)"), "{text}");
+    let json: serde_json::Value = serde_json::from_str(&r.to_json().unwrap()).unwrap();
+    assert_eq!(json["checks"][0]["pool"], "p");
 }

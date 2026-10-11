@@ -12,6 +12,7 @@ use super::github::Secret;
 use super::job::{self, JOB_ARCHIVE, JobPlan, build_bundle};
 use super::provider::PoolProvider;
 use super::record::DispatchRecord;
+use super::slot::PoolId;
 use crate::error::VivariumError;
 
 /// Budget when `--budget` is not given.
@@ -46,18 +47,23 @@ pub fn new_job_id(task: &str, nanos: u128, pid: u32) -> String {
 /// out of range.
 pub fn plan_job(
     config: &PoolConfig,
+    pool: &str,
     task: (&str, &str, &str),
     flags: &DispatchFlags,
     rules: String,
     job: String,
 ) -> Result<JobPlan, VivariumError> {
     let (handle, subject, body) = task;
-    let harness = config
-        .harness
-        .as_ref()
-        .ok_or_else(|| VivariumError::Config("[pool.harness] is required to dispatch".into()))?;
+    if config.embedded.is_none() {
+        config.require_repo(pool, "dispatch")?;
+    }
+    let harness = config.harness.as_ref().ok_or_else(|| {
+        VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
+    })?;
     let committer = config.committer.clone().ok_or_else(|| {
-        VivariumError::Config("[pool.committer] (name, email) is required to dispatch".into())
+        VivariumError::Config(format!(
+            "[pools.{pool}.committer] (name, email) is required to dispatch"
+        ))
     })?;
     job::check_model(&flags.model, &harness.models)?;
     let refs = job::resolve_refs(flags.from.as_deref(), flags.branch.as_deref(), body)?;
@@ -112,14 +118,14 @@ pub fn check_push_target(
 /// claim is undone before the error returns.
 pub fn dispatch(
     provider: &dyn PoolProvider,
-    pool: &str,
+    id: &PoolId,
     plan: &JobPlan,
     token: &Secret,
     start: &str,
     now: u64,
     pacing: &Pacing,
 ) -> Result<DispatchRecord, VivariumError> {
-    let claim = claim_slot(provider, pool, &plan.task, now)?;
+    let claim = claim_slot(provider, id, &plan.task, now)?;
     if let Err(e) = deliver(provider, &claim, plan, token, pacing) {
         if let Err(undo) = unclaim(provider, &claim) {
             eprintln!("warning: could not fully undo the claim: {undo}");
@@ -127,6 +133,7 @@ pub fn dispatch(
         return Err(e);
     }
     Ok(DispatchRecord {
+        pool: id.pool.clone(),
         slot: claim.slot.name,
         machine: claim.slot.id,
         job: plan.job.clone(),

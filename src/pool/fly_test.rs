@@ -6,7 +6,7 @@ const LIST: &str = r#"[
   {"id": "aaa111", "name": "faber-slot-1", "state": "stopped", "region": "iad",
    "created_at": "2026-10-11T01:19:34Z",
    "config": {"env": {"GH_TOKEN": "ghs_secret_token_value"},
-              "metadata": {"fly_platform_version": "v2", "vivi_pool": "faber",
+              "metadata": {"fly_platform_version": "v2", "vivi_pool": "faber", "vivi_pool_mailspace": "ms",
                            "vivi_pool_slot": "1", "vivi_pool_base": "0123456789abcdef0123456789abcdef01234567"}},
    "events": [{"type": "exit", "request": {"exit_event": {"exit_code": 0}}},
               {"type": "start", "request": {}}]},
@@ -15,7 +15,7 @@ const LIST: &str = r#"[
    "config": {"env": {}},
    "events": [{"type": "exit", "request": {"exit_event": {"exit_code": 143}}}]},
   {"id": "ccc333", "name": "faber-slot-2", "state": "started", "region": "iad",
-   "created_at": "2026-10-11T02:00:00Z", "config": {"metadata": {"vivi_pool": "faber", "vivi_pool_slot": "2"}},
+   "created_at": "2026-10-11T02:00:00Z", "config": {"metadata": {"vivi_pool": "faber", "vivi_pool_mailspace": "ms", "vivi_pool_slot": "2"}},
    "events": []}
 ]"#;
 
@@ -35,7 +35,8 @@ fn parses_machine_list_fixture() {
 #[test]
 fn fixture_becomes_slot_status() {
     let machines = parse_machine_list(LIST).unwrap();
-    let slots = crate::pool::slot::pool_slots("faber", &machines);
+    let slots =
+        crate::pool::slot::pool_slots(&crate::pool::slot::PoolId::new("ms", "faber"), &machines);
     assert_eq!(slots.len(), 2);
     assert_eq!(slots[0].name, "faber-slot-1");
     assert_eq!(slots[0].state, "unseeded", "no seed mark in the fixture");
@@ -142,7 +143,7 @@ fn a_taken_app_name_is_said_plainly_with_the_line_to_set() {
     assert!(said.contains("\"lanes\" is already taken"), "{said}");
     assert!(said.contains("unique across all Fly accounts"));
     assert!(
-        said.contains("[pool] name") && said.contains("[pool.fly] app"),
+        said.contains("[pools.<pool>.fly]") && said.contains("app ="),
         "{said}"
     );
     let other = VivariumError::Message("`fly apps create` failed: not logged in".into());

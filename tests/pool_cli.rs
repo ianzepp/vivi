@@ -5,26 +5,26 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 const POOL: &str = r#"
-[pool]
+[pools.lanes]
 repo = "acme/widgets"
 slots = 1
 image = "debian:12"
 build_dir = "target"
 
-[pool.fly]
+[pools.lanes.fly]
 app = "no-such-app"
 
-[pool.github]
+[pools.lanes.github]
 app_id = 1
 private_key = "/nonexistent.pem"
 
-[pool.harness]
+[pools.lanes.harness]
 name = "fake"
 run = "fake --model {model} @{brief}"
 models = ["m/ok"]
 env = ["SOME_KEY"]
 
-[pool.committer]
+[pools.lanes.committer]
 name = "bot"
 email = "bot@example.com"
 "#;
@@ -97,7 +97,7 @@ fn dispatch_refuses_an_unlisted_model_before_touching_anything() {
     ]);
     assert!(!out.status.success());
     let said = text(&out);
-    assert!(said.contains("not in [pool.harness].models"), "{said}");
+    assert!(said.contains("not in [harness].models"), "{said}");
     assert!(said.contains("m/ok"), "{said}");
 }
 
@@ -221,21 +221,44 @@ fn doctor_reports_each_side_and_exits_nonzero_when_a_check_fails() {
 }
 
 #[test]
-fn old_style_provider_keys_in_pool_are_refused_with_the_new_location() {
+fn the_retired_single_pool_table_is_refused_naming_the_new_form() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    setup(project.path());
+    let config = project.path().join(".vivi/mailspace.toml");
+    let mut old = std::fs::read_to_string(&config).unwrap();
+    old.push_str("\n[pool]\nslots = 1\n");
+    std::fs::write(&config, old).unwrap();
+    for args in [
+        ["pool", "status"],
+        ["pool", "doctor"],
+        ["pool", "reconcile"],
+    ] {
+        let out = vivi([args[0], args[1], "--project", root]);
+        assert!(!out.status.success(), "{args:?}");
+        let said = text(&out);
+        assert!(
+            said.contains("[pool]") && said.contains("[pools.<name>]"),
+            "{said}"
+        );
+    }
+}
+
+#[test]
+fn a_fly_pool_without_an_app_is_refused_naming_the_setting() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path().to_str().unwrap();
     setup(project.path());
     let config = project.path().join(".vivi/mailspace.toml");
     let text_in = std::fs::read_to_string(&config)
         .unwrap()
-        .replace("[pool.fly]\napp = \"no-such-app\"\n", "")
-        .replace("[pool]\n", "[pool]\nregion = \"iad\"\n");
+        .replace("[pools.lanes.fly]\napp = \"no-such-app\"\n", "");
     std::fs::write(&config, text_in).unwrap();
     let out = vivi(["pool", "status", "--project", root]);
     assert!(!out.status.success());
     let said = text(&out);
     assert!(
-        said.contains("region") && said.contains("[pool.fly]"),
+        said.contains("[pools.lanes]") && said.contains("fly.app is required"),
         "{said}"
     );
 }
@@ -249,10 +272,10 @@ fn a_docker_pool_reports_a_missing_docker_binary_in_the_doctor_and_the_status() 
     let swapped = std::fs::read_to_string(&config)
         .unwrap()
         .replace(
-            "[pool.fly]\napp = \"no-such-app\"\n",
-            "[pool.docker]\nmemory = \"1g\"\n",
+            "[pools.lanes.fly]\napp = \"no-such-app\"\n",
+            "[pools.lanes.docker]\nmemory = \"1g\"\n",
         )
-        .replace("[pool]\n", "[pool]\nprovider = \"docker\"\n");
+        .replace("[pools.lanes]\n", "[pools.lanes]\nprovider = \"docker\"\n");
     std::fs::write(&config, swapped).unwrap();
     let empty = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
@@ -310,13 +333,16 @@ fn doctor_porcelain_prints_only_check_and_summary_lines_with_the_same_exit_code(
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() > 2, "{stdout}");
     for line in &lines[..lines.len() - 1] {
-        assert!(line.starts_with("check "), "{line}");
+        assert!(line.starts_with("check lanes "), "{line}");
     }
-    assert!(lines[lines.len() - 1].starts_with("summary "), "{stdout}");
+    assert!(
+        lines[lines.len() - 1].starts_with("summary lanes "),
+        "{stdout}"
+    );
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with("check fail ") && l.contains(" flyctl ")),
+            .any(|l| l.starts_with("check lanes fail ") && l.contains(" flyctl ")),
         "{stdout}"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -342,5 +368,166 @@ fn wait_porcelain_prints_nothing_on_standard_output_when_it_fails() {
         wait.stdout.is_empty(),
         "{}",
         String::from_utf8_lossy(&wait.stdout)
+    );
+}
+
+const DOCKER_ONLY: &str = "provider = \"docker\"\nslots = 4\nimage = \"ubuntu:24.04\"\n";
+
+/// A mailspace with a pool `local` (provider settings only) and, when
+/// `second`, a second pool `lanes` of the same kind.
+fn two_pools(project: &Path, second: bool) -> String {
+    let handle = setup(project);
+    let config = project.join(".vivi/mailspace.toml");
+    let mut text_in = std::fs::read_to_string(&config).unwrap();
+    let start = text_in.find("\n[pools.lanes]").unwrap();
+    text_in.truncate(start);
+    text_in.push_str(&format!("\n[pools.local]\n{DOCKER_ONLY}"));
+    if second {
+        text_in.push_str(&format!("\n[pools.lanes]\n{DOCKER_ONLY}"));
+    }
+    std::fs::write(&config, text_in).unwrap();
+    handle
+}
+
+fn without_tools(args: &[&str]) -> Output {
+    let empty = tempfile::tempdir().unwrap();
+    Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .env("PATH", empty.path())
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn with_several_pools_the_commands_that_act_on_one_require_the_flag_and_list_the_names() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    let handle = two_pools(project.path(), true);
+    let cases: [Vec<&str>; 5] = [
+        vec!["pool", "create"],
+        vec!["pool", "destroy", "--all", "--yes"],
+        vec!["pool", "dispatch", &handle, "--model", "m/ok"],
+        vec!["pool", "scale", "1"],
+        vec!["pool", "doctor", "--test"],
+    ];
+    for mut args in cases {
+        args.extend(["--project", root]);
+        let out = without_tools(&args);
+        assert!(!out.status.success(), "{args:?}");
+        let said = text(&out);
+        assert!(
+            said.contains("several pools (lanes, local)") && said.contains("--pool"),
+            "{args:?}: {said}"
+        );
+    }
+}
+
+#[test]
+fn one_pool_needs_no_flag_and_an_unknown_name_lists_the_pools() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    two_pools(project.path(), false);
+    let create = without_tools(&["pool", "create", "--project", root]);
+    assert!(!create.status.success());
+    assert!(
+        !text(&create).contains("--pool"),
+        "a single pool is chosen: {}",
+        text(&create)
+    );
+    let named = without_tools(&["pool", "status", "--pool", "nope", "--project", root]);
+    assert!(!named.status.success());
+    assert!(
+        text(&named).contains("unknown pool \"nope\" (pools: local)"),
+        "{}",
+        text(&named)
+    );
+}
+
+#[test]
+fn a_pool_with_only_provider_settings_cannot_be_created_scaled_up_or_dispatched_to() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    let handle = two_pools(project.path(), false);
+    let create = without_tools(&["pool", "create", "--project", root]);
+    assert!(
+        text(&create).contains("[pools.local] repo is required to create slots"),
+        "{}",
+        text(&create)
+    );
+    let dispatch = without_tools(&[
+        "pool",
+        "dispatch",
+        &handle,
+        "--model",
+        "m",
+        "--project",
+        root,
+    ]);
+    assert!(!dispatch.status.success());
+    assert!(
+        text(&dispatch).contains("[pools.local] repo is required to dispatch")
+            || text(&dispatch).contains("[pools.local.harness] is required"),
+        "{}",
+        text(&dispatch)
+    );
+}
+
+#[test]
+fn scale_refuses_a_target_above_the_configured_slots_before_asking_the_host() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    two_pools(project.path(), false);
+    let out = without_tools(&["pool", "scale", "5", "--project", root]);
+    assert!(!out.status.success());
+    assert!(text(&out).contains("at most 4"), "{}", text(&out));
+    assert!(
+        !text(&out).contains("docker"),
+        "no host was asked: {}",
+        text(&out)
+    );
+}
+
+#[test]
+fn status_covers_every_pool_and_names_each_one_that_cannot_be_listed() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    two_pools(project.path(), true);
+    let all = without_tools(&["pool", "status", "--project", root]);
+    assert!(!all.status.success());
+    let said = text(&all);
+    assert!(
+        said.contains("pool lanes:") && said.contains("pool local:"),
+        "{said}"
+    );
+    let one = without_tools(&["pool", "status", "--pool", "local", "--project", root]);
+    let said = text(&one);
+    assert!(
+        said.contains("pool local:") && !said.contains("pool lanes:"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_provider_only_pool_passes_doctor_config_and_skips_the_repository() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    two_pools(project.path(), false);
+    let out = without_tools(&["pool", "doctor", "--json", "--project", root]);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let find = |name: &str| {
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name}: {json}"))
+    };
+    assert_eq!(find("config")["status"], "ok");
+    assert_eq!(find("config")["pool"], "local");
+    assert_eq!(find("repository")["status"], "skipped");
+    assert_eq!(
+        find("repository")["detail"],
+        "no repository configured for this pool"
     );
 }

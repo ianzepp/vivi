@@ -30,7 +30,7 @@ use super::docker_tar as tar;
 use super::doctor::Check;
 use super::job::sh_quote;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
-use super::slot::{META_POOL, META_SLOT};
+use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_cli::SshCli;
 use super::ssh_doctor::Probe;
 use super::ssh_script::command_line;
@@ -214,14 +214,14 @@ fn slot_id_of(id: &str) -> Result<&str, VivariumError> {
     }
 }
 
-/// The id a new slot gets from its spec: `<pool>/slot-<index>`.
+/// The id a new slot gets from its spec: `<mailspace>/<pool>/slot-<index>`.
 fn new_slot_id(spec: &CreateSpec) -> Result<String, VivariumError> {
     let field = |key: &str| {
         spec.metadata
             .get(key)
             .ok_or_else(|| VivariumError::Message(format!("slot spec lacks {key}")))
     };
-    let id = state::slot_id(field(META_POOL)?, field(META_SLOT)?);
+    let id = state::slot_id(field(META_MAILSPACE)?, field(META_POOL)?, field(META_SLOT)?);
     slot_id_of(&id).map(str::to_string)
 }
 
