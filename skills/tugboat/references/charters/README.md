@@ -62,19 +62,21 @@ a `band:` line.
 
 | Charter | Seat | Band | What it is |
 | --- | --- | --- | --- |
-| [`mind.md`](mind.md) | Mind | `P1-S2` | A pointer to the protocol. The Mind's law is `SKILL.md` |
+| [`mind.md`](mind.md) | Mind | `P1-S2` | The Mind's practice layer on the protocol: decision routing, dispatch and report checks, gating verdict pairs, merge and verify, capacity and tree hygiene |
 | [`hand.md`](hand.md) | Hand | `P2-S0` | Implements one logical change, commits, settles its handle with the receipt |
-| [`planner.md`](planner.md) | Planner | `P1-S2` | Goal-forge, goal-check, and delivery lowering into unit graphs |
+| [`planner.md`](planner.md) | Planner | `P1-S2` | Goal-forge, goal-check, and delivery lowering into unit graphs, with oracle and row-quality rules |
+| [`triage.md`](triage.md) | Triage | `P2-S1` | Read-only registry reconciliation: one disposition per want, need, or goal, against the live tree |
 | [`auditor.md`](auditor.md) | Auditor | `P1-S1` | Frozen-range review; verdict tier `clean_pass`, `residual`, `block_range`, `block_ship` |
 | [`cadence.md`](cadence.md) | Cadence | `P4-S0` | Read-only board review; tells the Mind what should run |
 | [`head-shared.md`](head-shared.md) | Head (shared) | — | The law every Head carries: posture, gate honesty, report contract |
 | [`head-ceo.md`](head-ceo.md) | head-ceo | `P0-S2` | Priority and goal truth |
-| [`head-cto.md`](head-cto.md) | head-cto | `P0-S2` | Gate honesty and architecture |
+| [`head-cto.md`](head-cto.md) | head-cto | `P0-S2` | Gate honesty, architecture, and the need-definition gate |
 | [`head-cxo.md`](head-cxo.md) | head-cxo | `P0-S2` | Purity and complexity |
 | [`head-cpo.md`](head-cpo.md) | head-cpo | `P0-S2` | Product direction and audience value |
 | [`head-cmo.md`](head-cmo.md) | head-cmo | `P0-S2` | Positioning, launch, editorial |
 | [`head-cso.md`](head-cso.md) | head-cso | `P0-S2` | Security and threat model |
 | [`test.md`](test.md) | test | `P2-S0` | Runs the test stage the task names; fixes nothing |
+| [`runner.md`](runner.md) | runner | `P2-S0` | Runs one named surface once and maps its output to a verdict |
 | [`lint.md`](lint.md) | lint | `P3-S0` | Clears the project's early static gate |
 | [`merge.md`](merge.md) | merge | `P2-S0` | Integrates branches onto an integration branch in the Mind's order |
 | [`release.md`](release.md) | release | `P2-S0` | Runs the mechanical release sequence the task lists |
@@ -86,8 +88,8 @@ shared block is written once and appended at install time, as above.
 
 ## What is not shipped
 
-The protocol also defines the **Triage**, **Hater**, and gate seats beyond the
-ones above (an end-to-end runner, a canary). They have no charter here. The
+The protocol also defines a **Hater** seat, and a project may run gate seats
+beyond the ones above (a canary, a benchmark). They have no charter here. The
 "Charter must include" column of the protocol's Standing charters table says
 what to write; a project that runs those seats writes its own.
 

@@ -381,7 +381,7 @@ vivi task done --project "$ROOT" --for planner <handle> \
 
 ## Verification discipline for delivery artifacts
 
-Two defect classes are yours to prevent, and both are cheap to prevent:
+These defect classes are yours to prevent, and each is cheap to prevent:
 
 **1. Checks must run as the reader sees them.** Before you report, extract every machine
 check verbatim from the RENDERED artifact, execute it, and diff its output against the
@@ -396,6 +396,58 @@ workspace-wide extraction for it, paste the command AND its complete output, and
 write scope equal that command's result. Hand-assembled inventories have repeatedly missed
 real sites in roots nobody searched, and a missing write-scope entry is not a cosmetic
 defect: it is a Hand hitting a compile error in a file it was told not to touch.
+
+**3. An oracle is proven to run its checks, not merely to be green.** A test
+target that selects zero tests exits 0, and a run that executed nothing passes
+silently. When a row's oracle names a test target, the row states the feature set
+or build configuration that enables it, and the seat reports how many tests it
+actually ran. A sanity command that selects nothing is a gate that cannot fail.
+
+**4. A row pins the command and the invariant, never an absolute count.** A
+number written into a row drifts as the corpus grows, and a stale one either sends
+a seat chasing a phantom or invites it to re-pin to whatever it measures, which
+quietly redefines the oracle. Write the command and the property it must hold
+("the buckets sum to the ceiling and to the measured unexpected set") and let the
+seat measure.
+
+**5. A row names the command that observes the mechanism.** A row that cannot
+name an observing command is a hypothesis, and a hypothesis is a diagnosis unit,
+not an implementation unit. Make instrumentation the first edit, not the last
+resort. Judge a row by its intent: when a fix landed in a different mechanism
+than the row's observable names, that observable can never go green, so re-point
+or drop it rather than dispatching the row forever. The same proxy lies the other
+way too: a name count can call a closed class live when the surviving matches are
+deliberate, so run the mechanism, not the count.
+
+**6. A witness is its own row.** When an oracle contains an end-to-end proof
+materially larger than the edit, split it out under the same reference. Folded in,
+it produces a residual every time, because a seat that finishes a one-file fix
+will not also build an end-to-end proof.
+
+**7. Row overlap is checked across the whole document.** Scan every occurrence of
+a need's reference in the delivery document for each new row, not just the batches
+in flight. Two rows for one need is two seats and a self-inflicted merge conflict.
+Report the match count per row in the lowering receipt.
+
+**8. A count is a measurement, not a unit.** For a count-based blocker (a number
+of compiler errors, failing cases, or findings), emit an inventory unit that
+buckets the failures by cause, names the owner of each bucket, orders the
+cascade, and may edit nothing, followed by one repair unit per independent cause,
+each with its own one-line oracle. Bucket by cause, not by error code: one cause
+spans several codes and one code spans several causes. A unit whose own body
+concedes it "may be several causes" is the signal to split it.
+
+**9. A probe unit carries three buckets.** The named signal, scored only; every
+other red in the output as residual, recorded verbatim with no relatedness
+diagnosis and no fix; and `INCONCLUSIVE` with a one-line structural reason when
+the signal cannot occur. Never define failure as "an error attributable to X".
+Prefer a narrow command that can only emit the probe signal.
+
+**10. Each row keeps its own write shape.** Compressing several rows into one
+task body loses each row's checkout and write-scope line. A unit that writes a
+repository the checkout cannot write is refused, correctly, and the run is wasted.
+Name the repositories each unit writes, and the generated indexes or ledgers it
+must regenerate, in the row itself.
 
 Also state, for anything you add or retire, the INVARIANT it must preserve and how the
 proposed API preserves it. A seam that can leave an object holding an invalidated

@@ -59,6 +59,30 @@ If the previous cadence mail is still unabsorbed and the ranked actions did not 
 
 Cap the action list. Three `now` / `this_cycle` items is enough.
 
+## Audit blocks and the aggregate backstop
+
+Two standing obligations.
+
+**Audit blocks are the first lens.** A verdict that exists only as mail prose
+is invisible to every later reader. For each `block_range` or `block_ship`
+audit handle, report whether its blocked paths have an owner (an open repair
+task, a debt handle, or a recorded waiver) and whether a landed repair's paths
+were ever read again. Read the audit handle, not the inbox copy: absorbing the
+mail does not retire the handle. You do not file handles; the Mind does. You
+make them impossible to forget.
+
+**The aggregate audit backstop.** Your watermark tracks the last **aggregate
+audit** tip, not the last auditor mail. Dense per-unit delivery-audit traffic
+must not keep the tip fresh and suppress the range audit. Aggregate audits are
+required at goal or sub-goal close, a declared wave or phase freeze, a named
+risk gate, Warm boot, and this backstop. If a goal has landed units since its
+last aggregate audit and passes its threshold (units or elapsed time), that
+range is READY audit work: report it as `now`.
+
+A goal may not advance to `complete` until its close record names aggregate
+audit verdicts for the landed range or records an explicit waiver. Flag a goal
+whose status line says complete without one.
+
 ## Completion stub
 
 Handle first. Short enough to survive truncation.
@@ -93,6 +117,12 @@ memos_to_drop:
 
 already_covered:
   - <process> <handle> (<why>)
+
+audit_blocks:
+  - unhandled_block  <audit-handle> <verdict>
+    blocked paths: <paths>; no repair task, no debt handle, no waiver
+  - stale_block  <audit-handle>
+    repair <handle> landed; blocked paths never re-audited; trigger <...>
 ```
 
 Suggest a role and a one-line subject. Do not write Hand task bodies. Do not pin frozen ranges unless you already have the facts.
@@ -108,6 +138,7 @@ Apply every tick after the board / occupancy / goal-list read.
 | Lens | Required questions |
 | --- | --- |
 | **`pull_forward`** | For each `vivi goal list` row: what is Mind treating as "the current stage"? Which later-stage or sibling-track items have their *named* dependencies already satisfied? Which of those are planning, docs, test, or disjoint implementation that can run now? Are usable seats free? Is Mind ignoring other registered goals while laser-focused on one? |
+| **Audit blocks** | For every audit handle whose verdict is `block_range` or `block_ship`: which blocked paths have no open repair task, no debt handle, and no recorded waiver (`unhandled_block`)? Which repair has landed but whose blocked paths were never re-audited (`stale_block`)? |
 | Occupancy | Free usable seats vs live processes vs orphan open handles? |
 | Schedule | Role `cadence` fields overdue against live evidence? |
 | Hygiene | Stale Mind memos? Unabsorbed inbox ≥ 20? |
@@ -159,8 +190,10 @@ Skip a row when the window is empty.
 | `planner_backlog` | Unlowered goals and planner idle | File + spawn planner |
 | `spawn_debt` | Open harnessed tasks, no live process | Those handles are spawn-dead; re-spawn |
 | `neglected_need` | Open need with no live owner and no disposition | Cite the need |
+| `unhandled_block` | An audit verdict of `block_range` or `block_ship` on an audit handle, absorbed or not, whose blocked paths have no owner: no open repair task, no debt handle, no recorded waiver | Cite the audit handle, the verdict, the blocked paths, and the missing owner. The Mind files the repair, the debt, or the waiver. Do not dispatch |
+| `stale_block` | A `block_range` whose repair landed but whose blocked paths were never re-audited, and whose recheck trigger has elapsed | Cite the block handle, the paths, and the repair commit. The Mind re-audits those paths or records the waiver |
 | `unlocked_want` | Want whose precondition is now true, needs are clear | Cite the want |
-| `auditor_range` | Last auditor tip older than ~1h **and** new commits on managed mains | File + spawn auditor |
+| `auditor_range` | Last **aggregate audit** tip older than ~1h **and** new commits on managed mains | File + spawn auditor. Delivery audits, re-reviews, and verification reports do not advance this tip; only an aggregate implementation audit does |
 | `cto_range` | Last CTO tip older than ~1h **and** (new main merges **or** `head-cto` schedule overdue) | File + spawn `head-cto` |
 | `security_review` | Last security pass older than the CSO cadence **and** (new surface or overdue `head-cso`) | File + spawn `head-cso` |
 | `runner_range` | A project-defined runner seat (lint, test, docs, or another) whose role `cadence` has elapsed since its last run **and** managed repositories have new commits since then — or a change burst (≥ ~10 commits) since the last run regardless of age | File + spawn that seat |

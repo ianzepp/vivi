@@ -196,10 +196,36 @@ exact boundary it blocks (paths, repos, units); everything outside it keeps movi
 
 | Verdict | Required state |
 | --- | --- |
-| `block_ship` | A named release invariant is violated (data loss or corruption, a security or authorization boundary, a persisted format or ABI, a published contract), or a claimed gate is false in a way a downstream consumer would rely on. The finding names the invariant, the affected paths, and what shipping it breaks, for whom, and whether that is recoverable |
+| `block_ship` | A named release invariant is violated (data loss or corruption, a security or authorization boundary, a persisted format or ABI, a published contract), or a claimed gate is false in a way a downstream consumer would rely on. The finding names the invariant, the affected paths, and what shipping it breaks, for whom, and whether that is recoverable. A verdict that cannot name a consumer-visible or unrecoverable consequence drops a tier |
 | `block_range` | Confirmed P0/P1; likely P1 without safe disproof; required validation failed due to the change; critical surface unreviewed; unstable identity on high/critical risk. The finding names the exact paths or units that are not acceptable; only those wait |
 | `residual` | No ship blocker, but P2, bounded uncertainty, skipped noncritical validation, or named follow-up remains |
 | `clean_pass` | Frozen range; full assigned coverage; required validation passed; no P0/P1/P2; blind spots empty or demonstrably immaterial |
+
+**Scope every block to the boundary it names.** An audit finding blocks exactly
+the dependency boundary in the finding, the same way any other blocker does.
+Stopping the whole stream for a scoped finding is an anti-pattern, and so is
+`block_ship` inflation: reaching for the whole-range veto when the finding is a
+recoverable leaf defect. "The diff is wrong" is not a `block_ship` reason; the
+question is what the wrongness costs once it is out the door.
+
+**The repair loop is bounded.** A repair is verified by a re-review of the
+repair diff alone, never a re-audit of the range, and by one re-review per
+finding. A different defect found by that re-review is a new finding with its
+own tier and does not reopen the original block. After two rounds on one
+finding, the next step is a Head ruling, not a third slice. Multiple round trips
+on one finding are a protocol failure, not diligence.
+
+**Every non-clean verdict is recorded durably.** A `block_range`, `block_ship`,
+or `residual` that exists only as mail prose is invisible to every later
+reader. The Mind files one handle per finding (a repair task for the blocked
+work, or a debt task or need carrying the audit handle, the blocked paths, and
+the recheck trigger). A block closes when its paths are read again, not when
+nobody objects. Your report must give the Mind what it needs to file each one:
+the exact paths, the audit handle, and a recheck trigger.
+
+**Conflict resolutions are code under review.** When a merge seat resolved a
+conflict inside the range, that diff was authorized by no delivery spec and
+covered by no acceptance. Treat it as an audit item and read it.
 
 ## Report schema
 

@@ -862,7 +862,7 @@ Each role is a Vivi identity with a mailbox and role record.
 
 Auditor, Planner, Hater, Head, and Cadence seats carry **full standing procedure on the Vivi role charter**. The Mind does not re-invent their job in the task body.
 
-Reference charters for the Mind, Hand, Planner, Auditor, Cadence, the Heads, and the project-gate seats (test, lint, merge, release, docs, website) ship in [`references/charters/`](references/charters/README.md), with the install commands. Triage and Hater charters are written per project from the table below.
+Reference charters for the Mind, Hand, Planner, Auditor, Cadence, the Heads, and the project-gate seats (test, lint, merge, release, docs, website) ship in [`references/charters/`](references/charters/README.md), with the install commands. A Hater charter, where the project runs that seat, is written per project from the table below.
 
 On every spawn or [unit resume](#unit-resume-worker-seats-only), the Mind
 sends only the [dispatch-contract](#dispatch-contract) pointer. The worker
