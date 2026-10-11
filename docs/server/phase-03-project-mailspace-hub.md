@@ -117,7 +117,10 @@ who the tenant is, what travels, and where the truth lives.
       local part of the address, not separate identities.
     - Same-domain addresses are local delivery and never need the server.
     - The prefix is a label, never proof: authentication is the key. The
-      UUID is decoupled from the key so an address survives re-key.
+      UUID is decoupled from the key so an address survives re-key. The
+      server stamps each letter with its authenticated sender's registered
+      prefix, and a receiver refuses a `From` address whose prefix
+      disagrees, so an address inside a letter can be trusted.
     - `.vivi/` configuration is machine-local, not source. A mailspace is
       not a repository: one workspace-level `.vivi` has one id, and a
       developer's separate `.vivi` is a different mailspace with a
@@ -439,6 +442,18 @@ to every member. Single-letter `GET` follows the same rule and answers 404
 otherwise. The index keeps `to` as the raw header string; no index schema
 change.
 
+**Sender prefix.** When a letter is appended the server records the
+authenticated sender's registered prefix beside it (null for an identity
+registered before this change). The list returns it as `from_prefix` and
+the single-letter `GET` as `X-Vivi-From-Prefix`. It is fixed at append and
+never recomputed. The server still never reads the letter. A receiving
+client refuses any letter whose `From` address domain is exactly
+`<8 hex>.local` with a prefix other than `from_prefix` (a missing
+`from_prefix` counts as a mismatch). Legacy name domains and external
+domains are exempt. This is what makes a `From` inside a letter an
+authenticated claim rather than free text: no member can write another
+mailspace's address.
+
 **Envelope check at the receiver.** On pull, unless the envelope `to` is
 absent or `postmaster`, the client compares the envelope's addresses with
 the letter's own `To` and `Cc` and refuses a record that disagrees. The
@@ -486,6 +501,9 @@ this endpoint an identity is locked out after an hour.
   delivered copy, and goes on the next push. A reply is addressed to the
   original `From`, so replying to a remote sender routes with no extra
   configuration.
+- Pull verification, before anything is filed: the bytes hash to
+  `content_sha256`; the envelope recipients equal the letter's own To/Cc;
+  a prefix-shaped `From` domain equals the record's `from_prefix`.
 - Pull filing, for each record not already held. Filing is by address and
   additive; it never depends on who authored the letter, because a letter can
   come back from another place that acts as this mailspace (a restore, a
