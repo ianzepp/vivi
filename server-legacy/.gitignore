@@ -2,7 +2,6 @@
 /.cargo
 /data
 
-# Vivi: configuration (mailspace.toml carries the mailspace id), keys, and
-# state are machine-local. Only the role charters are committed.
-/.vivi/*
-!/.vivi/charters/
+# Vivi: configuration (mailspace.toml carries the mailspace id), charters,
+# keys, and state are all machine-local. Nothing under .vivi/ is committed.
+/.vivi/
