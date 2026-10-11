@@ -70,16 +70,23 @@ fn finds_machine_id_in_run_output() {
 fn run_args_carry_the_slot_contract() {
     let spec = CreateSpec {
         name: "faber-slot-1".into(),
-        region: "iad".into(),
         image: "rust:1.97-bookworm".into(),
-        vm_size: "performance-8x".into(),
-        memory_mb: 32768,
         metadata: BTreeMap::from([("vivi_pool".into(), "faber".into())]),
         env: BTreeMap::from([("REPO".into(), "o/r".into())]),
+        once_env: BTreeMap::from([("GH_TOKEN".into(), "tok".into())]),
+        passthrough_env: vec!["SOME_KEY".into()],
         files: vec![("/work/boot.sh".into(), "echo hi\n".into())],
         command: vec!["bash".into(), "/work/boot.sh".into()],
+        build_dir: "target".into(),
+        tmpfs: "16g".into(),
     };
-    let args = run_args("lane-pool", &spec);
+    let host = PoolFly {
+        region: "iad".into(),
+        size: "performance-8x".into(),
+        memory: 32768,
+        ..PoolFly::default()
+    };
+    let args = run_args("lane-pool", &host, &spec);
     let joined = args.join(" ");
     assert!(joined.starts_with("machine run rust:1.97-bookworm --detach"));
     for needle in [
@@ -90,11 +97,18 @@ fn run_args_carry_the_slot_contract() {
         "--vm-memory 32768",
         "--metadata vivi_pool=faber",
         "--env REPO=o/r",
+        "--env GH_TOKEN=tok",
+        "--region iad",
+        "--vm-size performance-8x",
         "--file-literal /work/boot.sh=echo hi\n",
     ] {
         assert!(joined.contains(needle), "missing {needle}: {joined}");
     }
     assert!(joined.ends_with("-- bash /work/boot.sh"));
+    assert!(
+        !joined.contains("SOME_KEY"),
+        "Fly takes harness keys as app secrets"
+    );
 }
 
 #[test]
@@ -117,4 +131,32 @@ fn app_and_secret_names_parse_and_carry_no_values() {
     assert_eq!(secrets, ["MODEL_API_KEY"]);
     assert!(parse_secret_names("not json").is_err());
     assert!(parse_app_names("{}").is_err());
+}
+
+#[test]
+fn a_taken_app_name_is_said_plainly_with_the_line_to_set() {
+    let failed = VivariumError::Message(
+        "`fly apps create` failed: Error: Name has already been taken".into(),
+    );
+    let said = name_taken("lanes-4a0a33", failed).to_string();
+    assert!(said.contains("\"lanes-4a0a33\" is already taken"), "{said}");
+    assert!(said.contains("unique across all Fly accounts"));
+    assert!(
+        said.contains("[pool.fly]") && said.contains("app = "),
+        "{said}"
+    );
+    let other = VivariumError::Message("`fly apps create` failed: not logged in".into());
+    assert!(
+        name_taken("x", other)
+            .to_string()
+            .ends_with("failed: not logged in")
+    );
+    for text in [
+        "Name has already been taken",
+        "app name is taken",
+        "ALREADY TAKEN",
+    ] {
+        assert!(is_name_taken(text), "{text}");
+    }
+    assert!(!is_name_taken("organization not found"));
 }

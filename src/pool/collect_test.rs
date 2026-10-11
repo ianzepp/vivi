@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use super::*;
 use crate::pool::fake_provider::{Fake, claimed, slot};
 use crate::pool::record::DispatchRecord;
+use crate::pool::slot::META_CLAIMED;
 
 const RESULT_OK: &str = "@@vivi-pool result\njob=j1\nstate=done\npush=pushed\nbranch=factory/a\nsha=0123456789abcdef0123456789abcdef01234567\nstart=fedcba9876543210\nagent_rc=0\nagent_s=12\njob_s=30\nmodel=m/x\nslot=p-slot-1\n@@vivi-pool receipt\nall done\nsecond line\n\n@@vivi-pool stderr\n\n@@vivi-pool log\nfrom main at fedcba987654\n\n";
 
@@ -119,6 +120,75 @@ fn a_stopped_slot_without_a_result_is_lost_or_timed_out() {
     assert_eq!(
         poll(&fake, &d, late, &pacing()).unwrap(),
         Some(Outcome::Timeout)
+    );
+}
+
+fn readable(result: &str) -> Fake {
+    let fake = fake_with("stopped", "");
+    let files = [
+        (RESULT_PATHS[0], result),
+        (RESULT_PATHS[1], "the receipt\n"),
+        (RESULT_PATHS[3], "run log\n"),
+    ];
+    *fake.stopped_files.borrow_mut() = Some(
+        files
+            .iter()
+            .map(|(p, t)| ((*p).to_string(), t.as_bytes().to_vec()))
+            .collect(),
+    );
+    fake
+}
+
+#[test]
+fn a_provider_that_reads_the_stopped_disk_collects_without_a_restart() {
+    let fake = readable("job=j1\nstate=done\npush=pushed\nbranch=b\nsha=0123456789abcdef\n");
+    // Younger than the start grace: no grace applies, a stopped slot there is final.
+    let outcome = poll(&fake, &open("aaaa1111", "j1", 1000), 1005, &pacing()).unwrap();
+    let Some(Outcome::Finished(done)) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(done.result.push(), "pushed");
+    assert_eq!(done.receipt, "the receipt\n\n");
+    assert_eq!(done.stderr, "\n", "a file that is not there reads as empty");
+    assert_eq!(done.log, "run log\n\n");
+    assert_eq!(fake.calls_to("start"), 0);
+    assert_eq!(fake.calls_to("exec"), 0);
+}
+
+#[test]
+fn the_result_of_another_job_on_a_readable_stopped_disk_is_lost_or_timed_out() {
+    let fake = readable("job=earlier\nstate=done\npush=pushed\n");
+    let d = open("aaaa1111", "j1", 1000);
+    assert_eq!(
+        poll(&fake, &d, 1200, &pacing()).unwrap(),
+        Some(Outcome::Lost)
+    );
+    let late = 1000 + 600 + TIMEOUT_GRACE_SECS + 1;
+    assert_eq!(
+        poll(&fake, &d, late, &pacing()).unwrap(),
+        Some(Outcome::Timeout)
+    );
+    assert_eq!(fake.calls_to("start"), 0);
+}
+
+#[test]
+fn collected_from_files_keeps_the_head_of_the_receipt_and_the_tails_of_the_logs() {
+    let mut files = BTreeMap::new();
+    files.insert(RESULT_PATHS[0].to_string(), b"job=j9\n".to_vec());
+    files.insert(RESULT_PATHS[1].to_string(), vec![b'a'; RECEIPT_BYTES + 10]);
+    files.insert(
+        RESULT_PATHS[2].to_string(),
+        [vec![b'x'; 5000], b"END".to_vec()].concat(),
+    );
+    let got = collected_from_files(&files).unwrap();
+    assert_eq!(got.receipt.len(), RECEIPT_BYTES + 1);
+    assert_eq!(got.stderr.len(), TAIL_BYTES + 1);
+    assert!(got.stderr.ends_with("END\n"));
+    assert!(collected_from_files(&BTreeMap::new()).is_none());
+    files.insert(RESULT_PATHS[0].to_string(), b"state=done\n".to_vec());
+    assert!(
+        collected_from_files(&files).is_none(),
+        "no job id, no result"
     );
 }
 

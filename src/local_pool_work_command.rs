@@ -64,11 +64,11 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     let token = github::mint_token(&config)?;
     let default = github::default_branch(&token, &config.repo)?;
     dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
-    warn_missing_secrets(&provider, &config, &config.app_name(&space.config.name));
+    warn_missing_env(provider.as_ref(), &config);
     let start = github::resolve_base(&token, &config.repo, Some(&plan.refs.from))?;
     let made = work::submit(
         &space,
-        &provider,
+        provider.as_ref(),
         &pool,
         &plan,
         &token,
@@ -89,13 +89,13 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     Ok(())
 }
 
-/// Warn (never fail) when the app lacks secrets the harness is configured for.
-fn warn_missing_secrets(provider: &dyn vivi::pool::PoolProvider, config: &PoolConfig, app: &str) {
-    match run::missing_secrets(provider, config) {
-        Ok(missing) => run::secrets_warning(app, &missing)
+/// Warn (never fail) when the host lacks harness environment the config names.
+fn warn_missing_env(provider: &dyn vivi::pool::PoolProvider, config: &PoolConfig) {
+    match run::missing_env_at_dispatch(provider, config) {
+        Ok(missing) => run::env_warning(provider, &missing)
             .iter()
             .for_each(|w| eprintln!("{w}")),
-        Err(e) => eprintln!("warning: could not check the app's secrets: {e}"),
+        Err(e) => eprintln!("warning: could not check the harness environment: {e}"),
     }
 }
 
@@ -112,7 +112,7 @@ pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
         pacing: Pacing::default(),
         cancelled: &|| false,
     };
-    let waited = work::wait(&space, &provider, &wanted, &options, &mut |n| {
+    let waited = work::wait(&space, provider.as_ref(), &wanted, &options, &mut |n| {
         eprintln!("{n}");
     })?;
     match waited {
@@ -126,7 +126,7 @@ pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
 
 pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumError> {
     let (space, _, pool, provider) = open_pool_space(command.project.as_deref())?;
-    let report = work::reconcile(&space, &provider, &pool, &Pacing::default())?;
+    let report = work::reconcile(&space, provider.as_ref(), &pool, &Pacing::default())?;
     report.out.iter().for_each(|l| println!("{l}"));
     report.warnings.iter().for_each(|w| eprintln!("{w}"));
     report.error().map_or(Ok(()), Err)

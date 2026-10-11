@@ -8,23 +8,33 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::VivariumError;
 
+/// Machine hosts the pool can run on.
+pub const PROVIDERS: [&str; 2] = ["fly", "docker"];
 const DEFAULT_PROVIDER: &str = "fly";
 const DEFAULT_REGION: &str = "iad";
 const DEFAULT_ORGANIZATION: &str = "personal";
 const DEFAULT_SIZE: &str = "performance-8x";
 const DEFAULT_MEMORY_MB: u32 = 32768;
 const DEFAULT_TMPFS: &str = "16g";
+const DEFAULT_DOCKER_MEMORY: &str = "4g";
+const DEFAULT_DOCKER_TMPFS: &str = "2g";
+/// Longest Fly app name.
+const MAX_APP_NAME: usize = 63;
+/// Hex digits of the organization hash that end a default app name.
+const APP_SUFFIX_LEN: usize = 6;
 
-/// Remote lane pool settings. Machine-host settings live in [`PoolFly`].
+/// Remote lane pool settings. Machine-host settings live in [`PoolFly`] and
+/// [`PoolDocker`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
     /// Pool name; defaults to the mailspace name. Marks the pool's machines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Machine host. Only `fly` exists.
+    /// Machine host: `fly` or `docker`.
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Source repository, `owner/name`.
@@ -44,6 +54,9 @@ pub struct PoolConfig {
     /// Settings that belong to the `fly` machine host.
     #[serde(default)]
     pub fly: PoolFly,
+    /// Settings that belong to the `docker` machine host.
+    #[serde(default)]
+    pub docker: PoolDocker,
     /// GitHub App used to mint the fetch token.
     pub github: PoolGithub,
     /// Agent harness description; `dispatch` needs it.
@@ -76,8 +89,10 @@ pub struct EmbeddedSource {
 /// The `[pool.fly]` table: the settings only the `fly` machine host has.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolFly {
-    /// Provider application that holds the machines. Default: the pool name.
-    /// `create` makes it when it does not exist.
+    /// Provider application that holds the machines. Default: the pool name
+    /// plus a short suffix derived from the organization (app names are
+    /// unique across all Fly accounts). `create` makes it when it does not
+    /// exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     /// Provider organization that owns a newly created application.
@@ -110,6 +125,47 @@ impl Default for PoolFly {
             tmpfs: default_tmpfs(),
             unknown: BTreeMap::new(),
         }
+    }
+}
+
+/// The `[pool.docker]` table: the settings only the `docker` machine host has.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PoolDocker {
+    /// Docker daemon address, e.g. `ssh://user@server`. Omit for the local
+    /// daemon (or whatever `DOCKER_HOST` names).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Memory limit of each slot, e.g. `4g`. The memory disk over the build
+    /// output counts against it.
+    #[serde(default = "default_docker_memory")]
+    pub memory: String,
+    /// CPU limit of each slot (fractions allowed). Default: no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<f64>,
+    /// Size of the memory disk mounted over the build output, e.g. `2g`.
+    #[serde(default = "default_docker_tmpfs")]
+    pub tmpfs: String,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, toml::Value>,
+}
+
+impl Default for PoolDocker {
+    fn default() -> Self {
+        Self {
+            host: None,
+            memory: default_docker_memory(),
+            cpus: None,
+            tmpfs: default_docker_tmpfs(),
+            unknown: BTreeMap::new(),
+        }
+    }
+}
+
+impl PoolFly {
+    /// The organization a new application is created in.
+    #[must_use]
+    pub fn organization_name(&self) -> &str {
+        self.organization.as_deref().unwrap_or(DEFAULT_ORGANIZATION)
     }
 }
 
@@ -170,6 +226,12 @@ fn default_memory() -> u32 {
 fn default_tmpfs() -> String {
     DEFAULT_TMPFS.to_string()
 }
+fn default_docker_memory() -> String {
+    DEFAULT_DOCKER_MEMORY.to_string()
+}
+fn default_docker_tmpfs() -> String {
+    DEFAULT_DOCKER_TMPFS.to_string()
+}
 
 impl PoolConfig {
     /// The pool name: explicit, else the mailspace name, normalised to
@@ -185,13 +247,23 @@ impl PoolConfig {
         mapped.trim_matches('-').to_string()
     }
 
-    /// The provider application: explicit, else the pool name.
+    /// The Fly application: explicit, else the pool name plus a suffix of
+    /// the organization (see [`default_app_name`]).
     #[must_use]
     pub fn app_name(&self, mailspace_name: &str) -> String {
-        self.fly
-            .app
-            .clone()
-            .unwrap_or_else(|| self.pool_name(mailspace_name))
+        self.fly.app.clone().unwrap_or_else(|| {
+            default_app_name(&self.pool_name(mailspace_name), self.organization_name())
+        })
+    }
+
+    /// Size of the memory disk over the build output, from the active host.
+    #[must_use]
+    pub fn tmpfs_size(&self) -> &str {
+        if self.provider == "docker" {
+            &self.docker.tmpfs
+        } else {
+            &self.fly.tmpfs
+        }
     }
 
     /// The full Git address jobs and the seed fetch from and push to:
@@ -207,10 +279,7 @@ impl PoolConfig {
     /// The organization a new application is created in.
     #[must_use]
     pub fn organization_name(&self) -> &str {
-        self.fly
-            .organization
-            .as_deref()
-            .unwrap_or(DEFAULT_ORGANIZATION)
+        self.fly.organization_name()
     }
 
     /// The private key path with a leading `~` expanded.
@@ -242,19 +311,31 @@ impl PoolConfig {
         }
         reject_moved_keys(&self.unknown)?;
         reject_unknown("pool", &self.unknown)?;
-        reject_unknown("pool.fly", &self.fly.unknown)
+        reject_unknown("pool.fly", &self.fly.unknown)?;
+        reject_unknown("pool.docker", &self.docker.unknown)
     }
 
     fn validate_identity(&self, mailspace_name: &str) -> Result<(), VivariumError> {
-        if self.provider != DEFAULT_PROVIDER {
+        if !PROVIDERS.contains(&self.provider.as_str()) {
             return Err(bad(format!(
-                "provider \"{}\" is not supported (only \"fly\")",
+                "provider \"{}\" is not supported (use \"fly\" or \"docker\")",
                 self.provider
             )));
         }
         if self.pool_name(mailspace_name).is_empty() {
             return Err(bad("name resolves to an empty pool name"));
         }
+        if self.provider == "fly" {
+            self.validate_fly_names(mailspace_name)?;
+        }
+        let mut parts = self.repo.split('/');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(owner), Some(name), None) if is_repo_part(owner) && is_repo_part(name) => Ok(()),
+            _ => Err(bad("repo must be owner/name")),
+        }
+    }
+
+    fn validate_fly_names(&self, mailspace_name: &str) -> Result<(), VivariumError> {
         let app = self.app_name(mailspace_name);
         let org = self.organization_name().to_string();
         for (field, value) in [
@@ -268,29 +349,36 @@ impl PoolConfig {
                 )));
             }
         }
-        let mut parts = self.repo.split('/');
-        match (parts.next(), parts.next(), parts.next()) {
-            (Some(owner), Some(name), None) if is_repo_part(owner) && is_repo_part(name) => Ok(()),
-            _ => Err(bad("repo must be owner/name")),
-        }
+        Ok(())
     }
 
     fn validate_machine(&self) -> Result<(), VivariumError> {
         if self.slots == 0 {
             return Err(bad("slots must be at least 1"));
         }
+        if self.image.trim().is_empty() || self.image.chars().any(char::is_whitespace) {
+            return Err(bad("image must be a single word"));
+        }
+        if self.provider == "docker" {
+            self.docker.validate()?;
+        } else {
+            self.validate_fly_machine()?;
+        }
+        validate_build_dir(&self.build_dir)
+    }
+
+    fn validate_fly_machine(&self) -> Result<(), VivariumError> {
         if self.fly.memory == 0 {
             return Err(bad("memory must be positive (MB)"));
         }
-        for (field, value) in [("size", &self.fly.size), ("image", &self.image)] {
-            if value.trim().is_empty() || value.chars().any(char::is_whitespace) {
-                return Err(bad(format!("{field} must be a single word")));
-            }
+        let size = &self.fly.size;
+        if size.trim().is_empty() || size.chars().any(char::is_whitespace) {
+            return Err(bad("size must be a single word"));
         }
         if !is_tmpfs_size(&self.fly.tmpfs) {
             return Err(bad("tmpfs must look like 16g, 512m, or 4096k"));
         }
-        validate_build_dir(&self.build_dir)
+        Ok(())
     }
 
     fn validate_commands(&self) -> Result<(), VivariumError> {
@@ -310,6 +398,28 @@ impl PoolConfig {
             return Err(bad("github.private_key must name a key file"));
         }
         reject_unknown("pool.github", &self.github.unknown)
+    }
+}
+
+impl PoolDocker {
+    fn validate(&self) -> Result<(), VivariumError> {
+        if let Some(host) = &self.host
+            && !is_docker_host(host)
+        {
+            return Err(bad(
+                "docker.host must look like ssh://user@server (or tcp://, unix://)",
+            ));
+        }
+        if !is_tmpfs_size(&self.memory) {
+            return Err(bad("docker.memory must look like 4g, 512m, or 4096k"));
+        }
+        if !is_tmpfs_size(&self.tmpfs) {
+            return Err(bad("docker.tmpfs must look like 2g, 512m, or 4096k"));
+        }
+        if self.cpus.is_some_and(|c| !(c.is_finite() && c > 0.0)) {
+            return Err(bad("docker.cpus must be a positive number"));
+        }
+        Ok(())
     }
 }
 
@@ -410,6 +520,32 @@ fn is_repo_part(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn is_docker_host(value: &str) -> bool {
+    let schemes = ["ssh://", "tcp://", "unix://"];
+    schemes
+        .iter()
+        .any(|s| value.strip_prefix(s).is_some_and(|rest| !rest.is_empty()))
+        && !value.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// The Fly app a pool uses when `[pool.fly] app` is not set: the pool name
+/// and a short stable suffix of the organization, so two Fly accounts that
+/// both call a pool `lanes` do not fight over one name (Fly app names are
+/// unique across all customers). The suffix is six hex digits of the
+/// organization's SHA-256; the pool part is cut so the whole stays a valid
+/// Fly app name.
+#[must_use]
+pub fn default_app_name(pool: &str, organization: &str) -> String {
+    let digest = hex::encode(Sha256::digest(organization.as_bytes()));
+    let room = MAX_APP_NAME - APP_SUFFIX_LEN - 1;
+    let head: String = pool.chars().take(room).collect();
+    format!(
+        "{}-{}",
+        head.trim_end_matches('-'),
+        &digest[..APP_SUFFIX_LEN]
+    )
 }
 
 fn is_tmpfs_size(value: &str) -> bool {

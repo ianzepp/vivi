@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::pool::config::PoolConfig;
 use crate::pool::{collect, job};
@@ -41,7 +43,7 @@ fn slot_files_hold_boot_setup_and_seed() {
 #[test]
 fn env_is_parameterised_not_baked_into_the_script() {
     let token = crate::pool::github::Secret::new("tok".to_string());
-    let env = slot_env(&config(), &token, &"b".repeat(40));
+    let env = slot_env(&config(), &token, &"b".repeat(40), false);
     assert_eq!(env["REMOTE"], "https://github.com/acme/widgets.git");
     assert!(!env.contains_key("REPO"));
     assert!(!env.contains_key("SOURCE_DIR"));
@@ -165,7 +167,7 @@ fn embedded(config: &PoolConfig) -> PoolConfig {
 #[test]
 fn a_github_pool_sends_the_token_and_an_https_remote() {
     let token = crate::pool::github::Secret::new("tok".to_string());
-    let env = slot_env(&config(), &token, "main");
+    let env = slot_env(&config(), &token, "main", false);
     assert_eq!(env["REMOTE"], "https://github.com/acme/widgets.git");
     assert_eq!(env["GH_TOKEN"], "tok");
     assert!(!env.contains_key("SOURCE_DIR"));
@@ -176,7 +178,7 @@ fn a_github_pool_sends_the_token_and_an_https_remote() {
 fn an_embedded_source_is_delivered_with_a_file_remote_and_no_token() {
     let config = embedded(&config());
     let empty = crate::pool::github::Secret::new(String::new());
-    let env = slot_env(&config, &empty, "main");
+    let env = slot_env(&config, &empty, "main", false);
     assert_eq!(env["REMOTE"], "file:///work/remote.git");
     assert_eq!(env["SOURCE_DIR"], SOURCE_DIR);
     assert_eq!(env["BASE"], "main");
@@ -224,4 +226,108 @@ fn the_runner_takes_a_full_remote_and_adds_the_token_only_to_https() {
     }
     assert!(!job::RUNNER.contains("github.com"));
     assert!(!job::RUNNER.contains("${REPO}"));
+}
+
+fn slot_env_for(provider: &str, mounted: bool) -> BTreeMap<String, String> {
+    let mut config = config();
+    config.provider = provider.to_string();
+    config.docker.tmpfs = "2g".into();
+    let token = crate::pool::github::Secret::new(String::new());
+    slot_env(&config, &token, "main", mounted)
+}
+
+#[test]
+fn a_host_that_mounts_the_memory_disk_says_so_and_sizes_it_from_its_own_table() {
+    let docker = slot_env_for("docker", true);
+    assert_eq!(docker["BUILD_MOUNTED"], "1");
+    assert_eq!(docker["TMPFS_SIZE"], "2g");
+    let fly = slot_env_for("fly", false);
+    assert!(!fly.contains_key("BUILD_MOUNTED"));
+    assert_eq!(fly["TMPFS_SIZE"], "8g");
+}
+
+/// The text of the shell function `name` in the boot script.
+fn function_text(name: &str) -> String {
+    let start = BOOT_SCRIPT.find(&format!("{name}() {{")).unwrap();
+    let end = BOOT_SCRIPT[start..].find("\n}\n").unwrap() + 3;
+    BOOT_SCRIPT[start..start + end].to_string()
+}
+
+/// Run `mount_build` in `dir` with a `mount` that only writes down its call.
+fn run_mount_build(dir: &std::path::Path, mounted: bool) -> Option<(bool, String)> {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let stub = bin.join("mount");
+    std::fs::write(&stub, "#!/bin/sh\necho \"$@\" >> \"$MOUNT_LOG\"\n").unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let log = dir.join("mount.log");
+    let script = format!("{}\nmount_build\n", function_text("mount_build"));
+    let mut command = std::process::Command::new("bash");
+    command
+        .current_dir(dir)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("MOUNT_LOG", &log)
+        .env("BUILD_DIR", "out/cache")
+        .env("TMPFS_SIZE", "64m")
+        .env_remove("BUILD_MOUNTED")
+        .arg("-c")
+        .arg(script);
+    if mounted {
+        command.env("BUILD_MOUNTED", "1");
+    }
+    let status = command.status().ok()?;
+    Some((
+        status.success() && dir.join("out/cache").is_dir(),
+        std::fs::read_to_string(log).unwrap_or_default(),
+    ))
+}
+
+#[test]
+fn the_boot_script_mounts_the_memory_disk_unless_the_host_already_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some((made_dir, called)) = run_mount_build(dir.path(), false) else {
+        return;
+    };
+    assert!(made_dir);
+    assert_eq!(called.trim(), "-t tmpfs -o size=64m tmpfs out/cache");
+    let dir = tempfile::tempdir().unwrap();
+    let (made_dir, called) = run_mount_build(dir.path(), true).unwrap();
+    assert!(made_dir, "the directory still has to exist");
+    assert_eq!(called, "", "a host-mounted memory disk is left alone");
+}
+
+#[test]
+fn both_mount_sites_of_the_boot_script_go_through_the_conditional() {
+    assert_eq!(BOOT_SCRIPT.matches("mount -t tmpfs").count(), 1);
+    assert_eq!(BOOT_SCRIPT.matches("mount_build\n").count(), 2);
+    assert!(BOOT_SCRIPT.contains(r#"[ -n "${BUILD_MOUNTED:-}" ] ||"#));
+    assert!(BOOT_SCRIPT.contains("RD=/work/repo"));
+    assert_eq!(CHECKOUT_DIR, "/work/repo");
+}
+
+#[test]
+fn a_one_time_secret_file_is_read_then_removed_before_anything_uses_it() {
+    let line = BOOT_SCRIPT
+        .lines()
+        .find(|l| l.contains("/work/once.env") && l.starts_with("if "))
+        .unwrap();
+    assert!(
+        line.contains(". /work/once.env; rm -f /work/once.env"),
+        "{line}"
+    );
+    let first_use = BOOT_SCRIPT.find("remote_url()").unwrap();
+    assert!(BOOT_SCRIPT.find(line).unwrap() < first_use);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("once.env");
+    std::fs::write(&file, "export GH_TOKEN='it'\\''s'\n").unwrap();
+    let probe = line.replace("/work/once.env", file.to_str().unwrap());
+    let Ok(out) = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(format!("{probe}\nprintf '%s' \"$GH_TOKEN\""))
+        .output()
+    else {
+        return;
+    };
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "it's");
+    assert!(!file.exists(), "the secret file is gone once read");
 }

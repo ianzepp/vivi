@@ -4,12 +4,11 @@ use crate::local_pool_work_command as work;
 use vivi::VivariumError;
 use vivi::cli::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
 use vivi::mailspace::Mailspace;
-use vivi::pool::PoolConfig;
-use vivi::pool::fly::FlyctlProvider;
 use vivi::pool::github;
 use vivi::pool::run::{self, CreateOptions, DestroyTarget, SlotOutcome};
 use vivi::pool::slot::SlotStatus;
 use vivi::pool::work as engine;
+use vivi::pool::{PoolConfig, PoolProvider, open_provider};
 
 pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), VivariumError> {
     match command {
@@ -26,7 +25,7 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
 /// Load, validate, and name the pool: `(config, pool name, provider)`.
 fn open_pool(
     project: Option<&std::path::Path>,
-) -> Result<(PoolConfig, String, FlyctlProvider), VivariumError> {
+) -> Result<(PoolConfig, String, Box<dyn PoolProvider>), VivariumError> {
     let (_, config, pool, provider) = open_pool_space(project)?;
     Ok((config, pool, provider))
 }
@@ -34,7 +33,7 @@ fn open_pool(
 /// [`open_pool`] plus the mailspace the pool is configured in.
 pub(crate) fn open_pool_space(
     project: Option<&std::path::Path>,
-) -> Result<(Mailspace, PoolConfig, String, FlyctlProvider), VivariumError> {
+) -> Result<(Mailspace, PoolConfig, String, Box<dyn PoolProvider>), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let Some(config) = mailspace.config.pool.clone() else {
         return Err(VivariumError::Config(
@@ -43,21 +42,18 @@ pub(crate) fn open_pool_space(
     };
     config.validate(&mailspace.config.name)?;
     let pool = config.pool_name(&mailspace.config.name);
-    let provider = FlyctlProvider::new(&config.app_name(&mailspace.config.name));
+    let provider = open_provider(&config, &mailspace.config.name);
     Ok((mailspace, config, pool, provider))
 }
 
 fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
-    let (space, config, pool, provider) = open_pool_space(command.project.as_deref())?;
-    let app = config.app_name(&space.config.name);
-    let ready = run::prepare_app(&provider, &config, &app)?;
-    if ready.created {
-        println!(
-            "created app {app} in organization {}",
-            config.organization_name()
-        );
+    let (_, config, pool, provider) = open_pool_space(command.project.as_deref())?;
+    let provider = provider.as_ref();
+    let ready = run::prepare_home(provider, &config)?;
+    if let Some(made) = &ready.created {
+        println!("{made}");
     }
-    if let Some(warning) = run::secrets_warning(&app, &ready.missing_secrets) {
+    if let Some(warning) = run::env_warning(provider, &ready.missing_env) {
         eprintln!("{warning}");
     }
     let options = CreateOptions {
@@ -65,7 +61,7 @@ fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
         timeout: Duration::from_secs(command.timeout),
         ..CreateOptions::default()
     };
-    let report = run::create_slots(&provider, &config, &pool, &options, || {
+    let report = run::create_slots(provider, &config, &pool, &options, || {
         let token = github::mint_token(&config)?;
         let base = github::resolve_base(&token, &config.repo, command.base.as_deref())?;
         println!("seeding at {}", &base[..12.min(base.len())]);
@@ -108,7 +104,7 @@ fn outcome_line(outcome: &SlotOutcome) -> String {
 
 fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
     let (space, _, pool, provider) = open_pool_space(command.project.as_deref())?;
-    let mut slots = run::pool_status(&provider, &pool)?;
+    let mut slots = run::pool_status(provider.as_ref(), &pool)?;
     run::annotate_running(
         &mut slots,
         &engine::open_dispatches(&space)?,
@@ -142,8 +138,12 @@ fn print_slots(pool: &str, slots: &[SlotStatus]) {
             .task
             .as_deref()
             .map_or(String::new(), |t| format!("  task {t}"));
+        let arch = slot
+            .arch
+            .as_deref()
+            .map_or(String::new(), |a| format!("  arch {a}"));
         println!(
-            "  {}  {}  {}{task}{}  base {}  created {}",
+            "  {}  {}  {}{task}{}  base {}{arch}  created {}",
             slot.name,
             slot.id,
             slot.state,
@@ -167,7 +167,7 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
         Some(selector) => DestroyTarget::Slot(selector.clone()),
         None => DestroyTarget::All,
     };
-    let destroyed = run::destroy_slots(&provider, &pool, &target)?;
+    let destroyed = run::destroy_slots(provider.as_ref(), &pool, &target)?;
     for slot in &destroyed {
         println!("destroyed {}  {}", slot.name, slot.id);
     }

@@ -7,9 +7,12 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+use super::claim::CLAIM_TTL_SECS;
+use super::config::PoolFly;
 use super::doctor::Check;
 use super::fly_api::FlyApi;
-use super::provider::{CreateSpec, ExecOutput, Lease, MachineRecord, PoolProvider};
+use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
+use super::slot::{self, META_CLAIMED, META_TASK};
 use crate::error::VivariumError;
 
 /// Pool provider backed by the `fly` binary for list, create and destroy, and
@@ -18,17 +21,27 @@ use crate::error::VivariumError;
 pub struct FlyctlProvider {
     bin: String,
     pub(super) app: String,
+    /// Where new machines go and how big they are, from `[pool.fly]`.
+    host: PoolFly,
     api: FlyApi,
 }
 
 impl FlyctlProvider {
     #[must_use]
-    pub fn new(app: &str) -> Self {
+    pub fn new(app: &str, host: &PoolFly) -> Self {
         Self {
             bin: "fly".to_string(),
             app: app.to_string(),
+            host: host.clone(),
             api: FlyApi::new(app),
         }
+    }
+
+    /// The names (never the values) of the application's secrets.
+    pub(super) fn secret_names(&self) -> Result<Vec<String>, VivariumError> {
+        let args = ["secrets", "list", "--json", "-a", &self.app].map(str::to_string);
+        let (stdout, _) = self.run(&args, &[])?;
+        parse_secret_names(&stdout)
     }
 
     pub(super) fn run(
@@ -57,24 +70,68 @@ impl FlyctlProvider {
 }
 
 impl PoolProvider for FlyctlProvider {
-    fn ensure_app(&self, organization: &str) -> Result<bool, VivariumError> {
+    fn ensure_home(&self) -> Result<Option<String>, VivariumError> {
         let args = ["apps", "list", "--json"].map(str::to_string);
         let (stdout, _) = self.run(&args, &[])?;
         if parse_app_names(&stdout)?.contains(&self.app) {
-            return Ok(false);
+            return Ok(None);
         }
-        let args = ["apps", "create", &self.app, "--org", organization].map(str::to_string);
-        self.run(&args, &[]).map(|_| true)
+        let org = self.host.organization_name();
+        let args = ["apps", "create", &self.app, "--org", org].map(str::to_string);
+        self.run(&args, &[]).map_err(|e| name_taken(&self.app, e))?;
+        Ok(Some(format!(
+            "created app {} in organization {org}",
+            self.app
+        )))
     }
 
     fn doctor(&self, harness_env: &[String]) -> Vec<Check> {
         self.doctor_checks(harness_env)
     }
 
-    fn secret_names(&self) -> Result<Vec<String>, VivariumError> {
-        let args = ["secrets", "list", "--json", "-a", &self.app].map(str::to_string);
-        let (stdout, _) = self.run(&args, &[])?;
-        parse_secret_names(&stdout)
+    fn harness_env_gaps(&self, names: &[String]) -> Result<Vec<String>, VivariumError> {
+        let have = self.secret_names()?;
+        Ok(names
+            .iter()
+            .filter(|n| !have.contains(n))
+            .cloned()
+            .collect())
+    }
+
+    fn env_gaps_at_dispatch(&self, names: &[String]) -> Result<Vec<String>, VivariumError> {
+        self.harness_env_gaps(names)
+    }
+
+    fn supplies_build_mount(&self) -> bool {
+        false
+    }
+
+    /// A stopped machine's disk is only reachable by starting it.
+    fn read_stopped(
+        &self,
+        _id: &str,
+        _paths: &[&str],
+    ) -> Result<Option<std::collections::BTreeMap<String, Vec<u8>>>, VivariumError> {
+        Ok(None)
+    }
+
+    fn env_gap_hint(&self, missing: &[String]) -> String {
+        let assignments = missing
+            .iter()
+            .map(|name| format!("{name}=<value>"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "warning: app {} has no secret named {}. The harness gets these from the machine's environment, so a job will run without them unless the image sets them. Set them yourself (vivi never reads or sets secret values):\n  fly secrets set -a {} {assignments}",
+            self.app,
+            missing.join(", "),
+            self.app
+        )
+    }
+
+    fn live_test_notice(&self) -> String {
+        "it creates two small billable machines for a few minutes (Ctrl-C stops it and cleans up)"
+            .to_string()
     }
 
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
@@ -84,8 +141,9 @@ impl PoolProvider for FlyctlProvider {
     }
 
     fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
-        let secrets: Vec<&str> = spec.env.values().map(String::as_str).collect();
-        let (stdout, stderr) = self.run(&run_args(&self.app, spec), &secrets)?;
+        let secrets: Vec<&str> = spec.once_env.values().map(String::as_str).collect();
+        let args = run_args(&self.app, &self.host, spec);
+        let (stdout, stderr) = self.run(&args, &secrets)?;
         parse_run_output(&format!("{stdout}\n{stderr}")).ok_or_else(|| {
             VivariumError::Message(format!(
                 "could not find the machine id in flyctl output for {}",
@@ -107,30 +165,51 @@ impl PoolProvider for FlyctlProvider {
         self.api.machine(id)
     }
 
-    fn lease(&self, id: &str, ttl_secs: u32) -> Result<Option<Lease>, VivariumError> {
-        self.api.lease(id, ttl_secs)
+    /// A machine lease serialises the check-and-mark; the marks are machine
+    /// metadata and outlive the lease.
+    fn claim(&self, id: &str, task: &str, now: u64) -> Result<Option<Hold>, VivariumError> {
+        let Some(hold) = self.api.lease(id, CLAIM_TTL_SECS)? else {
+            return Ok(None);
+        };
+        // The list may be stale: re-read under the lease before marking.
+        let fresh = self.api.machine(id);
+        if !fresh.as_ref().is_ok_and(slot::is_free) {
+            self.api.release(id, &hold)?;
+            fresh?;
+            return Ok(None);
+        }
+        let marked = self
+            .api
+            .set_metadata(id, META_TASK, task)
+            .and_then(|()| self.api.set_metadata(id, META_CLAIMED, &now.to_string()));
+        if let Err(e) = marked {
+            // Every step is attempted; a mark left behind is a stale claim.
+            let (unmarked, freed) = (self.unclaim(id), self.api.release(id, &hold));
+            if let Err(undo) = unmarked.and(freed) {
+                eprintln!("warning: could not fully undo the claim: {undo}");
+            }
+            return Err(e);
+        }
+        Ok(Some(hold))
     }
 
-    fn release(&self, id: &str, lease: &Lease) -> Result<(), VivariumError> {
-        self.api.release(id, lease)
+    fn unclaim(&self, id: &str) -> Result<(), VivariumError> {
+        let task = self.api.clear_metadata(id, META_TASK);
+        task.and(self.api.clear_metadata(id, META_CLAIMED))
     }
 
-    fn set_metadata(&self, id: &str, key: &str, value: &str) -> Result<(), VivariumError> {
-        self.api.set_metadata(id, key, value)
-    }
-
-    fn clear_metadata(&self, id: &str, key: &str) -> Result<(), VivariumError> {
-        self.api.clear_metadata(id, key)
+    fn release(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
+        self.api.release(id, hold)
     }
 
     fn put_file(
         &self,
         id: &str,
-        lease: &Lease,
+        hold: &Hold,
         path: &str,
         content: &[u8],
     ) -> Result<(), VivariumError> {
-        self.api.put_file(id, lease, path, content)
+        self.api.put_file(id, hold, path, content)
     }
 
     fn seal(
@@ -156,12 +235,32 @@ impl PoolProvider for FlyctlProvider {
     }
 }
 
+/// The error for a failed `fly apps create`, in plain words when the cause is
+/// that the name is taken (Fly app names are unique across all accounts).
+fn name_taken(app: &str, error: VivariumError) -> VivariumError {
+    if !is_name_taken(&error.to_string()) {
+        return error;
+    }
+    VivariumError::Message(format!(
+        "the Fly app name \"{app}\" is already taken (Fly app names are unique across all Fly accounts). Choose another and set it in .vivi/mailspace.toml:\n  [pool.fly]\n  app = \"<your-unique-app-name>\""
+    ))
+}
+
+/// True when `flyctl` text says the app name is already in use.
+#[must_use]
+pub fn is_name_taken(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ["already been taken", "already taken", "name is taken"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
 /// Arguments for `fly machine run`. `--file-literal` takes the raw text (its
 /// help says base64, but flyctl encodes the value itself).
 /// Root disk persists and the machine never
 /// restarts on its own, so a finished machine is a stopped (free) slot.
 #[must_use]
-pub fn run_args(app: &str, spec: &CreateSpec) -> Vec<String> {
+pub fn run_args(app: &str, host: &PoolFly, spec: &CreateSpec) -> Vec<String> {
     let mut args: Vec<String> = [
         "machine",
         "run",
@@ -170,11 +269,11 @@ pub fn run_args(app: &str, spec: &CreateSpec) -> Vec<String> {
         "--app",
         app,
         "--region",
-        &spec.region,
+        &host.region,
         "--vm-size",
-        &spec.vm_size,
+        &host.size,
         "--vm-memory",
-        &spec.memory_mb.to_string(),
+        &host.memory.to_string(),
         "--restart",
         "no",
         "--rootfs-persist",
@@ -187,7 +286,7 @@ pub fn run_args(app: &str, spec: &CreateSpec) -> Vec<String> {
     for (key, value) in &spec.metadata {
         args.extend(["--metadata".to_string(), format!("{key}={value}")]);
     }
-    for (key, value) in &spec.env {
+    for (key, value) in spec.env.iter().chain(&spec.once_env) {
         args.extend(["--env".to_string(), format!("{key}={value}")]);
     }
     for (path, content) in &spec.files {

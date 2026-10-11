@@ -233,19 +233,60 @@ fn committer_must_be_single_line_text() {
 }
 
 #[test]
-fn app_defaults_to_the_pool_name_and_organization_to_personal() {
+fn app_defaults_to_the_pool_name_with_a_suffix_of_the_organization() {
     let mut config = full();
     config.fly.app = None;
     config.name = None;
     config.validate("My Project").unwrap();
-    assert_eq!(config.app_name("My Project"), "my-project");
+    assert_eq!(config.app_name("My Project"), "my-project-4a0a33");
     assert_eq!(config.organization_name(), "personal");
     config.name = Some("lanes".into());
-    assert_eq!(config.app_name("My Project"), "lanes");
-    config.fly.app = Some("shared".into());
+    assert_eq!(config.app_name("My Project"), "lanes-4a0a33");
     config.fly.organization = Some("acme".into());
-    assert_eq!(config.app_name("My Project"), "shared");
+    assert_eq!(config.app_name("My Project"), "lanes-822b33");
+    config.fly.app = Some("shared".into());
+    assert_eq!(
+        config.app_name("My Project"),
+        "shared",
+        "an explicit app wins"
+    );
     assert_eq!(config.organization_name(), "acme");
+}
+
+#[test]
+fn the_default_app_name_is_stable_per_organization_and_always_a_valid_name() {
+    assert_eq!(
+        default_app_name("lanes", "acme"),
+        default_app_name("lanes", "acme")
+    );
+    assert_ne!(
+        default_app_name("lanes", "acme"),
+        default_app_name("lanes", "other")
+    );
+    assert_ne!(
+        default_app_name("lanes", "acme"),
+        default_app_name("tracks", "acme")
+    );
+    for pool in [
+        "a",
+        "lanes",
+        "a-b-c",
+        &"x".repeat(200),
+        &format!("{}-tail", "y".repeat(56)),
+    ] {
+        let name = default_app_name(pool, "Some Org");
+        assert!(is_slug(&name), "{name}");
+        assert!(name.len() <= 63, "{name}");
+        assert!(!name.contains("--"), "{name}");
+        let suffix = name.rsplit('-').next().unwrap();
+        assert_eq!(suffix.len(), 6);
+        assert!(
+            suffix
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        );
+    }
+    assert!(default_app_name(&"x".repeat(200), "o").starts_with(&"x".repeat(56)));
 }
 
 #[test]
@@ -315,4 +356,100 @@ fn the_embedded_source_cannot_come_from_toml() {
     let parsed: PoolConfig = toml::from_str(&toml).unwrap();
     assert!(parsed.embedded.is_none());
     assert!(err(&parsed).contains("unknown field \"embedded\""));
+}
+
+const DOCKER: &str = r#"
+repo = "acme/widgets"
+slots = 2
+image = "ubuntu:24.04"
+build_dir = "target"
+provider = "docker"
+
+[docker]
+host = "ssh://ci@build-box"
+memory = "8g"
+cpus = 2.5
+tmpfs = "4g"
+
+[github]
+app_id = 1
+private_key = "k.pem"
+"#;
+
+fn docker() -> PoolConfig {
+    toml::from_str(DOCKER).unwrap()
+}
+
+#[test]
+fn a_docker_table_parses_and_validates() {
+    let config = docker();
+    config.validate("space").unwrap();
+    assert_eq!(config.docker.host.as_deref(), Some("ssh://ci@build-box"));
+    assert_eq!(config.docker.memory, "8g");
+    assert_eq!(config.docker.cpus, Some(2.5));
+    assert_eq!(config.tmpfs_size(), "4g");
+}
+
+#[test]
+fn docker_settings_have_sensible_defaults_and_the_local_daemon_is_the_default() {
+    let mut config = docker();
+    config.docker = PoolDocker::default();
+    config.validate("space").unwrap();
+    assert_eq!(config.docker.host, None);
+    assert_eq!(config.docker.memory, "4g");
+    assert_eq!(config.docker.cpus, None);
+    assert_eq!(config.tmpfs_size(), "2g");
+    let bare: PoolConfig = toml::from_str(&DOCKER.replace(
+        "[docker]\nhost = \"ssh://ci@build-box\"\nmemory = \"8g\"\ncpus = 2.5\ntmpfs = \"4g\"\n",
+        "",
+    ))
+    .unwrap();
+    bare.validate("space").unwrap();
+    assert_eq!(bare.tmpfs_size(), "2g");
+}
+
+#[test]
+fn an_integer_cpu_count_parses() {
+    let config: PoolConfig = toml::from_str(&DOCKER.replace("cpus = 2.5", "cpus = 4")).unwrap();
+    assert_eq!(config.docker.cpus, Some(4.0));
+}
+
+#[test]
+fn bad_docker_settings_are_refused_by_name() {
+    for (change, field) in [
+        (("ssh://ci@build-box", "build-box"), "docker.host"),
+        (("ssh://ci@build-box", "ssh://"), "docker.host"),
+        (("memory = \"8g\"", "memory = \"eight\""), "docker.memory"),
+        (("tmpfs = \"4g\"", "tmpfs = \"0g\""), "docker.tmpfs"),
+        (("cpus = 2.5", "cpus = 0"), "docker.cpus"),
+        (("cpus = 2.5", "cpus = -1.0"), "docker.cpus"),
+    ] {
+        let config: PoolConfig = toml::from_str(&DOCKER.replace(change.0, change.1)).unwrap();
+        assert!(err(&config).contains(field), "{field}: {}", err(&config));
+    }
+    let config: PoolConfig =
+        toml::from_str(&DOCKER.replace("cpus = 2.5", "cpus = 2.5\nswap = 1")).unwrap();
+    assert!(err(&config).contains("unknown field \"swap\" in [pool.docker]"));
+}
+
+#[test]
+fn the_fly_settings_are_not_checked_against_a_docker_pool_and_back() {
+    let mut config = docker();
+    config.fly.region = "Not A Slug".into();
+    config.fly.memory = 0;
+    config.validate("space").unwrap();
+    let mut config = full();
+    config.docker.memory = "eight".into();
+    config.validate("space").unwrap();
+}
+
+#[test]
+fn providers_other_than_fly_and_docker_are_refused_and_both_are_named() {
+    let mut config = docker();
+    config.provider = "podman".into();
+    let said = err(&config);
+    assert!(
+        said.contains("\"fly\"") && said.contains("\"docker\""),
+        "{said}"
+    );
 }

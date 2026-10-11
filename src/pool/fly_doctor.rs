@@ -3,7 +3,6 @@
 use super::doctor::Check;
 use super::fly::{FlyctlProvider, parse_app_names};
 use super::fly_api::fetch_token;
-use super::provider::PoolProvider;
 
 pub const GROUP: &str = "Provider (Fly)";
 

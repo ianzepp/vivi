@@ -239,3 +239,44 @@ fn old_style_provider_keys_in_pool_are_refused_with_the_new_location() {
         "{said}"
     );
 }
+
+#[test]
+fn a_docker_pool_reports_a_missing_docker_binary_in_the_doctor_and_the_status() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    setup(project.path());
+    let config = project.path().join(".vivi/mailspace.toml");
+    let swapped = std::fs::read_to_string(&config)
+        .unwrap()
+        .replace(
+            "[pool.fly]\napp = \"no-such-app\"\n",
+            "[pool.docker]\nmemory = \"1g\"\n",
+        )
+        .replace("[pool]\n", "[pool]\nprovider = \"docker\"\n");
+    std::fs::write(&config, swapped).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_vivi"))
+            .env("PATH", empty.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let doctor = run(&["pool", "doctor", "--project", root]);
+    let said = text(&doctor);
+    assert!(!doctor.status.success());
+    assert!(said.contains("Provider (Docker)"), "{said}");
+    assert!(said.contains("is Docker installed and on PATH"), "{said}");
+    assert!(said.contains("fix: install Docker"), "{said}");
+    assert!(
+        said.contains("skipped") && said.contains("needs the docker binary"),
+        "{said}"
+    );
+    let status = run(&["pool", "status", "--project", root]);
+    assert!(!status.status.success());
+    assert!(
+        text(&status).contains("is Docker installed and on PATH"),
+        "{}",
+        text(&status)
+    );
+}

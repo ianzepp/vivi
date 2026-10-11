@@ -5,9 +5,12 @@ use std::collections::BTreeMap;
 use super::doctor::Check;
 use crate::error::VivariumError;
 
-/// A held lease on one machine: the proof of an exclusive claim window.
+/// The proof of an exclusive claim: what a provider hands back when a claim
+/// succeeds, and takes back to deliver the job and to end the claim window.
+/// What it holds is the provider's own business (a lease nonce, the id of a
+/// claim marker).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Lease {
+pub struct Hold {
     pub nonce: String,
 }
 
@@ -50,31 +53,45 @@ impl MachineRecord {
     }
 }
 
-/// Everything needed to create and start one slot.
+/// Everything needed to create and start one slot. Settings that belong to
+/// one machine host (size, region, memory limits) are the host's own and are
+/// not here.
 #[derive(Clone)]
 pub struct CreateSpec {
     pub name: String,
-    pub region: String,
     pub image: String,
-    pub vm_size: String,
-    pub memory_mb: u32,
+    /// Fixed facts about the slot (pool, index, base). A host may add its own.
     pub metadata: BTreeMap<String, String>,
-    /// Environment for the machine. May carry a secret: never print it.
+    /// Environment for the machine. Holds no secret: it may be printed in a
+    /// command line.
     pub env: BTreeMap<String, String>,
+    /// Environment the seed needs once (the fetch token). May carry a secret:
+    /// never print it. The host must not leave it on the machine once
+    /// [`PoolProvider::seal`] has run.
+    pub once_env: BTreeMap<String, String>,
+    /// Names the machine's environment gets from the environment of the
+    /// process that creates it (the harness keys). Names only; a name that is
+    /// unset there is left out. Hosts with their own secret store ignore it.
+    pub passthrough_env: Vec<String>,
     /// `(guest path, contents)` files written into the machine.
     pub files: Vec<(String, String)>,
     /// Command the machine runs on every boot.
     pub command: Vec<String>,
+    /// Build output directory relative to the checkout, and the size of the
+    /// memory disk over it. Used by hosts that mount it themselves (see
+    /// [`PoolProvider::supplies_build_mount`]).
+    pub build_dir: String,
+    pub tmpfs: String,
 }
 
 impl std::fmt::Debug for CreateSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CreateSpec")
             .field("name", &self.name)
-            .field("region", &self.region)
             .field("image", &self.image)
             .field("metadata", &self.metadata)
             .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("once_env_keys", &self.once_env.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }
@@ -82,29 +99,52 @@ impl std::fmt::Debug for CreateSpec {
 /// A machine host. Implementations must keep secrets out of errors.
 /// Methods after `destroy` act on one machine by id.
 pub trait PoolProvider {
-    /// Make sure the pool's application exists, creating it in `organization`
-    /// when it does not. True when this call created it.
+    /// Make sure the pool's home on the host exists (a Fly application; a
+    /// Docker daemon needs none). `Some(text)` when this call created it,
+    /// saying what was made.
     ///
     /// # Errors
-    /// Returns an error if the provider cannot list or create applications.
-    fn ensure_app(&self, organization: &str) -> Result<bool, VivariumError>;
+    /// Returns an error if the host cannot list or create it.
+    fn ensure_home(&self) -> Result<Option<String>, VivariumError>;
 
-    /// The provider's own health checks for `vivi pool doctor`: read-only,
-    /// under the provider's own heading, each failure naming its fix. The
-    /// harness environment names are the ones the application must hold as
-    /// secrets.
+    /// The host's own health checks for `vivi pool doctor`: read-only, under
+    /// the host's own heading, each failure naming its fix. The harness
+    /// environment names are the ones the machines must receive.
     fn doctor(&self, harness_env: &[String]) -> Vec<Check>;
 
-    /// The names (never the values) of the application's secrets.
+    /// Which of the harness environment `names` the host has no value for
+    /// (names only; no value is read). A Fly app holds them as secrets; a
+    /// Docker slot takes them from the creating process's environment.
     ///
     /// # Errors
-    /// Returns an error if the provider cannot list secrets.
-    fn secret_names(&self) -> Result<Vec<String>, VivariumError>;
+    /// Returns an error if the host cannot be asked.
+    fn harness_env_gaps(&self, names: &[String]) -> Result<Vec<String>, VivariumError>;
 
-    /// All machines in the pool's app, pool members or not.
+    /// Like [`PoolProvider::harness_env_gaps`], for a dispatch to slots that
+    /// already exist. A host whose slots fixed their environment when they
+    /// were created has nothing to report here.
     ///
     /// # Errors
-    /// Returns an error if the provider cannot be reached or answers badly.
+    /// Returns an error if the host cannot be asked.
+    fn env_gaps_at_dispatch(&self, names: &[String]) -> Result<Vec<String>, VivariumError>;
+
+    /// What to tell the user about `missing` harness environment names:
+    /// the names and the way to supply them, never a value.
+    fn env_gap_hint(&self, missing: &[String]) -> String;
+
+    /// A line for the progress output of the live test, saying what it costs
+    /// on this host.
+    fn live_test_notice(&self) -> String;
+
+    /// True when the host mounts the memory disk over the build directory
+    /// itself (from [`CreateSpec::build_dir`]), because the boot script
+    /// cannot. The boot script then skips its own mount.
+    fn supplies_build_mount(&self) -> bool;
+
+    /// All machines of the pool's home, pool members or not.
+    ///
+    /// # Errors
+    /// Returns an error if the host cannot be reached or answers badly.
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError>;
 
     /// Create and start one machine; returns its id without waiting for the
@@ -124,56 +164,53 @@ pub trait PoolProvider {
     /// cannot remove it itself.
     fn destroy_command(&self, id: &str) -> String;
 
-    /// One machine as the provider reports it right now. A machine that no
+    /// One machine as the host reports it right now. A machine that no
     /// longer exists is not an error: it reads as [`MachineRecord::gone`]
     /// (state `destroyed`), so a dispatch whose machine vanished can be closed.
     ///
     /// # Errors
-    /// Returns an error if the provider fails.
+    /// Returns an error if the host fails.
     fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError>;
 
-    /// Take the machine's lease for `ttl_secs`. `Ok(None)` means another
-    /// holder has it: the atomic part of a claim.
+    /// Claim the machine for `task`: atomically take it and leave the task
+    /// and claim time as durable marks (`META_TASK`, `META_CLAIMED`) that
+    /// outlive the returned [`Hold`]. `Ok(None)` means another claimant has
+    /// it, or it is no longer free. Two claimants, in this process or
+    /// another, never both get `Some`.
     ///
     /// # Errors
-    /// Returns an error if the provider fails for any other reason.
-    fn lease(&self, id: &str, ttl_secs: u32) -> Result<Option<Lease>, VivariumError>;
+    /// Returns an error if the host fails for any other reason; a half-made
+    /// claim is undone first.
+    fn claim(&self, id: &str, task: &str, now: u64) -> Result<Option<Hold>, VivariumError>;
 
-    /// Give a lease back.
+    /// Drop the claim marks. Absent marks are not an error.
     ///
     /// # Errors
-    /// Returns an error if the provider refuses the release.
-    fn release(&self, id: &str, lease: &Lease) -> Result<(), VivariumError>;
+    /// Returns an error if the host refuses.
+    fn unclaim(&self, id: &str) -> Result<(), VivariumError>;
 
-    /// Set one metadata key.
+    /// End the claim window of `hold`; the marks stay.
     ///
     /// # Errors
-    /// Returns an error if the provider refuses the write.
-    fn set_metadata(&self, id: &str, key: &str, value: &str) -> Result<(), VivariumError>;
+    /// Returns an error if the host refuses the release.
+    fn release(&self, id: &str, hold: &Hold) -> Result<(), VivariumError>;
 
-    /// Remove one metadata key; absent is not an error.
-    ///
-    /// # Errors
-    /// Returns an error if the provider refuses the delete.
-    fn clear_metadata(&self, id: &str, key: &str) -> Result<(), VivariumError>;
-
-    /// Replace the machine's config file at `path` (a stopped machine stays
-    /// stopped), holding `lease`. The file lands on the next boot.
+    /// Put a file into the stopped machine (it stays stopped), holding
+    /// `hold`. The file is there the next time the machine starts.
     ///
     /// # Errors
     /// Returns an error if the update is refused.
     fn put_file(
         &self,
         id: &str,
-        lease: &Lease,
+        hold: &Hold,
         path: &str,
         content: &[u8],
     ) -> Result<(), VivariumError>;
 
-    /// In one config update of a stopped machine (which stays stopped): drop
-    /// environment names and set one metadata key. One update, because a
-    /// config update replaces the machine instance and would overwrite a
-    /// metadata write made alongside it.
+    /// Of a stopped machine (it stays stopped): drop the environment names
+    /// that carried one-time secrets (a host that never put them in the
+    /// machine's configuration has nothing to drop) and set one mark.
     ///
     /// # Errors
     /// Returns an error if the update is refused.
@@ -185,13 +222,13 @@ pub trait PoolProvider {
         value: &str,
     ) -> Result<(), VivariumError>;
 
-    /// Start a stopped machine; returns once the provider accepted it.
+    /// Start a stopped machine; returns once the host accepted it.
     ///
     /// # Errors
     /// Returns an error if the machine cannot be started.
     fn start(&self, id: &str) -> Result<(), VivariumError>;
 
-    /// Stop a machine; returns once the provider accepted it.
+    /// Stop a machine; returns once the host accepted it.
     ///
     /// # Errors
     /// Returns an error if the machine cannot be stopped.
@@ -202,4 +239,16 @@ pub trait PoolProvider {
     /// # Errors
     /// Returns an error if the machine is not running or the call fails.
     fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError>;
+
+    /// Read files out of a stopped machine without starting it: the files at
+    /// `paths` that exist, keyed by path. `Ok(None)` means this host cannot,
+    /// and the caller starts the machine and uses [`PoolProvider::exec`].
+    ///
+    /// # Errors
+    /// Returns an error if the host fails.
+    fn read_stopped(
+        &self,
+        id: &str,
+        paths: &[&str],
+    ) -> Result<Option<BTreeMap<String, Vec<u8>>>, VivariumError>;
 }

@@ -4,14 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use vivi::VivariumError;
 use vivi::cli::PoolDoctorCommand;
 use vivi::mailspace::Mailspace;
-use vivi::pool::PoolConfig;
 use vivi::pool::doctor::{self, Check, Inputs, Report};
 use vivi::pool::doctor_pool;
 use vivi::pool::doctor_repo;
-use vivi::pool::fly::FlyctlProvider;
 use vivi::pool::selftest::{self, TestOptions};
 use vivi::pool::selftest_world::Timing;
 use vivi::pool::work::{epoch_secs, open_dispatches};
+use vivi::pool::{PoolConfig, PoolProvider, open_provider};
 
 /// `vivi pool doctor [--test [--long]]`: print the report; fail when any
 /// check failed. The config is read, not validated up front, because
@@ -23,9 +22,9 @@ pub(crate) fn doctor(command: &PoolDoctorCommand) -> Result<(), VivariumError> {
             "no [pool] table in .vivi/mailspace.toml".into(),
         ));
     };
-    let provider = FlyctlProvider::new(&config.app_name(&space.config.name));
+    let provider = open_provider(&config, &space.config.name);
     let mut report = doctor::run(&Inputs {
-        provider: &provider,
+        provider: provider.as_ref(),
         config: &config,
         mailspace_name: &space.config.name,
         open: &open_dispatches(&space)?,
@@ -34,7 +33,7 @@ pub(crate) fn doctor(command: &PoolDoctorCommand) -> Result<(), VivariumError> {
     });
     if command.test {
         let pool = config.pool_name(&space.config.name);
-        let checks = live_test(command.long, &report, &config, &pool, &provider);
+        let checks = live_test(command.long, &report, &config, &pool, provider.as_ref());
         report.checks.extend(checks);
     }
     if command.json {
@@ -58,7 +57,7 @@ fn live_test(
     report: &Report,
     config: &PoolConfig,
     pool: &str,
-    provider: &FlyctlProvider,
+    provider: &dyn PoolProvider,
 ) -> Vec<Check> {
     let config_failed = report.checks.iter().any(|c| {
         c.group == doctor_pool::GROUP && c.name == "config" && c.status == doctor::Status::Fail
@@ -70,9 +69,7 @@ fn live_test(
             "not run: the provider or [pool] checks above failed; fix those first",
         )];
     }
-    eprintln!(
-        "running the live test: it creates two small billable machines for a few minutes (Ctrl-C stops it and cleans up)"
-    );
+    eprintln!("running the live test: {}", provider.live_test_notice());
     let interrupted = install_interrupt();
     let cancelled = || interrupted.load(Ordering::SeqCst);
     selftest::run_test(

@@ -15,7 +15,8 @@
 //! claims a slot atomically (see [`claim`]), delivers one job archive, and is
 //! recorded on the task (see [`record`]); `wait` and `reconcile` collect the
 //! result and free the slot (see [`collect`]). The provider sits behind
-//! [`provider::PoolProvider`] so tests use a fake. `vivi pool doctor --test`
+//! [`provider::PoolProvider`] so tests use a fake; `fly` and `docker` are the
+//! two machine hosts (see [`open_provider`]). `vivi pool doctor --test`
 //! runs a live exercise of all of this (see [`selftest`]).
 
 pub mod bootscript;
@@ -23,6 +24,11 @@ pub mod claim;
 pub mod collect;
 pub mod config;
 pub mod dispatch;
+pub mod docker;
+pub mod docker_cli;
+pub mod docker_doctor;
+pub mod docker_state;
+pub mod docker_tar;
 pub mod doctor;
 pub mod doctor_pool;
 pub mod doctor_repo;
@@ -47,3 +53,17 @@ pub mod work;
 
 pub use config::{PoolCommitter, PoolConfig, PoolGithub, PoolHarness};
 pub use provider::PoolProvider;
+
+/// The machine host `config` names, ready to use. `mailspace_name` is the
+/// mailspace's own name (the default pool name, and with it the default Fly app).
+#[must_use]
+pub fn open_provider(config: &PoolConfig, mailspace_name: &str) -> Box<dyn PoolProvider> {
+    if config.provider == "docker" {
+        Box::new(docker::DockerProvider::new(config))
+    } else {
+        Box::new(fly::FlyctlProvider::new(
+            &config.app_name(mailspace_name),
+            &config.fly,
+        ))
+    }
+}

@@ -5,8 +5,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 
 use super::doctor::Check;
-use super::provider::{CreateSpec, ExecOutput, Lease, MachineRecord, PoolProvider};
-use super::slot::{META_BASE, META_POOL, META_SLOT, META_STATE, META_TASK, STATE_READY};
+use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
+use super::slot::{
+    META_BASE, META_CLAIMED, META_POOL, META_SLOT, META_STATE, META_TASK, STATE_READY,
+};
 use crate::error::VivariumError;
 
 type Hook = Box<dyn Fn(&Fake, &str)>;
@@ -37,7 +39,7 @@ pub struct Fake {
     /// The next this-many `list` calls show every ready slot as still seeding
     /// (a listing that trails the seal).
     pub stale_lists: Cell<u32>,
-    /// Whether the app exists, and the organizations `ensure_app` created it in.
+    /// Whether the home exists, and what `ensure_home` created.
     pub app_exists: Cell<bool>,
     pub apps_created: RefCell<Vec<String>>,
     /// The app's secret names.
@@ -56,6 +58,9 @@ pub struct Fake {
     pub exec_hook: RefCell<Option<ExecHook>>,
     /// Destroying a machine fails and leaves it in place.
     pub destroy_fails: Cell<bool>,
+    /// When set, the provider reads a stopped machine's files directly (every
+    /// stopped machine holds these) instead of asking for a restart.
+    pub stopped_files: RefCell<Option<BTreeMap<String, Vec<u8>>>>,
 }
 
 impl Fake {
@@ -96,6 +101,12 @@ impl Fake {
             .ok_or_else(|| VivariumError::Message(format!("no machine {id}")))?;
         change(machine);
         Ok(())
+    }
+
+    pub fn set_metadata(&self, id: &str, key: &str, value: &str) -> Result<(), VivariumError> {
+        self.edit(id, |m| {
+            m.metadata.insert(key.to_string(), value.to_string());
+        })
     }
 
     pub fn calls_to(&self, verb: &str) -> usize {
@@ -140,23 +151,42 @@ pub fn claimed(id: &str, name: &str, state: &str, pool: &str, task: &str) -> Mac
 }
 
 impl PoolProvider for Fake {
-    fn ensure_app(&self, organization: &str) -> Result<bool, VivariumError> {
+    fn ensure_home(&self) -> Result<Option<String>, VivariumError> {
         if self.app_exists.get() {
-            return Ok(false);
+            return Ok(None);
         }
         self.app_exists.set(true);
-        self.apps_created
-            .borrow_mut()
-            .push(organization.to_string());
-        Ok(true)
+        self.apps_created.borrow_mut().push("fake".to_string());
+        Ok(Some("created fake home".to_string()))
     }
 
     fn doctor(&self, _harness_env: &[String]) -> Vec<Check> {
         self.doctor_checks.borrow().clone()
     }
 
-    fn secret_names(&self) -> Result<Vec<String>, VivariumError> {
-        Ok(self.secrets.borrow().clone())
+    fn harness_env_gaps(&self, names: &[String]) -> Result<Vec<String>, VivariumError> {
+        let have = self.secrets.borrow();
+        Ok(names
+            .iter()
+            .filter(|n| !have.contains(n))
+            .cloned()
+            .collect())
+    }
+
+    fn env_gaps_at_dispatch(&self, names: &[String]) -> Result<Vec<String>, VivariumError> {
+        self.harness_env_gaps(names)
+    }
+
+    fn supplies_build_mount(&self) -> bool {
+        false
+    }
+
+    fn env_gap_hint(&self, missing: &[String]) -> String {
+        format!("fake hint: set {}", missing.join(", "))
+    }
+
+    fn live_test_notice(&self) -> String {
+        "it uses the fake".to_string()
     }
 
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
@@ -186,7 +216,7 @@ impl PoolProvider for Fake {
             id: id.clone(),
             name: spec.name.clone(),
             state: "started".into(),
-            region: spec.region.clone(),
+            region: "iad".into(),
             created_at: "now".into(),
             metadata: spec.metadata.clone(),
             exit_code: None,
@@ -219,7 +249,7 @@ impl PoolProvider for Fake {
         format!("fake destroy {id}")
     }
 
-    fn lease(&self, id: &str, _ttl_secs: u32) -> Result<Option<Lease>, VivariumError> {
+    fn claim(&self, id: &str, task: &str, now: u64) -> Result<Option<Hold>, VivariumError> {
         if self.leases.borrow().contains_key(id) {
             return Ok(None);
         }
@@ -230,34 +260,37 @@ impl PoolProvider for Fake {
         if let Some(hook) = self.after_lease.borrow().as_ref() {
             hook(self, id);
         }
-        Ok(Some(Lease { nonce }))
+        // The list may be stale: re-read under the hold before marking.
+        let fresh = self.machine(id)?;
+        if !super::slot::is_free(&fresh) {
+            self.leases.borrow_mut().remove(id);
+            return Ok(None);
+        }
+        self.set_metadata(id, META_TASK, task)?;
+        self.set_metadata(id, META_CLAIMED, &now.to_string())?;
+        Ok(Some(Hold { nonce }))
     }
 
-    fn release(&self, id: &str, _lease: &Lease) -> Result<(), VivariumError> {
+    fn unclaim(&self, id: &str) -> Result<(), VivariumError> {
+        self.edit(id, |m| {
+            m.metadata.remove(META_TASK);
+            m.metadata.remove(META_CLAIMED);
+        })
+    }
+
+    fn release(&self, id: &str, _hold: &Hold) -> Result<(), VivariumError> {
         self.leases.borrow_mut().remove(id);
         Ok(())
-    }
-
-    fn set_metadata(&self, id: &str, key: &str, value: &str) -> Result<(), VivariumError> {
-        self.edit(id, |m| {
-            m.metadata.insert(key.to_string(), value.to_string());
-        })
-    }
-
-    fn clear_metadata(&self, id: &str, key: &str) -> Result<(), VivariumError> {
-        self.edit(id, |m| {
-            m.metadata.remove(key);
-        })
     }
 
     fn put_file(
         &self,
         id: &str,
-        lease: &Lease,
+        hold: &Hold,
         path: &str,
         content: &[u8],
     ) -> Result<(), VivariumError> {
-        if self.leases.borrow().get(id) != Some(&lease.nonce) {
+        if self.leases.borrow().get(id) != Some(&hold.nonce) {
             return Err(VivariumError::Message("not the lease holder".into()));
         }
         self.files
@@ -276,6 +309,22 @@ impl PoolProvider for Fake {
         let names = drop_env.iter().map(ToString::to_string).collect();
         self.env_cleared.borrow_mut().push((id.to_string(), names));
         self.set_metadata(id, key, value)
+    }
+
+    fn read_stopped(
+        &self,
+        id: &str,
+        paths: &[&str],
+    ) -> Result<Option<BTreeMap<String, Vec<u8>>>, VivariumError> {
+        self.calls.borrow_mut().push(format!("read_stopped {id}"));
+        let held = self.stopped_files.borrow();
+        Ok(held.as_ref().map(|files| {
+            files
+                .iter()
+                .filter(|(p, _)| paths.contains(&p.as_str()))
+                .map(|(p, b)| (p.clone(), b.clone()))
+                .collect()
+        }))
     }
 
     fn start(&self, id: &str) -> Result<(), VivariumError> {

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use super::fly::{RawMachine, record_from_raw};
 use super::fly_token::{TOKEN_MAX_AGE, TokenCache};
 use super::github::Secret;
-use super::provider::{ExecOutput, Lease, MachineRecord};
+use super::provider::{ExecOutput, Hold, MachineRecord};
 use crate::chat::b64;
 use crate::error::VivariumError;
 
@@ -135,7 +135,7 @@ impl FlyApi {
     ///
     /// # Errors
     /// Returns an error for any failure other than "already held".
-    pub fn lease(&self, id: &str, ttl_secs: u32) -> Result<Option<Lease>, VivariumError> {
+    pub fn lease(&self, id: &str, ttl_secs: u32) -> Result<Option<Hold>, VivariumError> {
         let path = format!("/machines/{id}/lease");
         let reply = self.call(
             "POST",
@@ -145,7 +145,7 @@ impl FlyApi {
             Duration::from_secs(40),
         )?;
         match reply.status {
-            200 | 201 => Ok(reply.body["data"]["nonce"].as_str().map(|nonce| Lease {
+            200 | 201 => Ok(reply.body["data"]["nonce"].as_str().map(|nonce| Hold {
                 nonce: nonce.to_string(),
             })),
             409 | 412 => Ok(None),
@@ -160,7 +160,7 @@ impl FlyApi {
     ///
     /// # Errors
     /// Returns an error if the release is refused.
-    pub fn release(&self, id: &str, lease: &Lease) -> Result<(), VivariumError> {
+    pub fn release(&self, id: &str, lease: &Hold) -> Result<(), VivariumError> {
         let path = format!("/machines/{id}/lease");
         self.require("DELETE", &path, Some(&lease.nonce), None, &[200, 204])
             .map(|_| ())
@@ -199,7 +199,7 @@ impl FlyApi {
     pub fn put_file(
         &self,
         id: &str,
-        lease: &Lease,
+        lease: &Hold,
         path: &str,
         content: &[u8],
     ) -> Result<(), VivariumError> {

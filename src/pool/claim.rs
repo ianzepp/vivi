@@ -1,24 +1,25 @@
 //! Claiming a free slot, safely against a second dispatcher.
 //!
-//! The claim is atomic on the provider side: a machine lease serialises the
-//! check-and-mark, and the durable mark is machine metadata (`META_TASK`), so
-//! it outlives the lease. Two dispatchers can both list the same slot as free;
-//! only one wins the lease, and the other, whenever it gets the lease, re-reads
-//! the machine, sees the mark, and moves on. A slot with a mark is never
-//! claimed, whether its job is running or finished and uncollected.
+//! The claim is atomic on the provider side ([`PoolProvider::claim`]): the
+//! provider's own exclusive primitive serialises the check-and-mark, and the
+//! durable mark (`META_TASK`, `META_CLAIMED`) outlives the claim window. Two
+//! dispatchers can both list the same slot as free; only one wins the claim,
+//! and the other moves on. A slot with a mark is never claimed, whether its
+//! job is running or finished and uncollected.
 
-use super::provider::{Lease, PoolProvider};
-use super::slot::{self, META_CLAIMED, META_TASK, SlotStatus};
+use super::provider::{Hold, PoolProvider};
+use super::slot::{self, SlotStatus};
 use crate::error::VivariumError;
 
-/// How long a claim holds the lease while it marks and delivers.
+/// How long a lease-based provider holds the claim window while it marks and
+/// delivers.
 pub const CLAIM_TTL_SECS: u32 = 120;
 
-/// A claimed slot and the lease that protects the claim window.
+/// A claimed slot and the hold that protects the claim window.
 #[derive(Debug, Clone)]
 pub struct Claim {
     pub slot: SlotStatus,
-    pub lease: Lease,
+    pub hold: Hold,
 }
 
 /// Claim one free slot for `task`.
@@ -34,49 +35,24 @@ pub fn claim_slot(
 ) -> Result<Claim, VivariumError> {
     let slots = slot::pool_slots(pool, &provider.list()?);
     for candidate in slots.iter().filter(|s| s.state == "free") {
-        let Some(lease) = provider.lease(&candidate.id, CLAIM_TTL_SECS)? else {
-            continue;
-        };
-        // The list may be stale: re-read under the lease before marking.
-        let fresh = provider.machine(&candidate.id);
-        if !fresh.as_ref().is_ok_and(slot::is_free) {
-            provider.release(&candidate.id, &lease)?;
-            fresh?;
-            continue;
-        }
-        let marked = provider
-            .set_metadata(&candidate.id, META_TASK, task)
-            .and_then(|()| provider.set_metadata(&candidate.id, META_CLAIMED, &now.to_string()));
-        if let Err(e) = marked {
-            let claim = Claim {
+        if let Some(hold) = provider.claim(&candidate.id, task, now)? {
+            return Ok(Claim {
                 slot: candidate.clone(),
-                lease,
-            };
-            if let Err(undo) = unclaim(provider, &claim) {
-                eprintln!("warning: could not fully undo the claim: {undo}");
-            }
-            return Err(e);
+                hold,
+            });
         }
-        return Ok(Claim {
-            slot: candidate.clone(),
-            lease,
-        });
     }
     Err(no_free_slot(pool, &slots))
 }
 
-/// Undo a claim: drop the marks and the lease. Every step is attempted; a
+/// Undo a claim: drop the marks and end the claim window. Every step is attempted; a
 /// failure leaves a mark that `reconcile` clears as a stale claim.
 ///
 /// # Errors
 /// Returns the first error any step hit.
 pub fn unclaim(provider: &dyn PoolProvider, claim: &Claim) -> Result<(), VivariumError> {
     let id = &claim.slot.id;
-    let steps = [
-        provider.clear_metadata(id, META_TASK),
-        provider.clear_metadata(id, META_CLAIMED),
-        provider.release(id, &claim.lease),
-    ];
+    let steps = [provider.unclaim(id), provider.release(id, &claim.hold)];
     steps.into_iter().collect()
 }
 

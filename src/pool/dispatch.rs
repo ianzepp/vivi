@@ -148,8 +148,8 @@ fn deliver(
 ) -> Result<(), VivariumError> {
     let id = &claim.slot.id;
     let archive = job::pack(&build_bundle(plan, &claim.slot.name, token))?;
-    provider.put_file(id, &claim.lease, JOB_ARCHIVE, &archive)?;
-    provider.release(id, &claim.lease)?;
+    provider.put_file(id, &claim.hold, JOB_ARCHIVE, &archive)?;
+    provider.release(id, &claim.hold)?;
     wait_stopped(provider, id, pacing)?;
     provider.start(id)
 }

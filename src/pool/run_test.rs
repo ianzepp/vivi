@@ -58,7 +58,17 @@ fn create_makes_missing_slots_and_waits_for_stopped() {
     assert!(report.created.iter().all(SlotOutcome::seeded));
     let specs = fake.created.borrow();
     assert_eq!(specs[0].metadata[META_BASE], "c".repeat(40));
-    assert_eq!(specs[0].env["GH_TOKEN"], "tok-secret");
+    assert_eq!(specs[0].once_env["GH_TOKEN"], "tok-secret");
+    assert!(
+        !specs[0].env.contains_key("GH_TOKEN"),
+        "the secret travels apart"
+    );
+    assert_eq!(specs[0].tmpfs, "16g");
+    assert_eq!(specs[0].build_dir, "target");
+    assert!(
+        !specs[0].env.contains_key("BUILD_MOUNTED"),
+        "this host does not mount"
+    );
     assert_eq!(specs[0].command, ["bash", "/work/boot.sh"]);
     assert!(fake.destroyed.borrow().is_empty());
 }
@@ -236,28 +246,25 @@ fn with_env(names: &[&str]) -> PoolConfig {
 }
 
 #[test]
-fn prepare_app_creates_a_missing_app_once() {
+fn prepare_home_creates_a_missing_home_once() {
     let fake = Fake::default();
     let config = with_env(&[]);
-    assert!(prepare_app(&fake, &config, "a").unwrap().created);
-    assert_eq!(*fake.apps_created.borrow(), ["personal"]);
-    assert!(!prepare_app(&fake, &config, "a").unwrap().created);
+    assert!(prepare_home(&fake, &config).unwrap().created.is_some());
+    assert_eq!(*fake.apps_created.borrow(), ["fake"]);
+    assert!(prepare_home(&fake, &config).unwrap().created.is_none());
     assert_eq!(fake.apps_created.borrow().len(), 1);
 }
 
 #[test]
-fn missing_secrets_are_the_harness_names_the_app_lacks() {
+fn missing_env_is_the_harness_names_the_host_lacks() {
     let fake = Fake::default();
     fake.secrets.borrow_mut().push("HAVE_KEY".into());
     let config = with_env(&["HAVE_KEY", "NEED_KEY", "OTHER_KEY"]);
-    let missing = missing_secrets(&fake, &config).unwrap();
+    let missing = missing_env(&fake, &config).unwrap();
     assert_eq!(missing, ["NEED_KEY", "OTHER_KEY"]);
-    assert!(missing_secrets(&fake, &with_env(&[])).unwrap().is_empty());
-    assert!(
-        missing_secrets(&fake, &config_no_harness())
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(missing_env_at_dispatch(&fake, &config).unwrap(), missing);
+    assert!(missing_env(&fake, &with_env(&[])).unwrap().is_empty());
+    assert!(missing_env(&fake, &config_no_harness()).unwrap().is_empty());
 }
 
 fn config_no_harness() -> PoolConfig {
@@ -265,11 +272,11 @@ fn config_no_harness() -> PoolConfig {
 }
 
 #[test]
-fn the_secrets_warning_names_the_secrets_and_the_command_and_no_value() {
-    assert!(secrets_warning("app", &[]).is_none());
-    let text = secrets_warning("my-app", &["A_KEY".to_string(), "B_KEY".to_string()]).unwrap();
-    assert!(text.contains("A_KEY, B_KEY"));
-    assert!(text.contains("fly secrets set -a my-app A_KEY=<value> B_KEY=<value>"));
+fn the_env_warning_comes_from_the_host_and_only_when_something_is_missing() {
+    let fake = Fake::default();
+    assert!(env_warning(&fake, &[]).is_none());
+    let text = env_warning(&fake, &["A_KEY".to_string(), "B_KEY".to_string()]).unwrap();
+    assert_eq!(text, "fake hint: set A_KEY, B_KEY");
 }
 
 #[test]

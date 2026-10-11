@@ -399,9 +399,13 @@ not only verdict flags.
 ## Remote lane pool
 
 `vivi pool` manages a pool of preseeded remote machines ("slots") and hands a
-Vivi task to one of them. The pool runs on Fly today: `[pool.fly]` holds the
-provider-specific settings, and no other provider exists yet. In-place reseed,
-a second provider, and overflow machines do not exist; do not invent them.
+Vivi task to one of them. Two machine hosts exist, chosen by
+`[pool].provider`: `fly` (the default; Fly Machines, billed by the second) and
+`docker` (containers on a Docker daemon: the local one, or a remote one over
+SSH; see "Docker provider" below). `[pool.fly]` and `[pool.docker]` hold the
+host-specific settings. Everything else in this section works the same on both.
+In-place reseed, other hosts (a plain SSH host is not a host), several named
+pools, and overflow machines do not exist; do not invent them.
 
 ```sh
 vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS]
@@ -427,6 +431,12 @@ when any check fails; warnings alone exit zero. `--json` gives the same data
 - **Provider (Fly)**: `fly` is installed and logged in, an API token can be
   obtained, the app exists, and every `[pool.harness].env` name is an app
   secret (names only; a name the image provides can be ignored).
+- **Provider (Docker)**: the `docker` binary runs; the daemon (local, or
+  `[pool.docker].host`) answers, with its version and platform; the image is
+  present or the registry has it (nothing is pulled by `doctor`); the daemon
+  has at least as much memory as one slot may use (`warn` otherwise); every
+  `[pool.harness].env` name is set in this process's environment (`warn` names
+  the unset ones: slots created now would lack them).
 - **Repository (GitHub)**: `openssl` is present, the App key file is readable, a
   one-hour token mints for the repo (never printed), the default branch
   resolves, and whether it is protected (whether the App may bypass the
@@ -451,10 +461,15 @@ live exercise that answers two questions apart: is the provider working
 (**Live test: Vivi**)? It stops after the read-only checks if the provider
 checks fail; the Repository checks are shown but never block it.
 
-- It creates a throwaway pool `<pool>-doctor` of two of the smallest machines in
-  the same provider application, seed command `true`, no setup commands. It
-  never touches the real pool's slots. **It creates billable machines for a few
-  minutes** (about 3 minutes; `--long` adds about 7 more).
+- It creates a throwaway pool `<pool>-doctor` of two of the smallest machines
+  on the same host (the same Fly app, or the same Docker daemon), seed command
+  `true`, no setup commands. It never touches the real pool's slots. **On Fly
+  it creates billable machines for a few minutes** (about 3 minutes; `--long`
+  adds about 7 more). **On Docker it costs nothing**: two containers on your
+  daemon, removed afterwards, about 1.5 minutes with a local daemon and an
+  image that is present (`--long` adds about 7 more, the job really sleeps past
+  six minutes). On a local Docker daemon it is the free check to run after any
+  change to the pool code, whichever host the real pool uses.
 - Source: a tiny tree carried in the vivi binary, turned into a bare Git remote
   on each slot's own disk (`file://`). Jobs fetch from and push to that remote.
   The harness is a built-in shell command that appends a line to a file. No
@@ -469,8 +484,13 @@ checks fail; the Repository checks are shown but never block it.
   since each slot has its own remote); a job finished while nobody waits is
   collected later from the stopped slot and the slot ends stopped and free;
   `reconcile` finds and stops a running slot with no dispatch.
-- `--long` adds one step: a `wait` that runs past six minutes (the provider's
-  API token lives about six minutes) and still collects.
+- On Docker the same steps run, and the same code. Two collect paths differ
+  underneath: a finished job is read by `exec` while the container still
+  lingers, and from the stopped container's disk with `docker cp` (no restart)
+  once it has stopped. A step that cannot apply to a host is reported
+  `skipped` with the reason, never `ok`; none is skipped today.
+- `--long` adds one step: a `wait` that runs past six minutes (the Fly API
+  token lives about six minutes) and still collects.
 - Every step is `ok`, `fail` (with the side, what was expected and what was
   observed) or `skipped` (an earlier step failed), with a duration. Exit code is
   nonzero when anything failed. `--json` adds `millis` to each step.
@@ -504,7 +524,8 @@ never claimed.
 
 ### Slots, create, destroy
 
-- A slot is a Fly Machine with a persistent root disk. On first boot it runs
+- A slot is a Fly Machine with a persistent root disk (on Docker, a container;
+  see below). On first boot it runs
   the configured `setup` commands as root, fetches the repo at the base commit,
   runs the `seed` commands in the checkout with a memory disk over `build_dir`,
   packs the build output, and exits. `create` then removes the fetch token from
@@ -518,13 +539,23 @@ never claimed.
   `vivi_pool`, `vivi_pool_slot`, `vivi_pool_base`, `vivi_pool_state`
   (`seeding`|`ready`), and, while a task holds the slot, `vivi_pool_task` and
   `vivi_pool_claimed`. Machines in the same Fly app without `vivi_pool` are
-  never listed or touched.
+  never listed or touched. (On Docker the same facts live in container labels,
+  a mark file and a claim container; see below.)
 - `--base` takes a commit, branch, or tag, resolved to a full hash through
   GitHub. Default: the repo's default branch tip.
 - `create` does not return until a fresh listing shows each new slot `free`.
 - The Fly app is `[pool.fly].app`, else the pool name (which defaults to the
-  mailspace name). `create` makes the app when it does not exist, in
-  `[pool.fly].organization` (default `personal`). Model keys are app secrets:
+  mailspace name) plus a dash and six hex digits derived from the Fly
+  organization (`lanes` in organization `acme` is always `lanes-822b33`; the
+  suffix is the start of the SHA-256 of the organization name). Fly app names
+  are unique across ALL Fly customers, so a bare common name collides. Set
+  `[pool.fly] app` to name it yourself; a pool created before this default
+  existed lives in the app named after the bare pool name, so set `app` to that
+  to keep using it. `create` makes the app when it does not exist, in
+  `[pool.fly].organization` (default `personal`; note that `personal` is the
+  same slug for every account, so for a personal organization the suffix does
+  not tell accounts apart). If Fly says the name is taken, `create` says so and
+  names the line to set (`[pool.fly]` `app = "..."`). Model keys are app secrets:
   `create` and `dispatch` list the app's secret NAMES and warn, naming the
   harness `env` entries with no secret and the command shape
   `fly secrets set -a <app> NAME=<value>`. Vivi never reads or sets a secret
@@ -539,6 +570,74 @@ never claimed.
 - Requires `fly` (flyctl, logged in; or `FLY_API_TOKEN`) and `openssl` on PATH,
   and a GitHub App with contents access to the repo. Tokens are one hour,
   narrowed to the one repo, and never printed.
+
+### Docker provider
+
+`provider = "docker"` runs each slot as a container. Use the `docker` CLI; no
+client library is involved, so a local and a remote daemon go through the same
+code: `[pool.docker] host = "ssh://user@server"` is passed to the CLI as
+`DOCKER_HOST`; omit it for the local daemon (or whatever your own
+`DOCKER_HOST` names). Never run a plain SSH host as a "provider": only Docker.
+
+- A slot is a container. A stopped container is a slot at rest and its writable
+  layer is the persistent disk; its main process is the boot script, so it
+  stops when the script exits. Containers are created with `--init`, a memory
+  limit, an optional CPU limit, and never privileged.
+- The memory disk over `build_dir` is a tmpfs mount declared when the container
+  is created (`/work/repo/<build_dir>`, with `exec`), because the script cannot
+  mount without privileges. The boot script skips its own mount when
+  `BUILD_MOUNTED` is set. The tmpfs counts against the container's memory limit.
+- Labels cannot change after creation, so they hold only fixed facts:
+  `vivi_pool` (pool name), `vivi_pool_slot`, `vivi_pool_base`,
+  `vivi_pool_role=slot`. The architecture and the seed mark (`vivi_pool_state`)
+  are small files under `/work/vivi-marks/` on the slot's disk, written and
+  read with `docker cp` (which works on stopped containers).
+  Nothing is kept locally.
+- The claim is a separate, never-started container named
+  `vivi-claim-<slot id>`, with the task and claim time as its labels
+  (`vivi_pool_task`, `vivi_pool_claimed`). The daemon refuses a second
+  container with a name in use, so two dispatchers (any number of `vivi`
+  processes, on any machines that share the daemon) cannot both claim a slot;
+  the loser moves on. After winning, the claim re-reads the slot (stopped,
+  seeded) and takes the claim back if it is not free. Removing the claim
+  container frees the slot. Limits: atomicity is the daemon's, so it holds
+  per daemon only; there is no expiry, so a dispatcher that dies between
+  claiming and recording leaves a claim that `vivi pool reconcile` frees as
+  stale after five minutes (`doctor` shows it); anyone with daemon access can
+  remove it by hand. The test is `cargo test --test pool_docker_live --
+  --ignored` (a real daemon: one winner among twelve claimants and among
+  twelve separate `docker create` processes).
+- Job delivery copies the job archive into the stopped container, then starts
+  it. Collecting execs into the container while it runs, and copies the result
+  files out of the stopped container otherwise (no restart; the Fly path starts
+  a stopped slot to read it).
+- Harness environment: the names in `[pool.harness].env` reach the container
+  with their values taken from the environment of the `vivi` process at
+  `create` time (`docker create -e NAME`; no value on a command line, none in
+  the config or the mailspace). A name unset then is left out; `create` warns
+  and `doctor` lists them. **The values then live in the container's
+  configuration on that daemon** (`docker inspect` shows them to anyone with
+  access to it). To change one, destroy and re-create the slots. The one-time
+  Git fetch token is not in the container's configuration: it is a file the
+  boot script reads and deletes.
+- Architecture: the daemon may be arm64 or amd64, and an image may run emulated.
+  Vivi assumes neither; each slot records its architecture (`status` shows
+  `arch arm64`, `status --json` has `arch`, `doctor` lists it). **`setup`
+  commands must not hard-code an architecture** (download URLs, `x86_64`
+  packages); read `uname -m` or use the package manager.
+- Differences from Fly: no per-second billing (a busy slot costs your own
+  hardware, not money); all slots share the daemon's cores and memory, so a
+  full pool of heavy builds competes (size `memory`, `cpus` and `slots` to the
+  daemon; `doctor` warns when one slot's `memory` exceeds the daemon's); no
+  provider secret store; the pool name is the only namespace on a daemon, so
+  two mailspaces with the same pool name on one daemon share slots (set
+  distinct `[pool].name`s). The image needs `bash`; the boot script installs
+  `git`, `zstd` and `curl` with `apt-get` when they are missing, which needs
+  network. With those tools already in the image, the whole pool, `doctor
+  --test` included, runs offline.
+- Slot ids are the first twelve hex digits of the container id; slot names are
+  the container names (`<pool>-slot-<n>`). `destroy` removes the containers,
+  their claims and anonymous volumes.
 
 ### Using the pool (orchestrator procedure)
 
@@ -570,9 +669,11 @@ never claimed.
   also runs under a hard limit enforced by the slot's boot script (budget plus
   ten minutes of slack).
 - Steps: mint a one-hour token; resolve `from` through GitHub; claim a free
-  slot (a machine lease serialises the check-and-mark, so two simultaneous
-  dispatches get different slots and a third finds none); deliver the job as one
-  archive in the machine's config; start it; record a `pool_dispatched` event
+  slot (the provider's atomic primitive serialises the check-and-mark: a Fly
+  machine lease, or a claim container on Docker; two simultaneous dispatches
+  get different slots and a third finds none); deliver the job as one
+  archive in the machine's config (Fly) or copied into the container (Docker);
+  start it; record a `pool_dispatched` event
   and a reply on the task. A failure after the claim undoes it.
 - The push target must not be the repository's default branch (resolved through
   GitHub); `--allow-default-branch` overrides that.
@@ -629,13 +730,15 @@ stops itself after 60 seconds; the job directory survives a
 stop and start until the next dispatch replaces it.
 
 Config is a `[pool]` table in `.vivi/mailspace.toml`. Everything provider
-neutral sits in `[pool]`; the Fly settings sit in `[pool.fly]`. A Fly key left
-directly in `[pool]` (`app`, `organization`, `region`, `size`, `memory`,
-`tmpfs`) is rejected with a message naming `[pool.fly]`.
+neutral sits in `[pool]`; the Fly settings sit in `[pool.fly]` and the Docker
+settings in `[pool.docker]`. A Fly key left directly in `[pool]` (`app`,
+`organization`, `region`, `size`, `memory`, `tmpfs`) is rejected with a message
+naming `[pool.fly]`. Only the table of the chosen `provider` is used and
+checked beyond its key names.
 
 ```toml
 [pool]
-# provider = "fly" is the default (the only one)
+# provider = "fly"            # default; or "docker"
 repo = "owner/name"           # required
 slots = 4                     # required; maximum pool size
 image = "rust:1.97-bookworm"  # required; Debian-based (needs apt for zstd/git)
@@ -645,12 +748,18 @@ build_dir = "target"          # required; relative to the repo
 # name = "lanes"              # defaults to the mailspace name; marks the machines
 
 [pool.fly]                    # provider-specific; every key optional
-# app = "my-fly-app"          # default: the pool name; created by `pool create` if missing
+# app = "my-fly-app"          # default: <pool>-<6 hex of the organization>; created by `pool create` if missing
 # organization = "personal"   # owner of a newly created app; default personal
 # region = "iad"              # default iad
 # size = "performance-8x"     # default
 # memory = 32768              # MB; default 32768
 # tmpfs = "16g"               # memory disk over build_dir; default 16g
+
+[pool.docker]                 # only with provider = "docker"; every key optional
+# host = "ssh://user@server"  # a remote daemon; omit for the local one
+# memory = "4g"               # per-slot limit (includes the memory disk); default 4g
+# cpus = 4                    # per-slot CPU limit; default none
+# tmpfs = "2g"                # memory disk over build_dir; default 2g
 
 [pool.github]
 app_id = 123456
@@ -839,9 +948,10 @@ or place passwords in shell history.
 - `vivi pool dispatch` launches an agent that can push to the repository; read
   the branch it was given before dispatching.
 - `vivi pool destroy` is permanent: it removes the slots and their seeded disks.
-- A busy slot bills by the second, and a leaked running slot is a cost; run
-  `vivi pool doctor` when anything looks stuck.
+- A busy Fly slot bills by the second, and a leaked running slot is a cost
+  (on Docker it holds the daemon's cores and memory); run `vivi pool doctor`
+  when anything looks stuck.
 - `vivi pool doctor` is read-only; `vivi pool reconcile` is the command that
   acts. `vivi pool doctor --test` is the exception: it creates and destroys
-  billable machines of its own (`<pool>-doctor`), and never touches the real
-  pool's slots.
+  machines of its own (`<pool>-doctor`; billable on Fly, free containers on
+  Docker), and never touches the real pool's slots.

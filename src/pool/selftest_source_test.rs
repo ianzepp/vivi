@@ -51,6 +51,11 @@ fn the_test_config_replaces_every_project_setting_but_keeps_the_host() {
         (config.fly.size.as_str(), config.fly.memory),
         ("shared-cpu-1x", 256)
     );
+    assert_eq!(
+        (config.docker.memory.as_str(), config.docker.tmpfs.as_str()),
+        ("512m", "64m"),
+        "a Docker test pool is small too"
+    );
     assert_eq!(config.image, "debian:12");
     let harness = config.harness.as_ref().unwrap();
     assert_eq!(harness.models, [MODEL]);

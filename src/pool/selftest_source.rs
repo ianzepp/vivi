@@ -69,6 +69,8 @@ pub fn test_config(real: &PoolConfig, pool: &str) -> PoolConfig {
     config.fly.size = "shared-cpu-1x".to_string();
     config.fly.memory = 256;
     config.fly.tmpfs = "32m".to_string();
+    config.docker.memory = "512m".to_string();
+    config.docker.tmpfs = "64m".to_string();
     config.harness = Some(PoolHarness {
         name: "builtin".to_string(),
         run: harness_command(0),

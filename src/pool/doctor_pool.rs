@@ -96,7 +96,11 @@ fn slot_check(f: &PoolFacts, slot: &SlotStatus) -> Check {
             )
         },
     );
-    let detail = format!("{}, {base}", slot.state);
+    let arch = slot
+        .arch
+        .as_deref()
+        .map_or(String::new(), |a| format!(", arch {a}"));
+    let detail = format!("{}, {base}{arch}", slot.state);
     let reseed = format!(
         "vivi pool destroy --slot {} --yes, then {CREATE}",
         slot.name
@@ -162,7 +166,7 @@ fn leak_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
         GROUP,
         "leaked runners",
         format!(
-            "{} running with no open dispatch (billing by the second)",
+            "{} running with no open dispatch (holding a machine, and billed by the second on Fly)",
             leaked.join(", ")
         ),
         RECONCILE,

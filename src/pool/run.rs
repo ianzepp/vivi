@@ -8,6 +8,9 @@ use super::github::Secret;
 use super::provider::{CreateSpec, MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
 use super::slot::{self, META_STATE, STATE_READY, SlotStatus};
+
+/// Environment names the seed needs once; they never stay on a ready slot.
+pub const ONCE_ENV: [&str; 1] = ["GH_TOKEN"];
 use crate::error::VivariumError;
 
 const MISSING_GRACE: Duration = Duration::from_secs(30);
@@ -123,10 +126,10 @@ pub fn create_slots(
 }
 
 /// Mark a cleanly seeded slot ready: remove the fetch token from its config
-/// and set the seed mark in one update (the machine stays stopped), so a ready
-/// slot never still carries the token.
+/// (where the host kept it there) and set the seed mark in one update (the
+/// machine stays stopped), so a ready slot never still carries the token.
 fn finalize_slot(provider: &dyn PoolProvider, id: &str) -> Result<(), VivariumError> {
-    provider.seal(id, &["GH_TOKEN"], META_STATE, STATE_READY)
+    provider.seal(id, &ONCE_ENV, META_STATE, STATE_READY)
 }
 
 /// Read the listing until the sealed slot shows `free`: `status` reads that
@@ -199,7 +202,7 @@ fn launch_all(
         if n > 0 {
             std::thread::sleep(options.spacing);
         }
-        let spec = slot_spec(config, pool, *index, token, base);
+        let spec = slot_spec(config, pool, *index, (token, base), provider);
         let at = Instant::now();
         match provider.create(&spec) {
             Ok(id) => launched.push(Launched {
@@ -218,19 +221,29 @@ fn slot_spec(
     config: &PoolConfig,
     pool: &str,
     index: u32,
-    token: &Secret,
-    base: &str,
+    (token, base): (&Secret, &str),
+    provider: &dyn PoolProvider,
 ) -> CreateSpec {
+    let mut env = bootscript::slot_env(config, token, base, provider.supplies_build_mount());
+    let once_env = ONCE_ENV
+        .iter()
+        .filter_map(|name| Some((name.to_string(), env.remove(*name)?)))
+        .collect();
     CreateSpec {
         name: slot::slot_name(pool, index),
-        region: config.fly.region.clone(),
         image: config.image.clone(),
-        vm_size: config.fly.size.clone(),
-        memory_mb: config.fly.memory,
         metadata: slot::slot_metadata(pool, index, base),
-        env: bootscript::slot_env(config, token, base),
+        env,
+        once_env,
+        passthrough_env: config
+            .harness
+            .as_ref()
+            .map(|h| h.env.clone())
+            .unwrap_or_default(),
         files: bootscript::slot_files(config),
         command: bootscript::slot_command(),
+        build_dir: config.build_dir.clone(),
+        tmpfs: config.tmpfs_size().to_string(),
     }
 }
 
@@ -310,39 +323,35 @@ fn settled(
     })
 }
 
-/// What making the application ready found.
+/// What making the pool's home ready found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppReport {
-    pub app: String,
-    /// True when this call created the application.
-    pub created: bool,
-    /// Harness environment names the application has no secret for.
-    pub missing_secrets: Vec<String>,
+pub struct HomeReport {
+    /// What this call created, when it created anything.
+    pub created: Option<String>,
+    /// Harness environment names the host has no value for.
+    pub missing_env: Vec<String>,
 }
 
-/// Make sure the application exists, then look for the secrets the harness
-/// needs. Secrets are never set here, and no value is read.
+/// Make sure the pool's home exists, then look for the harness environment
+/// the host lacks. No value is set or read here.
 ///
 /// # Errors
-/// Returns an error if the application cannot be listed or created.
-pub fn prepare_app(
+/// Returns an error if the home cannot be listed or created.
+pub fn prepare_home(
     provider: &dyn PoolProvider,
     config: &PoolConfig,
-    app: &str,
-) -> Result<AppReport, VivariumError> {
-    let created = provider.ensure_app(config.organization_name())?;
-    Ok(AppReport {
-        app: app.to_string(),
-        created,
-        missing_secrets: missing_secrets(provider, config)?,
+) -> Result<HomeReport, VivariumError> {
+    Ok(HomeReport {
+        created: provider.ensure_home()?,
+        missing_env: missing_env(provider, config)?,
     })
 }
 
-/// The harness environment names that the application has no secret for.
+/// The harness environment names that the host has no value for.
 ///
 /// # Errors
-/// Returns an error if the secret names cannot be listed.
-pub fn missing_secrets(
+/// Returns an error if the host cannot be asked.
+pub fn missing_env(
     provider: &dyn PoolProvider,
     config: &PoolConfig,
 ) -> Result<Vec<String>, VivariumError> {
@@ -352,30 +361,28 @@ pub fn missing_secrets(
     if harness.env.is_empty() {
         return Ok(Vec::new());
     }
-    let have = provider.secret_names()?;
-    Ok(harness
-        .env
-        .iter()
-        .filter(|name| !have.contains(name))
-        .cloned()
-        .collect())
+    provider.harness_env_gaps(&harness.env)
 }
 
-/// The warning for missing secrets: names and a command shape, no values.
-#[must_use]
-pub fn secrets_warning(app: &str, missing: &[String]) -> Option<String> {
-    if missing.is_empty() {
-        return None;
+/// The harness environment names a dispatch to existing slots would lack.
+///
+/// # Errors
+/// Returns an error if the host cannot be asked.
+pub fn missing_env_at_dispatch(
+    provider: &dyn PoolProvider,
+    config: &PoolConfig,
+) -> Result<Vec<String>, VivariumError> {
+    match config.harness.as_ref().filter(|h| !h.env.is_empty()) {
+        Some(harness) => provider.env_gaps_at_dispatch(&harness.env),
+        None => Ok(Vec::new()),
     }
-    let assignments = missing
-        .iter()
-        .map(|name| format!("{name}=<value>"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Some(format!(
-        "warning: app {app} has no secret named {}. The harness gets these from the machine's environment, so a job will run without them unless the image sets them. Set them yourself (vivi never reads or sets secret values):\n  fly secrets set -a {app} {assignments}",
-        missing.join(", ")
-    ))
+}
+
+/// The warning for missing harness environment: names and how to supply them
+/// on this host, no values.
+#[must_use]
+pub fn env_warning(provider: &dyn PoolProvider, missing: &[String]) -> Option<String> {
+    (!missing.is_empty()).then(|| provider.env_gap_hint(missing))
 }
 
 /// The pool's slots as the provider reports them.

@@ -253,10 +253,6 @@ fn the_test_pool_is_isolated_from_the_project() {
                 .values()
                 .any(|v| v.contains("github") || v.contains("acme"))
         );
-        assert_eq!(
-            (spec.vm_size.as_str(), spec.memory_mb),
-            ("shared-cpu-1x", 256)
-        );
         assert!(
             spec.files
                 .iter()

@@ -12,6 +12,11 @@
 #               it into the bare repository at REMOTE (branch main) first.
 #   BUILD_DIR   build output directory, relative to the checkout
 #   TMPFS_SIZE  size of the memory disk mounted over BUILD_DIR
+#   BUILD_MOUNTED  set when the machine host already mounts that memory disk
+#               (a container cannot mount without privileges): the script then
+#               leaves the mount alone and only makes sure the directory exists.
+# A host whose machines cannot change their environment after creation delivers
+# GH_TOKEN as /work/once.env instead; it is read and removed on first sight.
 # Files written beside this script: /work/setup.sh (root, once) and
 # /work/seed.sh (in the checkout, once).
 #
@@ -40,6 +45,13 @@ JT=/work/job.tgz
 now() { date +%s.%N; }
 d() { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.1f", b-a}'; }
 T0=$(now)
+if [ -f /work/once.env ]; then . /work/once.env; rm -f /work/once.env; fi
+
+# The memory disk over the build output: mounted here unless the host did it.
+mount_build() {
+  mkdir -p "$BUILD_DIR"
+  [ -n "${BUILD_MOUNTED:-}" ] || mount -t tmpfs -o "size=$TMPFS_SIZE" tmpfs "$BUILD_DIR"
+}
 
 # The address to fetch from: an https remote gets the token, anything else is
 # used as given.
@@ -82,7 +94,7 @@ if [ ! -f /work/seeded ]; then
   rm -f "$RD/.git/FETCH_HEAD"
   git rev-parse HEAD > /work/seed-base.txt
   T2=$(now); echo "clone_s $(d $T1 $T2)" >> $L
-  mkdir -p "$BUILD_DIR" && mount -t tmpfs -o "size=$TMPFS_SIZE" tmpfs "$BUILD_DIR"
+  mount_build
   bash /work/seed.sh > /work/seed.log 2>&1; SRC=$?
   T3=$(now); echo "seed_rc $SRC seed_s $(d $T2 $T3) build_mb $(du -sm "$BUILD_DIR" | cut -f1)" >> $L
   tar -cf - "$BUILD_DIR" | zstd -T0 -3 -q -o /work/build.tar.zst.partial \
@@ -131,7 +143,7 @@ LIMIT=$(cat /work/job/limit 2>/dev/null)
 case "$LIMIT" in ''|*[!0-9]*|0) LIMIT=3600 ;; esac
 [ -f /work/job/run.sh ] || { echo "job_bad_archive $JOB" >> $L; exit 5; }
 
-cd "$RD" && mkdir -p "$BUILD_DIR" && mount -t tmpfs -o "size=$TMPFS_SIZE" tmpfs "$BUILD_DIR"
+cd "$RD" && mount_build
 [ -f /work/build.tar.zst ] && zstd -d -T0 -c /work/build.tar.zst | tar -xf - -C "$RD"
 chown -R hand:hand "$BUILD_DIR"
 T1=$(now); echo "restore_s $(d $T0 $T1)" >> $L; echo "ready $T1 job $JOB" >> $L

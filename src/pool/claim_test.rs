@@ -73,7 +73,7 @@ fn successive_claims_get_different_slots() {
     let fake = Fake::default();
     pool_of(&fake, &["stopped", "stopped"]);
     let a = claim_slot(&fake, "p", "taskaaaa", 1).unwrap();
-    fake.release(&a.slot.id, &a.lease).unwrap();
+    fake.release(&a.slot.id, &a.hold).unwrap();
     let b = claim_slot(&fake, "p", "taskbbbb", 2).unwrap();
     assert_eq!(a.slot.name, "p-slot-1");
     assert_eq!(b.slot.name, "p-slot-2");
@@ -101,7 +101,7 @@ fn a_slot_claimed_between_list_and_lease_is_skipped_on_the_reread() {
 }
 
 #[test]
-fn unclaim_drops_marks_and_lease() {
+fn unclaim_drops_marks_and_hold() {
     let fake = Fake::default();
     pool_of(&fake, &["stopped"]);
     let claim = claim_slot(&fake, "p", "t", 1).unwrap();

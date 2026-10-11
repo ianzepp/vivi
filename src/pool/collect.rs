@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::provider::{MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
-use super::slot::{self, META_CLAIMED, META_TASK, SlotStatus};
+use super::slot::{self, META_TASK, SlotStatus};
 use crate::error::VivariumError;
 
 /// Seconds past the budget before a silent job counts as timed out. The
@@ -41,6 +41,17 @@ echo '@@vivi-pool receipt'; head -c 65536 "$J/agent.out" 2>/dev/null; echo
 echo '@@vivi-pool stderr'; tail -c 4096 "$J/agent.err" 2>/dev/null; echo
 echo '@@vivi-pool log'; tail -c 4096 "$J/run.log" 2>/dev/null; echo
 "#;
+
+/// The files of a finished job that [`COLLECT_SCRIPT`] reads, for a provider
+/// that reads a stopped slot's disk directly.
+pub const RESULT_PATHS: [&str; 4] = [
+    "/work/job/result",
+    "/work/job/agent.out",
+    "/work/job/agent.err",
+    "/work/job/run.log",
+];
+const RECEIPT_BYTES: usize = 65_536;
+const TAIL_BYTES: usize = 4096;
 
 /// How the engine paces its polling.
 #[derive(Debug, Clone)]
@@ -167,6 +178,32 @@ pub fn parse_collected(output: &str) -> Option<Collected> {
     })
 }
 
+/// What a finished job left, from the files themselves (the same content
+/// [`COLLECT_SCRIPT`] prints): `None` when there is no result with a job id.
+#[must_use]
+pub fn collected_from_files(files: &BTreeMap<String, Vec<u8>>) -> Option<Collected> {
+    let bytes_of = |path: &str| files.get(path).map_or(&[][..], Vec::as_slice);
+    let result = JobResult::parse(&text_of(bytes_of(RESULT_PATHS[0])));
+    if result.get("job").is_empty() {
+        return None;
+    }
+    let receipt = bytes_of(RESULT_PATHS[1]);
+    let tail = |path: &str| {
+        let bytes = bytes_of(path);
+        text_of(&bytes[bytes.len().saturating_sub(TAIL_BYTES)..])
+    };
+    Some(Collected {
+        result,
+        receipt: text_of(&receipt[..receipt.len().min(RECEIPT_BYTES)]),
+        stderr: tail(RESULT_PATHS[2]),
+        log: tail(RESULT_PATHS[3]),
+    })
+}
+
+fn text_of(bytes: &[u8]) -> String {
+    format!("{}\n", String::from_utf8_lossy(bytes))
+}
+
 /// How a dispatch ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -249,6 +286,16 @@ fn collect_stopped(
     pacing: &Pacing,
 ) -> Result<Option<Outcome>, VivariumError> {
     let record = &dispatch.record;
+    // A provider that reads the stopped disk needs no restart and no grace:
+    // a stopped machine there has stopped for good.
+    if let Some(files) = provider.read_stopped(&record.machine, &RESULT_PATHS)? {
+        let done = collected_from_files(&files).filter(|c| c.result.get("job") == record.job);
+        return Ok(Some(match done {
+            Some(done) => Outcome::Finished(done),
+            None if overdue => Outcome::Timeout,
+            None => Outcome::Lost,
+        }));
+    }
     if age < pacing.start_grace.as_secs() && !overdue {
         return Ok(None);
     }
@@ -293,8 +340,7 @@ pub fn release(
         return stop_unclaimed(provider, &machine, pacing);
     }
     stop_confirmed(provider, machine_id, pacing)?;
-    provider.clear_metadata(machine_id, META_TASK)?;
-    provider.clear_metadata(machine_id, META_CLAIMED)
+    provider.unclaim(machine_id)
 }
 
 /// Stop a seeded machine that runs with no task holding it.

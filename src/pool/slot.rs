@@ -22,6 +22,9 @@ pub const META_STATE: &str = "vivi_pool_state";
 pub const META_TASK: &str = "vivi_pool_task";
 /// Metadata key holding the claim time (epoch seconds).
 pub const META_CLAIMED: &str = "vivi_pool_claimed";
+/// Metadata key holding the machine's CPU architecture, when the host knows
+/// it (`arm64`, `amd64`).
+pub const META_ARCH: &str = "vivi_pool_arch";
 
 pub const STATE_SEEDING: &str = "seeding";
 pub const STATE_READY: &str = "ready";
@@ -66,6 +69,9 @@ pub struct SlotStatus {
     pub budget_secs: Option<u64>,
     pub created_at: String,
     pub region: String,
+    /// CPU architecture of the slot, when the host reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
 }
 
 fn slot_index(machine: &MachineRecord) -> Option<u32> {
@@ -125,6 +131,7 @@ pub fn pool_slots(pool: &str, machines: &[MachineRecord]) -> Vec<SlotStatus> {
             budget_secs: None,
             created_at: m.created_at.clone(),
             region: m.region.clone(),
+            arch: m.metadata.get(META_ARCH).cloned(),
         })
         .collect();
     slots.sort_by(|a, b| {

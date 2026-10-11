@@ -16,6 +16,9 @@ pub const BOOT_SCRIPT: &str = include_str!("boot-slot.sh");
 pub const BOOT_PATH: &str = "/work/boot.sh";
 const SETUP_PATH: &str = "/work/setup.sh";
 const SEED_PATH: &str = "/work/seed.sh";
+/// The checkout inside the machine (`RD` in the boot script); the build
+/// directory sits beneath it.
+pub const CHECKOUT_DIR: &str = "/work/repo";
 /// Where an embedded source tree lands inside the machine.
 pub const SOURCE_DIR: &str = "/work/source";
 
@@ -46,15 +49,25 @@ pub fn slot_files(config: &PoolConfig) -> Vec<(String, String)> {
 }
 
 /// The environment a slot is created with. `GH_TOKEN` is set only when there
-/// is a token; an embedded source needs none.
+/// is a token; an embedded source needs none. `mounted` says the machine host
+/// already mounts the memory disk over the build directory, so the boot script
+/// must not (`BUILD_MOUNTED`).
 #[must_use]
-pub fn slot_env(config: &PoolConfig, token: &Secret, base: &str) -> BTreeMap<String, String> {
+pub fn slot_env(
+    config: &PoolConfig,
+    token: &Secret,
+    base: &str,
+    mounted: bool,
+) -> BTreeMap<String, String> {
     let mut env = BTreeMap::from([
         ("REMOTE".to_string(), config.remote_address()),
         ("BASE".to_string(), base.to_string()),
         ("BUILD_DIR".to_string(), config.build_dir.clone()),
-        ("TMPFS_SIZE".to_string(), config.fly.tmpfs.clone()),
+        ("TMPFS_SIZE".to_string(), config.tmpfs_size().to_string()),
     ]);
+    if mounted {
+        env.insert("BUILD_MOUNTED".to_string(), "1".to_string());
+    }
     if !token.expose().is_empty() {
         env.insert("GH_TOKEN".to_string(), token.expose().to_string());
     }
