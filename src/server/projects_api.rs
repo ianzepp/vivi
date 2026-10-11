@@ -10,14 +10,12 @@ use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::json;
 use std::hash::{Hash, Hasher};
-use vivi::storage::is_traveling_id;
 
 use crate::AppState;
 use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
-use crate::identities::RegisterError;
+use crate::identities::{RefreshError, RegisterError};
 use crate::projects::{AppendItem, ProjectError};
 use crate::rooms::error_response;
-use crate::safety::body_over_cap;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateProjectRequest {
@@ -44,21 +42,23 @@ pub struct ItemsQuery {
     since: u64,
 }
 
-/// Append body, mirroring the room-send shape. `from` is never client
-/// input: it is always the bearer identity's name.
+/// Append body: the letter as standard base64 plus the envelope fields the
+/// sender declares. `from` is never client input: it is always the bearer
+/// identity's name.
 #[derive(Debug, Deserialize)]
 pub struct AppendRequest {
+    raw_eml: String,
     #[serde(default)]
     to: Option<String>,
     #[serde(default)]
-    subject: Option<String>,
-    body: String,
-    #[serde(default)]
     kind: Option<String>,
-    #[serde(default)]
-    in_reply_to: Option<String>,
-    #[serde(default)]
-    refs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TokenRequest {
+    name: String,
+    challenge_id: String,
+    signature_base64: String,
 }
 
 fn project_error(err: ProjectError) -> Response {
@@ -76,6 +76,11 @@ fn project_error(err: ProjectError) -> Response {
         ProjectError::BadRequest(message) => {
             error_response(StatusCode::BAD_REQUEST, "invalid_request", &message)
         }
+        ProjectError::TooLarge => error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_too_large",
+            "letter over 64 KiB",
+        ),
         ProjectError::Conflict(message) => {
             error_response(StatusCode::CONFLICT, "conflict", &message)
         }
@@ -477,9 +482,7 @@ pub async fn items_handler(
                         "from": record.from,
                         "to": record.to,
                         "kind": record.kind,
-                        "in_reply_to": record.in_reply_to,
-                        "refs": record.refs,
-                        "body": record.body,
+                        "content_sha256": record.content_sha256,
                         "raw_eml": STANDARD.encode(record.raw_eml),
                     })
                 })
@@ -493,9 +496,10 @@ pub async fn items_handler(
     }
 }
 
-/// `POST /v1/projects/:id/items` — append one item under its client-minted
-/// traveling Message-ID (bearer). The sender is always the authenticated
-/// identity; a vouch addressed to postmaster is admitted at submit.
+/// `POST /v1/projects/:id/items` — append one letter under its client-minted
+/// traveling Message-ID (bearer). The letter is opaque bytes, stored and
+/// served back exactly; the sender is always the authenticated identity, and
+/// a letter addressed to postmaster is a vouch, admitted at submit.
 pub async fn append_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -547,38 +551,29 @@ pub async fn append_handler(
         Ok(req) => req,
         Err(response) => return response,
     };
-    if body_over_cap(req.body.len()) {
+    let Ok(raw_eml) = STANDARD.decode(req.raw_eml.as_bytes()) else {
         return error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "body_too_large",
-            "body over 64 KiB",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "raw_eml must be standard base64",
         );
-    }
+    };
     // Clients mint every id: a traveling Message-ID header is required for
-    // every append, plain or kinded.
+    // every append. Id, size, kind, and recipient rules live in
+    // `AppendItem::new`.
     let message_id = headers
         .get("message-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    if !is_traveling_id(message_id) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "a Message-ID header of the form msg_ plus 24 lowercase hex is required",
-        );
-    }
-    // Kind rules mirror messages::normalize_extras (R8).
-    let kind = match req.kind.as_deref().map(|k| k.trim().to_ascii_lowercase()) {
-        None => None,
-        Some(k) if k.is_empty() || k == "mail" => None,
-        Some(k) if matches!(k.as_str(), "need" | "task" | "want") => Some(k),
-        Some(k) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                &format!("unsupported kind '{k}'; expected need, task, want, or mail"),
-            );
-        }
+    let item = match AppendItem::new(
+        message_id,
+        &viewer,
+        req.to.as_deref(),
+        req.kind.as_deref(),
+        raw_eml,
+    ) {
+        Ok(item) => item,
+        Err(err) => return project_error(err),
     };
     // The limiter keys on (room, u32 seat); fold the identity name into the
     // seat slot so the bucket stays per project plus member.
@@ -592,22 +587,13 @@ pub async fn append_handler(
             "over 30 sends/min/identity",
         );
     }
-    let item = AppendItem {
-        id: message_id.to_owned(),
-        from: viewer,
-        to: req.to,
-        subject: req.subject.unwrap_or_default(),
-        body: req.body,
-        kind,
-        in_reply_to: req.in_reply_to,
-        refs: req.refs,
-    };
     let projects = state.projects.clone();
     match tokio::task::spawn_blocking(move || projects.append(&cipher, &id, &item)).await {
         Ok(Ok(outcome)) => {
             let mut body = json!({
-                "message_id": outcome.item_id,
+                "message_id": outcome.message_id,
                 "sequence": outcome.sequence,
+                "content_sha256": outcome.content_sha256,
             });
             if outcome.duplicate {
                 body["duplicate"] = json!(true);
@@ -619,5 +605,64 @@ pub async fn append_handler(
         Err(err) => project_error(ProjectError::Storage(format!(
             "project append task failed: {err}"
         ))),
+    }
+}
+
+/// `POST /v1/projects/:id/auth/token` — renew the bearer for a registered
+/// identity. The challenge must have been issued for the key bound to
+/// `name` and the signature must verify under it; every mismatch is the
+/// same 401, so nothing says which part failed.
+pub async fn token_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    payload: Result<Json<TokenRequest>, JsonRejection>,
+) -> Response {
+    let req = match json_body(payload) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    let projects = state.projects.clone();
+    let check_id = id.clone();
+    match tokio::task::spawn_blocking(move || projects.existing_project_dir(&check_id)).await {
+        Ok(Ok(_)) => (),
+        Ok(Err(err)) => return project_error(err),
+        Err(err) => {
+            return project_error(ProjectError::Storage(format!(
+                "project lookup failed: {err}"
+            )));
+        }
+    }
+    let identities = state.identities.clone();
+    let challenges = state.challenges.clone();
+    let renewed = tokio::task::spawn_blocking(move || {
+        identities.refresh_token(
+            &id,
+            &req.name,
+            &req.challenge_id,
+            &req.signature_base64,
+            &challenges,
+        )
+    })
+    .await;
+    match renewed {
+        Ok(Ok((token, expires_at))) => (
+            StatusCode::OK,
+            Json(json!({"token": token, "token_expires_at": expires_at})),
+        )
+            .into_response(),
+        Ok(Err(RefreshError::Unauthorized)) => error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "token renewal failed",
+        ),
+        Ok(Err(RefreshError::Storage(message))) => {
+            tracing::error!("identity storage failure: {message}");
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "storage failure",
+            )
+        }
+        Err(err) => register_error(RegisterError::Storage(format!("token task failed: {err}"))),
     }
 }

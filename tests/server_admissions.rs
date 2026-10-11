@@ -1,7 +1,9 @@
 //! Integration tests for phase-03 admission by introduction (decided item 8):
 //! the creator is admitted at creation, a member's vouch to postmaster admits
 //! a new name+key and lands as a sequenced item, and unauthorized, malformed,
-//! reserved, and conflicting vouches are refused with nothing appended.
+//! reserved, and conflicting vouches are refused with nothing appended. A
+//! vouch is a letter to postmaster whose body (after the first blank line)
+//! is the vouch JSON.
 
 use std::path::PathBuf;
 
@@ -48,17 +50,11 @@ fn traveling(n: u64) -> String {
     format!("msg_{n:08x}{:016x}", 0)
 }
 
+/// A governance letter: headers, a blank line, then `body`.
 fn item(id: &str, from: &str, to: Option<&str>, body: &str) -> AppendItem {
-    AppendItem {
-        id: id.to_owned(),
-        from: from.to_owned(),
-        to: to.map(|t| t.to_owned()),
-        subject: "governance".to_owned(),
-        body: body.to_owned(),
-        kind: None,
-        in_reply_to: None,
-        refs: Vec::new(),
-    }
+    let raw =
+        format!("From: {from}@p.local\nTo: postmaster@p.local\nSubject: governance\n\n{body}");
+    AppendItem::new(id, from, to, None, raw.into_bytes()).unwrap()
 }
 
 fn vouch_body(name: &str, seed: u8) -> String {
@@ -165,7 +161,7 @@ fn vouch_from_unknown_voucher_is_refused_with_nothing_appended() {
     assert!(matches!(err, ProjectError::BadRequest(_)), "got {err:?}");
     assert_eq!(
         store
-            .read_after(&cipher(), &meta.project_id, 0)
+            .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
             .unwrap()
             .records
             .len(),
@@ -193,7 +189,7 @@ fn malformed_vouch_body_is_refused_with_nothing_appended() {
     }
     assert_eq!(
         store
-            .read_after(&cipher(), &meta.project_id, 0)
+            .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
             .unwrap()
             .records
             .len(),
@@ -291,11 +287,115 @@ fn same_name_with_different_key_conflicts() {
     // Only the first vouch was appended; bob still holds the first key.
     assert_eq!(
         store
-            .read_after(&cipher(), &meta.project_id, 0)
+            .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
             .unwrap()
             .records
             .len(),
         1
     );
+    assert_eq!(admissions(&data_dir, &meta.project_id).admissions.len(), 2);
+}
+
+fn raw_letter(id: &str, raw: Vec<u8>) -> AppendItem {
+    AppendItem::new(id, "alice", Some("postmaster"), None, raw).unwrap()
+}
+
+/// The vouch body is the bytes after the first blank line, whether the
+/// letter uses CRLF or LF line ends, and the letter is stored byte for byte.
+#[test]
+fn vouch_body_is_read_after_the_first_blank_line_in_either_line_ending() {
+    let data_dir = scratch_data_dir("line-endings");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store
+        .create_project_with_creator(&spki_pem(1), "alice")
+        .unwrap();
+    let crlf = format!(
+        "From: alice@p.local\r\nSubject: vouch\r\n\r\n{}\r\n",
+        vouch_body("bob", 2)
+    );
+    let lf = format!(
+        "From: alice@p.local\nSubject: vouch\n\n{}",
+        vouch_body("carol", 3)
+    );
+    for (n, raw) in [(1, crlf), (2, lf)] {
+        store
+            .append(
+                &cipher(),
+                &meta.project_id,
+                &raw_letter(&traveling(n), raw.clone().into_bytes()),
+            )
+            .unwrap();
+    }
+    let names: Vec<String> = admissions(&data_dir, &meta.project_id)
+        .admissions
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert!(names.contains(&"bob".to_owned()) && names.contains(&"carol".to_owned()));
+}
+
+#[test]
+fn vouch_letters_without_a_usable_body_are_refused_with_nothing_appended() {
+    let data_dir = scratch_data_dir("bad-letters");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store
+        .create_project_with_creator(&spki_pem(1), "alice")
+        .unwrap();
+    let json = vouch_body("bob", 2);
+    let mut non_utf8 = b"Subject: vouch\n\n".to_vec();
+    non_utf8.extend_from_slice(&[0xff, 0xfe]);
+    non_utf8.extend_from_slice(json.as_bytes());
+    let cases: Vec<Vec<u8>> = vec![
+        // No blank line at all: headers only, JSON as the last header line.
+        format!("Subject: vouch\n{json}").into_bytes(),
+        non_utf8,
+        // The first blank line is the LF-LF; the body is not the JSON.
+        format!("Subject: vouch\n\nnote\r\n\r\n{json}").into_bytes(),
+    ];
+    for (n, raw) in cases.into_iter().enumerate() {
+        let err = store
+            .append(
+                &cipher(),
+                &meta.project_id,
+                &raw_letter(&traveling(n as u64 + 1), raw),
+            )
+            .unwrap_err();
+        assert!(matches!(err, ProjectError::BadRequest(_)), "got {err:?}");
+    }
+    assert_eq!(admissions(&data_dir, &meta.project_id).admissions.len(), 1);
+    let page = store
+        .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
+        .unwrap();
+    assert!(page.records.is_empty());
+}
+
+/// A replay of a vouch whose admission landed but whose letter row did not
+/// (crash between the two writes) converges: the admission is a no-op and
+/// the letter stores.
+#[test]
+fn vouch_replay_after_admission_only_converges() {
+    let data_dir = scratch_data_dir("vouch-crash");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store
+        .create_project_with_creator(&spki_pem(1), "alice")
+        .unwrap();
+    store
+        .admissions()
+        .admit(&meta.project_id, "bob", &spki_pem(2), "alice")
+        .unwrap();
+    let outcome = store
+        .append(
+            &cipher(),
+            &meta.project_id,
+            &item(
+                &traveling(1),
+                "alice",
+                Some("postmaster"),
+                &vouch_body("bob", 2),
+            ),
+        )
+        .unwrap();
+    assert_eq!(outcome.sequence, 1);
+    assert!(!outcome.duplicate);
     assert_eq!(admissions(&data_dir, &meta.project_id).admissions.len(), 2);
 }

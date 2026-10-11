@@ -85,6 +85,10 @@ pub fn api_router(
             post(projects_api::register_handler),
         )
         .route(
+            "/v1/projects/{id}/auth/token",
+            post(projects_api::token_handler),
+        )
+        .route(
             "/v1/projects/{id}/directory",
             get(projects_api::directory_handler),
         )

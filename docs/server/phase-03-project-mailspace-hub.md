@@ -89,6 +89,15 @@ who the tenant is, what travels, and where the truth lives.
    the mailspace. A server-side LLM that interprets mail addressed to it is a
    future phase (see below); nothing about the loop is needed to build this
    phase.
+10. **Items travel as letters (decided 2026-10-11, repo owner).** Every
+    vivi type — mail, task, need, want — is an `.eml` file, and the `.eml`
+    is the unit of sync. The origin's file goes to the server byte for byte,
+    is stored there, and is synced down byte for byte to every member. A
+    letter is immutable once created; its hash (`sha256` of the bytes, which
+    is the `content_id` every store already uses) is therefore the same on
+    every machine, and that is the only way immutability can be enforced.
+    The server never parses, renders, or rewrites a letter. See
+    [Letter wire](#letter-wire-decided-2026-10-11).
 
 ## What carries over from phases 01 and 02
 
@@ -194,8 +203,8 @@ in the design conversation apply:
   (the item plus assignee metadata, or per-recipient delivered copies).
 - What supplies the sequence cursor (for example the per-store event log vivi
   already keeps) and how concurrent appends are serialized per project.
-- Whether the wire stays HTTP or speaks IMAP/SMTP, and whether an item travels as
-  its raw `.eml` or inside an envelope.
+- Whether the wire stays HTTP or speaks IMAP/SMTP. (The item encoding is
+  decided: the raw `.eml`, decided item 10. HTTP is the working assumption.)
 - Migration of the rooms and messages already on the staging and production
   services, and how long the rooms API stays alongside the new one.
 
@@ -212,6 +221,12 @@ in the design conversation apply:
   local mailspace maps to one project.
 
 ## Wire contract as built (2026-10-10)
+
+> **Superseded in part.** The `POST /v1/projects/{id}/items` body shape and
+> the `GET .../items` record shape below are replaced by the
+> [Letter wire](#letter-wire-decided-2026-10-11). Project creation,
+> challenge, registration, directory, admission, and the vouch rule are
+> unchanged.
 
 Endpoints under `/v1/projects`, additive alongside the frozen rooms
 contract. Authentication is per-identity ED25519 challenge/sign with digest
@@ -266,3 +281,96 @@ content.
   endpoint wired yet; the items read is a plain poll.
 - The smoke script has no project-API legs yet (tracked as a want; the
   vivi client speaking the project API is its precondition).
+
+## Letter wire (decided 2026-10-11)
+
+Decided item 10. A **letter** is the exact `.eml` file the origin's store
+holds. Its name is `content_sha256` = lowercase hex `sha256` of its bytes.
+The **envelope** is what travels beside it: the client-minted id, the
+recipient and kind the sender declares (for visibility), the authenticated
+sender, the server's sequence, and the hash the server computed. The server
+treats a letter as opaque bytes: it does not parse headers, render, or
+rewrite. Only mail addressed to `postmaster` is read (the vouch rule).
+
+### Append
+
+`POST /v1/projects/{id}/items` (bearer), header `Message-ID: msg_` + 24
+lowercase hex (client-minted, decided item 5). Body:
+
+```json
+{"raw_eml": "<standard base64 of the exact bytes>",
+ "to": "<identity name>",          // optional
+ "kind": "need|task|want|mail"}    // optional
+```
+
+- `from` is always the authenticated identity; it is not client input.
+- The decoded letter is capped at 64 KiB (413 `body_too_large`).
+- 201 `{message_id, sequence, content_sha256}` for a fresh letter.
+- 200 with `duplicate: true` for a replay: same id and same bytes, or the
+  same bytes presented under a different id **by the same sender** (the
+  response names the original id and sequence). The second case is
+  sender-scoped so a member who holds the exact bytes of mail they cannot
+  see learns nothing about it; another member presenting those bytes gets
+  an ordinary fresh append under their own id.
+- 409 `conflict`: the id already names different bytes.
+- 400 `invalid_request`: bad id, undecodable base64, empty letter, bad
+  `kind`, or an invalid `to`.
+- Rate limit and the vouch rule are as built. For `to: postmaster` the
+  letter's body (the bytes after the first blank line, UTF-8) must be the
+  JSON `{"vouch": {"name", "public_key_pem"}}`; the admission is written
+  first, then the letter is stored.
+
+### Read
+
+`GET /v1/projects/{id}/items?since=N` (bearer) →
+
+```json
+{"records": [{"sequence": 7, "message_id": "msg_...", "from": "alice",
+              "to": "bob", "kind": "need", "content_sha256": "...",
+              "raw_eml": "<base64, the exact bytes appended>"}],
+ "next_cursor": 7}
+```
+
+- Visibility and cursor behavior are as built: work items and governance
+  mail are member-visible, other mail is visible to its sender and
+  recipient, and filtered items do not advance `next_cursor`.
+- `raw_eml` is byte-identical to what was appended. A client verifies
+  `sha256(raw_eml) == content_sha256` and refuses a record that fails.
+
+### Storage
+
+Letters are sealed whole at rest under the server key (AES-256-GCM, as
+VC-5) in per-project blobs named by `content_sha256`, with an index of
+envelope rows (`sequence`, `message_id`, `content_sha256`, `from`, `to`,
+`kind`). The envelope rows are metadata in the clear, like the room
+sidecar; letter content, including subject and body, is sealed. A project
+no longer uses a vivi mailspace on the server. This is a clean break: a
+project created on the pre-letter wire has an incompatible `items.json`
+and must be recreated; nothing speaks that wire yet.
+
+### Token renewal
+
+`POST /v1/projects/{id}/auth/token` `{name, challenge_id, signature_base64}`
+→ 200 `{token, token_expires_at}`. The challenge comes from the existing
+`/identities/challenge` and is keyed to the project and key fingerprint; the
+signature must verify under the key bound to `name`. Any mismatch is 401.
+Tokens last one hour and a registered name cannot re-register, so without
+this endpoint an identity is locked out after an hour.
+
+### Client
+
+- Config is the `[sync]` table in `mailspace.toml`: `server`, `project`
+  (the server-side project id), `name` (this checkout's registered
+  identity), `recipient` (the local role that receives pulled letters), and
+  an optional `[sync.names]` map of local role to wire name.
+- `vivi sync` pushes every local letter that has no remote binding for the
+  project, then pulls letters since the stored cursor. Push sends the stored
+  file as-is. Pull verifies the hash and ingests the bytes verbatim under the
+  envelope id; an id or content already held is skipped.
+- Envelope derivation on push: `kind` is the letter's work kind (`need`,
+  `task`, `want`) or `mail`; `to` is the delivered row's account mapped
+  through `[sync.names]`, else the checkout's own identity.
+- Not synced: memos, drafts, trash, and local state (closing a need,
+  marks). Closing a need as an appended record is a later unit.
+- Out of this layer, by design: remote addressing in compose, reply routing
+  to a remote sender, identity per role, long-poll. They build on this.

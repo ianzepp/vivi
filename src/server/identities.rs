@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{
-    AuthError, canonical_spki_hex, constant_time_eq, key_fingerprint, mint_token,
-    parse_verifying_key, rfc3339, sha256_hex,
+    AuthError, ChallengeBook, canonical_spki_hex, constant_time_eq, key_fingerprint, mint_token,
+    parse_verifying_key, rfc3339, sha256_hex, verify_signature, verifying_key_from_spki_hex,
 };
 
 pub const MAX_IDENTITY_LEN: usize = 64;
@@ -43,6 +43,14 @@ pub enum RegisterError {
     InvalidName,
     NameTaken,
     ReservedName,
+    Storage(String),
+}
+
+#[derive(Debug)]
+pub enum RefreshError {
+    /// Unknown name, wrong key, or a bad, expired, or replayed challenge or
+    /// signature; deliberately one case.
+    Unauthorized,
     Storage(String),
 }
 
@@ -183,6 +191,44 @@ impl IdentityRegistry {
             expires_at,
             fingerprint,
         })
+    }
+
+    /// Renew the bearer for a registered identity. The challenge is spent
+    /// on its first use, must have been issued for this project and the
+    /// fingerprint bound to `name`, and the signature must verify under the
+    /// key registered for that name. Earlier unexpired tokens stay valid.
+    pub fn refresh_token(
+        &self,
+        project_id: &str,
+        name: &str,
+        challenge_id: &str,
+        signature_base64: &str,
+        book: &ChallengeBook,
+    ) -> Result<(String, String), RefreshError> {
+        let _guard = self.lock();
+        let (_, fingerprint) = book.peek(challenge_id).ok_or(RefreshError::Unauthorized)?;
+        let challenge = book
+            .consume(project_id, challenge_id, &fingerprint)
+            .map_err(|_| RefreshError::Unauthorized)?;
+        let mut file = self.load(project_id);
+        let identity = file
+            .identities
+            .iter_mut()
+            .find(|i| i.name == name && i.fingerprint == fingerprint)
+            .ok_or(RefreshError::Unauthorized)?;
+        let key = verifying_key_from_spki_hex(&identity.spki_der)
+            .map_err(|_| RefreshError::Unauthorized)?;
+        if !verify_signature(&key, &challenge, signature_base64) {
+            return Err(RefreshError::Unauthorized);
+        }
+        let (token, record) = self.mint_record().map_err(|err| match err {
+            RegisterError::Storage(message) => RefreshError::Storage(message),
+            _ => RefreshError::Storage("token mint failed".into()),
+        })?;
+        identity.tokens.push(record.clone());
+        self.save(project_id, &file)
+            .map_err(RefreshError::Storage)?;
+        Ok((token, record.expires_at))
     }
 
     /// List registered identities without exposing persisted public-key or token data.

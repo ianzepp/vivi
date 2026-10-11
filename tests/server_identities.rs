@@ -6,10 +6,10 @@ use std::path::PathBuf;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 
-use vivi_server::auth::{canonical_spki_hex, key_fingerprint, parse_verifying_key};
-use vivi_server::identities::{IdentityRegistry, MAX_IDENTITY_LEN, RegisterError};
+use vivi_server::auth::{ChallengeBook, canonical_spki_hex, key_fingerprint, parse_verifying_key};
+use vivi_server::identities::{IdentityRegistry, MAX_IDENTITY_LEN, RefreshError, RegisterError};
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -114,4 +114,70 @@ fn bearer_round_trips_and_fails_closed() {
     assert!(reg.verify_bearer("p1", "not-a-real-token").is_none());
     // A token minted in one project does not open another.
     assert!(reg.verify_bearer("p2", &out.token).is_none());
+}
+
+/// Issue a challenge for `key` in `project` and sign it with `signer`.
+fn signed_challenge(
+    book: &ChallengeBook,
+    project: &str,
+    key: &SigningKey,
+    signer: &SigningKey,
+) -> (String, String) {
+    let parsed = parse_verifying_key(&spki_pem(key)).unwrap();
+    let issued = book
+        .issue(project, &key_fingerprint(&parsed).unwrap())
+        .unwrap();
+    let bytes = STANDARD.decode(&issued.challenge).unwrap();
+    (
+        issued.challenge_id,
+        STANDARD.encode(signer.sign(&bytes).to_bytes()),
+    )
+}
+
+#[test]
+fn refresh_mints_a_new_token_and_leaves_the_old_one_valid() {
+    let reg = registry("refresh");
+    let book = ChallengeBook::default();
+    let key = test_key(6);
+    let out = reg.register("p1", "hand", &spki_pem(&key)).unwrap();
+    let (challenge_id, signature) = signed_challenge(&book, "p1", &key, &key);
+    let (token, expires_at) = reg
+        .refresh_token("p1", "hand", &challenge_id, &signature, &book)
+        .unwrap();
+    assert_ne!(token, out.token);
+    assert!(!expires_at.is_empty());
+    assert_eq!(reg.verify_bearer("p1", &token).unwrap().name, "hand");
+    assert_eq!(reg.verify_bearer("p1", &out.token).unwrap().name, "hand");
+    // The challenge was spent.
+    assert!(matches!(
+        reg.refresh_token("p1", "hand", &challenge_id, &signature, &book),
+        Err(RefreshError::Unauthorized)
+    ));
+}
+
+#[test]
+fn refresh_refuses_unknown_name_wrong_key_and_other_project() {
+    let reg = registry("refresh-refuse");
+    let book = ChallengeBook::default();
+    let key = test_key(7);
+    let other = test_key(8);
+    reg.register("p1", "hand", &spki_pem(&key)).unwrap();
+    reg.register("p1", "other", &spki_pem(&other)).unwrap();
+    let cases = [
+        // (project to refresh in, name, challenge key, signer)
+        ("p1", "nobody", &key, &key),
+        ("p1", "hand", &key, &other),
+        ("p1", "hand", &other, &other),
+        ("p2", "hand", &key, &key),
+    ];
+    for (project, name, challenge_key, signer) in cases {
+        let (challenge_id, signature) = signed_challenge(&book, "p1", challenge_key, signer);
+        assert!(
+            matches!(
+                reg.refresh_token(project, name, &challenge_id, &signature, &book),
+                Err(RefreshError::Unauthorized)
+            ),
+            "{project} {name}"
+        );
+    }
 }
