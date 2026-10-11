@@ -265,7 +265,7 @@ done
 Parent agents should pass **pointers**, not paste charters:
 
 ```text
-You are fleet role head-ceo.
+You are Vivi role head-ceo.
 Load charter: vivi role charter show head-ceo --project <root>
 Load task:    vivi task show <handle> --project <root>
 ```
