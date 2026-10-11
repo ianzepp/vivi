@@ -131,6 +131,25 @@ pub fn prepare(repo: &Repo, refs: &Refs, allow_default: bool) -> Result<Checkout
     decide(refs, &facts)
 }
 
+/// What a read-only job does in a worktree slot: start detached at the commit
+/// `from` names. No branch is read, made, moved or checked out, so none of the
+/// branch refusals apply.
+///
+/// # Errors
+/// Returns an error if `from` is not a commit in the repository.
+pub fn prepare_read_only(repo: &Repo, from: &str) -> Result<Checkout, VivariumError> {
+    let start = repo.commit_of(from).ok_or_else(|| {
+        VivariumError::Message(format!(
+            "\"{from}\" is not a commit or branch in {}",
+            repo.path().display()
+        ))
+    })?;
+    Ok(Checkout {
+        action: BranchAction::Detached,
+        start,
+    })
+}
+
 /// The commit a new slot's worktree starts at: the commit `requested` names,
 /// else the tip of the default branch, else `HEAD`.
 ///

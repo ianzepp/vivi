@@ -74,6 +74,12 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub branch: Option<String>,
 
+    /// Publish nothing: check `--from` out detached, run the agent, then
+    /// discard whatever it changed (listed on the result); no commit, no
+    /// push, a token that cannot push. Excludes `--branch`
+    #[arg(long, conflicts_with_all = ["branch", "allow_default_branch"])]
+    pub read_only: bool,
+
     /// Hard time limit for the agent, in seconds (default 1800)
     #[arg(long)]
     pub budget: Option<u64>,

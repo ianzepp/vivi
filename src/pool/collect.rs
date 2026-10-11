@@ -52,6 +52,12 @@ pub const RESULT_PATHS: [&str; 4] = [
     "/work/job/agent.err",
     "/work/job/run.log",
 ];
+/// Result keys of the discarded paths of a read-only job: `<prefix>1`,
+/// `<prefix>2`, ... (capped by the runner; `discarded_count` has the total).
+pub const DISCARDED_PATH_PREFIX: &str = "discarded_path_";
+/// Outcome words of a read-only job (the `push` key of the result).
+pub const READ_ONLY_UNCHANGED: &str = "read_only_unchanged";
+pub const READ_ONLY_DISCARDED: &str = "read_only_discarded";
 const RECEIPT_BYTES: usize = 65_536;
 const TAIL_BYTES: usize = 4096;
 
@@ -110,11 +116,31 @@ impl JobResult {
         self.get("push")
     }
 
-    /// `pushed <branch> <sha>` or `committed <branch> <sha>`, or the bare
-    /// outcome word.
+    /// The paths a read-only job changed and the runner discarded, in order
+    /// (the runner lists at most a fixed number; `discarded_count` has the
+    /// total).
+    #[must_use]
+    pub fn discarded_paths(&self) -> Vec<String> {
+        let mut found: Vec<(u64, &String)> = self
+            .fields
+            .iter()
+            .filter_map(|(k, v)| {
+                let n = k.strip_prefix(DISCARDED_PATH_PREFIX)?;
+                Some((n.parse::<u64>().into_iter().next()?, v))
+            })
+            .collect();
+        found.sort_unstable();
+        found.into_iter().map(|(_, v)| v.clone()).collect()
+    }
+
+    /// `pushed <branch> <sha>` or `committed <branch> <sha>`,
+    /// `read_only_discarded <count>`, or the bare outcome word.
     #[must_use]
     pub fn push_line(&self) -> String {
         match (self.push(), self.get("sha")) {
+            (READ_ONLY_DISCARDED, _) => {
+                format!("{READ_ONLY_DISCARDED} {}", self.get("discarded_count"))
+            }
             (word @ ("pushed" | "committed"), sha) if !sha.is_empty() => {
                 format!(
                     "{word} {} {}",
@@ -129,8 +155,13 @@ impl JobResult {
     /// Two plain lines for the receipt.
     #[must_use]
     pub fn summary(&self) -> String {
+        let label = if self.push().starts_with("read_only_") {
+            "result"
+        } else {
+            "push"
+        };
         format!(
-            "push: {}\nagent exit {} in {}s, job {}s, started from {}",
+            "{label}: {}\nagent exit {} in {}s, job {}s, started from {}",
             self.push_line(),
             self.get("agent_rc"),
             self.get("agent_s"),

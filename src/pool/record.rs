@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::collect::{Collected, Outcome};
+use super::collect::{Collected, DISCARDED_PATH_PREFIX, Outcome};
 use crate::mailspace::PoolEventRow;
 
 /// The machine-readable record of a dispatch, as written to the task.
@@ -27,6 +27,10 @@ pub struct DispatchRecord {
     pub budget: u64,
     /// Dispatch time, epoch seconds.
     pub at: u64,
+    /// The job publishes nothing (`branch` is then empty). A record made
+    /// before read-only jobs existed reads as `false`.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 /// A dispatch with no result recorded yet.
@@ -46,7 +50,7 @@ pub fn dispatch_note(record: &DispatchRecord) -> String {
 #[must_use]
 pub fn dispatch_text(record: &DispatchRecord) -> String {
     format!(
-        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s\nfrom {from} ({start})  branch {branch}",
+        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s\nfrom {from} ({start})  {target}",
         job = record.job,
         pool = record.pool,
         slot = record.slot,
@@ -54,8 +58,18 @@ pub fn dispatch_text(record: &DispatchRecord) -> String {
         budget = record.budget,
         from = record.from,
         start = record.start.get(..12).unwrap_or(&record.start),
-        branch = record.branch,
+        target = target_text(record),
     )
+}
+
+/// `branch <name>`, or `read-only (nothing is committed or pushed)`.
+#[must_use]
+pub fn target_text(record: &DispatchRecord) -> String {
+    if record.read_only {
+        "read-only (nothing is committed or pushed)".to_string()
+    } else {
+        format!("branch {}", record.branch)
+    }
 }
 
 /// Open dispatches among `events` (oldest first): a task's latest
@@ -88,9 +102,18 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
         "slot": record.slot,
         "outcome": outcome.word(),
     });
+    if record.read_only {
+        note["read_only"] = serde_json::Value::Bool(true);
+    }
     if let Outcome::Finished(done) = outcome {
         for (key, value) in &done.result.fields {
-            note[key] = serde_json::Value::String(value.clone());
+            if !key.starts_with(DISCARDED_PATH_PREFIX) {
+                note[key] = serde_json::Value::String(value.clone());
+            }
+        }
+        let discarded = done.result.discarded_paths();
+        if !discarded.is_empty() {
+            note["discarded"] = serde_json::json!(discarded);
         }
     }
     note.to_string()
@@ -101,14 +124,14 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
 pub fn collected_text(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
     let record = &dispatch.record;
     let mut text = format!(
-        "pool result {job}: {word}\npool {pool}  slot {slot}  model {model}\nfrom {from}  branch {branch}",
+        "pool result {job}: {word}\npool {pool}  slot {slot}  model {model}\nfrom {from}  {target}",
         job = record.job,
         word = outcome.word(),
         pool = record.pool,
         slot = record.slot,
         model = record.model,
         from = record.from,
-        branch = record.branch,
+        target = target_text(record),
     );
     match outcome {
         Outcome::Finished(done) => text.push_str(&finished_text(done)),
@@ -125,6 +148,18 @@ pub fn collected_text(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
 fn finished_text(done: &Collected) -> String {
     let mut text = String::from("\n");
     text.push_str(&done.result.summary());
+    let discarded = done.result.discarded_paths();
+    if !discarded.is_empty() {
+        text.push_str(&format!(
+            "\ndiscarded paths ({} of {}):",
+            discarded.len(),
+            done.result.get("discarded_count")
+        ));
+        for path in &discarded {
+            text.push_str("\n  ");
+            text.push_str(path);
+        }
+    }
     for (title, body) in [
         ("receipt", &done.receipt),
         ("stderr tail", &done.stderr),

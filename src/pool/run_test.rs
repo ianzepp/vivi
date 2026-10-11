@@ -413,6 +413,7 @@ fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
             start: "s".into(),
             budget: 1800,
             at: 1000,
+            read_only: false,
         },
     };
     annotate_running(&mut slots, &[open], 1095);

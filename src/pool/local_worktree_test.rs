@@ -123,15 +123,27 @@ impl Rig {
         harness: &str,
         budget: u64,
     ) -> Result<(String, DispatchRecord), VivariumError> {
+        self.dispatch_to(from, Some(branch), harness, budget)
+    }
+
+    /// As `dispatch`; without a branch the job is read-only.
+    fn dispatch_to(
+        &mut self,
+        from: &str,
+        branch: Option<&str>,
+        harness: &str,
+        budget: u64,
+    ) -> Result<(String, DispatchRecord), VivariumError> {
         let task = self.task();
         let mut config = self.config.clone();
         config.harness.as_mut().unwrap().run = harness.to_string();
         let flags = DispatchFlags {
             model: "standin".into(),
             from: Some(from.into()),
-            branch: Some(branch.into()),
+            branch: branch.map(str::to_string),
             budget: Some(budget),
             allow_default_branch: false,
+            read_only: branch.is_none(),
         };
         let job = dispatch::new_job_id(&task, u128::from(self.sent), std::process::id());
         let mut plan = dispatch::plan_job(
@@ -142,7 +154,12 @@ impl Rig {
             DEFAULT_RULES.into(),
             job,
         )?;
-        let checkout = local_branch::prepare(&Repo::new(&self.f.repo), &plan.refs, false)?;
+        let repo = Repo::new(&self.f.repo);
+        let checkout = if plan.read_only {
+            local_branch::prepare_read_only(&repo, &plan.refs.from)?
+        } else {
+            local_branch::prepare(&repo, &plan.refs, false)?
+        };
         let start = checkout.start.clone();
         plan.checkout = Some(checkout);
         let token = Secret::new(String::new());
@@ -189,6 +206,26 @@ impl Rig {
         let line = self.wait(&task);
         assert_eq!(line.state, "finished", "{line:?}");
         (self.result(&made), made)
+    }
+
+    /// Dispatch a read-only job from `from`, wait, and read the result.
+    fn run_read_only(&mut self, from: &str, harness: &str) -> (JobResult, DispatchRecord) {
+        let (task, made) = self.dispatch_to(from, None, harness, 120).unwrap();
+        let line = self.wait(&task);
+        assert_eq!(line.state, "finished", "{line:?}");
+        (self.result(&made), made)
+    }
+
+    /// Every local branch and where it points.
+    fn branches(&self) -> String {
+        git(
+            &self.f.repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/heads",
+            ],
+        )
     }
 
     fn result(&self, made: &DispatchRecord) -> JobResult {
@@ -364,6 +401,7 @@ fn a_branch_that_appeared_after_the_decision_is_refused_by_the_runner_and_never_
                 branch: Some("topic".into()),
                 budget: Some(120),
                 allow_default_branch: false,
+                read_only: false,
             },
             DEFAULT_RULES.into(),
             "0123456789ab".into(),
@@ -549,4 +587,60 @@ fn scale_down_style_destroy_takes_the_worktree_with_it_and_every_branch_stays() 
         2
     );
     assert!(!rig.root.exists());
+}
+
+#[test]
+fn a_read_only_job_in_a_worktree_slot_touches_no_branch_and_reports_an_unchanged_tree() {
+    let mut rig = Rig::new();
+    let (branches, main) = (rig.branches(), rig.tip("main"));
+    let (result, made) = rig.run_read_only("main", NOTHING);
+    assert!(made.read_only);
+    assert_eq!(made.branch, "");
+    assert_eq!(result.push(), "read_only_unchanged");
+    assert_eq!(result.get("start"), main);
+    assert_eq!(rig.branches(), branches, "no branch was made or moved");
+    assert_eq!(git(&rig.checkout(&made), &["status", "--porcelain"]), "");
+    rig.assert_all_detached();
+    assert_eq!(git(&rig.f.repo, &["status", "--short"]), "");
+}
+
+#[test]
+fn a_read_only_job_in_a_worktree_slot_discards_what_it_changed_and_says_what() {
+    let mut rig = Rig::new();
+    let branches = rig.branches();
+    let (result, made) = rig.run_read_only("main", "echo more >> a.txt; echo n > new.txt");
+    assert_eq!(result.push(), "read_only_discarded");
+    assert_eq!(result.get("discarded_count"), "2");
+    assert_eq!(result.discarded_paths(), ["a.txt", "new.txt"]);
+    let slot = rig.checkout(&made);
+    assert_eq!(git(&slot, &["status", "--porcelain"]), "");
+    assert!(!slot.join("new.txt").exists());
+    assert_eq!(rig.branches(), branches, "still no branch");
+    rig.assert_all_detached();
+    // The slot is clean for the next job, which can be a normal one.
+    let (next, _) = rig.run(("main", "topic"), WRITE);
+    assert_eq!(next.push(), "committed");
+}
+
+#[test]
+fn a_read_only_job_can_start_from_a_commit_or_another_branch_and_the_branch_checks_do_not_apply() {
+    let mut rig = Rig::new();
+    let first = git(&rig.f.repo, &["rev-parse", "main~1"]);
+    let (result, _) = rig.run_read_only(&first, NOTHING);
+    assert_eq!(result.get("start"), first);
+    git(&rig.f.repo, &["branch", "side", "main"]);
+    let (result, _) = rig.run_read_only("side", NOTHING);
+    assert_eq!(result.get("start"), rig.tip("side"));
+    // The primary checkout's own branch and the default branch are fine to read.
+    assert_eq!(
+        rig.run_read_only("main", NOTHING).0.push(),
+        "read_only_unchanged"
+    );
+    let missing = rig.dispatch_to("no-such-ref", None, NOTHING, 60);
+    assert!(
+        missing
+            .unwrap_err()
+            .to_string()
+            .contains("not a commit or branch")
+    );
 }

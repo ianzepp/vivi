@@ -134,6 +134,9 @@ pub struct SlotStatus {
     /// The open dispatch's time budget in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_secs: Option<u64>,
+    /// Whether the open dispatch is read-only, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
     pub created_at: String,
     pub region: String,
     /// CPU architecture of the slot, when the host reports it.
@@ -197,6 +200,7 @@ pub fn pool_slots(id: &PoolId, machines: &[MachineRecord]) -> Vec<SlotStatus> {
                 .get(META_CLAIMED)
                 .and_then(|v| v.parse::<u64>().into_iter().next()),
             running_secs: None,
+            read_only: None,
             budget_secs: None,
             created_at: m.created_at.clone(),
             region: m.region.clone(),

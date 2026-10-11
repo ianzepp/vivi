@@ -5,6 +5,7 @@
 # /work/job), delivered as one archive:
 #   params.env   REMOTE FROM BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
 #                COMMIT_NAME COMMIT_EMAIL ENV_NAMES
+#                READ_ONLY (set to 1 for a read-only job; BRANCH is then empty)
 #                (REMOTE is the full Git address; https gets the token below,
 #                a file:// address is used as given). A worktree slot has no
 #                REMOTE and also gets LOCAL_ACTION (create | continue) and
@@ -31,6 +32,14 @@
 # (refused when another worktree holds it). The result is a commit on BRANCH
 # (`push=committed`), and the worktree goes back to a detached HEAD at the
 # end, whatever the outcome, so the branch is free again.
+#
+# A read-only job (READ_ONLY set) publishes nothing. FROM is checked out
+# detached and no branch is made or moved. After the agent, the runner never
+# commits and never pushes: it lists the paths that differ from FROM (tracked
+# changes, commits the agent made, untracked files; not the build directory),
+# restores the tree, and ends with push=read_only_unchanged or
+# push=read_only_discarded plus discarded_count and the first
+# $READ_ONLY_LIST_CAP paths as discarded_path_N.
 #
 # Where UNPRIVILEGED is set the agent is the same user as this script and
 # there is no `hand` home: the brief and the rules go to $WORK/home (the
@@ -91,6 +100,7 @@ finish() { # finish <push-outcome> [sha]
     echo "job_s=$(( $(now) - T0 ))"
     echo "model=$MODEL"
     echo "slot=$SLOT"
+    [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
   } > "$J/result.partial"
   mv "$J/result.partial" "$J/result"
   exit 0
@@ -119,7 +129,7 @@ else
   as_hand git fetch -q --depth "${DEPTH:-1}" "$URL" "$FROM" || finish fetch_failed
   START=$(as_hand git rev-parse FETCH_HEAD)
   as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
-  as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
+  [ -n "${READ_ONLY:-}" ] || as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
   rm -f "$RD/.git/FETCH_HEAD"
 fi
 echo "from $FROM at ${START:0:12} prepared_s $(( $(now) - T0 ))"
@@ -146,6 +156,27 @@ echo "agent_rc $AGENT_RC agent_s $AGENT_S"
 kill_agent
 EXCLUDE=(.)
 [ -z "${BUILD_DIR:-}" ] || EXCLUDE+=(":(exclude)$BUILD_DIR")
+
+# A read-only job ends here, whatever the agent did: nothing is committed or
+# pushed. Detaching at START with -f restores the tracked files without moving
+# any branch (a branch the agent made or checked out is left as it is).
+READ_ONLY_LIST_CAP=50
+finish_read_only() {
+  local paths count i=0 path
+  paths=$( { as_hand git diff --name-only "$START" -- "${EXCLUDE[@]}"
+             as_hand git ls-files --others --exclude-standard -- "${EXCLUDE[@]}"; } | sort -u )
+  as_hand git checkout -q -f --detach "$START"
+  as_hand git clean "${CLEAN[@]}"
+  [ -n "$paths" ] || finish read_only_unchanged
+  count=$(printf '%s\n' "$paths" | grep -c .)
+  RESULT_EXTRA="discarded_count=$count"
+  while [ "$i" -lt "$READ_ONLY_LIST_CAP" ] && IFS= read -r path; do
+    i=$((i + 1))
+    RESULT_EXTRA+=$'\n'"discarded_path_$i=$path"
+  done <<< "$paths"
+  finish read_only_discarded
+}
+[ -z "${READ_ONLY:-}" ] || finish_read_only
 CHANGED=$(as_hand git status --porcelain -- "${EXCLUDE[@]}")
 # A worktree agent may have committed on its own: HEAD then moved off START.
 MOVED=

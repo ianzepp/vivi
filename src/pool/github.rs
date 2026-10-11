@@ -107,12 +107,48 @@ fn app_jwt(app_id: u64, key: &Path) -> Result<Secret, VivariumError> {
     Ok(Secret(format!("{input}.{}", b64url(&signature))))
 }
 
+/// What a minted token may do with the repository's contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Contents {
+    /// Fetch only; the token cannot push.
+    Read,
+    /// Fetch and push.
+    Write,
+}
+
+impl Contents {
+    /// The word GitHub's `contents` permission takes.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// The body of the installation-token request: one repository, `contents`
+/// narrowed to `contents`.
+#[must_use]
+pub fn token_request_body(repo_name: &str, contents: Contents) -> Value {
+    json!({"repositories": [repo_name], "permissions": {"contents": contents.word()}})
+}
+
 /// Mint a one-hour installation token narrowed to the pool's repo with
 /// `contents: write`.
 ///
 /// # Errors
 /// Returns an error if signing, the HTTP calls, or the response shape fail.
 pub fn mint_token(access: &RepoAccess) -> Result<Secret, VivariumError> {
+    mint_token_with(access, Contents::Write)
+}
+
+/// Mint a one-hour installation token narrowed to the pool's repo with the
+/// given `contents` permission.
+///
+/// # Errors
+/// Returns an error if signing, the HTTP calls, or the response shape fail.
+pub fn mint_token_with(access: &RepoAccess, contents: Contents) -> Result<Secret, VivariumError> {
     let (repo, github) = (access.repo, access.github);
     let jwt = app_jwt(github.app_id, &github.private_key_path())?;
     let install = request(
@@ -127,7 +163,7 @@ pub fn mint_token(access: &RepoAccess) -> Result<Secret, VivariumError> {
         ))
     })?;
     let name = repo.rsplit('/').next().unwrap_or_default();
-    let body = json!({"repositories": [name], "permissions": {"contents": "write"}});
+    let body = token_request_body(name, contents);
     let url = format!("{API}/app/installations/{id}/access_tokens");
     let reply = request("POST", &url, &jwt, Some(body))?;
     reply["token"]

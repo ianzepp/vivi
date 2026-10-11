@@ -93,3 +93,15 @@ fn signing_with_a_missing_key_fails_without_leaking() {
     let err = sign_rs256(Path::new("/nonexistent/key.pem"), "x").unwrap_err();
     assert!(err.to_string().contains("openssl could not sign"));
 }
+
+#[test]
+fn the_token_request_narrows_contents_to_read_or_write() {
+    assert_eq!(
+        token_request_body("widgets", Contents::Read),
+        serde_json::json!({"repositories": ["widgets"], "permissions": {"contents": "read"}})
+    );
+    assert_eq!(
+        token_request_body("widgets", Contents::Write),
+        serde_json::json!({"repositories": ["widgets"], "permissions": {"contents": "write"}})
+    );
+}

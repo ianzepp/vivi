@@ -421,6 +421,7 @@ vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SE
 vivi pool status [--pool <name>] [--json | --porcelain]
 vivi pool destroy --pool <name> (--slot <name-or-id> | --all) --yes
 vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--porcelain]
+vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>] [--budget SECS] [--porcelain]
 vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
 vivi pool reconcile [--pool <name>] [--porcelain]
 vivi pool doctor [--pool <name>] [--json | --porcelain]
@@ -474,6 +475,38 @@ vivi pool doctor --pool <name> --test [--long] [--json | --porcelain]
   line, "no repository configured for this pool"). `create`, `scale` (when it
   would create) and `dispatch` fail naming the missing setting, and `dispatch`
   also needs `harness` and `committer`.
+
+#### Read-only dispatch (reviewers and auditors)
+
+`vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>]
+[--budget SECS]` runs a job that publishes nothing, so a review role can have a
+full shell (git, builds, tests) safely. `--from` (or a `from:` body line) is
+required; `--branch` and `--allow-default-branch` are refused with it, and a
+`branch:` body line is ignored (the human output says so). Per-dispatch flag
+only; no config setting.
+
+- The GitHub token is minted with `contents: read`: the slot cannot push.
+- The runner checks `from` out detached (no branch made or moved), runs the
+  harness as usual, then never commits and never pushes. If the tree differs
+  from `from` (tracked changes, commits, untracked files; not the build
+  directory) it records the paths (up to 50; the count is exact) and restores
+  the tree. Changes are visible, not a failure.
+- Outcomes (the `DETAIL` of `collected`): `read_only_unchanged`, and
+  `"read_only_discarded COUNT"` (quoted: it holds a space). They never reuse
+  `pushed`, `committed`, `no_changes` or `push_refused`. The paths and the
+  receipt are on the task's result record (`task show` / the thread); in the
+  `pool_collected` JSON they are the array `discarded`.
+- Porcelain: `dispatched TASK POOL SLOT JOB MODEL FROM START - BUDGET read-only`
+  (BRANCH is `-`; MODE is `write` otherwise); `slot ... CREATED MODE` shows
+  `read-only` for a busy slot with a read-only dispatch (`status --json`:
+  `read_only`).
+- Guarantee by provider: Docker and Fly are the strong form (confined worker,
+  no credentials). SSH and local fetch mode: the runner publishes nothing and
+  the token cannot push, but the worker is a real user account with its own
+  access that Vivi cannot stop; a one-line warning goes to standard error. Local
+  worktree mode: no token and no push, no commit and no branch from the runner,
+  but the worker shares the repository and could commit with plain Git; the
+  dispatch warns of that.
 
 Example: a small local pool for everyday work and a larger rented pool to scale
 up for a big push and back down afterwards.
@@ -549,8 +582,8 @@ scale      created ... | home ... | exists ... | issue ...         as create
            destroyed POOL NAME ID
            skipped POOL NAME ID STATE TASK                         not free, so kept
            scaled POOL TARGET COUNT                                COUNT: slots the pool holds now
-status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED
-dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET
+status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE   MODE write|read-only, - with no open dispatch
+dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE       BRANCH - when read-only; MODE write|read-only
 wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
            nothing-open                                            already collected
            issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND poll-error, SUBJECT the task

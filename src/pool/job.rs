@@ -90,11 +90,28 @@ pub fn body_refs(body: &str) -> BodyRefs {
     refs
 }
 
-/// Where to start and where to push, after flags and body are merged.
+/// Where to start and where to push, after flags and body are merged. A
+/// read-only job has no branch: `branch` is empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refs {
     pub from: String,
     pub branch: String,
+}
+
+/// The commit or branch a job starts from: the flag, else the body line.
+///
+/// # Errors
+/// Returns an error if the value is missing or not a plain ref name.
+pub fn resolve_from(flag_from: Option<&str>, body: &str) -> Result<String, VivariumError> {
+    let from = flag_from
+        .map(str::to_string)
+        .or(body_refs(body).from)
+        .ok_or_else(|| missing("from"))?;
+    if plain_ref(&from) {
+        Ok(from)
+    } else {
+        Err(bad_ref("from", &from))
+    }
 }
 
 /// Flags win over body lines; both values are required one way or the other.
@@ -106,18 +123,11 @@ pub fn resolve_refs(
     flag_branch: Option<&str>,
     body: &str,
 ) -> Result<Refs, VivariumError> {
-    let found = body_refs(body);
-    let from = flag_from
-        .map(str::to_string)
-        .or(found.from)
-        .ok_or_else(|| missing("from"))?;
+    let from = resolve_from(flag_from, body)?;
     let branch = flag_branch
         .map(str::to_string)
-        .or(found.branch)
+        .or(body_refs(body).branch)
         .ok_or_else(|| missing("branch"))?;
-    if !plain_ref(&from) {
-        return Err(bad_ref("from", &from));
-    }
     if !plain_ref(&branch)
         || std::path::Path::new(&branch)
             .extension()
@@ -181,6 +191,9 @@ pub enum BranchAction {
     /// The branch exists and is the one the job continues: checked out as it
     /// is.
     Continue,
+    /// A read-only job: no branch is made or touched; the work stays on a
+    /// detached HEAD.
+    Detached,
 }
 
 impl BranchAction {
@@ -190,6 +203,7 @@ impl BranchAction {
         match self {
             Self::Create => "create",
             Self::Continue => "continue",
+            Self::Detached => "detached",
         }
     }
 }
@@ -224,6 +238,8 @@ pub struct JobPlan {
     pub harness_cmd: String,
     pub env_names: Vec<String>,
     pub committer: PoolCommitter,
+    /// The job publishes nothing: no commit, no push, no branch.
+    pub read_only: bool,
 }
 
 /// One file inside the job archive, under `job/`.
@@ -276,6 +292,9 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         ("COMMIT_EMAIL", spec.committer.email.clone()),
         ("ENV_NAMES", spec.env_names.join(" ")),
     ];
+    if spec.read_only {
+        fields.push(("READ_ONLY", "1".to_string()));
+    }
     if let Some(checkout) = &spec.checkout {
         fields.push(("LOCAL_ACTION", checkout.action.word().to_string()));
         fields.push(("LOCAL_START", checkout.start.clone()));
@@ -355,3 +374,7 @@ pub fn pack(bundle: &Bundle) -> Result<Vec<u8>, VivariumError> {
 #[cfg(test)]
 #[path = "job_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "job_runner_test.rs"]
+mod runner_tests;

@@ -515,6 +515,7 @@ pub fn annotate_running(slots: &mut [SlotStatus], open: &[OpenDispatch], now: u6
         if let Some(d) = open.iter().find(|d| d.record.machine == slot.id) {
             slot.running_secs = Some(now.saturating_sub(d.record.at));
             slot.budget_secs = Some(d.record.budget);
+            slot.read_only = Some(d.record.read_only);
         }
     }
 }

@@ -216,8 +216,13 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
 
 /// `running 95s of 1800s` for a slot with an open dispatch.
 fn running_text(slot: &SlotStatus) -> String {
+    let mode = if slot.read_only == Some(true) {
+        "  read-only"
+    } else {
+        ""
+    };
     match (slot.running_secs, slot.budget_secs) {
-        (Some(ran), Some(budget)) => format!("  running {ran}s of {budget}s"),
+        (Some(ran), Some(budget)) => format!("  running {ran}s of {budget}s{mode}"),
         _ if slot.state == "busy" => "  no open dispatch".to_string(),
         _ => String::new(),
     }

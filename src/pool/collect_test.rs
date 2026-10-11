@@ -22,6 +22,7 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
             start: "f".repeat(40),
             budget: 600,
             at,
+            read_only: false,
         },
     }
 }
@@ -56,6 +57,46 @@ fn result_file_parses_key_value_lines() {
     assert_eq!(r.push_line(), "pushed b/x 0123456789");
     let refused = JobResult::parse("push=push_refused\n");
     assert_eq!(refused.push_line(), "push_refused");
+}
+
+const RESULT_READ_ONLY: &str = "@@vivi-pool result\njob=j1\nstate=done\npush=read_only_discarded\nbranch=\nsha=\nstart=fedcba9876543210\nagent_rc=0\nagent_s=12\njob_s=30\nmodel=m/x\nslot=p-slot-1\ndiscarded_count=2\ndiscarded_path_1=a.txt\ndiscarded_path_2=new.txt\n@@vivi-pool receipt\nreviewed\n\n@@vivi-pool stderr\n\n@@vivi-pool log\n\n";
+
+#[test]
+fn the_two_read_only_outcomes_are_their_own_words() {
+    let unchanged =
+        JobResult::parse("push=read_only_unchanged\nbranch=\nsha=\nstart=abcdef0123456789\n");
+    assert_eq!(unchanged.push_line(), "read_only_unchanged");
+    assert!(unchanged.discarded_paths().is_empty());
+    assert!(
+        unchanged
+            .summary()
+            .starts_with("result: read_only_unchanged\n")
+    );
+    let done = parse_collected(RESULT_READ_ONLY).unwrap();
+    assert_eq!(done.result.push_line(), "read_only_discarded 2");
+    assert_eq!(done.result.discarded_paths(), ["a.txt", "new.txt"]);
+    assert!(
+        done.result
+            .summary()
+            .starts_with("result: read_only_discarded 2\n")
+    );
+    for word in [READ_ONLY_UNCHANGED, READ_ONLY_DISCARDED] {
+        for old in ["no_changes", "pushed", "committed", "push_refused"] {
+            assert_ne!(word, old);
+        }
+    }
+}
+
+#[test]
+fn a_read_only_result_is_collected_from_a_running_slot() {
+    let fake = fake_with("started", RESULT_READ_ONLY);
+    let Some(Outcome::Finished(done)) =
+        poll(&fake, &open("aaaa1111", "j1", 1000), 1100, &pacing()).unwrap()
+    else {
+        panic!("not finished");
+    };
+    assert_eq!(done.result.push(), READ_ONLY_DISCARDED);
+    assert_eq!(done.receipt, "reviewed\n\n");
 }
 
 #[test]

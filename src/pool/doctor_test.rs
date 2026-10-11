@@ -52,6 +52,7 @@ fn open_dispatch(task: &str, machine: &str, at: u64, budget: u64) -> OpenDispatc
             start: "f".repeat(40),
             budget,
             at,
+            read_only: false,
         },
     }
 }

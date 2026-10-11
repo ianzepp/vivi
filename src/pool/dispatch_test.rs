@@ -34,6 +34,7 @@ fn flags(model: &str) -> DispatchFlags {
         branch: Some("factory/a".into()),
         budget: None,
         allow_default_branch: false,
+        read_only: false,
     }
 }
 
@@ -317,4 +318,98 @@ fn a_pool_with_no_repository_refuses_to_dispatch_and_names_the_setting() {
         "j".into(),
     )
     .unwrap();
+}
+
+fn read_only(from: Option<&str>, branch: Option<&str>) -> DispatchFlags {
+    DispatchFlags {
+        model: "m/ok".into(),
+        from: from.map(str::to_string),
+        branch: branch.map(str::to_string),
+        read_only: true,
+        ..DispatchFlags::default()
+    }
+}
+
+#[test]
+fn a_read_only_job_needs_a_from_and_has_no_branch() {
+    let p = plan(&read_only(Some("main"), None)).unwrap();
+    assert!(p.read_only);
+    assert_eq!(p.refs.from, "main");
+    assert_eq!(p.refs.branch, "");
+    assert!(!plan(&flags("m/ok")).unwrap().read_only);
+    let err = plan(&read_only(None, None)).unwrap_err().to_string();
+    assert!(err.contains("no from"), "{err}");
+    let err = plan(&read_only(Some("-bad"), None))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a plain commit or branch"), "{err}");
+}
+
+#[test]
+fn a_read_only_job_takes_from_from_the_body_and_ignores_a_body_branch() {
+    let p = plan_job(
+        &config(),
+        "p",
+        ("t", "s", "review it\nfrom: main\nbranch: factory/body"),
+        &read_only(None, None),
+        "r".into(),
+        "j".into(),
+    )
+    .unwrap();
+    assert_eq!(p.refs.from, "main");
+    assert_eq!(p.refs.branch, "");
+}
+
+#[test]
+fn a_branch_flag_with_read_only_is_refused() {
+    let err = plan(&read_only(Some("main"), Some("factory/a")))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("--branch cannot be used with --read-only"),
+        "{err}"
+    );
+}
+
+fn config_of(provider: &str, extra: &str) -> PoolConfig {
+    toml::from_str(&format!(
+        "provider = \"{provider}\"\nrepo = \"o/r\"\nslots = 1\n{extra}"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn confined_providers_get_no_read_only_warning_and_the_others_say_what_is_not_promised() {
+    for provider in ["docker", "fly"] {
+        assert_eq!(
+            read_only_warning(&config_of(provider, "")),
+            None,
+            "{provider}"
+        );
+    }
+    let ssh = read_only_warning(&config_of("ssh", "")).unwrap();
+    assert!(
+        ssh.starts_with("warning: --read-only on the ssh provider"),
+        "{ssh}"
+    );
+    assert!(ssh.contains("real user account"), "{ssh}");
+    assert!(ssh.contains("Vivi cannot stop it"), "{ssh}");
+    let local = read_only_warning(&config_of("local", "")).unwrap();
+    assert!(local.contains("on the local provider"), "{local}");
+    assert!(local.contains("real user account"), "{local}");
+}
+
+#[test]
+fn a_worktree_pool_warns_that_the_worker_could_still_commit_with_plain_git() {
+    let worktree = config_of(
+        "local",
+        "[local]\nroot = \"/tmp/lanes\"\nworktree_of = \"/tmp/project\"\n",
+    );
+    let warning = read_only_warning(&worktree).unwrap();
+    assert!(warning.contains("worktree pool"), "{warning}");
+    assert!(
+        warning.contains("could still commit to it with plain Git"),
+        "{warning}"
+    );
+    assert!(warning.contains("there is no token"), "{warning}");
 }

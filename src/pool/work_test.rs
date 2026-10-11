@@ -40,6 +40,7 @@ fn dispatched(space: &Mailspace, task: &str, machine: &str) {
         start: "f".repeat(40),
         budget: 600,
         at: epoch_secs() - 100,
+        read_only: false,
     };
     space
         .record_pool_note(
@@ -329,6 +330,7 @@ fn dispatched_to(space: &Mailspace, task: &str, pool: &str, machine: &str) {
         start: "f".repeat(40),
         budget: 600,
         at: epoch_secs() - 100,
+        read_only: false,
     };
     let note = record::dispatch_note(&record);
     space

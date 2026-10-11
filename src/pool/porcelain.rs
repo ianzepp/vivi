@@ -18,12 +18,14 @@
 //!                created POOL NAME ID STATE SECONDS EXIT OUTCOME ERROR   OUTCOME: seeded|timeout|failed|unmarked
 //!                exists POOL COUNT                                 (nothing to create)
 //!                issue POOL KIND SUBJECT MESSAGE FIRST CLEARED
-//! pool status    slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED
+//! pool status    slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE
+//!                                                                  MODE: write|read-only, or - (no open dispatch)
 //! pool scale     created POOL NAME ID STATE SECONDS EXIT OUTCOME ERROR   (as create; also home, exists, issue)
 //!                destroyed POOL NAME ID
 //!                skipped POOL NAME ID STATE TASK                   (a slot that was not free, so kept)
 //!                scaled POOL TARGET COUNT                          (COUNT: slots the pool holds now)
-//! pool dispatch  dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET
+//! pool dispatch  dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE
+//!                                                                  BRANCH: - when read-only; MODE: write|read-only
 //! pool wait      collected TASK POOL SLOT STATE DETAIL             STATE: finished|timeout|lost
 //!                nothing-open
 //!                issue POOL KIND SUBJECT MESSAGE FIRST CLEARED     KIND: poll-error
@@ -32,6 +34,12 @@
 //! pool doctor    check POOL STATUS GROUP NAME DETAIL FIX MILLIS
 //!                summary POOL OK WARN FAIL SKIPPED                 (one per pool)
 //! ```
+//!
+//! `DETAIL` of a finished job is its outcome: `pushed BRANCH SHA`,
+//! `committed BRANCH SHA` (worktree pool), `no_changes`, `push_refused`, a
+//! runner failure word, or, for a read-only job, `read_only_unchanged` (the
+//! tree was as checked out) or `read_only_discarded COUNT` (changes were
+//! discarded, COUNT paths; the paths are on the task's result record).
 //!
 //! A `POOL` of `-` appears only where the pool is not known: a dispatch
 //! recorded without one (made before pools were named), or an issue that is
@@ -87,7 +95,7 @@ fn line(kind: &str, fields: &[String]) -> String {
         .join(" ")
 }
 
-/// `dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET`
+/// `dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE`
 #[must_use]
 pub fn dispatched(task: &str, made: &DispatchRecord) -> String {
     let fields = [
@@ -98,10 +106,15 @@ pub fn dispatched(task: &str, made: &DispatchRecord) -> String {
         quote(&made.model),
         quote(&made.from),
         quote(&made.start),
-        quote(&made.branch),
+        opt(Some(made.branch.as_str()).filter(|b| !b.is_empty())),
         made.budget.to_string(),
+        mode_word(made.read_only).to_string(),
     ];
     line("dispatched", &fields)
+}
+
+fn mode_word(read_only: bool) -> &'static str {
+    if read_only { "read-only" } else { "write" }
 }
 
 /// `home POOL TEXT`
@@ -173,7 +186,7 @@ pub fn scaled(pool: &str, target: u32, count: usize) -> String {
     )
 }
 
-/// `slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED`
+/// `slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE`
 #[must_use]
 pub fn slot(slot: &SlotStatus) -> String {
     let fields = [
@@ -187,6 +200,8 @@ pub fn slot(slot: &SlotStatus) -> String {
         opt(slot.base.as_deref()),
         opt(slot.arch.as_deref()),
         quote(&slot.created_at),
+        slot.read_only
+            .map_or_else(|| "-".to_string(), |r| mode_word(r).to_string()),
     ];
     line("slot", &fields)
 }

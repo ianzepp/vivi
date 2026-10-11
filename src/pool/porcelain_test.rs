@@ -53,13 +53,52 @@ fn dispatched_line() {
         start: "a".repeat(40),
         budget: 1800,
         at: 0,
+        read_only: false,
     };
     assert_eq!(
         dispatched("3f2a", &made),
         format!(
-            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} work/x 1800",
+            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} work/x 1800 write",
             "a".repeat(40)
         )
+    );
+}
+
+#[test]
+fn a_read_only_dispatch_has_no_branch_and_says_so() {
+    let made = DispatchRecord {
+        pool: "p".into(),
+        slot: "p-slot-1".into(),
+        machine: "m1".into(),
+        job: "0123456789ab".into(),
+        model: "sonnet".into(),
+        from: "main".into(),
+        branch: String::new(),
+        start: "a".repeat(40),
+        budget: 600,
+        at: 0,
+        read_only: true,
+    };
+    assert_eq!(
+        dispatched("3f2a", &made),
+        format!(
+            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} - 600 read-only",
+            "a".repeat(40)
+        )
+    );
+}
+
+#[test]
+fn read_only_results_are_collected_as_their_own_words() {
+    let unchanged = round_line("3f2a", "finished", "read_only_unchanged");
+    assert_eq!(
+        collected(&unchanged),
+        "collected 3f2a p p-slot-2 finished read_only_unchanged"
+    );
+    let discarded = round_line("3f2a", "finished", "read_only_discarded 3");
+    assert_eq!(
+        collected(&discarded),
+        r#"collected 3f2a p p-slot-2 finished "read_only_discarded 3""#
     );
 }
 
@@ -105,6 +144,7 @@ fn status_lines() {
         base: Some("abc".into()),
         task: Some("3f2a".into()),
         claimed_at: None,
+        read_only: None,
         running_secs: Some(95),
         budget_secs: Some(1800),
         created_at: "2026-10-11T10:00:00Z".into(),
@@ -113,7 +153,7 @@ fn status_lines() {
     };
     assert_eq!(
         slot(&busy),
-        "slot p p-slot-1 m1 busy 3f2a 95 1800 abc arm64 2026-10-11T10:00:00Z"
+        "slot p p-slot-1 m1 busy 3f2a 95 1800 abc arm64 2026-10-11T10:00:00Z -"
     );
     busy.state = "free".into();
     busy.task = None;
@@ -123,8 +163,12 @@ fn status_lines() {
     busy.arch = None;
     assert_eq!(
         slot(&busy),
-        "slot p p-slot-1 m1 free - - - - - 2026-10-11T10:00:00Z"
+        "slot p p-slot-1 m1 free - - - - - 2026-10-11T10:00:00Z -"
     );
+    busy.read_only = Some(false);
+    assert!(slot(&busy).ends_with("2026-10-11T10:00:00Z write"));
+    busy.read_only = Some(true);
+    assert!(slot(&busy).ends_with("2026-10-11T10:00:00Z read-only"));
 }
 
 #[test]
@@ -227,6 +271,7 @@ fn scale_lines() {
         base: None,
         task: Some("3f2a".into()),
         claimed_at: None,
+        read_only: None,
         running_secs: None,
         budget_secs: None,
         created_at: String::new(),

@@ -29,6 +29,9 @@ pub struct DispatchFlags {
     pub budget: Option<u64>,
     /// Allow pushing to the repository's default branch.
     pub allow_default_branch: bool,
+    /// The job publishes nothing: detached checkout, no commit, no push, a
+    /// token that cannot push. Excludes `branch`.
+    pub read_only: bool,
 }
 
 /// A fresh job id: twelve hex digits.
@@ -66,7 +69,7 @@ pub fn plan_job(
         ))
     })?;
     job::check_model(&flags.model, &harness.models)?;
-    let refs = job::resolve_refs(flags.from.as_deref(), flags.branch.as_deref(), body)?;
+    let refs = plan_refs(flags, body)?;
     let budget = flags.budget.unwrap_or(DEFAULT_BUDGET_SECS);
     if !BUDGET_RANGE.contains(&budget) {
         return Err(VivariumError::Message(format!(
@@ -90,6 +93,46 @@ pub fn plan_job(
         harness_cmd: job::render_harness(&harness.run, &flags.model),
         env_names: harness.env.clone(),
         committer,
+        read_only: flags.read_only,
+    })
+}
+
+/// `from` and `branch` for the flags. A read-only job names no branch.
+fn plan_refs(flags: &DispatchFlags, body: &str) -> Result<job::Refs, VivariumError> {
+    if !flags.read_only {
+        return job::resolve_refs(flags.from.as_deref(), flags.branch.as_deref(), body);
+    }
+    if flags.branch.is_some() {
+        return Err(VivariumError::Message(
+            "--branch cannot be used with --read-only: a read-only job has no branch".into(),
+        ));
+    }
+    Ok(job::Refs {
+        from: job::resolve_from(flags.from.as_deref(), body)?,
+        branch: String::new(),
+    })
+}
+
+/// What a read-only dispatch cannot promise on this pool, if anything: the
+/// confined providers (Docker, Fly) hold no credentials, so there is nothing
+/// to say there.
+#[must_use]
+pub fn read_only_warning(config: &PoolConfig) -> Option<String> {
+    if config.worktree_source().is_some() {
+        return Some(
+            "warning: --read-only in a worktree pool: the job makes no commit and no branch, \
+             and there is no token, but the worker shares the repository and could still \
+             commit to it with plain Git; Vivi cannot stop that"
+                .into(),
+        );
+    }
+    matches!(config.provider.as_str(), "ssh" | "local").then(|| {
+        format!(
+            "warning: --read-only on the {} provider: the runner publishes nothing and the \
+             token cannot push, but the worker runs as a real user account that may hold its \
+             own credentials, and Vivi cannot stop it from using that account's own access",
+            config.provider
+        )
     })
 }
 
@@ -144,6 +187,7 @@ pub fn dispatch(
         start: start.to_string(),
         budget: plan.budget,
         at: now,
+        read_only: plan.read_only,
     })
 }
 

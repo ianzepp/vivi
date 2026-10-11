@@ -52,13 +52,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let flags = DispatchFlags {
-        model: command.model.clone(),
-        from: command.from.clone(),
-        branch: command.branch.clone(),
-        budget: command.budget,
-        allow_default_branch: command.allow_default_branch,
-    };
+    let flags = dispatch_flags(command);
     let job_id = dispatch::new_job_id(&task.handle, nanos, std::process::id());
     let rules = load_rules(config, &space)?;
     let mut plan = dispatch::plan_job(
@@ -69,45 +63,84 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         rules,
         job_id,
     )?;
-    let (token, start) = match config.worktree_source() {
-        Some(path) => worktree_start(&path, &mut plan, flags.allow_default_branch, &progress)?,
-        None => remote_start(config, &id.pool, &plan, &flags, &progress)?,
+    read_only_notes(command, config, &task.body, &progress);
+    let (token, start) = match (config.worktree_source(), flags.read_only) {
+        (Some(path), true) => worktree_read_only_start(&path, &mut plan, &progress)?,
+        (Some(path), false) => {
+            worktree_start(&path, &mut plan, flags.allow_default_branch, &progress)?
+        }
+        (None, _) => remote_start(config, &id.pool, &plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
     progress.say(&format!(
         "{}: claiming a free slot and starting the job",
         id.pool
     ));
-    let made = work::submit(
-        &space,
-        provider,
-        id,
-        &plan,
-        &token,
-        &start,
-        &Pacing::default(),
-    )?;
+    let pacing = Pacing::default();
+    let made = work::submit(&space, provider, id, &plan, &token, &start, &pacing)?;
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
-        return Ok(());
+    } else {
+        println!("{}", dispatched_text(&task.handle, &made));
     }
-    println!(
-        "dispatched {}  {}  {}  job {}  model {}  from {} ({})  branch {}  budget {}s",
-        task.handle,
+    Ok(())
+}
+
+fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
+    DispatchFlags {
+        model: command.model.clone(),
+        from: command.from.clone(),
+        branch: command.branch.clone(),
+        budget: command.budget,
+        allow_default_branch: command.allow_default_branch,
+        read_only: command.read_only,
+    }
+}
+
+/// The human line of a dispatch.
+fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> String {
+    format!(
+        "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s",
         made.pool,
         made.slot,
         made.job,
         made.model,
         made.from,
         &made.start[..12.min(made.start.len())],
-        made.branch,
+        if made.read_only {
+            "read-only".to_string()
+        } else {
+            format!("branch {}", made.branch)
+        },
         made.budget
-    );
-    Ok(())
+    )
+}
+
+/// What a read-only dispatch tells the caller: that a `branch:` body line is
+/// ignored (human output only), and what the provider cannot promise (always,
+/// on standard error).
+fn read_only_notes(
+    command: &PoolDispatchCommand,
+    config: &PoolConfig,
+    body: &str,
+    progress: &Progress,
+) {
+    if !command.read_only {
+        return;
+    }
+    if let Some(branch) = job::body_refs(body).branch {
+        progress.say(&format!(
+            "note: the task body names branch {branch}; a read-only job has no branch, so it is ignored"
+        ));
+    }
+    if let Some(warning) = dispatch::read_only_warning(config) {
+        eprintln!("{warning}");
+    }
 }
 
 /// Where a job on a remote pool starts: a GitHub token, the push target
-/// checked against the default branch, and `from` resolved to a commit.
+/// checked against the default branch, and `from` resolved to a commit. A
+/// read-only job gets a token that cannot push and has no push target.
 fn remote_start(
     config: &PoolConfig,
     pool: &str,
@@ -117,10 +150,17 @@ fn remote_start(
 ) -> Result<(Secret, String), VivariumError> {
     let access = config.require_repo(pool, "dispatch")?;
     progress.say(&format!("{pool}: getting a GitHub token"));
-    let token = github::mint_token(&access)?;
-    progress.say("checking the push target");
-    let default = github::default_branch(&token, access.repo)?;
-    dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
+    let contents = if plan.read_only {
+        github::Contents::Read
+    } else {
+        github::Contents::Write
+    };
+    let token = github::mint_token_with(&access, contents)?;
+    if !plan.read_only {
+        progress.say("checking the push target");
+        let default = github::default_branch(&token, access.repo)?;
+        dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
+    }
     progress.say(&format!("resolving {}", plan.refs.from));
     let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
     Ok((token, start))
@@ -140,6 +180,24 @@ fn worktree_start(
         path.display()
     ));
     let checkout = local_branch::prepare(&Repo::new(path), &plan.refs, allow_default)?;
+    let start = checkout.start.clone();
+    plan.checkout = Some(checkout);
+    Ok((Secret::new(String::new()), start))
+}
+
+/// Where a read-only job on a worktree pool starts: detached at `from`, with
+/// no branch decision at all.
+fn worktree_read_only_start(
+    path: &std::path::Path,
+    plan: &mut job::JobPlan,
+    progress: &Progress,
+) -> Result<(Secret, String), VivariumError> {
+    progress.say(&format!(
+        "resolving {} in {}",
+        plan.refs.from,
+        path.display()
+    ));
+    let checkout = local_branch::prepare_read_only(&Repo::new(path), &plan.refs.from)?;
     let start = checkout.start.clone();
     plan.checkout = Some(checkout);
     Ok((Secret::new(String::new()), start))

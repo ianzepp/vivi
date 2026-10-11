@@ -32,6 +32,7 @@ fn plan() -> JobPlan {
         ),
         env_names: vec!["ZAI_API_KEY".into()],
         committer: committer(),
+        read_only: false,
     }
 }
 
@@ -258,4 +259,48 @@ fn a_local_checkout_travels_as_an_action_and_a_start_and_a_fetch_job_has_neither
         );
         assert!(params.contains("LOCAL_START='0123abcd'\n"), "{params}");
     }
+}
+
+#[test]
+fn from_resolves_without_a_branch() {
+    assert_eq!(resolve_from(Some("main"), "").unwrap(), "main");
+    assert_eq!(
+        resolve_from(None, "x\nfrom: abc123\nbranch: b").unwrap(),
+        "abc123"
+    );
+    assert_eq!(resolve_from(Some("flag"), "from: body").unwrap(), "flag");
+    assert!(
+        resolve_from(None, "no refs here")
+            .unwrap_err()
+            .to_string()
+            .contains("no from")
+    );
+    assert!(resolve_from(Some("a..b"), "").is_err());
+}
+
+#[test]
+fn only_a_read_only_bundle_says_so_and_a_detached_checkout_has_its_own_word() {
+    let params = |p: &JobPlan| {
+        text(
+            &build_bundle(p, "s", &Secret::new("t".into())),
+            "params.env",
+        )
+    };
+    assert!(!params(&plan()).contains("READ_ONLY"));
+    let ro = JobPlan {
+        read_only: true,
+        refs: Refs {
+            from: "main".into(),
+            branch: String::new(),
+        },
+        checkout: Some(Checkout {
+            action: BranchAction::Detached,
+            start: "c".repeat(40),
+        }),
+        ..plan()
+    };
+    let text = params(&ro);
+    assert!(text.contains("READ_ONLY='1'\n"), "{text}");
+    assert!(text.contains("BRANCH=''\n"), "{text}");
+    assert!(text.contains("LOCAL_ACTION='detached'\n"), "{text}");
 }

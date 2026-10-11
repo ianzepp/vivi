@@ -1293,6 +1293,31 @@ fn parses_pool_dispatch_default_branch_override() {
 }
 
 #[test]
+fn parses_pool_dispatch_read_only_and_refuses_a_branch_with_it() {
+    use vivi::cli::PoolSubcommand;
+    let parse = |extra: &[&str]| {
+        let mut args = vec!["vivi", "pool", "dispatch", "abcd1234", "--model", "m/x"];
+        args.extend(extra);
+        Cli::try_parse_from(args).map(|cli| match cli.command {
+            Command::Pool {
+                command: PoolSubcommand::Dispatch(d),
+            } => (d.read_only, d.from, d.branch),
+            _ => panic!("expected pool dispatch"),
+        })
+    };
+    assert!(!parse(&["--branch", "b"]).unwrap().0);
+    let (read_only, from, branch) = parse(&["--read-only", "--from", "main"]).unwrap();
+    assert!(read_only);
+    assert_eq!((from.as_deref(), branch), (Some("main"), None));
+    assert!(
+        parse(&["--read-only"]).unwrap().0,
+        "from may come from the body"
+    );
+    assert!(parse(&["--read-only", "--branch", "b"]).is_err());
+    assert!(parse(&["--read-only", "--allow-default-branch"]).is_err());
+}
+
+#[test]
 fn parses_pool_doctor_test_and_long() {
     use vivi::cli::PoolSubcommand;
     let parse = |extra: &[&str]| {

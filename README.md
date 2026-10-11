@@ -577,6 +577,7 @@ vivi pool scale --pool <name> <N> [--yes] [--base <commit>] [--porcelain]   # br
 vivi pool status [--pool <name>] [--json | --porcelain]   # pool, name, id, state, task, running time of budget, seeded base
 vivi pool destroy --pool <name> (--slot <name> | --all) --yes
 vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>] [--allow-default-branch] [--porcelain]
+vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>] [--budget <secs>] [--porcelain]   # publishes nothing
 vivi pool wait [--pool <name>] [<task>...] [--timeout <secs>] [--porcelain]   # block until a dispatch finishes; collect it
 vivi pool reconcile [--pool <name>] [--porcelain]   # collect finished, stop overdue, free slots
 vivi pool doctor [--pool <name>] [--json | --porcelain]   # read-only checks; each finding names its fix
@@ -665,12 +666,12 @@ pool create     home POOL TEXT                                          only whe
                 created POOL NAME ID STATE SECONDS EXIT OUTCOME ERROR   OUTCOME: seeded|timeout|failed|unmarked
                 exists POOL COUNT                                       nothing to create
                 issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND: list-error, SUBJECT: -
-pool status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED
+pool status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE   MODE: write|read-only, - with no open dispatch
 pool scale      created POOL ...   (as create; also home, exists, issue)
                 destroyed POOL NAME ID
                 skipped POOL NAME ID STATE TASK                         a slot that was not free, so kept
                 scaled POOL TARGET COUNT                                COUNT: slots the pool holds now
-pool dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET
+pool dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE   BRANCH: - when read-only; MODE: write|read-only
 pool wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
                 nothing-open                                            already collected
                 issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND: poll-error, SUBJECT: the task
@@ -692,10 +693,13 @@ names in `NAME` and `SLOT` now include the mailspace: `<mailspace>-<pool>-slot-<
 In `--json`, each slot of `status` and each check of `doctor` gained a `pool`
 field. The human output names the pool on each slot or result line too.
 
-Literal examples: `dispatched 3f2a local ms-local-slot-1 0123456789ab sonnet main <40-hex> work/x 1800`,
+Literal examples: `dispatched 3f2a local ms-local-slot-1 0123456789ab sonnet main <40-hex> work/x 1800 write`,
+`dispatched 3f2a local ms-local-slot-1 0123456789ab sonnet main <40-hex> - 1800 read-only`,
 `collected 3f2a lanes ms-lanes-slot-2 finished "pushed work/x 0123456789"`,
+`collected 3f2a lanes ms-lanes-slot-2 finished read_only_unchanged`,
+`collected 3f2a lanes ms-lanes-slot-2 finished "read_only_discarded 3"`,
 `created local ms-local-slot-1 m1 stopped 42 0 seeded -`,
-`slot lanes ms-lanes-slot-1 m1 free - - - <base> amd64 2026-10-11T10:00:00Z`,
+`slot lanes ms-lanes-slot-1 m1 free - - - <base> amd64 2026-10-11T10:00:00Z -`,
 `scaled lanes 0 0`,
 `issue lanes poll-error 3f2a "Fly unreachable" 1760000000 1760000090` (`-` as the last
 field: the problem lasted to the end). `issue` lines are printed by `wait` and
@@ -759,6 +763,58 @@ and removes them (about a minute; `--long` adds about seven); it needs no
 privileges and costs nothing beyond that host's cores and disk. On `local` it
 does the same on this machine, always in fetch mode (a worktree pool's test
 brings its own embedded remote instead of touching your repository).
+
+#### Read-only dispatch
+
+```
+vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>] [--budget <secs>] [--porcelain]
+```
+
+A read-only job is for a reviewer or auditor that must not change the
+repository but is useful only with a full shell (Git, builds, tests). Instead
+of withholding the shell, the pool makes sure nothing the job does can leave
+the slot. `--from` (or a `from:` line in the task body) says what to check out;
+`--branch` and `--allow-default-branch` are refused together with `--read-only`
+(a `branch:` line in the body is ignored, and the human output says so). It is a
+per-dispatch flag only; there is no config setting.
+
+What Vivi does for a read-only job:
+
+- **The token cannot push.** For a GitHub remote the installation token is
+  minted with `contents: read` instead of `contents: write`. The slot holds
+  nothing that can push; GitHub refuses a write with that token.
+- **The runner publishes nothing.** It checks `from` out detached (no branch is
+  made or moved), runs the harness exactly as for any job, and then never
+  commits and never pushes. If the tree differs from `from` afterwards (tracked
+  changes, commits the agent made, untracked files; the build directory is not
+  counted), it records the changed paths and puts the tree back to `from`, so
+  the slot is clean for the next job. Changes are never a failure of the job,
+  but they are always visible.
+- **Two outcomes**, not shared with the write outcomes (`pushed`, `committed`,
+  `no_changes`, `push_refused`):
+  `read_only_unchanged` (the tree was as checked out) and `read_only_discarded`
+  (changes were discarded; the count is in `discarded_count`). The result on the
+  task shows the outcome, the discarded paths (at most 50 are listed; the count
+  is exact) and the receipt. In the JSON note of the `pool_collected` event the
+  paths are the array `discarded`, next to `discarded_count` and
+  `"read_only": true`. The `pool_dispatched` record carries `"read_only": true`
+  with an empty `branch`, and `status` shows `read-only` for a busy slot
+  (`--json`: `read_only`).
+- `--porcelain`: `dispatched ... BRANCH MODE` has `-` for BRANCH and `read-only`
+  for MODE (`write` otherwise); `collected ... finished read_only_unchanged` or
+  `collected ... finished "read_only_discarded COUNT"`; `slot ... CREATED MODE`.
+
+What it guarantees depends on the provider:
+
+| Provider | Guarantee |
+| --- | --- |
+| Docker, Fly | The strong form. The worker is confined and holds no credentials: no push token, no keys, and the changes cannot leave the slot. A review role can have a full shell, even edit files, safely. |
+| SSH, local (fetch mode) | The runner publishes nothing and the token cannot push, but the worker runs as a real user account that may have its own credentials, and Vivi cannot stop it from using that account's access. `dispatch --read-only` prints a one-line warning to standard error saying so (never in `--porcelain` result lines). |
+| local (worktree mode) | No token and no push exist; the job starts detached at `from`, makes no commit and no branch, and its changes are reported and discarded. The runner never moves or creates a branch. But the worker shares your repository, so it could still commit to it with plain Git; the dispatch warns of that. |
+
+Hard time limit, clean harness environment, collection, `wait` and `reconcile`
+are unchanged. Not covered: roles, permission profiles, network restrictions,
+any sandboxing beyond what the provider gives.
 
 A slot can only fetch what the remote repository already has, so push the base
 before dispatching. `--model` is resolved by the caller in the harness's own
