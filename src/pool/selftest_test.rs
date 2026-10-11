@@ -8,6 +8,7 @@ use super::*;
 use crate::pool::doctor::{Report, Status};
 use crate::pool::fake_provider::{Fake, pid, slot};
 use crate::pool::progress::Progress;
+use crate::pool::provider::SlotLifetime;
 use crate::pool::slot::META_TASK;
 
 fn real_config() -> PoolConfig {
@@ -180,7 +181,7 @@ fn a_healthy_provider_passes_every_step_and_leaves_nothing() {
         checks: checks.clone(),
     };
     assert!(report.passed());
-    assert_eq!(report.counts().ok, plan(false).len());
+    assert_eq!(report.counts().ok, plan(false, SlotLifetime::Resting).len());
     assert_eq!(test_machines(&fake), 0, "the test pool is gone");
     assert_eq!(fake.destroyed.borrow().len(), 2);
     assert_eq!(
@@ -233,7 +234,10 @@ fn long_adds_one_vivi_step_before_the_cleanup() {
         .unwrap();
     assert_eq!(checks[at].group, VIVI_GROUP);
     assert_eq!(checks[at + 1].name, "destroy the test slots");
-    assert_eq!(plan(true).len(), plan(false).len() + 1);
+    assert_eq!(
+        plan(true, SlotLifetime::Resting).len(),
+        plan(false, SlotLifetime::Resting).len() + 1
+    );
 }
 
 #[test]

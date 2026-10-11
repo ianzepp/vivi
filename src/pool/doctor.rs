@@ -291,6 +291,9 @@ pub fn run(inputs: &Inputs) -> Report {
         now: inputs.now,
         github: &view,
         requires: &requires,
+        lifetime: inputs.provider.slot_lifetime(),
+        grace: inputs.provider.setup_grace_secs(),
+        billing: &inputs.provider.billing_note(),
     }));
     let checks = checks.into_iter().map(|c| c.in_pool(&inputs.id.pool));
     Report {

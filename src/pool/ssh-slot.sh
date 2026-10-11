@@ -12,12 +12,18 @@
 #                  hard-linked into place, so it appears complete or not at all
 #   boot.pid       process id of the slot's boot wrapper (start writes it)
 #   exit_code      exit code of the last boot that ran to its end
-#   slot.env       the environment the boot script runs with (no secrets)
+#   slot.env       the environment the boot script runs with (mode 600: a pod's
+#                  holds the harness environment values)
 #   boot.sh ...    the boot script and the files delivered with the slot
 # "Running" means boot.pid names a live process whose environment carries
 # VIVI_SLOT_ROOT=<the slot directory>: a reused pid is not mistaken for it. The
 # tag is inherited by everything the slot starts, so stopping finds the whole
 # tree, not only the process group. Linux (/proc) is required.
+#
+# UMASK (077 unless the provider says otherwise) is the umask of everything the
+# script writes. A host that runs the slot's scripts as root and its agent as
+# another user (a pod) needs the slot directory to be traversable: it says 022.
+# Secrets are made private by their own chmod, not by the umask.
 #
 # Verbs and their arguments:
 #   list                       the facts of every slot under $R
@@ -33,7 +39,7 @@
 #   read A1 A2                 tar stream of the files named in A2 that exist
 #   exec A1 A2                 run script A2 with the slot as WORK and cwd
 #   destroy A1                 stop and delete slot A1 (guarded)
-umask 077
+umask "$UMASK"
 fail() { echo "vivi-ssh: $*" >&2; exit 1; }
 refuse() { echo "vivi-ssh: refusing to delete: $*" >&2; exit 92; }
 
@@ -112,6 +118,7 @@ create_slot() {
   # The tar stream carries no useful times, so the slot's age is recorded here.
   date -u +%Y-%m-%dT%H:%M:%SZ > "$part/created"
   [ ! -f "$part/once.env" ] || chmod 600 "$part/once.env"
+  [ ! -f "$part/slot.env" ] || chmod 600 "$part/slot.env"
   case $(uname -m) in
     x86_64) echo amd64 ;;
     aarch64|arm64) echo arm64 ;;
@@ -181,7 +188,7 @@ put_file() {
   held=$(sed -n 's/^nonce=//p' "$D/claim" 2>/dev/null)
   [ -n "$held" ] && [ "$held" = "$A3" ] || fail "not the claim holder of $A1"
   case "$A2" in ''|/*|*..*) fail "bad path: $A2" ;; esac
-  mkdir -p "$(dirname "$D/$A2")" && cat > "$D/$A2.partial" && mv -f "$D/$A2.partial" "$D/$A2" \
+  mkdir -p "$(dirname "$D/$A2")" && ( umask 077; cat > "$D/$A2.partial" ) && mv -f "$D/$A2.partial" "$D/$A2" \
     || fail "cannot write $A2"
 }
 

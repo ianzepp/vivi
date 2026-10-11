@@ -39,9 +39,16 @@ pub struct PoolDoctorCommand {
     /// Also run a live test of the provider and of Vivi's pool machinery:
     /// creates two small throwaway slots (billable on Fly, free on Docker
     /// and SSH, for a few minutes), runs stand-in jobs against an embedded source tree, and
-    /// destroys them
+    /// destroys them. On a RunPod pool it rents one GPU pod instead and
+    /// refuses to run without --allow-spend
     #[arg(long)]
     pub test: bool,
+
+    /// With --test on a pool whose provider rents billable GPU machines
+    /// (RunPod): agree that the test spends real money. Without it the test is
+    /// refused, naming the price
+    #[arg(long, requires = "test")]
+    pub allow_spend: bool,
 
     /// With --test, add a wait that runs past six minutes (the provider token
     /// lifetime) and still collects; adds about seven minutes

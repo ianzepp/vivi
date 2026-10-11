@@ -27,6 +27,26 @@ email = "bot@example.com"
     .unwrap()
 }
 
+fn go(
+    provider: &dyn PoolProvider,
+    id: &PoolId,
+    p: &JobPlan,
+    token: &Secret,
+    start: &str,
+    now: u64,
+) -> Result<DispatchRecord, VivariumError> {
+    let config = config();
+    let progress = crate::pool::progress::Progress::silent();
+    let launch = Launch {
+        config: &config,
+        plan: p,
+        token,
+        start,
+        progress: &progress,
+    };
+    dispatch(provider, id, &launch, now, &pacing())
+}
+
 fn flags(model: &str) -> DispatchFlags {
     DispatchFlags {
         model: model.into(),
@@ -168,16 +188,7 @@ fn dispatch_claims_delivers_one_archive_and_starts() {
     fake.add(slot("m2", "p-slot-2", "stopped", "p", 2));
     let token = Secret::new("tok-secret-value".into());
     let p = plan(&flags("m/ok")).unwrap();
-    let record = dispatch(
-        &fake,
-        &pid("p"),
-        &p,
-        &token,
-        &"c".repeat(40),
-        5000,
-        &pacing(),
-    )
-    .unwrap();
+    let record = go(&fake, &pid("p"), &p, &token, &"c".repeat(40), 5000).unwrap();
     assert_eq!(record.slot, "p-slot-2");
     assert_eq!(record.machine, "m2");
     assert_eq!(record.at, 5000);
@@ -202,16 +213,7 @@ fn dispatch_with_no_free_slot_touches_no_machine() {
     let fake = Fake::default();
     fake.add(claimed("m1", "p-slot-1", "stopped", "p", "oldtask1"));
     let p = plan(&flags("m/ok")).unwrap();
-    let err = dispatch(
-        &fake,
-        &pid("p"),
-        &p,
-        &Secret::new("t".into()),
-        "s",
-        1,
-        &pacing(),
-    )
-    .unwrap_err();
+    let err = go(&fake, &pid("p"), &p, &Secret::new("t".into()), "s", 1).unwrap_err();
     assert!(err.to_string().contains("no free slot"));
     assert!(fake.files.borrow().is_empty());
     assert_eq!(fake.calls_to("start"), 0);
@@ -223,15 +225,7 @@ fn a_failed_start_undoes_the_claim() {
     fake.add(slot("m1", "p-slot-1", "stopped", "p", 1));
     fake.fail_start.set(true);
     let p = plan(&flags("m/ok")).unwrap();
-    let err = dispatch(
-        &fake,
-        &pid("p"),
-        &p,
-        &Secret::new("t".into()),
-        "s",
-        1,
-        &pacing(),
-    );
+    let err = go(&fake, &pid("p"), &p, &Secret::new("t".into()), "s", 1);
     assert!(err.is_err());
     assert!(fake.meta("m1", META_TASK).is_none());
     assert!(fake.meta("m1", META_CLAIMED).is_none());
@@ -256,7 +250,7 @@ fn the_dispatch_record_names_its_pool() {
     fake.add(slot("m1", "ms-p-slot-1", "stopped", "p", 1));
     let p = plan(&flags("m/ok")).unwrap();
     let id = pid("p");
-    let record = dispatch(&fake, &id, &p, &Secret::new("t".into()), "s", 1, &pacing()).unwrap();
+    let record = go(&fake, &id, &p, &Secret::new("t".into()), "s", 1).unwrap();
     assert_eq!(record.pool, "p");
 }
 
@@ -270,16 +264,7 @@ fn a_dispatch_never_claims_a_free_slot_of_another_pool_or_mailspace() {
         .insert(crate::pool::slot::META_MAILSPACE.into(), "other".into());
     fake.add(elsewhere);
     let p = plan(&flags("m/ok")).unwrap();
-    let err = dispatch(
-        &fake,
-        &pid("p"),
-        &p,
-        &Secret::new("t".into()),
-        "s",
-        1,
-        &pacing(),
-    )
-    .unwrap_err();
+    let err = go(&fake, &pid("p"), &p, &Secret::new("t".into()), "s", 1).unwrap_err();
     assert!(err.to_string().contains("pool p has no slots"), "{err}");
     assert!(fake.meta("m1", META_TASK).is_none());
     assert!(fake.meta("m2", META_TASK).is_none());

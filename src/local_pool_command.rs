@@ -11,8 +11,10 @@ use vivi::pool::local_git::Repo;
 use vivi::pool::pools::{self, Need, PoolHandle, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::Progress;
+use vivi::pool::provider::SlotLifetime;
 use vivi::pool::requires;
 use vivi::pool::run::{self, CreateOptions, CreateReport, DestroyTarget, SlotOutcome};
+use vivi::pool::scale::no_resting_slots;
 use vivi::pool::slot::SlotStatus;
 use vivi::pool::work as engine;
 
@@ -62,6 +64,9 @@ pub(crate) fn create_into(
 ) -> Result<CreateReport, VivariumError> {
     let (id, config) = (&handle.id, &handle.config);
     let provider = handle.provider.as_ref();
+    if provider.slot_lifetime() == SlotLifetime::PerDispatch {
+        return Err(no_resting_slots(&id.pool, &config.provider));
+    }
     let worktree = config.worktree_source();
     let access = match &worktree {
         Some(_) => None,
@@ -242,12 +247,22 @@ fn running_text(slot: &SlotStatus) -> String {
 }
 
 fn print_slots(handle: &PoolHandle, slots: &[&SlotStatus]) {
-    println!(
-        "pool {}  {}  {} slot(s)",
-        handle.id.pool,
-        handle.config.provider,
-        slots.len()
-    );
+    if handle.provider.slot_lifetime() == SlotLifetime::PerDispatch {
+        println!(
+            "pool {}  {}  {} pod(s) of at most {} (a pod exists only while a job runs)",
+            handle.id.pool,
+            handle.config.provider,
+            slots.len(),
+            handle.config.slots
+        );
+    } else {
+        println!(
+            "pool {}  {}  {} slot(s)",
+            handle.id.pool,
+            handle.config.provider,
+            slots.len()
+        );
+    }
     for slot in slots {
         let task = slot
             .task
@@ -273,13 +288,18 @@ fn print_slots(handle: &PoolHandle, slots: &[&SlotStatus]) {
 }
 
 fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
-    if !command.yes {
-        return Err(VivariumError::Message(
-            "destroy removes machines and their seeded disks; pass --yes to confirm".into(),
-        ));
-    }
     let space = Mailspace::discover(command.project.as_deref())?;
     let handle = pools::open_one(&space, command.pool.as_deref())?;
+    if !command.yes {
+        let what = if handle.provider.slot_lifetime() == SlotLifetime::PerDispatch {
+            "terminates the pool's pods, including any job running on one (its result is lost)"
+        } else {
+            "removes machines and their seeded disks"
+        };
+        return Err(VivariumError::Message(format!(
+            "destroy {what}; pass --yes to confirm"
+        )));
+    }
     let target = match &command.slot {
         Some(selector) => DestroyTarget::Slot(selector.clone()),
         None => DestroyTarget::All,

@@ -23,6 +23,7 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
             budget: 600,
             at,
             read_only: false,
+            hardware: String::new(),
         },
     }
 }
@@ -386,7 +387,7 @@ fn stale_claims_need_no_dispatch_and_enough_age() {
     let slots = crate::pool::slot::pool_slots(&pid("p"), &[old, recent, live]);
     let mut dispatch = open("aaaa1111", "j1", 100);
     dispatch.record.machine = "m3".into();
-    let stale = stale_claims(&slots, &[dispatch], 2000);
+    let stale = stale_claims(&slots, &[dispatch], 2000, STALE_CLAIM_SECS);
     let names: Vec<&str> = stale.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["p-slot-1"]);
 }

@@ -32,6 +32,10 @@ pub struct DispatchRecord {
     /// before read-only jobs existed reads as `false`.
     #[serde(default)]
     pub read_only: bool,
+    /// What the host gave the slot, when it says (a rented pod's GPU and
+    /// price). A record made before hosts said so has none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hardware: String,
 }
 
 /// A dispatch with no result recorded yet.
@@ -51,7 +55,7 @@ pub fn dispatch_note(record: &DispatchRecord) -> String {
 #[must_use]
 pub fn dispatch_text(record: &DispatchRecord) -> String {
     format!(
-        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s\nfrom {from} ({start})  {target}",
+        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s{hardware}\nfrom {from} ({start})  {target}",
         job = record.job,
         pool = record.pool,
         slot = record.slot,
@@ -60,7 +64,17 @@ pub fn dispatch_text(record: &DispatchRecord) -> String {
         from = record.from,
         start = record.start.get(..12).unwrap_or(&record.start),
         target = target_text(record),
+        hardware = hardware_text(record),
     )
+}
+
+/// `  hardware <what>` when the host named any, else nothing.
+fn hardware_text(record: &DispatchRecord) -> String {
+    if record.hardware.is_empty() {
+        String::new()
+    } else {
+        format!("  hardware {}", record.hardware)
+    }
 }
 
 /// `branch <name>`, or `read-only (nothing is committed or pushed)`.

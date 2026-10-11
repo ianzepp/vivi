@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use super::config::PoolConfig;
 use super::open_provider;
 use super::provider::PoolProvider;
+use super::runpod::HostContext;
 use super::slot::PoolId;
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -94,13 +95,20 @@ pub fn open_unvalidated(
     let all = configured(space)?;
     let names: Vec<&str> = all.keys().map(String::as_str).collect();
     let chosen = select(&names, flag, need)?;
+    let host = |pool: &str| HostContext {
+        dir: space.dir.clone(),
+        mailspace: super::slot::space_slug(&space.config.name),
+        pool: pool.to_string(),
+        pools: names.iter().map(|n| (*n).to_string()).collect(),
+    };
     Ok(chosen
         .into_iter()
         .filter_map(|name| {
             let config = all.get(&name)?.clone();
+            let ctx = host(&name);
             Some(PoolHandle {
                 id: PoolId::new(&space.config.name, &name),
-                provider: open_provider(&config),
+                provider: open_provider(&config, &ctx),
                 config,
             })
         })

@@ -2,8 +2,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::pool::collect::STALE_CLAIM_SECS;
 use crate::pool::config::RepoAccess;
 use crate::pool::fake_provider::{Fake, claimed, pid, slot};
+use crate::pool::provider::SlotLifetime;
 use crate::pool::record::DispatchRecord;
 use crate::pool::slot::{META_CLAIMED, META_STATE};
 
@@ -54,6 +56,7 @@ fn open_dispatch(task: &str, machine: &str, at: u64, budget: u64) -> OpenDispatc
             budget,
             at,
             read_only: false,
+            hardware: String::new(),
         },
     }
 }
@@ -169,6 +172,9 @@ fn a_listing_failure_is_a_fail_not_a_skip() {
             now: NOW,
             github: &view_ok(),
             requires: &doctor_pool::RequiresView::default(),
+            lifetime: SlotLifetime::Resting,
+            grace: STALE_CLAIM_SECS,
+            billing: "billed by the second",
         };
         Report {
             checks: doctor_pool::checks(&facts),

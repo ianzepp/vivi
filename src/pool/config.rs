@@ -13,11 +13,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::runpod_config::PoolRunpod;
 use super::slot::{DOCTOR_SUFFIX, PoolId};
 use crate::error::VivariumError;
 
 /// Machine hosts the pool can run on.
-pub const PROVIDERS: [&str; 4] = ["fly", "docker", "ssh", "local"];
+pub const PROVIDERS: [&str; 5] = ["fly", "docker", "ssh", "local", "runpod"];
 const DEFAULT_PROVIDER: &str = "fly";
 const DEFAULT_REGION: &str = "iad";
 const DEFAULT_ORGANIZATION: &str = "personal";
@@ -35,7 +36,7 @@ pub const DEFAULT_LOCAL_ROOT: &str = "~/vivi-pool";
 /// settings live in [`PoolFly`], [`PoolDocker`], [`PoolSsh`] and [`PoolLocal`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
-    /// Machine host: `fly`, `docker`, `ssh` or `local`.
+    /// Machine host: `fly`, `docker`, `ssh`, `local` or `runpod`.
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Source repository, `owner/name`. Optional: a pool can be defined with
@@ -43,9 +44,10 @@ pub struct PoolConfig {
     /// creates) and `dispatch` need it, together with `github`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    /// Maximum pool size.
+    /// Maximum pool size. On `runpod` there are no resting slots: this is the
+    /// most pods that may exist at once.
     pub slots: u32,
-    /// Container image the machines run. Required by `fly` and `docker`;
+    /// Container image the machines run. Required by `fly`, `docker` and `runpod`;
     /// the `ssh` and `local` providers have no image, so it must be left out
     /// there.
     #[serde(default)]
@@ -86,6 +88,9 @@ pub struct PoolConfig {
     /// Settings that belong to the `local` machine host.
     #[serde(default)]
     pub local: PoolLocal,
+    /// Settings that belong to the `runpod` machine host.
+    #[serde(default)]
+    pub runpod: PoolRunpod,
     /// GitHub App used to mint the fetch token. Optional, and required
     /// together with `repo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,7 +350,7 @@ impl PoolConfig {
         match self.provider.as_str() {
             "docker" => &self.docker.tmpfs,
             // A directory on a host has no memory disk.
-            "ssh" | "local" => "",
+            "ssh" | "local" | "runpod" => "",
             _ => &self.fly.tmpfs,
         }
     }
@@ -423,7 +428,10 @@ impl PoolConfig {
 
     fn validate_fields(&self, id: &PoolId) -> Result<(), VivariumError> {
         self.validate_identity(id)?;
-        self.validate_machine()?;
+        self.validate_machine(&id.pool)?;
+        if self.provider == "runpod" {
+            super::runpod_name::check_fits(id)?;
+        }
         self.validate_commands()?;
         self.validate_github()?;
         let pool = id.pool.as_str();
@@ -438,6 +446,7 @@ impl PoolConfig {
         reject_unknown(pool, ".docker", &self.docker.unknown)?;
         reject_unknown(pool, ".ssh", &self.ssh.unknown)?;
         reject_unknown(pool, ".local", &self.local.unknown)?;
+        reject_unknown(pool, ".runpod", &self.runpod.unknown)?;
         match &self.github {
             Some(github) => reject_unknown(pool, ".github", &github.unknown),
             None => Ok(()),
@@ -447,7 +456,7 @@ impl PoolConfig {
     fn validate_identity(&self, id: &PoolId) -> Result<(), VivariumError> {
         if !PROVIDERS.contains(&self.provider.as_str()) {
             return Err(bad(format!(
-                "provider \"{}\" is not supported (use \"fly\", \"docker\", \"ssh\" or \"local\")",
+                "provider \"{}\" is not supported (use \"fly\", \"docker\", \"ssh\", \"local\" or \"runpod\")",
                 self.provider
             )));
         }
@@ -501,7 +510,7 @@ impl PoolConfig {
         Ok(())
     }
 
-    fn validate_machine(&self) -> Result<(), VivariumError> {
+    fn validate_machine(&self, pool: &str) -> Result<(), VivariumError> {
         if self.slots == 0 {
             return Err(bad("slots must be at least 1"));
         }
@@ -510,6 +519,7 @@ impl PoolConfig {
             "docker" => self.docker.validate()?,
             "ssh" => self.ssh.validate()?,
             "local" => self.local.validate()?,
+            "runpod" => self.runpod.validate(pool)?,
             _ => self.validate_fly_machine()?,
         }
         self.build_dir.as_deref().map_or(Ok(()), validate_build_dir)
@@ -851,7 +861,7 @@ pub fn check_pool_name(name: &str) -> Result<(), VivariumError> {
     Ok(())
 }
 
-fn reject_unknown(
+pub(super) fn reject_unknown(
     pool: &str,
     table: &str,
     unknown: &BTreeMap<String, toml::Value>,
@@ -864,7 +874,7 @@ fn reject_unknown(
     }
 }
 
-fn bad(message: impl Into<String>) -> VivariumError {
+pub(super) fn bad(message: impl Into<String>) -> VivariumError {
     VivariumError::Config(message.into())
 }
 

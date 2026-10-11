@@ -16,6 +16,7 @@ fn record(job: &str) -> DispatchRecord {
         budget: 600,
         at: 1000,
         read_only: false,
+        hardware: String::new(),
     }
 }
 

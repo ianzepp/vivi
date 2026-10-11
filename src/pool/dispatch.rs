@@ -5,13 +5,15 @@ use std::time::Instant;
 
 use sha2::{Digest, Sha256};
 
-use super::claim::{Claim, claim_slot, unclaim};
+use super::claim::{Claim, claim_slot, open_slot, unclaim};
 use super::collect::Pacing;
 use super::config::PoolConfig;
 use super::github::Secret;
 use super::job::{self, JOB_ARCHIVE, JobPlan, build_bundle};
-use super::provider::PoolProvider;
+use super::progress::Progress;
+use super::provider::{OpenRequest, PoolProvider, SlotLifetime};
 use super::record::DispatchRecord;
+use super::run::dispatch_spec;
 use super::slot::PoolId;
 use crate::error::VivariumError;
 
@@ -155,8 +157,19 @@ pub fn check_push_target(
     Ok(())
 }
 
-/// Claim a free slot and start `plan` on it. `start` is the commit `from`
-/// resolved to, recorded with the dispatch.
+/// What a dispatch starts: the job, the token that lets it fetch (and push),
+/// the commit it starts from, and the pool's settings and progress sink.
+pub struct Launch<'a> {
+    pub config: &'a PoolConfig,
+    pub plan: &'a JobPlan,
+    pub token: &'a Secret,
+    /// The commit `from` resolved to, recorded with the dispatch.
+    pub start: &'a str,
+    pub progress: &'a Progress,
+}
+
+/// Get a slot for `launch` and start its job on it: claim a free resting slot,
+/// or have a per-dispatch host make one.
 ///
 /// # Errors
 /// Returns an error if no slot is free or the provider fails; a half-made
@@ -164,14 +177,13 @@ pub fn check_push_target(
 pub fn dispatch(
     provider: &dyn PoolProvider,
     id: &PoolId,
-    plan: &JobPlan,
-    token: &Secret,
-    start: &str,
+    launch: &Launch,
     now: u64,
     pacing: &Pacing,
 ) -> Result<DispatchRecord, VivariumError> {
-    let claim = claim_slot(provider, id, &plan.task, now)?;
-    if let Err(e) = deliver(provider, &claim, plan, token, pacing) {
+    let plan = launch.plan;
+    let claim = take_slot(provider, id, launch, now)?;
+    if let Err(e) = deliver(provider, &claim, plan, launch.token, pacing) {
         if let Err(undo) = unclaim(provider, &claim) {
             eprintln!("warning: could not fully undo the claim: {undo}");
         }
@@ -185,11 +197,38 @@ pub fn dispatch(
         model: plan.model.clone(),
         from: plan.refs.from.clone(),
         branch: plan.refs.branch.clone(),
-        start: start.to_string(),
+        start: launch.start.to_string(),
         budget: plan.budget,
         at: now,
         read_only: plan.read_only,
+        hardware: claim.hardware,
     })
+}
+
+fn take_slot(
+    provider: &dyn PoolProvider,
+    id: &PoolId,
+    launch: &Launch,
+    now: u64,
+) -> Result<Claim, VivariumError> {
+    let plan = launch.plan;
+    match provider.slot_lifetime() {
+        SlotLifetime::Resting => claim_slot(provider, id, &plan.task, now),
+        SlotLifetime::PerDispatch => {
+            let seed = (launch.token, launch.start);
+            open_slot(
+                provider,
+                &OpenRequest {
+                    pool: id,
+                    task: &plan.task,
+                    now,
+                    budget_secs: plan.budget,
+                    spec: dispatch_spec(launch.config, id, seed, provider),
+                    progress: launch.progress,
+                },
+            )
+        }
+    }
 }
 
 fn deliver(

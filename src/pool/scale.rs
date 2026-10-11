@@ -30,6 +30,15 @@ impl ScalePlan {
     }
 }
 
+/// The error for `create` and a scale-up on a host whose slots are made per
+/// dispatch.
+#[must_use]
+pub fn no_resting_slots(pool: &str, provider: &str) -> VivariumError {
+    VivariumError::Message(format!(
+        "pool {pool} uses the {provider} provider: its slots are made per dispatch, so there are none to create, seed or scale up (`slots` is the most that may exist at once). Run `vivi pool dispatch --pool {pool} <task>`; `vivi pool scale` and `vivi pool destroy` only remove what exists"
+    ))
+}
+
 /// Refuse a target above the pool's configured maximum.
 ///
 /// # Errors
@@ -48,6 +57,21 @@ pub fn check_target(target: u32, max: u32) -> Result<(), VivariumError> {
 /// # Errors
 /// Returns an error when `target` is above the configured maximum `max`.
 pub fn plan(slots: &[SlotStatus], target: u32, max: u32) -> Result<ScalePlan, VivariumError> {
+    plan_with(slots, target, max, |slot| slot.state == "free")
+}
+
+/// Like [`plan`], with `removable` deciding which slots may be destroyed
+/// (a per-dispatch host has no free slot: a slot with no open dispatch is the
+/// one that may go).
+///
+/// # Errors
+/// Returns an error when `target` is above the configured maximum `max`.
+pub fn plan_with(
+    slots: &[SlotStatus],
+    target: u32,
+    max: u32,
+    removable: impl Fn(&SlotStatus) -> bool,
+) -> Result<ScalePlan, VivariumError> {
     check_target(target, max)?;
     let want = target as usize;
     let have = slots.len();
@@ -69,7 +93,7 @@ pub fn plan(slots: &[SlotStatus], target: u32, max: u32) -> Result<ScalePlan, Vi
         if excess == 0 {
             break;
         }
-        if slot.state == "free" {
+        if removable(slot) {
             plan.destroy.push(slot.clone());
             excess -= 1;
         } else {

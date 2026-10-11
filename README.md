@@ -531,8 +531,11 @@ slot is a directory and the agent runs there as the login user, with no
 isolation), or on the machine Vivi itself runs on (`provider = "local"`: each
 slot is a directory and the worker is a process Vivi launches there, as you,
 with no isolation, optionally as a Git worktree of a repository on this
-machine); `[pools.<name>.fly]`, `[pools.<name>.docker]`, `[pools.<name>.ssh]`
-and `[pools.<name>.local]` are the host-specific parts of the config.
+machine), or on rented GPU pods (`provider = "runpod"`: one short-lived pod per
+dispatch, with no resting slots; see "RunPod: short-lived GPU pods");
+`[pools.<name>.fly]`, `[pools.<name>.docker]`, `[pools.<name>.ssh]`,
+`[pools.<name>.local]` and `[pools.<name>.runpod]` are the host-specific parts
+of the config.
 
 #### Named pools
 
@@ -581,7 +584,7 @@ vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>
 vivi pool wait [--pool <name>] [<task>...] [--timeout <secs>] [--porcelain]   # block until a dispatch finishes; collect it
 vivi pool reconcile [--pool <name>] [--porcelain]   # collect finished, stop overdue, free slots
 vivi pool doctor [--pool <name>] [--json | --porcelain]   # read-only checks; each finding names its fix
-vivi pool doctor --pool <name> --test [--long] [--json | --porcelain]   # also run a live test of the provider and of Vivi (billable on Fly, free on Docker, SSH and local)
+vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]   # also run a live test of the provider and of Vivi (billable on Fly; free on Docker, SSH and local; on RunPod it refuses without --allow-spend)
 ```
 
 **`--pool`.** When the mailspace has exactly one pool the flag may be omitted
@@ -715,7 +718,9 @@ the harness environment names; SSH: the `ssh` client, a non-interactive login,
 a Linux host with the tools the slots need, the root's writability, free disk
 space, the architecture, the harness environment names; local: the tools on
 `PATH`, `ps`, the root's writability, free disk space, the source repository of
-a worktree pool and its worktree count, the harness environment names), the
+a worktree pool and its worktree count, the harness environment names; RunPod: `runpodctl`,
+the key file's mode, that the API accepts the key, the account's SSH keys, each GPU type against
+the live market, the pool's pods and stray pods), the
 repository (GitHub: `openssl`, the App key, a token, the default branch and its
 protection; one `skipped` line for a pool with no repository), and the pool itself (config, slot count, each slot's state and how
 far its seeded base trails the default branch, leaked runners, orphaned
@@ -762,7 +767,159 @@ pool uses. On an SSH host it makes two slot directories under the pool's root
 and removes them (about a minute; `--long` adds about seven); it needs no
 privileges and costs nothing beyond that host's cores and disk. On `local` it
 does the same on this machine, always in fetch mode (a worktree pool's test
-brings its own embedded remote instead of touching your repository).
+brings its own embedded remote instead of touching your repository). On RunPod it would rent a real GPU pod, so it refuses unless `--allow-spend` is given: the refusal says it would rent a pod, the hourly price of the first GPU type when RunPod will say, and that nothing was rented; with the flag it rents one pod for a stand-in job and terminates it.
+
+#### RunPod: short-lived GPU pods
+
+`provider = "runpod"` rents one GPU pod per dispatch from RunPod, through the
+`runpodctl` command line, and reaches it over SSH. It exists for jobs that need
+a GPU you do not own. It differs from every other host in one way that shapes
+everything below: **a pod bills by the second from the moment it exists, and a
+stopped pod keeps nothing, so there are no resting slots.** `slots` is the most
+pods that may exist at once, not a count of waiting machines.
+
+```toml
+[pools.gpu]
+provider = "runpod"
+slots = 2                       # at most 2 pods at once (a ceiling, not a pool size)
+image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-runtime-ubuntu22.04"   # needs git, tar, setsid, timeout, sha256sum, ps and bash
+# repo, github, harness, committer, setup, seed, requires, facts as for the other hosts
+
+[pools.gpu.runpod]
+api_key_file = "~/.config/secrets/runpod.key"   # required; mode 600; Vivi never reads it
+gpu_types = ["NVIDIA A100 80GB PCIe", "NVIDIA H100 PCIe"]   # required; best first, as `runpodctl gpu list` spells them
+gpu_count = 1                   # GPUs per pod (1 to 8; default 1)
+cloud = "secure"                # or "community"; default secure
+container_disk_gb = 40          # default 40; the pod keeps nothing else
+# min_cuda_version = "12.8"     # lowest CUDA the host's driver must support
+# data_centers = ["EU-RO-1"]    # default: any
+```
+
+A different tier is a different pool: write a second `[pools.<name>]` with its
+own `gpu_types` rather than looking for a switch. The GPU type a pod actually
+got is recorded in the dispatch record and shown in `dispatch`'s output.
+
+**How the commands differ**
+
+- `create` and scaling up do not apply and say so (nothing is made ahead of a
+  job). `scale <N>` and `destroy` only remove: they terminate pods, and wait
+  until RunPod's list no longer shows them. `status` shows
+  `N pod(s) of at most M`.
+- `dispatch` makes the pod, which takes minutes (renting, waiting for SSH,
+  seeding), pins its SSH host key, runs the same seed as every other host,
+  delivers the job, starts it and returns. It prints the pod, its hourly price
+  and the time it was told to end by, and that **the pod bills until collected**.
+- `wait` and `reconcile` collect the result as for other hosts, then
+  **terminate the pod and confirm it is gone from RunPod's list** (up to three
+  minutes; if it is still listed they say so and print the command that
+  terminates it). A pod the provider no longer runs has lost its disk: the
+  engine reads that as a lost job.
+- A result is a pushed branch or a receipt, as everywhere in Vivi. Nothing else
+  leaves a pod: there is no artifact, checkpoint or output-file collection
+  today. A job that needs to keep a model or a dataset must push it somewhere
+  itself (and the pod's image must let it).
+- `doctor` is read-only (see below). `doctor --test` rents a pod, so it refuses
+  without `--allow-spend`.
+
+**What keeps it from billing unattended.** Every one of these exists; read the
+limits next to each.
+
+1. *The pod is told when to die.* `pod create` is given `--terminate-after`
+   with a time of dispatch + 30 minutes for setup + the job's budget + 15
+   minutes (the same silence `wait` allows before it calls a job lost). **It is
+   not verified that RunPod fires this when no client is running** (nothing has
+   been rented to find out); treat it as a second line, not the first.
+2. *Collection terminates.* `wait` and `reconcile` end the pod and check the
+   list. This needs Vivi to run: an uncollected pod costs its hourly rate until
+   something does.
+3. *A failed dispatch terminates its own pod* at whatever step failed (rent,
+   host key, seed, claim, delivery). If even that fails, the error says the pod
+   is still billing, when its provider-side deadline is, and the command to end
+   it.
+4. *`reconcile` finds leaks.* A pod of the pool that no dispatch record
+   explains, past 31 minutes (the longest a dispatch may spend setting up), is
+   terminated.
+5. *`doctor` reports leaks* with the money framing: pods of this pool with how
+   long they have run and their hourly price; any past their deadline as a
+   failure; and **stray** pods (a pod with Vivi's name prefix for a pool this
+   mailspace no longer has, or a malformed name) as a failure, "billing until
+   terminated", with the command that ends it. Pods of other mailspaces are
+   counted and left alone.
+
+`reconcile` and `destroy` act only on pods whose name says they belong to this
+mailspace and pool. Nothing here terminates a pod it did not name.
+
+**Identity and the claim, without labels or leases.** RunPod pods carry a name
+and nothing else Vivi can use, so the name is the record:
+`vivi-rp1-<mailspace>-<pool>-<mailspace length>-<slot index>-<task>-<claimed>-<deadline>-<nonce>`
+(at most 191 characters, which the config check enforces; the task field is the
+task handle, or a hash of it when the handle is not a plain word; the nonce is
+12 random hex digits). A name that does not parse is not Vivi's and is never
+touched. There is no lease, so a dispatch claims a slot like this:
+
+1. On one machine, a file lock per mailspace and pool serialises dispatches.
+2. It picks the lowest unused slot index among the pool's pods, and refuses if
+   the pool already holds `slots` pods.
+3. After the pod exists, it lists the pool's pods and orders them by RunPod's
+   own creation time (ties by pod id). A pod loses, and is terminated, if an
+   earlier pod holds its slot index, or if earlier pods already fill `slots`.
+   A pod whose creation time cannot be read gives way.
+4. The same check runs again just before the job starts.
+
+Limits, stated plainly: the rule is correct when the provider lists both pods
+by the second look, and two dispatchers on different machines have no lock
+between them. If RunPod's list lags enough that neither pod sees the other at
+either look, two pods can end up with one slot index or the pool can exceed
+`slots` for a while; no two jobs ever share a pod, and `doctor` and `reconcile`
+show and clear the excess. This was reasoned and tested against a simulated
+race; it was not observed on the real service.
+
+**SSH.** The pod's host key is captured once, at first contact: `ssh-keyscan`
+twice with a pause, the two answers must match, and the keys are written to a
+per-pod file under `.vivi/runpod/pins/` (mode 600). Every later call uses
+`StrictHostKeyChecking=yes` against that file alone, so a changed key fails
+closed. The account needs an SSH public key registered with RunPod (`doctor`
+warns when there is none). Inside the pod the work is done by the same remote
+script, boot script and job script as on the `ssh` host, run as root in the
+container, with the agent as the unprivileged `hand` user.
+
+**The API key.** `api_key_file` is required and must not be readable by group
+or others (Vivi refuses it and says `chmod 600`). Vivi never reads the file:
+each `runpodctl` call is started through a fixed one-line `sh` wrapper that
+reads the file and passes the key to the CLI in its environment
+(`RUNPOD_API_KEY`, which the CLI prefers to its own saved login). The key is
+not an argument, not in Vivi's memory and not in any message of Vivi's;
+`runpodctl`'s own error text is scrubbed of anything shaped like a key before
+it is printed. The key never reaches the pod. Harness environment variables
+(`harness.env`) are read from the environment of the `vivi` process at
+dispatch and sent inside the pinned SSH connection to a file only root can read
+in the pod; they do not pass through RunPod's API.
+
+**`doctor`** (read-only) checks: `runpodctl` and its version; the key file and
+its mode; that the API accepts the key (identity and balance only); the SSH
+keys on the account; `ssh` and `ssh-keyscan`; each configured GPU type against
+the live market (price and stock in the configured cloud and data centres); the
+image name; the pods of this pool; stray pods. **`doctor --test` does not spend
+by default.** It refuses, says it would rent a pod, quotes the hourly price of
+the first GPU type when RunPod will say, and says `--allow-spend` is needed.
+With `--allow-spend` it rents one pod for a stand-in job and terminates it. The
+flag does nothing without `--test`.
+
+**What has and has not been verified live.** Verified against a real, empty
+RunPod account, reading only: the shape of `runpodctl user`, `gpu list`,
+`datacenter list`, `ssh list-keys` and `pod list` output; that
+`RUNPOD_API_KEY` overrides the CLI's saved login; `vivi pool doctor` and
+`vivi pool status`, and the `doctor --test` refusal. Everything
+that creates a pod is **unverified live**, because building it required
+renting one and this feature was built under a rule not to: the create call,
+the `--terminate-after` deadline firing on its own, the pod name being
+accepted, the creation-time ordering and list lag the claim rule depends on,
+the state words of a stopped or terminating pod, the failure text for no
+capacity, the SSH host key capture on a real pod, the root-mode boot and job
+scripts on a RunPod image, the termination and the absence check, and the
+harness-environment path. These are covered by tests against a fake account
+and a fake pod only. Before relying on a RunPod pool for unattended work, run
+one `doctor --test --allow-spend` and read the result.
 
 #### Requirements and facts (special hardware)
 
@@ -854,7 +1011,7 @@ What it guarantees depends on the provider:
 
 | Provider | Guarantee |
 | --- | --- |
-| Docker, Fly | The strong form. The worker is confined and holds no credentials: no push token, no keys, and the changes cannot leave the slot. A review role can have a full shell, even edit files, safely. |
+| Docker, Fly, RunPod | The strong form (RunPod: by design, from the same scripts; not verified live). The worker is confined and holds no credentials: no push token, no keys, and the changes cannot leave the slot. A review role can have a full shell, even edit files, safely. |
 | SSH, local (fetch mode) | The runner publishes nothing and the token cannot push, but the worker runs as a real user account that may have its own credentials, and Vivi cannot stop it from using that account's access. `dispatch --read-only` prints a one-line warning to standard error saying so (never in `--porcelain` result lines). |
 | local (worktree mode) | No token and no push exist; the job starts detached at `from`, makes no commit and no branch, and its changes are reported and discarded. The runner never moves or creates a branch. But the worker shares your repository, so it could still commit to it with plain Git; the dispatch warns of that. |
 

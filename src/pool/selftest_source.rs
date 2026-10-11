@@ -53,7 +53,8 @@ pub fn harness_command(sleep_secs: u64) -> String {
 #[must_use]
 pub fn test_config(real: &PoolConfig) -> PoolConfig {
     let mut config = real.clone();
-    config.slots = 2;
+    // A host that rents a machine per dispatch is tested with one job at a time.
+    config.slots = if real.provider == "runpod" { 1 } else { 2 };
     config.setup = Vec::new();
     config.seed = vec!["true".to_string()];
     config.requires = Vec::new();

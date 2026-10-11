@@ -21,7 +21,7 @@ const KILLED_WITHIN: u64 = 60;
 
 const FIRST_BRANCH: &str = "doctor/first";
 
-fn observed(what: &str, saw: impl std::fmt::Display) -> String {
+pub(super) fn observed(what: &str, saw: impl std::fmt::Display) -> String {
     format!("expected {what}; observed {saw}")
 }
 
@@ -150,7 +150,7 @@ pub(super) fn third_refused(w: &mut World) -> StepResult {
     }
 }
 
-fn require_pushed(
+pub(super) fn require_pushed(
     w: &World,
     label: &str,
     line_state: &str,

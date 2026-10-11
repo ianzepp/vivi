@@ -10,6 +10,7 @@ fn parts(command: &Command) -> Vec<String> {
 fn unshared(host: &str) -> SshCli {
     SshCli {
         host: host.to_string(),
+        extra: Vec::new(),
         control_dir: None,
     }
 }

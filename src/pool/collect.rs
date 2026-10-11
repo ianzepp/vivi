@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use super::facts::{self, Fact};
 use super::pools::PoolSet;
 use super::progress::Issue;
-use super::provider::{MachineRecord, PoolProvider};
+use super::provider::{MachineRecord, PoolProvider, SlotLifetime};
 use super::record::OpenDispatch;
 use super::slot::{self, META_TASK, SlotStatus};
 use crate::error::VivariumError;
@@ -363,7 +363,8 @@ fn collect_stopped(
 }
 
 /// Free a slot held by `task`: stop it if it runs and confirm it stopped, then
-/// drop the claim marks. Marks go last, so a slot never looks free while it
+/// drop the claim marks. A slot that lives per dispatch is destroyed instead,
+/// and the call returns only once the host no longer lists it. Marks go last, so a slot never looks free while it
 /// still runs, and a slot that would not stop keeps its marks (a later
 /// `reconcile` retries). A slot that `task` no longer holds is left alone
 /// unless it runs with no claim at all (a collector started it after the
@@ -378,6 +379,9 @@ pub fn release(
     task: &str,
     pacing: &Pacing,
 ) -> Result<(), VivariumError> {
+    if provider.slot_lifetime() == SlotLifetime::PerDispatch {
+        return provider.destroy(machine_id);
+    }
     let machine = provider.machine(machine_id)?;
     if machine.metadata.get(META_TASK).map(String::as_str) != Some(task) {
         return stop_unclaimed(provider, &machine, pacing);
@@ -435,22 +439,21 @@ fn stop_confirmed(
     }
 }
 
-/// Claimed slots with no open dispatch behind them, claimed long enough ago
-/// that no dispatch is still being set up.
+/// Claimed slots with no open dispatch behind them, claimed more than `grace`
+/// seconds ago, so that no dispatch is still being set up
+/// ([`PoolProvider::setup_grace_secs`]).
 #[must_use]
 pub fn stale_claims<'a>(
     slots: &'a [SlotStatus],
     open: &[OpenDispatch],
     now: u64,
+    grace: u64,
 ) -> Vec<&'a SlotStatus> {
     slots
         .iter()
         .filter(|s| s.task.is_some())
         .filter(|s| !open.iter().any(|d| d.record.machine == s.id))
-        .filter(|s| {
-            s.claimed_at
-                .is_none_or(|at| now.saturating_sub(at) > STALE_CLAIM_SECS)
-        })
+        .filter(|s| s.claimed_at.is_none_or(|at| now.saturating_sub(at) > grace))
         .collect()
 }
 

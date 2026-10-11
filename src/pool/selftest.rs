@@ -16,8 +16,9 @@ use std::time::Instant;
 use super::config::PoolConfig;
 use super::doctor::Check;
 use super::progress::Progress;
-use super::provider::PoolProvider;
+use super::provider::{PoolProvider, SlotLifetime};
 use super::run;
+use super::selftest_pods as pods;
 use super::selftest_steps::{self as steps, StepResult};
 use super::selftest_world::{Timing, World};
 use super::slot::PoolId;
@@ -68,8 +69,27 @@ const fn cleanup(name: &'static str, run: fn(&mut World) -> StepResult) -> Step 
     }
 }
 
+/// The steps for a host whose slots live per dispatch: one pod, one job, and
+/// proof the pod is gone. Nothing rests, so there is nothing to create first.
+fn pod_plan() -> Vec<Step> {
+    vec![
+        step(
+            PROVIDER_GROUP,
+            "rent a pod and start a job",
+            pods::dispatch_one,
+        ),
+        step(VIVI_GROUP, "wait collects the job", pods::wait_collects),
+        step(PROVIDER_GROUP, "the pod is terminated", pods::pod_gone),
+        cleanup("terminate the test pods", steps::destroy_slots),
+        cleanup("nothing of the test pool remains", steps::nothing_left),
+    ]
+}
+
 /// The steps in order. `--long` adds one.
-fn plan(long: bool) -> Vec<Step> {
+fn plan(long: bool, lifetime: SlotLifetime) -> Vec<Step> {
+    if lifetime == SlotLifetime::PerDispatch {
+        return pod_plan();
+    }
     let mut list = vec![
         step(PROVIDER_GROUP, "create two slots", steps::create_slots),
         step(PROVIDER_GROUP, "both slots reach free", steps::slots_free),
@@ -200,7 +220,7 @@ pub fn run_test(
         note(check, &mut checks);
     }
     let mut failed: Option<&'static str> = None;
-    for item in plan(options.long) {
+    for item in plan(options.long, provider.slot_lifetime()) {
         if item.always {
             world.cleaning = true;
         } else if let Some(first) = failed {

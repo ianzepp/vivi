@@ -10,6 +10,7 @@ use crate::mailspace::{Mailspace, SendRequest};
 
 use crate::pool::collect::{ErrorWatch, JobResult, Pacing, RoundLine};
 use crate::pool::config::PoolConfig;
+use crate::pool::dispatch::Launch;
 use crate::pool::dispatch::{self, DispatchFlags};
 use crate::pool::github::Secret;
 use crate::pool::job::DEFAULT_RULES;
@@ -163,15 +164,15 @@ impl Rig {
         let start = checkout.start.clone();
         plan.checkout = Some(checkout);
         let token = Secret::new(String::new());
-        let made = work::submit(
-            &self.space,
-            &self.provider,
-            &self.id,
-            &plan,
-            &token,
-            &start,
-            &pacing(),
-        )?;
+        let progress = Progress::silent();
+        let launch = Launch {
+            config: &self.config,
+            plan: &plan,
+            token: &token,
+            start: &start,
+            progress: &progress,
+        };
+        let made = work::submit(&self.space, &self.provider, &self.id, &launch, &pacing())?;
         Ok((task, made))
     }
 
@@ -412,16 +413,15 @@ fn a_branch_that_appeared_after_the_decision_is_refused_by_the_runner_and_never_
         plan.checkout = Some(checkout);
         git(&rig.f.repo, &["branch", "topic", "main~1"]);
         let token = Secret::new(String::new());
-        let made = work::submit(
-            &rig.space,
-            &rig.provider,
-            &rig.id,
-            &plan,
-            &token,
-            "main",
-            &pacing(),
-        )
-        .unwrap();
+        let progress = Progress::silent();
+        let launch = Launch {
+            config: &rig.config,
+            plan: &plan,
+            token: &token,
+            start: "main",
+            progress: &progress,
+        };
+        let made = work::submit(&rig.space, &rig.provider, &rig.id, &launch, &pacing()).unwrap();
         (task, made)
     };
     let line = rig.wait(&task);

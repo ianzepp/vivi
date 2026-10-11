@@ -15,6 +15,7 @@ use vivi::pool::local_git::Repo;
 use vivi::pool::pools::{self, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::{HEARTBEAT, Progress};
+use vivi::pool::provider::SlotLifetime;
 use vivi::pool::work::{self, WaitOptions, Waited};
 use vivi::pool::{PoolConfig, github, job, run};
 
@@ -72,12 +73,23 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (None, _) => remote_start(config, &id.pool, &plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
-    progress.say(&format!(
-        "{}: claiming a free slot and starting the job",
-        id.pool
-    ));
+    progress.say(&if provider.slot_lifetime() == SlotLifetime::PerDispatch {
+        format!("{}: renting a pod and starting the job", id.pool)
+    } else {
+        format!("{}: claiming a free slot and starting the job", id.pool)
+    });
     let pacing = Pacing::default();
-    let made = work::submit(&space, provider, id, &plan, &token, &start, &pacing)?;
+    let launch = dispatch::Launch {
+        config,
+        plan: &plan,
+        token: &token,
+        start: &start,
+        progress: &progress,
+    };
+    let made = work::submit(&space, provider, id, &launch, &pacing)?;
+    if provider.slot_lifetime() == SlotLifetime::PerDispatch {
+        progress.say(&vivi::pool::runpod_open::uncollected_note(&made));
+    }
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
     } else {
@@ -100,7 +112,7 @@ fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
 /// The human line of a dispatch.
 fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> String {
     format!(
-        "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s",
+        "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s{}",
         made.pool,
         made.slot,
         made.job,
@@ -112,7 +124,12 @@ fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> Str
         } else {
             format!("branch {}", made.branch)
         },
-        made.budget
+        made.budget,
+        if made.hardware.is_empty() {
+            String::new()
+        } else {
+            format!("  hardware {}", made.hardware)
+        }
     )
 }
 

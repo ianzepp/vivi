@@ -9,9 +9,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::collect::{self, Missing, Outcome, Pacing, RoundLine};
-use super::dispatch;
-use super::github::Secret;
-use super::job::JobPlan;
+use super::dispatch::{self, Launch};
 use super::pools::PoolSet;
 use super::progress::Beat;
 use super::provider::PoolProvider;
@@ -59,12 +57,11 @@ pub fn submit(
     space: &Mailspace,
     provider: &dyn PoolProvider,
     id: &PoolId,
-    plan: &JobPlan,
-    token: &Secret,
-    start: &str,
+    launch: &Launch,
     pacing: &Pacing,
 ) -> Result<DispatchRecord, VivariumError> {
-    let made = dispatch::dispatch(provider, id, plan, token, start, epoch_secs(), pacing)?;
+    let plan = launch.plan;
+    let made = dispatch::dispatch(provider, id, launch, epoch_secs(), pacing)?;
     let note = record::dispatch_note(&made);
     let text = record::dispatch_text(&made);
     if let Err(e) = space.record_pool_note(&plan.task, "pool_dispatched", &note, &text) {
@@ -363,7 +360,7 @@ fn free_stale_claims(
     pacing: &Pacing,
     report: &mut ReconcileReport,
 ) {
-    for slot in collect::stale_claims(slots, open, now) {
+    for slot in collect::stale_claims(slots, open, now, provider.setup_grace_secs()) {
         let task = slot.task.as_deref().unwrap_or_default();
         match collect::release(provider, &slot.id, task, pacing) {
             Ok(()) => report.add(RoundLine {

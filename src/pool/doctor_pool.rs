@@ -4,6 +4,7 @@
 use super::collect::stale_claims;
 use super::doctor::Check;
 use super::doctor_repo::{GithubView, behind_text};
+use super::provider::SlotLifetime;
 use super::record::OpenDispatch;
 use super::requires;
 use super::run::annotate_running;
@@ -44,6 +45,12 @@ pub struct PoolFacts<'a> {
     pub now: u64,
     pub github: &'a GithubView,
     pub requires: &'a RequiresView<'a>,
+    /// How the host's slots live, and the seconds a claim may exist with no
+    /// dispatch recorded (the host's setup time).
+    pub lifetime: SlotLifetime,
+    pub grace: u64,
+    /// How a running slot nobody holds costs money, for the leak finding.
+    pub billing: &'a str,
 }
 
 /// Turn the facts into checks.
@@ -82,7 +89,7 @@ fn config_check(pool: &str, config: &Result<(), String>) -> Check {
 fn slot_checks(f: &PoolFacts, slots: &[SlotStatus]) -> Vec<Check> {
     let mut slots = slots.to_vec();
     annotate_running(&mut slots, f.open, f.now);
-    let mut out = vec![count_check(f.pool, f.max, &slots)];
+    let mut out = vec![count_check(f, &slots)];
     for slot in &slots {
         out.push(slot_check(f, slot));
         out.extend(requires_check(f, slot));
@@ -94,8 +101,12 @@ fn slot_checks(f: &PoolFacts, slots: &[SlotStatus]) -> Vec<Check> {
     out
 }
 
-fn count_check(pool: &str, max: u32, slots: &[SlotStatus]) -> Check {
+fn count_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
+    let (pool, max) = (f.pool, f.max);
     let have = u32::try_from(slots.len()).unwrap_or(u32::MAX);
+    if f.lifetime == SlotLifetime::PerDispatch {
+        return per_dispatch_count(pool, (have, max));
+    }
     let detail = format!("{have} of {max}");
     match have.cmp(&max) {
         std::cmp::Ordering::Equal => Check::ok(GROUP, "slot count", detail),
@@ -109,6 +120,21 @@ fn count_check(pool: &str, max: u32, slots: &[SlotStatus]) -> Check {
             ),
         ),
     }
+}
+
+/// A pool whose slots live per dispatch holds pods only while jobs run: none
+/// is normal, and more than the maximum is the finding.
+fn per_dispatch_count(pool: &str, (have, max): (u32, u32)) -> Check {
+    let detail = format!("{have} of at most {max} (pods exist only while a job runs)");
+    if have <= max {
+        return Check::ok(GROUP, "slot count", detail);
+    }
+    Check::warn(
+        GROUP,
+        "slot count",
+        format!("{detail}; more than the pool allows"),
+        reconcile(pool),
+    )
 }
 
 /// `base abcdef012345, 3 commits behind the default branch tip`, or just the
@@ -215,7 +241,7 @@ fn requires_check(f: &PoolFacts, slot: &SlotStatus) -> Option<Check> {
 /// Running slots that no open dispatch explains: a cost until stopped. A claim
 /// younger than the stale limit is a dispatch still being set up, not a leak.
 fn leak_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
-    let stale = stale_claims(slots, f.open, f.now);
+    let stale = stale_claims(slots, f.open, f.now, f.grace);
     let leaked: Vec<&str> = slots
         .iter()
         .filter(|s| s.state == "busy" && s.running_secs.is_none())
@@ -233,8 +259,9 @@ fn leak_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
         GROUP,
         "leaked runners",
         format!(
-            "{} running with no open dispatch (holding a machine, and billed by the second on Fly)",
-            leaked.join(", ")
+            "{} running with no open dispatch (holding a machine, and {})",
+            leaked.join(", "),
+            f.billing
         ),
         reconcile(f.pool),
     )
@@ -268,7 +295,7 @@ fn orphan_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
 
 /// Held slots with no open dispatch, past the grace for a dispatch in setup.
 fn stale_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
-    let stale = stale_claims(slots, f.open, f.now);
+    let stale = stale_claims(slots, f.open, f.now, f.grace);
     if stale.is_empty() {
         return Check::ok(GROUP, "stale claims", "no claim without a dispatch");
     }

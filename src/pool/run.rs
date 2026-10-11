@@ -247,6 +247,19 @@ fn launch_all(
     Ok(launched)
 }
 
+/// What the slot of one dispatch is made from, for a host that makes it per
+/// dispatch: as `create` would make slot `index`, seeded at `base` with the
+/// dispatch's `token` (the host chooses the index).
+#[must_use]
+pub fn dispatch_spec(
+    config: &PoolConfig,
+    id: &PoolId,
+    seed: (&Secret, &str),
+    provider: &dyn PoolProvider,
+) -> CreateSpec {
+    slot_spec(config, id, 0, seed, provider)
+}
+
 fn slot_spec(
     config: &PoolConfig,
     id: &PoolId,

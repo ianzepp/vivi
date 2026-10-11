@@ -32,6 +32,8 @@ static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug)]
 pub struct SshCli {
     host: String,
+    /// Options after the standard ones: a port and a pinned host key.
+    extra: Vec<String>,
     /// Directory holding the shared connection's control socket; none when
     /// no private directory could be made and every call connects on its own.
     control_dir: Option<PathBuf>,
@@ -44,8 +46,32 @@ impl SshCli {
     pub fn new(host: &str) -> Self {
         Self {
             host: host.to_string(),
+            extra: Vec::new(),
             control_dir: control_dir(),
         }
+    }
+
+    /// A runner for `host` on `port` that trusts exactly the host keys in the
+    /// file `known_hosts` and nothing else: strict checking, no other
+    /// known-hosts file, no learning. A changed or missing key fails the call.
+    #[must_use]
+    pub fn pinned(host: &str, port: u16, known_hosts: &std::path::Path) -> Self {
+        let mut cli = Self::new(host);
+        cli.extra = vec![
+            "-p".to_string(),
+            port.to_string(),
+            "-o".to_string(),
+            format!("UserKnownHostsFile={}", known_hosts.display()),
+            "-o".to_string(),
+            "GlobalKnownHostsFile=/dev/null".to_string(),
+            "-o".to_string(),
+            "StrictHostKeyChecking=yes".to_string(),
+            "-o".to_string(),
+            "CheckHostIP=no".to_string(),
+            "-o".to_string(),
+            "UpdateHostKeys=no".to_string(),
+        ];
+        cli
     }
 
     /// The process for one remote command line.
@@ -84,6 +110,7 @@ impl SshCli {
         ]
         .map(str::to_string)
         .to_vec();
+        options.extend(self.extra.iter().cloned());
         if let Some(dir) = &self.control_dir {
             options.extend([
                 "-o".to_string(),

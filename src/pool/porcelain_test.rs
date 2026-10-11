@@ -54,6 +54,7 @@ fn dispatched_line() {
         budget: 1800,
         at: 0,
         read_only: false,
+        hardware: String::new(),
     };
     assert_eq!(
         dispatched("3f2a", &made),
@@ -78,6 +79,7 @@ fn a_read_only_dispatch_has_no_branch_and_says_so() {
         budget: 600,
         at: 0,
         read_only: true,
+        hardware: String::new(),
     };
     assert_eq!(
         dispatched("3f2a", &made),

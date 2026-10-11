@@ -28,6 +28,9 @@ pub(crate) fn doctor(command: &PoolDoctorCommand) -> Result<(), VivariumError> {
     let space = Mailspace::discover(command.project.as_deref())?;
     let need = if command.test { Need::One } else { Need::Any };
     let handles = pools::open_unvalidated(&space, command.pool.as_deref(), need)?;
+    if command.test && !command.allow_spend {
+        refuse_unpaid_test(&handles)?;
+    }
     let open = open_dispatches(&space)?;
     Progress::stderr(command.porcelain, "")
         .say("checking the providers, the repositories and the pools");
@@ -58,6 +61,18 @@ pub(crate) fn doctor(command: &PoolDoctorCommand) -> Result<(), VivariumError> {
         n => Err(VivariumError::Message(format!(
             "doctor: {n} check(s) failed"
         ))),
+    }
+}
+
+/// Refuse `--test` on a pool whose provider bills for it, before anything is
+/// checked or rented.
+fn refuse_unpaid_test(handles: &[PoolHandle]) -> Result<(), VivariumError> {
+    match handles
+        .iter()
+        .find_map(|h| h.provider.live_test_spend_gate())
+    {
+        Some(why) => Err(VivariumError::Message(why)),
+        None => Ok(()),
     }
 }
 

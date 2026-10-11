@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::collect::{ErrorWatch, Pacing, RoundLine};
 use super::config::PoolConfig;
-use super::dispatch::{self, DispatchFlags};
+use super::dispatch::{self, DispatchFlags, Launch};
 use super::github::Secret;
 use super::job;
 use super::pools::PoolSet;
@@ -276,13 +276,18 @@ impl<'a> World<'a> {
         )?;
         let token = Secret::new(String::new());
         let start = refs.0;
+        let launch = Launch {
+            config: &config,
+            plan: &plan,
+            token: &token,
+            start,
+            progress: self.progress,
+        };
         let record = work::submit(
             &self.space,
             self.provider,
             &self.id,
-            &plan,
-            &token,
-            start,
+            &launch,
             &self.timing.pacing,
         )?;
         self.jobs.insert(

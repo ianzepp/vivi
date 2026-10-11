@@ -41,6 +41,7 @@ fn dispatched(space: &Mailspace, task: &str, machine: &str) {
         budget: 600,
         at: epoch_secs() - 100,
         read_only: false,
+        hardware: String::new(),
     };
     space
         .record_pool_note(
@@ -331,6 +332,7 @@ fn dispatched_to(space: &Mailspace, task: &str, pool: &str, machine: &str) {
         budget: 600,
         at: epoch_secs() - 100,
         read_only: false,
+        hardware: String::new(),
     };
     let note = record::dispatch_note(&record);
     space

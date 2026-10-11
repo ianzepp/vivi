@@ -16,8 +16,10 @@
 //! claims a slot atomically (see [`claim`]), delivers one job archive, and is
 //! recorded on the task (see [`record`]); `wait` and `reconcile` collect the
 //! result and free the slot (see [`collect`]). The provider sits behind
-//! [`provider::PoolProvider`] so tests use a fake; `fly`, `docker`, `ssh` and `local` are the
-//! four machine hosts (see [`open_provider`]). `vivi pool doctor --test`
+//! [`provider::PoolProvider`] so tests use a fake; `fly`, `docker`, `ssh`, `local` and
+//! `runpod` are the five machine hosts (see [`open_provider`]). `runpod` alone has no
+//! resting slots: a slot is a pod rented for one dispatch (see
+//! [`provider::SlotLifetime`]). `vivi pool doctor --test`
 //! runs a live exercise of all of this (see [`selftest`]).
 
 pub mod bootscript;
@@ -59,8 +61,22 @@ pub mod provider;
 pub mod record;
 pub mod requires;
 pub mod run;
+pub mod runpod;
+pub mod runpod_claim;
+pub mod runpod_cli;
+pub mod runpod_config;
+pub mod runpod_doctor;
+#[cfg(test)]
+#[path = "pool/runpod_fixture_test.rs"]
+pub(crate) mod runpod_fixture;
+pub mod runpod_lock;
+pub mod runpod_name;
+pub mod runpod_open;
+pub mod runpod_pin;
+pub mod runpod_pod;
 pub mod scale;
 pub mod selftest;
+pub mod selftest_pods;
 pub mod selftest_source;
 pub mod selftest_steps;
 pub mod selftest_world;
@@ -77,9 +93,12 @@ pub use provider::PoolProvider;
 
 /// The machine host `config` names, ready to use. A `fly` pool without an
 /// `app` gets an empty one here; validation rejects it before anything acts.
+/// `ctx` says where the mailspace keeps files and which pools it holds, for the
+/// hosts that need it (`runpod`).
 #[must_use]
-pub fn open_provider(config: &PoolConfig) -> Box<dyn PoolProvider> {
+pub fn open_provider(config: &PoolConfig, ctx: &runpod::HostContext) -> Box<dyn PoolProvider> {
     match config.provider.as_str() {
+        "runpod" => Box::new(runpod::RunpodProvider::new(config, ctx)),
         "docker" => Box::new(docker::DockerProvider::new(config)),
         "ssh" => Box::new(ssh::SshProvider::new(config)),
         "local" => Box::new(local::LocalProvider::new(config)),

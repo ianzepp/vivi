@@ -33,7 +33,7 @@ use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider}
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_cli::SshCli;
 use super::ssh_doctor::Probe;
-use super::ssh_script::command_line;
+use super::ssh_script::{PRIVATE_UMASK, command_line_as};
 use super::ssh_state::{self as state, is_slot_id, parse_listing};
 use crate::error::VivariumError;
 
@@ -48,6 +48,8 @@ pub struct SshProvider {
     runner: Box<dyn Runner>,
     host: String,
     root: String,
+    /// The umask the remote script writes under.
+    umask: &'static str,
 }
 
 /// The version line of the local `ssh` client.
@@ -81,6 +83,21 @@ impl SshProvider {
             runner,
             host: config.ssh.host.clone().unwrap_or_default(),
             root: config.ssh.root_or_default().to_string(),
+            umask: PRIVATE_UMASK,
+        }
+    }
+
+    /// A provider for the slot root `root` of a machine the caller made and
+    /// reaches through `runner` (a rented pod). `host` only names the machine
+    /// in messages. The slot's scripts run as root there and its agent as
+    /// another user, so the slot directory is traversable (umask `022`).
+    #[must_use]
+    pub(super) fn for_machine(host: &str, root: &str, runner: Box<dyn Runner>) -> Self {
+        Self {
+            runner,
+            host: host.to_string(),
+            root: root.to_string(),
+            umask: "022",
         }
     }
 
@@ -100,7 +117,7 @@ impl SshProvider {
         stdin: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<RunOutput, VivariumError> {
-        let line = command_line(&self.root, verb, args, login);
+        let line = command_line_as(&self.root, verb, args, login, self.umask);
         self.runner.run(&[line], stdin, timeout)
     }
 

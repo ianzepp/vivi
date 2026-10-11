@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 
+use super::collect::STALE_CLAIM_SECS;
 use super::doctor::Check;
+use super::progress::Progress;
+use super::slot::PoolId;
 use crate::error::VivariumError;
 
 /// The proof of an exclusive claim: what a provider hands back when a claim
@@ -97,9 +100,92 @@ impl std::fmt::Debug for CreateSpec {
     }
 }
 
+/// How a host's slots live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotLifetime {
+    /// Slots exist between jobs: `create` seeds them, a dispatch claims a free
+    /// one, and freeing it stops it (Fly, Docker, SSH, local).
+    Resting,
+    /// A slot exists only for one job: a dispatch makes it with
+    /// [`PoolProvider::open_for_dispatch`], and collecting its result destroys
+    /// it. `slots` is the most that may exist at once. Nothing rests, so
+    /// `create` and a scale-up do not apply, and an uncollected slot is a bill
+    /// that grows until it is destroyed.
+    PerDispatch,
+}
+
+/// What a per-dispatch host needs to make the slot of one job.
+pub struct OpenRequest<'a> {
+    pub pool: &'a PoolId,
+    /// The task the slot is for; it is part of the slot's mark on the host.
+    pub task: &'a str,
+    /// Dispatch time, epoch seconds.
+    pub now: u64,
+    /// The job's time budget in seconds.
+    pub budget_secs: u64,
+    /// What the slot is made from, as for a resting slot (the slot index in
+    /// its metadata is the host's to choose).
+    pub spec: CreateSpec,
+    /// Where the steps of making the slot are reported as they start.
+    pub progress: &'a Progress,
+}
+
+/// The slot a per-dispatch host made: running, seeded, and claimed by the
+/// task, ready for the job archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedSlot {
+    /// The machine id (what every later call names).
+    pub id: String,
+    /// The slot's display name, `<mailspace>-<pool>-slot-<index>`.
+    pub name: String,
+    pub index: u32,
+    pub hold: Hold,
+    /// What the host gave the slot, for the dispatch record (for example the
+    /// hardware it runs on). Empty when the host has nothing to say.
+    pub hardware: String,
+    pub created_at: String,
+}
+
 /// A machine host. Implementations must keep secrets out of errors.
 /// Methods after `destroy` act on one machine by id.
 pub trait PoolProvider {
+    /// How this host's slots live. Resting unless the host says otherwise.
+    fn slot_lifetime(&self) -> SlotLifetime {
+        SlotLifetime::Resting
+    }
+
+    /// Make, seed and claim the slot of one job (per-dispatch hosts only).
+    /// The machine is running when this returns; on failure nothing it made
+    /// is left behind.
+    ///
+    /// # Errors
+    /// Returns an error if no slot can be made (naming why) or the host fails.
+    fn open_for_dispatch(&self, _request: &OpenRequest) -> Result<OpenedSlot, VivariumError> {
+        Err(VivariumError::Message(
+            "this host keeps resting slots; there is nothing to make per dispatch".into(),
+        ))
+    }
+
+    /// Seconds a claimed slot may exist with no dispatch recorded before it
+    /// counts as stale: the longest a dispatch spends between claiming a
+    /// slot and recording it.
+    fn setup_grace_secs(&self) -> u64 {
+        STALE_CLAIM_SECS
+    }
+
+    /// How a machine that runs with nothing to explain it is costing money,
+    /// as the doctor's leak finding words it.
+    fn billing_note(&self) -> String {
+        "billed by the second on Fly".to_string()
+    }
+
+    /// When the live test (`doctor --test`) bills, the plain-words reason a
+    /// caller must pass `--allow-spend` to run it, with the price when the
+    /// host can read it. `None`: the test needs no such flag.
+    fn live_test_spend_gate(&self) -> Option<String> {
+        None
+    }
+
     /// Make sure the pool's home on the host exists (a Fly application; a
     /// Docker daemon needs none). `Some(text)` when this call created it,
     /// saying what was made.
