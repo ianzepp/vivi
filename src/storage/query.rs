@@ -340,6 +340,32 @@ impl Storage {
             .map_err(|e| VivariumError::Other(format!("failed to count stored messages: {e}")))
     }
 
+    /// Letters waiting in the inbox and work folders, counted once per
+    /// content, by the account that holds them.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn waiting_letters_by_account(&self) -> Result<Vec<(String, usize)>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT account, COUNT(DISTINCT content_id) FROM messages
+                 WHERE deleted_at IS NULL AND absorbed_at IS NULL
+                   AND local_role IN ('inbox', 'tasks', 'needs', 'wants')
+                 GROUP BY account ORDER BY account",
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to prepare account counts: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+            })
+            .map_err(|e| VivariumError::Other(format!("failed to count by account: {e}")))?;
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read account count: {e}")))
+        })
+        .collect()
+    }
+
     /// Count non-deleted messages for an account and role, optionally filtered by read state.
     ///
     /// # Errors

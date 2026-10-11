@@ -27,6 +27,7 @@ pub fn to_text(report: &BootReport) -> String {
     seats(&mut out, report);
     loops(&mut out, report);
     unabsorbed(&mut out, report);
+    held_unknown(&mut out, report);
     handles(&mut out, report);
     goals(&mut out, report);
     rules(&mut out, report);
@@ -124,6 +125,28 @@ fn unabsorbed(out: &mut String, report: &BootReport) {
             format!(
                 "  {}  {:<4} {:<24} {}",
                 row.handle, row.age, row.from, row.subject
+            ),
+        );
+    }
+}
+
+fn held_unknown(out: &mut String, report: &BootReport) {
+    if report.held_unknown.is_empty() {
+        return;
+    }
+    heading(out, "held for unknown roles: no seat here has these names");
+    for row in &report.held_unknown {
+        let noun = if row.letters == 1 {
+            "letter"
+        } else {
+            "letters"
+        };
+        line(
+            out,
+            format!(
+                "  {:<16} {} {noun}  (vivi role add {} adopts them; vivi mail list --to {} \
+                 shows them)",
+                row.role, row.letters, row.role, row.role
             ),
         );
     }

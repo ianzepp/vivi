@@ -164,8 +164,12 @@ Use `send` to create a project-local record and `mail reply` to continue its
 thread. `--depends-on` on any work-kind send (task, need, or want handles)
 creates a graph edge; handles are validated before anything is created, so
 an unknown dependency fails the send. `X-Vivi-Depends-On` headers remain on
-the message as evidence. There is one dependency substrate — the graph — for
-small and multi-unit relationships alike.
+the message and travel with it: whatever files a work letter (local send, pull,
+fetch, resync, `pull --refs`, audit repair) builds the edges its headers name
+for every dependency this mailspace holds as work, with or without `[sync]`. A
+dependency not held yet waits and its edge is made when that letter arrives; a
+reference that can never name work here blocks nothing. There is one dependency
+substrate — the graph — for small and multi-unit relationships alike.
 
 Closing a task, need, or want records its current disposition. Reopen when the
 CLI permits and evidence changes. `want promote` moves deferred work into the
@@ -349,9 +353,11 @@ of silence. The coordination host decides which ready nodes to dispatch.
 **Citizenship audit.** `vivi graph audit [--repair]` checks the backlog
 invariant — every work item sent while the graph existed has a node in step
 with its folder state — and reports `missing_node`, `node_state`,
-`node_kind`, and `orphan_node` findings. `--repair` mints missing nodes
-(from folder state and dependency headers), completes nodes for settled
-items, settles need mailboxes whose join fired, and corrects kinds.
+`node_kind`, `missing_edge`, and `orphan_node` findings. `missing_edge` is a
+held open work letter whose `X-Vivi-Depends-On` header names held work the
+graph has no edge from. `--repair` mints missing nodes and edges (from folder
+state and dependency headers), completes nodes for settled items, settles need
+mailboxes whose join fired, and corrects kinds.
 `graph activate` / `need bind` errors point here. Stale vivi binaries
 silently skip node minting entirely (observed with an old Homebrew 8.1.0 on
 PATH): `mailspace status` prints the running binary's version — check it
@@ -1497,7 +1503,7 @@ vivi sync fetch <handle>...    # file letters by their 8-hex handle
 vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
-vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded
+vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded, held for unknown roles
 ```
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
@@ -1558,9 +1564,17 @@ to the stated `content_sha256`, the envelope recipients equal the letter's own
 `To` and `Cc`, and a `From` address in prefix form carries the prefix the
 server registered for its sender. A letter that fails is refused, named, and
 makes the command exit non-zero; nothing partial is filed. Filing is by
-address: one delivered row for every local `To`/`Cc` role (a role this mailspace
-lacks is filed under its name with a warning, and appears once the role is
-added), plus a `sent` row when `From` is a local role. A need, task, or want
+address: one delivered row for every local `To`/`Cc` role, plus a `sent` row
+when `From` is a local role. A letter for a role this mailspace lacks (a typo, a
+name never added) is **held** under that name, not refused: the pull exits 0 and
+its summary line says `N held for unknown role(s): ghost` beside a stderr
+warning. Held work mints no backlog node, so `step` and `boot` do not dispatch
+or count it; `vivi sync status` and `vivi boot` list each unknown name with its
+letter count, and `vivi mail list --to <name>` (`--folder tasks|needs|wants` for
+work) shows them. `vivi role add <name>` or `role rename` to that name **adopts**
+them and says `adopted N held letters`: work gets its node and dependency
+edges then. A `retired` role still receives; the pull warns `role X is retired`
+once. A need, task, or want
 addressed to another mailspace's role is held under its address, so every member
 holds every work item without it landing in a local queue or the local backlog.
 

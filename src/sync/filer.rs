@@ -38,11 +38,37 @@ struct Placement {
     bind: bool,
     /// Whether the row becomes a backlog node (work kinds only).
     attach: bool,
+    /// The account is a role name this mailspace does not have: the row is
+    /// held under the raw name and mints no node until the role is added.
+    unknown_role: bool,
 }
 
 impl Placement {
     fn is_sent(&self) -> bool {
         self.role == "sent"
+    }
+
+    /// A delivered row for a local part of this mailspace's domain; a role
+    /// that is not there yet holds the row without a node.
+    fn delivered(account: String, role: &'static str, known: bool) -> Self {
+        Self {
+            account,
+            role,
+            bind: true,
+            attach: known,
+            unknown_role: !known,
+        }
+    }
+
+    /// A row held under another mailspace's address: no node, no role.
+    fn held(account: String, role: &'static str) -> Self {
+        Self {
+            account,
+            role,
+            bind: true,
+            attach: false,
+            unknown_role: false,
+        }
     }
 }
 
@@ -117,6 +143,7 @@ impl<'a> Filer<'a> {
         };
         let placements = self.placements(record, headers, report);
         let mut noted = false;
+        let mut arrived = Vec::new();
         for (index, placement) in placements.iter().enumerate() {
             // The wire id names the first row (a delivered row when there is
             // one, as at the sender); the others take the id their binding
@@ -131,10 +158,11 @@ impl<'a> Filer<'a> {
                 }
                 IngestOutcome::Existing if index == 0 => report.existing += 1,
                 IngestOutcome::Inserted | IngestOutcome::Restored => {
-                    *report.filed.entry(placement.role.to_string()).or_default() += 1;
-                    if outcome == IngestOutcome::Restored {
-                        report.restored += 1;
-                    }
+                    count_written(report, placement, outcome);
+                    arrived.push((
+                        message_id.clone(),
+                        record.content_sha256.to_ascii_lowercase(),
+                    ));
                     if !noted {
                         report.filed_ids.push(message_id);
                         noted = true;
@@ -143,6 +171,10 @@ impl<'a> Filer<'a> {
                 IngestOutcome::Existing => {}
             }
         }
+        // Every row of the letter has its node now: edges that were waiting
+        // for this letter can be made.
+        self.mailspace
+            .backlog_settle_pending_dependencies(&arrived)?;
         Ok(true)
     }
 
@@ -176,9 +208,12 @@ impl<'a> Filer<'a> {
             item::work_kind(record.kind.as_deref()),
             placement.attach,
         ) {
-            let handle = storage.display_handle(&stored.message_id)?;
-            self.mailspace
-                .backlog_attach(kind, &handle, &headers.subject, &[])?;
+            self.mailspace.backlog_attach_letter(
+                kind,
+                &stored.message_id,
+                &headers.subject,
+                bytes,
+            )?;
         }
         Ok((outcome, stored.message_id))
     }
@@ -206,14 +241,10 @@ impl<'a> Filer<'a> {
             if !self.mailspace.is_own_domain(domain) {
                 continue;
             }
-            let account = self.role_account(local, report);
+            let (account, known) = self.role_account(local, report);
             if !placements.iter().any(|p| p.account == account) {
-                placements.push(Placement {
-                    account,
-                    role: item::role_for(kind, false),
-                    bind: true,
-                    attach: true,
-                });
+                let role = item::role_for(kind, false);
+                placements.push(Placement::delivered(account, role, known));
             }
         }
         let from = headers
@@ -221,16 +252,17 @@ impl<'a> Filer<'a> {
             .as_deref()
             .and_then(|from| from.rsplit_once('@'));
         if let Some((local, _)) = from.filter(|(_, domain)| self.mailspace.is_own_domain(domain)) {
-            let account = self.role_account(local, report);
+            let (account, known) = self.role_account(local, report);
             // A letter to oneself has delivered and sent rows under one
             // account; only the delivered row takes the server position.
             let bind = !placements.iter().any(|p| p.account == account);
-            let attach = placements.is_empty();
+            let attach = placements.is_empty() && known;
             placements.push(Placement {
                 account,
                 role: "sent",
                 bind,
                 attach,
+                unknown_role: false,
             });
         }
         if placements.is_empty() {
@@ -241,28 +273,36 @@ impl<'a> Filer<'a> {
                 .unwrap_or_else(|| record.from.clone());
             // Held for another mailspace's role: the rows and blobs are
             // kept, but the work is not this mailspace's backlog.
-            placements.push(Placement {
-                account,
-                role: item::role_for(kind, false),
-                bind: true,
-                attach: false,
-            });
+            placements.push(Placement::held(account, item::role_for(kind, false)));
         }
         placements
     }
 
-    /// The account a local part files under: the canonical role (a renamed
-    /// role keeps its old name as an alias), else the name as written, with
-    /// a warning once per name.
-    fn role_account(&self, local: &str, report: &mut PullReport) -> String {
-        if let Ok(role) = self.mailspace.resolve_identity(local) {
-            return role;
-        }
-        let warning = format!("filed for unknown role {local}");
-        if !report.warnings.contains(&warning) {
+    /// The account a local part files under, and whether it is a role here.
+    ///
+    /// A known role files under its canonical name (a renamed role keeps its
+    /// old name as an alias) and warns once per pull when it is retired. An
+    /// unknown one files under the name as written, lowercased as a role name
+    /// is, with a warning once per name; it is held, not refused.
+    fn role_account(&self, local: &str, report: &mut PullReport) -> (String, bool) {
+        let (account, known, warning) = match self.mailspace.resolve_identity(local) {
+            Ok(role) => {
+                let retired = self.mailspace.role_is_retired(&role);
+                let warning = retired.then(|| format!("role {role} is retired"));
+                (role, true, warning)
+            }
+            Err(_) => {
+                let name = local.to_ascii_lowercase();
+                let warning = format!("filed for unknown role {name}");
+                (name, false, Some(warning))
+            }
+        };
+        if let Some(warning) = warning
+            && !report.warnings.contains(&warning)
+        {
             report.warnings.push(warning);
         }
-        local.to_string()
+        (account, known)
     }
 
     fn request(
@@ -374,6 +414,21 @@ pub(crate) fn forged_from(stamped: Option<&str>, headers: &LetterHeaders) -> Opt
         "From address claims mailspace {claimed} but the sender is registered as {}",
         stamped.as_deref().unwrap_or("none")
     ))
+}
+
+/// Count one row written by this run: by folder, and by the role name it is
+/// held for when this mailspace has no such role.
+fn count_written(report: &mut PullReport, placement: &Placement, outcome: IngestOutcome) {
+    *report.filed.entry(placement.role.to_string()).or_default() += 1;
+    if placement.unknown_role {
+        *report
+            .unknown_roles
+            .entry(placement.account.clone())
+            .or_default() += 1;
+    }
+    if outcome == IngestOutcome::Restored {
+        report.restored += 1;
+    }
 }
 
 fn refuse(report: &mut PullReport, record: &Record, reason: &str) {

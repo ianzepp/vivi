@@ -147,6 +147,10 @@ pub fn sync_dir(vivi_dir: &Path) -> PathBuf {
 mod fake_server;
 
 #[cfg(test)]
+#[path = "sync/deps_test.rs"]
+mod deps;
+
+#[cfg(test)]
 #[path = "sync/flow_test.rs"]
 mod flow;
 

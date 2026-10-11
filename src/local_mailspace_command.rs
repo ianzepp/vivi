@@ -161,6 +161,8 @@ fn handle_mailspace_identity_command(
             let mut mailspace = Mailspace::discover(project.as_deref())?;
             let address = mailspace.add_identity(identity)?;
             println!("added {address}");
+            let role = mailspace.resolve_identity(identity)?;
+            crate::local_role_command::report_adopted(&mailspace, &role)?;
         }
         MailspaceIdentityCommand::List { project } => {
             let mailspace = Mailspace::discover(project.as_deref())?;
@@ -180,6 +182,8 @@ fn handle_mailspace_identity_command(
             let address = mailspace.rename_identity(old, new)?;
             println!("renamed {old} -> {new} ({address})");
             println!("historical mail sent as {old} still resolves under {new}");
+            let role = mailspace.resolve_identity(new)?;
+            crate::local_role_command::report_adopted(&mailspace, &role)?;
         }
     }
     Ok(())

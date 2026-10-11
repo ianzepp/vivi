@@ -228,6 +228,19 @@ impl Mailspace {
         names
     }
 
+    /// Whether `account` is a role name or alias of this mailspace.
+    #[must_use]
+    pub(super) fn is_role_account(&self, account: &str) -> bool {
+        self.find_role_index(account).is_some()
+    }
+
+    /// Whether the role named `name` (or an alias of it) is retired.
+    #[must_use]
+    pub(crate) fn role_is_retired(&self, name: &str) -> bool {
+        self.find_role_by_name_or_alias(name)
+            .is_some_and(|role| role.status == ROLE_STATUS_RETIRED)
+    }
+
     /// Canonical identity name owning a (possibly historical) account name.
     /// Messages keep the account they were ingested under, so a renamed
     /// identity still owns its old name's rows.

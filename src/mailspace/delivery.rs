@@ -513,7 +513,9 @@ impl Mailspace {
 
     /// List open tasks with their dependency handles, optionally filtered.
     ///
-    /// - `blocked` keeps only tasks with at least one unfinished dependency.
+    /// - `blocked` keeps only tasks with at least one unfinished dependency
+    ///   that names held backlog work (the rule the graph's edges follow: a
+    ///   reference that is not held, or never can be, blocks nothing).
     /// - `blocking` keeps only tasks that depend on the given handle.
     ///
     /// # Errors
@@ -540,7 +542,7 @@ impl Mailspace {
             if blocked {
                 let mut has_unmet = false;
                 for dep in &deps {
-                    if !self.is_task_done(dep)? {
+                    if self.dependency_is_unmet(dep)? {
                         has_unmet = true;
                         break;
                     }

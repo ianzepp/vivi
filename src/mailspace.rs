@@ -17,12 +17,14 @@ pub(crate) use config_file::PREFIX_LEN;
 use config_file::{ensure_id, parse_config, write_config};
 
 mod address;
+mod adoption;
 mod archive;
 mod backlog;
 mod backlog_audit;
 mod body;
 mod config_file;
 mod delivery;
+mod dependencies;
 mod dump;
 mod event_log;
 mod gitignore;

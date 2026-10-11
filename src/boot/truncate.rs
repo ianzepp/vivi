@@ -13,6 +13,7 @@ use serde::Serialize;
 pub const CAP_SEATS: usize = 24;
 pub const CAP_LOOPS: usize = 10;
 pub const CAP_UNABSORBED: usize = 12;
+pub const CAP_UNKNOWN_ROLES: usize = 12;
 pub const CAP_TASKS: usize = 20;
 pub const CAP_NEEDS: usize = 40;
 pub const CAP_WANTS: usize = 20;

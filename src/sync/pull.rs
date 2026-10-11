@@ -55,6 +55,9 @@ pub struct PullReport {
     /// Message ids of one row of each letter written this run, for the
     /// reference follow.
     pub filed_ids: Vec<String>,
+    /// Letters filed this run under a role name this mailspace does not have,
+    /// by name. They are held, not refused.
+    pub unknown_roles: BTreeMap<String, usize>,
 }
 
 impl PullReport {
@@ -89,11 +92,30 @@ impl PullReport {
             };
             format!("{} refused: {ids}{tail}", self.refused.len())
         };
+        let held = self
+            .held_note()
+            .map(|note| format!(", {note}"))
+            .unwrap_or_default();
         format!(
-            "sync pull: {} fetched, {new}, {} already present, {} reply link(s), {refused}, \
+            "sync pull: {} fetched, {new}, {} already present, {} reply link(s), {refused}{held}, \
              cursor {}",
             self.fetched, self.existing, self.linked, self.cursor
         )
+    }
+
+    /// `N held for unknown role(s): ghost, ...` when letters were filed for
+    /// roles this mailspace does not have.
+    #[must_use]
+    pub fn held_note(&self) -> Option<String> {
+        if self.unknown_roles.is_empty() {
+            return None;
+        }
+        let total: usize = self.unknown_roles.values().sum();
+        let names: Vec<&str> = self.unknown_roles.keys().map(String::as_str).collect();
+        Some(format!(
+            "{total} held for unknown role(s): {}",
+            names.join(", ")
+        ))
     }
 
     /// Why the command should exit non-zero, if it should.

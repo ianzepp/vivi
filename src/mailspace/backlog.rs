@@ -13,11 +13,11 @@ use crate::storage::{
 };
 
 /// A resolved `--depends-on` reference to an existing need or want.
-struct BacklogDep {
-    handle: String,
-    subject: String,
-    state: &'static str,
-    kind: &'static str,
+pub(super) struct BacklogDep {
+    pub(super) handle: String,
+    pub(super) subject: String,
+    pub(super) state: &'static str,
+    pub(super) kind: &'static str,
 }
 
 impl Mailspace {
@@ -457,7 +457,10 @@ pub(super) fn backlog_node_by_token(
 /// Resolve one dependency token to a canonical backlog dep. Accepts open
 /// tasks, needs, and wants, the sender's own copy of work sent to another
 /// mailspace (open, as it is tracked here), plus done items of any kind.
-fn resolve_backlog_dep(storage: &Storage, token: &str) -> Result<BacklogDep, VivariumError> {
+pub(super) fn resolve_backlog_dep(
+    storage: &Storage,
+    token: &str,
+) -> Result<BacklogDep, VivariumError> {
     let message_id = storage
         .resolve_message_token(token)
         .map_err(|e| VivariumError::Message(format!("dependency '{token}': {e}")))?;

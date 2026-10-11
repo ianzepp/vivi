@@ -231,6 +231,17 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
         }
         Err(error) => println!("sync unsent: unknown ({error})"),
     }
+    let held = mailspace.held_for_unknown_roles()?;
+    if !held.is_empty() {
+        let list: Vec<String> = held
+            .iter()
+            .map(|(name, count)| format!("{name} ({count})"))
+            .collect();
+        println!(
+            "sync held for unknown roles: {}; `vivi role add <name>` adopts them",
+            list.join(", ")
+        );
+    }
     Ok(())
 }
 

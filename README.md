@@ -414,7 +414,14 @@ include the author's own open outbound copies (role `sent`), `--depends-on`
 accepts them, and `done` settles the node; reopening or promoting a sent copy
 is refused, because only the receiving mailspace can. Work held for another
 mailspace's role mints no node; `graph audit` reports a node left for it as
-`foreign_held` and `--repair` settles it.
+`foreign_held` and `--repair` settles it. Dependency edges follow the letters:
+an `X-Vivi-Depends-On` header builds its edge on whichever mailspace files the
+letter (send, pull, fetch, resync, audit repair), a dependency not held yet
+waits for its letter, and `graph audit` reports a held letter whose header names
+held work with no edge as `missing_edge` (`--repair` mints it). A letter for a
+role this mailspace does not have is held under that name with no node (`boot`
+and `sync status` list the names); `role add` or `role rename` to the name
+adopts it.
 
 `vivi step` adjudicates **only the `backlog` graph**. Imported topologies never
 enter the step manifest — their nodes are dispatched with `graph activate` and

@@ -12,7 +12,9 @@ use super::Mailspace;
 use super::backlog::backlog_node_by_token;
 use super::holding::is_foreign_account;
 use crate::error::VivariumError;
-use crate::storage::{BACKLOG_GRAPH_CODE, StoredMessageView, WorkGraphNodeRow};
+use crate::storage::{
+    BACKLOG_GRAPH_CODE, Storage, StoredMessageView, WorkGraphEdgeRow, WorkGraphNodeRow,
+};
 
 /// One citizenship violation.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -42,8 +44,12 @@ struct AuditItem {
     folder_done: bool,
     subject: String,
     message_id: String,
+    content_id: String,
     /// The row is held under another mailspace's address.
     foreign_account: Option<String>,
+    /// The row is held under a role name this mailspace does not have: it
+    /// gets its node when the role is added.
+    unowned: bool,
 }
 
 impl Mailspace {
@@ -61,7 +67,8 @@ impl Mailspace {
                 findings: Vec::new(),
             });
         };
-        let nodes = storage.work_graph_nodes(&graph.handle)?;
+        let mut nodes = storage.work_graph_nodes(&graph.handle)?;
+        let mut edges = storage.work_graph_edges(&graph.handle)?;
         let candidates =
             storage.work_role_messages_updated_since(&audit_since(&graph.created_at))?;
         let mut findings = Vec::new();
@@ -75,6 +82,7 @@ impl Mailspace {
             let Some(item) = canonical_item(&storage, self, message)? else {
                 continue;
             };
+            let before = findings.len();
             audit_item(
                 self,
                 &storage,
@@ -84,6 +92,13 @@ impl Mailspace {
                 repair,
                 &mut findings,
             )?;
+            if !item.unowned && item.foreign_account.is_none() {
+                audit_edges(self, &storage, &nodes, &edges, &item, repair, &mut findings)?;
+            }
+            if repair && findings.len() > before {
+                nodes = storage.work_graph_nodes(&graph.handle)?;
+                edges = storage.work_graph_edges(&graph.handle)?;
+            }
         }
         audit_orphan_nodes(&storage, &nodes, &mut findings)?;
         Ok(BacklogAuditReport {
@@ -122,6 +137,8 @@ fn canonical_item(
         kind,
         folder_done: view.local_role == "done",
         foreign_account: is_foreign_account(&view.account).then(|| view.account.clone()),
+        unowned: mailspace.is_unowned_account(&view.account),
+        content_id: view.content_id,
         subject: view.subject,
         message_id,
     }))
@@ -161,6 +178,9 @@ fn audit_item(
     let node = backlog_node_by_token(storage, nodes, &item.handle)?;
     if let Some(account) = &item.foreign_account {
         return audit_foreign(mailspace, node.as_ref(), item, account, repair, findings);
+    }
+    if item.unowned {
+        return Ok(());
     }
     let Some(node) = node else {
         let mut finding = BacklogAuditFinding {
@@ -217,25 +237,56 @@ fn audit_foreign(
     Ok(())
 }
 
-/// Mint the missing node for `item`, completing it when the folder is done.
+/// Mint the missing node for `item` and the edges its headers name,
+/// completing it when the folder is done.
 fn repair_mint(mailspace: &Mailspace, item: &AuditItem) -> Result<(), VivariumError> {
-    let deps = resolvable_deps(mailspace, &item.message_id)?;
-    mailspace.backlog_attach(&item.kind, &item.handle, &item.subject, &deps)?;
+    let letter = mailspace.storage()?.read_message(&item.message_id)?;
+    mailspace.backlog_attach_letter(&item.kind, &item.message_id, &item.subject, &letter)?;
     if item.folder_done {
         mailspace.backlog_complete_item_via(&item.handle, "via=repair")?;
     }
+    let arrived = (item.message_id.clone(), item.content_id.clone());
+    mailspace.backlog_settle_pending_dependencies(&[arrived])?;
     Ok(())
 }
 
-/// Dependency headers that still resolve; drifted handles are dropped
-/// rather than blocking the repair.
-fn resolvable_deps(mailspace: &Mailspace, message_id: &str) -> Result<Vec<String>, VivariumError> {
-    let storage = mailspace.storage()?;
-    Ok(mailspace
-        .task_depends_on(message_id)?
-        .into_iter()
-        .filter(|dep| storage.resolve_message_token(dep).is_ok())
-        .collect())
+/// Report (and with `repair`, make) the edges an item's `X-Vivi-Depends-On`
+/// headers name that the graph lacks.
+fn audit_edges(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    nodes: &[WorkGraphNodeRow],
+    edges: &[WorkGraphEdgeRow],
+    item: &AuditItem,
+    repair: bool,
+    findings: &mut Vec<BacklogAuditFinding>,
+) -> Result<(), VivariumError> {
+    let missing = mailspace.missing_edges(storage, nodes, edges, &item.content_id)?;
+    let mut repaired: Vec<String> = Vec::new();
+    for edge in missing {
+        let mut finding = BacklogAuditFinding {
+            class: "missing_edge".into(),
+            kind: item.kind.clone(),
+            handle: edge.handle.clone(),
+            subject: item.subject.clone(),
+            detail: format!(
+                "its Depends-On header names {} ({}) but the graph has no edge from it",
+                edge.reference, edge.dependency
+            ),
+            repaired: false,
+        };
+        if repair {
+            if !repaired.contains(&edge.message_id) {
+                let letter = storage.read_message(&edge.message_id)?;
+                let refs = super::dependencies::depends_on_refs(&letter);
+                mailspace.link_dependencies(&edge.message_id, &refs)?;
+                repaired.push(edge.message_id.clone());
+            }
+            finding.repaired = true;
+        }
+        findings.push(finding);
+    }
+    Ok(())
 }
 
 fn audit_kind(
@@ -413,8 +464,14 @@ pub fn print_backlog_audit(
         .iter()
         .filter(|f| f.class == "foreign_held")
         .count();
+    let edge = report
+        .findings
+        .iter()
+        .filter(|f| f.class == "missing_edge")
+        .count();
     println!(
-        "  findings missing={missing} state={state} kind={kind} orphan={orphan} foreign={foreign}"
+        "  findings missing={missing} state={state} kind={kind} orphan={orphan} \
+         foreign={foreign} edge={edge}"
     );
     for finding in &report.findings {
         let flag = if finding.repaired { " [repaired]" } else { "" };

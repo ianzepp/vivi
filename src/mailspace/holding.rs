@@ -7,6 +7,9 @@
 //! - **local**: a role of this mailspace holds it;
 //! - **foreign**: another mailspace's role holds it, so the row sits under the
 //!   raw address it was written to (a letter between two other members);
+//! - **unowned**: it was addressed to a role of this mailspace that does not
+//!   exist (a typo, a retired name never added), so the row sits under the raw
+//!   role name until `role add` adopts it;
 //! - **sent**: it is the sender's own copy of work addressed to another
 //!   mailspace. The node is how the sender orders and tracks work in flight,
 //!   and the receiving mailspace dispatches it.
@@ -25,6 +28,8 @@ use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView};
 pub(crate) const READINESS_AWAITING: &str = "awaiting";
 /// Readiness of an open node held for another mailspace's role.
 pub(crate) const READINESS_FOREIGN: &str = "foreign";
+/// Readiness of an open node held for a role this mailspace does not have.
+pub(crate) const READINESS_UNOWNED: &str = "unowned";
 
 /// How this mailspace holds the row behind one node.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +37,8 @@ pub(super) enum Holding {
     Local,
     /// Held under another mailspace's address (the account it is filed under).
     Foreign(String),
+    /// Held under a role name this mailspace does not have.
+    Unowned(String),
     /// The sender's own copy, handed to this address.
     Sent(String),
 }
@@ -66,6 +73,20 @@ fn recipients(view: &StoredMessageView) -> Vec<String> {
 }
 
 impl Mailspace {
+    /// Whether `account` is a role name that this mailspace never added: a
+    /// letter addressed to one of its own roles that does not exist.
+    #[must_use]
+    pub fn is_unowned_account(&self, account: &str) -> bool {
+        !is_foreign_account(account) && !self.is_role_account(account)
+    }
+
+    /// Whether `account` is a role (or former role name) of this mailspace,
+    /// so its letters are this mailspace's to read and dispatch.
+    #[must_use]
+    pub fn is_local_account(&self, account: &str) -> bool {
+        !is_foreign_account(account) && self.is_role_account(account)
+    }
+
     fn address_is_remote(&self, address: &str) -> bool {
         address
             .rsplit_once('@')
@@ -121,6 +142,9 @@ impl Mailspace {
         if is_foreign_account(&view.account) {
             return Holding::Foreign(view.account.clone());
         }
+        if self.is_unowned_account(&view.account) {
+            return Holding::Unowned(view.account.clone());
+        }
         match self.sent_copy_recipient(view) {
             Some(address) => Holding::Sent(address),
             None => Holding::Local,
@@ -153,6 +177,7 @@ impl Mailspace {
             match self.node_holding(storage, &node.source_id)? {
                 Holding::Local => {}
                 Holding::Foreign(_) => node.readiness = READINESS_FOREIGN.into(),
+                Holding::Unowned(_) => node.readiness = READINESS_UNOWNED.into(),
                 Holding::Sent(_) if node.readiness == "ready" => {
                     node.readiness = READINESS_AWAITING.into();
                 }
@@ -197,6 +222,12 @@ impl Mailspace {
             Holding::Local => return Ok(()),
             Holding::Sent(to) => format!("it was handed to {to}"),
             Holding::Foreign(account) => format!("it is held for {account}, another mailspace"),
+            Holding::Unowned(account) => {
+                return Err(VivariumError::Message(format!(
+                    "cannot activate '{source_id}': it is held for the unknown role '{account}'; \
+                     add the role with `vivi role add {account}` first"
+                )));
+            }
         };
         Err(VivariumError::Message(format!(
             "cannot activate '{source_id}': {reason}; only the receiving mailspace dispatches it"

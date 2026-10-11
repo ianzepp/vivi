@@ -21,7 +21,7 @@ use serde::Serialize;
 use crate::error::VivariumError;
 use crate::mailspace::{
     DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace, RoleView, TaskDumpRequest,
-    TaskDumpStatus, is_foreign_account,
+    TaskDumpStatus,
 };
 use crate::role_schedule::{self, ScheduleState};
 use crate::role_status::{self, ProcessState};
@@ -41,7 +41,7 @@ use probe::{ProbeOutput, ProbeRun, ProbeSection};
 pub use truncate::Truncation;
 use truncate::{
     CAP_CHARTER_LINES, CAP_CHARTERS, CAP_GOALS, CAP_LOOPS, CAP_MEMOS, CAP_RULES, CAP_SEATS,
-    CAP_UNABSORBED,
+    CAP_UNABSORBED, CAP_UNKNOWN_ROLES,
 };
 
 /// One role's seat binding against its observed process state.
@@ -73,6 +73,13 @@ pub struct MailRow {
     pub from: String,
     pub subject: String,
     pub age: String,
+}
+
+/// A role name letters are held under that this mailspace does not have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnknownRoleRow {
+    pub role: String,
+    pub letters: usize,
 }
 
 /// One registered goal document with its derived completion evidence.
@@ -132,6 +139,8 @@ pub struct BootTotals {
     pub handles_stale: usize,
     pub handles_blocked: usize,
     pub unabsorbed_mail: usize,
+    /// Letters held for role names this mailspace does not have.
+    pub held_unknown_role: usize,
     pub goals_registered: usize,
     pub goals_claim_mismatch: usize,
     pub frontier_remaining: usize,
@@ -152,6 +161,8 @@ pub struct BootReport {
     pub loops: Vec<LoopRow>,
     /// Inbox records no reader has absorbed.
     pub unabsorbed: Vec<MailRow>,
+    /// Role names letters wait under that no seat here carries.
+    pub held_unknown: Vec<UnknownRoleRow>,
     /// Open tasks, needs, and wants with verdicts.
     pub handles: Vec<HandleRow>,
     /// Registered goal documents with register tallies.
@@ -200,7 +211,9 @@ impl BootReport {
         let memos = collect_memos(mailspace, now, &mut truncations)?;
         let charters = collect_charters(&views, &handles);
         let triage = handles::triage_slices(&handles);
-        let totals = totals(&seats.0, &loops, &unabsorbed, &handles, &goals);
+        let (held_unknown, held_letters) = collect_held_unknown(mailspace, &mut truncations)?;
+        let mut totals = totals(&seats.0, &loops, &unabsorbed, &handles, &goals);
+        totals.held_unknown_role = held_letters;
 
         Ok(Self {
             mailspace: mailspace.config.name.clone(),
@@ -211,6 +224,7 @@ impl BootReport {
             seats: seats.1,
             loops,
             unabsorbed,
+            held_unknown,
             handles,
             goals,
             rules,
@@ -381,10 +395,11 @@ fn collect_unabsorbed(
         },
     })?;
     // Mail held under another mailspace's address (the governance vouch
-    // letter, other members' traffic) is nobody's here to absorb.
+    // letter, other members' traffic) or for a role name this mailspace does
+    // not have is nobody's here to absorb.
     let records: Vec<_> = records
         .into_iter()
-        .filter(|record| !is_foreign_account(&record.account))
+        .filter(|record| mailspace.is_local_account(&record.account))
         .collect();
     let rows = truncate::capped(records, CAP_UNABSORBED, "unabsorbed mail", truncations);
     Ok(rows
@@ -396,6 +411,21 @@ fn collect_unabsorbed(
             age: age_label(&record.date, now),
         })
         .collect())
+}
+
+/// The rows of role names letters are held for, and the letter total.
+fn collect_held_unknown(
+    mailspace: &Mailspace,
+    truncations: &mut Vec<Truncation>,
+) -> Result<(Vec<UnknownRoleRow>, usize), VivariumError> {
+    let rows: Vec<UnknownRoleRow> = mailspace
+        .held_for_unknown_roles()?
+        .into_iter()
+        .map(|(role, letters)| UnknownRoleRow { role, letters })
+        .collect();
+    let total = rows.iter().map(|row| row.letters).sum();
+    let shown = truncate::capped(rows, CAP_UNKNOWN_ROLES, "unknown roles", truncations);
+    Ok((shown, total))
 }
 
 fn collect_handles(
@@ -424,10 +454,11 @@ fn collect_open(
         include_outbound: false,
         filters: DumpFilters::default(),
     })?;
-    // Work held for another mailspace's role is that mailspace's handle.
+    // Work held for another mailspace's role, or for a role name this
+    // mailspace does not have, is nobody's handle here.
     let local = records
         .into_iter()
-        .filter(|record| !is_foreign_account(&record.account));
+        .filter(|record| mailspace.is_local_account(&record.account));
     rows.extend(local.map(|record| {
         HandleRow::new(
             &record.handle,
@@ -451,7 +482,7 @@ fn collect_wants(
     // does not go through `list_wants_with_metadata` for metadata it never
     // shows.
     for want in mailspace.list_kind(None, "wants", "want")? {
-        if want.absorbed_at.is_some() || is_foreign_account(&want.account) {
+        if want.absorbed_at.is_some() || !mailspace.is_local_account(&want.account) {
             continue;
         }
         rows.push(HandleRow::new(
@@ -660,6 +691,7 @@ fn totals(
             .filter(|row| row.verdict == Verdict::Blocked)
             .count(),
         unabsorbed_mail: unabsorbed.len(),
+        held_unknown_role: 0,
         goals_registered: goals.len(),
         goals_claim_mismatch: goals
             .iter()

@@ -160,6 +160,18 @@ fn add_role(args: &AddRoleArgs<'_>) -> Result<(), VivariumError> {
     let update = build_add_update(args);
     let address = mailspace.add_role(args.name, update)?;
     println!("added {address}");
+    let role = mailspace.resolve_identity(args.name)?;
+    report_adopted(&mailspace, &role)
+}
+
+/// Adopt the letters held under a role name that now exists, and say how
+/// many: `role add` and `role rename` both end here.
+pub(crate) fn report_adopted(mailspace: &Mailspace, role: &str) -> Result<(), VivariumError> {
+    let adopted = mailspace.adopt_held_letters(role)?;
+    if adopted > 0 {
+        let noun = if adopted == 1 { "letter" } else { "letters" };
+        println!("adopted {adopted} held {noun}");
+    }
     Ok(())
 }
 
@@ -206,7 +218,8 @@ fn rename_role(
     let address = mailspace.rename_identity(old, new)?;
     println!("renamed {old} -> {new} ({address})");
     println!("historical mail sent as {old} still resolves under {new}");
-    Ok(())
+    let role = mailspace.resolve_identity(new)?;
+    report_adopted(&mailspace, &role)
 }
 
 fn status_role(
