@@ -47,3 +47,109 @@ fn set_config_metadata_adds_to_existing_or_new_maps() {
     set_config_metadata(&mut bare, "state", "ready");
     assert_eq!(bare["metadata"], json!({"state": "ready"}));
 }
+
+mod refresh {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// A one-thread HTTP stub: answers each request with the next status in
+    /// `statuses` and records the Authorization header it saw.
+    fn stub(statuses: Vec<u16>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for status in statuses {
+                let Ok((mut conn, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let n = conn.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let auth = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("authorization: "))
+                    .unwrap_or_default()
+                    .to_string();
+                record.lock().unwrap().push(auth);
+                let body = r#"{"message":"stub"}"#;
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (base, seen)
+    }
+
+    static REFUSED: AtomicUsize = AtomicUsize::new(0);
+    #[allow(clippy::unnecessary_wraps)]
+    fn numbered_refused() -> Result<Secret, VivariumError> {
+        Ok(Secret::new(format!(
+            "tok{}",
+            REFUSED.fetch_add(1, Ordering::SeqCst)
+        )))
+    }
+
+    #[test]
+    fn a_refused_token_is_replaced_and_the_call_repeated() {
+        let (base, seen) = stub(vec![401, 200]);
+        let api = FlyApi::with_parts("app", &base, numbered_refused);
+        let reply = api
+            .call("GET", "/machines", None, None, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(reply.status, 200);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_ne!(seen[0], seen[1], "the retry carries a new token");
+    }
+
+    static STILL: AtomicUsize = AtomicUsize::new(0);
+    #[allow(clippy::unnecessary_wraps)]
+    fn numbered_still() -> Result<Secret, VivariumError> {
+        Ok(Secret::new(format!(
+            "tok{}",
+            STILL.fetch_add(1, Ordering::SeqCst)
+        )))
+    }
+
+    #[test]
+    fn a_token_refused_twice_is_an_error_not_a_loop() {
+        let (base, seen) = stub(vec![401, 401, 200]);
+        let api = FlyApi::with_parts("app", &base, numbered_still);
+        let err = api
+            .require("GET", "/machines", None, None, &[200])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("HTTP 401"), "{err}");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    static AGED: AtomicUsize = AtomicUsize::new(0);
+    #[allow(clippy::unnecessary_wraps)]
+    fn numbered_aged() -> Result<Secret, VivariumError> {
+        Ok(Secret::new(format!(
+            "tok{}",
+            AGED.fetch_add(1, Ordering::SeqCst)
+        )))
+    }
+
+    #[test]
+    fn an_old_token_is_not_reused_across_calls() {
+        let (base, seen) = stub(vec![200, 200]);
+        let mut api = FlyApi::with_parts("app", &base, numbered_aged);
+        api.tokens = Arc::new(TokenCache::new(Duration::ZERO, numbered_aged));
+        for _ in 0..2 {
+            api.call("GET", "/machines", None, None, Duration::from_secs(5))
+                .unwrap();
+        }
+        let seen = seen.lock().unwrap();
+        assert_ne!(seen[0], seen[1]);
+    }
+}

@@ -16,13 +16,13 @@ use crate::local_pool_command::open_pool_space;
 
 const WAIT_POLL: Duration = Duration::from_secs(8);
 
-fn epoch_secs() -> u64 {
+pub(crate) fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-fn open_dispatches(space: &Mailspace) -> Result<Vec<OpenDispatch>, VivariumError> {
+pub(crate) fn open_dispatches(space: &Mailspace) -> Result<Vec<OpenDispatch>, VivariumError> {
     Ok(record::fold_open(&space.pool_events()?))
 }
 
@@ -61,6 +61,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         from: command.from.clone(),
         branch: command.branch.clone(),
         budget: command.budget,
+        allow_default_branch: command.allow_default_branch,
     };
     let job_id = dispatch::new_job_id(&task.handle, nanos, std::process::id());
     let rules = load_rules(&config, &space)?;
@@ -72,6 +73,9 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         job_id,
     )?;
     let token = github::mint_token(&config)?;
+    let default = github::default_branch(&token, &config.repo)?;
+    dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
+    warn_missing_secrets(&provider, &config, &config.app_name(&space.config.name));
     let start = github::resolve_base(&token, &config.repo, Some(&plan.refs.from))?;
     let made = dispatch::dispatch(
         &provider,
@@ -85,7 +89,8 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     let note = record::dispatch_note(&made);
     let text = record::dispatch_text(&made);
     if let Err(e) = space.record_pool_note(&task.handle, "pool_dispatched", &note, &text) {
-        if let Err(undo) = collect::release(&provider, &made.machine, &task.handle) {
+        let freed = collect::release(&provider, &made.machine, &task.handle, &Pacing::default());
+        if let Err(undo) = freed {
             eprintln!(
                 "warning: could not stop slot {} after the failed record: {undo}",
                 made.slot
@@ -105,6 +110,16 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         made.budget
     );
     Ok(())
+}
+
+/// Warn (never fail) when the app lacks secrets the harness is configured for.
+fn warn_missing_secrets(provider: &dyn vivi::pool::PoolProvider, config: &PoolConfig, app: &str) {
+    match run::missing_secrets(provider, config) {
+        Ok(missing) => run::secrets_warning(app, &missing)
+            .iter()
+            .for_each(|w| eprintln!("{w}")),
+        Err(e) => eprintln!("warning: could not check the app's secrets: {e}"),
+    }
 }
 
 /// Record a settled dispatch on its task, unless another process already did.
@@ -146,6 +161,7 @@ pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
     let started = Instant::now();
     let limit = Duration::from_secs(command.timeout);
     let mut last_error = None;
+    let mut watch = collect::ErrorWatch::default();
     loop {
         let open = wanted_open(&space, &wanted)?;
         if open.is_empty() {
@@ -159,6 +175,7 @@ pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
             &Pacing::default(),
             &mut recorder(&space),
         )?;
+        watch.observe(&lines).iter().for_each(|n| eprintln!("{n}"));
         let settled: Vec<&RoundLine> = lines.iter().filter(|l| l.settled()).collect();
         if !settled.is_empty() {
             settled.into_iter().for_each(print_line);
@@ -219,31 +236,60 @@ pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumEr
     let (space, _, pool, provider) = open_pool_space(command.project.as_deref())?;
     let open = open_dispatches(&space)?;
     let now = epoch_secs();
-    let lines = collect::run_round(
-        &provider,
-        &open,
-        now,
-        &Pacing::default(),
-        &mut recorder(&space),
-    )?;
+    let pacing = Pacing::default();
+    let lines = collect::run_round(&provider, &open, now, &pacing, &mut recorder(&space))?;
     lines.iter().for_each(print_line);
     let slots = run::pool_status(&provider, &pool)?;
+    let mut failures = lines.iter().filter(|l| l.state == "error").count();
     for slot in collect::stale_claims(&slots, &open, now) {
         let task = slot.task.as_deref().unwrap_or_default();
-        collect::release(&provider, &slot.id, task)?;
-        println!(
-            "{task}  stale-claim  {}  freed (no open dispatch)",
-            slot.name
-        );
+        match collect::release(&provider, &slot.id, task, &pacing) {
+            Ok(()) => println!(
+                "{task}  stale-claim  {}  freed (no open dispatch)",
+                slot.name
+            ),
+            Err(e) => {
+                eprintln!("warning: could not free {}: {e}", slot.name);
+                failures += 1;
+            }
+        }
     }
+    failures += stop_orphans(&provider, &slots, &open, &pacing);
     if lines.is_empty() {
         println!("no open dispatches");
     }
-    let errors = lines.iter().filter(|l| l.state == "error").count();
-    if errors > 0 {
+    if failures > 0 {
+        let first = lines.iter().find(|l| l.state == "error");
+        let tail = first.map_or(String::new(), |l| format!(" (first: {})", l.detail));
         return Err(VivariumError::Message(format!(
-            "{errors} dispatch(es) could not be polled"
+            "{failures} problem(s) while reconciling{tail}"
         )));
     }
     Ok(())
+}
+
+/// Stop running slots that no task holds. Returns how many could not be stopped.
+fn stop_orphans(
+    provider: &dyn vivi::pool::PoolProvider,
+    slots: &[vivi::pool::slot::SlotStatus],
+    open: &[OpenDispatch],
+    pacing: &Pacing,
+) -> usize {
+    let mut failed = 0;
+    for slot in collect::orphan_runners(slots, open) {
+        match provider
+            .machine(&slot.id)
+            .and_then(|m| collect::stop_unclaimed(provider, &m, pacing))
+        {
+            Ok(()) => println!(
+                "-  orphan-stopped  {}  stopped (running with no task)",
+                slot.name
+            ),
+            Err(e) => {
+                eprintln!("warning: could not stop {}: {e}", slot.name);
+                failed += 1;
+            }
+        }
+    }
+    failed
 }

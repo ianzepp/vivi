@@ -27,6 +27,7 @@ pub mod dispatch;
 pub(crate) mod fake_provider;
 pub mod fly;
 pub mod fly_api;
+pub mod fly_token;
 pub mod github;
 pub mod job;
 pub mod provider;

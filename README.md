@@ -526,10 +526,10 @@ vivi cycle intake --project /path/to/project --for mind \
 seconds against a warm build, and hands a Vivi task to one of them.
 
 ```
-vivi pool create [--slots N] [--base <commit>]   # create + seed missing slots, wait until stopped
-vivi pool status [--json]                        # name, id, state, task, seeded base, created
+vivi pool create [--slots N] [--base <commit>]   # make the app if missing, create + seed slots, wait until free
+vivi pool status [--json]                        # name, id, state, task, running time of budget, seeded base
 vivi pool destroy (--slot <name> | --all) --yes
-vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>]
+vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>] [--allow-default-branch]
 vivi pool wait [<task>...] [--timeout <secs>]    # block until a dispatch finishes; collect it
 vivi pool reconcile                              # collect finished, stop overdue, free slots
 ```
@@ -537,7 +537,8 @@ vivi pool reconcile                              # collect finished, stop overdu
 A slot is `free`, `seeding`, `busy` (a task holds it and the machine runs),
 `finished-uncollected` (a task holds it and the machine stopped, its result
 still on disk), or `unseeded` (the seed failed or `create` was interrupted).
-Only a `free` slot is claimed. `dispatch` takes the task body as the brief,
+Only a `free` slot is claimed. `status` shows how long a busy slot's dispatch
+has run against its budget (`running 95s of 1800s`). `dispatch` takes the task body as the brief,
 claims a slot atomically (a Fly machine lease serialises the claim; machine
 metadata is the durable mark), delivers the job as one archive, starts the
 slot, records the dispatch on the task, and returns without waiting. The slot
@@ -547,9 +548,20 @@ leaves a result. `wait` and `reconcile` collect it, record the result and the
 agent's receipt on the task (a `pool_collected` event plus a reply in the
 task's thread), and free the slot. Neither ever closes the task.
 
+`dispatch` refuses the repository's default branch as the push target unless
+`--allow-default-branch` is passed. `wait` and `reconcile` print a provider
+error to stderr as soon as a poll fails (and say when polling recovers); an
+error is never reported as "still running". After a collect the slot is
+stopped and confirmed `stopped` before it is freed, and `reconcile` also stops
+a running slot that no task holds.
+
 Slots are discovered from Fly machine metadata (`vivi_pool*`); Vivi keeps no
-local slot records. Configure with a `[pool]` table in `.vivi/mailspace.toml`
-(app, repo, slots, image, setup/seed commands, `build_dir`, a GitHub App id and
+local slot records. The Fly app defaults to the pool name (itself the mailspace
+name) and `create` makes it in `organization` (default `personal`) when it does
+not exist. Model keys are app secrets: `create` and `dispatch` list the app's
+secret names, never values, and warn about harness `env` names without one
+(vivi does not set secrets). Configure with a `[pool]` table in
+`.vivi/mailspace.toml` (optional app and organization, repo, slots, image, setup/seed commands, `build_dir`, a GitHub App id and
 key path, `[pool.harness]` with `run`, `models`, `env` and `rules`, and
 `[pool.committer]`); see `skills/vivi/SKILL.md` for the full table. Nothing in
 the pool is specific to a language, a repository, or an agent harness. The

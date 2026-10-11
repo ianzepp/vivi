@@ -105,3 +105,16 @@ fn scrub_hides_secret_values() {
     );
     assert_eq!(scrub("short x", &["x"]), "short x");
 }
+
+#[test]
+fn app_and_secret_names_parse_and_carry_no_values() {
+    let apps = parse_app_names(r#"[{"Name": "one", "Status": "x"}, {"Name": "two"}]"#).unwrap();
+    assert_eq!(apps, ["one", "two"]);
+    let secrets = parse_secret_names(
+        r#"[{"name": "MODEL_API_KEY", "digest": "271141684a869909", "status": "Staged"}]"#,
+    )
+    .unwrap();
+    assert_eq!(secrets, ["MODEL_API_KEY"]);
+    assert!(parse_secret_names("not json").is_err());
+    assert!(parse_app_names("{}").is_err());
+}

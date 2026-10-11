@@ -52,6 +52,22 @@ impl FlyctlProvider {
 }
 
 impl PoolProvider for FlyctlProvider {
+    fn ensure_app(&self, organization: &str) -> Result<bool, VivariumError> {
+        let args = ["apps", "list", "--json"].map(str::to_string);
+        let (stdout, _) = self.run(&args, &[])?;
+        if parse_app_names(&stdout)?.contains(&self.app) {
+            return Ok(false);
+        }
+        let args = ["apps", "create", &self.app, "--org", organization].map(str::to_string);
+        self.run(&args, &[]).map(|_| true)
+    }
+
+    fn secret_names(&self) -> Result<Vec<String>, VivariumError> {
+        let args = ["secrets", "list", "--json", "-a", &self.app].map(str::to_string);
+        let (stdout, _) = self.run(&args, &[])?;
+        parse_secret_names(&stdout)
+    }
+
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
         let args = ["machine", "list", "--json", "-a", &self.app].map(str::to_string);
         let (stdout, _) = self.run(&args, &[])?;
@@ -184,6 +200,39 @@ fn scrub(text: &str, secrets: &[&str]) -> String {
         .iter()
         .filter(|s| s.len() >= 8)
         .fold(text.to_string(), |acc, s| acc.replace(s, "<redacted>"))
+}
+
+#[derive(Debug, Deserialize)]
+struct RawApp {
+    #[serde(default, rename = "Name")]
+    name: String,
+}
+
+/// Parse `fly apps list --json` into app names.
+///
+/// # Errors
+/// Returns an error if the text is not the expected JSON array.
+pub fn parse_app_names(json: &str) -> Result<Vec<String>, VivariumError> {
+    let raw: Vec<RawApp> = serde_json::from_str(json)
+        .map_err(|e| VivariumError::Parse(format!("unexpected `fly apps list` output: {e}")))?;
+    Ok(raw.into_iter().map(|a| a.name).collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSecret {
+    #[serde(default)]
+    name: String,
+}
+
+/// Parse `fly secrets list --json` into secret names. Only the name field is
+/// read; no value is ever part of that output or of this result.
+///
+/// # Errors
+/// Returns an error if the text is not the expected JSON array.
+pub fn parse_secret_names(json: &str) -> Result<Vec<String>, VivariumError> {
+    let raw: Vec<RawSecret> = serde_json::from_str(json)
+        .map_err(|e| VivariumError::Parse(format!("unexpected `fly secrets list` output: {e}")))?;
+    Ok(raw.into_iter().map(|s| s.name).collect())
 }
 
 #[derive(Debug, Deserialize)]

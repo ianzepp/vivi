@@ -64,6 +64,19 @@ impl std::fmt::Debug for CreateSpec {
 /// A machine host. Implementations must keep secrets out of errors.
 /// Methods after `destroy` act on one machine by id.
 pub trait PoolProvider {
+    /// Make sure the pool's application exists, creating it in `organization`
+    /// when it does not. True when this call created it.
+    ///
+    /// # Errors
+    /// Returns an error if the provider cannot list or create applications.
+    fn ensure_app(&self, organization: &str) -> Result<bool, VivariumError>;
+
+    /// The names (never the values) of the application's secrets.
+    ///
+    /// # Errors
+    /// Returns an error if the provider cannot list secrets.
+    fn secret_names(&self) -> Result<Vec<String>, VivariumError>;
+
     /// All machines in the pool's app, pool members or not.
     ///
     /// # Errors

@@ -1273,3 +1273,21 @@ fn parses_task_list_blocked_and_blocking() {
         other => panic!("unexpected command: {other:?}"),
     }
 }
+
+#[test]
+fn parses_pool_dispatch_default_branch_override() {
+    use vivi::cli::PoolSubcommand;
+    let parse = |extra: &[&str]| {
+        let mut args = vec!["vivi", "pool", "dispatch", "abcd1234", "--model", "m/x"];
+        args.extend(extra);
+        let Command::Pool {
+            command: PoolSubcommand::Dispatch(d),
+        } = Cli::try_parse_from(args).unwrap().command
+        else {
+            panic!("expected pool dispatch");
+        };
+        d.allow_default_branch
+    };
+    assert!(!parse(&[]));
+    assert!(parse(&["--allow-default-branch"]));
+}

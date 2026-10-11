@@ -22,8 +22,12 @@
 #                the build output, run the job under a hard time limit, then
 #                linger so the result can be collected without a restart.
 #   old job      the archive is the one already run (a collect boot): do not
-#                run it again; linger so the result can be read, then stop.
+#                run it again; stay up IDLE_LIMIT seconds so the result can be
+#                read, then stop.
 #   no job       idle: stop after IDLE_LIMIT seconds.
+# A boot with nothing to run never stays up longer than IDLE_LIMIT (default 60):
+# whoever started it reads and stops it at once, and this is the backstop for
+# a collector that died first.
 # The job directory is never wiped at boot, only replaced by the next job, so
 # a result survives stopping and starting until it is collected.
 L=/work/boot.log
@@ -68,6 +72,7 @@ fi
 
 echo "boot_start $T0" >> $L
 LINGER=${LINGER:-120}
+IDLE_LIMIT=${IDLE_LIMIT:-60}
 
 # The archive arrives with the machine's config on every boot; keep it out of
 # reach of the agent by unpacking it and removing the copy at once.
@@ -84,12 +89,12 @@ fi
 
 if [ "$MODE" = old ]; then
   rm -f "$JT"
-  echo "collect_boot linger ${LINGER}s" >> $L
-  sleep "$LINGER"; exit 0
+  echo "collect_boot stay ${IDLE_LIMIT}s" >> $L
+  sleep "$IDLE_LIMIT"; exit 0
 fi
 
 if [ "$MODE" = idle ]; then
-  sleep "${IDLE_LIMIT:-120}"
+  sleep "$IDLE_LIMIT"
   echo "no_job_idle_stop" >> $L; exit 0
 fi
 

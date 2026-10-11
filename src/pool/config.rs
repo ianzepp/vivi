@@ -13,6 +13,7 @@ use crate::error::VivariumError;
 
 const DEFAULT_PROVIDER: &str = "fly";
 const DEFAULT_REGION: &str = "iad";
+const DEFAULT_ORGANIZATION: &str = "personal";
 const DEFAULT_SIZE: &str = "performance-8x";
 const DEFAULT_MEMORY_MB: u32 = 32768;
 const DEFAULT_TMPFS: &str = "16g";
@@ -26,8 +27,14 @@ pub struct PoolConfig {
     /// Machine host. Only `fly` exists.
     #[serde(default = "default_provider")]
     pub provider: String,
-    /// Provider application that holds the machines.
-    pub app: String,
+    /// Provider application that holds the machines. Default: the pool name.
+    /// `create` makes it when it does not exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// Provider organization that owns a newly created application.
+    /// Default: `personal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
     #[serde(default = "default_region")]
     pub region: String,
     /// Source repository, `owner/name`.
@@ -137,6 +144,20 @@ impl PoolConfig {
         mapped.trim_matches('-').to_string()
     }
 
+    /// The provider application: explicit, else the pool name.
+    #[must_use]
+    pub fn app_name(&self, mailspace_name: &str) -> String {
+        self.app
+            .clone()
+            .unwrap_or_else(|| self.pool_name(mailspace_name))
+    }
+
+    /// The organization a new application is created in.
+    #[must_use]
+    pub fn organization_name(&self) -> &str {
+        self.organization.as_deref().unwrap_or(DEFAULT_ORGANIZATION)
+    }
+
     /// The private key path with a leading `~` expanded.
     #[must_use]
     pub fn private_key_path(&self) -> PathBuf {
@@ -177,7 +198,13 @@ impl PoolConfig {
         if self.pool_name(mailspace_name).is_empty() {
             return Err(bad("name resolves to an empty pool name"));
         }
-        for (field, value) in [("app", &self.app), ("region", &self.region)] {
+        let app = self.app_name(mailspace_name);
+        let org = self.organization_name().to_string();
+        for (field, value) in [
+            ("app", &app),
+            ("organization", &org),
+            ("region", &self.region),
+        ] {
             if !is_slug(value) {
                 return Err(bad(format!(
                     "{field} must be lowercase letters, digits, and dashes"

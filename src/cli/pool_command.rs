@@ -41,6 +41,10 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub budget: Option<u64>,
 
+    /// Allow pushing to the repository's default branch (refused otherwise)
+    #[arg(long)]
+    pub allow_default_branch: bool,
+
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

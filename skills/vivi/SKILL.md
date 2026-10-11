@@ -406,7 +406,7 @@ overflow machines do not exist; do not invent them.
 vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS]
 vivi pool status [--json]
 vivi pool destroy (--slot <name-or-id> | --all) --yes
-vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS]
+vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch]
 vivi pool wait [<task>...] [--timeout SECS]
 vivi pool reconcile
 ```
@@ -421,8 +421,11 @@ vivi pool reconcile
 | `busy` | a task holds it and the machine runs (booting, working, or lingering) | no |
 | `finished-uncollected` | a task holds it and the machine stopped; the result is still on its disk | no |
 
-`status` shows `task <handle>` on a held slot. A slot with an uncollected
-result is never claimed.
+`status` shows `task <handle>` on a held slot, and for a slot with an open
+dispatch how long it has run against its budget (`running 95s of 1800s`;
+`--json` adds `running_secs` and `budget_secs`). A busy slot with no open
+dispatch says so; `reconcile` stops it. A slot with an uncollected result is
+never claimed.
 
 ### Slots, create, destroy
 
@@ -443,6 +446,14 @@ result is never claimed.
   never listed or touched.
 - `--base` takes a commit, branch, or tag, resolved to a full hash through
   GitHub. Default: the repo's default branch tip.
+- `create` does not return until a fresh listing shows each new slot `free`.
+- The Fly app is `[pool].app`, else the pool name (which defaults to the
+  mailspace name). `create` makes the app when it does not exist, in
+  `[pool].organization` (default `personal`). Model keys are app secrets:
+  `create` and `dispatch` list the app's secret NAMES and warn, naming the
+  harness `env` entries with no secret and the command shape
+  `fly secrets set -a <app> NAME=<value>`. Vivi never reads or sets a secret
+  value; a name the image itself provides can be ignored.
 - `destroy` requires `--yes` and only touches this pool's slots.
 - Slots made by the first iteration (before dispatch existed) lack the seed
   mark and the new boot script: destroy and re-create them.
@@ -473,6 +484,8 @@ result is never claimed.
   dispatches get different slots and a third finds none); deliver the job as one
   archive in the machine's config; start it; record a `pool_dispatched` event
   and a reply on the task. A failure after the claim undoes it.
+- The push target must not be the repository's default branch (resolved through
+  GitHub); `--allow-default-branch` overrides that.
 - A task with an open dispatch cannot be dispatched again until it is collected.
   After collection it can be dispatched again (for example to continue its
   branch).
@@ -489,13 +502,22 @@ result is never claimed.
   15-minute grace is stopped and recorded as a timeout; one whose machine
   stopped without a result is recorded as lost; one still within budget is
   reported `running`. It also frees stale claims (a held slot with no open
-  dispatch, claimed more than ten minutes ago).
+  dispatch, claimed more than five minutes ago).
 - Collecting reads the result and the agent's final output from the slot (a
   stopped slot is started, read, and stopped), records a `pool_collected` event
   and a reply on the task (push outcome, exit code, durations, the receipt, log
   tails), then stops the machine and releases the slot. Recording comes before
   freeing, so a failed record leaves the result in place. Neither command
-  closes or completes the task; the orchestrator does that. Read the receipt
+  closes or completes the task; the orchestrator does that. A slot is only
+  freed after a fresh read shows it `stopped`; one that will not stop keeps its
+  claim and `reconcile` retries.
+- Provider failures are visible: while `wait` runs, a poll error is printed to
+  stderr when it first appears or changes (`warning: cannot poll ...`) and
+  `recovered: ...` when it clears; the final timeout message names the last
+  one. The Fly token is re-fetched every minute and after a refusal (a
+  token from `fly auth token` stops working after about five minutes).
+  `reconcile` also stops any running slot that no task holds and no dispatch
+  explains. Read the receipt
   with `vivi task show <handle>`.
 - Push outcomes: `pushed <branch> <sha>`, `push_refused`, `no_changes`,
   `fetch_failed`, `checkout_failed`, `commit_failed`. A result with
@@ -511,14 +533,17 @@ root), then commits what changed as the configured bot identity, with a
 `Pool-Run:` trailer recording slot, model, start ref, exit code, and duration,
 and pushes without force. The harness's standard output is the receipt;
 standard output and error are kept as files. A finished job lingers for two
-minutes so `wait` can collect without a restart; the job directory survives a
+minutes so `wait` can collect without a restart; a boot with nothing to run
+stops itself after 60 seconds; the job directory survives a
 stop and start until the next dispatch replaces it.
 
 Config is a `[pool]` table in `.vivi/mailspace.toml`:
 
 ```toml
 [pool]
-app = "my-fly-app"            # required; provider = "fly" is the default
+# app = "my-fly-app"          # default: the pool name; created by `pool create` if missing
+# organization = "personal"   # owner of a newly created app; default personal
+# provider = "fly" is the default
 region = "iad"                # default iad
 repo = "owner/name"           # required
 slots = 4                     # required; maximum pool size

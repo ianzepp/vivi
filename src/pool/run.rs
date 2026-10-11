@@ -6,6 +6,7 @@ use super::bootscript;
 use super::config::PoolConfig;
 use super::github::Secret;
 use super::provider::{CreateSpec, MachineRecord, PoolProvider};
+use super::record::OpenDispatch;
 use super::slot::{self, META_STATE, STATE_READY, SlotStatus};
 use crate::error::VivariumError;
 
@@ -22,6 +23,8 @@ pub struct CreateOptions {
     pub poll: Duration,
     /// Give up waiting on a slot after this long.
     pub timeout: Duration,
+    /// How long to wait for a sealed slot to read `free` in a fresh listing.
+    pub confirm_timeout: Duration,
 }
 
 impl Default for CreateOptions {
@@ -31,6 +34,7 @@ impl Default for CreateOptions {
             spacing: Duration::from_secs(1),
             poll: Duration::from_secs(5),
             timeout: Duration::from_mins(15),
+            confirm_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -106,10 +110,11 @@ pub fn create_slots(
     }
     let (token, base) = seed_inputs()?;
     let started = launch_all(provider, config, pool, &missing, &token, &base, options)?;
-    report.created = wait_for_seeds(provider, &started, options)?;
+    report.created = wait_for_seeds(provider, &started, options);
     for outcome in &mut report.created {
         if outcome.seeded() {
             outcome.error = finalize_slot(provider, &outcome.id)
+                .and_then(|()| confirm_free(provider, &outcome.id, options))
                 .err()
                 .map(|e| e.to_string());
         }
@@ -122,6 +127,32 @@ pub fn create_slots(
 /// slot never still carries the token.
 fn finalize_slot(provider: &dyn PoolProvider, id: &str) -> Result<(), VivariumError> {
     provider.seal(id, &["GH_TOKEN"], META_STATE, STATE_READY)
+}
+
+/// Read the listing until the sealed slot shows `free`: `status` reads that
+/// listing, and it can trail the seal by a few seconds. `create` does not
+/// return before it has seen the slot free.
+fn confirm_free(
+    provider: &dyn PoolProvider,
+    id: &str,
+    options: &CreateOptions,
+) -> Result<(), VivariumError> {
+    let deadline = Instant::now() + options.confirm_timeout;
+    let pause = options.poll.min(Duration::from_secs(2));
+    loop {
+        let machines = provider.list()?;
+        let state = machines.iter().find(|m| m.id == id).map(slot::slot_state);
+        if state.as_deref() == Some("free") {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(VivariumError::Message(format!(
+                "slot {id} was sealed but still reads {} in a fresh listing",
+                state.unwrap_or_else(|| "missing".to_string())
+            )));
+        }
+        std::thread::sleep(pause);
+    }
 }
 
 /// Finish slots a previous, interrupted `create` seeded cleanly but never
@@ -207,23 +238,53 @@ fn wait_for_seeds(
     provider: &dyn PoolProvider,
     launched: &[Launched],
     options: &CreateOptions,
-) -> Result<Vec<SlotOutcome>, VivariumError> {
+) -> Vec<SlotOutcome> {
     let mut outcomes: Vec<Option<SlotOutcome>> = vec![None; launched.len()];
+    let mut shown = String::new();
     loop {
-        let machines = provider.list()?;
-        for (slot, done) in launched.iter().zip(outcomes.iter_mut()) {
-            if done.is_some() {
-                continue;
+        // A failed listing is a warning, not the end of a long create: the
+        // slots keep seeding, and the per-slot timeout still ends the wait.
+        let listing = provider.list().map_err(|e| e.to_string());
+        if let Err(message) = &listing {
+            if *message != shown {
+                eprintln!("warning: cannot list machines yet: {message}");
             }
-            let record = machines.iter().find(|m| m.id == slot.id);
-            *done = settled(slot, record, options.timeout);
+            shown.clone_from(message);
+        } else {
+            shown.clear();
+        }
+        for (slot, done) in launched.iter().zip(outcomes.iter_mut()) {
+            if done.is_none() {
+                *done = match &listing {
+                    Ok(machines) => settled(
+                        slot,
+                        machines.iter().find(|m| m.id == slot.id),
+                        options.timeout,
+                    ),
+                    Err(_) => unseen(slot, options.timeout),
+                };
+            }
         }
         if outcomes.iter().all(Option::is_some) {
             break;
         }
         std::thread::sleep(options.poll);
     }
-    Ok(outcomes.into_iter().flatten().collect())
+    outcomes.into_iter().flatten().collect()
+}
+
+/// The outcome for a slot that could not be looked at for the whole timeout.
+fn unseen(slot: &Launched, timeout: Duration) -> Option<SlotOutcome> {
+    let elapsed = slot.at.elapsed();
+    (elapsed >= timeout).then(|| SlotOutcome {
+        name: slot.name.clone(),
+        id: slot.id.clone(),
+        state: "unknown".to_string(),
+        exit_code: None,
+        seconds: elapsed.as_secs(),
+        timed_out: true,
+        error: None,
+    })
 }
 
 /// The outcome for one slot once it has stopped, vanished, or timed out.
@@ -249,6 +310,74 @@ fn settled(
     })
 }
 
+/// What making the application ready found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppReport {
+    pub app: String,
+    /// True when this call created the application.
+    pub created: bool,
+    /// Harness environment names the application has no secret for.
+    pub missing_secrets: Vec<String>,
+}
+
+/// Make sure the application exists, then look for the secrets the harness
+/// needs. Secrets are never set here, and no value is read.
+///
+/// # Errors
+/// Returns an error if the application cannot be listed or created.
+pub fn prepare_app(
+    provider: &dyn PoolProvider,
+    config: &PoolConfig,
+    app: &str,
+) -> Result<AppReport, VivariumError> {
+    let created = provider.ensure_app(config.organization_name())?;
+    Ok(AppReport {
+        app: app.to_string(),
+        created,
+        missing_secrets: missing_secrets(provider, config)?,
+    })
+}
+
+/// The harness environment names that the application has no secret for.
+///
+/// # Errors
+/// Returns an error if the secret names cannot be listed.
+pub fn missing_secrets(
+    provider: &dyn PoolProvider,
+    config: &PoolConfig,
+) -> Result<Vec<String>, VivariumError> {
+    let Some(harness) = &config.harness else {
+        return Ok(Vec::new());
+    };
+    if harness.env.is_empty() {
+        return Ok(Vec::new());
+    }
+    let have = provider.secret_names()?;
+    Ok(harness
+        .env
+        .iter()
+        .filter(|name| !have.contains(name))
+        .cloned()
+        .collect())
+}
+
+/// The warning for missing secrets: names and a command shape, no values.
+#[must_use]
+pub fn secrets_warning(app: &str, missing: &[String]) -> Option<String> {
+    if missing.is_empty() {
+        return None;
+    }
+    let assignments = missing
+        .iter()
+        .map(|name| format!("{name}=<value>"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!(
+        "warning: app {app} has no secret named {}. The harness gets these from the machine's environment, so a job will run without them unless the image sets them. Set them yourself (vivi never reads or sets secret values):\n  fly secrets set -a {app} {assignments}",
+        missing.join(", ")
+    ))
+}
+
 /// The pool's slots as the provider reports them.
 ///
 /// # Errors
@@ -258,6 +387,16 @@ pub fn pool_status(
     pool: &str,
 ) -> Result<Vec<SlotStatus>, VivariumError> {
     Ok(slot::pool_slots(pool, &provider.list()?))
+}
+
+/// Fill in how long each slot's open dispatch has run and its budget.
+pub fn annotate_running(slots: &mut [SlotStatus], open: &[OpenDispatch], now: u64) {
+    for slot in slots {
+        if let Some(d) = open.iter().find(|d| d.record.machine == slot.id) {
+            slot.running_secs = Some(now.saturating_sub(d.record.at));
+            slot.budget_secs = Some(d.record.budget);
+        }
+    }
 }
 
 /// Which slots `destroy` removes.

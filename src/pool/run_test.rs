@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::pool::PoolHarness;
 use crate::pool::fake_provider::Fake;
 use crate::pool::slot::{META_BASE, META_STATE, STATE_READY};
 
@@ -26,6 +27,7 @@ fn fast() -> CreateOptions {
         spacing: Duration::ZERO,
         poll: Duration::ZERO,
         timeout: Duration::from_mins(1),
+        confirm_timeout: Duration::from_millis(50),
     }
 }
 
@@ -217,4 +219,113 @@ fn an_interrupted_create_is_finished_by_the_next_one() {
     assert_eq!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
     assert_eq!(fake.meta("m2", META_STATE).as_deref(), Some("seeding"));
     assert_eq!(fake.env_cleared.borrow().len(), 1);
+}
+
+fn with_env(names: &[&str]) -> PoolConfig {
+    let mut config = config(1);
+    config.harness = Some(PoolHarness {
+        name: "h".into(),
+        run: "h".into(),
+        models: vec![],
+        env: names.iter().map(ToString::to_string).collect(),
+        rules: None,
+        unknown: BTreeMap::new(),
+    });
+    config
+}
+
+#[test]
+fn prepare_app_creates_a_missing_app_once() {
+    let fake = Fake::default();
+    let config = with_env(&[]);
+    assert!(prepare_app(&fake, &config, "a").unwrap().created);
+    assert_eq!(*fake.apps_created.borrow(), ["personal"]);
+    assert!(!prepare_app(&fake, &config, "a").unwrap().created);
+    assert_eq!(fake.apps_created.borrow().len(), 1);
+}
+
+#[test]
+fn missing_secrets_are_the_harness_names_the_app_lacks() {
+    let fake = Fake::default();
+    fake.secrets.borrow_mut().push("HAVE_KEY".into());
+    let config = with_env(&["HAVE_KEY", "NEED_KEY", "OTHER_KEY"]);
+    let missing = missing_secrets(&fake, &config).unwrap();
+    assert_eq!(missing, ["NEED_KEY", "OTHER_KEY"]);
+    assert!(missing_secrets(&fake, &with_env(&[])).unwrap().is_empty());
+    assert!(
+        missing_secrets(&fake, &config_no_harness())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn config_no_harness() -> PoolConfig {
+    config(1)
+}
+
+#[test]
+fn the_secrets_warning_names_the_secrets_and_the_command_and_no_value() {
+    assert!(secrets_warning("app", &[]).is_none());
+    let text = secrets_warning("my-app", &["A_KEY".to_string(), "B_KEY".to_string()]).unwrap();
+    assert!(text.contains("A_KEY, B_KEY"));
+    assert!(text.contains("fly secrets set -a my-app A_KEY=<value> B_KEY=<value>"));
+}
+
+#[test]
+fn create_does_not_return_until_a_fresh_listing_shows_the_slot_free() {
+    let fake = Fake::default();
+    fake.stale_lists.set(4);
+    let options = CreateOptions {
+        confirm_timeout: Duration::from_secs(5),
+        ..fast()
+    };
+    let report = create_slots(&fake, &config(1), "p", &options, inputs).unwrap();
+    assert!(report.created[0].seeded(), "{:?}", report.created[0]);
+    let listed = fake.list().unwrap();
+    assert_eq!(slot::slot_state(&listed[0]), "free");
+}
+
+#[test]
+fn a_slot_that_never_reads_free_is_reported_not_called_seeded() {
+    let fake = Fake::default();
+    fake.stale_lists.set(10_000);
+    let options = CreateOptions {
+        confirm_timeout: Duration::ZERO,
+        ..fast()
+    };
+    let report = create_slots(&fake, &config(1), "p", &options, inputs).unwrap();
+    assert!(!report.created[0].seeded());
+    assert!(
+        report.created[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("still reads")
+    );
+}
+
+#[test]
+fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
+    use crate::pool::record::{DispatchRecord, OpenDispatch};
+    let busy = crate::pool::fake_provider::claimed("m1", "p-slot-1", "started", "p", "aaaa1111");
+    let mut slots = slot::pool_slots("p", &[busy]);
+    let open = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: DispatchRecord {
+            slot: "p-slot-1".into(),
+            machine: "m1".into(),
+            job: "j".into(),
+            model: "m".into(),
+            from: "main".into(),
+            branch: "b".into(),
+            start: "s".into(),
+            budget: 1800,
+            at: 1000,
+        },
+    };
+    annotate_running(&mut slots, &[open], 1095);
+    assert_eq!(slots[0].running_secs, Some(95));
+    assert_eq!(slots[0].budget_secs, Some(1800));
+    let json = serde_json::to_string(&slots[0]).unwrap();
+    assert!(json.contains("\"running_secs\":95") && json.contains("\"budget_secs\":1800"));
 }

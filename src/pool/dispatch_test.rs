@@ -32,6 +32,7 @@ fn flags(model: &str) -> DispatchFlags {
         from: Some("main".into()),
         branch: Some("factory/a".into()),
         budget: None,
+        allow_default_branch: false,
     }
 }
 
@@ -49,6 +50,7 @@ fn pacing() -> Pacing {
     Pacing {
         poll: std::time::Duration::ZERO,
         ready_timeout: std::time::Duration::ZERO,
+        stop_timeout: std::time::Duration::ZERO,
     }
 }
 
@@ -181,4 +183,16 @@ fn a_failed_start_undoes_the_claim() {
     assert!(fake.meta("m1", META_TASK).is_none());
     assert!(fake.meta("m1", META_CLAIMED).is_none());
     assert!(fake.leases.borrow().is_empty());
+}
+
+#[test]
+fn the_default_branch_is_refused_unless_allowed() {
+    let err = check_push_target("main", "main", false)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("default branch \"main\""), "{err}");
+    assert!(err.contains("--allow-default-branch"), "{err}");
+    check_push_target("main", "main", true).unwrap();
+    check_push_target("factory/x", "main", false).unwrap();
+    check_push_target("main", "trunk", false).unwrap();
 }

@@ -31,6 +31,20 @@ pub struct Fake {
     pub after_lease: RefCell<Option<Hook>>,
     /// Starting a machine fails.
     pub fail_start: Cell<bool>,
+    /// The next this-many `list` calls show every ready slot as still seeding
+    /// (a listing that trails the seal).
+    pub stale_lists: Cell<u32>,
+    /// Whether the app exists, and the organizations `ensure_app` created it in.
+    pub app_exists: Cell<bool>,
+    pub apps_created: RefCell<Vec<String>>,
+    /// The app's secret names.
+    pub secrets: RefCell<Vec<String>>,
+    /// The next this-many `exec` calls fail (the provider is unreachable).
+    pub exec_fails: Cell<u32>,
+    /// The next this-many `machine` reads fail.
+    pub machine_fails: Cell<u32>,
+    /// The next this-many `stop` calls are accepted but do not take.
+    pub stops_ignored: Cell<u32>,
 }
 
 impl Fake {
@@ -74,6 +88,13 @@ impl Fake {
     }
 }
 
+/// True and counts down while `n` is positive.
+fn take_one(n: &Cell<u32>) -> bool {
+    let left = n.get();
+    n.set(left.saturating_sub(1));
+    left > 0
+}
+
 /// A seeded pool slot.
 pub fn slot(id: &str, name: &str, state: &str, pool: &str, index: u32) -> MachineRecord {
     MachineRecord {
@@ -100,6 +121,21 @@ pub fn claimed(id: &str, name: &str, state: &str, pool: &str, task: &str) -> Mac
 }
 
 impl PoolProvider for Fake {
+    fn ensure_app(&self, organization: &str) -> Result<bool, VivariumError> {
+        if self.app_exists.get() {
+            return Ok(false);
+        }
+        self.app_exists.set(true);
+        self.apps_created
+            .borrow_mut()
+            .push(organization.to_string());
+        Ok(true)
+    }
+
+    fn secret_names(&self) -> Result<Vec<String>, VivariumError> {
+        Ok(self.secrets.borrow().clone())
+    }
+
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
         *self.lists.borrow_mut() += 1;
         if !self.never_stop && *self.lists.borrow() > 2 {
@@ -111,7 +147,14 @@ impl PoolProvider for Fake {
                 }
             }
         }
-        Ok(self.machines.borrow().clone())
+        let mut machines = self.machines.borrow().clone();
+        if take_one(&self.stale_lists) {
+            for m in &mut machines {
+                m.metadata
+                    .insert(META_STATE.to_string(), "seeding".to_string());
+            }
+        }
+        Ok(machines)
     }
 
     fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
@@ -136,6 +179,9 @@ impl PoolProvider for Fake {
     }
 
     fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError> {
+        if take_one(&self.machine_fails) {
+            return Err(VivariumError::Message("Fly unreachable".into()));
+        }
         self.machines
             .borrow()
             .iter()
@@ -213,11 +259,17 @@ impl PoolProvider for Fake {
 
     fn stop(&self, id: &str) -> Result<(), VivariumError> {
         self.calls.borrow_mut().push(format!("stop {id}"));
+        if take_one(&self.stops_ignored) {
+            return Ok(());
+        }
         self.edit(id, |m| m.state = "stopped".into())
     }
 
     fn exec(&self, id: &str, _script: &str, _timeout: u32) -> Result<ExecOutput, VivariumError> {
         self.calls.borrow_mut().push(format!("exec {id}"));
+        if take_one(&self.exec_fails) {
+            return Err(VivariumError::Message("Fly exec failed (HTTP 401)".into()));
+        }
         if self.state_of(id) != "started" {
             return Err(VivariumError::Message("machine not running".into()));
         }

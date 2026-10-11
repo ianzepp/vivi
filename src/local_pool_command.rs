@@ -41,12 +41,23 @@ pub(crate) fn open_pool_space(
     };
     config.validate(&mailspace.config.name)?;
     let pool = config.pool_name(&mailspace.config.name);
-    let provider = FlyctlProvider::new(&config.app);
+    let provider = FlyctlProvider::new(&config.app_name(&mailspace.config.name));
     Ok((mailspace, config, pool, provider))
 }
 
 fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
-    let (config, pool, provider) = open_pool(command.project.as_deref())?;
+    let (space, config, pool, provider) = open_pool_space(command.project.as_deref())?;
+    let app = config.app_name(&space.config.name);
+    let ready = run::prepare_app(&provider, &config, &app)?;
+    if ready.created {
+        println!(
+            "created app {app} in organization {}",
+            config.organization_name()
+        );
+    }
+    if let Some(warning) = run::secrets_warning(&app, &ready.missing_secrets) {
+        eprintln!("{warning}");
+    }
     let options = CreateOptions {
         slots: command.slots,
         timeout: Duration::from_secs(command.timeout),
@@ -94,8 +105,13 @@ fn outcome_line(outcome: &SlotOutcome) -> String {
 }
 
 fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
-    let (_, pool, provider) = open_pool(command.project.as_deref())?;
-    let slots = run::pool_status(&provider, &pool)?;
+    let (space, _, pool, provider) = open_pool_space(command.project.as_deref())?;
+    let mut slots = run::pool_status(&provider, &pool)?;
+    run::annotate_running(
+        &mut slots,
+        &work::open_dispatches(&space)?,
+        work::epoch_secs(),
+    );
     if command.json {
         println!(
             "{}",
@@ -108,6 +124,15 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
     Ok(())
 }
 
+/// `running 95s of 1800s` for a slot with an open dispatch.
+fn running_text(slot: &SlotStatus) -> String {
+    match (slot.running_secs, slot.budget_secs) {
+        (Some(ran), Some(budget)) => format!("  running {ran}s of {budget}s"),
+        _ if slot.state == "busy" => "  no open dispatch".to_string(),
+        _ => String::new(),
+    }
+}
+
 fn print_slots(pool: &str, slots: &[SlotStatus]) {
     println!("pool {pool}  {} slot(s)", slots.len());
     for slot in slots {
@@ -116,10 +141,11 @@ fn print_slots(pool: &str, slots: &[SlotStatus]) {
             .as_deref()
             .map_or(String::new(), |t| format!("  task {t}"));
         println!(
-            "  {}  {}  {}{task}  base {}  created {}",
+            "  {}  {}  {}{task}{}  base {}  created {}",
             slot.name,
             slot.id,
             slot.state,
+            running_text(slot),
             slot.base
                 .as_deref()
                 .map_or("unknown", |b| &b[..12.min(b.len())]),

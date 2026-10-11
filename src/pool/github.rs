@@ -150,11 +150,7 @@ pub fn resolve_base(
         check_ref(r)?;
         r.to_string()
     } else {
-        let info = request("GET", &format!("{API}/repos/{repo}"), token, None)?;
-        info["default_branch"]
-            .as_str()
-            .ok_or_else(|| VivariumError::Message(format!("no default branch for {repo}")))?
-            .to_string()
+        default_branch(token, repo)?
     };
     let commit = request(
         "GET",
@@ -170,6 +166,18 @@ pub fn resolve_base(
             "could not resolve \"{reference}\" to a commit in {repo}"
         )))
     }
+}
+
+/// The repository's default branch, as GitHub names it.
+///
+/// # Errors
+/// Returns an error if GitHub is unreachable or names no default branch.
+pub fn default_branch(token: &Secret, repo: &str) -> Result<String, VivariumError> {
+    let info = request("GET", &format!("{API}/repos/{repo}"), token, None)?;
+    info["default_branch"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| VivariumError::Message(format!("no default branch for {repo}")))
 }
 
 fn check_ref(reference: &str) -> Result<(), VivariumError> {

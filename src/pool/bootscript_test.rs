@@ -103,8 +103,11 @@ fn boot_script_bounds_every_job_and_keeps_results_until_replaced() {
     let unpack = BOOT_SCRIPT.find("rm -rf /work/job").unwrap();
     let new_job = BOOT_SCRIPT.find("# New job.").unwrap();
     assert!(unpack > new_job, "the wipe sits inside the new-job path");
-    // A collect boot (same archive) does not run the job again.
+    // A collect boot (same archive) does not run the job again, and a boot
+    // with nothing to run stops itself within the idle limit.
     assert!(BOOT_SCRIPT.contains("collect_boot"));
+    assert!(BOOT_SCRIPT.contains("IDLE_LIMIT=${IDLE_LIMIT:-60}"));
+    assert_eq!(BOOT_SCRIPT.matches(r#"sleep "$IDLE_LIMIT""#).count(), 2);
     // The archive copy is removed before the agent can exist.
     assert!(BOOT_SCRIPT.contains(r#"rm -f "$JT"; echo "$SHA" > /work/job.sha"#));
     // A killed job still leaves a result with its job id.

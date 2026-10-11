@@ -228,3 +228,36 @@ fn committer_must_be_single_line_text() {
     });
     assert!(err(&config).contains("committer.name"));
 }
+
+#[test]
+fn app_defaults_to_the_pool_name_and_organization_to_personal() {
+    let mut config = full();
+    config.app = None;
+    config.name = None;
+    config.validate("My Project").unwrap();
+    assert_eq!(config.app_name("My Project"), "my-project");
+    assert_eq!(config.organization_name(), "personal");
+    config.name = Some("lanes".into());
+    assert_eq!(config.app_name("My Project"), "lanes");
+    config.app = Some("shared".into());
+    config.organization = Some("acme".into());
+    assert_eq!(config.app_name("My Project"), "shared");
+    assert_eq!(config.organization_name(), "acme");
+}
+
+#[test]
+fn app_and_organization_must_be_slugs() {
+    let mut config = full();
+    config.app = Some("Bad App".into());
+    assert!(err(&config).contains("app"));
+    let mut config = full();
+    config.organization = Some("Acme Inc".into());
+    assert!(err(&config).contains("organization"));
+}
+
+#[test]
+fn a_table_without_app_parses() {
+    let config: PoolConfig = toml::from_str(&FULL.replace("app = \"lane-pool\"\n", "")).unwrap();
+    config.validate("space").unwrap();
+    assert!(config.app.is_none());
+}

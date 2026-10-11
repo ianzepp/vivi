@@ -58,6 +58,12 @@ pub struct SlotStatus {
     pub task: Option<String>,
     /// When the task claimed the slot (epoch seconds).
     pub claimed_at: Option<u64>,
+    /// How long the open dispatch has been running, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running_secs: Option<u64>,
+    /// The open dispatch's time budget in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_secs: Option<u64>,
     pub created_at: String,
     pub region: String,
 }
@@ -115,6 +121,8 @@ pub fn pool_slots(pool: &str, machines: &[MachineRecord]) -> Vec<SlotStatus> {
                 .metadata
                 .get(META_CLAIMED)
                 .and_then(|v| v.parse::<u64>().into_iter().next()),
+            running_secs: None,
+            budget_secs: None,
             created_at: m.created_at.clone(),
             region: m.region.clone(),
         })

@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use super::provider::PoolProvider;
+use super::provider::{MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
-use super::slot::{META_CLAIMED, META_TASK, SlotStatus};
+use super::slot::{self, META_CLAIMED, META_TASK, SlotStatus};
 use crate::error::VivariumError;
 
 /// Seconds past the budget before a silent job counts as timed out. The
@@ -22,8 +22,9 @@ use crate::error::VivariumError;
 pub const TIMEOUT_GRACE_SECS: u64 = 900;
 /// A stopped slot younger than this is assumed to be still starting.
 pub const START_GRACE_SECS: u64 = 60;
-/// A claim mark with no dispatch behind it is stale after this long.
-pub const STALE_CLAIM_SECS: u64 = 600;
+/// A claim mark with no dispatch behind it is stale after this long: more
+/// than the time a dispatch spends between claiming a slot and recording.
+pub const STALE_CLAIM_SECS: u64 = 300;
 
 const SECTION_RESULT: &str = "@@vivi-pool result";
 const SECTION_RECEIPT: &str = "@@vivi-pool receipt";
@@ -46,6 +47,8 @@ pub struct Pacing {
     pub poll: Duration,
     /// How long to wait for a slot to accept commands after a start.
     pub ready_timeout: Duration,
+    /// How long to wait for a stopped slot to read `stopped`.
+    pub stop_timeout: Duration,
 }
 
 impl Default for Pacing {
@@ -53,6 +56,7 @@ impl Default for Pacing {
         Self {
             poll: Duration::from_secs(3),
             ready_timeout: Duration::from_secs(90),
+            stop_timeout: Duration::from_mins(1),
         }
     }
 }
@@ -179,20 +183,26 @@ impl Outcome {
     }
 }
 
-/// Read this job's result from a running slot. A slot that is not running,
-/// has no result, or holds an earlier job's result gives `None`.
-fn try_collect(provider: &dyn PoolProvider, machine: &str, job: &str) -> Option<Collected> {
-    let Ok(output) = provider.exec(machine, COLLECT_SCRIPT, 20) else {
-        return None;
-    };
-    parse_collected(&output.stdout).filter(|c| c.result.get("job") == job)
+/// Read this job's result from a running slot. `Ok(None)` means the slot
+/// answered and holds no result of this job (none yet, or an earlier job's).
+///
+/// # Errors
+/// Returns the provider error when the slot could not be asked: that is not
+/// the same as "still running" and must not be treated as it.
+fn try_collect(
+    provider: &dyn PoolProvider,
+    machine: &str,
+    job: &str,
+) -> Result<Option<Collected>, VivariumError> {
+    let output = provider.exec(machine, COLLECT_SCRIPT, 20)?;
+    Ok(parse_collected(&output.stdout).filter(|c| c.result.get("job") == job))
 }
 
 /// Where one open dispatch stands. `None` means still running.
 ///
 /// # Errors
-/// Returns an error if the provider cannot report the machine, or cannot
-/// start a stopped one.
+/// Returns an error if the provider cannot report the machine, cannot start a
+/// stopped one, or cannot read a running one before the dispatch is overdue.
 pub fn poll(
     provider: &dyn PoolProvider,
     dispatch: &OpenDispatch,
@@ -206,11 +216,23 @@ pub fn poll(
     match machine.state.as_str() {
         "stopped" => collect_stopped(provider, dispatch, age, overdue, pacing),
         "destroyed" | "failed" => Ok(Some(Outcome::Lost)),
-        _ => Ok(match try_collect(provider, &record.machine, &record.job) {
-            Some(done) => Some(Outcome::Finished(done)),
-            None if overdue => Some(Outcome::Timeout),
-            None => None,
-        }),
+        "started" => collect_running(provider, dispatch, overdue),
+        // starting, stopping, replacing: look again next round.
+        _ => Ok(overdue.then_some(Outcome::Timeout)),
+    }
+}
+
+fn collect_running(
+    provider: &dyn PoolProvider,
+    dispatch: &OpenDispatch,
+    overdue: bool,
+) -> Result<Option<Outcome>, VivariumError> {
+    let record = &dispatch.record;
+    match try_collect(provider, &record.machine, &record.job) {
+        Ok(Some(done)) => Ok(Some(Outcome::Finished(done))),
+        Ok(None) | Err(_) if overdue => Ok(Some(Outcome::Timeout)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -228,41 +250,95 @@ fn collect_stopped(
     provider.start(&record.machine)?;
     let deadline = Instant::now() + pacing.ready_timeout;
     loop {
-        if let Some(done) = try_collect(provider, &record.machine, &record.job) {
-            return Ok(Some(Outcome::Finished(done)));
-        }
+        let unanswered = match try_collect(provider, &record.machine, &record.job) {
+            Ok(Some(done)) => return Ok(Some(Outcome::Finished(done))),
+            Ok(None) => None,
+            Err(e) => Some(e),
+        };
         if Instant::now() >= deadline {
-            return Ok(Some(if overdue {
-                Outcome::Timeout
-            } else {
-                Outcome::Lost
-            }));
+            return match (overdue, unanswered) {
+                (true, _) => Ok(Some(Outcome::Timeout)),
+                // The slot never answered: that says nothing about the job.
+                (false, Some(e)) => Err(e),
+                (false, None) => Ok(Some(Outcome::Lost)),
+            };
         }
         std::thread::sleep(pacing.poll);
     }
 }
 
-/// Free a slot held by `task`: stop it if it runs, then drop the claim marks.
-/// Marks go last, so a slot never looks free while it still runs. A slot
-/// that `task` no longer holds (freed and claimed again by someone else) is
-/// left alone.
+/// Free a slot held by `task`: stop it if it runs and confirm it stopped, then
+/// drop the claim marks. Marks go last, so a slot never looks free while it
+/// still runs, and a slot that would not stop keeps its marks (a later
+/// `reconcile` retries). A slot that `task` no longer holds is left alone
+/// unless it runs with no claim at all (a collector started it after the
+/// holder freed it): that one is stopped.
 ///
 /// # Errors
-/// Returns an error if the machine cannot be read, stopped, or unmarked.
+/// Returns an error if the machine cannot be read, will not stop, or cannot
+/// be unmarked.
 pub fn release(
     provider: &dyn PoolProvider,
     machine_id: &str,
     task: &str,
+    pacing: &Pacing,
 ) -> Result<(), VivariumError> {
     let machine = provider.machine(machine_id)?;
     if machine.metadata.get(META_TASK).map(String::as_str) != Some(task) {
-        return Ok(());
+        return stop_unclaimed(provider, &machine, pacing);
     }
-    if !matches!(machine.state.as_str(), "stopped" | "stopping" | "destroyed") {
-        provider.stop(machine_id)?;
-    }
+    stop_confirmed(provider, machine_id, pacing)?;
     provider.clear_metadata(machine_id, META_TASK)?;
     provider.clear_metadata(machine_id, META_CLAIMED)
+}
+
+/// Stop a seeded machine that runs with no task holding it.
+///
+/// # Errors
+/// Returns an error if the machine will not stop.
+pub fn stop_unclaimed(
+    provider: &dyn PoolProvider,
+    machine: &MachineRecord,
+    pacing: &Pacing,
+) -> Result<(), VivariumError> {
+    let runs_free =
+        slot::slot_state(machine) == "busy" && !machine.metadata.contains_key(META_TASK);
+    if runs_free {
+        stop_confirmed(provider, &machine.id, pacing)?;
+    }
+    Ok(())
+}
+
+/// Stop a machine and read it back until it says `stopped`; ask again when it
+/// still runs.
+fn stop_confirmed(
+    provider: &dyn PoolProvider,
+    id: &str,
+    pacing: &Pacing,
+) -> Result<(), VivariumError> {
+    let deadline = Instant::now() + pacing.stop_timeout;
+    let mut asked = false;
+    let mut state = provider.machine(id)?.state;
+    loop {
+        match state.as_str() {
+            "stopped" | "destroyed" => return Ok(()),
+            "stopping" if asked => {}
+            _ => match provider.stop(id) {
+                Err(e) if !asked => return Err(e),
+                _ => asked = true,
+            },
+        }
+        std::thread::sleep(pacing.poll);
+        state = provider.machine(id)?.state;
+        if matches!(state.as_str(), "stopped" | "destroyed") {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(VivariumError::Message(format!(
+                "machine {id} did not stop (it is {state})"
+            )));
+        }
+    }
 }
 
 /// Claimed slots with no open dispatch behind them, claimed long enough ago
@@ -282,6 +358,48 @@ pub fn stale_claims<'a>(
                 .is_none_or(|at| now.saturating_sub(at) > STALE_CLAIM_SECS)
         })
         .collect()
+}
+
+/// Running slots that no task holds and no dispatch explains: a billing leak.
+/// A dispatch marks its slot before it starts it, so an unmarked running slot
+/// is always left over from a collector or a failed start.
+#[must_use]
+pub fn orphan_runners<'a>(slots: &'a [SlotStatus], open: &[OpenDispatch]) -> Vec<&'a SlotStatus> {
+    slots
+        .iter()
+        .filter(|s| s.state == "busy" && s.task.is_none())
+        .filter(|s| !open.iter().any(|d| d.record.machine == s.id))
+        .collect()
+}
+
+/// Remembers which poll errors were already shown, so a long `wait` shows
+/// each new problem once and says when it clears. An error and "still
+/// running" must never look alike.
+#[derive(Debug, Default)]
+pub struct ErrorWatch {
+    shown: BTreeMap<String, String>,
+}
+
+impl ErrorWatch {
+    /// The notices to print for this round: each new or changed error, and
+    /// each task whose polls work again.
+    pub fn observe(&mut self, lines: &[RoundLine]) -> Vec<String> {
+        let mut notices = Vec::new();
+        for line in lines {
+            if line.state == "error" {
+                if self.shown.get(&line.task) != Some(&line.detail) {
+                    notices.push(format!(
+                        "warning: cannot poll {} on {}: {}",
+                        line.task, line.slot, line.detail
+                    ));
+                    self.shown.insert(line.task.clone(), line.detail.clone());
+                }
+            } else if self.shown.remove(&line.task).is_some() {
+                notices.push(format!("recovered: polling {} works again", line.task));
+            }
+        }
+        notices
+    }
 }
 
 /// One line of a round's report.
@@ -310,7 +428,7 @@ impl RoundLine {
 /// retries.
 ///
 /// # Errors
-/// Returns the error `record` or `release` returns.
+/// Returns the error `record` returns.
 pub fn run_round(
     provider: &dyn PoolProvider,
     open: &[OpenDispatch],
@@ -335,14 +453,28 @@ pub fn run_round(
             }
             Ok(Some(outcome)) => {
                 if !record(dispatch, &outcome)? {
+                    // Closed elsewhere. This poll may have started the slot
+                    // after its holder freed it: never leave it running. A
+                    // slot still marked is the holder's to free.
+                    let stopped = provider
+                        .machine(&dispatch.record.machine)
+                        .and_then(|m| stop_unclaimed(provider, &m, pacing));
+                    if let Err(e) = stopped {
+                        eprintln!("warning: could not stop slot {}: {e}", dispatch.record.slot);
+                    }
                     continue;
                 }
-                release(provider, &dispatch.record.machine, &dispatch.task)?;
-                let detail = match &outcome {
+                let mut detail = match &outcome {
                     Outcome::Finished(done) => done.result.push_line(),
                     Outcome::Timeout => "no result; slot stopped".to_string(),
                     Outcome::Lost => "slot ended without a result".to_string(),
                 };
+                // The result is recorded; a slot that would not free is
+                // retried by `reconcile`, and must not hide this result.
+                if let Err(e) = release(provider, &dispatch.record.machine, &dispatch.task, pacing)
+                {
+                    detail = format!("{detail}; slot not freed yet ({e})");
+                }
                 lines.push(line(outcome.word(), detail));
             }
         }

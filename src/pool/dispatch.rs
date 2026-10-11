@@ -26,6 +26,8 @@ pub struct DispatchFlags {
     pub from: Option<String>,
     pub branch: Option<String>,
     pub budget: Option<u64>,
+    /// Allow pushing to the repository's default branch.
+    pub allow_default_branch: bool,
 }
 
 /// A fresh job id: twelve hex digits.
@@ -81,6 +83,24 @@ pub fn plan_job(
         env_names: harness.env.clone(),
         committer,
     })
+}
+
+/// Refuse a push target that is the repository's default branch, unless the
+/// caller said it is wanted.
+///
+/// # Errors
+/// Returns an error naming the branch and the override flag.
+pub fn check_push_target(
+    branch: &str,
+    default_branch: &str,
+    allow: bool,
+) -> Result<(), VivariumError> {
+    if branch == default_branch && !allow {
+        return Err(VivariumError::Message(format!(
+            "refusing to push to the default branch \"{default_branch}\"; pass --allow-default-branch if that is intended"
+        )));
+    }
+    Ok(())
 }
 
 /// Claim a free slot and start `plan` on it. `start` is the commit `from`

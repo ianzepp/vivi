@@ -6,12 +6,13 @@
 //! as a [`Secret`] and never appears in an error.
 
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use super::fly::{RawMachine, record_from_raw};
+use super::fly_token::{TOKEN_MAX_AGE, TokenCache};
 use super::github::Secret;
 use super::provider::{ExecOutput, Lease, MachineRecord};
 use crate::chat::b64;
@@ -25,9 +26,11 @@ const RATE_LIMIT_RETRIES: u64 = 4;
 #[derive(Debug, Clone)]
 pub struct FlyApi {
     app: String,
-    token: OnceLock<Secret>,
+    base: String,
+    tokens: Arc<TokenCache>,
 }
 
+#[derive(Debug)]
 struct Reply {
     status: u16,
     body: Value,
@@ -36,19 +39,25 @@ struct Reply {
 impl FlyApi {
     #[must_use]
     pub fn new(app: &str) -> Self {
+        Self::with_parts(app, BASE, fetch_token)
+    }
+
+    /// A client against another base URL with another token source (tests).
+    #[must_use]
+    pub(super) fn with_parts(
+        app: &str,
+        base: &str,
+        fetch: fn() -> Result<Secret, VivariumError>,
+    ) -> Self {
         Self {
             app: app.to_string(),
-            token: OnceLock::new(),
+            base: base.to_string(),
+            tokens: Arc::new(TokenCache::new(TOKEN_MAX_AGE, fetch)),
         }
     }
 
     fn authorization(&self) -> Result<Secret, VivariumError> {
-        let token = if let Some(token) = self.token.get() {
-            token.clone()
-        } else {
-            let fetched = fetch_token()?;
-            self.token.get_or_init(|| fetched).clone()
-        };
+        let token = self.tokens.get()?;
         let raw = token.expose();
         Ok(Secret::new(if raw.starts_with("FlyV1 ") {
             raw.to_string()
@@ -57,6 +66,8 @@ impl FlyApi {
         }))
     }
 
+    /// One request, with a fresh token after the API refuses the cached one
+    /// and a pause after a rate limit.
     fn call(
         &self,
         method: &'static str,
@@ -65,20 +76,17 @@ impl FlyApi {
         body: Option<&Value>,
         read_timeout: Duration,
     ) -> Result<Reply, VivariumError> {
-        let url = format!("{BASE}/{}{path}", self.app);
-        let auth = self.authorization()?;
-        let nonce = nonce.map(str::to_string);
+        let url = format!("{}/{}{path}", self.base, self.app);
+        let mut auth = self.authorization()?;
+        let mut renewed = false;
         for attempt in 0..=RATE_LIMIT_RETRIES {
-            let (u, a, n, b) = (url.clone(), auth.clone(), nonce.clone(), body.cloned());
-            let reply = std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| VivariumError::Other(format!("failed to build runtime: {e}")))?;
-                runtime.block_on(send(method, &u, &a, n.as_deref(), b, read_timeout))
-            })
-            .join()
-            .map_err(|_| VivariumError::Message("Fly request thread panicked".into()))??;
+            let reply = send_once(method, &url, &auth, nonce, body, read_timeout)?;
+            if matches!(reply.status, 401 | 403) && !renewed {
+                renewed = true;
+                self.tokens.invalidate();
+                auth = self.authorization()?;
+                continue;
+            }
             if reply.status != 429 || attempt == RATE_LIMIT_RETRIES {
                 return Ok(reply);
             }
@@ -348,6 +356,31 @@ fn reply_message(body: &Value) -> String {
         .find_map(|k| body[*k].as_str())
         .unwrap_or("no message")
         .to_string()
+}
+
+fn send_once(
+    method: &'static str,
+    url: &str,
+    auth: &Secret,
+    nonce: Option<&str>,
+    body: Option<&Value>,
+    read_timeout: Duration,
+) -> Result<Reply, VivariumError> {
+    let (u, a, n, b) = (
+        url.to_string(),
+        auth.clone(),
+        nonce.map(str::to_string),
+        body.cloned(),
+    );
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| VivariumError::Other(format!("failed to build runtime: {e}")))?;
+        runtime.block_on(send(method, &u, &a, n.as_deref(), b, read_timeout))
+    })
+    .join()
+    .map_err(|_| VivariumError::Message("Fly request thread panicked".into()))?
 }
 
 async fn send(
