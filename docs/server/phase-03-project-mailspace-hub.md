@@ -56,9 +56,9 @@ who the tenant is, what travels, and where the truth lives.
    `mind-on-pharos`. The client chooses the name when it registers. It is bound
    to the key that registered it and published in the project directory as a
    member or role. The key, not the name, identifies the client.
-   - The domain part of an email address has no meaning on the wire. Vivi
-     supports it because vivi can also send external email, but in a
-     project-scoped view `mind@pharos` and `mind-on-pharos` are the same thing.
+   - ~~The domain part of an email address has no meaning on the wire.~~
+     Superseded by item 11: the domain part of a letter's address is the
+     sender's mailspace prefix, and the server routes on it.
 4. **The server is the source of truth.** Clients are replicas. A new or
    damaged checkout can resync everything from the server.
 5. **Clients mint every id.** The server never creates a need, a want, a task, a
@@ -98,6 +98,36 @@ who the tenant is, what travels, and where the truth lives.
     every machine, and that is the only way immutability can be enforced.
     The server never parses, renders, or rewrites a letter. See
     [Letter wire](#letter-wire-decided-2026-10-11).
+11. **Mailspaces are addressed by id (decided 2026-10-11, repo owner).**
+    Every mailspace has a UUID, minted once on the machine where it lives
+    and stored in that mailspace's uncommitted `mailspace.toml` (`id`).
+    The first 8 characters of the UUID are its **prefix**, and the prefix
+    is the domain part of every address the mailspace mints:
+    `mind@3f9a1c7e.local` is the `mind` role of the mailspace whose id begins
+    `3f9a1c7e`. Consequences:
+    - The address is in the letter's bytes, so sender and recipient are part
+      of the hashed, immutable object. Routing no longer depends on a
+      config table outside the letter.
+    - The UUID is the global identity. The prefix only has to be unique
+      among the mailspaces of one project (1,000 mailspaces collide with
+      probability about 0.012%), because a prefix is bound at registration
+      and the first claim wins. A collision is refused at join, before
+      anything is pushed.
+    - One wire identity is one checkout is one mailspace. Roles are the
+      local part of the address, not separate identities.
+    - Same-domain addresses are local delivery and never need the server.
+    - The prefix is a label, never proof: authentication is the key. The
+      UUID is decoupled from the key so an address survives re-key.
+    - `.vivi/` configuration is machine-local, not source. A mailspace is
+      not a repository: one workspace-level `.vivi` has one id, and a
+      developer's separate `.vivi` is a different mailspace with a
+      different address. A committed or copied `mailspace.toml` would
+      duplicate an id; the registration refusal is the backstop.
+    - Letters minted before this change keep their old domain
+      (`name@<mailspace-name>.local`). They are immutable. They travel, but
+      their addresses are not routable, so a reply to one needs an explicit
+      address.
+    See [Mailspace addresses](#mailspace-addresses-decided-2026-10-11).
 
 ## What carries over from phases 01 and 02
 
@@ -304,7 +334,9 @@ message/rfc822`, no wrapping and no encoding. The envelope fields the
 sender declares ride as request headers (these are HTTP headers, not
 headers of the letter):
 
-- `X-Vivi-To: <identity name>` (optional)
+- `X-Vivi-To: <recipients>` (optional): `postmaster`, or a comma-separated
+  list of addresses (grammar under
+  [Mailspace addresses](#mailspace-addresses-decided-2026-10-11)).
 - `X-Vivi-Kind: need|task|want|mail` (optional)
 
 - `from` is always the authenticated identity; it is not client input.
@@ -338,7 +370,7 @@ the raw body, the same format `PUT` accepts:
 Content-Type: message/rfc822
 X-Vivi-Message-Id: msg_...
 X-Vivi-From: alice
-X-Vivi-To: bob                  (omitted when none)
+X-Vivi-To: hand@3f9a1c7e.local  (omitted when none)
 X-Vivi-Kind: need               (omitted when none, meaning mail)
 X-Vivi-Sequence: 7
 X-Vivi-Content-Sha256: <sha256 of the body>
@@ -358,7 +390,8 @@ X-Vivi-Content-Sha256: <sha256 of the body>
 
 ```json
 {"records": [{"sequence": 7, "message_id": "msg_...", "from": "alice",
-              "to": "bob", "kind": "need", "content_sha256": "...",
+              "to": "hand@3f9a1c7e.local", "kind": "need",
+              "content_sha256": "...",
               "raw_eml": "<base64, the exact bytes appended>"}],
  "next_cursor": 7}
 ```
@@ -370,6 +403,46 @@ X-Vivi-Content-Sha256: <sha256 of the body>
   `sha256(raw_eml) == content_sha256` and refuses a record that fails.
 - The list is JSON with base64 letters because it is a batch of envelopes;
   only the single-letter push is a raw body.
+
+### Mailspace addresses (decided 2026-10-11)
+
+Item 11 made concrete.
+
+**Registration.** `POST /v1/projects/{id}/identities` gains a required
+`mailspace_id`: a canonical UUID, lowercase and hyphenated (36 characters).
+A missing or malformed id is 400 `invalid_request`. The server derives the
+prefix (the first 8 characters). If another registered identity in the
+project already holds that prefix, the registration is refused 409
+`mailspace_prefix_taken` and nothing is registered; the admission stays
+usable for a registration with a different id. An already registered name
+remains 409 `conflict`. The 201 response gains `mailspace_id`. An identity
+registers exactly one mailspace id for life.
+
+**Directory.** `GET /v1/projects/{id}/directory` members are
+`{name, fingerprint, mailspace_id}`. `mailspace_id` is null for an identity
+registered before this change; such a member has no prefix and cannot be
+addressed.
+
+**Envelope recipients.** `X-Vivi-To` is `postmaster` or a comma-separated
+list of 1 to 16 addresses `local@domain`: local part `[A-Za-z0-9._-]{1,64}`,
+domain `[A-Za-z0-9.-]{1,64}`, the whole header at most 1 KiB. The sender's
+client fills it from the letter's own `To` and `Cc` addresses (lowercased,
+deduplicated, sorted); the server never reads the letter. The server checks
+grammar only. A domain of exactly `<8 lowercase hex>.local` names a
+mailspace prefix. Any other domain is accepted and routes to no one. A
+prefix need not be registered when the letter is appended.
+
+**Mail visibility.** Mail (no kind) is visible to the member who sent it and
+to the member whose registered prefix equals the prefix of any recipient
+address. Need, task, and want letters and mail to `postmaster` stay visible
+to every member. Single-letter `GET` follows the same rule and answers 404
+otherwise. The index keeps `to` as the raw header string; no index schema
+change.
+
+**Envelope check at the receiver.** On pull, unless the envelope `to` is
+absent or `postmaster`, the client compares the envelope's addresses with
+the letter's own `To` and `Cc` and refuses a record that disagrees. The
+server stays unparsing, and a lying envelope is caught at the edge.
 
 ### Storage
 
@@ -394,17 +467,38 @@ this endpoint an identity is locked out after an hour.
 ### Client
 
 - Config is the `[sync]` table in `mailspace.toml`: `server`, `project`
-  (the server-side project id), `name` (this checkout's registered
-  identity), `recipient` (the local role that receives pulled letters), and
-  an optional `[sync.names]` map of local role to wire name.
+  (the server-side project id), and `name` (this checkout's registered
+  identity). `recipient` and `[sync.names]` are gone: the address carries
+  both. The mailspace id is the top-level `id` in `mailspace.toml`, minted
+  once when absent and never rewritten.
+- `vivi sync join` registers `name`, the key, and the mailspace id.
+  `vivi sync directory` lists the project's members and their address
+  domains so a remote role can be addressed.
 - `vivi sync` pushes every local letter that has no remote binding for the
   project, then pulls letters since the stored cursor. Push sends the stored
-  file as-is. Pull verifies the hash and ingests the bytes verbatim under the
-  envelope id; an id or content already held is skipped.
+  file as-is. Pull verifies the hash and the envelope and ingests the bytes
+  verbatim under the envelope id; an id or content already held is skipped.
 - Envelope derivation on push: `kind` is the letter's work kind (`need`,
-  `task`, `want`) or `mail`; `to` is the delivered row's account mapped
-  through `[sync.names]`, else the checkout's own identity.
+  `task`, `want`) or `mail`; `to` is the letter's own `To` and `Cc`
+  addresses.
+- Compose: a recipient `role@<prefix>.local` whose prefix is not this
+  mailspace's is a remote recipient. The letter gets a sent copy and no
+  delivered copy, and goes on the next push. A reply is addressed to the
+  original `From`, so replying to a remote sender routes with no extra
+  configuration.
+- Pull filing, for each record not already held:
+  1. Own letter (envelope `from` is this checkout's name): filed `sent`
+     under the `From` address's role.
+  2. Otherwise one row per `To`/`Cc` address whose domain is this
+     mailspace's, under that local role. A role this mailspace does not have
+     is filed under the name anyway and reported, so adding the role later
+     shows it.
+  3. A letter addressed to no role of this mailspace (a need, task, or want
+     for another mailspace's role) is held under its first `To` address
+     verbatim, so every member holds every work item without it landing in
+     a local role's queue.
 - Not synced: memos, drafts, trash, and local state (closing a need,
   marks). Closing a need as an appended record is a later unit.
-- Out of this layer, by design: remote addressing in compose, reply routing
-  to a remote sender, identity per role, long-poll. They build on this.
+- Out of this layer, by design: long-poll, and a reply to a letter minted
+  before item 11 (its address is not routable; address the reply
+  explicitly).
