@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — letters (2026-10-11)
+
+Items travel as raw `.eml` letters, byte for byte (decided item 10). A push
+is `PUT /v1/projects/{id}/items/{message_id}` with the letter as the request
+body and the envelope in `X-Vivi-To` / `X-Vivi-Kind` headers; a single
+letter is fetched with `GET` of the same address as the raw body; the list
+(`GET .../items?since=N`) stays JSON. The server stores each letter sealed
+whole and never parses or renders it, so the content hash is identical on
+every machine. Adds `POST /v1/projects/{id}/auth/token` (token renewal).
+Breaking: the field-based append is gone and projects created on the
+earlier wire must be recreated. Rooms are unchanged. Acceptance:
+`scripts/project-sync-smoke.sh`.
+
 ## Unreleased — phase 03 core (2026-10-10)
 
 The project, not the room, is the tenant: `/v1/projects` is the new wire,

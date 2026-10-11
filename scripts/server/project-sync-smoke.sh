@@ -5,7 +5,8 @@
 # .eml file: it is stored on the server byte for byte and filed on B with an
 # identical hash. A reply composed on B travels back and threads on A. Replays
 # change nothing. Raw HTTP legs check the server's idempotency and that what it
-# serves is exactly what was appended.
+# serves is exactly what was appended. A push is `PUT .../items/{id}` with the
+# letter as the request body.
 #
 # Local (default): boots target/debug/vivi-server from this repo on $PORT.
 # Deployed: SERVER_URL=https://host scripts/project-sync-smoke.sh runs the same
@@ -89,16 +90,12 @@ bearer() { # name tag  -> token on stdout (project must exist: $PID)
     -d "{\"name\":\"$1\",\"challenge_id\":\"$cid\",\"signature_base64\":\"$sig\"}" | jget '["token"]'
 }
 append() { # token id emlfile to kind -> http code (body in $W/append.out)
-  python3 - "$3" "$4" "$5" <<'PY' > "$W/append.json"
-import base64, json, sys
-path, to, kind = sys.argv[1:4]
-d = {"raw_eml": base64.b64encode(open(path, "rb").read()).decode()}
-if to: d["to"] = to
-if kind: d["kind"] = kind
-print(json.dumps(d))
-PY
-  curl -s -m 15 -o "$W/append.out" -w '%{http_code}' -X POST "$BASE/v1/projects/$PID/items" \
-    -H "authorization: Bearer $1" -H "message-id: $2" -H 'content-type: application/json' --data-binary @"$W/append.json"
+  # The letter is the request body, byte for byte; the envelope rides in headers.
+  local extra=()
+  [ -n "$4" ] && extra+=(-H "x-vivi-to: $4")
+  [ -n "$5" ] && extra+=(-H "x-vivi-kind: $5")
+  curl -s -m 15 -o "$W/append.out" -w '%{http_code}' -X PUT "$BASE/v1/projects/$PID/items/$2" \
+    -H "authorization: Bearer $1" -H 'content-type: message/rfc822' ${extra[@]+"${extra[@]}"} --data-binary @"$3"
 }
 read_items() { # token -> body on stdout
   curl -s -m 15 "$BASE/v1/projects/$PID/items?since=0" -H "authorization: Bearer $1"
@@ -202,9 +199,17 @@ r = [x for x in json.load(sys.stdin)["records"] if x["message_id"] == sys.argv[1
 sys.stdout.buffer.write(base64.b64decode(r[0]["raw_eml"]))' "$ID1" | shasum -a 256 | awk '{print $1}')
 WANT=$(shasum -a 256 < "$W/raw1.eml" | awk '{print $1}')
 [ "$BACK" = "$WANT" ] && ok "raw bytes (CRLF, no trailing newline) come back identical" || bad "raw round trip differs"
-CODE=$(printf '{"raw_eml":"!!!not base64"}' | curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/projects/$PID/items" \
-  -H "authorization: Bearer $TOKEN_B" -H "message-id: msg_$(openssl rand -hex 12)" -H 'content-type: application/json' -d @-)
-[ "$CODE" = 400 ] && ok "undecodable base64 is refused (400)" || bad "bad base64 returned $CODE"
+# the push is a raw body: empty is refused, over 64 KiB is refused, exactly 64 KiB is taken
+: > "$W/empty.eml"
+CODE=$(append "$TOKEN_B" "msg_$(openssl rand -hex 12)" "$W/empty.eml" alice mail)
+[ "$CODE" = 400 ] && ok "an empty letter is refused (400)" || bad "empty letter returned $CODE"
+python3 -c 'import sys; sys.stdout.buffer.write(b"X" * 65536)' > "$W/at-cap.eml"
+python3 -c 'import sys; sys.stdout.buffer.write(b"X" * 65537)' > "$W/over-cap.eml"
+C_AT=$(append "$TOKEN_B" "msg_$(openssl rand -hex 12)" "$W/at-cap.eml" alice mail)
+C_OVER=$(append "$TOKEN_B" "msg_$(openssl rand -hex 12)" "$W/over-cap.eml" alice mail)
+[ "$C_AT" = 201 ] && [ "$C_OVER" = 413 ] && ok "64 KiB is accepted, 64 KiB + 1 is refused (413)" || bad "size cap: at=$C_AT over=$C_OVER"
+CODE=$(append "$TOKEN_B" "not-a-traveling-id" "$W/raw1.eml" alice mail)
+[ "$CODE" = 400 ] && ok "a non-traveling id is refused (400)" || bad "bad id returned $CODE"
 
 echo "RESULT pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -71,30 +71,46 @@ async fn request(
     uri: &str,
     body: Option<Value>,
     token: Option<&str>,
-    message_id: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut headers = Vec::new();
+    if body.is_some() {
+        headers.push(("content-type".to_owned(), "application/json".to_owned()));
+    }
+    let bytes = body.map(|v| v.to_string().into_bytes()).unwrap_or_default();
+    raw_request(app, method, uri, bytes, token, headers).await
+}
+
+/// One request with an arbitrary byte body and explicit headers; the
+/// response body is JSON (or empty, as `Value::Null`).
+async fn raw_request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Vec<u8>,
+    token: Option<&str>,
+    headers: Vec<(String, String)>,
 ) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
-    if body.is_some() {
-        builder = builder.header("content-type", "application/json");
-    }
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));
     }
-    if let Some(id) = message_id {
-        builder = builder.header("message-id", id);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
     }
     let response = app
         .clone()
-        .oneshot(
-            builder
-                .body(Body::from(body.map(|v| v.to_string()).unwrap_or_default()))
-                .unwrap(),
-        )
+        .oneshot(builder.body(Body::from(body)).unwrap())
         .await
         .unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap())
+    // Framework-level rejections (405) carry no body at all.
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, value)
 }
 
 async fn send(
@@ -104,29 +120,34 @@ async fn send(
     body: Option<Value>,
     token: Option<&str>,
 ) -> (StatusCode, Value) {
-    request(app, method, uri, body, token, None).await
+    request(app, method, uri, body, token).await
 }
 
-/// POST one letter with an explicit Message-ID header and raw JSON body.
-async fn post_item(
+/// `PUT` raw letter bytes to `/items/{path_id}` with the given extra headers
+/// (envelope fields, a stray Message-ID, ...). `content-type` is always
+/// `message/rfc822`, as clients send it.
+async fn put_with(
     app: &Router,
     project: &str,
-    token: &str,
-    message_id: Option<&str>,
-    body: Value,
+    token: Option<&str>,
+    path_id: &str,
+    raw: &[u8],
+    headers: &[(&str, &str)],
 ) -> (StatusCode, Value) {
-    request(
+    let mut all = vec![("content-type".to_owned(), "message/rfc822".to_owned())];
+    all.extend(headers.iter().map(|(n, v)| (n.to_string(), v.to_string())));
+    raw_request(
         app,
-        "POST",
-        &format!("/v1/projects/{project}/items"),
-        Some(body),
-        Some(token),
-        message_id,
+        "PUT",
+        &format!("/v1/projects/{project}/items/{path_id}"),
+        raw.to_vec(),
+        token,
+        all,
     )
     .await
 }
 
-/// Append raw letter bytes with optional envelope fields.
+/// Append raw letter bytes with optional envelope headers.
 async fn append(
     app: &Router,
     project: &str,
@@ -136,14 +157,14 @@ async fn append(
     to: Option<&str>,
     kind: Option<&str>,
 ) -> (StatusCode, Value) {
-    let mut body = json!({"raw_eml": STANDARD.encode(raw)});
+    let mut headers = Vec::new();
     if let Some(to) = to {
-        body["to"] = json!(to);
+        headers.push(("x-vivi-to", to));
     }
     if let Some(kind) = kind {
-        body["kind"] = json!(kind);
+        headers.push(("x-vivi-kind", kind));
     }
-    post_item(app, project, token, Some(id), body).await
+    put_with(app, project, Some(token), id, raw, &headers).await
 }
 
 async fn read(app: &Router, project: &str, token: &str, since: u64) -> Value {
@@ -498,76 +519,64 @@ async fn size_cap_and_input_validation() {
     assert_eq!(too_big["error"]["code"], "body_too_large");
 
     let letter = eml(&traveling(3), "x");
-    // Bad base64, empty letter, missing raw_eml.
     let bad = |status: StatusCode, value: &Value| {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
         assert_eq!(value["error"]["code"], "invalid_request");
     };
-    let (status, value) = post_item(
-        &fx.app,
-        &fx.project,
-        &fx.token,
-        Some(&traveling(3)),
-        json!({"raw_eml": "!!!not base64"}),
-    )
-    .await;
-    bad(status, &value);
-    let (status, value) = post_item(
-        &fx.app,
-        &fx.project,
-        &fx.token,
-        Some(&traveling(3)),
-        json!({"raw_eml": ""}),
-    )
-    .await;
-    bad(status, &value);
-    let (status, value) = post_item(
-        &fx.app,
-        &fx.project,
-        &fx.token,
-        Some(&traveling(3)),
-        json!({"body": "the old field shape"}),
-    )
-    .await;
+
+    // Empty body.
+    let (status, value) = fx.append(&traveling(3), b"", None, None).await;
     bad(status, &value);
 
-    // Bad kind and bad `to`.
-    let (status, value) = fx.append(&traveling(3), &letter, None, Some("memo")).await;
+    // Bad kind (header) and bad `to` (header, including present-but-empty).
+    let (status, value) = fx.append(&traveling(3), &letter, None, Some("bogus")).await;
     bad(status, &value);
     for to in ["", "two words", "a@b", &"a".repeat(65)] {
         let (status, value) = fx.append(&traveling(3), &letter, Some(to), None).await;
         bad(status, &value);
     }
-
-    // Bad or missing Message-ID.
-    for id in [None, Some("plain-1"), Some("msg_ABCDEF000000000000000000")] {
-        let (status, value) = post_item(
-            &fx.app,
-            &fx.project,
-            &fx.token,
-            id,
-            json!({"raw_eml": STANDARD.encode(&letter)}),
+    // A header value that is not ASCII.
+    let non_ascii = Request::builder()
+        .method("PUT")
+        .uri(format!(
+            "/v1/projects/{}/items/{}",
+            fx.project,
+            traveling(4)
+        ))
+        .header("authorization", format!("Bearer {}", fx.token))
+        .header(
+            "x-vivi-to",
+            axum::http::HeaderValue::from_bytes(b"caf\xe9").unwrap(),
         )
-        .await;
+        .body(Body::from(letter.clone()))
+        .unwrap();
+    let response = fx.app.clone().oneshot(non_ascii).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    bad(status, &serde_json::from_slice(&bytes).unwrap());
+
+    // Bad path id.
+    for id in ["plain-1", "msg_ABCDEF000000000000000000", "msg_0000"] {
+        let (status, value) = fx.append(id, &letter, None, None).await;
         bad(status, &value);
     }
 
     // No token: 401.
-    let (status, no_token) = send(
-        &fx.app,
-        "POST",
-        &format!("/v1/projects/{}/items", fx.project),
-        Some(json!({"raw_eml": STANDARD.encode(&letter)})),
-        None,
-    )
-    .await;
+    let (status, no_token) =
+        put_with(&fx.app, &fx.project, None, &traveling(5), &letter, &[]).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{no_token}");
 
-    // None of the rejects consumed a sequence or stored anything.
+    // None of the rejects consumed a sequence or stored anything: the cap
+    // letter is the only one stored.
     let items = read(&fx.app, &fx.project, &fx.token, 0).await;
     assert_eq!(items["records"].as_array().unwrap().len(), 1);
     let (status, fine) = fx
-        .append(&traveling(3), &letter, Some("Bob.s-1_x"), None)
+        .append(
+            &traveling(6),
+            &eml(&traveling(6), "y"),
+            Some("Bob.s-1_x"),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{fine}");
     assert_eq!(fine["sequence"], 2);
@@ -978,4 +987,345 @@ async fn token_renewal_is_keyed_to_the_project() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{value}");
     assert_eq!(value["error"]["code"], "project_not_found");
+}
+
+#[tokio::test]
+async fn raw_body_round_trips_byte_identically_through_put_then_get() {
+    let fx = fixture("raw-body", 151).await;
+    // Non-UTF-8, NUL, CRLF, a lone CR, and no trailing newline; also a
+    // body that looks like JSON and a base64-ish run, which must stay raw.
+    let mut raw = b"From: a@p.local\r\nSubject: raw\r\n\r\n".to_vec();
+    raw.extend_from_slice(&[0xff, 0xfe, 0x00, 0x80, b'\r', b'{', b'"', b'=', b'=']);
+    raw.extend_from_slice(b"\r\nlast line without newline");
+    let id = traveling(1);
+    let (status, created) = fx.append(&id, &raw, None, Some("task")).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["content_sha256"], sha256_hex(&raw));
+
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    let served = STANDARD
+        .decode(items["records"][0]["raw_eml"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(served, raw);
+}
+
+#[tokio::test]
+async fn the_content_type_is_ignored() {
+    let fx = fixture("content-type", 152).await;
+    for (n, content_type) in ["application/json", "text/plain", "application/x-weird"]
+        .into_iter()
+        .enumerate()
+    {
+        let id = traveling(n as u64 + 1);
+        let raw = eml(&id, "typed oddly");
+        let (status, value) = raw_request(
+            &fx.app,
+            "PUT",
+            &format!("/v1/projects/{}/items/{id}", fx.project),
+            raw.clone(),
+            Some(&fx.token),
+            vec![("content-type".to_owned(), content_type.to_owned())],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{content_type}: {value}");
+        assert_eq!(value["content_sha256"], sha256_hex(&raw));
+    }
+}
+
+#[tokio::test]
+async fn the_old_post_append_route_is_gone() {
+    let fx = fixture("old-route", 153).await;
+    let id = traveling(1);
+    let raw = eml(&id, "old wire");
+    let (status, _) = raw_request(
+        &fx.app,
+        "POST",
+        &format!("/v1/projects/{}/items", fx.project),
+        json!({"raw_eml": STANDARD.encode(&raw)})
+            .to_string()
+            .into_bytes(),
+        Some(&fx.token),
+        vec![
+            ("content-type".to_owned(), "application/json".to_owned()),
+            ("message-id".to_owned(), id.clone()),
+        ],
+    )
+    .await;
+    assert!(!status.is_success(), "POST append must not exist: {status}");
+    assert!(
+        status == StatusCode::METHOD_NOT_ALLOWED || status == StatusCode::NOT_FOUND,
+        "{status}"
+    );
+    // Nothing was stored, and the collection path still reads.
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert!(items["records"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_path_id_wins_over_a_message_id_header() {
+    let fx = fixture("path-id", 154).await;
+    let path_id = traveling(1);
+    let header_id = traveling(2);
+    let raw = eml(&path_id, "path id");
+    let (status, created) = put_with(
+        &fx.app,
+        &fx.project,
+        Some(&fx.token),
+        &path_id,
+        &raw,
+        &[("message-id", &header_id)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["message_id"], path_id);
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert_eq!(ids(&items), vec![path_id]);
+
+    // A valid Message-ID header does not rescue a bad path id.
+    let (status, value) = put_with(
+        &fx.app,
+        &fx.project,
+        Some(&fx.token),
+        "not-an-id",
+        &raw,
+        &[("message-id", &header_id)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    assert_eq!(value["error"]["code"], "invalid_request");
+}
+
+/// The extractor limit sits just above the cap, so both the cap's own 413
+/// and an extractor-level 413 (far over the limit) use our JSON shape.
+#[tokio::test]
+async fn oversize_bodies_get_the_json_413_shape() {
+    let fx = fixture("cap-413", 155).await;
+    let cap = 64 * 1024;
+    for (n, len, expected) in [
+        (1u64, cap, StatusCode::CREATED),
+        (2, cap + 1, StatusCode::PAYLOAD_TOO_LARGE),
+        // Past the route's body limit, rejected before the handler's check.
+        (3, 200 * 1024, StatusCode::PAYLOAD_TOO_LARGE),
+        (4, 3 * 1024 * 1024, StatusCode::PAYLOAD_TOO_LARGE),
+    ] {
+        let id = traveling(n);
+        let mut raw = eml(&id, "");
+        raw.resize(len, b'x');
+        let (status, value) = fx.append(&id, &raw, None, None).await;
+        assert_eq!(status, expected, "len {len}: {value}");
+        if expected == StatusCode::PAYLOAD_TOO_LARGE {
+            assert_eq!(value["error"]["code"], "body_too_large", "len {len}");
+        }
+    }
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert_eq!(ids(&items), vec![traveling(1)]);
+}
+
+/// `GET /items/{id}` with the raw response: status, headers, body bytes.
+async fn get_letter(
+    app: &Router,
+    project: &str,
+    token: Option<&str>,
+    id: &str,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut builder = Request::builder()
+        .method("GET")
+        .uri(format!("/v1/projects/{project}/items/{id}"));
+    if let Some(token) = token {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, headers, bytes.to_vec())
+}
+
+fn header<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).map(|v| v.to_str().unwrap())
+}
+
+#[tokio::test]
+async fn single_letter_get_returns_raw_bytes_with_envelope_headers() {
+    let fx = fixture("get-one", 161).await;
+    // Non-UTF-8, NUL, CRLF, no trailing newline.
+    let mut raw = b"From: a@p.local\r\nSubject: raw\r\n\r\n".to_vec();
+    raw.extend_from_slice(&[0xff, 0xfe, 0x00, 0x80, b'\r', b'\n']);
+    raw.extend_from_slice(b"no trailing newline");
+
+    // First letter, no envelope fields: To and Kind headers are omitted.
+    let plain_id = traveling(1);
+    let (status, value) = fx.append(&plain_id, &raw, None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (status, headers, body) =
+        get_letter(&fx.app, &fx.project, Some(&fx.token), &plain_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, raw, "byte-identical to what was PUT");
+    assert_eq!(header(&headers, "content-type"), Some("message/rfc822"));
+    assert_eq!(
+        header(&headers, "x-vivi-message-id"),
+        Some(plain_id.as_str())
+    );
+    assert_eq!(header(&headers, "x-vivi-from"), Some("creator"));
+    assert_eq!(header(&headers, "x-vivi-sequence"), Some("1"));
+    assert_eq!(
+        header(&headers, "x-vivi-content-sha256"),
+        Some(sha256_hex(&body).as_str())
+    );
+    assert_eq!(header(&headers, "cache-control"), Some("no-store"));
+    assert!(headers.get("x-vivi-to").is_none());
+    assert!(headers.get("x-vivi-kind").is_none());
+
+    // Second letter with both fields.
+    let id = traveling(2);
+    let letter = eml(&id, "kinded");
+    let (status, value) = fx.append(&id, &letter, Some("builder"), Some("NEED")).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (status, headers, body) = get_letter(&fx.app, &fx.project, Some(&fx.token), &id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, letter);
+    assert_eq!(header(&headers, "x-vivi-to"), Some("builder"));
+    assert_eq!(header(&headers, "x-vivi-kind"), Some("need"));
+    assert_eq!(header(&headers, "x-vivi-sequence"), Some("2"));
+}
+
+#[tokio::test]
+async fn single_letter_get_applies_list_visibility() {
+    let fx = fixture("get-visibility", 171).await;
+    let bob = fx.add_member(&traveling(90), "bob", &key(172)).await;
+    let carol = fx.add_member(&traveling(91), "carol", &key(173)).await;
+
+    let work = traveling(10);
+    let mail = traveling(11);
+    let gov = traveling(12);
+    assert_eq!(
+        fx.append(&work, &eml(&work, "w"), None, Some("task"))
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        fx.append(&mail, &eml(&mail, "m"), Some("bob"), None)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    // A governance letter must carry a vouch; re-vouching bob is idempotent.
+    let gov_raw = vouch_letter(&gov, "bob", &key(172));
+    assert_eq!(
+        fx.append(&gov, &gov_raw, Some("postmaster"), None).await.0,
+        StatusCode::CREATED
+    );
+
+    // Work items and postmaster mail: every member.
+    for token in [&fx.token, &bob, &carol] {
+        let (status, _, _) = get_letter(&fx.app, &fx.project, Some(token), &work).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, body) = get_letter(&fx.app, &fx.project, Some(token), &gov).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, gov_raw);
+    }
+    // Mail: sender and recipient only.
+    for token in [&fx.token, &bob] {
+        let (status, _, _) = get_letter(&fx.app, &fx.project, Some(token), &mail).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // A not-visible letter and an unknown id are byte-identical 404s.
+    let (hidden_status, hidden_headers, hidden_body) =
+        get_letter(&fx.app, &fx.project, Some(&carol), &mail).await;
+    let (unknown_status, unknown_headers, unknown_body) =
+        get_letter(&fx.app, &fx.project, Some(&carol), &traveling(999)).await;
+    assert_eq!(hidden_status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown_status, StatusCode::NOT_FOUND);
+    assert_eq!(hidden_body, unknown_body);
+    assert_eq!(hidden_headers, unknown_headers);
+    let value: Value = serde_json::from_slice(&hidden_body).unwrap();
+    assert_eq!(value["error"]["code"], "item_not_found");
+    assert_eq!(value["error"]["message"], "no such letter");
+}
+
+#[tokio::test]
+async fn single_letter_get_error_cases() {
+    let fx = fixture("get-errors", 181).await;
+    let id = traveling(1);
+    assert_eq!(
+        fx.append(&id, &eml(&id, "x"), None, Some("need")).await.0,
+        StatusCode::CREATED
+    );
+    let json_of = |body: &[u8]| serde_json::from_slice::<Value>(body).unwrap();
+
+    // Malformed id: 400.
+    let (status, _, body) = get_letter(&fx.app, &fx.project, Some(&fx.token), "plain-1").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json_of(&body)["error"]["code"], "invalid_request");
+
+    // Missing and invalid bearer: 401.
+    let (status, _, body) = get_letter(&fx.app, &fx.project, None, &id).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json_of(&body)["error"]["code"], "unauthorized");
+    let (status, _, _) = get_letter(&fx.app, &fx.project, Some("not-a-token"), &id).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Unknown project: 404 project_not_found.
+    let unknown = format!(
+        "{}{}",
+        if fx.project.starts_with('z') {
+            "y"
+        } else {
+            "z"
+        },
+        &fx.project[1..]
+    );
+    let (status, _, body) = get_letter(&fx.app, &unknown, Some(&fx.token), &id).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json_of(&body)["error"]["code"], "project_not_found");
+
+    // A token from another project does not open this one.
+    let other = fixture("get-errors-other", 182).await;
+    let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&other.token), &id).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// An indexed letter whose blob is gone or does not match its hash is a 500,
+/// never a 404 (a 404 would say "no such letter" about a letter we hold).
+#[tokio::test]
+async fn single_letter_get_with_an_unreadable_blob_is_500_not_404() {
+    let fx = fixture("get-missing-blob", 191).await;
+    let first = traveling(1);
+    let second = traveling(2);
+    let (_, created) = fx
+        .append(&first, &eml(&first, "one"), None, Some("need"))
+        .await;
+    let (_, other) = fx
+        .append(&second, &eml(&second, "two"), None, Some("need"))
+        .await;
+    let letters = fx.dir.join("projects").join(&fx.project).join("letters");
+    let blob = |value: &Value| {
+        letters.join(format!(
+            "{}.sealed",
+            value["content_sha256"].as_str().unwrap()
+        ))
+    };
+
+    // Swapped blob: unseals fine, hash mismatch.
+    std::fs::copy(blob(&other), blob(&created)).unwrap();
+    let (status, _, body) = get_letter(&fx.app, &fx.project, Some(&fx.token), &first).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["error"]["code"],
+        "internal"
+    );
+
+    // Missing blob.
+    std::fs::remove_file(blob(&created)).unwrap();
+    let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&fx.token), &first).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    // The other letter is unaffected.
+    let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&fx.token), &second).await;
+    assert_eq!(status, StatusCode::OK);
 }

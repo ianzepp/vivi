@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 
 use auth::ChallengeBook;
@@ -92,9 +93,12 @@ pub fn api_router(
             "/v1/projects/{id}/directory",
             get(projects_api::directory_handler),
         )
+        .route("/v1/projects/{id}/items", get(projects_api::items_handler))
         .route(
-            "/v1/projects/{id}/items",
-            get(projects_api::items_handler).post(projects_api::append_handler),
+            "/v1/projects/{id}/items/{message_id}",
+            get(projects_api::letter_handler)
+                .put(projects_api::append_handler)
+                .layer(DefaultBodyLimit::max(projects_api::APPEND_BODY_LIMIT)),
         )
         .route("/v1/rooms", post(rooms::create_room_handler))
         .route("/v1/rooms/{id}", get(rooms::room_meta_handler))

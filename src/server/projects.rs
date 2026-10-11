@@ -538,20 +538,48 @@ impl ProjectStore {
         for row in rows {
             let raw_eml = read_letter(cipher, &dir, row)?;
             next_cursor = row.sequence;
-            records.push(ProjectRecord {
-                sequence: row.sequence,
-                message_id: row.message_id.clone(),
-                from: row.from.clone(),
-                to: row.to.clone(),
-                kind: row.kind.clone(),
-                content_sha256: row.content_sha256.clone(),
-                raw_eml,
-            });
+            records.push(record_of(row, raw_eml));
         }
         Ok(ReadAfter {
             records,
             next_cursor,
         })
+    }
+
+    /// Read one letter by id, scoped to `viewer` with the same rules as
+    /// [`read_after_scoped`](Self::read_after_scoped). A letter the viewer
+    /// may not see is `None`, exactly like an unknown id, and is decided
+    /// from the index row so it is never unsealed.
+    pub fn read_one_scoped(
+        &self,
+        cipher: &StoreCipher,
+        raw_id: &str,
+        message_id: &str,
+        viewer: &str,
+    ) -> Result<Option<ProjectRecord>, ProjectError> {
+        let dir = self.existing_project_dir(raw_id)?;
+        let index = read_index(&dir)?;
+        let Some(row) = index
+            .records
+            .iter()
+            .find(|row| row.message_id == message_id && scoped_visible(row, viewer))
+        else {
+            return Ok(None);
+        };
+        let raw_eml = read_letter(cipher, &dir, row)?;
+        Ok(Some(record_of(row, raw_eml)))
+    }
+}
+
+fn record_of(row: &StoredRow, raw_eml: Vec<u8>) -> ProjectRecord {
+    ProjectRecord {
+        sequence: row.sequence,
+        message_id: row.message_id.clone(),
+        from: row.from.clone(),
+        to: row.to.clone(),
+        kind: row.kind.clone(),
+        content_sha256: row.content_sha256.clone(),
+        raw_eml,
     }
 }
 

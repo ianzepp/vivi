@@ -270,41 +270,47 @@ content.
 
 ### Carried forward from the build
 
-- Identity tokens have no refresh endpoint; re-registering a taken name is
-  refused. A refresh or re-auth path is future work.
+- ~~Identity tokens have no refresh endpoint~~ Built 2026-10-11:
+  `POST /v1/projects/{id}/auth/token` (see Token renewal below).
 - The append rate limiter folds the identity name into the limiter's u32
   seat slot (`DefaultHasher`); a theoretical name collision shares one
-  bucket. True string keying wants a `safety.rs` variant.
+  bucket. True string keying wants a `safety.rs` variant. The cap is 30
+  sends per minute per member, so a first push of a large mailspace takes
+  several runs (the client stops cleanly and resumes).
 - Revocation and re-key events share the vouch privilege by design but are
   not built; the registry admits only.
 - Per-project wake exists in the store (`ProjectWake`) with no long-poll
-  endpoint wired yet; the items read is a plain poll.
-- The smoke script has no project-API legs yet (tracked as a want; the
-  vivi client speaking the project API is its precondition).
+  endpoint wired yet; the items read is a plain poll. A long-poll must
+  register its waiter before reading so an append between read and wait is
+  not missed (a miss costs latency, never data: reads are cursored).
+- ~~The smoke script has no project-API legs~~ Built 2026-10-11:
+  `scripts/project-sync-smoke.sh` is the end-to-end acceptance for the
+  letter wire (two checkouts, real server, real binaries).
+- URL project ids are used raw by the challenge and identity paths rather
+  than canonicalized. Harmless on a case-sensitive filesystem and not a
+  signature bypass, but it should be canonicalized.
+- Appends and reads scan the whole `items.json` index linearly.
 
-## Letter wire (decided 2026-10-11)
-
-Decided item 10. A **letter** is the exact `.eml` file the origin's store
-holds. Its name is `content_sha256` = lowercase hex `sha256` of its bytes.
-The **envelope** is what travels beside it: the client-minted id, the
-recipient and kind the sender declares (for visibility), the authenticated
-sender, the server's sequence, and the hash the server computed. The server
-treats a letter as opaque bytes: it does not parse headers, render, or
-rewrite. Only mail addressed to `postmaster` is read (the vouch rule).
+**Shape rule.** A letter itself, PUT or GET, is the raw `.eml` with its
+envelope in HTTP headers. Every action *around* letters (listing now,
+archiving and the like later) is JSON.
 
 ### Append
 
-`POST /v1/projects/{id}/items` (bearer), header `Message-ID: msg_` + 24
-lowercase hex (client-minted, decided item 5). Body:
+`PUT /v1/projects/{id}/items/{message_id}` (bearer). `{message_id}` is the
+client-minted id, `msg_` + 24 lowercase hex (decided item 5). The request
+body **is the letter**: the exact `.eml` bytes, `Content-Type:
+message/rfc822`, no wrapping and no encoding. The envelope fields the
+sender declares ride as request headers (these are HTTP headers, not
+headers of the letter):
 
-```json
-{"raw_eml": "<standard base64 of the exact bytes>",
- "to": "<identity name>",          // optional
- "kind": "need|task|want|mail"}    // optional
-```
+- `X-Vivi-To: <identity name>` (optional)
+- `X-Vivi-Kind: need|task|want|mail` (optional)
 
 - `from` is always the authenticated identity; it is not client input.
-- The decoded letter is capped at 64 KiB (413 `body_too_large`).
+- The body is capped at 64 KiB (413 `body_too_large`); an empty body is 400.
+- `PUT` is idempotent by id, which is the point: replaying the same request
+  is safe.
 - 201 `{message_id, sequence, content_sha256}` for a fresh letter.
 - 200 with `duplicate: true` for a replay: same id and same bytes, or the
   same bytes presented under a different id **by the same sender** (the
@@ -313,14 +319,40 @@ lowercase hex (client-minted, decided item 5). Body:
   see learns nothing about it; another member presenting those bytes gets
   an ordinary fresh append under their own id.
 - 409 `conflict`: the id already names different bytes.
-- 400 `invalid_request`: bad id, undecodable base64, empty letter, bad
-  `kind`, or an invalid `to`.
-- Rate limit and the vouch rule are as built. For `to: postmaster` the
-  letter's body (the bytes after the first blank line, UTF-8) must be the
-  JSON `{"vouch": {"name", "public_key_pem"}}`; the admission is written
-  first, then the letter is stored.
+- 400 `invalid_request`: bad id, empty body, bad `X-Vivi-Kind`, or an
+  invalid `X-Vivi-To`.
+- Rate limit and the vouch rule are as built. For `X-Vivi-To: postmaster`
+  the letter's body (the bytes after the first blank line, UTF-8) must be
+  the JSON `{"vouch": {"name", "public_key_pem"}}`; the admission is
+  written first, then the letter is stored.
+- A client verifies that the response's `content_sha256` equals the
+  `sha256` of the bytes it sent.
 
-### Read
+### Fetch one letter
+
+`GET /v1/projects/{id}/items/{message_id}` (bearer) returns the letter as
+the raw body, the same format `PUT` accepts:
+
+```
+200 OK
+Content-Type: message/rfc822
+X-Vivi-Message-Id: msg_...
+X-Vivi-From: alice
+X-Vivi-To: bob                  (omitted when none)
+X-Vivi-Kind: need               (omitted when none, meaning mail)
+X-Vivi-Sequence: 7
+X-Vivi-Content-Sha256: <sha256 of the body>
+
+<the exact .eml bytes>
+```
+
+- Visibility is the same scoping as the list. A letter the caller may not
+  see is 404 `item_not_found`, identical to an unknown id, so the route
+  cannot be used to probe for existence.
+- A malformed id is 400 `invalid_request`; an unknown project is 404
+  `project_not_found`; a missing or bad bearer is 401.
+
+### Read (list, JSON)
 
 `GET /v1/projects/{id}/items?since=N` (bearer) →
 
@@ -336,6 +368,8 @@ lowercase hex (client-minted, decided item 5). Body:
   recipient, and filtered items do not advance `next_cursor`.
 - `raw_eml` is byte-identical to what was appended. A client verifies
   `sha256(raw_eml) == content_sha256` and refuses a record that fails.
+- The list is JSON with base64 letters because it is a batch of envelopes;
+  only the single-letter push is a raw body.
 
 ### Storage
 

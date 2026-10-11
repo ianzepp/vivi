@@ -1,20 +1,22 @@
 //! Project creation, identity proof-of-possession, and item read endpoints.
 
 use axum::Json;
-use axum::extract::rejection::JsonRejection;
+use axum::body::{Body, Bytes};
+use axum::extract::rejection::{BytesRejection, JsonRejection};
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::json;
 use std::hash::{Hash, Hasher};
+use vivi::storage::is_traveling_id;
 
 use crate::AppState;
 use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
 use crate::identities::{RefreshError, RegisterError};
-use crate::projects::{AppendItem, ProjectError};
+use crate::projects::{AppendItem, ProjectError, ProjectRecord};
 use crate::rooms::error_response;
 
 #[derive(Debug, Deserialize)]
@@ -40,18 +42,6 @@ pub struct RegisterRequest {
 pub struct ItemsQuery {
     #[serde(default)]
     since: u64,
-}
-
-/// Append body: the letter as standard base64 plus the envelope fields the
-/// sender declares. `from` is never client input: it is always the bearer
-/// identity's name.
-#[derive(Debug, Deserialize)]
-pub struct AppendRequest {
-    raw_eml: String,
-    #[serde(default)]
-    to: Option<String>,
-    #[serde(default)]
-    kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -496,15 +486,35 @@ pub async fn items_handler(
     }
 }
 
-/// `POST /v1/projects/:id/items` — append one letter under its client-minted
-/// traveling Message-ID (bearer). The letter is opaque bytes, stored and
-/// served back exactly; the sender is always the authenticated identity, and
-/// a letter addressed to postmaster is a vouch, admitted at submit.
+/// Body limit for the append route, a little above the 64 KiB letter cap so
+/// an oversize body reaches this module's own 413 instead of the extractor's.
+pub const APPEND_BODY_LIMIT: usize = 70 * 1024;
+
+/// One optional envelope header: absent is `None`; a value that is not
+/// plain ASCII is a 400.
+fn envelope_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, Response> {
+    match headers.get(name).map(|v| v.to_str()) {
+        None => Ok(None),
+        Some(Ok(value)) => Ok(Some(value)),
+        Some(Err(_)) => Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            &format!("{name} must be ASCII"),
+        )),
+    }
+}
+
+/// `PUT /v1/projects/:id/items/:message_id` — append one letter under its
+/// client-minted traveling id (bearer). The request body is the letter, kept
+/// exactly: no wrapping, no encoding, and `Content-Type` is ignored. The
+/// envelope rides in `X-Vivi-To` and `X-Vivi-Kind`; the sender is always the
+/// authenticated identity, and a letter addressed to postmaster is a vouch,
+/// admitted at submit.
 pub async fn append_handler(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath((id, message_id)): AxumPath<(String, String)>,
     headers: HeaderMap,
-    payload: Result<Json<AppendRequest>, JsonRejection>,
+    body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let Some(token) = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -547,31 +557,29 @@ pub async fn append_handler(
             "storage encryption unavailable",
         );
     };
-    let req = match json_body(payload) {
-        Ok(req) => req,
+    let raw_eml = match body {
+        Ok(bytes) => bytes.to_vec(),
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return project_error(ProjectError::TooLarge);
+        }
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "request body could not be read",
+            );
+        }
+    };
+    let to = match envelope_header(&headers, "x-vivi-to") {
+        Ok(to) => to,
         Err(response) => return response,
     };
-    let Ok(raw_eml) = STANDARD.decode(req.raw_eml.as_bytes()) else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "raw_eml must be standard base64",
-        );
+    let kind = match envelope_header(&headers, "x-vivi-kind") {
+        Ok(kind) => kind,
+        Err(response) => return response,
     };
-    // Clients mint every id: a traveling Message-ID header is required for
-    // every append. Id, size, kind, and recipient rules live in
-    // `AppendItem::new`.
-    let message_id = headers
-        .get("message-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    let item = match AppendItem::new(
-        message_id,
-        &viewer,
-        req.to.as_deref(),
-        req.kind.as_deref(),
-        raw_eml,
-    ) {
+    // Id, size, kind, and recipient rules live in `AppendItem::new`.
+    let item = match AppendItem::new(&message_id, &viewer, to, kind, raw_eml) {
         Ok(item) => item,
         Err(err) => return project_error(err),
     };
@@ -606,6 +614,120 @@ pub async fn append_handler(
             "project append task failed: {err}"
         ))),
     }
+}
+
+/// `GET /v1/projects/:id/items/:message_id` — fetch one letter as the raw
+/// `.eml` body (bearer), with its envelope in `X-Vivi-*` response headers.
+/// A letter the caller may not see and an unknown id are the same 404.
+pub async fn letter_handler(
+    State(state): State<AppState>,
+    AxumPath((id, message_id)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let projects = state.projects.clone();
+    let check_id = id.clone();
+    match tokio::task::spawn_blocking(move || projects.existing_project_dir(&check_id)).await {
+        Ok(Ok(_)) => (),
+        Ok(Err(err)) => return project_error(err),
+        Err(err) => {
+            return project_error(ProjectError::Storage(format!(
+                "project lookup failed: {err}"
+            )));
+        }
+    }
+    let Some(token) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    };
+    let identities = state.identities.clone();
+    let token = token.to_owned();
+    let project_id = id.clone();
+    let viewer =
+        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
+            .await
+        {
+            Ok(Some(identity)) => identity.name,
+            Ok(None) => {
+                return error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "invalid bearer token",
+                );
+            }
+            Err(_) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "identity lookup failed",
+                );
+            }
+        };
+    if !is_traveling_id(&message_id) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "message id must be msg_ plus 24 lowercase hex",
+        );
+    }
+    let Some(cipher) = state.store_cipher else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "storage encryption unavailable",
+        );
+    };
+    let projects = state.projects.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        projects.read_one_scoped(&cipher, &id, &message_id, &viewer)
+    })
+    .await;
+    match read {
+        Ok(Ok(Some(record))) => letter_response(record),
+        Ok(Ok(None)) => error_response(StatusCode::NOT_FOUND, "item_not_found", "no such letter"),
+        Ok(Err(err)) => project_error(err),
+        Err(err) => project_error(ProjectError::Storage(format!(
+            "project read task failed: {err}"
+        ))),
+    }
+}
+
+/// The 200 response for one letter: exact bytes, envelope in headers.
+fn letter_response(record: ProjectRecord) -> Response {
+    let mut response = Response::new(Body::from(record.raw_eml));
+    let headers = response.headers_mut();
+    let mut put = |name: &'static str, value: &str| match HeaderValue::from_str(value) {
+        Ok(value) => {
+            headers.insert(name, value);
+            true
+        }
+        Err(_) => false,
+    };
+    let mut ok = put("content-type", "message/rfc822")
+        && put("x-vivi-message-id", &record.message_id)
+        && put("x-vivi-from", &record.from)
+        && put("x-vivi-sequence", &record.sequence.to_string())
+        && put("x-vivi-content-sha256", &record.content_sha256)
+        && put("cache-control", "no-store");
+    if let Some(to) = &record.to {
+        ok = ok && put("x-vivi-to", to);
+    }
+    if let Some(kind) = &record.kind {
+        ok = ok && put("x-vivi-kind", kind);
+    }
+    if !ok {
+        // Names and kinds are validated before they are stored.
+        return project_error(ProjectError::Storage(
+            "stored envelope is not a valid header value".to_owned(),
+        ));
+    }
+    response
 }
 
 /// `POST /v1/projects/:id/auth/token` — renew the bearer for a registered
