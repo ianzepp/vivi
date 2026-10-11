@@ -11,7 +11,7 @@ use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::Storage;
 use crate::sync::filer::Filer;
-use crate::sync::pull::{PullReport, RefusedRecord, settle_links};
+use crate::sync::pull::{PullReport, RefusedRecord, settle_events, settle_links};
 use crate::sync::state::SyncState;
 use crate::sync::transport::Transport;
 use crate::sync::{SyncSettings, sync_dir};
@@ -51,7 +51,7 @@ impl FetchReport {
         if let Some(held) = self.pull.held_note() {
             line = format!("{line}, {held}");
         }
-        line
+        format!("{line}{}", self.pull.event_note())
     }
 
     /// Refused records, for the operator.
@@ -152,6 +152,7 @@ pub fn fetch_handles(
     )?;
     let before = state.clone();
     report.pull.linked += settle_links(&storage, pending, &mut state)?;
+    settle_events(mailspace, &mut report.pull)?;
     if state != before {
         state.save(&dir)?;
     }

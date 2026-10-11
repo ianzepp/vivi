@@ -6,6 +6,7 @@
 //! the live rows' `Message-ID` headers, never by wire id.
 
 use crate::error::VivariumError;
+use crate::mailspace::EVENT_HEADER;
 use crate::message::normalize_message_id;
 use crate::storage::Storage;
 
@@ -20,6 +21,9 @@ pub struct LetterHeaders {
     /// The letter's own To then Cc addresses, bare and lowercased,
     /// deduplicated, in header order.
     pub recipients: Vec<String>,
+    /// The letter carries an `X-Vivi-Event` header: it is an item-state
+    /// event, which files read.
+    pub is_event: bool,
 }
 
 impl LetterHeaders {
@@ -69,11 +73,16 @@ pub fn parse_headers(data: &[u8]) -> LetterHeaders {
         .and_then(|addr| addr.address.as_deref())
         .map(|address| address.trim().to_ascii_lowercase())
         .filter(|address| !address.is_empty());
+    let is_event = parsed
+        .headers()
+        .iter()
+        .any(|header| header.name().eq_ignore_ascii_case(EVENT_HEADER));
     LetterHeaders {
         subject: parsed.subject().unwrap_or_default().to_string(),
         parent: cited.and_then(normalize_message_id),
         from,
         recipients,
+        is_event,
     }
 }
 

@@ -185,7 +185,7 @@ fn reply_targets(
     recipients
 }
 
-fn reply_subject(subject: &str) -> String {
+pub(super) fn reply_subject(subject: &str) -> String {
     if has_reply_prefix(subject) {
         subject.to_string()
     } else {

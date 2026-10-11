@@ -12,7 +12,7 @@ use crate::mailspace::Mailspace;
 use crate::storage::Storage;
 use crate::sync::fetch::lookup_and_file;
 use crate::sync::filer::Filer;
-use crate::sync::pull::{PullReport, settle_links};
+use crate::sync::pull::{PullReport, settle_events, settle_links};
 use crate::sync::state::SyncState;
 use crate::sync::transport::Transport;
 use crate::sync::{SyncSettings, sync_dir};
@@ -174,6 +174,7 @@ pub fn follow_refs(
     let mut state = SyncState::load(&dir, &settings.project)?;
     let before = state.clone();
     pull.linked += settle_links(&storage, pending, &mut state)?;
+    settle_events(mailspace, pull)?;
     if state != before {
         state.save(&dir)?;
     }

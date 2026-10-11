@@ -57,6 +57,9 @@ pub fn print_thread(
         );
     } else {
         print_text_thread(&messages);
+        if let Some(state) = mailspace.item_event_state(handle)? {
+            println!("\nState: {} (event {})", state.state, state.event);
+        }
     }
     Ok(())
 }

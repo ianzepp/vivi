@@ -42,7 +42,7 @@ pub use graph::{
 };
 pub use links::MailspaceLink;
 use metadata::parse_metadata;
-pub use mutate::{MailspaceMoveWithReply, MailspaceNoteWithReply};
+pub use mutate::{ItemEventWrite, MailspaceMoveWithReply, MailspaceNoteWithReply, RoleMove};
 pub use pending_deps::PendingDependencies;
 use schema::{ensure_schema, message_query};
 pub use sync::{IngestEvent, IngestOutcome};

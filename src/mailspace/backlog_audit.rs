@@ -79,26 +79,15 @@ impl Mailspace {
                 continue;
             }
             checked += 1;
-            let Some(item) = canonical_item(&storage, self, message)? else {
-                continue;
-            };
-            let before = findings.len();
-            audit_item(
+            audit_candidate(
                 self,
                 &storage,
                 &graph.handle,
-                &nodes,
-                &item,
+                (&mut nodes, &mut edges),
+                message,
                 repair,
                 &mut findings,
             )?;
-            if !item.unowned && item.foreign_account.is_none() {
-                audit_edges(self, &storage, &nodes, &edges, &item, repair, &mut findings)?;
-            }
-            if repair && findings.len() > before {
-                nodes = storage.work_graph_nodes(&graph.handle)?;
-                edges = storage.work_graph_edges(&graph.handle)?;
-            }
         }
         audit_orphan_nodes(&storage, &nodes, &mut findings)?;
         Ok(BacklogAuditReport {
@@ -107,6 +96,86 @@ impl Mailspace {
             findings,
         })
     }
+}
+
+/// Audit one candidate row's item: its folders against its latest event
+/// letter, then its node and edges. A repair refreshes the graph snapshot,
+/// so the rest of the audit judges what is there now.
+fn audit_candidate(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    graph_handle: &str,
+    (nodes, edges): (&mut Vec<WorkGraphNodeRow>, &mut Vec<WorkGraphEdgeRow>),
+    message: &StoredMessageView,
+    repair: bool,
+    findings: &mut Vec<BacklogAuditFinding>,
+) -> Result<(), VivariumError> {
+    let before = findings.len();
+    audit_event_state(mailspace, storage, &message.content_id, repair, findings)?;
+    if repair && findings.len() > before {
+        *nodes = storage.work_graph_nodes(graph_handle)?;
+        *edges = storage.work_graph_edges(graph_handle)?;
+    }
+    let before = findings.len();
+    if let Some(item) = canonical_item(storage, mailspace, message)? {
+        audit_item(
+            mailspace,
+            storage,
+            graph_handle,
+            nodes,
+            &item,
+            repair,
+            findings,
+        )?;
+        if !item.unowned && item.foreign_account.is_none() {
+            audit_edges(mailspace, storage, nodes, edges, &item, repair, findings)?;
+        }
+    }
+    if repair && findings.len() > before {
+        *nodes = storage.work_graph_nodes(graph_handle)?;
+        *edges = storage.work_graph_edges(graph_handle)?;
+    }
+    Ok(())
+}
+
+/// Report (and with `repair`, re-apply) an item whose folders disagree with
+/// the latest event letter held for it: a checkout copied or restored from
+/// before the event, or an event filed by a binary that did not apply it.
+fn audit_event_state(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    content_id: &str,
+    repair: bool,
+    findings: &mut Vec<BacklogAuditFinding>,
+) -> Result<(), VivariumError> {
+    let Some((kind, rows)) = mailspace.event_drift(storage, content_id)? else {
+        return Ok(());
+    };
+    let Some(first) = rows.first() else {
+        return Ok(());
+    };
+    let folders: Vec<String> = rows
+        .iter()
+        .map(|row| format!("{} in '{}'", row.handle, row.local_role))
+        .collect();
+    let mut finding = BacklogAuditFinding {
+        class: "event_state".into(),
+        kind: mailspace.source_kind(storage, first).unwrap_or_default(),
+        handle: first.handle.clone(),
+        subject: first.subject.clone(),
+        detail: format!(
+            "the latest event letter says {}, but {}",
+            kind.header(),
+            folders.join(", ")
+        ),
+        repaired: false,
+    };
+    if repair {
+        mailspace.repair_event_drift(content_id)?;
+        finding.repaired = true;
+    }
+    findings.push(finding);
+    Ok(())
 }
 
 /// Canonical (lowest message id) work copy of a candidate row.
@@ -439,39 +508,16 @@ pub fn print_backlog_audit(
     }
     println!("backlog audit {}", report.graph);
     println!("  checked  {}", report.checked);
-    let missing = report
-        .findings
-        .iter()
-        .filter(|f| f.class == "missing_node")
-        .count();
-    let state = report
-        .findings
-        .iter()
-        .filter(|f| f.class == "node_state")
-        .count();
-    let kind = report
-        .findings
-        .iter()
-        .filter(|f| f.class == "node_kind")
-        .count();
-    let orphan = report
-        .findings
-        .iter()
-        .filter(|f| f.class == "orphan_node")
-        .count();
-    let foreign = report
-        .findings
-        .iter()
-        .filter(|f| f.class == "foreign_held")
-        .count();
-    let edge = report
-        .findings
-        .iter()
-        .filter(|f| f.class == "missing_edge")
-        .count();
+    let count = |class: &str| report.findings.iter().filter(|f| f.class == class).count();
     println!(
-        "  findings missing={missing} state={state} kind={kind} orphan={orphan} \
-         foreign={foreign} edge={edge}"
+        "  findings missing={} state={} kind={} orphan={} foreign={} edge={} event={}",
+        count("missing_node"),
+        count("node_state"),
+        count("node_kind"),
+        count("orphan_node"),
+        count("foreign_held"),
+        count("missing_edge"),
+        count("event_state"),
     );
     for finding in &report.findings {
         let flag = if finding.repaired { " [repaired]" } else { "" };

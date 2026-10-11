@@ -1,0 +1,315 @@
+use super::*;
+use crate::mailspace::SendRequest;
+
+fn space() -> (tempfile::TempDir, Mailspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    for role in ["mind", "hand", "auditor"] {
+        mailspace.add_identity(role).unwrap();
+    }
+    (tmp, mailspace)
+}
+
+/// `(the delivered copy's handle, the sender's copy's handle)`.
+fn send(mailspace: &Mailspace, kind: &str, to: &str) -> (String, String) {
+    let result = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec![to.into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: format!("a {kind}"),
+            body: "done_when: ok\n".into(),
+            role: format!("{kind}s"),
+            kind: Some(kind.into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let delivered = result
+        .delivered
+        .first()
+        .map_or_else(|| result.sent.clone(), |d| d.handle.clone());
+    (delivered, result.sent)
+}
+
+fn event(kind: ItemEventKind, id: &str, prev: &[&str], date: i64) -> EventLetter {
+    EventLetter {
+        kind,
+        id: id.into(),
+        of: "item".into(),
+        prev: prev.iter().map(ToString::to_string).collect(),
+        from_domain: "a.local".into(),
+        date,
+    }
+}
+
+fn letter(headers: &str) -> Vec<u8> {
+    format!(
+        "From: mind@aaaaaaaa.local\r\nTo: hand@aaaaaaaa.local\r\nSubject: Re: x\r\n\
+         Message-ID: <ev-1@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n{headers}\r\nbody\r\n"
+    )
+    .into_bytes()
+}
+
+/// The event letters held for `item`, oldest first, as `(kind, prev count)`.
+fn events_of(mailspace: &Mailspace, handle: &str) -> Vec<(String, usize)> {
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    let mut found: Vec<(i64, String, usize)> = Vec::new();
+    for child in storage.reply_child_contents(&view.content_id).unwrap() {
+        let row = storage.message_by_content_id(&child).unwrap().unwrap();
+        let bytes = storage.read_listed_blob(&row.blob_relpath).unwrap();
+        if let Some(event) = parse_event(&bytes) {
+            found.push((event.date, event.kind.header().into(), event.prev.len()));
+        }
+    }
+    found.sort();
+    found
+        .into_iter()
+        .map(|(_, kind, prev)| (kind, prev))
+        .collect()
+}
+
+#[test]
+fn an_event_letter_names_its_item_twice_and_a_kind() {
+    let bytes = letter(
+        "In-Reply-To: <item-1@x.test>\r\nX-Vivi-Event: done\r\n\
+         X-Vivi-Event-Of: <Item-1@x.test>\r\nX-Vivi-Event-Prev: <p1@x.test>\r\n\
+         X-Vivi-Event-Prev: <p2@x.test>\r\nX-Vivi-Event-Prev: <p1@x.test>\r\n",
+    );
+
+    let parsed = parse_event(&bytes).unwrap();
+
+    assert_eq!(parsed.kind, ItemEventKind::Done);
+    assert_eq!(parsed.of, "item-1@x.test");
+    assert_eq!(parsed.id, "ev-1@x.test");
+    assert_eq!(parsed.prev, ["p1@x.test", "p2@x.test"], "deduplicated");
+    assert_eq!(parsed.from_domain, "aaaaaaaa.local");
+    assert!(parsed.date > 0);
+}
+
+#[test]
+fn a_letter_that_does_not_reply_to_its_item_or_has_no_kind_is_plain_mail() {
+    let elsewhere = letter(
+        "In-Reply-To: <other@x.test>\r\nX-Vivi-Event: done\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+    );
+    let unknown = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: cancelled\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+    );
+    let bare = letter("In-Reply-To: <item@x.test>\r\n");
+
+    assert!(parse_event(&elsewhere).is_none());
+    assert!(parse_event(&unknown).is_none());
+    assert!(parse_event(&bare).is_none());
+}
+
+#[test]
+fn the_head_is_the_event_no_other_names_whatever_the_dates() {
+    let events = [
+        event(ItemEventKind::Done, "d", &[], 200),
+        event(ItemEventKind::Reopened, "r", &["d"], 100),
+    ];
+
+    let heads = chain_heads(&events);
+
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0].id, "r");
+}
+
+#[test]
+fn a_fork_has_every_unnamed_event_as_a_head_and_the_later_date_then_id_wins() {
+    let events = [
+        event(ItemEventKind::Done, "a", &[], 100),
+        event(ItemEventKind::Reopened, "b", &[], 100),
+        event(ItemEventKind::Done, "c", &["a"], 90),
+    ];
+
+    let heads = chain_heads(&events);
+
+    let ids: Vec<&str> = heads.iter().map(|head| head.id.as_str()).collect();
+    assert_eq!(ids, ["c", "b"], "oldest to newest; the last is current");
+}
+
+#[test]
+fn a_cycle_has_no_head_so_every_event_is_a_candidate() {
+    let events = [
+        event(ItemEventKind::Done, "a", &["b"], 100),
+        event(ItemEventKind::Reopened, "b", &["a"], 200),
+    ];
+
+    let heads = chain_heads(&events);
+
+    assert_eq!(heads.last().unwrap().id, "b");
+}
+
+#[test]
+fn the_owners_close_and_reopen_are_chained_reply_letters() {
+    let (_tmp, mailspace) = space();
+    let (task, sent) = send(&mailspace, "task", "hand");
+
+    mailspace
+        .move_task("mind", &sent, "done", Some("accepted"), None, &[], &[])
+        .unwrap();
+    let first = mailspace.item_event_state(&task).unwrap().unwrap();
+    mailspace
+        .move_task("mind", &sent, "tasks", None, None, &[], &[])
+        .unwrap();
+    let second = mailspace.item_event_state(&task).unwrap().unwrap();
+
+    assert_eq!(first.state, "done");
+    assert_eq!(second.state, "reopened");
+    assert_eq!(second.heads, 1, "the reopen names the close");
+    assert_ne!(first.event, second.event);
+    assert_eq!(
+        events_of(&mailspace, &task),
+        [("done".to_string(), 0), ("reopened".to_string(), 1)]
+    );
+    // The assignee's copy followed both, and the event letters are read.
+    assert_eq!(
+        mailspace.list("hand", "tasks").unwrap().len(),
+        1,
+        "reopened"
+    );
+    let inbox = mailspace.list("hand", "inbox").unwrap();
+    assert_eq!(inbox.len(), 2);
+    assert!(inbox.iter().all(|row| row.read_state));
+    assert!(inbox.iter().all(|row| row.subject == "Re: a task"));
+}
+
+#[test]
+fn the_event_letter_goes_to_the_items_recipients_minus_the_sender() {
+    let (_tmp, mailspace) = space();
+    let result = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into(), "mind".into()],
+            cc: vec!["auditor".into(), "hand@3f9a1c7e.local".into()],
+            bcc: Vec::new(),
+            subject: "wide".into(),
+            body: "done_when: ok\n".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+
+    mailspace
+        .move_item("mind", &result.sent, "done", None, "need done", None)
+        .unwrap();
+
+    let storage = mailspace.storage().unwrap();
+    let event_row = storage
+        .list_messages_by_role("sent")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.subject == "Re: wide")
+        .unwrap();
+    assert!(event_row.from_addr.starts_with("mind@"));
+    assert!(event_row.to_addr.contains("hand@"), "{}", event_row.to_addr);
+    assert!(
+        !event_row.to_addr.contains("mind@"),
+        "{}",
+        event_row.to_addr
+    );
+    assert!(
+        event_row.cc_addr.contains("auditor@"),
+        "{}",
+        event_row.cc_addr
+    );
+    assert!(
+        event_row.cc_addr.contains("hand@3f9a1c7e.local"),
+        "{}",
+        event_row.cc_addr
+    );
+    // Delivered read to the local roles; the remote Cc is reached by sync.
+    for role in ["hand", "auditor"] {
+        let rows = mailspace.list(role, "inbox").unwrap();
+        assert_eq!(rows.len(), 1, "{role}");
+        assert!(rows[0].read_state);
+    }
+}
+
+#[test]
+fn an_assignee_may_not_reopen_what_its_owner_closed() {
+    let (_tmp, mailspace) = space();
+    let (task, sent) = send(&mailspace, "task", "hand");
+    mailspace
+        .move_task("mind", &sent, "done", None, None, &[], &[])
+        .unwrap();
+
+    let error = mailspace
+        .move_task("hand", &task, "tasks", None, None, &[], &[])
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("only the owner can reopen it"),
+        "{error}"
+    );
+    assert_eq!(mailspace.list("hand", "done").unwrap().len(), 1);
+}
+
+#[test]
+fn an_assignees_close_is_a_local_report_without_an_event() {
+    let (_tmp, mailspace) = space();
+    let (task, _) = send(&mailspace, "task", "hand");
+
+    mailspace
+        .move_task("hand", &task, "done", Some("finished"), None, &[], &[])
+        .unwrap();
+
+    assert_eq!(mailspace.item_event_state(&task).unwrap(), None);
+    assert_eq!(mailspace.list("hand", "done").unwrap().len(), 1);
+    assert!(events_of(&mailspace, &task).is_empty());
+}
+
+#[test]
+fn wants_close_and_reopen_by_the_same_letters() {
+    let (_tmp, mailspace) = space();
+    let (want, sent) = send(&mailspace, "want", "hand");
+
+    mailspace
+        .move_item("mind", &sent, "done", None, "want drop", None)
+        .unwrap();
+    assert_eq!(mailspace.list("hand", "done").unwrap().len(), 1);
+    assert_eq!(
+        mailspace.item_event_state(&want).unwrap().unwrap().state,
+        "done"
+    );
+
+    mailspace
+        .move_item("mind", &sent, "wants", None, "item move", None)
+        .unwrap();
+    assert_eq!(mailspace.list("hand", "wants").unwrap().len(), 1);
+    assert_eq!(
+        mailspace.item_event_state(&want).unwrap().unwrap().state,
+        "reopened"
+    );
+}
+
+#[test]
+fn applying_the_same_head_again_changes_nothing() {
+    let (_tmp, mailspace) = space();
+    let (task, sent) = send(&mailspace, "task", "hand");
+    mailspace
+        .move_task("mind", &sent, "done", None, None, &[], &[])
+        .unwrap();
+    let content = {
+        let storage = mailspace.storage().unwrap();
+        let id = storage.resolve_message_token(&task).unwrap();
+        storage.message_by_id(&id).unwrap().unwrap().content_id
+    };
+    let before = mailspace.storage().unwrap().list_messages().unwrap();
+
+    let tally = mailspace
+        .apply_arrived_events(std::slice::from_ref(&content))
+        .unwrap();
+
+    assert_eq!(tally, EventTally::default());
+    assert_eq!(
+        mailspace.storage().unwrap().list_messages().unwrap(),
+        before
+    );
+}

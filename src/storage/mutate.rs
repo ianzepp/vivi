@@ -28,6 +28,26 @@ pub struct MailspaceNoteWithReply<'a> {
     pub parent_content_id: &'a str,
 }
 
+/// One row an item-state event touches: the folder it moves to (`None`
+/// leaves it where it is) and the lifecycle event that records the action.
+#[derive(Debug, Clone)]
+pub struct RoleMove {
+    pub account: String,
+    pub message_id: String,
+    pub to_role: Option<String>,
+    pub event: MailspaceEventInput,
+}
+
+/// An item-state event applied atomically: the event letter's rows and reply
+/// link (when this mailspace wrote the letter) and every folder move and
+/// lifecycle event the new state brings.
+pub struct ItemEventWrite<'a> {
+    pub reply_requests: &'a [MessageIngestRequest],
+    pub reply_data: Option<&'a [u8]>,
+    pub parent_content_id: &'a str,
+    pub moves: &'a [RoleMove],
+}
+
 pub(super) fn absorbed_error(token: &str) -> VivariumError {
     VivariumError::Message(format!("{token} is absorbed and can no longer be changed"))
 }
@@ -166,6 +186,60 @@ impl Storage {
         append_lifecycle_event(&tx, request.event, &reply.now)?;
         tx.commit()
             .map_err(|e| VivariumError::Other(format!("failed to commit note transaction: {e}")))?;
+        self.invalidate_handle_index();
+        Ok(replies)
+    }
+
+    /// Apply an item-state event in a single transaction: ingest the event
+    /// letter and link it to the item (when there is one), move each row of
+    /// `moves` that names a folder, and append each move's lifecycle event.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if a moved row is absorbed or missing, or
+    /// the blob write, database update, or event logging fails.
+    pub fn apply_item_event(
+        &mut self,
+        write: &ItemEventWrite<'_>,
+    ) -> Result<Vec<StoredMessage>, VivariumError> {
+        let reply = write
+            .reply_data
+            .map(|data| prepare_reply_blob(&self.mail_root, data))
+            .transpose()?;
+        for step in write.moves.iter().filter(|step| step.to_role.is_some()) {
+            reject_if_absorbed(&self.conn, &step.message_id, &step.message_id)?;
+        }
+        let now = reply
+            .as_ref()
+            .map_or_else(|| Utc::now().to_rfc3339(), |reply| reply.now.clone());
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| VivariumError::Other(format!("failed to open item-event write: {e}")))?;
+        let mut replies = Vec::new();
+        if let Some(reply) = &reply {
+            replies = ingest_reply_rows(&tx, reply, write.reply_requests)?;
+            store_reply_link(
+                &tx,
+                &reply.content_id,
+                write.parent_content_id,
+                !replies.is_empty(),
+            )?;
+        }
+        for step in write.moves {
+            if let Some(role) = &step.to_role {
+                update_moved_message(
+                    &tx,
+                    &step.account,
+                    &step.message_id,
+                    role,
+                    &now,
+                    &step.message_id,
+                )?;
+            }
+            append_lifecycle_event(&tx, &step.event, &now)?;
+        }
+        tx.commit()
+            .map_err(|e| VivariumError::Other(format!("failed to commit item-event write: {e}")))?;
         self.invalidate_handle_index();
         Ok(replies)
     }

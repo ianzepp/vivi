@@ -228,6 +228,9 @@ impl Mailspace {
         } else {
             ("done", "needs", "need reopen")
         };
+        if self.settle_need_by_event(&mut storage, &view, to_done, command, via)? {
+            return Ok(());
+        }
         for sibling_id in storage.message_ids_by_content(&view.content_id)? {
             let Some(copy) = storage.message_by_id(&sibling_id)? else {
                 continue;
@@ -265,6 +268,13 @@ impl Mailspace {
     pub fn backlog_reopen_item(&self, handle: &str) -> Result<(), VivariumError> {
         self.reopen_item_cascading(handle, &mut Vec::new())
             .map(|_| ())
+    }
+
+    /// Reopen the node of `handle` like [`Mailspace::backlog_reopen_item`],
+    /// reporting whether a node changed.
+    pub(super) fn backlog_reopen_item_changed(&self, handle: &str) -> Result<bool, VivariumError> {
+        self.reopen_item_cascading(handle, &mut Vec::new())
+            .map(|kind| kind.is_some())
     }
 
     /// Returns the kind of the reopened node, or `None` when no transition

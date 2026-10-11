@@ -74,6 +74,31 @@ impl Storage {
             .map_err(|e| VivariumError::Other(format!("failed to read mailspace link: {e}")))
     }
 
+    /// The content ids that answer `parent_content_id`: every child the link
+    /// table records for it, oldest id first.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn reply_child_contents(
+        &self,
+        parent_content_id: &str,
+    ) -> Result<Vec<String>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT child_content_id FROM mailspace_links
+                 WHERE parent_content_id = ?1 ORDER BY child_content_id",
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to prepare reply query: {e}")))?;
+        let rows = stmt
+            .query_map(params![parent_content_id], |row| row.get(0))
+            .map_err(|e| VivariumError::Other(format!("failed to query replies: {e}")))?;
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read reply row: {e}")))
+        })
+        .collect()
+    }
+
     /// Batch-load links for multiple child `content_ids` in a single query.
     ///
     /// # Errors

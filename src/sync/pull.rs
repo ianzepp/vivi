@@ -58,6 +58,13 @@ pub struct PullReport {
     /// Letters filed this run under a role name this mailspace does not have,
     /// by name. They are held, not refused.
     pub unknown_roles: BTreeMap<String, usize>,
+    /// Content ids of the event letters and work items handled since the
+    /// last settle, new or already held. Drained by [`settle_events`].
+    pub touched: Vec<String>,
+    /// Items whose rows or node moved to match their latest event.
+    pub events_applied: usize,
+    /// Events not applied: not from the item's owner, or for a sealed item.
+    pub events_ignored: usize,
 }
 
 impl PullReport {
@@ -97,10 +104,29 @@ impl PullReport {
             .map(|note| format!(", {note}"))
             .unwrap_or_default();
         format!(
-            "sync pull: {} fetched, {new}, {} already present, {} reply link(s), {refused}{held}, \
+            "sync pull: {} fetched, {new}, {} already present, {} reply link(s), {refused}{held}{}, \
              cursor {}",
-            self.fetched, self.existing, self.linked, self.cursor
+            self.fetched,
+            self.existing,
+            self.linked,
+            self.event_note(),
+            self.cursor
         )
+    }
+
+    /// `, N event(s) applied, M event(s) ignored: not from the item's owner`
+    /// when item-state events were seen, else nothing.
+    #[must_use]
+    pub fn event_note(&self) -> String {
+        let applied = (self.events_applied > 0)
+            .then(|| format!(", {} event(s) applied", self.events_applied));
+        let ignored = (self.events_ignored > 0).then(|| {
+            format!(
+                ", {} event(s) ignored: not from the item's owner",
+                self.events_ignored
+            )
+        });
+        [applied, ignored].into_iter().flatten().collect()
     }
 
     /// `N held for unknown role(s): ghost, ...` when letters were filed for
@@ -217,6 +243,7 @@ pub fn pull_with(
             filer.file_record(&mut storage, record, &mut report, &mut pending)?;
         }
         report.linked += settle_links(&storage, pending, &mut state)?;
+        settle_events(mailspace, &mut report)?;
         let advanced = !page.records.is_empty() && page.next_cursor > state.since;
         if advanced {
             state.since = page.next_cursor;
@@ -304,6 +331,21 @@ fn refine_floor(state: &mut SyncState, first: Option<&Record>) {
         sequence: first.sequence,
         time: first.appended_at.clone().or_else(|| floor.time.clone()),
     });
+}
+
+/// Apply the item-state events this page brought, and the events held for
+/// the work items it brought, now that the page's rows and reply links are
+/// all there. Idempotent: an item already at its latest event changes
+/// nothing.
+pub(crate) fn settle_events(
+    mailspace: &Mailspace,
+    report: &mut PullReport,
+) -> Result<(), VivariumError> {
+    let touched = std::mem::take(&mut report.touched);
+    let tally = mailspace.apply_arrived_events(&touched)?;
+    report.events_applied += tally.applied;
+    report.events_ignored += tally.ignored;
+    Ok(())
 }
 
 /// Try every reply this page produced, and every reply still waiting from

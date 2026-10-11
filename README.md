@@ -411,8 +411,9 @@ but the node is `awaiting`: `graph ready` lists it on its own line, `vivi step`
 reports it as `awaiting_remote` with the recipient's address, and
 `graph activate` refuses it. `need|task|want list --for <sender>` and `dump`
 include the author's own open outbound copies (role `sent`), `--depends-on`
-accepts them, and `done` settles the node; reopening or promoting a sent copy
-is refused, because only the receiving mailspace can. Work held for another
+accepts them, and `done` settles the node and tells the receiving mailspace (see
+State as letters); promoting an open sent copy is refused, because only the
+receiving mailspace can. Work held for another
 mailspace's role mints no node; `graph audit` reports a node left for it as
 `foreign_held` and `--repair` settles it. Dependency edges follow the letters:
 an `X-Vivi-Depends-On` header builds its edge on whichever mailspace files the
@@ -558,6 +559,33 @@ completed tasks since the cursor, open needs, and priority-sorted wants:
 vivi cycle intake --project /path/to/project --for mind \
   --cursor-file .vivi/mind-cycle.cursor --write-cursor --json
 ```
+
+### State as letters
+
+Closing and reopening work are letters, not local flags. The role that authored
+a need, task, or want owns it, and its `done`, `drop` and `reopen` each write a
+small reply on the item with `X-Vivi-Event: done|reopened`,
+`X-Vivi-Event-Of: <item Message-ID>` and `X-Vivi-Event-Prev: <the event it
+follows>`. The letter goes to the item's To and Cc minus the sender, files
+read, and carries `--note` as its body. Every mailspace holding the item
+applies it: folders move and nodes complete or reopen, so the assignee's queue
+empties when the owner closes and a reopen brings the item back.
+
+An assignee reports with an ordinary reply. `task done --note` moves its own
+copy and sends the note, and never changes the owner's state; an assignee
+cannot reopen what its owner closed. The current state is the chain head, the
+event no other held event names as `Prev`; a fork resolves by the later
+`(Date, Message-ID)` on every checkout, and the next event names all heads. An
+event counts only when its From domain is the item's From domain. Anything
+else is filed as plain mail and counted in the pull summary, as is an event
+for an absorbed item.
+
+State is a function of the letters held, so it works with no `[sync]`: the
+server only carries them. `pull`, `fetch`, `resync` and `pull --refs` apply
+every event they see, an event that arrives before its item is applied when the
+item does, and `vivi graph audit` reports a folder that disagrees with its
+item's latest event as `event_state` (`--repair` re-applies it).
+`need|task|want show` prints `State: done|reopened`.
 
 ### Remote lane pool
 

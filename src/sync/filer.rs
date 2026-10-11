@@ -117,6 +117,11 @@ impl<'a> Filer<'a> {
             report.existing += 1;
             self.bind_held(storage, record, &held, report);
         }
+        // Event letters and work items are settled against each other once
+        // the page is filed and its reply links are made.
+        if headers.is_event || item::work_kind(record.kind.as_deref()).is_some() {
+            report.touched.push(content_id.clone());
+        }
         if let Some(parent) = headers.parent {
             pending.push((content_id, parent));
         }
@@ -148,7 +153,7 @@ impl<'a> Filer<'a> {
             // The wire id names the first row (a delivered row when there is
             // one, as at the sender); the others take the id their binding
             // derives, so each is stable across replays.
-            let request = self.request(record, placement, uid, index == 0);
+            let request = self.request(record, placement, uid, index == 0, headers.is_event);
             let (outcome, message_id) =
                 self.ingest_row(storage, record, bytes, headers, placement, &request)?;
             match outcome {
@@ -311,11 +316,14 @@ impl<'a> Filer<'a> {
         placement: &Placement,
         uid: u32,
         primary: bool,
+        event: bool,
     ) -> MessageIngestRequest {
         MessageIngestRequest {
             account: placement.account.clone(),
             local_role: placement.role.to_string(),
-            read_state: placement.is_sent(),
+            // An item-state event is a record, not mail to answer: it files
+            // read, as the sender's own copy does.
+            read_state: placement.is_sent() || event,
             starred: false,
             message_id_hint: None,
             presented_id: primary.then(|| record.message_id.clone()),

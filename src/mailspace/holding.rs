@@ -66,6 +66,11 @@ fn bare_addresses(list: &str) -> Vec<String> {
         .collect()
 }
 
+/// The first bare lowercase address of a stored address list.
+pub(super) fn first_bare_address(list: &str) -> Option<String> {
+    bare_addresses(list).into_iter().next()
+}
+
 fn recipients(view: &StoredMessageView) -> Vec<String> {
     let mut all = bare_addresses(&view.to_addr);
     all.extend(bare_addresses(&view.cc_addr));
@@ -107,6 +112,13 @@ impl Mailspace {
             .into_iter()
             .filter(|address| self.address_is_remote(address))
             .collect()
+    }
+
+    /// Whether every To and Cc address of `view` names another mailspace, so
+    /// the sender's own copy is the only row this mailspace holds of it.
+    pub(super) fn all_recipients_remote(&self, view: &StoredMessageView) -> bool {
+        let all = recipients(view);
+        !all.is_empty() && self.remote_recipients(view).len() == all.len()
     }
 
     /// The address `view`'s work was handed to when `view` is the sender's

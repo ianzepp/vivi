@@ -163,11 +163,13 @@ fn activating_a_sent_copy_names_the_address_it_was_handed_to() {
 }
 
 #[test]
-fn closing_a_sent_copy_completes_its_node_and_it_cannot_come_back() {
+fn closing_a_sent_copy_completes_its_node_and_the_owner_can_reopen_it() {
     let (_tmp, mailspace) = space();
     let need = send_work(&mailspace, "need", REMOTE, "away", &[]).unwrap();
     let want = send_work(&mailspace, "want", REMOTE, "maybe", &[]).unwrap();
 
+    // Promoting or reopening an open sent copy would land a second owner
+    // here; it stays refused.
     for (handle, role) in [(&need, "needs"), (&want, "needs")] {
         let error = mailspace
             .move_item("mind", handle, role, None, "need reopen", None)
@@ -184,19 +186,30 @@ fn closing_a_sent_copy_completes_its_node_and_it_cannot_come_back() {
         .unwrap();
 
     assert_eq!(readiness(&mailspace, &need), "n/a");
-    let node = mailspace
-        .graph_show("backlog")
-        .unwrap()
-        .nodes
-        .into_iter()
-        .find(|node| node.source_id == need)
-        .unwrap();
-    assert_eq!(node.state, "done");
-    let error = mailspace
-        .move_item("mind", &need, "needs", None, "need reopen", None)
-        .unwrap_err();
-    assert!(error.to_string().contains("only the receiving mailspace"));
+    let node_state = |mailspace: &Mailspace| {
+        mailspace
+            .graph_show("backlog")
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.source_id == need)
+            .unwrap()
+            .state
+    };
+    assert_eq!(node_state(&mailspace), "done");
     assert_eq!(mailspace.list("mind", "done").unwrap().len(), 1);
+
+    // The closed copy is the owner's: it reopens it with an event letter,
+    // and the copy goes back to `sent`, awaiting the receiving mailspace.
+    mailspace
+        .move_item("mind", &need, "needs", None, "need reopen", None)
+        .unwrap();
+
+    assert_eq!(node_state(&mailspace), "open");
+    assert_eq!(readiness(&mailspace, &need), "awaiting");
+    assert!(mailspace.list("mind", "done").unwrap().is_empty());
+    assert!(mailspace.list("mind", "needs").unwrap().is_empty());
+    assert_eq!(mailspace.list("mind", "sent").unwrap().len(), 4);
 }
 
 #[test]

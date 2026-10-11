@@ -660,33 +660,55 @@ impl Mailspace {
                 "{handle} is absorbed and can no longer be changed"
             )));
         }
-        self.refuse_sent_copy_reopen(handle, &before, &role)?;
-        // Stored messages keep the account name they were ingested under
-        // even after a rename, so the storage-layer mutation must target
-        // that historical account rather than the current canonical name.
-        let account = before.account.clone();
-        if let Some(note) = note {
-            let reply = self.note_reply(&storage, &identity, &before, note)?;
-            let event = Self::move_event(command, &identity, &account, &before, &role, note);
-            storage.move_message_with_reply(&MailspaceMoveWithReply {
-                account: &account,
-                message_id: &resolved,
-                local_role: &role,
-                event: &event,
-                reply_requests: &reply.requests,
-                reply_data: &reply.data,
-                parent_content_id: &before.content_id,
-            })?;
-        } else {
-            storage.move_message_to_role(&account, &resolved, &role)?;
-            log_move_event(&storage, &identity, &role, &before, command, None)?;
+        // The owner of work closing or reopening it writes an event letter,
+        // which carries the move to every mailspace holding the item; any
+        // other move is local.
+        let emitted =
+            self.try_emit_for_move(&mut storage, &identity, &before, &role, note, command)?;
+        if emitted.is_none() {
+            self.refuse_sent_copy_reopen(handle, &before, &role)?;
+            self.move_row_locally(&mut storage, &identity, &before, &role, note, command)?;
         }
         if let Some(metadata) = metadata {
             storage.set_item_metadata(&resolved, metadata)?;
         }
         let handle = storage.display_handle(&resolved)?;
-        self.sync_backlog_node(&before.local_role, &role, &handle)?;
+        if emitted.is_none() {
+            self.sync_backlog_node(&before.local_role, &role, &handle)?;
+        }
         Ok(handle)
+    }
+
+    /// Move the one row `before` names, with the note as a reply when given.
+    fn move_row_locally(
+        &self,
+        storage: &mut Storage,
+        identity: &str,
+        before: &StoredMessageView,
+        role: &str,
+        note: Option<&str>,
+        command: &str,
+    ) -> Result<(), VivariumError> {
+        // Stored messages keep the account name they were ingested under
+        // even after a rename, so the storage-layer mutation must target
+        // that historical account rather than the current canonical name.
+        let account = before.account.clone();
+        let Some(note) = note else {
+            storage.move_message_to_role(&account, &before.message_id, role)?;
+            return log_move_event(storage, identity, role, before, command, None);
+        };
+        let reply = self.note_reply(storage, identity, before, note)?;
+        let event = Self::move_event(command, identity, &account, before, role, note);
+        storage.move_message_with_reply(&MailspaceMoveWithReply {
+            account: &account,
+            message_id: &before.message_id,
+            local_role: role,
+            event: &event,
+            reply_requests: &reply.requests,
+            reply_data: &reply.data,
+            parent_content_id: &before.content_id,
+        })?;
+        Ok(())
     }
 
     /// Error for a token that resolves globally but is not held by the

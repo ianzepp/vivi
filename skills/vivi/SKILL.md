@@ -171,8 +171,9 @@ dependency not held yet waits and its edge is made when that letter arrives; a
 reference that can never name work here blocks nothing. There is one dependency
 substrate — the graph — for small and multi-unit relationships alike.
 
-Closing a task, need, or want records its current disposition. Reopen when the
-CLI permits and evidence changes. `want promote` moves deferred work into the
+Closing a task, need, or want records its current disposition, as a letter on
+the item (see State as letters). Reopen when the CLI permits and evidence
+changes. `want promote` moves deferred work into the
 must-do queue; promotion is request-only and never fires because a
 dependency completed. Lifecycle notes (`--note`) never inbox the acting
 identity: other participants receive the receipt, and the actor keeps only a
@@ -208,6 +209,37 @@ When a mailspace has a configured archive, absorption exports one Markdown
 record to that dedicated Git repository. Vivi does not stage or commit the
 archive. Use the archive commands and `--help`; do not write exported files by
 hand.
+
+### State as letters
+
+Closing and reopening are letters, not local flags. The role that authored a
+need, task, or want owns it: its `done`, `drop` and `reopen` write one small
+reply on the item, with `X-Vivi-Event: done|reopened`,
+`X-Vivi-Event-Of: <item Message-ID>` and `X-Vivi-Event-Prev: <the event it
+follows>` (absent for the first) beside the usual `In-Reply-To`. It is
+addressed to the item's To and Cc minus the sender and filed read; `--note` is
+its body. Every holder of the item applies it: the folder moves, the node
+completes or reopens, and the assignee's queue empties when the owner closes.
+A need that closes through `need bind` writes the same letter when this
+mailspace authored it.
+
+An assignee reports with an ordinary reply. `task done --note` moves its own
+copy and sends the note, nothing more, and a report never changes the owner's
+state. An assignee cannot reopen what its owner closed; ask in a reply.
+
+The state of an item is its chain head: the event no other held event names as
+`Prev`. A fork (two checkouts acted on the same event) leaves several heads and
+the later `(Date, Message-ID)` wins on every checkout; the next event names all
+heads. An event counts only when its From domain is the item's From domain.
+Anything else is filed as plain mail and counted (`N event(s) ignored: not from
+the item's owner` in the pull summary), as is an event for an absorbed item.
+
+This is local-first. It works with no `[sync]`; the server only carries
+letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
+see, and an event that arrives before its item is applied when the item
+arrives. `graph audit` reports a folder that disagrees with its item's latest
+event as `event_state`, and `--repair` re-applies it. `need|task|want show`
+prints `State: done|reopened`.
 
 ## Rules
 

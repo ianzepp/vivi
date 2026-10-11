@@ -33,6 +33,7 @@ mod graph;
 mod graph_mutate;
 mod holding;
 mod identity;
+mod item_events;
 mod kind;
 mod lifecycle;
 mod marks;
@@ -68,6 +69,8 @@ pub use identity::{
     LocalIdentity, ROLE_HARNESS_SUBAGENT, ROLE_STATUS_ACTIVE, ROLE_STATUS_PARKED,
     ROLE_STATUS_RETIRED, RoleUpdate, RoleView,
 };
+pub(crate) use item_events::EVENT_HEADER;
+pub use item_events::{EventTally, ItemEventKind, ItemEventState};
 pub(crate) use kind::effective_kind;
 pub use lifecycle::{
     CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult, WantListOptions,

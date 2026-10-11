@@ -151,6 +151,10 @@ mod fake_server;
 mod deps;
 
 #[cfg(test)]
+#[path = "sync/events_test.rs"]
+mod events;
+
+#[cfg(test)]
 #[path = "sync/flow_test.rs"]
 mod flow;
 

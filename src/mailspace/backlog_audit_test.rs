@@ -157,6 +157,12 @@ fn audit_repair_settles_need_mailbox_when_join_fired_without_settle() {
     storage
         .move_message_to_role(&view.account, &need_id, "needs")
         .unwrap();
+    // A pre-fix join wrote no event letter: forget the one this join wrote,
+    // so the repair has the node and the folder to go by, as it did then.
+    rusqlite::Connection::open(mailspace.store_path())
+        .unwrap()
+        .execute("DELETE FROM mailspace_links", [])
+        .unwrap();
 
     let report = mailspace.backlog_audit(true).unwrap();
     assert!(
