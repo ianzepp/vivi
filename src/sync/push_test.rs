@@ -82,7 +82,17 @@ fn memos_drafts_trash_oversize_and_foreign_ids_stay_home_and_are_reported() {
     assert!(lines.contains("not a traveling id"), "{lines}");
     assert!(lines.contains("1 memo"), "{lines}");
     assert_eq!(MAX_LETTER_BYTES, 65_536);
-    assert!(report.failure().is_none(), "policy skips are not failures");
+    // An oversize letter can never be delivered: that is a failure (the
+    // policy skips and the legacy id alone are not).
+    assert!(report.failure().unwrap().contains("never be delivered"));
+    let mut without_oversize = report.clone();
+    without_oversize
+        .skipped
+        .retain(|s| !s.reason.undeliverable());
+    assert!(
+        without_oversize.failure().is_none(),
+        "policy skips are not failures"
+    );
     for row in a.rows() {
         let skipped = matches!(row.local_role.as_str(), "memos" | "drafts" | "trash")
             || row.message_id == "legacy-1"
@@ -489,4 +499,107 @@ fn a_sequence_that_does_not_fit_a_binding_is_reported() {
 
     assert_eq!(report.unbound.len(), 1);
     assert!(report.unbound[0].reason.contains("does not fit"));
+}
+
+fn eml_from(subject: &str, from: &str) -> Vec<u8> {
+    let head = format!(
+        "From: {from}\r\nTo: hand@x.test\r\nSubject: {subject}\r\n\
+         Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\nbody\r\n"
+    );
+    head.into_bytes()
+}
+
+#[test]
+fn a_letter_from_another_mailspace_is_listed_not_uploaded_and_fails_the_push() {
+    let server = FakeServer::new();
+    let a = alice();
+    let client = a.client(&server);
+    let own = a.mailspace.address_prefix().to_string();
+    let forged = put(
+        &a,
+        "hand",
+        "inbox",
+        None,
+        &eml_from("forged", "mind@3f9a1c7e.local"),
+    );
+    let handle = a.row(&forged).unwrap().handle;
+    let own_from = format!("mind@{own}.local");
+    let legacy = format!("mind@{}.local", a.mailspace.config.name);
+    for (subject, from) in [
+        ("own", own_from.as_str()),
+        ("legacy", legacy.as_str()),
+        ("external", "mind@example.com"),
+    ] {
+        put(&a, "hand", "inbox", None, &eml_from(subject, from));
+    }
+
+    let report = a.push(&client);
+
+    assert_eq!(report.sent, 3, "{:?}", report.lines());
+    assert_eq!(server.items().len(), 3, "the forged letter never leaves");
+    assert!(
+        server.items().iter().all(|item| item.message_id != forged),
+        "{:?}",
+        server.items()
+    );
+    assert_eq!(
+        reasons(&report)
+            .iter()
+            .filter(|r| matches!(r, SkipReason::ForeignFrom(_)))
+            .count(),
+        1
+    );
+    let lines = report.lines().join("\n");
+    assert!(lines.contains(&format!("skipped {handle}")), "{lines}");
+    assert!(lines.contains("claims mailspace 3f9a1c7e"), "{lines}");
+    assert!(lines.contains(&own), "{lines}");
+    assert!(report.failure().is_some(), "{lines}");
+    assert!(
+        a.row(&forged).unwrap().remote.is_none(),
+        "still unbound locally"
+    );
+}
+
+#[test]
+fn an_oversize_letter_fails_the_push_by_handle_on_every_run() {
+    let server = FakeServer::new();
+    let a = alice();
+    let client = a.client(&server);
+    let big = put(&a, "mind", "inbox", None, &eml("big", Some(70_000)));
+    let handle = a.row(&big).unwrap().handle;
+
+    for _ in 0..2 {
+        let report = a.push(&client);
+
+        assert_eq!(report.sent, 0);
+        assert!(report.lines().join("\n").contains(&handle));
+        assert!(report.failure().unwrap().contains("never be delivered"));
+    }
+    assert!(server.items().is_empty());
+}
+
+#[test]
+fn unsent_counts_the_stuck_letters_and_says_why() {
+    let a = alice();
+    put(&a, "mind", "inbox", None, &eml("big", Some(70_000)));
+    put(
+        &a,
+        "hand",
+        "inbox",
+        None,
+        &eml_from("forged", "mind@3f9a1c7e.local"),
+    );
+    a.send_need("mind", "hand", "fine");
+
+    let pending = push::pending(&a.mailspace, &a.settings).unwrap();
+
+    assert_eq!(pending.letters.len(), 1);
+    assert_eq!(pending.unsent(), 3, "the stuck letters are unsent too");
+    assert_eq!(push::unsent(&a.mailspace, &a.settings).unwrap(), 3);
+    let line = pending.not_uploaded_line().unwrap();
+    assert!(line.contains("1 too large"), "{line}");
+    assert!(
+        line.contains("1 with a From that claims another mailspace"),
+        "{line}"
+    );
 }

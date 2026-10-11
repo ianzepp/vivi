@@ -128,6 +128,10 @@ pub fn fetch_handles(
     handles: &[String],
 ) -> Result<FetchReport, VivariumError> {
     let handles = normalize_handles(handles)?;
+    // Before any lookup: an unreadable state file fails the command before it
+    // files anything, not after.
+    let dir = sync_dir(&mailspace.dir);
+    let mut state = SyncState::load(&dir, &settings.project)?;
     let mut storage = mailspace.storage()?;
     let filer = Filer::new(mailspace, settings);
     let mut report = FetchReport {
@@ -143,8 +147,6 @@ pub fn fetch_handles(
         &mut report.pull,
         &mut pending,
     )?;
-    let dir = sync_dir(&mailspace.dir);
-    let mut state = SyncState::load(&dir, &settings.project)?;
     let before = state.clone();
     report.pull.linked += settle_links(&storage, pending, &mut state)?;
     if state != before {

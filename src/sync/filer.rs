@@ -362,7 +362,7 @@ fn envelope_agrees(envelope: Option<&str>, headers: &LetterHeaders) -> bool {
 /// authenticated sender registered. The two must agree (case aside), else any
 /// member could write as another mailspace's role. Other domains (legacy
 /// names, external) and letters with no From make no claim.
-fn forged_from(stamped: Option<&str>, headers: &LetterHeaders) -> Option<String> {
+pub(crate) fn forged_from(stamped: Option<&str>, headers: &LetterHeaders) -> Option<String> {
     let from = headers.from.as_deref()?;
     let (_, domain) = from.rsplit_once('@')?;
     let claimed = prefix_of_domain(&domain.to_ascii_lowercase())?.to_string();

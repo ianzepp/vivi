@@ -7,6 +7,7 @@ use vivi::cli::{SyncCommand, SyncSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::sync::fetch::fetch_handles;
 use vivi::sync::http::{self, HttpTransport};
+use vivi::sync::lock::SyncLock;
 use vivi::sync::prune as sync_prune;
 use vivi::sync::pull::PullPlan;
 use vivi::sync::state::SyncState;
@@ -81,6 +82,7 @@ fn run_passes(
     let settings = SyncSettings::resolve(&mailspace)?;
     let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
     let transport = HttpTransport::new(&settings, &identity);
+    let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let mut failures = Vec::new();
     if push {
         let report = push::push(&mailspace, &settings, &transport)?;
@@ -154,6 +156,7 @@ fn fetch(project: Option<&Path>, handles: &[String]) -> Result<(), VivariumError
     let settings = SyncSettings::resolve(&mailspace)?;
     let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
     let transport = HttpTransport::new(&settings, &identity);
+    let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let report = fetch_handles(&mailspace, &settings, &transport, handles)?;
     println!("{}", report.summary());
     for warning in &report.pull.warnings {
@@ -171,6 +174,7 @@ fn fetch(project: Option<&Path>, handles: &[String]) -> Result<(), VivariumError
 fn prune(project: Option<&Path>, older_than: &str, dry_run: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let age = vivi::chat::prune::parse_age(older_than)?;
+    let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let report = sync_prune::prune(&mailspace, age, chrono::Utc::now(), dry_run)?;
     for line in sync_prune::report_lines(&report) {
         println!("{line}");
@@ -218,10 +222,13 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
         println!("sync cursor: (project not set)");
     }
     match SyncSettings::resolve(&mailspace) {
-        Ok(settings) => println!(
-            "sync unsent: {} letter(s)",
-            push::unsent(&mailspace, &settings)?
-        ),
+        Ok(settings) => {
+            let pending = push::pending(&mailspace, &settings)?;
+            println!("sync unsent: {} letter(s)", pending.unsent());
+            if let Some(line) = pending.not_uploaded_line() {
+                println!("sync not uploaded: {line}; `vivi sync push` lists them");
+            }
+        }
         Err(error) => println!("sync unsent: unknown ({error})"),
     }
     Ok(())

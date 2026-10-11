@@ -686,7 +686,10 @@ To: {to}\r\n\
 Cc: {cc1}, {cc2}\r\n\
 Subject: multi\r\n\r\nbody"
     );
-    let delivered = mailspace.deliver_raw(eml.as_bytes(), "inbox").unwrap();
+    let delivered = mailspace
+        .deliver_raw(eml.as_bytes(), "inbox")
+        .unwrap()
+        .delivered;
     let delivered_names: BTreeSet<String> = delivered.iter().map(|d| d.identity.clone()).collect();
     assert_eq!(
         delivered_names,

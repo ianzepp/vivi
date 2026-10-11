@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::error::VivariumError;
@@ -166,8 +166,13 @@ impl Storage {
         secure_create_dir_all(&mail_root.join(BLOBS_DIR))
             .map_err(|e| VivariumError::Other(format!("failed to create blob dir: {e}")))?;
 
-        let conn = Connection::open(db_path)
+        let mut conn = Connection::open(db_path)
             .map_err(|e| VivariumError::Other(format!("failed to open storage database: {e}")))?;
+        // A deferred transaction that reads and then writes fails at once with
+        // `database is locked` when another connection committed in between;
+        // the busy timeout never applies. Taking the write lock up front lets
+        // the timeout do its job.
+        conn.set_transaction_behavior(TransactionBehavior::Immediate);
         conn.busy_timeout(Duration::from_secs(5))
             .map_err(|e| VivariumError::Other(format!("failed to set SQLite timeout: {e}")))?;
         conn.pragma_update(None, "journal_mode", "WAL")

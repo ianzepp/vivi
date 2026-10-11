@@ -326,6 +326,25 @@ fn a_taken_prefix_is_explained_at_join() {
 
     assert!(error.contains("3f9a1c7e"), "{error}");
     assert!(error.contains("mailspace.toml"), "{error}");
+    assert!(
+        error.contains(".vivi/mailspace.id"),
+        "the sidecar restores the id line, so both files must go: {error}"
+    );
+    assert!(error.contains("new prefix"), "{error}");
+}
+
+#[test]
+fn a_lost_key_is_told_the_name_is_bound_and_who_can_help() {
+    let body = error_body("admission_required", "not admitted");
+    let settings = settings_for("https://sync.example");
+    let dir = tempfile::tempdir().unwrap();
+    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+
+    let error = join_error(409, &body, &settings, &identity).to_string();
+
+    assert!(error.contains("has no way to re-key"), "{error}");
+    assert!(error.contains("project creator"), "{error}");
+    assert!(error.contains(&identity.wire_fingerprint()), "{error}");
 }
 
 #[test]

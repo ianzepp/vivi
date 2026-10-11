@@ -153,3 +153,19 @@ fn a_reply_fetched_before_its_parent_links_once_the_parent_arrives() {
     assert_eq!(second.pull.linked, 1);
     assert!(w.state().dangling.is_empty());
 }
+
+#[test]
+fn a_corrupt_state_file_fails_a_fetch_before_anything_is_filed() {
+    let w = World::new();
+    w.put(0xa1, "wanted", "x");
+    let dir = sync_dir(&w.bob.mailspace.dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("state.json"), "not json").unwrap();
+
+    let error = fetch(&w, &["000000a1"]).unwrap_err().to_string();
+
+    assert!(error.contains("state.json"), "{error}");
+    assert!(error.contains("vivi sync resync"), "{error}");
+    assert!(w.server.lookups().is_empty(), "no lookup was made");
+    assert!(w.live_ids().is_empty(), "nothing was filed");
+}

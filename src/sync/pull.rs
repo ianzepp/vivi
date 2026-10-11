@@ -167,7 +167,7 @@ pub fn pull_with(
     progress: &mut dyn FnMut(&PageProgress),
 ) -> Result<PullReport, VivariumError> {
     let dir = sync_dir(&mailspace.dir);
-    let mut state = SyncState::load(&dir, &settings.project)?;
+    let mut state = load_state(&dir, settings, plan)?;
     let before_plan = state.clone();
     apply_plan(&mut state, plan, settings)?;
     // The plan's changes are saved with the first page that is read, so a
@@ -216,6 +216,20 @@ pub fn pull_with(
     }
     report.cursor = state.since;
     Ok(report)
+}
+
+/// The state a pull starts from. A resync replaces the cursor and floor, so
+/// it also replaces an unreadable file instead of failing on it.
+fn load_state(
+    dir: &std::path::Path,
+    settings: &SyncSettings,
+    plan: &PullPlan<'_>,
+) -> Result<SyncState, VivariumError> {
+    if plan.resync {
+        Ok(SyncState::load_for_resync(dir, &settings.project))
+    } else {
+        SyncState::load(dir, &settings.project)
+    }
 }
 
 /// Apply a plan to the state before the first request: refuse a window on a

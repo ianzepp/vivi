@@ -5,13 +5,17 @@ use chrono::Utc;
 use super::event_log::{log_move_event, log_send_events};
 use super::kind::matches_kind;
 use super::reply::{add_reply_headers, resolve_reply_parent};
-use super::{DeliveredMessage, DeliveryResult, Mailspace, SendRequest, canonical_local_role};
+use super::{
+    DeliveredMessage, DeliveryResult, Mailspace, RawDelivery, Recipient, SendRequest,
+    canonical_local_role,
+};
 use crate::error::VivariumError;
 use crate::message::{ComposeDraft, build_compose_draft, validate_message_headers};
 use crate::storage::{
     MailspaceEventInput, MailspaceMoveWithReply, MessageIngestRequest, Storage, StoredMessage,
     StoredMessageView,
 };
+use crate::sync::{MAX_LETTER_BYTES, SyncSettings};
 
 pub(super) struct DeliveredMessageId {
     pub(super) identity: String,
@@ -62,6 +66,7 @@ impl Mailspace {
             &request,
             reply_parent.as_ref().map(|(_, data)| data.as_slice()),
         )?;
+        self.check_letter_size(eml.len())?;
         if work_kind.is_some() {
             let from_addr = self.address_for(&from);
             warn_duplicate_work_subjects(
@@ -192,18 +197,75 @@ impl Mailspace {
             .collect()
     }
 
-    /// Deliver a raw `.eml` message into the mailspace for each recipient that
-    /// resolves to a known local identity.
+    /// Whether `[sync]` is complete enough for `vivi sync` to run here.
+    #[must_use]
+    pub fn sync_configured(&self) -> bool {
+        SyncSettings::resolve(self).is_ok()
+    }
+
+    /// Refuse a letter the project server would never take. Only a mailspace
+    /// with `[sync]` configured has such a cap; without sync nothing leaves
+    /// the checkout and any size is stored.
     ///
     /// # Errors
-    /// Returns an error if the message cannot be parsed, recipient resolution
-    /// fails, or the storage operation fails.
-    pub fn deliver_raw(
-        &self,
-        data: &[u8],
-        folder: &str,
-    ) -> Result<Vec<DeliveredMessage>, VivariumError> {
+    /// Returns an error naming the size and the cap when `len` is over it.
+    pub(super) fn check_letter_size(&self, len: usize) -> Result<(), VivariumError> {
+        let size = u64::try_from(len).unwrap_or(u64::MAX);
+        if size <= MAX_LETTER_BYTES || !self.sync_configured() {
+            return Ok(());
+        }
+        Err(VivariumError::Message(format!(
+            "letter is {size} bytes, over the {MAX_LETTER_BYTES}-byte (64 KiB) cap the project \
+             server accepts; shorten it or split it into several letters (nothing was stored)"
+        )))
+    }
+
+    /// The operator line for recipients in other mailspaces: the queued
+    /// confirmation when sync is configured, else a note that the letter
+    /// stays in this checkout. `None` for no remote recipients.
+    #[must_use]
+    pub fn remote_line(&self, remote: &[String]) -> Option<String> {
+        if remote.is_empty() {
+            return None;
+        }
+        let list = remote.join(", ");
+        Some(if self.sync_configured() {
+            format!("queued for sync: {list}")
+        } else {
+            format!(
+                "note: no [sync] is configured in this mailspace; the letter to {list} \
+                 will not leave this checkout"
+            )
+        })
+    }
+
+    /// Print [`Mailspace::remote_line`]: the queued confirmation on stdout,
+    /// the no-sync note on stderr.
+    pub fn announce_remote(&self, remote: &[String]) {
+        match self.remote_line(remote) {
+            Some(line) if self.sync_configured() => println!("{line}"),
+            Some(line) => eprintln!("{line}"),
+            None => {}
+        }
+    }
+
+    /// Deliver a raw `.eml` message into the mailspace.
+    ///
+    /// Each To and Cc address is classified as `send` does: a role of this
+    /// mailspace gets a delivered copy, an address in another mailspace
+    /// (`role@<prefix>.local`) is listed in [`RawDelivery::remote`] and
+    /// reaches its holder when `vivi sync` pushes the letter, and anything
+    /// else is an error. A letter with no local recipient is kept as the
+    /// sender's own copy (`sent`), so its From must be a role of this
+    /// mailspace. The bytes are stored as given.
+    ///
+    /// # Errors
+    /// Returns an error if the message cannot be parsed, a recipient is
+    /// neither a local role nor a remote address, the letter is over the sync
+    /// cap, or the storage operation fails.
+    pub fn deliver_raw(&self, data: &[u8], folder: &str) -> Result<RawDelivery, VivariumError> {
         validate_message_headers(data)?;
+        self.check_letter_size(data.len())?;
         let parsed = mail_parser::MessageParser::default()
             .parse(data)
             .ok_or_else(|| VivariumError::Parse("failed to parse message".into()))?;
@@ -212,19 +274,23 @@ impl Mailspace {
                 "Bcc is not supported for local mailspace delivery in v1".into(),
             ));
         }
-        let mut recipients = BTreeSet::new();
-        collect_addresses(parsed.to(), &mut recipients);
-        collect_addresses(parsed.cc(), &mut recipients);
-        let recipients = recipients
-            .iter()
-            .map(|addr| self.resolve_identity(addr))
-            .collect::<Result<Vec<_>, _>>()?;
-        if recipients.is_empty() {
-            return Err(VivariumError::Message(
-                "no recipient address resolves to a known local identity".into(),
-            ));
+        let mut addresses = BTreeSet::new();
+        collect_addresses(parsed.to(), &mut addresses);
+        collect_addresses(parsed.cc(), &mut addresses);
+        let addresses: Vec<String> = addresses.into_iter().collect();
+        let (local, remote) = self.split_recipients(&addresses, &[])?;
+        let mut role = canonical_local_role(folder)?;
+        let mut recipients: Vec<String> = local.into_iter().collect();
+        let held = recipients.is_empty();
+        if held {
+            if remote.is_empty() {
+                return Err(VivariumError::Message(
+                    "no recipient address resolves to a known local identity".into(),
+                ));
+            }
+            recipients.push(self.raw_sender(&parsed)?);
+            role = "sent".into();
         }
-        let role = canonical_local_role(folder)?;
         let requests = raw_delivery_requests(&recipients, &role, data.len());
         let subject = parsed.subject().unwrap_or_default().to_string();
         let mut storage = self.storage()?;
@@ -236,7 +302,7 @@ impl Mailspace {
             &role,
             &subject,
         )?;
-        stored
+        let mut delivered = stored
             .into_iter()
             .zip(requests.iter())
             .map(|(msg, req)| {
@@ -245,7 +311,34 @@ impl Mailspace {
                     handle: storage.display_handle(&msg.message_id)?,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, VivariumError>>()?;
+        let sent = held.then(|| delivered.remove(0).handle);
+        Ok(RawDelivery {
+            delivered,
+            sent,
+            remote: remote.into_iter().collect(),
+        })
+    }
+
+    /// The local role a letter addressed only to other mailspaces is kept
+    /// under: its From, which must be a role of this mailspace.
+    fn raw_sender(&self, parsed: &mail_parser::Message<'_>) -> Result<String, VivariumError> {
+        let mut from = BTreeSet::new();
+        collect_addresses(parsed.from(), &mut from);
+        let Some(from) = from.into_iter().next() else {
+            return Err(VivariumError::Message(
+                "a letter addressed only to other mailspaces needs a From that is a role of \
+                 this mailspace; the letter has no From"
+                    .into(),
+            ));
+        };
+        match self.classify_recipient(&from) {
+            Ok(Recipient::Local(identity)) => Ok(identity),
+            _ => Err(VivariumError::Message(format!(
+                "a letter addressed only to other mailspaces needs a From that is a role of \
+                 this mailspace; '{from}' is not one"
+            ))),
+        }
     }
 
     /// List messages for a given identity and canonical role.
@@ -789,3 +882,7 @@ fn warn_duplicate_work_subjects(
         );
     }
 }
+
+#[cfg(test)]
+#[path = "delivery_test.rs"]
+mod tests;

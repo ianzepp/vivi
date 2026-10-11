@@ -211,6 +211,39 @@ fn a_state_file_from_before_windows_reads_as_unknown_and_keeps_pulling() {
 }
 
 #[test]
+fn a_corrupt_state_file_blocks_a_pull_but_not_a_resync_which_rewrites_it() {
+    let w = World::new();
+    three_letters(&w);
+    let dir = sync_dir(&w.bob.mailspace.dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    std::fs::write(&path, "{\"project\":\"abc\",\"sinc").unwrap();
+
+    let error = pull_with(
+        &w.bob.mailspace,
+        &w.bob.settings,
+        &w.bob_client,
+        &PullPlan::default(),
+        &mut |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("state.json"), "{error}");
+    assert!(error.contains("vivi sync resync"), "{error}");
+    assert!(w.server.lists().is_empty(), "nothing was requested");
+
+    let report = resynced(&w);
+
+    assert_eq!((report.fetched, report.cursor), (3, 3));
+    let state = w.state();
+    assert_eq!((state.since, state.floor), (3, Some(Floor::full())));
+    assert!(
+        SyncState::load(&dir, &w.bob.settings.project).is_ok(),
+        "the file is readable again"
+    );
+}
+
+#[test]
 fn resync_replays_everything_and_records_full_history() {
     let w = World::new();
     three_letters(&w);

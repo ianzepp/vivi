@@ -591,3 +591,143 @@ fn queued_work_item_keeps_kind_and_threading_across_the_retry() {
     let (_, _, _, head) = requests.last().unwrap();
     assert_eq!(header(head, "message-id"), Some(report.message_id.as_str()));
 }
+
+const OTHER_ROOM: &str = "23456-abcde-fghjk-mnpqr-stvwz";
+
+/// Accepts everything except a message to `nobody`, which the server refuses
+/// the way it refuses an unknown recipient label.
+fn refuses_nobody() -> impl Fn(&str, &str, &str, &str) -> (u16, String) {
+    let accept = handler_flow("tok-r");
+    move |line, path, body, head| {
+        if path.ends_with("/messages") && body.contains("nobody") {
+            return (
+                400,
+                json!({"error": {"code": "invalid_request",
+                    "message": "unknown recipient label: nobody"}})
+                .to_string(),
+            );
+        }
+        accept(line, path, body, head)
+    }
+}
+
+fn enqueue_chat(
+    state: &ChatState,
+    identity: &ChatIdentity,
+    room: &str,
+    to: Option<&str>,
+) -> String {
+    let (message_id, envelope) = compose_message(&Draft::chat(to, Some("s"), "body"), identity);
+    state
+        .enqueue(room, &message_id, &envelope.to_string())
+        .expect("enqueue");
+    message_id
+}
+
+#[test]
+fn a_rejected_message_is_kept_with_its_reason_and_blocks_nothing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = chat_dir(tmp.path());
+    let identity = identity_with_seed(&dir, 7);
+    let state = ChatState::open(&dir).expect("state");
+    state.join_room(ROOM, 2, "burgus/vivi").expect("joined");
+    state
+        .join_room(OTHER_ROOM, 2, "burgus/vivi")
+        .expect("joined");
+    let bad = enqueue_chat(&state, &identity, ROOM, Some("nobody"));
+    let good_same_room = enqueue_chat(&state, &identity, ROOM, None);
+    let good_other_room = enqueue_chat(&state, &identity, OTHER_ROOM, None);
+
+    // Room one: challenge, token, bad post, good post. Room two: the same
+    // handshake and one post.
+    let (server, rx) = stub_server(7, refuses_nobody());
+    let summary = deliver_all(&server, &state, &identity).expect("flush");
+    drop(rx);
+
+    assert_eq!(summary.sent, 2, "{summary:?}");
+    assert_eq!(summary.queued, 0);
+    assert!(summary.error.is_none(), "{:?}", summary.error);
+    assert!(summary.sent_ids.contains(&good_same_room));
+    assert!(summary.sent_ids.contains(&good_other_room));
+    assert_eq!(summary.rejected.len(), 1);
+    assert_eq!(summary.rejected[0].message_id, bad);
+    assert!(
+        summary.rejected[0]
+            .reason
+            .contains("unknown recipient label: nobody"),
+        "{}",
+        summary.rejected[0].reason
+    );
+    assert_eq!(state.outbox_depth().expect("depth"), 0);
+    let kept = state.rejected_outbox().expect("rejected");
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].message_id, bad);
+    assert_eq!(kept[0].room_id, ROOM);
+    assert!(kept[0].reason.contains("nobody"), "{}", kept[0].reason);
+
+    // The next pass does not retry it: nothing pending, so no request at all.
+    let again = deliver_all("http://127.0.0.1:1", &state, &identity).expect("again");
+    assert_eq!((again.sent, again.queued), (0, 0));
+    assert!(again.error.is_none() && again.rejected.is_empty());
+    assert_eq!(state.rejected_outbox().expect("rejected").len(), 1);
+}
+
+#[test]
+fn a_send_the_server_rejects_reports_the_reason_not_a_queue() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = chat_dir(tmp.path());
+    let identity = identity_with_seed(&dir, 7);
+    let state = ChatState::open(&dir).expect("state");
+    state.join_room(ROOM, 2, "burgus/vivi").expect("joined");
+
+    let (server, rx) = stub_server(3, refuses_nobody());
+    let report = send_message(
+        &server,
+        &state,
+        &identity,
+        ROOM,
+        &Draft::chat(Some("nobody"), Some("s"), "b"),
+    )
+    .expect("send");
+    drop(rx);
+
+    assert!(!report.delivered);
+    assert!(report.queued_reason.is_none());
+    assert!(
+        report
+            .rejected
+            .as_deref()
+            .is_some_and(|reason| reason.contains("unknown recipient label: nobody")),
+        "{:?}",
+        report.rejected
+    );
+    assert_eq!(state.rejected_outbox().expect("rejected").len(), 1);
+}
+
+#[test]
+fn a_rate_limited_message_stays_queued_and_is_not_rejected() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = chat_dir(tmp.path());
+    let identity = identity_with_seed(&dir, 7);
+    let state = ChatState::open(&dir).expect("state");
+    state.join_room(ROOM, 2, "burgus/vivi").expect("joined");
+    enqueue_chat(&state, &identity, ROOM, None);
+
+    let accept = handler_flow("tok-l");
+    let (server, rx) = stub_server(3, move |line, path, body, head| {
+        if path.ends_with("/messages") {
+            return (
+                429,
+                json!({"error": {"code": "rate_limited", "message": "slow down"}}).to_string(),
+            );
+        }
+        accept(line, path, body, head)
+    });
+    let summary = deliver_all(&server, &state, &identity).expect("flush");
+    drop(rx);
+
+    assert_eq!((summary.sent, summary.queued), (0, 1));
+    assert!(summary.rejected.is_empty());
+    assert_eq!(state.outbox_depth().expect("depth"), 1);
+    assert!(state.rejected_outbox().expect("rejected").is_empty());
+}

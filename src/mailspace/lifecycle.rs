@@ -115,6 +115,24 @@ impl Mailspace {
         self.storage()?.display_handle(&message.message_id)
     }
 
+    /// Move a memo to the trash. Only a memo goes: a need, task, want, or
+    /// mail is work or correspondence with its own lifecycle, and trashing it
+    /// here would silently drop it.
+    ///
+    /// # Errors
+    /// Returns an error if the identity or message cannot be resolved, if the
+    /// record is not a memo, or if a storage operation fails.
+    pub fn delete_memo(&self, identity: &str, handle: &str) -> Result<String, VivariumError> {
+        let (identity, message) = self.resolve_owned_message(identity, handle)?;
+        let kind = self.source_kind(&self.storage()?, &message)?;
+        if kind != "memo" {
+            return Err(VivariumError::Message(format!(
+                "{handle} is {kind}, not memo; memo delete only removes memos"
+            )));
+        }
+        self.move_item(&identity, handle, "trash", None, "memo delete", None)
+    }
+
     /// Absorb an owned mail record. After absorb, the record cannot be changed.
     ///
     /// # Errors

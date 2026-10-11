@@ -85,24 +85,42 @@ impl SyncState {
     ///
     /// # Errors
     /// Returns an error when the file exists but cannot be read or parsed.
+    /// The message names the file and the command that rebuilds it.
     pub fn load(dir: &Path, project: &str) -> Result<Self, VivariumError> {
         let empty = Self {
             project: project.to_string(),
             ..Self::default()
         };
         let path = state_path(dir);
+        let unreadable = |cause: &str| {
+            VivariumError::Message(format!(
+                "sync state {} {cause}; run `vivi sync resync` to rebuild it",
+                path.display()
+            ))
+        };
         let raw = match fs::read_to_string(&path) {
             Ok(raw) => raw,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(empty),
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(unreadable(&format!("cannot be read ({e})"))),
         };
-        let state: Self = serde_json::from_str(&raw).map_err(|e| {
-            VivariumError::Message(format!("sync state {} is unreadable: {e}", path.display()))
-        })?;
+        let state: Self = serde_json::from_str(&raw)
+            .map_err(|_| unreadable("is corrupt (it is not a valid sync state)"))?;
         Ok(if state.project == project {
             state
         } else {
             empty
+        })
+    }
+
+    /// Load the state a resync starts from: whatever the file holds, or the
+    /// empty state when it cannot be read. A resync resets the cursor and
+    /// floor anyway and writes the file fresh, so an unreadable file is the
+    /// very thing it repairs.
+    #[must_use]
+    pub fn load_for_resync(dir: &Path, project: &str) -> Self {
+        Self::load(dir, project).unwrap_or_else(|_| Self {
+            project: project.to_string(),
+            ..Self::default()
         })
     }
 
@@ -129,7 +147,7 @@ fn state_path(dir: &Path) -> PathBuf {
 
 /// Create the sync dir (0700) with a self-gitignore so nothing under it can
 /// ever be committed.
-fn ensure_sync_dir(dir: &Path) -> Result<(), VivariumError> {
+pub(crate) fn ensure_sync_dir(dir: &Path) -> Result<(), VivariumError> {
     crate::store::secure_create_dir_all(dir)?;
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {

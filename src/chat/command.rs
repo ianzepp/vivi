@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::chat::identity::ChatIdentity;
 use crate::chat::outbox::Draft;
-use crate::chat::state::ChatState;
+use crate::chat::state::{ChatState, RejectedMessage};
 use crate::chat::{chat_dir, client, outbox, prune, sync, watch};
 use crate::cli::{ChatSendCommand, ChatSubcommand, RoomSubcommand};
 use crate::error::VivariumError;
@@ -117,6 +117,13 @@ pub fn send(args: &ChatSendCommand) -> Result<(), VivariumError> {
         refs: &refs,
     };
     let report = outbox::send_message(&server, &state, &identity, &room_id, &draft)?;
+    if let Some(reason) = &report.rejected {
+        return Err(VivariumError::Message(format!(
+            "the server rejected {} for {room_id}: {reason}; it stays in the outbox marked \
+             rejected and is not retried (vivi chat status lists it)",
+            report.message_id
+        )));
+    }
     if report.delivered {
         println!("sent {} to {}", report.message_id, room_id);
     } else {
@@ -157,14 +164,36 @@ pub fn flush(project: Option<&Path>) -> Result<(), VivariumError> {
     let server = server_of(&mailspace)?;
     let (state, identity) = chat_parts(&mailspace)?;
     let summary = outbox::deliver_all(&server, &state, &identity)?;
+    let rejected = state.rejected_outbox()?;
     println!(
-        "flush: {} sent ({} duplicate), {} queued",
-        summary.sent, summary.duplicates, summary.queued
+        "flush: {} sent ({} duplicate), {} queued, {} rejected",
+        summary.sent,
+        summary.duplicates,
+        summary.queued,
+        rejected.len()
     );
     if let Some(error) = summary.error {
         println!("first failure: {error}");
     }
-    Ok(())
+    print_rejected(&rejected);
+    if rejected.is_empty() {
+        Ok(())
+    } else {
+        Err(VivariumError::Message(format!(
+            "{} message(s) rejected by the server stay in the outbox and are not retried",
+            rejected.len()
+        )))
+    }
+}
+
+/// One line per message the server refused for good.
+fn print_rejected(rejected: &[RejectedMessage]) {
+    for item in rejected {
+        println!(
+            "rejected {} (room {}): {}",
+            item.message_id, item.room_id, item.reason
+        );
+    }
 }
 
 /// `vivi chat read`: poll since the stored cursor, render origin labels and
@@ -311,6 +340,11 @@ pub fn status(project: Option<&Path>) -> Result<(), VivariumError> {
         );
     }
     println!("chat outbox depth: {}", state.outbox_depth()?);
+    let rejected = state.rejected_outbox()?;
+    if !rejected.is_empty() {
+        println!("chat outbox rejected: {}", rejected.len());
+        print_rejected(&rejected);
+    }
     Ok(())
 }
 

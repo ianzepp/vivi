@@ -1421,6 +1421,14 @@ of 1-256 bytes) before it is queued, so a bad send fails at the prompt
 instead of sitting in the outbox. A queued work item retries with its
 kind and threading intact, under the same id.
 
+A message the server refuses for good (a 400, 413 or 422, such as an unknown
+`--to` label) is not retried: `send` exits non-zero with the server's reason,
+and the row stays in the outbox marked rejected. It blocks nothing behind it
+and nothing in other rooms. `vivi chat status` lists rejected rows under the
+depth line, and `vivi chat flush` prints them and exits non-zero while any
+exist. A rate limit or an unreachable server is not a rejection; those rows
+stay queued and retry.
+
 `vivi chat pull` is the down-sync: it polls each room since its own sync
 cursor and files what arrived into the mailspace as real mail items for
 the `[chat] recipient` role (required — pull refuses without it, and chat
@@ -1489,7 +1497,7 @@ vivi sync fetch <handle>...    # file letters by their 8-hex handle
 vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
-vivi sync status         # fingerprint, server, project, address, cursor, history, unsent
+vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded
 ```
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
@@ -1506,7 +1514,20 @@ but are not routable, so address a reply to one explicitly.
 **Configuration** is the `[sync]` table: `server`, `project` (the server-side
 project id), and `name` (this checkout's registered member name). A member's
 key must be vouched for by an existing member before `vivi sync join` is
-accepted. There is no recipient or name map: the address carries both.
+accepted. There is no recipient or name map: the address carries both. The
+server binds a name to the first key admitted under it and has no re-key, so a
+checkout that loses its key cannot take its name back; only the project creator
+can help. If a join says another member already holds this mailspace's address
+prefix, remove both the `id` line in `.vivi/mailspace.toml` and the file
+`.vivi/mailspace.id` (the copy that restores the id) so a new id is minted;
+letters sent after that carry the new prefix.
+
+**One sync at a time.** `push`, `pull`, `resync`, `fetch` and `prune` take an
+exclusive lock under `.vivi/sync/`, so a cron run and an interactive run
+serialize. The second waits up to 10 seconds, then exits 1 with `another vivi
+sync is running`. A corrupt or unreadable `.vivi/sync/state.json` makes
+`status`, `pull` and `fetch` fail with a message naming the file; `vivi sync
+resync` rebuilds it.
 
 **Sending to another mailspace.** Address the role directly, taking the prefix
 from `vivi sync directory`:
@@ -1517,8 +1538,20 @@ vivi need send --from mind --to hand@ab12cd34.local --subject ... --body ...
 
 A remote recipient gets no local delivered copy. The letter is held as a sent
 copy, the command prints `queued for sync: ...`, and the next push sends it.
-A reply to a pulled letter is addressed to its `From` with no `--to`, so a
-remote sender is answered through the server.
+`mail deliver` takes remote `To`/`Cc` addresses the same way (a letter with no
+local recipient is kept as the `From` role's sent copy, so `From` must be a
+role here). Without a `[sync]` table the command prints a note instead:
+the letter stays in this checkout. A reply to a pulled letter is addressed to
+its `From` with no `--to`, so a remote sender is answered through the server.
+
+**Letters that cannot go.** With `[sync]` configured, a letter over 64 KiB is
+refused when it is composed (`mail send`, `mail reply`, `need`/`task`/`want
+send`, `mail deliver`) and nothing is stored. Push never uploads a letter whose
+`From` claims another mailspace's prefix (every puller would refuse it), and
+it lists any stored letter that is too large or has such a `From` by handle and
+exits non-zero. `vivi sync status` counts them on a `not uploaded` line beside
+`unsent`. The server does not check that a recipient prefix belongs to anyone:
+compare it with `vivi sync directory`.
 
 **What pull does.** Each record is verified before it is filed: the bytes hash
 to the stated `content_sha256`, the envelope recipients equal the letter's own

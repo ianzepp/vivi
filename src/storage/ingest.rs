@@ -5,7 +5,7 @@ use super::{
     StoredMessage, Utc, VivariumError, blob_relpath, fallback_message_id, is_traveling_id, params,
     parse_metadata, remote_bound_message_id, sha256_hex, write_blob_if_absent,
 };
-use rusqlite::Transaction;
+use rusqlite::Connection;
 
 impl Storage {
     /// Ingest a single message, inserting or updating blob, metadata, message,
@@ -26,7 +26,9 @@ impl Storage {
         let created_blob = write_blob_if_absent(&blob_abspath, data)?;
         let metadata = parse_metadata(data);
         let now = Utc::now().to_rfc3339();
-        let tx = self.conn.transaction().map_err(|e| {
+        // A savepoint, so a batch that holds an outer transaction (see
+        // `begin_batch`) can ingest inside it; alone it is a transaction.
+        let tx = self.conn.savepoint().map_err(|e| {
             VivariumError::Other(format!("failed to open storage transaction: {e}"))
         })?;
         upsert_blob_row(&tx, &content_id, &blob_relpath, data.len(), &metadata, &now)?;
@@ -44,6 +46,44 @@ impl Storage {
             blob_relpath,
             created_blob,
         })
+    }
+
+    /// Open a write transaction that spans several calls, so a batch of
+    /// ingests and event appends lands whole or not at all. Pair it with
+    /// [`Self::commit_batch`] or [`Self::rollback_batch`]. A blob file written
+    /// inside a batch that rolls back stays on disk as a harmless orphan: it
+    /// is content-addressed and reused by the next ingest of the same bytes.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] when the transaction cannot start.
+    pub fn begin_batch(&mut self) -> Result<(), VivariumError> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| VivariumError::Other(format!("failed to open batch transaction: {e}")))
+    }
+
+    /// Commit the transaction opened by [`Self::begin_batch`].
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] when the commit fails.
+    pub fn commit_batch(&mut self) -> Result<(), VivariumError> {
+        self.conn
+            .execute_batch("COMMIT")
+            .map_err(|e| VivariumError::Other(format!("failed to commit batch: {e}")))?;
+        self.invalidate_handle_index();
+        Ok(())
+    }
+
+    /// Discard everything since [`Self::begin_batch`].
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] when the rollback fails.
+    pub fn rollback_batch(&mut self) -> Result<(), VivariumError> {
+        self.conn
+            .execute_batch("ROLLBACK")
+            .map_err(|e| VivariumError::Other(format!("failed to roll back batch: {e}")))?;
+        self.invalidate_handle_index();
+        Ok(())
     }
 
     /// Atomically ingest a single blob for multiple recipients and log a
@@ -232,7 +272,7 @@ fn is_presented(request: &MessageIngestRequest) -> bool {
 /// the existing message's content for foreign input. Same content is an
 /// idempotent re-ingest.
 pub(super) fn ensure_presented_id_unclaimed(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     request: &MessageIngestRequest,
     message_id: &str,
     content_id: &str,
@@ -280,7 +320,7 @@ fn delivery_event(
 }
 
 pub(super) fn upsert_blob_row(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     content_id: &str,
     blob_relpath: &str,
     byte_size: usize,
@@ -307,7 +347,7 @@ pub(super) fn upsert_blob_row(
 }
 
 pub(super) fn upsert_metadata_row(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     content_id: &str,
     metadata: &ParsedMetadata,
 ) -> Result<(), VivariumError> {
@@ -339,7 +379,7 @@ pub(super) fn upsert_metadata_row(
 }
 
 pub(super) fn upsert_message_row(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     request: &MessageIngestRequest,
     message_id: &str,
     content_id: &str,
@@ -373,7 +413,7 @@ pub(super) fn upsert_message_row(
 }
 
 pub(super) fn upsert_remote_binding(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     message_id: &str,
     remote: Option<&RemoteBindingInput>,
     now: &str,

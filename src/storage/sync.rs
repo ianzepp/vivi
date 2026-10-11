@@ -59,7 +59,8 @@ impl Storage {
     /// Unlike [`Storage::ingest_message`], an existing row is left exactly as
     /// it is. An evicted row (soft-deleted by [`Storage::evict_messages`]) is
     /// restored in place. The optional `event` is appended in the same
-    /// transaction, and only when a row was inserted or restored.
+    /// transaction, and only when a row was inserted: a restore is not a new
+    /// delivery, and the earlier event survives eviction.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if a presented id is malformed, the id
@@ -96,7 +97,10 @@ impl Storage {
                 restore_message_row(&tx, &message_id, &now)?;
             }
             upsert_remote_binding(&tx, &message_id, request.remote.as_ref(), &now)?;
-            if let Some(event) = event {
+            // A restore is not a delivery: the row's first ingest already
+            // logged one, and the log outlives eviction. A second one would
+            // wake a watcher again and claim a role the row has left.
+            if let (Some(event), IngestOutcome::Inserted) = (event, outcome) {
                 let input = delivery_event(event, request, &message_id, &content_id);
                 append_event_tx(&tx, &input, &now)?;
             }
@@ -147,6 +151,32 @@ impl Storage {
         tx.commit()
             .map_err(|e| VivariumError::Other(format!("failed to commit bind: {e}")))?;
         Ok(true)
+    }
+
+    /// The message that holds the remote position `remote` names, if any. A
+    /// position belongs to one row: binding it to another fails.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn remote_binding_holder(
+        &self,
+        remote: &RemoteBindingInput,
+    ) -> Result<Option<String>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT message_id FROM remote_bindings
+                 WHERE account = ?1 AND remote_mailbox = ?2
+                   AND remote_uidvalidity = ?3 AND remote_uid = ?4",
+                params![
+                    remote.account,
+                    remote.remote_mailbox,
+                    remote.remote_uidvalidity,
+                    remote.remote_uid
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| VivariumError::Other(format!("failed to read remote binding: {e}")))
     }
 
     /// Every live row holding `content_id`, whatever its id, account, or role.
