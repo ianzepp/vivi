@@ -550,6 +550,10 @@ named owner before the unit counts as done.
 In [Direct](#operating-modes) the Mind commits the work it just did. It
 still does not commit for a Hand.
 
+In a pool lane (`vivi pool dispatch`) the runner makes the commit, as the
+lane's configured bot identity, and the orchestrator closes the task; a
+read-only dispatch commits nothing. The rule above governs a host-spawned seat.
+
 ### Rule 4: Route blockers; do not freeze
 
 The Mind's job is to keep the campaign moving. Finding a blocker does not end
@@ -895,6 +899,13 @@ The Mind uses the full role system through Vivi:
 - Planners lower goals. A raw goal goes to a Planner, not a Hand.
 - Heads advise. They do not implement or lower goals.
 - Haters provide cold perception evidence. Run each pass in a fresh context and send its raw report to a separate Head for merit extraction.
+- A review seat (Auditor, Head, Hater) that needs a full shell but must change
+  nothing can run as a read-only pool dispatch (`vivi pool dispatch --read-only`).
+  Its GitHub token is minted `contents: read`, so even a misbehaving seat cannot
+  push, and anything it altered is recorded and discarded. The guarantee is
+  strongest on Docker and Fly pools and weaker on SSH and local pools; the Vivi
+  skill's table says exactly how. Prefer it for review seats when a remote pool
+  is configured.
 
 Hands, Haters, and Cadence do not use memos. Vivi permits memos for every identity, but memos are reserved for durable context used by the Mind and Heads. Cadence cites existing Mind memos for cleanup; it does not file its own. A Hater's ignorance of durable internal context is part of the test.
 
@@ -961,7 +972,7 @@ Mind sets it when filing, from the unit's complexity; the seat never chooses
 its own. The Mind and Heads take no override.
 
 Using a mid-P high-decode slug as a Head is a quota exception, not the
-Head band. Project bans live in that project's agents doc.
+Head band. Project bans live in that project's agents doc or in a project rule (`vivi rule`).
 
 ### Offline fallback
 
