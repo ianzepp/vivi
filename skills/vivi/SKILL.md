@@ -1460,6 +1460,68 @@ current live deployment is
 `https://vivi-server-production.up.railway.app` (Railway default
 domain); a custom hostname is still open.
 
+## Project Sync
+
+`vivi sync` replicates a mailspace with a project on a server, so several
+mailspaces on different machines share needs, tasks, wants, and mail. The unit
+of sync is the letter: the exact `.eml` file. It travels byte for byte, its
+`sha256` is its identity on every machine, and it is immutable once written.
+The server stores and serves letters and never rewrites one. Verify the exact
+flags with `vivi sync --help`.
+
+```sh
+vivi sync                # push, then pull
+vivi sync push           # send local letters the server does not have
+vivi sync pull           # file what other members pushed
+vivi sync join           # register [sync] name (the key must be vouched for)
+vivi sync directory      # members: name, address domain, fingerprint
+vivi sync status         # fingerprint, server, project, address, cursor, unsent
+```
+
+**Addresses.** Every mailspace has a UUID `id`, minted once into its
+`mailspace.toml`. Its first 8 characters are the domain of every address it
+mints: the `mind` role of the mailspace whose id begins `3f9a1c7e` is
+`mind@3f9a1c7e.local`. The address sits inside the letter, so sender and
+recipient are part of the hashed object. Treat the file as machine-local: do
+not commit it, edit the `id`, or copy a `.vivi` directory to another machine
+(the server refuses a second member under a prefix already claimed). Letters
+written before the id existed keep their old `name.local` domain; they travel
+but are not routable, so address a reply to one explicitly.
+
+**Configuration** is the `[sync]` table: `server`, `project` (the server-side
+project id), and `name` (this checkout's registered member name). A member's
+key must be vouched for by an existing member before `vivi sync join` is
+accepted. There is no recipient or name map: the address carries both.
+
+**Sending to another mailspace.** Address the role directly, taking the prefix
+from `vivi sync directory`:
+
+```sh
+vivi need send --from mind --to hand@ab12cd34.local --subject ... --body ...
+```
+
+A remote recipient gets no local delivered copy. The letter is held as a sent
+copy, the command prints `queued for sync: ...`, and the next push sends it.
+A reply to a pulled letter is addressed to its `From` with no `--to`, so a
+remote sender is answered through the server.
+
+**What pull does.** Each record is verified before it is filed: the bytes hash
+to the stated `content_sha256`, the envelope recipients equal the letter's own
+`To` and `Cc`, and a `From` address in prefix form carries the prefix the
+server registered for its sender. A letter that fails is refused, named, and
+makes the command exit non-zero; nothing partial is filed. Filing is by
+address: one delivered row for every local `To`/`Cc` role (a role this mailspace
+lacks is filed under its name with a warning, and appears once the role is
+added), plus a `sent` row when `From` is a local role. A need, task, or want
+addressed to another mailspace's role is held under its address, so every member
+holds every work item without it landing in a local queue.
+
+Not synced: memos, drafts, trash, rules, and local state (closing a need, marks,
+read flags). A letter is limited to 64 KiB, and a member may send 30 letters per
+minute, so a large first push stops cleanly and resumes on the next run. Mail
+is visible only to its sender and the addressed mailspace; work items and
+mail to `postmaster` are visible to every member.
+
 ## Safety
 
 - Use the CLI rather than underlying stores.
