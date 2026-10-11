@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use super::config::PoolConfig;
 use super::github::Secret;
+use super::requires;
 
 /// The generic boot script, embedded in the binary.
 pub const BOOT_SCRIPT: &str = include_str!("boot-slot.sh");
@@ -35,8 +36,9 @@ pub fn render_commands(commands: &[String]) -> String {
     script
 }
 
-/// The files a slot is created with: boot, setup, and seed scripts, then the
-/// embedded source files when the pool has any.
+/// The files a slot is created with: boot, setup, and seed scripts, the list of
+/// requirements when the pool has any, then the embedded source files when the
+/// pool has any.
 #[must_use]
 pub fn slot_files(config: &PoolConfig) -> Vec<(String, String)> {
     let mut files = vec![
@@ -44,6 +46,12 @@ pub fn slot_files(config: &PoolConfig) -> Vec<(String, String)> {
         (SETUP_PATH.to_string(), render_commands(&config.setup)),
         (SEED_PATH.to_string(), render_commands(&config.seed)),
     ];
+    if !config.requires.is_empty() {
+        files.push((
+            requires::LIST_PATH.to_string(),
+            requires::render_list(&config.requires),
+        ));
+    }
     if let Some(source) = &config.embedded {
         files.extend(source.files.iter().cloned());
     }

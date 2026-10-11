@@ -49,6 +49,11 @@ impl Rig {
 
     /// Run the runner as a read-only job with `harness`; the result it wrote.
     fn run(&self, harness: &str, build_dir: &str) -> JobResult {
+        self.run_with_facts(harness, build_dir, &[])
+    }
+
+    /// Like [`Rig::run`], with `facts` as the pool's fact commands.
+    fn run_with_facts(&self, harness: &str, build_dir: &str, facts: &[&str]) -> JobResult {
         let job = self.work.path().join("job");
         std::fs::create_dir_all(&job).unwrap();
         let params = format!(
@@ -63,6 +68,10 @@ impl Rig {
             ("rules.md", "rules\n"),
         ] {
             std::fs::write(job.join(name), content).unwrap();
+        }
+        if !facts.is_empty() {
+            let list: String = facts.iter().map(|c| format!("{c}\n")).collect();
+            std::fs::write(job.join("facts.cmd"), list).unwrap();
         }
         let home = self.work.path().join("home");
         let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
@@ -222,4 +231,98 @@ fn the_runner_has_no_commit_or_push_on_the_read_only_path() {
         call < RUNNER.find("commit -q -m").unwrap(),
         "and before any commit"
     );
+}
+
+#[test]
+fn facts_are_recorded_in_order_before_the_harness_and_a_failure_does_not_fail_the_job() {
+    let rig = Rig::new();
+    let marker = rig.work.path().join("harness-started");
+    let harness = format!(
+        "test -f fact-ran.txt && cp fact-ran.txt {} ; cat a.txt",
+        marker.display()
+    );
+    let facts = [
+        "echo from-fact > fact-ran.txt; echo hello; echo world",
+        "echo oops >&2; echo ignored; exit 3",
+        "pwd | sed 's#.*/##'",
+    ];
+    let result = rig.run_with_facts(&harness, "build", &facts);
+    assert_eq!(result.push(), "read_only_discarded", "{:?}", result.fields);
+    assert_eq!(
+        result.discarded_paths(),
+        ["fact-ran.txt"],
+        "the harness ran after the facts, and the fact's file was discarded"
+    );
+    let got = result.facts();
+    assert_eq!(got.len(), 3, "{:?}", result.fields);
+    assert_eq!(got[0].command, facts[0]);
+    assert_eq!((got[0].exit, got[0].output.as_str()), (0, "hello\nworld"));
+    assert_eq!(got[1].exit, 3);
+    assert_eq!(got[1].output, "oops", "stderr is recorded for a failure");
+    assert_eq!(got[2].output, "repo", "facts run in the checkout");
+    assert!(marker.is_file(), "the harness saw the fact's side effect");
+}
+
+#[test]
+fn a_fact_that_hangs_is_stopped_and_recorded_as_timed_out() {
+    let rig = Rig::new();
+    let started = std::time::Instant::now();
+    let result = rig.run_with_facts(
+        "cat a.txt",
+        "build",
+        &["echo before; sleep 30", "echo after"],
+    );
+    assert!(started.elapsed().as_secs() < 25, "the limit is 10 seconds");
+    assert_eq!(result.push(), "read_only_unchanged");
+    let got = result.facts();
+    assert_eq!(got[0].status(), "timed out");
+    assert_eq!(got[1].output, "after");
+}
+
+#[test]
+fn long_fact_output_is_capped_to_the_first_lines_and_bytes() {
+    let rig = Rig::new();
+    let result = rig.run_with_facts(
+        "cat a.txt",
+        "build",
+        &[
+            "seq 1 5000",
+            "head -c 100000 /dev/zero | tr '\\0' 'x'; echo",
+        ],
+    );
+    let got = result.facts();
+    assert_eq!(got[0].output.lines().count(), 40);
+    assert!(got[0].output.starts_with("1\n2\n"));
+    assert!(got[0].output.ends_with("\n40"));
+    assert_eq!(got[1].output.len(), 4096);
+}
+
+#[test]
+fn fact_output_cannot_break_the_result_file_or_run_anything() {
+    let rig = Rig::new();
+    let command = r#"printf 'it\047s "q" $(touch pwned) `touch pwned2` back\\slash lit\\n\nsecond=line\r\nfact_9_cmd=forged\njob=evil\001end'"#;
+    let result = rig.run_with_facts("cat a.txt", "build", &[command, "echo second"]);
+    assert_eq!(
+        result.get("job"),
+        "j1",
+        "a forged job= line changed nothing"
+    );
+    assert_eq!(result.get("fact_9_cmd"), "", "no forged fact key");
+    let got = result.facts();
+    assert_eq!(got.len(), 2, "{:?}", result.fields);
+    assert_eq!(got[0].command, command);
+    assert_eq!(
+        got[0].output,
+        "it's \"q\" $(touch pwned) `touch pwned2` back\\slash lit\\n\nsecond=line\nfact_9_cmd=forged\njob=evilend"
+    );
+    assert_eq!(got[1].output, "second");
+    assert!(!rig.repo().join("pwned").exists() && !rig.repo().join("pwned2").exists());
+}
+
+#[test]
+fn a_job_without_facts_records_none() {
+    let rig = Rig::new();
+    let result = rig.run("cat a.txt", "build");
+    assert!(result.facts().is_empty());
+    assert!(result.fields.keys().all(|k| !k.starts_with("fact_")));
 }

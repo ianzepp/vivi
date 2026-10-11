@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::collect::{Collected, DISCARDED_PATH_PREFIX, Outcome};
+use super::facts;
 use crate::mailspace::PoolEventRow;
 
 /// The machine-readable record of a dispatch, as written to the task.
@@ -107,9 +108,13 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
     }
     if let Outcome::Finished(done) = outcome {
         for (key, value) in &done.result.fields {
-            if !key.starts_with(DISCARDED_PATH_PREFIX) {
+            if !key.starts_with(DISCARDED_PATH_PREFIX) && !key.starts_with(facts::KEY_PREFIX) {
                 note[key] = serde_json::Value::String(value.clone());
             }
+        }
+        let recorded = done.result.facts();
+        if !recorded.is_empty() {
+            note["facts"] = serde_json::json!(recorded);
         }
         let discarded = done.result.discarded_paths();
         if !discarded.is_empty() {
@@ -161,6 +166,7 @@ fn finished_text(done: &Collected) -> String {
         }
     }
     for (title, body) in [
+        ("facts", &facts::text(&done.result.facts())),
         ("receipt", &done.receipt),
         ("stderr tail", &done.stderr),
         ("runner log tail", &done.log),

@@ -14,6 +14,8 @@
 #                copied to the agent
 #   harness.cmd  the rendered harness command
 #   brief.md     the task body        rules.md  the standing rules
+#   facts.cmd    optional: commands to record before the harness starts, one
+#                per line (see run_facts below)
 # Environment from the machine: BUILD_DIR, and any variable named in
 # ENV_NAMES (their values come from the machine's own environment).
 # UNPRIVILEGED, BUILD_PERSISTS and WORK are the ones of the boot script.
@@ -101,6 +103,7 @@ finish() { # finish <push-outcome> [sha]
     echo "model=$MODEL"
     echo "slot=$SLOT"
     [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
+    [ -z "${FACTS_EXTRA:-}" ] || printf '%s\n' "$FACTS_EXTRA"
   } > "$J/result.partial"
   mv "$J/result.partial" "$J/result"
   exit 0
@@ -145,6 +148,42 @@ HARNESS_ENV=("HOME=$AGENT_USER_HOME" "PATH=$PATH" "VIVI_AGENT_JOB=$JOB")
 for name in $ENV_NAMES; do
   [ -n "${!name+x}" ] && HARNESS_ENV+=("$name=${!name}")
 done
+
+# Facts: each command of $J/facts.cmd (one per line) runs in the checkout as the
+# agent's user, with a clean environment, before the harness starts. Per command
+# the result gets fact_<n>_cmd, fact_<n>_exit and fact_<n>_out: standard output,
+# or standard error when the command failed (standard output if that is empty),
+# the first 40 lines and 4096 bytes, control characters dropped, backslash and
+# line break escaped so a value is one line. A command gets FACT_SECS seconds
+# and may write 8 MB to each stream (it is stopped beyond that, and a stopped
+# command counts as failed). A failing fact never fails the job.
+FACT_SECS=10
+FACTS_EXTRA=
+esc() {
+  printf '%s' "$1" | sed -e ':a' -e '$!{N;ba' -e '}' -e 's/\\/\\\\/g' -e 's/\n/\\n/g'
+}
+keep_head() { head -n 40 "$1" | head -c 4096 | tr -d '\000-\010\013-\037'; }
+run_fact() { # run_fact <command>: stdout to fact.out, stderr to fact.err; returns its exit code
+  ( ulimit -f 8192
+    as_hand env -i "HOME=$AGENT_USER_HOME" "PATH=$PATH" "VIVI_AGENT_JOB=$JOB" \
+      timeout -k 2 "$FACT_SECS" bash -c "$1" ) > "$J/fact.out" 2> "$J/fact.err" < /dev/null
+}
+run_facts() {
+  [ -s "$J/facts.cmd" ] || return 0
+  local n=0 cmd rc out
+  cd "$RD" || return 0
+  while IFS= read -r cmd || [ -n "$cmd" ]; do
+    [ -n "$cmd" ] || continue
+    n=$((n + 1))
+    run_fact "$cmd"; rc=$?
+    if [ "$rc" -eq 0 ] || [ ! -s "$J/fact.err" ]; then out=$(keep_head "$J/fact.out"); else out=$(keep_head "$J/fact.err"); fi
+    [ -z "$FACTS_EXTRA" ] || FACTS_EXTRA+=$'\n'
+    FACTS_EXTRA+="fact_${n}_cmd=$(esc "$cmd")"$'\n'"fact_${n}_exit=$rc"$'\n'"fact_${n}_out=$(esc "$out")"
+  done < "$J/facts.cmd"
+  rm -f "$J/fact.out" "$J/fact.err"
+  kill_agent
+}
+run_facts
 A0=$(now)
 as_hand env -i "${HARNESS_ENV[@]}" timeout -k 15 "$BUDGET" bash -c "$HARNESS_CMD" \
   > "$J/agent.out" 2> "$J/agent.err"

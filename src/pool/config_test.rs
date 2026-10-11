@@ -625,3 +625,43 @@ fn repo_and_github_are_set_together_or_not_at_all() {
     config.repo = None;
     assert!(err(&config).contains("repo is required when github is set"));
 }
+
+#[test]
+fn requires_and_facts_parse_as_command_lists_and_default_to_empty() {
+    let config = full();
+    assert!(config.requires.is_empty() && config.facts.is_empty());
+    let mut config = full();
+    config.requires = vec!["command -v tool".into(), "tool --list".into()];
+    config.facts = vec!["tool --query --csv".into(), "uname -srm".into()];
+    config.validate(&id()).unwrap();
+    let parsed: PoolConfig = toml::from_str(&format!(
+        "{FULL}\n"
+    ).replacen("seed = [\"cargo build\"]", "seed = [\"cargo build\"]\nrequires = [\"command -v tool\"]\nfacts = [\"uname -srm\", \"tool --version\"]", 1))
+    .unwrap();
+    assert_eq!(parsed.requires, ["command -v tool"]);
+    assert_eq!(parsed.facts, ["uname -srm", "tool --version"]);
+    parsed.validate(&id()).unwrap();
+}
+
+#[test]
+fn requires_and_facts_reject_empty_and_multi_line_entries_naming_the_field() {
+    for field in ["requires", "facts"] {
+        for bad in ["", "   ", "a\nb", "a\r", "a\u{1b}[0m"] {
+            let mut config = full();
+            let list = vec![bad.to_string()];
+            match field {
+                "requires" => config.requires = list,
+                _ => config.facts = list,
+            }
+            let said = err(&config);
+            assert!(said.contains(field), "{field} {bad:?}: {said}");
+        }
+        let mut config = full();
+        let list = vec!["printf 'a\tb'".to_string()];
+        match field {
+            "requires" => config.requires = list,
+            _ => config.facts = list,
+        }
+        config.validate(&id()).unwrap();
+    }
+}

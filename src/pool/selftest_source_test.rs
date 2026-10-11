@@ -113,3 +113,13 @@ fn the_embedded_source_is_small_and_ignores_the_build_mount() {
         .unwrap();
     assert!(ignore.1.lines().any(|l| l == "build/"));
 }
+
+#[test]
+fn the_self_test_runs_no_requirements_and_no_facts_of_the_real_pool() {
+    let mut real = real();
+    real.requires = vec!["command -v some-tool".into()];
+    real.facts = vec!["some-tool --version".into()];
+    let test = test_config(&real);
+    assert!(test.requires.is_empty() && test.facts.is_empty());
+    assert_eq!(real.requires.len(), 1, "the real pool is not touched");
+}

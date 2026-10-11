@@ -7,13 +7,16 @@
 //! source repository host, and Vivi's own pool state. A check that cannot run
 //! because an earlier one failed is `skipped`, not `fail`.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use super::config::{PoolConfig, RepoAccess};
-use super::doctor_pool::{self, PoolFacts};
+use super::doctor_pool::{self, MarkView, PoolFacts, RequiresView};
 use super::doctor_repo::{self, GithubView};
 use super::provider::PoolProvider;
 use super::record::OpenDispatch;
+use super::requires;
 use super::slot::{self, PoolId, SlotStatus};
 use crate::error::VivariumError;
 
@@ -275,6 +278,10 @@ pub fn run(inputs: &Inputs) -> Report {
             ..GithubView::default()
         }
     };
+    let requires = RequiresView {
+        configured: &config.requires,
+        marks: read_marks(inputs, slots.as_ref()),
+    };
     checks.extend(doctor_pool::checks(&PoolFacts {
         pool: &inputs.id.pool,
         config: config.validate(inputs.id).map_err(|e| e.to_string()),
@@ -283,10 +290,46 @@ pub fn run(inputs: &Inputs) -> Report {
         open: inputs.open,
         now: inputs.now,
         github: &view,
+        requires: &requires,
     }));
     let checks = checks.into_iter().map(|c| c.in_pool(&inputs.id.pool));
     Report {
         checks: checks.collect(),
+    }
+}
+
+/// What each slot's disk says about the pool's `requires`: read without
+/// starting anything, so a running slot (or a host that cannot read a stopped
+/// disk) is reported as not read. Nothing is read when nothing is configured.
+fn read_marks(
+    inputs: &Inputs,
+    slots: Option<&Result<Vec<SlotStatus>, String>>,
+) -> BTreeMap<String, MarkView> {
+    let Some(Ok(slots)) = slots.filter(|_| !inputs.config.requires.is_empty()) else {
+        return BTreeMap::new();
+    };
+    slots
+        .iter()
+        .map(|slot| {
+            let view = if slot.provider_state == "stopped" {
+                read_mark(inputs.provider, &slot.id)
+            } else {
+                MarkView::Unread("the slot is running; doctor never starts or touches one".into())
+            };
+            (slot.name.clone(), view)
+        })
+        .collect()
+}
+
+fn read_mark(provider: &dyn PoolProvider, id: &str) -> MarkView {
+    match provider.read_stopped(id, &[requires::MARK_PATH]) {
+        Ok(Some(files)) => files
+            .get(requires::MARK_PATH)
+            .map_or(MarkView::Absent, |b| {
+                MarkView::Mark(String::from_utf8_lossy(b).into_owned())
+            }),
+        Ok(None) => MarkView::Unread("this host cannot read a stopped slot's disk".into()),
+        Err(e) => MarkView::Unread(e.to_string()),
     }
 }
 

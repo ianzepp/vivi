@@ -764,6 +764,52 @@ privileges and costs nothing beyond that host's cores and disk. On `local` it
 does the same on this machine, always in fetch mode (a worktree pool's test
 brings its own embedded remote instead of touching your repository).
 
+#### Requirements and facts (special hardware)
+
+Two optional lists in the pool table, both plain shell commands, one line each.
+Nothing in them is known to Vivi: they are for a pool whose machines have
+something particular (a GPU, a toolchain, a device) and whose results are only
+evidence if they say what produced them.
+
+```toml
+[pools.gpu]
+provider = "ssh"
+slots = 1                       # one slot per device, so two jobs never share it
+requires = ["command -v gpu-query", "gpu-query --list"]
+facts    = ["gpu-query --name --driver --memory --csv", "uname -srm"]
+# [pools.gpu.ssh] host = "gpu-box" ... repo, github, harness, committer as usual
+```
+
+- `requires`: each command must exit 0 on a slot for the slot to be usable.
+  They run during the seed, in the checkout, after `setup` and before `seed`,
+  as the user the worker will run as (`hand` on Fly and Docker, the login user
+  on SSH and local), each under a two-minute limit. If one fails, the seed
+  fails: `create` and `scale` print `exit 7 (a `requires` command failed)` and,
+  where the host can read a stopped slot's disk (SSH, local, Docker), the
+  failing command, its exit code and the last line of its output; the slot
+  stays `unseeded`. `vivi pool doctor` reports, per seeded slot, that the
+  requirements passed at seed time (from a mark the boot script wrote, listing
+  what it checked), or, when `requires` was configured or changed after the slot
+  was seeded, `not checked on this slot; re-create it`. Doctor only reads: it
+  never starts a slot to check, so a running slot, or a host that cannot read a
+  stopped disk (Fly), is reported as not read. `doctor --test` ignores both
+  lists.
+- `facts`: each command runs before the harness starts, in the checkout, as the
+  worker's user, with a clean environment, a 10-second limit and an output cap
+  (the first 40 lines and 4096 bytes; the command may write at most 8 MB per
+  stream). Every job gets them, normal or `--read-only`, on every provider.
+  Each is recorded with its command, its exit code and its standard output
+  (its standard error when it failed, or its standard output if that is empty).
+  A fact that fails or times out (shown as `timed out`) is recorded as such and
+  never fails the job. The facts are in the task's result reply under a
+  `--- facts` heading before the receipt, and in the `pool_collected` JSON as a
+  `facts` array of `{command, exit, output}`. They are not in porcelain lines.
+
+The commands are configuration, so they are trusted; their output is treated
+as data (control characters dropped, escaped in the result file, only ever
+shown or stored). A requirement is checked once, at seed time, and a fact is
+evidence of the moment the job started; neither selects or schedules slots.
+
 #### Read-only dispatch
 
 ```
@@ -865,7 +911,7 @@ environment of the `vivi` process when a slot is created; `create` and `doctor`
 name the ones that are unset. On SSH the `env` names are read from the login
 environment of the remote user when a job runs. Configure each pool with a
 `[pools.<name>]` table in `.vivi/mailspace.toml` (provider, slots, image,
-setup/seed commands, optionally `build_dir`, and optionally `repo`),
+setup/seed commands, optionally `requires` and `facts`, `build_dir`, and optionally `repo`),
 `[pools.<name>.fly]` (app, which is required, and optional organization, region,
 size, memory, tmpfs), `[pools.<name>.docker]` (optional host, memory, cpus,
 tmpfs), `[pools.<name>.ssh]` (host, optional root) or `[pools.<name>.local]`

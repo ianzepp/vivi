@@ -33,6 +33,7 @@ pub mod docker_tar;
 pub mod doctor;
 pub mod doctor_pool;
 pub mod doctor_repo;
+pub mod facts;
 #[cfg(test)]
 #[path = "pool/fake_provider_test.rs"]
 pub(crate) mod fake_provider;
@@ -56,6 +57,7 @@ pub mod porcelain;
 pub mod progress;
 pub mod provider;
 pub mod record;
+pub mod requires;
 pub mod run;
 pub mod scale;
 pub mod selftest;

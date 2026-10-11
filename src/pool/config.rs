@@ -57,6 +57,18 @@ pub struct PoolConfig {
     /// Shell commands run in the checkout at seed time to warm the build output.
     #[serde(default)]
     pub seed: Vec<String>,
+    /// Shell commands that must each exit 0 on a slot for it to be usable.
+    /// They run during seeding, in the checkout, after `setup` and before
+    /// `seed`, as the user the worker will run as. One that fails fails the
+    /// seed, and the slot stays `unseeded`.
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// Shell commands whose output is recorded in every job's result: run in
+    /// the checkout as the worker's user before the harness starts, each under
+    /// a short time limit and an output cap. A fact that fails or times out is
+    /// recorded as such and does not fail the job.
+    #[serde(default)]
+    pub facts: Vec<String>,
     /// Build output directory relative to the repo; gets the memory disk and
     /// the pack (a plain, kept directory on `ssh` and `local`). No default:
     /// a pool that sets none has no build directory handling at all.
@@ -538,6 +550,19 @@ impl PoolConfig {
         for (field, list) in [("setup", &self.setup), ("seed", &self.seed)] {
             if list.iter().any(|c| c.trim().is_empty()) {
                 return Err(bad(format!("{field} holds an empty command")));
+            }
+        }
+        for (field, list) in [("requires", &self.requires), ("facts", &self.facts)] {
+            if list.iter().any(|c| c.trim().is_empty()) {
+                return Err(bad(format!("{field} holds an empty command")));
+            }
+            if list
+                .iter()
+                .any(|c| c.chars().any(|ch| ch.is_control() && ch != '\t'))
+            {
+                return Err(bad(format!(
+                    "{field} holds a command with a line break or control character (one command per entry, on one line)"
+                )));
             }
         }
         Ok(())

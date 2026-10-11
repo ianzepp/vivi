@@ -608,3 +608,54 @@ fn the_self_test_pool_of_one_pool_is_not_that_pool() {
     assert!(pool_status(&host, &real).unwrap().is_empty());
     assert_eq!(pool_status(&host, &real.doctor()).unwrap().len(), 1);
 }
+
+#[test]
+fn a_requirement_failure_is_reported_with_the_reason_the_slot_wrote() {
+    let fake = Fake {
+        stopped_files: RefCell::new(Some(BTreeMap::from([(
+            requires::FAILURE_PATH.to_string(),
+            b"requires: command -v tool exited 1\nsecond line\n".to_vec(),
+        )]))),
+        ..Fake::default()
+    };
+    fake.seed_exit.set(requires::EXIT_CODE);
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
+    let outcome = &report.created[0];
+    assert!(!outcome.seeded());
+    assert_eq!(outcome.exit_code, Some(requires::EXIT_CODE));
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("requires: command -v tool exited 1")
+    );
+    assert_eq!(
+        fake.meta(&outcome.id, META_STATE).as_deref(),
+        Some("seeding"),
+        "the slot is not marked ready, so it reads unseeded"
+    );
+}
+
+#[test]
+fn a_failed_seed_without_a_readable_reason_reports_only_the_exit_code() {
+    let fake = Fake::default();
+    fake.seed_exit.set(3);
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
+    assert_eq!(report.created[0].exit_code, Some(3));
+    assert_eq!(report.created[0].error, None);
+    assert!(!report.created[0].seeded());
+}

@@ -20,10 +20,10 @@ use crate::pool::selftest_source as source;
 use crate::pool::{job, ssh_script};
 
 /// Tools the scripts may use, linked into the private PATH.
-const ALLOWED: [&str; 32] = [
+const ALLOWED: [&str; 33] = [
     "bash", "sh", "git", "date", "awk", "cat", "tar", "rm", "mkdir", "sed", "head", "tr", "cut",
     "du", "mv", "touch", "sleep", "printf", "env", "sync", "chmod", "cp", "dirname", "basename",
-    "ls", "grep", "uname", "id", "pwd", "wc", "sort", "gzip",
+    "ls", "grep", "uname", "id", "pwd", "wc", "sort", "gzip", "tail",
 ];
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -365,4 +365,73 @@ fn the_remote_command_line_is_one_quoted_word_for_the_login_shell() {
     assert!(line.ends_with('\''));
     let login = ssh_script::command_line("~/x", "probe", &[], true);
     assert!(login.starts_with("bash -l -c '"));
+}
+
+#[test]
+fn passing_requirements_run_in_the_checkout_before_the_seed_and_leave_a_mark() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = embedded_config("test -f build/required.txt && touch build/seed-saw-it");
+    config.requires = vec![
+        "pwd | grep -q /repo$ && mkdir -p build && echo ok > build/required.txt".to_string(),
+        "echo 'it'\\''s fine'".to_string(),
+    ];
+    let slot = lay_out(root.path(), &config);
+    let out = boot(&slot);
+    let log = std::fs::read_to_string(slot.work.join("boot.log")).unwrap_or_default();
+    assert!(out.status.success(), "{} {log}", said(&out));
+    assert!(slot.work.join("repo/build/seed-saw-it").is_file(), "{log}");
+    let mark = std::fs::read_to_string(slot.work.join("requires.ok")).unwrap();
+    assert_eq!(mark, requires::render_list(&config.requires));
+    assert!(requires::mark_matches(&config.requires, &mark));
+    assert!(!slot.work.join("seed.failure").exists());
+    assert_eq!(privileged_calls(root.path()), "");
+}
+
+#[test]
+fn a_failing_requirement_stops_the_seed_names_itself_and_runs_nothing_after() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = embedded_config("touch build-seed-ran");
+    config.requires = vec![
+        "true".to_string(),
+        "echo first-line; echo 'no such device: gpu0' >&2; exit 4".to_string(),
+        "touch third-ran".to_string(),
+    ];
+    let slot = lay_out(root.path(), &config);
+    let out = boot(&slot);
+    let log = std::fs::read_to_string(slot.work.join("boot.log")).unwrap_or_default();
+    assert_eq!(out.status.code(), Some(requires::EXIT_CODE as i32), "{log}");
+    assert!(!slot.work.join("seeded").exists(), "the slot never seeds");
+    assert!(!slot.work.join("requires.ok").exists());
+    let failure = std::fs::read_to_string(slot.work.join("seed.failure")).unwrap();
+    assert_eq!(
+        failure.trim_end(),
+        "requires: echo first-line; echo 'no such device: gpu0' >&2; exit 4 exited 4: no such device: gpu0"
+    );
+    assert!(
+        log.contains(&format!("seed_failed {}", failure.trim_end())),
+        "{log}"
+    );
+    assert!(
+        !slot.work.join("repo/build-seed-ran").exists(),
+        "seed.sh did not run"
+    );
+    assert!(
+        !slot.work.join("repo/third-ran").exists(),
+        "later requirements did not run"
+    );
+}
+
+#[test]
+fn a_chatty_requirement_is_not_a_failure_and_a_pool_without_requirements_writes_no_mark() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = embedded_config("true");
+    config.requires = vec!["head -c 3000000 /dev/zero | tr '\\0' x".to_string()];
+    let slot = lay_out(root.path(), &config);
+    assert!(boot(&slot).status.success());
+    assert!(slot.work.join("requires.ok").is_file());
+    let plain = tempfile::tempdir().unwrap();
+    let slot = lay_out(plain.path(), &embedded_config("true"));
+    assert!(boot(&slot).status.success());
+    assert!(!slot.work.join("requires.ok").exists());
+    assert!(!slot.work.join("requires.txt").exists());
 }

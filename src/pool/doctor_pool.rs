@@ -5,10 +5,31 @@ use super::collect::stale_claims;
 use super::doctor::Check;
 use super::doctor_repo::{GithubView, behind_text};
 use super::record::OpenDispatch;
+use super::requires;
 use super::run::annotate_running;
 use super::slot::SlotStatus;
+use std::collections::BTreeMap;
 
 pub const GROUP: &str = "Pool (Vivi)";
+
+/// What the doctor read from one slot's disk about the pool's `requires`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarkView {
+    /// The slot's requirements mark, as written by the boot script.
+    Mark(String),
+    /// The slot was read and has no mark (seeded before `requires` was set).
+    Absent,
+    /// The slot could not be read, and why.
+    Unread(String),
+}
+
+/// The pool's `requires` and what each slot's disk says about them.
+#[derive(Debug, Default)]
+pub struct RequiresView<'a> {
+    pub configured: &'a [String],
+    /// By slot name. Empty when nothing is configured.
+    pub marks: BTreeMap<String, MarkView>,
+}
 
 /// What the pool checks read.
 pub struct PoolFacts<'a> {
@@ -22,6 +43,7 @@ pub struct PoolFacts<'a> {
     pub open: &'a [OpenDispatch],
     pub now: u64,
     pub github: &'a GithubView,
+    pub requires: &'a RequiresView<'a>,
 }
 
 /// Turn the facts into checks.
@@ -61,7 +83,10 @@ fn slot_checks(f: &PoolFacts, slots: &[SlotStatus]) -> Vec<Check> {
     let mut slots = slots.to_vec();
     annotate_running(&mut slots, f.open, f.now);
     let mut out = vec![count_check(f.pool, f.max, &slots)];
-    out.extend(slots.iter().map(|s| slot_check(f, s)));
+    for slot in &slots {
+        out.push(slot_check(f, slot));
+        out.extend(requires_check(f, slot));
+    }
     out.push(leak_check(f, &slots));
     out.push(orphan_check(f, &slots));
     out.push(stale_check(f, &slots));
@@ -153,6 +178,38 @@ fn slot_check(f: &PoolFacts, slot: &SlotStatus) -> Check {
         ),
         _ => Check::warn(GROUP, &name, detail, reseed),
     }
+}
+
+/// Whether a seeded slot's requirements were checked when it was seeded. Slots
+/// that are not seeded have nothing to say here (their state check does).
+fn requires_check(f: &PoolFacts, slot: &SlotStatus) -> Option<Check> {
+    let configured = f.requires.configured;
+    if configured.is_empty() || matches!(slot.state.as_str(), "seeding" | "unseeded") {
+        return None;
+    }
+    let name = format!("requires {}", slot.name);
+    let reseed = format!(
+        "vivi pool destroy --pool {} --slot {} --yes, then {}",
+        f.pool,
+        slot.name,
+        create(f.pool)
+    );
+    let count = configured.len();
+    Some(match f.requires.marks.get(&slot.name) {
+        Some(MarkView::Mark(mark)) if requires::mark_matches(configured, mark) => Check::ok(
+            GROUP,
+            &name,
+            format!("{count} requirement(s) passed at seed time"),
+        ),
+        Some(MarkView::Mark(_) | MarkView::Absent) => Check::warn(
+            GROUP,
+            &name,
+            "requirements not checked on this slot (configured, or changed, after it was seeded); re-create it",
+            reseed,
+        ),
+        Some(MarkView::Unread(why)) => Check::skipped(GROUP, &name, format!("not read: {why}")),
+        None => Check::skipped(GROUP, &name, "not read"),
+    })
 }
 
 /// Running slots that no open dispatch explains: a cost until stopped. A claim

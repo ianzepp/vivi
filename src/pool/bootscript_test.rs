@@ -417,3 +417,31 @@ fn run_mount_build_without_build_dir(dir: &std::path::Path) -> bool {
         .unwrap()
         .success()
 }
+
+#[test]
+fn the_requirements_list_is_a_slot_file_only_when_the_pool_has_requirements() {
+    let mut config = config();
+    config.requires = vec!["command -v tool".into(), "tool --list".into()];
+    let files = slot_files(&config);
+    let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/work/boot.sh",
+            "/work/setup.sh",
+            "/work/seed.sh",
+            "/work/requires.txt"
+        ]
+    );
+    assert_eq!(files[3].1, "command -v tool\ntool --list\n");
+}
+
+#[test]
+fn the_boot_script_runs_requirements_as_the_worker_after_setup_and_before_the_seed() {
+    let setup = BOOT_SCRIPT.find("setup.sh\" >").unwrap();
+    let check = BOOT_SCRIPT.find("check_requires || exit 7").unwrap();
+    let seed = BOOT_SCRIPT.find("bash \"$W/seed.sh\"").unwrap();
+    assert!(setup < check && check < seed);
+    assert!(BOOT_SCRIPT.contains("as=(runuser -u hand --)"));
+    assert!(BOOT_SCRIPT.contains("[ -n \"${UNPRIVILEGED:-}\" ] || as=("));
+}

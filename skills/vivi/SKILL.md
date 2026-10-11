@@ -742,6 +742,43 @@ dispatch how long it has run against its budget (`running 95s of 1800s`;
 dispatch says so; `reconcile` stops it. A slot with an uncollected result is
 never claimed.
 
+### Requirements and facts (special hardware)
+
+For a pool on machines with something particular (a GPU, a toolchain, a
+device) whose results are only evidence if they record what produced them. Two
+optional lists of one-line shell commands in the pool table. Vivi knows nothing
+about what they query.
+
+```toml
+[pools.gpu]
+provider = "ssh"
+slots = 1                       # one slot per device, so two jobs never share it
+requires = ["command -v gpu-query", "gpu-query --list"]
+facts    = ["gpu-query --name --driver --memory --csv", "uname -srm"]
+```
+
+- `requires` runs at **seed** time, in the checkout, after `setup` and before
+  `seed`, **as the worker's user** (`hand` on Fly and Docker, the login user on
+  SSH and local), two-minute limit each. A failing command **fails the seed**:
+  `create`/`scale` print `exit 7 (a `requires` command failed)` plus, on hosts
+  that can read a stopped slot's disk (SSH, local, Docker), the command, its
+  exit code and the last line of its output; the slot ends `unseeded`.
+  `pool doctor` reports per slot that the requirements passed at seed time (a
+  mark the boot script wrote), or `not checked on this slot; re-create it` when
+  `requires` was set or changed after the slot was seeded. Doctor is read-only:
+  a running slot, or Fly (cannot read a stopped disk), is shown as not read.
+- `facts` runs **before every job's harness** (normal and `--read-only`, every
+  provider), in the checkout, as the worker's user, clean environment, 10
+  seconds each, output capped to the first 40 lines / 4096 bytes. Recorded per
+  command: the command, its exit code, its stdout (stderr when it failed, or
+  stdout if that is empty). **A failed or timed-out fact does not fail the
+  job**; it is recorded as failed (`timed out` for a time-out). Shown on the task
+  result under `--- facts`, before the receipt, and in the `pool_collected`
+  JSON as `facts: [{command, exit, output}]`. Not in `--porcelain` lines.
+- Both are trusted configuration; their output is data (control characters
+  dropped, escaped in the result file, never evaluated). `doctor --test`
+  ignores both.
+
 ### Slots, create, destroy
 
 - A slot is a Fly Machine with a persistent root disk (on Docker, a container;
@@ -1109,6 +1146,8 @@ slots = 4                     # required; maximum pool size
 image = "rust:1.97-bookworm"  # required on fly and docker (Debian-based: needs apt for zstd/git); an error on ssh and local
 setup = ["npm install -g some-harness"]   # root, once, before the checkout (login user on ssh)
 seed = ["cargo build"]                    # in the checkout, once, warms build_dir
+# requires = ["command -v some-tool"]     # must exit 0 on a slot, at seed time (see Requirements and facts)
+# facts = ["some-tool --version"]         # recorded in every job's result, before the harness starts
 # build_dir = "target"        # optional, relative to the repo; NO default: a pool without one has no build-directory handling
 
 [pools.lanes.fly]

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use super::*;
@@ -167,6 +168,7 @@ fn a_listing_failure_is_a_fail_not_a_skip() {
             open: &[],
             now: NOW,
             github: &view_ok(),
+            requires: &doctor_pool::RequiresView::default(),
         };
         Report {
             checks: doctor_pool::checks(&facts),
@@ -538,4 +540,101 @@ fn every_check_is_stamped_with_its_pool_and_reports_split_by_pool() {
     assert!(text.contains("(pool p)"), "{text}");
     let json: serde_json::Value = serde_json::from_str(&r.to_json().unwrap()).unwrap();
     assert_eq!(json["checks"][0]["pool"], "p");
+}
+
+fn with_requires(requires: &[&str]) -> PoolConfig {
+    let mut config = config(2);
+    config.requires = requires.iter().map(ToString::to_string).collect();
+    config
+}
+
+fn mark_files(content: Option<&str>) -> RefCell<Option<BTreeMap<String, Vec<u8>>>> {
+    RefCell::new(Some(content.map_or_else(BTreeMap::new, |c| {
+        BTreeMap::from([(requires::MARK_PATH.to_string(), c.as_bytes().to_vec())])
+    })))
+}
+
+fn only_reads(fake: &Fake) -> bool {
+    fake.calls
+        .borrow()
+        .iter()
+        .all(|c| c.starts_with("read_stopped "))
+        && fake.created.borrow().is_empty()
+        && fake.destroyed.borrow().is_empty()
+        && fake.files.borrow().is_empty()
+}
+
+#[test]
+fn a_slot_whose_requirements_passed_at_seed_time_says_so() {
+    let fake = fake_with(vec![
+        slot("m1", "p-slot-1", "stopped", "p", 1),
+        slot("m2", "p-slot-2", "stopped", "p", 2),
+    ]);
+    fake.stopped_files
+        .replace(mark_files(Some("command -v tool\ntool --list\n")).into_inner());
+    let cfg = with_requires(&["command -v tool", "tool --list"]);
+    let r = report(&fake, &cfg, &[], view_ok());
+    assert!(r.passed(), "{}", r.render());
+    let check = find(&r, "requires p-slot-1");
+    assert_eq!(check.status, Status::Ok);
+    assert!(
+        check
+            .detail
+            .contains("2 requirement(s) passed at seed time"),
+        "{}",
+        check.detail
+    );
+    assert!(only_reads(&fake));
+}
+
+#[test]
+fn requirements_configured_after_a_slot_was_seeded_are_not_checked_on_it() {
+    for mark in [None, Some("command -v tool\n")] {
+        let fake = fake_with(vec![slot("m1", "p-slot-1", "stopped", "p", 1)]);
+        fake.stopped_files.replace(mark_files(mark).into_inner());
+        let cfg = with_requires(&["command -v tool", "tool --list"]);
+        let r = report(&fake, &cfg, &[], view_ok());
+        let check = find(&r, "requires p-slot-1");
+        assert_eq!(check.status, Status::Warn, "{mark:?}");
+        assert!(
+            check.detail.contains("not checked on this slot"),
+            "{check:?}"
+        );
+        assert!(check.detail.contains("re-create it"), "{check:?}");
+        assert!(check.fix.as_deref().unwrap().contains(
+            "vivi pool destroy --pool p --slot p-slot-1 --yes, then vivi pool create --pool p"
+        ));
+        assert!(r.passed(), "a warning does not fail the report");
+        assert!(only_reads(&fake));
+    }
+}
+
+#[test]
+fn a_running_slot_or_a_host_that_cannot_read_a_stopped_disk_is_skipped_never_started() {
+    let fake = fake_with(vec![
+        slot("m1", "p-slot-1", "stopped", "p", 1),
+        claimed("m2", "p-slot-2", "started", "p", "t1"),
+    ]);
+    let cfg = with_requires(&["command -v tool"]);
+    let r = report(&fake, &cfg, &[], view_ok());
+    let cannot = find(&r, "requires p-slot-1");
+    assert_eq!(cannot.status, Status::Skipped);
+    assert!(
+        cannot.detail.contains("cannot read a stopped slot"),
+        "{cannot:?}"
+    );
+    let running = find(&r, "requires p-slot-2");
+    assert_eq!(running.status, Status::Skipped);
+    assert!(running.detail.contains("running"), "{running:?}");
+    assert!(only_reads(&fake));
+    assert!(!fake.calls.borrow().iter().any(|c| c.contains("m2")));
+}
+
+#[test]
+fn a_pool_without_requirements_reads_no_marks_and_adds_no_checks() {
+    let fake = fake_with(vec![slot("m1", "p-slot-1", "stopped", "p", 1)]);
+    fake.stopped_files.replace(mark_files(None).into_inner());
+    let r = report(&fake, &config(1), &[], view_ok());
+    assert!(!r.checks.iter().any(|c| c.name.starts_with("requires")));
+    assert!(fake.calls.borrow().is_empty());
 }

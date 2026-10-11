@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use super::facts::{self, Fact};
 use super::pools::PoolSet;
 use super::progress::Issue;
 use super::provider::{MachineRecord, PoolProvider};
@@ -131,6 +132,12 @@ impl JobResult {
             .collect();
         found.sort_unstable();
         found.into_iter().map(|(_, v)| v.clone()).collect()
+    }
+
+    /// What the pool's `facts` commands said before the harness started.
+    #[must_use]
+    pub fn facts(&self) -> Vec<Fact> {
+        facts::from_fields(&self.fields)
     }
 
     /// `pushed <branch> <sha>` or `committed <branch> <sha>`,

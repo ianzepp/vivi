@@ -9,6 +9,7 @@ use super::pools::PoolSet;
 use super::progress::{Beat, HEARTBEAT, Issue, Progress};
 use super::provider::{CreateSpec, MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
+use super::requires;
 use super::slot::{self, META_STATE, PoolId, STATE_READY, SlotStatus};
 
 /// Environment names the seed needs once; they never stay on a ready slot.
@@ -59,7 +60,9 @@ pub struct SlotOutcome {
     pub exit_code: Option<i64>,
     pub seconds: u64,
     pub timed_out: bool,
-    /// Why the slot could not be marked ready after a clean seed.
+    /// Why the slot could not be marked ready after a clean seed, or the
+    /// reason the seed failed when the slot named one (a `requires` command
+    /// that did not pass).
     pub error: Option<String>,
 }
 
@@ -135,9 +138,23 @@ pub fn create_slots(
                 .and_then(|()| confirm_free(provider, &outcome.id, options))
                 .err()
                 .map(|e| e.to_string());
+        } else if !outcome.timed_out && outcome.state == "stopped" {
+            outcome.error = seed_failure(provider, &outcome.id);
         }
     }
     Ok(report)
+}
+
+/// Why a stopped, unseeded slot's seed failed, when the boot script named a
+/// reason (a requirement that did not pass) and the host can read the stopped
+/// disk. `None` otherwise: the exit code is then all there is.
+fn seed_failure(provider: &dyn PoolProvider, id: &str) -> Option<String> {
+    let Ok(Some(files)) = provider.read_stopped(id, &[requires::FAILURE_PATH]) else {
+        return None;
+    };
+    let text = String::from_utf8_lossy(files.get(requires::FAILURE_PATH)?);
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_string())
 }
 
 /// Mark a cleanly seeded slot ready: remove the fetch token from its config

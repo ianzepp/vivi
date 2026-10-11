@@ -809,3 +809,13 @@ fn a_set_for_one_pool_leaves_the_dispatches_of_other_pools_alone() {
 fn a_dispatch_recorded_without_a_pool_reads_as_made_before_pools_were_named() {
     assert!(missing_pool_text("").contains("before pools were named"));
 }
+
+#[test]
+fn facts_survive_the_collect_output_as_result_lines() {
+    let output = "@@vivi-pool result\njob=j1\nstate=done\npush=read_only_unchanged\nfact_1_cmd=gpu-query --csv\nfact_1_exit=0\nfact_1_out=Some GPU, 550.1\\n8 GiB\n@@vivi-pool receipt\nfact_2_cmd=not a fact: the receipt is another section\n";
+    let done = parse_collected(output).unwrap();
+    let facts = done.result.facts();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].command, "gpu-query --csv");
+    assert_eq!(facts[0].output, "Some GPU, 550.1\n8 GiB");
+}

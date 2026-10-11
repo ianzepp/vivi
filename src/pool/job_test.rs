@@ -33,6 +33,7 @@ fn plan() -> JobPlan {
         env_names: vec!["ZAI_API_KEY".into()],
         committer: committer(),
         read_only: false,
+        facts: Vec::new(),
     }
 }
 
@@ -303,4 +304,45 @@ fn only_a_read_only_bundle_says_so_and_a_detached_checkout_has_its_own_word() {
     assert!(text.contains("READ_ONLY='1'\n"), "{text}");
     assert!(text.contains("BRANCH=''\n"), "{text}");
     assert!(text.contains("LOCAL_ACTION='detached'\n"), "{text}");
+}
+
+#[test]
+fn the_brief_is_delivered_with_lf_line_endings_and_the_stored_task_is_not_touched() {
+    let stored = "do the work\r\nfrom: main\r\n\r\nlast\rline\r\n";
+    let p = JobPlan {
+        brief: stored.into(),
+        ..plan()
+    };
+    let bundle = build_bundle(&p, "s", &Secret::new("t".into()));
+    assert_eq!(
+        text(&bundle, "brief.md"),
+        "do the work\nfrom: main\n\nlast\rline\n"
+    );
+    assert_eq!(p.brief, stored);
+    assert_eq!(lf("a\r\nb\n"), "a\nb\n");
+    assert_eq!(lf("a\r\r\nb\r\n"), "a\nb\n", "CRLF stored over CRLF");
+    assert_eq!(lf("no line end\r"), "no line end");
+    assert_eq!(lf(""), "");
+}
+
+#[test]
+fn the_facts_travel_as_one_command_per_line_and_only_when_there_are_some() {
+    let names = |p: &JobPlan| -> Vec<&'static str> {
+        build_bundle(p, "s", &Secret::new("t".into()))
+            .files
+            .iter()
+            .map(|f| f.name)
+            .collect()
+    };
+    assert!(!names(&plan()).contains(&"facts.cmd"));
+    let p = JobPlan {
+        facts: vec!["tool --query".into(), "uname -srm".into()],
+        ..plan()
+    };
+    let bundle = build_bundle(&p, "s", &Secret::new("tok".into()));
+    assert_eq!(text(&bundle, "facts.cmd"), "tool --query\nuname -srm\n");
+    assert!(
+        !bundle.agent_visible().iter().any(|f| f.name == "facts.cmd"),
+        "facts are the runner's, not the agent's"
+    );
 }

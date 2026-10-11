@@ -62,6 +62,8 @@ pub struct Fake {
     /// When set, the provider reads a stopped machine's files directly (every
     /// stopped machine holds these) instead of asking for a restart.
     pub stopped_files: RefCell<Option<BTreeMap<String, Vec<u8>>>>,
+    /// The exit code a created machine's seed ends with (0 unless set).
+    pub seed_exit: Cell<i64>,
 }
 
 impl Fake {
@@ -214,7 +216,7 @@ impl PoolProvider for Fake {
                 let fresh = m.metadata.get(META_STATE).map(String::as_str) == Some("seeding");
                 if m.state == "started" && fresh {
                     m.state = "stopped".into();
-                    m.exit_code = Some(0);
+                    m.exit_code = Some(self.seed_exit.get());
                 }
             }
         }

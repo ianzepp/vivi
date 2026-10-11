@@ -32,8 +32,9 @@
 #               SOURCE_DIR means this root, wherever it really is.
 # A host whose machines cannot change their environment after creation delivers
 # GH_TOKEN as $WORK/once.env instead; it is read and removed on first sight.
-# Files written beside this script: $WORK/setup.sh (root, once) and
-# $WORK/seed.sh (in the checkout, once). A host that lacks GNU tools (timeout,
+# Files written beside this script: $WORK/setup.sh (root, once),
+# $WORK/requires.txt (optional: commands that must pass, see check_requires)
+# and $WORK/seed.sh (in the checkout, once). A host that lacks GNU tools (timeout,
 # sha256sum, nproc) puts stand-ins in $WORK/bin; they come last on PATH, so a
 # real tool always wins.
 #
@@ -89,6 +90,29 @@ case "$REMOTE" in
   file://*) LOCAL_REMOTE=$(real "${REMOTE#file://}"); REMOTE=file://$LOCAL_REMOTE ;;
 esac
 
+# Requirements ($WORK/requires.txt, one command per line): each must exit 0 as
+# the user the worker runs as (`hand`, or the current user when UNPRIVILEGED),
+# in the checkout, under a time limit. The first failure ends the seed with
+# exit 7 and a one-line reason in $WORK/seed.failure; when all pass, the list
+# that passed is left in $WORK/requires.ok.
+check_requires() {
+  [ -s "$W/requires.txt" ] || return 0
+  local as=() cmd rc last
+  [ -n "${UNPRIVILEGED:-}" ] || as=(runuser -u hand --)
+  while IFS= read -r cmd || [ -n "$cmd" ]; do
+    [ -n "$cmd" ] || continue
+    ( ulimit -f 8192; cd "$RD" && timeout -k 5 120 "${as[@]}" bash -c "$cmd" ) \
+      > "$W/requires.out" 2>&1 < /dev/null
+    rc=$?
+    [ "$rc" -ne 0 ] || continue
+    last=$(grep . "$W/requires.out" 2>/dev/null | tail -n 1 | tr -d '\000-\010\013-\037' | cut -c1-200)
+    echo "requires: $(printf '%s' "$cmd" | cut -c1-200) exited $rc${last:+: $last}" > "$W/seed.failure"
+    echo "seed_failed $(cat "$W/seed.failure")" >> $L
+    return 1
+  done < "$W/requires.txt"
+  cp "$W/requires.txt" "$W/requires.ok"
+}
+
 need() {
   command -v "$1" >/dev/null 2>&1 && return 0
   [ -z "${UNPRIVILEGED:-}" ] || return 1
@@ -99,6 +123,7 @@ need() {
 }
 
 if [ ! -f "$W/seeded" ]; then
+  rm -f "$W/seed.failure" "$W/requires.ok"
   echo "seed_start $T0 cores $(nproc) base ${BASE:0:12}" >> $L
   # tar and gzip unpack every job archive; a host without them fails here, clearly.
   TOOLS="git tar gzip"
@@ -134,6 +159,7 @@ if [ ! -f "$W/seeded" ]; then
   git rev-parse HEAD > "$W/seed-base.txt"
   T2=$(now); echo "clone_s $(d $T1 $T2)" >> $L
   mount_build
+  check_requires || exit 7
   bash "$W/seed.sh" > "$W/seed.log" 2>&1; SRC=$?
   T3=$(now); echo "seed_rc $SRC seed_s $(d $T2 $T3) build_mb $(du -sm "$BUILD_DIR" | cut -f1)" >> $L
   if [ -z "${BUILD_PERSISTS:-}" ]; then

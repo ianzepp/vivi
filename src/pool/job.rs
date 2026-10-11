@@ -240,6 +240,9 @@ pub struct JobPlan {
     pub committer: PoolCommitter,
     /// The job publishes nothing: no commit, no push, no branch.
     pub read_only: bool,
+    /// Commands the runner records the output of before the harness starts
+    /// (the pool's `facts`).
+    pub facts: Vec<String>,
 }
 
 /// One file inside the job archive, under `job/`.
@@ -308,22 +311,36 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         content: content.as_bytes().to_vec(),
         mode,
     };
-    Bundle {
-        files: vec![
-            file("run.sh", RUNNER, 0o700),
-            file("params.env", &params, 0o600),
-            file("token", token.expose(), 0o600),
-            file("id", &spec.job, 0o600),
-            file(
-                "limit",
-                &(spec.budget + RUNNER_SLACK_SECS).to_string(),
-                0o600,
-            ),
-            file("brief.md", &spec.brief, 0o644),
-            file("rules.md", &spec.rules, 0o644),
-            file("harness.cmd", &spec.harness_cmd, 0o644),
-        ],
+    let mut files = vec![
+        file("run.sh", RUNNER, 0o700),
+        file("params.env", &params, 0o600),
+        file("token", token.expose(), 0o600),
+        file("id", &spec.job, 0o600),
+        file(
+            "limit",
+            &(spec.budget + RUNNER_SLACK_SECS).to_string(),
+            0o600,
+        ),
+        file("brief.md", &lf(&spec.brief), 0o644),
+        file("rules.md", &spec.rules, 0o644),
+        file("harness.cmd", &spec.harness_cmd, 0o644),
+    ];
+    if !spec.facts.is_empty() {
+        let list = spec.facts.join("\n") + "\n";
+        files.push(file("facts.cmd", &list, 0o600));
     }
+    Bundle { files }
+}
+
+/// Line endings as LF. A stored task body has CRLF (and CR CR LF where the
+/// text already had CRLF); the brief the worker reads should not. A lone CR
+/// inside a line is kept.
+#[must_use]
+pub fn lf(text: &str) -> String {
+    text.split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn first_line(text: &str) -> String {

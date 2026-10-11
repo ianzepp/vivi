@@ -213,3 +213,47 @@ fn a_discarding_read_only_result_lists_the_paths_in_order() {
         "{text}"
     );
 }
+
+#[test]
+fn facts_are_in_the_json_note_and_shown_before_the_receipt_not_as_flat_keys() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: read_only_record("j1"),
+    };
+    let outcome = read_only_outcome(&[
+        ("push", "read_only_unchanged"),
+        ("fact_1_cmd", "gpu-query --csv"),
+        ("fact_1_exit", "0"),
+        ("fact_1_out", r"Some GPU, 550.1\n8 GiB"),
+        ("fact_2_cmd", "missing-tool"),
+        ("fact_2_exit", "127"),
+        ("fact_2_out", "missing-tool: not found"),
+    ]);
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    assert_eq!(
+        note["facts"],
+        serde_json::json!([
+            {"command": "gpu-query --csv", "exit": 0, "output": "Some GPU, 550.1\n8 GiB"},
+            {"command": "missing-tool", "exit": 127, "output": "missing-tool: not found"},
+        ])
+    );
+    assert!(note.get("fact_1_cmd").is_none(), "{note}");
+    let text = collected_text(&d, &outcome);
+    let facts = text.find("--- facts\n").unwrap();
+    assert!(facts < text.find("--- receipt").unwrap(), "{text}");
+    assert!(
+        text.contains("$ gpu-query --csv  (exit 0)\n  Some GPU, 550.1\n  8 GiB\n$ missing-tool  (exit 127)\n  missing-tool: not found"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_result_without_facts_has_no_facts_key_and_no_heading() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    assert!(note.get("facts").is_none());
+    assert!(!collected_text(&d, &finished()).contains("--- facts"));
+}

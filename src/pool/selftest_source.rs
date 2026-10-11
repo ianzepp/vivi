@@ -56,6 +56,8 @@ pub fn test_config(real: &PoolConfig) -> PoolConfig {
     config.slots = 2;
     config.setup = Vec::new();
     config.seed = vec!["true".to_string()];
+    config.requires = Vec::new();
+    config.facts = Vec::new();
     config.build_dir = Some("build".to_string());
     config.local.worktree_of = None;
     config.fly.size = "shared-cpu-1x".to_string();

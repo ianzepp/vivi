@@ -11,6 +11,7 @@ use vivi::pool::local_git::Repo;
 use vivi::pool::pools::{self, Need, PoolHandle, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::Progress;
+use vivi::pool::requires;
 use vivi::pool::run::{self, CreateOptions, CreateReport, DestroyTarget, SlotOutcome};
 use vivi::pool::slot::SlotStatus;
 use vivi::pool::work as engine;
@@ -158,7 +159,12 @@ fn outcome_line(outcome: &SlotOutcome) -> String {
         "  TIMED OUT".to_string()
     } else {
         match outcome.exit_code {
-            Some(code) if code != 0 => format!("  exit {code}"),
+            Some(requires::EXIT_CODE) => format!(
+                "  exit {} (a `requires` command failed){}",
+                requires::EXIT_CODE,
+                reason_text(outcome)
+            ),
+            Some(code) if code != 0 => format!("  exit {code}{}", reason_text(outcome)),
             _ => String::new(),
         }
     };
@@ -166,6 +172,13 @@ fn outcome_line(outcome: &SlotOutcome) -> String {
         "{}  {}  {}  {}  seed {}s{note}",
         outcome.pool, outcome.name, outcome.id, outcome.state, outcome.seconds
     )
+}
+
+fn reason_text(outcome: &SlotOutcome) -> String {
+    outcome
+        .error
+        .as_ref()
+        .map_or_else(String::new, |reason| format!(": {reason}"))
 }
 
 fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
