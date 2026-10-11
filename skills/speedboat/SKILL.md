@@ -1,6 +1,6 @@
 ---
 name: speedboat
-description: Execute a Vivi backlog with fast in-band models, small parallel Hand assignments, and minimum verification. Use when the operator chooses Speedboat or asks for break-fast, ship-fast delivery instead of Tugboat's planning and audit cycle.
+description: Execute a Vivi backlog with fast in-band models, small parallel Hand assignments, and minimum verification. Use when the operator chooses Speedboat or asks for break-fast, ship-fast delivery. The slower, review-heavy alternative is the sibling tugboat skill.
 ---
 
 # Speedboat
@@ -15,54 +15,66 @@ improving it and hand it over.**
 
 ## Operating contract
 
-Speedboat is a separate protocol over the same Vivi backlog as Tugboat.
-Selecting Speedboat selects this workflow for the admitted work:
+Speedboat is a delivery protocol over a Vivi backlog. Roles, handles, and
+dependencies come from Vivi; this skill defines how work is sliced,
+dispatched, checked, and landed:
 
 ```text
 Operator -> Mind -> parallel Hands -> Mind integrates -> next small units
 ```
 
-The Mind reads goals and phases, slices work, dispatches, integrates, and
-grades turnaround. Hands implement one small unit each. The Mind owns
-commits by default. Hands do not commit unless the operator authorizes it.
+The **Mind** reads goals and phases, slices work, dispatches, integrates, and
+grades turnaround. A **Hand** implements one small unit. The Mind owns commits
+by default; Hands do not commit unless the operator authorizes it. (In a pool
+lane the runner commits for its worker; see "Running Hands in a pool".)
 
-Replace Tugboat's Planner pass, delivery audit, automatic Auditor/CTO
-reviews, paired verdicts as routine gates, phase freezes, warm-boot
-reacquaintance reviews, and repeated merge handoffs. Do not import these
-requirements through an old role charter. No automatic broad verification
-jobs, cadence loops, polish passes, or hardening phase.
+Speedboat has no Planner pass, no delivery audit, no automatic Auditor or CTO
+review, no paired verdicts as routine gates, no phase freezes, no
+reacquaintance review after compaction, and no repeated merge handoffs. It
+runs no broad verification jobs, cadence loops, polish passes, or hardening
+phase unless the operator asks. A role charter that describes one of those
+procedures does not bind a Speedboat unit: the brief's `protocol: speedboat`
+line and this skill govern it.
 
-Keep settled architecture decisions, the full campaign completion contract,
-foreign-work ownership, Git lock serialization, and authorization boundaries.
-Keep any acceptance condition explicitly required by the operator. A broad
-test ladder or release gate is Mind-owned integration work after the small
-Hand changes land; it is never a Hand's finishing chore. Run the requested
-gate rather than treating the Hand check limit as a reason to omit it.
+Keep the project's settled architecture decisions, the full completion
+contract for the admitted scope, ownership of other agents' work, serialized
+Git mutations, and authorization boundaries; they live in the project's rules
+(`vivi rule`) and agent docs. Keep any acceptance condition the operator
+explicitly requires. A broad test ladder or release gate is Mind-owned
+integration work after the small Hand changes land; it is never a Hand's
+finishing chore. Run the requested gate rather than treating the Hand check
+limit as a reason to omit it.
 
 ## Tools and models
 
 Use Vivi for assignments, dependencies, decisions, and receipts. Load the
-Vivi skill for CLI semantics and check installed command help before relying
-on exact flags. Use `--project <root>` for the intended mailspace. Do not
-inspect or mutate Vivi's underlying stores.
-Resolve that mailspace root once before dispatch (it may be the workspace
-container rather than the Git repo) and include the same `--project` in every
-Hand command and receipt.
+[Vivi skill](../vivi/SKILL.md) for CLI semantics and check installed command
+help before relying on exact flags. Use `--project <root>` for the intended
+mailspace. Do not inspect or mutate Vivi's underlying stores. Resolve that
+mailspace root once before dispatch (it may be a workspace container rather
+than the Git repo) and include the same `--project` in every Hand command and
+receipt.
 
-Resolve every spawn through the canonical `model-availability` skill, by
-**band**. A band is a model at an effort, not a model alone: the same model at
-low and at xhigh lands in different tiers, so do not pin Hands to a thinking
-level. Use Tugboat's role bands: Mind P1, Hand P2, Planner P1, Auditor P1,
-Head P0. Set `band:` in the brief only when the unit is not the role default:
-`band: P1` for a complex or architectural unit, `band: P2` for a Planner on a
-low-complexity requirement, `band: P0` for an Auditor on a complex range.
+**Bands.** A role's model preference is a **band**, `P<n>-S<n>`: a quality
+tier P (lower is deeper) and a speed tier S (lower is faster decode). A band
+names a model at an effort, not a model alone: the same model at low and at
+high effort lands in different tiers, so do not pin Hands to a thinking level.
+Vivi stores the band as an opaque string in the role's `model` field. The Mind
+resolves it to a slug and effort at spawn from the host's model inventory if it
+has one, otherwise from the models the project configured (for a pool dispatch,
+the pool's `models` allowlist). Never write a slug back into the role.
+
+Default bands: Mind P1, Hand P2. Planner, Auditor, and Head seats are used only
+when the operator asks, at their usual bands (Planner P1, Auditor P1, Head P0).
+Set `band:` in the brief only when the unit is not the role default: `band: P1`
+for a complex or architectural unit, `band: P0` for an Auditor on a complex
+range. A bare P keeps the role's S; a full band (`band: P1-S0`) sets both.
 Speedboat adds one preference inside the band: take the fastest healthy slug
-(prefer S0), and do not seat a deeper band than the unit needs. Favor latency
+(prefer S0) and do not seat a deeper band than the unit needs. Favor latency
 and useful turnover over marginal answer quality. Do not inherit the Mind's
-model or effort accidentally. Record the actual slug and effort selected. On
-the Claude harness the spawn takes a model but no effort: effort comes from the
-agent type, so a band is a choice of agent type (see `model-availability`
-`references/claude-harness.md`).
+model or effort accidentally. Record the actual slug and effort selected. On a
+harness whose spawn takes a model but no effort, effort comes from the agent
+type, so a band is a choice of agent type.
 
 Escalate only for a named obstacle the Hand could not resolve: retry the unit
 at the next deeper band (`band: P1`), and give that seat the obstacle, not the
@@ -136,8 +148,7 @@ return: diff, check result, elapsed time, known failures or blocker
 Use graph dependencies for real prerequisites and activate the task at
 dispatch so it is not offered twice. Record dispatch time and the live
 process binding on the assignment. Send the Hand a pointer to this skill,
-its role charter, and its Vivi handle. The task holds the brief. Say explicitly
-that Speedboat replaces the charter's Tugboat planning and review procedure.
+its role charter, and its Vivi handle. The task holds the brief.
 `vivi task send` may print both `created <role> <handle>` and `sent <handle>`.
 The **created task handle** is the graph node and the Hand assignment; the
 `sent` handle is a delivery record. Activate and later close the created
@@ -151,6 +162,26 @@ Do not bind an incomplete subset of units to a parent need whose automatic
 join would then falsely close the whole need. Keep the full goal open until
 every admitted requirement has landed. Small units sequence scope; they do
 not reduce it.
+
+### Running Hands in a pool
+
+A Hand can also run as a pool-dispatched worker instead of a host-spawned
+seat. The Vivi skill's work-graph flow has the procedure; the points that
+matter here:
+
+- `vivi pool dispatch --pool <name> <task> --model <slug> --from <ref>
+  [--branch <name>]` claims a slot and starts the worker in one step. The
+  task body is the brief; the worker's standard output is the receipt.
+- The runner commits and pushes (or commits a local branch) as the lane's bot
+  identity. The Mind integrates the branch and closes the task; `wait` and
+  `reconcile` never close it.
+- A dependent unit may start from an unmerged base with `--from <base branch>
+  --branch <new>`, once the base worker has been collected.
+- Remote lanes scale Hand implementation; a local worktree pool with a
+  persistent build directory is the place for integration and acceptance.
+  Which work goes to which pool is the Mind's call.
+- A review seat that needs a full shell but must change nothing runs with
+  `--read-only`; its token cannot push.
 
 ## Hand procedure
 
@@ -180,21 +211,22 @@ budget without changing the repair route.
 
 The Mind assigns **one cheapest useful check**, not a check ladder.
 
-- Prefer `cargo check -p <crate> --lib` over `cargo build`. Select the actual
-  affected target when it is not a library.
+- Prefer the narrowest compile or type check of the affected target over a
+  full build (in a Cargo workspace, `cargo check -p <crate> --lib` rather than
+  `cargo build`). Select the actual affected target when it is not a library.
 - When behavior needs a test, run one fully qualified test in one named
-  crate and target, with `--exact`. A filter matching a whole module is a
+  package and target, matched exactly. A filter matching a whole module is a
   suite, not a specific test. Confirm that the intended test actually ran;
   zero tests is not a pass.
-- Never run a broad test suite, broad build, bare workspace check,
-  `--workspace`, or `--all-targets`. Do not run both a build/check and a test
-  as an automatic Hand finishing ritual.
+- Never run a broad test suite, broad build, bare workspace-wide check, or
+  all-targets run. Do not run both a build/check and a test as an automatic
+  Hand finishing ritual.
 - For a trivial change, the Mind may assign inspection alone and state why.
   New behavior should receive a focused test when that fits the unit.
 
 Read existing timings before choosing a command. Estimate and bound any
 command likely to exceed 30 seconds; capture actual elapsed time. Its timeout
-must fit both the remaining assignment budget and the five-minute command
+must fit both the remaining assignment budget and the project's single-command
 ceiling. A scoped command can still trigger costly compilation or lock waits.
 Do not clean caches, rebuild everything, or increase a timeout to hide this.
 Report the cost and route a concrete performance fix.
@@ -207,96 +239,51 @@ may be preserved or committed as WIP without claiming the goal is complete.
 
 ## Mind acceptance gates
 
-After integrating the Hands, run any ladder or e2e proof the operator
-explicitly requested. Split it by stage or target so each command stays
-under the project's five-minute command limit. State estimates for longer
-runs, use bounded timeouts, and record actual elapsed time. Preserve raw
-failure logs on red and name their paths in the receipt; a summary count
-alone is insufficient to route the next repair unit. Rerun the affected
-gate after a fix, then continue to the next required gate.
-Before settling a campaign, recheck every admitted unit's exact `done_when`
-against live code and executed receipts. For each named fixture or parity
-oracle, confirm the file exists, the owning gate invokes it, and the current
-receipt shows it ran; a broad green ladder does not replace a missing unit
-proof. When adding a script to a stage, update every source-closure or static
-coverage manifest that inventories stage contents, then run the owning
-inventory gate. Keep missing proof pending and the campaign active instead of
-trusting stale ledger rows or old summaries.
-Before a broad acceptance run, identify the exact integrated source revision
-and the warmth of each available checkout's own target. When a clean campaign
-packet has the integrated commit as an ancestor and its target is already warm,
-fast-forward that packet to the integrated commit and run the ladder there;
-record the exact revision in every receipt. Do not make the first broad gate
-pay a cold main-checkout build when an exact-source warm packet is available.
-Never copy or share target artifacts between checkouts. Keep a timed-out cold
-run as its own finding, and continue acceptance in the synchronized warm
-checkout instead of retrying the cold command unchanged or raising its bound.
-During packet-based work, use that exact-source warm packet for focused
-regression rechecks after integration too; do not trigger a cold main-target
-compile solely to validate code that will be accepted in the packet.
-On macOS, resolve the interpreter selected by each `#!/usr/bin/env bash`
-script before invoking a gate. System Bash 3.2 mishandles expansion of an
-empty array under `set -u`; when the script uses that pattern, invoke it
-explicitly with Homebrew Bash instead of counting an interpreter failure as
-a product-test result. A Bash 5 wrapper does not change a child script's
-`env bash` lookup; put Homebrew's bin directory first in the child's `PATH`
-or invoke the child with the explicit interpreter too.
-If a pooled log names a failed test but omits its panic detail, rerun that
-exact test with uncaptured output in the same isolated checkout and retain
-the focused log.
-If an aggregate gate reports failing paths without the underlying compiler
-or tool messages, preserve its owned temporary output (when the harness
-supports it), reproduce only that failed stage against the preserved tree,
-and retain the raw diagnostic before changing code or an outcome ledger.
-Remove only the exact temporary tree created for that reproduction after the
-diagnosis is complete. A path-only failure is not enough evidence to add an
-expected-failure row.
-When the campaign changes the corpus, reconcile every newly added exemplar
-against each enabled target's applicable expected-outcome ledger before
-closing the E2E matrix. Failure classifications are target-specific: inspect
-the failing stage's compiler or tool diagnostic for each lane, and do not
-copy another target's outcome row as evidence.
-If one requested stage times out because it serializes independent required
-checks, repair or split that stage's orchestration while preserving every
-check and failure status. A green isolated tail check does not make the timed
-out aggregate green; rerun the aggregate after the scheduling repair.
-When splitting an overlong stage, give every child proof a selectable,
-failure-fatal ladder step and make the parent stage select it. Preserve the
-old full-stage behavior; a new standalone command must not become an orphaned
-check. Put owned scratch logs under a stable task/repository evidence path
-before applying a timeout, since system temporary directories may disappear
-after an interrupted process. Do not point `TMPDIR` inside a Cargo workspace:
-tests use it for generated Cargo projects, which then inherit the enclosing
-workspace and can fail for reasons created by the test invocation. Use a
-stable scratch directory outside every affected repository root, or a
-harness-specific log path that leaves `TMPDIR` unchanged.
-Before a stage near the five-minute cap, inspect the live runner and latest
-receipt for nested checks and serial waits. Estimate the critical path,
-including required post-check work; overlap independent legs with separate
-logs and exit results, or split them into bounded proofs before launch when
-the combined path is too close to the cap. Do not spend a full timeout to
-discover that the stage contains another long gate.
-For E2E targets with multiple stages, default to one target-stage command at
-a time unless a receipt for the exact current revision and power/cache state
-shows the complete target will finish comfortably below the cap. A historical
-whole-target duration does not establish that: inspect the current stage's
-serial fan-out and all work after it. During a long run, compare live progress
-with remaining time and switch to selectable stage commands before the cap
-when the full target cannot finish. If a single stage itself exceeds the
-bound, repair or split that stage while keeping every check failure-fatal.
-For golden or other corpus-wide stages, inspect the per-case loop and corpus
-item count before choosing a bound. Run one representative focused case and
-estimate the serial critical path from its measured cost; do not infer that a
-corpus walk is short from a fast single case or an old aggregate receipt. Long
-walks must emit useful per-case progress often enough to distinguish active
-work from a lock or startup stall. If the estimate approaches the command cap,
-parallelize independent cases or split them into selectable, failure-fatal
-ladder steps before launching the full walk, while preserving result ordering
-and every existing floor/failure check.
-Trace the caller through its final success return, including commands after
-helper calls and branches reached only when earlier checks pass. A red run
-may return early and skip required work, so record which checks ran and rerun
-the whole accepted stage after fixing the first failure.
+After integrating the Hands, run any ladder or end-to-end proof the operator
+explicitly requested, and only that.
+
+- **Fit the clock.** Split a gate by stage or target so each command stays
+  under the project's single-command limit. State an estimate for any longer
+  run, use a bounded timeout, and record the actual elapsed time. Before a
+  stage near the limit, inspect the live runner and the latest receipt for
+  nested checks and serial waits; overlap independent legs with separate logs
+  and exit results, or split them into bounded proofs. Do not spend a full
+  timeout to discover another long gate inside the stage. For corpus-wide
+  walks, estimate from one measured representative case, not from a fast
+  single case or an old aggregate.
+- **Keep the evidence.** Preserve raw failure logs on red and name their paths
+  in the receipt; a summary count cannot route the next repair. If an
+  aggregate gate reports failing paths without the underlying diagnostics,
+  preserve its temporary output, reproduce only that stage, and retain the raw
+  diagnostic before changing code or an outcome ledger. A path-only failure is
+  not evidence for an expected-failure row.
+- **Rerun, then advance.** Rerun the affected gate after a fix, then continue
+  to the next required gate. A red run may return early and skip required
+  work, so trace the caller through its final success return, record which
+  checks ran, and rerun the whole stage after fixing the first failure.
+- **Repair orchestration, not coverage.** If a stage times out because it
+  serializes independent required checks, repair or split the orchestration
+  while preserving every check and failure status. A green isolated tail
+  check does not make a timed-out aggregate green.
+- **Prove each admitted unit.** Before settling a campaign, recheck every
+  admitted unit's exact `done_when` against live code and executed receipts.
+  For each named fixture or parity oracle, confirm the file exists, the owning
+  gate invokes it, and the current receipt shows it ran; a broad green run does
+  not replace a missing unit proof. Keep missing proof pending and the campaign
+  active instead of trusting stale ledger rows or old summaries.
+- **Name the revision, use a warm checkout.** Identify the exact integrated
+  source revision and record it in every receipt. Run broad acceptance in a
+  checkout at that revision whose own build cache is already warm (a local
+  pool slot with a persistent build directory is one); do not make the first
+  broad gate pay a cold build. Never copy or share build artifacts between
+  checkouts. A timed-out cold run is its own finding: continue in the warm
+  checkout rather than retrying the cold command unchanged or raising its bound.
+- **Scratch logs live outside the repositories,** in a stable task or evidence
+  path rather than a system temporary directory that can vanish after an
+  interrupted process.
+
+Language- and toolchain-specific acceptance lessons belong in the project's
+own agent docs, not here.
 
 ## Clock and Mind grading
 
@@ -346,23 +333,23 @@ Treat a worker startup error, provider usage-limit response, or process exit
 without a receipt as an execution failure, separate from the code check.
 Inspect the live process and exact diff first; preserve partial work, and do
 not reassign its write scope until the old writer has stopped. Never retry a
-provider/model that returned an explicit usage-limit error. Resolve a currently
-eligible fallback through `model-availability`, or take over the small unit
-in the Mind. Keep the original assignment open until its result is honestly
-settled; a replacement does not reset its elapsed clock.
+provider or model that returned an explicit usage-limit error. Resolve a
+currently eligible fallback from the host's model inventory, or take over the
+small unit in the Mind. Keep the original assignment open until its result is
+honestly settled; a replacement does not reset its elapsed clock.
 
-If a scoped Cargo command times out on a shared target lock, identify the lock
-holder and measure the wait. If a broad test build times out while a cold
-target is compiling, keep its partial artifacts and log; do not count it as a
-test failure or rerun it unchanged in that checkout. When the selected
-workflow already has an isolated packet, fast-forward it to the exact
-integrated source commit and use its own target for acceptance. Report the
-tested commit identity. Never set `CARGO_TARGET_DIR`, link targets, or share
-compiled artifacts. Otherwise split the work or record the infrastructure
-blocker and move to independent work.
+If a scoped command times out waiting on a shared build lock, identify the
+lock holder and measure the wait. If a broad build times out while a cold
+cache is compiling, keep its partial artifacts and log; do not count it as a
+test failure or rerun it unchanged in that checkout. Use an isolated checkout
+at the exact integrated commit, with its own cache, for acceptance, and report
+the tested commit. Never share or link build caches between checkouts.
+Otherwise split the work or record the infrastructure blocker and move to
+independent work.
 
-After interruption or compaction, Mind reads this skill, Vivi boot, live
+After interruption or compaction, the Mind reads this skill, Vivi boot, live
 process state, and Git status. Resume existing handles. Do not respawn live
 workers, reset clocks, replan admitted scope, or launch reacquaintance audits.
 A Hand resumes only its own handle and remaining budget. Continue until the
-full admitted scope has landed or a real external/operator dependency remains.
+full admitted scope has landed or a real external or operator dependency
+remains.
