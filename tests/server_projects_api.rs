@@ -1791,3 +1791,121 @@ async fn mail_is_routed_by_the_recipient_prefix() {
         assert_eq!(status, StatusCode::OK, "{shared}");
     }
 }
+
+#[tokio::test]
+async fn letters_are_stamped_with_the_authenticated_senders_prefix() {
+    let fx = fixture("from-prefix", 250).await;
+    let bob = fx.add_member(&traveling(90), "bob", &key(249)).await;
+    let creator_prefix = prefix_for("creator");
+
+    // The letter's own From header claims another mailspace; the stamp is
+    // the authenticated sender's regardless.
+    let id = traveling(1);
+    let forged = format!(
+        "From: mind@{}.local\nTo: x@p.local\nMessage-ID: <{id}@p.local>\n\nforged",
+        prefix_for("bob")
+    )
+    .into_bytes();
+    let (status, value) = fx.append(&id, &forged, None, Some("need")).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+
+    // A second member's letter carries that member's prefix.
+    let bob_id = traveling(2);
+    let (status, value) = append(
+        &fx.app,
+        &fx.project,
+        &bob,
+        &bob_id,
+        &eml(&bob_id, "from bob"),
+        None,
+        Some("need"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    let by_id = |id: &str| {
+        items["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["message_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_id(&id)["from_prefix"], creator_prefix);
+    assert_eq!(by_id(&bob_id)["from_prefix"], prefix_for("bob"));
+    let (status, headers, body) = get_letter(&fx.app, &fx.project, Some(&bob), &id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, forged, "the bytes are served untouched");
+    assert_eq!(
+        header(&headers, "x-vivi-from-prefix"),
+        Some(creator_prefix.as_str())
+    );
+
+    // A legacy identity (no mailspace id) stamps nothing, and a letter
+    // already stamped keeps its stamp: it is fixed at append.
+    let path = fx
+        .dir
+        .join("projects")
+        .join(&fx.project)
+        .join("identities.json");
+    let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for identity in file["identities"].as_array_mut().unwrap() {
+        if identity["name"] == "creator" {
+            identity.as_object_mut().unwrap().remove("mailspace_id");
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+    let legacy_id = traveling(3);
+    let (status, value) = fx
+        .append(&legacy_id, &eml(&legacy_id, "legacy"), None, Some("need"))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (status, headers, _) = get_letter(&fx.app, &fx.project, Some(&bob), &legacy_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("x-vivi-from-prefix").is_none());
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    let records = items["records"].as_array().unwrap();
+    let find = |id: &str| records.iter().find(|r| r["message_id"] == id).unwrap();
+    assert_eq!(find(&legacy_id)["from_prefix"], Value::Null);
+    assert_eq!(find(&id)["from_prefix"], creator_prefix, "never recomputed");
+    // A replay returns the original row and stamps nothing new.
+    let (status, replay) = fx.append(&id, &forged, None, Some("need")).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["duplicate"], true);
+    let (_, headers, _) = get_letter(&fx.app, &fx.project, Some(&bob), &id).await;
+    assert_eq!(
+        header(&headers, "x-vivi-from-prefix"),
+        Some(creator_prefix.as_str())
+    );
+}
+
+#[tokio::test]
+async fn an_index_written_without_from_prefix_still_loads() {
+    let fx = fixture("from-prefix-legacy-index", 248).await;
+    let id = traveling(1);
+    let raw = eml(&id, "old row");
+    let (status, value) = fx.append(&id, &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+
+    let path = fx.dir.join("projects").join(&fx.project).join("items.json");
+    let mut index: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for row in index["records"].as_array_mut().unwrap() {
+        assert!(row.as_object_mut().unwrap().remove("from_prefix").is_some());
+    }
+    std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
+
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert_eq!(items["records"][0]["from_prefix"], Value::Null);
+    let (status, headers, body) = get_letter(&fx.app, &fx.project, Some(&fx.token), &id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, raw);
+    assert!(headers.get("x-vivi-from-prefix").is_none());
+    // The next append still works against the rewritten index.
+    let next = traveling(2);
+    let (status, value) = fx.append(&next, &eml(&next, "next"), None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    assert_eq!(value["sequence"], 2);
+}

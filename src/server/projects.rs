@@ -61,6 +61,7 @@ pub struct ProjectMeta {
 pub struct AppendItem {
     id: String,
     from: String,
+    from_prefix: Option<String>,
     to: Option<String>,
     kind: Option<String>,
     raw_eml: Vec<u8>,
@@ -185,10 +186,19 @@ impl AppendItem {
         Ok(Self {
             id: id.to_owned(),
             from: from.to_owned(),
+            from_prefix: None,
             to,
             kind,
             raw_eml,
         })
+    }
+
+    /// Stamp the sender's registered mailspace prefix (none for a legacy
+    /// identity). It is recorded beside the letter at append and never
+    /// recomputed, so a receiver can check the letter's From domain against it.
+    pub fn with_from_prefix(mut self, prefix: Option<&str>) -> Self {
+        self.from_prefix = prefix.map(str::to_owned);
+        self
     }
 
     fn is_governance(&self) -> bool {
@@ -218,6 +228,9 @@ pub struct ProjectRecord {
     pub sequence: u64,
     pub message_id: String,
     pub from: String,
+    /// The sender's mailspace prefix as of the append; `None` for a legacy
+    /// identity.
+    pub from_prefix: Option<String>,
     pub to: Option<String>,
     pub kind: Option<String>,
     pub content_sha256: String,
@@ -239,6 +252,8 @@ struct StoredRow {
     sequence: u64,
     content_sha256: String,
     from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from_prefix: Option<String>,
     to: Option<String>,
     kind: Option<String>,
 }
@@ -568,6 +583,7 @@ impl ProjectStore {
             sequence,
             content_sha256: content_sha256.clone(),
             from: item.from.clone(),
+            from_prefix: item.from_prefix.clone(),
             to: item.to.clone(),
             kind: item.kind.clone(),
         });
@@ -649,6 +665,7 @@ fn record_of(row: &StoredRow, raw_eml: Vec<u8>) -> ProjectRecord {
         sequence: row.sequence,
         message_id: row.message_id.clone(),
         from: row.from.clone(),
+        from_prefix: row.from_prefix.clone(),
         to: row.to.clone(),
         kind: row.kind.clone(),
         content_sha256: row.content_sha256.clone(),

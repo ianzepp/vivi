@@ -24,6 +24,13 @@ its sender and to the member whose prefix a recipient address
 (`<8 hex>.local`) names; need/task/want and mail to `postmaster` stay
 visible to every member.
 
+Additive: each letter is stamped at append with its authenticated sender's
+registered mailspace prefix (`from_prefix`, null for an identity without a
+mailspace id), returned in list records and in the `X-Vivi-From-Prefix`
+response header of a single-letter `GET`, so a receiver can refuse a letter
+whose From domain claims another mailspace. The server still never parses a
+letter.
+
 ## Unreleased — phase 03 core (2026-10-10)
 
 The project, not the room, is the tenant: `/v1/projects` is the new wire,

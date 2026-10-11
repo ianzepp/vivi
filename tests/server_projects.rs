@@ -669,3 +669,22 @@ async fn duplicate_append_does_not_wake_waiter() {
     assert!(replay.duplicate);
     assert!(!waiter.await.unwrap(), "a duplicate must not wake");
 }
+
+/// The stamp is set by the caller from the authenticated sender and read
+/// back from the index row; an unstamped letter reads as `None`.
+#[test]
+fn from_prefix_is_recorded_at_append() {
+    let data_dir = scratch_data_dir("from-prefix");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let stamped = need(&traveling(1), "stamped").with_from_prefix(Some("3f9a1c7e"));
+    store.append(&cipher(), &meta.project_id, &stamped).unwrap();
+    store
+        .append(&cipher(), &meta.project_id, &need(&traveling(2), "plain"))
+        .unwrap();
+    let read = store
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .unwrap();
+    assert_eq!(read.records[0].from_prefix.as_deref(), Some("3f9a1c7e"));
+    assert_eq!(read.records[1].from_prefix, None);
+}

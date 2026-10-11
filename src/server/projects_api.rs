@@ -496,6 +496,7 @@ pub async fn items_handler(
                         "sequence": record.sequence,
                         "message_id": record.message_id,
                         "from": record.from,
+                        "from_prefix": record.from_prefix,
                         "to": record.to,
                         "kind": record.kind,
                         "content_sha256": record.content_sha256,
@@ -605,9 +606,10 @@ pub async fn append_handler(
         Err(response) => return response,
     };
     // Id, size, kind, and recipient rules live in `AppendItem::new`.
+    let from_prefix = identity.mailspace_prefix().map(str::to_owned);
     let viewer = identity.name;
     let item = match AppendItem::new(&message_id, &viewer, to, kind, raw_eml) {
-        Ok(item) => item,
+        Ok(item) => item.with_from_prefix(from_prefix.as_deref()),
         Err(err) => return project_error(err),
     };
     // The limiter keys on (room, u32 seat); fold the identity name into the
@@ -742,6 +744,9 @@ fn letter_response(record: ProjectRecord) -> Response {
         && put("x-vivi-sequence", &record.sequence.to_string())
         && put("x-vivi-content-sha256", &record.content_sha256)
         && put("cache-control", "no-store");
+    if let Some(prefix) = &record.from_prefix {
+        ok = ok && put("x-vivi-from-prefix", prefix);
+    }
     if let Some(to) = &record.to {
         ok = ok && put("x-vivi-to", to);
     }
