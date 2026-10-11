@@ -146,6 +146,22 @@ who the tenant is, what travels, and where the truth lives.
     local state are refused; the interim credential is the member's own
     key. Local-first is unchanged. See
     [Transparent mode](#transparent-mode-decided-2026-10-11).
+13. **History is pulled by window, and letters are fetched by handle
+    (decided 2026-10-11, repo owner).** The common case is a hand that
+    pulls a week of history for coverage, not a full clone and not a bulk
+    seed. The server stamps every letter with its append time
+    (`appended_at`, the server clock, monotone with the sequence), so a
+    pull can start at a time instead of a cursor, and the list takes
+    `limit`, `after`, `kind`, and `to`. A mailspace may hold a suffix of
+    history; the pull records a **floor** saying where. Deepening an
+    older range is a later unit; `resync` replays everything. A handle (8
+    hex characters of a message id) is matched by the server against ids,
+    scoped by visibility, so a hand can fetch the letters its content
+    references and does not hold. `vivi sync prune` evicts old bound
+    letters locally under the chat-prune policy, restorable byte for
+    byte. Bulk push (seeding a large existing mailspace at 30 letters per
+    minute) is deferred and is not a current requirement. See
+    [Windows, handles, and prune](#windows-handles-and-prune-decided-2026-10-11).
 
 ## What carries over from phases 01 and 02
 
@@ -450,6 +466,10 @@ content.
   than canonicalized. Harmless on a case-sensitive filesystem and not a
   signature bypass, but it should be canonicalized.
 - Appends and reads scan the whole `items.json` index linearly.
+- Bulk append is deferred (decided item 13): seeding a large existing
+  mailspace is one `PUT` per letter at 30 letters per minute per member,
+  about eleven hours for 20,000 letters. A JSON batch action, resumable by
+  id and counted per call, is the shape if it is wanted.
 
 **Shape rule.** A letter itself, PUT or GET, is the raw `.eml` with its
 envelope in HTTP headers. Every action *around* letters (listing now,
@@ -585,6 +605,98 @@ mailspace's address.
 absent or `postmaster`, the client compares the envelope's addresses with
 the letter's own `To` and `Cc` and refuses a record that disagrees. The
 server stays unparsing, and a lying envelope is caught at the edge.
+
+### Windows, handles, and prune (decided 2026-10-11)
+
+Item 13 made concrete. Bulk push is not part of this.
+
+**Append time.** Each letter is stamped at append with `appended_at`, the
+server clock as RFC 3339 UTC to the second. The stamp is monotone with the
+sequence (the server stores `max(previous stamp, now)` under the append
+mutex, so a clock step cannot reorder it) and is fixed when the letter is
+appended. A replay returns the original row with its original stamp. The list
+returns it as `appended_at` and the single-letter `GET` as
+`X-Vivi-Appended-At`. A row written before this field existed has none; the
+index loads without it, and a `after` window excludes such rows.
+
+**List parameters.** `GET /v1/projects/{id}/items` accepts, all optional and
+combined with AND (a filter narrows what visibility allows and never widens
+it):
+
+- `since=N`: sequences after N (as built).
+- `limit=K`: at most K records. Default 500, maximum 1000, and a page also
+  stops adding records once their raw letters exceed 8 MiB (at least one
+  record is always returned).
+- `after=<RFC 3339 time>`: only letters whose `appended_at` is at or after the
+  time.
+- `kind=need,task,want,mail`: a comma list of kinds; `mail` is plain mail
+  (no kind).
+- `to=<address or prefix>`: letters whose envelope recipients include that
+  exact address, or any address whose domain is `<prefix>.local`. Case
+  insensitive.
+
+The response gains `has_more` (true when more records match after
+`next_cursor`). `next_cursor` is the sequence of the last record returned,
+or `since` when none matched; filtered-out and invisible rows never advance
+it. A page is bounded by `limit`, so a client loops until `has_more` is
+false and saves its cursor after each page.
+
+**Lookup by handle.** A handle is the 8 hex characters after `msg_` in a
+message id. `POST /v1/projects/{id}/items/lookup` with
+`{"handles": ["4b8275cc", ...]}` (1 to 100 handles, each 8 hex characters,
+case insensitive; anything else is 400 `invalid_request`) returns
+`{"records": [...], "missing": ["...", ...]}`. Records have exactly the list
+record shape, ordered by sequence, and are scoped by the same visibility
+rule as the list. A handle that names several ids returns all of them. A
+handle that matches nothing the caller may see is in `missing`, identical
+whether the id is unknown or hidden, so the route is not an existence probe.
+Lookup never moves a cursor.
+
+**Compression.** List and lookup responses are gzip-compressed when the
+client sends `Accept-Encoding: gzip`, where an existing dependency's feature
+makes that possible. It is an optimization, not a contract.
+
+**Client.**
+
+- `vivi sync pull --since <age|date>`: on a mailspace with no pull cursor for
+  the project, start at that window (`7d`, `12h`, `90m`, an RFC 3339 time, or
+  a `YYYY-MM-DD` date, midnight UTC) and continue to the head. The state then
+  records the **floor**: the sequence and `appended_at` of the first record
+  received, or the requested time when the window was empty. `vivi sync
+  status` prints `history from <time> (sequence N)` or `full history`. On a
+  mailspace that already has a cursor, `--since` is refused with a message
+  that names the floor and says `vivi sync resync` replays everything.
+  Deepening an older range is a later unit.
+- `vivi sync resync`: reset the cursor and floor to zero and pull, through
+  the same verification and ingest as `pull`. Evicted letters come back
+  byte-identically under the same ids and local state is left as it was.
+  Interrupted, it resumes from the saved cursor.
+- `vivi sync fetch <handle>...`: look the handles up (in chunks of 100) and
+  file what comes back through the same verification and filing as pull.
+  Prints counts of filed, already held, and missing. The cursor and floor are
+  untouched. Library form: a function a later transparent mode can call to
+  resolve a handle it does not hold.
+- `vivi sync pull --refs [--depth N]`: after the pull, scan the letters this
+  invocation filed for references the mailspace does not hold, look those up,
+  and file them. A reference is a value of an `X-Vivi-Depends-On` header or a
+  whole-word 8-hex token in the subject or body. Depth defaults to 1 and is
+  at most 3; each further hop scans only what the previous hop filed. At most
+  500 tokens are looked up per invocation. A token that matches nothing is
+  ignored.
+- `vivi sync prune --older-than <age> [--dry-run]`: evict, from the local
+  store only, letters bound to the server by the same policy as `vivi chat
+  prune`: never open needs, tasks, or wants (however old), never starred or
+  absorbed items, never local-origin letters (anything with no binding), and
+  only letters dated before the cutoff. The row and its local state stay, the
+  blob goes, and re-ingest reports the row as restored. It needs neither the
+  server nor a key and never runs on its own. Restore with `resync`, `fetch`,
+  or `pull --refs`.
+
+**Measurement.** A synthetic 20,000-letter project built at store level
+(letters of about 3 KiB, a mix of kinds, several recipients) times a full
+list, a 7-day `after` window, a `kind` filter, a `to` filter, and a lookup of
+100 handles, before and after paging, and the client's pull of 5,000 letters
+through the in-process fake server. The numbers are reported, not asserted.
 
 ### Storage
 
