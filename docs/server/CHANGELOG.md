@@ -13,6 +13,17 @@ Breaking: the field-based append is gone and projects created on the
 earlier wire must be recreated. Rooms are unchanged. Acceptance:
 `scripts/project-sync-smoke.sh`.
 
+Mailspaces are addressed by id (decided item 11). Breaking: `POST
+/v1/projects/{id}/identities` requires `mailspace_id` (a lowercase
+hyphenated UUID); its first 8 characters are bound to the identity as the
+domain of its addresses, a taken prefix is 409 `mailspace_prefix_taken`, the
+201 response and the directory members carry `mailspace_id` (null for an
+identity registered before this), and `X-Vivi-To` is now `postmaster` or 1
+to 16 `local@domain` addresses (a bare name is refused). Mail is visible to
+its sender and to the member whose prefix a recipient address
+(`<8 hex>.local`) names; need/task/want and mail to `postmaster` stay
+visible to every member.
+
 ## Unreleased — phase 03 core (2026-10-10)
 
 The project, not the room, is the tenant: `/v1/projects` is the new wire,

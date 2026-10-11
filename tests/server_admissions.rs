@@ -13,7 +13,15 @@ use ed25519_dalek::SigningKey;
 
 use vivi_server::admissions::AdmissionsFile;
 use vivi_server::crypto::StoreCipher;
-use vivi_server::projects::{AppendItem, ProjectError, ProjectStore};
+use vivi_server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
+
+/// The sender of every letter in this file; it has no mailspace prefix.
+fn alice() -> Viewer<'static> {
+    Viewer {
+        name: "alice",
+        prefix: None,
+    }
+}
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -161,7 +169,7 @@ fn vouch_from_unknown_voucher_is_refused_with_nothing_appended() {
     assert!(matches!(err, ProjectError::BadRequest(_)), "got {err:?}");
     assert_eq!(
         store
-            .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
+            .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
             .unwrap()
             .records
             .len(),
@@ -189,7 +197,7 @@ fn malformed_vouch_body_is_refused_with_nothing_appended() {
     }
     assert_eq!(
         store
-            .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
+            .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
             .unwrap()
             .records
             .len(),
@@ -287,7 +295,7 @@ fn same_name_with_different_key_conflicts() {
     // Only the first vouch was appended; bob still holds the first key.
     assert_eq!(
         store
-            .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
+            .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
             .unwrap()
             .records
             .len(),
@@ -364,7 +372,7 @@ fn vouch_letters_without_a_usable_body_are_refused_with_nothing_appended() {
     }
     assert_eq!(admissions(&data_dir, &meta.project_id).admissions.len(), 1);
     let page = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "alice")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
         .unwrap();
     assert!(page.records.is_empty());
 }

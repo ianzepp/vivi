@@ -15,8 +15,8 @@ use vivi::storage::is_traveling_id;
 
 use crate::AppState;
 use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
-use crate::identities::{RefreshError, RegisterError};
-use crate::projects::{AppendItem, ProjectError, ProjectRecord};
+use crate::identities::{RefreshError, RegisterError, valid_mailspace_id};
+use crate::projects::{AppendItem, ProjectError, ProjectRecord, Viewer};
 use crate::rooms::error_response;
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +36,8 @@ pub struct RegisterRequest {
     public_key_pem: String,
     challenge_id: String,
     signature_base64: String,
+    /// The registering checkout's mailspace id (canonical UUID).
+    mailspace_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +94,12 @@ fn register_error(err: RegisterError) -> Response {
             "invalid_request",
             "invalid identity name or public key",
         ),
+        RegisterError::InvalidMailspaceId => invalid_mailspace_id(),
+        RegisterError::PrefixTaken => error_response(
+            StatusCode::CONFLICT,
+            "mailspace_prefix_taken",
+            "another identity in this project already holds that mailspace prefix",
+        ),
         RegisterError::NameTaken | RegisterError::ReservedName => error_response(
             StatusCode::CONFLICT,
             "conflict",
@@ -106,6 +114,14 @@ fn register_error(err: RegisterError) -> Response {
             )
         }
     }
+}
+
+fn invalid_mailspace_id() -> Response {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        "mailspace_id must be a lowercase hyphenated UUID",
+    )
 }
 
 fn json_body<T: for<'de> Deserialize<'de>>(
@@ -245,6 +261,10 @@ pub async fn register_handler(
         Ok(req) => req,
         Err(response) => return response,
     };
+    // A shape check, made before the challenge is spent.
+    if !valid_mailspace_id(&req.mailspace_id) {
+        return invalid_mailspace_id();
+    }
     let key = match parse_verifying_key(&req.public_key_pem) {
         Ok(key) => key,
         Err(_) => {
@@ -318,7 +338,12 @@ pub async fn register_handler(
     let identities = state.identities.clone();
     let project_id = id;
     match tokio::task::spawn_blocking(move || {
-        identities.register(&project_id, &req.name, &req.public_key_pem)
+        identities.register(
+            &project_id,
+            &req.name,
+            &req.public_key_pem,
+            &req.mailspace_id,
+        )
     })
     .await
     {
@@ -329,6 +354,7 @@ pub async fn register_handler(
                 "token": outcome.token,
                 "token_expires_at": outcome.expires_at,
                 "fingerprint": outcome.fingerprint,
+                "mailspace_id": outcome.mailspace_id,
             })),
         )
             .into_response(),
@@ -428,11 +454,11 @@ pub async fn items_handler(
     let identities = state.identities.clone();
     let token = token.to_owned();
     let project_id = id.clone();
-    let viewer =
+    let identity =
         match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
             .await
         {
-            Ok(Some(identity)) => identity.name,
+            Ok(Some(identity)) => identity,
             Ok(None) => {
                 return error_response(
                     StatusCode::UNAUTHORIZED,
@@ -457,7 +483,7 @@ pub async fn items_handler(
     };
     let projects = state.projects.clone();
     match tokio::task::spawn_blocking(move || {
-        projects.read_after_scoped(&cipher, &id, query.since, &viewer)
+        projects.read_after_scoped(&cipher, &id, query.since, &Viewer::of(&identity))
     })
     .await
     {
@@ -530,11 +556,11 @@ pub async fn append_handler(
     let identities = state.identities.clone();
     let token = token.to_owned();
     let project_id = id.clone();
-    let viewer =
+    let identity =
         match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
             .await
         {
-            Ok(Some(identity)) => identity.name,
+            Ok(Some(identity)) => identity,
             Ok(None) => {
                 return error_response(
                     StatusCode::UNAUTHORIZED,
@@ -579,6 +605,7 @@ pub async fn append_handler(
         Err(response) => return response,
     };
     // Id, size, kind, and recipient rules live in `AppendItem::new`.
+    let viewer = identity.name;
     let item = match AppendItem::new(&message_id, &viewer, to, kind, raw_eml) {
         Ok(item) => item,
         Err(err) => return project_error(err),
@@ -649,11 +676,11 @@ pub async fn letter_handler(
     let identities = state.identities.clone();
     let token = token.to_owned();
     let project_id = id.clone();
-    let viewer =
+    let identity =
         match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
             .await
         {
-            Ok(Some(identity)) => identity.name,
+            Ok(Some(identity)) => identity,
             Ok(None) => {
                 return error_response(
                     StatusCode::UNAUTHORIZED,
@@ -685,7 +712,7 @@ pub async fn letter_handler(
     };
     let projects = state.projects.clone();
     let read = tokio::task::spawn_blocking(move || {
-        projects.read_one_scoped(&cipher, &id, &message_id, &viewer)
+        projects.read_one_scoped(&cipher, &id, &message_id, &Viewer::of(&identity))
     })
     .await;
     match read {

@@ -20,7 +20,7 @@ use vivi::storage::is_traveling_id;
 
 use crate::admissions::{AdmissionError, AdmissionRegistry};
 use crate::crypto::{StoreCipher, harden_tree};
-use crate::identities::MAX_IDENTITY_LEN;
+use crate::identities::{IdentityRecord, MAILSPACE_PREFIX_LEN};
 use crate::ids::{mint_room_id, normalize_room_id};
 use crate::project_wake::ProjectWake;
 use crate::safety::body_over_cap;
@@ -66,19 +66,94 @@ pub struct AppendItem {
     raw_eml: Vec<u8>,
 }
 
-/// Recipient names share the identity-name charset and length cap.
-fn valid_recipient(to: &str) -> bool {
-    (1..=MAX_IDENTITY_LEN).contains(&to.len())
-        && to
+/// At most this many addresses in one `X-Vivi-To`.
+const MAX_RECIPIENTS: usize = 16;
+/// Cap on the whole `X-Vivi-To` value, in bytes.
+const MAX_TO_LEN: usize = 1024;
+/// Cap on the local and the domain part of an address, in bytes.
+const MAX_ADDRESS_PART: usize = 64;
+
+/// `local@domain`: local `[A-Za-z0-9._-]{1,64}`, domain `[A-Za-z0-9.-]{1,64}`.
+fn valid_address(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    (1..=MAX_ADDRESS_PART).contains(&local.len())
+        && local
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && (1..=MAX_ADDRESS_PART).contains(&domain.len())
+        && domain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
+
+/// The addresses of a stored `to` value; entries are trimmed.
+fn recipients(to: &str) -> impl Iterator<Item = &str> {
+    to.split(',').map(str::trim)
+}
+
+/// Validate the envelope recipient header. Absent or blank is no recipient;
+/// otherwise `postmaster` (any case) or 1 to 16 comma-separated addresses.
+/// The trimmed value is stored verbatim.
+fn parse_to(to: Option<&str>) -> Result<Option<String>, ProjectError> {
+    let Some(to) = to.map(str::trim).filter(|to| !to.is_empty()) else {
+        return Ok(None);
+    };
+    let ok = to.len() <= MAX_TO_LEN
+        && (to.eq_ignore_ascii_case(POSTMASTER)
+            || (recipients(to).count() <= MAX_RECIPIENTS && recipients(to).all(valid_address)));
+    if ok {
+        Ok(Some(to.to_owned()))
+    } else {
+        Err(ProjectError::BadRequest(format!(
+            "to must be postmaster or 1-{MAX_RECIPIENTS} comma-separated local@domain addresses \
+             (at most {MAX_TO_LEN} bytes)"
+        )))
+    }
+}
+
+/// The mailspace prefix an address domain names: exactly `<8 hex>.local`
+/// (case-insensitive), else `None`.
+fn domain_prefix(domain: &str) -> Option<&str> {
+    let (head, tld) = domain.split_once('.')?;
+    (head.len() == MAILSPACE_PREFIX_LEN
+        && head.bytes().all(|b| b.is_ascii_hexdigit())
+        && tld.eq_ignore_ascii_case("local"))
+    .then_some(head)
+}
+
+/// True when any recipient address in `to` names `prefix`'s mailspace.
+fn names_prefix(to: &str, prefix: &str) -> bool {
+    recipients(to)
+        .filter_map(|address| address.split_once('@'))
+        .filter_map(|(_, domain)| domain_prefix(domain))
+        .any(|named| named.eq_ignore_ascii_case(prefix))
+}
+
+/// Who is reading: the authenticated identity name and the mailspace prefix
+/// bound to it at registration (none for a legacy identity).
+#[derive(Debug, Clone, Copy)]
+pub struct Viewer<'a> {
+    pub name: &'a str,
+    pub prefix: Option<&'a str>,
+}
+
+impl<'a> Viewer<'a> {
+    pub fn of(identity: &'a IdentityRecord) -> Self {
+        Self {
+            name: &identity.name,
+            prefix: identity.mailspace_prefix(),
+        }
+    }
 }
 
 impl AppendItem {
     /// Validate one letter and its envelope. `id` is the client-minted
     /// traveling id; `kind` is `need` | `task` | `want` (case-insensitive),
     /// or `mail`/empty/absent for plain mail, recorded as no kind; `to` is
-    /// an optional recipient name that need not be a registered identity.
+    /// the optional envelope recipient: `postmaster` or a comma-separated
+    /// list of `local@domain` addresses whose domains need not be registered.
     pub fn new(
         id: &str,
         from: &str,
@@ -106,15 +181,11 @@ impl AppendItem {
                 )));
             }
         };
-        if to.is_some_and(|to| !valid_recipient(to)) {
-            return Err(ProjectError::BadRequest(format!(
-                "to must be 1-{MAX_IDENTITY_LEN} chars of letters, digits, dot, dash, or underscore"
-            )));
-        }
+        let to = parse_to(to)?;
         Ok(Self {
             id: id.to_owned(),
             from: from.to_owned(),
-            to: to.map(str::to_owned),
+            to,
             kind,
             raw_eml,
         })
@@ -249,19 +320,20 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
-/// Scoped-read visibility (decided item 7 plus the governance carve-out),
-/// decided from the envelope row alone: work items and mail addressed to
-/// postmaster are member-visible; every other letter only to its sender or
-/// recipient.
-fn scoped_visible(row: &StoredRow, viewer: &str) -> bool {
+/// Scoped-read visibility (decided items 7 and 11 plus the governance
+/// carve-out), decided from the envelope row alone: work items and mail
+/// addressed to postmaster are member-visible; every other letter only to
+/// its sender (by name) or to the member whose registered prefix is named by
+/// a recipient address.
+fn scoped_visible(row: &StoredRow, viewer: &Viewer<'_>) -> bool {
     match row.kind.as_deref() {
         Some("need" | "task" | "want") => true,
         _ => {
-            row.to
-                .as_deref()
-                .is_some_and(|to| to.eq_ignore_ascii_case(POSTMASTER))
-                || row.from == viewer
-                || row.to.as_deref() == Some(viewer)
+            row.from == viewer.name
+                || row.to.as_deref().is_some_and(|to| {
+                    to.eq_ignore_ascii_case(POSTMASTER)
+                        || viewer.prefix.is_some_and(|prefix| names_prefix(to, prefix))
+                })
         }
     }
 }
@@ -512,9 +584,10 @@ impl ProjectStore {
     }
 
     /// Read letters after a transport cursor, scoped to `viewer` (decided
-    /// item 7 plus the governance carve-out): work items (need/task/want)
-    /// and mail addressed to postmaster are member-visible; every other
-    /// letter only to its sender or recipient. Visibility is decided from
+    /// items 7 and 11 plus the governance carve-out): work items
+    /// (need/task/want) and mail addressed to postmaster are member-visible;
+    /// every other letter only to its sender or the recipient prefix's
+    /// member. Visibility is decided from
     /// the index row, so a letter the viewer cannot see is never unsealed. A
     /// filtered-out letter still holds its sequence, and `next_cursor` only
     /// reflects returned records.
@@ -523,7 +596,7 @@ impl ProjectStore {
         cipher: &StoreCipher,
         raw_id: &str,
         since: u64,
-        viewer: &str,
+        viewer: &Viewer<'_>,
     ) -> Result<ReadAfter, ProjectError> {
         let dir = self.existing_project_dir(raw_id)?;
         let index = read_index(&dir)?;
@@ -555,7 +628,7 @@ impl ProjectStore {
         cipher: &StoreCipher,
         raw_id: &str,
         message_id: &str,
-        viewer: &str,
+        viewer: &Viewer<'_>,
     ) -> Result<Option<ProjectRecord>, ProjectError> {
         let dir = self.existing_project_dir(raw_id)?;
         let index = read_index(&dir)?;

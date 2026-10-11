@@ -60,6 +60,31 @@ fn traveling(n: u64) -> String {
     format!("msg_{n:08x}{:016x}", 0)
 }
 
+/// A deterministic canonical mailspace id for `name`: lowercase hyphenated
+/// 8-4-4-4-12 hex derived from the name, so every test identity gets its own
+/// stable prefix.
+fn mailspace_for(name: &str) -> String {
+    let hex = sha256_hex(name.as_bytes());
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// The prefix of `mailspace_for(name)`.
+fn prefix_for(name: &str) -> String {
+    mailspace_for(name)[..8].to_owned()
+}
+
+/// `name@<prefix>.local`: the address of `name`'s mailspace role.
+fn address(name: &str) -> String {
+    format!("{name}@{}.local", prefix_for(name))
+}
+
 /// A letter with LF line ends whose bytes are unique per `(id, body)`.
 fn eml(id: &str, body: &str) -> Vec<u8> {
     format!("From: a@p.local\nTo: b@p.local\nMessage-ID: <{id}@p.local>\n\n{body}").into_bytes()
@@ -208,24 +233,41 @@ async fn challenge(app: &Router, project: &str, signing_key: &SigningKey) -> (St
     )
 }
 
+/// Register `name` with `mailspace_for(name)`.
 async fn register(
     app: &Router,
     project: &str,
     signing_key: &SigningKey,
     name: &str,
 ) -> (StatusCode, Value) {
+    register_with(app, project, signing_key, name, json!(mailspace_for(name))).await
+}
+
+/// Register with an explicit `mailspace_id` JSON value; `Value::Null` omits
+/// the field entirely.
+async fn register_with(
+    app: &Router,
+    project: &str,
+    signing_key: &SigningKey,
+    name: &str,
+    mailspace_id: Value,
+) -> (StatusCode, Value) {
     let (challenge_id, bytes) = challenge(app, project, signing_key).await;
     let signature = STANDARD.encode(signing_key.sign(&bytes).to_bytes());
+    let mut body = json!({
+        "name": name,
+        "public_key_pem": spki_pem(signing_key),
+        "challenge_id": challenge_id,
+        "signature_base64": signature,
+    });
+    if !mailspace_id.is_null() {
+        body["mailspace_id"] = mailspace_id;
+    }
     send(
         app,
         "POST",
         &format!("/v1/projects/{project}/identities"),
-        Some(json!({
-            "name": name,
-            "public_key_pem": spki_pem(signing_key),
-            "challenge_id": challenge_id,
-            "signature_base64": signature,
-        })),
+        Some(body),
         None,
     )
     .await
@@ -435,7 +477,8 @@ async fn letter_round_trip_is_byte_exact_and_hashes_match() {
     let expected = sha256_hex(&raw);
 
     let id = traveling(1);
-    let (status, created) = fx.append(&id, &raw, Some("builder"), Some("task")).await;
+    let to = address("builder");
+    let (status, created) = fx.append(&id, &raw, Some(&to), Some("task")).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     assert_eq!(created["message_id"], id);
     assert_eq!(created["sequence"], 1);
@@ -445,7 +488,7 @@ async fn letter_round_trip_is_byte_exact_and_hashes_match() {
     let items = read(&fx.app, &fx.project, &fx.token, 0).await;
     let record = &items["records"][0];
     assert_eq!(record["content_sha256"], expected);
-    assert_eq!(record["to"], "builder");
+    assert_eq!(record["to"], to);
     assert_eq!(record["kind"], "task");
     let served = STANDARD
         .decode(record["raw_eml"].as_str().unwrap())
@@ -528,10 +571,11 @@ async fn size_cap_and_input_validation() {
     let (status, value) = fx.append(&traveling(3), b"", None, None).await;
     bad(status, &value);
 
-    // Bad kind (header) and bad `to` (header, including present-but-empty).
+    // Bad kind (header) and bad `to` (header; the full grammar is covered by
+    // `recipient_grammar_is_enforced_at_append`).
     let (status, value) = fx.append(&traveling(3), &letter, None, Some("bogus")).await;
     bad(status, &value);
-    for to in ["", "two words", "a@b", &"a".repeat(65)] {
+    for to in ["two words", "bob", &"a".repeat(65)] {
         let (status, value) = fx.append(&traveling(3), &letter, Some(to), None).await;
         bad(status, &value);
     }
@@ -574,7 +618,7 @@ async fn size_cap_and_input_validation() {
         .append(
             &traveling(6),
             &eml(&traveling(6), "y"),
-            Some("Bob.s-1_x"),
+            Some("Bob.s-1_x@Elsewhere.example"),
             None,
         )
         .await;
@@ -613,14 +657,15 @@ async fn visibility_scopes_mail_and_filtered_items_do_not_advance_the_cursor() {
 
     // 3: private mail creator -> bob. 4: work item. 5: postmaster mail
     // (member-visible). 6: private mail creator -> bob again.
-    let letters: [(u64, Option<&str>, Option<&str>); 4] = [
-        (10, Some("bob"), None),
+    let letters: [(u64, Option<String>, Option<&str>); 4] = [
+        (10, Some(address("bob")), None),
         (11, None, Some("need")),
-        (12, Some("POSTMASTER"), None),
-        (13, Some("bob"), Some("mail")),
+        (12, Some("POSTMASTER".to_owned()), None),
+        (13, Some(address("bob")), Some("mail")),
     ];
     for (n, to, kind) in letters {
         let id = traveling(n);
+        let to = to.as_deref();
         let raw = if to == Some("POSTMASTER") {
             // A postmaster letter must carry a vouch; re-vouch an
             // already-admitted member (idempotent) to keep it valid.
@@ -732,7 +777,9 @@ async fn letters_are_sealed_at_rest() {
     let marker = "PLAINTEXT-MARKER-7f3a9c41d2e8";
     let id = traveling(1);
     let raw = eml(&id, &format!("secret {marker} secret"));
-    let (status, created) = fx.append(&id, &raw, Some("builder"), Some("need")).await;
+    let (status, created) = fx
+        .append(&id, &raw, Some(&address("builder")), Some("need"))
+        .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
 
     let project_dir = fx.dir.join("projects").join(&fx.project);
@@ -1183,12 +1230,13 @@ async fn single_letter_get_returns_raw_bytes_with_envelope_headers() {
     // Second letter with both fields.
     let id = traveling(2);
     let letter = eml(&id, "kinded");
-    let (status, value) = fx.append(&id, &letter, Some("builder"), Some("NEED")).await;
+    let to = address("builder");
+    let (status, value) = fx.append(&id, &letter, Some(&to), Some("NEED")).await;
     assert_eq!(status, StatusCode::CREATED, "{value}");
     let (status, headers, body) = get_letter(&fx.app, &fx.project, Some(&fx.token), &id).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, letter);
-    assert_eq!(header(&headers, "x-vivi-to"), Some("builder"));
+    assert_eq!(header(&headers, "x-vivi-to"), Some(to.as_str()));
     assert_eq!(header(&headers, "x-vivi-kind"), Some("need"));
     assert_eq!(header(&headers, "x-vivi-sequence"), Some("2"));
 }
@@ -1209,7 +1257,7 @@ async fn single_letter_get_applies_list_visibility() {
         StatusCode::CREATED
     );
     assert_eq!(
-        fx.append(&mail, &eml(&mail, "m"), Some("bob"), None)
+        fx.append(&mail, &eml(&mail, "m"), Some(&address("bob")), None)
             .await
             .0,
         StatusCode::CREATED
@@ -1328,4 +1376,418 @@ async fn single_letter_get_with_an_unreadable_blob_is_500_not_404() {
     // The other letter is unaffected.
     let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&fx.token), &second).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// Vouch `name` for `signing_key` through the creator, without registering.
+async fn vouch_only(fx: &Fixture, vouch_id: &str, name: &str, signing_key: &SigningKey) {
+    let raw = vouch_letter(vouch_id, name, signing_key);
+    let (status, vouched) = fx.append(vouch_id, &raw, Some("postmaster"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{vouched}");
+}
+
+#[tokio::test]
+async fn registration_requires_a_canonical_mailspace_id() {
+    let fx = fixture("ms-id-shape", 201).await;
+    vouch_only(&fx, &traveling(90), "builder", &key(202)).await;
+
+    let good = mailspace_for("builder");
+    let bad: Vec<Value> = vec![
+        Value::Null, // omitted
+        json!(""),
+        json!(good.to_uppercase()),
+        json!(good.replace('-', "")),
+        json!(&good[..35]),
+        json!(format!("{good}0")),
+        json!(good.replace('a', "g")),
+        json!(good.replacen('-', "_", 1)),
+        json!(7),
+    ];
+    for mailspace_id in bad {
+        let (status, value) = register_with(
+            &fx.app,
+            &fx.project,
+            &key(202),
+            "builder",
+            mailspace_id.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{mailspace_id}: {value}");
+        assert_eq!(value["error"]["code"], "invalid_request");
+    }
+
+    // Nothing was registered by the refusals, and the admission still works.
+    let (status, identity) = register(&fx.app, &fx.project, &key(202), "builder").await;
+    assert_eq!(status, StatusCode::CREATED, "{identity}");
+    assert_eq!(identity["mailspace_id"], good);
+}
+
+#[tokio::test]
+async fn prefix_collision_is_refused_and_the_admission_stays_usable() {
+    let fx = fixture("ms-prefix", 211).await;
+    vouch_only(&fx, &traveling(90), "builder", &key(212)).await;
+    let creator_id = mailspace_for("creator");
+
+    // The same id, and a different id sharing only the 8-char prefix.
+    let same_prefix = format!("{}-1111-2222-3333-444444444444", &creator_id[..8]);
+    for mailspace_id in [creator_id.clone(), same_prefix] {
+        let (status, value) = register_with(
+            &fx.app,
+            &fx.project,
+            &key(212),
+            "builder",
+            json!(mailspace_id),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{value}");
+        assert_eq!(value["error"]["code"], "mailspace_prefix_taken");
+    }
+
+    // The admission is intact: the same key retries with a different id.
+    let fresh = mailspace_for("builder");
+    let (status, identity) =
+        register_with(&fx.app, &fx.project, &key(212), "builder", json!(fresh)).await;
+    assert_eq!(status, StatusCode::CREATED, "{identity}");
+    assert_eq!(identity["mailspace_id"], fresh);
+
+    // An already registered name stays `conflict`, and it is checked before
+    // the prefix: here the id's prefix is also taken.
+    for mailspace_id in [mailspace_for("elsewhere"), creator_id] {
+        let (status, value) = register_with(
+            &fx.app,
+            &fx.project,
+            &key(212),
+            "builder",
+            json!(mailspace_id),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{value}");
+        assert_eq!(value["error"]["code"], "conflict");
+    }
+
+    // The directory carries each member's id.
+    let (status, directory) = send(
+        &fx.app,
+        "GET",
+        &format!("/v1/projects/{}/directory", fx.project),
+        None,
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{directory}");
+    assert_eq!(directory["members"][0]["name"], "builder");
+    assert_eq!(directory["members"][0]["mailspace_id"], fresh);
+    assert_eq!(directory["members"][1]["name"], "creator");
+    assert_eq!(
+        directory["members"][1]["mailspace_id"],
+        mailspace_for("creator")
+    );
+}
+
+#[tokio::test]
+async fn legacy_identity_has_a_null_id_and_no_prefix() {
+    let fx = fixture("ms-legacy", 221).await;
+    let bob = fx.add_member(&traveling(90), "bob", &key(222)).await;
+
+    // Rewrite the creator's record as an identities file from before
+    // addresses: no `mailspace_id` key at all.
+    let path = fx
+        .dir
+        .join("projects")
+        .join(&fx.project)
+        .join("identities.json");
+    let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for identity in file["identities"].as_array_mut().unwrap() {
+        if identity["name"] == "creator" {
+            assert!(
+                identity
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("mailspace_id")
+                    .is_some()
+            );
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+    // The file still loads, the old bearer still works, and the directory
+    // shows null for the legacy member only.
+    let (status, directory) = send(
+        &fx.app,
+        "GET",
+        &format!("/v1/projects/{}/directory", fx.project),
+        None,
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{directory}");
+    assert_eq!(directory["members"][0]["name"], "bob");
+    assert_eq!(
+        directory["members"][0]["mailspace_id"],
+        mailspace_for("bob")
+    );
+    assert_eq!(directory["members"][1]["name"], "creator");
+    assert_eq!(directory["members"][1]["mailspace_id"], Value::Null);
+
+    // Mail to the legacy member's old address cannot reach it by prefix; it
+    // still sees what it sent.
+    let id = traveling(1);
+    let (status, value) = append(
+        &fx.app,
+        &fx.project,
+        &bob,
+        &id,
+        &eml(&id, "hello"),
+        Some(&address("creator")),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&fx.token), &id).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&bob), &id).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn recipient_grammar_is_enforced_at_append() {
+    let fx = fixture("recipient-grammar", 231).await;
+    let letter = eml(&traveling(1), "g");
+    let bad = |status: StatusCode, value: &Value, what: &str| {
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {value}");
+        assert_eq!(value["error"]["code"], "invalid_request", "{what}");
+    };
+
+    // 16 addresses is the cap.
+    let sixteen: Vec<String> = (0..16).map(|n| format!("r{n}@3f9a1c7e.local")).collect();
+    let seventeen: Vec<String> = (0..17).map(|n| format!("r{n}@3f9a1c7e.local")).collect();
+    let local65 = format!("{}@x.local", "a".repeat(65));
+    let domain65 = format!("a@{}", "b".repeat(65));
+    // A list of 8 addresses totalling exactly 1024 bytes, and one over.
+    let long_address = format!("{}@{}", "a".repeat(64), "b".repeat(64));
+    let max_list = |last_local: usize| {
+        let mut parts = vec![long_address.clone(); 7];
+        parts.push(format!("{}@{}", "c".repeat(last_local), "d".repeat(64)));
+        parts.join(",")
+    };
+    assert_eq!(max_list(49).len(), 1024);
+    assert_eq!(max_list(50).len(), 1025);
+
+    let bad_values = [
+        ("bare name", "bob".to_owned()),
+        ("bare name with dots", "Bob.s-1_x".to_owned()),
+        ("whitespace in local", "two words@x.local".to_owned()),
+        ("slash in local", "a/b@x.local".to_owned()),
+        ("empty local", "@x.local".to_owned()),
+        ("empty domain", "a@".to_owned()),
+        ("two at signs", "a@b@c.local".to_owned()),
+        ("underscore in domain", "a@b_c.local".to_owned()),
+        ("local over 64", local65),
+        ("domain over 64", domain65),
+        ("empty entry", "a@x.local,,b@x.local".to_owned()),
+        ("trailing comma", "a@x.local,".to_owned()),
+        ("a bare name in a list", "a@x.local, bob".to_owned()),
+        ("postmaster in a list", "postmaster, a@x.local".to_owned()),
+        (
+            "postmaster after a list",
+            "a@x.local, postmaster".to_owned(),
+        ),
+        ("17 addresses", seventeen.join(",")),
+        ("over 1 KiB", max_list(50)),
+    ];
+    for (what, to) in &bad_values {
+        let (status, value) = fx.append(&traveling(1), &letter, Some(to), None).await;
+        bad(status, &value, what);
+    }
+
+    // Nothing above was stored.
+    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert!(items["records"].as_array().unwrap().is_empty());
+
+    // Valid forms: stored verbatim, in the same order, entries untouched.
+    let good_values = [
+        "a@x.local".to_owned(),
+        "Mind@3F9A1C7E.LOCAL".to_owned(),
+        "a@x.local, b@y.example".to_owned(),
+        sixteen.join(","),
+        max_list(49),
+        // A postmaster-looking local part is an ordinary address.
+        "postmaster@x.local".to_owned(),
+    ];
+    for (n, to) in good_values.iter().enumerate() {
+        let id = traveling(10 + n as u64);
+        let (status, value) = fx.append(&id, &eml(&id, "ok"), Some(to), None).await;
+        assert_eq!(status, StatusCode::CREATED, "{to}: {value}");
+        let (status, headers, _) = get_letter(&fx.app, &fx.project, Some(&fx.token), &id).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(header(&headers, "x-vivi-to"), Some(to.as_str()));
+    }
+
+    // A blank header is no recipient at all.
+    let id = traveling(30);
+    let (status, value) = fx.append(&id, &eml(&id, "blank"), Some(""), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (_, headers, _) = get_letter(&fx.app, &fx.project, Some(&fx.token), &id).await;
+    assert!(headers.get("x-vivi-to").is_none());
+
+    // `postmaster` is still governance, in any case.
+    let id = traveling(31);
+    let vouch = vouch_letter(&id, "builder", &key(232));
+    let (status, value) = fx.append(&id, &vouch, Some("PostMaster"), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (status, identity) = register(&fx.app, &fx.project, &key(232), "builder").await;
+    assert_eq!(status, StatusCode::CREATED, "{identity}");
+}
+
+#[tokio::test]
+async fn mail_is_routed_by_the_recipient_prefix() {
+    let fx = fixture("prefix-routing", 241).await;
+    let bob = fx.add_member(&traveling(90), "bob", &key(242)).await;
+    let carol = fx.add_member(&traveling(91), "carol", &key(243)).await;
+    // Sequences 1 and 2 are the vouches (governance mail, member-visible).
+    let bob_prefix = prefix_for("bob");
+    let carol_prefix = prefix_for("carol");
+
+    let mail = traveling(10);
+    let work = traveling(11);
+    let legacy = traveling(12);
+    let gov = traveling(13);
+    let unregistered = traveling(14);
+    let both = traveling(15);
+    let upper = traveling(16);
+    let not_local = traveling(17);
+
+    // 3: mail to a role of bob's mailspace; the local part is not his name.
+    let to = format!("mind@{bob_prefix}.local");
+    assert_eq!(
+        fx.append(&mail, &eml(&mail, "m"), Some(&to), None).await.0,
+        StatusCode::CREATED
+    );
+    // 4: a work item, member-visible.
+    assert_eq!(
+        fx.append(&work, &eml(&work, "w"), None, Some("need"))
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    // 5: mail to a legacy (named, non-prefix) domain: sender only.
+    assert_eq!(
+        fx.append(
+            &legacy,
+            &eml(&legacy, "l"),
+            Some("mind@faberlang.local"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    // 6: governance mail: every member.
+    let gov_raw = vouch_letter(&gov, "bob", &key(242));
+    assert_eq!(
+        fx.append(&gov, &gov_raw, Some("postmaster"), None).await.0,
+        StatusCode::CREATED
+    );
+    // 7: a prefix that nobody registered is accepted; sender only.
+    assert_eq!(
+        fx.append(
+            &unregistered,
+            &eml(&unregistered, "u"),
+            Some("mind@deadbeef.local"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    // 8: two recipients in two mailspaces: both see it, the sender too.
+    let to_both = format!("a@{bob_prefix}.local, b@{carol_prefix}.local");
+    assert_eq!(
+        fx.append(&both, &eml(&both, "b"), Some(&to_both), None)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    // 9: the domain compare is case-insensitive.
+    let to_upper = format!("Mind@{}.LOCAL", bob_prefix.to_uppercase());
+    assert_eq!(
+        fx.append(&upper, &eml(&upper, "c"), Some(&to_upper), None)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    // 10: only `<prefix>.local` names a mailspace.
+    let to_not_local = format!("mind@{bob_prefix}.example");
+    assert_eq!(
+        fx.append(&not_local, &eml(&not_local, "n"), Some(&to_not_local), None)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+
+    // The sender sees everything it sent plus all shared items.
+    let creator_view = read(&fx.app, &fx.project, &fx.token, 0).await;
+    assert_eq!(ids(&creator_view).len(), 10);
+
+    // Bob: vouches, his mail, the work item, governance, both, upper.
+    let bob_view = read(&fx.app, &fx.project, &bob, 0).await;
+    assert_eq!(
+        ids(&bob_view),
+        vec![
+            traveling(90),
+            traveling(91),
+            mail.clone(),
+            work.clone(),
+            gov.clone(),
+            both.clone(),
+            upper.clone(),
+        ]
+    );
+    assert_eq!(bob_view["next_cursor"], 9);
+
+    // Carol: only shared items and the two-recipient mail; the filtered
+    // letters (seq 3, 5, 7, 9, 10) never advance the cursor, so it stops at
+    // the last letter she can see.
+    let carol_view = read(&fx.app, &fx.project, &carol, 0).await;
+    assert_eq!(
+        ids(&carol_view),
+        vec![
+            traveling(90),
+            traveling(91),
+            work.clone(),
+            gov.clone(),
+            both.clone()
+        ]
+    );
+    assert_eq!(carol_view["next_cursor"], 8);
+    let tail = read(&fx.app, &fx.project, &carol, 8).await;
+    assert!(tail["records"].as_array().unwrap().is_empty());
+    assert_eq!(tail["next_cursor"], 8, "hidden letters hold the cursor");
+
+    // Single GET matches the list: bob reads his mail, carol gets the same
+    // 404 she gets for an unknown id.
+    let (status, _, body) = get_letter(&fx.app, &fx.project, Some(&bob), &mail).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, eml(&mail, "m"));
+    let (hidden_status, hidden_headers, hidden_body) =
+        get_letter(&fx.app, &fx.project, Some(&carol), &mail).await;
+    let (unknown_status, unknown_headers, unknown_body) =
+        get_letter(&fx.app, &fx.project, Some(&carol), &traveling(999)).await;
+    assert_eq!(hidden_status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown_status, StatusCode::NOT_FOUND);
+    assert_eq!(hidden_body, unknown_body);
+    assert_eq!(hidden_headers, unknown_headers);
+    for private in [&legacy, &unregistered, &upper, &not_local] {
+        let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&carol), private).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{private}");
+    }
+    // Neither the legacy-domain letter nor the wrong-TLD one reaches bob.
+    for private in [&legacy, &unregistered, &not_local] {
+        let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&bob), private).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{private}");
+    }
+    // The shared items are visible to carol.
+    for shared in [&work, &gov, &both] {
+        let (status, _, _) = get_letter(&fx.app, &fx.project, Some(&carol), shared).await;
+        assert_eq!(status, StatusCode::OK, "{shared}");
+    }
 }

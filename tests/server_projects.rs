@@ -11,7 +11,7 @@ use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
 use vivi_server::crypto::StoreCipher;
-use vivi_server::projects::{AppendItem, ProjectError, ProjectStore};
+use vivi_server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -63,6 +63,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// A viewer with no mailspace prefix: sees its own mail and shared items.
+fn viewer(name: &str) -> Viewer<'_> {
+    Viewer { name, prefix: None }
+}
+
+/// A viewer whose registered mailspace prefix is `prefix`.
+fn viewer_at<'a>(name: &'a str, prefix: &'a str) -> Viewer<'a> {
+    Viewer {
+        name,
+        prefix: Some(prefix),
+    }
 }
 
 fn letter(id: &str, from: &str, to: Option<&str>, kind: Option<&str>, raw: Vec<u8>) -> AppendItem {
@@ -132,10 +145,20 @@ fn item_validation_rejects_bad_id_empty_oversize_kind_and_recipient() {
         AppendItem::new(&traveling(1), "hand", to, kind, b"x".to_vec())
     };
     assert!(ok(None, None).is_ok());
-    assert!(ok(Some("Bob.s-1_x"), Some("  WANT ")).is_ok());
+    assert!(ok(Some("Bob.s-1_x@3f9a1c7e.local"), Some("  WANT ")).is_ok());
     assert!(ok(Some("postmaster"), Some("mail")).is_ok());
+    assert!(ok(Some("PostMaster"), None).is_ok());
     assert!(ok(None, Some("")).is_ok());
-    for bad_to in ["", "has space", "a@b", &"a".repeat(65)] {
+    // A blank header is no recipient.
+    assert!(ok(Some("  "), None).is_ok());
+    for bad_to in [
+        "has space@x.local",
+        "bob",
+        "a@",
+        "@b",
+        "postmaster, a@x.local",
+        &"a".repeat(65),
+    ] {
         assert!(
             matches!(ok(Some(bad_to), None), Err(ProjectError::BadRequest(_))),
             "to {bad_to:?}"
@@ -215,7 +238,7 @@ fn same_bytes_under_another_id_is_a_duplicate_of_the_original() {
     assert_eq!(alias.message_id, traveling(1));
     assert_eq!(alias.sequence, first.sequence);
     let read = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records.len(), 1, "the alias id was never stored");
 }
@@ -230,7 +253,13 @@ fn same_bytes_from_another_member_do_not_reveal_the_original() {
         .append(
             &cipher(),
             &meta.project_id,
-            &letter(&traveling(1), "alice", Some("bob"), None, bytes.clone()),
+            &letter(
+                &traveling(1),
+                "alice",
+                Some("bob@aaaaaaaa.local"),
+                None,
+                bytes.clone(),
+            ),
         )
         .unwrap();
     // "carol" holds the exact bytes but is neither sender nor recipient. She
@@ -239,14 +268,20 @@ fn same_bytes_from_another_member_do_not_reveal_the_original() {
         .append(
             &cipher(),
             &meta.project_id,
-            &letter(&traveling(9), "carol", Some("carol"), None, bytes),
+            &letter(
+                &traveling(9),
+                "carol",
+                Some("carol@bbbbbbbb.local"),
+                None,
+                bytes,
+            ),
         )
         .unwrap();
     assert!(!probe.duplicate);
     assert_eq!(probe.message_id, traveling(9));
     assert_ne!(probe.sequence, original.sequence);
     let carol = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "carol")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("carol"))
         .unwrap();
     assert_eq!(carol.records.len(), 1);
     assert_eq!(carol.records[0].message_id, traveling(9));
@@ -270,7 +305,7 @@ fn same_id_different_bytes_is_refused_and_writes_nothing() {
         .count();
     assert_eq!(blobs, 1, "the refused letter left no blob");
     let read = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records.len(), 1);
     assert_eq!(read.records[0].raw_eml, eml(&id, "original body"));
@@ -286,12 +321,12 @@ fn read_returns_suffix_with_exact_bytes_and_envelope() {
         let mut raw = eml(&id, &format!("body-{n}"));
         // Non-UTF-8 bytes and CRLF must survive untouched.
         raw.extend_from_slice(b"\r\n\xff\xfe\x00");
-        let item = letter(&id, "hand", Some("bob"), Some("need"), raw);
+        let item = letter(&id, "hand", Some("bob@aaaaaaaa.local"), Some("need"), raw);
         store.append(&cipher(), &meta.project_id, &item).unwrap();
     }
 
     let all = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(
         all.records.iter().map(|r| r.sequence).collect::<Vec<_>>(),
@@ -300,14 +335,14 @@ fn read_returns_suffix_with_exact_bytes_and_envelope() {
     let second = &all.records[1];
     assert_eq!(second.message_id, traveling(11));
     assert_eq!(second.from, "hand");
-    assert_eq!(second.to.as_deref(), Some("bob"));
+    assert_eq!(second.to.as_deref(), Some("bob@aaaaaaaa.local"));
     assert_eq!(second.kind.as_deref(), Some("need"));
     assert!(second.raw_eml.ends_with(b"\r\n\xff\xfe\x00"));
     assert_eq!(second.content_sha256, sha256_hex(&second.raw_eml));
     assert_eq!(all.next_cursor, 3);
 
     let suffix = store
-        .read_after_scoped(&cipher(), &meta.project_id, 1, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 1, &viewer("hand"))
         .unwrap();
     assert_eq!(
         suffix
@@ -342,7 +377,7 @@ fn sequence_stays_monotonic_after_close_and_reopen() {
     assert!(replay.duplicate);
     assert_eq!(replay.sequence, 1);
     let read = reopened
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records[0].raw_eml, eml(&traveling(5), "one"));
 }
@@ -376,7 +411,7 @@ fn orphan_blob_without_index_row_converges_on_replay() {
             .is_file()
     );
     let hidden = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(hidden.records.len(), 1, "no row, so not served");
 
@@ -385,7 +420,7 @@ fn orphan_blob_without_index_row_converges_on_replay() {
     assert_eq!(replay.sequence, 2);
     assert_eq!(replay.content_sha256, outcome.content_sha256);
     let read = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records.len(), 2);
     assert_eq!(
@@ -409,7 +444,7 @@ fn missing_blob_fails_the_read() {
     let letters = project_dir(&data_dir, &meta.project_id).join("letters");
     std::fs::remove_file(letters.join(format!("{}.sealed", second.content_sha256))).unwrap();
     let err = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap_err();
     assert!(matches!(err, ProjectError::Storage(_)), "got {err:?}");
 }
@@ -434,7 +469,7 @@ fn swapped_blob_fails_the_hash_check() {
     )
     .unwrap();
     let err = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
         .unwrap_err();
     assert!(matches!(err, ProjectError::Storage(_)), "got {err:?}");
 }
@@ -454,7 +489,7 @@ fn read_order_follows_append_order_not_id_order() {
         .append(&cipher, &meta.project_id, &need(&traveling(1), "second in"))
         .unwrap();
     let read = store
-        .read_after_scoped(&cipher, &meta.project_id, 0, "hand")
+        .read_after_scoped(&cipher, &meta.project_id, 0, &viewer("hand"))
         .unwrap();
     let ids: Vec<&str> = read.records.iter().map(|r| r.message_id.as_str()).collect();
     assert_eq!(ids, vec![traveling(2), traveling(1)]);
@@ -480,7 +515,7 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
     let first = letter(
         &traveling(20),
         "alice",
-        Some("bob"),
+        Some("bob@aaaaaaaa.local"),
         None,
         eml(&traveling(20), "for bob only"),
     );
@@ -502,22 +537,22 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
     let second = letter(
         &traveling(23),
         "alice",
-        Some("bob"),
+        Some("bob@aaaaaaaa.local"),
         Some("mail"),
         eml(&traveling(23), "again for bob"),
     );
     store.append(&cipher, &meta.project_id, &second).unwrap();
 
-    let ids = |viewer: &str, since: u64| {
+    let ids = |viewer: Viewer<'_>, since: u64| {
         let page = store
-            .read_after_scoped(&cipher, &meta.project_id, since, viewer)
+            .read_after_scoped(&cipher, &meta.project_id, since, &viewer)
             .unwrap();
         let ids: Vec<String> = page.records.iter().map(|r| r.message_id.clone()).collect();
         (ids, page.next_cursor)
     };
 
     // The recipient sees the mail addressed to them plus all shared items.
-    let (bob_ids, bob_cursor) = ids("bob", 0);
+    let (bob_ids, bob_cursor) = ids(viewer_at("bob", "aaaaaaaa"), 0);
     assert_eq!(
         bob_ids,
         vec![traveling(20), traveling(21), traveling(22), traveling(23)]
@@ -526,16 +561,16 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
 
     // A bystander sees the work item and governance mail but neither
     // private mail; the cursor reflects returned records only (3, not 4).
-    let (carol_ids, carol_cursor) = ids("carol", 0);
+    let (carol_ids, carol_cursor) = ids(viewer_at("carol", "bbbbbbbb"), 0);
     assert_eq!(carol_ids, vec![traveling(21), traveling(22)]);
     assert_eq!(carol_cursor, 3);
 
     // The sender still sees their own sent mail.
-    assert_eq!(ids("alice", 0).0.len(), 4);
+    assert_eq!(ids(viewer("alice"), 0).0.len(), 4);
 
     // Resuming after the last returned record: the remaining letter is
     // hidden from carol, so the result is empty and the cursor stays put.
-    let (tail, tail_cursor) = ids("carol", 3);
+    let (tail, tail_cursor) = ids(viewer_at("carol", "bbbbbbbb"), 3);
     assert!(tail.is_empty());
     assert_eq!(tail_cursor, 3);
 }
@@ -550,7 +585,7 @@ fn invisible_letters_are_not_unsealed() {
     let private = letter(
         &traveling(1),
         "alice",
-        Some("bob"),
+        Some("bob@aaaaaaaa.local"),
         None,
         eml(&traveling(1), "private"),
     );
@@ -563,12 +598,17 @@ fn invisible_letters_are_not_unsealed() {
     )
     .unwrap();
     let carol = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, "carol")
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("carol"))
         .unwrap();
     assert!(carol.records.is_empty());
     assert!(
         store
-            .read_after_scoped(&cipher(), &meta.project_id, 0, "bob")
+            .read_after_scoped(
+                &cipher(),
+                &meta.project_id,
+                0,
+                &viewer_at("bob", "aaaaaaaa")
+            )
             .is_err()
     );
 }

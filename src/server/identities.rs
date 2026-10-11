@@ -16,6 +16,19 @@ use crate::auth::{
 
 pub const MAX_IDENTITY_LEN: usize = 64;
 
+/// Length of a mailspace id prefix: the domain part of its addresses
+/// (phase-03 item 11).
+pub const MAILSPACE_PREFIX_LEN: usize = 8;
+
+/// True for a canonical mailspace id: lowercase hyphenated 8-4-4-4-12 hex.
+pub fn valid_mailspace_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => matches!(b, b'0'..=b'9' | b'a'..=b'f'),
+        })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenRecord {
     pub digest: String,
@@ -30,6 +43,20 @@ pub struct IdentityRecord {
     /// registered the name. Raw tokens are never persisted.
     pub spki_der: String,
     pub tokens: Vec<TokenRecord>,
+    /// The one mailspace this identity registered (canonical UUID). Absent
+    /// on identities registered before addresses; such an identity has no
+    /// prefix and cannot receive mail by prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailspace_id: Option<String>,
+}
+
+impl IdentityRecord {
+    /// The address domain prefix bound to this identity, when it has one.
+    pub fn mailspace_prefix(&self) -> Option<&str> {
+        self.mailspace_id
+            .as_deref()
+            .and_then(|id| id.get(..MAILSPACE_PREFIX_LEN))
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -41,8 +68,12 @@ pub struct IdentitiesFile {
 pub enum RegisterError {
     InvalidKey,
     InvalidName,
+    /// `mailspace_id` is not a canonical lowercase hyphenated UUID.
+    InvalidMailspaceId,
     NameTaken,
     ReservedName,
+    /// Another identity in the project already holds the id's prefix.
+    PrefixTaken,
     Storage(String),
 }
 
@@ -59,6 +90,8 @@ pub enum RefreshError {
 pub struct IdentitySummary {
     pub name: String,
     pub fingerprint: String,
+    /// Null for an identity registered before addresses.
+    pub mailspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +100,7 @@ pub struct RegisterOutcome {
     pub token: String,
     pub expires_at: String,
     pub fingerprint: String,
+    pub mailspace_id: String,
 }
 
 #[derive(Clone)]
@@ -163,18 +197,32 @@ impl IdentityRegistry {
     /// Bind a flat identity name to an ED25519 key: parse the PEM, store the
     /// key fingerprint and canonical SPKI hex, and mint a bearer token bound
     /// to the identity (raw form returned once; only its digest is stored).
+    /// The identity also binds `mailspace_id`; its prefix must be unused by
+    /// every other identity in the project (the name is checked first).
     pub fn register(
         &self,
         project_id: &str,
         name: &str,
         public_key_pem: &str,
+        mailspace_id: &str,
     ) -> Result<RegisterOutcome, RegisterError> {
         let _guard = self.lock();
+        if !valid_mailspace_id(mailspace_id) {
+            return Err(RegisterError::InvalidMailspaceId);
+        }
         let key = parse_verifying_key(public_key_pem).map_err(|_| RegisterError::InvalidKey)?;
         let fingerprint = key_fingerprint(&key).map_err(|_| RegisterError::InvalidKey)?;
         let spki_der = canonical_spki_hex(&key).map_err(|_| RegisterError::InvalidKey)?;
         let mut file = self.load(project_id);
         let name = validate_name(name, &file.identities)?;
+        let prefix = &mailspace_id[..MAILSPACE_PREFIX_LEN];
+        if file
+            .identities
+            .iter()
+            .any(|i| i.mailspace_prefix() == Some(prefix))
+        {
+            return Err(RegisterError::PrefixTaken);
+        }
         let (token, record) = self.mint_record()?;
         let expires_at = record.expires_at.clone();
         file.identities.push(IdentityRecord {
@@ -182,6 +230,7 @@ impl IdentityRegistry {
             fingerprint: fingerprint.clone(),
             spki_der,
             tokens: vec![record],
+            mailspace_id: Some(mailspace_id.to_owned()),
         });
         self.save(project_id, &file)
             .map_err(RegisterError::Storage)?;
@@ -190,6 +239,7 @@ impl IdentityRegistry {
             token,
             expires_at,
             fingerprint,
+            mailspace_id: mailspace_id.to_owned(),
         })
     }
 
@@ -241,6 +291,7 @@ impl IdentityRegistry {
             .map(|identity| IdentitySummary {
                 name: identity.name,
                 fingerprint: identity.fingerprint,
+                mailspace_id: identity.mailspace_id,
             })
             .collect();
         identities.sort_by(|a, b| a.name.cmp(&b.name));
