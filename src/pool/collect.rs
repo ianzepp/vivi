@@ -33,9 +33,9 @@ const SECTION_RECEIPT: &str = "@@vivi-pool receipt";
 const SECTION_STDERR: &str = "@@vivi-pool stderr";
 const SECTION_LOG: &str = "@@vivi-pool log";
 
-/// Runs inside the slot. Prints nothing until the job's result exists, then
+/// Runs inside the slot (`WORK` names its root where that is not `/work`). Prints nothing until the job's result exists, then
 /// the result, the receipt, and the log tails, each under a marker line.
-pub const COLLECT_SCRIPT: &str = r#"J=/work/job
+pub const COLLECT_SCRIPT: &str = r#"J="${WORK:-/work}/job"
 [ -f "$J/result" ] || exit 0
 echo '@@vivi-pool result'; cat "$J/result"
 echo '@@vivi-pool receipt'; head -c 65536 "$J/agent.out" 2>/dev/null; echo

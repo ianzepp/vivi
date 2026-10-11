@@ -15,8 +15,8 @@
 //! claims a slot atomically (see [`claim`]), delivers one job archive, and is
 //! recorded on the task (see [`record`]); `wait` and `reconcile` collect the
 //! result and free the slot (see [`collect`]). The provider sits behind
-//! [`provider::PoolProvider`] so tests use a fake; `fly` and `docker` are the
-//! two machine hosts (see [`open_provider`]). `vivi pool doctor --test`
+//! [`provider::PoolProvider`] so tests use a fake; `fly`, `docker` and `ssh` are the
+//! three machine hosts (see [`open_provider`]). `vivi pool doctor --test`
 //! runs a live exercise of all of this (see [`selftest`]).
 
 pub mod bootscript;
@@ -51,6 +51,11 @@ pub mod selftest_source;
 pub mod selftest_steps;
 pub mod selftest_world;
 pub mod slot;
+pub mod ssh;
+pub mod ssh_cli;
+pub mod ssh_doctor;
+pub mod ssh_script;
+pub mod ssh_state;
 pub mod work;
 
 pub use config::{PoolCommitter, PoolConfig, PoolGithub, PoolHarness};
@@ -60,12 +65,12 @@ pub use provider::PoolProvider;
 /// mailspace's own name (the default pool name, and with it the default Fly app).
 #[must_use]
 pub fn open_provider(config: &PoolConfig, mailspace_name: &str) -> Box<dyn PoolProvider> {
-    if config.provider == "docker" {
-        Box::new(docker::DockerProvider::new(config))
-    } else {
-        Box::new(fly::FlyctlProvider::new(
+    match config.provider.as_str() {
+        "docker" => Box::new(docker::DockerProvider::new(config)),
+        "ssh" => Box::new(ssh::SshProvider::new(config)),
+        _ => Box::new(fly::FlyctlProvider::new(
             &config.app_name(mailspace_name),
             &config.fly,
-        ))
+        )),
     }
 }

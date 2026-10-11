@@ -141,6 +141,17 @@ pub trait PoolProvider {
     /// cannot. The boot script then skips its own mount.
     fn supplies_build_mount(&self) -> bool;
 
+    /// True when the build directory is a plain directory that keeps its
+    /// contents between boots (a slot that is a directory on a host). The
+    /// boot script then mounts no memory disk and neither packs nor restores
+    /// the build output: a seeded slot simply keeps its warm build.
+    fn build_persists(&self) -> bool;
+
+    /// True when the slot's scripts run as an ordinary user on a host they do
+    /// not own. They then create no user, install nothing, mount nothing and
+    /// change no ownership; a missing tool is a failure to report.
+    fn runs_unprivileged(&self) -> bool;
+
     /// All machines of the pool's home, pool members or not.
     ///
     /// # Errors

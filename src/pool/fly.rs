@@ -106,6 +106,14 @@ impl PoolProvider for FlyctlProvider {
         false
     }
 
+    fn build_persists(&self) -> bool {
+        false
+    }
+
+    fn runs_unprivileged(&self) -> bool {
+        false
+    }
+
     /// A stopped machine's disk is only reachable by starting it.
     fn read_stopped(
         &self,

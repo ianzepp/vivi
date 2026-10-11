@@ -35,8 +35,8 @@ pub struct PoolDoctorCommand {
     pub porcelain: bool,
 
     /// Also run a live test of the provider and of Vivi's pool machinery:
-    /// creates two small throwaway slots (billable on Fly, free on Docker, for
-    /// a few minutes), runs stand-in jobs against an embedded source tree, and
+    /// creates two small throwaway slots (billable on Fly, free on Docker
+    /// and SSH, for a few minutes), runs stand-in jobs against an embedded source tree, and
     /// destroys them
     #[arg(long)]
     pub test: bool,

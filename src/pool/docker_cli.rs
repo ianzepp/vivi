@@ -107,37 +107,50 @@ impl Runner for DockerCli {
         stdin: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<RunOutput, VivariumError> {
-        let mut child = self.spawn(args, stdin.is_some())?;
-        let feeder = child
-            .stdin
-            .take()
-            .zip(stdin.map(<[u8]>::to_vec))
-            .map(|(mut pipe, bytes)| {
-                std::thread::spawn(move || {
-                    // A child that exits early closes the pipe; its exit code
-                    // and stderr already say why.
-                    pipe.write_all(&bytes).map(drop).unwrap_or_default();
-                })
-            });
-        let out = drain(child.stdout.take());
-        let err = drain(child.stderr.take());
-        let status = wait_within(&mut child, timeout, args)?;
-        if let Some(feeder) = feeder {
-            feeder.join().map(drop).unwrap_or_default();
-        }
-        Ok(RunOutput {
-            code: status.code().unwrap_or(-1),
-            stdout: out.join().unwrap_or_default(),
-            stderr: String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned(),
-        })
+        let child = self.spawn(args, stdin.is_some())?;
+        let label = format!("docker {}", args.first().map_or("", String::as_str));
+        finish(child, stdin, timeout, &label)
     }
+}
+
+/// Feed `stdin` to a spawned child, collect its output, and wait for it,
+/// killing it when `timeout` passes. `label` names the call in the timeout
+/// error. Shared by every command-line provider.
+pub(super) fn finish(
+    mut child: Child,
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+    label: &str,
+) -> Result<RunOutput, VivariumError> {
+    let feeder = child
+        .stdin
+        .take()
+        .zip(stdin.map(<[u8]>::to_vec))
+        .map(|(mut pipe, bytes)| {
+            std::thread::spawn(move || {
+                // A child that exits early closes the pipe; its exit code
+                // and stderr already say why.
+                pipe.write_all(&bytes).map(drop).unwrap_or_default();
+            })
+        });
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+    let status = wait_within(&mut child, timeout, label)?;
+    if let Some(feeder) = feeder {
+        feeder.join().map(drop).unwrap_or_default();
+    }
+    Ok(RunOutput {
+        code: status.code().unwrap_or(-1),
+        stdout: out.join().unwrap_or_default(),
+        stderr: String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned(),
+    })
 }
 
 /// Wait for the child, killing it when `timeout` passes.
 fn wait_within(
     child: &mut Child,
     timeout: Duration,
-    args: &[String],
+    label: &str,
 ) -> Result<ExitStatus, VivariumError> {
     let started = Instant::now();
     loop {
@@ -151,13 +164,12 @@ fn wait_within(
                     .map(drop)
                     .unwrap_or_default();
                 return Err(VivariumError::Message(format!(
-                    "`docker {}` did not finish within {}s",
-                    args.first().map_or("", String::as_str),
+                    "`{label}` did not finish within {}s",
                     timeout.as_secs()
                 )));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(15)),
-            Err(e) => return Err(VivariumError::Message(format!("docker wait failed: {e}"))),
+            Err(e) => return Err(VivariumError::Message(format!("{label} wait failed: {e}"))),
         }
     }
 }

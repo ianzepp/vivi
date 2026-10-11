@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::VivariumError;
 
 /// Machine hosts the pool can run on.
-pub const PROVIDERS: [&str; 2] = ["fly", "docker"];
+pub const PROVIDERS: [&str; 3] = ["fly", "docker", "ssh"];
 const DEFAULT_PROVIDER: &str = "fly";
 const DEFAULT_REGION: &str = "iad";
 const DEFAULT_ORGANIZATION: &str = "personal";
@@ -21,24 +21,29 @@ const DEFAULT_MEMORY_MB: u32 = 32768;
 const DEFAULT_TMPFS: &str = "16g";
 const DEFAULT_DOCKER_MEMORY: &str = "4g";
 const DEFAULT_DOCKER_TMPFS: &str = "2g";
+/// Where an `ssh` pool keeps its slot directories when `root` is not set.
+pub const DEFAULT_SSH_ROOT: &str = "~/vivi-pool";
 
-/// Remote lane pool settings. Machine-host settings live in [`PoolFly`] and
-/// [`PoolDocker`].
+/// Remote lane pool settings. Machine-host settings live in [`PoolFly`],
+/// [`PoolDocker`] and [`PoolSsh`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
     /// Pool name; defaults to the mailspace name. Marks the pool's machines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Machine host: `fly` or `docker`.
+    /// Machine host: `fly`, `docker` or `ssh`.
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Source repository, `owner/name`.
     pub repo: String,
     /// Maximum pool size.
     pub slots: u32,
-    /// Container image the machines run.
+    /// Container image the machines run. Required by `fly` and `docker`;
+    /// the `ssh` provider has no image, so it must be left out there.
+    #[serde(default)]
     pub image: String,
-    /// Shell commands run once as root at seed time, before the checkout.
+    /// Shell commands run once at seed time, before the checkout: as root on
+    /// `fly` and `docker`, as the login user on `ssh`.
     #[serde(default)]
     pub setup: Vec<String>,
     /// Shell commands run in the checkout at seed time to warm the build output.
@@ -52,6 +57,9 @@ pub struct PoolConfig {
     /// Settings that belong to the `docker` machine host.
     #[serde(default)]
     pub docker: PoolDocker,
+    /// Settings that belong to the `ssh` machine host.
+    #[serde(default)]
+    pub ssh: PoolSsh,
     /// GitHub App used to mint the fetch token.
     pub github: PoolGithub,
     /// Agent harness description; `dispatch` needs it.
@@ -156,6 +164,30 @@ impl Default for PoolDocker {
     }
 }
 
+/// The `[pool.ssh]` table: the settings only the `ssh` machine host has. A
+/// slot is a directory on that host and the agent runs as the login user.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PoolSsh {
+    /// What `ssh` is given to reach the host: `user@server`, or a `Host`
+    /// alias from `~/.ssh/config`. Required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Directory on the host that holds the pools: `<root>/<pool>/slot-<n>/`.
+    /// `~/` means the login user's home. Default: `~/vivi-pool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, toml::Value>,
+}
+
+impl PoolSsh {
+    /// The slot root as configured, or the default.
+    #[must_use]
+    pub fn root_or_default(&self) -> &str {
+        self.root.as_deref().unwrap_or(DEFAULT_SSH_ROOT)
+    }
+}
+
 impl PoolFly {
     /// The organization a new application is created in.
     #[must_use]
@@ -256,10 +288,11 @@ impl PoolConfig {
     /// Size of the memory disk over the build output, from the active host.
     #[must_use]
     pub fn tmpfs_size(&self) -> &str {
-        if self.provider == "docker" {
-            &self.docker.tmpfs
-        } else {
-            &self.fly.tmpfs
+        match self.provider.as_str() {
+            "docker" => &self.docker.tmpfs,
+            // A directory on a host has no memory disk.
+            "ssh" => "",
+            _ => &self.fly.tmpfs,
         }
     }
 
@@ -309,13 +342,14 @@ impl PoolConfig {
         reject_moved_keys(&self.unknown)?;
         reject_unknown("pool", &self.unknown)?;
         reject_unknown("pool.fly", &self.fly.unknown)?;
-        reject_unknown("pool.docker", &self.docker.unknown)
+        reject_unknown("pool.docker", &self.docker.unknown)?;
+        reject_unknown("pool.ssh", &self.ssh.unknown)
     }
 
     fn validate_identity(&self, mailspace_name: &str) -> Result<(), VivariumError> {
         if !PROVIDERS.contains(&self.provider.as_str()) {
             return Err(bad(format!(
-                "provider \"{}\" is not supported (use \"fly\" or \"docker\")",
+                "provider \"{}\" is not supported (use \"fly\", \"docker\" or \"ssh\")",
                 self.provider
             )));
         }
@@ -353,15 +387,29 @@ impl PoolConfig {
         if self.slots == 0 {
             return Err(bad("slots must be at least 1"));
         }
+        self.validate_image()?;
+        match self.provider.as_str() {
+            "docker" => self.docker.validate()?,
+            "ssh" => self.ssh.validate()?,
+            _ => self.validate_fly_machine()?,
+        }
+        validate_build_dir(&self.build_dir)
+    }
+
+    fn validate_image(&self) -> Result<(), VivariumError> {
+        if self.provider == "ssh" {
+            return if self.image.is_empty() {
+                Ok(())
+            } else {
+                Err(bad(
+                    "image does not apply to the ssh provider (a slot is a directory on the host, not a container); remove it",
+                ))
+            };
+        }
         if self.image.trim().is_empty() || self.image.chars().any(char::is_whitespace) {
             return Err(bad("image must be a single word"));
         }
-        if self.provider == "docker" {
-            self.docker.validate()?;
-        } else {
-            self.validate_fly_machine()?;
-        }
-        validate_build_dir(&self.build_dir)
+        Ok(())
     }
 
     fn validate_fly_machine(&self) -> Result<(), VivariumError> {
@@ -417,6 +465,60 @@ impl PoolDocker {
             return Err(bad("docker.cpus must be a positive number"));
         }
         Ok(())
+    }
+}
+
+impl PoolSsh {
+    fn validate(&self) -> Result<(), VivariumError> {
+        let Some(host) = &self.host else {
+            return Err(bad(
+                "ssh.host is required (user@server, or a Host alias from ~/.ssh/config)",
+            ));
+        };
+        check_ssh_host(host).map_err(bad)?;
+        check_ssh_root(self.root_or_default()).map_err(bad)
+    }
+}
+
+/// Check what `ssh` will be given as the host.
+///
+/// # Errors
+/// Returns the reason the host cannot be used.
+pub fn check_ssh_host(host: &str) -> Result<(), String> {
+    let plain = |c: char| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '.' | '_' | '@' | ':' | '-' | '[' | ']' | '%' | '+')
+    };
+    if host.is_empty() || host.starts_with('-') || !host.chars().all(plain) {
+        return Err(
+            "ssh.host must be user@server or a Host alias (letters, digits and . _ @ : - only, not starting with a dash)"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Check the directory that holds an `ssh` pool's slots. It is deleted from,
+/// so it must be an explicit directory of its own: `~/<path>` or an absolute
+/// path, plain characters only, never the home directory or `/` itself.
+///
+/// # Errors
+/// Returns the reason the root cannot be used.
+pub fn check_ssh_root(root: &str) -> Result<(), String> {
+    let rest = root.strip_prefix("~/").or_else(|| root.strip_prefix('/'));
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
+    let parts_ok = |rest: &str| {
+        !rest.is_empty()
+            && rest
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+    };
+    match rest {
+        Some(rest) if root.chars().skip(1).all(plain) && parts_ok(rest) => Ok(()),
+        _ => Err(
+            "ssh.root must be a directory of its own: ~/some/dir or /abs/dir (letters, digits and . _ - / only; no .., not / or the home directory itself)"
+                .to_string(),
+        ),
     }
 }
 

@@ -181,6 +181,14 @@ impl PoolProvider for Fake {
         false
     }
 
+    fn build_persists(&self) -> bool {
+        false
+    }
+
+    fn runs_unprivileged(&self) -> bool {
+        false
+    }
+
     fn env_gap_hint(&self, missing: &[String]) -> String {
         format!("fake hint: set {}", missing.join(", "))
     }

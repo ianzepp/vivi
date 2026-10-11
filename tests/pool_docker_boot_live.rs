@@ -8,7 +8,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use vivi::pool::PoolConfig;
-use vivi::pool::bootscript::{slot_command, slot_env, slot_files};
+use vivi::pool::bootscript::{SlotMode, slot_command, slot_env, slot_files};
 use vivi::pool::docker::DockerProvider;
 use vivi::pool::github::Secret;
 use vivi::pool::provider::{CreateSpec, PoolProvider};
@@ -42,7 +42,15 @@ fn a_booted_slot_consumes_its_secret_file_and_leaves_the_mount_to_the_provider()
     unsafe { std::env::set_var("VIVI_LIVE_PROBE", "probe-value") };
     let config = test_config(&real(), POOL);
     let provider = DockerProvider::new(&config);
-    let mut env = slot_env(&config, &Secret::new(TOKEN.into()), "main", true);
+    let mut env = slot_env(
+        &config,
+        &Secret::new(TOKEN.into()),
+        "main",
+        SlotMode {
+            mounted: true,
+            ..SlotMode::default()
+        },
+    );
     let once = env.remove("GH_TOKEN").unwrap();
     let spec = CreateSpec {
         name: slot::slot_name(POOL, 1),

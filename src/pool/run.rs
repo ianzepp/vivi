@@ -237,7 +237,12 @@ fn slot_spec(
     (token, base): (&Secret, &str),
     provider: &dyn PoolProvider,
 ) -> CreateSpec {
-    let mut env = bootscript::slot_env(config, token, base, provider.supplies_build_mount());
+    let mode = bootscript::SlotMode {
+        mounted: provider.supplies_build_mount(),
+        persists: provider.build_persists(),
+        unprivileged: provider.runs_unprivileged(),
+    };
+    let mut env = bootscript::slot_env(config, token, base, mode);
     let once_env = ONCE_ENV
         .iter()
         .filter_map(|name| Some((name.to_string(), env.remove(*name)?)))

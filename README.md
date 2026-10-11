@@ -524,9 +524,12 @@ vivi cycle intake --project /path/to/project --for mind \
 
 `vivi pool` manages preseeded remote machines so agent work can start in
 seconds against a warm build, and hands a Vivi task to one of them. The pool
-runs on Fly (the default) or on Docker (`provider = "docker"`: containers on the
-local daemon, or on a remote one over SSH); `[pool.fly]` and `[pool.docker]` are
-the host-specific parts of the config.
+runs on Fly (the default), on Docker (`provider = "docker"`: containers on the
+local daemon, or on a remote one over SSH), or, as a minimal form that is not
+the recommended one, on a plain host reachable by SSH (`provider = "ssh"`: each
+slot is a directory and the agent runs there as the login user, with no
+isolation); `[pool.fly]`, `[pool.docker]` and `[pool.ssh]` are the
+host-specific parts of the config.
 
 ```
 vivi pool create [--slots N] [--base <commit>] [--porcelain]   # make the app if missing, create + seed slots, wait until free
@@ -592,7 +595,9 @@ seeded commit.
 `doctor` checks three sides under their own headings: the provider (Fly: `fly`
 installed and logged in, an API token, the app, the harness secrets; Docker: the
 `docker` binary, the daemon, the image, daemon memory against a slot's limit,
-the harness environment names), the
+the harness environment names; SSH: the `ssh` client, a non-interactive login,
+a Linux host with the tools the slots need, the root's writability, free disk
+space, the architecture, the harness environment names), the
 repository (GitHub: `openssl`, the App key, a token, the default branch and its
 protection), and the pool itself (config, slot count, each slot's state and how
 far its seeded base trails the default branch, leaked runners, orphaned
@@ -635,7 +640,9 @@ with a healthy provider; `--long` adds about seven). On Docker it creates two
 containers on your daemon and removes them (about a minute and a half with the
 image present; `--long` adds about seven): it is free, so a local Docker daemon
 is the check to run after any change to the pool code, whichever host the real
-pool uses.
+pool uses. On an SSH host it makes two slot directories under the pool's root
+and removes them (about a minute; `--long` adds about seven); it needs no
+privileges and costs nothing beyond that host's cores and disk.
 
 A slot can only fetch what the remote repository already has, so push the base
 before dispatching. `--model` is resolved by the caller in the harness's own
@@ -652,8 +659,9 @@ has run against its budget (`running 95s of 1800s`). `dispatch` takes the task b
 claims a slot atomically (a Fly machine lease serialises the claim and machine
 metadata is the durable mark; on Docker, creating a claim container named after
 the slot is the claim, because the daemon refuses a second container with the
-same name, and its labels are the mark), delivers the job as one archive, starts the
-slot, records the dispatch on the task, and returns without waiting. The slot
+same name, and its labels are the mark; on SSH, a hard link of a complete file
+inside the slot directory, which fails if the claim exists), delivers the job as
+one archive, starts the slot, records the dispatch on the task, and returns without waiting. The slot
 runs the configured harness as an unprivileged user under a hard time limit,
 commits what changed as the configured bot identity, pushes without force, and
 leaves a result. `wait` and `reconcile` collect it, record the result and the
@@ -667,8 +675,9 @@ error is never reported as "still running". After a collect the slot is
 stopped and confirmed `stopped` before it is freed, and `reconcile` also stops
 a running slot that no task holds.
 
-Slots are discovered from Fly machine metadata (`vivi_pool*`) or Docker
-container labels, marks and claim containers; Vivi keeps no local slot records.
+Slots are discovered from Fly machine metadata (`vivi_pool*`), Docker
+container labels, marks and claim containers, or the marks in each slot
+directory on an SSH host; Vivi keeps no local slot records.
 The Fly app is the pool name (itself the mailspace name) unless `[pool.fly] app`
 is set. Fly app names are unique across all Fly accounts and Vivi does not try
 to make the name unique: if Fly says it is taken, `create` says so and the fix
@@ -680,10 +689,12 @@ Model keys are app secrets on Fly: `create` and `dispatch` list the app's
 secret names, never values, and warn about harness `env` names without one
 (vivi does not set secrets). On Docker the `env` names are copied from the
 environment of the `vivi` process when a slot is created; `create` and `doctor`
-name the ones that are unset. Configure with a `[pool]` table in
+name the ones that are unset. On SSH the `env` names are read from the login
+environment of the remote user when a job runs. Configure with a `[pool]` table in
 `.vivi/mailspace.toml` (repo, slots, image, setup/seed commands, `build_dir`),
-`[pool.fly]` (optional app, organization, region, size, memory, tmpfs) or
-`[pool.docker]` (optional host, memory, cpus, tmpfs),
+`[pool.fly]` (optional app, organization, region, size, memory, tmpfs),
+`[pool.docker]` (optional host, memory, cpus, tmpfs) or `[pool.ssh]` (host,
+optional root),
 `[pool.github]` (App id and key path), `[pool.harness]` with `run`, `models`,
 `env` and `rules`, and `[pool.committer]`; Fly keys left in `[pool]` are
 rejected with a message naming `[pool.fly]`. See `skills/vivi/SKILL.md` for the full table. Nothing in
@@ -734,6 +745,73 @@ its architecture, shown by `status` and `doctor`), so `setup` commands must not
 hard-code an architecture; two mailspaces with the same pool name on one daemon
 share slots, so give them distinct `[pool].name`s. With `git`, `zstd` and `curl`
 already in the image, the pool and `doctor --test` run offline.
+
+#### SSH provider
+
+A minimal supported form, not the recommended one: a host reachable by SSH where
+each slot is a subdirectory and the agent runs as the login user, with whatever
+tools that host already has.
+
+```toml
+[pool]
+provider = "ssh"                # no `image`: setting one is an error
+# ...repo, slots, setup, seed, build_dir as for Fly
+
+[pool.ssh]
+host = "user@server"            # anything `ssh` accepts, including a Host alias
+# root = "~/vivi-pool"          # default; each pool gets <root>/<pool>/slot-<n>/
+```
+
+What the host needs: SSH that works without a prompt (`BatchMode=yes`; a key in
+an agent, a known host key), a POSIX login shell, Linux (`/proc`), and `bash`,
+`git`, `tar`, `setsid`, `timeout`, `sha256sum` and `ps` from the base system.
+Nothing is installed: a missing tool is a `doctor` failure with a hint, not
+something a slot script fixes. `zstd` and `curl` are not needed. `doctor`
+reports the architecture, free disk space (it warns under 5 GiB) and whether
+the root can be created.
+
+What it deliberately lacks. **There is no isolation**: the slot's scripts and the
+agent run as the SSH login user and can read and write whatever that user can,
+start processes, and use that user's credentials and network. There is no image,
+so the host's tools are what a job sees. Slots share the host's cores, memory
+and disk with each other and with everything else on it. `[pool].setup` commands
+run once per slot as the login user, not as root, so they cannot install
+packages. The Git token of a job is removed from the slot as soon as the runner
+has read it, but an agent running as the same user is not kept from anything
+else that user owns. Use Docker or Fly when any of that matters.
+
+How it maps. A slot is `<root>/<pool>/slot-<n>/`; it holds the checkout, the
+build directory, the job directory, the boot log and the marks (one small file
+per mark, in `marks/`). The build directory is a plain directory that persists:
+there is no memory disk and nothing to pack or restore, so a seeded slot keeps
+its warm build between jobs (the job runner's clean spares it even if the
+repository does not ignore it). Starting launches the boot script detached
+(`setsid`, a pid file, no systemd) so it outlives the SSH session; a slot is
+running while that process is alive and carries the slot's tag in its
+environment, and stopping ends everything that carries the tag, so nothing a
+job started survives a stop (a process that scrubs its own environment can
+escape this; the hard time limit and the job's own process group still apply).
+The claim is the hard link of a complete file named `claim`, which fails if it
+exists, so two `vivi` processes on two machines cannot both claim a slot; it
+carries the task and the claim time. A job is one archive copied over SSH into
+the slot; results are read as files over SSH whether or not the slot runs.
+Calls share one SSH connection through a private control socket in the
+temporary directory, removed when `vivi` exits.
+
+`destroy` deletes a slot directory, so it is guarded on the host: the id must be
+`<pool>/slot-<n>`, the root must be a directory of its own (never `/`, empty, or
+the home directory), the slot must be a plain directory (not a link) that really
+lies inside the root, and it must hold Vivi's own mark naming the pool. Anything
+else is refused with a message and nothing is deleted. A root that Vivi created
+is removed when its last slot goes; a root that was already there is left.
+
+The values of the `[pool.harness].env` names never pass through Vivi or the
+mailspace: the job reads them from the remote user's login environment when it
+runs. Put `export NAME=...` in `~/.profile` on the host (a non-interactive login
+does not read `~/.bashrc`); `doctor`, `create` and `dispatch` name the ones the
+host lacks. `cargo test --test pool_ssh_live -- --ignored` (with
+`VIVI_SSH_TEST_HOST`) proves the process handling and the claim against a real
+host.
 
 ### Blocking on local mailspace changes
 

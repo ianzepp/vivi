@@ -411,12 +411,133 @@ fn the_fly_settings_are_not_checked_against_a_docker_pool_and_back() {
 }
 
 #[test]
-fn providers_other_than_fly_and_docker_are_refused_and_both_are_named() {
+fn providers_other_than_the_three_are_refused_and_all_are_named() {
     let mut config = docker();
     config.provider = "podman".into();
     let said = err(&config);
     assert!(
-        said.contains("\"fly\"") && said.contains("\"docker\""),
+        said.contains("\"fly\"") && said.contains("\"docker\"") && said.contains("\"ssh\""),
         "{said}"
     );
+}
+
+const SSH: &str = r#"
+repo = "acme/widgets"
+slots = 2
+build_dir = "target"
+provider = "ssh"
+
+[ssh]
+host = "ci@build-box"
+root = "~/lanes"
+
+[github]
+app_id = 1
+private_key = "k.pem"
+"#;
+
+fn ssh() -> PoolConfig {
+    toml::from_str(SSH).unwrap()
+}
+
+#[test]
+fn an_ssh_table_parses_and_validates_with_no_image() {
+    let config = ssh();
+    config.validate("space").unwrap();
+    assert_eq!(config.ssh.host.as_deref(), Some("ci@build-box"));
+    assert_eq!(config.ssh.root_or_default(), "~/lanes");
+    assert_eq!(config.image, "");
+    assert_eq!(config.tmpfs_size(), "", "a directory has no memory disk");
+}
+
+#[test]
+fn the_ssh_root_defaults_under_the_remote_home() {
+    let mut config = ssh();
+    config.ssh.root = None;
+    config.validate("space").unwrap();
+    assert_eq!(config.ssh.root_or_default(), "~/vivi-pool");
+}
+
+#[test]
+fn an_image_is_refused_for_ssh_and_still_required_elsewhere() {
+    let mut config = ssh();
+    config.image = "debian:12".into();
+    let said = err(&config);
+    assert!(
+        said.contains("image does not apply to the ssh provider"),
+        "{said}"
+    );
+    let mut config = docker();
+    config.image = String::new();
+    assert!(err(&config).contains("image must be a single word"));
+    let mut config = full();
+    config.image = String::new();
+    assert!(err(&config).contains("image must be a single word"));
+}
+
+#[test]
+fn the_ssh_host_is_required_and_cannot_be_an_option() {
+    let mut config = ssh();
+    config.ssh.host = None;
+    assert!(err(&config).contains("ssh.host is required"));
+    for host in [
+        "",
+        "-oProxyCommand=x",
+        "a b",
+        "host;rm",
+        "a\nb",
+        "$(x)",
+        "user@",
+    ] {
+        let mut config = ssh();
+        config.ssh.host = Some(host.to_string());
+        if host == "user@" {
+            // Syntactically plain; `ssh` itself refuses it at connect time.
+            config.validate("space").unwrap();
+            continue;
+        }
+        assert!(err(&config).contains("ssh.host must be"), "{host:?}");
+    }
+    for host in ["pharos", "me@server.example.com", "me@[::1]", "10.0.0.7"] {
+        let mut config = ssh();
+        config.ssh.host = Some(host.to_string());
+        config.validate("space").unwrap();
+    }
+}
+
+#[test]
+fn the_ssh_root_must_be_a_directory_of_its_own() {
+    for root in [
+        "",
+        "/",
+        "~",
+        "~/",
+        "//",
+        "relative/dir",
+        "~/a/../b",
+        "~/./a",
+        "/a//b",
+        "/a/",
+        "~/a b",
+        "~/a;b",
+        "/tmp/$HOME",
+    ] {
+        let mut config = ssh();
+        config.ssh.root = Some(root.to_string());
+        assert!(err(&config).contains("ssh.root must be"), "{root:?}");
+    }
+    for root in ["~/vivi-pool", "/srv/lanes", "/home/me/a.b/c_d-e"] {
+        let mut config = ssh();
+        config.ssh.root = Some(root.to_string());
+        config.validate("space").unwrap();
+    }
+}
+
+#[test]
+fn ssh_tables_are_checked_for_unknown_keys_and_only_for_ssh() {
+    let config: PoolConfig = toml::from_str(&SSH.replace("root = ", "port = 22\nroot = ")).unwrap();
+    assert!(err(&config).contains("unknown field \"port\" in [pool.ssh]"));
+    let mut config = docker();
+    config.ssh.host = Some("-bad".into());
+    config.validate("space").unwrap();
 }

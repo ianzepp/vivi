@@ -335,7 +335,7 @@ fn shell_quote(value: &str) -> String {
 
 /// The files a new slot is created with: the spec's own, and the one-time
 /// secrets as a file the boot script reads and removes.
-fn slot_files(spec: &CreateSpec) -> Vec<(String, Vec<u8>)> {
+pub(super) fn slot_files(spec: &CreateSpec) -> Vec<(String, Vec<u8>)> {
     let mut files: Vec<(String, Vec<u8>)> = spec
         .files
         .iter()
@@ -409,6 +409,14 @@ impl PoolProvider for DockerProvider {
 
     fn supplies_build_mount(&self) -> bool {
         true
+    }
+
+    fn build_persists(&self) -> bool {
+        false
+    }
+
+    fn runs_unprivileged(&self) -> bool {
+        false
     }
 
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
