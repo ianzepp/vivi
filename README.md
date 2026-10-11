@@ -288,7 +288,9 @@ different 8-hex prefix (`mind@9f8e7d6c.local`) names a role in another
 mailspace: `vivi mail send`, `need send`, `task send`, `want send`, and
 `mail reply` accept it next to local roles, write it in the letter's To or Cc,
 keep only the sent copy locally, and print `queued for sync: ...`; `vivi sync`
-carries the letter. A reply to a pulled letter goes to its From with no extra
+carries the letter. `mail deliver` accepts them too. Without a `[sync]` table
+the command prints a note that the letter will not leave this checkout, and with
+one a letter over 64 KiB is refused at compose time. A reply to a pulled letter goes to its From with no extra
 flags. Unknown local roles and other external addresses are rejected. Use the
 existing `compose`, `enqueue send`, and `exec send` flows for human or external
 mail.

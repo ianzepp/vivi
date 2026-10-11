@@ -1,0 +1,219 @@
+use crate::mailspace::{Mailspace, SendRequest};
+use crate::storage::StoredMessageView;
+use crate::sync::SyncConfig;
+
+const REMOTE: &str = "hand@3f9a1c7e.local";
+
+fn space(synced: bool) -> (tempfile::TempDir, Mailspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("mind").unwrap();
+    mailspace.add_identity("hand").unwrap();
+    if synced {
+        mailspace.config.sync = Some(SyncConfig {
+            server: Some("http://sync.test".into()),
+            project: Some("abcde-fghjk-mnpqr-stvwz-23456".into()),
+            name: Some("alice".into()),
+        });
+    }
+    (tmp, mailspace)
+}
+
+fn request(to: &str, body: String) -> SendRequest {
+    SendRequest {
+        from: "mind".into(),
+        to: vec![to.into()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "s".into(),
+        body,
+        role: "inbox".into(),
+        kind: Some("mail".into()),
+        reply_to: None,
+        depends_on: Vec::new(),
+    }
+}
+
+fn rows(mailspace: &Mailspace) -> Vec<StoredMessageView> {
+    mailspace.storage().unwrap().list_messages().unwrap()
+}
+
+fn letter(from: &str, to: &str) -> String {
+    format!(
+        "From: {from}\r\nTo: {to}\r\nSubject: raw\r\nMessage-ID: <raw@audit.local>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\nbody\r\n"
+    )
+}
+
+#[test]
+fn a_letter_over_the_cap_is_refused_at_send_when_sync_is_configured() {
+    let (_tmp, mailspace) = space(true);
+    let body = "x".repeat(70_000);
+
+    for to in ["hand", REMOTE] {
+        let error = mailspace.send(request(to, body.clone())).unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains(" bytes, over the 65536-byte"), "{text}");
+        assert!(text.contains("65536-byte (64 KiB) cap"), "{text}");
+    }
+
+    assert!(rows(&mailspace).is_empty(), "nothing is stored");
+}
+
+#[test]
+fn a_letter_under_the_cap_is_stored_and_so_is_any_size_without_sync() {
+    let (_tmp, synced) = space(true);
+    synced.send(request("hand", "x".repeat(60_000))).unwrap();
+    assert!(!rows(&synced).is_empty());
+
+    let (_tmp, local) = space(false);
+    local.send(request("hand", "x".repeat(70_000))).unwrap();
+    assert!(!rows(&local).is_empty());
+}
+
+#[test]
+fn a_reply_over_the_cap_is_refused_too() {
+    let (_tmp, mailspace) = space(true);
+    let sent = mailspace.send(request("hand", "hi".into())).unwrap();
+    let parent = sent.delivered[0].handle.clone();
+    let before = rows(&mailspace).len();
+
+    let error = mailspace
+        .reply(
+            &parent,
+            "hand",
+            Vec::new(),
+            Vec::new(),
+            None,
+            "y".repeat(70_000),
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("64 KiB"), "{error}");
+    assert_eq!(rows(&mailspace).len(), before);
+}
+
+#[test]
+fn the_queued_line_needs_sync_and_the_note_says_the_letter_stays() {
+    let remote = [REMOTE.to_string()];
+    let (_tmp, synced) = space(true);
+    let (_tmp2, local) = space(false);
+
+    assert_eq!(
+        synced.remote_line(&remote).as_deref(),
+        Some("queued for sync: hand@3f9a1c7e.local")
+    );
+    let note = local.remote_line(&remote).unwrap();
+    assert!(!note.contains("queued for sync"), "{note}");
+    assert!(note.contains("no [sync] is configured"), "{note}");
+    assert!(note.contains("will not leave this checkout"), "{note}");
+    assert_eq!(synced.remote_line(&[]), None);
+    assert_eq!(local.remote_line(&[]), None);
+}
+
+#[test]
+fn deliver_refuses_an_oversize_letter_only_when_sync_is_configured() {
+    let big = format!(
+        "{}{}",
+        letter("mind@local", "hand@local"),
+        "x".repeat(70_000)
+    );
+    let (_tmp, synced) = space(true);
+    let (_tmp2, local) = space(false);
+
+    let error = synced.deliver_raw(big.as_bytes(), "inbox").unwrap_err();
+
+    assert!(error.to_string().contains("64 KiB"), "{error}");
+    assert!(rows(&synced).is_empty());
+    assert_eq!(
+        local
+            .deliver_raw(big.as_bytes(), "inbox")
+            .unwrap()
+            .delivered
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn deliver_classifies_local_and_remote_recipients_like_send() {
+    let (_tmp, mailspace) = space(true);
+    let raw = format!(
+        "{}\r\n",
+        letter("mind@local", &format!("hand@local, {REMOTE}"))
+    );
+
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+
+    assert_eq!(result.remote, [REMOTE]);
+    assert_eq!(result.sent, None);
+    assert_eq!(result.delivered.len(), 1);
+    assert_eq!(result.delivered[0].identity, "hand");
+    let rows = rows(&mailspace);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let stored = mailspace
+        .storage()
+        .unwrap()
+        .read_message(&rows[0].message_id)
+        .unwrap();
+    assert_eq!(stored, raw.as_bytes(), "kept byte for byte");
+}
+
+#[test]
+fn deliver_to_remote_only_keeps_the_senders_copy_for_sync() {
+    let (_tmp, mailspace) = space(true);
+    let raw = letter("mind@local", REMOTE);
+
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+
+    assert!(result.delivered.is_empty());
+    assert_eq!(result.remote, [REMOTE]);
+    let handle = result.sent.unwrap();
+    let rows = rows(&mailspace);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].handle, handle);
+    assert_eq!(rows[0].local_role, "sent");
+    assert_eq!(rows[0].account, "mind");
+}
+
+#[test]
+fn deliver_to_remote_only_needs_a_local_from_and_stores_nothing_otherwise() {
+    let (_tmp, mailspace) = space(true);
+
+    for from in ["stranger@example.com", "mind@3f9a1c7e.local"] {
+        let raw = letter(from, REMOTE);
+        let error = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap_err();
+        assert!(error.to_string().contains("needs a From"), "{error}");
+    }
+    let unknown = letter("mind@local", "ghost@local");
+    let error = mailspace
+        .deliver_raw(unknown.as_bytes(), "inbox")
+        .unwrap_err();
+    assert!(error.to_string().contains("unknown local role"), "{error}");
+    assert!(rows(&mailspace).is_empty());
+}
+
+#[test]
+fn deliver_keeps_an_attachment_letter_byte_for_byte() {
+    let (_tmp, mailspace) = space(true);
+    let raw = format!(
+        "From: mind@{}.local\r\nTo: {REMOTE}\r\nSubject: att\r\nMessage-ID: <att@audit.local>\r\n\
+         Date: Sun, 11 Oct 2026 12:00:00 +0000\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\n\
+         Content-Type: text/plain\r\n\r\nsee file\r\n--b\r\n\
+         Content-Type: application/octet-stream\r\n\
+         Content-Disposition: attachment; filename=\"a.bin\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\nAAECAwQF\r\n--b--\r\n",
+        mailspace.address_prefix()
+    );
+
+    let result = mailspace.deliver_raw(raw.as_bytes(), "inbox").unwrap();
+
+    let id = {
+        let storage = mailspace.storage().unwrap();
+        let handle = result.sent.unwrap();
+        storage.resolve_message_token(&handle).unwrap()
+    };
+    let stored = mailspace.storage().unwrap().read_message(&id).unwrap();
+    assert_eq!(stored, raw.as_bytes());
+}

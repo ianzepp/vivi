@@ -180,7 +180,7 @@ fn a_reply_composed_on_b_with_no_flags_goes_back_to_the_sender_and_threads() {
     assert!(reply.delivered.is_empty(), "nobody here to deliver to");
     assert_eq!(reply.remote, [a.address("mind")]);
     assert_eq!(
-        reply.queued_line().as_deref(),
+        b.mailspace.remote_line(&reply.remote).as_deref(),
         Some(format!("queued for sync: {}", a.address("mind")).as_str())
     );
     let pushed = b.push(&cb);

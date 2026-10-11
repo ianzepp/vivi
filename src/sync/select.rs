@@ -3,13 +3,16 @@
 //! Rows are grouped by `content_id`: one letter, however many local rows
 //! (delivered copies, the sent copy) hold it. A letter is already pushed when
 //! any of its rows is bound to this project. Memos, drafts, trash, and any
-//! kind other than need, task, want, or plain mail never travel.
+//! kind other than need, task, want, or plain mail never travel. A letter the
+//! server or every puller would refuse (over the size cap, or a From that
+//! claims another mailspace) is skipped and reported, not uploaded.
 
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
 use crate::mailspace::effective_kind;
 use crate::storage::{Storage, StoredMessageView, is_traveling_id};
+use crate::sync::filer::forged_from;
 use crate::sync::link;
 use crate::sync::{MAX_LETTER_BYTES, PROVIDER, SyncSettings};
 
@@ -39,6 +42,10 @@ pub enum SkipReason {
     /// An effective kind that does not travel (rule, or an unknown one).
     OtherKind(String),
     TooLarge(u64),
+    /// The From address claims another mailspace's prefix. Every puller
+    /// refuses such a letter, so it is not uploaded. Holds the reason, in
+    /// the words the pull side uses.
+    ForeignFrom(String),
     NotTravelingId(String),
     /// Every sendable row already holds a binding to another remote.
     BoundElsewhere(String),
@@ -51,8 +58,18 @@ impl SkipReason {
     pub fn actionable(&self) -> bool {
         matches!(
             self,
-            Self::TooLarge(_) | Self::NotTravelingId(_) | Self::BoundElsewhere(_)
+            Self::TooLarge(_)
+                | Self::ForeignFrom(_)
+                | Self::NotTravelingId(_)
+                | Self::BoundElsewhere(_)
         )
+    }
+
+    /// Whether the letter can never be delivered as it is: the server would
+    /// refuse it or every puller would. Push reports these as failures.
+    #[must_use]
+    pub fn undeliverable(&self) -> bool {
+        matches!(self, Self::TooLarge(_) | Self::ForeignFrom(_))
     }
 
     #[must_use]
@@ -62,7 +79,8 @@ impl SkipReason {
             Self::Draft => "draft".into(),
             Self::Trash => "trash".into(),
             Self::OtherKind(kind) => format!("kind {kind}"),
-            Self::TooLarge(bytes) => format!("{bytes} bytes, over the 64 KiB cap"),
+            Self::TooLarge(bytes) => format!("{bytes} bytes, over the 64 KiB cap; not uploaded"),
+            Self::ForeignFrom(reason) => format!("{reason}; not uploaded"),
             Self::NotTravelingId(id) => format!("id {id} is not a traveling id"),
             Self::BoundElsewhere(remote) => format!("already bound to {remote}"),
         }
@@ -79,6 +97,45 @@ pub struct Skipped {
 pub struct Selection {
     pub letters: Vec<Letter>,
     pub skipped: Vec<Skipped>,
+}
+
+impl Selection {
+    /// Letters waiting to go: those a push would send, plus those it cannot
+    /// (too large, or a From that claims another mailspace), which stay
+    /// unsent until someone acts.
+    #[must_use]
+    pub fn unsent(&self) -> usize {
+        let stuck = self.skipped.iter().filter(|s| s.reason.undeliverable());
+        self.letters.len() + stuck.count()
+    }
+
+    /// One line counting the actionable skips by reason, or `None` when a
+    /// push would skip nothing it could report.
+    #[must_use]
+    pub fn not_uploaded_line(&self) -> Option<String> {
+        let kinds: [(&str, fn(&SkipReason) -> bool); 4] = [
+            ("too large (over the 64 KiB cap)", |r| {
+                matches!(r, SkipReason::TooLarge(_))
+            }),
+            ("with a From that claims another mailspace", |r| {
+                matches!(r, SkipReason::ForeignFrom(_))
+            }),
+            ("bound to another remote", |r| {
+                matches!(r, SkipReason::BoundElsewhere(_))
+            }),
+            ("without a traveling id", |r| {
+                matches!(r, SkipReason::NotTravelingId(_))
+            }),
+        ];
+        let parts: Vec<String> = kinds
+            .iter()
+            .filter_map(|(what, is)| {
+                let count = self.skipped.iter().filter(|s| is(&s.reason)).count();
+                (count > 0).then(|| format!("{count} {what}"))
+            })
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
 }
 
 /// Choose the letters to push, oldest first.
@@ -100,7 +157,7 @@ pub fn select(storage: &Storage, settings: &SyncSettings) -> Result<Selection, V
         if rows.iter().any(|row| bound_here(row, &settings.project)) {
             continue;
         }
-        match classify(storage, &rows)? {
+        match classify(storage, &rows, settings.address_prefix())? {
             Ok(letter) => selection.letters.push(letter),
             Err(skipped) => selection.skipped.push(skipped),
         }
@@ -129,6 +186,7 @@ fn excluded_role(role: &str) -> Option<SkipReason> {
 fn classify(
     storage: &Storage,
     rows: &[StoredMessageView],
+    own_prefix: &str,
 ) -> Result<Result<Letter, Skipped>, VivariumError> {
     let skip = |row: &StoredMessageView, reason| {
         Ok(Err(Skipped {
@@ -165,6 +223,10 @@ fn classify(
         return skip(row, SkipReason::NotTravelingId(row.message_id.clone()));
     }
     let data = storage.read_message(&row.message_id)?;
+    let headers = link::parse_headers(&data);
+    if let Some(reason) = forged_from(Some(own_prefix), &headers) {
+        return skip(row, SkipReason::ForeignFrom(reason));
+    }
     let events = storage.list_mailspace_events(&row.message_id)?;
     let kind = match effective_kind(&row.local_role, &data, &events).as_deref() {
         None | Some("mail") => "mail".to_string(),
@@ -177,6 +239,6 @@ fn classify(
         content_id: row.content_id.clone(),
         account: row.account.clone(),
         kind,
-        to: link::parse_headers(&data).envelope_to(),
+        to: headers.envelope_to(),
     }))
 }

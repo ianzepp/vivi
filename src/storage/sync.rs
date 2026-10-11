@@ -59,7 +59,8 @@ impl Storage {
     /// Unlike [`Storage::ingest_message`], an existing row is left exactly as
     /// it is. An evicted row (soft-deleted by [`Storage::evict_messages`]) is
     /// restored in place. The optional `event` is appended in the same
-    /// transaction, and only when a row was inserted or restored.
+    /// transaction, and only when a row was inserted: a restore is not a new
+    /// delivery, and the earlier event survives eviction.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if a presented id is malformed, the id
@@ -96,7 +97,10 @@ impl Storage {
                 restore_message_row(&tx, &message_id, &now)?;
             }
             upsert_remote_binding(&tx, &message_id, request.remote.as_ref(), &now)?;
-            if let Some(event) = event {
+            // A restore is not a delivery: the row's first ingest already
+            // logged one, and the log outlives eviction. A second one would
+            // wake a watcher again and claim a role the row has left.
+            if let (Some(event), IngestOutcome::Inserted) = (event, outcome) {
                 let input = delivery_event(event, request, &message_id, &content_id);
                 append_event_tx(&tx, &input, &now)?;
             }

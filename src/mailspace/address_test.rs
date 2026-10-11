@@ -253,10 +253,10 @@ fn a_remote_only_send_writes_one_sent_copy_and_no_delivery() {
 
     assert!(result.delivered.is_empty());
     assert_eq!(result.remote, [REMOTE]);
-    assert_eq!(
-        result.queued_line().as_deref(),
-        Some("queued for sync: mind@3f9a1c7e.local")
-    );
+    let note = mailspace.remote_line(&result.remote).unwrap();
+    assert!(!note.contains("queued for sync"), "{note}");
+    assert!(note.contains("no [sync] is configured"), "{note}");
+    assert!(note.contains(REMOTE), "{note}");
     let storage = mailspace.storage().unwrap();
     let rows = storage.list_messages().unwrap();
     assert_eq!(rows.len(), 1, "{rows:?}");
@@ -288,7 +288,7 @@ fn a_local_only_send_is_unchanged_and_lists_no_remote() {
 
     assert_eq!(result.delivered.len(), 1);
     assert!(result.remote.is_empty());
-    assert!(result.queued_line().is_none());
+    assert!(mailspace.remote_line(&result.remote).is_none());
     assert_eq!(
         mailspace.storage().unwrap().list_messages().unwrap().len(),
         2
@@ -334,6 +334,7 @@ fn pulled_need(mailspace: &Mailspace, to: &str) -> String {
     mailspace
         .deliver_raw(letter.as_bytes(), "needs")
         .unwrap()
+        .delivered
         .remove(0)
         .handle
 }

@@ -956,6 +956,36 @@ fn evicted_items_restore_in_place_with_their_blob_and_local_state() {
 }
 
 #[test]
+fn a_restore_logs_no_second_delivery_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("evict@example.com", "body");
+    let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
+    let event = IngestEvent {
+        command: "sync pull",
+        event_type: "delivered",
+        subject: "subject",
+        note: None,
+    };
+    storage
+        .ingest_if_absent(&request, &raw, Some(&event))
+        .unwrap();
+    storage.evict_messages(&[TRAVELING_ID.to_string()]).unwrap();
+
+    let (outcome, _) = storage
+        .ingest_if_absent(&request, &raw, Some(&event))
+        .unwrap();
+
+    assert_eq!(outcome, IngestOutcome::Restored);
+    let events = storage.list_mailspace_events(TRAVELING_ID).unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "the first ingest's event survives eviction"
+    );
+}
+
+#[test]
 fn a_shared_blob_survives_until_its_last_live_row_is_evicted() {
     let tmp = tempfile::tempdir().unwrap();
     let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
