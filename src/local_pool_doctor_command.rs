@@ -7,6 +7,8 @@ use vivi::mailspace::Mailspace;
 use vivi::pool::doctor::{self, Check, Inputs, Report};
 use vivi::pool::doctor_pool;
 use vivi::pool::doctor_repo;
+use vivi::pool::porcelain;
+use vivi::pool::progress::Progress;
 use vivi::pool::selftest::{self, TestOptions};
 use vivi::pool::selftest_world::Timing;
 use vivi::pool::work::{epoch_secs, open_dispatches};
@@ -23,6 +25,8 @@ pub(crate) fn doctor(command: &PoolDoctorCommand) -> Result<(), VivariumError> {
         ));
     };
     let provider = open_provider(&config, &space.config.name);
+    Progress::stderr(command.porcelain, "")
+        .say("checking the provider, the repository and the pool");
     let mut report = doctor::run(&Inputs {
         provider: provider.as_ref(),
         config: &config,
@@ -33,11 +37,23 @@ pub(crate) fn doctor(command: &PoolDoctorCommand) -> Result<(), VivariumError> {
     });
     if command.test {
         let pool = config.pool_name(&space.config.name);
-        let checks = live_test(command.long, &report, &config, &pool, provider.as_ref());
+        let quiet = command.porcelain;
+        let checks = live_test(
+            command.long,
+            quiet,
+            (&report, &config, &pool),
+            provider.as_ref(),
+        );
         report.checks.extend(checks);
     }
     if command.json {
         println!("{}", report.to_json()?);
+    } else if command.porcelain {
+        report
+            .checks
+            .iter()
+            .for_each(|c| println!("{}", porcelain::check(c)));
+        println!("{}", porcelain::summary(&report.counts()));
     } else {
         print!("{}", report.render());
     }
@@ -54,9 +70,8 @@ pub(crate) fn doctor(command: &PoolDoctorCommand) -> Result<(), VivariumError> {
 /// the test never touches the repository.
 fn live_test(
     long: bool,
-    report: &Report,
-    config: &PoolConfig,
-    pool: &str,
+    quiet: bool,
+    (report, config, pool): (&Report, &PoolConfig, &str),
     provider: &dyn PoolProvider,
 ) -> Vec<Check> {
     let config_failed = report.checks.iter().any(|c| {
@@ -69,9 +84,19 @@ fn live_test(
             "not run: the provider or [pool] checks above failed; fix those first",
         )];
     }
-    eprintln!("running the live test: {}", provider.live_test_notice());
+    let say = Progress::stderr(quiet, "");
+    say.say(&format!(
+        "running the live test: {}; expect about {}",
+        provider.live_test_notice(),
+        if long {
+            "10 minutes (the --long step alone is almost 7)"
+        } else {
+            "3 minutes (about 10 with --long)"
+        }
+    ));
     let interrupted = install_interrupt();
     let cancelled = || interrupted.load(Ordering::SeqCst);
+    let detail = Progress::stderr(quiet, "    ");
     selftest::run_test(
         provider,
         config,
@@ -80,7 +105,13 @@ fn live_test(
             long,
             timing: Timing::default(),
             cancelled: &cancelled,
-            progress: &print_progress,
+            progress: &|check| {
+                if !quiet {
+                    print_progress(check);
+                }
+            },
+            starting: &|name| say.say(&format!("  running  {name}")),
+            detail: &detail,
         },
     )
 }

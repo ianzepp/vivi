@@ -5,6 +5,8 @@ use vivi::VivariumError;
 use vivi::cli::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::pool::github;
+use vivi::pool::porcelain;
+use vivi::pool::progress::Progress;
 use vivi::pool::run::{self, CreateOptions, DestroyTarget, SlotOutcome};
 use vivi::pool::slot::SlotStatus;
 use vivi::pool::work as engine;
@@ -47,11 +49,20 @@ pub(crate) fn open_pool_space(
 }
 
 fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
+    let progress = Progress::stderr(command.porcelain, "");
     let (_, config, pool, provider) = open_pool_space(command.project.as_deref())?;
     let provider = provider.as_ref();
+    progress.say("preparing the pool's home");
     let ready = run::prepare_home(provider, &config)?;
     if let Some(made) = &ready.created {
-        println!("{made}");
+        println!(
+            "{}",
+            if command.porcelain {
+                porcelain::home(made)
+            } else {
+                made.clone()
+            }
+        );
     }
     if let Some(warning) = run::env_warning(provider, &ready.missing_env) {
         eprintln!("{warning}");
@@ -61,22 +72,14 @@ fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
         timeout: Duration::from_secs(command.timeout),
         ..CreateOptions::default()
     };
-    let report = run::create_slots(provider, &config, &pool, &options, || {
+    let report = run::create_slots(provider, &config, &pool, &options, &progress, || {
+        progress.say("getting a GitHub token and the base commit");
         let token = github::mint_token(&config)?;
         let base = github::resolve_base(&token, &config.repo, command.base.as_deref())?;
-        println!("seeding at {}", &base[..12.min(base.len())]);
+        progress.say(&format!("seeding at {}", &base[..12.min(base.len())]));
         Ok((token, base))
     })?;
-    if report.created.is_empty() {
-        println!(
-            "pool {pool} already has {} slot(s); nothing to create",
-            report.existing.len()
-        );
-        return Ok(());
-    }
-    for outcome in &report.created {
-        println!("{}", outcome_line(outcome));
-    }
+    print_created(command.porcelain, &pool, &report);
     let failed = report.created.iter().filter(|o| !o.seeded()).count();
     if failed > 0 {
         return Err(VivariumError::Message(format!(
@@ -85,6 +88,35 @@ fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
         )));
     }
     Ok(())
+}
+
+/// The results of `create`: one line per new slot (and per problem met while
+/// waiting, in porcelain), or the note that nothing was missing.
+fn print_created(porcelain: bool, pool: &str, report: &run::CreateReport) {
+    if report.created.is_empty() {
+        if porcelain {
+            println!("{}", porcelain::exists(pool, report.existing.len()));
+        } else {
+            println!(
+                "pool {pool} already has {} slot(s); nothing to create",
+                report.existing.len()
+            );
+        }
+        return;
+    }
+    for outcome in &report.created {
+        if porcelain {
+            println!("{}", porcelain::created(outcome));
+        } else {
+            println!("{}", outcome_line(outcome));
+        }
+    }
+    if porcelain {
+        report
+            .issues
+            .iter()
+            .for_each(|i| println!("{}", porcelain::issue(i)));
+    }
 }
 
 fn outcome_line(outcome: &SlotOutcome) -> String {
@@ -116,6 +148,12 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
             serde_json::to_string_pretty(&slots)
                 .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
         );
+        return Ok(());
+    }
+    if command.porcelain {
+        slots
+            .iter()
+            .for_each(|s| println!("{}", porcelain::slot(s)));
         return Ok(());
     }
     print_slots(&pool, &slots);

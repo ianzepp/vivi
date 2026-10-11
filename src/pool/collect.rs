@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use super::progress::Issue;
 use super::provider::{MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
 use super::slot::{self, META_TASK, SlotStatus};
@@ -425,31 +426,64 @@ pub fn orphan_runners<'a>(slots: &'a [SlotStatus], open: &[OpenDispatch]) -> Vec
 
 /// Remembers which poll errors were already shown, so a long `wait` shows
 /// each new problem once and says when it clears. An error and "still
-/// running" must never look alike.
+/// running" must never look alike. It also keeps every problem it saw, with
+/// when it began and when it cleared, for the `--porcelain` report.
 #[derive(Debug, Default)]
 pub struct ErrorWatch {
-    shown: BTreeMap<String, String>,
+    /// The index in `issues` of each task's current error.
+    live: BTreeMap<String, usize>,
+    issues: Vec<Issue>,
 }
 
 impl ErrorWatch {
-    /// The notices to print for this round: each new or changed error, and
-    /// each task whose polls work again.
-    pub fn observe(&mut self, lines: &[RoundLine]) -> Vec<String> {
+    /// The notices to print for this round (`now` is epoch seconds): each new
+    /// or changed error, and each task whose polls work again.
+    pub fn observe(&mut self, lines: &[RoundLine], now: u64) -> Vec<String> {
         let mut notices = Vec::new();
         for line in lines {
             if line.state == "error" {
-                if self.shown.get(&line.task) != Some(&line.detail) {
+                if self.current(&line.task) != Some(line.detail.as_str()) {
+                    self.clear(&line.task, now);
                     notices.push(format!(
                         "warning: cannot poll {} on {}: {}",
                         line.task, line.slot, line.detail
                     ));
-                    self.shown.insert(line.task.clone(), line.detail.clone());
+                    self.live.insert(line.task.clone(), self.issues.len());
+                    self.issues.push(Issue {
+                        kind: "poll-error",
+                        subject: Some(line.task.clone()),
+                        message: line.detail.clone(),
+                        first_seen: now,
+                        cleared: None,
+                    });
                 }
-            } else if self.shown.remove(&line.task).is_some() {
+            } else if self.clear(&line.task, now) {
                 notices.push(format!("recovered: polling {} works again", line.task));
             }
         }
         notices
+    }
+
+    /// Every problem seen so far, in the order it began.
+    #[must_use]
+    pub fn issues(&self) -> &[Issue] {
+        &self.issues
+    }
+
+    fn current(&self, task: &str) -> Option<&str> {
+        let index = *self.live.get(task)?;
+        Some(self.issues[index].message.as_str())
+    }
+
+    /// Mark the task's current error cleared; true when it had one.
+    fn clear(&mut self, task: &str, now: u64) -> bool {
+        match self.live.remove(task) {
+            Some(index) => {
+                self.issues[index].cleared = Some(now);
+                true
+            }
+            None => false,
+        }
     }
 }
 

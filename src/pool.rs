@@ -41,6 +41,8 @@ pub mod fly_doctor;
 pub mod fly_token;
 pub mod github;
 pub mod job;
+pub mod porcelain;
+pub mod progress;
 pub mod provider;
 pub mod record;
 pub mod run;

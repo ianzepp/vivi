@@ -408,15 +408,62 @@ In-place reseed, other hosts (a plain SSH host is not a host), several named
 pools, and overflow machines do not exist; do not invent them.
 
 ```sh
-vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS]
-vivi pool status [--json]
+vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS] [--porcelain]
+vivi pool status [--json | --porcelain]
 vivi pool destroy (--slot <name-or-id> | --all) --yes
-vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch]
-vivi pool wait [<task>...] [--timeout SECS]
-vivi pool reconcile
-vivi pool doctor [--json]
-vivi pool doctor --test [--long] [--json]
+vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--porcelain]
+vivi pool wait [<task>...] [--timeout SECS] [--porcelain]
+vivi pool reconcile [--porcelain]
+vivi pool doctor [--json | --porcelain]
+vivi pool doctor --test [--long] [--json | --porcelain]
 ```
+
+**Agents: pass `--porcelain` to every pool command you run, especially a
+background `vivi pool wait`.** Output of a background command is read back into
+your context, and the default output of `create`, `wait` and `doctor --test`
+carries progress lines and a heartbeat every 30 seconds meant for a person at a
+terminal. `--porcelain` prints only result lines on standard output (no start
+lines, no heartbeats, no decoration); exit codes are unchanged. `--porcelain`
+with `--json` is a usage error (`--json` stays the full structured detail,
+silent until the end).
+
+Default output (for a person): progress to standard error, results to standard
+output. A line when each step starts (so the last line names what is running),
+the usual line when it finishes, a heartbeat every 30 seconds while waiting
+(`waiting  3f2a on p-slot-2  running 150s of 1800s budget`; for `create`
+`waiting  seeding p-slot-1 120s, p-slot-2 118s (gives up at 900s)`; none for a
+wait under 30 seconds), and `doctor --test` states up front that it takes about
+three minutes (about ten with `--long`).
+
+#### Porcelain line formats
+
+One line per result; fields separated by single spaces, in this order; `-` for
+an absent field; a value that is empty, holds whitespace, a quote or a
+backslash, or is itself `-` is double-quoted with `\"`, `\\`, `\n`, `\r`, `\t`,
+`\u{hex}` escapes; times are epoch seconds.
+
+```
+create     home TEXT                                          only when the app was made
+           created NAME ID STATE SECONDS EXIT OUTCOME ERROR   OUTCOME: seeded|timeout|failed|unmarked
+           exists POOL COUNT                                  nothing to create
+           issue KIND SUBJECT MESSAGE FIRST CLEARED           KIND list-error, SUBJECT -
+status     slot NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED
+dispatch   dispatched TASK SLOT JOB MODEL FROM START BRANCH BUDGET
+wait       collected TASK SLOT STATE DETAIL                   STATE: finished|timeout|lost
+           nothing-open                                       already collected
+           issue KIND SUBJECT MESSAGE FIRST CLEARED           KIND poll-error, SUBJECT the task
+reconcile  reconciled TASK SLOT STATE DETAIL                  STATE: running|finished|timeout|lost|error|stale-claim|orphan-stopped
+           nothing-open                                       no dispatch was open
+doctor     check STATUS GROUP NAME DETAIL FIX MILLIS          STATUS: ok|warn|fail|skipped
+           summary OK WARN FAIL SKIPPED
+```
+
+Examples: `collected 3f2a p-slot-2 finished "pushed work/x 0123456789"`,
+`created p-slot-1 m1 stopped 42 0 seeded -`,
+`issue poll-error 3f2a "Fly unreachable" 1760000000 1760000090` (CLEARED `-`:
+the problem lasted to the end). `wait` and `create` print their `issue` lines
+even when they then fail, so a slow wait explains itself. Warnings (such as
+missing harness environment) stay on standard error.
 
 ### doctor
 
@@ -545,17 +592,12 @@ never claimed.
   GitHub. Default: the repo's default branch tip.
 - `create` does not return until a fresh listing shows each new slot `free`.
 - The Fly app is `[pool.fly].app`, else the pool name (which defaults to the
-  mailspace name) plus a dash and six hex digits derived from the Fly
-  organization (`lanes` in organization `acme` is always `lanes-822b33`; the
-  suffix is the start of the SHA-256 of the organization name). Fly app names
-  are unique across ALL Fly customers, so a bare common name collides. Set
-  `[pool.fly] app` to name it yourself; a pool created before this default
-  existed lives in the app named after the bare pool name, so set `app` to that
-  to keep using it. `create` makes the app when it does not exist, in
-  `[pool.fly].organization` (default `personal`; note that `personal` is the
-  same slug for every account, so for a personal organization the suffix does
-  not tell accounts apart). If Fly says the name is taken, `create` says so and
-  names the line to set (`[pool.fly]` `app = "..."`). Model keys are app secrets:
+  mailspace name); there is no prefix or suffix. Fly app names are unique
+  across ALL Fly accounts and Vivi does not try to make the name unique: if Fly
+  says it is taken, pick another (`[pool] name` or `[pool.fly] app`).
+  `create` makes the app when it does not exist, in
+  `[pool.fly].organization` (default `personal`). If Fly says the name is
+  taken, `create` says so and names the lines to set. Model keys are app secrets:
   `create` and `dispatch` list the app's secret NAMES and warn, naming the
   harness `env` entries with no secret and the command shape
   `fly secrets set -a <app> NAME=<value>`. Vivi never reads or sets a secret
@@ -641,10 +683,10 @@ code: `[pool.docker] host = "ssh://user@server"` is passed to the CLI as
 
 ### Using the pool (orchestrator procedure)
 
-1. `vivi pool doctor`; fix what it names.
+1. `vivi pool doctor --porcelain`; fix what it names.
 2. Push the base commit or branch to the remote.
-3. `vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>]`.
-4. Run `vivi pool wait <task>` in the background.
+3. `vivi pool dispatch --porcelain <task> --model <slug> [--from <ref>] [--branch <name>]`.
+4. Run `vivi pool wait --porcelain <task>` in the background.
 5. When it returns, read the receipt with `vivi task show <task>`.
 6. Integrate the pushed branch.
 7. Delete the remote branch.
@@ -685,7 +727,7 @@ code: `[pool.docker] host = "ssh://user@server"` is passed to the CLI as
 
 - `vivi pool wait [<task>...] [--timeout SECS]` blocks until at least one open
   dispatch (the named ones, or all) has finished, collects each finished one,
-  prints one line per task (`<task> finished <slot> <push outcome>`), and exits
+  prints one line per task (`<task>  <state>  <slot>  <detail>`; with `--porcelain` the `collected` line above), and exits
   0. On timeout (default 3600) it exits nonzero and says nothing finished.
   Run it in the background to be woken.
 - `vivi pool reconcile` handles every open dispatch once: finished ones are
@@ -748,7 +790,7 @@ build_dir = "target"          # required; relative to the repo
 # name = "lanes"              # defaults to the mailspace name; marks the machines
 
 [pool.fly]                    # provider-specific; every key optional
-# app = "my-fly-app"          # default: <pool>-<6 hex of the organization>; created by `pool create` if missing
+# app = "my-fly-app"          # default: the pool name; created by `pool create` if missing; a taken name is for you to change
 # organization = "personal"   # owner of a newly created app; default personal
 # region = "iad"              # default iad
 # size = "performance-8x"     # default

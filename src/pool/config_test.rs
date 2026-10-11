@@ -233,17 +233,20 @@ fn committer_must_be_single_line_text() {
 }
 
 #[test]
-fn app_defaults_to_the_pool_name_with_a_suffix_of_the_organization() {
+fn app_defaults_to_the_pool_name_and_an_explicit_app_wins() {
     let mut config = full();
     config.fly.app = None;
     config.name = None;
     config.validate("My Project").unwrap();
-    assert_eq!(config.app_name("My Project"), "my-project-4a0a33");
-    assert_eq!(config.organization_name(), "personal");
+    assert_eq!(config.app_name("My Project"), "my-project");
     config.name = Some("lanes".into());
-    assert_eq!(config.app_name("My Project"), "lanes-4a0a33");
+    assert_eq!(config.app_name("My Project"), "lanes");
     config.fly.organization = Some("acme".into());
-    assert_eq!(config.app_name("My Project"), "lanes-822b33");
+    assert_eq!(
+        config.app_name("My Project"),
+        "lanes",
+        "the organization is not part of it"
+    );
     config.fly.app = Some("shared".into());
     assert_eq!(
         config.app_name("My Project"),
@@ -251,42 +254,6 @@ fn app_defaults_to_the_pool_name_with_a_suffix_of_the_organization() {
         "an explicit app wins"
     );
     assert_eq!(config.organization_name(), "acme");
-}
-
-#[test]
-fn the_default_app_name_is_stable_per_organization_and_always_a_valid_name() {
-    assert_eq!(
-        default_app_name("lanes", "acme"),
-        default_app_name("lanes", "acme")
-    );
-    assert_ne!(
-        default_app_name("lanes", "acme"),
-        default_app_name("lanes", "other")
-    );
-    assert_ne!(
-        default_app_name("lanes", "acme"),
-        default_app_name("tracks", "acme")
-    );
-    for pool in [
-        "a",
-        "lanes",
-        "a-b-c",
-        &"x".repeat(200),
-        &format!("{}-tail", "y".repeat(56)),
-    ] {
-        let name = default_app_name(pool, "Some Org");
-        assert!(is_slug(&name), "{name}");
-        assert!(name.len() <= 63, "{name}");
-        assert!(!name.contains("--"), "{name}");
-        let suffix = name.rsplit('-').next().unwrap();
-        assert_eq!(suffix.len(), 6);
-        assert!(
-            suffix
-                .chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-        );
-    }
-    assert!(default_app_name(&"x".repeat(200), "o").starts_with(&"x".repeat(56)));
 }
 
 #[test]

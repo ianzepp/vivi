@@ -7,6 +7,7 @@ use std::rc::Rc;
 use super::*;
 use crate::pool::doctor::{Report, Status};
 use crate::pool::fake_provider::{Fake, slot};
+use crate::pool::progress::Progress;
 use crate::pool::slot::META_TASK;
 
 fn real_config() -> PoolConfig {
@@ -140,6 +141,8 @@ fn run_with(fake: &Fake, long: bool, cancelled: &dyn Fn() -> bool) -> Vec<Check>
         timing: Timing::instant(),
         cancelled,
         progress: &|_| {},
+        starting: &|_| {},
+        detail: &Progress::silent(),
     };
     run_test(fake, &real_config(), "p", &options)
 }
@@ -441,4 +444,65 @@ fn the_report_renders_durations_and_json_keeps_them() {
     let json = report.to_json().unwrap();
     assert!(json.contains("\"millis\""));
     assert!(json.contains(PROVIDER_GROUP) && json.contains(VIVI_GROUP));
+}
+
+#[test]
+fn every_step_announces_itself_before_it_runs_and_a_quiet_detail_says_nothing() {
+    let fake = world_fake(false);
+    let started = RefCell::new(Vec::<String>::new());
+    let finished = RefCell::new(Vec::<String>::new());
+    let heard = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = Rc::clone(&heard);
+    let detail = Progress::to(true, move |l| sink.borrow_mut().push(l.to_string()));
+    let options = TestOptions {
+        long: false,
+        timing: Timing::instant(),
+        cancelled: &|| false,
+        progress: &|c| finished.borrow_mut().push(c.name.clone()),
+        starting: &|name| started.borrow_mut().push(name.to_string()),
+        detail: &detail,
+    };
+    run_test(&fake, &real_config(), "p", &options);
+    assert_eq!(
+        started.borrow().first().map(String::as_str),
+        Some("create two slots")
+    );
+    assert_eq!(
+        *started.borrow(),
+        *finished.borrow(),
+        "one start per finish, in order"
+    );
+    assert!(heard.borrow().is_empty(), "a quiet detail drops its lines");
+}
+
+#[test]
+fn the_steps_of_a_wait_say_when_they_start_and_beat_while_they_wait() {
+    let fake = world_fake(false);
+    let heard = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = Rc::clone(&heard);
+    let detail = Progress::to(false, move |l| sink.borrow_mut().push(l.to_string()));
+    let mut timing = Timing::instant();
+    timing.heartbeat = std::time::Duration::ZERO;
+    let options = TestOptions {
+        long: false,
+        timing,
+        cancelled: &|| false,
+        progress: &|_| {},
+        starting: &|_| {},
+        detail: &detail,
+    };
+    run_test(&fake, &real_config(), "p", &options);
+    let lines = heard.borrow();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("creating p-doctor-slot-1")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("waiting for 1 dispatch(es):")),
+        "{lines:?}"
+    );
 }

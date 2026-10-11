@@ -529,15 +529,65 @@ local daemon, or on a remote one over SSH); `[pool.fly]` and `[pool.docker]` are
 the host-specific parts of the config.
 
 ```
-vivi pool create [--slots N] [--base <commit>]   # make the app if missing, create + seed slots, wait until free
-vivi pool status [--json]                        # name, id, state, task, running time of budget, seeded base
+vivi pool create [--slots N] [--base <commit>] [--porcelain]   # make the app if missing, create + seed slots, wait until free
+vivi pool status [--json | --porcelain]          # name, id, state, task, running time of budget, seeded base
 vivi pool destroy (--slot <name> | --all) --yes
-vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>] [--allow-default-branch]
-vivi pool wait [<task>...] [--timeout <secs>]    # block until a dispatch finishes; collect it
-vivi pool reconcile                              # collect finished, stop overdue, free slots
-vivi pool doctor [--json]                        # read-only checks; each finding names its fix
-vivi pool doctor --test [--long] [--json]        # also run a live test of the provider and of Vivi (billable on Fly, free on Docker)
+vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>] [--allow-default-branch] [--porcelain]
+vivi pool wait [<task>...] [--timeout <secs>] [--porcelain]   # block until a dispatch finishes; collect it
+vivi pool reconcile [--porcelain]               # collect finished, stop overdue, free slots
+vivi pool doctor [--json | --porcelain]          # read-only checks; each finding names its fix
+vivi pool doctor --test [--long] [--json | --porcelain]   # also run a live test of the provider and of Vivi (billable on Fly, free on Docker)
 ```
+
+**Progress and `--porcelain`.** The default output is for a person. Progress
+goes to standard error and results stay on standard output. `create`,
+`dispatch`, `wait` and `doctor --test` print a line when each step starts, so
+the last line on screen names what is running (the finish lines are unchanged),
+and a long wait prints a heartbeat every 30 seconds: one short line with what
+is being waited on and how long against the budget or limit, for example
+`waiting  3f2a on p-slot-2  running 150s of 1800s budget`, or for `create`
+`waiting  seeding p-slot-1 120s, p-slot-2 118s (gives up at 900s)`. A wait
+shorter than 30 seconds prints no heartbeat. `doctor --test` says up front that
+it takes about three minutes (about ten with `--long`). `--json` keeps its
+meaning (full detail, silent until the end).
+
+**An orchestrating agent passes `--porcelain` to every pool command it runs**,
+above all to a `wait` it runs in the background: the output of a background
+command is read back into the agent's context, and progress lines there are
+wasted context. `--porcelain` prints no start lines, no heartbeats and no
+decoration: only result lines on standard output, one per result, fixed fields
+separated by single spaces, in the order below. An absent field is `-`. A value
+that is empty, holds whitespace, a quote or a backslash, or is itself `-` is
+double-quoted with `\"`, `\\`, `\n`, `\r`, `\t` and `\u{hex}` escapes. Times are
+epoch seconds. Exit codes are unchanged. `--porcelain` with `--json` is a usage
+error. Warnings (for example missing harness environment) still go to standard
+error.
+
+```
+pool create     home TEXT                                          only when the app was made
+                created NAME ID STATE SECONDS EXIT OUTCOME ERROR   OUTCOME: seeded|timeout|failed|unmarked
+                exists POOL COUNT                                  nothing to create
+                issue KIND SUBJECT MESSAGE FIRST CLEARED           KIND: list-error, SUBJECT: -
+pool status     slot NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED
+pool dispatch   dispatched TASK SLOT JOB MODEL FROM START BRANCH BUDGET
+pool wait       collected TASK SLOT STATE DETAIL                   STATE: finished|timeout|lost
+                nothing-open                                       already collected
+                issue KIND SUBJECT MESSAGE FIRST CLEARED           KIND: poll-error, SUBJECT: the task
+pool reconcile  reconciled TASK SLOT STATE DETAIL                  STATE: running|finished|timeout|lost|error|stale-claim|orphan-stopped
+                nothing-open                                       no dispatch was open
+pool doctor     check STATUS GROUP NAME DETAIL FIX MILLIS          STATUS: ok|warn|fail|skipped
+                summary OK WARN FAIL SKIPPED
+```
+
+Literal examples: `dispatched 3f2a p-slot-1 0123456789ab sonnet main <40-hex> work/x 1800`,
+`collected 3f2a p-slot-2 finished "pushed work/x 0123456789"`,
+`created p-slot-1 m1 stopped 42 0 seeded -`,
+`issue poll-error 3f2a "Fly unreachable" 1760000000 1760000090` (`-` as the last
+field: the problem lasted to the end). `issue` lines are printed by `wait` and
+`create` even when the command then fails, so a caller learns why a wait was
+slow: the kind, the task, the message, when it was first seen and when it
+cleared. In `status`, `RUNNING` and `BUDGET` are seconds, `BASE` is the full
+seeded commit.
 
 `doctor` checks three sides under their own headings: the provider (Fly: `fly`
 installed and logged in, an API token, the app, the harness secrets; Docker: the
@@ -619,12 +669,11 @@ a running slot that no task holds.
 
 Slots are discovered from Fly machine metadata (`vivi_pool*`) or Docker
 container labels, marks and claim containers; Vivi keeps no local slot records.
-The Fly app defaults to the pool name (itself the mailspace name) plus a dash
-and six hex digits derived from the Fly organization, because Fly app names are
-unique across all Fly customers (`[pool.fly] app` overrides it; a pool made
-before this default lives in the app named after the bare pool name, so set
-`app` to that to keep it; if the name is taken, `create` says so and names the
-line to set). `create` makes the app in `[pool.fly].organization` (default
+The Fly app is the pool name (itself the mailspace name) unless `[pool.fly] app`
+is set. Fly app names are unique across all Fly accounts and Vivi does not try
+to make the name unique: if Fly says it is taken, `create` says so and the fix
+is to pick another (`[pool] name` or `[pool.fly] app`).
+`create` makes the app in `[pool.fly].organization` (default
 `personal`) when it does not exist. A job's Git address is `https://github.com/<repo>.git`
 for `[pool].repo = "owner/name"`; slots take it as a full remote address.
 Model keys are app secrets on Fly: `create` and `dispatch` list the app's

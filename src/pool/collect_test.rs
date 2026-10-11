@@ -410,7 +410,7 @@ fn a_provider_that_fails_for_a_while_then_recovers_is_reported_then_collected() 
     let mut finished = false;
     for _ in 0..6 {
         let lines = round(&fake, 1100).unwrap();
-        notices.extend(watch.observe(&lines));
+        notices.extend(watch.observe(&lines, 0));
         if lines.iter().any(RoundLine::settled) {
             finished = true;
             break;
@@ -447,12 +447,16 @@ fn running_line(task: &str) -> RoundLine {
 #[test]
 fn the_same_error_is_shown_once_and_a_changed_one_again() {
     let mut watch = ErrorWatch::default();
-    assert_eq!(watch.observe(&[error_line("t", "403")]).len(), 1);
-    assert!(watch.observe(&[error_line("t", "403")]).is_empty());
-    assert_eq!(watch.observe(&[error_line("t", "timeout")]).len(), 1);
-    assert_eq!(watch.observe(&[running_line("t")]).len(), 1, "recovery");
-    assert!(watch.observe(&[running_line("t")]).is_empty());
-    assert_eq!(watch.observe(&[error_line("t", "403")]).len(), 1, "again");
+    assert_eq!(watch.observe(&[error_line("t", "403")], 0).len(), 1);
+    assert!(watch.observe(&[error_line("t", "403")], 0).is_empty());
+    assert_eq!(watch.observe(&[error_line("t", "timeout")], 0).len(), 1);
+    assert_eq!(watch.observe(&[running_line("t")], 0).len(), 1, "recovery");
+    assert!(watch.observe(&[running_line("t")], 0).is_empty());
+    assert_eq!(
+        watch.observe(&[error_line("t", "403")], 0).len(),
+        1,
+        "again"
+    );
 }
 
 // --- the slot ends stopped and free ---
@@ -603,4 +607,53 @@ fn a_machine_the_provider_no_longer_knows_is_lost_and_closed_not_an_error_foreve
     assert!(lines[0].settled());
     assert_eq!(*seen.borrow(), [("aaaa1111".to_string(), "lost")]);
     assert_eq!(fake.calls_to("start"), 0, "nothing is started to look");
+}
+
+#[test]
+fn the_watch_keeps_each_problem_with_when_it_began_and_cleared() {
+    let mut watch = ErrorWatch::default();
+    watch.observe(&[error_line("t", "403")], 100);
+    watch.observe(&[error_line("t", "403")], 110);
+    watch.observe(&[error_line("t", "timeout")], 120);
+    watch.observe(&[running_line("t")], 150);
+    watch.observe(&[error_line("u", "403")], 160);
+    let seen: Vec<_> = watch
+        .issues()
+        .iter()
+        .map(|i| {
+            (
+                i.kind,
+                i.subject.clone(),
+                i.message.clone(),
+                i.first_seen,
+                i.cleared,
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (
+                "poll-error",
+                Some("t".to_string()),
+                "403".to_string(),
+                100,
+                Some(120)
+            ),
+            (
+                "poll-error",
+                Some("t".to_string()),
+                "timeout".to_string(),
+                120,
+                Some(150)
+            ),
+            (
+                "poll-error",
+                Some("u".to_string()),
+                "403".to_string(),
+                160,
+                None
+            ),
+        ]
+    );
 }

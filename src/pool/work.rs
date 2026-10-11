@@ -12,6 +12,7 @@ use super::collect::{self, Outcome, Pacing, RoundLine};
 use super::dispatch;
 use super::github::Secret;
 use super::job::JobPlan;
+use super::progress::Beat;
 use super::provider::PoolProvider;
 use super::record::{self, DispatchRecord, OpenDispatch};
 use super::run;
@@ -101,8 +102,39 @@ pub struct WaitOptions<'a> {
     /// Pause between rounds.
     pub poll: Duration,
     pub pacing: Pacing,
+    /// How often `notice` gets a heartbeat while nothing has settled.
+    pub heartbeat: Duration,
     /// True once the caller wants to stop waiting (an interrupt).
     pub cancelled: &'a dyn Fn() -> bool,
+}
+
+/// The line that says what a wait is about to do.
+fn start_text(open: &[OpenDispatch], options: &WaitOptions) -> String {
+    let held: Vec<String> = open
+        .iter()
+        .map(|d| format!("{} on {}", d.task, d.record.slot))
+        .collect();
+    format!(
+        "waiting for {} dispatch(es): {} (checks every {}s, gives up after {}s)",
+        open.len(),
+        held.join(", "),
+        options.poll.as_secs(),
+        options.limit.as_secs()
+    )
+}
+
+/// The heartbeat: what is being waited on and for how long, from the latest
+/// round.
+#[must_use]
+pub fn beat_text(lines: &[RoundLine]) -> String {
+    let parts: Vec<String> = lines
+        .iter()
+        .map(|l| match l.state {
+            "error" => format!("{} on {}  cannot poll: {}", l.task, l.slot, l.detail),
+            _ => format!("{} on {}  running {} budget", l.task, l.slot, l.detail),
+        })
+        .collect();
+    format!("waiting  {}", parts.join("; "))
 }
 
 /// What `wait` ended with.
@@ -115,7 +147,9 @@ pub enum Waited {
 }
 
 /// Block until a wanted dispatch settles, collecting it. `wanted` empty means
-/// any open dispatch. `notice` gets each warning once.
+/// any open dispatch. `notice` gets the start line, a heartbeat every
+/// `options.heartbeat`, and each warning once; `watch` keeps every poll error
+/// for the caller, whether or not the wait succeeds.
 ///
 /// # Errors
 /// Returns an error if a named task has no open dispatch, nothing is open,
@@ -126,34 +160,47 @@ pub fn wait(
     provider: &dyn PoolProvider,
     wanted: &[String],
     options: &WaitOptions,
+    watch: &mut collect::ErrorWatch,
     notice: &mut dyn FnMut(&str),
 ) -> Result<Waited, VivariumError> {
     check_wanted(space, wanted)?;
     let started = Instant::now();
+    let mut beat = Beat::new(options.heartbeat);
     let mut last_error = None;
-    let mut watch = collect::ErrorWatch::default();
+    let mut announced = false;
     loop {
         let open = wanted_open(space, wanted)?;
         if open.is_empty() {
             return Ok(Waited::NothingOpen);
         }
+        if !announced {
+            notice(&start_text(&open, options));
+            announced = true;
+        }
         let mut record = recorder(space);
         let pacing = &options.pacing;
         let lines = collect::run_round(provider, &open, epoch_secs(), pacing, &mut record)?;
-        watch.observe(&lines).iter().for_each(|n| notice(n));
+        watch
+            .observe(&lines, epoch_secs())
+            .iter()
+            .for_each(|n| notice(n));
         let settled: Vec<RoundLine> = lines.iter().filter(|l| l.settled()).cloned().collect();
         if !settled.is_empty() {
             return Ok(Waited::Settled(settled));
         }
         last_error = lines
-            .into_iter()
+            .iter()
             .find(|l| l.state == "error")
+            .cloned()
             .or(last_error);
         if (options.cancelled)() {
             return Err(VivariumError::Message("interrupted".into()));
         }
         if started.elapsed() >= options.limit {
             return Err(timeout_error(options.limit.as_secs(), last_error.as_ref()));
+        }
+        if beat.due(started.elapsed()) {
+            notice(&beat_text(&lines));
         }
         std::thread::sleep(options.poll);
     }
@@ -199,8 +246,13 @@ fn check_wanted(space: &Mailspace, wanted: &[String]) -> Result<(), VivariumErro
 /// What one `reconcile` round did.
 #[derive(Debug, Clone, Default)]
 pub struct ReconcileReport {
-    /// Lines for standard output, in order.
+    /// Lines for standard output, in order (`items` as text, then the idle
+    /// note).
     pub out: Vec<String>,
+    /// What the round did, one entry per task or slot, in order.
+    pub items: Vec<RoundLine>,
+    /// True when no dispatch was open.
+    pub idle: bool,
     /// Lines for standard error.
     pub warnings: Vec<String>,
     /// Dispatches that could not be polled, plus slots that could not be freed.
@@ -210,6 +262,11 @@ pub struct ReconcileReport {
 }
 
 impl ReconcileReport {
+    fn add(&mut self, line: RoundLine) {
+        self.out.push(line_text(&line));
+        self.items.push(line);
+    }
+
     /// The error to exit with, when anything went wrong.
     #[must_use]
     pub fn error(&self) -> Option<VivariumError> {
@@ -245,6 +302,7 @@ pub fn reconcile(
     let slots = run::pool_status(provider, pool)?;
     let mut report = ReconcileReport {
         out: lines.iter().map(line_text).collect(),
+        items: lines.clone(),
         failures: lines.iter().filter(|l| l.state == "error").count(),
         first_error: lines
             .iter()
@@ -256,6 +314,7 @@ pub fn reconcile(
     stop_orphans(provider, &slots, &open, pacing, &mut report);
     if lines.is_empty() {
         report.out.push("no open dispatches".into());
+        report.idle = true;
     }
     Ok(report)
 }
@@ -271,10 +330,12 @@ fn free_stale_claims(
     for slot in collect::stale_claims(slots, open, now) {
         let task = slot.task.as_deref().unwrap_or_default();
         match collect::release(provider, &slot.id, task, pacing) {
-            Ok(()) => report.out.push(format!(
-                "{task}  stale-claim  {}  freed (no open dispatch)",
-                slot.name
-            )),
+            Ok(()) => report.add(RoundLine {
+                task: task.to_string(),
+                slot: slot.name.clone(),
+                state: "stale-claim",
+                detail: "freed (no open dispatch)".to_string(),
+            }),
             Err(e) => {
                 report
                     .warnings
@@ -298,10 +359,12 @@ fn stop_orphans(
             .machine(&slot.id)
             .and_then(|m| collect::stop_unclaimed(provider, &m, pacing))
         {
-            Ok(()) => report.out.push(format!(
-                "-  orphan-stopped  {}  stopped (running with no task)",
-                slot.name
-            )),
+            Ok(()) => report.add(RoundLine {
+                task: "-".to_string(),
+                slot: slot.name.clone(),
+                state: "orphan-stopped",
+                detail: "stopped (running with no task)".to_string(),
+            }),
             Err(e) => {
                 report
                     .warnings

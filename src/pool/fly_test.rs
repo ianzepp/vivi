@@ -138,11 +138,11 @@ fn a_taken_app_name_is_said_plainly_with_the_line_to_set() {
     let failed = VivariumError::Message(
         "`fly apps create` failed: Error: Name has already been taken".into(),
     );
-    let said = name_taken("lanes-4a0a33", failed).to_string();
-    assert!(said.contains("\"lanes-4a0a33\" is already taken"), "{said}");
+    let said = name_taken("lanes", failed).to_string();
+    assert!(said.contains("\"lanes\" is already taken"), "{said}");
     assert!(said.contains("unique across all Fly accounts"));
     assert!(
-        said.contains("[pool.fly]") && said.contains("app = "),
+        said.contains("[pool] name") && said.contains("[pool.fly] app"),
         "{said}"
     );
     let other = VivariumError::Message("`fly apps create` failed: not logged in".into());

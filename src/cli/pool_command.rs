@@ -23,10 +23,16 @@ pub enum PoolSubcommand {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PoolDoctorCommand {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+
+    /// Print only result lines in a fixed format, for scripts and agents: no
+    /// progress, no heartbeats (agents: pass this)
+    #[arg(long, conflicts_with = "json")]
+    pub porcelain: bool,
 
     /// Also run a live test of the provider and of Vivi's pool machinery:
     /// creates two small throwaway slots (billable on Fly, free on Docker, for
@@ -70,6 +76,11 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub allow_default_branch: bool,
 
+    /// Print only result lines in a fixed format, for scripts and agents: no
+    /// progress, no heartbeats (agents: pass this)
+    #[arg(long)]
+    pub porcelain: bool,
+
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -84,6 +95,11 @@ pub struct PoolWaitCommand {
     #[arg(long, default_value_t = 3600)]
     pub timeout: u64,
 
+    /// Print only result lines in a fixed format, for scripts and agents: no
+    /// progress, no heartbeats (agents: pass this)
+    #[arg(long)]
+    pub porcelain: bool,
+
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -91,6 +107,11 @@ pub struct PoolWaitCommand {
 
 #[derive(Debug, Args)]
 pub struct PoolReconcileCommand {
+    /// Print only result lines in a fixed format, for scripts and agents: no
+    /// progress, no heartbeats (agents: pass this)
+    #[arg(long)]
+    pub porcelain: bool,
+
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -110,6 +131,11 @@ pub struct PoolCreateCommand {
     #[arg(long, default_value_t = 900)]
     pub timeout: u64,
 
+    /// Print only result lines in a fixed format, for scripts and agents: no
+    /// progress, no heartbeats (agents: pass this)
+    #[arg(long)]
+    pub porcelain: bool,
+
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -120,6 +146,11 @@ pub struct PoolStatusCommand {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+
+    /// Print only result lines in a fixed format, for scripts and agents: no
+    /// progress, no heartbeats (agents: pass this)
+    #[arg(long, conflicts_with = "json")]
+    pub porcelain: bool,
 
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]

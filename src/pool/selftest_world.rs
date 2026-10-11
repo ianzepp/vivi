@@ -8,11 +8,12 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use super::collect::{Pacing, RoundLine};
+use super::collect::{ErrorWatch, Pacing, RoundLine};
 use super::config::PoolConfig;
 use super::dispatch::{self, DispatchFlags};
 use super::github::Secret;
 use super::job;
+use super::progress::{Beat, HEARTBEAT, Progress};
 use super::provider::PoolProvider;
 use super::record::DispatchRecord;
 use super::run::{self, CreateOptions};
@@ -40,7 +41,12 @@ pub struct Timing {
     pub stops_by_itself: Duration,
     /// How long a `wait` that must outlast the provider token runs.
     pub long_wait: Duration,
+    /// How often a waiting step says it is still working.
+    pub heartbeat: Duration,
 }
+
+/// A heartbeat interval no fake-provider test reaches.
+const QUIET: Duration = Duration::from_hours(1);
 
 /// How long the `--long` job sleeps: past the six minutes a provider token
 /// lives.
@@ -61,6 +67,7 @@ impl Default for Timing {
             job: Duration::from_mins(5),
             stops_by_itself: Duration::from_mins(5),
             long_wait: Duration::from_mins(12),
+            heartbeat: HEARTBEAT,
         }
     }
 }
@@ -84,6 +91,7 @@ impl Timing {
                 poll: Duration::ZERO,
                 timeout: limit,
                 confirm_timeout: limit,
+                heartbeat: QUIET,
             },
             poll: tick,
             wait_poll: tick,
@@ -91,6 +99,7 @@ impl Timing {
             job: limit,
             stops_by_itself: limit,
             long_wait: limit,
+            heartbeat: QUIET,
         }
     }
 }
@@ -108,6 +117,8 @@ pub struct World<'a> {
     pub pool: String,
     pub timing: Timing,
     pub cancelled: &'a dyn Fn() -> bool,
+    /// Where the lines of a running step go: its start lines and heartbeats.
+    pub progress: &'a Progress,
     /// Set once cleanup starts, so an interrupt cannot abort the cleanup.
     pub cleaning: bool,
     pub jobs: BTreeMap<&'static str, Job>,
@@ -128,6 +139,7 @@ impl<'a> World<'a> {
         real_pool: &str,
         timing: Timing,
         cancelled: &'a dyn Fn() -> bool,
+        progress: &'a Progress,
     ) -> Result<Self, VivariumError> {
         let dir = tempfile::tempdir()?;
         let mut space = Mailspace::init(Some(dir.path()))?;
@@ -140,6 +152,7 @@ impl<'a> World<'a> {
             pool,
             timing,
             cancelled,
+            progress,
             cleaning: false,
             jobs: BTreeMap::new(),
             space,
@@ -180,6 +193,7 @@ impl<'a> World<'a> {
         mut probe: impl FnMut() -> Result<Option<T>, String>,
     ) -> Result<T, String> {
         let started = Instant::now();
+        let mut beat = Beat::new(self.timing.heartbeat);
         loop {
             if let Some(found) = probe()? {
                 return Ok(found);
@@ -191,6 +205,13 @@ impl<'a> World<'a> {
                 return Err(format!(
                     "timed out after {}s waiting for {what}",
                     started.elapsed().as_secs()
+                ));
+            }
+            if beat.due(started.elapsed()) {
+                self.progress.say(&format!(
+                    "waiting  for {what}  {}s of {}s limit",
+                    started.elapsed().as_secs(),
+                    limit.as_secs()
                 ));
             }
             std::thread::sleep(self.timing.poll);
@@ -290,13 +311,23 @@ impl<'a> World<'a> {
             limit,
             poll: self.timing.wait_poll,
             pacing: self.timing.pacing.clone(),
+            heartbeat: self.timing.heartbeat,
             cancelled: if self.cleaning {
                 &|| false
             } else {
                 self.cancelled
             },
         };
-        match work::wait(&self.space, self.provider, &[task], &options, &mut |_| {}) {
+        let mut say = |line: &str| self.progress.say(line);
+        let mut watch = ErrorWatch::default();
+        match work::wait(
+            &self.space,
+            self.provider,
+            &[task],
+            &options,
+            &mut watch,
+            &mut say,
+        ) {
             Ok(Waited::Settled(mut lines)) => lines
                 .pop()
                 .ok_or_else(|| "wait settled with no line".to_string()),

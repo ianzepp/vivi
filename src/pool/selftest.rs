@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use super::config::PoolConfig;
 use super::doctor::Check;
+use super::progress::Progress;
 use super::provider::PoolProvider;
 use super::run;
 use super::selftest_steps::{self as steps, StepResult};
@@ -33,6 +34,10 @@ pub struct TestOptions<'a> {
     pub cancelled: &'a dyn Fn() -> bool,
     /// Called with each finished step, for progress output.
     pub progress: &'a dyn Fn(&Check),
+    /// Called with the name of each step as it starts.
+    pub starting: &'a dyn Fn(&str),
+    /// Where the start lines and heartbeats inside a step go.
+    pub detail: &'a Progress,
 }
 
 struct Step {
@@ -171,6 +176,7 @@ pub fn run_test(
         real_pool,
         options.timing.clone(),
         options.cancelled,
+        options.detail,
     ) {
         Ok(world) => world,
         Err(e) => {
@@ -200,6 +206,7 @@ pub fn run_test(
             note(Check::skipped(item.group, item.name, reason), &mut checks);
             continue;
         }
+        (options.starting)(item.name);
         let started = Instant::now();
         let result = if !item.always && (options.cancelled)() {
             Err("interrupted before this step ran".to_string())

@@ -7,8 +7,10 @@ use std::time::Duration;
 use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
-use vivi::pool::collect::Pacing;
+use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::dispatch::{self, DispatchFlags};
+use vivi::pool::porcelain;
+use vivi::pool::progress::{HEARTBEAT, Progress};
 use vivi::pool::work::{self, WaitOptions, Waited};
 use vivi::pool::{PoolConfig, github, job, run};
 
@@ -31,6 +33,7 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
 }
 
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
+    let progress = Progress::stderr(command.porcelain, "");
     let (space, config, pool, provider) = open_pool_space(command.project.as_deref())?;
     let task = space.pool_task(&command.task)?;
     if work::open_dispatches(&space)?
@@ -61,11 +64,15 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         rules,
         job_id,
     )?;
+    progress.say("getting a GitHub token");
     let token = github::mint_token(&config)?;
+    progress.say("checking the push target");
     let default = github::default_branch(&token, &config.repo)?;
     dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
     warn_missing_env(provider.as_ref(), &config);
+    progress.say(&format!("resolving {}", plan.refs.from));
     let start = github::resolve_base(&token, &config.repo, Some(&plan.refs.from))?;
+    progress.say("claiming a free slot and starting the job");
     let made = work::submit(
         &space,
         provider.as_ref(),
@@ -75,6 +82,10 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         &start,
         &Pacing::default(),
     )?;
+    if command.porcelain {
+        println!("{}", porcelain::dispatched(&task.handle, &made));
+        return Ok(());
+    }
     println!(
         "dispatched {}  {}  job {}  model {}  from {} ({})  branch {}  budget {}s",
         task.handle,
@@ -100,6 +111,7 @@ fn warn_missing_env(provider: &dyn vivi::pool::PoolProvider, config: &PoolConfig
 }
 
 pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
+    let progress = Progress::stderr(command.porcelain, "");
     let (space, _, _, provider) = open_pool_space(command.project.as_deref())?;
     let wanted = command
         .tasks
@@ -110,24 +122,54 @@ pub(crate) fn wait(command: &PoolWaitCommand) -> Result<(), VivariumError> {
         limit: Duration::from_secs(command.timeout),
         poll: WAIT_POLL,
         pacing: Pacing::default(),
+        heartbeat: HEARTBEAT,
         cancelled: &|| false,
     };
-    let waited = work::wait(&space, provider.as_ref(), &wanted, &options, &mut |n| {
-        eprintln!("{n}");
-    })?;
-    match waited {
-        Waited::NothingOpen => println!("nothing left to wait for (already collected)"),
-        Waited::Settled(lines) => lines
+    let mut watch = ErrorWatch::default();
+    let waited = work::wait(
+        &space,
+        provider.as_ref(),
+        &wanted,
+        &options,
+        &mut watch,
+        &mut |n| progress.say(n),
+    );
+    if command.porcelain {
+        watch
+            .issues()
             .iter()
-            .for_each(|l| println!("{}", work::line_text(l))),
+            .for_each(|i| println!("{}", porcelain::issue(i)));
+    }
+    match waited? {
+        Waited::NothingOpen if command.porcelain => println!("{}", porcelain::nothing_open()),
+        Waited::NothingOpen => println!("nothing left to wait for (already collected)"),
+        Waited::Settled(lines) => lines.iter().for_each(|l| {
+            if command.porcelain {
+                println!("{}", porcelain::collected(l));
+            } else {
+                println!("{}", work::line_text(l));
+            }
+        }),
     }
     Ok(())
 }
 
 pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumError> {
+    let progress = Progress::stderr(command.porcelain, "");
     let (space, _, pool, provider) = open_pool_space(command.project.as_deref())?;
+    progress.say("polling the open dispatches and freeing stale slots");
     let report = work::reconcile(&space, provider.as_ref(), &pool, &Pacing::default())?;
-    report.out.iter().for_each(|l| println!("{l}"));
+    if command.porcelain {
+        report
+            .items
+            .iter()
+            .for_each(|l| println!("{}", porcelain::reconciled(l)));
+        if report.idle {
+            println!("{}", porcelain::nothing_open());
+        }
+    } else {
+        report.out.iter().for_each(|l| println!("{l}"));
+    }
     report.warnings.iter().for_each(|w| eprintln!("{w}"));
     report.error().map_or(Ok(()), Err)
 }

@@ -280,3 +280,67 @@ fn a_docker_pool_reports_a_missing_docker_binary_in_the_doctor_and_the_status() 
         text(&status)
     );
 }
+
+#[test]
+fn porcelain_and_json_together_are_a_usage_error() {
+    for command in ["status", "doctor"] {
+        let out = vivi(["pool", command, "--porcelain", "--json"]);
+        assert_eq!(out.status.code(), Some(2), "{command}");
+        let said = text(&out);
+        assert!(
+            said.contains("--porcelain") && said.contains("--json"),
+            "{said}"
+        );
+    }
+}
+
+#[test]
+fn doctor_porcelain_prints_only_check_and_summary_lines_with_the_same_exit_code() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    setup(project.path());
+    let empty = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .env("PATH", empty.path())
+        .args(["pool", "doctor", "--porcelain", "--project", root])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a failed check still exits nonzero");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() > 2, "{stdout}");
+    for line in &lines[..lines.len() - 1] {
+        assert!(line.starts_with("check "), "{line}");
+    }
+    assert!(lines[lines.len() - 1].starts_with("summary "), "{stdout}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("check fail ") && l.contains(" flyctl ")),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("check(s) failed"), "{stderr}");
+}
+
+#[test]
+fn wait_porcelain_prints_nothing_on_standard_output_when_it_fails() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    setup(project.path());
+    let wait = vivi([
+        "pool",
+        "wait",
+        "--porcelain",
+        "--timeout",
+        "1",
+        "--project",
+        root,
+    ]);
+    assert!(!wait.status.success());
+    assert!(
+        wait.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&wait.stdout)
+    );
+}

@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::error::VivariumError;
 
@@ -22,10 +21,6 @@ const DEFAULT_MEMORY_MB: u32 = 32768;
 const DEFAULT_TMPFS: &str = "16g";
 const DEFAULT_DOCKER_MEMORY: &str = "4g";
 const DEFAULT_DOCKER_TMPFS: &str = "2g";
-/// Longest Fly app name.
-const MAX_APP_NAME: usize = 63;
-/// Hex digits of the organization hash that end a default app name.
-const APP_SUFFIX_LEN: usize = 6;
 
 /// Remote lane pool settings. Machine-host settings live in [`PoolFly`] and
 /// [`PoolDocker`].
@@ -247,13 +242,15 @@ impl PoolConfig {
         mapped.trim_matches('-').to_string()
     }
 
-    /// The Fly application: explicit, else the pool name plus a suffix of
-    /// the organization (see [`default_app_name`]).
+    /// The Fly application: explicit, else the pool name. Fly app names are
+    /// unique across all Fly accounts; Vivi does not try to make the name
+    /// unique, and `create` says plainly when it is taken.
     #[must_use]
     pub fn app_name(&self, mailspace_name: &str) -> String {
-        self.fly.app.clone().unwrap_or_else(|| {
-            default_app_name(&self.pool_name(mailspace_name), self.organization_name())
-        })
+        self.fly
+            .app
+            .clone()
+            .unwrap_or_else(|| self.pool_name(mailspace_name))
     }
 
     /// Size of the memory disk over the build output, from the active host.
@@ -528,24 +525,6 @@ fn is_docker_host(value: &str) -> bool {
         .iter()
         .any(|s| value.strip_prefix(s).is_some_and(|rest| !rest.is_empty()))
         && !value.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-/// The Fly app a pool uses when `[pool.fly] app` is not set: the pool name
-/// and a short stable suffix of the organization, so two Fly accounts that
-/// both call a pool `lanes` do not fight over one name (Fly app names are
-/// unique across all customers). The suffix is six hex digits of the
-/// organization's SHA-256; the pool part is cut so the whole stays a valid
-/// Fly app name.
-#[must_use]
-pub fn default_app_name(pool: &str, organization: &str) -> String {
-    let digest = hex::encode(Sha256::digest(organization.as_bytes()));
-    let room = MAX_APP_NAME - APP_SUFFIX_LEN - 1;
-    let head: String = pool.chars().take(room).collect();
-    format!(
-        "{}-{}",
-        head.trim_end_matches('-'),
-        &digest[..APP_SUFFIX_LEN]
-    )
 }
 
 fn is_tmpfs_size(value: &str) -> bool {

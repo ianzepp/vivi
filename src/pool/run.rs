@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use super::bootscript;
 use super::config::PoolConfig;
 use super::github::Secret;
+use super::progress::{Beat, HEARTBEAT, Issue, Progress};
 use super::provider::{CreateSpec, MachineRecord, PoolProvider};
 use super::record::OpenDispatch;
 use super::slot::{self, META_STATE, STATE_READY, SlotStatus};
@@ -28,6 +29,8 @@ pub struct CreateOptions {
     pub timeout: Duration,
     /// How long to wait for a sealed slot to read `free` in a fresh listing.
     pub confirm_timeout: Duration,
+    /// How often the wait for seeds says it is still working.
+    pub heartbeat: Duration,
 }
 
 impl Default for CreateOptions {
@@ -38,6 +41,7 @@ impl Default for CreateOptions {
             poll: Duration::from_secs(5),
             timeout: Duration::from_mins(15),
             confirm_timeout: Duration::from_secs(30),
+            heartbeat: HEARTBEAT,
         }
     }
 }
@@ -74,12 +78,15 @@ pub struct CreateReport {
     /// Slots the pool already held and left alone.
     pub existing: Vec<SlotStatus>,
     pub created: Vec<SlotOutcome>,
+    /// Problems met while waiting for the seeds (a listing that failed).
+    pub issues: Vec<Issue>,
 }
 
 /// Create the missing slots up to the target and wait for each to seed.
 ///
 /// `seed_inputs` supplies the fetch token and the resolved base commit; it
-/// runs only when there is something to create.
+/// runs only when there is something to create. `progress` gets a line as each
+/// phase starts and a heartbeat while the seeds run.
 ///
 /// # Errors
 /// Returns an error if the target exceeds the configured maximum, or the
@@ -89,6 +96,7 @@ pub fn create_slots(
     config: &PoolConfig,
     pool: &str,
     options: &CreateOptions,
+    progress: &Progress,
     seed_inputs: impl FnOnce() -> Result<(Secret, String), VivariumError>,
 ) -> Result<CreateReport, VivariumError> {
     let target = options.slots.unwrap_or(config.slots);
@@ -98,6 +106,7 @@ pub fn create_slots(
             config.slots
         )));
     }
+    progress.say("checking the pool's existing slots");
     let mut machines = provider.list()?;
     if adopt_finished_seeds(provider, pool, &machines) {
         machines = provider.list()?;
@@ -106,16 +115,19 @@ pub fn create_slots(
     let missing = slot::missing_indices(&existing, target);
     let mut report = CreateReport {
         existing,
-        created: Vec::new(),
+        ..CreateReport::default()
     };
     if missing.is_empty() {
         return Ok(report);
     }
     let (token, base) = seed_inputs()?;
-    let started = launch_all(provider, config, pool, &missing, &token, &base, options)?;
-    report.created = wait_for_seeds(provider, &started, options);
+    let seed = (&token, base.as_str());
+    let started = launch_all(provider, config, pool, &missing, seed, options, progress)?;
+    progress.say(&format!("seeding {} slot(s)", started.len()));
+    (report.created, report.issues) = wait_for_seeds(provider, &started, options, progress);
     for outcome in &mut report.created {
         if outcome.seeded() {
+            progress.say(&format!("marking {} ready", outcome.name));
             outcome.error = finalize_slot(provider, &outcome.id)
                 .and_then(|()| confirm_free(provider, &outcome.id, options))
                 .err()
@@ -193,16 +205,17 @@ fn launch_all(
     config: &PoolConfig,
     pool: &str,
     indices: &[u32],
-    token: &Secret,
-    base: &str,
+    seed: (&Secret, &str),
     options: &CreateOptions,
+    progress: &Progress,
 ) -> Result<Vec<Launched>, VivariumError> {
     let mut launched = Vec::new();
     for (n, index) in indices.iter().enumerate() {
         if n > 0 {
             std::thread::sleep(options.spacing);
         }
-        let spec = slot_spec(config, pool, *index, (token, base), provider);
+        let spec = slot_spec(config, pool, *index, seed, provider);
+        progress.say(&format!("creating {}", spec.name));
         let at = Instant::now();
         match provider.create(&spec) {
             Ok(id) => launched.push(Launched {
@@ -251,21 +264,17 @@ fn wait_for_seeds(
     provider: &dyn PoolProvider,
     launched: &[Launched],
     options: &CreateOptions,
-) -> Vec<SlotOutcome> {
+    progress: &Progress,
+) -> (Vec<SlotOutcome>, Vec<Issue>) {
     let mut outcomes: Vec<Option<SlotOutcome>> = vec![None; launched.len()];
-    let mut shown = String::new();
+    let mut seen = ListingErrors::default();
+    let started = Instant::now();
+    let mut beat = Beat::new(options.heartbeat);
     loop {
         // A failed listing is a warning, not the end of a long create: the
         // slots keep seeding, and the per-slot timeout still ends the wait.
         let listing = provider.list().map_err(|e| e.to_string());
-        if let Err(message) = &listing {
-            if *message != shown {
-                eprintln!("warning: cannot list machines yet: {message}");
-            }
-            shown.clone_from(message);
-        } else {
-            shown.clear();
-        }
+        seen.observe(listing.as_ref().err(), progress);
         for (slot, done) in launched.iter().zip(outcomes.iter_mut()) {
             if done.is_none() {
                 *done = match &listing {
@@ -281,9 +290,72 @@ fn wait_for_seeds(
         if outcomes.iter().all(Option::is_some) {
             break;
         }
+        if beat.due(started.elapsed()) {
+            progress.say(&seeding_text(launched, &outcomes, options.timeout));
+        }
         std::thread::sleep(options.poll);
     }
-    outcomes.into_iter().flatten().collect()
+    (outcomes.into_iter().flatten().collect(), seen.issues)
+}
+
+/// The heartbeat of the wait for seeds: which slots still seed, and for how
+/// long, against the time they are given.
+fn seeding_text(
+    launched: &[Launched],
+    outcomes: &[Option<SlotOutcome>],
+    timeout: Duration,
+) -> String {
+    let seeding: Vec<String> = launched
+        .iter()
+        .zip(outcomes)
+        .filter(|(_, done)| done.is_none())
+        .map(|(slot, _)| format!("{} {}s", slot.name, slot.at.elapsed().as_secs()))
+        .collect();
+    format!(
+        "waiting  seeding {} (gives up at {}s)",
+        seeding.join(", "),
+        timeout.as_secs()
+    )
+}
+
+/// Remembers the listing failure in progress, so a long outage warns once and
+/// is one issue with a start and an end.
+#[derive(Default)]
+struct ListingErrors {
+    open: Option<usize>,
+    issues: Vec<Issue>,
+}
+
+impl ListingErrors {
+    fn observe(&mut self, error: Option<&String>, progress: &Progress) {
+        let now = super::work::epoch_secs();
+        match (error, self.open) {
+            (Some(message), open) => {
+                let same = open.is_some_and(|i| &self.issues[i].message == message);
+                if same {
+                    return;
+                }
+                self.close(now);
+                progress.say(&format!("warning: cannot list machines yet: {message}"));
+                self.open = Some(self.issues.len());
+                self.issues.push(Issue {
+                    kind: "list-error",
+                    subject: None,
+                    message: message.clone(),
+                    first_seen: now,
+                    cleared: None,
+                });
+            }
+            (None, Some(_)) => self.close(now),
+            (None, None) => {}
+        }
+    }
+
+    fn close(&mut self, now: u64) {
+        if let Some(i) = self.open.take() {
+            self.issues[i].cleared = Some(now);
+        }
+    }
 }
 
 /// The outcome for a slot that could not be looked at for the whole timeout.

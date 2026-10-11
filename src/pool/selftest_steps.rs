@@ -28,8 +28,15 @@ fn observed(what: &str, saw: impl std::fmt::Display) -> String {
 /// Provider: create two slots and see each seed cleanly.
 pub(super) fn create_slots(w: &mut World) -> StepResult {
     let seed = || Ok((Secret::new(String::new()), MAIN_BRANCH.to_string()));
-    let report = run::create_slots(w.provider, &w.config, &w.pool, &w.timing.create, seed)
-        .map_err(|e| observed("two slots created", format!("create failed: {e}")))?;
+    let report = run::create_slots(
+        w.provider,
+        &w.config,
+        &w.pool,
+        &w.timing.create,
+        w.progress,
+        seed,
+    )
+    .map_err(|e| observed("two slots created", format!("create failed: {e}")))?;
     let bad: Vec<String> = report
         .created
         .iter()

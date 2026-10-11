@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use super::*;
 use crate::pool::PoolHarness;
@@ -29,6 +31,7 @@ fn fast() -> CreateOptions {
         poll: Duration::ZERO,
         timeout: Duration::from_mins(1),
         confirm_timeout: Duration::from_millis(50),
+        heartbeat: Duration::from_hours(1),
     }
 }
 
@@ -51,7 +54,8 @@ fn create_makes_missing_slots_and_waits_for_stopped() {
         metadata: BTreeMap::new(),
         ..existing("slot-quad-1", "foreign", "stopped", "p", 1)
     });
-    let report = create_slots(&fake, &config(3), "p", &fast(), inputs).unwrap();
+    let report =
+        create_slots(&fake, &config(3), "p", &fast(), &Progress::silent(), inputs).unwrap();
     assert_eq!(report.existing.len(), 1);
     let names: Vec<&str> = report.created.iter().map(|o| o.name.as_str()).collect();
     assert_eq!(names, ["p-slot-1", "p-slot-3"]);
@@ -79,7 +83,7 @@ fn create_with_full_pool_does_nothing_and_skips_token_minting() {
     fake.machines
         .borrow_mut()
         .push(existing("p-slot-1", "o1", "stopped", "p", 1));
-    let report = create_slots(&fake, &config(1), "p", &fast(), || {
+    let report = create_slots(&fake, &config(1), "p", &fast(), &Progress::silent(), || {
         Err(VivariumError::Other("must not mint".into()))
     })
     .unwrap();
@@ -94,7 +98,15 @@ fn create_refuses_more_than_the_configured_maximum() {
         slots: Some(4),
         ..fast()
     };
-    let err = create_slots(&fake, &config(3), "p", &options, inputs).unwrap_err();
+    let err = create_slots(
+        &fake,
+        &config(3),
+        "p",
+        &options,
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap_err();
     assert!(
         err.to_string()
             .contains("exceeds the configured maximum of 3")
@@ -109,7 +121,15 @@ fn create_to_a_smaller_target_creates_fewer() {
         slots: Some(1),
         ..fast()
     };
-    let report = create_slots(&fake, &config(4), "p", &options, inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(4),
+        "p",
+        &options,
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert_eq!(report.created.len(), 1);
 }
 
@@ -123,7 +143,15 @@ fn create_reports_timeouts_without_destroying() {
         timeout: Duration::ZERO,
         ..fast()
     };
-    let report = create_slots(&fake, &config(1), "p", &options, inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(1),
+        "p",
+        &options,
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert!(report.created[0].timed_out);
     assert!(!report.created[0].seeded());
     assert!(fake.destroyed.borrow().is_empty());
@@ -179,7 +207,8 @@ fn status_lists_pool_slots_from_the_provider() {
 #[test]
 fn a_clean_seed_clears_the_fetch_token_then_marks_the_slot_ready() {
     let fake = Fake::default();
-    let report = create_slots(&fake, &config(1), "p", &fast(), inputs).unwrap();
+    let report =
+        create_slots(&fake, &config(1), "p", &fast(), &Progress::silent(), inputs).unwrap();
     assert!(report.created[0].seeded());
     let cleared = fake.env_cleared.borrow();
     assert_eq!(cleared.len(), 1);
@@ -205,7 +234,15 @@ fn a_new_slot_starts_unmarked_so_status_tells_seeding_from_busy() {
         timeout: Duration::ZERO,
         ..fast()
     };
-    create_slots(&fake, &config(1), "p", &options, inputs).unwrap();
+    create_slots(
+        &fake,
+        &config(1),
+        "p",
+        &options,
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     let slots = pool_status(&fake, "p").unwrap();
     assert_eq!(slots[0].state, "seeding");
     assert!(
@@ -225,7 +262,8 @@ fn an_interrupted_create_is_finished_by_the_next_one() {
     failed.metadata.insert(META_STATE.into(), "seeding".into());
     failed.exit_code = Some(3);
     fake.add(failed);
-    let report = create_slots(&fake, &config(2), "p", &fast(), inputs).unwrap();
+    let report =
+        create_slots(&fake, &config(2), "p", &fast(), &Progress::silent(), inputs).unwrap();
     assert!(report.created.is_empty());
     assert_eq!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
     assert_eq!(fake.meta("m2", META_STATE).as_deref(), Some("seeding"));
@@ -287,7 +325,15 @@ fn create_does_not_return_until_a_fresh_listing_shows_the_slot_free() {
         confirm_timeout: Duration::from_secs(5),
         ..fast()
     };
-    let report = create_slots(&fake, &config(1), "p", &options, inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(1),
+        "p",
+        &options,
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert!(report.created[0].seeded(), "{:?}", report.created[0]);
     let listed = fake.list().unwrap();
     assert_eq!(slot::slot_state(&listed[0]), "free");
@@ -301,7 +347,15 @@ fn a_slot_that_never_reads_free_is_reported_not_called_seeded() {
         confirm_timeout: Duration::ZERO,
         ..fast()
     };
-    let report = create_slots(&fake, &config(1), "p", &options, inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(1),
+        "p",
+        &options,
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert!(!report.created[0].seeded());
     assert!(
         report.created[0]
@@ -336,4 +390,69 @@ fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
     assert_eq!(slots[0].budget_secs, Some(1800));
     let json = serde_json::to_string(&slots[0]).unwrap();
     assert!(json.contains("\"running_secs\":95") && json.contains("\"budget_secs\":1800"));
+}
+
+fn capture() -> (Progress, Rc<RefCell<Vec<String>>>) {
+    let lines = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&lines);
+    let progress = Progress::to(false, move |l| sink.borrow_mut().push(l.to_string()));
+    (progress, lines)
+}
+
+#[test]
+fn create_says_each_phase_and_beats_while_seeds_run() {
+    let fake = Fake {
+        never_stop: true,
+        ..Fake::default()
+    };
+    let options = CreateOptions {
+        timeout: Duration::from_millis(60),
+        poll: Duration::from_millis(5),
+        heartbeat: Duration::from_millis(10),
+        ..fast()
+    };
+    let (progress, lines) = capture();
+    create_slots(&fake, &config(1), "p", &options, &progress, inputs).unwrap();
+    let said = lines.borrow();
+    assert_eq!(said[0], "checking the pool's existing slots");
+    assert_eq!(said[1], "creating p-slot-1");
+    assert_eq!(said[2], "seeding 1 slot(s)");
+    let beat = said
+        .iter()
+        .find(|l| l.starts_with("waiting  "))
+        .expect("a heartbeat");
+    assert!(beat.starts_with("waiting  seeding p-slot-1 "), "{beat}");
+    assert!(beat.ends_with("(gives up at 0s)"), "{beat}");
+}
+
+#[test]
+fn a_short_create_wait_prints_no_heartbeat() {
+    let fake = Fake::default();
+    let (progress, lines) = capture();
+    create_slots(&fake, &config(1), "p", &fast(), &progress, inputs).unwrap();
+    let said = lines.borrow();
+    assert!(said.iter().all(|l| !l.starts_with("waiting")), "{said:?}");
+    assert!(
+        said.iter().any(|l| l == "marking p-slot-1 ready"),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_quiet_progress_says_nothing_during_create() {
+    let fake = Fake {
+        never_stop: true,
+        ..Fake::default()
+    };
+    let options = CreateOptions {
+        timeout: Duration::from_millis(30),
+        poll: Duration::from_millis(5),
+        heartbeat: Duration::from_millis(1),
+        ..fast()
+    };
+    let lines = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = Rc::clone(&lines);
+    let quiet = Progress::to(true, move |l| sink.borrow_mut().push(l.to_string()));
+    create_slots(&fake, &config(1), "p", &options, &quiet, inputs).unwrap();
+    assert!(lines.borrow().is_empty());
 }
