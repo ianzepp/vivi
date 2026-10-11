@@ -1,12 +1,15 @@
 # Phase 03 — Project mailspace hub
 
-Status: **CORE BUILT 2026-10-10** (Speedboat, 8 hand units: project store
-and sync, identity registration, admission by introduction, governance
-mail, visibility scoping, directory, the append endpoint). The wire as
-built is recorded at the end of this document; the postmaster LLM loop
-remains a future phase. Until clients speak it, the room-based wire
-contract in [`contract.md`](contract.md) is the shipped behavior, and the
-rooms API stays alongside (migration is the open want `b4d07a2a`).
+Status: **CORE BUILT 2026-10-10, CLIENT BUILT 2026-10-11.** The server
+(project store, identity registration, admission by introduction,
+governance mail, visibility scoping, directory, letters, mailspace
+addresses) and the vivi client (`vivi sync`) interoperate end to end; the
+49-leg `scripts/project-sync-smoke.sh` passes locally and against staging.
+The wire as built is recorded at the end of this document. Transparent
+mode is decided and not built. The postmaster LLM loop remains a future
+phase. The room-based wire contract in [`contract.md`](contract.md) is
+unchanged and the rooms API stays alongside (migration is the open want
+`b4d07a2a`).
 Recorded 2026-10-10 from a design conversation with the repo owner;
 admission by introduction and the reserved `postmaster` identity were
 decided in a follow-up conversation the same day. Each item is marked
@@ -131,6 +134,18 @@ who the tenant is, what travels, and where the truth lives.
       their addresses are not routable, so a reply to one needs an explicit
       address.
     See [Mailspace addresses](#mailspace-addresses-decided-2026-10-11).
+12. **Transparent mode (decided 2026-10-11, repo owner).** A mailspace can
+    be configured to keep no local store. Its commands read live from the
+    server and write letters straight to it, so a remote pool slot or
+    auditor reads its tasks and replies with no download step and no
+    handshake. A slot is a virtual extension of the mind's mailspace: it
+    carries the mind's mailspace id, so work addressed to a seat of the
+    mind (`hand-7@<mind prefix>.local`) is already addressed to it, and
+    the mind can create and push that work before any slot exists. Three
+    rulings: the store is always stateless; commands that change only
+    local state are refused; the interim credential is the member's own
+    key. Local-first is unchanged. See
+    [Transparent mode](#transparent-mode-decided-2026-10-11).
 
 ## What carries over from phases 01 and 02
 
@@ -157,16 +172,108 @@ who the tenant is, what travels, and where the truth lives.
 - The client rendering of a polled chat record into an `.eml`. The server holds
   the real item.
 
-## Notes for the client side (not decided)
+## Client-side questions (resolved 2026-10-11)
 
-- Local addresses are `<identity>@<mailspace-name>.local` today, so every checkout
-  of one project has its own `mind@<project>.local`. A local role must map to the
-  registered wire name, and an item from a remote identity needs a local address
-  form (the chat client uses `<label>@<room>.vivi-room`).
-- Replying to a remote sender must route through the server. This is the failure
-  vivi recorded as its open item 3 (a pulled item's sender is not a local role).
-- The local folders are a fixed set (inbox, sent, drafts, trash, archive, tasks,
-  needs, wants, memos, done); no new folder is needed if chat is plain mail.
+- Local addresses were `<identity>@<mailspace-name>.local`, so every
+  checkout of a project shared one `mind@<project>.local`. Resolved by
+  item 11: the domain is the mailspace's own id prefix, and a remote role
+  is addressed directly with no local stand-in.
+- Replying to a remote sender routes through the server. Built: a reply is
+  addressed to the original `From`, which is routable.
+- The local folders are unchanged; chat is plain mail.
+
+## Transparent mode (decided 2026-10-11)
+
+Decided by the repo owner in conversation on 2026-10-11. Not built. This
+section is the design record and the build prerequisites; names marked
+provisional are expected to change while it is tested.
+
+**Why.** The mind keeps needs in a priority order and, when it works one,
+writes a task for a hand. That hand is often a remote slot that does not exist
+yet, and may not for a while. The mind should not have to wait for a slot,
+provision it, learn an address, come back, address the task, push it, and send
+the slot back to sync it. A slot, or an auditor handed a set of handles, is an
+execution location of the mind's mailspace, not a mailspace of its own.
+
+**What it is.** A mailspace configuration that keeps no local store. The
+provisional key is `[sync] transparent = true`. Each command is one session:
+
+1. Make a temporary directory and copy the mailspace config and key into it.
+2. Authenticate (challenge, sign, bearer).
+3. Pull what the command needs, with the same verification and additive
+   filing as `vivi sync pull`.
+4. Run the command against that store, unchanged.
+5. Push every letter the command wrote.
+6. Delete the directory.
+
+Letters keep their bytes and ids, so a handle (the first 8 hex of the message
+id) is the mind's handle, and the mind receives the slot's replies the
+ordinary way: filing is by address and additive, so a letter authored by
+another place acting as the mailspace lands in the right role's inbox.
+
+**How the work reaches the slot.** The slot carries the mind's mailspace id.
+Work addressed to a seat of the mind (`hand-7@<mind prefix>.local`) is
+already addressed to it. The mind creates and pushes that work whenever it
+likes, before any slot exists. Parallel slots address distinct seats, since
+two readers of `hand` would see the same task. Dispatch places two files on
+the slot, the mailspace config (id, `[sync]`, the transparent flag, the seat
+role) and the key, and the instruction is the handle or handles to work. An
+auditor is the same: a seat plus handles, no dedicated mailspace.
+
+**Rulings**
+
+- **Stateless always.** A transparent command never reads or keeps a persisted
+  store, even when the host's directory persists. A persisted replica carries
+  local-only state (closed needs, marks, the backlog graph) that never syncs,
+  diverges from the mind's silently, and carries one seat's leftovers into the
+  next. A content-addressed letter cache is safe later, because a letter is
+  immutable and never goes stale; it is an optimization, not part of this
+  decision.
+- **Reads are live, writes are letters.** A command whose only effect is local
+  state is refused with a clear message: closing or reopening a need, marks,
+  graph, role edits, memos, rules, and the mind-side surfaces `board`, `boot`
+  and `step`. `need done --note` sends its note as a letter and closes
+  nothing. A first-class done is the appended-event item under Proposed.
+- **A write is a push.** A command that writes a letter pushes it before it
+  reports success and exits non-zero if the push fails. There is no outbox:
+  an ephemeral host has no disk to queue to.
+- **The interim credential is the member's own key,** provisioned to the slot.
+  The owner's ruling is that the baseline is a mind using ordinary subagents
+  in the same workspace, which already see everything in the mailspace
+  through the vivi tool, so no scoped credential is required. Known costs,
+  accepted: the member's send budget (30 per minute) is shared by every slot
+  and the mind, and the key lingers on a warm host until something removes it.
+
+**Pool kinds**
+
+| Pool | What persists | Behavior |
+| --- | --- | --- |
+| Destroyed on exit (for example a Fly machine) | Nothing | Stateless per command. A write that fails to push fails the command. |
+| Warm directory (for example SSH to a directory) | The directory, possibly the config and key | Same stateless store. The key should be removed at slot end; a crashed slot leaves it. |
+| Local worktree | Everything | No transparency needed. Discovery walks up to the mind's own `.vivi`, so the hand is on the same mailspace. |
+
+**Server prerequisites.** None is needed for correctness. All are needed for
+scale or latency:
+
+- **A recipient filter on the list:** `GET /items?since=N&to=<address or
+  prefix>`. Without it every command pulls everything the member can see,
+  including every work item of the project.
+- **A handle lookup.** The single-letter `GET` takes the full `msg_` id and a
+  handle is the first 8 hex of it, so a thin client needs a route that
+  resolves a handle (for example `?handle=<8 hex>`) without scanning.
+- **Long-poll on the list** (`?wait=`, registering the waiter before reading
+  so an append between read and wait is not missed), so the originating
+  mind's `pool wait` can block on a reply instead of polling.
+
+**Open**
+
+- The send budget: raise the member's bucket, or key it per seat, once
+  parallel slots are real.
+- Seat role provisioning: write the role into the slot's config, or let
+  filing create the account on first use (it files under an unknown role with
+  a warning today).
+- The command set of the first cut: list, show, thread, reply, send, and
+  `done --note` are the intended core.
 
 ## Proposed
 
@@ -174,11 +281,14 @@ who the tenant is, what travels, and where the truth lives.
   folding events in the server's append order, so everyone converges. A receipt
   carrying evidence can still be a normal mail, but it is not the mechanism.
 - Mail to an unpublished identity is rejected at submit time, with a hard error to
-  the sender.
+  the sender. (Not built: the server accepts a recipient prefix that has not
+  registered, so a mailspace can be addressed before it joins. Revisit if
+  typos prove costly.)
 - Identity names use the restricted character set roles use today (letters,
   digits, `.`, `-`, `_`, with a length cap). Names are immutable once registered;
   a rename is a new identity.
-- A directory call lists a project's members and roles.
+- A directory call lists a project's members and roles. (Built:
+  `GET .../directory`, with each member's `mailspace_id`.)
 - A connecting client sees the inboxes of every identity bound to its key.
 - Any admitted member may vouch for a new key, so trust is transitive one hop
   at a time; the who-admitted-whom chain in the log is the accountability
@@ -201,6 +311,19 @@ who the tenant is, what travels, and where the truth lives.
 - Governance mail (admissions, revocations, re-keys) is visible to every
   member — a scoped exception to mail's recipient-only visibility — because
   the vouching chain is the accountability record.
+
+- **A delegated pass for slots (proposed 2026-10-11, deferred).** The member
+  key mints, offline, a short-lived EdDSA-signed JWT that the server
+  accepts directly as a bearer after verifying it against the member's
+  registered key. Claims: `iss` (member name), `aud` (project id), `sub`
+  (seat), `roles` (the roles it may send as and read mail for), an optional
+  `read` list of handles, `exp` (hours), and `jti`. It is single hop and
+  non-renewable, so expiry replaces revocation. A scoped pass also needs
+  the sender role in the envelope, checked by the server against `roles`
+  and by receivers against the letter's `From`. Deferred because transparent
+  mode accepts the member key (decided item 12); the pass adds a per-seat
+  send budget, audit, and least privilege when those are wanted. Pin one
+  algorithm, require `exp` and `aud`, and never log the token.
 
 ## Future phase: the postmaster loop
 
@@ -234,8 +357,12 @@ in the design conversation apply:
 - Retention and deletion on a server that is the source of truth.
 - How an assigned work item is represented to members who are not the assignee
   (the item plus assignee metadata, or per-recipient delivered copies).
+  (Resolved: the letter's own addresses are the assignee, and a work item
+  for another mailspace's role is held under that address.)
 - What supplies the sequence cursor (for example the per-store event log vivi
   already keeps) and how concurrent appends are serialized per project.
+  (Resolved: the project index's counter under one process-wide append
+  mutex.)
 - Whether the wire stays HTTP or speaks IMAP/SMTP. (The item encoding is
   decided: the raw `.eml`, decided item 10. HTTP is the working assumption.)
 - Migration of the rooms and messages already on the staging and production
