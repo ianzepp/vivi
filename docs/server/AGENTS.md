@@ -17,9 +17,13 @@ that draft first.
 Development coordination runs through a project mailspace at `.vivi/`:
 two roles, `mind` (coordinating seat — dispatch, merge cycle, deploy
 checks) and `hand` (implementation seat — one handle, narrow
-verification, no commits). Charters in `.vivi/charters/` and
-`.vivi/mailspace.toml` are committed; the store, blobs, and logs are
-git-ignored and excluded from the Docker context.
+verification, no commits). Charters in `.vivi/charters/` are committed.
+Everything else under `.vivi/` is machine-local and git-ignored: the
+config (`mailspace.toml`, which carries this mailspace's id), keys, store,
+blobs, and logs. A mailspace is a machine, so its id and key must never be
+shared between clones. After a fresh clone run `vivi mailspace init` and add
+the `mind` and `hand` roles; the charters then apply. The directory is
+excluded from the Docker context.
 
 ## Git Workflow
 

@@ -2,7 +2,7 @@
 /.cargo
 /data
 
-# Vivi runtime state (charters and mailspace.toml are committed)
-/.vivi/blobs/
-/.vivi/mail.sqlite*
-/.vivi/logs/
+# Vivi: configuration (mailspace.toml carries the mailspace id), keys, and
+# state are machine-local. Only the role charters are committed.
+/.vivi/*
+!/.vivi/charters/
