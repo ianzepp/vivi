@@ -1480,7 +1480,7 @@ vivi sync fetch <handle>...    # file letters by their 8-hex handle
 vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
-vivi sync status         # fingerprint, server, project, address, cursor, history, unsent
+vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded
 ```
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
@@ -1508,8 +1508,20 @@ vivi need send --from mind --to hand@ab12cd34.local --subject ... --body ...
 
 A remote recipient gets no local delivered copy. The letter is held as a sent
 copy, the command prints `queued for sync: ...`, and the next push sends it.
-A reply to a pulled letter is addressed to its `From` with no `--to`, so a
-remote sender is answered through the server.
+`mail deliver` takes remote `To`/`Cc` addresses the same way (a letter with no
+local recipient is kept as the `From` role's sent copy, so `From` must be a
+role here). Without a `[sync]` table the command prints a note instead:
+the letter stays in this checkout. A reply to a pulled letter is addressed to
+its `From` with no `--to`, so a remote sender is answered through the server.
+
+**Letters that cannot go.** With `[sync]` configured, a letter over 64 KiB is
+refused when it is composed (`mail send`, `mail reply`, `need`/`task`/`want
+send`, `mail deliver`) and nothing is stored. Push never uploads a letter whose
+`From` claims another mailspace's prefix (every puller would refuse it), and
+it lists any stored letter that is too large or has such a `From` by handle and
+exits non-zero. `vivi sync status` counts them on a `not uploaded` line beside
+`unsent`. The server does not check that a recipient prefix belongs to anyone:
+compare it with `vivi sync directory`.
 
 **What pull does.** Each record is verified before it is filed: the bytes hash
 to the stated `content_sha256`, the envelope recipients equal the letter's own

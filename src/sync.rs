@@ -112,6 +112,17 @@ impl SyncSettings {
     }
 }
 
+impl SyncSettings {
+    /// The address prefix of this mailspace: the first characters of its id,
+    /// the domain every letter From address of this mailspace carries.
+    #[must_use]
+    pub fn address_prefix(&self) -> &str {
+        self.mailspace_id
+            .get(..crate::mailspace::PREFIX_LEN)
+            .unwrap_or(&self.mailspace_id)
+    }
+}
+
 fn required(value: Option<&str>, key: &str, what: &str) -> Result<String, VivariumError> {
     value
         .map(str::trim)

@@ -218,10 +218,13 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
         println!("sync cursor: (project not set)");
     }
     match SyncSettings::resolve(&mailspace) {
-        Ok(settings) => println!(
-            "sync unsent: {} letter(s)",
-            push::unsent(&mailspace, &settings)?
-        ),
+        Ok(settings) => {
+            let pending = push::pending(&mailspace, &settings)?;
+            println!("sync unsent: {} letter(s)", pending.unsent());
+            if let Some(line) = pending.not_uploaded_line() {
+                println!("sync not uploaded: {line}; `vivi sync push` lists them");
+            }
+        }
         Err(error) => println!("sync unsent: unknown ({error})"),
     }
     Ok(())

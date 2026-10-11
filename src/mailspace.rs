@@ -13,6 +13,7 @@ use crate::pool::PoolConfig;
 use crate::storage::Storage;
 use crate::store::secure_create_dir_all;
 use crate::sync::SyncConfig;
+pub(crate) use config_file::PREFIX_LEN;
 use config_file::{ensure_id, parse_config, write_config};
 
 mod address;
@@ -198,18 +199,17 @@ pub struct DeliveryResult {
     pub remote: Vec<String>,
 }
 
-impl DeliveryResult {
-    /// The operator line naming the remote recipients, when there are any.
-    #[must_use]
-    pub fn queued_line(&self) -> Option<String> {
-        queued_line(&self.remote)
-    }
-}
-
-/// `queued for sync: <addresses>` for a non-empty remote recipient list.
-#[must_use]
-pub fn queued_line(remote: &[String]) -> Option<String> {
-    (!remote.is_empty()).then(|| format!("queued for sync: {}", remote.join(", ")))
+/// What `mail deliver` stored for one raw letter.
+#[derive(Debug, Clone)]
+pub struct RawDelivery {
+    /// One delivered copy per local recipient.
+    pub delivered: Vec<DeliveredMessage>,
+    /// The handle of the sender's own copy, kept only when no recipient is a
+    /// role of this mailspace: the letter then has to live somewhere for
+    /// `vivi sync` to carry it.
+    pub sent: Option<String>,
+    /// Recipients in other mailspaces, as in [`DeliveryResult::remote`].
+    pub remote: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

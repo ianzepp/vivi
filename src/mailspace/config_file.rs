@@ -16,7 +16,7 @@ use super::MailspaceConfig;
 use crate::error::VivariumError;
 
 /// Length of the address prefix: the first characters of the mailspace id.
-pub(super) const PREFIX_LEN: usize = 8;
+pub(crate) const PREFIX_LEN: usize = 8;
 
 /// Holds the config lock until dropped (closing the file releases it, also
 /// when the process dies).

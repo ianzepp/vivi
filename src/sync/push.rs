@@ -132,7 +132,19 @@ impl PushReport {
                 stopped.remaining, stopped.reason
             ));
         }
+        let stuck = self
+            .skipped
+            .iter()
+            .filter(|skipped| skipped.reason.undeliverable())
+            .count();
         let problems = self.refused.len() + self.unbound.len();
+        if stuck > 0 {
+            return Some(format!(
+                "{} letter(s) refused, not bound, or not uploaded because they can never be \
+                 delivered; see above",
+                problems + stuck
+            ));
+        }
         (problems > 0).then(|| format!("{problems} letter(s) refused or not bound; see above"))
     }
 }
@@ -248,13 +260,21 @@ fn bind_sent(
     Ok(())
 }
 
-/// Count the letters a push would send, without touching the network.
+/// What a push would do with the letters not yet on the server, without
+/// touching the network.
+///
+/// # Errors
+/// Returns an error on a storage failure.
+pub fn pending(mailspace: &Mailspace, settings: &SyncSettings) -> Result<Selection, VivariumError> {
+    select::select(&mailspace.storage()?, settings)
+}
+
+/// Count the letters waiting to go, counting those a push cannot upload.
 ///
 /// # Errors
 /// Returns an error on a storage failure.
 pub fn unsent(mailspace: &Mailspace, settings: &SyncSettings) -> Result<usize, VivariumError> {
-    let storage = mailspace.storage()?;
-    Ok(select::select(&storage, settings)?.letters.len())
+    Ok(pending(mailspace, settings)?.unsent())
 }
 
 #[cfg(test)]
