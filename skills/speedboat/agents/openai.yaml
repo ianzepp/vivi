@@ -1,0 +1,4 @@
+interface:
+  display_name: "Speedboat"
+  short_description: "Fast parallel Vivi delivery with minimum verification"
+  default_prompt: "Use $speedboat to dispatch small Vivi backlog units to fast Hands, verify narrowly, and land changes continuously."

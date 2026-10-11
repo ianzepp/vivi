@@ -1,0 +1,3 @@
+display_name: Tugboat
+short_description: Mind/Hand/Cadence multi-agent protocol on Vivi.
+default_prompt: Use this skill for lightweight multi-agent coordination. Vivi is the record. The host starts processes. Mind routes; Hands implement; Auditors and Heads review; Cadence advises. Load SKILL.md and follow it.
