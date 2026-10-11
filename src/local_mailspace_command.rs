@@ -200,7 +200,7 @@ fn import_mailspace(command: &MailspaceImportCommand) -> Result<(), VivariumErro
             serde_json::to_string_pretty(&report)
                 .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
         );
-        return Ok(());
+        return report.binding_conflict_error().map_or(Ok(()), Err);
     }
     let mode = if report.dry_run { "dry run" } else { "applied" };
     println!("mailspace import {mode}");
@@ -228,7 +228,7 @@ fn import_mailspace(command: &MailspaceImportCommand) -> Result<(), VivariumErro
             println!("  {conflict}");
         }
     }
-    Ok(())
+    report.binding_conflict_error().map_or(Ok(()), Err)
 }
 
 fn handle_cycle_command(command: &CycleCommand) -> Result<(), VivariumError> {
@@ -374,7 +374,7 @@ fn handle_memo_command(command: &MemoCommand) -> Result<(), VivariumError> {
         MemoCommand::Absorb(command) => absorb_record("memo", command)?,
         MemoCommand::Delete { handle, for_identity, project } => {
             let mailspace = Mailspace::discover(project.as_deref())?;
-            let handle = mailspace.move_item(for_identity, handle, "trash", None, "memo delete", None)?;
+            let handle = mailspace.delete_memo(for_identity, handle)?;
             println!("deleted {handle}");
         }
         MemoCommand::List { for_identity, json, project } => {

@@ -70,3 +70,28 @@ fn leave_room_removes_row_and_cursor() {
         "idempotent"
     );
 }
+
+#[test]
+fn a_rejected_row_leaves_the_pending_list_and_stays_listed_with_its_reason() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = ChatState::open(tmp.path()).expect("state");
+    let first = state.enqueue("room", "msg-1", "{}").expect("enqueue");
+    state.enqueue("room", "msg-2", "{}").expect("enqueue");
+
+    state
+        .mark_rejected(first, "unknown recipient")
+        .expect("mark");
+
+    assert_eq!(state.outbox_depth().expect("depth"), 1);
+    let pending: Vec<String> = state
+        .pending_outbox()
+        .expect("pending")
+        .into_iter()
+        .map(|row| row.message_id)
+        .collect();
+    assert_eq!(pending, ["msg-2"]);
+    let rejected = state.rejected_outbox().expect("rejected");
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].message_id, "msg-1");
+    assert_eq!(rejected[0].reason, "unknown recipient");
+}

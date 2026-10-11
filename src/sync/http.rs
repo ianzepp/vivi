@@ -332,7 +332,9 @@ fn mint_bearer(settings: &SyncSettings, identity: &ChatIdentity) -> Result<Strin
     if status == 401 {
         return Err(VivariumError::Message(format!(
             "project server refused the bearer mint for '{}'; this checkout's key is not \
-             registered under that name (run vivi sync join)",
+             registered under that name (run vivi sync join; if this checkout's key was lost \
+             or replaced, the name stays bound to the old key and the server has no re-key: \
+             only the project creator can help)",
             settings.name
         )));
     }
@@ -392,8 +394,11 @@ fn join_error(
     let code = error_code(body);
     match (status, code.as_str()) {
         (409, "admission_required") => VivariumError::Message(format!(
-            "this key has not been vouched for as '{}' in project {}; ask a member to vouch for \
-             fingerprint {} under that name, then run vivi sync join again",
+            "this key has not been vouched for as '{}' in project {}. A member can vouch for \
+             fingerprint {} under that name, then run vivi sync join again. If that name was \
+             admitted before with a different key (this checkout's key was lost or replaced), \
+             the server binds a name to the first key admitted and has no way to re-key it: \
+             the vouch will be refused, and only the project creator can help",
             settings.name,
             settings.project,
             identity.wire_fingerprint()
@@ -405,9 +410,11 @@ fn join_error(
         )),
         (409, "mailspace_prefix_taken") => VivariumError::Message(format!(
             "another member of project {} already holds the address prefix {} (the first 8 \
-             characters of this mailspace's id); if nothing was sent from this mailspace yet, \
-             remove the id line from .vivi/mailspace.toml so a new one is minted, then run \
-             vivi sync join again",
+             characters of this mailspace's id). If nothing was sent from this mailspace yet, \
+             remove both the id line in .vivi/mailspace.toml and the file .vivi/mailspace.id (the \
+             copy that restores the id) so a new id is minted, then run vivi sync join again. \
+             Letters sent from this mailspace after that carry the new prefix; letters already \
+             stored keep the old one",
             settings.project,
             settings.mailspace_id.get(..8).unwrap_or_default()
         )),

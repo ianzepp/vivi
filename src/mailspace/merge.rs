@@ -26,7 +26,48 @@ pub struct MailspaceImportReport {
     pub deduped_events: usize,
     pub imported_links: usize,
     pub deduped_links: usize,
+    /// Soft conflicts: reported, and the rest of the import still applies.
     pub conflicts: Vec<String>,
+    /// Source messages whose remote position another message in the target
+    /// already holds. They cannot be filed, so a real import refuses whole.
+    pub binding_conflicts: Vec<String>,
+}
+
+/// Binding conflicts listed in the refusal before the rest are summarized.
+const LISTED_CONFLICTS: usize = 5;
+
+impl MailspaceImportReport {
+    /// The refusal for this report, if any message cannot be filed.
+    #[must_use]
+    pub fn binding_conflict_error(&self) -> Option<VivariumError> {
+        if self.binding_conflicts.is_empty() {
+            return None;
+        }
+        let mut lines: Vec<String> = self
+            .binding_conflicts
+            .iter()
+            .take(LISTED_CONFLICTS)
+            .map(|conflict| format!("  {conflict}"))
+            .collect();
+        if self.binding_conflicts.len() > LISTED_CONFLICTS {
+            lines.push(format!(
+                "  ... and {} more",
+                self.binding_conflicts.len() - LISTED_CONFLICTS
+            ));
+        }
+        let outcome = if self.dry_run {
+            "a real import would be refused"
+        } else {
+            "nothing was imported"
+        };
+        Some(VivariumError::Message(format!(
+            "import conflict: {} message(s) are bound to a project item that a different \
+             message in this mailspace already holds, so the two mailspaces cannot be merged \
+             as they are; {outcome}\n{}",
+            self.binding_conflicts.len(),
+            lines.join("\n")
+        )))
+    }
 }
 
 /// Import messages, events, and links from a source mailspace into the
@@ -57,27 +98,45 @@ pub fn import_mailspace(
         target: target_dir,
         ..Default::default()
     };
-    let message_map = import_messages(
-        &source_storage,
-        &mut target_storage,
-        options.dry_run,
-        &mut report,
-    )?;
+    if options.dry_run {
+        run_import(&source_storage, &mut target_storage, true, &mut report)?;
+        return Ok(report);
+    }
+    // One transaction: a conflict, or any failure, leaves the target as it was.
+    target_storage.begin_batch()?;
+    let outcome = run_import(&source_storage, &mut target_storage, false, &mut report)
+        .and_then(|()| report.binding_conflict_error().map_or(Ok(()), Err));
+    match outcome {
+        Ok(()) => {
+            target_storage.commit_batch()?;
+            Ok(report)
+        }
+        Err(error) => {
+            if let Err(rollback) = target_storage.rollback_batch() {
+                return Err(VivariumError::Other(format!(
+                    "{error}; the rollback also failed: {rollback}"
+                )));
+            }
+            Err(error)
+        }
+    }
+}
 
+fn run_import(
+    source_storage: &Storage,
+    target_storage: &mut Storage,
+    dry_run: bool,
+    report: &mut MailspaceImportReport,
+) -> Result<(), VivariumError> {
+    let message_map = import_messages(source_storage, target_storage, dry_run, report)?;
     import_events(
-        &source_storage,
-        &target_storage,
+        source_storage,
+        target_storage,
         &message_map,
-        options.dry_run,
-        &mut report,
+        dry_run,
+        report,
     )?;
-    import_links(
-        &source_storage,
-        &target_storage,
-        options.dry_run,
-        &mut report,
-    )?;
-    Ok(report)
+    import_links(source_storage, target_storage, dry_run, report)
 }
 
 fn import_messages(
@@ -112,6 +171,10 @@ fn import_one_message(
     if map_existing_message(target_storage, &source_message, report, message_map)? {
         return Ok(());
     }
+    if let Some(conflict) = binding_conflict(target_storage, &source_message)? {
+        report.binding_conflicts.push(conflict);
+        return Ok(());
+    }
     let blob_exists = target_storage.blob_exists(&source_message.content_id)?;
     if dry_run {
         record_dry_run_message(&source_message, blob_exists, report, message_map);
@@ -127,6 +190,26 @@ fn import_one_message(
     report.imported_messages += 1;
     message_map.insert(source_message.message_id, stored.message_id);
     Ok(())
+}
+
+/// A source message bound to a remote position that another target message
+/// holds: filing it would break the position's uniqueness.
+fn binding_conflict(
+    target_storage: &Storage,
+    source_message: &StoredMessageView,
+) -> Result<Option<String>, VivariumError> {
+    let Some(remote) = &source_message.remote else {
+        return Ok(None);
+    };
+    let holder = target_storage.remote_binding_holder(remote)?;
+    Ok(holder
+        .filter(|holder| *holder != source_message.message_id)
+        .map(|holder| {
+            format!(
+                "{} (account {}) is bound to {} item {}, which {holder} already holds",
+                source_message.message_id, remote.account, remote.remote_mailbox, remote.remote_uid
+            )
+        }))
 }
 
 fn map_existing_message(

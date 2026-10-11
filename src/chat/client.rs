@@ -57,6 +57,28 @@ pub struct MessageAck {
     pub duplicate: bool,
 }
 
+/// Why a post did not land.
+#[derive(Debug)]
+pub enum PostFailure {
+    /// The server refused this message and always will: a 400, 413 or 422.
+    /// Retrying it only blocks the messages behind it.
+    Rejected(String),
+    /// Transient or unknown: server unreachable, rate limited, bearer
+    /// expired, a 5xx. The message stays queued.
+    Retry(VivariumError),
+}
+
+impl From<VivariumError> for PostFailure {
+    fn from(error: VivariumError) -> Self {
+        Self::Retry(error)
+    }
+}
+
+/// Statuses that mean "this message is wrong", not "try again later".
+fn permanent_rejection(status: u16) -> bool {
+    matches!(status, 400 | 413 | 422)
+}
+
 /// One message as polled from a room (origin label + fingerprint included).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatMessage {
@@ -299,7 +321,8 @@ pub fn mint_bearer(
 /// header for server-side idempotency; origin headers must match the seat.
 ///
 /// # Errors
-/// Returns a friendly error (mapped from contract codes) on any non-2xx.
+/// Returns [`PostFailure::Rejected`] for a refusal the server will repeat,
+/// and [`PostFailure::Retry`] for everything else that is not a 2xx.
 pub fn post_message(
     server: &str,
     raw_room_id: &str,
@@ -308,7 +331,7 @@ pub fn post_message(
     fingerprint_short: &str,
     message_id: &str,
     payload: &Value,
-) -> Result<MessageAck, VivariumError> {
+) -> Result<MessageAck, PostFailure> {
     let room_id = normalize_room_id(raw_room_id)?;
     let url = format!(
         "{}/v1/rooms/{room_id}/messages",
@@ -318,7 +341,15 @@ pub fn post_message(
     let (status, body) = request_json("POST", &url, Some(payload), &headers)?;
     let code = error_code(&body);
     if status != 200 && status != 201 {
-        return Err(send_error(status, &code, &body));
+        let error = send_error(status, &code, &body);
+        return Err(if permanent_rejection(status) {
+            PostFailure::Rejected(match error {
+                VivariumError::Message(text) => text,
+                other => other.to_string(),
+            })
+        } else {
+            PostFailure::Retry(error)
+        });
     }
     let ack: AckResponse = parse_body(&body)?;
     Ok(MessageAck {

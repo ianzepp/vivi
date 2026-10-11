@@ -32,6 +32,17 @@ pub struct PendingMessage {
     pub payload_json: String,
 }
 
+/// One outbox row the server refused and will never accept.
+#[derive(Debug, Clone)]
+pub struct RejectedMessage {
+    pub id: i64,
+    pub room_id: String,
+    pub message_id: String,
+    /// The server's reason, as it answered.
+    pub reason: String,
+    pub rejected_at: String,
+}
+
 /// Local chat state store. Offline sends enqueue here and flush
 /// at-least-once on later commands.
 pub struct ChatState {
@@ -81,6 +92,11 @@ impl ChatState {
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 flushed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS outbox_rejections (
+                outbox_id INTEGER PRIMARY KEY,
+                reason TEXT NOT NULL,
+                rejected_at TEXT NOT NULL
             );",
         )
         .map_err(|e| VivariumError::Other(format!("failed to init chat state schema: {e}")))?;
@@ -276,7 +292,8 @@ impl ChatState {
         Ok(())
     }
 
-    /// Number of undelivered outbox rows.
+    /// Number of outbox rows still awaiting delivery. A row the server
+    /// rejected is not counted: see [`Self::rejected_outbox`].
     ///
     /// # Errors
     /// Returns an error on a database failure.
@@ -284,7 +301,8 @@ impl ChatState {
     pub fn outbox_depth(&self) -> Result<usize, VivariumError> {
         self.conn
             .query_row(
-                "SELECT COUNT(*) FROM outbox WHERE flushed_at IS NULL",
+                "SELECT COUNT(*) FROM outbox WHERE flushed_at IS NULL
+                   AND id NOT IN (SELECT outbox_id FROM outbox_rejections)",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -292,7 +310,8 @@ impl ChatState {
             .map_err(sql_err)
     }
 
-    /// Undelivered outbox rows, oldest first.
+    /// Outbox rows awaiting delivery, oldest first. A rejected row is never
+    /// retried, so it is not listed.
     ///
     /// # Errors
     /// Returns an error on a database failure.
@@ -301,7 +320,9 @@ impl ChatState {
             .conn
             .prepare(
                 "SELECT id, room_id, message_id, payload_json FROM outbox
-                 WHERE flushed_at IS NULL ORDER BY id",
+                 WHERE flushed_at IS NULL
+                   AND id NOT IN (SELECT outbox_id FROM outbox_rejections)
+                 ORDER BY id",
             )
             .map_err(sql_err)?;
         let rows = stmt
@@ -311,6 +332,51 @@ impl ChatState {
                     room_id: row.get(1)?,
                     message_id: row.get(2)?,
                     payload_json: row.get(3)?,
+                })
+            })
+            .map_err(sql_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
+    }
+
+    /// Record that the server will never accept outbox row `id`. The row
+    /// stays, marked with the reason, and delivery passes skip it.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn mark_rejected(&self, id: i64, reason: &str) -> Result<(), VivariumError> {
+        self.conn
+            .execute(
+                "INSERT INTO outbox_rejections (outbox_id, reason, rejected_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(outbox_id) DO UPDATE SET
+                   reason = excluded.reason, rejected_at = excluded.rejected_at",
+                params![id, reason, now_rfc3339()],
+            )
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
+    /// Undelivered rows the server rejected, oldest first.
+    ///
+    /// # Errors
+    /// Returns an error on a database failure.
+    pub fn rejected_outbox(&self) -> Result<Vec<RejectedMessage>, VivariumError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT o.id, o.room_id, o.message_id, r.reason, r.rejected_at
+                 FROM outbox o JOIN outbox_rejections r ON r.outbox_id = o.id
+                 WHERE o.flushed_at IS NULL ORDER BY o.id",
+            )
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RejectedMessage {
+                    id: row.get(0)?,
+                    room_id: row.get(1)?,
+                    message_id: row.get(2)?,
+                    reason: row.get(3)?,
+                    rejected_at: row.get(4)?,
                 })
             })
             .map_err(sql_err)?;

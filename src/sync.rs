@@ -19,6 +19,7 @@ pub mod fetch;
 pub mod filer;
 pub mod http;
 pub mod link;
+pub mod lock;
 pub mod prune;
 pub mod pull;
 pub mod push;

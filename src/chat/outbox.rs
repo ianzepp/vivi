@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use rand_core::{OsRng, RngCore};
 use serde_json::{Value, json};
 
-use crate::chat::client::{self, ChatMessage};
+use crate::chat::client::{self, ChatMessage, PostFailure};
 use crate::chat::identity::ChatIdentity;
 use crate::chat::item::work_kind;
 use crate::chat::state::ChatState;
@@ -22,8 +22,18 @@ pub const MAX_BODY_BYTES: usize = 64 * 1024;
 pub struct SendReport {
     pub message_id: String,
     pub delivered: bool,
+    /// The server's reason, when it refused this message for good. The row
+    /// stays in the outbox, marked rejected, and is not retried.
+    pub rejected: Option<String>,
     pub queued_reason: Option<String>,
     pub summary: FlushSummary,
+}
+
+/// A message the server refused for good during one flush pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejection {
+    pub message_id: String,
+    pub reason: String,
 }
 
 /// What one flush pass delivered. `sent_ids` carries acknowledged
@@ -34,6 +44,9 @@ pub struct FlushSummary {
     pub duplicates: usize,
     pub queued: usize,
     pub sent_ids: Vec<String>,
+    /// Messages refused for good in this pass. Rows rejected by an earlier
+    /// pass are not here; see `ChatState::rejected_outbox`.
+    pub rejected: Vec<Rejection>,
     pub error: Option<String>,
 }
 
@@ -44,6 +57,7 @@ impl FlushSummary {
             duplicates: 0,
             queued: 0,
             sent_ids: Vec::new(),
+            rejected: Vec::new(),
             error: None,
         }
     }
@@ -190,7 +204,12 @@ pub fn send_message(
     state.enqueue(room_id, &message_id, &envelope.to_string())?;
     let summary = deliver_all(server, state, identity)?;
     let delivered = summary.sent_ids.iter().any(|id| id == &message_id);
-    let queued_reason = if delivered {
+    let rejected = summary
+        .rejected
+        .iter()
+        .find(|rejection| rejection.message_id == message_id)
+        .map(|rejection| rejection.reason.clone());
+    let queued_reason = if delivered || rejected.is_some() {
         None
     } else {
         Some(
@@ -203,6 +222,7 @@ pub fn send_message(
     Ok(SendReport {
         message_id,
         delivered,
+        rejected,
         queued_reason,
         summary,
     })
@@ -210,7 +230,9 @@ pub fn send_message(
 
 /// Deliver every pending outbox row at-least-once. Bearers are minted fresh
 /// per room per invocation and never persisted; the pass stops at the first
-/// delivery failure (the server dedups Message-IDs on retry).
+/// transient delivery failure (the server dedups Message-IDs on retry). A
+/// message the server refuses for good is marked rejected and skipped, so it
+/// blocks neither the rows behind it nor other rooms.
 ///
 /// # Errors
 /// Returns an error only on a state-store failure or undecodable outbox row.
@@ -249,7 +271,14 @@ pub fn deliver_all(
                 }
                 summary.sent_ids.push(row.message_id);
             }
-            Err(error) => {
+            Err(PostFailure::Rejected(reason)) => {
+                state.mark_rejected(row.id, &reason)?;
+                summary.rejected.push(Rejection {
+                    message_id: row.message_id,
+                    reason,
+                });
+            }
+            Err(PostFailure::Retry(error)) => {
                 summary.queued += 1;
                 summary.error = Some(error.to_string());
                 break;
@@ -267,9 +296,9 @@ fn post_row(
     label: &str,
     row: &crate::chat::state::PendingMessage,
     token: &str,
-) -> Result<bool, VivariumError> {
+) -> Result<bool, PostFailure> {
     let envelope: Value = serde_json::from_str(&row.payload_json)
-        .map_err(|_| VivariumError::Message("outbox row holds invalid json".into()))?;
+        .map_err(|_| PostFailure::Rejected("outbox row holds invalid json".into()))?;
     let mut payload = json!({
         "to": envelope.get("to").cloned().unwrap_or(Value::Null),
         "subject": envelope.get("subject").cloned().unwrap_or(Value::Null),

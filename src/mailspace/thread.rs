@@ -180,7 +180,12 @@ fn connected_content_ids(
     let mut queue = VecDeque::from([(seed.to_string(), 0usize)]);
     let mut visited = BTreeSet::new();
     while let Some((content_id, depth)) = queue.pop_front() {
-        if !visited.insert(content_id.clone()) || visited.len() >= limit {
+        // The limit is checked before the insert: every queued neighbour
+        // would otherwise still be added once the thread is full.
+        if visited.len() >= limit {
+            break;
+        }
+        if !visited.insert(content_id.clone()) {
             continue;
         }
         if depth < max_depth {

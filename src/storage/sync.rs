@@ -149,6 +149,32 @@ impl Storage {
         Ok(true)
     }
 
+    /// The message that holds the remote position `remote` names, if any. A
+    /// position belongs to one row: binding it to another fails.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn remote_binding_holder(
+        &self,
+        remote: &RemoteBindingInput,
+    ) -> Result<Option<String>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT message_id FROM remote_bindings
+                 WHERE account = ?1 AND remote_mailbox = ?2
+                   AND remote_uidvalidity = ?3 AND remote_uid = ?4",
+                params![
+                    remote.account,
+                    remote.remote_mailbox,
+                    remote.remote_uidvalidity,
+                    remote.remote_uid
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| VivariumError::Other(format!("failed to read remote binding: {e}")))
+    }
+
     /// Every live row holding `content_id`, whatever its id, account, or role.
     ///
     /// # Errors

@@ -70,3 +70,31 @@ fn an_unreadable_file_is_an_error_not_a_silent_reset() {
 
     assert!(SyncState::load(&dir, "prj").is_err());
 }
+
+#[test]
+fn an_unreadable_file_names_itself_and_the_command_that_repairs_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("sync");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("state.json"), "{\"project\":\"prj\",\"sinc").unwrap();
+
+    let error = SyncState::load(&dir, "prj").unwrap_err().to_string();
+
+    assert!(error.contains("state.json"), "{error}");
+    assert!(error.contains("vivi sync resync"), "{error}");
+    assert!(error.contains("is corrupt"), "{error}");
+    assert!(!error.contains("EOF"), "no raw parser text: {error}");
+}
+
+#[test]
+fn a_resync_starts_from_the_empty_state_when_the_file_is_unreadable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("sync");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("state.json"), "").unwrap();
+
+    let state = SyncState::load_for_resync(&dir, "prj");
+
+    assert_eq!(state.project, "prj");
+    assert_eq!(state.since, 0);
+}

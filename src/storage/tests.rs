@@ -1136,3 +1136,116 @@ fn live_lookups_find_rows_by_content_and_by_rfc_message_id() {
             .is_none()
     );
 }
+
+fn bind_input(uid: u32) -> RemoteBindingInput {
+    RemoteBindingInput {
+        account: "acct".into(),
+        provider: "vivi-project".into(),
+        remote_mailbox: "proj".into(),
+        remote_uid: uid,
+        remote_uidvalidity: 1,
+    }
+}
+
+#[test]
+fn a_batch_that_rolls_back_leaves_no_rows_and_one_that_commits_keeps_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+
+    storage.begin_batch().unwrap();
+    let first = ingest_hinted(&mut storage, "batch-one", 1);
+    let second = ingest_hinted(&mut storage, "batch-two", 2);
+    assert!(storage.message_by_id(&first).unwrap().is_some());
+    storage.rollback_batch().unwrap();
+
+    assert!(storage.message_by_id(&first).unwrap().is_none());
+    assert!(storage.message_by_id(&second).unwrap().is_none());
+    assert!(
+        storage
+            .remote_binding_holder(&bind_input(1))
+            .unwrap()
+            .is_none(),
+        "the binding rolled back with the row"
+    );
+
+    storage.begin_batch().unwrap();
+    let kept = ingest_hinted(&mut storage, "batch-kept", 3);
+    storage.commit_batch().unwrap();
+    let reopened = Storage::open_mailspace(tmp.path()).unwrap();
+    assert!(reopened.message_by_id(&kept).unwrap().is_some());
+}
+
+#[test]
+fn the_holder_of_a_remote_position_is_found_by_its_binding_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let held = ingest_hinted(&mut storage, "held-row", 7);
+
+    let mut remote = bind_input(7);
+    remote.account = "acct".into();
+    remote.provider = "protonmail".into();
+    remote.remote_mailbox = "INBOX".into();
+    remote.remote_uidvalidity = 42;
+    assert_eq!(storage.remote_binding_holder(&remote).unwrap(), Some(held));
+    remote.remote_uid = 8;
+    assert_eq!(storage.remote_binding_holder(&remote).unwrap(), None);
+}
+
+#[test]
+fn two_connections_binding_at_once_wait_for_each_other_instead_of_failing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    {
+        let mut storage = Storage::open_mailspace(&dir).unwrap();
+        for n in 0..120 {
+            ingest_unbound(&mut storage, &format!("row-{n}"));
+        }
+    }
+    let workers: Vec<_> = (0..2)
+        .map(|worker| {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let mut storage = Storage::open_mailspace(&dir).unwrap();
+                let mut failures = Vec::new();
+                for n in (worker..120).step_by(2) {
+                    let uid = u32::try_from(n).unwrap() + 1;
+                    let bound = storage.bind_remote(&format!("row-{n}"), &bind_input(uid));
+                    if let Err(error) = bound {
+                        failures.push(error.to_string());
+                    }
+                }
+                failures
+            })
+        })
+        .collect();
+
+    let failures: Vec<String> = workers
+        .into_iter()
+        .flat_map(|worker| worker.join().unwrap())
+        .collect();
+
+    assert!(
+        failures.is_empty(),
+        "{} binds failed, first: {:?}",
+        failures.len(),
+        failures.first()
+    );
+}
+
+fn ingest_unbound(storage: &mut Storage, message_id: &str) {
+    storage
+        .ingest_message(
+            &MessageIngestRequest {
+                account: "acct".into(),
+                local_role: "inbox".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: Some(message_id.to_string()),
+                presented_id: None,
+                seed_hint: message_id.to_string(),
+                remote: None,
+            },
+            &message_bytes(&format!("{message_id}@example.com"), message_id),
+        )
+        .unwrap();
+}

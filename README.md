@@ -1431,6 +1431,11 @@ vivi mailspace import --project /path/to/current/project \
   --from /path/to/recovered/project/.vivi
 ```
 
+An import is one transaction. When the two mailspaces hold different messages
+for the same project item (two checkouts of one project that both synced the
+same letter under the same role name), it stops with an `import conflict`
+message and changes nothing; `--dry-run` finds the same conflict and exits 1.
+
 ## Storage Layout
 
 Everything Vivi owns lives under the project's `.vivi/` directory:
