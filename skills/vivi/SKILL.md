@@ -1219,7 +1219,7 @@ image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-runtime-ubuntu22.04"
 # repo, github, harness, committer, setup, seed, requires, facts as usual
 
 [pools.gpu.runpod]
-api_key_file = "~/.config/secrets/runpod.key"   # required; mode 600; Vivi never reads it
+api_key_file = "/path/to/runpod.key"   # required; mode 600; Vivi never reads it
 gpu_types = ["NVIDIA A100 80GB PCIe", "NVIDIA H100 PCIe"]   # required, best first; `runpodctl gpu list` spells them
 gpu_count = 1                   # 1 to 8
 cloud = "secure"                # or "community"

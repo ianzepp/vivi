@@ -937,8 +937,8 @@ Quality is **model P** (lower = deeper). Speed is **S** (lower = faster
 decode). These are not planning P1 Forge / P2 Check / P3 Delivery.
 
 On spawn, Mind reads the role band and resolves it from the **host's
-model inventory** (a model-availability skill if the workspace has one,
-otherwise the host's configured slugs). Pick the cheapest **healthy**
+model inventory** (if the workspace keeps one; otherwise the
+host's configured slugs). Pick the cheapest **healthy**
 slug in that band. Throttle, 429, or session death → next slug in the
 same band, same handle. Climb P only if the whole band is dead. Clear
 `provider` and `thinking` on the role; do not write a slug back into
