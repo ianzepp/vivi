@@ -17,7 +17,7 @@ mailspace half only:
 
 | Repo | Owns |
 | --- | --- |
-| `vivi` (this repo) | Project mailspaces, roles, goals, work graphs, the `vivi` binary |
+| `vivi` (this repo) | Project mailspaces, roles, goals, work graphs, the `vivi` binary, and the `vivi`, `tugboat` and `speedboat` agent skills |
 | `vivi-mail` | IMAP, SMTP, the direct Proton API, sync, send, the local email archive, search, drafts, and the `~/.vivarium/` home |
 | `vivi-pty` | The project-scoped PTY runtime adapter |
 
@@ -36,11 +36,21 @@ The three share no code and no data. The mailspace lives at
   **executable work graphs** (Mermaid import, ready frontier, task-attempt
   binding)
 
-## Agent skill
+## Agent skills
 
-Agent-facing `vivi` CLI guidance is [`skills/vivi/SKILL.md`](skills/vivi/SKILL.md).
-Load that skill for mailspace, role, goal, and graph command usage. Verify live
-`--help` before exact flags.
+Agent-facing guidance ships as three skills under `skills/`:
+
+- [`skills/vivi/SKILL.md`](skills/vivi/SKILL.md): the CLI. Load it for
+  mailspace, role, goal, graph, and pool usage. Verify live `--help` before
+  exact flags.
+- [`skills/tugboat/SKILL.md`](skills/tugboat/SKILL.md) and
+  [`skills/speedboat/SKILL.md`](skills/speedboat/SKILL.md): the two operating
+  protocols over a Vivi backlog. Each depends only on the vivi skill; the
+  operator chooses one.
+
+Skills here are portable. They carry no home-directory paths, host names,
+provider model slugs, or names of skills outside this repo; a host binds those
+in its own overlay. Describe only behavior the binary ships.
 
 ## Work Graphs (project mailspace)
 

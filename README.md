@@ -76,13 +76,21 @@ cd vivi
 cargo install --path .
 ```
 
-## Agent skill
+## Agent skills
 
-Agent-facing CLI guidance lives at [`skills/vivi/SKILL.md`](skills/vivi/SKILL.md).
-Symlink that folder into a client skill directory:
+Agent-facing guidance ships as three skills under [`skills/`](skills/):
+
+| Skill | Load it for |
+| --- | --- |
+| [`vivi`](skills/vivi/SKILL.md) | The CLI: mailspaces, roles, goals, work graphs, the remote lane pool. Load this one always. |
+| [`tugboat`](skills/tugboat/SKILL.md) | A deliberate multi-agent protocol on a Vivi backlog: a Mind routes, Hands implement, Auditors and Heads review, Cadence advises. |
+| [`speedboat`](skills/speedboat/SKILL.md) | A fast delivery protocol on the same backlog: small parallel Hands, minimum verification, the Mind integrates. |
+
+`tugboat` and `speedboat` are alternatives; each needs only the `vivi` skill.
+Symlink the folders you want into a client skill directory:
 
 ```sh
-ln -s "$(pwd)/skills/vivi" ~/.agents/skills/vivi
+for s in vivi tugboat speedboat; do ln -s "$(pwd)/skills/$s" ~/.agents/skills/$s; done
 ```
 
 ## Quick Start
