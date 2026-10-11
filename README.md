@@ -1475,6 +1475,15 @@ mailspace under traveling ids that keep one handle on every machine; `prune`
 sheds old cached items and `resync` rebuilds them byte-identically from the
 room. The server is a sibling repository, `vivi-server`.
 
+`sync` replicates a mailspace with a project on that server: `vivi sync` pushes
+local letters and pulls the others'. A pull reads pages of 500 and saves its
+cursor per page; `sync pull --since 7d` starts a new mailspace at a time and
+records where its history starts (`sync status` prints `history from: ...`);
+`sync resync` replays everything; `sync fetch <handle>` and
+`sync pull --refs [--depth N]` bring in older letters by handle or by
+reference; `sync prune --older-than 30d [--dry-run]` evicts old letters
+locally, and any of the three restores them byte for byte.
+
 Everything Vivi does is project-scoped, so `--project <root>` is accepted either
 before or after the subcommand and every command resolves the same mailspace.
 The mailspace section above is the command reference; the most common entry

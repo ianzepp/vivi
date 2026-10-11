@@ -1,0 +1,196 @@
+use chrono::{DateTime, TimeZone, Utc};
+
+use crate::chat::prune::parse_age;
+use crate::sync::fake_server::{World, handle, wire_id};
+use crate::sync::fetch::fetch_handles;
+use crate::sync::prune::{prune, report_lines};
+use crate::sync::pull;
+use crate::sync::refs::follow_refs;
+
+fn now() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap()
+}
+
+fn thirty_days() -> std::time::Duration {
+    parse_age("30d").unwrap()
+}
+
+/// Six pulled letters and one local one:
+/// 1 and 5 are done (evictable), 2 is starred, 3 is absorbed, 4 is an open
+/// need, 6 is recent, and `local` is a letter that never travelled.
+struct Fixture {
+    w: World,
+    local_id: String,
+}
+
+fn fixture() -> Fixture {
+    let w = World::new();
+    for n in 1..=5 {
+        w.put(n, &format!("letter {n}"), "body");
+    }
+    w.put_dated(6, "recent", "body", "25 Dec 2099 12:00:00 +0000");
+    w.bob.pull(&w.bob_client);
+    let local = w
+        .bob
+        .send_need("mind", &w.bob.address("hand"), "local only");
+    let local_id = w.bob.id_of(&local);
+    {
+        let mut storage = w.bob.mailspace.storage().unwrap();
+        for n in [1, 2, 3, 5, 6] {
+            storage
+                .move_message_to_role("mind", &wire_id(n, 0), "done")
+                .unwrap();
+        }
+        storage
+            .move_message_to_role("hand", &local_id, "done")
+            .unwrap();
+        storage
+            .absorb_message("mind", &wire_id(3, 0), "test")
+            .unwrap();
+        storage
+            .update_remote_flags("mind", &w.bob.settings.project, 1, 2, false, true)
+            .unwrap();
+    }
+    Fixture { w, local_id }
+}
+
+fn handles(report: &crate::chat::prune::PruneReport) -> Vec<String> {
+    let mut found: Vec<String> = report.items.iter().map(|i| i.handle.clone()).collect();
+    found.sort();
+    found
+}
+
+#[test]
+fn only_old_unbound_free_closed_letters_are_selected_and_a_dry_run_changes_nothing() {
+    let Fixture { w, local_id } = fixture();
+    let before = w.bob.rows();
+
+    let dry = prune(&w.bob.mailspace, thirty_days(), now(), true).unwrap();
+
+    assert_eq!(handles(&dry), vec![handle(1), handle(5)]);
+    assert!(dry.dry_run);
+    assert_eq!(dry.evicted, 0);
+    assert_eq!(w.bob.rows(), before, "a dry run changes nothing");
+    let lines = report_lines(&dry);
+    assert!(lines[0].starts_with("would evict 2 letter(s)"), "{lines:?}");
+    assert!(lines.last().unwrap().contains("dry run"), "{lines:?}");
+
+    let real = prune(&w.bob.mailspace, thirty_days(), now(), false).unwrap();
+
+    assert_eq!(
+        real.items, dry.items,
+        "a dry run previews the real selection"
+    );
+    assert_eq!(real.evicted, 2);
+    let live = w.live_ids();
+    for kept in [2, 3, 4, 6] {
+        assert!(live.contains(&wire_id(kept, 0)), "letter {kept} is kept");
+    }
+    for gone in [1, 5] {
+        assert!(
+            !live.contains(&wire_id(gone, 0)),
+            "letter {gone} is evicted"
+        );
+    }
+    assert!(
+        w.bob.row(&local_id).is_some(),
+        "a local-origin letter is never evicted"
+    );
+    assert_eq!(
+        prune(&w.bob.mailspace, thirty_days(), now(), false)
+            .unwrap()
+            .evicted,
+        0,
+        "pruning twice evicts nothing the second time"
+    );
+}
+
+#[test]
+fn fetch_and_resync_bring_evicted_letters_back_byte_for_byte_with_local_state() {
+    let Fixture { w, .. } = fixture();
+    let snapshot = |n: u64| {
+        let id = wire_id(n, 0);
+        (w.bob.row(&id).unwrap(), w.bob.bytes_of(&handle(n)))
+    };
+    let (view_1, bytes_1) = snapshot(1);
+    let (view_5, bytes_5) = snapshot(5);
+    prune(&w.bob.mailspace, thirty_days(), now(), false).unwrap();
+    assert!(!w.bob.mailspace.dir.join(&view_1.blob_relpath).exists());
+    let state_before = w.state();
+
+    // A plain pull never brings them back: the cursor is past them.
+    let plain = w.bob.pull(&w.bob_client);
+    assert_eq!((plain.fetched, plain.restored), (0, 0));
+
+    let fetched = fetch_handles(
+        &w.bob.mailspace,
+        &w.bob.settings,
+        &w.bob_client,
+        &[handle(1)],
+    )
+    .unwrap();
+    assert_eq!(fetched.pull.restored, 1);
+    assert_eq!(
+        w.state(),
+        state_before,
+        "a fetch moves neither cursor nor floor"
+    );
+    let back = w.bob.row(&wire_id(1, 0)).unwrap();
+    assert_eq!(back.content_id, view_1.content_id);
+    assert_eq!(back.local_role, "done", "local state survives");
+    assert_eq!(w.bob.bytes_of(&handle(1)), bytes_1);
+
+    let plan = pull::PullPlan {
+        window: None,
+        resync: true,
+    };
+    let resync = pull::pull_with(
+        &w.bob.mailspace,
+        &w.bob.settings,
+        &w.bob_client,
+        &plan,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(resync.restored, 1, "only letter 5 was still evicted");
+    assert_eq!(resync.existing, 5);
+    let back = w.bob.row(&wire_id(5, 0)).unwrap();
+    assert_eq!(back.content_id, view_5.content_id);
+    assert_eq!(back.local_role, "done");
+    assert_eq!(w.bob.bytes_of(&handle(5)), bytes_5);
+    assert_eq!(w.bob.blob_hash(&back), w.server.items()[4].sha);
+}
+
+#[test]
+fn a_reference_to_an_evicted_letter_restores_it() {
+    let Fixture { w, .. } = fixture();
+    prune(&w.bob.mailspace, thirty_days(), now(), false).unwrap();
+    let body = format!("see {} for the history", handle(1));
+    w.put(7, "points back", &body);
+
+    let mut report = w.bob.pull(&w.bob_client);
+    let refs = follow_refs(
+        &w.bob.mailspace,
+        &w.bob.settings,
+        &w.bob_client,
+        &mut report,
+        1,
+    )
+    .unwrap();
+
+    assert_eq!((refs.found, refs.looked_up, refs.filed), (1, 1, 1));
+    assert_eq!(report.restored, 1);
+    assert!(w.live_ids().contains(&wire_id(1, 0)));
+    assert_eq!(w.server.lookups(), vec![1]);
+}
+
+#[test]
+fn prune_is_scoped_to_the_configured_project() {
+    let Fixture { w, .. } = fixture();
+    let mut other = w.bob.mailspace.clone();
+    other.config.sync.as_mut().unwrap().project = Some("bcdef-ghjkm-npqrs-tvwxy-z2345".into());
+
+    let report = prune(&other, thirty_days(), now(), true).unwrap();
+
+    assert!(report.items.is_empty(), "letters of another project stay");
+}

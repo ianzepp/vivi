@@ -1,7 +1,9 @@
 //! Pull state: the read cursor and replies still waiting for their parent,
 //! in `<project>/.vivi/sync/state.json`.
 //!
-//! The file belongs to one server project. A cursor from another project
+//! The file also records the **floor**: where this mailspace's history
+//! starts, so a suffix of the project's history is never mistaken for all of
+//! it. The file belongs to one server project. A cursor from another project
 //! would silently skip items, so a state recorded for a different project
 //! reads as empty.
 
@@ -23,13 +25,61 @@ pub struct SyncState {
     /// The highest sequence handled; the next read asks for items after it.
     #[serde(default)]
     pub since: u64,
+    /// Where this mailspace's history starts. Absent in a file written
+    /// before windows existed: the floor is then unknown, not "full".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor: Option<Floor>,
     /// Replies held without a parent: child `content_id` -> the RFC
     /// `Message-ID` it answers. Retried on every pull.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dangling: BTreeMap<String, String>,
 }
 
+/// The start of the history this mailspace holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Floor {
+    /// Sequence of the first record received; 0 for full history.
+    #[serde(default)]
+    pub sequence: u64,
+    /// Its `appended_at`, or the requested time when the window was empty;
+    /// absent for full history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
+}
+
+impl Floor {
+    /// The floor of a pull from the very beginning.
+    #[must_use]
+    pub fn full() -> Self {
+        Self::default()
+    }
+
+    /// Whether this is the whole history.
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        self.sequence == 0 && self.time.is_none()
+    }
+}
+
 impl SyncState {
+    /// The `vivi sync status` line for the floor.
+    #[must_use]
+    pub fn history_line(&self) -> String {
+        let Some(floor) = &self.floor else {
+            return if self.since > 0 {
+                "history from: unknown (pulled before windows)".into()
+            } else {
+                "history from: nothing pulled yet".into()
+            };
+        };
+        match (floor.sequence, floor.time.as_deref()) {
+            (0, None) => "history from: full history".into(),
+            (0, Some(time)) => format!("history from: {time} (no letters yet)"),
+            (sequence, Some(time)) => format!("history from: {time} (sequence {sequence})"),
+            (sequence, None) => format!("history from: sequence {sequence}"),
+        }
+    }
+
     /// Load the state for `project`. A missing file, or one recorded for
     /// another project, is the empty state.
     ///

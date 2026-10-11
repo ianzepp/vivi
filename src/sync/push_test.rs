@@ -400,7 +400,7 @@ fn a_corrupted_local_file_is_not_sent() {
 
 #[test]
 fn a_server_hash_that_differs_is_not_bound() {
-    use crate::sync::transport::{AppendFailure, Appended, Page};
+    use crate::sync::transport::{AppendFailure, Appended, ListQuery, Page};
     struct Liar;
     impl Transport for Liar {
         fn append(&self, id: &str, _: &Envelope<'_>) -> Result<Appended, AppendFailure> {
@@ -411,10 +411,11 @@ fn a_server_hash_that_differs_is_not_bound() {
                 content_sha256: Some("0".repeat(64)),
             })
         }
-        fn fetch(&self, since: u64) -> Result<Page, crate::VivariumError> {
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
             Ok(Page {
                 records: Vec::new(),
-                next_cursor: since,
+                next_cursor: query.since,
+                has_more: None,
             })
         }
     }
@@ -432,7 +433,7 @@ fn a_server_hash_that_differs_is_not_bound() {
 
 #[test]
 fn an_ack_without_a_content_hash_is_not_bound() {
-    use crate::sync::transport::{AppendFailure, Appended, Page};
+    use crate::sync::transport::{AppendFailure, Appended, ListQuery, Page};
     struct Silent;
     impl Transport for Silent {
         fn append(&self, id: &str, _: &Envelope<'_>) -> Result<Appended, AppendFailure> {
@@ -443,10 +444,11 @@ fn an_ack_without_a_content_hash_is_not_bound() {
                 content_sha256: None,
             })
         }
-        fn fetch(&self, since: u64) -> Result<Page, crate::VivariumError> {
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
             Ok(Page {
                 records: Vec::new(),
-                next_cursor: since,
+                next_cursor: query.since,
+                has_more: None,
             })
         }
     }
@@ -461,7 +463,7 @@ fn an_ack_without_a_content_hash_is_not_bound() {
 
 #[test]
 fn a_sequence_that_does_not_fit_a_binding_is_reported() {
-    use crate::sync::transport::{AppendFailure, Appended, Page};
+    use crate::sync::transport::{AppendFailure, Appended, ListQuery, Page};
     struct Huge;
     impl Transport for Huge {
         fn append(&self, id: &str, letter: &Envelope<'_>) -> Result<Appended, AppendFailure> {
@@ -472,10 +474,11 @@ fn a_sequence_that_does_not_fit_a_binding_is_reported() {
                 content_sha256: Some(crate::storage::sha256_hex(letter.raw_eml)),
             })
         }
-        fn fetch(&self, since: u64) -> Result<Page, crate::VivariumError> {
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
             Ok(Page {
                 records: Vec::new(),
-                next_cursor: since,
+                next_cursor: query.since,
+                has_more: None,
             })
         }
     }

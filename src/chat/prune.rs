@@ -89,10 +89,27 @@ pub fn prune(
     dry_run: bool,
 ) -> Result<PruneReport, VivariumError> {
     let room_id = room.map(normalize_room_id).transpose()?;
+    evict_bound_before(mailspace, PROVIDER, room_id.as_deref(), age, now, dry_run)
+}
+
+/// The shared selection and eviction: rows bound to `provider` (narrowed to
+/// one remote `mailbox` when given) dated before `now - age`, under the
+/// conservative policy above. A dry run reports the same selection and
+/// changes nothing. Used by `vivi chat prune` and `vivi sync prune`.
+///
+/// # Errors
+/// Returns an error for an unusable age or a storage failure.
+pub fn evict_bound_before(
+    mailspace: &Mailspace,
+    provider: &str,
+    mailbox: Option<&str>,
+    age: Duration,
+    now: DateTime<Utc>,
+    dry_run: bool,
+) -> Result<PruneReport, VivariumError> {
     let cutoff = cutoff_string(now, age)?;
     let mut storage = mailspace.storage()?;
-    let candidates =
-        storage.eviction_candidates(PROVIDER, room_id.as_deref(), &KEEP_ROLES, &cutoff)?;
+    let candidates = storage.eviction_candidates(provider, mailbox, &KEEP_ROLES, &cutoff)?;
     let items = candidates.iter().map(PrunedItem::from).collect();
     let evicted = if dry_run {
         0

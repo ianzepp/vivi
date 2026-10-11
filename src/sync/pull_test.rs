@@ -6,7 +6,9 @@ use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
 use crate::sync::link;
 use crate::sync::state::SyncState;
 use crate::sync::sync_dir;
-use crate::sync::transport::{AppendFailure, Appended, Envelope, Page, Record, Transport};
+use crate::sync::transport::{
+    AppendFailure, Appended, Envelope, ListQuery, Page, Record, Transport,
+};
 use crate::{VivariumError, sync::pull};
 
 const ID_A: &str = "msg_0000000000000000000000a1";
@@ -48,6 +50,7 @@ fn record(sequence: u64, id: &str, from: &str, kind: Option<&str>, bytes: &[u8])
         to: (!to.is_empty()).then_some(to),
         kind: kind.map(String::from),
         content_sha256: sha256_hex(bytes),
+        appended_at: None,
         raw_eml: b64::encode(bytes),
     }
 }
@@ -62,15 +65,20 @@ impl Transport for Canned {
         Err(AppendFailure::Stop("canned".into()))
     }
 
-    fn fetch(&self, since: u64) -> Result<Page, VivariumError> {
+    fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, VivariumError> {
         Ok(self
             .pages
             .iter()
-            .find(|page| page.records.first().is_some_and(|r| r.sequence > since))
+            .find(|page| {
+                page.records
+                    .first()
+                    .is_some_and(|r| r.sequence > query.since)
+            })
             .cloned()
             .unwrap_or(Page {
                 records: Vec::new(),
-                next_cursor: since,
+                next_cursor: query.since,
+                has_more: None,
             }))
     }
 }
@@ -81,6 +89,7 @@ fn pull_canned(fx: &Checkout, records: Vec<Record>) -> pull::PullReport {
         pages: vec![Page {
             records,
             next_cursor,
+            has_more: None,
         }],
     };
     pull::pull(&fx.mailspace, &fx.settings, &canned).unwrap()
@@ -565,7 +574,7 @@ fn a_failed_read_leaves_the_cursor_where_it_was() {
         fn append(&self, _: &str, _: &Envelope<'_>) -> Result<Appended, AppendFailure> {
             Err(AppendFailure::Stop("down".into()))
         }
-        fn fetch(&self, _: u64) -> Result<Page, VivariumError> {
+        fn fetch(&self, _: &ListQuery<'_>) -> Result<Page, VivariumError> {
             Err(VivariumError::Message("project server unreachable".into()))
         }
     }

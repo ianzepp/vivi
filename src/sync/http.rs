@@ -15,7 +15,9 @@ use crate::chat::client::{Body, request_json_with_timeout, request_with_body, si
 use crate::chat::identity::ChatIdentity;
 use crate::error::VivariumError;
 use crate::sync::SyncSettings;
-use crate::sync::transport::{AppendFailure, Appended, Envelope, Page, Transport};
+use crate::sync::transport::{
+    AppendFailure, Appended, Envelope, ListQuery, Lookup, Page, Transport,
+};
 
 /// Request timeout for project server calls.
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -158,14 +160,52 @@ impl Transport for HttpTransport<'_> {
         classify_append(status, &body)
     }
 
-    fn fetch(&self, since: u64) -> Result<Page, VivariumError> {
-        let url = format!("{}/items?since={since}", project_url(self.settings));
+    fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, VivariumError> {
+        let url = list_url(self.settings, query);
         let (status, body) = request("GET", &url, None, &self.authorized()?)?;
         if status != 200 {
             return Err(api_error(status, &body, self.settings));
         }
         parse(&body)
     }
+
+    fn lookup(&self, handles: &[String]) -> Result<Lookup, VivariumError> {
+        let url = format!("{}/items/lookup", project_url(self.settings));
+        let payload = json!({ "handles": handles });
+        let (status, body) = request("POST", &url, Some(&payload), &self.authorized()?)?;
+        if status != 200 {
+            return Err(api_error(status, &body, self.settings));
+        }
+        parse(&body)
+    }
+}
+
+/// The list URL: `since` and an explicit `limit` always, `after` when set.
+/// The time carries `+` and `:` only in RFC 3339 forms, so it is encoded.
+pub(crate) fn list_url(settings: &SyncSettings, query: &ListQuery<'_>) -> String {
+    let mut url = format!(
+        "{}/items?since={}&limit={}",
+        project_url(settings),
+        query.since,
+        query.limit
+    );
+    if let Some(after) = query.after {
+        url.push_str("&after=");
+        url.push_str(&encode_query(after));
+    }
+    url
+}
+
+fn encode_query(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                char::from(byte).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 /// Read a directory response: `{members: [{name, fingerprint, mailspace_id}]}`.

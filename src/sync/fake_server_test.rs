@@ -1,8 +1,10 @@
 //! An in-memory project server and real-mailspace fixtures for the sync
 //! tests. The fake implements the letter wire's semantics: client ids,
-//! sequence order, byte-exact storage, id/hash idempotency, and visibility.
-//! Hooks inject the failures the wire can produce.
+//! sequence order, byte-exact storage, id/hash idempotency, visibility,
+//! append-time stamps, `limit`/`after` windows with `has_more`, and lookup by
+//! handle. Hooks inject the failures the wire can produce.
 
+use chrono::DateTime;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -13,7 +15,9 @@ use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{StoredMessageView, is_traveling_id, sha256_hex};
 use crate::sync::pull::{self, PullReport};
 use crate::sync::push::{self, PushReport};
-use crate::sync::transport::{AppendFailure, Appended, Envelope, Page, Record, Transport};
+use crate::sync::transport::{
+    AppendFailure, Appended, Envelope, ListQuery, Lookup, Page, Record, Transport,
+};
 use crate::sync::{MAX_LETTER_BYTES, SyncConfig, SyncSettings};
 
 #[derive(Debug, Clone)]
@@ -25,6 +29,8 @@ pub struct Item {
     pub kind: Option<String>,
     /// The sender's registered prefix, as the server stamps it.
     pub from_prefix: Option<String>,
+    /// The server clock at append (RFC 3339), as the server stamps it.
+    pub appended_at: Option<String>,
     pub bytes: Vec<u8>,
     pub sha: String,
 }
@@ -37,6 +43,12 @@ struct Inner {
     refuse: HashMap<String, u16>,
     tampered: HashMap<String, Vec<u8>>,
     page_limit: Option<usize>,
+    /// The server clock new appends are stamped with.
+    clock: Option<String>,
+    /// Every list request seen: `(since, limit, after)`.
+    lists: Vec<(u64, u32, Option<String>)>,
+    /// The number of handles in every lookup request seen.
+    lookups: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -52,6 +64,34 @@ impl FakeServer {
 
     pub fn items(&self) -> Vec<Item> {
         self.inner.borrow().items.clone()
+    }
+
+    /// Stamp appends from now on with this server time (RFC 3339).
+    pub fn set_clock(&self, time: &str) {
+        self.inner.borrow_mut().clock = Some(time.to_string());
+    }
+
+    /// Forget the append time of an item, as for a row written before the
+    /// server stamped letters.
+    pub fn clear_appended_at(&self, message_id: &str) {
+        let mut inner = self.inner.borrow_mut();
+        for item in inner
+            .items
+            .iter_mut()
+            .filter(|i| i.message_id == message_id)
+        {
+            item.appended_at = None;
+        }
+    }
+
+    /// Every list request seen: `(since, limit, after)`.
+    pub fn lists(&self) -> Vec<(u64, u32, Option<String>)> {
+        self.inner.borrow().lists.clone()
+    }
+
+    /// The handle count of every lookup request seen.
+    pub fn lookups(&self) -> Vec<usize> {
+        self.inner.borrow().lookups.clone()
     }
 
     /// How many appends reached the server, accepted or not.
@@ -163,6 +203,10 @@ impl Transport for FakeClient {
             return Ok(duplicate_of(held));
         }
         let sequence = inner.items.len() as u64 + 1;
+        let appended_at = inner
+            .clock
+            .clone()
+            .unwrap_or_else(|| "2026-10-11T00:00:00Z".to_string());
         inner.items.push(Item {
             sequence,
             message_id: message_id.to_string(),
@@ -170,6 +214,7 @@ impl Transport for FakeClient {
             to: Some(envelope.to.to_string()),
             kind: Some(envelope.kind.to_string()),
             from_prefix: self.prefix.clone(),
+            appended_at: Some(appended_at),
             bytes: bytes.to_vec(),
             sha: sha.clone(),
         });
@@ -181,39 +226,99 @@ impl Transport for FakeClient {
         })
     }
 
-    fn fetch(&self, since: u64) -> Result<Page, VivariumError> {
-        let inner = self.server.inner.borrow();
-        let work =
-            |kind: &Option<String>| matches!(kind.as_deref(), Some("need" | "task" | "want"));
-        let records: Vec<Record> = inner
+    fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, VivariumError> {
+        let mut inner = self.server.inner.borrow_mut();
+        inner
+            .lists
+            .push((query.since, query.limit, query.after.map(String::from)));
+        let after = query
+            .after
+            .map(|time| DateTime::parse_from_rfc3339(time).unwrap());
+        let limit = (query.limit as usize).min(inner.page_limit.unwrap_or(usize::MAX));
+        let matching: Vec<&Item> = inner
             .items
             .iter()
-            .filter(|item| item.sequence > since)
-            .filter(|item| work(&item.kind) || item.from == self.member || self.addressed(item))
-            .take(inner.page_limit.unwrap_or(usize::MAX))
-            .map(|item| {
-                let served = inner.tampered.get(&item.message_id).unwrap_or(&item.bytes);
-                Record {
-                    sequence: item.sequence,
-                    message_id: item.message_id.clone(),
-                    from: item.from.clone(),
-                    to: item.to.clone(),
-                    kind: item.kind.clone(),
-                    content_sha256: item.sha.clone(),
-                    from_prefix: item.from_prefix.clone(),
-                    raw_eml: b64::encode(served),
-                }
+            .filter(|item| item.sequence > query.since)
+            .filter(|item| self.visible(item))
+            .filter(|item| {
+                after.is_none_or(|after| {
+                    item.appended_at
+                        .as_deref()
+                        .is_some_and(|at| DateTime::parse_from_rfc3339(at).unwrap() >= after)
+                })
             })
             .collect();
-        let next_cursor = records.last().map_or(since, |record| record.sequence);
+        let has_more = matching.len() > limit;
+        let records: Vec<Record> = matching
+            .into_iter()
+            .take(limit)
+            .map(|item| self.record_of(&inner, item))
+            .collect();
+        let next_cursor = records.last().map_or(query.since, |record| record.sequence);
         Ok(Page {
             records,
             next_cursor,
+            has_more: Some(has_more),
         })
+    }
+
+    fn lookup(&self, handles: &[String]) -> Result<Lookup, VivariumError> {
+        let mut inner = self.server.inner.borrow_mut();
+        inner.lookups.push(handles.len());
+        assert!(handles.len() <= 100, "the server takes at most 100 handles");
+        let handle_of = |item: &Item| {
+            item.message_id
+                .strip_prefix("msg_")
+                .and_then(|rest| rest.get(..8))
+                .map(str::to_ascii_lowercase)
+        };
+        let mut records: Vec<Record> = Vec::new();
+        let mut missing = Vec::new();
+        for handle in handles {
+            let wanted = handle.to_ascii_lowercase();
+            let found: Vec<&Item> = inner
+                .items
+                .iter()
+                .filter(|item| handle_of(item).as_deref() == Some(wanted.as_str()))
+                .filter(|item| self.visible(item))
+                .collect();
+            if found.is_empty() {
+                missing.push(handle.clone());
+            }
+            for item in found {
+                if !records.iter().any(|r| r.sequence == item.sequence) {
+                    records.push(self.record_of(&inner, item));
+                }
+            }
+        }
+        records.sort_by_key(|record| record.sequence);
+        Ok(Lookup { records, missing })
     }
 }
 
 impl FakeClient {
+    /// The visibility rule: work items to everyone, mail to its sender and
+    /// to the member whose prefix is on a recipient address.
+    fn visible(&self, item: &Item) -> bool {
+        let work = matches!(item.kind.as_deref(), Some("need" | "task" | "want"));
+        work || item.from == self.member || self.addressed(item)
+    }
+
+    fn record_of(&self, inner: &Inner, item: &Item) -> Record {
+        let served = inner.tampered.get(&item.message_id).unwrap_or(&item.bytes);
+        Record {
+            sequence: item.sequence,
+            message_id: item.message_id.clone(),
+            from: item.from.clone(),
+            to: item.to.clone(),
+            kind: item.kind.clone(),
+            content_sha256: item.sha.clone(),
+            from_prefix: item.from_prefix.clone(),
+            appended_at: item.appended_at.clone(),
+            raw_eml: b64::encode(served),
+        }
+    }
+
     /// Whether any envelope address of `item` is in this member's domain.
     fn addressed(&self, item: &Item) -> bool {
         let Some(prefix) = &self.prefix else {
@@ -377,5 +482,144 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<String>) {
         } else {
             out.push(path.to_string_lossy().into_owned());
         }
+    }
+}
+
+/// `msg_` + 8 hex characters (the handle, `n` in hex) + 16 hex characters.
+pub fn wire_id(n: u64, tail: u64) -> String {
+    format!("msg_{n:08x}{tail:016x}")
+}
+
+/// The handle of `wire_id(n, _)`.
+pub fn handle(n: u64) -> String {
+    format!("{n:08x}")
+}
+
+/// The date every injected letter carries unless told otherwise.
+pub const LETTER_DATE: &str = "Sun, 11 Oct 2026 12:00:00 +0000";
+
+/// A plain letter with a unique Message-ID taken from its wire id.
+pub fn letter(
+    id: &str,
+    from: &str,
+    to: &str,
+    subject: &str,
+    body: &str,
+    date: &str,
+    extra_headers: &str,
+) -> Vec<u8> {
+    format!(
+        "From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\nMessage-ID: <{id}@x.test>\r\n\
+         Date: {date}\r\n{extra_headers}\r\n{body}\r\n"
+    )
+    .into_bytes()
+}
+
+/// One sender, one receiver, and a server that letters are put onto
+/// directly: no composing, no push. The receiver owns the roles `mind` and
+/// `hand`; every letter is a need addressed to its `mind` unless told
+/// otherwise.
+pub struct World {
+    pub server: Rc<FakeServer>,
+    pub alice: Checkout,
+    pub bob: Checkout,
+    pub bob_client: FakeClient,
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl World {
+    #[must_use]
+    pub fn new() -> Self {
+        let server = FakeServer::new();
+        let alice = checkout("alice", &["mind"]);
+        let bob = checkout("bob", &["mind", "hand"]);
+        let bob_client = bob.client(&server);
+        Self {
+            server,
+            alice,
+            bob,
+            bob_client,
+        }
+    }
+
+    /// Stamp what is put next with this server time.
+    pub fn at(&self, time: &str) -> &Self {
+        self.server.set_clock(time);
+        self
+    }
+
+    /// A need for bob's `mind`, under `wire_id(n, 0)`; returns the id.
+    pub fn put(&self, n: u64, subject: &str, body: &str) -> String {
+        self.put_full(
+            &wire_id(n, 0),
+            "need",
+            &self.bob.address("mind"),
+            subject,
+            body,
+            LETTER_DATE,
+            "",
+        )
+    }
+
+    /// [`World::put`] with a `Date` header.
+    pub fn put_dated(&self, n: u64, subject: &str, body: &str, date: &str) -> String {
+        self.put_full(
+            &wire_id(n, 0),
+            "need",
+            &self.bob.address("mind"),
+            subject,
+            body,
+            date,
+            "",
+        )
+    }
+
+    /// A letter with every part chosen.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_full(
+        &self,
+        id: &str,
+        kind: &str,
+        to: &str,
+        subject: &str,
+        body: &str,
+        date: &str,
+        extra_headers: &str,
+    ) -> String {
+        let from = self.alice.address("mind");
+        let bytes = letter(id, &from, to, subject, body, date, extra_headers);
+        let envelope = Envelope {
+            raw_eml: &bytes,
+            to,
+            kind,
+        };
+        self.alice
+            .client(&self.server)
+            .append(id, &envelope)
+            .expect("the fake server takes the letter");
+        id.to_string()
+    }
+
+    /// The saved pull state of bob's mailspace.
+    pub fn state(&self) -> crate::sync::state::SyncState {
+        crate::sync::state::SyncState::load(
+            &crate::sync::sync_dir(&self.bob.mailspace.dir),
+            PROJECT,
+        )
+        .unwrap()
+    }
+
+    /// Live row ids of bob's mailspace, sorted.
+    pub fn live_ids(&self) -> Vec<String> {
+        self.bob
+            .rows()
+            .into_iter()
+            .map(|row| row.message_id)
+            .collect()
     }
 }

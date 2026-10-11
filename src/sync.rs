@@ -15,13 +15,18 @@ use serde::{Deserialize, Serialize};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 
+pub mod fetch;
+pub mod filer;
 pub mod http;
 pub mod link;
+pub mod prune;
 pub mod pull;
 pub mod push;
+pub mod refs;
 pub mod select;
 pub mod state;
 pub mod transport;
+pub mod window;
 
 /// Remote-binding provider for letters synced with a project server.
 pub const PROVIDER: &str = "vivi-project";
@@ -132,6 +137,10 @@ mod fake_server;
 #[cfg(test)]
 #[path = "sync/flow_test.rs"]
 mod flow;
+
+#[cfg(test)]
+#[path = "sync/windows_test.rs"]
+mod windows;
 
 #[cfg(test)]
 #[path = "sync/sync_test.rs"]

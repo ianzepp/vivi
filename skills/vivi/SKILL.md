@@ -1473,9 +1473,14 @@ flags with `vivi sync --help`.
 vivi sync                # push, then pull
 vivi sync push           # send local letters the server does not have
 vivi sync pull           # file what other members pushed
+vivi sync pull --since 7d      # first pull only: start at a time, not at the beginning
+vivi sync pull --refs [--depth N]  # then look up the letters the new ones point at
+vivi sync resync         # reset cursor and floor to zero, replay everything
+vivi sync fetch <handle>...    # file letters by their 8-hex handle
+vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
-vivi sync status         # fingerprint, server, project, address, cursor, unsent
+vivi sync status         # fingerprint, server, project, address, cursor, history, unsent
 ```
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
@@ -1516,6 +1521,39 @@ lacks is filed under its name with a warning, and appears once the role is
 added), plus a `sent` row when `From` is a local role. A need, task, or want
 addressed to another mailspace's role is held under its address, so every member
 holds every work item without it landing in a local queue.
+
+**Windows and the floor.** A pull reads the project in pages of 500 and saves
+the cursor after every page, so an interrupted pull resumes where it stopped.
+A new mailspace need not take the whole history: `vivi sync pull --since <age>`
+(`7d`, `12h`, `90m`, an RFC 3339 time, or `YYYY-MM-DD`) starts at that time. It
+is refused once the mailspace has a cursor for the project. The **floor** is
+where this mailspace's history starts: the first letter received (sequence and
+server time), or the requested time when the window held nothing. A plain
+first pull records full history. `vivi sync status` prints it as
+`history from: ...`; a mailspace that pulled before windows existed reads
+`unknown (pulled before windows)` and is never guessed to be full. A letter
+older than the floor is not here, so a reply to one stays unlinked until it
+is fetched.
+
+**Getting older letters.** `vivi sync resync` resets the cursor and floor to
+zero and replays everything; letters already held are left alone, evicted ones
+come back byte for byte with their local state. `vivi sync fetch <handle>...`
+asks the server for letters by the 8 hex characters of their id (100 per
+request; a handle that names nothing visible is reported as missing, not an
+error) and files them through the same checks as a pull, without moving the
+cursor or the floor. `vivi sync pull --refs [--depth N]` follows references
+after a pull: an `X-Vivi-Depends-On` value, or a whole-word 8-hex token in the
+subject or body, that names a letter this mailspace does not hold is looked up
+and filed. Each extra hop (`--depth`, 1 to 3, default 1) scans only what the
+previous hop filed; one invocation looks up at most 500 handles. A token that
+matches nothing is ignored.
+
+**Pruning.** `vivi sync prune --older-than 30d [--dry-run]` evicts letters
+bound to the project that are dated before the cutoff, freeing the files. It
+never evicts open needs, tasks, or wants, starred or absorbed rows, or letters
+that never travelled. The rows and local state stay; `resync`, `fetch`, or
+`pull --refs` restores a letter byte for byte. It needs no server or key and
+runs only when asked.
 
 Not synced: memos, drafts, trash, rules, and local state (closing a need, marks,
 read flags). A letter is limited to 64 KiB, and a member may send 30 letters per
