@@ -1482,9 +1482,10 @@ vivi sync status         # fingerprint, server, project, address, cursor, unsent
 `mailspace.toml`. Its first 8 characters are the domain of every address it
 mints: the `mind` role of the mailspace whose id begins `3f9a1c7e` is
 `mind@3f9a1c7e.local`. The address sits inside the letter, so sender and
-recipient are part of the hashed object. Treat the file as machine-local: do
-not commit it, edit the `id`, or copy a `.vivi` directory to another machine
-(the server refuses a second member under a prefix already claimed). Letters
+recipient are part of the hashed object. Treat the file as machine-local
+(`.vivi/` ignores itself, so nothing in it is committed): do not commit it,
+edit the `id`, or copy a `.vivi` directory to another machine (the server
+refuses a second member under a prefix already claimed). Letters
 written before the id existed keep their old `name.local` domain; they travel
 but are not routable, so address a reply to one explicitly.
 

@@ -296,3 +296,145 @@ fn a_config_an_older_binary_rewrote_without_the_id_gets_the_same_id_back() {
         format!("{id}\n")
     );
 }
+
+const IGNORE: &str = "# Machine-local vivi state (config with the mailspace id, charters, keys, store,\n\
+# blobs, logs). Nothing in this directory is committed.\n*\n";
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn init_writes_the_self_ignoring_gitignore_and_says_so() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path();
+
+    let init = run(path, &["mailspace", "init"]);
+
+    let out = ok(&init);
+    let file = path.join(".vivi/.gitignore");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), IGNORE);
+    assert!(out.contains("ignore "), "{out}");
+    assert!(stderr(&init).is_empty(), "{}", stderr(&init));
+    assert!(!path.join(".gitignore").exists(), "the root is untouched");
+}
+
+#[test]
+fn an_existing_mailspace_gets_the_file_once_and_a_second_open_is_silent() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path();
+    ok(&run(path, &["mailspace", "init"]));
+    let file = path.join(".vivi/.gitignore");
+    std::fs::remove_file(&file).unwrap();
+
+    let first = run(path, &["mailspace", "identity", "list"]);
+    ok(&first);
+    let second = run(path, &["mailspace", "identity", "list"]);
+    ok(&second);
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), IGNORE);
+    let line = stderr(&first);
+    assert!(line.starts_with("vivi: wrote "), "{line}");
+    assert!(line.contains(".vivi/.gitignore"), "{line}");
+    assert!(line.contains("(nothing in .vivi is committed)"), "{line}");
+    assert_eq!(line.lines().count(), 1, "{line}");
+    assert!(stderr(&second).is_empty(), "{}", stderr(&second));
+}
+
+#[test]
+fn an_existing_gitignore_is_never_edited() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path();
+    ok(&run(path, &["mailspace", "init"]));
+    let file = path.join(".vivi/.gitignore");
+    std::fs::write(&file, "mine\n").unwrap();
+
+    let output = run(path, &["mailspace", "identity", "list"]);
+    ok(&output);
+    ok(&run(path, &["mailspace", "init"]));
+
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine\n");
+    assert!(stderr(&output).is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn an_unwritable_directory_is_silent_and_never_fails_a_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path();
+    ok(&run(path, &["mailspace", "init"]));
+    let vivi_dir = path.join(".vivi");
+    std::fs::remove_file(vivi_dir.join(".gitignore")).unwrap();
+    std::fs::set_permissions(&vivi_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let output = run(path, &["mailspace", "identity", "list"]);
+
+    std::fs::set_permissions(&vivi_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // A superuser can write anyway; the property is about the rest.
+    ok(&output);
+    let line = stderr(&output);
+    assert!(
+        line.is_empty() || line.starts_with("vivi: wrote "),
+        "{line}"
+    );
+}
+
+fn git(path: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "git {args:?}: {status:?}");
+}
+
+#[test]
+fn a_tracked_config_is_warned_about_by_the_status_commands_only() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path();
+    git(path, &["init", "-q"]);
+    ok(&run(path, &["mailspace", "init"]));
+
+    let untracked = run(path, &["mailspace", "status"]);
+    ok(&untracked);
+    assert!(
+        !stderr(&untracked).contains("tracked"),
+        "{}",
+        stderr(&untracked)
+    );
+
+    git(path, &["add", "-f", ".vivi/mailspace.toml"]);
+    let warning = "warning: .vivi/mailspace.toml is tracked by git, so every clone would share \
+                   this mailspace's id; run: git rm --cached -r .vivi";
+    let status = run(path, &["mailspace", "status"]);
+    ok(&status);
+    assert!(stderr(&status).contains(warning), "{}", stderr(&status));
+    let sync_status = run(path, &["sync", "status"]);
+    ok(&sync_status);
+    assert!(
+        stderr(&sync_status).contains(warning),
+        "{}",
+        stderr(&sync_status)
+    );
+    // Join fails on the missing [sync] table, after warning and before any network.
+    let join = run(path, &["sync", "join"]);
+    assert!(!join.status.success());
+    assert!(stderr(&join).contains(warning), "{}", stderr(&join));
+    // Ordinary commands do not run git.
+    let list = run(path, &["mailspace", "identity", "list"]);
+    ok(&list);
+    assert!(!stderr(&list).contains("tracked"), "{}", stderr(&list));
+}
+
+#[test]
+fn outside_a_git_repository_there_is_no_warning() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path();
+    ok(&run(path, &["mailspace", "init"]));
+
+    let status = run(path, &["mailspace", "status"]);
+
+    ok(&status);
+    assert!(stderr(&status).is_empty(), "{}", stderr(&status));
+}

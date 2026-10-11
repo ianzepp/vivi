@@ -51,9 +51,19 @@ fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumEr
             println!("mailspace {}", mailspace.config.name);
             println!("root      {}", mailspace.root.display());
             println!("store     {}", mailspace.store_path().display());
+            let ignore = mailspace.dir.join(".gitignore");
+            if ignore.is_file() {
+                println!(
+                    "ignore    {} (nothing in .vivi is committed)",
+                    ignore.display()
+                );
+            }
         }
         MailspaceCommand::Status { project, json } => {
             let mailspace = Mailspace::discover(project.as_deref())?;
+            if let Some(warning) = mailspace.tracked_config_warning() {
+                eprintln!("{warning}");
+            }
             let status = mailspace.status()?;
             if *json {
                 println!(

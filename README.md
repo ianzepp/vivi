@@ -276,9 +276,10 @@ Load task:    vivi task show <handle> --project <root>
 
 Every mailspace has an id: a UUID minted the first time the mailspace is
 opened and stored as the top-level `id` in its `.vivi/mailspace.toml`, which is
-machine-local and uncommitted. The first 8 characters are the domain part of
-every address the mailspace mints, so `cto` in a mailspace whose id begins
-`3f9a1c7e` is `cto@3f9a1c7e.local`. Do not copy `mailspace.toml` between
+machine-local and uncommitted: `.vivi/` ignores itself with its own
+`.gitignore`, so nothing in it is committed. The first 8 characters are the
+domain part of every address the mailspace mints, so `cto` in a mailspace whose
+id begins `3f9a1c7e` is `cto@3f9a1c7e.local`. Do not copy `mailspace.toml` between
 machines: two mailspaces with one id collide at `vivi sync join`.
 
 Bare names, aliases, `cto@local`, the own prefix address, and the legacy

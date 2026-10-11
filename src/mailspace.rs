@@ -24,6 +24,7 @@ mod config_file;
 mod delivery;
 mod dump;
 mod event_log;
+mod gitignore;
 mod goals;
 mod graph;
 mod graph_mutate;
@@ -229,6 +230,7 @@ impl Mailspace {
         let dir = root.join(MAILSPACE_DIR);
         secure_create_dir_all(&dir)?;
         secure_create_dir_all(&dir.join("blobs"))?;
+        gitignore::ensure_ignore_file(&dir);
         let path = dir.join(MAILSPACE_CONFIG);
         if path.exists() {
             return Self::open_root(root);
@@ -289,7 +291,23 @@ impl Mailspace {
         })?;
         let mut config = parse_config(&path, &raw)?;
         ensure_id(&path, &mut config)?;
+        if gitignore::ensure_ignore_file(&dir) {
+            eprintln!(
+                "vivi: wrote {} (nothing in .vivi is committed)",
+                dir.join(".gitignore").display()
+            );
+        }
         Ok(Self { root, dir, config })
+    }
+
+    /// A warning line when git tracks `.vivi/mailspace.toml`, which would
+    /// make every clone share this mailspace's id. Best effort and silent
+    /// when `git` is missing or the project is not a repository. Runs git,
+    /// so only status-style commands call it.
+    #[must_use]
+    pub fn tracked_config_warning(&self) -> Option<String> {
+        let relpath = format!("{MAILSPACE_DIR}/{MAILSPACE_CONFIG}");
+        gitignore::tracked_config_warning(&self.root, &relpath)
     }
 
     #[must_use]

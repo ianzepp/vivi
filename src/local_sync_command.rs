@@ -64,6 +64,7 @@ fn run_passes(project: Option<&Path>, push: bool, pull: bool) -> Result<(), Viva
 
 fn join(project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    warn_if_config_tracked(&mailspace);
     let settings = SyncSettings::resolve(&mailspace)?;
     let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
     let receipt = http::join(&settings, &identity)?;
@@ -72,8 +73,15 @@ fn join(project: Option<&Path>) -> Result<(), VivariumError> {
     Ok(())
 }
 
+fn warn_if_config_tracked(mailspace: &Mailspace) {
+    if let Some(warning) = mailspace.tracked_config_warning() {
+        eprintln!("{warning}");
+    }
+}
+
 fn status(project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    warn_if_config_tracked(&mailspace);
     let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
     let config = mailspace.config.sync.clone().unwrap_or_default();
     let show = |value: &Option<String>| value.clone().unwrap_or_else(|| "(not set)".into());
