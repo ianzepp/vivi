@@ -211,6 +211,7 @@ impl Mailspace {
                 target.kind, source_id
             )));
         }
+        self.refuse_unowned_activation(&storage, &graph.code, source_id)?;
         let (_, ready, _) = project_nodes(&rows, &edges);
         if !ready.iter().any(|n| n.handle == target.handle) {
             return Err(VivariumError::Message(format!(

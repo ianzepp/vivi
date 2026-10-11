@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::Mailspace;
 use super::graph::GraphNodeView;
+use super::holding::{Holding, READINESS_AWAITING};
 use crate::error::VivariumError;
 use crate::storage::BACKLOG_GRAPH_CODE;
 
@@ -58,7 +59,15 @@ impl Mailspace {
         let show = self.graph_show(BACKLOG_GRAPH_CODE)?;
         let mut dispatches = Vec::new();
         let mut exceptions = Vec::new();
-        for node in &show.ready {
+        let frontier = show
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.readiness.as_str(), "ready" | READINESS_AWAITING));
+        for node in frontier {
+            if node.readiness == READINESS_AWAITING {
+                exceptions.push(self.awaiting_remote(&storage, node)?);
+                continue;
+            }
             match adjudicate_node(&storage, &graph.handle, node)? {
                 StepOutcome::Dispatch(dispatch) => dispatches.push(dispatch),
                 StepOutcome::Exception(exc) => exceptions.push(exc),
@@ -70,6 +79,25 @@ impl Mailspace {
             exceptions,
             decisions: Vec::new(),
         })
+    }
+
+    /// The exception for a ready node that is this mailspace's own copy of
+    /// work handed to another one: tracked here, dispatched there.
+    fn awaiting_remote(
+        &self,
+        storage: &crate::storage::Storage,
+        node: &GraphNodeView,
+    ) -> Result<StepException, VivariumError> {
+        let to = match self.node_holding(storage, &node.source_id)? {
+            Holding::Sent(address) => address,
+            _ => "another mailspace".into(),
+        };
+        Ok(exception(
+            node,
+            &node.kind,
+            "awaiting_remote",
+            &format!("handed to {to}; the receiving mailspace dispatches it"),
+        ))
     }
 
     /// Apply mode without a judgment provider (mechanical only).

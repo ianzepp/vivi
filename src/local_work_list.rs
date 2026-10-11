@@ -41,21 +41,23 @@ pub(crate) fn print_work_lists(
     let to = crate::local_mail_list::resolve_list_header(mailspace, to);
     let mut messages = Vec::new();
     for role in roles {
-        messages.extend(
-            mailspace
-                .list_kind(identity, role, kind)?
-                .into_iter()
-                .filter(|message| {
-                    (roles.contains(&"done") || message.absorbed_at.is_none())
-                        && crate::local_mail_list::headers_match(
-                            &message.from_addr,
-                            &message.to_addr,
-                            &message.cc_addr,
-                            from.as_ref(),
-                            to.as_ref(),
-                        )
-                }),
-        );
+        // The sender's own copies of work handed to another mailspace are
+        // the author's open outbound work; only those, not all sent mail.
+        let listed = if *role == "sent" {
+            mailspace.list_outbound_work(identity, kind)?
+        } else {
+            mailspace.list_kind(identity, role, kind)?
+        };
+        messages.extend(listed.into_iter().filter(|message| {
+            (roles.contains(&"done") || message.absorbed_at.is_none())
+                && crate::local_mail_list::headers_match(
+                    &message.from_addr,
+                    &message.to_addr,
+                    &message.cc_addr,
+                    from.as_ref(),
+                    to.as_ref(),
+                )
+        }));
     }
     let message_ids = messages
         .iter()
@@ -209,8 +211,12 @@ fn print_json(items: &[impl serde::Serialize]) -> Result<(), VivariumError> {
 
 fn print_human(kind: &str, roles: &[&str], items: &[WorkListItem]) {
     if items.is_empty() {
-        let role = roles.join("/");
-        println!("  no {kind}s in {role}");
+        let shown: Vec<&str> = roles
+            .iter()
+            .copied()
+            .filter(|role| *role != "sent")
+            .collect();
+        println!("  no {kind}s in {}", shown.join("/"));
         return;
     }
     println!("  handle  status  role  date  from  subject  last_event");

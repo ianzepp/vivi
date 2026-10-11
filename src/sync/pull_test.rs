@@ -2,7 +2,7 @@ use crate::chat::b64;
 use crate::storage::{
     MessageIngestRequest, RemoteBindingInput, StoredMessageView, is_traveling_id, sha256_hex,
 };
-use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
+use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout, wire_id};
 use crate::sync::link;
 use crate::sync::state::SyncState;
 use crate::sync::sync_dir;
@@ -365,6 +365,151 @@ fn a_letter_naming_no_role_here_is_held_under_its_first_to_address() {
     assert_eq!(row.account, first);
     assert_eq!(row.local_role, "needs");
     assert!(row.remote.is_some());
+    assert!(
+        !fx.mailspace.backlog_item_tracked(&row.handle).unwrap(),
+        "another mailspace's work is held, not backlog"
+    );
+}
+
+/// A pulled world with one need for a local role, one for another
+/// mailspace's role, and a governance letter held under `postmaster`.
+fn foreign_world() -> (Checkout, StoredMessageView, StoredMessageView) {
+    let fx = bob();
+    let letters = vec![
+        record(
+            1,
+            &wire_id(1, 0),
+            "alice",
+            Some("need"),
+            &eml(&fx.address("hand"), "ours"),
+        ),
+        record(
+            2,
+            &wire_id(2, 0),
+            "alice",
+            Some("need"),
+            &eml(&format!("hand@{ELSEWHERE}"), "not ours"),
+        ),
+        record(
+            3,
+            &wire_id(3, 0),
+            "alice",
+            Some("mail"),
+            &eml("postmaster@audit.local", "vouch carol"),
+        ),
+    ];
+    let report = pull_canned(&fx, letters);
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    let (ours, theirs) = (
+        fx.row(&wire_id(1, 0)).unwrap(),
+        fx.row(&wire_id(2, 0)).unwrap(),
+    );
+    (fx, ours, theirs)
+}
+
+#[test]
+fn work_held_for_another_mailspace_reaches_no_step_boot_or_audit_repair() {
+    let (fx, ours, theirs) = foreign_world();
+
+    let nodes = fx.mailspace.graph_show("backlog").unwrap().nodes;
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(nodes[0].source_id, ours.handle);
+    let manifest = fx.mailspace.step_shadow().unwrap();
+    let items: Vec<&str> = manifest
+        .dispatches
+        .iter()
+        .map(|d| d.item.as_str())
+        .chain(manifest.exceptions.iter().map(|e| e.item.as_str()))
+        .collect();
+    assert_eq!(items, [ours.handle.as_str()]);
+    assert_eq!(
+        fx.row(&wire_id(2, 0)).unwrap().account,
+        format!("hand@{ELSEWHERE}"),
+        "the row is still held"
+    );
+
+    let boot = crate::boot::BootReport::collect(&fx.mailspace).unwrap();
+    let handles: Vec<&str> = boot.handles.iter().map(|h| h.handle.as_str()).collect();
+    assert_eq!(handles, [ours.handle.as_str()]);
+    assert!(boot.unabsorbed.is_empty(), "{:?}", boot.unabsorbed);
+
+    let audit = fx.mailspace.backlog_audit(true).unwrap();
+    assert!(audit.findings.is_empty(), "{:?}", audit.findings);
+    assert!(!fx.mailspace.backlog_item_tracked(&theirs.handle).unwrap());
+}
+
+#[test]
+fn a_node_minted_for_foreign_work_is_hidden_reported_and_settled_by_repair() {
+    let (fx, ours, theirs) = foreign_world();
+    // What an older binary left behind: a node for the foreign row.
+    fx.mailspace
+        .backlog_attach("need", &theirs.handle, "not ours", &[])
+        .unwrap();
+
+    let show = fx.mailspace.graph_show("backlog").unwrap();
+    let ready: Vec<&str> = show.ready.iter().map(|n| n.source_id.as_str()).collect();
+    assert_eq!(ready, [ours.handle.as_str()]);
+    assert!(show.blocked.is_empty());
+    let manifest = fx.mailspace.step_shadow().unwrap();
+    assert!(
+        manifest
+            .dispatches
+            .iter()
+            .map(|d| &d.item)
+            .chain(manifest.exceptions.iter().map(|e| &e.item))
+            .all(|item| *item == ours.handle),
+        "{manifest:?}"
+    );
+
+    let dry = fx.mailspace.backlog_audit(false).unwrap();
+    assert_eq!(dry.findings.len(), 1, "{:?}", dry.findings);
+    assert_eq!(dry.findings[0].class, "foreign_held");
+    assert_eq!(dry.findings[0].handle, theirs.handle);
+    assert!(!dry.findings[0].repaired);
+    assert!(
+        fx.mailspace
+            .graph_show("backlog")
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|n| n.source_id == theirs.handle && n.state == "open")
+    );
+
+    let repaired = fx.mailspace.backlog_audit(true).unwrap();
+    assert!(repaired.findings[0].repaired);
+    let node = fx
+        .mailspace
+        .graph_show("backlog")
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|n| n.source_id == theirs.handle)
+        .unwrap();
+    assert_eq!(node.state, "done");
+    assert_eq!(
+        fx.row(&wire_id(2, 0)).unwrap().local_role,
+        "needs",
+        "the row is left"
+    );
+    assert!(
+        fx.mailspace
+            .backlog_audit(true)
+            .unwrap()
+            .findings
+            .is_empty(),
+        "folder wins must not reopen a settled foreign node"
+    );
+    assert_eq!(
+        fx.mailspace
+            .graph_show("backlog")
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|n| n.source_id == theirs.handle)
+            .unwrap()
+            .state,
+        "done"
+    );
 }
 
 #[test]

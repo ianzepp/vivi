@@ -278,6 +278,7 @@ impl Mailspace {
             status: super::TaskDumpStatus::Open,
             open_role: "needs".into(),
             kind: "need".into(),
+            include_outbound: false,
             filters: super::DumpFilters {
                 for_identity: Some(identity.into()),
                 ..Default::default()
@@ -407,8 +408,14 @@ fn wants_for_roles(
 ) -> Result<Vec<StoredMessageView>, VivariumError> {
     let mut wants = Vec::new();
     for role in roles {
-        for want in mailspace.list_kind(identity, role, "want")? {
-            if want.absorbed_at.is_some() && *role == "wants" && !roles.contains(&"done") {
+        let listed = if *role == "sent" {
+            mailspace.list_outbound_work(identity, "want")?
+        } else {
+            mailspace.list_kind(identity, role, "want")?
+        };
+        for want in listed {
+            let open_role = matches!(*role, "wants" | "sent");
+            if want.absorbed_at.is_some() && open_role && !roles.contains(&"done") {
                 continue;
             }
             wants.push(want);

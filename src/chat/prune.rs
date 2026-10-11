@@ -9,7 +9,9 @@
 //! - only items bound to a `vivi-room` mailbox; local-origin mail is never
 //!   touched;
 //! - never open work: anything still in `needs`, `tasks`, or `wants` is live
-//!   state, however old;
+//!   state, however old, and so is any row behind an open backlog node outside
+//!   `done` (the sender's own `sent` copy of work handed to another
+//!   mailspace);
 //! - never starred or absorbed items;
 //! - only items dated before the cutoff.
 
@@ -109,7 +111,12 @@ pub fn evict_bound_before(
 ) -> Result<PruneReport, VivariumError> {
     let cutoff = cutoff_string(now, age)?;
     let mut storage = mailspace.storage()?;
-    let candidates = storage.eviction_candidates(provider, mailbox, &KEEP_ROLES, &cutoff)?;
+    // Open work in flight is kept whichever folder holds it: the sender's
+    // `sent` copy of work handed to another mailspace is the item here. A
+    // `done` row is closed work by its folder, whatever its node says.
+    let in_flight = mailspace.open_work_content_ids()?;
+    let mut candidates = storage.eviction_candidates(provider, mailbox, &KEEP_ROLES, &cutoff)?;
+    candidates.retain(|row| row.local_role == "done" || !in_flight.contains(&row.content_id));
     let items = candidates.iter().map(PrunedItem::from).collect();
     let evicted = if dry_run {
         0

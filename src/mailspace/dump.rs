@@ -34,6 +34,9 @@ pub struct TaskDumpRequest {
     pub status: TaskDumpStatus,
     pub open_role: String,
     pub kind: String,
+    /// Also list the sender's own open copies of work addressed to another
+    /// mailspace (role `sent`) for an open or all-status dump.
+    pub include_outbound: bool,
     pub filters: DumpFilters,
 }
 
@@ -103,13 +106,23 @@ impl Mailspace {
     /// Returns an error if the role is invalid, filter resolution fails, or a
     /// storage operation fails.
     pub fn dump_tasks(&self, request: TaskDumpRequest) -> Result<Vec<DumpRecord>, VivariumError> {
-        let roles = status_roles(&request.open_role, request.status);
-        self.dump_records(
+        let mut roles = status_roles(&request.open_role, request.status);
+        let outbound = request.include_outbound && request.status != TaskDumpStatus::Done;
+        if outbound {
+            roles.push("sent".into());
+        }
+        let mut records = self.dump_records(
             &roles,
             Some((request.status, request.open_role.as_str())),
             Some(&request.kind),
             request.filters,
-        )
+        )?;
+        if outbound {
+            records.retain(|record| {
+                record.role != "sent" || self.addresses_include_remote(&[&record.to, &record.cc])
+            });
+        }
+        Ok(records)
     }
 
     fn dump_records(
@@ -386,7 +399,7 @@ fn status_roles(open_role: &str, status: TaskDumpStatus) -> Vec<String> {
 }
 
 fn status_for_role(role: &str, open_role: &str) -> Option<String> {
-    if role == open_role {
+    if role == open_role || role == "sent" {
         Some("open".into())
     } else if role == "done" {
         Some("done".into())

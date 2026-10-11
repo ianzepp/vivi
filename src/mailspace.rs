@@ -28,6 +28,7 @@ mod gitignore;
 mod goals;
 mod graph;
 mod graph_mutate;
+mod holding;
 mod identity;
 mod kind;
 mod lifecycle;
@@ -59,6 +60,7 @@ pub use graph::{
     print_action_receipt, print_frontier, print_frontiers, print_import_report, split_ready_gates,
 };
 pub use graph_mutate::{GraphApplyReceipt, print_apply_report};
+pub use holding::is_foreign_account;
 pub use identity::{
     LocalIdentity, ROLE_HARNESS_SUBAGENT, ROLE_STATUS_ACTIVE, ROLE_STATUS_PARKED,
     ROLE_STATUS_RETIRED, RoleUpdate, RoleView,

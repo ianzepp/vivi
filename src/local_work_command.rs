@@ -445,17 +445,17 @@ fn show_need(
 
 fn status_roles<'a>(status: &TaskStatus, open_role: &'a str) -> Vec<&'a str> {
     match status {
-        TaskStatus::Open => vec![open_role],
+        TaskStatus::Open => vec![open_role, "sent"],
         TaskStatus::Done => vec!["done"],
-        TaskStatus::All => vec![open_role, "done"],
+        TaskStatus::All => vec![open_role, "sent", "done"],
     }
 }
 
 fn want_status_roles(status: &WantStatus) -> &'static [&'static str] {
     match status {
-        WantStatus::Open => &["wants"],
+        WantStatus::Open => &["wants", "sent"],
         WantStatus::Done => &["done"],
-        WantStatus::All => &["wants", "done"],
+        WantStatus::All => &["wants", "sent", "done"],
     }
 }
 
@@ -468,6 +468,7 @@ fn work_dump_request(command: &TaskDumpCommand, open_role: &str, kind: &str) -> 
         },
         open_role: open_role.into(),
         kind: kind.into(),
+        include_outbound: true,
         filters: task_dump_filters(command),
     }
 }

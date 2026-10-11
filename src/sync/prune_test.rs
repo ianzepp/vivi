@@ -194,3 +194,32 @@ fn prune_is_scoped_to_the_configured_project() {
 
     assert!(report.items.is_empty(), "letters of another project stay");
 }
+
+#[test]
+fn the_sent_copy_of_open_work_is_kept_until_it_closes() {
+    let w = World::new();
+    let away = "hand@a1b2c3d4.local";
+    let sent = w.bob.send_need("mind", away, "away");
+    let local = w
+        .bob
+        .send_need("mind", &w.bob.address("hand"), "stays home");
+    w.bob.push(&w.bob_client);
+
+    let open = prune(&w.bob.mailspace, thirty_days(), now(), true).unwrap();
+
+    assert!(
+        handles(&open).is_empty(),
+        "an open sent copy is the item in flight: {:?}",
+        open.items
+    );
+    assert_eq!(w.bob.row(&w.bob.id_of(&sent)).unwrap().local_role, "sent");
+
+    w.bob
+        .mailspace
+        .move_item("mind", &sent, "done", None, "need done", None)
+        .unwrap();
+    let closed = prune(&w.bob.mailspace, thirty_days(), now(), true).unwrap();
+
+    assert_eq!(handles(&closed), vec![sent], "closed work evicts as before");
+    assert!(w.bob.row(&w.bob.id_of(&local)).is_some());
+}

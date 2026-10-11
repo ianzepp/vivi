@@ -6,11 +6,12 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::Mailspace;
+use super::holding::with_readiness;
 use super::mermaid::{MermaidFlowchart, parse_flowchart};
 use crate::error::VivariumError;
 use crate::storage::{
-    Storage, WorkGraphEdgeInput, WorkGraphEdgeRow, WorkGraphImportCommit, WorkGraphImportInput,
-    WorkGraphNodeInput, WorkGraphNodeRow, WorkGraphRow, sha256_hex,
+    BACKLOG_GRAPH_CODE, Storage, WorkGraphEdgeInput, WorkGraphEdgeRow, WorkGraphImportCommit,
+    WorkGraphImportInput, WorkGraphNodeInput, WorkGraphNodeRow, WorkGraphRow, sha256_hex,
 };
 
 /// Import report returned by check and commit paths.
@@ -126,7 +127,13 @@ impl Mailspace {
         let nodes = storage.work_graph_nodes(&graph.handle)?;
         let edges = storage.work_graph_edges(&graph.handle)?;
         let hash = storage.work_graph_revision_hash(&graph.handle, graph.current_revision)?;
-        let (node_views, ready, blocked) = project_nodes(&nodes, &edges);
+        let (mut node_views, mut ready, mut blocked) = project_nodes(&nodes, &edges);
+        if graph.code == BACKLOG_GRAPH_CODE {
+            // Foreign and sent-copy nodes are not this mailspace's dispatch.
+            self.mark_holdings(&storage, &mut node_views)?;
+            ready = with_readiness(&node_views, "ready");
+            blocked = with_readiness(&node_views, "blocked");
+        }
         let edge_views = project_edges(&nodes, &edges);
         Ok(GraphShow {
             graph,
@@ -148,6 +155,9 @@ pub struct GraphFrontier {
     pub ready: Vec<String>,
     pub blocked: Vec<String>,
     pub active: Vec<String>,
+    /// Open work this mailspace handed to another one: tracked here, never
+    /// dispatched here.
+    pub awaiting: Vec<String>,
     pub gates: Vec<GraphFrontierGate>,
 }
 
@@ -210,6 +220,12 @@ pub fn frontier_from_show(show: &GraphShow) -> GraphFrontier {
             .nodes
             .iter()
             .filter(|n| n.state == "active")
+            .map(|n| n.source_id.clone())
+            .collect(),
+        awaiting: show
+            .nodes
+            .iter()
+            .filter(|n| n.readiness == super::holding::READINESS_AWAITING)
             .map(|n| n.source_id.clone())
             .collect(),
     }
@@ -343,10 +359,11 @@ pub fn print_frontier(
     println!("  handle   {}", frontier.handle);
     println!("  revision {}", frontier.revision);
     println!(
-        "  counts   ready={} blocked={} active={} gates={}",
+        "  counts   ready={} blocked={} active={} awaiting={} gates={}",
         frontier.ready.len(),
         frontier.blocked.len(),
         frontier.active.len(),
+        frontier.awaiting.len(),
         frontier.gates.len()
     );
     println!(
@@ -360,6 +377,10 @@ pub fn print_frontier(
     println!(
         "  active   {}",
         frontier.active.join(", ").if_empty("(none)")
+    );
+    println!(
+        "  awaiting {}",
+        frontier.awaiting.join(", ").if_empty("(none)")
     );
     println!(
         "  gates    {}",

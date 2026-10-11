@@ -303,6 +303,41 @@ impl Mailspace {
         Ok(messages)
     }
 
+    /// The sender's own open copies of `kind` work addressed to another
+    /// mailspace: rows still in `sent` with a remote To or Cc. These are the
+    /// author's outbound work in flight, which the receiving mailspace owns.
+    ///
+    /// # Errors
+    /// Returns an error if the identity cannot be resolved or the storage
+    /// operation fails.
+    pub fn list_outbound_work(
+        &self,
+        identity: Option<&str>,
+        kind: &str,
+    ) -> Result<Vec<StoredMessageView>, VivariumError> {
+        let storage = self.storage()?;
+        let sent = [String::from("sent")];
+        let rows = if let Some(identity) = identity {
+            let identity = self.resolve_identity(identity)?;
+            let names = sorted_identity_names(self.identity_names(&identity));
+            storage.list_messages_by_account_roles_scoped(&names, &sent)?
+        } else {
+            storage.list_messages_by_role("sent")?
+        };
+        let mut messages = Vec::new();
+        for row in rows {
+            if self.remote_recipients(&row).is_empty() {
+                continue;
+            }
+            let data = storage.read_message(&row.message_id)?;
+            let events = storage.list_mailspace_events(&row.message_id)?;
+            if matches_kind(&row.local_role, &data, &events, kind) {
+                messages.push(row);
+            }
+        }
+        Ok(messages)
+    }
+
     /// Search memos for an identity by query.
     ///
     /// Matches subject and body (unless `subject_only` is true). Search is
@@ -530,6 +565,7 @@ impl Mailspace {
                 "{handle} is absorbed and can no longer be changed"
             )));
         }
+        self.refuse_sent_copy_reopen(handle, &before, &role)?;
         // Stored messages keep the account name they were ingested under
         // even after a rename, so the storage-layer mutation must target
         // that historical account rather than the current canonical name.

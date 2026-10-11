@@ -190,7 +190,7 @@ impl<'a> Filer<'a> {
     /// role and the folder its kind files under. If the From address names
     /// this mailspace as well, a `sent` row under the From role. A letter
     /// with neither is held under its first To address, verbatim, so nothing
-    /// is dropped.
+    /// is dropped; it is another mailspace's work and mints no backlog node.
     fn placements(
         &self,
         record: &Record,
@@ -239,11 +239,13 @@ impl<'a> Filer<'a> {
                 .first()
                 .cloned()
                 .unwrap_or_else(|| record.from.clone());
+            // Held for another mailspace's role: the rows and blobs are
+            // kept, but the work is not this mailspace's backlog.
             placements.push(Placement {
                 account,
                 role: item::role_for(kind, false),
                 bind: true,
-                attach: true,
+                attach: false,
             });
         }
         placements

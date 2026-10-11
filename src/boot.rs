@@ -21,7 +21,7 @@ use serde::Serialize;
 use crate::error::VivariumError;
 use crate::mailspace::{
     DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace, RoleView, TaskDumpRequest,
-    TaskDumpStatus,
+    TaskDumpStatus, is_foreign_account,
 };
 use crate::role_schedule::{self, ScheduleState};
 use crate::role_status::{self, ProcessState};
@@ -380,6 +380,12 @@ fn collect_unabsorbed(
             ..Default::default()
         },
     })?;
+    // Mail held under another mailspace's address (the governance vouch
+    // letter, other members' traffic) is nobody's here to absorb.
+    let records: Vec<_> = records
+        .into_iter()
+        .filter(|record| !is_foreign_account(&record.account))
+        .collect();
     let rows = truncate::capped(records, CAP_UNABSORBED, "unabsorbed mail", truncations);
     Ok(rows
         .into_iter()
@@ -415,9 +421,14 @@ fn collect_open(
         status: TaskDumpStatus::Open,
         open_role: role.into(),
         kind: kind.into(),
+        include_outbound: false,
         filters: DumpFilters::default(),
     })?;
-    rows.extend(records.into_iter().map(|record| {
+    // Work held for another mailspace's role is that mailspace's handle.
+    let local = records
+        .into_iter()
+        .filter(|record| !is_foreign_account(&record.account));
+    rows.extend(local.map(|record| {
         HandleRow::new(
             &record.handle,
             kind,
@@ -440,7 +451,7 @@ fn collect_wants(
     // does not go through `list_wants_with_metadata` for metadata it never
     // shows.
     for want in mailspace.list_kind(None, "wants", "want")? {
-        if want.absorbed_at.is_some() {
+        if want.absorbed_at.is_some() || is_foreign_account(&want.account) {
             continue;
         }
         rows.push(HandleRow::new(

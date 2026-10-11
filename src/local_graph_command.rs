@@ -99,6 +99,7 @@ fn frontier_with_kind_filter(show: &GraphShow, kind: Option<&str>) -> GraphFront
     frontier.ready.retain(|id| matching.contains(id));
     frontier.blocked.retain(|id| matching.contains(id));
     frontier.active.retain(|id| matching.contains(id));
+    frontier.awaiting.retain(|id| matching.contains(id));
     frontier.gates.retain(|gate| gate.kind == kind);
     frontier
 }

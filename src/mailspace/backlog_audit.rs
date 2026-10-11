@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use super::Mailspace;
 use super::backlog::backlog_node_by_token;
+use super::holding::is_foreign_account;
 use crate::error::VivariumError;
 use crate::storage::{BACKLOG_GRAPH_CODE, StoredMessageView, WorkGraphNodeRow};
 
@@ -41,6 +42,8 @@ struct AuditItem {
     folder_done: bool,
     subject: String,
     message_id: String,
+    /// The row is held under another mailspace's address.
+    foreign_account: Option<String>,
 }
 
 impl Mailspace {
@@ -118,6 +121,7 @@ fn canonical_item(
         handle,
         kind,
         folder_done: view.local_role == "done",
+        foreign_account: is_foreign_account(&view.account).then(|| view.account.clone()),
         subject: view.subject,
         message_id,
     }))
@@ -155,6 +159,9 @@ fn audit_item(
     findings: &mut Vec<BacklogAuditFinding>,
 ) -> Result<(), VivariumError> {
     let node = backlog_node_by_token(storage, nodes, &item.handle)?;
+    if let Some(account) = &item.foreign_account {
+        return audit_foreign(mailspace, node.as_ref(), item, account, repair, findings);
+    }
     let Some(node) = node else {
         let mut finding = BacklogAuditFinding {
             class: "missing_node".into(),
@@ -174,6 +181,39 @@ fn audit_item(
     };
     audit_kind(mailspace, graph_handle, &node, item, repair, findings)?;
     audit_state(mailspace, graph_handle, &node, item, repair, findings)?;
+    Ok(())
+}
+
+/// An item held under another mailspace's address is that mailspace's work:
+/// it never needs a node here, and one that exists is settled, not repaired
+/// toward the folder. Reports only a node still open or active.
+fn audit_foreign(
+    mailspace: &Mailspace,
+    node: Option<&WorkGraphNodeRow>,
+    item: &AuditItem,
+    account: &str,
+    repair: bool,
+    findings: &mut Vec<BacklogAuditFinding>,
+) -> Result<(), VivariumError> {
+    let Some(node) = node.filter(|node| matches!(node.state.as_str(), "open" | "active")) else {
+        return Ok(());
+    };
+    let mut finding = BacklogAuditFinding {
+        class: "foreign_held".into(),
+        kind: node.kind.clone(),
+        handle: item.handle.clone(),
+        subject: item.subject.clone(),
+        detail: format!(
+            "node is '{}' but the item is held for {account}",
+            node.state
+        ),
+        repaired: false,
+    };
+    if repair {
+        mailspace.backlog_complete_item_via(&item.handle, "via=repair")?;
+        finding.repaired = true;
+    }
+    findings.push(finding);
     Ok(())
 }
 
@@ -368,7 +408,14 @@ pub fn print_backlog_audit(
         .iter()
         .filter(|f| f.class == "orphan_node")
         .count();
-    println!("  findings missing={missing} state={state} kind={kind} orphan={orphan}");
+    let foreign = report
+        .findings
+        .iter()
+        .filter(|f| f.class == "foreign_held")
+        .count();
+    println!(
+        "  findings missing={missing} state={state} kind={kind} orphan={orphan} foreign={foreign}"
+    );
     for finding in &report.findings {
         let flag = if finding.repaired { " [repaired]" } else { "" };
         println!(

@@ -404,6 +404,16 @@ Gated kinds never appear in `graph ready`'s ready list (they render under
 couplings: topology evidence that never blocks readiness. Export round-trips
 them dotted. `-->` remains the only prerequisite arrow.
 
+A `sent` copy of work addressed to another mailspace keeps its backlog node,
+but the node is `awaiting`: `graph ready` lists it on its own line, `vivi step`
+reports it as `awaiting_remote` with the recipient's address, and
+`graph activate` refuses it. `need|task|want list --for <sender>` and `dump`
+include the author's own open outbound copies (role `sent`), `--depends-on`
+accepts them, and `done` settles the node; reopening or promoting a sent copy
+is refused, because only the receiving mailspace can. Work held for another
+mailspace's role mints no node; `graph audit` reports a node left for it as
+`foreign_held` and `--repair` settles it.
+
 `vivi step` adjudicates **only the `backlog` graph**. Imported topologies never
 enter the step manifest — their nodes are dispatched with `graph activate` and
 completed at reconcile. `graph ready` without an argument lists every graph's

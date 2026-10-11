@@ -2,7 +2,8 @@
 //! store, restorable byte for byte.
 //!
 //! The policy and the eviction are chat prune's: never open needs, tasks or
-//! wants, never starred or absorbed items, never anything without a binding
+//! wants (nor the sender's own copy of open work handed to another mailspace),
+//! never starred or absorbed items, never anything without a binding
 //! (local-origin letters), only letters dated before the cutoff. The row and
 //! its local state stay and the blob goes; `resync`, `fetch`, or
 //! `pull --refs` bring a letter back as a restored row. It needs neither the
@@ -55,8 +56,8 @@ pub fn report_lines(report: &PruneReport) -> Vec<String> {
         report.evicted
     };
     let mut lines = vec![format!(
-        "{verb} {count} letter(s) dated before {} (open needs/tasks/wants, starred, absorbed, \
-         and local mail are kept)",
+        "{verb} {count} letter(s) dated before {} (open needs/tasks/wants, including your copies \
+         of work sent to another mailspace, starred, absorbed, and local mail are kept)",
         report.cutoff
     )];
     for item in report.items.iter().take(LISTING) {

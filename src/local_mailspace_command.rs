@@ -580,9 +580,9 @@ fn list_tasks(
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let roles = match status {
-        vivi::cli::TaskStatus::Open => vec!["tasks"],
+        vivi::cli::TaskStatus::Open => vec!["tasks", "sent"],
         vivi::cli::TaskStatus::Done => vec!["done"],
-        vivi::cli::TaskStatus::All => vec!["tasks", "done"],
+        vivi::cli::TaskStatus::All => vec!["tasks", "sent", "done"],
     };
     crate::local_work_list::print_work_lists(
         &mailspace,

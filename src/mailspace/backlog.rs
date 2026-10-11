@@ -306,8 +306,9 @@ impl Mailspace {
     }
 
     /// Keep the backlog node in step with a lifecycle folder move. Work-item
-    /// closes (tasks/needs/wants → done) and their reversals touch graph
-    /// state; promotion (wants→needs) intentionally leaves the node open.
+    /// closes (tasks/needs/wants → done, and the sender's own `sent` copy →
+    /// done) and their reversals touch graph state; promotion (wants→needs)
+    /// intentionally leaves the node open.
     pub(super) fn sync_backlog_node(
         &self,
         from_role: &str,
@@ -315,7 +316,9 @@ impl Mailspace {
         handle: &str,
     ) -> Result<(), VivariumError> {
         match (from_role, to_role) {
-            ("tasks" | "needs" | "wants", "done") => self.backlog_complete_item(handle).map(|_| ()),
+            ("tasks" | "needs" | "wants" | "sent", "done") => {
+                self.backlog_complete_item(handle).map(|_| ())
+            }
             ("done", "tasks" | "needs" | "wants") => self.backlog_reopen_item(handle),
             _ => Ok(()),
         }
@@ -452,7 +455,8 @@ pub(super) fn backlog_node_by_token(
 }
 
 /// Resolve one dependency token to a canonical backlog dep. Accepts open
-/// tasks, needs, and wants plus done items of any kind.
+/// tasks, needs, and wants, the sender's own copy of work sent to another
+/// mailspace (open, as it is tracked here), plus done items of any kind.
 fn resolve_backlog_dep(storage: &Storage, token: &str) -> Result<BacklogDep, VivariumError> {
     let message_id = storage
         .resolve_message_token(token)
@@ -465,6 +469,7 @@ fn resolve_backlog_dep(storage: &Storage, token: &str) -> Result<BacklogDep, Viv
         "needs" => ("need", "open"),
         "wants" => ("want", "open"),
         "done" => ("item", "done"),
+        "sent" => (sent_work_kind(storage, &message_id, token)?, "open"),
         other => {
             return Err(VivariumError::Message(format!(
                 "dependency '{token}' has role '{other}'; expected a task, need, or want handle"
@@ -480,6 +485,24 @@ fn resolve_backlog_dep(storage: &Storage, token: &str) -> Result<BacklogDep, Viv
         state,
         kind,
     })
+}
+
+/// The work kind of a sent copy, from the letter's own kind header. Sent
+/// mail that is not work is not a dependency.
+fn sent_work_kind(
+    storage: &Storage,
+    message_id: &str,
+    token: &str,
+) -> Result<&'static str, VivariumError> {
+    let data = storage.read_message(message_id)?;
+    match super::kind::message_kind(&data).as_deref() {
+        Some("task") => Ok("task"),
+        Some("need") => Ok("need"),
+        Some("want") => Ok("want"),
+        _ => Err(VivariumError::Message(format!(
+            "dependency '{token}' has role 'sent'; expected a task, need, or want handle"
+        ))),
+    }
 }
 
 /// Canonical display handle for a message's content: a multi-recipient send

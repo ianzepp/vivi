@@ -324,12 +324,21 @@ provider is configured.
 Use `graph show`, `graph ready`, and `board --graph` for inspection.
 `graph ready` prints a `counts` line first — use it (or `--kind
 task|need|want|decision|stub|parked`) instead of reading long id lists.
+`awaiting` lists open work this mailspace handed to another one: it is
+tracked here so a sender can order it with `--depends-on` and see it with
+`need|task|want list --for <sender>` (the role column reads `sent`), but it is
+never ready here, `step` reports it as `awaiting_remote` naming the recipient,
+and `graph activate` refuses it. The receiving mailspace dispatches it; close
+your copy with `done` to settle the node. Work held for another mailspace's
+role (see Project Sync) is not this mailspace's backlog: `step`, `graph
+ready` and `boot` leave it out, and `graph audit` reports a node left for it
+as `foreign_held` and `--repair` settles it.
 Use `vivi step [--json]` for a mechanical adjudication of the backlog into
 `dispatches` (ready, verifiable work with clause counts) and `exceptions`
 (reason vocabulary: `want_requires_promotion`, `lowered_awaiting_units`,
-`no_done_when`, `item_missing`, `not_settled`, `untracked_item`). Wants
-render as parked in their exception detail. A clauseless task/need body
-warns at send time, and a duplicate work send (same sender, same subject,
+`no_done_when`, `item_missing`, `not_settled`, `untracked_item`,
+`awaiting_remote`). Wants render as parked in their exception detail. A
+clauseless task/need body warns at send time, and a duplicate work send (same sender, same subject,
 still open in the recipient's folder) warns on stderr without blocking.
 `vivi step
 --apply <handle>` completes an already-settled item's node and lists
@@ -1520,7 +1529,7 @@ address: one delivered row for every local `To`/`Cc` role (a role this mailspace
 lacks is filed under its name with a warning, and appears once the role is
 added), plus a `sent` row when `From` is a local role. A need, task, or want
 addressed to another mailspace's role is held under its address, so every member
-holds every work item without it landing in a local queue.
+holds every work item without it landing in a local queue or the local backlog.
 
 **Windows and the floor.** A pull reads the project in pages of 500 and saves
 the cursor after every page, so an interrupted pull resumes where it stopped.
@@ -1550,7 +1559,8 @@ matches nothing is ignored.
 
 **Pruning.** `vivi sync prune --older-than 30d [--dry-run]` evicts letters
 bound to the project that are dated before the cutoff, freeing the files. It
-never evicts open needs, tasks, or wants, starred or absorbed rows, or letters
+never evicts open needs, tasks, or wants (including your own `sent` copy of
+open work handed to another mailspace), starred or absorbed rows, or letters
 that never travelled. The rows and local state stay; `resync`, `fetch`, or
 `pull --refs` restores a letter byte for byte. It needs no server or key and
 runs only when asked.
