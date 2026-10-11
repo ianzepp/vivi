@@ -83,7 +83,8 @@ need() {
   command -v "$1" >/dev/null 2>&1 && return 0
   [ -z "${UNPRIVILEGED:-}" ] || return 1
   apt-get update -qq >/dev/null 2>&1
-  apt-get install -y -qq --no-install-recommends "$2" >/dev/null 2>&1
+  # A bare base image has no CA bundle; without one every https fetch fails.
+  apt-get install -y -qq --no-install-recommends "$2" ca-certificates >/dev/null 2>&1
   command -v "$1" >/dev/null 2>&1
 }
 
@@ -108,8 +109,10 @@ if [ ! -f "$W/seeded" ]; then
       && git push -q "$LOCAL_REMOTE" HEAD:refs/heads/main ) || { echo "seed_failed source" >> $L; exit 6; }
   fi
   mkdir -p "$RD" && cd "$RD" && git init -q . \
-    && git fetch -q --depth 1 "$(remote_url)" "$BASE" \
-    && git checkout -q FETCH_HEAD || { echo "seed_failed fetch" >> $L; exit 4; }
+    && git fetch -q --depth 1 "$(remote_url)" "$BASE" 2> "$W/fetch.err" \
+    && git checkout -q FETCH_HEAD || {
+      # Say why, without the address: it can carry the fetch token.
+      echo "seed_failed fetch: $(grep -v '://' "$W/fetch.err" 2>/dev/null | tail -1 | cut -c1-160)" >> $L; exit 4; }
   rm -f "$RD/.git/FETCH_HEAD"
   git rev-parse HEAD > "$W/seed-base.txt"
   T2=$(now); echo "clone_s $(d $T1 $T2)" >> $L
