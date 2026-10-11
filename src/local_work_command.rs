@@ -394,7 +394,7 @@ fn move_item(
     verb: &str,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    let handle = mailspace.move_item(
+    let moved = mailspace.move_item_outcome(
         for_identity,
         handle,
         role,
@@ -402,7 +402,7 @@ fn move_item(
         command,
         None,
     )?;
-    println!("{verb} {handle}");
+    println!("{}", moved.receipt(verb));
     Ok(())
 }
 

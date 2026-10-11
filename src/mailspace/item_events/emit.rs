@@ -43,10 +43,12 @@ impl EmitRequest<'_> {
 
 /// The event kind a folder move is, if it is one: a close of open work, or a
 /// reopen of closed work. A reopen may point at the owner's `sent` record of
-/// a send whose delivered copies are closed; the caller checks that.
+/// a send whose delivered copies are closed; the caller checks that. A close
+/// may point at a copy an assignee already reported done, which the owner
+/// still has to close; the caller checks that too.
 fn event_kind_for_move(from: &str, to: &str) -> Option<ItemEventKind> {
     match (from, to) {
-        ("tasks" | "needs" | "wants" | "sent", "done") => Some(ItemEventKind::Done),
+        ("tasks" | "needs" | "wants" | "sent" | "done", "done") => Some(ItemEventKind::Done),
         ("done" | "sent", "tasks" | "needs" | "wants") => Some(ItemEventKind::Reopened),
         _ => None,
     }
@@ -59,10 +61,11 @@ struct EventLetterDraft {
 }
 
 impl Mailspace {
-    /// Write the event letter for a `done` or `reopen` move by the item's
-    /// owner and apply it. `Ok(None)` when the move is not an event: not a
-    /// close or reopen, not work, or the actor is not the item's owner (an
-    /// assignee's move is a local report).
+    /// Write the event letter for a `done` or `reopen` move by a role that
+    /// may close the item (its author, or a mind) and apply it; the result is
+    /// the event letter's handle. `Ok(None)` when the move is not an event:
+    /// not a close or reopen, not work, or the actor may not close the item
+    /// (an assignee's move is a local report).
     pub(in crate::mailspace) fn try_emit_for_move(
         &self,
         storage: &mut Storage,
@@ -79,8 +82,15 @@ impl Mailspace {
             return Ok(None);
         };
         let head = self.item_head(storage, &item)?;
-        if self.item_author(&item).as_deref() != Some(identity) {
+        if !self.may_close(&item, identity) {
             return refuse_assignee_reopen(before, kind, head, &item);
+        }
+        if kind == ItemEventKind::Done
+            && before.local_role == "done"
+            && head == Some(ItemEventKind::Done)
+        {
+            // Already closed by an event: the move is a no-op.
+            return Ok(None);
         }
         if kind == ItemEventKind::Reopened
             && before.local_role == "sent"
@@ -139,6 +149,107 @@ impl Mailspace {
         Ok(true)
     }
 
+    /// The row an identity acts on when it names work it does not hold: any
+    /// row of the item here, when the move closes or reopens it and the
+    /// identity may close it (its author or holder of the sent copy, or a
+    /// mind). `Ok(None)` otherwise; the caller reports who holds the row.
+    pub(in crate::mailspace) fn row_for_item_actor(
+        &self,
+        storage: &Storage,
+        identity: &str,
+        token: &str,
+        role: &str,
+    ) -> Result<Option<StoredMessageView>, VivariumError> {
+        let Ok(resolved) = storage.resolve_message_token(token) else {
+            return Ok(None);
+        };
+        let Some(row) = storage.message_by_id(&resolved)? else {
+            return Ok(None);
+        };
+        if event_kind_for_move(&row.local_role, role).is_none() {
+            return Ok(None);
+        }
+        let Some(item) = held_item(storage, &row.content_id)? else {
+            return Ok(None);
+        };
+        if !self.may_close(&item, identity) {
+            return Ok(None);
+        }
+        if row.local_role == "done"
+            && role == "done"
+            && self.item_head(storage, &item)? == Some(ItemEventKind::Done)
+        {
+            return Err(VivariumError::Message(format!(
+                "{token} is already closed by its owner; reopen it to change it"
+            )));
+        }
+        Ok(Some(row))
+    }
+
+    /// Whether moving `before` to `role` is a close or reopen of work: an
+    /// event when the actor may close it, a report when not.
+    pub(in crate::mailspace) fn is_work_close(
+        &self,
+        storage: &Storage,
+        before: &StoredMessageView,
+        role: &str,
+    ) -> Result<bool, VivariumError> {
+        if event_kind_for_move(&before.local_role, role).is_none() {
+            return Ok(false);
+        }
+        Ok(held_item(storage, &before.content_id)?.is_some())
+    }
+
+    /// The refusal for naming work another role holds when the actor may not
+    /// close it: who holds it, the command that reports on it, and who may
+    /// close it. Falls back to the plain holder error for anything else.
+    pub(in crate::mailspace) fn foreign_move_error(
+        &self,
+        storage: &Storage,
+        identity: &str,
+        token: &str,
+        role: &str,
+        command: &str,
+    ) -> VivariumError {
+        let error = self.cross_identity_error(storage, token);
+        let Ok(resolved) = storage.resolve_message_token(token) else {
+            return error;
+        };
+        let Ok(Some(row)) = storage.message_by_id(&resolved) else {
+            return error;
+        };
+        let Some(holder) = self.identity_owning_account(&row.account) else {
+            return error;
+        };
+        if event_kind_for_move(&row.local_role, role).is_none() {
+            return error;
+        }
+        let Ok(Some(item)) = held_item(storage, &row.content_id) else {
+            return error;
+        };
+        let author = self
+            .item_author(&item)
+            .map_or_else(|| item.from_addr.clone(), |name| format!("'{name}'"));
+        let report = if command == "item move" {
+            format!("--for {holder}")
+        } else {
+            format!("--for {holder} (vivi {command} {token} --for {holder})")
+        };
+        let why = if self.identity_is_mind(identity) {
+            format!(
+                "'{identity}' is a mind, but {author} is in another mailspace, so a close \
+                 here stays a local report"
+            )
+        } else {
+            format!("'{identity}' is neither")
+        };
+        VivariumError::Message(format!(
+            "message '{token}' is held by identity '{holder}'; to report on it retry with \
+             {report}, which moves only that copy. Closing or reopening it for everyone is \
+             for its author {author} or a mind-kind role; {why}"
+        ))
+    }
+
     fn emit_item_event(
         &self,
         storage: &mut Storage,
@@ -154,14 +265,18 @@ impl Mailspace {
         self.check_letter_size(letter.data.len())?;
         let rows = event_rows(request.identity, &letter.local, &item.content_id);
         let moves = self.event_moves(storage, item, request)?;
-        storage.apply_item_event(&ItemEventWrite {
+        let written = storage.apply_item_event(&ItemEventWrite {
             reply_requests: &rows,
             reply_data: Some(&letter.data),
             parent_content_id: &item.content_id,
             moves: &moves,
         })?;
         self.sync_item_nodes(storage, item, request.kind, "via=lifecycle")?;
-        storage.display_handle(&request.before.message_id)
+        // The last row is the actor's own sent copy of the letter.
+        let event = written
+            .last()
+            .ok_or_else(|| VivariumError::Message("the event letter was not stored".into()))?;
+        storage.display_handle(&event.message_id)
     }
 
     /// The folder moves the event makes, with the actor's own lifecycle row:

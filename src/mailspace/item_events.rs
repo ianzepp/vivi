@@ -333,6 +333,19 @@ impl Mailspace {
         })
     }
 
+    /// Whether `identity` may close or reopen `item` for everyone: the role
+    /// that authored it (or holds its sent copy), or a role of kind `mind`.
+    /// A mind's event is believed only when this mailspace authored the item;
+    /// the receive-side authority is the mailspace, so on another mailspace's
+    /// item a mind's close stays a local report.
+    pub(super) fn may_close(&self, item: &HeldItem, identity: &str) -> bool {
+        if self.item_author(item).as_deref() == Some(identity) {
+            return true;
+        }
+        self.identity_is_mind(identity)
+            && self.event_speaks_for(&self.address_domain(), &item.from_domain)
+    }
+
     /// The rows the head `kind` moves: open work to `done` on a close, done
     /// rows back to the folder they closed from on a reopen. A `sent` row
     /// follows only when it is the sender's only copy (every recipient is in

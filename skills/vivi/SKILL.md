@@ -212,20 +212,29 @@ hand.
 
 ### State as letters
 
-Closing and reopening are letters, not local flags. The role that authored a
-need, task, or want owns it: its `done`, `drop` and `reopen` write one small
-reply on the item, with `X-Vivi-Event: done|reopened`,
-`X-Vivi-Event-Of: <item Message-ID>` and `X-Vivi-Event-Prev: <the event it
-follows>` (absent for the first) beside the usual `In-Reply-To`. It is
-addressed to the item's To and Cc minus the sender and filed read; `--note` is
-its body. Every holder of the item applies it: the folder moves, the node
-completes or reopens, and the assignee's queue empties when the owner closes.
-A need that closes through `need bind` writes the same letter when this
-mailspace authored it.
+Closing and reopening are letters, not local flags. Two kinds of role may
+close or reopen an item for everyone: the role that authored it (or holds its
+`sent` copy), and any role of kind `mind` (`role add <name> --kind mind`). Its
+`done`, `drop` and `reopen` write one small reply on the item, with
+`X-Vivi-Event: done|reopened`, `X-Vivi-Event-Of: <item Message-ID>` and
+`X-Vivi-Event-Prev: <the event it follows>` (absent for the first) beside the
+usual `In-Reply-To`. It is addressed to the item's To and Cc minus the sender
+and filed read; `--note` is its body. Every holder of the item applies it: the
+folder moves, the node completes or reopens, and the assignee's queue empties
+when the owner closes. A need that closes through `need bind` writes the same
+letter when this mailspace authored it.
 
-An assignee reports with an ordinary reply. `task done --note` moves its own
-copy and sends the note, nothing more, and a report never changes the owner's
-state. An assignee cannot reopen what its owner closed; ask in a reply.
+Any handle of the item works for a role that may close it. A mind can name the
+delivered copy a hand holds, its own copy, or the author's `sent` copy; give
+`--for <your identity>` and the close lands on the item, not on the row named.
+The command prints `done <handle>; event <id>`. A role of any other kind (hand,
+auditor, head, ...) reports instead and prints `done <handle>; reported`: its
+own copy moves and the `--note` is a reply, nothing more, and a report never
+changes the item's state. Naming a copy another role holds is refused, and the
+error names the holder, the report command to retry with `--for <holder>`, and
+who may close. A report cannot reopen what its owner closed; ask in a reply.
+An event counts only in the item's own mailspace, so a mind in an assignee's
+mailspace reports on an item another mailspace authored; it does not close it.
 
 The state of an item is its chain head: the event no other held event names as
 `Prev`. A fork (two checkouts acted on the same event) leaves several heads and

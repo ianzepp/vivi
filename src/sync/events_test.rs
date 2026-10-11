@@ -2,7 +2,7 @@
 //! reply letters that travel through the fake project server and move the
 //! assignee's rows and nodes; an assignee's report does not move the owner's.
 
-use crate::mailspace::{Mailspace, SendRequest};
+use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
@@ -582,4 +582,99 @@ fn an_event_naming_no_held_item_changes_nothing() {
     assert_eq!(pulled.filed.get("inbox"), Some(&1));
     assert_eq!(pulled.events_applied + pulled.events_ignored, 0);
     assert_eq!(w.bob.rows().len(), 1);
+}
+
+fn minds(checkout: &mut Checkout, role: &str) {
+    checkout
+        .mailspace
+        .add_role(
+            role,
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn another_mind_in_the_owning_mailspace_closes_and_the_assignees_queue_empties() {
+    let server = FakeServer::new();
+    let mut a = alice();
+    minds(&mut a, "lead");
+    a.mailspace.add_identity("auditor").unwrap();
+    let b = bob();
+    let task = send_task(&a, &b.address("hand"), "ship it");
+    a.push(&a.client(&server));
+    b.pull(&b.client(&server));
+    let p = Pair { server, a, b, task };
+
+    // `lead` did not author the task and names `mind`'s sent handle: a mind
+    // closes work for everyone. A role of another kind may not.
+    let refused =
+        p.a.mailspace
+            .move_task("auditor", &p.task, "done", None, None, &[], &[])
+            .unwrap_err()
+            .to_string();
+    assert!(refused.contains("held by identity 'mind'"), "{refused}");
+    assert_eq!(role_of(&p.a, &p.task), "sent");
+
+    let moved =
+        p.a.mailspace
+            .move_task_outcome("lead", &p.task, "done", Some("accepted"), None, &[], &[])
+            .unwrap();
+    assert!(moved.event.is_some());
+    assert!(!moved.reported);
+    assert_eq!(state(&p.a, &p.task).as_deref(), Some("done"));
+    assert_eq!(node_state(&p.a.mailspace, &p.task), "done");
+    let pulled = p.sync_a_to_b();
+
+    assert_eq!(pulled.events_applied, 1);
+    assert_eq!(pulled.events_ignored, 0);
+    assert_eq!(role_of(&p.b, &p.task), "done", "the queue empties");
+    assert_eq!(node_state(&p.b.mailspace, &p.task), "done");
+    assert!(p.b.mailspace.list("hand", "tasks").unwrap().is_empty());
+
+    // The same mind reopens it, and the item returns.
+    p.a.mailspace
+        .move_task("lead", &p.task, "tasks", None, None, &[], &[])
+        .unwrap();
+    p.sync_a_to_b();
+    assert_eq!(role_of(&p.b, &p.task), "tasks");
+    assert_eq!(state(&p.b, &p.task).as_deref(), Some("reopened"));
+}
+
+#[test]
+fn a_mind_in_the_assignees_mailspace_reports_because_it_did_not_author_the_item() {
+    let server = FakeServer::new();
+    let a = alice();
+    let mut b = bob();
+    minds(&mut b, "lead");
+    let task = send_task(&a, &b.address("hand"), "ship it");
+    a.push(&a.client(&server));
+    b.pull(&b.client(&server));
+    let p = Pair { server, a, b, task };
+
+    // The event could not be believed by its owner's mailspace, so the
+    // refusal says so and names the report command.
+    let refused =
+        p.b.mailspace
+            .move_task("lead", &p.task, "done", None, None, &[], &[])
+            .unwrap_err()
+            .to_string();
+    assert!(refused.contains("held by identity 'hand'"), "{refused}");
+    assert!(refused.contains("--for hand"), "{refused}");
+    assert!(refused.contains("another mailspace"), "{refused}");
+
+    // The assignee reports on its own copy: no event, the owner untouched.
+    let moved =
+        p.b.mailspace
+            .move_task_outcome("hand", &p.task, "done", None, None, &[], &[])
+            .unwrap();
+    assert!(moved.event.is_none());
+    assert!(moved.reported);
+    assert_eq!(moved.receipt("done"), format!("done {}; reported", p.task));
+    p.sync_b_to_a();
+    assert_eq!(state(&p.a, &p.task), None);
+    assert_eq!(node_state(&p.a.mailspace, &p.task), "open");
 }

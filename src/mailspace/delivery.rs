@@ -23,6 +23,32 @@ pub(super) struct DeliveredMessageId {
     pub(super) content_id: String,
 }
 
+/// What a `done`/`reopen`-style move did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveOutcome {
+    /// The handle of the row the move named.
+    pub handle: String,
+    /// The handle of the event letter, when the move closed or reopened work
+    /// as its author or a mind: the change travels to every holder.
+    pub event: Option<String>,
+    /// Whether a close or reopen of work stayed a local report: only this
+    /// mailspace's copy moved and the owner's state is unchanged.
+    pub reported: bool,
+}
+
+impl MoveOutcome {
+    /// The one-line receipt: `done <handle>; event <id>` for a close that
+    /// travelled, `done <handle>; reported` for one that did not.
+    #[must_use]
+    pub fn receipt(&self, verb: &str) -> String {
+        match &self.event {
+            Some(event) => format!("{verb} {}; event {event}", self.handle),
+            None if self.reported => format!("{verb} {}; reported", self.handle),
+            None => format!("{verb} {}", self.handle),
+        }
+    }
+}
+
 impl Mailspace {
     /// Send a message to identities in the mailspace and to remote addresses.
     /// `request` specifies the sender, recipients, subject, body, and optional
@@ -573,6 +599,26 @@ impl Mailspace {
         repo: &[String],
         tip: &[String],
     ) -> Result<String, VivariumError> {
+        self.move_task_outcome(identity, handle, role, note, verdict, repo, tip)
+            .map(|moved| moved.handle)
+    }
+
+    /// [`Mailspace::move_task`], reporting whether the move travelled as an
+    /// event letter or stayed a local report.
+    ///
+    /// # Errors
+    /// Same as [`Mailspace::move_task`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_task_outcome(
+        &self,
+        identity: &str,
+        handle: &str,
+        role: &str,
+        note: Option<&str>,
+        verdict: Option<&str>,
+        repo: &[String],
+        tip: &[String],
+    ) -> Result<MoveOutcome, VivariumError> {
         if repo.len() != tip.len() {
             return Err(VivariumError::Other(
                 "--repo and --tip must be provided in matching pairs".into(),
@@ -585,7 +631,7 @@ impl Mailspace {
         for (repo, tip) in repo.iter().zip(tip.iter()) {
             metadata.insert(format!("repo:{repo}"), tip.clone());
         }
-        self.move_item(
+        self.move_item_outcome(
             identity,
             handle,
             role,
@@ -637,13 +683,72 @@ impl Mailspace {
         command: &str,
         metadata: Option<&std::collections::BTreeMap<String, String>>,
     ) -> Result<String, VivariumError> {
+        self.move_item_outcome(identity, handle, role, note, command, metadata)
+            .map(|moved| moved.handle)
+    }
+
+    /// [`Mailspace::move_item`], reporting whether the move travelled as an
+    /// event letter or stayed a local report.
+    ///
+    /// # Errors
+    /// Same as [`Mailspace::move_item`].
+    pub fn move_item_outcome(
+        &self,
+        identity: &str,
+        handle: &str,
+        role: &str,
+        note: Option<&str>,
+        command: &str,
+        metadata: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> Result<MoveOutcome, VivariumError> {
         let identity = self.resolve_identity(identity)?;
-        let names = sorted_identity_names(self.identity_names(&identity));
         let role = canonical_local_role(role)?;
         let mut storage = self.storage()?;
-        let resolved = match storage.resolve_message_token_for_accounts(handle, &names) {
-            Ok(resolved) => resolved,
-            Err(_) => return Err(self.cross_identity_error(&storage, handle)),
+        let before = self.move_target(&storage, &identity, handle, &role, command)?;
+        if before.absorbed_at.is_some() {
+            return Err(VivariumError::Message(format!(
+                "{handle} is absorbed and can no longer be changed"
+            )));
+        }
+        let work_close = self.is_work_close(&storage, &before, &role)?;
+        // A role that may close the work (its author, or a mind) writes an
+        // event letter, which carries the move to every mailspace holding
+        // the item; any other move is local, and a close is a report.
+        let event =
+            self.try_emit_for_move(&mut storage, &identity, &before, &role, note, command)?;
+        if event.is_none() {
+            self.refuse_sent_copy_reopen(handle, &before, &role)?;
+            self.move_row_locally(&mut storage, &identity, &before, &role, note, command)?;
+        }
+        if let Some(metadata) = metadata {
+            storage.set_item_metadata(&before.message_id, metadata)?;
+        }
+        let shown = storage.display_handle(&before.message_id)?;
+        if event.is_none() {
+            self.sync_backlog_node(&before.local_role, &role, &shown)?;
+        }
+        Ok(MoveOutcome {
+            handle: shown,
+            reported: event.is_none() && work_close,
+            event,
+        })
+    }
+
+    /// The row a move acts on: the one the identity holds under `handle`, or
+    /// any row of the same item when the identity may close it.
+    fn move_target(
+        &self,
+        storage: &Storage,
+        identity: &str,
+        handle: &str,
+        role: &str,
+        command: &str,
+    ) -> Result<StoredMessageView, VivariumError> {
+        let names = sorted_identity_names(self.identity_names(identity));
+        let Ok(resolved) = storage.resolve_message_token_for_accounts(handle, &names) else {
+            return self
+                .row_for_item_actor(storage, identity, handle, role)?
+                .ok_or_else(|| self.foreign_move_error(storage, identity, handle, role, command));
         };
         let Some(before) = storage.message_by_id(&resolved)? else {
             return Err(VivariumError::Message(format!(
@@ -655,28 +760,7 @@ impl Mailspace {
                 "message not found for {identity}: {handle}"
             )));
         }
-        if before.absorbed_at.is_some() {
-            return Err(VivariumError::Message(format!(
-                "{handle} is absorbed and can no longer be changed"
-            )));
-        }
-        // The owner of work closing or reopening it writes an event letter,
-        // which carries the move to every mailspace holding the item; any
-        // other move is local.
-        let emitted =
-            self.try_emit_for_move(&mut storage, &identity, &before, &role, note, command)?;
-        if emitted.is_none() {
-            self.refuse_sent_copy_reopen(handle, &before, &role)?;
-            self.move_row_locally(&mut storage, &identity, &before, &role, note, command)?;
-        }
-        if let Some(metadata) = metadata {
-            storage.set_item_metadata(&resolved, metadata)?;
-        }
-        let handle = storage.display_handle(&resolved)?;
-        if emitted.is_none() {
-            self.sync_backlog_node(&before.local_role, &role, &handle)?;
-        }
-        Ok(handle)
+        Ok(before)
     }
 
     /// Move the one row `before` names, with the note as a reply when given.

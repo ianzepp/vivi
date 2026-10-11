@@ -4060,8 +4060,34 @@ fn cross_identity_close_names_the_holder() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let project_s = project.path().to_str().unwrap();
+    assert_success(&vivi([
+        "mailspace",
+        "identity",
+        "add",
+        "cfo",
+        "--project",
+        project_s,
+    ]));
     let task = send_work(project.path(), "task", "cto", "routed unit", "done_when: x");
 
+    // `cfo` neither authored the task nor is a mind: it may only report,
+    // and the refusal says through whom and who may close it.
+    let out = vivi([
+        "task",
+        "done",
+        "--for",
+        "cfo",
+        &task,
+        "--project",
+        project_s,
+    ]);
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("held by identity 'cto'"), "{err}");
+    assert!(err.contains("--for cto"), "{err}");
+    assert!(err.contains("its author 'ceo'"), "{err}");
+
+    // `ceo` authored it: the delivered handle works for the author.
     let out = vivi([
         "task",
         "done",
@@ -4071,10 +4097,12 @@ fn cross_identity_close_names_the_holder() {
         "--project",
         project_s,
     ]);
-    assert!(!out.status.success());
-    let err = stderr(&out);
-    assert!(err.contains("held by identity 'cto'"), "{err}");
-    assert!(err.contains("--for cto"), "{err}");
+    assert_success(&out);
+    assert!(
+        stdout(&out).starts_with(&format!("done {task}; event ")),
+        "{}",
+        stdout(&out)
+    );
 }
 
 #[test]

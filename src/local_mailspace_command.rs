@@ -778,9 +778,10 @@ fn move_task(
         ));
     }
     let mailspace = Mailspace::discover(project)?;
-    let handle = mailspace.move_task(for_identity, handle, role, note, verdict, repo, tip)?;
+    let moved =
+        mailspace.move_task_outcome(for_identity, handle, role, note, verdict, repo, tip)?;
     let verb = if role == "done" { "done" } else { "reopened" };
-    println!("{verb} {handle}");
+    println!("{}", moved.receipt(verb));
     Ok(())
 }
 

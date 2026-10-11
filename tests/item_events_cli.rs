@@ -36,23 +36,32 @@ fn fails(project: &Path, args: &[&str]) -> String {
 fn project() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     ok(tmp.path(), &["mailspace", "init"]);
-    for role in ["mind", "hand", "auditor"] {
-        ok(tmp.path(), &["role", "add", role]);
+    for (role, kind) in [
+        ("mind", "mind"),
+        ("hand", "hand"),
+        ("auditor", "auditor"),
+        ("operator", "operator"),
+    ] {
+        ok(tmp.path(), &["role", "add", role, "--kind", kind]);
     }
     tmp
 }
 
 /// `(the delivered copy's handle, the sender's copy's handle)`.
 fn send(p: &Path, kind: &str, subject: &str) -> (String, String) {
+    send_between(p, kind, "mind", "hand", subject)
+}
+
+fn send_between(p: &Path, kind: &str, from: &str, to: &str, subject: &str) -> (String, String) {
     let out = ok(
         p,
         &[
             kind,
             "send",
             "--from",
-            "mind",
+            from,
             "--to",
-            "hand",
+            to,
             "--subject",
             subject,
             "--body",
@@ -66,7 +75,7 @@ fn send(p: &Path, kind: &str, subject: &str) -> (String, String) {
             .trim()
             .to_string()
     };
-    (after("created hand "), after("sent "))
+    (after(&format!("created {to} ")), after("sent "))
 }
 
 /// The folder role of the row `handle` names, from `show`'s JSON thread.
@@ -307,5 +316,177 @@ fn a_self_addressed_need_closes_and_reopens_by_its_own_letters() {
     ok(p, &["need", "reopen", &need, "--for", "mind"]);
     assert_eq!(role_of(p, "need", &need), "needs");
     assert_eq!(state_line(p, "need", &need).as_deref(), Some("reopened"));
+    audit_is_clean(p);
+}
+
+/// The bodies of an item's thread, in order.
+fn bodies(p: &Path, kind: &str, handle: &str) -> Vec<String> {
+    let out = ok(p, &[kind, "show", handle, "--json"]);
+    let thread: serde_json::Value = serde_json::from_str(&out).unwrap();
+    thread
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].as_str().unwrap().trim().to_string())
+        .collect()
+}
+
+#[test]
+fn a_mind_closes_an_operators_need_it_was_handed_with_no_sync() {
+    let tmp = project();
+    let p = tmp.path();
+    let (need, need_sent) = send_between(p, "need", "operator", "mind", "N from the operator");
+    assert_eq!(state_line(p, "need", &need), None);
+
+    // The mind holds the delivered copy and is not the author: its close is
+    // still the event, because a mind closes work for everyone.
+    let out = ok(p, &["need", "done", &need, "--for", "mind"]);
+    assert!(out.starts_with(&format!("done {need}; event ")), "{out}");
+    assert!(!out.contains("reported"), "{out}");
+
+    assert_eq!(role_of(p, "need", &need), "done");
+    assert_eq!(state_line(p, "need", &need).as_deref(), Some("done"));
+    assert_eq!(state_line(p, "need", &need_sent).as_deref(), Some("done"));
+    assert_eq!(thread_len(p, "need", &need), 2, "the item and its event");
+    let thread = bodies(p, "need", &need);
+    assert_eq!(
+        thread.iter().filter(|b| *b == "done").count(),
+        1,
+        "{thread:?}"
+    );
+    assert!(counts(p).contains("ready=0"), "{}", counts(p));
+    audit_is_clean(p);
+
+    // And reopens it the same way.
+    let out = ok(p, &["need", "reopen", &need, "--for", "mind"]);
+    assert!(
+        out.starts_with(&format!("reopened {need}; event ")),
+        "{out}"
+    );
+    assert_eq!(role_of(p, "need", &need), "needs");
+    assert_eq!(state_line(p, "need", &need).as_deref(), Some("reopened"));
+    assert_eq!(thread_len(p, "need", &need), 3);
+    audit_is_clean(p);
+}
+
+#[test]
+fn a_hands_close_reports_and_the_minds_close_of_the_same_handle_is_the_event() {
+    let tmp = project();
+    let p = tmp.path();
+    let (task, task_sent) = send(p, "task", "T the unit");
+    assert!(counts(p).contains("ready=1"), "{}", counts(p));
+
+    // The hand reports on its delivered copy: no event, no owner state. The
+    // copy moves, and the backlog node follows the folder as it always has.
+    let out = ok(
+        p,
+        &["task", "done", &task, "--for", "hand", "--note", "finished"],
+    );
+    assert!(out.starts_with(&format!("done {task}; reported")), "{out}");
+    assert_eq!(state_line(p, "task", &task), None);
+    assert_eq!(thread_len(p, "task", &task), 2, "the item and the note");
+
+    // The mind closes with the very same (delivered) handle: the event.
+    let out = ok(
+        p,
+        &["task", "done", &task, "--for", "mind", "--note", "accepted"],
+    );
+    assert!(out.starts_with(&format!("done {task}; event ")), "{out}");
+    assert_eq!(state_line(p, "task", &task).as_deref(), Some("done"));
+    assert_eq!(state_line(p, "task", &task_sent).as_deref(), Some("done"));
+    assert_eq!(thread_len(p, "task", &task), 3);
+    assert!(counts(p).contains("ready=0"), "{}", counts(p));
+    audit_is_clean(p);
+
+    // Closing again is not a second event.
+    let again = fails(p, &["task", "done", &task, "--for", "mind"]);
+    assert!(again.contains("already closed"), "{again}");
+    assert_eq!(thread_len(p, "task", &task), 3);
+
+    // The mind reopens through the delivered handle too.
+    let out = ok(p, &["task", "reopen", &task, "--for", "mind"]);
+    assert!(
+        out.starts_with(&format!("reopened {task}; event ")),
+        "{out}"
+    );
+    assert_eq!(role_of(p, "task", &task), "tasks");
+    assert_eq!(state_line(p, "task", &task).as_deref(), Some("reopened"));
+    assert!(counts(p).contains("ready=1"), "{}", counts(p));
+    audit_is_clean(p);
+}
+
+#[test]
+fn a_mind_closes_a_task_it_did_not_hold_by_the_hands_handle_and_by_its_own() {
+    let tmp = project();
+    let p = tmp.path();
+    // The operator's task to the hand: the mind is neither author nor holder.
+    let (task, task_sent) = send_between(p, "task", "operator", "hand", "T routed past the mind");
+
+    let out = ok(p, &["task", "done", &task, "--for", "mind"]);
+    assert!(out.contains("; event "), "{out}");
+    assert_eq!(state_line(p, "task", &task).as_deref(), Some("done"));
+    assert_eq!(role_of(p, "task", &task), "done");
+    assert_eq!(state_line(p, "task", &task_sent).as_deref(), Some("done"));
+    audit_is_clean(p);
+
+    // The mind may reopen what the operator's own mailspace closed.
+    ok(p, &["task", "reopen", &task_sent, "--for", "mind"]);
+    assert_eq!(role_of(p, "task", &task), "tasks");
+    assert_eq!(state_line(p, "task", &task).as_deref(), Some("reopened"));
+}
+
+#[test]
+fn an_auditors_close_is_never_an_event_on_any_handle() {
+    let tmp = project();
+    let p = tmp.path();
+    let (task, task_sent) = send(p, "task", "T the unit");
+    let (need, need_sent) = send_between(p, "need", "operator", "mind", "N the need");
+
+    // The auditor holds neither copy: the refusal names the report command
+    // and who may close.
+    let error = fails(p, &["task", "done", &task, "--for", "auditor"]);
+    assert!(error.contains("held by identity 'hand'"), "{error}");
+    assert!(error.contains("--for hand"), "{error}");
+    assert!(error.contains("vivi task done"), "{error}");
+    assert!(error.contains("mind-kind role"), "{error}");
+    let error = fails(p, &["need", "done", &need_sent, "--for", "auditor"]);
+    assert!(error.contains("held by identity 'operator'"), "{error}");
+    let error = fails(p, &["task", "done", &task_sent, "--for", "auditor"]);
+    assert!(error.contains("held by identity 'mind'"), "{error}");
+
+    // Work handed to the auditor itself: its close is a report, whatever
+    // the handle. Only that copy moves; no event, no owner state.
+    let (own_task, _) = send_between(p, "task", "mind", "auditor", "T for the auditor");
+    let (own_need, _) = send_between(p, "need", "operator", "auditor", "N for the auditor");
+    for (kind, handle) in [("task", &own_task), ("need", &own_need)] {
+        let out = ok(p, &[kind, "done", handle, "--for", "auditor"]);
+        assert!(
+            out.starts_with(&format!("done {handle}; reported")),
+            "{out}"
+        );
+        assert_eq!(role_of(p, kind, handle), "done");
+        assert_eq!(state_line(p, kind, handle), None, "{kind}");
+        assert_eq!(thread_len(p, kind, handle), 1, "{kind}: no event letter");
+    }
+    assert_eq!(state_line(p, "task", &task), None);
+    assert_eq!(state_line(p, "need", &need), None);
+    assert_eq!(role_of(p, "task", &task), "tasks");
+    assert_eq!(role_of(p, "need", &need), "needs");
+    audit_is_clean(p);
+}
+
+#[test]
+fn the_minds_close_with_the_sent_handle_still_works() {
+    let tmp = project();
+    let p = tmp.path();
+    let (task, task_sent) = send(p, "task", "T the unit");
+
+    let out = ok(p, &["task", "done", &task_sent, "--for", "mind"]);
+    assert!(
+        out.starts_with(&format!("done {task_sent}; event ")),
+        "{out}"
+    );
+    assert_eq!(role_of(p, "task", &task), "done");
+    assert_eq!(state_line(p, "task", &task).as_deref(), Some("done"));
     audit_is_clean(p);
 }

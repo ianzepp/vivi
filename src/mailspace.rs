@@ -54,6 +54,7 @@ pub use archive::ArchiveExportReport;
 pub use backlog::BacklogBoundUnit;
 pub use backlog_audit::{BacklogAuditFinding, BacklogAuditReport, print_backlog_audit};
 pub use body::{read_body_arg, read_body_input};
+pub use delivery::MoveOutcome;
 pub use dump::{
     DumpFilters, DumpRecord, MailDumpRequest, TaskDumpRequest, TaskDumpStatus, parse_time_bound,
 };

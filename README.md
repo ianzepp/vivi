@@ -563,17 +563,21 @@ vivi cycle intake --project /path/to/project --for mind \
 ### State as letters
 
 Closing and reopening work are letters, not local flags. The role that authored
-a need, task, or want owns it, and its `done`, `drop` and `reopen` each write a
-small reply on the item with `X-Vivi-Event: done|reopened`,
+a need, task, or want (or holds its `sent` copy) and any role of kind `mind`
+may close or reopen it for everyone: their `done`, `drop` and `reopen` each
+write a small reply on the item with `X-Vivi-Event: done|reopened`,
 `X-Vivi-Event-Of: <item Message-ID>` and `X-Vivi-Event-Prev: <the event it
 follows>`. The letter goes to the item's To and Cc minus the sender, files
 read, and carries `--note` as its body. Every mailspace holding the item
 applies it: folders move and nodes complete or reopen, so the assignee's queue
-empties when the owner closes and a reopen brings the item back.
+empties when the owner closes and a reopen brings the item back. A mind may
+name any copy of the item in the mailspace (the delivered one, its own, the
+author's `sent` copy) and prints `done <handle>; event <id>`.
 
-An assignee reports with an ordinary reply. `task done --note` moves its own
-copy and sends the note, and never changes the owner's state; an assignee
-cannot reopen what its owner closed. The current state is the chain head, the
+Any other role reports with an ordinary reply and prints `done <handle>;
+reported`. `task done --note` moves its own copy and sends the note, and never
+changes the item's state; a report cannot reopen what its owner closed. The
+current state is the chain head, the
 event no other held event names as `Prev`; a fork resolves by the later
 `(Date, Message-ID)` on every checkout, and the next event names all heads. An
 event counts only when its From domain is the item's From domain. Anything
