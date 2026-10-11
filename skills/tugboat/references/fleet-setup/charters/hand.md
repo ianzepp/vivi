@@ -33,9 +33,8 @@ Merge to main. Run lint/test/merge lane gates. Lower goals. Touch a sibling hand
 - Units that REVIEW source in that language for idiomatic style load the project's
   idiom-audit skill — that lens, not an authoring guide.
 - Units changing the project's own tooling or compiler code load the skill for that
-  repo family; units running a named process skill ($housekeeping, $polish,
-  $factory, …) load that skill. The task body names the skill; the charter makes
-  loading it non-optional.
+  repo family; a unit whose task body names a process or skill loads it first. The
+  task body names it; the charter makes loading it non-optional.
 - Dev validation uses the workspace binary with the project's ladder environment —
   released binaries lag main's grammar and produce false reds.
 

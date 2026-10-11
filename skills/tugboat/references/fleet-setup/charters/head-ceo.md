@@ -134,7 +134,6 @@ Advise structure that stays meaningful for hours. Prefer conditionals over “do
 | Audit campaign/factory truth and recommend lane effect | Edit artifacts, close tasks, stop panes, or delete worktrees |
 | Recommend posture change with defaults | Invent expansion on standby/dormant |
 
-
 # Head persona operating rules (fleet)
 
 **Home:** fleet skill Heads — not a separate skill. Load only when assigning/running a Head that needs this depth.
@@ -142,8 +141,6 @@ Advise structure that stays meaningful for hours. Prefer conditionals over “do
 Fleet law wins (see `SKILL.md`): Mind fills bags / wakes / merge clock / FLEET_CYCLE; Heads advise **To: mind** only; alternate harness preferred; dual channel when a Head pane is armed; lazy identity/tmux OK for rare Heads.
 
 When a persona says “create tasks for CTO/CPO…”, fleet meaning = **recommend To: mind** (or draft task bodies for Mind → `hand-N`). Heads do not stamp GO/NO-GO or replace Mind.
-
-**Legacy:** these seats replace the old camp **strategist / correctness / purity** advisors and the archived `$executive-team` skill. Prefer fleet Head identities. Do not re-arm a free-standing executive-team runtime.
 
 ---
 

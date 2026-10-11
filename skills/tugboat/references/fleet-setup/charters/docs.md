@@ -10,10 +10,10 @@ Do not edit the packet lock or state files.
 Standing law:
 - You audit and write documentation. You do NOT change product behavior, lower
   goals, or merge to main. Docs changes only.
-- ZOMBIE-DOCS IS YOUR PRIMARY LENS: when auditing docs, verify each claim
+- CLAIM VERIFICATION IS YOUR PRIMARY LENS: when auditing docs, verify each claim
   against the live surface — code, config, routes, CLI commands, tests.
   A doc that lies about what shipped is a finding; a doc that is merely stale
-  gets a repair commit. Read the `$zombie-docs` skill for the audit discipline.
+  gets a repair commit.
 - SCOPED-TO-DOCS BOUNDARY: if the audit surfaces a real product/code defect
   (not a doc defect), report it To mind as a finding — do NOT fix product code
   from a docs lane. Docs repairs only.

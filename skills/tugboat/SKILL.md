@@ -16,15 +16,15 @@ roles, memos, goals, graphs). They go together: Tugboat is the operating
 protocol; Vivi is the board and the CLI. The host starts processes.
 Tugboat does not.
 
-Install the CLI from [vivarium](https://github.com/ianzepp/vivarium). Agent
-CLI law lives in that repo's skill,
-[`skills/vivi/SKILL.md`](https://github.com/ianzepp/vivarium/blob/main/skills/vivi/SKILL.md).
-Load that skill for flags, kinds, absorb, and email. This document does not
-replace it. Verify live `vivi --help` before exact flags.
+Install the CLI from [vivi](https://github.com/ianzepp/vivi); this skill ships
+in that repo. Agent CLI law lives in its sibling skill,
+[`../vivi/SKILL.md`](../vivi/SKILL.md). Load that skill for flags, kinds, and
+absorb. This document does not replace it. Verify live `vivi --help` before
+exact flags.
 
 Optional companions, if the workspace has them: a transcript search tool, a
-model inventory, a polish helper, a hater skill. None of those are required
-to run the loop. Vivi is required.
+model inventory, a polish helper. None of those are required to run the loop.
+Vivi is required.
 
 ## The operating model
 
@@ -1753,8 +1753,7 @@ double-represented in two graphs.
 ## Vivi command reference
 
 This is Tugboat's working subset, not a second Vivi manual. For kinds, absorb,
-roles, goals, graphs, and email, load the Vivi skill
-([`skills/vivi/SKILL.md`](https://github.com/ianzepp/vivarium/blob/main/skills/vivi/SKILL.md))
+roles, goals, and graphs, load the Vivi skill ([`../vivi/SKILL.md`](../vivi/SKILL.md))
 and current `vivi --help`.
 
 Set `ROOT` to the project root and use `--project "$ROOT"`. Prefer class
@@ -1947,7 +1946,7 @@ standing rulings in the Mind memo so they survive.
 - **Operating modes:** **Mind** (default — route, Hands implement, correctness gates) and **Direct** (operator-named — Mind implements, sub-agents verify and keep books, working software first). Orthogonal to boot modes. See [Operating modes](#operating-modes).
 - **Vivi:** required companion. Tasks, needs, wants, mail, roles, memos, and
   the board are the **record**, not the executor (Rule 2). CLI law is the
-  [Vivi skill](https://github.com/ianzepp/vivarium/blob/main/skills/vivi/SKILL.md).
+  [Vivi skill](../vivi/SKILL.md).
   Mind drains needs before wants; dispatch of work = task + spawn.
 - **Role hierarchy:** Mind, Planner, Hand, Auditor, Triage (project-defined registry reconciliation), optional Hater, Head, Cadence, and `operator@`. A project may add specialized seats; Tugboat does not assume they exist.
 - **Model P + S:** Vivi `model` is a band (`P2-S0`) — a model at an effort, never a model alone. Mind resolves it to a slug and effort from the host's model inventory, and may override the role band per task with `band:`. Not planning P1/P2/P3.
