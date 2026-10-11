@@ -909,17 +909,19 @@ flag does nothing without `--test`.
 RunPod account, reading only: the shape of `runpodctl user`, `gpu list`,
 `datacenter list`, `ssh list-keys` and `pod list` output; that
 `RUNPOD_API_KEY` overrides the CLI's saved login; `vivi pool doctor` and
-`vivi pool status`, and the `doctor --test` refusal. Everything
-that creates a pod is **unverified live**, because building it required
-renting one and this feature was built under a rule not to: the create call,
-the `--terminate-after` deadline firing on its own, the pod name being
-accepted, the creation-time ordering and list lag the claim rule depends on,
-the state words of a stopped or terminating pod, the failure text for no
-capacity, the SSH host key capture on a real pod, the root-mode boot and job
-scripts on a RunPod image, the termination and the absence check, and the
-harness-environment path. These are covered by tests against a fake account
-and a fake pod only. Before relying on a RunPod pool for unattended work, run
-one `doctor --test --allow-spend` and read the result.
+`vivi pool status`, and the `doctor --test` refusal. One
+`doctor --test --allow-spend` run on 2026-10-11 (one pod, secure cloud, the
+first configured GPU type available, a public image known to publish SSH)
+then verified, end to end in 51 seconds: the create call, the pod name being
+accepted, the SSH host key capture, the root-mode boot and job scripts on a
+RunPod image, collection, the termination and the absence check. Still
+**unverified live**: the `--terminate-after` deadline firing on its own, the
+fallback to a second GPU type and the failure text for no capacity, the
+creation-time ordering and list lag the claim rule depends on, the state words
+of a stopped or terminating pod, a dispatch against a real repository, and the
+harness-environment path. Those are covered by tests against a fake account
+and a fake pod only. The self-test does not run a pool's `requires` or
+`facts`.
 
 #### Requirements and facts (special hardware)
 

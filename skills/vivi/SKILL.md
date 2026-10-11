@@ -1283,13 +1283,15 @@ the dispatch record and the `dispatch` output.
 - **Verified live (read-only, empty account)**: the output shapes of `user`,
   `gpu list`, `datacenter list`, `ssh list-keys` and `pod list`; that
   `RUNPOD_API_KEY` overrides the CLI's saved login; `pool doctor`, `pool
-  status`, and the `doctor --test` refusal. **Not verified live** (nothing has
-  been rented): pod creation, `--terminate-after` firing, name acceptance,
+  status`, and the `doctor --test` refusal. **Verified live by one
+  `doctor --test --allow-spend` run (2026-10-11, one pod, 51 seconds)**: pod
+  creation, name acceptance, host key capture and the SSH scripts on a real
+  pod, root-mode boot on a RunPod image, collection, termination plus the
+  absence check. **Still not verified live**: `--terminate-after` firing with
+  no client, fallback to a second GPU type and the no-capacity failure text,
   creation-time ordering and list lag, state words of stopped or terminating
-  pods, the no-capacity failure text, host key capture and the SSH scripts on a
-  real pod, root-mode boot on a RunPod image, termination plus the absence
-  check, and the harness-environment path. Tests use a fake account and a fake
-  pod. Before unattended use, run one `doctor --test --allow-spend` and read it.
+  pods, a dispatch against a real repository, and the harness-environment
+  path. The self-test does not run a pool's `requires` or `facts`.
 
 ## Watches and Cycle Intake
 
