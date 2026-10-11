@@ -867,9 +867,10 @@ limits next to each.
    with a time of dispatch + the worst case of setup + the job's budget + 15
    minutes (the same silence `wait` allows before it calls a job lost). The
    worst case of setup is (number of GPU types x `ready_timeout`, or the
-   dispatch's `--ready-timeout`) + the 30-minute seeding limit. **It is
-   not verified that RunPod fires this when no client is running** (nothing has
-   been rented to find out); treat it as a second line, not the first.
+   dispatch's `--ready-timeout`) + the 30-minute seeding limit. **Do not rely on
+   it**: on 2026-10-11 it fired on neither pod tested (a CPU pod 12 minutes
+   past the time, a GPU pod rented by a Vivi dispatch 20 minutes past it); each
+   ran until something terminated it. Collect every dispatch promptly.
 2. *Collection terminates.* `wait` and `reconcile` end the pod and check the
    list. This needs Vivi to run: an uncollected pod costs its hourly rate until
    something does.
@@ -957,14 +958,18 @@ RunPod account, reading only: the shape of `runpodctl user`, `gpu list`,
 first configured GPU type available, a public image known to publish SSH)
 then verified, end to end in 51 seconds: the create call, the pod name being
 accepted, the SSH host key capture, the root-mode boot and job scripts on a
-RunPod image, collection, the termination and the absence check. Still
-**unverified live**: the `--terminate-after` deadline firing on its own, the
-fallback to a second GPU type and the failure text for no capacity, the
+RunPod image, collection, the termination and the absence check. Two dispatches the same day
+verified the fallback to a second GPU type (the first pod never became
+reachable), and a read-only dispatch against a real repository: token, fetch,
+`facts` recorded from the rented card, and `reconcile` collecting the finished
+job 55 minutes later and terminating the pod. `--terminate-after` was checked
+live and did not fire. Still
+**unverified live**: the failure text for no capacity, the
 `ready_timeout` path (a pod that never answers, the id in the CLI's timeout
 error, the termination and absence check that follow, the approximate cost it
 reports: **this code path is verified against a fake account only**), the
 creation-time ordering and list lag the claim rule depends on, the state words
-of a stopped or terminating pod, a dispatch against a real repository, and the
+of a stopped or terminating pod, a write dispatch that pushes a branch, and the
 harness-environment path. Those are covered by tests against a fake account
 and a fake pod only. The self-test does not run a pool's `requires` or
 `facts`.

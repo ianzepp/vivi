@@ -1269,8 +1269,9 @@ that publishes SSH. Measured on 2026-10-11: a working pod answered on SSH 35 to
 - **Cost safeguards, with limits.** (1) `pod create --terminate-after` at
   dispatch + setup worst case + budget + 15 min, where the setup worst case is
   (number of `gpu_types` x the ready timeout in force) + 30 min seeding. **Do
-  not rely on it**: on 2026-10-11 a CPU pod created with `--terminate-after` was
-  still running 12 minutes past that time and had to be deleted by hand.
+  not rely on it**: on 2026-10-11 it fired on neither pod tested. A CPU pod was
+  still running 12 minutes past that time, and a GPU pod rented by a Vivi
+  dispatch 20 minutes past it; each ran until something terminated it.
   (2) Collection terminates the pod: needs Vivi to run, so **always collect a
   RunPod dispatch promptly** (`wait` in the background, or `reconcile`).
   (3) A failed dispatch terminates its own pod; if that fails, the error says
@@ -1327,15 +1328,18 @@ that publishes SSH. Measured on 2026-10-11: a working pod answered on SSH 35 to
   pod, root-mode boot on a RunPod image, collection, termination plus the
   absence check. **Verified live by one dispatch (2026-10-11)**: fallback to
   the second GPU type when the first pod never became reachable (before
-  `ready_timeout` existed, after a ten-minute wait). **Checked live and found
-  not to work**: `--terminate-after` (see the cost safeguards). **Still not
+  `ready_timeout` existed, after a ten-minute wait). **Verified live by one
+  read-only dispatch against a real repository (2026-10-11)**: token, fetch,
+  `facts` recorded from the rented card, and `reconcile` collecting the
+  finished job from the still-running pod 55 minutes later, then terminating
+  it and confirming it gone. **Checked live and found not to work**: `--terminate-after` (see the cost safeguards). **Still not
   verified live**: the `ready_timeout` path itself (the id in `runpodctl`'s
   timeout error, the termination and absence check that follow, the reported
   cost: tested against a fake account only; if the error names no pod and the
   list does not show it yet, the pod stays until something terminates it), the
   no-capacity failure text, creation-time ordering and list lag, state words of
-  stopped or terminating pods, a collected dispatch against a real repository,
-  and the harness-environment path. The self-test does not run a pool's `requires` or `facts`.
+  stopped or terminating pods, a write dispatch that pushes a branch, and the
+  harness-environment path. The self-test does not run a pool's `requires` or `facts`.
 
 ## Watches and Cycle Intake
 
