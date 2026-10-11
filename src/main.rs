@@ -17,6 +17,7 @@ mod local_graph_command;
 mod local_mail_list;
 mod local_mailspace_command;
 mod local_mailspace_dump;
+mod local_pool_command;
 mod local_role_command;
 mod local_rule_command;
 mod local_step_command;

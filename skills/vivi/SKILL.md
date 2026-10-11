@@ -396,6 +396,67 @@ apply after configuring. Screens judge the receipt against the clauses: tasks
 that want meaningful screens should carry their validation claim in the body,
 not only verdict flags.
 
+## Remote lane pool (first iteration)
+
+`vivi pool` manages a pool of preseeded remote machines ("slots") on Fly.
+First iteration: it creates, lists, and destroys slots. Dispatch, wait,
+reconcile, and reseed do not exist yet; do not invent them.
+
+```sh
+vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS]
+vivi pool status [--json]
+vivi pool destroy (--slot <name-or-id> | --all) --yes
+```
+
+- A slot is a Fly Machine with a persistent root disk. On first boot it runs
+  the configured `setup` commands as root, fetches the repo at the base commit,
+  runs the `seed` commands in the checkout with a memory disk over `build_dir`,
+  packs the build output, and exits. A stopped machine is a free slot; a
+  started one is busy. Later starts restore the pack in about ten seconds,
+  wait for `/work/job/go`, run `/work/job/job.sh`, and idle-stop.
+- `create` fills the lowest free slot numbers up to N (default and maximum:
+  `slots` in config), seeds them in parallel, waits until each is stopped, and
+  prints one line per slot with its id, state, and seed seconds. Existing
+  slots are left alone. It exits nonzero if a slot timed out or exited nonzero.
+- Slot state comes from Fly, never from local files: slots carry machine
+  metadata `vivi_pool`, `vivi_pool_slot`, and `vivi_pool_base`. Machines in the
+  same Fly app without that metadata are never listed or touched.
+- `--base` takes a commit, branch, or tag; it is resolved to a full hash through
+  GitHub and recorded as the slot's seeded base. Default: the repo's default
+  branch tip.
+- `destroy` requires `--yes` and only touches this pool's slots.
+- Requires `fly` (flyctl, logged in) and `openssl` on PATH, and a GitHub App
+  with contents access to the repo. The fetch token is minted per `create`
+  (one hour, narrowed to the one repo) and is never printed.
+
+Config is a `[pool]` table in `.vivi/mailspace.toml`:
+
+```toml
+[pool]
+app = "my-fly-app"            # required; provider = "fly" is the default
+region = "iad"                # default iad
+repo = "owner/name"           # required
+slots = 4                     # required; maximum pool size
+image = "rust:1.97-bookworm"  # required; Debian-based (needs apt for zstd/git)
+size = "performance-8x"       # default; memory = 32768 (MB), tmpfs = "16g"
+setup = ["npm install -g some-harness"]   # root, once, before the checkout
+seed = ["cargo build"]                    # in the checkout, once, warms build_dir
+build_dir = "target"          # required; relative to the repo
+# name = "lanes"              # defaults to the mailspace name; marks the machines
+
+[pool.github]
+app_id = 123456
+private_key = "~/secrets/app.private-key.pem"
+
+[pool.harness]                # parsed and validated; nothing uses it yet
+name = "pi"
+run = "pi -p --model {model} @{brief}"
+models = ["zai/glm-5.3-flash"]
+```
+
+Validation runs when a `vivi pool` command starts, and rejects misspelled keys.
+The config holds a key path, never a key.
+
 ## Watches and Cycle Intake
 
 Project-local watch commands observe mailspace events. Prefer `--once` for

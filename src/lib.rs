@@ -15,6 +15,7 @@ pub mod extract;
 pub mod judgment;
 pub mod mailspace;
 pub mod message;
+pub mod pool;
 pub mod role_schedule;
 pub mod role_status;
 pub mod stdout_budget;

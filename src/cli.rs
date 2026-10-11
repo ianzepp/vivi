@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 mod board_command;
 mod chat_command;
 mod mailspace_command;
+mod pool_command;
 mod role_command;
 
 pub use board_command::BoardCommand;
@@ -24,6 +25,7 @@ pub use mailspace_command::{
     TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand, WantStatus,
     WatchCommon,
 };
+pub use pool_command::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
 pub use role_command::{RoleCharterCommand, RoleCommand};
 
 #[derive(Debug, Parser)]
@@ -110,6 +112,12 @@ pub enum Command {
     Goal {
         #[command(subcommand)]
         command: GoalCommand,
+    },
+
+    /// Remote lane pool of preseeded machines (first iteration)
+    Pool {
+        #[command(subcommand)]
+        command: PoolSubcommand,
     },
 
     /// Manage first-class mailspace agent seats (roles)

@@ -520,6 +520,27 @@ vivi cycle intake --project /path/to/project --for mind \
   --cursor-file .vivi/mind-cycle.cursor --write-cursor --json
 ```
 
+### Remote lane pool (first iteration)
+
+`vivi pool create | status | destroy` manages preseeded remote machines on Fly
+(through `flyctl`) so agent work can start in seconds against a warm build.
+This is the first iteration: slot creation, listing, and destruction only.
+Dispatch, wait, reconcile, and reseed are not built yet.
+
+```
+vivi pool create [--slots N] [--base <commit>]   # create + seed missing slots, wait until stopped
+vivi pool status [--json]                        # name, id, free|busy, seeded base, created
+vivi pool destroy (--slot <name> | --all) --yes
+```
+
+Slots are discovered from Fly machine metadata (`vivi_pool*`); Vivi keeps no
+local slot records. Configure with a `[pool]` table in `.vivi/mailspace.toml`
+(app, repo, slots, image, setup/seed commands, `build_dir`, a GitHub App id
+and key path, optional `[pool.harness]`); see `skills/vivi/SKILL.md` for the
+full table. Nothing in the pool is specific to a language, a repository, or
+an agent harness. The GitHub App key is read by `openssl` when minting a
+one-hour, single-repo fetch token; Vivi never stores or prints it.
+
 ### Blocking on local mailspace changes
 
 Use project-local watch when an agent has handed off work and should wait for a
@@ -618,7 +639,7 @@ Rules:
 `chat`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`,
 `cycle`, `trace`, `graph`, `step`.
 
-After 10.2.0 the tree also has `rule`: project rules every seat can read.
+After 10.2.0 the tree also has `pool` (remote lane pool, first iteration) and `rule`: project rules every seat can read.
 `--local` marks a rule that a later sync should skip. Nothing syncs rules yet.
 
 `chat` is new in 10.2.0: `vivi chat room create`, `join`, `rooms`, `send`,

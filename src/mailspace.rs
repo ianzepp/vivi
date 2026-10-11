@@ -8,6 +8,7 @@ use crate::boot::probe::ProbeConfig;
 use crate::chat::ChatConfig;
 use crate::error::VivariumError;
 use crate::judgment::Judgment;
+use crate::pool::PoolConfig;
 use crate::storage::Storage;
 use crate::store::secure_create_dir_all;
 
@@ -101,6 +102,9 @@ pub struct MailspaceConfig {
     /// Chat client settings. Absent means chat defaults apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<ChatConfig>,
+    /// Remote lane pool settings (first iteration). Absent means no pool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<PoolConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,6 +199,7 @@ impl Mailspace {
             probes: Vec::new(),
             judgment: None,
             chat: None,
+            pool: None,
         };
         write_config(&path, &config)?;
         Storage::open_mailspace(&dir)?;
