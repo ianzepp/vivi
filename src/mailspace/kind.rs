@@ -17,7 +17,7 @@ pub(super) fn message_kind(data: &[u8]) -> Option<String> {
     None
 }
 
-pub(super) fn effective_kind(role: &str, data: &[u8], events: &[MailspaceEvent]) -> Option<String> {
+pub(crate) fn effective_kind(role: &str, data: &[u8], events: &[MailspaceEvent]) -> Option<String> {
     match role {
         "tasks" => return Some("task".into()),
         "needs" => return Some("need".into()),

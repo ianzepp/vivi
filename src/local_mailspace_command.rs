@@ -16,6 +16,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Mailspace { command } => handle_mailspace_command(command),
         Command::Board(command) => crate::local_board_command::handle_board_command(command),
         Command::Chat { command } => vivi::chat::command::dispatch(command),
+        Command::Sync(command) => crate::local_sync_command::handle_sync_command(command),
         Command::Boot { project } => {
             crate::local_boot_command::handle_boot_command(project.as_deref())
         }

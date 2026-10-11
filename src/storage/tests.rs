@@ -983,3 +983,156 @@ fn a_shared_blob_survives_until_its_last_live_row_is_evicted() {
     storage.evict_messages(&[other_id.to_string()]).unwrap();
     assert!(!blob.exists());
 }
+
+fn project_binding(account: &str, uid: u32) -> RemoteBindingInput {
+    RemoteBindingInput {
+        account: account.into(),
+        provider: "vivi-project".into(),
+        remote_mailbox: "prj-x".into(),
+        remote_uid: uid,
+        remote_uidvalidity: 1,
+    }
+}
+
+#[test]
+fn bind_remote_binds_an_existing_row_and_leaves_its_state_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("bind@example.com", "body");
+    let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
+    storage.ingest_if_absent(&request, &raw, None).unwrap();
+    storage
+        .set_local_read_state("acct", TRAVELING_ID, true)
+        .unwrap();
+    assert!(
+        storage
+            .message_by_id(TRAVELING_ID)
+            .unwrap()
+            .unwrap()
+            .remote
+            .is_none()
+    );
+
+    assert!(
+        storage
+            .bind_remote(TRAVELING_ID, &project_binding("acct", 7))
+            .unwrap()
+    );
+
+    let held = storage.message_by_id(TRAVELING_ID).unwrap().unwrap();
+    assert_eq!(held.remote, Some(project_binding("acct", 7)));
+    assert_eq!(held.local_role, "needs");
+    assert!(held.read_state);
+    assert_eq!(storage.remote_binding_count().unwrap(), 1);
+
+    // A second bind replaces the first: one binding per message.
+    assert!(
+        storage
+            .bind_remote(TRAVELING_ID, &project_binding("acct", 9))
+            .unwrap()
+    );
+    let held = storage.message_by_id(TRAVELING_ID).unwrap().unwrap();
+    assert_eq!(held.remote.unwrap().remote_uid, 9);
+    assert_eq!(storage.remote_binding_count().unwrap(), 1);
+}
+
+#[test]
+fn bind_remote_refuses_a_missing_or_evicted_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("gone@example.com", "body");
+    assert!(
+        !storage
+            .bind_remote(TRAVELING_ID, &project_binding("acct", 1))
+            .unwrap(),
+        "no such row"
+    );
+
+    let request = request_in("acct", "inbox", "s", Some(TRAVELING_ID), None);
+    storage.ingest_if_absent(&request, &raw, None).unwrap();
+    storage.evict_messages(&[TRAVELING_ID.to_string()]).unwrap();
+    assert!(
+        !storage
+            .bind_remote(TRAVELING_ID, &project_binding("acct", 1))
+            .unwrap(),
+        "an evicted row is not live"
+    );
+    assert_eq!(storage.remote_binding_count().unwrap(), 0);
+}
+
+#[test]
+fn bind_remote_reports_a_position_another_row_holds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let other = "msg_aaaaaaaaaaaaaaaaaaaaaaaa";
+    for (id, body) in [(TRAVELING_ID, "one"), (other, "two")] {
+        let raw = message_bytes(&format!("{body}@example.com"), body);
+        let request = request_in("acct", "inbox", "s", Some(id), None);
+        storage.ingest_if_absent(&request, &raw, None).unwrap();
+    }
+    storage
+        .bind_remote(TRAVELING_ID, &project_binding("acct", 5))
+        .unwrap();
+
+    assert!(
+        storage
+            .bind_remote(other, &project_binding("acct", 5))
+            .is_err()
+    );
+    assert!(
+        storage
+            .message_by_id(other)
+            .unwrap()
+            .unwrap()
+            .remote
+            .is_none()
+    );
+}
+
+#[test]
+fn live_lookups_find_rows_by_content_and_by_rfc_message_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let raw = message_bytes("Lookup@Example.com", "body");
+    let other = "msg_aaaaaaaaaaaaaaaaaaaaaaaa";
+    for (account, id) in [("a", TRAVELING_ID), ("b", other)] {
+        let request = request_in(account, "inbox", "s", Some(id), None);
+        storage.ingest_if_absent(&request, &raw, None).unwrap();
+    }
+    let content_id = sha256_hex(&raw);
+
+    assert_eq!(
+        storage
+            .live_messages_for_content(&content_id)
+            .unwrap()
+            .len(),
+        2
+    );
+    let parent = storage
+        .live_message_by_rfc_id("lookup@example.com")
+        .unwrap()
+        .expect("normalized id matches");
+    assert_eq!(parent.content_id, content_id);
+    assert!(
+        storage
+            .live_message_by_rfc_id("missing@example.com")
+            .unwrap()
+            .is_none()
+    );
+
+    storage
+        .evict_messages(&[TRAVELING_ID.to_string(), other.to_string()])
+        .unwrap();
+    assert!(
+        storage
+            .live_messages_for_content(&content_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        storage
+            .live_message_by_rfc_id("lookup@example.com")
+            .unwrap()
+            .is_none()
+    );
+}

@@ -9,6 +9,7 @@ mod chat_command;
 mod mailspace_command;
 mod pool_command;
 mod role_command;
+mod sync_command;
 
 pub use board_command::BoardCommand;
 pub use chat_command::{ChatCommand, ChatSendCommand, ChatSubcommand, RoomSubcommand};
@@ -30,6 +31,7 @@ pub use pool_command::{
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
+pub use sync_command::{SyncCommand, SyncSubcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -68,6 +70,9 @@ pub enum Command {
         #[command(subcommand)]
         command: ChatSubcommand,
     },
+
+    /// Push local letters to a project server, then pull what other members pushed
+    Sync(SyncCommand),
 
     /// Manage a project-local Vivi mailspace
     Mailspace {

@@ -12,6 +12,7 @@ use crate::judgment::Judgment;
 use crate::pool::PoolConfig;
 use crate::storage::Storage;
 use crate::store::secure_create_dir_all;
+use crate::sync::SyncConfig;
 
 mod archive;
 mod backlog;
@@ -57,6 +58,7 @@ pub use identity::{
     LocalIdentity, ROLE_HARNESS_SUBAGENT, ROLE_STATUS_ACTIVE, ROLE_STATUS_PARKED,
     ROLE_STATUS_RETIRED, RoleUpdate, RoleView,
 };
+pub(crate) use kind::effective_kind;
 pub use lifecycle::{
     CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult, WantListOptions,
     WantListRecord, WantMetadataUpdate,
@@ -105,6 +107,9 @@ pub struct MailspaceConfig {
     /// Chat client settings. Absent means chat defaults apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<ChatConfig>,
+    /// Project letter sync settings. Absent means `vivi sync` is not set up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncConfig>,
     /// Remote lane pools, by name: one `[pools.<name>]` table each. Absent
     /// means no pool.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -208,6 +213,7 @@ impl Mailspace {
             probes: Vec::new(),
             judgment: None,
             chat: None,
+            sync: None,
             pools: BTreeMap::new(),
             retired_pool: None,
         };

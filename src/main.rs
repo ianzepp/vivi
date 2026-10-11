@@ -24,6 +24,7 @@ mod local_pool_work_command;
 mod local_role_command;
 mod local_rule_command;
 mod local_step_command;
+mod local_sync_command;
 mod local_work_command;
 mod local_work_list;
 

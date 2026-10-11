@@ -194,7 +194,10 @@ pub fn join_room(
 }
 
 /// Decode and sign an issued challenge (32 bytes), returning base64.
-fn sign_challenge(identity: &ChatIdentity, challenge_b64: &str) -> Result<String, VivariumError> {
+pub(crate) fn sign_challenge(
+    identity: &ChatIdentity,
+    challenge_b64: &str,
+) -> Result<String, VivariumError> {
     let bytes = b64::decode(challenge_b64)
         .ok_or_else(|| VivariumError::Message("server returned an undecodable challenge".into()))?;
     if bytes.len() != 32 {
@@ -472,15 +475,34 @@ fn request_json(
 
 /// `request_json` with a caller-chosen timeout (long-poll holds exceed the
 /// default).
-fn request_json_with_timeout(
+pub(crate) fn request_json_with_timeout(
     method: &str,
     url: &str,
     payload: Option<&Value>,
     headers: &[(&'static str, String)],
     timeout: Duration,
 ) -> Result<(u16, Value), VivariumError> {
+    let body = payload.map_or(Body::Empty, |payload| Body::Json(payload.clone()));
+    request_with_body(method, url, body, headers, timeout)
+}
+
+/// What a request carries: nothing, a JSON document, or raw bytes sent as-is
+/// (the caller sets `Content-Type`).
+pub(crate) enum Body {
+    Empty,
+    Json(Value),
+    Raw(Vec<u8>),
+}
+
+/// The one blocking request plumbing: thread + runtime, JSON response.
+pub(crate) fn request_with_body(
+    method: &str,
+    url: &str,
+    payload: Body,
+    headers: &[(&'static str, String)],
+    timeout: Duration,
+) -> Result<(u16, Value), VivariumError> {
     let url = url.to_string();
-    let payload = payload.cloned();
     let method = method.to_string();
     let headers = headers.to_vec();
     let handle = std::thread::spawn(move || {
@@ -499,9 +521,11 @@ fn request_json_with_timeout(
             for (name, value) in &headers {
                 request = request.header(*name, value.as_str());
             }
-            if let Some(payload) = payload.as_ref() {
-                request = request.json(payload);
-            }
+            request = match payload {
+                Body::Empty => request,
+                Body::Json(payload) => request.json(&payload),
+                Body::Raw(bytes) => request.body(bytes),
+            };
             let response = request.send().await.map_err(|e| {
                 if e.is_timeout() {
                     VivariumError::Message(format!(

@@ -14,9 +14,9 @@ use super::ingest::{
     upsert_remote_binding,
 };
 use super::{
-    MailspaceEventInput, MessageIngestRequest, OptionalExtension, Storage, StoredMessage,
-    StoredMessageView, Utc, VivariumError, blob_relpath, params, parse_metadata, sha256_hex,
-    write_blob_if_absent,
+    MailspaceEventInput, MessageIngestRequest, OptionalExtension, RemoteBindingInput, Storage,
+    StoredMessage, StoredMessageView, Utc, VivariumError, blob_relpath, message_query, params,
+    parse_metadata, sha256_hex, write_blob_if_absent,
 };
 
 /// What [`Storage::ingest_if_absent`] did.
@@ -113,6 +113,83 @@ impl Storage {
             created_blob,
         };
         Ok((outcome, stored))
+    }
+
+    /// Bind an existing live row to a remote mailbox position, replacing any
+    /// binding it already has. Returns `false` when no live row holds
+    /// `message_id`. [`Storage::ingest_if_absent`] cannot do this: it leaves
+    /// an existing row exactly as it is, binding included.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database write fails, including a
+    /// position another row already holds.
+    pub fn bind_remote(
+        &mut self,
+        message_id: &str,
+        remote: &RemoteBindingInput,
+    ) -> Result<bool, VivariumError> {
+        let now = Utc::now().to_rfc3339();
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| VivariumError::Other(format!("failed to open bind transaction: {e}")))?;
+        let live: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE message_id = ?1 AND deleted_at IS NULL)",
+                params![message_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to check bind target: {e}")))?;
+        if !live {
+            return Ok(false);
+        }
+        upsert_remote_binding(&tx, message_id, Some(remote), &now)?;
+        tx.commit()
+            .map_err(|e| VivariumError::Other(format!("failed to commit bind: {e}")))?;
+        Ok(true)
+    }
+
+    /// Every live row holding `content_id`, whatever its id, account, or role.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query or handle
+    /// decoration fails.
+    pub fn live_messages_for_content(
+        &self,
+        content_id: &str,
+    ) -> Result<Vec<StoredMessageView>, VivariumError> {
+        self.list_messages_by_query(
+            "WHERE m.content_id = ?1 AND m.deleted_at IS NULL",
+            params![content_id],
+        )
+    }
+
+    /// A live row whose RFC `Message-ID` header equals `normalized`
+    /// (see `normalize_message_id`), if any.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query or handle
+    /// resolution fails.
+    pub fn live_message_by_rfc_id(
+        &self,
+        normalized: &str,
+    ) -> Result<Option<StoredMessageView>, VivariumError> {
+        let mut message = self
+            .conn
+            .query_row(
+                &message_query(
+                    "WHERE md.normalized_message_id = ?1 AND m.deleted_at IS NULL
+                     ORDER BY m.message_id LIMIT 1",
+                ),
+                params![normalized],
+                super::raw_stored_message_from_row,
+            )
+            .optional()
+            .map_err(|e| VivariumError::Other(format!("failed to read message by rfc id: {e}")))?;
+        if let Some(message) = &mut message {
+            message.handle = self.display_handle(&message.message_id)?;
+        }
+        Ok(message)
     }
 
     /// Live messages bound to `provider` that are safe to evict: not

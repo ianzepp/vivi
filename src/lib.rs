@@ -21,5 +21,6 @@ pub mod role_status;
 pub mod stdout_budget;
 pub mod storage;
 pub mod store;
+pub mod sync;
 
 pub use error::VivariumError;
