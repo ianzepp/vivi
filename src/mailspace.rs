@@ -13,11 +13,14 @@ use crate::pool::PoolConfig;
 use crate::storage::Storage;
 use crate::store::secure_create_dir_all;
 use crate::sync::SyncConfig;
+use config_file::{ensure_id, parse_config, write_config};
 
+mod address;
 mod archive;
 mod backlog;
 mod backlog_audit;
 mod body;
+mod config_file;
 mod delivery;
 mod dump;
 mod event_log;
@@ -40,6 +43,7 @@ mod thread;
 mod trace;
 mod watch;
 
+pub use address::{Recipient, prefix_of_domain};
 pub use archive::ArchiveExportReport;
 pub use backlog::BacklogBoundUnit;
 pub use backlog_audit::{BacklogAuditFinding, BacklogAuditReport, print_backlog_audit};
@@ -86,6 +90,12 @@ pub struct Mailspace {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailspaceConfig {
     pub name: String,
+    /// This mailspace's id: a canonical lowercase hyphenated UUID, minted on
+    /// first open and never changed. Its first 8 characters are the domain
+    /// part of every address the mailspace mints. The file is machine-local
+    /// and uncommitted, so the id never travels with the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     /// Path to a dedicated git repo that receives absorbed records.
@@ -181,6 +191,24 @@ pub struct SendRequest {
 pub struct DeliveryResult {
     pub delivered: Vec<DeliveredMessage>,
     pub sent: String,
+    /// Recipients in other mailspaces (`role@<prefix>.local`, lowercased,
+    /// sorted). They got no delivered copy; the letter reaches them when
+    /// `vivi sync` pushes the sent copy.
+    pub remote: Vec<String>,
+}
+
+impl DeliveryResult {
+    /// The operator line naming the remote recipients, when there are any.
+    #[must_use]
+    pub fn queued_line(&self) -> Option<String> {
+        queued_line(&self.remote)
+    }
+}
+
+/// `queued for sync: <addresses>` for a non-empty remote recipient list.
+#[must_use]
+pub fn queued_line(remote: &[String]) -> Option<String> {
+    (!remote.is_empty()).then(|| format!("queued for sync: {}", remote.join(", ")))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,8 +233,10 @@ impl Mailspace {
         if path.exists() {
             return Self::open_root(root);
         }
+        // The id is minted by the open below, under the config lock.
         let config = MailspaceConfig {
             name: default_name(&root),
+            id: None,
             description: None,
             archive: None,
             identities: Vec::new(),
@@ -241,8 +271,13 @@ impl Mailspace {
 
     /// Open a mailspace at an explicit root path.
     ///
+    /// A config without an id gets one minted and persisted here, under the
+    /// config lock, so the mailspace's addresses are stable from the first
+    /// open.
+    ///
     /// # Errors
-    /// Returns an error if the config file cannot be read or parsed.
+    /// Returns an error if the config file cannot be read or parsed, its id
+    /// is malformed, or a new id cannot be persisted.
     pub fn open_root(root: PathBuf) -> Result<Self, VivariumError> {
         let dir = root.join(MAILSPACE_DIR);
         let path = dir.join(MAILSPACE_CONFIG);
@@ -252,12 +287,8 @@ impl Mailspace {
                 path.display()
             ))
         })?;
-        let config: MailspaceConfig = toml::from_str(&raw).map_err(|e| {
-            VivariumError::Message(format!(
-                "failed to parse mailspace config at {}: {e}",
-                path.display()
-            ))
-        })?;
+        let mut config = parse_config(&path, &raw)?;
+        ensure_id(&path, &mut config)?;
         Ok(Self { root, dir, config })
     }
 
@@ -491,11 +522,4 @@ fn sanitize_project_name(value: &str) -> String {
     } else {
         out
     }
-}
-
-pub(super) fn write_config(path: &Path, config: &MailspaceConfig) -> Result<(), VivariumError> {
-    let raw = toml::to_string_pretty(config)
-        .map_err(|e| VivariumError::Other(format!("failed to encode mailspace config: {e}")))?;
-    fs::write(path, raw)?;
-    Ok(())
 }

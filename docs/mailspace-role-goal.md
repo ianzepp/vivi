@@ -60,7 +60,7 @@ runtime binding stays optional overlay.
 | --- | --- |
 | Noun | **`role`** — first-class CLI and storage concept |
 | Mailbox key | Role **`name`** (local-part); same token used for addresses today |
-| Address | **Derived**: `{name}@{mailspace}.local` — not independently edited |
+| Address | **Derived**: `{name}@{prefix}.local` (prefix = first 8 characters of the mailspace id) — not independently edited |
 | Process class | **`kind`** — freeform; preferred `hand` \| `head` \| `mind` \| `operator` \| `steward` |
 | Tags | **`labels`** — freeform slugs (e.g. `auditor`, `floater`) |
 | Lifecycle | **`status`** — preferred set (at least `active`, `parked`, `retired`) |
@@ -193,7 +193,7 @@ done
 ## Invariants
 
 1. **One seat, one name.** Role `name` is the stable mailspace key and local-part.
-2. **Address is derived.** `address = "{name}@{mailspace}.local"`.
+2. **Address is derived.** `address = "{name}@{prefix}.local"`, `prefix` being the first 8 characters of the mailspace id.
 3. **Charter is standing definition**, not an assignment and not board work.
 4. **Capacity fields are desired execution preferences**, not proof a process is
    live. Updating them does not require runtime restart to be considered stored.

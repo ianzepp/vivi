@@ -51,8 +51,8 @@ pub(crate) fn print_work_lists(
                             &message.from_addr,
                             &message.to_addr,
                             &message.cc_addr,
-                            from.as_deref(),
-                            to.as_deref(),
+                            from.as_ref(),
+                            to.as_ref(),
                         )
                 }),
         );

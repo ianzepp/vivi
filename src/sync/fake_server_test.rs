@@ -23,6 +23,8 @@ pub struct Item {
     pub from: String,
     pub to: Option<String>,
     pub kind: Option<String>,
+    /// The sender's registered prefix, as the server stamps it.
+    pub from_prefix: Option<String>,
     pub bytes: Vec<u8>,
     pub sha: String,
 }
@@ -87,11 +89,25 @@ impl FakeServer {
             .insert(message_id.to_string(), bytes.to_vec());
     }
 
+    /// A connection for registered `member`, whose mailspace id begins
+    /// `prefix` (8 lowercase hex characters).
     #[must_use]
-    pub fn client(self: &Rc<Self>, member: &str) -> FakeClient {
+    pub fn client(self: &Rc<Self>, member: &str, prefix: &str) -> FakeClient {
         FakeClient {
             server: Rc::clone(self),
             member: member.to_string(),
+            prefix: Some(prefix.to_string()),
+        }
+    }
+
+    /// A connection for a member registered before mailspaces had ids: no
+    /// prefix to stamp, and nothing can be addressed to it.
+    #[must_use]
+    pub fn legacy_client(self: &Rc<Self>, member: &str) -> FakeClient {
+        FakeClient {
+            server: Rc::clone(self),
+            member: member.to_string(),
+            prefix: None,
         }
     }
 }
@@ -99,6 +115,9 @@ impl FakeServer {
 pub struct FakeClient {
     server: Rc<FakeServer>,
     member: String,
+    /// Mail addressed to `<prefix>.local` is visible to this member, and
+    /// every letter it appends is stamped with it.
+    prefix: Option<String>,
 }
 
 impl Transport for FakeClient {
@@ -150,6 +169,7 @@ impl Transport for FakeClient {
             from: self.member.clone(),
             to: Some(envelope.to.to_string()),
             kind: Some(envelope.kind.to_string()),
+            from_prefix: self.prefix.clone(),
             bytes: bytes.to_vec(),
             sha: sha.clone(),
         });
@@ -169,11 +189,7 @@ impl Transport for FakeClient {
             .items
             .iter()
             .filter(|item| item.sequence > since)
-            .filter(|item| {
-                work(&item.kind)
-                    || item.from == self.member
-                    || item.to.as_deref() == Some(self.member.as_str())
-            })
+            .filter(|item| work(&item.kind) || item.from == self.member || self.addressed(item))
             .take(inner.page_limit.unwrap_or(usize::MAX))
             .map(|item| {
                 let served = inner.tampered.get(&item.message_id).unwrap_or(&item.bytes);
@@ -184,6 +200,7 @@ impl Transport for FakeClient {
                     to: item.to.clone(),
                     kind: item.kind.clone(),
                     content_sha256: item.sha.clone(),
+                    from_prefix: item.from_prefix.clone(),
                     raw_eml: b64::encode(served),
                 }
             })
@@ -192,6 +209,21 @@ impl Transport for FakeClient {
         Ok(Page {
             records,
             next_cursor,
+        })
+    }
+}
+
+impl FakeClient {
+    /// Whether any envelope address of `item` is in this member's domain.
+    fn addressed(&self, item: &Item) -> bool {
+        let Some(prefix) = &self.prefix else {
+            return false;
+        };
+        let domain = format!("{prefix}.local");
+        item.to.as_deref().is_some_and(|to| {
+            to.split(',')
+                .filter_map(|address| address.trim().rsplit_once('@'))
+                .any(|(_, found)| found == domain)
         })
     }
 }
@@ -206,9 +238,8 @@ pub struct Checkout {
 
 pub const PROJECT: &str = "abcde-fghjk-mnpqr-stvwz-23456";
 
-/// A checkout named `name` on the wire, receiving pulls into `recipient`,
-/// with local `roles` and a `[sync.names]` map.
-pub fn checkout(name: &str, recipient: &str, roles: &[&str], names: &[(&str, &str)]) -> Checkout {
+/// A checkout named `name` on the wire, with local `roles`.
+pub fn checkout(name: &str, roles: &[&str]) -> Checkout {
     let tmp = tempfile::tempdir().unwrap();
     let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
     for role in roles {
@@ -218,13 +249,8 @@ pub fn checkout(name: &str, recipient: &str, roles: &[&str], names: &[(&str, &st
         server: Some("http://sync.test".into()),
         project: Some(PROJECT.into()),
         name: Some(name.into()),
-        recipient: Some(recipient.into()),
-        names: names
-            .iter()
-            .map(|(role, wire)| ((*role).to_string(), (*wire).to_string()))
-            .collect(),
     });
-    let settings = SyncSettings::resolve(&mailspace, true).unwrap();
+    let settings = SyncSettings::resolve(&mailspace).unwrap();
     Checkout {
         mailspace,
         settings,
@@ -233,6 +259,16 @@ pub fn checkout(name: &str, recipient: &str, roles: &[&str], names: &[(&str, &st
 }
 
 impl Checkout {
+    /// This member's connection to `server`.
+    pub fn client(&self, server: &Rc<FakeServer>) -> FakeClient {
+        server.client(&self.settings.name, self.mailspace.address_prefix())
+    }
+
+    /// The address this mailspace mints for `role`.
+    pub fn address(&self, role: &str) -> String {
+        self.mailspace.address_for(role)
+    }
+
     pub fn push(&self, client: &FakeClient) -> PushReport {
         push::push(&self.mailspace, &self.settings, client).unwrap()
     }
@@ -241,8 +277,8 @@ impl Checkout {
         pull::pull(&self.mailspace, &self.settings, client).unwrap()
     }
 
-    /// Send a need the way `vivi need send` does; returns the delivered
-    /// handle.
+    /// Send a need the way `vivi need send` does; returns the handle the
+    /// command prints first: the delivered copy's, else the sent copy's.
     pub fn send_need(&self, from: &str, to: &str, subject: &str) -> String {
         let result = self
             .mailspace
@@ -259,7 +295,10 @@ impl Checkout {
                 depends_on: Vec::new(),
             })
             .unwrap();
-        result.delivered[0].handle.clone()
+        result
+            .delivered
+            .first()
+            .map_or(result.sent, |delivered| delivered.handle.clone())
     }
 
     /// Compose a plain-mail reply the way `vivi mail reply` does.
@@ -279,7 +318,10 @@ impl Checkout {
                 depends_on: Vec::new(),
             })
             .unwrap();
-        result.delivered[0].handle.clone()
+        result
+            .delivered
+            .first()
+            .map_or(result.sent, |delivered| delivered.handle.clone())
     }
 
     /// The full message id a handle names.

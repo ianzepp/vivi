@@ -20,9 +20,15 @@ pub(super) struct DeliveredMessageId {
 }
 
 impl Mailspace {
-    /// Send a message to identities in the mailspace. `request` specifies the
-    /// sender, recipients, subject, body, and optional role. Sent and delivered
-    /// copies are created in the store.
+    /// Send a message to identities in the mailspace and to remote addresses.
+    /// `request` specifies the sender, recipients, subject, body, and optional
+    /// role. Sent and delivered copies are created in the store.
+    ///
+    /// A recipient that is a role of this mailspace gets a delivered copy. A
+    /// recipient that is an address in another mailspace
+    /// (`role@<prefix>.local`) gets none: its address is written in the To or
+    /// Cc header, the sent copy is the local record, and `vivi sync` carries
+    /// the letter. Those addresses are listed in [`DeliveryResult::remote`].
     ///
     /// # Errors
     /// Returns an error if the sender or any recipient identity cannot be
@@ -39,10 +45,10 @@ impl Mailspace {
             self.backlog_validate_deps(&request.depends_on)?;
         }
         let from = self.resolve_identity(&request.from)?;
-        let recipients = self.resolve_recipients(&request.to, &request.cc)?;
-        if recipients.is_empty() {
+        let (recipients, remote) = self.split_recipients(&request.to, &request.cc)?;
+        if recipients.is_empty() && remote.is_empty() {
             return Err(VivariumError::Message(
-                "local delivery needs at least one To or Cc recipient".into(),
+                "delivery needs at least one To or Cc recipient".into(),
             ));
         }
         let mut storage = self.storage()?;
@@ -75,15 +81,35 @@ impl Mailspace {
         }
         log_send_events(&storage, &from, &request, &delivered_ids, &sent)?;
         let delivered = delivered_with_handles(&storage, delivered_ids)?;
+        let sent_handle = storage.display_handle(&sent.message_id)?;
         if let Some(kind) = work_kind {
-            for message in &delivered {
-                self.backlog_attach(kind, &message.handle, &request.subject, &request.depends_on)?;
-            }
+            self.attach_sent_work(kind, &request, &delivered, &sent_handle)?;
         }
         Ok(DeliveryResult {
             delivered,
-            sent: storage.display_handle(&sent.message_id)?,
+            sent: sent_handle,
+            remote: remote.into_iter().collect(),
         })
+    }
+
+    /// Mint the backlog node for each delivered copy of a work item. With no
+    /// local delivery the sent copy is the only row here, so it is the item.
+    fn attach_sent_work(
+        &self,
+        kind: &str,
+        request: &SendRequest,
+        delivered: &[DeliveredMessage],
+        sent_handle: &str,
+    ) -> Result<(), VivariumError> {
+        let handles: Vec<&str> = if delivered.is_empty() {
+            vec![sent_handle]
+        } else {
+            delivered.iter().map(|m| m.handle.as_str()).collect()
+        };
+        for handle in handles {
+            self.backlog_attach(kind, handle, &request.subject, &request.depends_on)?;
+        }
+        Ok(())
     }
 
     /// Save a self-addressed memo into the identity's `memos` folder.
@@ -162,7 +188,7 @@ impl Mailspace {
     pub(super) fn addresses_for(&self, values: &[String]) -> Result<Vec<String>, VivariumError> {
         values
             .iter()
-            .map(|value| self.resolve_identity(value).map(|id| self.address_for(&id)))
+            .map(|value| self.header_address(value))
             .collect()
     }
 
@@ -530,18 +556,6 @@ impl Mailspace {
         let handle = storage.display_handle(&resolved)?;
         self.sync_backlog_node(&before.local_role, &role, &handle)?;
         Ok(handle)
-    }
-
-    fn resolve_recipients(
-        &self,
-        to: &[String],
-        cc: &[String],
-    ) -> Result<BTreeSet<String>, VivariumError> {
-        let mut recipients = BTreeSet::new();
-        for value in to.iter().chain(cc) {
-            recipients.insert(self.resolve_identity(value)?);
-        }
-        Ok(recipients)
     }
 
     /// Error for a token that resolves globally but is not held by the

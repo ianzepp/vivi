@@ -1,5 +1,5 @@
 use super::delivery::add_header;
-use super::{DeliveryResult, Mailspace, SendRequest};
+use super::{DeliveryResult, Mailspace, Recipient, SendRequest};
 use crate::error::VivariumError;
 use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{MessageIngestRequest, Storage, StoredMessageView};
@@ -11,7 +11,7 @@ pub(super) struct NoteReply {
 
 impl Mailspace {
     /// Reply to an existing message. Resolves recipients from the parent
-    /// message if none are specified.
+    /// message if none are specified: its sender, local or remote.
     ///
     /// # Errors
     /// Returns an error if the parent handle cannot be resolved, the from
@@ -65,13 +65,15 @@ impl Mailspace {
             .ok_or_else(|| VivariumError::Parse("failed to parse lifecycle reply parent".into()))?;
         // Notes on self-addressed items deliver nothing: the actor already
         // knows their own note, and the sent copy (minted below) keeps the
-        // thread record. Only other local identities receive an inbox copy.
-        let recipients = reply_recipients(self, &parsed, identity).unwrap_or_default();
-        let to = if recipients.is_empty() {
+        // thread record. Only other local identities receive an inbox copy;
+        // a remote sender is named in the header and reached by sync.
+        let targets = reply_recipients(self, &parsed, identity).unwrap_or_default();
+        let to = if targets.is_empty() {
             vec![self.address_for(identity)]
         } else {
-            self.addresses_for(&recipients)?
+            self.addresses_for(&targets)?
         };
+        let (recipients, _) = self.split_recipients(&targets, &[])?;
         let mut data = build_compose_draft(&ComposeDraft {
             from: self.address_for(identity),
             to,
@@ -141,21 +143,24 @@ fn reply_recipients(
     parsed: &mail_parser::Message<'_>,
     from: &str,
 ) -> Result<Vec<String>, VivariumError> {
-    let mut recipients = local_recipients(mailspace, parsed.from(), from);
+    let mut recipients = reply_targets(mailspace, parsed.from(), from);
     if recipients.is_empty()
         && let Some(addresses) = parsed.to()
     {
-        recipients = local_recipients(mailspace, Some(addresses), from);
+        recipients = reply_targets(mailspace, Some(addresses), from);
     }
     if recipients.is_empty() {
         return Err(VivariumError::Message(
-            "reply parent has no other local identity to receive the reply".into(),
+            "reply parent has no other local identity or remote address to receive the reply"
+                .into(),
         ));
     }
     Ok(recipients)
 }
 
-fn local_recipients(
+/// The addresses of a header that can receive a reply: other local roles by
+/// name, remote addresses as written.
+fn reply_targets(
     mailspace: &Mailspace,
     addresses: Option<&mail_parser::Address<'_>>,
     from: &str,
@@ -168,11 +173,13 @@ fn local_recipients(
         let Some(value) = address.address.as_deref() else {
             continue;
         };
-        let Ok(identity) = mailspace.resolve_identity(value) else {
-            continue;
+        let target = match mailspace.classify_recipient(value) {
+            Ok(Recipient::Local(identity)) if identity != from => identity,
+            Ok(Recipient::Remote(address)) => address,
+            _ => continue,
         };
-        if identity != from && !recipients.contains(&identity) {
-            recipients.push(identity);
+        if !recipients.contains(&target) {
+            recipients.push(target);
         }
     }
     recipients

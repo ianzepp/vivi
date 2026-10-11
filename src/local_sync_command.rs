@@ -21,6 +21,7 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
         }
         Some(SyncSubcommand::Join { project }) => join(project.as_deref().or(top)),
         Some(SyncSubcommand::Status { project }) => status(project.as_deref().or(top)),
+        Some(SyncSubcommand::Directory { project }) => directory(project.as_deref().or(top)),
     }
 }
 
@@ -28,7 +29,7 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
 /// failure is reported and the command exits non-zero at the end.
 fn run_passes(project: Option<&Path>, push: bool, pull: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace, pull)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
     let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
     let transport = HttpTransport::new(&settings, &identity);
     let mut failures = Vec::new();
@@ -63,7 +64,7 @@ fn run_passes(project: Option<&Path>, push: bool, pull: bool) -> Result<(), Viva
 
 fn join(project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    let settings = SyncSettings::resolve(&mailspace, false)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
     let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
     let receipt = http::join(&settings, &identity)?;
     println!("joined project {} as {}", settings.project, receipt.name);
@@ -84,19 +85,32 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
     println!("sync server: {}", show(&config.server));
     println!("sync project: {}", show(&config.project));
     println!("sync name: {}", show(&config.name));
-    println!("sync recipient: {}", show(&config.recipient));
+    println!("sync address: {}", mailspace.address_domain());
     if let Some(project) = config.project.as_deref().filter(|p| !p.trim().is_empty()) {
         let state = SyncState::load(&sync_dir(&mailspace.dir), project.trim())?;
         println!("sync cursor: {}", state.since);
     } else {
         println!("sync cursor: (project not set)");
     }
-    match SyncSettings::resolve(&mailspace, false) {
+    match SyncSettings::resolve(&mailspace) {
         Ok(settings) => println!(
             "sync unsent: {} letter(s)",
             push::unsent(&mailspace, &settings)?
         ),
         Err(error) => println!("sync unsent: unknown ({error})"),
+    }
+    Ok(())
+}
+
+/// One line per member: name, address domain (`-` when the server has none),
+/// and a short fingerprint.
+fn directory(project: Option<&Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
+    let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
+    let transport = HttpTransport::new(&settings, &identity);
+    for member in transport.directory()? {
+        println!("{}", member.line());
     }
     Ok(())
 }

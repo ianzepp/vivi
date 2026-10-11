@@ -5,6 +5,7 @@ use vivi::cli::{
 };
 use vivi::mailspace::{
     DumpFilters, Mailspace, SendRequest, TaskDumpRequest, WantListOptions, WantMetadataUpdate,
+    queued_line,
 };
 
 pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumError> {
@@ -262,8 +263,8 @@ fn list_wants(
                 &record.from,
                 &record.to,
                 "",
-                from.as_deref(),
-                to.as_deref(),
+                from.as_ref(),
+                to.as_ref(),
             ) && vivi::mailspace::marks_include(&record.marks, marks)
         })
         .collect::<Vec<_>>();
@@ -374,6 +375,9 @@ fn send_local_item(
         println!("{verb} {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
+    if let Some(line) = queued_line(&result.remote) {
+        println!("{line}");
+    }
     if lacks_clause {
         eprintln!(
             "note: body declares no 'done_when:' clause; vivi step will report this {kind} as \

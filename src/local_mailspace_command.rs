@@ -6,7 +6,7 @@ use vivi::cli::{
 };
 use vivi::mailspace::{
     DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace, MailspaceWatchRequest, SendRequest,
-    SourceTaskRequest,
+    SourceTaskRequest, queued_line,
 };
 use vivi::message;
 use vivi::storage::StoredMessageView;
@@ -626,6 +626,9 @@ fn task_from_source(command: &vivi::cli::TaskFromCommand) -> Result<(), Vivarium
     }
     println!("source {} {}", result.source_kind, result.source_handle);
     println!("sent {}", result.sent);
+    if let Some(line) = queued_line(&result.remote) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -652,6 +655,9 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         println!("created {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
+    if let Some(line) = queued_line(&result.remote) {
+        println!("{line}");
+    }
     if lacks_clause {
         eprintln!(
             "note: body declares no 'done_when:' clause; vivi step will report this task as \
@@ -690,6 +696,9 @@ fn send_mail(
         );
     }
     println!("sent {}", result.sent);
+    if let Some(line) = queued_line(&result.remote) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -707,6 +716,9 @@ fn reply_local_mail(command: &MailReplyCommand) -> Result<(), VivariumError> {
         println!("replied {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
+    if let Some(line) = queued_line(&result.remote) {
+        println!("{line}");
+    }
     Ok(())
 }
 

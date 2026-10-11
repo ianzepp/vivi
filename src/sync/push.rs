@@ -148,7 +148,7 @@ pub fn push(
     transport: &dyn Transport,
 ) -> Result<PushReport, VivariumError> {
     let mut storage = mailspace.storage()?;
-    let selection = select::select(mailspace, &storage, settings)?;
+    let selection = select::select(&storage, settings)?;
     send_all(&mut storage, settings, transport, selection)
 }
 
@@ -254,7 +254,7 @@ fn bind_sent(
 /// Returns an error on a storage failure.
 pub fn unsent(mailspace: &Mailspace, settings: &SyncSettings) -> Result<usize, VivariumError> {
     let storage = mailspace.storage()?;
-    Ok(select::select(mailspace, &storage, settings)?.letters.len())
+    Ok(select::select(&storage, settings)?.letters.len())
 }
 
 #[cfg(test)]

@@ -23,7 +23,8 @@ pub enum SyncSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
-    /// File letters other members pushed, byte for byte, under [sync] recipient
+    /// File letters other members pushed, byte for byte, under the roles
+    /// their To and Cc addresses name
     Pull {
         /// Project root that owns .vivi/
         #[arg(long)]
@@ -35,9 +36,15 @@ pub enum SyncSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
-    /// Show the identity fingerprint, server, project, name, recipient, pull
-    /// cursor, and the count of unsent letters
+    /// Show the identity fingerprint, server, project, name, own address
+    /// domain, pull cursor, and the count of unsent letters
     Status {
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// List the project's members: name, address domain, and fingerprint
+    Directory {
         /// Project root that owns .vivi/
         #[arg(long)]
         project: Option<PathBuf>,

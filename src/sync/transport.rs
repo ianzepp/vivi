@@ -50,6 +50,11 @@ pub struct Record {
     #[serde(default)]
     pub kind: Option<String>,
     pub content_sha256: String,
+    /// The authenticated sender's registered address prefix (8 lowercase hex
+    /// characters), stamped by the server; absent for a legacy identity. A
+    /// From address claiming another prefix is a forgery.
+    #[serde(default)]
+    pub from_prefix: Option<String>,
     /// Standard base64 of the exact bytes appended.
     pub raw_eml: String,
 }

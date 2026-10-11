@@ -2,15 +2,24 @@
 //! this mailspace does not hold, byte for byte.
 //!
 //! Every record is verified (`sha256(bytes) == content_sha256`) before it is
-//! looked at. Ingest is idempotent and the cursor moves only after a whole
+//! looked at, its envelope recipients must agree with the letter's own To and
+//! Cc, and a From address that claims a mailspace prefix must carry the one
+//! the server stamped for the sender. Ingest is idempotent and the cursor moves only after a whole
 //! page is handled, so a failure replays the page and changes nothing twice.
+//!
+//! Filing follows the letter's addresses, never its author, and is
+//! additive. One row per To or Cc address that names this mailspace, under
+//! that role. If the From address names this mailspace too, also a `sent` row
+//! under the From role: exactly what a local send writes, so a restore from
+//! an empty store reproduces both. A letter with neither is held under its
+//! first To address.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::chat::b64;
 use crate::chat::item;
 use crate::error::VivariumError;
-use crate::mailspace::Mailspace;
+use crate::mailspace::{Mailspace, prefix_of_domain};
 use crate::storage::{
     IngestEvent, IngestOutcome, MessageIngestRequest, RemoteBindingInput, Storage,
     StoredMessageView, is_traveling_id, sha256_hex,
@@ -85,7 +94,7 @@ impl PullReport {
     pub fn failure(&self) -> Option<String> {
         (!self.refused.is_empty()).then(|| {
             format!(
-                "{} record(s) refused (hash mismatch, id clash, or bad id); see above",
+                "{} record(s) refused (hash, envelope or From mismatch, id clash, or bad id); see above",
                 self.refused.len()
             )
         })
@@ -95,23 +104,19 @@ impl PullReport {
 /// Pull everything after the stored cursor, page by page.
 ///
 /// # Errors
-/// Returns an error when `[sync] recipient` is not resolved, the read fails,
-/// or storage or the state file cannot be written.
+/// Returns an error when the read fails or storage or the state file cannot
+/// be written.
 pub fn pull(
     mailspace: &Mailspace,
     settings: &SyncSettings,
     transport: &dyn Transport,
 ) -> Result<PullReport, VivariumError> {
-    let recipient = settings.recipient.as_deref().ok_or_else(|| {
-        VivariumError::Config("[sync] recipient is not set; pull files letters under it".into())
-    })?;
     let dir = sync_dir(&mailspace.dir);
     let mut state = SyncState::load(&dir, &settings.project)?;
     let mut storage = mailspace.storage()?;
     let filer = Filer {
         mailspace,
         settings,
-        recipient,
     };
     let mut report = PullReport::default();
     loop {
@@ -165,7 +170,25 @@ fn settle_links(
 struct Filer<'a> {
     mailspace: &'a Mailspace,
     settings: &'a SyncSettings,
-    recipient: &'a str,
+}
+
+/// Where one row of a letter goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Placement {
+    account: String,
+    role: &'static str,
+    /// Whether the row takes the letter's server position. A second row
+    /// under the same account cannot: the binding model holds one row per
+    /// account and position.
+    bind: bool,
+    /// Whether the row becomes a backlog node (work kinds only).
+    attach: bool,
+}
+
+impl Placement {
+    fn is_sent(&self) -> bool {
+        self.role == "sent"
+    }
 }
 
 impl Filer<'_> {
@@ -189,6 +212,14 @@ impl Filer<'_> {
             return Ok(());
         }
         let headers = link::parse_headers(&bytes);
+        if !envelope_agrees(record.to.as_deref(), &headers) {
+            refuse(report, record, ENVELOPE_MISMATCH);
+            return Ok(());
+        }
+        if let Some(reason) = forged_from(record.from_prefix.as_deref(), &headers) {
+            refuse(report, record, &reason);
+            return Ok(());
+        }
         let held = storage.live_messages_for_content(&content_id)?;
         if held.is_empty() {
             if !self.file_new(storage, record, &bytes, &headers, report)? {
@@ -204,8 +235,8 @@ impl Filer<'_> {
         Ok(())
     }
 
-    /// Ingest a letter nothing holds. Returns whether it was filed or found
-    /// held; `false` means it was refused.
+    /// Ingest a letter nothing holds, one row per placement. Returns whether
+    /// it was filed or found held; `false` means it was refused.
     fn file_new(
         &self,
         storage: &mut Storage,
@@ -222,16 +253,45 @@ impl Filer<'_> {
             refuse(report, record, "sequence does not fit a remote binding");
             return Ok(false);
         };
-        let own = record.from == self.settings.name;
-        let role = item::role_for(record.kind.as_deref(), own);
-        let request = self.request(record, role, own, uid);
+        let placements = self.placements(record, headers, report);
+        for (index, placement) in placements.iter().enumerate() {
+            // The wire id names the first row (a delivered row when there is
+            // one, as at the sender); the others take the id their binding
+            // derives, so each is stable across replays.
+            let request = self.request(record, placement, uid, index == 0);
+            let outcome = self.ingest_row(storage, record, bytes, headers, placement, &request)?;
+            match outcome {
+                IngestOutcome::Conflict => {
+                    refuse(report, record, "id already names different content here");
+                    return Ok(false);
+                }
+                IngestOutcome::Existing if index == 0 => report.existing += 1,
+                IngestOutcome::Inserted | IngestOutcome::Restored => {
+                    *report.filed.entry(placement.role.to_string()).or_default() += 1;
+                }
+                IngestOutcome::Existing => {}
+            }
+        }
+        Ok(true)
+    }
+
+    /// Ingest one row and attach the backlog node for a work item.
+    fn ingest_row(
+        &self,
+        storage: &mut Storage,
+        record: &Record,
+        bytes: &[u8],
+        headers: &LetterHeaders,
+        placement: &Placement,
+        request: &MessageIngestRequest,
+    ) -> Result<IngestOutcome, VivariumError> {
         let note = format!(
             "project {} item {} from {}",
             self.settings.project, record.sequence, record.from
         );
         let event = IngestEvent {
             command: "sync pull",
-            event_type: if own {
+            event_type: if placement.is_sent() {
                 "sent_copy_created"
             } else {
                 "delivered"
@@ -239,38 +299,120 @@ impl Filer<'_> {
             subject: &headers.subject,
             note: Some(&note),
         };
-        let (outcome, stored) = storage.ingest_if_absent(&request, bytes, Some(&event))?;
-        match outcome {
-            IngestOutcome::Inserted | IngestOutcome::Restored => {
-                *report.filed.entry(role.to_string()).or_default() += 1;
-                if let (Some(kind), false) = (item::work_kind(record.kind.as_deref()), own) {
-                    let handle = storage.display_handle(&stored.message_id)?;
-                    self.mailspace
-                        .backlog_attach(kind, &handle, &headers.subject, &[])?;
-                }
-                Ok(true)
-            }
-            IngestOutcome::Existing => {
-                report.existing += 1;
-                Ok(true)
-            }
-            IngestOutcome::Conflict => {
-                refuse(report, record, "id already names different content here");
-                Ok(false)
-            }
+        let (outcome, stored) = storage.ingest_if_absent(request, bytes, Some(&event))?;
+        if let (true, Some(kind), true) = (
+            outcome.wrote(),
+            item::work_kind(record.kind.as_deref()),
+            placement.attach,
+        ) {
+            let handle = storage.display_handle(&stored.message_id)?;
+            self.mailspace
+                .backlog_attach(kind, &handle, &headers.subject, &[])?;
         }
+        Ok(outcome)
     }
 
-    fn request(&self, record: &Record, role: &str, own: bool, uid: u32) -> MessageIngestRequest {
+    /// The rows a new letter becomes, delivered rows first.
+    ///
+    /// One delivered row per To or Cc address whose domain is this
+    /// mailspace's (own prefix or the legacy name domain), under that local
+    /// role and the folder its kind files under. If the From address names
+    /// this mailspace as well, a `sent` row under the From role. A letter
+    /// with neither is held under its first To address, verbatim, so nothing
+    /// is dropped.
+    fn placements(
+        &self,
+        record: &Record,
+        headers: &LetterHeaders,
+        report: &mut PullReport,
+    ) -> Vec<Placement> {
+        let kind = record.kind.as_deref();
+        let mut placements: Vec<Placement> = Vec::new();
+        for address in &headers.recipients {
+            let Some((local, domain)) = address.rsplit_once('@') else {
+                continue;
+            };
+            if !self.mailspace.is_own_domain(domain) {
+                continue;
+            }
+            let account = self.role_account(local, report);
+            if !placements.iter().any(|p| p.account == account) {
+                placements.push(Placement {
+                    account,
+                    role: item::role_for(kind, false),
+                    bind: true,
+                    attach: true,
+                });
+            }
+        }
+        let from = headers
+            .from
+            .as_deref()
+            .and_then(|from| from.rsplit_once('@'));
+        if let Some((local, _)) = from.filter(|(_, domain)| self.mailspace.is_own_domain(domain)) {
+            let account = self.role_account(local, report);
+            // A letter to oneself has delivered and sent rows under one
+            // account; only the delivered row takes the server position.
+            let bind = !placements.iter().any(|p| p.account == account);
+            let attach = placements.is_empty();
+            placements.push(Placement {
+                account,
+                role: "sent",
+                bind,
+                attach,
+            });
+        }
+        if placements.is_empty() {
+            let account = headers
+                .recipients
+                .first()
+                .cloned()
+                .unwrap_or_else(|| record.from.clone());
+            placements.push(Placement {
+                account,
+                role: item::role_for(kind, false),
+                bind: true,
+                attach: true,
+            });
+        }
+        placements
+    }
+
+    /// The account a local part files under: the canonical role (a renamed
+    /// role keeps its old name as an alias), else the name as written, with
+    /// a warning once per name.
+    fn role_account(&self, local: &str, report: &mut PullReport) -> String {
+        if let Ok(role) = self.mailspace.resolve_identity(local) {
+            return role;
+        }
+        let warning = format!("filed for unknown role {local}");
+        if !report.warnings.contains(&warning) {
+            report.warnings.push(warning);
+        }
+        local.to_string()
+    }
+
+    fn request(
+        &self,
+        record: &Record,
+        placement: &Placement,
+        uid: u32,
+        primary: bool,
+    ) -> MessageIngestRequest {
         MessageIngestRequest {
-            account: self.recipient.to_string(),
-            local_role: role.to_string(),
-            read_state: own,
+            account: placement.account.clone(),
+            local_role: placement.role.to_string(),
+            read_state: placement.is_sent(),
             starred: false,
             message_id_hint: None,
-            presented_id: Some(record.message_id.clone()),
-            seed_hint: format!("{PROVIDER}\0{}\0{}", self.settings.project, record.sequence),
-            remote: Some(self.binding(self.recipient, uid)),
+            presented_id: primary.then(|| record.message_id.clone()),
+            seed_hint: format!(
+                "{PROVIDER}\0{}\0{}\0{}\0{}",
+                self.settings.project, record.sequence, placement.account, placement.role
+            ),
+            remote: placement
+                .bind
+                .then(|| self.binding(&placement.account, uid)),
         }
     }
 
@@ -318,6 +460,47 @@ impl Filer<'_> {
                 .push(format!("could not bind {}: {error}", target.handle));
         }
     }
+}
+
+const ENVELOPE_MISMATCH: &str = "envelope recipients do not match the letter's To/Cc";
+
+/// Whether the envelope's recipient list is the letter's own To and Cc. An
+/// absent (or empty) envelope `to`, and `postmaster`, are not checked.
+fn envelope_agrees(envelope: Option<&str>, headers: &LetterHeaders) -> bool {
+    let Some(declared) = envelope.map(str::trim).filter(|to| !to.is_empty()) else {
+        return true;
+    };
+    if declared.eq_ignore_ascii_case("postmaster") {
+        return true;
+    }
+    let declared: BTreeSet<String> = declared
+        .split(',')
+        .map(|address| address.trim().to_ascii_lowercase())
+        .filter(|address| !address.is_empty())
+        .collect();
+    let own: BTreeSet<String> = headers.recipients.iter().cloned().collect();
+    declared == own
+}
+
+/// Why a letter's From address is not its sender's, if it is not.
+///
+/// A From domain of exactly `<8 lowercase hex>.local` claims a mailspace
+/// prefix, and the server stamps every record with the prefix its
+/// authenticated sender registered. The two must agree (case aside), else any
+/// member could write as another mailspace's role. Other domains (legacy
+/// names, external) and letters with no From make no claim.
+fn forged_from(stamped: Option<&str>, headers: &LetterHeaders) -> Option<String> {
+    let from = headers.from.as_deref()?;
+    let (_, domain) = from.rsplit_once('@')?;
+    let claimed = prefix_of_domain(&domain.to_ascii_lowercase())?.to_string();
+    let stamped = stamped.map(str::to_ascii_lowercase);
+    if stamped.as_deref() == Some(claimed.as_str()) {
+        return None;
+    }
+    Some(format!(
+        "From address claims mailspace {claimed} but the sender is registered as {}",
+        stamped.as_deref().unwrap_or("none")
+    ))
 }
 
 fn refuse(report: &mut PullReport, record: &Record, reason: &str) {

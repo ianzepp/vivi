@@ -204,7 +204,7 @@ durable metadata used by multi-agent hosts (especially sub-agent spawns):
 | `pid` / `host` | Live process binding; self-set by the role at boot (PID-file semantics). `host` defaults to the local hostname when `pid` is set |
 | `cadence` | Optional maximum silence between outbound signals (`15m`, `1h`, …). General-purpose; often used for heads/stewards |
 | `charter` | Standing prompt body for the seat (stored under `.vivi/charters/`) |
-| `address` | Derived: `{name}@{mailspace}.local` |
+| `address` | Derived: `{name}@{prefix}.local`, where `prefix` is the first 8 characters of the mailspace id |
 
 ```sh
 vivi role list --json
@@ -274,12 +274,23 @@ Load task:    vivi task show <handle> --project <root>
 `vivi role` for new work. Existing `[[identities]]` entries in
 `mailspace.toml` load as roles with empty optional fields.
 
-The default local domain is derived from the project directory name. In a
-project named `hanta-monitor`, `cto` resolves to
-`cto@hanta-monitor.local`. Unknown local roles are rejected, external
-recipients are rejected by the local delivery commands, and mixed
-local/external sends are not sent automatically. Use the existing
-`compose`, `enqueue send`, and `exec send` flows for human or external mail.
+Every mailspace has an id: a UUID minted the first time the mailspace is
+opened and stored as the top-level `id` in its `.vivi/mailspace.toml`, which is
+machine-local and uncommitted. The first 8 characters are the domain part of
+every address the mailspace mints, so `cto` in a mailspace whose id begins
+`3f9a1c7e` is `cto@3f9a1c7e.local`. Do not copy `mailspace.toml` between
+machines: two mailspaces with one id collide at `vivi sync join`.
+
+Bare names, aliases, `cto@local`, the own prefix address, and the legacy
+`cto@<project-name>.local` all resolve to the local role. An address with a
+different 8-hex prefix (`mind@9f8e7d6c.local`) names a role in another
+mailspace: `vivi mail send`, `need send`, `task send`, `want send`, and
+`mail reply` accept it next to local roles, write it in the letter's To or Cc,
+keep only the sent copy locally, and print `queued for sync: ...`; `vivi sync`
+carries the letter. A reply to a pulled letter goes to its From with no extra
+flags. Unknown local roles and other external addresses are rejected. Use the
+existing `compose`, `enqueue send`, and `exec send` flows for human or external
+mail.
 
 Local agent mail is stored as raw RFC 5322 `.eml` blobs under `.vivi/blobs/`
 with mailbox state in `.vivi/mail.sqlite`:

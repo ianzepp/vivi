@@ -8,8 +8,9 @@
 use std::collections::BTreeMap;
 
 use crate::error::VivariumError;
-use crate::mailspace::{Mailspace, effective_kind};
+use crate::mailspace::effective_kind;
 use crate::storage::{Storage, StoredMessageView, is_traveling_id};
+use crate::sync::link;
 use crate::sync::{MAX_LETTER_BYTES, PROVIDER, SyncSettings};
 
 /// One letter to send.
@@ -23,7 +24,9 @@ pub struct Letter {
     pub account: String,
     /// `need`, `task`, `want`, or `mail`.
     pub kind: String,
-    /// Declared recipient: the account mapped through `[sync.names]`.
+    /// Declared recipients: the letter's own To and Cc addresses, bare and
+    /// lowercased, deduplicated, sorted, joined with `,`. Empty means the
+    /// header is omitted.
     pub to: String,
 }
 
@@ -82,11 +85,7 @@ pub struct Selection {
 ///
 /// # Errors
 /// Returns an error on a storage failure.
-pub fn select(
-    mailspace: &Mailspace,
-    storage: &Storage,
-    settings: &SyncSettings,
-) -> Result<Selection, VivariumError> {
+pub fn select(storage: &Storage, settings: &SyncSettings) -> Result<Selection, VivariumError> {
     let mut groups: BTreeMap<String, Vec<StoredMessageView>> = BTreeMap::new();
     for row in storage.list_messages()? {
         groups.entry(row.content_id.clone()).or_default().push(row);
@@ -101,7 +100,7 @@ pub fn select(
         if rows.iter().any(|row| bound_here(row, &settings.project)) {
             continue;
         }
-        match classify(mailspace, storage, settings, &rows)? {
+        match classify(storage, &rows)? {
             Ok(letter) => selection.letters.push(letter),
             Err(skipped) => selection.skipped.push(skipped),
         }
@@ -128,9 +127,7 @@ fn excluded_role(role: &str) -> Option<SkipReason> {
 /// goes. The id printed to the sender is the delivered row's, so a non-`sent`
 /// row wins; the sent copy names a letter only when nothing else holds it.
 fn classify(
-    mailspace: &Mailspace,
     storage: &Storage,
-    settings: &SyncSettings,
     rows: &[StoredMessageView],
 ) -> Result<Result<Letter, Skipped>, VivariumError> {
     let skip = |row: &StoredMessageView, reason| {
@@ -180,6 +177,6 @@ fn classify(
         content_id: row.content_id.clone(),
         account: row.account.clone(),
         kind,
-        to: settings.wire_name(mailspace, &row.account),
+        to: link::parse_headers(&data).envelope_to(),
     }))
 }

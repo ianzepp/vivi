@@ -8,7 +8,6 @@
 //! the envelope id. Tokens are minted per invocation and never persisted.
 //! The wire is the "Letter wire" section of the server's phase-03 design.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +33,11 @@ pub const UIDVALIDITY: u32 = 1;
 pub const MAX_LETTER_BYTES: u64 = 64 * 1024;
 
 /// Sync settings (the `[sync]` table in `mailspace.toml`).
+///
+/// Recipients are not configured: a letter's own To and Cc addresses name
+/// them, and the domain of an address is the prefix of the mailspace it
+/// belongs to. Keys older vivi versions wrote here (`recipient`,
+/// `[sync.names]`) are ignored.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SyncConfig {
     /// Base URL of the project server.
@@ -45,12 +49,6 @@ pub struct SyncConfig {
     /// This checkout's registered identity name on the server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Local role that receives pulled letters.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipient: Option<String>,
-    /// Local role -> wire name, for letters addressed to a remote member.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub names: BTreeMap<String, String>,
 }
 
 /// `[sync]` validated for one command: every key the command needs is set.
@@ -59,23 +57,20 @@ pub struct SyncSettings {
     pub server: String,
     pub project: String,
     pub name: String,
-    /// Canonical local role receiving pulled letters; resolved only for
-    /// commands that pull.
-    pub recipient: Option<String>,
-    pub names: BTreeMap<String, String>,
+    /// This mailspace's id, sent when registering so the server can derive
+    /// the address prefix.
+    pub mailspace_id: String,
 }
 
 impl SyncSettings {
-    /// Validate `[sync]`. `pulls` also requires `recipient`, which must name
-    /// a local role.
+    /// Validate `[sync]` and read the mailspace id.
     ///
     /// # Errors
     /// Returns a config error naming the first missing or blank key.
-    pub fn resolve(mailspace: &Mailspace, pulls: bool) -> Result<Self, VivariumError> {
+    pub fn resolve(mailspace: &Mailspace) -> Result<Self, VivariumError> {
         let config = mailspace.config.sync.as_ref().ok_or_else(|| {
             VivariumError::Config(
-                "no [sync] table in mailspace.toml; add server, project, name, and recipient"
-                    .into(),
+                "no [sync] table in mailspace.toml; add server, project, and name".into(),
             )
         })?;
         let server = required(config.server.as_deref(), "server", "the project server URL")?;
@@ -97,42 +92,18 @@ impl SyncSettings {
             "name",
             "this checkout's identity name",
         )?;
-        let recipient = if pulls {
-            let role = required(
-                config.recipient.as_deref(),
-                "recipient",
-                "the local role that receives pulled letters",
-            )?;
-            let canonical = mailspace
-                .resolve_identity(&role)
-                .map_err(|e| VivariumError::Config(format!("[sync] recipient: {e}")))?;
-            Some(canonical)
-        } else {
-            None
-        };
-        if let Some((role, _)) = config.names.iter().find(|(_, wire)| wire.trim().is_empty()) {
-            return Err(VivariumError::Config(format!(
-                "[sync.names] {role} is blank; set it to the member's registered name"
-            )));
+        let mailspace_id = mailspace.mailspace_id();
+        if mailspace_id.is_empty() {
+            return Err(VivariumError::Config(
+                "this mailspace has no id; reopen it with vivi so one is minted".into(),
+            ));
         }
         Ok(Self {
             server: server.trim_end_matches('/').to_string(),
             project,
             name,
-            recipient,
-            names: config.names.clone(),
+            mailspace_id: mailspace_id.to_string(),
         })
-    }
-
-    /// The wire name a local account maps to: the `[sync.names]` entry for
-    /// the account's role, else this checkout's own name.
-    #[must_use]
-    pub fn wire_name(&self, mailspace: &Mailspace, account: &str) -> String {
-        let canonical = mailspace.resolve_identity(account).unwrap_or_default();
-        [account, canonical.as_str()]
-            .into_iter()
-            .find_map(|role| self.names.get(role))
-            .map_or_else(|| self.name.clone(), |wire| wire.trim().to_string())
     }
 }
 

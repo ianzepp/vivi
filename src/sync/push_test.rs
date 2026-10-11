@@ -6,12 +6,7 @@ use crate::sync::select::SkipReason;
 use crate::sync::transport::{Envelope, Transport};
 
 fn alice() -> Checkout {
-    checkout(
-        "alice",
-        "mind",
-        &["mind", "hand", "peer"],
-        &[("peer", "bob")],
-    )
+    checkout("alice", &["mind", "hand", "peer"])
 }
 
 fn eml(subject: &str, total: Option<usize>) -> Vec<u8> {
@@ -55,7 +50,7 @@ fn reasons(report: &push::PushReport) -> Vec<SkipReason> {
 fn memos_drafts_trash_oversize_and_foreign_ids_stay_home_and_are_reported() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
+    let client = a.client(&server);
     a.mailspace
         .save_memo("mind", "a memo", "memo body")
         .unwrap();
@@ -104,7 +99,7 @@ fn memos_drafts_trash_oversize_and_foreign_ids_stay_home_and_are_reported() {
 fn the_wire_id_is_the_delivered_row_else_the_sent_row() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
+    let client = a.client(&server);
     let need = a.send_need("mind", "hand", "delivered and sent");
     let delivered_id = a.id_of(&need);
     let sent_only = put(&a, "mind", "sent", None, &eml("only-sent", None));
@@ -129,17 +124,18 @@ fn the_wire_id_is_the_delivered_row_else_the_sent_row() {
 }
 
 #[test]
-fn kind_and_recipient_follow_the_letter_and_the_names_map() {
+fn kind_follows_the_letter_and_recipients_are_its_own_addresses() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
-    a.send_need("mind", "peer", "to a mapped role");
-    a.send_need("mind", "hand", "to an unmapped role");
+    let client = a.client(&server);
+    let remote = "mind@3f9a1c7e.local";
+    a.send_need("mind", remote, "to a remote role");
+    a.send_need("mind", "hand", "to a local role");
     a.reply(
         &a.send_need("mind", "hand", "parent"),
         "hand",
-        "peer",
-        "mail to bob",
+        remote,
+        "mail to the remote",
     );
 
     a.push(&client);
@@ -151,25 +147,63 @@ fn kind_and_recipient_follow_the_letter_and_the_names_map() {
             .find(|item| String::from_utf8_lossy(&item.bytes).contains(needle))
             .unwrap()
     };
-    let mapped = by_subject("Subject: to a mapped role");
-    assert_eq!(mapped.to.as_deref(), Some("bob"));
-    assert_eq!(mapped.kind.as_deref(), Some("need"));
-    let unmapped = by_subject("Subject: to an unmapped role");
+    let remote_need = by_subject("Subject: to a remote role");
+    assert_eq!(remote_need.to.as_deref(), Some(remote));
+    assert_eq!(remote_need.kind.as_deref(), Some("need"));
+    let local_need = by_subject("Subject: to a local role");
     assert_eq!(
-        unmapped.to.as_deref(),
-        Some("alice"),
-        "the checkout's own name"
+        local_need.to.as_deref(),
+        Some(a.address("hand").as_str()),
+        "a local role is addressed by its own prefix"
     );
-    let mail = by_subject("mail to bob");
-    assert_eq!(mail.to.as_deref(), Some("bob"));
+    let mail = by_subject("mail to the remote");
+    assert_eq!(mail.to.as_deref(), Some(remote));
     assert_eq!(mail.kind.as_deref(), Some("mail"));
+}
+
+#[test]
+fn the_declared_recipients_are_to_and_cc_lowercased_deduplicated_and_sorted() {
+    let server = FakeServer::new();
+    let a = alice();
+    let client = a.client(&server);
+    let letter = |subject: &str, headers: &str| {
+        let bytes = format!(
+            "From: mind@x.test\r\n{headers}Subject: {subject}\r\n\
+             Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\r\nbody\r\n"
+        );
+        put(&a, "mind", "inbox", None, bytes.as_bytes());
+    };
+    letter(
+        "several",
+        "To: Zed@X.test, \"Mind\" <MIND@x.test>\r\nCc: mind@x.test, alice@x.test\r\n",
+    );
+    letter("nobody", "");
+
+    a.push(&client);
+
+    let by_subject = |needle: &str| {
+        server
+            .items()
+            .into_iter()
+            .find(|item| String::from_utf8_lossy(&item.bytes).contains(needle))
+            .unwrap()
+    };
+    assert_eq!(
+        by_subject("Subject: several").to.as_deref(),
+        Some("alice@x.test,mind@x.test,zed@x.test")
+    );
+    assert_eq!(
+        by_subject("Subject: nobody").to.as_deref(),
+        Some(""),
+        "no recipients: the header is omitted on the wire"
+    );
 }
 
 #[test]
 fn tasks_and_wants_travel_with_their_kind() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
+    let client = a.client(&server);
     for (role, kind) in [("tasks", "task"), ("wants", "want")] {
         a.mailspace
             .send(crate::mailspace::SendRequest {
@@ -198,7 +232,7 @@ fn tasks_and_wants_travel_with_their_kind() {
 fn a_rate_limit_stops_the_pass_and_leaves_the_rest_unbound() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
+    let client = a.client(&server);
     for subject in ["one", "two", "three", "four"] {
         a.send_need("mind", "hand", subject);
     }
@@ -231,7 +265,7 @@ fn a_rate_limit_stops_the_pass_and_leaves_the_rest_unbound() {
 fn one_refused_letter_is_reported_and_the_rest_proceed() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
+    let client = a.client(&server);
     let handles: Vec<String> = ["one", "two", "three"]
         .iter()
         .map(|subject| a.send_need("mind", "hand", subject))
@@ -260,7 +294,7 @@ fn one_refused_letter_is_reported_and_the_rest_proceed() {
 fn bytes_the_server_already_holds_from_this_sender_are_bound_not_resent() {
     let server = FakeServer::new();
     let a = alice();
-    let ca = server.client("alice");
+    let ca = a.client(&server);
     let handle = a.send_need("mind", "hand", "already there");
     // This sender pushed the identical letter earlier under another id.
     let envelope = Envelope {
@@ -285,7 +319,7 @@ fn bytes_the_server_already_holds_from_this_sender_are_bound_not_resent() {
 fn another_members_identical_bytes_are_an_ordinary_fresh_append() {
     let server = FakeServer::new();
     let a = alice();
-    let (ca, cx) = (server.client("alice"), server.client("xena"));
+    let (ca, cx) = (a.client(&server), server.client("xena", "deadbeef"));
     let handle = a.send_need("mind", "hand", "held by two members");
     let envelope = Envelope {
         raw_eml: &a.bytes_of(&handle),
@@ -306,7 +340,7 @@ fn another_members_identical_bytes_are_an_ordinary_fresh_append() {
 fn a_row_bound_to_another_remote_is_never_rebound() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
+    let client = a.client(&server);
     let id = {
         let bytes = eml("from-a-room", None);
         let stored = a
@@ -351,7 +385,7 @@ fn a_row_bound_to_another_remote_is_never_rebound() {
 fn a_corrupted_local_file_is_not_sent() {
     let server = FakeServer::new();
     let a = alice();
-    let client = server.client("alice");
+    let client = a.client(&server);
     let handle = a.send_need("mind", "hand", "bit rot");
     let row = a.row(&a.id_of(&handle)).unwrap();
     std::fs::write(a.mailspace.dir.join(&row.blob_relpath), b"rotted").unwrap();

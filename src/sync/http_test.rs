@@ -60,8 +60,7 @@ fn settings_for(server: &str) -> SyncSettings {
         server: server.into(),
         project: "abcde-fghjk".into(),
         name: "alice".into(),
-        recipient: None,
-        names: std::collections::BTreeMap::new(),
+        mailspace_id: "3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b".into(),
     }
 }
 
@@ -188,6 +187,20 @@ fn project_server(method: &str, path: &str) -> (u16, String) {
             200,
             r#"{"token":"tok-1","token_expires_at":"later"}"#.into(),
         ),
+        ("GET", "directory") => (
+            200,
+            r#"{"members":[
+                {"name":"alice","fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mailspace_id":"3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b","extra":1},
+                {"name":"old","fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","mailspace_id":null},
+                {"name":"older","fingerprint":"cc"}
+            ],"project":"x"}"#
+                .into(),
+        ),
+        ("POST", "identities") => (
+            201,
+            r#"{"name":"alice","token":"t","token_expires_at":"later","fingerprint":"f","mailspace_id":"3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b","extra":true}"#
+                .into(),
+        ),
         _ => (
             201,
             format!(
@@ -282,4 +295,67 @@ fn rebrand_leaves_other_errors_alone() {
         timed.to_string(),
         "message error: project server timed out after 15000ms"
     );
+}
+
+#[test]
+fn join_registers_the_mailspace_id_and_tolerates_extra_response_fields() {
+    let (port, listener) = serve(2, project_server);
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+    let dir = tempfile::tempdir().unwrap();
+    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+
+    let receipt = join(&settings, &identity).unwrap();
+
+    assert_eq!(receipt.name, "alice");
+    let seen = listener.join().unwrap();
+    assert_eq!(seen[1].method, "POST");
+    assert_eq!(seen[1].path, "/v1/projects/abcde-fghjk/identities");
+    let body: Value = serde_json::from_slice(&seen[1].body).unwrap();
+    assert_eq!(body["mailspace_id"], "3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b");
+    assert_eq!(body["name"], "alice");
+}
+
+#[test]
+fn a_taken_prefix_is_explained_at_join() {
+    let body = error_body("mailspace_prefix_taken", "taken");
+    let settings = settings_for("https://sync.example");
+    let dir = tempfile::tempdir().unwrap();
+    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+
+    let error = join_error(409, &body, &settings, &identity).to_string();
+
+    assert!(error.contains("3f9a1c7e"), "{error}");
+    assert!(error.contains("mailspace.toml"), "{error}");
+}
+
+#[test]
+fn the_directory_lists_members_with_their_address_domains() {
+    let (port, listener) = serve(3, project_server);
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+    let dir = tempfile::tempdir().unwrap();
+    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+    let transport = HttpTransport::new(&settings, &identity);
+
+    let members = transport.directory().unwrap();
+
+    let lines: Vec<String> = members.iter().map(Member::line).collect();
+    assert_eq!(
+        lines,
+        [
+            "alice  3f9a1c7e.local  aaaaaaaaaaaaaaaa",
+            "old  -  bbbbbbbbbbbbbbbb",
+            "older  -  cc",
+        ]
+    );
+    let seen = listener.join().unwrap();
+    assert_eq!(seen[2].method, "GET");
+    assert_eq!(seen[2].path, "/v1/projects/abcde-fghjk/directory");
+    let auth = seen[2].headers.iter().find(|(k, _)| k == "authorization");
+    assert_eq!(auth.map(|(_, v)| v.as_str()), Some("Bearer tok-1"));
+}
+
+#[test]
+fn a_directory_without_members_is_an_empty_list() {
+    assert!(parse_directory(&json!({})).unwrap().is_empty());
+    assert!(parse_directory(&json!({"members": "no"})).is_err());
 }

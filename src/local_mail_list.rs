@@ -34,8 +34,8 @@ pub(crate) fn print_mail_list(
             &message.from_addr,
             &message.to_addr,
             &message.cc_addr,
-            from.as_deref(),
-            to.as_deref(),
+            from.as_ref(),
+            to.as_ref(),
         ) {
             continue;
         }
@@ -71,28 +71,52 @@ pub(crate) fn print_mail_list(
     Ok(())
 }
 
-pub(crate) fn resolve_list_header(mailspace: &Mailspace, raw: Option<&str>) -> Option<String> {
+/// A `--from` / `--to` filter: matches when any of its lowercased needles is a
+/// substring of the header. A resolved local role carries its current address
+/// and its legacy-domain address, so mail written before the mailspace had an
+/// id still matches.
+pub(crate) struct HeaderNeedle(Vec<String>);
+
+impl HeaderNeedle {
+    fn matches(&self, haystack: &str) -> bool {
+        self.0
+            .iter()
+            .any(|needle| haystack.contains(needle.as_str()))
+    }
+}
+
+pub(crate) fn resolve_list_header(
+    mailspace: &Mailspace,
+    raw: Option<&str>,
+) -> Option<HeaderNeedle> {
     let raw = raw.map(str::trim).filter(|value| !value.is_empty())?;
-    Some(
-        mailspace
-            .resolve_identity(raw)
-            .map_or_else(|_| raw.to_string(), |name| mailspace.address_for(&name))
-            .to_ascii_lowercase(),
-    )
+    let needles = match mailspace.resolve_identity(raw) {
+        Ok(name) => vec![
+            mailspace.address_for(&name),
+            format!("{name}@{}", mailspace.legacy_domain()),
+        ],
+        Err(_) => vec![raw.to_string()],
+    };
+    Some(HeaderNeedle(
+        needles
+            .into_iter()
+            .map(|needle| needle.to_ascii_lowercase())
+            .collect(),
+    ))
 }
 
 pub(crate) fn headers_match(
     from_addr: &str,
     to_addr: &str,
     cc_addr: &str,
-    from: Option<&str>,
-    to: Option<&str>,
+    from: Option<&HeaderNeedle>,
+    to: Option<&HeaderNeedle>,
 ) -> bool {
     let hay_from = from_addr.to_ascii_lowercase();
     let hay_to = to_addr.to_ascii_lowercase();
     let hay_cc = cc_addr.to_ascii_lowercase();
-    from.is_none_or(|needle| hay_from.contains(needle))
-        && to.is_none_or(|needle| hay_to.contains(needle) || hay_cc.contains(needle))
+    from.is_none_or(|needle| needle.matches(&hay_from))
+        && to.is_none_or(|needle| needle.matches(&hay_to) || needle.matches(&hay_cc))
 }
 
 fn mail_list_item(message: StoredMessageView, events: &[MailspaceEvent]) -> MailListItem {

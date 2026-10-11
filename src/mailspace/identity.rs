@@ -207,9 +207,10 @@ impl Mailspace {
         Ok(self.address_for(&new))
     }
 
+    /// The address this mailspace mints for a role: `role@<prefix>.local`.
     #[must_use]
     pub fn address_for(&self, identity: &str) -> String {
-        format!("{identity}@{}.local", self.config.name)
+        format!("{identity}@{}", self.address_domain())
     }
 
     #[must_use]
@@ -238,8 +239,9 @@ impl Mailspace {
         })
     }
 
-    /// Resolve a string to a canonical identity name. Accepts `name@domain`,
-    /// `name`, and aliases.
+    /// Resolve a string to a canonical identity name. Accepts `name`, aliases,
+    /// `name@local`, `name@<prefix>.local` (this mailspace's own address), and
+    /// the legacy `name@<mailspace-name>.local`.
     ///
     /// # Errors
     /// Returns an error if the value is empty, references an external domain, or
@@ -252,8 +254,7 @@ impl Mailspace {
             ));
         }
         let identity = if let Some((local, domain)) = trimmed.rsplit_once('@') {
-            let expected = format!("{}.local", self.config.name);
-            if domain == "local" || domain == expected {
+            if self.is_own_domain(domain) {
                 local
             } else {
                 return Err(VivariumError::Message(format!(
@@ -335,10 +336,17 @@ impl Mailspace {
         if cadence.is_none() {
             return Ok(role_schedule::evaluate(None, None, Utc::now()));
         }
+        // Messages sent before the mailspace had an id carry the legacy
+        // domain; both forms are this role's signal.
         let mut addresses: Vec<_> = self
             .identity_names(&canonical)
             .into_iter()
-            .map(|n| self.address_for(&n))
+            .flat_map(|n| {
+                [
+                    self.address_for(&n),
+                    format!("{n}@{}", self.legacy_domain()),
+                ]
+            })
             .collect();
         addresses.sort();
         addresses.dedup();
@@ -542,7 +550,7 @@ fn rename_charter_file(dir: &std::path::Path, old: &str, new: &str) -> Result<()
     })
 }
 
-fn sanitize_identity(value: &str) -> Result<String, VivariumError> {
+pub(super) fn sanitize_identity(value: &str) -> Result<String, VivariumError> {
     let value = value.trim().to_ascii_lowercase();
     let valid = !value.is_empty()
         && value

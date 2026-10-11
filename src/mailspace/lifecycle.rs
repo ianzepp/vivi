@@ -32,6 +32,9 @@ pub struct SourceTaskResult {
     pub source_kind: String,
     pub delivered: Vec<super::DeliveredMessage>,
     pub sent: String,
+    /// Recipients in other mailspaces, reached by sync.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub remote: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -161,6 +164,7 @@ impl Mailspace {
             source_kind,
             delivered: result.delivered,
             sent: result.sent,
+            remote: result.remote,
         })
     }
 
@@ -357,14 +361,15 @@ impl Mailspace {
     ) -> Result<(), VivariumError> {
         let storage = self.storage()?;
         let source_handle = storage.display_handle(&source.message_id)?;
-        let task_handles = result
-            .delivered
-            .iter()
-            .map(|delivered| delivered.handle.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        for delivered in &result.delivered {
-            let task_id = storage.resolve_message_token(&delivered.handle)?;
+        // With no local delivery the sent copy is the task here.
+        let handles: Vec<&str> = if result.delivered.is_empty() {
+            vec![result.sent.as_str()]
+        } else {
+            result.delivered.iter().map(|d| d.handle.as_str()).collect()
+        };
+        let task_handles = handles.join(",");
+        for handle in handles {
+            let task_id = storage.resolve_message_token(handle)?;
             let mut metadata = BTreeMap::new();
             metadata.insert("source_handle".into(), source_handle.clone());
             metadata.insert("source_content_id".into(), source.content_id.clone());

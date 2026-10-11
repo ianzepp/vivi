@@ -1,4 +1,4 @@
-//! Reply linking from headers alone.
+//! Reading a letter's headers: reply linking, addresses.
 //!
 //! A letter is the only carrier of its reply relation: the envelope has no
 //! parent field. The parent is whichever RFC `Message-ID` the letter's
@@ -15,6 +15,22 @@ pub struct LetterHeaders {
     pub subject: String,
     /// Normalized RFC `Message-ID` of the letter this one answers.
     pub parent: Option<String>,
+    /// The first From address, lowercased.
+    pub from: Option<String>,
+    /// The letter's own To then Cc addresses, bare and lowercased,
+    /// deduplicated, in header order.
+    pub recipients: Vec<String>,
+}
+
+impl LetterHeaders {
+    /// The recipients as the envelope declares them: sorted and joined with
+    /// `,`. Empty when the letter names none.
+    #[must_use]
+    pub fn envelope_to(&self) -> String {
+        let mut sorted = self.recipients.clone();
+        sorted.sort();
+        sorted.join(",")
+    }
 }
 
 /// What [`link_reply`] did.
@@ -38,9 +54,26 @@ pub fn parse_headers(data: &[u8]) -> LetterHeaders {
         .in_reply_to()
         .as_text()
         .or_else(|| parsed.references().as_text());
+    let mut recipients: Vec<String> = Vec::new();
+    for list in [parsed.to(), parsed.cc()].into_iter().flatten() {
+        for address in list.iter().filter_map(|addr| addr.address.as_deref()) {
+            let address = address.trim().to_ascii_lowercase();
+            if !address.is_empty() && !recipients.contains(&address) {
+                recipients.push(address);
+            }
+        }
+    }
+    let from = parsed
+        .from()
+        .and_then(|list| list.first())
+        .and_then(|addr| addr.address.as_deref())
+        .map(|address| address.trim().to_ascii_lowercase())
+        .filter(|address| !address.is_empty());
     LetterHeaders {
         subject: parsed.subject().unwrap_or_default().to_string(),
         parent: cited.and_then(normalize_message_id),
+        from,
+        recipients,
     }
 }
 
