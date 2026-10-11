@@ -172,12 +172,47 @@ pub fn check_model(model: &str, allowed: &[String]) -> Result<(), VivariumError>
     )))
 }
 
+/// What a worktree slot does with the job's branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchAction {
+    /// The branch does not exist: it is made at the start commit when the
+    /// job has something to commit.
+    Create,
+    /// The branch exists and is the one the job continues: checked out as it
+    /// is.
+    Continue,
+}
+
+impl BranchAction {
+    /// The word the runner is given.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Continue => "continue",
+        }
+    }
+}
+
+/// How a job starts in a worktree slot: decided before a slot is claimed
+/// (see [`super::local_branch`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkout {
+    pub action: BranchAction,
+    /// The commit the job starts from (the tip of the branch when continuing).
+    pub start: String,
+}
+
 /// Everything about a job that is known before a slot is chosen.
 #[derive(Debug, Clone)]
 pub struct JobPlan {
     pub job: String,
-    /// Full Git address the runner fetches from and pushes to.
+    /// Full Git address the runner fetches from and pushes to. Empty for a
+    /// worktree slot, which has no remote.
     pub remote: String,
+    /// Set for a worktree slot: how the job starts and what happens to the
+    /// branch.
+    pub checkout: Option<Checkout>,
     pub task: String,
     pub subject: String,
     pub brief: String,
@@ -226,7 +261,7 @@ pub fn sh_quote(value: &str) -> String {
 /// and nowhere else.
 #[must_use]
 pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
-    let params = [
+    let mut fields = vec![
         ("REMOTE", spec.remote.clone()),
         ("JOB", spec.job.clone()),
         ("TASK", spec.task.clone()),
@@ -240,9 +275,15 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         ("COMMIT_NAME", spec.committer.name.clone()),
         ("COMMIT_EMAIL", spec.committer.email.clone()),
         ("ENV_NAMES", spec.env_names.join(" ")),
-    ]
-    .map(|(k, v)| format!("{k}={}\n", sh_quote(&v)))
-    .concat();
+    ];
+    if let Some(checkout) = &spec.checkout {
+        fields.push(("LOCAL_ACTION", checkout.action.word().to_string()));
+        fields.push(("LOCAL_START", checkout.start.clone()));
+    }
+    let params: String = fields
+        .into_iter()
+        .map(|(k, v)| format!("{k}={}\n", sh_quote(&v)))
+        .collect();
     let file = |name, content: &str, mode| BundleFile {
         name,
         content: content.as_bytes().to_vec(),

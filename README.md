@@ -528,8 +528,11 @@ runs on Fly (the default), on Docker (`provider = "docker"`: containers on the
 local daemon, or on a remote one over SSH), or, as a minimal form that is not
 the recommended one, on a plain host reachable by SSH (`provider = "ssh"`: each
 slot is a directory and the agent runs there as the login user, with no
-isolation); `[pools.<name>.fly]`, `[pools.<name>.docker]` and
-`[pools.<name>.ssh]` are the host-specific parts of the config.
+isolation), or on the machine Vivi itself runs on (`provider = "local"`: each
+slot is a directory and the worker is a process Vivi launches there, as you,
+with no isolation, optionally as a Git worktree of a repository on this
+machine); `[pools.<name>.fly]`, `[pools.<name>.docker]`, `[pools.<name>.ssh]`
+and `[pools.<name>.local]` are the host-specific parts of the config.
 
 #### Named pools
 
@@ -577,7 +580,7 @@ vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch 
 vivi pool wait [--pool <name>] [<task>...] [--timeout <secs>] [--porcelain]   # block until a dispatch finishes; collect it
 vivi pool reconcile [--pool <name>] [--porcelain]   # collect finished, stop overdue, free slots
 vivi pool doctor [--pool <name>] [--json | --porcelain]   # read-only checks; each finding names its fix
-vivi pool doctor --pool <name> --test [--long] [--json | --porcelain]   # also run a live test of the provider and of Vivi (billable on Fly, free on Docker and SSH)
+vivi pool doctor --pool <name> --test [--long] [--json | --porcelain]   # also run a live test of the provider and of Vivi (billable on Fly, free on Docker, SSH and local)
 ```
 
 **`--pool`.** When the mailspace has exactly one pool the flag may be omitted
@@ -593,12 +596,17 @@ pool and is handled the same way. An unknown `--pool` lists the known names.
 
 **`scale --pool <name> <N>`** brings a pool to N slots. Going up creates and
 seeds what is missing (it is `create --slots N`, so it needs the pool's
-repository). Going down destroys **free** slots only, highest index first, and
+repository, or `worktree_of` on a local pool). Going down destroys **free** slots only, highest index first, and
 needs `--yes`; it never destroys a busy, seeding, finished-uncollected or
 unseeded slot, and prints each one it passed over as `skipped` (the pool then
 ends above N; run it again once they are free). N above the pool's configured
 `slots` is refused before any machine is asked. `scale 0` empties the pool of
 its free slots.
+
+**`build_dir` is optional and has no default.** A pool that names none has no
+build-directory handling at all: no memory disk, no pack or restore, and the
+job runner's clean has nothing to spare. Name one (`build_dir = "target"`) to
+get the warm build described below.
 
 **A pool can be defined with only its provider settings**, for testing: `repo`,
 `github`, `harness` and `committer` are all optional (`github` is required
@@ -612,17 +620,17 @@ configured for this pool") instead of the token, branch and protection checks;
 own source tree, stand-in harness and committer.
 
 **Slot identity.** A slot belongs to a mailspace **and** a pool: its marks
-(Fly machine metadata, Docker labels, the mark files of an SSH slot) carry both
+(Fly machine metadata, Docker labels, the mark files of an SSH or local slot) carry both
 the mailspace's slug and the pool's name, and discovery, claiming, status,
 destroy and the self-test all filter on both. Two mailspaces may each have a
 pool called `local` on the same Docker daemon, SSH host or Fly app and never
 see or touch each other's slots. Machine names are
 `<mailspace>-<pool>-slot-<n>` (Fly machine name, Docker container name) and an
-SSH slot is the directory `<root>/<mailspace>/<pool>/slot-<n>/`. The mailspace
+SSH or local slot is the directory `<root>/<mailspace>/<pool>/slot-<n>/`. The mailspace
 slug is the mailspace name lowercased with every other character turned into a
 dash (so `My Project` is `my-project`, and two mailspace names that slug the
 same collide). The self-test pool is `<pool>-doctor` of the same mailspace.
-The SSH `destroy` guard checks the pool mark **and** the mailspace mark.
+The SSH and local `destroy` guards check the pool mark **and** the mailspace mark.
 
 **Progress and `--porcelain`.** The default output is for a person. Progress
 goes to standard error and results stay on standard output. `create`,
@@ -701,7 +709,9 @@ installed and logged in, an API token, the app, the harness secrets; Docker: the
 `docker` binary, the daemon, the image, daemon memory against a slot's limit,
 the harness environment names; SSH: the `ssh` client, a non-interactive login,
 a Linux host with the tools the slots need, the root's writability, free disk
-space, the architecture, the harness environment names), the
+space, the architecture, the harness environment names; local: the tools on
+`PATH`, `ps`, the root's writability, free disk space, the source repository of
+a worktree pool and its worktree count, the harness environment names), the
 repository (GitHub: `openssl`, the App key, a token, the default branch and its
 protection; one `skipped` line for a pool with no repository), and the pool itself (config, slot count, each slot's state and how
 far its seeded base trails the default branch, leaked runners, orphaned
@@ -746,7 +756,9 @@ image present; `--long` adds about seven): it is free, so a local Docker daemon
 is the check to run after any change to the pool code, whichever host the real
 pool uses. On an SSH host it makes two slot directories under the pool's root
 and removes them (about a minute; `--long` adds about seven); it needs no
-privileges and costs nothing beyond that host's cores and disk.
+privileges and costs nothing beyond that host's cores and disk. On `local` it
+does the same on this machine, always in fetch mode (a worktree pool's test
+brings its own embedded remote instead of touching your repository).
 
 A slot can only fetch what the remote repository already has, so push the base
 before dispatching. `--model` is resolved by the caller in the harness's own
@@ -764,7 +776,7 @@ claims a slot atomically (a Fly machine lease serialises the claim and machine
 metadata is the durable mark; on Docker, creating a claim container named after
 the slot is the claim, because the daemon refuses a second container with the
 same name, and its labels are the mark; on SSH, a hard link of a complete file
-inside the slot directory, which fails if the claim exists), delivers the job as
+inside the slot directory, which fails if the claim exists; the same on local), delivers the job as
 one archive, starts the slot, records the dispatch on the task, and returns without waiting. The slot
 runs the configured harness as an unprivileged user under a hard time limit,
 commits what changed as the configured bot identity, pushes without force, and
@@ -781,7 +793,7 @@ a running slot that no task holds.
 
 Slots are discovered from Fly machine metadata (`vivi_pool*`), Docker
 container labels, marks and claim containers, or the marks in each slot
-directory on an SSH host; Vivi keeps no local slot records.
+directory on an SSH host or on this machine; Vivi keeps no local slot records.
 The Fly app is **required** for a Fly pool (`[pools.<name>.fly] app`) and has no
 default: Fly app names are unique across all Fly accounts and a pool name is a
 short word that would collide. If Fly says the name is taken, `create` says so
@@ -797,10 +809,11 @@ environment of the `vivi` process when a slot is created; `create` and `doctor`
 name the ones that are unset. On SSH the `env` names are read from the login
 environment of the remote user when a job runs. Configure each pool with a
 `[pools.<name>]` table in `.vivi/mailspace.toml` (provider, slots, image,
-setup/seed commands, `build_dir`, and optionally `repo`),
+setup/seed commands, optionally `build_dir`, and optionally `repo`),
 `[pools.<name>.fly]` (app, which is required, and optional organization, region,
 size, memory, tmpfs), `[pools.<name>.docker]` (optional host, memory, cpus,
-tmpfs) or `[pools.<name>.ssh]` (host, optional root),
+tmpfs), `[pools.<name>.ssh]` (host, optional root) or `[pools.<name>.local]`
+(optional root, optional `worktree_of`),
 `[pools.<name>.github]` (App id and key path; with `repo`),
 `[pools.<name>.harness]` with `run`, `models`, `env` and `rules`, and
 `[pools.<name>.committer]`. See `skills/vivi/SKILL.md` for the full table. Nothing in
@@ -919,6 +932,112 @@ does not read `~/.bashrc`); `doctor`, `create` and `dispatch` name the ones the
 host lacks. `cargo test --test pool_ssh_live -- --ignored` (with
 `VIVI_SSH_TEST_HOST`) proves the process handling and the claim against a real
 host.
+
+#### Local provider
+
+The machine `vivi` runs on is the host: each slot is a directory under a root,
+and the worker is a process Vivi launches itself, detached, as the current
+user. No rented machine, no container, no `ssh`.
+
+```toml
+[pools.here]
+provider = "local"              # no `image`: setting one is an error
+slots = 4
+# build_dir = "target"          # optional, no default
+# ...repo + github, or worktree_of; setup, seed, harness, committer as for Fly
+
+[pools.here.local]
+# root = "~/vivi-pool"          # default; each slot is <root>/<mailspace>/<pool>/slot-<n>/
+# worktree_of = "~/work/repo"   # optional: slots are Git worktrees of this local repository
+```
+
+**There is no isolation.** The boot script, the `setup` and `seed` commands and
+the worker all run as the user who runs `vivi`, with that user's whole account:
+every file it can read or write, every credential in its environment and home
+directory, its network. Slots share this machine's cores, memory and disk with
+each other and with everything else on it. `setup` commands run as you, not as
+root, so they install nothing system-wide. Use it for work you would run in a
+terminal yourself; use Docker or Fly when that is not enough.
+
+**Two ways to get the code.**
+
+- *Fetch mode* (no `worktree_of`): a slot checks out its own clone, fetched as
+  an SSH slot's is, from `repo` (with `[github]`, a one-hour token) or, for
+  `doctor --test`, from the tiny embedded remote. A job ends in `pushed`.
+- *Worktree mode* (`worktree_of` set): a slot's checkout is a Git worktree of a
+  local repository, made with `git worktree add --detach` at the seeded base.
+  No `repo`, no GitHub App, no token, no network; setting both `worktree_of` and
+  `repo` is an error. A job ends in a commit on `branch` in that repository,
+  reported as `committed <branch> <sha>` instead of `pushed`. Nothing is pushed
+  anywhere; the repository's own remotes are not touched.
+
+**Branch rules in worktree mode.** Nothing is ever forced: no `-B`, `--force`,
+or `branch -f`, and an existing branch is never moved or reset. The decision is
+made at dispatch, before a slot is claimed, so a refusal costs nothing:
+
+| `branch` | `from` | What happens |
+| --- | --- | --- |
+| does not exist | a commit | created at that commit |
+| does not exist | another branch | created at the tip of that branch (a stack) |
+| exists | the same branch | continued: checked out as it is, the new commit goes on top |
+| exists | anything else | **refused**: reset or rebase it yourself, or continue it with `--from <branch>` |
+| checked out in another worktree | any | **refused**, naming the path that holds it (Git allows one worktree per branch) |
+| the primary checkout's branch | any | **refused** |
+| the repository's default branch | any | **refused** unless `--allow-default-branch` |
+
+A slot at rest is always on a **detached HEAD**, so it never holds a branch: it
+goes back to detached after a finished job, after a job the hard time limit
+killed, and when the slot is stopped or freed. A new branch is created only
+when the job has something to commit, so a job with `no_changes` leaves no
+branch behind. The slot is cleaned back to `from` before the worker starts,
+sparing the build directory. Only `git worktree add`, `remove` and `prune` (and
+read-only queries) touch the source repository, and the first three are
+serialised per repository by a lock on its Git directory, which also holds
+between separate `vivi` processes. `destroy` runs `git worktree remove`, then
+removes the slot directory, and never deletes a branch; the commits of a
+finished job stay in the repository.
+
+**What the orchestrator does differently in worktree mode.** There is no base
+to push first: `create` (or `scale` up) seeds each new worktree at `--base`, by
+default the tip of the repository's default branch, so make sure that commit is
+where you want it. There is no remote branch to delete afterwards: the result
+is already a local branch, so integrate it (merge or cherry-pick) and, if you
+like, delete it yourself; Vivi never deletes a branch. The sequence is
+`doctor`, `dispatch`, `wait` in the background, read the receipt with
+`task show`, integrate `committed <branch> <sha>`, close the task. A branch a
+slot holds cannot be dispatched again to another slot, so run one job per
+branch at a time.
+
+**A fixed pool bounds build output.** Each slot keeps one persistent build
+directory (a plain directory; nothing is packed or restored), so a pool of N
+slots holds at most N build directories however many jobs run. The job
+runner's clean spares it even when the repository does not ignore it. A pool
+with no `build_dir` has none.
+
+**Processes.** Starting runs the boot script detached, in a process group of
+its own, so it outlives `vivi`; a slot is running while that process is alive
+(told by process id and start time, so a reused id is never mistaken for it).
+Stopping ends everything the slot started: the group, the descendants (from one
+`ps` listing) and, on Linux, any process whose environment carries the slot's
+tag. The slot's processes are frozen (`STOP`) until no new one appears, then
+ended with `TERM` and `KILL`, so nothing is born after the listing. This works
+on macOS and Linux with `bash` and `ps` only (no `setsid`, no `/proc` on
+macOS, and the tools macOS lacks, `timeout`, `sha256sum` and `nproc`, are
+small stand-ins the slot carries). The limit: on macOS a process that
+deliberately leaves both the group and the process tree (a double fork) is not
+found; the hard time limit and the runner's own group still apply.
+
+**State.** The marks are small files in the slot directory, the claim is the
+hard link of a complete file (atomic across processes), and everything Vivi
+knows comes from the directories; there are no other records. The values of the
+`[pools.<name>.harness].env` names are read from the environment of the `vivi`
+process at job time; `doctor` names the unset ones, and no value is stored.
+
+`destroy` is guarded like SSH's: the id must be `<pool>/slot-<n>`, the root must
+be a directory of its own, the slot must be a plain directory inside the root
+(never a link) and must carry Vivi's own mark naming the mailspace and pool.
+`cargo test` covers the process handling, the claim and the branch rules on the
+platform it runs on; the Linux-only tag scan is gated to Linux, not skipped.
 
 ### Blocking on local mailspace changes
 

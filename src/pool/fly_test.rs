@@ -78,7 +78,7 @@ fn run_args_carry_the_slot_contract() {
         passthrough_env: vec!["SOME_KEY".into()],
         files: vec![("/work/boot.sh".into(), "echo hi\n".into())],
         command: vec!["bash".into(), "/work/boot.sh".into()],
-        build_dir: "target".into(),
+        build_dir: Some("target".into()),
         tmpfs: "16g".into(),
     };
     let host = PoolFly {

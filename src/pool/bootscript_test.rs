@@ -346,3 +346,74 @@ fn a_one_time_secret_file_is_read_then_removed_before_anything_uses_it() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "it's");
     assert!(!file.exists(), "the secret file is gone once read");
 }
+
+#[test]
+fn a_pool_without_a_build_dir_has_no_build_handling_at_all() {
+    let mut config = config();
+    config.build_dir = None;
+    let token = crate::pool::github::Secret::new(String::new());
+    let env = slot_env(&config, &token, "main", SlotMode::default());
+    for name in [
+        "BUILD_DIR",
+        "TMPFS_SIZE",
+        "BUILD_MOUNTED",
+        "BUILD_PERSISTS",
+        "WORKTREE_OF",
+    ] {
+        assert!(!env.contains_key(name), "{name} set: {env:?}");
+    }
+    config.build_dir = Some("out/cache".into());
+    let env = slot_env(&config, &token, "main", SlotMode::default());
+    assert_eq!(env["BUILD_DIR"], "out/cache");
+    assert!(env.contains_key("TMPFS_SIZE"));
+}
+
+#[test]
+fn only_a_local_worktree_pool_names_its_repository_in_the_slot_environment() {
+    let token = crate::pool::github::Secret::new(String::new());
+    let mut config: PoolConfig = toml::from_str(
+        "provider = \"local\"\nslots = 1\n[local]\nroot = \"/r\"\nworktree_of = \"/r/project\"\n",
+    )
+    .unwrap();
+    let env = slot_env(&config, &token, "abc", SlotMode::default());
+    assert_eq!(env["WORKTREE_OF"], "/r/project");
+    assert_eq!(env["REMOTE"], "", "no remote: nothing is fetched");
+    config.local.worktree_of = None;
+    assert!(!slot_env(&config, &token, "abc", SlotMode::default()).contains_key("WORKTREE_OF"));
+    let mut elsewhere = self::config();
+    elsewhere.provider = "ssh".into();
+    elsewhere.local.worktree_of = Some("/r/project".into());
+    assert!(!slot_env(&elsewhere, &token, "abc", SlotMode::default()).contains_key("WORKTREE_OF"));
+}
+
+#[test]
+fn the_boot_script_handles_the_build_directory_only_when_it_is_named() {
+    let mount = function_text("mount_build");
+    assert!(mount.contains("BUILD_DIR"), "{mount}");
+    let dir = tempfile::tempdir().unwrap();
+    let ran = run_mount_build_without_build_dir(dir.path());
+    assert!(ran, "mount_build must return cleanly with no BUILD_DIR");
+    assert!(
+        !dir.path().join("mount.log").exists(),
+        "no mount without a build dir"
+    );
+}
+
+fn run_mount_build_without_build_dir(dir: &std::path::Path) -> bool {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let stub = bin.join("mount");
+    std::fs::write(&stub, "#!/bin/sh\necho \"$@\" >> \"$MOUNT_LOG\"\n").unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let script = format!("set -e\n{}\nmount_build\n", function_text("mount_build"));
+    std::process::Command::new("bash")
+        .current_dir(dir)
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("MOUNT_LOG", dir.join("mount.log"))
+        .env_remove("BUILD_DIR")
+        .env("BUILD_MOUNTED", "1")
+        .args(["-c", &script])
+        .status()
+        .unwrap()
+        .success()
+}

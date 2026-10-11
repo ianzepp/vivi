@@ -1,0 +1,38 @@
+#!/bin/bash
+# Stand-in for GNU `timeout`, for a host that has none (macOS). Usage:
+#   timeout [-k KILL_AFTER] DURATION COMMAND [ARG]...
+# Runs COMMAND in a process group of its own. When DURATION (whole seconds)
+# passes, the group gets TERM, and KILL after KILL_AFTER more seconds; the exit
+# code is then 124 (137 when KILL was needed), as in GNU timeout. When the
+# command ends first, anything it left running in its group is killed and its
+# exit code is passed on. A TERM, INT or HUP sent to this script goes to the
+# command's group and ends with 143.
+kill_after=0
+while [ "$1" = -k ]; do kill_after=$2; shift 2; done
+secs=$1; shift
+[ $# -gt 0 ] || { echo "usage: timeout [-k KILL_AFTER] DURATION COMMAND [ARG]..." >&2; exit 125; }
+set -m
+timed_out=
+terminated=
+on_timeout() { timed_out=1; kill -TERM -- "-$pid" 2>/dev/null; }
+on_signal() { terminated=1; kill -TERM -- "-$pid" 2>/dev/null; }
+trap on_timeout USR1
+trap on_signal TERM INT HUP
+"$@" &
+pid=$!
+# What the shell says about jobs it reaps must not reach the command's error output.
+exec 2>/dev/null
+( sleep "$secs"; kill -USR1 $$; sleep "$kill_after"; kill -KILL -- "-$pid" ) &
+timer=$!
+while :; do
+  wait "$pid"; rc=$?
+  kill -0 "$pid" 2>/dev/null || break
+done
+kill -TERM -- "-$timer"
+kill -KILL -- "-$pid"
+if [ -n "$timed_out" ]; then
+  [ "$rc" = 137 ] && exit 137
+  exit 124
+fi
+[ -z "$terminated" ] || exit 143
+exit "$rc"

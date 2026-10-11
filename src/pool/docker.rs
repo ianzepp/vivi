@@ -288,7 +288,6 @@ pub fn go_arch(name: &str) -> String {
 /// in the creating process: they go as `-e NAME`, never with a value.
 #[must_use]
 pub fn create_args(spec: &CreateSpec, limits: &Limits, passed: &[String]) -> Vec<String> {
-    let mount = format!("{CHECKOUT_DIR}/{}", spec.build_dir);
     let mut args: Vec<String> = [
         "create",
         "--name",
@@ -305,10 +304,12 @@ pub fn create_args(spec: &CreateSpec, limits: &Limits, passed: &[String]) -> Vec
         args.extend(["--cpus".to_string(), cpus.to_string()]);
     }
     // `exec`: a build output the build runs binaries from must be executable.
-    args.extend([
-        "--tmpfs".to_string(),
-        format!("{mount}:rw,exec,size={}", spec.tmpfs),
-    ]);
+    if let Some(dir) = &spec.build_dir {
+        args.extend([
+            "--tmpfs".to_string(),
+            format!("{CHECKOUT_DIR}/{dir}:rw,exec,size={}", spec.tmpfs),
+        ]);
+    }
     let labels = spec
         .metadata
         .iter()

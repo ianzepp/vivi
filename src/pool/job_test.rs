@@ -14,6 +14,7 @@ fn plan() -> JobPlan {
     JobPlan {
         job: "0123456789ab".into(),
         remote: "https://github.com/acme/widgets.git".into(),
+        checkout: None,
         task: "abcd1234".into(),
         subject: "Fix the thing's edge case\nsecond line".into(),
         brief: "do the work\nfrom: main\nbranch: factory/x\n".into(),
@@ -230,4 +231,31 @@ fn a_file_remote_with_no_token_travels_as_given() {
     let bundle = build_bundle(&local, "p-doctor-slot-1", &Secret::new(String::new()));
     assert!(text(&bundle, "params.env").contains("REMOTE='file:///work/remote.git'\n"));
     assert_eq!(text(&bundle, "token"), "");
+}
+
+#[test]
+fn a_local_checkout_travels_as_an_action_and_a_start_and_a_fetch_job_has_neither() {
+    let secret = Secret::new(String::new());
+    let params = text(&build_bundle(&plan(), "p-slot-1", &secret), "params.env");
+    assert!(
+        !params.contains("LOCAL_ACTION") && !params.contains("LOCAL_START"),
+        "{params}"
+    );
+
+    for (action, word) in [
+        (BranchAction::Create, "create"),
+        (BranchAction::Continue, "continue"),
+    ] {
+        let mut local = plan();
+        local.checkout = Some(Checkout {
+            action,
+            start: "0123abcd".into(),
+        });
+        let params = text(&build_bundle(&local, "p-slot-1", &secret), "params.env");
+        assert!(
+            params.contains(&format!("LOCAL_ACTION='{word}'\n")),
+            "{params}"
+        );
+        assert!(params.contains("LOCAL_START='0123abcd'\n"), "{params}");
+    }
 }

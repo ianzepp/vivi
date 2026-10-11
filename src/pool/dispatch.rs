@@ -54,7 +54,7 @@ pub fn plan_job(
     job: String,
 ) -> Result<JobPlan, VivariumError> {
     let (handle, subject, body) = task;
-    if config.embedded.is_none() {
+    if config.embedded.is_none() && config.worktree_source().is_none() {
         config.require_repo(pool, "dispatch")?;
     }
     let harness = config.harness.as_ref().ok_or_else(|| {
@@ -78,6 +78,7 @@ pub fn plan_job(
     Ok(JobPlan {
         job,
         remote: config.remote_address(),
+        checkout: None,
         task: handle.to_string(),
         subject: subject.to_string(),
         brief: body.to_string(),

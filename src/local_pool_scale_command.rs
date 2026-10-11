@@ -23,7 +23,7 @@ pub(crate) fn scale(command: &PoolScaleCommand) -> Result<(), VivariumError> {
     progress.say(&format!("{}: looking at the pool's slots", id.pool));
     let slots = run::pool_status(provider, id)?;
     let plan = scale::plan(&slots, command.target, config.slots)?;
-    if plan.create > 0 {
+    if plan.create > 0 && config.worktree_source().is_none() {
         config.require_repo(&id.pool, "create slots")?;
     }
     if !plan.destroy.is_empty() && !command.yes {

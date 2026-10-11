@@ -1,0 +1,3 @@
+#!/bin/bash
+# Stand-in for GNU `sha256sum`, for a host that has none.
+exec shasum -a 256 "$@"

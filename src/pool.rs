@@ -16,8 +16,8 @@
 //! claims a slot atomically (see [`claim`]), delivers one job archive, and is
 //! recorded on the task (see [`record`]); `wait` and `reconcile` collect the
 //! result and free the slot (see [`collect`]). The provider sits behind
-//! [`provider::PoolProvider`] so tests use a fake; `fly`, `docker` and `ssh` are the
-//! three machine hosts (see [`open_provider`]). `vivi pool doctor --test`
+//! [`provider::PoolProvider`] so tests use a fake; `fly`, `docker`, `ssh` and `local` are the
+//! four machine hosts (see [`open_provider`]). `vivi pool doctor --test`
 //! runs a live exercise of all of this (see [`selftest`]).
 
 pub mod bootscript;
@@ -42,6 +42,15 @@ pub mod fly_doctor;
 pub mod fly_token;
 pub mod github;
 pub mod job;
+pub mod local;
+pub mod local_branch;
+pub mod local_doctor;
+#[cfg(test)]
+#[path = "pool/local_fixture_test.rs"]
+pub(crate) mod local_fixture;
+pub mod local_git;
+pub mod local_proc;
+pub mod local_slots;
 pub mod pools;
 pub mod porcelain;
 pub mod progress;
@@ -71,6 +80,7 @@ pub fn open_provider(config: &PoolConfig) -> Box<dyn PoolProvider> {
     match config.provider.as_str() {
         "docker" => Box::new(docker::DockerProvider::new(config)),
         "ssh" => Box::new(ssh::SshProvider::new(config)),
+        "local" => Box::new(local::LocalProvider::new(config)),
         _ => Box::new(fly::FlyctlProvider::new(
             config.fly.app.as_deref().unwrap_or_default(),
             &config.fly,

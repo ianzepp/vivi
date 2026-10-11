@@ -63,7 +63,10 @@ pub struct SlotMode {
 }
 
 /// The environment a slot is created with. `GH_TOKEN` is set only when there
-/// is a token; an embedded source needs none. `mode` is what the machine host
+/// is a token; an embedded source needs none. `BUILD_DIR` and `TMPFS_SIZE`
+/// are set only for a pool with a build directory. `WORKTREE_OF` is set only
+/// for a pool whose slots are Git worktrees of a local repository: the
+/// provider makes the checkout from it before the boot script runs. `mode` is what the machine host
 /// does for the slot (see [`SlotMode`]).
 #[must_use]
 pub fn slot_env(
@@ -75,9 +78,14 @@ pub fn slot_env(
     let mut env = BTreeMap::from([
         ("REMOTE".to_string(), config.remote_address()),
         ("BASE".to_string(), base.to_string()),
-        ("BUILD_DIR".to_string(), config.build_dir.clone()),
-        ("TMPFS_SIZE".to_string(), config.tmpfs_size().to_string()),
     ]);
+    if let Some(dir) = &config.build_dir {
+        env.insert("BUILD_DIR".to_string(), dir.clone());
+        env.insert("TMPFS_SIZE".to_string(), config.tmpfs_size().to_string());
+    }
+    if let Some(repo) = config.worktree_source() {
+        env.insert("WORKTREE_OF".to_string(), repo.display().to_string());
+    }
     for (name, on) in [
         ("BUILD_MOUNTED", mode.mounted),
         ("BUILD_PERSISTS", mode.persists),

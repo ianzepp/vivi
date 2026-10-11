@@ -36,7 +36,7 @@ fn spec(index: u32) -> CreateSpec {
         passthrough_env: Vec::new(),
         files: vec![("/work/hello.txt".into(), "hi\n".into())],
         command: vec!["true".into()],
-        build_dir: "target".into(),
+        build_dir: Some("target".into()),
         tmpfs: "16m".into(),
     }
 }

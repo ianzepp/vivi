@@ -102,7 +102,7 @@ fn rejects_bad_repo_and_zero_slots() {
 fn rejects_escaping_build_dir() {
     for bad in ["/target", "../target", "a/../b", "", "a b", "./x", "a//b"] {
         let mut config = full();
-        config.build_dir = bad.into();
+        config.build_dir = Some(bad.into());
         assert!(err(&config).contains("build_dir"), "{bad}");
     }
 }
@@ -587,7 +587,7 @@ fn a_pool_with_only_its_provider_settings_validates() {
     config.validate(&id()).unwrap();
     assert!(config.repo.is_none() && config.github.is_none());
     assert!(config.repo_access().is_none());
-    assert_eq!(config.build_dir, "target");
+    assert_eq!(config.build_dir, None, "no default build directory");
     assert_eq!(config.remote_address(), "");
     let ssh: PoolConfig =
         toml::from_str("provider = \"ssh\"\nslots = 1\n[ssh]\nhost = \"box\"\n").unwrap();

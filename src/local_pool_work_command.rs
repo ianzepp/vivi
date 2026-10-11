@@ -9,6 +9,9 @@ use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::dispatch::{self, DispatchFlags};
+use vivi::pool::github::Secret;
+use vivi::pool::local_branch;
+use vivi::pool::local_git::Repo;
 use vivi::pool::pools::{self, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::{HEARTBEAT, Progress};
@@ -58,7 +61,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     };
     let job_id = dispatch::new_job_id(&task.handle, nanos, std::process::id());
     let rules = load_rules(config, &space)?;
-    let plan = dispatch::plan_job(
+    let mut plan = dispatch::plan_job(
         config,
         &id.pool,
         (&task.handle, &task.subject, &task.body),
@@ -66,15 +69,11 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         rules,
         job_id,
     )?;
-    let access = config.require_repo(&id.pool, "dispatch")?;
-    progress.say(&format!("{}: getting a GitHub token", id.pool));
-    let token = github::mint_token(&access)?;
-    progress.say("checking the push target");
-    let default = github::default_branch(&token, access.repo)?;
-    dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
+    let (token, start) = match config.worktree_source() {
+        Some(path) => worktree_start(&path, &mut plan, flags.allow_default_branch, &progress)?,
+        None => remote_start(config, &id.pool, &plan, &flags, &progress)?,
+    };
     warn_missing_env(provider, config);
-    progress.say(&format!("resolving {}", plan.refs.from));
-    let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
     progress.say(&format!(
         "{}: claiming a free slot and starting the job",
         id.pool
@@ -105,6 +104,45 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         made.budget
     );
     Ok(())
+}
+
+/// Where a job on a remote pool starts: a GitHub token, the push target
+/// checked against the default branch, and `from` resolved to a commit.
+fn remote_start(
+    config: &PoolConfig,
+    pool: &str,
+    plan: &job::JobPlan,
+    flags: &dispatch::DispatchFlags,
+    progress: &Progress,
+) -> Result<(Secret, String), VivariumError> {
+    let access = config.require_repo(pool, "dispatch")?;
+    progress.say(&format!("{pool}: getting a GitHub token"));
+    let token = github::mint_token(&access)?;
+    progress.say("checking the push target");
+    let default = github::default_branch(&token, access.repo)?;
+    dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
+    progress.say(&format!("resolving {}", plan.refs.from));
+    let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
+    Ok((token, start))
+}
+
+/// Where a job on a worktree pool starts: the branch decision, made against
+/// the local repository before any slot is claimed. There is no token.
+fn worktree_start(
+    path: &std::path::Path,
+    plan: &mut job::JobPlan,
+    allow_default: bool,
+    progress: &Progress,
+) -> Result<(Secret, String), VivariumError> {
+    progress.say(&format!(
+        "checking branch {} in {}",
+        plan.refs.branch,
+        path.display()
+    ));
+    let checkout = local_branch::prepare(&Repo::new(path), &plan.refs, allow_default)?;
+    let start = checkout.start.clone();
+    plan.checkout = Some(checkout);
+    Ok((Secret::new(String::new()), start))
 }
 
 /// Warn (never fail) when the host lacks harness environment the config names.

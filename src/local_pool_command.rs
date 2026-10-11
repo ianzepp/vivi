@@ -5,7 +5,9 @@ use crate::local_pool_work_command as work;
 use vivi::VivariumError;
 use vivi::cli::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
 use vivi::mailspace::Mailspace;
-use vivi::pool::github;
+use vivi::pool::github::{self, Secret};
+use vivi::pool::local_branch;
+use vivi::pool::local_git::Repo;
 use vivi::pool::pools::{self, Need, PoolHandle, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::Progress;
@@ -59,7 +61,11 @@ pub(crate) fn create_into(
 ) -> Result<CreateReport, VivariumError> {
     let (id, config) = (&handle.id, &handle.config);
     let provider = handle.provider.as_ref();
-    let access = config.require_repo(&id.pool, "create slots")?;
+    let worktree = config.worktree_source();
+    let access = match &worktree {
+        Some(_) => None,
+        None => Some(config.require_repo(&id.pool, "create slots")?),
+    };
     progress.say(&format!("{}: preparing the pool's home", id.pool));
     let ready = run::prepare_home(provider, config)?;
     if let Some(made) = &ready.created {
@@ -76,12 +82,33 @@ pub(crate) fn create_into(
         eprintln!("{warning}");
     }
     let report = run::create_slots(provider, config, id, options, progress, || {
-        progress.say(&format!(
-            "{}: getting a GitHub token and the base commit",
-            id.pool
-        ));
-        let token = github::mint_token(&access)?;
-        let base = github::resolve_base(&token, access.repo, seed.base)?;
+        let (token, base) = match (&worktree, &access) {
+            (Some(path), _) => {
+                let repo = Repo::new(path);
+                progress.say(&format!(
+                    "{}: resolving the base commit in {}",
+                    id.pool,
+                    path.display()
+                ));
+                let base = local_branch::base_commit(&repo, seed.base)?;
+                (Secret::new(String::new()), base)
+            }
+            (None, Some(access)) => {
+                progress.say(&format!(
+                    "{}: getting a GitHub token and the base commit",
+                    id.pool
+                ));
+                let token = github::mint_token(access)?;
+                let base = github::resolve_base(&token, access.repo, seed.base)?;
+                (token, base)
+            }
+            (None, None) => {
+                return Err(VivariumError::Config(format!(
+                    "[pools.{}] has no source to seed from",
+                    id.pool
+                )));
+            }
+        };
         progress.say(&format!("seeding at {}", &base[..12.min(base.len())]));
         Ok((token, base))
     })?;

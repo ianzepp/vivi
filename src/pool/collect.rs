@@ -102,19 +102,22 @@ impl JobResult {
         self.fields.get(key).map_or("", String::as_str)
     }
 
-    /// The push outcome word (`pushed`, `push_refused`, `no_changes`, ...).
+    /// The outcome word (`pushed`, `push_refused`, `no_changes`, ... and, for
+    /// a worktree slot, `committed`: a commit on the branch in the local
+    /// repository, with nothing pushed).
     #[must_use]
     pub fn push(&self) -> &str {
         self.get("push")
     }
 
-    /// `pushed <branch> <sha>`, or the bare outcome word.
+    /// `pushed <branch> <sha>` or `committed <branch> <sha>`, or the bare
+    /// outcome word.
     #[must_use]
     pub fn push_line(&self) -> String {
         match (self.push(), self.get("sha")) {
-            ("pushed", sha) if !sha.is_empty() => {
+            (word @ ("pushed" | "committed"), sha) if !sha.is_empty() => {
                 format!(
-                    "pushed {} {}",
+                    "{word} {} {}",
                     self.get("branch"),
                     sha.get(..10).unwrap_or(sha)
                 )

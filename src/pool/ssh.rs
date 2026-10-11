@@ -185,7 +185,7 @@ impl SshProvider {
 
 /// A path as the pool spells it (under `/work`), relative to the slot
 /// directory.
-fn relative(path: &str) -> Result<String, VivariumError> {
+pub(super) fn relative(path: &str) -> Result<String, VivariumError> {
     match path.strip_prefix(LOGICAL_ROOT) {
         Some(rel) if !rel.is_empty() && !rel.split('/').any(|p| p == ".." || p.is_empty()) => {
             Ok(rel.to_string())
@@ -197,7 +197,7 @@ fn relative(path: &str) -> Result<String, VivariumError> {
 }
 
 /// Values that become one line of a file: no line break.
-fn one_line(value: &str) -> Result<(), VivariumError> {
+pub(super) fn one_line(value: &str) -> Result<(), VivariumError> {
     if value.contains(['\n', '\r', '\0']) {
         return Err(VivariumError::Message(
             "a slot value must be a single line".into(),

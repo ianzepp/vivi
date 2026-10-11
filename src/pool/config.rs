@@ -17,9 +17,8 @@ use super::slot::{DOCTOR_SUFFIX, PoolId};
 use crate::error::VivariumError;
 
 /// Machine hosts the pool can run on.
-pub const PROVIDERS: [&str; 3] = ["fly", "docker", "ssh"];
+pub const PROVIDERS: [&str; 4] = ["fly", "docker", "ssh", "local"];
 const DEFAULT_PROVIDER: &str = "fly";
-const DEFAULT_BUILD_DIR: &str = "target";
 const DEFAULT_REGION: &str = "iad";
 const DEFAULT_ORGANIZATION: &str = "personal";
 const DEFAULT_SIZE: &str = "performance-8x";
@@ -29,12 +28,14 @@ const DEFAULT_DOCKER_MEMORY: &str = "4g";
 const DEFAULT_DOCKER_TMPFS: &str = "2g";
 /// Where an `ssh` pool keeps its slot directories when `root` is not set.
 pub const DEFAULT_SSH_ROOT: &str = "~/vivi-pool";
+/// Where a `local` pool keeps its slot directories when `root` is not set.
+pub const DEFAULT_LOCAL_ROOT: &str = "~/vivi-pool";
 
 /// Remote lane pool settings: one `[pools.<name>]` table. Machine-host
-/// settings live in [`PoolFly`], [`PoolDocker`] and [`PoolSsh`].
+/// settings live in [`PoolFly`], [`PoolDocker`], [`PoolSsh`] and [`PoolLocal`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolConfig {
-    /// Machine host: `fly`, `docker` or `ssh`.
+    /// Machine host: `fly`, `docker`, `ssh` or `local`.
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Source repository, `owner/name`. Optional: a pool can be defined with
@@ -45,20 +46,22 @@ pub struct PoolConfig {
     /// Maximum pool size.
     pub slots: u32,
     /// Container image the machines run. Required by `fly` and `docker`;
-    /// the `ssh` provider has no image, so it must be left out there.
+    /// the `ssh` and `local` providers have no image, so it must be left out
+    /// there.
     #[serde(default)]
     pub image: String,
     /// Shell commands run once at seed time, before the checkout: as root on
-    /// `fly` and `docker`, as the login user on `ssh`.
+    /// `fly` and `docker`, as the login user on `ssh` and `local`.
     #[serde(default)]
     pub setup: Vec<String>,
     /// Shell commands run in the checkout at seed time to warm the build output.
     #[serde(default)]
     pub seed: Vec<String>,
-    /// Build output directory relative to the repo; gets the memory disk and the pack.
-    /// Default: `target`.
-    #[serde(default = "default_build_dir")]
-    pub build_dir: String,
+    /// Build output directory relative to the repo; gets the memory disk and
+    /// the pack (a plain, kept directory on `ssh` and `local`). No default:
+    /// a pool that sets none has no build directory handling at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_dir: Option<String>,
     /// Settings that belong to the `fly` machine host.
     #[serde(default)]
     pub fly: PoolFly,
@@ -68,6 +71,9 @@ pub struct PoolConfig {
     /// Settings that belong to the `ssh` machine host.
     #[serde(default)]
     pub ssh: PoolSsh,
+    /// Settings that belong to the `local` machine host.
+    #[serde(default)]
+    pub local: PoolLocal,
     /// GitHub App used to mint the fetch token. Optional, and required
     /// together with `repo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +206,46 @@ impl PoolSsh {
     }
 }
 
+/// The `[pools.<name>.local]` table: the settings only the `local` machine
+/// host has. A slot is a directory on this machine and the worker runs as the
+/// current user, with no isolation.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PoolLocal {
+    /// Directory that holds the pools:
+    /// `<root>/<mailspace>/<pool>/slot-<n>/`. `~/` means the home
+    /// directory. Default: `~/vivi-pool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// A Git repository already on this machine. When set, each slot's
+    /// checkout is a Git worktree of it (no `repo`, no `github`, no token, no
+    /// network) and a job's result is a commit on its branch in that
+    /// repository. When not set, the slot fetches from a remote like the
+    /// `ssh` provider does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_of: Option<String>,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, toml::Value>,
+}
+
+impl PoolLocal {
+    /// The slot root as configured, or the default.
+    #[must_use]
+    pub fn root_or_default(&self) -> &str {
+        self.root.as_deref().unwrap_or(DEFAULT_LOCAL_ROOT)
+    }
+
+    /// The repository the slots are worktrees of, with a leading `~/`
+    /// expanded.
+    #[must_use]
+    pub fn worktree_path(&self) -> Option<PathBuf> {
+        let raw = self.worktree_of.as_deref()?;
+        Some(match raw.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().map_or_else(|| PathBuf::from(raw), |h| h.join(rest)),
+            None => PathBuf::from(raw),
+        })
+    }
+}
+
 impl PoolFly {
     /// The organization a new application is created in.
     #[must_use]
@@ -258,9 +304,6 @@ pub struct PoolHarness {
     pub unknown: BTreeMap<String, toml::Value>,
 }
 
-fn default_build_dir() -> String {
-    DEFAULT_BUILD_DIR.to_string()
-}
 fn default_provider() -> String {
     DEFAULT_PROVIDER.to_string()
 }
@@ -290,15 +333,27 @@ impl PoolConfig {
         match self.provider.as_str() {
             "docker" => &self.docker.tmpfs,
             // A directory on a host has no memory disk.
-            "ssh" => "",
+            "ssh" | "local" => "",
             _ => &self.fly.tmpfs,
+        }
+    }
+
+    /// The local repository the slots are worktrees of, for a `local` pool in
+    /// worktree mode.
+    #[must_use]
+    pub fn worktree_source(&self) -> Option<PathBuf> {
+        if self.provider == "local" {
+            self.local.worktree_path()
+        } else {
+            None
         }
     }
 
     /// The full Git address jobs and the seed fetch from and push to:
     /// GitHub for `repo = "owner/name"`, or the embedded source's own remote.
     /// Empty for a pool with neither (commands that need one check first with
-    /// [`PoolConfig::require_repo`]).
+    /// [`PoolConfig::require_repo`]) and for a worktree pool, which has no
+    /// remote.
     #[must_use]
     pub fn remote_address(&self) -> String {
         match (&self.embedded, &self.repo) {
@@ -370,6 +425,7 @@ impl PoolConfig {
         reject_unknown(pool, ".fly", &self.fly.unknown)?;
         reject_unknown(pool, ".docker", &self.docker.unknown)?;
         reject_unknown(pool, ".ssh", &self.ssh.unknown)?;
+        reject_unknown(pool, ".local", &self.local.unknown)?;
         match &self.github {
             Some(github) => reject_unknown(pool, ".github", &github.unknown),
             None => Ok(()),
@@ -379,7 +435,7 @@ impl PoolConfig {
     fn validate_identity(&self, id: &PoolId) -> Result<(), VivariumError> {
         if !PROVIDERS.contains(&self.provider.as_str()) {
             return Err(bad(format!(
-                "provider \"{}\" is not supported (use \"fly\", \"docker\" or \"ssh\")",
+                "provider \"{}\" is not supported (use \"fly\", \"docker\", \"ssh\" or \"local\")",
                 self.provider
             )));
         }
@@ -396,6 +452,11 @@ impl PoolConfig {
             (Some(_), None) => return Err(bad("github is required when repo is set")),
             (None, Some(_)) => return Err(bad("repo is required when github is set")),
             _ => {}
+        }
+        if self.repo.is_some() && self.local.worktree_of.is_some() {
+            return Err(bad(
+                "worktree_of and repo cannot both be set (a worktree pool takes its source from a repository on this machine, not from GitHub)",
+            ));
         }
         let Some(repo) = &self.repo else {
             return Ok(());
@@ -436,19 +497,21 @@ impl PoolConfig {
         match self.provider.as_str() {
             "docker" => self.docker.validate()?,
             "ssh" => self.ssh.validate()?,
+            "local" => self.local.validate()?,
             _ => self.validate_fly_machine()?,
         }
-        validate_build_dir(&self.build_dir)
+        self.build_dir.as_deref().map_or(Ok(()), validate_build_dir)
     }
 
     fn validate_image(&self) -> Result<(), VivariumError> {
-        if self.provider == "ssh" {
+        if matches!(self.provider.as_str(), "ssh" | "local") {
             return if self.image.is_empty() {
                 Ok(())
             } else {
-                Err(bad(
-                    "image does not apply to the ssh provider (a slot is a directory on the host, not a container); remove it",
-                ))
+                Err(bad(format!(
+                    "image does not apply to the {} provider (a slot is a directory on the host, not a container); remove it",
+                    self.provider
+                )))
             };
         }
         if self.image.trim().is_empty() || self.image.chars().any(char::is_whitespace) {
@@ -528,6 +591,39 @@ impl PoolSsh {
     }
 }
 
+impl PoolLocal {
+    fn validate(&self) -> Result<(), VivariumError> {
+        check_root(self.root_or_default(), "local.root").map_err(bad)?;
+        match &self.worktree_of {
+            Some(path) => check_worktree_of(path).map_err(bad),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Check the repository a worktree pool is made from: an absolute path or
+/// `~/<path>`, with no line break, `..` part or empty part. It may hold any
+/// other character a directory name can.
+///
+/// # Errors
+/// Returns the reason the path cannot be used.
+pub fn check_worktree_of(path: &str) -> Result<(), String> {
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix('/'));
+    let parts_ok = |rest: &str| {
+        !rest.is_empty()
+            && rest
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+    };
+    match rest {
+        Some(rest) if parts_ok(rest) && !path.chars().any(char::is_control) => Ok(()),
+        _ => Err(
+            "local.worktree_of must be the path of a Git repository on this machine: /abs/path or ~/path (no .. and no line break)"
+                .to_string(),
+        ),
+    }
+}
+
 /// Check what `ssh` will be given as the host.
 ///
 /// # Errors
@@ -546,13 +642,22 @@ pub fn check_ssh_host(host: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Check the directory that holds an `ssh` pool's slots. It is deleted from,
-/// so it must be an explicit directory of its own: `~/<path>` or an absolute
-/// path, plain characters only, never the home directory or `/` itself.
+/// Check the directory that holds an `ssh` pool's slots. See [`check_root`].
 ///
 /// # Errors
 /// Returns the reason the root cannot be used.
 pub fn check_ssh_root(root: &str) -> Result<(), String> {
+    check_root(root, "ssh.root")
+}
+
+/// Check the directory that holds a directory pool's slots (`key` names the
+/// setting in the message). It is deleted from, so it must be an explicit
+/// directory of its own: `~/<path>` or an absolute path, plain characters
+/// only, never the home directory or `/` itself.
+///
+/// # Errors
+/// Returns the reason the root cannot be used.
+pub fn check_root(root: &str, key: &str) -> Result<(), String> {
     let rest = root.strip_prefix("~/").or_else(|| root.strip_prefix('/'));
     let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
     let parts_ok = |rest: &str| {
@@ -563,10 +668,9 @@ pub fn check_ssh_root(root: &str) -> Result<(), String> {
     };
     match rest {
         Some(rest) if root.chars().skip(1).all(plain) && parts_ok(rest) => Ok(()),
-        _ => Err(
-            "ssh.root must be a directory of its own: ~/some/dir or /abs/dir (letters, digits and . _ - / only; no .., not / or the home directory itself)"
-                .to_string(),
-        ),
+        _ => Err(format!(
+            "{key} must be a directory of its own: ~/some/dir or /abs/dir (letters, digits and . _ - / only; no .., not / or the home directory itself)"
+        )),
     }
 }
 
@@ -742,3 +846,7 @@ fn bad(message: impl Into<String>) -> VivariumError {
 #[cfg(test)]
 #[path = "config_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "config_local_test.rs"]
+mod local_tests;

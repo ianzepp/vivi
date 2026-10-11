@@ -77,10 +77,11 @@ pub struct CreateSpec {
     pub files: Vec<(String, String)>,
     /// Command the machine runs on every boot.
     pub command: Vec<String>,
-    /// Build output directory relative to the checkout, and the size of the
-    /// memory disk over it. Used by hosts that mount it themselves (see
+    /// Build output directory relative to the checkout (none: the pool has no
+    /// build directory handling), and the size of the memory disk over it.
+    /// Used by hosts that mount it themselves (see
     /// [`PoolProvider::supplies_build_mount`]).
-    pub build_dir: String,
+    pub build_dir: Option<String>,
     pub tmpfs: String,
 }
 

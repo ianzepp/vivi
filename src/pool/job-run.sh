@@ -6,7 +6,9 @@
 #   params.env   REMOTE FROM BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
 #                COMMIT_NAME COMMIT_EMAIL ENV_NAMES
 #                (REMOTE is the full Git address; https gets the token below,
-#                a file:// address is used as given)
+#                a file:// address is used as given). A worktree slot has no
+#                REMOTE and also gets LOCAL_ACTION (create | continue) and
+#                LOCAL_START (the commit FROM resolved to).
 #   token        Git token, empty for a file:// remote; root-only, never
 #                copied to the agent
 #   harness.cmd  the rendered harness command
@@ -19,6 +21,16 @@
 # user `hand` (the current user when UNPRIVILEGED) under BUDGET seconds, then
 # commit what changed and push to BRANCH without force. The outcome goes to
 # $WORK/job/result as key=value lines.
+#
+# A worktree slot (LOCAL_ACTION set) has no remote: the checkout is a Git
+# worktree of a repository on this machine, so nothing is fetched or pushed.
+# The work happens on a detached HEAD at LOCAL_START. Where LOCAL_ACTION is
+# `create`, BRANCH is made only when there is something to commit, at the
+# commit the work started from (a plain `checkout -b`, which refuses an
+# existing name); where it is `continue`, BRANCH is checked out as it is
+# (refused when another worktree holds it). The result is a commit on BRANCH
+# (`push=committed`), and the worktree goes back to a detached HEAD at the
+# end, whatever the outcome, so the branch is free again.
 #
 # Where UNPRIVILEGED is set the agent is the same user as this script and
 # there is no `hand` home: the brief and the rules go to $WORK/home (the
@@ -56,7 +68,17 @@ else
   kill_agent() { pkill -KILL -u hand 2>/dev/null; }
 fi
 
+# A worktree slot at rest is detached, so the branch it worked on is free to
+# be checked out or merged elsewhere. Never touches the working tree.
+detach_local() {
+  [ -z "${LOCAL_ACTION:-}" ] || as_hand git -C "$RD" checkout -q --detach 2>/dev/null
+  return 0
+}
+[ -z "${LOCAL_ACTION:-}" ] || trap detach_local EXIT
+[ -z "${LOCAL_ACTION:-}" ] || trap 'exit 143' TERM HUP INT
+
 finish() { # finish <push-outcome> [sha]
+  detach_local
   {
     echo "job=$JOB"
     echo "state=done"
@@ -84,13 +106,22 @@ esac
 
 # A reused slot holds the last task's branch and stray files: return to a
 # clean tree at FROM before anything runs.
-as_hand git fetch -q --depth "${DEPTH:-1}" "$URL" "$FROM" || finish fetch_failed
-START=$(as_hand git rev-parse FETCH_HEAD)
 CLEAN=(-fdq)
-[ -z "${BUILD_PERSISTS:-}" ] || CLEAN+=(-e "/$BUILD_DIR")
-as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
-as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
-rm -f "$RD/.git/FETCH_HEAD"
+[ -z "${BUILD_PERSISTS:-}" ] || [ -z "${BUILD_DIR:-}" ] || CLEAN+=(-e "/$BUILD_DIR")
+if [ -n "${LOCAL_ACTION:-}" ]; then
+  START=$LOCAL_START
+  as_hand git checkout -q -f --detach "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
+  if [ "$LOCAL_ACTION" = continue ]; then
+    as_hand git checkout -q "$BRANCH" || finish checkout_failed
+    START=$(as_hand git rev-parse HEAD)
+  fi
+else
+  as_hand git fetch -q --depth "${DEPTH:-1}" "$URL" "$FROM" || finish fetch_failed
+  START=$(as_hand git rev-parse FETCH_HEAD)
+  as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
+  as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
+  rm -f "$RD/.git/FETCH_HEAD"
+fi
 echo "from $FROM at ${START:0:12} prepared_s $(( $(now) - T0 ))"
 
 mkdir -p "$AGENT_HOME" && cp "$J/brief.md" "$J/rules.md" "$AGENT_HOME/" || finish workdir_missing
@@ -113,14 +144,25 @@ echo "agent_rc $AGENT_RC agent_s $AGENT_S"
 
 # Nothing the agent started may outlive it into the commit and push below.
 kill_agent
-EXCLUDE=(. ":(exclude)$BUILD_DIR")
-if [ -z "$(as_hand git status --porcelain -- "${EXCLUDE[@]}")" ]; then
+EXCLUDE=(.)
+[ -z "${BUILD_DIR:-}" ] || EXCLUDE+=(":(exclude)$BUILD_DIR")
+CHANGED=$(as_hand git status --porcelain -- "${EXCLUDE[@]}")
+# A worktree agent may have committed on its own: HEAD then moved off START.
+MOVED=
+[ -z "${LOCAL_ACTION:-}" ] || [ "$(as_hand git rev-parse HEAD)" = "$START" ] || MOVED=1
+if [ -z "$CHANGED" ] && [ -z "$MOVED" ]; then
   finish no_changes
 fi
-TRAILER="Pool-Run: slot=$SLOT model=$MODEL from=${START:0:10} exit=$AGENT_RC duration=${AGENT_S}s"
-as_hand git add -A && as_hand git reset -q -- "$BUILD_DIR" \
-  && as_hand git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
-       commit -q -m "$SUBJECT" -m "$TRAILER" || finish commit_failed
+[ "${LOCAL_ACTION:-}" != create ] || as_hand git checkout -q -b "$BRANCH" || finish branch_exists
+if [ -n "$CHANGED" ]; then
+  TRAILER="Pool-Run: slot=$SLOT model=$MODEL from=${START:0:10} exit=$AGENT_RC duration=${AGENT_S}s"
+  as_hand git add -A && { [ -z "${BUILD_DIR:-}" ] || as_hand git reset -q -- "$BUILD_DIR"; } \
+    && as_hand git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
+         commit -q -m "$SUBJECT" -m "$TRAILER" || finish commit_failed
+fi
+if [ -n "${LOCAL_ACTION:-}" ]; then
+  finish committed "$(as_hand git rev-parse HEAD)"
+fi
 if as_hand git push -q "$URL" "HEAD:refs/heads/$BRANCH"; then
   finish pushed "$(as_hand git rev-parse HEAD)"
 fi

@@ -76,7 +76,7 @@ fn create_makes_missing_slots_and_waits_for_stopped() {
         "the secret travels apart"
     );
     assert_eq!(specs[0].tmpfs, "16g");
-    assert_eq!(specs[0].build_dir, "target");
+    assert_eq!(specs[0].build_dir.as_deref(), Some("target"));
     assert!(
         !specs[0].env.contains_key("BUILD_MOUNTED"),
         "this host does not mount"

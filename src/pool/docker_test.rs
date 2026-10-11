@@ -327,7 +327,7 @@ fn spec() -> CreateSpec {
         passthrough_env: vec!["VIVI_TEST_SURELY_UNSET_KEY".into()],
         files: vec![("/work/boot.sh".into(), "echo boot\n".into())],
         command: vec!["bash".into(), "/work/boot.sh".into()],
-        build_dir: "target".into(),
+        build_dir: Some("target".into()),
         tmpfs: "2g".into(),
     }
 }
@@ -649,4 +649,20 @@ fn harness_env_names_unset_in_this_process_are_reported_and_dispatch_asks_nothin
         "{hint}"
     );
     assert!(hint.contains("VIVI_TEST_SURELY_UNSET_KEY=<value>"));
+}
+
+#[test]
+fn a_spec_without_a_build_dir_gets_no_memory_disk() {
+    let mut bare = spec();
+    bare.build_dir = None;
+    bare.tmpfs = String::new();
+    let args = create_args(
+        &bare,
+        &Limits {
+            memory: "4g".into(),
+            cpus: None,
+        },
+        &[],
+    );
+    assert!(!args.iter().any(|a| a == "--tmpfs"), "{args:?}");
 }

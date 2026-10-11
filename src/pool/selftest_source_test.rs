@@ -47,7 +47,7 @@ fn the_test_config_replaces_every_project_setting_but_keeps_the_host() {
     assert_eq!(config.slots, 2);
     assert!(config.setup.is_empty());
     assert_eq!(config.seed, ["true"]);
-    assert_eq!(config.build_dir, "build");
+    assert_eq!(config.build_dir.as_deref(), Some("build"));
     assert_eq!(config.fly.app.as_deref(), Some("lane"), "same host app");
     assert_eq!(config.fly.region, "ord");
     assert_eq!(

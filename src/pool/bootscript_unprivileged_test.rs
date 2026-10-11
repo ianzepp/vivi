@@ -20,10 +20,10 @@ use crate::pool::selftest_source as source;
 use crate::pool::{job, ssh_script};
 
 /// Tools the scripts may use, linked into the private PATH.
-const ALLOWED: [&str; 31] = [
+const ALLOWED: [&str; 32] = [
     "bash", "sh", "git", "date", "awk", "cat", "tar", "rm", "mkdir", "sed", "head", "tr", "cut",
     "du", "mv", "touch", "sleep", "printf", "env", "sync", "chmod", "cp", "dirname", "basename",
-    "ls", "grep", "uname", "id", "pwd", "wc", "sort",
+    "ls", "grep", "uname", "id", "pwd", "wc", "sort", "gzip",
 ];
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -341,6 +341,19 @@ fn a_missing_tool_is_a_failure_when_unprivileged_and_an_install_otherwise() {
         );
         std::fs::remove_file(&log).ok();
     }
+}
+
+#[test]
+fn the_seed_checks_every_tool_that_unpacks_a_job_archive() {
+    assert!(
+        BOOT_SCRIPT.contains("TOOLS=\"git tar gzip\""),
+        "tar and gzip must be in the required-tools list"
+    );
+    assert!(BOOT_SCRIPT.contains("seed_failed missing_tool $t"));
+    assert!(
+        BOOT_SCRIPT.contains("tar -xzf \"$JT\""),
+        "the archive is gzip-compressed"
+    );
 }
 
 #[test]

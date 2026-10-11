@@ -10,8 +10,13 @@
 #               the seed has finished). Absent for a file:// REMOTE.
 #   SOURCE_DIR  optional: a source tree delivered with the slot. The seed turns
 #               it into the bare repository at REMOTE (branch main) first.
-#   BUILD_DIR   build output directory, relative to the checkout
+#   BUILD_DIR   build output directory, relative to the checkout. Unset when
+#               the pool has none: then there is no memory disk, no pack, no
+#               restore and nothing to keep out of the clean.
 #   TMPFS_SIZE  size of the memory disk mounted over BUILD_DIR
+#   WORKTREE_OF set when the provider already made the checkout $WORK/repo as a
+#               Git worktree of a repository on this machine, at BASE: the
+#               seed then fetches nothing and only warms the build.
 #   BUILD_MOUNTED  set when the machine host already mounts that memory disk
 #               (a container cannot mount without privileges): the script then
 #               leaves the mount alone and only makes sure the directory exists.
@@ -28,7 +33,9 @@
 # A host whose machines cannot change their environment after creation delivers
 # GH_TOKEN as $WORK/once.env instead; it is read and removed on first sight.
 # Files written beside this script: $WORK/setup.sh (root, once) and
-# $WORK/seed.sh (in the checkout, once).
+# $WORK/seed.sh (in the checkout, once). A host that lacks GNU tools (timeout,
+# sha256sum, nproc) puts stand-ins in $WORK/bin; they come last on PATH, so a
+# real tool always wins.
 #
 # First boot seeds: tools, a shallow checkout at BASE, a warmed build output
 # packed onto the persistent root disk. The machine then exits and stays
@@ -50,18 +57,21 @@
 # The job directory is never wiped at boot, only replaced by the next job, so
 # a result survives stopping and starting until it is collected.
 W=${WORK:-/work}
+[ ! -d "$W/bin" ] || PATH=$PATH:$W/bin
 L=$W/boot.log
 RD=$W/repo
 JT=$W/job.tgz
 # A path as the configuration spells it (under /work) -> where it really is.
 real() { case "$1" in /work|/work/*) echo "$W${1#/work}" ;; *) echo "$1" ;; esac; }
-now() { date +%s.%N; }
+# `date +%N` is GNU only; elsewhere the fraction is left out.
+now() { local t; t=$(date +%s.%N); echo "${t%.N}"; }
 d() { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.1f", b-a}'; }
 T0=$(now)
 if [ -f "$W/once.env" ]; then . "$W/once.env"; rm -f "$W/once.env"; fi
 
 # The memory disk over the build output: mounted here unless the host did it.
 mount_build() {
+  [ -n "${BUILD_DIR:-}" ] || return 0
   mkdir -p "$BUILD_DIR"
   [ -n "${BUILD_MOUNTED:-}${BUILD_PERSISTS:-}" ] || mount -t tmpfs -o "size=$TMPFS_SIZE" tmpfs "$BUILD_DIR"
 }
@@ -90,8 +100,9 @@ need() {
 
 if [ ! -f "$W/seeded" ]; then
   echo "seed_start $T0 cores $(nproc) base ${BASE:0:12}" >> $L
-  TOOLS="git"
-  [ -n "${BUILD_PERSISTS:-}" ] || TOOLS="$TOOLS zstd"
+  # tar and gzip unpack every job archive; a host without them fails here, clearly.
+  TOOLS="git tar gzip"
+  [ -n "${BUILD_PERSISTS:-}" ] || [ -z "${BUILD_DIR:-}" ] || TOOLS="$TOOLS zstd"
   [ -n "${UNPRIVILEGED:-}" ] || TOOLS="$TOOLS curl"
   for t in $TOOLS; do
     need "$t" "$t" || { echo "seed_failed missing_tool $t" >> $L; exit 2; }
@@ -108,11 +119,17 @@ if [ ! -f "$W/seeded" ]; then
       && git -c user.name=vivi-pool -c user.email=pool@localhost commit -q -m "Embedded source" \
       && git push -q "$LOCAL_REMOTE" HEAD:refs/heads/main ) || { echo "seed_failed source" >> $L; exit 6; }
   fi
-  mkdir -p "$RD" && cd "$RD" && git init -q . \
-    && git fetch -q --depth 1 "$(remote_url)" "$BASE" 2> "$W/fetch.err" \
-    && git checkout -q FETCH_HEAD || {
-      # Say why, without the address: it can carry the fetch token.
-      echo "seed_failed fetch: $(grep -v '://' "$W/fetch.err" 2>/dev/null | tail -1 | cut -c1-160)" >> $L; exit 4; }
+  if [ -n "${WORKTREE_OF:-}" ]; then
+    # The provider made the checkout as a worktree of a local repository.
+    [ -e "$RD/.git" ] || { echo "seed_failed worktree_missing" >> $L; exit 4; }
+    cd "$RD"
+  else
+    mkdir -p "$RD" && cd "$RD" && git init -q . \
+      && git fetch -q --depth 1 "$(remote_url)" "$BASE" 2> "$W/fetch.err" \
+      && git checkout -q FETCH_HEAD || {
+        # Say why, without the address: it can carry the fetch token.
+        echo "seed_failed fetch: $(grep -v '://' "$W/fetch.err" 2>/dev/null | tail -1 | cut -c1-160)" >> $L; exit 4; }
+  fi
   rm -f "$RD/.git/FETCH_HEAD"
   git rev-parse HEAD > "$W/seed-base.txt"
   T2=$(now); echo "clone_s $(d $T1 $T2)" >> $L
@@ -169,7 +186,7 @@ case "$LIMIT" in ''|*[!0-9]*|0) LIMIT=3600 ;; esac
 [ -f "$W/job/run.sh" ] || { echo "job_bad_archive $JOB" >> $L; exit 5; }
 
 cd "$RD" && mount_build
-if [ -z "${BUILD_PERSISTS:-}" ]; then
+if [ -z "${BUILD_PERSISTS:-}" ] && [ -n "${BUILD_DIR:-}" ]; then
   [ -f "$W/build.tar.zst" ] && zstd -d -T0 -c "$W/build.tar.zst" | tar -xf - -C "$RD"
   chown -R hand:hand "$BUILD_DIR"
 fi

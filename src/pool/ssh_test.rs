@@ -73,7 +73,7 @@ fn spec(pool: &str, index: u32) -> CreateSpec {
             ("/work/source/README.md".into(), "# hi\n".into()),
         ],
         command: vec!["bash".into(), "/work/boot.sh".into()],
-        build_dir: "target".into(),
+        build_dir: Some("target".into()),
         tmpfs: String::new(),
     }
 }

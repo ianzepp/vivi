@@ -51,7 +51,7 @@ fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
         passthrough_env: Vec::new(),
         files: vec![("/work/boot.sh".into(), boot.into())],
         command: vec!["bash".into(), "/work/boot.sh".into()],
-        build_dir: "target".into(),
+        build_dir: Some("target".into()),
         tmpfs: String::new(),
     }
 }
@@ -220,7 +220,7 @@ fn destroy_leaves_nothing_behind_and_a_foreign_directory_is_refused() {
     p.destroy(&id).unwrap();
     assert_eq!(p.machine(&id).unwrap().state, "destroyed");
     // A directory of the user's own under the root is not a slot.
-    let dir = format!("{}/{POOL_DESTROY}/slot-9", root());
+    let dir = format!("{}/livetest/{POOL_DESTROY}/slot-9", root());
     let make = format!("mkdir -p {dir} && echo mine > {dir}/keep");
     let out = Command::new("ssh")
         .args(["-o", "BatchMode=yes", &host(), &make])
@@ -230,7 +230,7 @@ fn destroy_leaves_nothing_behind_and_a_foreign_directory_is_refused() {
     let refused = p.destroy(&id_of(POOL_DESTROY, 9)).unwrap_err().to_string();
     assert!(refused.contains("refusing to delete"), "{refused}");
     let check = format!(
-        "cat {dir}/keep; rm -r {r}/{POOL_DESTROY}; rmdir {r} 2>/dev/null; true",
+        "cat {dir}/keep; rm -r {r}/livetest/{POOL_DESTROY}; true",
         r = root()
     );
     let out = Command::new("ssh")

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Stand-in for GNU `nproc`, for a host that has none.
+sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1
