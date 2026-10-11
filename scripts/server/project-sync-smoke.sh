@@ -12,6 +12,9 @@
 # is visible only to its sender and the addressed mailspace, and that a pulled
 # letter whose envelope disagrees with its own headers is refused. A push is
 # `PUT .../items/{id}` with the letter as the request body.
+# The last legs cover history windows: paging and filters on the list, lookup by
+# handle, `pull --since` with its floor, `fetch`, `pull --refs`, `prune`, and
+# `resync` restoring evicted letters byte for byte.
 #
 # Local (default): boots target/debug/vivi-server from this repo on $PORT.
 # Deployed: SERVER_URL=https://host scripts/project-sync-smoke.sh runs the same
@@ -261,6 +264,9 @@ path, ident = sys.argv[1], sys.argv[2]
 text = open(path).read()
 open(path, "w").write(re.sub(r'(?m)^id *= *".*"$', 'id = "%s"' % ident, text, count=1))
 PYEOF
+# adopting an id on purpose: the sidecar guard holds the id init minted, so the
+# provisioner drops it and the next command rewrites it from the config
+rm -f "$A2/.vivi/mailspace.id"
 cp "$A/.vivi/chat/identity.ed25519" "$A2/.vivi/chat/identity.ed25519"
 write_sync_config "$A2" alice
 [ "$(id_of "$A2")" = "$ID_A" ] && ok "the second place carries A's mailspace id" || bad "second place id: $(id_of "$A2")"
@@ -350,6 +356,220 @@ CODE=$(append "$TOKEN_B" "not-a-traveling-id" "$W/raw1.eml" "" mail)
 [ "$CODE" = 400 ] && ok "a non-traveling id is refused (400)" || bad "bad id returned $CODE"
 CODE=$(append "$TOKEN_B" "msg_$(openssl rand -hex 12)" "$W/raw1.eml" "alice" mail)
 [ "$CODE" = 400 ] && ok "a bare name is no longer a recipient (400)" || bad "bare-name recipient returned $CODE"
+
+# --- the list is paged, filtered, and stamped; a handle is looked up --------
+# The window legs: limit/has_more paging, the `after`, `kind` and `to` filters,
+# the append time on every record, lookup by handle, and gzip.
+items_q() { # token query -> body on stdout
+  curl -s -m 15 "$BASE/v1/projects/$PID/items?$2" -H "authorization: Bearer $1"
+}
+items_code() { # token query -> http code
+  curl -s -m 15 -o /dev/null -w '%{http_code}' "$BASE/v1/projects/$PID/items?$2" -H "authorization: Bearer $1"
+}
+lookup_q() { # token json -> body on stdout, code in $W/lookup.code
+  curl -s -m 15 -o "$W/lookup.out" -w '%{http_code}' -X POST "$BASE/v1/projects/$PID/items/lookup" \
+    -H "authorization: Bearer $1" -H 'content-type: application/json' -d "$2" > "$W/lookup.code"
+  cat "$W/lookup.out"
+}
+
+ALL=$(items_q "$TOKEN_A" "since=0&limit=1000")
+TOTAL=$(echo "$ALL" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["records"]))')
+echo "$ALL" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+recs = d["records"]
+stamps = [r.get("appended_at") for r in recs]
+seqs = [r["sequence"] for r in recs]
+ok = bool(recs) and all(isinstance(s, str) and s.endswith("Z") for s in stamps) \
+    and stamps == sorted(stamps) and seqs == sorted(seqs) and d.get("has_more") is False
+sys.exit(0 if ok else 1)' \
+  && ok "every record carries appended_at, monotone with the sequence ($TOTAL records, has_more false)" \
+  || bad "appended_at / has_more on the full list"
+
+PAGED=$(python3 - "$BASE" "$PID" "$TOKEN_A" <<'PYEOF'
+import json, sys, urllib.request
+base, pid, token = sys.argv[1:4]
+since, pages, ids, more_seen = 0, 0, [], []
+while True:
+    req = urllib.request.Request(f"{base}/v1/projects/{pid}/items?since={since}&limit=2",
+                                 headers={"authorization": f"Bearer {token}"})
+    d = json.load(urllib.request.urlopen(req, timeout=15))
+    pages += 1
+    assert len(d["records"]) <= 2, "page larger than limit"
+    ids += [r["message_id"] for r in d["records"]]
+    more_seen.append(d["has_more"])
+    if not d["has_more"]:
+        break
+    assert d["next_cursor"] > since, "cursor did not advance"
+    since = d["next_cursor"]
+    assert pages < 500
+print(pages, len(ids), len(set(ids)), more_seen[0], more_seen[-1])
+PYEOF
+)
+set -- $PAGED
+[ "$2" = "$TOTAL" ] && [ "$3" = "$TOTAL" ] && [ "$1" -ge 2 ] && [ "$4" = True ] && [ "$5" = False ] \
+  && ok "limit=2 walks the list in $1 pages: every record once, has_more true until the last" \
+  || bad "paging: pages=$1 records=$2 distinct=$3 first_more=$4 last_more=$5 total=$TOTAL"
+
+[ "$(items_code "$TOKEN_A" "since=0&limit=0")" = 400 ] && [ "$(items_code "$TOKEN_A" "since=0&limit=abc")" = 400 ] \
+  && ok "limit=0 and a non-number are refused (400)" || bad "bad limit was not refused"
+items_q "$TOKEN_A" "since=0&kind=need" | python3 -c '
+import json, sys
+recs = json.load(sys.stdin)["records"]
+sys.exit(0 if recs and all(r["kind"] == "need" for r in recs) else 1)' \
+  && ok "kind=need returns only needs" || bad "kind filter"
+items_q "$TOKEN_A" "since=0&to=$PB" | python3 -c '
+import json, sys
+recs = json.load(sys.stdin)["records"]
+sys.exit(0 if recs and all((r.get("to") or "").lower().endswith("@" + sys.argv[1] + ".local") for r in recs) else 1)' "$PB" \
+  && ok "to=<prefix> returns only letters addressed to that mailspace" || bad "to filter"
+items_q "$TOKEN_A" "since=0&after=2099-01-01T00:00:00Z" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if d["records"] == [] and d["has_more"] is False else 1)' \
+  && ok "an after time past every letter returns an empty page" || bad "after filter"
+
+NEEDID=$(echo "$ALL" | python3 -c 'import json,sys; print([r["message_id"] for r in json.load(sys.stdin)["records"] if r["kind"] == "need"][0])')
+NEEDH=${NEEDID:4:8}
+[ "$NEEDH" = "$NEED" ] && ok "a letter's handle is the 8 hex characters after msg_ ($NEEDH)" || bad "handle $NEEDH is not the need's handle $NEED"
+LK=$(lookup_q "$TOKEN_A" "{\"handles\": [\"$NEEDH\", \"0badf00d\"]}")
+echo "$LK" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if len(d["records"]) == 1 and d["records"][0]["message_id"][4:12] == sys.argv[1] and d["missing"] == ["0badf00d"] else 1)' "$NEEDH" \
+  && [ "$(cat "$W/lookup.code")" = 200 ] && ok "lookup returns the letter and names the handle that matched nothing" || bad "lookup: $LK"
+lookup_q "$TOKEN_A" '{"handles": ["zz"]}' >/dev/null
+[ "$(cat "$W/lookup.code")" = 400 ] && ok "a malformed handle is refused (400)" || bad "bad handle returned $(cat "$W/lookup.code")"
+# carol may not see the raw mail from B to A: lookup says missing, as for an unknown handle
+HID=${ID1:4:8}
+LK=$(lookup_q "$TOKEN_C" "{\"handles\": [\"$HID\"]}")
+echo "$LK" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if d["records"] == [] and d["missing"] == [sys.argv[1]] else 1)' "$HID" \
+  && ok "lookup is scoped by visibility: a letter carol may not see is missing, like an unknown one" || bad "lookup leaked: $LK"
+GZ=$(curl -s -m 15 --compressed "$BASE/v1/projects/$PID/items?since=0&limit=1000" -H "authorization: Bearer $TOKEN_A" \
+  | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["records"]))')
+[ "$GZ" = "$TOTAL" ] && ok "the list decodes the same with Accept-Encoding: gzip ($GZ records)" || bad "gzip list: $GZ vs $TOTAL"
+if [ "$LOCAL" = 1 ]; then
+  curl -s -m 15 -D - -o /dev/null -H 'accept-encoding: gzip' "$BASE/v1/projects/$PID/items?since=0" -H "authorization: Bearer $TOKEN_A" \
+    | grep -qi '^content-encoding: gzip' && ok "the list is gzip-compressed on request" || bad "no content-encoding: gzip"
+fi
+
+# --- a window, a handle, a reference, and a prune, on a fresh place --------
+# A third place acting as A (same id, same key, empty store) pulls only the
+# letters appended from a marker on, then fetches an older one by handle,
+# follows a reference, evicts old letters, and resyncs them back byte for byte.
+place_of() { # dir mailspace_id key_source_dir
+  mkdir -p "$1/.vivi/chat"
+  "$VIVI" mailspace init --project "$1" >/dev/null 2>&1
+  "$VIVI" role add mind --kind mind --project "$1" >/dev/null 2>&1
+  "$VIVI" role add hand --kind hand --project "$1" >/dev/null 2>&1
+  python3 - "$1/.vivi/mailspace.toml" "$2" <<'PYEOF'
+import re, sys
+path, ident = sys.argv[1], sys.argv[2]
+text = open(path).read()
+open(path, "w").write(re.sub(r'(?m)^id *= *".*"$', 'id = "%s"' % ident, text, count=1))
+PYEOF
+  rm -f "$1/.vivi/mailspace.id"   # adopt the id on purpose (see the sidecar guard)
+  cp "$3/.vivi/chat/identity.ed25519" "$1/.vivi/chat/identity.ed25519"
+}
+blob_path() { # dir sha -> path of the .eml blob
+  echo "$1/.vivi/blobs/${2:0:2}/${2:2:2}/$2.eml"
+}
+A3=$W/a3
+place_of "$A3" "$ID_A" "$A"
+write_sync_config "$A3" alice
+
+sleep 2   # the markers land in a later second than every letter above
+printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: window marker one\nMessage-ID: <wm1@smoke.local>\nDate: Mon, 01 Jan 2024 00:00:00 +0000\n\nthe first marker\n' "$PB" "$PA" > "$W/m1.eml"
+printf 'From: hand@%s.local\nTo: mind@%s.local\nSubject: window marker two\nMessage-ID: <wm2@smoke.local>\nDate: Mon, 01 Jan 2024 00:00:01 +0000\n\nthe second marker, for context see %s\n' "$PB" "$PA" "$NEED" > "$W/m2.eml"
+M1ID="msg_$(openssl rand -hex 12)"; M2ID="msg_$(openssl rand -hex 12)"
+TOKEN_BM=$(bearer bob b)
+C_M1=$(append "$TOKEN_BM" "$M1ID" "$W/m1.eml" "mind@$PA.local" mail)
+C_M2=$(append "$TOKEN_BM" "$M2ID" "$W/m2.eml" "mind@$PA.local" mail)
+[ "$C_M1" = 201 ] && [ "$C_M2" = 201 ] && ok "two marker letters are appended after a pause" || bad "marker appends: $C_M1 $C_M2"
+read -r WSTAMP WSEQ <<EOF
+$(items_q "$TOKEN_A" "since=0&limit=1000" | python3 -c '
+import json, sys
+r = [x for x in json.load(sys.stdin)["records"] if x["message_id"] == sys.argv[1]][0]
+print(r["appended_at"], r["sequence"])' "$M1ID")
+EOF
+[ -n "$WSTAMP" ] && ok "marker one was appended at $WSTAMP (sequence $WSEQ)" || bad "no appended_at for marker one"
+
+"$VIVI" sync pull --since "$WSTAMP" --refs --project "$A3" >"$W/sync-a3-window.log" 2>&1 \
+  && ok "A3 pulls the window from $WSTAMP and follows references" || { bad "A3 windowed pull"; cat "$W/sync-a3-window.log"; }
+"$VIVI" mail list --for mind --project "$A3" 2>&1 | grep -q "window marker one" \
+  && "$VIVI" mail list --for mind --project "$A3" 2>&1 | grep -q "window marker two" \
+  && ok "the window's letters are filed on A3" || bad "markers not filed on A3"
+"$VIVI" mail list --for mind --project "$A3" 2>&1 | grep -q "Re: ship the sync" \
+  && bad "the reply from before the window was pulled" || ok "letters before the window are not pulled"
+grep -qE '1 looked up, 1 filed' "$W/sync-a3-window.log" \
+  && "$VIVI" need show "$NEED" --project "$A3" >/dev/null 2>&1 \
+  && ok "pull --refs found the handle in marker two's body and filed the need ($NEED)" \
+  || { bad "refs did not file the referenced need"; cat "$W/sync-a3-window.log"; }
+"$VIVI" sync status --project "$A3" 2>&1 | grep -q "history from: $WSTAMP (sequence $WSEQ)" \
+  && ok "sync status records the floor ($WSTAMP, sequence $WSEQ)" \
+  || { bad "status floor"; "$VIVI" sync status --project "$A3" 2>&1; }
+
+"$VIVI" sync pull --since 7d --project "$A3" >"$W/sync-a3-since.log" 2>&1 \
+  && bad "--since was accepted on a mailspace that already has a cursor" \
+  || { grep -qi 'resync' "$W/sync-a3-since.log" && ok "--since is refused once a cursor exists, and says to resync" || { bad "--since refusal text"; cat "$W/sync-a3-since.log"; }; }
+
+REPLYID=$(echo "$ALL" | python3 -c '
+import json, sys
+recs = [r for r in json.load(sys.stdin)["records"] if r["from"] == "bob" and (r.get("to") or "").lower() == "mind@" + sys.argv[1] + ".local"]
+print(sorted(recs, key=lambda r: r["sequence"])[0]["message_id"])' "$PA")
+REPLYH=${REPLYID:4:8}
+"$VIVI" sync fetch "$REPLYH" --project "$A3" >"$W/fetch-a3.log" 2>&1 && grep -q '1 filed' "$W/fetch-a3.log" \
+  && ok "sync fetch files an older letter by handle ($REPLYH)" || { bad "fetch by handle"; cat "$W/fetch-a3.log"; }
+case "$("$VIVI" need show "$NEED" --project "$A3" 2>&1)" in
+  *"Thread (2 message"*) ok "the fetched reply threads to the need" ;;
+  *) bad "the fetched reply did not thread" ;;
+esac
+"$VIVI" sync status --project "$A3" 2>&1 | grep -q "history from: $WSTAMP (sequence $WSEQ)" \
+  && ok "fetch leaves the floor where it was" || bad "fetch moved the floor"
+"$VIVI" sync fetch "$REPLYH" --project "$A3" 2>&1 | grep -q '0 filed, 1 already held' \
+  && ok "fetching a held handle again files nothing" || bad "repeat fetch"
+"$VIVI" sync fetch 0badf00d --project "$A3" 2>&1 | grep -q '1 missing' \
+  && ok "a handle that matches nothing is reported as missing, not an error" || bad "missing handle report"
+"$VIVI" sync fetch not-a-handle --project "$A3" >/dev/null 2>&1 \
+  && bad "a malformed handle was accepted" || ok "a malformed handle is refused before any request"
+
+# prune: the two 2024 markers go (blob and row hidden), the open need and today's reply stay
+H1=$(shasum -a 256 "$W/m1.eml" | awk '{print $1}'); H2=$(shasum -a 256 "$W/m2.eml" | awk '{print $1}')
+[ -s "$(blob_path "$A3" "$H1")" ] && [ -s "$(blob_path "$A3" "$H2")" ] \
+  && ok "A3 holds the markers' exact bytes on disk" || bad "marker blobs missing before the prune"
+"$VIVI" sync prune --older-than 1d --dry-run --project "$A3" >"$W/prune-dry.log" 2>&1 \
+  && grep -q 'would evict 2 letter' "$W/prune-dry.log" && [ -s "$(blob_path "$A3" "$H1")" ] \
+  && ok "prune --dry-run names the two old letters and changes nothing" || { bad "prune dry run"; cat "$W/prune-dry.log"; }
+"$VIVI" sync prune --older-than 1d --project "$A3" >"$W/prune.log" 2>&1 \
+  && grep -q 'evicted 2 letter' "$W/prune.log" && [ ! -e "$(blob_path "$A3" "$H1")" ] && [ ! -e "$(blob_path "$A3" "$H2")" ] \
+  && ok "prune evicts the old letters' blobs and keeps the rest" || { bad "prune"; cat "$W/prune.log"; }
+"$VIVI" need show "$NEED" --project "$A3" >/dev/null 2>&1 && ok "the open need is never pruned" || bad "the need was pruned"
+
+# a full replay meets the two bad letters planted above (lying envelope, forged
+# From) and refuses them again, so it exits non-zero by design
+"$VIVI" sync resync --project "$A3" >"$W/resync-a3.log" 2>&1
+grep -q '2 restored' "$W/resync-a3.log" && grep -q '2 refused' "$W/resync-a3.log" \
+  && grep -q 'envelope recipients' "$W/resync-a3.log" && grep -q 'claims mailspace' "$W/resync-a3.log" \
+  && ok "resync replays the whole project, restores the 2 evicted letters, and refuses the 2 planted bad ones again" \
+  || { bad "resync"; cat "$W/resync-a3.log"; }
+[ "$(shasum -a 256 "$(blob_path "$A3" "$H1")" 2>/dev/null | awk '{print $1}')" = "$H1" ] \
+  && [ "$(shasum -a 256 "$(blob_path "$A3" "$H2")" 2>/dev/null | awk '{print $1}')" = "$H2" ] \
+  && ok "the restored letters are byte for byte what was appended" || bad "restored bytes differ"
+"$VIVI" sync status --project "$A3" 2>&1 | grep -q 'history from: full history' \
+  && ok "after a resync the floor is full history" || bad "floor after resync"
+"$VIVI" sync --project "$A3" >"$W/sync-a3-clean.log" 2>&1 && grep -q ' 0 new' "$W/sync-a3-clean.log" \
+  && ok "a plain sync after the resync is clean" || { bad "sync after resync"; cat "$W/sync-a3-clean.log"; }
+
+# an empty window, then a plain pull, stays inside the window
+A4=$W/a4
+place_of "$A4" "$ID_A" "$A"
+write_sync_config "$A4" alice
+"$VIVI" sync pull --since 2099-01-01 --project "$A4" >"$W/sync-a4.log" 2>&1 && grep -q ' 0 fetched' "$W/sync-a4.log" \
+  && "$VIVI" sync status --project "$A4" 2>&1 | grep -q 'history from: 2099-01-01T00:00:00Z (no letters yet)' \
+  && ok "an empty window records the requested time as its floor" || { bad "empty window"; cat "$W/sync-a4.log"; }
 
 echo "RESULT pass=$PASS fail=$FAIL"
 [ "$FAIL" -eq 0 ]

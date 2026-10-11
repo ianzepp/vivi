@@ -3,8 +3,10 @@
 Status: **CORE BUILT 2026-10-10, CLIENT BUILT 2026-10-11.** The server
 (project store, identity registration, admission by introduction,
 governance mail, visibility scoping, directory, letters, mailspace
-addresses) and the vivi client (`vivi sync`) interoperate end to end; the
-49-leg `scripts/project-sync-smoke.sh` passes locally and against staging.
+addresses, history windows, lookup by handle) and the vivi client (`vivi
+sync`, including `pull --since`, `fetch`, `pull --refs`, `resync`, and
+`prune`) interoperate end to end; the 84-leg
+`scripts/project-sync-smoke.sh` passes locally.
 The wire as built is recorded at the end of this document. Transparent
 mode is decided and not built. The postmaster LLM loop remains a future
 phase. The room-based wire contract in [`contract.md`](contract.md) is
