@@ -95,6 +95,13 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub allow_default_branch: bool,
 
+    /// Seconds a newly rented pod may take to answer on SSH before it is
+    /// terminated and the next GPU type is tried (30 to 1800; default: the
+    /// pool's `runpod.ready_timeout`, itself 120). Only for a pool whose
+    /// slots are made per dispatch (a `RunPod` pool)
+    #[arg(long)]
+    pub ready_timeout: Option<u64>,
+
     /// Print only result lines in a fixed format, for scripts and agents: no
     /// progress, no heartbeats (agents: pass this)
     #[arg(long)]

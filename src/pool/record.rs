@@ -36,6 +36,52 @@ pub struct DispatchRecord {
     /// price). A record made before hosts said so has none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hardware: String,
+    /// Pods the host made and terminated before the one that works, because
+    /// they did not become reachable in time. A record made before hosts said
+    /// so reads as none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub abandoned: u32,
+    /// Their approximate total charge in millionths of a dollar (hourly price
+    /// times the time each was waited for); zero when none was abandoned or
+    /// no price was known.
+    #[serde(default, skip_serializing_if = "is_zero_cost")]
+    pub abandoned_cost_micros: u64,
+}
+
+/// `skip_serializing_if` takes a reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_cost(n: &u64) -> bool {
+    *n == 0
+}
+
+/// Millionths of a dollar as `0.12`, rounded to the cent.
+#[must_use]
+pub fn dollars(micros: u64) -> String {
+    let cents = micros.saturating_add(5_000) / 10_000;
+    format!("{}.{:02}", cents / 100, cents % 100)
+}
+
+/// What a dispatch tells about the pods it gave up on: nothing when none, else
+/// `abandoned 2 pod(s), approx $0.12`.
+#[must_use]
+pub fn abandoned_text(record: &DispatchRecord) -> String {
+    if record.abandoned == 0 {
+        return String::new();
+    }
+    let cost = if record.abandoned_cost_micros == 0 {
+        "price unknown".to_string()
+    } else {
+        format!("approx ${}", dollars(record.abandoned_cost_micros))
+    };
+    format!(
+        "abandoned {} pod(s) that did not become reachable, {cost}",
+        record.abandoned
+    )
 }
 
 /// A dispatch with no result recorded yet.
@@ -55,7 +101,7 @@ pub fn dispatch_note(record: &DispatchRecord) -> String {
 #[must_use]
 pub fn dispatch_text(record: &DispatchRecord) -> String {
     format!(
-        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s{hardware}\nfrom {from} ({start})  {target}",
+        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s{hardware}\nfrom {from} ({start})  {target}{abandoned}",
         job = record.job,
         pool = record.pool,
         slot = record.slot,
@@ -65,7 +111,18 @@ pub fn dispatch_text(record: &DispatchRecord) -> String {
         start = record.start.get(..12).unwrap_or(&record.start),
         target = target_text(record),
         hardware = hardware_text(record),
+        abandoned = abandoned_line(record),
     )
+}
+
+/// `\n<abandoned text>` when pods were abandoned, else nothing.
+fn abandoned_line(record: &DispatchRecord) -> String {
+    let text = abandoned_text(record);
+    if text.is_empty() {
+        text
+    } else {
+        format!("\n{text}")
+    }
 }
 
 /// `  hardware <what>` when the host named any, else nothing.

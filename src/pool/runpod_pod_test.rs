@@ -186,7 +186,7 @@ fn create_argv_for_the_minimal_pool() {
         "img:1",
         "vivi-rp1-n",
         "NVIDIA A100 80GB PCIe",
-        "2026-10-11T14:00:00Z",
+        ("2026-10-11T14:00:00Z", 120),
     );
     assert_eq!(
         argv,
@@ -212,7 +212,7 @@ fn create_argv_for_the_minimal_pool() {
             "2026-10-11T14:00:00Z",
             "--wait",
             "--wait-timeout",
-            "10m",
+            "120s",
         ])
     );
 }
@@ -225,7 +225,7 @@ fn create_argv_with_every_option() {
     cfg.container_disk_gb = 200;
     cfg.min_cuda_version = Some("12.8".into());
     cfg.data_centers = s(&["EU-RO-1", "US-CA-2"]);
-    let argv = create_args(&cfg, "img:1", "n", "G", "T");
+    let argv = create_args(&cfg, "img:1", "n", "G", ("T", 45));
     let after = |flag: &str| {
         let at = argv
             .iter()
@@ -239,7 +239,7 @@ fn create_argv_with_every_option() {
     assert_eq!(after("--min-cuda-version"), "12.8");
     assert_eq!(after("--data-center-ids"), "EU-RO-1,US-CA-2");
     assert_eq!(after("--terminate-after"), "T");
-    assert_eq!(after("--wait-timeout"), "10m");
+    assert_eq!(after("--wait-timeout"), "45s");
     assert!(
         argv.contains(&"--public-ip".to_string()),
         "community pods need a public address"
@@ -250,7 +250,7 @@ fn create_argv_with_every_option() {
 
 #[test]
 fn a_secure_pod_asks_for_no_public_address_and_no_unset_options() {
-    let argv = create_args(&config(), "i", "n", "G", "T");
+    let argv = create_args(&config(), "i", "n", "G", ("T", 120));
     for absent in ["--public-ip", "--min-cuda-version", "--data-center-ids"] {
         assert!(!argv.iter().any(|a| a == absent), "{absent}");
     }
@@ -258,8 +258,31 @@ fn a_secure_pod_asks_for_no_public_address_and_no_unset_options() {
 
 #[test]
 fn the_api_key_never_appears_in_any_argument_list() {
-    let argv = create_args(&config(), "i", "n", "G", "T");
+    let argv = create_args(&config(), "i", "n", "G", ("T", 120));
     assert!(!argv.iter().any(|a| a.contains("rpa_")
         || a.to_lowercase().contains("api-key")
         || a.to_lowercase().contains("api_key")));
+}
+
+#[test]
+fn pod_ids_are_found_in_a_json_field_or_after_the_word_pod() {
+    let ids = |t: &str| pod_ids_in(t);
+    assert_eq!(
+        ids(r#"{"error":"timed out waiting for ssh","id":"abc123def456"}"#),
+        s(&["abc123def456"])
+    );
+    assert_eq!(
+        ids(r#"{"error":"timed out waiting for ssh on pod xedezhzb9la3ye; the pod was kept"}"#),
+        s(&["xedezhzb9la3ye"])
+    );
+    assert_eq!(
+        ids("timed out (pod_id: zz11yy22xx33)"),
+        s(&["zz11yy22xx33"])
+    );
+    assert!(ids("timed out waiting for the pod's SSH port").is_empty());
+    assert_eq!(
+        ids("pod abc123def456 pod abc123def456 pod x"),
+        s(&["abc123def456"]),
+        "a repeated id is listed once and a short word is no id"
+    );
 }

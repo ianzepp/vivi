@@ -42,6 +42,8 @@ fn dispatched(space: &Mailspace, task: &str, machine: &str) {
         at: epoch_secs() - 100,
         read_only: false,
         hardware: String::new(),
+        abandoned: 0,
+        abandoned_cost_micros: 0,
     };
     space
         .record_pool_note(
@@ -333,6 +335,8 @@ fn dispatched_to(space: &Mailspace, task: &str, pool: &str, machine: &str) {
         at: epoch_secs() - 100,
         read_only: false,
         hardware: String::new(),
+        abandoned: 0,
+        abandoned_cost_micros: 0,
     };
     let note = record::dispatch_note(&record);
     space

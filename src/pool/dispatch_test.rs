@@ -43,6 +43,7 @@ fn go(
         token,
         start,
         progress: &progress,
+        ready_timeout: None,
     };
     dispatch(provider, id, &launch, now, &pacing())
 }
@@ -397,4 +398,40 @@ fn a_worktree_pool_warns_that_the_worker_could_still_commit_with_plain_git() {
         "{warning}"
     );
     assert!(warning.contains("there is no token"), "{warning}");
+}
+
+#[test]
+fn a_ready_timeout_override_is_for_per_dispatch_pools_only_and_in_range() {
+    use crate::pool::provider::SlotLifetime;
+    assert_eq!(
+        check_ready_timeout(SlotLifetime::Resting, None).unwrap(),
+        None
+    );
+    assert_eq!(
+        check_ready_timeout(SlotLifetime::PerDispatch, None).unwrap(),
+        None
+    );
+    assert_eq!(
+        check_ready_timeout(SlotLifetime::PerDispatch, Some(30)).unwrap(),
+        Some(30)
+    );
+    assert_eq!(
+        check_ready_timeout(SlotLifetime::PerDispatch, Some(1800)).unwrap(),
+        Some(1800)
+    );
+    let resting = check_ready_timeout(SlotLifetime::Resting, Some(60))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        resting.contains("--ready-timeout")
+            && resting.contains("per dispatch")
+            && resting.contains("resting slots"),
+        "{resting}"
+    );
+    for out in [0, 29, 1801] {
+        let said = check_ready_timeout(SlotLifetime::PerDispatch, Some(out))
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("between 30 and 1800"), "{said}");
+    }
 }

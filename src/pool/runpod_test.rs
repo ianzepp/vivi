@@ -62,13 +62,14 @@ fn this_host_lives_per_dispatch_and_has_no_resting_slots() {
         "nothing was asked of the provider"
     );
     assert!(r.provider.billing_note().contains("billed by the second"));
+    // Two GPU types, 120 s each to answer, then the seed limit, and a minute.
     assert_eq!(
         r.provider.setup_grace_secs(),
-        r.provider.pace.setup_limit.as_secs() + 60
+        2 * 120 + r.provider.pace.seed_limit.as_secs() + 60
     );
-    assert_eq!(Pace::default().setup_limit, SETUP_LIMIT);
+    assert_eq!(Pace::default().seed_limit, SEED_LIMIT);
     assert!(
-        SETUP_LIMIT.as_secs() + 60 > STALE_CLAIM_SECS,
+        SEED_LIMIT.as_secs() + 60 > STALE_CLAIM_SECS,
         "a pod being set up is never taken for a leak"
     );
     assert!(
@@ -315,6 +316,7 @@ fn dispatch_collect_terminate_confirm_absent_against_the_engine() {
         token: &token,
         start: &"c".repeat(40),
         progress: &progress,
+        ready_timeout: None,
     };
     let record = dispatch(&r.provider, &r.id, &launch, NOW, &pacing()).unwrap();
     assert_eq!(record.pool, "gpu");
@@ -352,6 +354,43 @@ fn dispatch_collect_terminate_confirm_absent_against_the_engine() {
 }
 
 #[test]
+fn a_dispatch_records_the_pods_it_gave_up_on_before_the_one_that_works() {
+    let r = rig(1, "");
+    r.account.world().half_made_with_id = vec!["NVIDIA A100 80GB PCIe".into()];
+    let plan = plan(&r);
+    let token = Secret::new("tok".into());
+    let progress = Progress::silent();
+    let launch = Launch {
+        config: &r.config,
+        plan: &plan,
+        token: &token,
+        start: &"c".repeat(40),
+        progress: &progress,
+        ready_timeout: Some(30),
+    };
+    let record = dispatch(&r.provider, &r.id, &launch, NOW, &pacing()).unwrap();
+    assert!(
+        record.hardware.starts_with("NVIDIA H100 PCIe"),
+        "{}",
+        record.hardware
+    );
+    assert_eq!(record.abandoned, 1);
+    let line = crate::pool::porcelain::dispatched("abcd1234", &record);
+    let fields: Vec<&str> = line.split(' ').collect();
+    assert_eq!(fields[fields.len() - 2], "1", "{line}");
+    let text = crate::pool::record::dispatch_text(&record);
+    assert!(text.contains("abandoned 1 pod(s)"), "{text}");
+    let wait = r
+        .account
+        .world()
+        .calls_to(&["pod", "create"])
+        .iter()
+        .map(|c| c[c.iter().position(|a| a == "--wait-timeout").unwrap() + 1].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(wait, ["30s", "30s"], "the override reached every create");
+}
+
+#[test]
 fn a_dispatch_that_loses_the_last_claim_check_leaves_no_pod_of_its_own() {
     let r = rig(3, "");
     let plan = plan(&r);
@@ -363,6 +402,7 @@ fn a_dispatch_that_loses_the_last_claim_check_leaves_no_pod_of_its_own() {
         token: &token,
         start: &"c".repeat(40),
         progress: &progress,
+        ready_timeout: None,
     };
     // A rival with our index, made before ours, is not in the listing when the
     // dispatch first checks, and is by the time the job is about to start.

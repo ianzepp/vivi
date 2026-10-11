@@ -24,6 +24,8 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
             at,
             read_only: false,
             hardware: String::new(),
+            abandoned: 0,
+            abandoned_cost_micros: 0,
         },
     }
 }

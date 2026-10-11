@@ -35,11 +35,22 @@ const EMPTY_KEY: i32 = 98;
 
 /// How long an ordinary call may take.
 pub const CALL_TIMEOUT: Duration = Duration::from_mins(1);
-/// How long a create (which waits for the pod's SSH port) may take: the
-/// CLI's own wait is ten minutes.
-pub const CREATE_TIMEOUT: Duration = Duration::from_mins(11);
-/// The wait the create asks the CLI for.
-pub const CREATE_WAIT: &str = "10m";
+/// What a create may take beyond the wait it asks the CLI for: the API call
+/// that makes the pod, before the wait starts.
+const CREATE_MARGIN: Duration = Duration::from_secs(90);
+
+/// How long Vivi lets a create run when the pod may take `ready_secs` to
+/// answer on SSH: the CLI's own wait, plus the call that makes the pod.
+#[must_use]
+pub fn create_timeout(ready_secs: u64) -> Duration {
+    Duration::from_secs(ready_secs) + CREATE_MARGIN
+}
+
+/// The wait the create asks the CLI for (`--wait-timeout`), a Go duration.
+#[must_use]
+pub fn create_wait(ready_secs: u64) -> String {
+    format!("{ready_secs}s")
+}
 
 /// The real `runpodctl` with one key file.
 #[derive(Debug, Clone)]

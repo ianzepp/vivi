@@ -97,6 +97,8 @@ pub struct RunpodFacts {
     pub centers: Vec<String>,
     pub gpu_count: u32,
     pub image: String,
+    /// The effective `ready_timeout` in seconds.
+    pub ready_timeout: u64,
     pub now: u64,
 }
 
@@ -160,6 +162,7 @@ impl RunpodProvider {
             centers: cfg.data_centers.clone(),
             gpu_count: cfg.gpu_count,
             image: self.config.image.clone(),
+            ready_timeout: cfg.ready_timeout,
             now: super::work::epoch_secs(),
         }
     }
@@ -239,6 +242,7 @@ pub fn checks(f: &RunpodFacts) -> Vec<Check> {
     ];
     list.extend(gpu_checks(f));
     list.push(image_check(f));
+    list.push(ready_timeout_check(f));
     list.extend(pod_checks(f));
     list
 }
@@ -377,6 +381,19 @@ fn gpu_check(f: &RunpodFacts, market: &[GpuType], wanted: &str) -> Check {
             "a dispatch tries the next type in `gpu_types`, or fails with no pod rented",
         )
     }
+}
+
+fn ready_timeout_check(f: &RunpodFacts) -> Check {
+    let worst = u64::try_from(f.types.len()).unwrap_or(u64::MAX) * f.ready_timeout;
+    Check::ok(
+        GROUP,
+        "ready timeout",
+        format!(
+            "{}s for a new pod to answer on SSH, then it is terminated and the next GPU type is tried (up to {worst}s of waiting across {} type(s)); `vivi pool dispatch --ready-timeout` overrides it for one dispatch",
+            f.ready_timeout,
+            f.types.len()
+        ),
+    )
 }
 
 fn image_check(f: &RunpodFacts) -> Check {

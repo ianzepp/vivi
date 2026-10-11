@@ -40,6 +40,23 @@ fn a_minimal_pool_validates_and_takes_the_defaults() {
     assert_eq!(r.cloud_type(), "SECURE");
     assert_eq!(r.container_disk_gb, 40);
     assert!(r.min_cuda_version.is_none() && r.data_centers.is_empty());
+    assert_eq!(r.ready_timeout, 120, "a working pod answers well within it");
+}
+
+#[test]
+fn the_ready_timeout_is_read_and_kept_between_30_and_1800_seconds() {
+    for ok in [30, 45, 1800] {
+        let config = parse(&format!("ready_timeout = {ok}\n"));
+        config.validate(&id()).unwrap();
+        assert_eq!(config.runpod.ready_timeout, ok);
+    }
+    for bad in [0, 29, 1801] {
+        let said = refused_with(&format!("ready_timeout = {bad}\n"));
+        assert!(
+            said.contains("runpod.ready_timeout") && said.contains("between 30 and 1800"),
+            "{said}"
+        );
+    }
 }
 
 #[test]

@@ -17,6 +17,8 @@ fn record(job: &str) -> DispatchRecord {
         at: 1000,
         read_only: false,
         hardware: String::new(),
+        abandoned: 0,
+        abandoned_cost_micros: 0,
     }
 }
 
@@ -257,4 +259,32 @@ fn a_result_without_facts_has_no_facts_key_and_no_heading() {
     let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
     assert!(note.get("facts").is_none());
     assert!(!collected_text(&d, &finished()).contains("--- facts"));
+}
+
+#[test]
+fn abandoned_pods_are_stated_with_an_approximate_cost_and_only_when_there_are_any() {
+    let none = record("j");
+    assert_eq!(abandoned_text(&none), "");
+    assert!(!dispatch_text(&none).contains("abandoned"));
+    assert!(
+        !dispatch_note(&none).contains("abandoned"),
+        "a record with none is unchanged on disk"
+    );
+    let two = DispatchRecord {
+        abandoned: 2,
+        abandoned_cost_micros: 123_456,
+        ..record("j")
+    };
+    assert_eq!(
+        abandoned_text(&two),
+        "abandoned 2 pod(s) that did not become reachable, approx $0.12"
+    );
+    assert!(dispatch_text(&two).ends_with("approx $0.12"));
+    let back: DispatchRecord = serde_json::from_str(&dispatch_note(&two)).unwrap();
+    assert_eq!(back, two);
+    let unpriced = DispatchRecord {
+        abandoned_cost_micros: 0,
+        ..two
+    };
+    assert!(abandoned_text(&unpriced).ends_with("price unknown"));
 }

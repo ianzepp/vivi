@@ -24,8 +24,12 @@
 //!                destroyed POOL NAME ID
 //!                skipped POOL NAME ID STATE TASK                   (a slot that was not free, so kept)
 //!                scaled POOL TARGET COUNT                          (COUNT: slots the pool holds now)
-//! pool dispatch  dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE
-//!                                                                  BRANCH: - when read-only; MODE: write|read-only
+//! pool dispatch  dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST
+//!                                                                  BRANCH: - when read-only; MODE: write|read-only;
+//!                                                                  ABANDONED: pods made and terminated before the one that
+//!                                                                  works because they did not answer on SSH in time (0 on
+//!                                                                  every other host); COST: their approximate total charge
+//!                                                                  in dollars, `0.12`, or - when none or no price known
 //! pool wait      collected TASK POOL SLOT STATE DETAIL             STATE: finished|timeout|lost
 //!                nothing-open
 //!                issue POOL KIND SUBJECT MESSAGE FIRST CLEARED     KIND: poll-error
@@ -95,7 +99,7 @@ fn line(kind: &str, fields: &[String]) -> String {
         .join(" ")
 }
 
-/// `dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE`
+/// `dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST`
 #[must_use]
 pub fn dispatched(task: &str, made: &DispatchRecord) -> String {
     let fields = [
@@ -109,6 +113,12 @@ pub fn dispatched(task: &str, made: &DispatchRecord) -> String {
         opt(Some(made.branch.as_str()).filter(|b| !b.is_empty())),
         made.budget.to_string(),
         mode_word(made.read_only).to_string(),
+        made.abandoned.to_string(),
+        if made.abandoned_cost_micros == 0 {
+            "-".to_string()
+        } else {
+            super::record::dollars(made.abandoned_cost_micros)
+        },
     ];
     line("dispatched", &fields)
 }

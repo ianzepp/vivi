@@ -57,6 +57,8 @@ fn open_dispatch(task: &str, machine: &str, at: u64, budget: u64) -> OpenDispatc
             at,
             read_only: false,
             hardware: String::new(),
+            abandoned: 0,
+            abandoned_cost_micros: 0,
         },
     }
 }

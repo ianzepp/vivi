@@ -7,7 +7,7 @@
 //! and the other moves on. A slot with a mark is never claimed, whether its
 //! job is running or finished and uncollected.
 
-use super::provider::{Hold, OpenRequest, PoolProvider, SlotLifetime};
+use super::provider::{Abandoned, Hold, OpenRequest, PoolProvider, SlotLifetime};
 use super::slot::{self, PoolId, SlotStatus};
 use crate::error::VivariumError;
 
@@ -23,6 +23,8 @@ pub struct Claim {
     /// What the host gave the slot (the hardware of a rented pod); empty for a
     /// resting slot.
     pub hardware: String,
+    /// Machines a per-dispatch host made and gave up on before this one.
+    pub abandoned: Vec<Abandoned>,
 }
 
 /// Claim one free slot for `task`.
@@ -43,6 +45,7 @@ pub fn claim_slot(
                 slot: candidate.clone(),
                 hold,
                 hardware: String::new(),
+                abandoned: Vec::new(),
             });
         }
     }
@@ -79,6 +82,7 @@ pub fn open_slot(
         },
         hold: opened.hold,
         hardware: opened.hardware,
+        abandoned: opened.abandoned,
     })
 }
 

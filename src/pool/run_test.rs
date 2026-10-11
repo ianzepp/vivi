@@ -415,6 +415,8 @@ fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
             at: 1000,
             read_only: false,
             hardware: String::new(),
+            abandoned: 0,
+            abandoned_cost_micros: 0,
         },
     };
     annotate_running(&mut slots, &[open], 1095);

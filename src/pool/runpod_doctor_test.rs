@@ -31,6 +31,7 @@ fn good() -> RunpodFacts {
         centers: Vec::new(),
         gpu_count: 1,
         image: "runpod/pytorch:2.4.0-runtime".into(),
+        ready_timeout: 120,
         now: NOW,
     }
 }
@@ -402,4 +403,28 @@ fn the_spend_notice_quotes_the_first_types_price_from_the_market() {
         "{notice}"
     );
     assert_eq!(r.account.world().spending_calls(), 0);
+}
+
+#[test]
+fn the_doctor_shows_the_effective_ready_timeout() {
+    let list = checks(&good());
+    let c = list.iter().find(|c| c.name == "ready timeout").unwrap();
+    assert_eq!(c.status, Status::Ok);
+    assert!(
+        c.detail.contains("120s")
+            && c.detail.contains("1 type(s)")
+            && c.detail.contains("--ready-timeout"),
+        "{}",
+        c.detail
+    );
+    let r = rig(1, "ready_timeout = 45");
+    let facts = r.provider.gather();
+    assert_eq!(facts.ready_timeout, 45);
+    let list = checks(&facts);
+    let c = list.iter().find(|c| c.name == "ready timeout").unwrap();
+    assert!(
+        c.detail.contains("45s") && c.detail.contains("90s of waiting across 2"),
+        "{}",
+        c.detail
+    );
 }

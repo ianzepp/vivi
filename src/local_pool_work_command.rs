@@ -40,6 +40,8 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     let space = Mailspace::discover(command.project.as_deref())?;
     let handle = pools::open_one(&space, command.pool.as_deref())?;
     let (config, id, provider) = (&handle.config, &handle.id, handle.provider.as_ref());
+    let ready_timeout =
+        dispatch::check_ready_timeout(provider.slot_lifetime(), command.ready_timeout)?;
     let task = space.pool_task(&command.task)?;
     if work::open_dispatches(&space)?
         .iter()
@@ -85,10 +87,16 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         token: &token,
         start: &start,
         progress: &progress,
+        ready_timeout,
     };
     let made = work::submit(&space, provider, id, &launch, &pacing)?;
     if provider.slot_lifetime() == SlotLifetime::PerDispatch {
-        progress.say(&vivi::pool::runpod_open::uncollected_note(&made));
+        let deadline = vivi::pool::runpod_open::dispatch_deadline(
+            &config.runpod,
+            ready_timeout,
+            (made.at, made.budget),
+        );
+        progress.say(&vivi::pool::runpod_open::uncollected_note(&made, deadline));
     }
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
@@ -130,7 +138,17 @@ fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> Str
         } else {
             format!("  hardware {}", made.hardware)
         }
-    )
+    ) + &abandoned_suffix(made)
+}
+
+/// `  abandoned ...` when pods were given up on before the one that works.
+fn abandoned_suffix(made: &vivi::pool::record::DispatchRecord) -> String {
+    let text = vivi::pool::record::abandoned_text(made);
+    if text.is_empty() {
+        text
+    } else {
+        format!("  {text}")
+    }
 }
 
 /// What a read-only dispatch tells the caller: that a `branch:` body line is

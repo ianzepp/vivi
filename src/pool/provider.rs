@@ -128,6 +128,24 @@ pub struct OpenRequest<'a> {
     pub spec: CreateSpec,
     /// Where the steps of making the slot are reported as they start.
     pub progress: &'a Progress,
+    /// Seconds a new machine may take to become reachable, for this dispatch
+    /// only (none: the pool's own setting). Only a host that makes machines
+    /// per dispatch has such a wait.
+    pub ready_timeout_secs: Option<u64>,
+}
+
+/// A machine a per-dispatch host made and terminated again because it did not
+/// become reachable in time. It billed while it existed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Abandoned {
+    pub id: String,
+    /// The hardware type that was being tried.
+    pub gpu: String,
+    /// Seconds from the start of the create to the machine's confirmed absence.
+    pub waited_secs: u64,
+    /// Approximate charge in millionths of a dollar (hourly price times the
+    /// time waited); none when the host did not say the price.
+    pub cost_micros: Option<u64>,
 }
 
 /// The slot a per-dispatch host made: running, seeded, and claimed by the
@@ -144,6 +162,9 @@ pub struct OpenedSlot {
     /// hardware it runs on). Empty when the host has nothing to say.
     pub hardware: String,
     pub created_at: String,
+    /// Machines made and terminated before this one because they did not
+    /// become reachable, in the order they were tried.
+    pub abandoned: Vec<Abandoned>,
 }
 
 /// A machine host. Implementations must keep secrets out of errors.

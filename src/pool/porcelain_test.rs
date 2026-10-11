@@ -55,11 +55,13 @@ fn dispatched_line() {
         at: 0,
         read_only: false,
         hardware: String::new(),
+        abandoned: 0,
+        abandoned_cost_micros: 0,
     };
     assert_eq!(
         dispatched("3f2a", &made),
         format!(
-            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} work/x 1800 write",
+            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} work/x 1800 write 0 -",
             "a".repeat(40)
         )
     );
@@ -80,11 +82,13 @@ fn a_read_only_dispatch_has_no_branch_and_says_so() {
         at: 0,
         read_only: true,
         hardware: String::new(),
+        abandoned: 0,
+        abandoned_cost_micros: 0,
     };
     assert_eq!(
         dispatched("3f2a", &made),
         format!(
-            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} - 600 read-only",
+            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} - 600 read-only 0 -",
             "a".repeat(40)
         )
     );
@@ -286,4 +290,36 @@ fn scale_lines() {
     assert_eq!(skipped(&s), "skipped p ms-p-slot-4 m4 seeding -");
     assert_eq!(destroyed(&s), "destroyed p ms-p-slot-4 m4");
     assert_eq!(scaled("p", 0, 1), "scaled p 0 1");
+}
+
+#[test]
+fn a_dispatch_that_gave_up_on_pods_ends_with_their_count_and_approximate_cost() {
+    let made = DispatchRecord {
+        pool: "p".into(),
+        slot: "p-slot-1".into(),
+        machine: "m1".into(),
+        job: "0123456789ab".into(),
+        model: "sonnet".into(),
+        from: "main".into(),
+        branch: "work/x".into(),
+        start: "a".repeat(40),
+        budget: 1800,
+        at: 0,
+        read_only: false,
+        hardware: String::new(),
+        abandoned: 2,
+        abandoned_cost_micros: 123_456,
+    };
+    assert_eq!(
+        dispatched("3f2a", &made),
+        format!(
+            "dispatched 3f2a p p-slot-1 0123456789ab sonnet main {} work/x 1800 write 2 0.12",
+            "a".repeat(40)
+        )
+    );
+    let unpriced = DispatchRecord {
+        abandoned_cost_micros: 0,
+        ..made
+    };
+    assert!(dispatched("3f2a", &unpriced).ends_with(" write 2 -"));
 }

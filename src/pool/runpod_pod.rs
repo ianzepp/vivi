@@ -4,7 +4,7 @@
 
 use serde::Deserialize;
 
-use super::runpod_cli::CREATE_WAIT;
+use super::runpod_cli::create_wait;
 use super::runpod_config::PoolRunpod;
 use crate::error::VivariumError;
 
@@ -271,6 +271,41 @@ pub fn delete_args(id: &str) -> Result<Vec<String>, VivariumError> {
     Ok(vec!["pod".into(), "delete".into(), pod_id(id)?])
 }
 
+/// Pod ids a failed create's output may name: a JSON field called `id`,
+/// `podId` or `pod_id`, or a word that follows the word `pod` or `id`. These
+/// are guesses at the CLI's wording; the caller checks each against the
+/// account before acting on it.
+#[must_use]
+pub fn pod_ids_in(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        for key in ["id", "podId", "pod_id"] {
+            if let Some(id) = value.get(key).and_then(serde_json::Value::as_str) {
+                found.push(id.to_string());
+            }
+        }
+    }
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    for pair in words.windows(2) {
+        if matches!(
+            pair[0].to_ascii_lowercase().as_str(),
+            "pod" | "id" | "podid"
+        ) {
+            found.push(pair[1].to_string());
+        }
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for id in found {
+        if is_pod_id(&id) && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 fn pod_id(id: &str) -> Result<String, VivariumError> {
     if is_pod_id(id) {
         Ok(id.to_string())
@@ -295,7 +330,7 @@ pub fn ssh_keys_args() -> Vec<String> {
 }
 
 /// The arguments of one `pod create`: a fixed list, never a shell line. It
-/// waits (up to [`CREATE_WAIT`]) until the pod's SSH port answers, and sets a
+/// waits (up to `ready_secs`) until the pod's SSH port answers, and sets a
 /// provider-side deadline `terminate_after` (an ISO time) after which the
 /// provider is asked to terminate the pod.
 #[must_use]
@@ -304,7 +339,7 @@ pub fn create_args(
     image: &str,
     name: &str,
     gpu_id: &str,
-    terminate_after: &str,
+    (terminate_after, ready_secs): (&str, u64),
 ) -> Vec<String> {
     let mut list = args(&[
         "pod", "create", "--name", name, "--image", image, "--gpu-id", gpu_id,
@@ -330,7 +365,11 @@ pub fn create_args(
         list.push("--public-ip".to_string());
     }
     list.extend(["--terminate-after".to_string(), terminate_after.to_string()]);
-    list.extend(args(&["--wait", "--wait-timeout", CREATE_WAIT]));
+    list.extend([
+        "--wait".to_string(),
+        "--wait-timeout".to_string(),
+        create_wait(ready_secs),
+    ]);
     list
 }
 

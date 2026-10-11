@@ -160,6 +160,17 @@ fn an_existing_branch_with_another_from_is_refused_and_nothing_moves() {
 }
 
 #[test]
+fn a_ready_timeout_on_a_pool_with_resting_slots_is_a_usage_error_and_nothing_moves() {
+    let rig = rig("");
+    let (ok, said) = dispatch(&rig, "main", "feat/new", &["--ready-timeout", "60"]);
+    assert!(
+        !ok && said.contains("--ready-timeout") && said.contains("per dispatch"),
+        "{said}"
+    );
+    nothing_was_made(&rig);
+}
+
+#[test]
 fn the_default_branch_and_the_primary_checkouts_branch_are_refused() {
     let rig = rig("");
     let (ok, said) = dispatch(&rig, "main", "main", &[]);

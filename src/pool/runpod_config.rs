@@ -14,6 +14,12 @@ const MAX_GPU_COUNT: u32 = 8;
 const DEFAULT_DISK_GB: u32 = 40;
 const MAX_DISK_GB: u32 = 4096;
 const DEFAULT_CLOUD: &str = "secure";
+/// How long a new pod may take to answer on SSH, in seconds, when the pool does
+/// not say. A working pod answers in well under a minute; one that has not by
+/// now is not going to, and it bills until it is terminated.
+pub const DEFAULT_READY_TIMEOUT_SECS: u64 = 120;
+/// The range `ready_timeout` (and `--ready-timeout`) may take, in seconds.
+pub const READY_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 30..=1800;
 
 /// The `[pools.<name>.runpod]` table.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -43,6 +49,10 @@ pub struct PoolRunpod {
     /// Data centre ids to rent in (empty: any).
     #[serde(default)]
     pub data_centers: Vec<String>,
+    /// Seconds a new pod may take to answer on SSH before Vivi terminates it
+    /// and tries the next GPU type (30 to 1800; default 120).
+    #[serde(default = "default_ready_timeout")]
+    pub ready_timeout: u64,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
 }
@@ -56,6 +66,24 @@ fn default_cloud() -> String {
 fn default_disk() -> u32 {
     DEFAULT_DISK_GB
 }
+fn default_ready_timeout() -> u64 {
+    DEFAULT_READY_TIMEOUT_SECS
+}
+
+/// Check a ready timeout (from the pool table or `--ready-timeout`).
+///
+/// # Errors
+/// Returns text naming `what` and the allowed range.
+pub fn check_ready_timeout(secs: u64, what: &str) -> Result<(), String> {
+    if READY_TIMEOUT_RANGE.contains(&secs) {
+        return Ok(());
+    }
+    Err(format!(
+        "{what} must be between {} and {} seconds",
+        READY_TIMEOUT_RANGE.start(),
+        READY_TIMEOUT_RANGE.end()
+    ))
+}
 
 impl Default for PoolRunpod {
     fn default() -> Self {
@@ -67,6 +95,7 @@ impl Default for PoolRunpod {
             container_disk_gb: DEFAULT_DISK_GB,
             min_cuda_version: None,
             data_centers: Vec::new(),
+            ready_timeout: DEFAULT_READY_TIMEOUT_SECS,
             unknown: BTreeMap::new(),
         }
     }
@@ -141,7 +170,7 @@ impl PoolRunpod {
                 "runpod.data_centers holds an id that is not letters, digits and dashes (for example EU-RO-1)",
             ));
         }
-        Ok(())
+        check_ready_timeout(self.ready_timeout, "runpod.ready_timeout").map_err(bad)
     }
 }
 

@@ -59,8 +59,9 @@ pub struct Pace {
     pub settle: Duration,
     /// How long a dispatch waits for another on this machine.
     pub lock_wait: Duration,
-    /// How long a dispatch may take, from the start to the job running.
-    pub setup_limit: Duration,
+    /// How long seeding may take once the pod answers on SSH (the second of the
+    /// two setup limits; the first is the pool's `ready_timeout`).
+    pub seed_limit: Duration,
 }
 
 impl Default for Pace {
@@ -71,14 +72,15 @@ impl Default for Pace {
             absent: Duration::from_mins(3),
             settle: Duration::from_secs(8),
             lock_wait: Duration::from_mins(15),
-            setup_limit: SETUP_LIMIT,
+            seed_limit: SEED_LIMIT,
         }
     }
 }
 
-/// The longest a dispatch may take to get a job running on a new pod: create,
-/// seed and deliver. It bounds what a half-made pod can cost.
-pub const SETUP_LIMIT: Duration = Duration::from_mins(30);
+/// The longest seeding may take, from the moment a new pod answers on SSH
+/// (pin the key, run the seed, claim the slot). It is separate from the pool's
+/// `ready_timeout`, which bounds only the wait for the pod to answer at all.
+pub const SEED_LIMIT: Duration = Duration::from_mins(30);
 
 /// Where the host's own files live and which pools exist, for the checks that
 /// need to know a pod's siblings.
@@ -350,8 +352,13 @@ impl PoolProvider for RunpodProvider {
         self.open(request)
     }
 
+    /// The worst case of setting a pod up (every GPU type waited for in full,
+    /// then seeding) and a minute. It uses the pool's `ready_timeout`; a
+    /// dispatch that passes a longer `--ready-timeout` is not covered.
     fn setup_grace_secs(&self) -> u64 {
-        self.pace.setup_limit.as_secs() + 60
+        let cfg = &self.config.runpod;
+        super::runpod_open::setup_secs(cfg.gpu_types.len(), cfg.ready_timeout, self.pace.seed_limit)
+            + 60
     }
 
     fn billing_note(&self) -> String {

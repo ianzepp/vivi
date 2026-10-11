@@ -587,7 +587,7 @@ vivi pool create --pool <name> [--slots N] [--base <commit>] [--porcelain]   # m
 vivi pool scale --pool <name> <N> [--yes] [--base <commit>] [--porcelain]   # bring the pool to N slots
 vivi pool status [--pool <name>] [--json | --porcelain]   # pool, name, id, state, task, running time of budget, seeded base
 vivi pool destroy --pool <name> (--slot <name> | --all) --yes
-vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>] [--allow-default-branch] [--porcelain]
+vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>] [--allow-default-branch] [--ready-timeout <secs>] [--porcelain]   # --ready-timeout: RunPod only
 vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>] [--budget <secs>] [--porcelain]   # publishes nothing
 vivi pool wait [--pool <name>] [<task>...] [--timeout <secs>] [--porcelain]   # block until a dispatch finishes; collect it
 vivi pool reconcile [--pool <name>] [--porcelain]   # collect finished, stop overdue, free slots
@@ -682,7 +682,11 @@ pool scale      created POOL ...   (as create; also home, exists, issue)
                 destroyed POOL NAME ID
                 skipped POOL NAME ID STATE TASK                         a slot that was not free, so kept
                 scaled POOL TARGET COUNT                                COUNT: slots the pool holds now
-pool dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE   BRANCH: - when read-only; MODE: write|read-only
+pool dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST
+                                                                        BRANCH: - when read-only; MODE: write|read-only;
+                                                                        ABANDONED: pods made and terminated before the one that works because they
+                                                                        did not answer on SSH in time (always 0 off RunPod); COST: their approximate
+                                                                        total charge in dollars (`0.12`), `-` when none or no price was known
 pool wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
                 nothing-open                                            already collected
                 issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND: poll-error, SUBJECT: the task
@@ -801,11 +805,38 @@ cloud = "secure"                # or "community"; default secure
 container_disk_gb = 40          # default 40; the pod keeps nothing else
 # min_cuda_version = "12.8"     # lowest CUDA the host's driver must support
 # data_centers = ["EU-RO-1"]    # default: any
+ready_timeout = 120             # seconds a new pod gets to answer on SSH (30 to 1800; default 120)
 ```
 
 A different tier is a different pool: write a second `[pools.<name>]` with its
 own `gpu_types` rather than looking for a switch. The GPU type a pod actually
 got is recorded in the dispatch record and shown in `dispatch`'s output.
+
+**`ready_timeout`: how long a new pod gets to answer on SSH.** A working pod
+answers in well under a minute (35 to 45 seconds when measured). A pod that
+RunPod accepts and lists as running but that never answers is not going to, and
+it bills by the second until it is terminated. So Vivi waits `ready_timeout`
+seconds (default 120) for each new pod; when that expires it **terminates the
+pod, confirms it is gone from RunPod's list, and tries the next GPU type**.
+When every type has been tried the dispatch fails and nothing is left behind.
+`vivi pool dispatch --ready-timeout <secs>` sets it for one dispatch (same range,
+30 to 1800); on a pool whose slots rest between jobs (Docker, Fly, SSH, local)
+the flag is a usage error. This limit covers only the wait for the pod to
+answer. Seeding after that has its own, separate limit of 30 minutes, counted
+from the moment the pod answers.
+
+Every pod given up on is reported. The progress output (not `--porcelain`) says,
+per pod, its id, the GPU type, how long Vivi waited, and the **approximate**
+charge (the pod's hourly price times that time; RunPod's bill is the authority).
+The final result then records how many pods were abandoned before the one that
+worked and their approximate total cost: in `dispatch`'s human line
+(`abandoned N pod(s) that did not become reachable, approx $X`), in the dispatch
+record and reply on the task, and in `--porcelain` as two trailing fields on the
+`dispatched` line, `ABANDONED COST` (see the table above; existing readers that
+take the first ten fields are unaffected). When a dispatch fails, the error
+gives the same count and cost. If the CLI keeps the pod on a timeout, Vivi finds
+it by the id in the CLI's error (checked: the pod must carry this dispatch's
+name), or, when the error names none, by the nonce in its name.
 
 **How the commands differ**
 
@@ -833,8 +864,10 @@ got is recorded in the dispatch record and shown in `dispatch`'s output.
 limits next to each.
 
 1. *The pod is told when to die.* `pod create` is given `--terminate-after`
-   with a time of dispatch + 30 minutes for setup + the job's budget + 15
-   minutes (the same silence `wait` allows before it calls a job lost). **It is
+   with a time of dispatch + the worst case of setup + the job's budget + 15
+   minutes (the same silence `wait` allows before it calls a job lost). The
+   worst case of setup is (number of GPU types x `ready_timeout`, or the
+   dispatch's `--ready-timeout`) + the 30-minute seeding limit. **It is
    not verified that RunPod fires this when no client is running** (nothing has
    been rented to find out); treat it as a second line, not the first.
 2. *Collection terminates.* `wait` and `reconcile` end the pod and check the
@@ -845,8 +878,10 @@ limits next to each.
    is still billing, when its provider-side deadline is, and the command to end
    it.
 4. *`reconcile` finds leaks.* A pod of the pool that no dispatch record
-   explains, past 31 minutes (the longest a dispatch may spend setting up), is
-   terminated.
+   explains, past the longest a dispatch may spend setting up (number of GPU
+   types x the pool's `ready_timeout` + 30 minutes seeding + 1 minute; 35
+   minutes for two types at the default), is terminated. A dispatch that passes
+   a `--ready-timeout` longer than the pool's is not covered by this grace.
 5. *`doctor` reports leaks* with the money framing: pods of this pool with how
    long they have run and their hourly price; any past their deadline as a
    failure; and **stray** pods (a pod with Vivi's name prefix for a pool this
@@ -925,6 +960,9 @@ accepted, the SSH host key capture, the root-mode boot and job scripts on a
 RunPod image, collection, the termination and the absence check. Still
 **unverified live**: the `--terminate-after` deadline firing on its own, the
 fallback to a second GPU type and the failure text for no capacity, the
+`ready_timeout` path (a pod that never answers, the id in the CLI's timeout
+error, the termination and absence check that follow, the approximate cost it
+reports: **this code path is verified against a fake account only**), the
 creation-time ordering and list lag the claim rule depends on, the state words
 of a stopped or terminating pod, a dispatch against a real repository, and the
 harness-environment path. Those are covered by tests against a fake account

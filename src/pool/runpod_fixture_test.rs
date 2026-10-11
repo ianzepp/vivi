@@ -65,6 +65,8 @@ pub struct World {
     /// GPU types whose create makes the pod and then reports a failure (the
     /// CLI keeps a pod whose SSH did not come up in time).
     pub half_made: Vec<String>,
+    /// Like `half_made`, but the CLI's error names the pod it kept.
+    pub half_made_with_id: Vec<String>,
     /// Runs right after a create has made its pod (race simulation).
     pub after_create: Option<Hook>,
     /// How many listings a terminated pod still shows in.
@@ -339,6 +341,17 @@ fn create(w: &mut World, rest: &[&str]) -> Result<RunOutput, VivariumError> {
         hook(w);
         w.after_create = Some(hook);
     }
+    if w.half_made_with_id.contains(
+        &w.pods
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.gpu.clone())
+            .unwrap_or_default(),
+    ) {
+        return fail(&format!(
+            "timed out waiting for ssh on pod {id}; the pod was kept"
+        ));
+    }
     if w.half_made.contains(
         &w.pods
             .iter()
@@ -569,7 +582,7 @@ pub fn fast() -> Pace {
         absent: Duration::from_millis(300),
         settle: Duration::ZERO,
         lock_wait: Duration::from_millis(200),
-        setup_limit: Duration::from_secs(20),
+        seed_limit: Duration::from_secs(20),
     }
 }
 
@@ -677,6 +690,7 @@ pub fn request<'a>(id: &'a PoolId, task: &'a str, progress: &'a Progress) -> Ope
         budget_secs: 600,
         spec: spec(id, 1),
         progress,
+        ready_timeout_secs: None,
     }
 }
 

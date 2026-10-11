@@ -2,6 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::*;
 use crate::pool::provider::PoolProvider;
+use crate::pool::runpod_fixture::Rig;
 use crate::pool::runpod_fixture::{
     HOST_KEY, NOW, OTHER_KEY, pod_name, recording, request, rig, scan_text,
 };
@@ -11,13 +12,44 @@ fn open_one(r: &crate::pool::runpod_fixture::Rig, task: &str) -> Result<OpenedSl
     r.provider.open(&request(&r.id, task, &progress))
 }
 
+/// The deadline of a 600 s job from `NOW` on the rig's two GPU types when each
+/// pod gets `ready` seconds.
+fn due(r: &Rig, ready: u64) -> u64 {
+    deadline_of(NOW, 600, setup_secs(2, ready, r.provider.pace.seed_limit))
+}
+
 #[test]
-fn the_deadline_is_setup_plus_budget_plus_the_silence_the_wait_allows() {
-    let end = deadline_of(1000, 600);
-    assert_eq!(end, 1000 + SETUP_LIMIT.as_secs() + 600 + TIMEOUT_GRACE_SECS);
+fn the_deadline_is_every_wait_plus_seeding_plus_budget_plus_the_silence_the_wait_allows() {
+    let seed = Duration::from_mins(30);
+    for (types, ready) in [(1_usize, 120_u64), (3, 120), (2, 900)] {
+        let setup = setup_secs(types, ready, seed);
+        assert_eq!(setup, types as u64 * ready + 1800);
+        let end = deadline_of(1000, 600, setup);
+        assert_eq!(end, 1000 + setup + 600 + TIMEOUT_GRACE_SECS);
+        assert!(
+            end > 1000 + 600,
+            "a job gets all of its budget before the pod is due to end"
+        );
+    }
     assert!(
-        end > 1000 + 600,
-        "a job gets all of its budget before the pod is due to end"
+        deadline_of(0, 0, setup_secs(3, 120, seed)) > deadline_of(0, 0, setup_secs(1, 120, seed)),
+        "more GPU types to wait for push the deadline out"
+    );
+}
+
+#[test]
+fn the_deadline_of_a_dispatch_follows_the_pool_and_the_override() {
+    let r = rig(1, "");
+    let cfg = &r.config.runpod;
+    let base = dispatch_deadline(cfg, None, (NOW, 600));
+    assert_eq!(base, deadline_of(NOW, 600, 2 * 120 + 1800));
+    let longer = dispatch_deadline(cfg, Some(300), (NOW, 600));
+    assert_eq!(longer, base + 2 * (300 - 120));
+    let mut one = cfg.clone();
+    one.gpu_types.truncate(1);
+    assert_eq!(
+        dispatch_deadline(&one, None, (NOW, 600)),
+        deadline_of(NOW, 600, 120 + 1800)
     );
 }
 
@@ -35,7 +67,7 @@ fn a_dispatch_rents_one_pod_named_for_it_with_a_provider_side_deadline() {
     );
     assert_eq!(name.task, "abc12345");
     assert_eq!(name.claimed, NOW);
-    assert_eq!(name.deadline, deadline_of(NOW, 600));
+    assert_eq!(name.deadline, due(&r, 120));
     assert_eq!(
         pod.terminate_after,
         iso(name.deadline),
@@ -369,7 +401,7 @@ fn a_failed_termination_says_the_pod_is_still_billing_and_how_to_end_it() {
     );
     assert!(said.contains("runpodctl pod delete rp"), "{said}");
     assert!(
-        said.contains(&iso(deadline_of(NOW, 600))),
+        said.contains(&iso(due(&r, 120))),
         "the provider-side deadline is stated: {said}"
     );
     assert!(!said.contains("/keys/runpod.key\n"));
@@ -435,15 +467,18 @@ fn the_uncollected_note_states_the_cost_and_the_unverified_deadline() {
         at: NOW,
         read_only: false,
         hardware: "NVIDIA A100 80GB PCIe x1, $1.19/h".into(),
+        abandoned: 0,
+        abandoned_cost_micros: 0,
     };
-    let note = uncollected_note(&record);
+    let deadline = deadline_of(NOW, 600, setup_secs(1, 120, Duration::from_mins(30)));
+    let note = uncollected_note(&record, deadline);
     assert!(
         note.contains("bills by the second")
             && note.contains("rp000001")
             && note.contains("$1.19/h"),
         "{note}"
     );
-    assert!(note.contains(&iso(deadline_of(NOW, 600))), "{note}");
+    assert!(note.contains(&iso(deadline)), "{note}");
     assert!(note.contains("not verified"), "{note}");
 }
 
@@ -469,4 +504,187 @@ fn two_dispatches_in_one_process_are_serialised_by_the_lock_file() {
     let said = open_one(&r, "t1").unwrap_err().to_string();
     assert!(said.contains("another dispatch"), "{said}");
     assert!(r.account.world().calls_to(&["pod", "create"]).is_empty());
+}
+
+/// The `--wait-timeout` the first create asked for.
+fn wait_asked(r: &Rig) -> String {
+    let w = r.account.world();
+    let create = &w.calls_to(&["pod", "create"])[0];
+    let at = create.iter().position(|a| a == "--wait-timeout").unwrap();
+    create[at + 1].clone()
+}
+
+#[test]
+fn a_new_pod_gets_120_seconds_unless_the_pool_or_the_dispatch_says_otherwise() {
+    let r = rig(1, "");
+    open_one(&r, "t1").unwrap();
+    assert_eq!(wait_asked(&r), "120s");
+
+    let r = rig(1, "ready_timeout = 45");
+    open_one(&r, "t1").unwrap();
+    assert_eq!(wait_asked(&r), "45s", "the pool's setting");
+    let w = r.account.world();
+    let name = PodName::decode(&w.pods[0].name).unwrap();
+    assert_eq!(name.deadline, deadline_of(NOW, 600, 2 * 45 + 20));
+    drop(w);
+
+    let r = rig(1, "ready_timeout = 45");
+    let (progress, said) = recording();
+    let mut req = request(&r.id, "t1", &progress);
+    req.ready_timeout_secs = Some(200);
+    r.provider.open(&req).unwrap();
+    assert_eq!(wait_asked(&r), "200s", "the dispatch's override wins");
+    let w = r.account.world();
+    let name = PodName::decode(&w.pods[0].name).unwrap();
+    assert_eq!(
+        name.deadline,
+        due(&r, 200),
+        "the provider-side deadline allows every type its full wait"
+    );
+    assert!(
+        said.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("200s to answer on SSH")),
+        "the wait is announced"
+    );
+}
+
+#[test]
+fn a_pod_that_never_answers_is_terminated_reported_and_the_next_type_works() {
+    let r = rig(1, "");
+    r.account.world().half_made_with_id = vec!["NVIDIA A100 80GB PCIe".into()];
+    let (progress, said) = recording();
+    let opened = r.provider.open(&request(&r.id, "t1", &progress)).unwrap();
+    assert!(
+        opened.hardware.starts_with("NVIDIA H100 PCIe"),
+        "the hardware of the pod that works is recorded: {}",
+        opened.hardware
+    );
+    assert_eq!(opened.abandoned.len(), 1);
+    let gone = &opened.abandoned[0];
+    assert_eq!(gone.gpu, "NVIDIA A100 80GB PCIe");
+    assert!(gone.cost_micros.is_some(), "the price was known");
+    let w = r.account.world();
+    assert_eq!(w.live().len(), 1, "only the pod that works is left");
+    assert!(
+        w.pods.iter().all(|p| p.id != gone.id),
+        "the abandoned pod is confirmed gone from the list"
+    );
+    assert_ne!(gone.id, opened.id);
+    assert!(
+        w.calls_to(&["pod", "get", gone.id.as_str()]).len() == 1,
+        "the id in the error was used"
+    );
+    let lines = said.lock().unwrap().join("\n");
+    assert!(
+        lines.contains("abandoned pod")
+            && lines.contains(&gone.id)
+            && lines.contains("NVIDIA A100 80GB PCIe")
+            && lines.contains("within 120s")
+            && lines.contains("terminated after")
+            && lines.contains("approximate charge $"),
+        "{lines}"
+    );
+}
+
+#[test]
+fn a_timed_out_create_whose_error_names_no_pod_is_found_by_its_nonce() {
+    let r = rig(1, "");
+    r.account.world().half_made = vec!["NVIDIA A100 80GB PCIe".into()];
+    let opened = open_one(&r, "t1").unwrap();
+    assert_eq!(opened.abandoned.len(), 1);
+    let w = r.account.world();
+    assert!(
+        w.calls_to(&["pod", "get"])
+            .iter()
+            .all(|c| c[2] == opened.id),
+        "no id was named, so no pod was asked for by one: {:?}",
+        w.calls_to(&["pod", "get"])
+    );
+    assert_eq!(w.live().len(), 1);
+    assert!(w.pods.iter().all(|p| p.id != opened.abandoned[0].id));
+}
+
+#[test]
+fn an_id_in_the_error_that_is_not_this_dispatchs_pod_is_never_terminated() {
+    let r = rig(2, "");
+    let other = r
+        .account
+        .world()
+        .add(&pod_name(2, "else", "eeeeeeeeeeee"), 5);
+    let found = r
+        .provider
+        .pod_of_failed_create(&format!("timed out on pod {other}"), "ffffffffffff")
+        .unwrap();
+    assert!(found.is_none(), "another dispatch's pod is not ours");
+    assert!(r.account.world().pods.iter().any(|p| p.id == other));
+    let found = r
+        .provider
+        .pod_of_failed_create(&format!("timed out on pod {other}"), "eeeeeeeeeeee")
+        .unwrap();
+    assert_eq!(found.map(|p| p.id), Some(other), "its own nonce proves it");
+}
+
+#[test]
+fn when_no_type_answers_every_pod_is_terminated_and_the_failure_counts_them() {
+    let r = rig(1, "");
+    r.account.world().half_made_with_id = vec!["NVIDIA A100 80GB PCIe".into()];
+    r.account.world().half_made = vec!["NVIDIA H100 PCIe".into()];
+    let said = open_one(&r, "t1").unwrap_err().to_string();
+    assert!(said.contains("no pod could be rented"), "{said}");
+    assert!(
+        said.contains("2 pod(s) were made earlier in this dispatch")
+            && said.contains("did not become reachable")
+            && said.contains("approximately $")
+            || said.contains("price unknown"),
+        "{said}"
+    );
+    assert!(r.account.world().pods.is_empty(), "nothing is left billing");
+    assert_eq!(r.account.world().calls_to(&["pod", "create"]).len(), 2);
+}
+
+#[test]
+fn an_abandoned_pod_that_cannot_be_terminated_says_it_still_bills() {
+    let r = rig(1, "");
+    r.account.world().half_made_with_id = vec!["NVIDIA A100 80GB PCIe".into()];
+    r.account.world().delete_fails = true;
+    let said = open_one(&r, "t1").unwrap_err().to_string();
+    assert!(
+        said.contains("did not become reachable")
+            && said.contains("could not be terminated")
+            && said.contains("bills until")
+            && said.contains("runpodctl pod delete rp"),
+        "{said}"
+    );
+}
+
+#[test]
+fn the_approximate_charge_is_the_hourly_price_times_the_wait() {
+    assert_eq!(charge_micros(1.19, Duration::from_mins(2)), 39_667);
+    assert_eq!(charge_micros(2.39, Duration::from_hours(1)), 2_390_000);
+    assert_eq!(charge_micros(1.19, Duration::ZERO), 0);
+    assert_eq!(charge_micros(f64::NAN, Duration::from_mins(2)), 0);
+    assert_eq!(dollars(39_667), "0.04");
+    assert_eq!(dollars(123_456), "0.12");
+    assert_eq!(dollars(4_000), "0.00");
+    assert_eq!(dollars(2_390_000), "2.39");
+    let line = abandoned_line(
+        &Abandoned {
+            id: "rp000001".into(),
+            gpu: "G".into(),
+            waited_secs: 125,
+            cost_micros: Some(41_319),
+        },
+        120,
+        "timed out",
+    );
+    assert!(
+        line.contains("rp000001")
+            && line.contains("(G)")
+            && line.contains("within 120s")
+            && line.contains("terminated after 125s")
+            && line.contains("approximate charge $0.04"),
+        "{line}"
+    );
 }

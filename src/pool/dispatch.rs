@@ -157,6 +157,28 @@ pub fn check_push_target(
     Ok(())
 }
 
+/// Check `--ready-timeout` before anything is rented or any token minted.
+///
+/// # Errors
+/// Returns a usage error if the pool's slots rest between jobs (there is no
+/// pod to wait for), or the seconds are out of range.
+pub fn check_ready_timeout(
+    lifetime: SlotLifetime,
+    secs: Option<u64>,
+) -> Result<Option<u64>, VivariumError> {
+    let Some(secs) = secs else {
+        return Ok(None);
+    };
+    if lifetime != SlotLifetime::PerDispatch {
+        return Err(VivariumError::Message(
+            "--ready-timeout applies only to a pool whose slots are made per dispatch (a RunPod pool); this pool keeps resting slots, so there is no new machine to wait for".into(),
+        ));
+    }
+    super::runpod_config::check_ready_timeout(secs, "--ready-timeout")
+        .map_err(VivariumError::Message)?;
+    Ok(Some(secs))
+}
+
 /// What a dispatch starts: the job, the token that lets it fetch (and push),
 /// the commit it starts from, and the pool's settings and progress sink.
 pub struct Launch<'a> {
@@ -166,6 +188,9 @@ pub struct Launch<'a> {
     /// The commit `from` resolved to, recorded with the dispatch.
     pub start: &'a str,
     pub progress: &'a Progress,
+    /// `--ready-timeout`: seconds a new pod may take to answer on SSH for
+    /// this dispatch (none: the pool's setting).
+    pub ready_timeout: Option<u64>,
 }
 
 /// Get a slot for `launch` and start its job on it: claim a free resting slot,
@@ -202,6 +227,8 @@ pub fn dispatch(
         at: now,
         read_only: plan.read_only,
         hardware: claim.hardware,
+        abandoned: u32::try_from(claim.abandoned.len()).unwrap_or(u32::MAX),
+        abandoned_cost_micros: claim.abandoned.iter().filter_map(|a| a.cost_micros).sum(),
     })
 }
 
@@ -225,6 +252,7 @@ fn take_slot(
                     budget_secs: plan.budget,
                     spec: dispatch_spec(launch.config, id, seed, provider),
                     progress: launch.progress,
+                    ready_timeout_secs: launch.ready_timeout,
                 },
             )
         }
