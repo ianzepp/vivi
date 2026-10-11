@@ -242,3 +242,57 @@ fn list_filters_match_mail_written_under_the_legacy_domain() {
     assert!(listed.contains("written before ids"), "{listed}");
     assert!(listed.contains("written after ids"), "{listed}");
 }
+
+#[test]
+fn a_config_an_older_binary_rewrote_without_the_id_gets_the_same_id_back() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path();
+    ok(&run(path, &["mailspace", "init"]));
+    ok(&run(path, &["mailspace", "identity", "add", "mind"]));
+    let before = ok(&run(path, &["mailspace", "identity", "list"]));
+    let config = path.join(".vivi/mailspace.toml");
+    let sidecar = path.join(".vivi/mailspace.id");
+    let original = std::fs::read_to_string(&config).unwrap();
+    let id = original
+        .lines()
+        .find_map(|line| line.strip_prefix("id = "))
+        .unwrap()
+        .trim_matches('"')
+        .to_string();
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).unwrap(),
+        format!("{id}\n")
+    );
+
+    // An older vivi rewrites the config from a struct with no `id` field.
+    let dropped: String = original
+        .lines()
+        .filter(|line| !line.starts_with("id = "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&config, &dropped).unwrap();
+
+    let output = run(path, &["mailspace", "identity", "list"]);
+    let after = ok(&output);
+
+    assert_eq!(after, before, "addresses are unchanged");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("restored"), "{stderr}");
+    assert!(stderr.contains(&id), "{stderr}");
+    let restored = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(restored, format!("id = \"{id}\"\n{dropped}"));
+    // Quiet once restored, and a rewriting command keeps it.
+    let quiet = run(path, &["role", "add", "hand"]);
+    ok(&quiet);
+    assert!(
+        quiet.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+    let kept = std::fs::read_to_string(&config).unwrap();
+    assert!(kept.contains(&format!("id = \"{id}\"")), "{kept}");
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).unwrap(),
+        format!("{id}\n")
+    );
+}

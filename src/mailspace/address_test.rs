@@ -127,6 +127,8 @@ fn many_openers_of_a_fresh_config_agree_on_one_id() {
     let raw = fs::read_to_string(config_path(&tmp)).unwrap();
     assert_eq!(id_lines(&raw), 1, "{raw}");
     assert!(raw.contains("[[identities]]"));
+    let sidecar = fs::read_to_string(tmp.path().join(".vivi/mailspace.id")).unwrap();
+    assert_eq!(sidecar.trim(), ids.iter().next().unwrap().as_str());
 }
 
 #[test]
@@ -425,4 +427,138 @@ fn a_roles_last_signal_counts_mail_sent_under_the_legacy_domain() {
     let report = mailspace.schedule_report("mind").unwrap();
 
     assert!(report.last_signal_handle.is_some(), "{report:?}");
+}
+
+fn sidecar_path(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+    tmp.path().join(".vivi/mailspace.id")
+}
+
+const ID_A: &str = "00000000-0000-4000-8000-00000000000a";
+const ID_B: &str = "00000000-0000-4000-8000-00000000000b";
+
+fn bare(tmp: &tempfile::TempDir, config: &str) {
+    fs::create_dir_all(tmp.path().join(".vivi")).unwrap();
+    fs::write(config_path(tmp), config).unwrap();
+}
+
+#[test]
+fn a_mint_writes_the_config_and_the_sidecar_with_one_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    bare(&tmp, "name = \"x\"\n");
+
+    let mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+
+    let sidecar = fs::read_to_string(sidecar_path(&tmp)).unwrap();
+    assert_eq!(sidecar, format!("{}\n", mailspace.mailspace_id()));
+    assert!(!tmp.path().join(".vivi/mailspace.id.tmp").exists());
+}
+
+#[test]
+fn a_config_and_sidecar_that_agree_change_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = format!("id = \"{ID_A}\"\nname = \"x\"\n");
+    bare(&tmp, &config);
+    fs::write(sidecar_path(&tmp), format!("{ID_A}\n")).unwrap();
+
+    let mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+
+    assert_eq!(mailspace.mailspace_id(), ID_A);
+    assert_eq!(fs::read_to_string(config_path(&tmp)).unwrap(), config);
+    assert_eq!(
+        fs::read_to_string(sidecar_path(&tmp)).unwrap(),
+        format!("{ID_A}\n")
+    );
+}
+
+#[test]
+fn a_config_id_with_no_sidecar_gets_the_sidecar_written() {
+    let tmp = tempfile::tempdir().unwrap();
+    bare(&tmp, &format!("id = \"{ID_A}\"\nname = \"x\"\n"));
+
+    let mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+
+    assert_eq!(mailspace.mailspace_id(), ID_A);
+    assert_eq!(
+        fs::read_to_string(sidecar_path(&tmp)).unwrap(),
+        format!("{ID_A}\n")
+    );
+}
+
+#[test]
+fn a_sidecar_that_cannot_be_written_next_to_a_config_with_the_id_is_not_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    bare(&tmp, &format!("id = \"{ID_A}\"\nname = \"x\"\n"));
+    let vivi = tmp.path().join(".vivi");
+    let mut permissions = fs::metadata(&vivi).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o500);
+    fs::set_permissions(&vivi, permissions.clone()).unwrap();
+
+    let opened = Mailspace::open_root(tmp.path().to_path_buf());
+
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o700);
+    fs::set_permissions(&vivi, permissions).unwrap();
+    assert_eq!(opened.unwrap().mailspace_id(), ID_A);
+}
+
+#[test]
+fn a_config_and_sidecar_that_differ_are_an_error_naming_both_and_nothing_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = format!("id = \"{ID_A}\"\nname = \"x\"\n");
+    bare(&tmp, &config);
+    fs::write(sidecar_path(&tmp), format!("{ID_B}\n")).unwrap();
+
+    let error = Mailspace::open_root(tmp.path().to_path_buf())
+        .unwrap_err()
+        .to_string();
+
+    for needle in [ID_A, ID_B, "mailspace.toml", "mailspace.id", "keep"] {
+        assert!(error.contains(needle), "{needle}: {error}");
+    }
+    assert_eq!(fs::read_to_string(config_path(&tmp)).unwrap(), config);
+    assert_eq!(
+        fs::read_to_string(sidecar_path(&tmp)).unwrap(),
+        format!("{ID_B}\n")
+    );
+}
+
+#[test]
+fn a_config_that_lost_its_id_gets_the_sidecars_back_and_never_a_new_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rest = "# kept\nname = \"x\"\n\n[[identities]]\nname = \"mind\"\n";
+    bare(&tmp, rest);
+    fs::write(sidecar_path(&tmp), format!("{ID_B}\n")).unwrap();
+
+    let mailspace = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+
+    assert_eq!(mailspace.mailspace_id(), ID_B);
+    assert_eq!(mailspace.address_for("mind"), "mind@00000000.local");
+    assert_eq!(
+        fs::read_to_string(config_path(&tmp)).unwrap(),
+        format!("id = \"{ID_B}\"\n{rest}"),
+        "the same first-line insert as a mint"
+    );
+    let again = Mailspace::open_root(tmp.path().to_path_buf()).unwrap();
+    assert_eq!(again.mailspace_id(), ID_B);
+}
+
+#[test]
+fn a_malformed_sidecar_is_a_config_error_naming_the_file() {
+    for (config, remedy) in [
+        (format!("id = \"{ID_A}\"\nname = \"x\"\n"), "re-derive"),
+        ("name = \"x\"\n".to_string(), "mint a new id"),
+    ] {
+        for bad in ["garbage", "", "00000000-0000-4000-8000-00000000000A"] {
+            let tmp = tempfile::tempdir().unwrap();
+            bare(&tmp, &config);
+            fs::write(sidecar_path(&tmp), format!("{bad}\n")).unwrap();
+
+            let error = Mailspace::open_root(tmp.path().to_path_buf())
+                .unwrap_err()
+                .to_string();
+
+            assert!(error.contains("mailspace.id"), "{bad}: {error}");
+            assert!(error.contains(remedy), "{bad}: {error}");
+            assert_eq!(fs::read_to_string(config_path(&tmp)).unwrap(), config);
+        }
+    }
 }

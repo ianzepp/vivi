@@ -77,20 +77,37 @@ pub(super) fn parse_config(path: &Path, raw: &str) -> Result<MailspaceConfig, Vi
     })
 }
 
-/// Make sure `config` carries a valid mailspace id, minting and persisting
-/// one when the file has none. An existing id is never overwritten.
+/// Make sure `config` carries a valid mailspace id, restoring or minting one
+/// when the file has none. An existing id is never overwritten.
 ///
-/// The mint re-reads the file under the config lock and writes only if the
-/// id is still absent. The id is added as the file's first line, so
-/// everything else in the file stays as it was.
+/// The id is kept twice: as `id` in `mailspace.toml` (the source of truth)
+/// and in `mailspace.id` beside it. An older vivi rewrites the config from a
+/// struct that has no `id`, dropping the line; it never touches the sidecar,
+/// so the next open restores the id instead of minting a different one.
+///
+/// | config id | sidecar   | action                                     |
+/// | --------- | --------- | ------------------------------------------ |
+/// | present   | same      | nothing                                    |
+/// | present   | absent    | write the sidecar (best effort)            |
+/// | present   | different | error naming both; never guess             |
+/// | absent    | present   | restore it into the config; never mint     |
+/// | absent    | absent    | mint, write both                           |
+///
+/// Restore and mint re-read the config under the config lock and add the id
+/// as the file's first line, so everything else in the file stays as it was.
 ///
 /// # Errors
-/// Returns a config error when a present id is malformed, and an error when
-/// the file cannot be locked, read, or written: an unpersisted id is never
-/// used.
+/// Returns a config error when an id (config or sidecar) is malformed or the
+/// two disagree, and an error when a restore or mint cannot be persisted: an
+/// unpersisted id is never used. A sidecar that cannot be written next to a
+/// config that already has the id is not an error.
 pub(super) fn ensure_id(path: &Path, config: &mut MailspaceConfig) -> Result<(), VivariumError> {
-    if let Some(id) = &config.id {
-        return check_id(path, id);
+    if let Some(id) = config.id.clone() {
+        check_id(path, &id)?;
+        if sidecar_state(path, &id, true)? == Sidecar::Missing {
+            backfill_sidecar(path, &id);
+        }
+        return Ok(());
     }
     let _lock = lock(path)?;
     let raw = fs::read_to_string(path).map_err(|e| {
@@ -101,18 +118,128 @@ pub(super) fn ensure_id(path: &Path, config: &mut MailspaceConfig) -> Result<(),
     })?;
     if let Some(id) = parse_config(path, &raw)?.id {
         check_id(path, &id)?;
+        if sidecar_state(path, &id, true)? == Sidecar::Missing {
+            write_if_missing(path, &id);
+        }
         config.id = Some(id);
         return Ok(());
     }
-    let id = generate_id();
-    replace(path, &format!("id = \"{id}\"\n{raw}")).map_err(|e| {
-        VivariumError::Config(format!(
-            "cannot persist a new mailspace id in {}: {e}",
-            path.display()
-        ))
-    })?;
+    let id = match read_sidecar(path, false)? {
+        Some(id) => {
+            eprintln!(
+                "vivi: {} had lost its mailspace id; restored {id} from {}",
+                path.display(),
+                sidecar_path(path).display()
+            );
+            id
+        }
+        None => {
+            let id = generate_id();
+            write_sidecar(path, &id).map_err(|e| persist_error(path, &e))?;
+            id
+        }
+    };
+    replace(path, &format!("id = \"{id}\"\n{raw}")).map_err(|e| persist_error(path, &e))?;
     config.id = Some(id);
     Ok(())
+}
+
+fn persist_error(path: &Path, error: &VivariumError) -> VivariumError {
+    VivariumError::Config(format!(
+        "cannot persist the mailspace id for {}: {error}",
+        path.display()
+    ))
+}
+
+/// The id copy beside the config: `<.vivi>/mailspace.id`.
+fn sidecar_path(config: &Path) -> PathBuf {
+    config.with_file_name("mailspace.id")
+}
+
+/// How the sidecar stands against the config's id.
+#[derive(Debug, PartialEq, Eq)]
+enum Sidecar {
+    Same,
+    Missing,
+}
+
+/// Compare the sidecar with the config's `id`.
+///
+/// # Errors
+/// Returns a config error for a malformed sidecar, or when the two ids
+/// differ (naming both ids and both files).
+fn sidecar_state(path: &Path, id: &str, config_has_id: bool) -> Result<Sidecar, VivariumError> {
+    match read_sidecar(path, config_has_id)? {
+        None => Ok(Sidecar::Missing),
+        Some(other) if other == id => Ok(Sidecar::Same),
+        Some(other) => Err(VivariumError::Config(format!(
+            "mailspace id conflict: {} has id {id} but {} has {other}. Keep the id the letters you already sent were minted under (their From address starts with its first 8 characters): to keep the config's id, delete {}; to keep the sidecar's, set the id line in {} to {other}. Nothing was changed.",
+            path.display(),
+            sidecar_path(path).display(),
+            sidecar_path(path).display(),
+            path.display(),
+        ))),
+    }
+}
+
+/// The sidecar's id, if the file exists.
+///
+/// # Errors
+/// Returns a config error naming the file when it holds something other than
+/// a canonical id, or cannot be read.
+fn read_sidecar(path: &Path, config_has_id: bool) -> Result<Option<String>, VivariumError> {
+    let sidecar = sidecar_path(path);
+    let raw = match fs::read_to_string(&sidecar) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(VivariumError::Config(format!(
+                "cannot read the mailspace id copy {}: {e}",
+                sidecar.display()
+            )));
+        }
+    };
+    let id = raw.trim();
+    if is_canonical_id(id) {
+        return Ok(Some(id.to_string()));
+    }
+    let remedy = if config_has_id {
+        "delete it to re-derive it from the config"
+    } else {
+        "delete it to mint a new id"
+    };
+    Err(VivariumError::Config(format!(
+        "{}: '{id}' is not a canonical lowercase hyphenated UUID; {remedy}",
+        sidecar.display()
+    )))
+}
+
+/// Write the sidecar atomically (temp file, then rename). The caller holds
+/// the config lock.
+fn write_sidecar(path: &Path, id: &str) -> Result<(), VivariumError> {
+    let sidecar = sidecar_path(path);
+    let mut name = sidecar.as_os_str().to_owned();
+    name.push(".tmp");
+    let tmp = PathBuf::from(name);
+    fs::write(&tmp, format!("{id}\n"))?;
+    fs::rename(&tmp, &sidecar)?;
+    Ok(())
+}
+
+/// Give a config that already has its id the sidecar copy. A safeguard, not
+/// a requirement (provisioned and read-only directories): failure is quiet.
+/// Returns whether the copy was written.
+fn backfill_sidecar(path: &Path, id: &str) -> bool {
+    let Ok(_lock) = lock(path) else {
+        return false;
+    };
+    write_if_missing(path, id)
+}
+
+/// Write the sidecar unless it exists (another opener may have written it
+/// while this one waited for the lock). The caller holds the config lock.
+fn write_if_missing(path: &Path, id: &str) -> bool {
+    matches!(read_sidecar(path, true), Ok(None)) && write_sidecar(path, id).is_ok()
 }
 
 fn check_id(path: &Path, id: &str) -> Result<(), VivariumError> {
