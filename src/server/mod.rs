@@ -22,6 +22,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
+use tower_http::compression::CompressionLayer;
 
 use auth::ChallengeBook;
 use crypto::StoreCipher;
@@ -93,7 +94,16 @@ pub fn api_router(
             "/v1/projects/{id}/directory",
             get(projects_api::directory_handler),
         )
-        .route("/v1/projects/{id}/items", get(projects_api::items_handler))
+        // List and lookup responses are large JSON; gzip them when the
+        // client asks for it.
+        .route(
+            "/v1/projects/{id}/items",
+            get(projects_api::items_handler).layer(CompressionLayer::new()),
+        )
+        .route(
+            "/v1/projects/{id}/items/lookup",
+            post(projects_api::lookup_handler).layer(CompressionLayer::new()),
+        )
         .route(
             "/v1/projects/{id}/items/{message_id}",
             get(projects_api::letter_handler)

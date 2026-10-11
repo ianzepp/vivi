@@ -16,7 +16,7 @@ use vivi::storage::is_traveling_id;
 use crate::AppState;
 use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
 use crate::identities::{RefreshError, RegisterError, valid_mailspace_id};
-use crate::projects::{AppendItem, ProjectError, ProjectRecord, Viewer};
+use crate::projects::{AppendItem, ListQuery, ProjectError, ProjectRecord, Viewer};
 use crate::rooms::error_response;
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +44,17 @@ pub struct RegisterRequest {
 pub struct ItemsQuery {
     #[serde(default)]
     since: u64,
+    // Raw strings so a malformed value is our `invalid_request`, not the
+    // extractor's plain-text rejection.
+    limit: Option<String>,
+    after: Option<String>,
+    kind: Option<String>,
+    to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LookupRequest {
+    handles: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,34 +492,132 @@ pub async fn items_handler(
             "storage encryption unavailable",
         );
     };
+    let list = match ListQuery::parse(
+        query.since,
+        query.limit.as_deref(),
+        query.after.as_deref(),
+        query.kind.as_deref(),
+        query.to.as_deref(),
+    ) {
+        Ok(list) => list,
+        Err(err) => return project_error(err),
+    };
     let projects = state.projects.clone();
     match tokio::task::spawn_blocking(move || {
-        projects.read_after_scoped(&cipher, &id, query.since, &Viewer::of(&identity))
+        projects.read_page(&cipher, &id, &list, &Viewer::of(&identity))
     })
     .await
     {
         Ok(Ok(page)) => {
-            let records: Vec<_> = page
-                .records
-                .into_iter()
-                .map(|record| {
-                    json!({
-                        "sequence": record.sequence,
-                        "message_id": record.message_id,
-                        "from": record.from,
-                        "from_prefix": record.from_prefix,
-                        "to": record.to,
-                        "kind": record.kind,
-                        "content_sha256": record.content_sha256,
-                        "raw_eml": STANDARD.encode(record.raw_eml),
-                    })
-                })
-                .collect();
-            Json(json!({"records": records, "next_cursor": page.next_cursor})).into_response()
+            let records: Vec<_> = page.records.into_iter().map(record_json).collect();
+            Json(json!({
+                "records": records,
+                "next_cursor": page.next_cursor,
+                "has_more": page.has_more,
+            }))
+            .into_response()
         }
         Ok(Err(err)) => project_error(err),
         Err(err) => project_error(ProjectError::Storage(format!(
             "project read task failed: {err}"
+        ))),
+    }
+}
+
+/// The list record shape, shared by the list and the handle lookup.
+fn record_json(record: ProjectRecord) -> serde_json::Value {
+    json!({
+        "sequence": record.sequence,
+        "message_id": record.message_id,
+        "from": record.from,
+        "from_prefix": record.from_prefix,
+        "to": record.to,
+        "kind": record.kind,
+        "content_sha256": record.content_sha256,
+        "appended_at": record.appended_at,
+        "raw_eml": STANDARD.encode(record.raw_eml),
+    })
+}
+
+/// `POST /v1/projects/:id/items/lookup` — fetch letters by handle (the 8 hex
+/// after `msg_`), scoped by the list's visibility rule. A handle that names
+/// nothing the caller may see is `missing`, the same whether the id is
+/// unknown or hidden. Never moves a cursor.
+pub async fn lookup_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    payload: Result<Json<LookupRequest>, JsonRejection>,
+) -> Response {
+    let req = match json_body(payload) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    let projects = state.projects.clone();
+    let check_id = id.clone();
+    match tokio::task::spawn_blocking(move || projects.existing_project_dir(&check_id)).await {
+        Ok(Ok(_)) => (),
+        Ok(Err(err)) => return project_error(err),
+        Err(err) => {
+            return project_error(ProjectError::Storage(format!(
+                "project lookup failed: {err}"
+            )));
+        }
+    }
+    let Some(token) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    };
+    let identities = state.identities.clone();
+    let token = token.to_owned();
+    let project_id = id.clone();
+    let identity =
+        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
+            .await
+        {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
+                return error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "invalid bearer token",
+                );
+            }
+            Err(_) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "identity lookup failed",
+                );
+            }
+        };
+    let Some(cipher) = state.store_cipher else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "storage encryption unavailable",
+        );
+    };
+    let projects = state.projects.clone();
+    let looked_up = tokio::task::spawn_blocking(move || {
+        projects.lookup_handles(&cipher, &id, &req.handles, &Viewer::of(&identity))
+    })
+    .await;
+    match looked_up {
+        Ok(Ok(found)) => {
+            let records: Vec<_> = found.records.into_iter().map(record_json).collect();
+            Json(json!({"records": records, "missing": found.missing})).into_response()
+        }
+        Ok(Err(err)) => project_error(err),
+        Err(err) => project_error(ProjectError::Storage(format!(
+            "project lookup task failed: {err}"
         ))),
     }
 }
@@ -746,6 +855,9 @@ fn letter_response(record: ProjectRecord) -> Response {
         && put("cache-control", "no-store");
     if let Some(prefix) = &record.from_prefix {
         ok = ok && put("x-vivi-from-prefix", prefix);
+    }
+    if let Some(at) = &record.appended_at {
+        ok = ok && put("x-vivi-appended-at", at);
     }
     if let Some(to) = &record.to {
         ok = ok && put("x-vivi-to", to);

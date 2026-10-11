@@ -31,6 +31,23 @@ response header of a single-letter `GET`, so a receiver can refuse a letter
 whose From domain claims another mailspace. The server still never parses a
 letter.
 
+Additive: history is pulled by window (decided item 13). Each letter is
+stamped at append with `appended_at` (server clock, RFC 3339 UTC to the
+second, never behind the previous row's stamp, fixed at append), returned in
+list records and as the `X-Vivi-Appended-At` header of a single-letter `GET`;
+rows written before this carry none. `GET .../items` takes `limit`, `after`,
+`kind`, and `to`, combined with `since` and visibility (filters only narrow),
+and adds `has_more` to its response. `POST /v1/projects/{id}/items/lookup`
+fetches letters by 8-hex handle (1 to 100 per call; `{records, missing}`,
+hidden and unknown ids are indistinguishable). List and lookup responses are
+gzip-compressed when the client sends `Accept-Encoding: gzip`.
+
+Behavior change for clients that assumed one response: a list now returns at
+most 500 records by default (1000 with `limit`, and a page also ends once its
+raw letters exceed 8 MiB), so a client must loop on `has_more`, saving
+`next_cursor` after each page. A client that ignored `has_more` and read one
+response will silently see only the first page of a long history.
+
 ## Unreleased — phase 03 core (2026-10-10)
 
 The project, not the room, is the tenant: `/v1/projects` is the new wire,

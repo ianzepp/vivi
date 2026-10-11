@@ -688,3 +688,448 @@ fn from_prefix_is_recorded_at_append() {
     assert_eq!(read.records[0].from_prefix.as_deref(), Some("3f9a1c7e"));
     assert_eq!(read.records[1].from_prefix, None);
 }
+
+// ---- append time, paged and filtered list, lookup by handle ----
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use chrono::{TimeZone, Utc};
+use vivi_server::projects::{ListQuery, PAGE_BYTE_CAP, monotone_stamp};
+
+/// A store whose clock reads `seconds` (unix), which the test steps.
+fn stepped_store(name: &str) -> (ProjectStore, Arc<AtomicI64>, PathBuf) {
+    let data_dir = scratch_data_dir(name);
+    let seconds = Arc::new(AtomicI64::new(0));
+    let clock = seconds.clone();
+    let store = ProjectStore::with_clock(&data_dir, move || {
+        Utc.timestamp_opt(clock.load(Ordering::SeqCst), 0).unwrap()
+    });
+    (store, seconds, data_dir)
+}
+
+fn stamp_of(unix: i64) -> String {
+    Utc.timestamp_opt(unix, 0)
+        .unwrap()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
+/// A traveling id whose handle is `handle` (8 hex) and whose tail is `tail`.
+fn id_with(handle: &str, tail: u64) -> String {
+    format!("msg_{handle}{tail:016x}")
+}
+
+/// All records visible to `who` for `query`, as `(message_id, sequence)`.
+fn page_ids(
+    store: &ProjectStore,
+    project: &str,
+    query: &ListQuery,
+    who: &Viewer<'_>,
+) -> (Vec<String>, u64, bool) {
+    let page = store.read_page(&cipher(), project, query, who).unwrap();
+    (
+        page.records.iter().map(|r| r.message_id.clone()).collect(),
+        page.next_cursor,
+        page.has_more,
+    )
+}
+
+#[test]
+fn monotone_stamp_never_goes_behind_the_previous_row() {
+    let at = |s: i64| Utc.timestamp_opt(s, 0).unwrap();
+    assert_eq!(monotone_stamp(None, at(100)), stamp_of(100));
+    assert_eq!(monotone_stamp(Some(&stamp_of(50)), at(100)), stamp_of(100));
+    assert_eq!(monotone_stamp(Some(&stamp_of(100)), at(100)), stamp_of(100));
+    // The clock stepped back: the previous stamp wins.
+    assert_eq!(monotone_stamp(Some(&stamp_of(200)), at(100)), stamp_of(200));
+}
+
+#[test]
+fn append_stamps_time_monotonically_and_a_replay_keeps_the_stamp() {
+    let (store, clock, _) = stepped_store("stamp");
+    let meta = store.create_project().unwrap();
+    let hand = viewer("hand");
+
+    clock.store(1_000, Ordering::SeqCst);
+    let first = need(&traveling(1), "first");
+    store.append(&cipher(), &meta.project_id, &first).unwrap();
+    // The clock steps backward: the stamp holds at the previous value.
+    clock.store(400, Ordering::SeqCst);
+    store
+        .append(&cipher(), &meta.project_id, &need(&traveling(2), "second"))
+        .unwrap();
+    clock.store(2_000, Ordering::SeqCst);
+    store
+        .append(&cipher(), &meta.project_id, &need(&traveling(3), "third"))
+        .unwrap();
+    // A replay (same id, same bytes) changes nothing, whatever the clock says.
+    clock.store(9_000, Ordering::SeqCst);
+    let replay = store.append(&cipher(), &meta.project_id, &first).unwrap();
+    assert!(replay.duplicate);
+
+    let page = store
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &hand)
+        .unwrap();
+    let stamps: Vec<_> = page
+        .records
+        .iter()
+        .map(|r| r.appended_at.clone().unwrap())
+        .collect();
+    assert_eq!(
+        stamps,
+        vec![stamp_of(1_000), stamp_of(1_000), stamp_of(2_000)]
+    );
+    assert_eq!(page.records.len(), 3, "the replay stored no row");
+}
+
+#[test]
+fn an_index_without_appended_at_loads_and_after_excludes_those_rows() {
+    let (store, clock, data_dir) = stepped_store("old-index");
+    let meta = store.create_project().unwrap();
+    clock.store(5_000, Ordering::SeqCst);
+    for n in 1..=2 {
+        store
+            .append(&cipher(), &meta.project_id, &need(&traveling(n), "old"))
+            .unwrap();
+    }
+    // Rewrite the index as it was before stamps existed.
+    let path = project_dir(&data_dir, &meta.project_id).join("items.json");
+    let mut index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for row in index["records"].as_array_mut().unwrap() {
+        assert!(row.as_object_mut().unwrap().remove("appended_at").is_some());
+    }
+    std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
+
+    let hand = viewer("hand");
+    let page = store
+        .read_after_scoped(&cipher(), &meta.project_id, 0, &hand)
+        .unwrap();
+    assert_eq!(page.records.len(), 2);
+    assert!(page.records.iter().all(|r| r.appended_at.is_none()));
+
+    // A new row is stamped; an `after` window keeps only stamped rows.
+    clock.store(6_000, Ordering::SeqCst);
+    store
+        .append(&cipher(), &meta.project_id, &need(&traveling(3), "new"))
+        .unwrap();
+    let after = ListQuery::parse(0, None, Some("1970-01-01T00:00:00Z"), None, None).unwrap();
+    let (ids, cursor, more) = page_ids(&store, &meta.project_id, &after, &hand);
+    assert_eq!(ids, vec![traveling(3)]);
+    assert_eq!((cursor, more), (3, false));
+}
+
+/// Eight letters at known times, kinds, and recipients, appended by "hand".
+/// Returns the store, project id, and the ids in sequence order.
+fn windowed_project(name: &str) -> (ProjectStore, String, Vec<String>) {
+    let (store, clock, _) = stepped_store(name);
+    let meta = store.create_project().unwrap();
+    // (kind, to, unix time)
+    let rows: [(Option<&str>, Option<&str>, i64); 8] = [
+        (Some("need"), None, 100),
+        (Some("task"), None, 200),
+        (None, Some("a@aaaaaaaa.local"), 300),
+        (Some("want"), Some("a@aaaaaaaa.local"), 400),
+        (None, Some("B@bbbbbbbb.local, a@aaaaaaaa.local"), 500),
+        (Some("need"), Some("a@bbbbbbbb.local"), 600),
+        (None, Some("a@aaaaaaaa.example"), 700),
+        (None, Some("a@aaaaaaaa.local"), 800),
+    ];
+    let mut ids = Vec::new();
+    for (n, (kind, to, at)) in rows.iter().enumerate() {
+        clock.store(*at, Ordering::SeqCst);
+        let id = traveling(n as u64 + 1);
+        let item = letter(&id, "hand", *to, *kind, eml(&id, &format!("row {n}")));
+        store.append(&cipher(), &meta.project_id, &item).unwrap();
+        ids.push(id);
+    }
+    (store, meta.project_id, ids)
+}
+
+#[test]
+fn each_filter_alone_and_combined_only_narrows() {
+    let (store, project, ids) = windowed_project("filters");
+    // "hand" is the sender, so every letter is visible to it.
+    let hand = viewer("hand");
+    let run = |limit: Option<&str>, after: Option<&str>, kind: Option<&str>, to: Option<&str>| {
+        let query = ListQuery::parse(0, limit, after, kind, to).unwrap();
+        page_ids(&store, &project, &query, &hand)
+    };
+    let pick = |ns: &[usize]| ns.iter().map(|n| ids[*n].clone()).collect::<Vec<_>>();
+
+    // kind: lists, case-insensitive, `mail` is no kind.
+    assert_eq!(run(None, None, Some("need"), None).0, pick(&[0, 5]));
+    assert_eq!(run(None, None, Some("task, WANT"), None).0, pick(&[1, 3]));
+    assert_eq!(run(None, None, Some("mail"), None).0, pick(&[2, 4, 6, 7]));
+    assert_eq!(
+        run(None, None, Some("need,mail"), None).0,
+        pick(&[0, 2, 4, 5, 6, 7])
+    );
+    // after: at or after the instant (300 is included).
+    assert_eq!(
+        run(None, Some(&stamp_of(300)), None, None).0,
+        pick(&[2, 3, 4, 5, 6, 7])
+    );
+    assert_eq!(run(None, Some(&stamp_of(301)), None, None).0.len(), 5);
+    // A sub-second `after` rounds up, so it never admits an earlier row.
+    assert_eq!(
+        run(None, Some("1970-01-01T00:05:00.5Z"), None, None).0,
+        pick(&[3, 4, 5, 6, 7])
+    );
+    // An offset time is the same instant.
+    assert_eq!(
+        run(None, Some("1970-01-01T01:05:00+01:00"), None, None).0,
+        pick(&[2, 3, 4, 5, 6, 7])
+    );
+    // to: exact address (any case), and a bare prefix names `<prefix>.local`.
+    assert_eq!(
+        run(None, None, None, Some("A@AAAAAAAA.local")).0,
+        pick(&[2, 3, 4, 7])
+    );
+    assert_eq!(
+        run(None, None, None, Some("aaaaaaaa")).0,
+        pick(&[2, 3, 4, 7]),
+        "the .example domain is not a mailspace"
+    );
+    assert_eq!(run(None, None, None, Some("BBBBBBBB")).0, pick(&[4, 5]));
+    assert_eq!(
+        run(None, None, None, Some("b@bbbbbbbb.local")).0,
+        pick(&[4]),
+        "an exact address matches within a recipient list"
+    );
+    assert!(run(None, None, None, Some("cccccccc")).0.is_empty());
+    // limit.
+    let (page, cursor, more) = run(Some("3"), None, None, None);
+    assert_eq!(page, pick(&[0, 1, 2]));
+    assert_eq!((cursor, more), (3, true));
+    // Combined: AND of everything.
+    let (page, cursor, more) = run(
+        Some("1"),
+        Some(&stamp_of(400)),
+        Some("mail,want"),
+        Some("aaaaaaaa"),
+    );
+    assert_eq!(page, pick(&[3]));
+    assert_eq!((cursor, more), (4, true));
+    let (page, cursor, more) = run(None, Some(&stamp_of(400)), Some("mail"), Some("aaaaaaaa"));
+    assert_eq!(page, pick(&[4, 7]));
+    assert_eq!((cursor, more), (8, false));
+    // Nothing matched: the cursor is `since`.
+    let query = ListQuery::parse(2, None, None, Some("task"), None).unwrap();
+    let (page, cursor, more) = page_ids(&store, &project, &query, &hand);
+    assert!(page.is_empty());
+    assert_eq!((cursor, more), (2, false));
+}
+
+#[test]
+fn filters_never_widen_visibility() {
+    let (store, project, ids) = windowed_project("filters-visibility");
+    // A bystander with no prefix sees only the work items (rows 0, 1, 3, 5),
+    // even when a filter names the mail's recipient.
+    let carol = viewer("carol");
+    let query = ListQuery::parse(0, None, None, None, Some("aaaaaaaa")).unwrap();
+    let (page, _, _) = page_ids(&store, &project, &query, &carol);
+    assert_eq!(page, vec![ids[3].clone()], "only the want to that prefix");
+    let query = ListQuery::parse(0, None, None, Some("mail"), None).unwrap();
+    assert!(page_ids(&store, &project, &query, &carol).0.is_empty());
+    // The prefix's own member sees the mail naming it, and no other mail.
+    let member = viewer_at("alice", "aaaaaaaa");
+    let query = ListQuery::parse(0, None, None, Some("mail"), None).unwrap();
+    assert_eq!(
+        page_ids(&store, &project, &query, &member).0,
+        vec![ids[2].clone(), ids[4].clone(), ids[7].clone()]
+    );
+}
+
+#[test]
+fn bad_list_parameters_are_refused() {
+    let bad = |limit, after, kind, to| {
+        assert!(
+            matches!(
+                ListQuery::parse(0, limit, after, kind, to),
+                Err(ProjectError::BadRequest(_))
+            ),
+            "{limit:?} {after:?} {kind:?} {to:?}"
+        );
+    };
+    bad(Some("0"), None, None, None);
+    bad(Some("-1"), None, None, None);
+    bad(Some("abc"), None, None, None);
+    bad(Some(""), None, None, None);
+    bad(None, Some("yesterday"), None, None);
+    bad(None, Some("2026-10-11"), None, None);
+    bad(None, None, Some("memo"), None);
+    bad(None, None, Some("need,"), None);
+    bad(None, None, None, Some("bob"));
+    bad(None, None, None, Some("3f9a1c7"));
+    bad(None, None, None, Some("postmaster"));
+    // Over the maximum is clamped, not refused.
+    assert!(ListQuery::parse(0, Some("5000"), None, None, None).is_ok());
+}
+
+#[test]
+fn paging_with_hidden_and_filtered_rows_interleaved() {
+    let (store, _, _) = stepped_store("paging");
+    let meta = store.create_project().unwrap();
+    // 30 letters: every third is private mail for another mailspace, so the
+    // viewer sees 20. Pages of 6 must be full until the last.
+    let mut visible = Vec::new();
+    for n in 1..=30u64 {
+        let id = traveling(n);
+        let item = if n % 3 == 0 {
+            letter(
+                &id,
+                "alice",
+                Some("x@cccccccc.local"),
+                None,
+                eml(&id, "private"),
+            )
+        } else {
+            visible.push(id.clone());
+            letter(&id, "alice", None, Some("need"), eml(&id, "shared"))
+        };
+        store.append(&cipher(), &meta.project_id, &item).unwrap();
+    }
+    let carol = viewer("carol");
+    let mut cursor = 0;
+    let mut seen = Vec::new();
+    let mut pages = 0;
+    loop {
+        let query = ListQuery::parse(cursor, Some("6"), None, None, None).unwrap();
+        let (ids, next, more) = page_ids(&store, &meta.project_id, &query, &carol);
+        pages += 1;
+        if more {
+            assert_eq!(ids.len(), 6, "a page is never short because of hidden rows");
+        }
+        assert!(next >= cursor);
+        seen.extend(ids);
+        cursor = next;
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(seen, visible);
+    assert_eq!(pages, 4, "20 visible letters in pages of 6");
+    // The filtered variant pages the same way: `task` matches nothing.
+    let query = ListQuery::parse(0, Some("6"), None, Some("task"), None).unwrap();
+    let (ids, next, more) = page_ids(&store, &meta.project_id, &query, &carol);
+    assert!(ids.is_empty());
+    assert_eq!((next, more), (0, false));
+}
+
+#[test]
+fn a_page_stops_once_its_letters_exceed_the_byte_cap() {
+    let (store, _, _) = stepped_store("byte-cap");
+    let meta = store.create_project().unwrap();
+    let total = 150u64;
+    let mut size = 0;
+    for n in 1..=total {
+        let id = traveling(n);
+        let mut raw = eml(&id, "x");
+        raw.resize(60_000, b'x');
+        size = raw.len();
+        store
+            .append(
+                &cipher(),
+                &meta.project_id,
+                &letter(&id, "hand", None, Some("need"), raw),
+            )
+            .unwrap();
+    }
+    let hand = viewer("hand");
+    // Default limit (500) is far above the byte-bounded page.
+    let query = ListQuery::since(0);
+    let first = store
+        .read_page(&cipher(), &meta.project_id, &query, &hand)
+        .unwrap();
+    let expected = PAGE_BYTE_CAP / size + 1;
+    assert_eq!(first.records.len(), expected, "stops once past the cap");
+    assert!(first.has_more);
+    assert_eq!(first.next_cursor, expected as u64);
+    let rest = store
+        .read_page(
+            &cipher(),
+            &meta.project_id,
+            &ListQuery::since(first.next_cursor),
+            &hand,
+        )
+        .unwrap();
+    assert_eq!(first.records.len() + rest.records.len(), total as usize);
+    assert!(!rest.has_more);
+}
+
+#[test]
+fn lookup_by_handle_hits_misses_multiples_and_hidden() {
+    let (store, _, _) = stepped_store("lookup");
+    let meta = store.create_project().unwrap();
+    let project = meta.project_id.as_str();
+    let work = id_with("4b8275cc", 1);
+    let twin_a = id_with("aaaa0001", 1);
+    let twin_b = id_with("aaaa0001", 2);
+    let private = id_with("deadbeef", 1);
+    let appends = [
+        letter(&work, "alice", None, Some("need"), eml(&work, "w")),
+        letter(&twin_a, "alice", None, Some("task"), eml(&twin_a, "a")),
+        letter(&twin_b, "alice", None, Some("want"), eml(&twin_b, "b")),
+        letter(
+            &private,
+            "alice",
+            Some("x@dddddddd.local"),
+            None,
+            eml(&private, "p"),
+        ),
+    ];
+    for item in &appends {
+        store.append(&cipher(), project, item).unwrap();
+    }
+    let handles = |hs: &[&str]| hs.iter().map(|h| h.to_string()).collect::<Vec<_>>();
+    let carol = viewer("carol");
+
+    // Hit, case-insensitive; a handle with two ids returns both in sequence
+    // order; an unknown and a hidden handle are both missing.
+    let found = store
+        .lookup_handles(
+            &cipher(),
+            project,
+            &handles(&["AAAA0001", "4B8275CC", "00000000", "deadbeef", "00000000"]),
+            &carol,
+        )
+        .unwrap();
+    let got: Vec<_> = found.records.iter().map(|r| r.message_id.clone()).collect();
+    assert_eq!(got, vec![work.clone(), twin_a, twin_b]);
+    assert_eq!(found.missing, vec!["00000000", "deadbeef"]);
+    assert_eq!(found.records[0].sequence, 1);
+
+    // The sender sees the private one; the recipient prefix's member too.
+    for who in [viewer("alice"), viewer_at("dan", "dddddddd")] {
+        let found = store
+            .lookup_handles(&cipher(), project, &handles(&["deadbeef"]), &who)
+            .unwrap();
+        assert_eq!(found.records.len(), 1);
+        assert!(found.missing.is_empty());
+    }
+
+    // Count and shape limits.
+    let none: Vec<String> = Vec::new();
+    let many: Vec<String> = (0..101).map(|n| format!("{n:08x}")).collect();
+    let max: Vec<String> = (0..100).map(|n| format!("{n:08x}")).collect();
+    for bad in [
+        none,
+        many,
+        handles(&["xyz"]),
+        handles(&["4b8275c"]),
+        handles(&["4b8275cc0"]),
+        handles(&["4b8275cg"]),
+    ] {
+        assert!(matches!(
+            store.lookup_handles(&cipher(), project, &bad, &carol),
+            Err(ProjectError::BadRequest(_))
+        ));
+    }
+    let found = store
+        .lookup_handles(&cipher(), project, &max, &carol)
+        .unwrap();
+    assert!(found.records.is_empty());
+    assert_eq!(found.missing.len(), 100);
+}

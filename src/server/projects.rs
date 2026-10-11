@@ -11,9 +11,11 @@
 //! two leaves an orphan blob and no row, and a replay converges. Sequences
 //! are transport-only cursors; appends are serialized under a mutex.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use chrono::{DateTime, SecondsFormat, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vivi::storage::is_traveling_id;
@@ -234,6 +236,9 @@ pub struct ProjectRecord {
     pub to: Option<String>,
     pub kind: Option<String>,
     pub content_sha256: String,
+    /// Server clock at append, RFC 3339 UTC to the second; `None` for a row
+    /// written before the stamp existed.
+    pub appended_at: Option<String>,
     /// The exact bytes that were appended.
     pub raw_eml: Vec<u8>,
 }
@@ -243,6 +248,164 @@ pub struct ReadAfter {
     pub records: Vec<ProjectRecord>,
     /// Cursor for the last record returned, or the supplied cursor if empty.
     pub next_cursor: u64,
+    /// True when more records match after `next_cursor`.
+    pub has_more: bool,
+}
+
+/// Result of a handle lookup: the visible letters, ordered by sequence, and
+/// the handles that matched nothing the caller may see.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Lookup {
+    pub records: Vec<ProjectRecord>,
+    pub missing: Vec<String>,
+}
+
+/// Default page size of a list.
+pub const DEFAULT_LIMIT: usize = 500;
+/// Largest page size a list will honor.
+pub const MAX_LIMIT: usize = 1000;
+/// A page stops adding letters once their raw bytes exceed this.
+pub const PAGE_BYTE_CAP: usize = 8 * 1024 * 1024;
+/// Most handles one lookup may carry.
+pub const MAX_HANDLES: usize = 100;
+/// Characters in a handle: the hex after `msg_` in a message id.
+const HANDLE_LEN: usize = 8;
+
+/// Which recipient a `to` filter names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToFilter {
+    /// An exact address, lowercased.
+    Address(String),
+    /// A bare 8-hex prefix: any `<prefix>.local` address.
+    Prefix(String),
+}
+
+/// A validated list request: the cursor plus optional narrowing filters.
+/// Filters only ever narrow what visibility allows.
+#[derive(Debug, Clone)]
+pub struct ListQuery {
+    since: u64,
+    limit: usize,
+    /// Lower bound on `appended_at`, normalized to whole seconds.
+    after: Option<String>,
+    /// Allowed kinds; `None` inside the list is plain mail.
+    kinds: Option<Vec<Option<String>>>,
+    to: Option<ToFilter>,
+}
+
+fn bad_param(message: &str) -> ProjectError {
+    ProjectError::BadRequest(message.to_owned())
+}
+
+impl ListQuery {
+    /// Only the cursor: default page size, no filters.
+    pub fn since(since: u64) -> Self {
+        Self {
+            since,
+            limit: DEFAULT_LIMIT,
+            after: None,
+            kinds: None,
+            to: None,
+        }
+    }
+
+    /// Parse the raw query parameters. A malformed `limit`, `after`,
+    /// `kind`, or `to` is a `BadRequest`; a `limit` above the maximum is
+    /// clamped to it.
+    pub fn parse(
+        since: u64,
+        limit: Option<&str>,
+        after: Option<&str>,
+        kind: Option<&str>,
+        to: Option<&str>,
+    ) -> Result<Self, ProjectError> {
+        let mut query = Self::since(since);
+        if let Some(limit) = limit {
+            let parsed: usize = limit
+                .parse()
+                .ok()
+                .filter(|n| *n >= 1)
+                .ok_or_else(|| bad_param("limit must be a positive integer"))?;
+            query.limit = parsed.min(MAX_LIMIT);
+        }
+        query.after = after.map(parse_after).transpose()?;
+        query.kinds = kind.map(parse_kinds).transpose()?;
+        query.to = to.map(parse_to_filter).transpose()?;
+        Ok(query)
+    }
+
+    /// True when the row passes every filter (visibility is separate).
+    fn matches(&self, row: &StoredRow) -> bool {
+        if let Some(kinds) = &self.kinds
+            && !kinds.iter().any(|k| k.as_deref() == row.kind.as_deref())
+        {
+            return false;
+        }
+        if let Some(after) = &self.after
+            && !row
+                .appended_at
+                .as_deref()
+                .is_some_and(|at| at >= after.as_str())
+        {
+            return false;
+        }
+        match (&self.to, row.to.as_deref()) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(ToFilter::Address(wanted)), Some(to)) => {
+                recipients(to).any(|address| address.eq_ignore_ascii_case(wanted))
+            }
+            (Some(ToFilter::Prefix(prefix)), Some(to)) => names_prefix(to, prefix),
+        }
+    }
+}
+
+/// An RFC 3339 instant as a whole-second UTC string, rounded up so that
+/// "at or after" never admits a row stamped before the requested instant.
+fn parse_after(raw: &str) -> Result<String, ProjectError> {
+    let parsed = DateTime::parse_from_rfc3339(raw.trim())
+        .map_err(|_| bad_param("after must be an RFC 3339 time"))?
+        .with_timezone(&Utc);
+    let whole = parsed.with_nanosecond(0).unwrap_or(parsed);
+    let whole = if parsed.nanosecond() > 0 {
+        whole + chrono::Duration::seconds(1)
+    } else {
+        whole
+    };
+    Ok(whole.to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+fn parse_kinds(raw: &str) -> Result<Vec<Option<String>>, ProjectError> {
+    raw.split(',')
+        .map(|kind| match kind.trim().to_ascii_lowercase().as_str() {
+            "mail" => Ok(None),
+            k @ ("need" | "task" | "want") => Ok(Some(k.to_owned())),
+            _ => Err(bad_param("kind must list need, task, want, or mail")),
+        })
+        .collect()
+}
+
+fn parse_to_filter(raw: &str) -> Result<ToFilter, ProjectError> {
+    let raw = raw.trim();
+    if raw.len() == MAILSPACE_PREFIX_LEN && raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(ToFilter::Prefix(raw.to_ascii_lowercase()))
+    } else if valid_address(raw) {
+        Ok(ToFilter::Address(raw.to_ascii_lowercase()))
+    } else {
+        Err(bad_param(
+            "to must be a local@domain address or an 8-hex mailspace prefix",
+        ))
+    }
+}
+
+/// The stamp for a new row: the server clock to the second, never behind
+/// the previous row's stamp, so a clock step cannot reorder history.
+pub fn monotone_stamp(previous: Option<&str>, now: DateTime<Utc>) -> String {
+    let now = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+    match previous {
+        Some(previous) if previous > now.as_str() => previous.to_owned(),
+        _ => now,
+    }
 }
 
 /// One envelope row of the index.
@@ -256,6 +419,9 @@ struct StoredRow {
     from_prefix: Option<String>,
     to: Option<String>,
     kind: Option<String>,
+    /// Absent on rows written before append time was stamped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    appended_at: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -271,6 +437,17 @@ pub struct ProjectStore {
     projects_root: PathBuf,
     admissions: AdmissionRegistry,
     wake: Arc<ProjectWake>,
+    clock: Clock,
+}
+
+/// The server clock the append stamp reads; injectable so tests can step it.
+#[derive(Clone)]
+struct Clock(Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>);
+
+impl std::fmt::Debug for Clock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Clock")
+    }
 }
 
 fn append_lock() -> MutexGuard<'static, ()> {
@@ -450,10 +627,19 @@ fn find_replay(
 
 impl ProjectStore {
     pub fn new(data_dir: &Path) -> Self {
+        Self::with_clock(data_dir, Utc::now)
+    }
+
+    /// A store whose append stamp reads `clock` instead of the system clock.
+    pub fn with_clock(
+        data_dir: &Path,
+        clock: impl Fn() -> DateTime<Utc> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             projects_root: data_dir.join("projects"),
             admissions: AdmissionRegistry::new(data_dir),
             wake: Arc::new(ProjectWake::default()),
+            clock: Clock(Arc::new(clock)),
         }
     }
 
@@ -578,6 +764,12 @@ impl ProjectStore {
         write_atomic(&letter_path(&dir, &content_sha256), sealed.as_bytes())?;
         let sequence = index.next_sequence + 1;
         index.next_sequence = sequence;
+        let previous = index
+            .records
+            .iter()
+            .rev()
+            .find_map(|row| row.appended_at.as_deref());
+        let appended_at = monotone_stamp(previous, (self.clock.0)());
         index.records.push(StoredRow {
             message_id: item.id.clone(),
             sequence,
@@ -586,6 +778,7 @@ impl ProjectStore {
             from_prefix: item.from_prefix.clone(),
             to: item.to.clone(),
             kind: item.kind.clone(),
+            appended_at: Some(appended_at),
         });
         write_index(&dir, &index)?;
         // Fresh state arrived: wake long-poll waiters on this project.
@@ -599,14 +792,8 @@ impl ProjectStore {
         })
     }
 
-    /// Read letters after a transport cursor, scoped to `viewer` (decided
-    /// items 7 and 11 plus the governance carve-out): work items
-    /// (need/task/want) and mail addressed to postmaster are member-visible;
-    /// every other letter only to its sender or the recipient prefix's
-    /// member. Visibility is decided from
-    /// the index row, so a letter the viewer cannot see is never unsealed. A
-    /// filtered-out letter still holds its sequence, and `next_cursor` only
-    /// reflects returned records.
+    /// Read letters after a transport cursor, scoped to `viewer`, with the
+    /// default page size and no filters. See [`read_page`](Self::read_page).
     pub fn read_after_scoped(
         &self,
         cipher: &StoreCipher,
@@ -614,25 +801,97 @@ impl ProjectStore {
         since: u64,
         viewer: &Viewer<'_>,
     ) -> Result<ReadAfter, ProjectError> {
+        self.read_page(cipher, raw_id, &ListQuery::since(since), viewer)
+    }
+
+    /// Read one page of letters scoped to `viewer` (decided items 7, 11, 13
+    /// plus the governance carve-out): work items (need/task/want) and mail
+    /// addressed to postmaster are member-visible; every other letter only
+    /// to its sender or the recipient prefix's member. Visibility and the
+    /// query's filters are decided from the index row and applied before the
+    /// page limit, so a letter the viewer cannot see or the filters exclude
+    /// is never unsealed and never makes a page short. A page ends at the
+    /// limit or once its raw letters exceed [`PAGE_BYTE_CAP`], whichever
+    /// comes first, and always holds at least one record when any match.
+    /// `next_cursor` is the last returned sequence, or the query's `since`.
+    pub fn read_page(
+        &self,
+        cipher: &StoreCipher,
+        raw_id: &str,
+        query: &ListQuery,
+        viewer: &Viewer<'_>,
+    ) -> Result<ReadAfter, ProjectError> {
         let dir = self.existing_project_dir(raw_id)?;
         let index = read_index(&dir)?;
         let mut rows: Vec<&StoredRow> = index
             .records
             .iter()
-            .filter(|row| row.sequence > since && scoped_visible(row, viewer))
+            .filter(|row| {
+                row.sequence > query.since && scoped_visible(row, viewer) && query.matches(row)
+            })
             .collect();
         rows.sort_by_key(|row| row.sequence);
-        let mut records = Vec::with_capacity(rows.len());
-        let mut next_cursor = since;
-        for row in rows {
+        let mut records = Vec::with_capacity(rows.len().min(query.limit));
+        let mut next_cursor = query.since;
+        let mut bytes = 0usize;
+        for row in &rows {
+            if records.len() >= query.limit || (bytes > PAGE_BYTE_CAP && !records.is_empty()) {
+                break;
+            }
             let raw_eml = read_letter(cipher, &dir, row)?;
+            bytes += raw_eml.len();
             next_cursor = row.sequence;
             records.push(record_of(row, raw_eml));
         }
+        let has_more = records.len() < rows.len();
         Ok(ReadAfter {
             records,
             next_cursor,
+            has_more,
         })
+    }
+
+    /// Look letters up by handle (the 8 hex after `msg_`), scoped to
+    /// `viewer` by the same rule as the list. A handle may name several
+    /// ids; one that names nothing visible is `missing`, identically for an
+    /// unknown and a hidden id. Only matching, visible letters are unsealed.
+    pub fn lookup_handles(
+        &self,
+        cipher: &StoreCipher,
+        raw_id: &str,
+        handles: &[String],
+        viewer: &Viewer<'_>,
+    ) -> Result<Lookup, ProjectError> {
+        let wanted = parse_handles(handles)?;
+        let dir = self.existing_project_dir(raw_id)?;
+        let index = read_index(&dir)?;
+        let mut rows: Vec<&StoredRow> = index
+            .records
+            .iter()
+            .filter(|row| {
+                handle_of(&row.message_id).is_some_and(|handle| wanted.contains(handle))
+                    && scoped_visible(row, viewer)
+            })
+            .collect();
+        rows.sort_by_key(|row| row.sequence);
+        let mut found = HashSet::new();
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            if let Some(handle) = handle_of(&row.message_id) {
+                found.insert(handle.to_owned());
+            }
+            let raw_eml = read_letter(cipher, &dir, row)?;
+            records.push(record_of(row, raw_eml));
+        }
+        let mut seen = HashSet::new();
+        let missing = handles
+            .iter()
+            .filter(|h| {
+                !found.contains(&h.to_ascii_lowercase()) && seen.insert(h.to_ascii_lowercase())
+            })
+            .cloned()
+            .collect();
+        Ok(Lookup { records, missing })
     }
 
     /// Read one letter by id, scoped to `viewer` with the same rules as
@@ -660,6 +919,33 @@ impl ProjectStore {
     }
 }
 
+/// The handle of a stored message id: the 8 hex after `msg_`.
+fn handle_of(message_id: &str) -> Option<&str> {
+    message_id.get(4..4 + HANDLE_LEN)
+}
+
+/// Validate a lookup's handles: 1 to [`MAX_HANDLES`], each 8 hex characters,
+/// compared case-insensitively (returned lowercased).
+fn parse_handles(handles: &[String]) -> Result<HashSet<String>, ProjectError> {
+    if handles.is_empty() || handles.len() > MAX_HANDLES {
+        return Err(ProjectError::BadRequest(format!(
+            "handles must hold 1 to {MAX_HANDLES} entries"
+        )));
+    }
+    handles
+        .iter()
+        .map(|handle| {
+            if handle.len() == HANDLE_LEN && handle.bytes().all(|b| b.is_ascii_hexdigit()) {
+                Ok(handle.to_ascii_lowercase())
+            } else {
+                Err(ProjectError::BadRequest(
+                    "each handle must be 8 hex characters".to_owned(),
+                ))
+            }
+        })
+        .collect()
+}
+
 fn record_of(row: &StoredRow, raw_eml: Vec<u8>) -> ProjectRecord {
     ProjectRecord {
         sequence: row.sequence,
@@ -669,6 +955,7 @@ fn record_of(row: &StoredRow, raw_eml: Vec<u8>) -> ProjectRecord {
         to: row.to.clone(),
         kind: row.kind.clone(),
         content_sha256: row.content_sha256.clone(),
+        appended_at: row.appended_at.clone(),
         raw_eml,
     }
 }

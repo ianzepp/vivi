@@ -1909,3 +1909,450 @@ async fn an_index_written_without_from_prefix_still_loads() {
     assert_eq!(status, StatusCode::CREATED, "{value}");
     assert_eq!(value["sequence"], 2);
 }
+
+// ---- append time, paged and filtered list, lookup by handle ----
+
+/// `GET` a path with an optional `Accept-Encoding`; the raw response.
+async fn get_raw(
+    app: &Router,
+    uri: &str,
+    token: &str,
+    accept_encoding: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut builder = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"));
+    if let Some(encoding) = accept_encoding {
+        builder = builder.header("accept-encoding", encoding);
+    }
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, headers, bytes.to_vec())
+}
+
+/// A list with extra query parameters (`"&limit=2&kind=need"`), as JSON.
+async fn list(fx_app: &Router, project: &str, token: &str, query: &str) -> (StatusCode, Value) {
+    send(
+        fx_app,
+        "GET",
+        &format!("/v1/projects/{project}/items?since=0{query}"),
+        None,
+        Some(token),
+    )
+    .await
+}
+
+async fn lookup(
+    app: &Router,
+    project: &str,
+    token: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    send(
+        app,
+        "POST",
+        &format!("/v1/projects/{project}/items/lookup"),
+        Some(body),
+        token,
+    )
+    .await
+}
+
+fn is_rfc3339_secs(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value).is_ok() && value.len() == 20 && value.ends_with('Z')
+}
+
+/// A project with creator and bob, and eight letters from the creator:
+/// seq 1 vouch (postmaster), 2 need, 3 task, 4 need, 5 mail to bob,
+/// 6 mail to creator itself, 7 mail to an unregistered mailspace, 8 want.
+/// Returns the fixture, bob's token, and the ids by sequence (index 0 = seq 1).
+async fn windows_fixture(name: &str, seed: u8) -> (Fixture, String, Vec<String>) {
+    let fx = fixture(name, seed).await;
+    let vouch = traveling(1);
+    let bob = fx.add_member(&vouch, "bob", &key(seed + 1)).await;
+    let mut ids = vec![vouch];
+    let plan: [(Option<String>, Option<&str>); 7] = [
+        (None, Some("need")),
+        (None, Some("task")),
+        (None, Some("need")),
+        (Some(address("bob")), None),
+        (Some(address("creator")), None),
+        (Some("x@cccccccc.local".to_owned()), None),
+        (None, Some("want")),
+    ];
+    for (n, (to, kind)) in plan.iter().enumerate() {
+        let id = traveling(n as u64 + 2);
+        let (status, value) = fx
+            .append(&id, &eml(&id, &format!("letter {n}")), to.as_deref(), *kind)
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{value}");
+        ids.push(id);
+    }
+    (fx, bob, ids)
+}
+
+fn record_ids(page: &Value) -> Vec<String> {
+    ids(page)
+}
+
+#[tokio::test]
+async fn list_filters_pages_and_reports_has_more() {
+    let (fx, bob, ids) = windows_fixture("windows-list", 100).await;
+    let at = |ns: &[usize]| ns.iter().map(|n| ids[*n].clone()).collect::<Vec<_>>();
+    // Bob sees seq 1 (vouch), 2, 3, 4, 5, 8; not 6 or 7.
+    let (status, all) = list(&fx.app, &fx.project, &bob, "").await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(record_ids(&all), at(&[0, 1, 2, 3, 4, 7]));
+    assert_eq!(all["next_cursor"], 8);
+    assert_eq!(all["has_more"], false);
+    for record in all["records"].as_array().unwrap() {
+        assert!(is_rfc3339_secs(record["appended_at"].as_str().unwrap()));
+    }
+
+    // Pages of two follow the visible rows, never short for hidden ones.
+    let mut cursor = 0;
+    let mut pages = Vec::new();
+    loop {
+        let (status, page) = send(
+            &fx.app,
+            "GET",
+            &format!("/v1/projects/{}/items?since={cursor}&limit=2", fx.project),
+            None,
+            Some(&bob),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let more = page["has_more"].as_bool().unwrap();
+        if more {
+            assert_eq!(record_ids(&page).len(), 2);
+        }
+        cursor = page["next_cursor"].as_u64().unwrap();
+        pages.push((record_ids(&page), cursor, more));
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(
+        pages,
+        vec![
+            (at(&[0, 1]), 2, true),
+            (at(&[2, 3]), 4, true),
+            (at(&[4, 7]), 8, false),
+        ]
+    );
+
+    // Each filter alone, then combined.
+    let kind = list(&fx.app, &fx.project, &bob, "&kind=need").await.1;
+    assert_eq!(record_ids(&kind), at(&[1, 3]));
+    let kind = list(&fx.app, &fx.project, &bob, "&kind=mail").await.1;
+    assert_eq!(record_ids(&kind), at(&[0, 4]));
+    let kind = list(&fx.app, &fx.project, &bob, "&kind=task,want").await.1;
+    assert_eq!(record_ids(&kind), at(&[2, 7]));
+    let prefix = prefix_for("bob");
+    let to = list(&fx.app, &fx.project, &bob, &format!("&to={prefix}"))
+        .await
+        .1;
+    assert_eq!(record_ids(&to), at(&[4]));
+    let to = list(
+        &fx.app,
+        &fx.project,
+        &bob,
+        &format!("&to={}", address("bob")),
+    )
+    .await
+    .1;
+    assert_eq!(record_ids(&to), at(&[4]));
+    // `to` names a letter bob cannot see: filters never widen visibility.
+    let to = list(&fx.app, &fx.project, &bob, "&to=cccccccc").await.1;
+    assert!(record_ids(&to).is_empty());
+    assert_eq!(to["next_cursor"], 0);
+    let after = list(&fx.app, &fx.project, &bob, "&after=2000-01-01T00:00:00Z")
+        .await
+        .1;
+    assert_eq!(record_ids(&after).len(), 6);
+    let after = list(&fx.app, &fx.project, &bob, "&after=2999-01-01T00:00:00Z").await;
+    assert_eq!(after.0, StatusCode::OK);
+    assert!(record_ids(&after.1).is_empty());
+    assert_eq!(after.1["next_cursor"], 0);
+    assert_eq!(after.1["has_more"], false);
+    let combined = list(
+        &fx.app,
+        &fx.project,
+        &bob,
+        &format!("&after=2000-01-01T00:00:00Z&kind=mail,need&to={prefix}&limit=1"),
+    )
+    .await
+    .1;
+    assert_eq!(record_ids(&combined), at(&[4]));
+    assert_eq!(combined["has_more"], false);
+    // The creator, as sender, sees its own private mail under the filters.
+    let own = list(&fx.app, &fx.project, &fx.token, "&to=cccccccc")
+        .await
+        .1;
+    assert_eq!(record_ids(&own), at(&[6]));
+
+    // Malformed parameters are 400 invalid_request; an oversize limit clamps.
+    for query in [
+        "&limit=0",
+        "&limit=abc",
+        "&limit=",
+        "&limit=-3",
+        "&after=yesterday",
+        "&after=2026-10-11",
+        "&kind=memo",
+        "&kind=need,",
+        "&to=bob",
+        "&to=3f9a1c7",
+    ] {
+        let (status, value) = list(&fx.app, &fx.project, &bob, query).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {value}");
+        assert_eq!(value["error"]["code"], "invalid_request", "{query}");
+    }
+    let (status, value) = list(&fx.app, &fx.project, &bob, "&limit=100000").await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+}
+
+#[tokio::test]
+async fn appended_at_is_returned_in_list_and_single_get() {
+    let (fx, bob, ids) = windows_fixture("windows-stamp", 110).await;
+    let (_, page) = list(&fx.app, &fx.project, &bob, "").await;
+    let mut previous = String::new();
+    for record in page["records"].as_array().unwrap() {
+        let at = record["appended_at"].as_str().unwrap().to_owned();
+        assert!(at >= previous, "stamps never decrease with the sequence");
+        let (status, headers, _) = get_letter(
+            &fx.app,
+            &fx.project,
+            Some(&bob),
+            record["message_id"].as_str().unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(header(&headers, "x-vivi-appended-at"), Some(at.as_str()));
+        previous = at;
+    }
+    // A replay answers with the original stamp.
+    let before = page["records"][1]["appended_at"].clone();
+    let raw = eml(&ids[1], "letter 0");
+    let (status, replay) = fx.append(&ids[1], &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    let (_, again) = list(&fx.app, &fx.project, &bob, "").await;
+    assert_eq!(again["records"][1]["appended_at"], before);
+}
+
+#[tokio::test]
+async fn lookup_by_handle_wire() {
+    let (fx, bob, ids) = windows_fixture("windows-lookup", 120).await;
+    let handle = |n: usize| ids[n][4..12].to_owned();
+    let (_, listed) = list(&fx.app, &fx.project, &bob, "").await;
+
+    // Hit (any case) and miss; records are the list record shape.
+    let upper = handle(1).to_uppercase();
+    let (status, found) = lookup(
+        &fx.app,
+        &fx.project,
+        Some(&bob),
+        json!({"handles": [upper, "00000000", handle(3)]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(record_ids(&found), vec![ids[1].clone(), ids[3].clone()]);
+    assert_eq!(found["missing"], json!(["00000000"]));
+    assert_eq!(found["records"][0], listed["records"][1]);
+    assert!(found.get("next_cursor").is_none(), "lookup has no cursor");
+
+    // Hidden (creator's mail to another mailspace) is `missing`, exactly
+    // like an unknown handle.
+    let (_, hidden) = lookup(
+        &fx.app,
+        &fx.project,
+        Some(&bob),
+        json!({"handles": [handle(6)]}),
+    )
+    .await;
+    let (_, unknown) = lookup(
+        &fx.app,
+        &fx.project,
+        Some(&bob),
+        json!({"handles": ["abcdef12"]}),
+    )
+    .await;
+    assert!(record_ids(&hidden).is_empty());
+    assert_eq!(hidden["missing"], json!([handle(6)]));
+    assert_eq!(unknown["missing"], json!(["abcdef12"]));
+    // The sender sees it.
+    let (_, own) = lookup(
+        &fx.app,
+        &fx.project,
+        Some(&fx.token),
+        json!({"handles": [handle(6)]}),
+    )
+    .await;
+    assert_eq!(record_ids(&own), vec![ids[6].clone()]);
+
+    // A handle may name several ids.
+    let twin_a = format!("msg_{}{:016x}", "5eed0001", 1);
+    let twin_b = format!("msg_{}{:016x}", "5eed0001", 2);
+    for id in [&twin_a, &twin_b] {
+        let (status, value) = fx.append(id, &eml(id, "twin"), None, Some("need")).await;
+        assert_eq!(status, StatusCode::CREATED, "{value}");
+    }
+    let (_, twins) = lookup(
+        &fx.app,
+        &fx.project,
+        Some(&bob),
+        json!({"handles": ["5eed0001"]}),
+    )
+    .await;
+    assert_eq!(record_ids(&twins), vec![twin_a, twin_b]);
+    assert_eq!(twins["missing"], json!([]));
+
+    // Count and shape: 1..=100, each 8 hex.
+    let many: Vec<String> = (0..101).map(|n| format!("ffff{n:04x}")).collect();
+    let max: Vec<String> = (0..100).map(|n| format!("ffff{n:04x}")).collect();
+    for bad in [
+        json!({"handles": many}),
+        json!({"handles": []}),
+        json!({"handles": ["xyz"]}),
+        json!({"handles": ["4b8275c"]}),
+        json!({"handles": ["4b8275cg"]}),
+        json!({"handles": "4b8275cc"}),
+        json!({}),
+    ] {
+        let (status, value) = lookup(&fx.app, &fx.project, Some(&bob), bad.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {value}");
+        assert_eq!(value["error"]["code"], "invalid_request");
+    }
+    let (status, value) = lookup(&fx.app, &fx.project, Some(&bob), json!({"handles": max})).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["missing"].as_array().unwrap().len(), 100);
+
+    // Auth and project ordering: unknown project 404, missing/bad bearer 401.
+    let unknown_project = format!(
+        "{}{}",
+        if fx.project.starts_with('z') {
+            "y"
+        } else {
+            "z"
+        },
+        &fx.project[1..]
+    );
+    let body = json!({"handles": ["4b8275cc"]});
+    let (status, value) = lookup(&fx.app, &unknown_project, Some(&bob), body.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{value}");
+    assert_eq!(value["error"]["code"], "project_not_found");
+    let (status, _) = lookup(&fx.app, &fx.project, None, body.clone()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = lookup(&fx.app, &fx.project, Some("not-a-token"), body).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Lookup never moves a cursor: the list is unchanged by it.
+    let (_, after) = list(&fx.app, &fx.project, &bob, "").await;
+    assert_eq!(after["next_cursor"], 10, "only the twins moved the head");
+    let before = listed["records"].as_array().unwrap();
+    assert_eq!(
+        &after["records"].as_array().unwrap()[..before.len()],
+        &before[..]
+    );
+}
+
+#[tokio::test]
+async fn list_and_lookup_gzip_only_when_asked() {
+    let (fx, bob, ids) = windows_fixture("windows-gzip", 130).await;
+    let uri = format!("/v1/projects/{}/items?since=0", fx.project);
+
+    let (status, headers, plain) = get_raw(&fx.app, &uri, &bob, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("content-encoding").is_none());
+    let plain_json: Value = serde_json::from_slice(&plain).unwrap();
+
+    let (status, headers, zipped) = get_raw(&fx.app, &uri, &bob, Some("gzip")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, "content-encoding"), Some("gzip"));
+    assert_eq!(&zipped[..2], &[0x1f, 0x8b], "gzip magic");
+    let mut decoded = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&zipped[..]), &mut decoded)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&decoded).unwrap(),
+        plain_json
+    );
+
+    // Lookup compresses the same way.
+    let body = json!({"handles": [ids[1][4..12].to_owned()]})
+        .to_string()
+        .into_bytes();
+    let (status, headers, zipped) = raw_post(
+        &fx.app,
+        &format!("/v1/projects/{}/items/lookup", fx.project),
+        &bob,
+        &body,
+        Some("gzip"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, "content-encoding"), Some("gzip"));
+    let mut decoded = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&zipped[..]), &mut decoded)
+        .unwrap();
+    let decoded: Value = serde_json::from_slice(&decoded).unwrap();
+    assert_eq!(record_ids(&decoded), vec![ids[1].clone()]);
+    let (_, headers, plain) = raw_post(
+        &fx.app,
+        &format!("/v1/projects/{}/items/lookup", fx.project),
+        &bob,
+        &body,
+        None,
+    )
+    .await;
+    assert!(headers.get("content-encoding").is_none());
+    assert_eq!(serde_json::from_slice::<Value>(&plain).unwrap(), decoded);
+
+    // The single-letter route stays uncompressed (raw bytes, byte-exact).
+    let (status, headers, body) = {
+        let (s, h, b) = get_raw(
+            &fx.app,
+            &format!("/v1/projects/{}/items/{}", fx.project, ids[1]),
+            &bob,
+            Some("gzip"),
+        )
+        .await;
+        (s, h, b)
+    };
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers.get("content-encoding").is_none());
+    assert_eq!(body, eml(&ids[1], "letter 0"));
+}
+
+async fn raw_post(
+    app: &Router,
+    uri: &str,
+    token: &str,
+    body: &[u8],
+    accept_encoding: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json");
+    if let Some(encoding) = accept_encoding {
+        builder = builder.header("accept-encoding", encoding);
+    }
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::from(body.to_vec())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, headers, bytes.to_vec())
+}
