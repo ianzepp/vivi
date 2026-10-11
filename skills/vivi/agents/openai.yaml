@@ -1,3 +1,3 @@
-display_name: Mail
-short_description: Work with email through Vivi—IMAP, search, drafts, queues, and project mailspaces (task/need/want).
-default_prompt: Use this skill for Vivi email and project mailspace CLI. Verify the live `vivi` surface first; do not parse cache files. Treat external send/mutation as approval-gated via exec, enqueue, and queue.
+display_name: Vivi
+short_description: Project mailspaces, roles, goals, work graphs, and the remote lane pool through the Vivi CLI.
+default_prompt: Use this skill for the Vivi project-mailspace CLI. Verify the live `vivi` surface first; do not read or write `.vivi/` storage directly.

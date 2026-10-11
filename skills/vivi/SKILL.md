@@ -1,12 +1,12 @@
 ---
 name: vivi
-description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, the remote lane pool (`vivi pool`: preseeded remote machines that run a task and push a branch), local email search and drafts, queues, and explicitly authorized email mutations.
+description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, and the remote lane pool (`vivi pool`: machines or containers that run a task and push a branch).
 ---
 
 # Vivi
 
 Use `vivi` as the interface. Do not inspect or mutate `.vivi` databases, blob
-trees, email caches, or indexes directly unless the user explicitly requests
+trees, or indexes directly unless the user explicitly requests
 low-level debugging.
 
 The command surface evolves. Before relying on exact flags or versioned
@@ -21,6 +21,10 @@ vivi <command> --help
 Use `--project <root>` whenever the project cannot be inferred safely from the
 current directory. If the task concerns Vivi product implementation or release
 behavior, use only the source repo named by the user.
+
+Email (IMAP and SMTP, the local archive, search, drafts) is not part of this
+CLI: it is the separate `vivi-mail` tool. `vivi mail` is project-local mail
+only, with no external side effects.
 
 ## Project Mailspaces
 
@@ -102,7 +106,7 @@ declares in `.vivi/mailspace.toml`:
 ```toml
 [[probes]]
 name = "example"
-command = "scripta/boot-probe"   # executable, resolved against the mailspace root
+command = "scripts/boot-probe"   # executable, resolved against the mailspace root
 ```
 
 The probe prints one JSON object on stdout:
@@ -384,7 +388,7 @@ provider calls.
 ```toml
 [judgment]
 provider = "typesafe"
-key_cmd  = "cat ~/.config/secrets/typesafe-ai.key"
+key_cmd  = "cat /path/to/judgment.key"
 ```
 
 Authentication is exclusively `key_cmd` (`sh -c`, `password_cmd` semantics):
@@ -529,7 +533,7 @@ app_id = 123456
 private_key = "~/secrets/app.private-key.pem"
 [pools.local.harness]
 run = "pi -p --model {model} @{brief}"
-models = ["zai/glm-5.3-flash"]
+models = ["provider/model"]
 env = ["MODEL_API_KEY"]
 [pools.local.committer]
 name = "lane-bot"
@@ -912,7 +916,7 @@ slots = 4
 
 [pools.here.local]
 # root = "~/vivi-pool"      # default; each slot is <root>/<mailspace>/<pool>/slot-<n>/
-# worktree_of = "~/work/repo"   # slots are Git worktrees of this local repository
+# worktree_of = "~/src/repo"   # slots are Git worktrees of this local repository
 ```
 
 - **No isolation.** The scripts, `setup` and `seed` commands and the worker run
@@ -1175,7 +1179,7 @@ app = "my-fly-app"            # REQUIRED, no default; created by `pool create` i
 
 # [pools.lanes.local]         # only with provider = "local"; every key optional
 # root = "~/vivi-pool"        # slot directories live in <root>/<mailspace>/<pool>/; default ~/vivi-pool
-# worktree_of = "~/work/repo" # slots are worktrees of this local repository (then no repo/github)
+# worktree_of = "~/src/repo" # slots are worktrees of this local repository (then no repo/github)
 
 [pools.lanes.github]          # with repo
 app_id = 123456
@@ -1184,7 +1188,7 @@ private_key = "~/secrets/app.private-key.pem"
 [pools.lanes.harness]         # required to dispatch; not needed to test
 name = "pi"
 run = "pi -p --model {model} --append-system-prompt {rules} @{brief}"
-models = ["zai/glm-5.3-flash"]            # --model must be one of these
+models = ["provider/model"]            # --model must be one of these
 env = ["MODEL_API_KEY"]       # names only; values come from the machine's environment
 # rules = "docs/worker-rules.md"          # default: a short embedded rules file
 
@@ -1335,7 +1339,7 @@ Configuration is the `[chat]` table in the project's `mailspace.toml`:
 [chat]
 server  = "https://vivi-server-production.up.railway.app"
 notify  = true   # board may show the unread-chat badge (default)
-name    = "pharos/vivi"  # seat label override; default <short-host>/<project>
+name    = "build-host/vivi"  # seat label override; default <short-host>/<project>
 recipient = "mind"  # local role that receives room items on `chat pull`
 ```
 
@@ -1412,49 +1416,14 @@ current live deployment is
 `https://vivi-server-production.up.railway.app` (Railway default
 domain); a custom hostname is still open.
 
-## Email
-
-For IMAP-backed email, sync before claiming current state when freshness
-matters. Use `list`, `search`, `show`, and `thread` for bounded inspection.
-Keyword search is the default; semantic or hybrid search requires a healthy
-embedding index. Rebuild indexes through Vivi rather than editing storage.
-
-Distinguish local preparation from remote effects:
-
-| Surface | Effect |
-|---|---|
-| `compose` / `reply` | Create a local draft; do not send |
-| `enqueue` | Store a proposed remote action for later review |
-| `queue run` | Execute queued remote actions |
-| `exec` | Execute a remote write immediately |
-
-Remote writes include sending, archiving, deleting, moving, flagging, and
-running queued actions. They require authority appropriate to the user's
-request. Never run `vivi exec send` without explicit approval for that send.
-Prefer queue-first when work is agent-prepared, uncertain, or awaiting review.
-
-For a non-trivial message:
-
-1. Create the local draft.
-2. Inspect the generated `.eml`, including recipients, subject, plain text,
-   HTML, threading headers, and attachments.
-3. Revise locally if needed.
-4. Send only after explicit approval.
-
-Use `password_cmd` or the configured secret mechanism. Never print credentials
-or place passwords in shell history.
-
 ## Safety
 
 - Use the CLI rather than underlying stores.
 - Verify current help before exact mutations.
 - Narrow reads before dumps and broad searches.
 - Treat absorb as permanent.
-- Treat `queue run` as a remote mutation, not a review action.
-- Do not emulate unsupported labels with folder moves.
-- Do not infer a source repository or account when the user has not identified
-  it.
-- Report whether an operation was local, queued, or executed remotely.
+- Do not infer a source repository when the user has not identified it.
+- Report whether an operation was local or executed remotely.
 - `vivi pool dispatch` launches an agent that can push to the repository; read
   the branch it was given before dispatching.
 - `vivi pool destroy` is permanent: it removes the slots and their seeded disks.
