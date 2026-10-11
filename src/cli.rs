@@ -25,7 +25,10 @@ pub use mailspace_command::{
     TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand, WantStatus,
     WatchCommon,
 };
-pub use pool_command::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
+pub use pool_command::{
+    PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand, PoolReconcileCommand,
+    PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
+};
 pub use role_command::{RoleCharterCommand, RoleCommand};
 
 #[derive(Debug, Parser)]
@@ -114,7 +117,7 @@ pub enum Command {
         command: GoalCommand,
     },
 
-    /// Remote lane pool of preseeded machines (first iteration)
+    /// Remote lane pool of preseeded machines
     Pool {
         #[command(subcommand)]
         command: PoolSubcommand,

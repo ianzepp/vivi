@@ -6,7 +6,7 @@ use super::bootscript;
 use super::config::PoolConfig;
 use super::github::Secret;
 use super::provider::{CreateSpec, MachineRecord, PoolProvider};
-use super::slot::{self, SlotStatus};
+use super::slot::{self, META_STATE, STATE_READY, SlotStatus};
 use crate::error::VivariumError;
 
 const MISSING_GRACE: Duration = Duration::from_secs(30);
@@ -45,13 +45,19 @@ pub struct SlotOutcome {
     pub exit_code: Option<i64>,
     pub seconds: u64,
     pub timed_out: bool,
+    /// Why the slot could not be marked ready after a clean seed.
+    pub error: Option<String>,
 }
 
 impl SlotOutcome {
-    /// Seeded cleanly: stopped with exit code 0 (or none reported).
+    /// Seeded cleanly and marked ready: stopped with exit code 0 (or none
+    /// reported), seed token removed, seed mark set.
     #[must_use]
     pub fn seeded(&self) -> bool {
-        !self.timed_out && self.state == "stopped" && self.exit_code.unwrap_or(0) == 0
+        !self.timed_out
+            && self.state == "stopped"
+            && self.exit_code.unwrap_or(0) == 0
+            && self.error.is_none()
     }
 }
 
@@ -85,7 +91,11 @@ pub fn create_slots(
             config.slots
         )));
     }
-    let existing = slot::pool_slots(pool, &provider.list()?);
+    let mut machines = provider.list()?;
+    if adopt_finished_seeds(provider, pool, &machines) {
+        machines = provider.list()?;
+    }
+    let existing = slot::pool_slots(pool, &machines);
     let missing = slot::missing_indices(&existing, target);
     let mut report = CreateReport {
         existing,
@@ -97,9 +107,47 @@ pub fn create_slots(
     let (token, base) = seed_inputs()?;
     let started = launch_all(provider, config, pool, &missing, &token, &base, options)?;
     report.created = wait_for_seeds(provider, &started, options)?;
+    for outcome in &mut report.created {
+        if outcome.seeded() {
+            outcome.error = finalize_slot(provider, &outcome.id)
+                .err()
+                .map(|e| e.to_string());
+        }
+    }
     Ok(report)
 }
 
+/// Mark a cleanly seeded slot ready: remove the fetch token from its config
+/// and set the seed mark in one update (the machine stays stopped), so a ready
+/// slot never still carries the token.
+fn finalize_slot(provider: &dyn PoolProvider, id: &str) -> Result<(), VivariumError> {
+    provider.seal(id, &["GH_TOKEN"], META_STATE, STATE_READY)
+}
+
+/// Finish slots a previous, interrupted `create` seeded cleanly but never
+/// marked: stopped, exit code 0, no seed mark. A failure here only leaves the
+/// slot unmarked, so it shows as `unseeded`. True when any slot was touched.
+fn adopt_finished_seeds(
+    provider: &dyn PoolProvider,
+    pool: &str,
+    machines: &[MachineRecord],
+) -> bool {
+    let mut touched = false;
+    for machine in machines {
+        let ours = machine
+            .metadata
+            .get(slot::META_POOL)
+            .is_some_and(|p| p == pool);
+        let marked = machine.metadata.get(META_STATE).map(String::as_str) == Some(STATE_READY);
+        if ours && !marked && machine.state == "stopped" && machine.exit_code == Some(0) {
+            if let Err(e) = finalize_slot(provider, &machine.id) {
+                eprintln!("warning: could not finish seeding {}: {e}", machine.name);
+            }
+            touched = true;
+        }
+    }
+    touched
+}
 struct Launched {
     name: String,
     id: String,
@@ -197,6 +245,7 @@ fn settled(
         exit_code: record.and_then(|m| m.exit_code),
         seconds: elapsed.as_secs(),
         timed_out,
+        error: None,
     })
 }
 

@@ -19,6 +19,15 @@ pub struct MailspaceMoveWithReply<'a> {
     pub parent_content_id: &'a str,
 }
 
+/// A reply note plus one event on an existing message; no role move.
+pub struct MailspaceNoteWithReply<'a> {
+    pub message_id: &'a str,
+    pub event: &'a MailspaceEventInput,
+    pub reply_requests: &'a [MessageIngestRequest],
+    pub reply_data: &'a [u8],
+    pub parent_content_id: &'a str,
+}
+
 pub(super) fn absorbed_error(token: &str) -> VivariumError {
     VivariumError::Message(format!("{token} is absorbed and can no longer be changed"))
 }
@@ -126,6 +135,37 @@ impl Storage {
         tx.commit().map_err(|e| {
             VivariumError::Other(format!("failed to commit lifecycle transaction: {e}"))
         })?;
+        self.invalidate_handle_index();
+        Ok(replies)
+    }
+
+    /// Ingest a reply note and append one event on `message_id` in a single
+    /// transaction. The message itself does not move.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the token resolution, blob write,
+    /// database update, or event logging fails, or the message is absorbed.
+    pub fn note_message_with_reply(
+        &mut self,
+        request: &MailspaceNoteWithReply<'_>,
+    ) -> Result<Vec<StoredMessage>, VivariumError> {
+        let reply = prepare_reply_blob(&self.mail_root, request.reply_data)?;
+        let resolved = self.resolve_message_token(request.message_id)?;
+        reject_if_absorbed(&self.conn, &resolved, request.message_id)?;
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| VivariumError::Other(format!("failed to open note transaction: {e}")))?;
+        let replies = ingest_reply_rows(&tx, &reply, request.reply_requests)?;
+        store_reply_link(
+            &tx,
+            &reply.content_id,
+            request.parent_content_id,
+            !replies.is_empty(),
+        )?;
+        append_lifecycle_event(&tx, request.event, &reply.now)?;
+        tx.commit()
+            .map_err(|e| VivariumError::Other(format!("failed to commit note transaction: {e}")))?;
         self.invalidate_handle_index();
         Ok(replies)
     }

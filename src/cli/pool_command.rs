@@ -1,4 +1,4 @@
-//! `vivi pool`: remote lane pool (first iteration).
+//! `vivi pool`: remote lane pool.
 
 use std::path::PathBuf;
 
@@ -12,6 +12,59 @@ pub enum PoolSubcommand {
     Status(PoolStatusCommand),
     /// Destroy one slot or all of them
     Destroy(PoolDestroyCommand),
+    /// Hand a task to a free slot and return at once
+    Dispatch(PoolDispatchCommand),
+    /// Block until a dispatched task finishes, then collect it
+    Wait(PoolWaitCommand),
+    /// Collect finished dispatches, stop overdue ones, free their slots
+    Reconcile(PoolReconcileCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct PoolDispatchCommand {
+    /// Task handle; its body is the brief
+    pub task: String,
+
+    /// Model slug; must be one of `[pool.harness].models`
+    #[arg(long)]
+    pub model: String,
+
+    /// Commit or branch to start from (default: a `from:` line in the task body)
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Branch to push to (default: a `branch:` line in the task body)
+    #[arg(long)]
+    pub branch: Option<String>,
+
+    /// Hard time limit for the agent, in seconds (default 1800)
+    #[arg(long)]
+    pub budget: Option<u64>,
+
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolWaitCommand {
+    /// Task handles to wait on (default: every open dispatch)
+    pub tasks: Vec<String>,
+
+    /// Give up after this many seconds and exit nonzero
+    #[arg(long, default_value_t = 3600)]
+    pub timeout: u64,
+
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolReconcileCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

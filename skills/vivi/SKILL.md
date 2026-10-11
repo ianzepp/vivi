@@ -396,38 +396,123 @@ apply after configuring. Screens judge the receipt against the clauses: tasks
 that want meaningful screens should carry their validation claim in the body,
 not only verdict flags.
 
-## Remote lane pool (first iteration)
+## Remote lane pool
 
-`vivi pool` manages a pool of preseeded remote machines ("slots") on Fly.
-First iteration: it creates, lists, and destroys slots. Dispatch, wait,
-reconcile, and reseed do not exist yet; do not invent them.
+`vivi pool` manages a pool of preseeded remote machines ("slots") on Fly and
+hands a Vivi task to one of them. In-place reseed, a second provider, and
+overflow machines do not exist; do not invent them.
 
 ```sh
 vivi pool create [--slots N] [--base <commit|branch>] [--timeout SECS]
 vivi pool status [--json]
 vivi pool destroy (--slot <name-or-id> | --all) --yes
+vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS]
+vivi pool wait [<task>...] [--timeout SECS]
+vivi pool reconcile
 ```
+
+### Slot states
+
+| State | Meaning | Claimable |
+|---|---|---|
+| `free` | seeded, stopped, no task holds it | yes |
+| `seeding` | `create` started it and has not yet seen the seed finish | no |
+| `unseeded` | stopped without the seed mark: the seed failed, or `create` was interrupted before marking (re-running `create` adopts a clean one) | no |
+| `busy` | a task holds it and the machine runs (booting, working, or lingering) | no |
+| `finished-uncollected` | a task holds it and the machine stopped; the result is still on its disk | no |
+
+`status` shows `task <handle>` on a held slot. A slot with an uncollected
+result is never claimed.
+
+### Slots, create, destroy
 
 - A slot is a Fly Machine with a persistent root disk. On first boot it runs
   the configured `setup` commands as root, fetches the repo at the base commit,
   runs the `seed` commands in the checkout with a memory disk over `build_dir`,
-  packs the build output, and exits. A stopped machine is a free slot; a
-  started one is busy. Later starts restore the pack in about ten seconds,
-  wait for `/work/job/go`, run `/work/job/job.sh`, and idle-stop.
+  packs the build output, and exits. `create` then removes the fetch token from
+  the machine's config (the machine stays stopped) and sets the seed mark in the
+  same update. Later starts restore the pack, run one job, linger, and stop.
 - `create` fills the lowest free slot numbers up to N (default and maximum:
   `slots` in config), seeds them in parallel, waits until each is stopped, and
-  prints one line per slot with its id, state, and seed seconds. Existing
-  slots are left alone. It exits nonzero if a slot timed out or exited nonzero.
-- Slot state comes from Fly, never from local files: slots carry machine
-  metadata `vivi_pool`, `vivi_pool_slot`, and `vivi_pool_base`. Machines in the
-  same Fly app without that metadata are never listed or touched.
-- `--base` takes a commit, branch, or tag; it is resolved to a full hash through
-  GitHub and recorded as the slot's seeded base. Default: the repo's default
-  branch tip.
+  prints one line per slot with its id, state, and seed seconds. Existing slots
+  are left alone. It exits nonzero if a slot timed out or exited nonzero.
+- Slot state comes from Fly, never from local files: machine metadata
+  `vivi_pool`, `vivi_pool_slot`, `vivi_pool_base`, `vivi_pool_state`
+  (`seeding`|`ready`), and, while a task holds the slot, `vivi_pool_task` and
+  `vivi_pool_claimed`. Machines in the same Fly app without `vivi_pool` are
+  never listed or touched.
+- `--base` takes a commit, branch, or tag, resolved to a full hash through
+  GitHub. Default: the repo's default branch tip.
 - `destroy` requires `--yes` and only touches this pool's slots.
-- Requires `fly` (flyctl, logged in) and `openssl` on PATH, and a GitHub App
-  with contents access to the repo. The fetch token is minted per `create`
-  (one hour, narrowed to the one repo) and is never printed.
+- Slots made by the first iteration (before dispatch existed) lack the seed
+  mark and the new boot script: destroy and re-create them.
+- Requires `fly` (flyctl, logged in; or `FLY_API_TOKEN`) and `openssl` on PATH,
+  and a GitHub App with contents access to the repo. Tokens are one hour,
+  narrowed to the one repo, and never printed.
+
+### dispatch
+
+`vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>]
+[--budget SECS]` hands an open task to a free slot and returns at once.
+
+- The brief is the task body, read from the mailspace. `--model` is required,
+  has no default, and must be one of `[pool.harness].models`; it is checked
+  before any machine is touched.
+- `from` is what to start from (a commit or a branch); `branch` is where to
+  push. Each comes from its flag, else from a `from: <ref>` / `branch: <name>`
+  line in the task body; both are required one way or the other. One rule covers
+  three cases: a new branch (`from` = commit), continuing a branch (`from` =
+  `branch`), and stacking (`from` = one branch, `branch` = another). The push
+  is never forced: if the branch moved or holds other work, the result is
+  `push_refused`.
+- `--budget` is the agent's hard time limit in seconds (default 1800). Every job
+  also runs under a hard limit enforced by the slot's boot script (budget plus
+  ten minutes of slack).
+- Steps: mint a one-hour token; resolve `from` through GitHub; claim a free
+  slot (a machine lease serialises the check-and-mark, so two simultaneous
+  dispatches get different slots and a third finds none); deliver the job as one
+  archive in the machine's config; start it; record a `pool_dispatched` event
+  and a reply on the task. A failure after the claim undoes it.
+- A task with an open dispatch cannot be dispatched again until it is collected.
+  After collection it can be dispatched again (for example to continue its
+  branch).
+
+### wait and reconcile
+
+- `vivi pool wait [<task>...] [--timeout SECS]` blocks until at least one open
+  dispatch (the named ones, or all) has finished, collects each finished one,
+  prints one line per task (`<task> finished <slot> <push outcome>`), and exits
+  0. On timeout (default 3600) it exits nonzero and says nothing finished.
+  Run it in the background to be woken.
+- `vivi pool reconcile` handles every open dispatch once: finished ones are
+  collected and their slots freed; one still running past its budget plus a
+  15-minute grace is stopped and recorded as a timeout; one whose machine
+  stopped without a result is recorded as lost; one still within budget is
+  reported `running`. It also frees stale claims (a held slot with no open
+  dispatch, claimed more than ten minutes ago).
+- Collecting reads the result and the agent's final output from the slot (a
+  stopped slot is started, read, and stopped), records a `pool_collected` event
+  and a reply on the task (push outcome, exit code, durations, the receipt, log
+  tails), then stops the machine and releases the slot. Recording comes before
+  freeing, so a failed record leaves the result in place. Neither command
+  closes or completes the task; the orchestrator does that. Read the receipt
+  with `vivi task show <handle>`.
+- Push outcomes: `pushed <branch> <sha>`, `push_refused`, `no_changes`,
+  `fetch_failed`, `checkout_failed`, `commit_failed`. A result with
+  `state=killed` means the slot's hard limit stopped the runner.
+
+### On the slot
+
+A generic runner, embedded in the binary and delivered with each job, returns
+the checkout to a clean tree at `from`, runs the harness as the unprivileged
+user `hand` with a clean environment (only `HOME`, `PATH`, and the names in
+`[pool.harness].env`; the Git token is never among them and is readable only by
+root), then commits what changed as the configured bot identity, with a
+`Pool-Run:` trailer recording slot, model, start ref, exit code, and duration,
+and pushes without force. The harness's standard output is the receipt;
+standard output and error are kept as files. A finished job lingers for two
+minutes so `wait` can collect without a restart; the job directory survives a
+stop and start until the next dispatch replaces it.
 
 Config is a `[pool]` table in `.vivi/mailspace.toml`:
 
@@ -448,14 +533,23 @@ build_dir = "target"          # required; relative to the repo
 app_id = 123456
 private_key = "~/secrets/app.private-key.pem"
 
-[pool.harness]                # parsed and validated; nothing uses it yet
+[pool.harness]                # required to dispatch
 name = "pi"
-run = "pi -p --model {model} @{brief}"
-models = ["zai/glm-5.3-flash"]
+run = "pi -p --model {model} --append-system-prompt {rules} @{brief}"
+models = ["zai/glm-5.3-flash"]            # --model must be one of these
+env = ["MODEL_API_KEY"]       # names only; values come from the machine's environment
+# rules = "docs/worker-rules.md"          # default: a short embedded rules file
+
+[pool.committer]              # required to dispatch
+name = "lane-bot"
+email = "lane-bot@users.noreply.github.com"
 ```
 
+`run` is a shell command; `{model}`, `{brief}` and `{rules}` are the only
+placeholders (the brief and rules are files inside the slot). Its standard
+output is the receipt. Use a print mode that writes only the final answer.
 Validation runs when a `vivi pool` command starts, and rejects misspelled keys.
-The config holds a key path, never a key.
+The config holds a key path and variable names, never a key or a value.
 
 ## Watches and Cycle Intake
 

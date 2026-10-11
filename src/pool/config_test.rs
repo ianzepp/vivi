@@ -159,3 +159,72 @@ fn mailspace_config_roundtrips_pool() {
     again.validate("space").unwrap();
     assert_eq!(again.build_dir, config.build_dir);
 }
+
+#[test]
+fn harness_env_rules_and_committer_parse() {
+    let mut config = full();
+    config.harness.as_mut().unwrap().env = vec!["ZAI_API_KEY".into(), "CARGO_HOME".into()];
+    config.harness.as_mut().unwrap().rules = Some("docs/rules.md".into());
+    config.committer = Some(PoolCommitter {
+        name: "bot".into(),
+        email: "bot@example.com".into(),
+        unknown: BTreeMap::new(),
+    });
+    config.validate("space").unwrap();
+    let rules = config
+        .harness
+        .as_ref()
+        .unwrap()
+        .rules_path(std::path::Path::new("/proj"));
+    assert_eq!(rules, Some(PathBuf::from("/proj/docs/rules.md")));
+}
+
+#[test]
+fn harness_toml_accepts_the_new_keys() {
+    let text = format!("{FULL}\n[committer]\nname = \"bot\"\nemail = \"b@x.io\"\n").replace(
+        "models = [",
+        "env = [\"KEY_ONE\"]\nrules = \"r.md\"\nmodels = [",
+    );
+    let config: PoolConfig = toml::from_str(&text).unwrap();
+    config.validate("space").unwrap();
+    assert_eq!(config.harness.unwrap().env, ["KEY_ONE"]);
+    assert_eq!(config.committer.unwrap().email, "b@x.io");
+}
+
+#[test]
+fn harness_env_names_must_be_plain_and_never_the_git_token() {
+    for bad in ["GH_TOKEN", "A B", "1X", "A=b", ""] {
+        let mut config = full();
+        config.harness.as_mut().unwrap().env = vec![bad.into()];
+        assert!(err(&config).contains("harness.env"), "{bad}");
+    }
+}
+
+#[test]
+fn harness_run_rejects_unknown_placeholders_but_not_shell_expansion() {
+    let mut config = full();
+    config.harness.as_mut().unwrap().run = "tool --model {modle} {brief}".into();
+    assert!(err(&config).contains("{modle}"));
+    config.harness.as_mut().unwrap().run = "tool --model {model} -x ${home} {rules}".into();
+    config.validate("space").unwrap();
+}
+
+#[test]
+fn model_slugs_are_restricted_to_safe_characters() {
+    let mut config = full();
+    config.harness.as_mut().unwrap().models = vec!["a b".into()];
+    assert!(err(&config).contains("harness.models"));
+    config.harness.as_mut().unwrap().models = vec!["x;rm".into()];
+    assert!(err(&config).contains("harness.models"));
+}
+
+#[test]
+fn committer_must_be_single_line_text() {
+    let mut config = full();
+    config.committer = Some(PoolCommitter {
+        name: "bot\nx".into(),
+        email: "b@x.io".into(),
+        unknown: BTreeMap::new(),
+    });
+    assert!(err(&config).contains("committer.name"));
+}

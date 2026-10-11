@@ -28,6 +28,7 @@ mod lifecycle;
 mod marks;
 mod merge;
 mod mermaid;
+mod pool_record;
 mod reply;
 mod rules;
 mod step;
@@ -62,6 +63,7 @@ pub use lifecycle::{
 pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate_marks_filter};
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
+pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask};
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
 pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};
 pub use thread::{MailspaceThreadMessage, print_thread};
@@ -102,7 +104,7 @@ pub struct MailspaceConfig {
     /// Chat client settings. Absent means chat defaults apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<ChatConfig>,
-    /// Remote lane pool settings (first iteration). Absent means no pool.
+    /// Remote lane pool settings. Absent means no pool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolConfig>,
 }

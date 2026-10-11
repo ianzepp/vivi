@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::local_pool_work_command as work;
 use vivi::VivariumError;
 use vivi::cli::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
 use vivi::mailspace::Mailspace;
@@ -14,6 +15,9 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
         PoolSubcommand::Create(c) => create(c),
         PoolSubcommand::Status(c) => status(c),
         PoolSubcommand::Destroy(c) => destroy(c),
+        PoolSubcommand::Dispatch(c) => work::dispatch(c),
+        PoolSubcommand::Wait(c) => work::wait(c),
+        PoolSubcommand::Reconcile(c) => work::reconcile(c),
     }
 }
 
@@ -21,6 +25,14 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
 fn open_pool(
     project: Option<&std::path::Path>,
 ) -> Result<(PoolConfig, String, FlyctlProvider), VivariumError> {
+    let (_, config, pool, provider) = open_pool_space(project)?;
+    Ok((config, pool, provider))
+}
+
+/// [`open_pool`] plus the mailspace the pool is configured in.
+pub(crate) fn open_pool_space(
+    project: Option<&std::path::Path>,
+) -> Result<(Mailspace, PoolConfig, String, FlyctlProvider), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let Some(config) = mailspace.config.pool.clone() else {
         return Err(VivariumError::Config(
@@ -30,7 +42,7 @@ fn open_pool(
     config.validate(&mailspace.config.name)?;
     let pool = config.pool_name(&mailspace.config.name);
     let provider = FlyctlProvider::new(&config.app);
-    Ok((config, pool, provider))
+    Ok((mailspace, config, pool, provider))
 }
 
 fn create(command: &PoolCreateCommand) -> Result<(), VivariumError> {
@@ -99,8 +111,12 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
 fn print_slots(pool: &str, slots: &[SlotStatus]) {
     println!("pool {pool}  {} slot(s)", slots.len());
     for slot in slots {
+        let task = slot
+            .task
+            .as_deref()
+            .map_or(String::new(), |t| format!("  task {t}"));
         println!(
-            "  {}  {}  {}  base {}  created {}",
+            "  {}  {}  {}{task}  base {}  created {}",
             slot.name,
             slot.id,
             slot.state,

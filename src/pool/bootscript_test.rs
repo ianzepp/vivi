@@ -1,5 +1,6 @@
 use super::*;
 use crate::pool::config::PoolConfig;
+use crate::pool::{collect, job};
 
 fn config() -> PoolConfig {
     toml::from_str(
@@ -58,8 +59,10 @@ fn boot_script_is_generic_and_keeps_the_job_path() {
     for needed in [
         "/work/setup.sh",
         "/work/seed.sh",
-        "/work/job/go",
-        "/work/job/job.sh",
+        "/work/job.tgz",
+        "/work/job/run.sh",
+        "/work/job/limit",
+        "timeout -k 30",
         "useradd -m hand",
         "mount -t tmpfs",
         "$BUILD_DIR",
@@ -84,4 +87,67 @@ fn boot_script_has_valid_bash_syntax() {
         return;
     };
     assert!(status.success());
+}
+
+#[test]
+fn boot_script_bounds_every_job_and_keeps_results_until_replaced() {
+    // Every job runs under the hard limit, with a default when none is given.
+    assert!(BOOT_SCRIPT.contains(r#"timeout -k 30 "$LIMIT" bash /work/job/run.sh"#));
+    assert!(BOOT_SCRIPT.contains("LIMIT=3600"));
+    // The job directory is only replaced by a new job, never wiped at boot.
+    let wipes: Vec<&str> = BOOT_SCRIPT
+        .lines()
+        .filter(|l| l.contains("rm -rf /work/job"))
+        .collect();
+    assert_eq!(wipes, ["rm -rf /work/job"], "one wipe, at new-job unpack");
+    let unpack = BOOT_SCRIPT.find("rm -rf /work/job").unwrap();
+    let new_job = BOOT_SCRIPT.find("# New job.").unwrap();
+    assert!(unpack > new_job, "the wipe sits inside the new-job path");
+    // A collect boot (same archive) does not run the job again.
+    assert!(BOOT_SCRIPT.contains("collect_boot"));
+    // The archive copy is removed before the agent can exist.
+    assert!(BOOT_SCRIPT.contains(r#"rm -f "$JT"; echo "$SHA" > /work/job.sha"#));
+    // A killed job still leaves a result with its job id.
+    assert!(BOOT_SCRIPT.contains("state=killed"));
+}
+
+#[test]
+fn job_runner_is_generic_runs_as_hand_and_never_forces_a_push() {
+    for project_word in ["faber", "radix", "cargo", "rustup", "pi ", "ZAI", "npm"] {
+        assert!(
+            !job::RUNNER.contains(project_word),
+            "runner mentions {project_word}"
+        );
+    }
+    assert!(job::RUNNER.contains("runuser -u hand"));
+    assert!(job::RUNNER.contains("env -i"));
+    assert!(job::RUNNER.contains(r#"timeout -k 15 "$BUDGET""#));
+    assert!(job::RUNNER.contains("HEAD:refs/heads/$BRANCH"));
+    assert!(!job::RUNNER.contains("--force"));
+    assert!(!job::RUNNER.contains("push -f"));
+    // The Git token is read into the runner only, not into the agent's env.
+    assert!(!job::RUNNER.contains("GH_TOKEN"));
+    assert!(job::RUNNER.contains("finish no_changes"));
+    assert!(job::RUNNER.contains("finish push_refused"));
+    assert!(job::RUNNER.contains("Pool-Run: slot=$SLOT model=$MODEL"));
+}
+
+#[test]
+fn job_runner_has_valid_bash_syntax() {
+    for (name, script) in [
+        ("run.sh", job::RUNNER),
+        ("collect.sh", collect::COLLECT_SCRIPT),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, script).unwrap();
+        let Ok(status) = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(&path)
+            .status()
+        else {
+            return;
+        };
+        assert!(status.success(), "{name}");
+    }
 }

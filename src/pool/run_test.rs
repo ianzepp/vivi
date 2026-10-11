@@ -1,54 +1,8 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::pool::slot::{META_BASE, META_POOL, META_SLOT};
-
-/// A fake host: created machines start `started` and stop after two lists.
-#[derive(Default)]
-struct Fake {
-    machines: RefCell<Vec<MachineRecord>>,
-    lists: RefCell<u32>,
-    created: RefCell<Vec<CreateSpec>>,
-    destroyed: RefCell<Vec<String>>,
-    never_stop: bool,
-}
-
-impl PoolProvider for Fake {
-    fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
-        *self.lists.borrow_mut() += 1;
-        if !self.never_stop && *self.lists.borrow() > 2 {
-            for m in self.machines.borrow_mut().iter_mut() {
-                if m.state == "started" && m.metadata.contains_key(META_BASE) {
-                    m.state = "stopped".into();
-                    m.exit_code = Some(0);
-                }
-            }
-        }
-        Ok(self.machines.borrow().clone())
-    }
-
-    fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
-        let id = format!("id-{}", spec.name);
-        self.machines.borrow_mut().push(MachineRecord {
-            id: id.clone(),
-            name: spec.name.clone(),
-            state: "started".into(),
-            region: spec.region.clone(),
-            created_at: "now".into(),
-            metadata: spec.metadata.clone(),
-            exit_code: None,
-        });
-        self.created.borrow_mut().push(spec.clone());
-        Ok(id)
-    }
-
-    fn destroy(&self, id: &str) -> Result<(), VivariumError> {
-        self.destroyed.borrow_mut().push(id.to_string());
-        self.machines.borrow_mut().retain(|m| m.id != id);
-        Ok(())
-    }
-}
+use crate::pool::fake_provider::Fake;
+use crate::pool::slot::{META_BASE, META_STATE, STATE_READY};
 
 fn config(slots: u32) -> PoolConfig {
     toml::from_str(&format!(
@@ -81,18 +35,7 @@ fn inputs() -> Result<(Secret, String), VivariumError> {
 }
 
 fn existing(name: &str, id: &str, state: &str, pool: &str, index: u32) -> MachineRecord {
-    MachineRecord {
-        id: id.into(),
-        name: name.into(),
-        state: state.into(),
-        region: "iad".into(),
-        created_at: "then".into(),
-        metadata: BTreeMap::from([
-            (META_POOL.to_string(), pool.to_string()),
-            (META_SLOT.to_string(), index.to_string()),
-        ]),
-        exit_code: None,
-    }
+    crate::pool::fake_provider::slot(id, name, state, pool, index)
 }
 
 #[test]
@@ -182,6 +125,7 @@ fn nonzero_exit_is_not_a_clean_seed() {
         exit_code: Some(3),
         seconds: 1,
         timed_out: false,
+        error: None,
     };
     assert!(!outcome.seeded());
 }
@@ -217,4 +161,60 @@ fn status_lists_pool_slots_from_the_provider() {
         .push(existing("p-slot-1", "m1", "stopped", "p", 1));
     let slots = pool_status(&fake, "p").unwrap();
     assert_eq!(slots[0].state, "free");
+}
+
+#[test]
+fn a_clean_seed_clears_the_fetch_token_then_marks_the_slot_ready() {
+    let fake = Fake::default();
+    let report = create_slots(&fake, &config(1), "p", &fast(), inputs).unwrap();
+    assert!(report.created[0].seeded());
+    let cleared = fake.env_cleared.borrow();
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(cleared[0].1, ["GH_TOKEN"]);
+    assert_eq!(
+        fake.meta("id-p-slot-1", META_STATE).as_deref(),
+        Some(STATE_READY)
+    );
+    assert_eq!(
+        fake.calls_to("start"),
+        0,
+        "clearing the token never starts the slot"
+    );
+}
+
+#[test]
+fn a_new_slot_starts_unmarked_so_status_tells_seeding_from_busy() {
+    let fake = Fake {
+        never_stop: true,
+        ..Fake::default()
+    };
+    let options = CreateOptions {
+        timeout: Duration::ZERO,
+        ..fast()
+    };
+    create_slots(&fake, &config(1), "p", &options, inputs).unwrap();
+    let slots = pool_status(&fake, "p").unwrap();
+    assert_eq!(slots[0].state, "seeding");
+    assert!(
+        fake.env_cleared.borrow().is_empty(),
+        "an unfinished seed keeps its token"
+    );
+}
+
+#[test]
+fn an_interrupted_create_is_finished_by_the_next_one() {
+    let fake = Fake::default();
+    let mut m = existing("p-slot-1", "m1", "stopped", "p", 1);
+    m.metadata.insert(META_STATE.into(), "seeding".into());
+    m.exit_code = Some(0);
+    fake.add(m);
+    let mut failed = existing("p-slot-2", "m2", "stopped", "p", 2);
+    failed.metadata.insert(META_STATE.into(), "seeding".into());
+    failed.exit_code = Some(3);
+    fake.add(failed);
+    let report = create_slots(&fake, &config(2), "p", &fast(), inputs).unwrap();
+    assert!(report.created.is_empty());
+    assert_eq!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
+    assert_eq!(fake.meta("m2", META_STATE).as_deref(), Some("seeding"));
+    assert_eq!(fake.env_cleared.borrow().len(), 1);
 }

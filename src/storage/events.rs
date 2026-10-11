@@ -201,6 +201,43 @@ impl Storage {
         Ok(map)
     }
 
+    /// List every event whose type is one of `types`, oldest first.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn list_mailspace_events_of_types(
+        &self,
+        types: &[&str],
+    ) -> Result<Vec<MailspaceEvent>, VivariumError> {
+        if types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = (1..=types.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT event_id, occurred_at, command, event_type, actor_identity,
+                    account, message_id, content_id, from_role, to_role,
+                    from_identity, to_identity, subject, note
+             FROM mailspace_events
+             WHERE event_type IN ({})
+             ORDER BY event_id",
+            placeholders.join(",")
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+            VivariumError::Other(format!("failed to prepare typed event query: {e}"))
+        })?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = types
+            .iter()
+            .map(|t| t as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt
+            .query_map(params_refs.as_slice(), mailspace_event_from_row)
+            .map_err(|e| VivariumError::Other(format!("failed to query typed events: {e}")))?;
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read event row: {e}")))
+        })
+        .collect()
+    }
+
     /// List events that occurred after a given event ID.
     ///
     /// # Errors

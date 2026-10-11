@@ -38,12 +38,12 @@ fn fixture_becomes_slot_status() {
     let slots = crate::pool::slot::pool_slots("faber", &machines);
     assert_eq!(slots.len(), 2);
     assert_eq!(slots[0].name, "faber-slot-1");
-    assert_eq!(slots[0].state, "free");
+    assert_eq!(slots[0].state, "unseeded", "no seed mark in the fixture");
     assert_eq!(
         slots[0].base.as_deref(),
         Some("0123456789abcdef0123456789abcdef01234567")
     );
-    assert_eq!(slots[1].state, "busy");
+    assert_eq!(slots[1].state, "seeding");
     assert_eq!(slots[1].base, None);
 }
 

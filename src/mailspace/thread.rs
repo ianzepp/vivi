@@ -307,7 +307,7 @@ fn print_text_thread(messages: &[MailspaceThreadMessage]) {
     }
 }
 
-fn text_body(data: &[u8]) -> String {
+pub(super) fn text_body(data: &[u8]) -> String {
     mail_parser::MessageParser::default()
         .parse(data)
         .and_then(|parsed| parsed.body_text(0).map(|body| body.to_string()))

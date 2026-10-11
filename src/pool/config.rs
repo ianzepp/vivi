@@ -55,9 +55,12 @@ pub struct PoolConfig {
     pub build_dir: String,
     /// GitHub App used to mint the fetch token.
     pub github: PoolGithub,
-    /// Agent harness description. Parsed and validated; nothing uses it yet.
+    /// Agent harness description; `dispatch` needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<PoolHarness>,
+    /// Identity the remote runner commits as; `dispatch` needs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committer: Option<PoolCommitter>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
 }
@@ -72,15 +75,34 @@ pub struct PoolGithub {
     pub unknown: BTreeMap<String, toml::Value>,
 }
 
+/// The `[pool.committer]` table: the Git identity of remote commits.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PoolCommitter {
+    pub name: String,
+    pub email: String,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, toml::Value>,
+}
+
 /// The `[pool.harness]` table.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PoolHarness {
     pub name: String,
-    /// Command template that runs the harness headlessly.
+    /// Command template that runs the harness headlessly. Placeholders:
+    /// `{model}`, `{brief}` (path of the task body), `{rules}` (path of the
+    /// standing rules). Its standard output is the receipt.
     pub run: String,
     /// Model slugs the harness may be given.
     #[serde(default)]
     pub models: Vec<String>,
+    /// Names of environment variables the harness receives, read from the
+    /// machine's own environment. Names only; never values.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// Standing rules file for the remote worker. `~` expands; a relative
+    /// path is relative to the project root. Default: the embedded rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<String>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
 }
@@ -138,6 +160,9 @@ impl PoolConfig {
         self.validate_github()?;
         if let Some(harness) = &self.harness {
             harness.validate()?;
+        }
+        if let Some(committer) = &self.committer {
+            committer.validate()?;
         }
         reject_unknown("pool", &self.unknown)
     }
@@ -204,7 +229,29 @@ impl PoolConfig {
     }
 }
 
+impl PoolCommitter {
+    fn validate(&self) -> Result<(), VivariumError> {
+        for (field, value) in [("name", &self.name), ("email", &self.email)] {
+            if value.trim().is_empty() || value.chars().any(char::is_control) {
+                return Err(bad(format!("committer.{field} must be a single line")));
+            }
+        }
+        reject_unknown("pool.committer", &self.unknown)
+    }
+}
+
 impl PoolHarness {
+    /// The rules file path with `~` expanded and a relative path anchored at
+    /// the project root; `None` means the embedded default.
+    #[must_use]
+    pub fn rules_path(&self, root: &std::path::Path) -> Option<PathBuf> {
+        let raw = self.rules.as_deref()?;
+        Some(match raw.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().map_or_else(|| PathBuf::from(raw), |h| h.join(rest)),
+            None => root.join(raw),
+        })
+    }
+
     fn validate(&self) -> Result<(), VivariumError> {
         if self.name.trim().is_empty() {
             return Err(bad("harness.name must not be empty"));
@@ -212,8 +259,22 @@ impl PoolHarness {
         if self.run.trim().is_empty() {
             return Err(bad("harness.run must not be empty"));
         }
-        if self.models.iter().any(|m| m.trim().is_empty()) {
-            return Err(bad("harness.models holds an empty slug"));
+        if let Some(unknown) = super::job::unknown_placeholder(&self.run) {
+            return Err(bad(format!(
+                "harness.run holds the unknown placeholder {{{unknown}}} (use {{model}}, {{brief}}, {{rules}})"
+            )));
+        }
+        if self.models.iter().any(|m| !is_model_slug(m)) {
+            return Err(bad(
+                "harness.models holds an empty slug or one with characters outside A-Z a-z 0-9 . _ : / @ + -",
+            ));
+        }
+        for name in &self.env {
+            if !is_env_name(name) || name == "GH_TOKEN" {
+                return Err(bad(format!(
+                    "harness.env holds \"{name}\": use plain variable names, never GH_TOKEN"
+                )));
+            }
         }
         let mut seen = self.models.clone();
         seen.sort();
@@ -236,6 +297,21 @@ fn validate_build_dir(dir: &str) -> Result<(), VivariumError> {
         ));
     }
     Ok(())
+}
+
+fn is_model_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '@' | '+' | '-')
+        })
+}
+
+fn is_env_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_slug(value: &str) -> bool {

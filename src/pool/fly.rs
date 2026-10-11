@@ -7,14 +7,17 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use super::provider::{CreateSpec, MachineRecord, PoolProvider};
+use super::fly_api::FlyApi;
+use super::provider::{CreateSpec, ExecOutput, Lease, MachineRecord, PoolProvider};
 use crate::error::VivariumError;
 
-/// Pool provider backed by the `fly` binary.
+/// Pool provider backed by the `fly` binary for list, create and destroy, and
+/// by the Machines API ([`FlyApi`]) for everything that acts on one machine.
 #[derive(Debug, Clone)]
 pub struct FlyctlProvider {
     bin: String,
     app: String,
+    api: FlyApi,
 }
 
 impl FlyctlProvider {
@@ -23,6 +26,7 @@ impl FlyctlProvider {
         Self {
             bin: "fly".to_string(),
             app: app.to_string(),
+            api: FlyApi::new(app),
         }
     }
 
@@ -68,6 +72,58 @@ impl PoolProvider for FlyctlProvider {
     fn destroy(&self, id: &str) -> Result<(), VivariumError> {
         let args = ["machine", "destroy", "--force", id, "-a", &self.app].map(str::to_string);
         self.run(&args, &[]).map(|_| ())
+    }
+
+    fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError> {
+        self.api.machine(id)
+    }
+
+    fn lease(&self, id: &str, ttl_secs: u32) -> Result<Option<Lease>, VivariumError> {
+        self.api.lease(id, ttl_secs)
+    }
+
+    fn release(&self, id: &str, lease: &Lease) -> Result<(), VivariumError> {
+        self.api.release(id, lease)
+    }
+
+    fn set_metadata(&self, id: &str, key: &str, value: &str) -> Result<(), VivariumError> {
+        self.api.set_metadata(id, key, value)
+    }
+
+    fn clear_metadata(&self, id: &str, key: &str) -> Result<(), VivariumError> {
+        self.api.clear_metadata(id, key)
+    }
+
+    fn put_file(
+        &self,
+        id: &str,
+        lease: &Lease,
+        path: &str,
+        content: &[u8],
+    ) -> Result<(), VivariumError> {
+        self.api.put_file(id, lease, path, content)
+    }
+
+    fn seal(
+        &self,
+        id: &str,
+        drop_env: &[&str],
+        key: &str,
+        value: &str,
+    ) -> Result<(), VivariumError> {
+        self.api.seal(id, drop_env, key, value)
+    }
+
+    fn start(&self, id: &str) -> Result<(), VivariumError> {
+        self.api.start(id)
+    }
+
+    fn stop(&self, id: &str) -> Result<(), VivariumError> {
+        self.api.stop(id)
+    }
+
+    fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError> {
+        self.api.exec(id, script, timeout_secs)
     }
 }
 
@@ -131,7 +187,7 @@ fn scrub(text: &str, secrets: &[&str]) -> String {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawMachine {
+pub(super) struct RawMachine {
     id: String,
     #[serde(default)]
     name: String,
@@ -169,23 +225,25 @@ struct RawEvent {
 pub fn parse_machine_list(json: &str) -> Result<Vec<MachineRecord>, VivariumError> {
     let raw: Vec<RawMachine> = serde_json::from_str(json)
         .map_err(|e| VivariumError::Parse(format!("unexpected `fly machine list` output: {e}")))?;
-    Ok(raw
-        .into_iter()
-        .map(|m| MachineRecord {
-            exit_code: m
-                .events
-                .iter()
-                .find(|e| e.kind == "exit")
-                .and_then(|e| e.request.pointer("/exit_event/exit_code"))
-                .and_then(serde_json::Value::as_i64),
-            id: m.id,
-            name: m.name,
-            state: m.state,
-            region: m.region,
-            created_at: m.created_at,
-            metadata: m.config.metadata.unwrap_or_default(),
-        })
-        .collect())
+    Ok(raw.into_iter().map(record_from_raw).collect())
+}
+
+/// The pool's view of one raw machine record.
+pub(super) fn record_from_raw(m: RawMachine) -> MachineRecord {
+    MachineRecord {
+        exit_code: m
+            .events
+            .iter()
+            .find(|e| e.kind == "exit")
+            .and_then(|e| e.request.pointer("/exit_event/exit_code"))
+            .and_then(serde_json::Value::as_i64),
+        id: m.id,
+        name: m.name,
+        state: m.state,
+        region: m.region,
+        created_at: m.created_at,
+        metadata: m.config.metadata.unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]

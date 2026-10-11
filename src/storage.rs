@@ -41,7 +41,7 @@ pub use graph::{
 };
 pub use links::MailspaceLink;
 use metadata::parse_metadata;
-pub use mutate::MailspaceMoveWithReply;
+pub use mutate::{MailspaceMoveWithReply, MailspaceNoteWithReply};
 use schema::{ensure_schema, message_query};
 pub use sync::{IngestEvent, IngestOutcome};
 

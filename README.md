@@ -520,26 +520,42 @@ vivi cycle intake --project /path/to/project --for mind \
   --cursor-file .vivi/mind-cycle.cursor --write-cursor --json
 ```
 
-### Remote lane pool (first iteration)
+### Remote lane pool
 
-`vivi pool create | status | destroy` manages preseeded remote machines on Fly
-(through `flyctl`) so agent work can start in seconds against a warm build.
-This is the first iteration: slot creation, listing, and destruction only.
-Dispatch, wait, reconcile, and reseed are not built yet.
+`vivi pool` manages preseeded remote machines on Fly so agent work can start in
+seconds against a warm build, and hands a Vivi task to one of them.
 
 ```
 vivi pool create [--slots N] [--base <commit>]   # create + seed missing slots, wait until stopped
-vivi pool status [--json]                        # name, id, free|busy, seeded base, created
+vivi pool status [--json]                        # name, id, state, task, seeded base, created
 vivi pool destroy (--slot <name> | --all) --yes
+vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--budget <secs>]
+vivi pool wait [<task>...] [--timeout <secs>]    # block until a dispatch finishes; collect it
+vivi pool reconcile                              # collect finished, stop overdue, free slots
 ```
+
+A slot is `free`, `seeding`, `busy` (a task holds it and the machine runs),
+`finished-uncollected` (a task holds it and the machine stopped, its result
+still on disk), or `unseeded` (the seed failed or `create` was interrupted).
+Only a `free` slot is claimed. `dispatch` takes the task body as the brief,
+claims a slot atomically (a Fly machine lease serialises the claim; machine
+metadata is the durable mark), delivers the job as one archive, starts the
+slot, records the dispatch on the task, and returns without waiting. The slot
+runs the configured harness as an unprivileged user under a hard time limit,
+commits what changed as the configured bot identity, pushes without force, and
+leaves a result. `wait` and `reconcile` collect it, record the result and the
+agent's receipt on the task (a `pool_collected` event plus a reply in the
+task's thread), and free the slot. Neither ever closes the task.
 
 Slots are discovered from Fly machine metadata (`vivi_pool*`); Vivi keeps no
 local slot records. Configure with a `[pool]` table in `.vivi/mailspace.toml`
-(app, repo, slots, image, setup/seed commands, `build_dir`, a GitHub App id
-and key path, optional `[pool.harness]`); see `skills/vivi/SKILL.md` for the
-full table. Nothing in the pool is specific to a language, a repository, or
-an agent harness. The GitHub App key is read by `openssl` when minting a
-one-hour, single-repo fetch token; Vivi never stores or prints it.
+(app, repo, slots, image, setup/seed commands, `build_dir`, a GitHub App id and
+key path, `[pool.harness]` with `run`, `models`, `env` and `rules`, and
+`[pool.committer]`); see `skills/vivi/SKILL.md` for the full table. Nothing in
+the pool is specific to a language, a repository, or an agent harness. The
+GitHub App key is read by `openssl` when minting a one-hour, single-repo token;
+Vivi never stores or prints it, and the token is not in the agent's
+environment.
 
 ### Blocking on local mailspace changes
 
@@ -639,7 +655,7 @@ Rules:
 `chat`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`,
 `cycle`, `trace`, `graph`, `step`.
 
-After 10.2.0 the tree also has `pool` (remote lane pool, first iteration) and `rule`: project rules every seat can read.
+After 10.2.0 the tree also has `pool` (remote lane pool: create, status, destroy, dispatch, wait, reconcile) and `rule`: project rules every seat can read.
 `--local` marks a rule that a later sync should skip. Nothing syncs rules yet.
 
 `chat` is new in 10.2.0: `vivi chat room create`, `join`, `rooms`, `send`,
