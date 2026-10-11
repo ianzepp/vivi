@@ -116,12 +116,16 @@ impl FlyApi {
         )))
     }
 
-    /// One machine, with its config.
+    /// One machine, with its config. A machine the API no longer knows (HTTP
+    /// 404) reads as [`MachineRecord::gone`]: destroyed.
     ///
     /// # Errors
-    /// Returns an error if the machine is unknown or the call fails.
+    /// Returns an error if the call fails for any other reason.
     pub fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError> {
-        let reply = self.require("GET", &format!("/machines/{id}"), None, None, &[200])?;
+        let reply = self.require("GET", &format!("/machines/{id}"), None, None, &[200, 404])?;
+        if reply.status == 404 {
+            return Ok(MachineRecord::gone(id));
+        }
         let raw: RawMachine = serde_json::from_value(reply.body)
             .map_err(|e| VivariumError::Parse(format!("unexpected machine record: {e}")))?;
         Ok(record_from_raw(raw))

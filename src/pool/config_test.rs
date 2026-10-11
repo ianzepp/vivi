@@ -293,3 +293,26 @@ fn unknown_keys_in_the_fly_table_are_rejected() {
         "{message}"
     );
 }
+
+#[test]
+fn a_repo_name_means_github_and_an_embedded_source_replaces_it() {
+    let mut config = full();
+    assert_eq!(
+        config.remote_address(),
+        "https://github.com/acme/widgets.git"
+    );
+    config.embedded = Some(EmbeddedSource {
+        remote: "file:///work/remote.git".into(),
+        ..EmbeddedSource::default()
+    });
+    assert_eq!(config.remote_address(), "file:///work/remote.git");
+    assert!(config.validate("space").is_ok());
+}
+
+#[test]
+fn the_embedded_source_cannot_come_from_toml() {
+    let toml = format!("{FULL}\n[embedded]\nremote = \"file:///x\"\n");
+    let parsed: PoolConfig = toml::from_str(&toml).unwrap();
+    assert!(parsed.embedded.is_none());
+    assert!(err(&parsed).contains("unknown field \"embedded\""));
+}

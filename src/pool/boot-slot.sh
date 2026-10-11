@@ -2,10 +2,14 @@
 # Vivi pool slot. Runs inside the machine on every boot.
 #
 # Environment (set by `vivi pool create`):
-#   REPO        owner/name on GitHub
-#   BASE        commit to seed at
-#   GH_TOKEN    short-lived fetch token (first boot only; `create` removes it
-#               from the machine's config once the seed has finished)
+#   REMOTE      full Git address of the source: an https address, or a file://
+#               address of a bare repository on this disk
+#   BASE        commit or branch to seed at
+#   GH_TOKEN    short-lived fetch token, used only with an https REMOTE (first
+#               boot only; `create` removes it from the machine's config once
+#               the seed has finished). Absent for a file:// REMOTE.
+#   SOURCE_DIR  optional: a source tree delivered with the slot. The seed turns
+#               it into the bare repository at REMOTE (branch main) first.
 #   BUILD_DIR   build output directory, relative to the checkout
 #   TMPFS_SIZE  size of the memory disk mounted over BUILD_DIR
 # Files written beside this script: /work/setup.sh (root, once) and
@@ -37,6 +41,17 @@ now() { date +%s.%N; }
 d() { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.1f", b-a}'; }
 T0=$(now)
 
+# The address to fetch from: an https remote gets the token, anything else is
+# used as given.
+remote_url() {
+  case "$REMOTE" in
+    https://*) [ -n "${GH_TOKEN:-}" ] && echo "https://x-access-token:${GH_TOKEN}@${REMOTE#https://}" || echo "$REMOTE" ;;
+    *) echo "$REMOTE" ;;
+  esac
+}
+LOCAL_REMOTE=
+case "$REMOTE" in file://*) LOCAL_REMOTE=${REMOTE#file://} ;; esac
+
 need() {
   command -v "$1" >/dev/null 2>&1 && return 0
   apt-get update -qq >/dev/null 2>&1
@@ -53,8 +68,16 @@ if [ ! -f /work/seeded ]; then
   id hand >/dev/null 2>&1 || useradd -m hand
   bash /work/setup.sh > /work/setup.log 2>&1 || { echo "seed_failed setup rc=$?" >> $L; exit 3; }
   T1=$(now); echo "setup_s $(d $T0 $T1)" >> $L
+  if [ -n "${SOURCE_DIR:-}" ] && [ -n "$LOCAL_REMOTE" ]; then
+    ( git init -q --bare "$LOCAL_REMOTE" \
+      && git -C "$LOCAL_REMOTE" symbolic-ref HEAD refs/heads/main \
+      && cd "$SOURCE_DIR" && git init -q . && git symbolic-ref HEAD refs/heads/main \
+      && git add -A \
+      && git -c user.name=vivi-pool -c user.email=pool@localhost commit -q -m "Embedded source" \
+      && git push -q "$LOCAL_REMOTE" HEAD:refs/heads/main ) || { echo "seed_failed source" >> $L; exit 6; }
+  fi
   mkdir -p "$RD" && cd "$RD" && git init -q . \
-    && git fetch -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$BASE" \
+    && git fetch -q --depth 1 "$(remote_url)" "$BASE" \
     && git checkout -q FETCH_HEAD || { echo "seed_failed fetch" >> $L; exit 4; }
   rm -f "$RD/.git/FETCH_HEAD"
   git rev-parse HEAD > /work/seed-base.txt
@@ -64,7 +87,7 @@ if [ ! -f /work/seeded ]; then
   T3=$(now); echo "seed_rc $SRC seed_s $(d $T2 $T3) build_mb $(du -sm "$BUILD_DIR" | cut -f1)" >> $L
   tar -cf - "$BUILD_DIR" | zstd -T0 -3 -q -o /work/build.tar.zst.partial \
     && mv /work/build.tar.zst.partial /work/build.tar.zst
-  chown -R hand:hand /home/hand "$RD"
+  chown -R hand:hand /home/hand "$RD" ${LOCAL_REMOTE:+"$LOCAL_REMOTE"}
   T4=$(now); echo "pack_s $(d $T3 $T4) pack_mb $(du -sm /work/build.tar.zst | cut -f1)" >> $L
   sync; touch /work/seeded; echo "seed_done $T4" >> $L
   exit "$SRC"

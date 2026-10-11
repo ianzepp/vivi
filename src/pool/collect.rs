@@ -20,7 +20,8 @@ use crate::error::VivariumError;
 /// slot's own hard limit is the budget plus the runner slack, so this only
 /// trips when the slot itself is wedged.
 pub const TIMEOUT_GRACE_SECS: u64 = 900;
-/// A stopped slot younger than this is assumed to be still starting.
+/// A stopped slot younger than this is assumed to be still starting (the
+/// default of [`Pacing::start_grace`]).
 pub const START_GRACE_SECS: u64 = 60;
 /// A claim mark with no dispatch behind it is stale after this long: more
 /// than the time a dispatch spends between claiming a slot and recording.
@@ -49,6 +50,9 @@ pub struct Pacing {
     pub ready_timeout: Duration,
     /// How long to wait for a stopped slot to read `stopped`.
     pub stop_timeout: Duration,
+    /// A stopped slot dispatched more recently than this is assumed to be
+    /// still starting, and is left alone.
+    pub start_grace: Duration,
 }
 
 impl Default for Pacing {
@@ -57,6 +61,7 @@ impl Default for Pacing {
             poll: Duration::from_secs(3),
             ready_timeout: Duration::from_secs(90),
             stop_timeout: Duration::from_mins(1),
+            start_grace: Duration::from_secs(START_GRACE_SECS),
         }
     }
 }
@@ -244,7 +249,7 @@ fn collect_stopped(
     pacing: &Pacing,
 ) -> Result<Option<Outcome>, VivariumError> {
     let record = &dispatch.record;
-    if age < START_GRACE_SECS && !overdue {
+    if age < pacing.start_grace.as_secs() && !overdue {
         return Ok(None);
     }
     provider.start(&record.machine)?;

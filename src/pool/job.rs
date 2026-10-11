@@ -176,6 +176,8 @@ pub fn check_model(model: &str, allowed: &[String]) -> Result<(), VivariumError>
 #[derive(Debug, Clone)]
 pub struct JobPlan {
     pub job: String,
+    /// Full Git address the runner fetches from and pushes to.
+    pub remote: String,
     pub task: String,
     pub subject: String,
     pub brief: String,
@@ -225,6 +227,7 @@ pub fn sh_quote(value: &str) -> String {
 #[must_use]
 pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     let params = [
+        ("REMOTE", spec.remote.clone()),
         ("JOB", spec.job.clone()),
         ("TASK", spec.task.clone()),
         ("FROM", spec.refs.from.clone()),

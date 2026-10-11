@@ -28,7 +28,9 @@ pub enum Status {
 }
 
 impl Status {
-    fn word(self) -> &'static str {
+    /// The status as the report prints it.
+    #[must_use]
+    pub fn word(self) -> &'static str {
         match self {
             Self::Ok => "ok",
             Self::Warn => "warn",
@@ -48,6 +50,9 @@ pub struct Check {
     /// The command (or step) that fixes a `warn` or `fail`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
+    /// How long the check took in milliseconds, for the steps of the live test.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub millis: Option<u64>,
 }
 
 impl Check {
@@ -58,7 +63,15 @@ impl Check {
             status,
             detail,
             fix,
+            millis: None,
         }
+    }
+
+    /// A timed step of the live test.
+    #[must_use]
+    pub fn timed(mut self, took: std::time::Duration) -> Self {
+        self.millis = Some(u64::try_from(took.as_millis()).unwrap_or(u64::MAX));
+        self
     }
 
     #[must_use]
@@ -129,6 +142,17 @@ impl Report {
         counts
     }
 
+    /// True when a check of the machine host failed: any failure outside the
+    /// repository and Vivi's own pool groups.
+    #[must_use]
+    pub fn provider_failed(&self) -> bool {
+        self.checks.iter().any(|c| {
+            c.status == Status::Fail
+                && c.group != doctor_repo::GROUP
+                && c.group != doctor_pool::GROUP
+        })
+    }
+
     /// True when no check failed (warnings do not count).
     #[must_use]
     pub fn passed(&self) -> bool {
@@ -163,8 +187,12 @@ impl Report {
                 lines.push(check.group.clone());
                 group = &check.group;
             }
+            #[allow(clippy::cast_precision_loss)]
+            let took = check
+                .millis
+                .map_or(String::new(), |ms| format!(" ({:.1}s)", ms as f64 / 1000.0));
             lines.push(format!(
-                "  {:<7}  {:<width$}  {}",
+                "  {:<7}  {:<width$}  {}{took}",
                 check.status.word(),
                 check.name,
                 check.detail

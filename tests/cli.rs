@@ -1291,3 +1291,28 @@ fn parses_pool_dispatch_default_branch_override() {
     assert!(!parse(&[]));
     assert!(parse(&["--allow-default-branch"]));
 }
+
+#[test]
+fn parses_pool_doctor_test_and_long() {
+    use vivi::cli::PoolSubcommand;
+    let parse = |extra: &[&str]| {
+        let mut args = vec!["vivi", "pool", "doctor"];
+        args.extend(extra);
+        Cli::try_parse_from(args).map(|cli| {
+            let Command::Pool {
+                command: PoolSubcommand::Doctor(d),
+            } = cli.command
+            else {
+                panic!("expected pool doctor");
+            };
+            (d.test, d.long, d.json)
+        })
+    };
+    assert_eq!(parse(&[]).unwrap(), (false, false, false));
+    assert_eq!(parse(&["--test"]).unwrap(), (true, false, false));
+    assert_eq!(
+        parse(&["--test", "--long", "--json"]).unwrap(),
+        (true, true, true)
+    );
+    assert!(parse(&["--long"]).is_err(), "--long needs --test");
+}

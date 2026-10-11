@@ -16,6 +16,8 @@ pub const BOOT_SCRIPT: &str = include_str!("boot-slot.sh");
 pub const BOOT_PATH: &str = "/work/boot.sh";
 const SETUP_PATH: &str = "/work/setup.sh";
 const SEED_PATH: &str = "/work/seed.sh";
+/// Where an embedded source tree lands inside the machine.
+pub const SOURCE_DIR: &str = "/work/source";
 
 /// Render a command list as a script that stops at the first failure.
 #[must_use]
@@ -28,26 +30,39 @@ pub fn render_commands(commands: &[String]) -> String {
     script
 }
 
-/// The files a slot is created with: boot, setup, and seed scripts.
+/// The files a slot is created with: boot, setup, and seed scripts, then the
+/// embedded source files when the pool has any.
 #[must_use]
 pub fn slot_files(config: &PoolConfig) -> Vec<(String, String)> {
-    vec![
+    let mut files = vec![
         (BOOT_PATH.to_string(), BOOT_SCRIPT.to_string()),
         (SETUP_PATH.to_string(), render_commands(&config.setup)),
         (SEED_PATH.to_string(), render_commands(&config.seed)),
-    ]
+    ];
+    if let Some(source) = &config.embedded {
+        files.extend(source.files.iter().cloned());
+    }
+    files
 }
 
-/// The environment a slot is created with.
+/// The environment a slot is created with. `GH_TOKEN` is set only when there
+/// is a token; an embedded source needs none.
 #[must_use]
 pub fn slot_env(config: &PoolConfig, token: &Secret, base: &str) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("REPO".to_string(), config.repo.clone()),
+    let mut env = BTreeMap::from([
+        ("REMOTE".to_string(), config.remote_address()),
         ("BASE".to_string(), base.to_string()),
-        ("GH_TOKEN".to_string(), token.expose().to_string()),
         ("BUILD_DIR".to_string(), config.build_dir.clone()),
         ("TMPFS_SIZE".to_string(), config.fly.tmpfs.clone()),
-    ])
+    ]);
+    if !token.expose().is_empty() {
+        env.insert("GH_TOKEN".to_string(), token.expose().to_string());
+    }
+    if let Some(source) = &config.embedded {
+        env.insert("SOURCE_DIR".to_string(), SOURCE_DIR.to_string());
+        env.extend(source.env.clone());
+    }
+    env
 }
 
 /// The command a slot runs on every boot.

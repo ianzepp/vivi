@@ -33,6 +33,23 @@ pub struct MachineRecord {
     pub exit_code: Option<i64>,
 }
 
+impl MachineRecord {
+    /// What the provider's answer for a machine that no longer exists reads
+    /// as: state `destroyed`, nothing else known.
+    #[must_use]
+    pub fn gone(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            name: String::new(),
+            state: "destroyed".to_string(),
+            region: String::new(),
+            created_at: String::new(),
+            metadata: BTreeMap::new(),
+            exit_code: None,
+        }
+    }
+}
+
 /// Everything needed to create and start one slot.
 #[derive(Clone)]
 pub struct CreateSpec {
@@ -103,10 +120,16 @@ pub trait PoolProvider {
     /// Returns an error if the machine could not be destroyed.
     fn destroy(&self, id: &str) -> Result<(), VivariumError>;
 
-    /// One machine as the provider reports it right now.
+    /// The shell command that removes one machine by hand, for a report that
+    /// cannot remove it itself.
+    fn destroy_command(&self, id: &str) -> String;
+
+    /// One machine as the provider reports it right now. A machine that no
+    /// longer exists is not an error: it reads as [`MachineRecord::gone`]
+    /// (state `destroyed`), so a dispatch whose machine vanished can be closed.
     ///
     /// # Errors
-    /// Returns an error if the machine is unknown or the provider fails.
+    /// Returns an error if the provider fails.
     fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError>;
 
     /// Take the machine's lease for `ttl_secs`. `Ok(None)` means another

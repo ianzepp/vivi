@@ -188,7 +188,9 @@ fn orphan_check(f: &PoolFacts, slots: &[SlotStatus]) -> Check {
         GROUP,
         "orphaned dispatches",
         format!("open dispatch with no machine: {}", orphans.join(", ")),
-        format!("{RECONCILE} (it reports these; a destroyed machine has no result to collect)"),
+        format!(
+            "{RECONCILE} (records each as lost and closes it; a destroyed machine has no result to collect)"
+        ),
     )
 }
 

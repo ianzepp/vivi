@@ -535,6 +535,7 @@ vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--bud
 vivi pool wait [<task>...] [--timeout <secs>]    # block until a dispatch finishes; collect it
 vivi pool reconcile                              # collect finished, stop overdue, free slots
 vivi pool doctor [--json]                        # read-only checks; each finding names its fix
+vivi pool doctor --test [--long] [--json]        # also run a live test of the provider and of Vivi (billable)
 ```
 
 `doctor` checks three sides under their own headings: the provider (Fly: `fly`
@@ -545,6 +546,39 @@ far its seeded base trails the default branch, leaked runners, orphaned
 dispatches, stale claims, overdue slots). It changes nothing, prints a `fix:`
 line under every `warn` or `fail`, and exits nonzero when any check fails.
 Run it at orchestrator boot and whenever something looks stuck.
+
+`doctor --test` adds a live exercise that answers two questions apart: is the
+provider working, and is Vivi's own pool machinery working? It first runs the
+read-only checks above and stops if the provider checks fail (the repository
+checks are shown but do not block it). Then it creates a throwaway pool named
+`<pool>-doctor` of two of the smallest machines in the same provider
+application and runs stand-in jobs on it. Each step is reported `ok` or `fail`
+with a duration under a Provider or a Vivi heading, and a failure says which
+side it is on and what was expected and observed. Provider steps: create two
+slots and see both reach `free`, a start and stop round trip. Vivi steps: two
+dispatches take two different slots; a third is refused with "no free slot";
+`wait` collects a job during the linger; a job past its budget is killed and
+recorded; a second dispatch continues a pushed branch with a new commit on top;
+a job that finishes while nobody waits is later collected from the stopped slot
+and the slot ends stopped and free; `reconcile` finds and stops a running slot
+with no dispatch. `--long` adds one `wait` that runs past six minutes (the
+lifetime of the provider's API token) and still collects. The slots are always
+destroyed at the end (also after a failed step or Ctrl-C), a final check
+confirms nothing of the test pool remains, and if something does it names the
+machines and the command that removes them.
+
+The test is deliberately independent of the project. Its source is a tiny
+tree carried inside the vivi binary; each slot turns it into a bare Git remote
+on its own disk, and jobs fetch from and push to that remote. The stand-in
+harness is a shell command that appends a line to a file. So the test needs no
+repository, no GitHub App, no token, no model key and no agent harness, and it
+does not touch the project's mailspace (its tasks live in a temporary one).
+What it therefore does not cover: minting a repository token, fetching from and
+pushing to the real repository, repository rules such as branch protection (the
+plain checks look at those), and any harness or model. Run it after a change to
+the pool code, before a campaign that depends on the pool, and when something
+looks stuck. It creates billable machines for a few minutes (about three with a
+healthy provider; `--long` adds about seven).
 
 A slot can only fetch what the remote repository already has, so push the base
 before dispatching. `--model` is resolved by the caller in the harness's own
@@ -577,7 +611,9 @@ a running slot that no task holds.
 Slots are discovered from Fly machine metadata (`vivi_pool*`); Vivi keeps no
 local slot records. The Fly app defaults to the pool name (itself the mailspace
 name) and `create` makes it in `[pool.fly].organization` (default `personal`)
-when it does not exist. Model keys are app secrets: `create` and `dispatch` list the app's
+when it does not exist. A job's Git address is `https://github.com/<repo>.git`
+for `[pool].repo = "owner/name"`; slots take it as a full remote address.
+Model keys are app secrets: `create` and `dispatch` list the app's
 secret names, never values, and warn about harness `env` names without one
 (vivi does not set secrets). Configure with a `[pool]` table in
 `.vivi/mailspace.toml` (repo, slots, image, setup/seed commands, `build_dir`),

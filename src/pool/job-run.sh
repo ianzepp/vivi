@@ -2,12 +2,15 @@
 # Vivi pool job runner. Runs inside a slot as root, started by the boot script
 # under a hard time limit. Everything it needs is in /work/job, delivered as
 # one archive:
-#   params.env   FROM BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
+#   params.env   REMOTE FROM BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
 #                COMMIT_NAME COMMIT_EMAIL ENV_NAMES
-#   token        Git token; root-only, never copied to the agent
+#                (REMOTE is the full Git address; https gets the token below,
+#                a file:// address is used as given)
+#   token        Git token, empty for a file:// remote; root-only, never
+#                copied to the agent
 #   harness.cmd  the rendered harness command
 #   brief.md     the task body        rules.md  the standing rules
-# Environment from the machine: REPO, BUILD_DIR, and any variable named in
+# Environment from the machine: BUILD_DIR, and any variable named in
 # ENV_NAMES (their values come from the machine's own environment).
 #
 # Start from FROM (a commit or a branch), run the harness as the unprivileged
@@ -43,7 +46,10 @@ finish() { # finish <push-outcome> [sha]
 
 cd "$RD" || finish workdir_missing
 TOKEN=$(cat "$J/token")
-URL="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+URL=$REMOTE
+case "$REMOTE" in
+  https://*) [ -n "$TOKEN" ] && URL="https://x-access-token:${TOKEN}@${REMOTE#https://}" ;;
+esac
 
 # A reused slot holds the last task's branch and stray files: return to a
 # clean tree at FROM before anything runs.

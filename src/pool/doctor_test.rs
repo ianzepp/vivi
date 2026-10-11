@@ -273,13 +273,39 @@ fn an_open_dispatch_whose_machine_is_gone_is_an_orphan() {
     let orphan = find(&r, "orphaned dispatches");
     assert_eq!(orphan.status, Status::Fail);
     assert!(orphan.detail.contains("t9") && orphan.detail.contains("m-gone"));
-    assert!(
-        orphan
-            .fix
-            .as_deref()
-            .unwrap()
-            .starts_with("vivi pool reconcile")
-    );
+    let fix = orphan.fix.as_deref().unwrap();
+    assert!(fix.starts_with("vivi pool reconcile"), "{fix}");
+    assert!(fix.contains("records each as lost and closes it"), "{fix}");
+}
+
+#[test]
+fn only_a_failure_outside_the_repository_and_pool_groups_is_a_provider_failure() {
+    let mut r = Report {
+        checks: vec![
+            Check::fail(doctor_repo::GROUP, "token", "d", "f"),
+            Check::fail(doctor_pool::GROUP, "config", "d", "f"),
+            Check::warn("Provider (Fake)", "login", "d", "f"),
+        ],
+    };
+    assert!(!r.provider_failed());
+    r.checks
+        .push(Check::fail("Provider (Fake)", "login", "d", "f"));
+    assert!(r.provider_failed());
+}
+
+#[test]
+fn a_timed_check_shows_its_duration_in_text_and_json() {
+    let r = Report {
+        checks: vec![
+            Check::ok("g", "step", "fine").timed(std::time::Duration::from_millis(12_340)),
+            Check::ok("g", "plain", "fine"),
+        ],
+    };
+    assert!(r.render().contains("fine (12.3s)"));
+    assert!(!r.render().contains("plain  fine ("));
+    let json: serde_json::Value = serde_json::from_str(&r.to_json().unwrap()).unwrap();
+    assert_eq!(json["checks"][0]["millis"], 12_340);
+    assert!(json["checks"][1].get("millis").is_none());
 }
 
 #[test]

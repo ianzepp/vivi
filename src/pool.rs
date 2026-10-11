@@ -15,7 +15,8 @@
 //! claims a slot atomically (see [`claim`]), delivers one job archive, and is
 //! recorded on the task (see [`record`]); `wait` and `reconcile` collect the
 //! result and free the slot (see [`collect`]). The provider sits behind
-//! [`provider::PoolProvider`] so tests use a fake.
+//! [`provider::PoolProvider`] so tests use a fake. `vivi pool doctor --test`
+//! runs a live exercise of all of this (see [`selftest`]).
 
 pub mod bootscript;
 pub mod claim;
@@ -37,7 +38,12 @@ pub mod job;
 pub mod provider;
 pub mod record;
 pub mod run;
+pub mod selftest;
+pub mod selftest_source;
+pub mod selftest_steps;
+pub mod selftest_world;
 pub mod slot;
+pub mod work;
 
 pub use config::{PoolCommitter, PoolConfig, PoolGithub, PoolHarness};
 pub use provider::PoolProvider;

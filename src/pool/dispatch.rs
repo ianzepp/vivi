@@ -71,6 +71,7 @@ pub fn plan_job(
     }
     Ok(JobPlan {
         job,
+        remote: config.remote_address(),
         task: handle.to_string(),
         subject: subject.to_string(),
         brief: body.to_string(),

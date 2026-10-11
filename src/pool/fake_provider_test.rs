@@ -10,6 +10,8 @@ use super::slot::{META_BASE, META_POOL, META_SLOT, META_STATE, META_TASK, STATE_
 use crate::error::VivariumError;
 
 type Hook = Box<dyn Fn(&Fake, &str)>;
+/// Decides what `exec` prints on a machine; `None` falls back to `exec_out`.
+type ExecHook = Box<dyn Fn(&Fake, &str) -> Option<String>>;
 
 #[derive(Default)]
 pub struct Fake {
@@ -48,6 +50,12 @@ pub struct Fake {
     pub machine_fails: Cell<u32>,
     /// The next this-many `stop` calls are accepted but do not take.
     pub stops_ignored: Cell<u32>,
+    /// Runs before every `machine` read (machines that change on their own).
+    pub on_machine_read: RefCell<Option<Hook>>,
+    /// Computes the output of `exec` on a running machine.
+    pub exec_hook: RefCell<Option<ExecHook>>,
+    /// Destroying a machine fails and leaves it in place.
+    pub destroy_fails: Cell<bool>,
 }
 
 impl Fake {
@@ -57,6 +65,14 @@ impl Fake {
 
     pub fn state_of(&self, id: &str) -> String {
         self.get(id).state
+    }
+
+    /// Change a machine's state the way the machine itself would.
+    pub fn set_state(&self, id: &str, state: &str) {
+        let mut machines = self.machines.borrow_mut();
+        if let Some(machine) = machines.iter_mut().find(|m| m.id == id) {
+            machine.state = state.to_string();
+        }
     }
 
     pub fn meta(&self, id: &str, key: &str) -> Option<String> {
@@ -180,21 +196,27 @@ impl PoolProvider for Fake {
     }
 
     fn destroy(&self, id: &str) -> Result<(), VivariumError> {
+        if self.destroy_fails.get() {
+            return Err(VivariumError::Message("cannot destroy".into()));
+        }
         self.destroyed.borrow_mut().push(id.to_string());
         self.machines.borrow_mut().retain(|m| m.id != id);
         Ok(())
     }
 
     fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError> {
+        if let Some(hook) = self.on_machine_read.borrow().as_ref() {
+            hook(self, id);
+        }
         if take_one(&self.machine_fails) {
             return Err(VivariumError::Message("Fly unreachable".into()));
         }
-        self.machines
-            .borrow()
-            .iter()
-            .find(|m| m.id == id)
-            .cloned()
-            .ok_or_else(|| VivariumError::Message(format!("no machine {id}")))
+        let found = self.machines.borrow().iter().find(|m| m.id == id).cloned();
+        Ok(found.unwrap_or_else(|| MachineRecord::gone(id)))
+    }
+
+    fn destroy_command(&self, id: &str) -> String {
+        format!("fake destroy {id}")
     }
 
     fn lease(&self, id: &str, _ttl_secs: u32) -> Result<Option<Lease>, VivariumError> {
@@ -280,8 +302,15 @@ impl PoolProvider for Fake {
         if self.state_of(id) != "started" {
             return Err(VivariumError::Message("machine not running".into()));
         }
+        let hooked = self
+            .exec_hook
+            .borrow()
+            .as_ref()
+            .and_then(|hook| hook(self, id));
         Ok(ExecOutput {
-            stdout: self.exec_out.borrow().get(id).cloned().unwrap_or_default(),
+            stdout: hooked
+                .or_else(|| self.exec_out.borrow().get(id).cloned())
+                .unwrap_or_default(),
             stderr: String::new(),
             exit_code: 0,
         })

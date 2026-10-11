@@ -9,6 +9,7 @@ use vivi::pool::fly::FlyctlProvider;
 use vivi::pool::github;
 use vivi::pool::run::{self, CreateOptions, DestroyTarget, SlotOutcome};
 use vivi::pool::slot::SlotStatus;
+use vivi::pool::work as engine;
 
 pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), VivariumError> {
     match command {
@@ -110,8 +111,8 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
     let mut slots = run::pool_status(&provider, &pool)?;
     run::annotate_running(
         &mut slots,
-        &work::open_dispatches(&space)?,
-        work::epoch_secs(),
+        &engine::open_dispatches(&space)?,
+        engine::epoch_secs(),
     );
     if command.json {
         println!(

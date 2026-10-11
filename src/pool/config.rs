@@ -52,8 +52,25 @@ pub struct PoolConfig {
     /// Identity the remote runner commits as; `dispatch` needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committer: Option<PoolCommitter>,
+    /// Source delivered with each slot instead of fetched from `repo`. Never
+    /// read from TOML: only the live self-test of `vivi pool doctor --test`
+    /// sets it.
+    #[serde(skip)]
+    pub embedded: Option<EmbeddedSource>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
+}
+
+/// A small source tree that travels with a slot and becomes a bare Git
+/// remote on the slot's own disk, so jobs fetch and push locally.
+#[derive(Debug, Clone, Default)]
+pub struct EmbeddedSource {
+    /// The `file://` address of the bare remote inside the slot.
+    pub remote: String,
+    /// `(guest path, contents)` of the source files.
+    pub files: Vec<(String, String)>,
+    /// Extra machine environment (for example boot timing).
+    pub env: BTreeMap<String, String>,
 }
 
 /// The `[pool.fly]` table: the settings only the `fly` machine host has.
@@ -175,6 +192,16 @@ impl PoolConfig {
             .app
             .clone()
             .unwrap_or_else(|| self.pool_name(mailspace_name))
+    }
+
+    /// The full Git address jobs and the seed fetch from and push to:
+    /// GitHub for `repo = "owner/name"`, or the embedded source's own remote.
+    #[must_use]
+    pub fn remote_address(&self) -> String {
+        match &self.embedded {
+            Some(source) => source.remote.clone(),
+            None => format!("https://github.com/{}.git", self.repo),
+        }
     }
 
     /// The organization a new application is created in.

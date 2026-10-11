@@ -13,6 +13,7 @@ fn committer() -> PoolCommitter {
 fn plan() -> JobPlan {
     JobPlan {
         job: "0123456789ab".into(),
+        remote: "https://github.com/acme/widgets.git".into(),
         task: "abcd1234".into(),
         subject: "Fix the thing's edge case\nsecond line".into(),
         brief: "do the work\nfrom: main\nbranch: factory/x\n".into(),
@@ -164,6 +165,7 @@ fn the_token_lives_in_exactly_one_file_and_not_where_the_agent_looks() {
 fn the_bundle_carries_what_the_runner_needs() {
     let bundle = build_bundle(&plan(), "p-slot-2", &Secret::new(SECRET.into()));
     let params = text(&bundle, "params.env");
+    assert!(params.contains("REMOTE='https://github.com/acme/widgets.git'\n"));
     assert!(params.contains("FROM='main'\n"));
     assert!(params.contains("BRANCH='factory/x'\n"));
     assert!(params.contains("DEPTH='1'\n"));
@@ -219,4 +221,13 @@ fn an_oversized_brief_is_refused_before_delivery() {
         .collect();
     let err = pack(&build_bundle(&big, "s", &Secret::new("t".into()))).unwrap_err();
     assert!(err.to_string().contains("shorten the brief"), "{err}");
+}
+
+#[test]
+fn a_file_remote_with_no_token_travels_as_given() {
+    let mut local = plan();
+    local.remote = "file:///work/remote.git".into();
+    let bundle = build_bundle(&local, "p-doctor-slot-1", &Secret::new(String::new()));
+    assert!(text(&bundle, "params.env").contains("REMOTE='file:///work/remote.git'\n"));
+    assert_eq!(text(&bundle, "token"), "");
 }

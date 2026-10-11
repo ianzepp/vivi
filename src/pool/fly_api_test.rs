@@ -152,4 +152,25 @@ mod refresh {
         let seen = seen.lock().unwrap();
         assert_ne!(seen[0], seen[1]);
     }
+
+    static GONE: AtomicUsize = AtomicUsize::new(0);
+    #[allow(clippy::unnecessary_wraps)]
+    fn numbered_gone() -> Result<Secret, VivariumError> {
+        Ok(Secret::new(format!(
+            "tok{}",
+            GONE.fetch_add(1, Ordering::SeqCst)
+        )))
+    }
+
+    #[test]
+    fn a_machine_the_api_does_not_know_reads_as_destroyed_other_failures_stay_errors() {
+        let (base, _) = stub(vec![404, 500]);
+        let api = FlyApi::with_parts("app", &base, numbered_gone);
+        let gone = api.machine("m-1").unwrap();
+        assert_eq!(gone.state, "destroyed");
+        assert_eq!(gone.id, "m-1");
+        assert!(gone.metadata.is_empty());
+        let err = api.machine("m-2").unwrap_err().to_string();
+        assert!(err.contains("HTTP 500"), "{err}");
+    }
 }

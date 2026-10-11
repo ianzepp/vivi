@@ -411,6 +411,7 @@ vivi pool dispatch <task> --model <slug> [--from <ref>] [--branch <name>] [--bud
 vivi pool wait [<task>...] [--timeout SECS]
 vivi pool reconcile
 vivi pool doctor [--json]
+vivi pool doctor --test [--long] [--json]
 ```
 
 ### doctor
@@ -438,7 +439,52 @@ when any check fails; warnings alone exit zero. `--json` gives the same data
   script are not detectable and are not checked.
 
 Run it at orchestrator boot and whenever something looks stuck (a dispatch that
-never finishes, a slot that will not free, an unexpected bill).
+never finishes, a slot that will not free, an unexpected bill). An orphaned
+dispatch (its machine no longer exists) is closed by `vivi pool reconcile`: it
+is recorded on the task as `lost` and the task can be dispatched again.
+
+### doctor --test
+
+`vivi pool doctor --test [--long] [--json]` runs the read-only checks, then a
+live exercise that answers two questions apart: is the provider working
+(**Live test: provider**), and is Vivi's own pool machinery working
+(**Live test: Vivi**)? It stops after the read-only checks if the provider
+checks fail; the Repository checks are shown but never block it.
+
+- It creates a throwaway pool `<pool>-doctor` of two of the smallest machines in
+  the same provider application, seed command `true`, no setup commands. It
+  never touches the real pool's slots. **It creates billable machines for a few
+  minutes** (about 3 minutes; `--long` adds about 7 more).
+- Source: a tiny tree carried in the vivi binary, turned into a bare Git remote
+  on each slot's own disk (`file://`). Jobs fetch from and push to that remote.
+  The harness is a built-in shell command that appends a line to a file. No
+  repository, GitHub App, token, model key or harness is used, and the
+  project's mailspace is not written (the throwaway tasks live in a temporary
+  mailspace).
+- Provider steps: create two slots; both reach `free`; start and stop round
+  trip. Vivi steps: two dispatches take two different slots; a third is refused
+  with "no free slot"; `wait` collects a job during the linger; a job past its
+  budget is killed and recorded; a second dispatch continues a pushed branch
+  with a new commit on top (it must land on the slot that holds the branch,
+  since each slot has its own remote); a job finished while nobody waits is
+  collected later from the stopped slot and the slot ends stopped and free;
+  `reconcile` finds and stops a running slot with no dispatch.
+- `--long` adds one step: a `wait` that runs past six minutes (the provider's
+  API token lives about six minutes) and still collects.
+- Every step is `ok`, `fail` (with the side, what was expected and what was
+  observed) or `skipped` (an earlier step failed), with a duration. Exit code is
+  nonzero when anything failed. `--json` adds `millis` to each step.
+- Cleanup always runs, also after a failed step or Ctrl-C (a second Ctrl-C quits
+  at once): the test slots are destroyed and a last step confirms nothing of the
+  test pool remains. If something does, the step names the machines and the
+  command that removes them. Slots left by an earlier killed run are removed
+  first and reported as a warning.
+- Not covered, on purpose: minting a repository token, fetching and pushing
+  against the real repository, repository rules (branch protection), harnesses
+  and models. The plain checks look at the first group; a real dispatch is the
+  only test of the rest.
+- When to run it: after a change to the pool code, before a campaign that
+  depends on the pool, and when something looks stuck.
 
 ### Slot states
 
@@ -544,7 +590,8 @@ never claimed.
 - `vivi pool reconcile` handles every open dispatch once: finished ones are
   collected and their slots freed; one still running past its budget plus a
   15-minute grace is stopped and recorded as a timeout; one whose machine
-  stopped without a result is recorded as lost; one still within budget is
+  stopped without a result, or no longer exists at all, is recorded as lost
+  (and the task can be dispatched again); one still within budget is
   reported `running`. It also frees stale claims (a held slot with no open
   dispatch, claimed more than five minutes ago).
 - Collecting reads the result and the agent's final output from the slot (a
@@ -795,4 +842,6 @@ or place passwords in shell history.
 - A busy slot bills by the second, and a leaked running slot is a cost; run
   `vivi pool doctor` when anything looks stuck.
 - `vivi pool doctor` is read-only; `vivi pool reconcile` is the command that
-  acts.
+  acts. `vivi pool doctor --test` is the exception: it creates and destroys
+  billable machines of its own (`<pool>-doctor`), and never touches the real
+  pool's slots.

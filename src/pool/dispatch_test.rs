@@ -52,6 +52,7 @@ fn pacing() -> Pacing {
         poll: std::time::Duration::ZERO,
         ready_timeout: std::time::Duration::ZERO,
         stop_timeout: std::time::Duration::ZERO,
+        start_grace: std::time::Duration::from_secs(super::super::collect::START_GRACE_SECS),
     }
 }
 

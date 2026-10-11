@@ -99,6 +99,10 @@ impl PoolProvider for FlyctlProvider {
         self.run(&args, &[]).map(|_| ())
     }
 
+    fn destroy_command(&self, id: &str) -> String {
+        format!("fly machine destroy --force {id} -a {}", self.app)
+    }
+
     fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError> {
         self.api.machine(id)
     }

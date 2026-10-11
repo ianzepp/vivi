@@ -42,7 +42,9 @@ fn slot_files_hold_boot_setup_and_seed() {
 fn env_is_parameterised_not_baked_into_the_script() {
     let token = crate::pool::github::Secret::new("tok".to_string());
     let env = slot_env(&config(), &token, &"b".repeat(40));
-    assert_eq!(env["REPO"], "acme/widgets");
+    assert_eq!(env["REMOTE"], "https://github.com/acme/widgets.git");
+    assert!(!env.contains_key("REPO"));
+    assert!(!env.contains_key("SOURCE_DIR"));
     assert_eq!(env["BUILD_DIR"], "out/cache");
     assert_eq!(env["TMPFS_SIZE"], "8g");
     assert_eq!(env["GH_TOKEN"], "tok");
@@ -154,4 +156,72 @@ fn job_runner_has_valid_bash_syntax() {
         };
         assert!(status.success(), "{name}");
     }
+}
+
+fn embedded(config: &PoolConfig) -> PoolConfig {
+    crate::pool::selftest_source::test_config(config, "p-doctor")
+}
+
+#[test]
+fn a_github_pool_sends_the_token_and_an_https_remote() {
+    let token = crate::pool::github::Secret::new("tok".to_string());
+    let env = slot_env(&config(), &token, "main");
+    assert_eq!(env["REMOTE"], "https://github.com/acme/widgets.git");
+    assert_eq!(env["GH_TOKEN"], "tok");
+    assert!(!env.contains_key("SOURCE_DIR"));
+    assert_eq!(slot_files(&config()).len(), 3);
+}
+
+#[test]
+fn an_embedded_source_is_delivered_with_a_file_remote_and_no_token() {
+    let config = embedded(&config());
+    let empty = crate::pool::github::Secret::new(String::new());
+    let env = slot_env(&config, &empty, "main");
+    assert_eq!(env["REMOTE"], "file:///work/remote.git");
+    assert_eq!(env["SOURCE_DIR"], SOURCE_DIR);
+    assert_eq!(env["BASE"], "main");
+    assert!(!env.contains_key("GH_TOKEN"), "{env:?}");
+    assert!(env.contains_key("LINGER") && env.contains_key("IDLE_LIMIT"));
+    let files = slot_files(&config);
+    let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(paths.contains(&"/work/source/README.md"), "{paths:?}");
+    assert!(paths.contains(&"/work/source/notes.txt"));
+    assert!(paths.contains(&"/work/source/.gitignore"));
+    let ignore = files
+        .iter()
+        .find(|(p, _)| p.ends_with(".gitignore"))
+        .unwrap();
+    assert_eq!(ignore.1, "build/\n", "the build mount must not be cleaned");
+}
+
+#[test]
+fn the_boot_script_turns_the_delivered_source_into_a_bare_remote() {
+    for needed in [
+        "remote_url()",
+        r#"git init -q --bare "$LOCAL_REMOTE""#,
+        r#"symbolic-ref HEAD refs/heads/main"#,
+        r#"git push -q "$LOCAL_REMOTE" HEAD:refs/heads/main"#,
+        r#"git fetch -q --depth 1 "$(remote_url)" "$BASE""#,
+        "file://*) LOCAL_REMOTE=${REMOTE#file://}",
+        "seed_failed source",
+        r#"chown -R hand:hand /home/hand "$RD" ${LOCAL_REMOTE:+"$LOCAL_REMOTE"}"#,
+    ] {
+        assert!(BOOT_SCRIPT.contains(needed), "script lacks {needed}");
+    }
+    assert!(!BOOT_SCRIPT.contains("github.com"), "no hard-wired host");
+    assert!(!BOOT_SCRIPT.contains("${REPO}"));
+}
+
+#[test]
+fn the_runner_takes_a_full_remote_and_adds_the_token_only_to_https() {
+    for needed in [
+        r#"URL=$REMOTE"#,
+        r#"https://*) [ -n "$TOKEN" ] && URL="https://x-access-token:${TOKEN}@${REMOTE#https://}""#,
+        r#"git fetch -q --depth "${DEPTH:-1}" "$URL" "$FROM""#,
+        r#"git push -q "$URL" "HEAD:refs/heads/$BRANCH""#,
+    ] {
+        assert!(job::RUNNER.contains(needed), "runner lacks {needed}");
+    }
+    assert!(!job::RUNNER.contains("github.com"));
+    assert!(!job::RUNNER.contains("${REPO}"));
 }

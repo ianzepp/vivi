@@ -28,6 +28,7 @@ fn pacing() -> Pacing {
         poll: Duration::ZERO,
         ready_timeout: Duration::ZERO,
         stop_timeout: Duration::ZERO,
+        start_grace: Duration::from_secs(START_GRACE_SECS),
     }
 }
 
@@ -514,4 +515,22 @@ fn orphan_runners_are_running_unmarked_slots_with_no_dispatch() {
         .map(|s| s.name.as_str())
         .collect();
     assert_eq!(names, ["p-slot-2"]);
+}
+
+#[test]
+fn a_machine_the_provider_no_longer_knows_is_lost_and_closed_not_an_error_forever() {
+    let fake = Fake::default();
+    let mut dispatch = open("aaaa1111", "j1", 1000);
+    dispatch.record.machine = "m-gone".into();
+    let seen = RefCell::new(Vec::new());
+    let mut record = |d: &OpenDispatch, outcome: &Outcome| {
+        seen.borrow_mut().push((d.task.clone(), outcome.word()));
+        Ok(true)
+    };
+    let lines = run_round(&fake, &[dispatch], 1100, &pacing(), &mut record).unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].state, "lost", "{lines:?}");
+    assert!(lines[0].settled());
+    assert_eq!(*seen.borrow(), [("aaaa1111".to_string(), "lost")]);
+    assert_eq!(fake.calls_to("start"), 0, "nothing is started to look");
 }

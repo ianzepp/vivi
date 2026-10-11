@@ -18,7 +18,7 @@ pub enum PoolSubcommand {
     Wait(PoolWaitCommand),
     /// Collect finished dispatches, stop overdue ones, free their slots
     Reconcile(PoolReconcileCommand),
-    /// Check the pool, its provider and its repository; read-only, names the fix for each finding
+    /// Check the pool, its provider and its repository, naming the fix for each finding; read-only unless --test
     Doctor(PoolDoctorCommand),
 }
 
@@ -27,6 +27,17 @@ pub struct PoolDoctorCommand {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+
+    /// Also run a live test of the provider and of Vivi's pool machinery:
+    /// creates two small throwaway slots (billable for a few minutes), runs
+    /// stand-in jobs against an embedded source tree, and destroys them
+    #[arg(long)]
+    pub test: bool,
+
+    /// With --test, add a wait that runs past six minutes (the provider token
+    /// lifetime) and still collects; adds about seven minutes
+    #[arg(long, requires = "test")]
+    pub long: bool,
 
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
