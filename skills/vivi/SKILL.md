@@ -427,7 +427,7 @@ vivi pool create --pool <name> [--slots N] [--base <commit|branch>] [--timeout S
 vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool status [--pool <name>] [--json | --porcelain]
 vivi pool destroy --pool <name> (--slot <name-or-id> | --all) --yes
-vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--porcelain]
+vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--ready-timeout SECS] [--porcelain]   # --ready-timeout: RunPod pools only
 vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>] [--budget SECS] [--porcelain]
 vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
 vivi pool reconcile [--pool <name>] [--porcelain]
@@ -503,7 +503,7 @@ only; no config setting.
   `pushed`, `committed`, `no_changes` or `push_refused`. The paths and the
   receipt are on the task's result record (`task show` / the thread); in the
   `pool_collected` JSON they are the array `discarded`.
-- Porcelain: `dispatched TASK POOL SLOT JOB MODEL FROM START - BUDGET read-only`
+- Porcelain: `dispatched TASK POOL SLOT JOB MODEL FROM START - BUDGET read-only ABANDONED COST`
   (BRANCH is `-`; MODE is `write` otherwise); `slot ... CREATED MODE` shows
   `read-only` for a busy slot with a read-only dispatch (`status --json`:
   `read_only`).
@@ -590,7 +590,7 @@ scale      created ... | home ... | exists ... | issue ...         as create
            skipped POOL NAME ID STATE TASK                         not free, so kept
            scaled POOL TARGET COUNT                                COUNT: slots the pool holds now
 status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE   MODE write|read-only, - with no open dispatch
-dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE       BRANCH - when read-only; MODE write|read-only
+dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST   BRANCH - when read-only; MODE write|read-only; ABANDONED COST: see below
 wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
            nothing-open                                            already collected
            issue POOL KIND SUBJECT MESSAGE FIRST CLEARED           KIND poll-error, SUBJECT the task
@@ -608,6 +608,13 @@ not known (a dispatch recorded before pools were named). `scale` adds
 `destroyed`, `skipped` and `scaled`. Slot names (`NAME`, `SLOT`) now include the
 mailspace. In `--json`, each slot of `status` and each check of `doctor` gained
 `pool`. Human output names the pool on each slot or result line as well.
+
+`ABANDONED` and `COST` are the two trailing fields of `dispatched`, always
+present. `ABANDONED` is the number of pods a RunPod dispatch rented and
+terminated because they never answered on SSH, before the one that worked (`0`
+on every other host). `COST` is their approximate total charge in dollars
+(`0.12`), or `-` when none were abandoned or no price was known. The first ten
+fields are unchanged.
 
 Examples: `collected 3f2a lanes ms-lanes-slot-2 finished "pushed work/x 0123456789"`,
 `created local ms-local-slot-1 m1 stopped 42 0 seeded -`,
@@ -894,7 +901,7 @@ provider below; to use Docker on a remote host, set `[pools.<name>.docker].host`
   provider secret store; slots are namespaced by mailspace and pool, so two
   mailspaces with the same pool name on one daemon do not see each other's
   slots. The image needs `bash`; the boot script installs
-  `git`, `zstd` and `curl` with `apt-get` when they are missing, which needs
+  `git`, `zstd` and `curl` (and `ca-certificates` with them) with `apt-get` when they are missing, which needs
   network. With those tools already in the image, the whole pool, `doctor
   --test` included, runs offline.
 - Slot ids are the first twelve hex digits of the container id; slot names are
@@ -1035,7 +1042,8 @@ provider") costs nothing: no slot was claimed.
   stopped without a result, or no longer exists at all, is recorded as lost
   (and the task can be dispatched again); one still within budget is
   reported `running`. It also frees stale claims (a held slot with no open
-  dispatch, claimed more than five minutes ago).
+  dispatch, claimed more than five minutes ago; a RunPod pool uses a longer
+  grace, see "RunPod provider").
 - Collecting reads the result and the agent's final output from the slot (a
   stopped slot is started, read, and stopped), records a `pool_collected` event
   and a reply on the task (push outcome, exit code, durations, the receipt, log
@@ -1048,7 +1056,7 @@ provider") costs nothing: no slot was claimed.
   stderr when it first appears or changes (`warning: cannot poll ...`) and
   `recovered: ...` when it clears; the final timeout message names the last
   one. The Fly token is re-fetched every minute and after a refusal (a
-  token from `fly auth token` stops working after about five minutes).
+  token from `fly auth token` stops working after about six minutes).
   `reconcile` also stops any running slot that no task holds and no dispatch
   explains. Read the receipt
   with `vivi task show <handle>`.
@@ -1143,16 +1151,16 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
 Config is one `[pools.<name>]` table per pool in `.vivi/mailspace.toml`.
 Everything provider neutral sits in the pool table; the Fly settings sit in
 `[pools.<name>.fly]`, the Docker settings in `[pools.<name>.docker]`, the SSH
-settings in `[pools.<name>.ssh]` and the local settings in `[pools.<name>.local]`. Only the table of the chosen `provider` is
+settings in `[pools.<name>.ssh]`, the local settings in `[pools.<name>.local]` and the RunPod settings in `[pools.<name>.runpod]` (shown under "RunPod provider"). Only the table of the chosen `provider` is
 used and checked beyond its key names. A top-level `[pool]` table is rejected.
 Everything below is per pool and nothing is inherited:
 
 ```toml
 [pools.lanes]
-# provider = "fly"            # default; or "docker", "ssh" or "local"
+# provider = "fly"            # default; or "docker", "ssh", "local" or "runpod"
 repo = "owner/name"           # optional for a provider-only test pool; needed by create/scale-up/dispatch (with [github])
 slots = 4                     # required; maximum pool size
-image = "rust:1.97-bookworm"  # required on fly and docker (Debian-based: needs apt for zstd/git); an error on ssh and local
+image = "rust:1.97-bookworm"  # required on fly, docker and runpod (Debian-based: needs apt for zstd/git); an error on ssh and local
 setup = ["npm install -g some-harness"]   # root, once, before the checkout (login user on ssh)
 seed = ["cargo build"]                    # in the checkout, once, warms build_dir
 # requires = ["command -v some-tool"]     # must exit 0 on a slot, at seed time (see Requirements and facts)
@@ -1224,11 +1232,30 @@ gpu_types = ["NVIDIA A100 80GB PCIe", "NVIDIA H100 PCIe"]   # required, best fir
 gpu_count = 1                   # 1 to 8
 cloud = "secure"                # or "community"
 container_disk_gb = 40
+# ready_timeout = 120           # seconds a new pod gets to answer on SSH; 30 to 1800; default 120
 # min_cuda_version = "12.8"; data_centers = ["EU-RO-1"]
 ```
 
 A different GPU tier is a different pool. The GPU type a pod actually got is in
 the dispatch record and the `dispatch` output.
+
+**When to use it.** RunPod is for work that needs a card you cannot get
+elsewhere. It is not a general lane pool: every dispatch pays for a fresh pod
+and a full seed. Use an image RunPod already caches (its own public images)
+that publishes SSH. Measured on 2026-10-11: a working pod answered on SSH 35 to
+45 seconds after the create call, on three runs.
+
+- **`ready_timeout`**: the longest a newly rented pod gets to answer on SSH
+  (default 120 seconds, 30 to 1800). **A pod that exists but never becomes
+  reachable is billed** (observed 2026-10-11: one RTX 4090 pod never answered).
+  On expiry Vivi terminates that pod, confirms it is gone from RunPod's list,
+  and tries the next entry of `gpu_types`; when every type fails, the dispatch
+  fails. `vivi pool dispatch --ready-timeout <secs>` overrides it for one
+  dispatch (same range; a usage error on Fly, Docker, SSH and local pools). Each
+  abandoned pod is reported on standard error with its id, GPU type, seconds
+  waited and an approximate charge (hourly price x time); the dispatch line, the
+  task reply and the dispatch record carry the count and the total. Seeding has
+  its own 30-minute limit, counted from the pod answering on SSH.
 
 - **Commands**: `create` and scale-up are refused with an explanation (nothing
   is made ahead of a job). `scale N` and `destroy` terminate pods and wait until
@@ -1240,12 +1267,18 @@ the dispatch record and the `dispatch` output.
   artifact or output-file collection today, so a job that must keep something
   has to push it.
 - **Cost safeguards, with limits.** (1) `pod create --terminate-after` at
-  dispatch + 30 min setup + budget + 15 min: *not verified that RunPod fires it
-  with no client running*. (2) Collection terminates the pod: needs Vivi to run.
+  dispatch + setup worst case + budget + 15 min, where the setup worst case is
+  (number of `gpu_types` x the ready timeout in force) + 30 min seeding. **Do
+  not rely on it**: on 2026-10-11 a CPU pod created with `--terminate-after` was
+  still running 12 minutes past that time and had to be deleted by hand.
+  (2) Collection terminates the pod: needs Vivi to run, so **always collect a
+  RunPod dispatch promptly** (`wait` in the background, or `reconcile`).
   (3) A failed dispatch terminates its own pod; if that fails, the error says
   the pod is still billing, its deadline, and the command that ends it.
   (4) `reconcile` terminates a pod of the pool that no dispatch explains, once
-  it is older than 31 minutes. (5) `doctor` lists the pool's pods with run time
+  it is older than the setup worst case plus one minute, computed with the
+  pool's `ready_timeout` (35 minutes for two GPU types at the default). A
+  dispatch that passed a longer `--ready-timeout` is not covered by that grace. (5) `doctor` lists the pool's pods with run time
   and hourly price, fails on pods past their deadline, and fails on stray pods
   (Vivi's name prefix, a pool this mailspace no longer has, or a malformed
   name) as "billing until terminated". It never touches another mailspace's
@@ -1278,7 +1311,8 @@ the dispatch record and the `dispatch` output.
 - **doctor** is read-only: `runpodctl` and version; key file and mode; the API
   accepts the key (identity and balance only); SSH keys on the account; local
   `ssh` and `ssh-keyscan`; each GPU type against the live market; image name;
-  the pool's pods; strays.
+  the pool's pods; strays; the ready timeout in force and the worst-case wait
+  across all GPU types.
 - **`doctor --test` does not spend by default.** It refuses, says it would rent
   a pod, quotes the first type's hourly price when readable, and says
   `--allow-spend` is needed. With `--allow-spend` (valid only with `--test`) it
@@ -1291,11 +1325,17 @@ the dispatch record and the `dispatch` output.
   `doctor --test --allow-spend` run (2026-10-11, one pod, 51 seconds)**: pod
   creation, name acceptance, host key capture and the SSH scripts on a real
   pod, root-mode boot on a RunPod image, collection, termination plus the
-  absence check. **Still not verified live**: `--terminate-after` firing with
-  no client, fallback to a second GPU type and the no-capacity failure text,
-  creation-time ordering and list lag, state words of stopped or terminating
-  pods, a dispatch against a real repository, and the harness-environment
-  path. The self-test does not run a pool's `requires` or `facts`.
+  absence check. **Verified live by one dispatch (2026-10-11)**: fallback to
+  the second GPU type when the first pod never became reachable (before
+  `ready_timeout` existed, after a ten-minute wait). **Checked live and found
+  not to work**: `--terminate-after` (see the cost safeguards). **Still not
+  verified live**: the `ready_timeout` path itself (the id in `runpodctl`'s
+  timeout error, the termination and absence check that follow, the reported
+  cost: tested against a fake account only; if the error names no pod and the
+  list does not show it yet, the pod stays until something terminates it), the
+  no-capacity failure text, creation-time ordering and list lag, state words of
+  stopped or terminating pods, a collected dispatch against a real repository,
+  and the harness-environment path. The self-test does not run a pool's `requires` or `facts`.
 
 ## Watches and Cycle Intake
 
