@@ -38,7 +38,8 @@ The three share no code and no data. The mailspace lives at
 
 ## Agent skills
 
-Agent-facing guidance ships as three skills under `skills/`:
+Agent-facing guidance ships as three skills under `skills/`, and the same
+trees are embedded in the binary (`vivi skills list|show|install`):
 
 - [`skills/vivi/SKILL.md`](skills/vivi/SKILL.md): the CLI. Load it for
   mailspace, role, goal, graph, and pool usage. Verify live `--help` before

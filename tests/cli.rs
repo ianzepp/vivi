@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use vivi::cli::{
     Cli, Command, CycleCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
-    MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, TaskCommand,
-    TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand, WantSendCommand,
+    MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, SkillsCommand,
+    TaskCommand, TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand, WantSendCommand,
 };
 
 #[test]
@@ -1328,4 +1328,46 @@ fn parses_pool_doctor_test_and_long() {
         (true, true, true)
     );
     assert!(parse(&["--long"]).is_err(), "--long needs --test");
+}
+
+#[test]
+fn parses_skills_list_show_and_install() {
+    let list = Cli::try_parse_from(["vivi", "skills", "list", "--json"]).unwrap();
+    match list.command {
+        Command::Skills {
+            command: SkillsCommand::List { json },
+        } => assert!(json),
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let show = Cli::try_parse_from([
+        "vivi",
+        "skills",
+        "show",
+        "vivi",
+        "--file",
+        "references/work-graph-flow.md",
+    ])
+    .unwrap();
+    match show.command {
+        Command::Skills {
+            command: SkillsCommand::Show { name, file },
+        } => {
+            assert_eq!(name, "vivi");
+            assert_eq!(file.as_deref(), Some("references/work-graph-flow.md"));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let install =
+        Cli::try_parse_from(["vivi", "skills", "install", "/tmp/skills", "--force"]).unwrap();
+    match install.command {
+        Command::Skills {
+            command: SkillsCommand::Install { dir, force },
+        } => {
+            assert_eq!(dir.as_os_str(), "/tmp/skills");
+            assert!(force);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
 }

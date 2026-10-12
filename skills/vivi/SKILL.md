@@ -26,6 +26,23 @@ Email (IMAP and SMTP, the local archive, search, drafts) is not part of this
 CLI: it is the separate `vivi-mail` tool. `vivi mail` is project-local mail
 only, with no external side effects.
 
+## Embedded skills
+
+This binary carries the `vivi`, `tugboat`, and `speedboat` skills. Their
+text matches `vivi --version`. Prefer the embedded copy over a checkout of
+`skills/` when the installed binary may be older or newer than that tree.
+
+```sh
+vivi skills list
+vivi skills show vivi
+vivi skills show vivi --file references/work-graph-flow.md
+vivi skills install ~/.agents/skills
+```
+
+`show` without `--file` prints `SKILL.md` and lists every supporting file
+(so relative links can be requested). `install` writes the same layout the
+repository uses; `--force` overwrites. Skills do not need a mailspace.
+
 ## Project Mailspaces
 
 A project mailspace is durable coordination state. Use these kinds

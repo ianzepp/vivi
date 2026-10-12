@@ -18,6 +18,7 @@ pub mod message;
 pub mod pool;
 pub mod role_schedule;
 pub mod role_status;
+pub mod skills;
 pub mod stdout_budget;
 pub mod storage;
 pub mod store;

@@ -31,6 +31,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Cycle { command } => handle_cycle_command(command),
         Command::Trace(command) => handle_trace_command(command),
         Command::Graph { command } => crate::local_graph_command::handle_graph_command(command),
+        Command::Skills { command } => crate::local_skills_command::handle_skills_command(command),
         Command::Step {
             apply,
             project,
