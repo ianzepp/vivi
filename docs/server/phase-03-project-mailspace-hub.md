@@ -438,16 +438,26 @@ in the design conversation apply:
 - Migration of the rooms and messages already on the staging and production
   services, and how long the rooms API stays alongside the new one.
 - The MCP tool list of the first cut and its role permissions (item 15).
-- Where the transport fields live in the server mailspace. Verbatim ingest
-  is public API in `vivi` (`Storage::ingest_if_absent`, `ingest_message`,
-  and `Mailspace::deliver_raw`), but the client's filing (`sync::filer`) is
-  `pub(crate)` and tied to client pull types. The server holds every
-  member's letters, so it needs one row per letter and queries by
-  recipient prefix and kind, not per-role delivery. `sequence` maps onto
-  the existing `remote_bindings` uid; `appended_at` and `from_prefix` have
-  no column and need a decision (an ingest event, a table beside the
-  mailspace, or a small public addition to `vivi`). A spike settles this
-  before the store is built.
+- **Spike result (2026-10-12, `tests/spike_mailspace_store.rs`).** The
+  server can hold a project as a real vivi mailspace with the public `vivi`
+  API alone; no `vivi` change is required to start. Verified: a letter
+  ingested through `Storage::ingest_if_absent` under its presented id is
+  stored byte for byte under its content hash; the index answers from,
+  to, subject, role and handle without reading the `.eml`; a replay is a
+  no-op and writes no event; a different body under a held id is refused
+  as a conflict; everything survives a reopen. `sequence` rides the
+  remote-binding uid. `appended_at`, `from_prefix` and the content hash
+  ride the ingest event's note, written in the same transaction and only
+  when a row is inserted. The filer is not needed: the server files every
+  letter under one account and a role by kind. Two gaps remain. First,
+  `ingest_if_absent` opens its own transaction, so it cannot be batched
+  with other writes. Second, there is no public cursor or recipient query
+  (`sequence > N LIMIT K`, `to = prefix`): listing filters index rows in
+  Rust, which never reads an `.eml` but is O(rows) per call, and the
+  transport fields sit in JSON note text rather than indexed columns. The
+  fix is either a small cursor/recipient query added to `vivi`, or SQL run
+  by the server beside the mailspace; decide at build time, since neither
+  blocks the store.
 
 ## Effect on pending work
 
