@@ -1402,8 +1402,9 @@ The config holds a key path and variable names, never a key or a value.
 
 ### RunPod provider
 
-`provider = "runpod"` rents one GPU pod per dispatch (RunPod, via `runpodctl`)
-and reaches it over SSH. **A pod bills by the second from the moment it exists
+`provider = "runpod"` rents one pod per dispatch (RunPod, via `runpodctl`)
+and reaches it over SSH: GPU pods by default, or CPU pods with
+`runpod.compute = "cpu"`. **A pod bills by the second from the moment it exists
 and a stopped pod keeps nothing, so there are no resting slots.** `slots` is
 the most pods that may exist at once. Do not invent a warm pool, a reseed, an
 idle pod or a "keep it for the next job" option; none exists.
@@ -1412,7 +1413,7 @@ idle pod or a "keep it for the next job" option; none exists.
 [pools.gpu]
 provider = "runpod"
 slots = 2                       # ceiling on simultaneous pods
-image = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-runtime-ubuntu22.04"
+image = "runpod/base:1.0.2-ubuntu2404"   # an image that starts sshd itself (see below)
 # repo, github, harness, committer, setup, seed, requires, facts as usual
 
 [pools.gpu.runpod]
@@ -1421,6 +1422,8 @@ gpu_types = ["NVIDIA A100 80GB PCIe", "NVIDIA H100 PCIe"]   # required, best fir
 gpu_count = 1                   # 1 to 8
 cloud = "secure"                # or "community"
 container_disk_gb = 40
+# compute = "gpu"               # or "cpu": a CPU pool (then no gpu_types, gpu_count or
+                                # min_cuda_version, and container_disk_gb is capped at 20)
 # ready_timeout = 120           # seconds a new pod gets to answer on SSH; 30 to 1800; default 120
 # min_cuda_version = "12.8"; data_centers = ["EU-RO-1"]
 ```
@@ -1432,7 +1435,27 @@ the dispatch record and the `dispatch` output.
 elsewhere. It is not a general lane pool: every dispatch pays for a fresh pod
 and a full seed. Use an image RunPod already caches (its own public images)
 that publishes SSH. Measured on 2026-10-11: a working pod answered on SSH 35 to
-45 seconds after the create call, on three runs.
+45 seconds after the create call, on three runs. CPU pods (`compute = "cpu"`)
+are small — 2 vCPU was observed — and cheap ($0.06/h observed): a mid-size
+Rust crate seeds on them in a few minutes, which is fine for everything that
+is not a million-line build.
+
+- **The image must publish SSH itself, on both tiers.** A stock registry image
+  (a `rust:*` image, say) rents fine and then never answers: on CPU pods the
+  REST path runpodctl uses cannot request RunPod-managed SSH at all, and on
+  GPU pods the managed request still left the SSH port unallocated for the
+  whole `--wait` window (observed live 2026-10-12, both tiers; the pod was
+  terminated, ~$0.02, and the next GPU type was tried before the dispatch
+  refused). Use an official RunPod image that starts sshd, such as the
+  `runpod/base:<tag>-ubuntu*` family, and install the toolchain and harness
+  through `setup`.
+- **A root-installed toolchain is invisible to the worker user.** `setup` runs
+  as root, but the facts and the agent run as `hand`: a rustup under `/root`
+  cannot be reached (its home is mode 700, and the rustup proxies need
+  `RUSTUP_HOME` besides). Install with `RUSTUP_HOME=/opt/rustup
+  CARGO_HOME=/opt/cargo`, `chmod -R a+rX` both, and symlink the **real**
+  toolchain binaries (`/opt/rustup/toolchains/*/bin/*`) into `/usr/bin`; a
+  `cargo --version` entry in `facts` proves the worker-side view.
 
 - **`ready_timeout`**: the longest a newly rented pod gets to answer on SSH
   (default 120 seconds, 30 to 1800). **A pod that exists but never becomes
@@ -1521,14 +1544,22 @@ that publishes SSH. Measured on 2026-10-11: a working pod answered on SSH 35 to
   read-only dispatch against a real repository (2026-10-11)**: token, fetch,
   `facts` recorded from the rented card, and `reconcile` collecting the
   finished job from the still-running pod 55 minutes later, then terminating
-  it and confirming it gone. **Checked live and found not to work**: `--terminate-after` (see the cost safeguards). **Still not
+  it and confirming it gone. **Verified live, CPU tier (2026-10-12)**:
+  `compute = "cpu"` create, self-test, a read-only dispatch
+  (`read_only_unchanged`) and a write dispatch that pushes a branch, all
+  against the real repository on `runpod/base` pods (2 vCPU, $0.06/h, whole
+  dispatches 4-7 minutes each); the API's CPU disk cap surfaced as
+  `Container Disk must be less than or equal to 20` (validation now enforces
+  it). **Verified live, GPU tier (2026-10-12)**: self-test plus read-only and
+  write dispatches on an L4 with the same base-image setup, the harness
+  environment reaching the agent, and an sshd-less image failing to answer on
+  SSH on both tiers (see the image rule above). **Checked live and found not to work**: `--terminate-after` (see the cost safeguards). **Still not
   verified live**: the `ready_timeout` path itself (the id in `runpodctl`'s
   timeout error, the termination and absence check that follow, the reported
   cost: tested against a fake account only; if the error names no pod and the
   list does not show it yet, the pod stays until something terminates it), the
-  no-capacity failure text, creation-time ordering and list lag, state words of
-  stopped or terminating pods, a write dispatch that pushes a branch, and the
-  harness-environment path. The self-test does not run a pool's `requires` or `facts`.
+  no-capacity failure text, creation-time ordering and list lag, and state words of
+  stopped or terminating pods. The self-test does not run a pool's `requires` or `facts`.
 
 ## Watches and Cycle Intake
 
