@@ -34,9 +34,9 @@ what has actually been completed.
 
 ## Install
 
-Current release: **10.2.0**
+Current release: **11.0.0**
 ([GitHub releases](https://github.com/ianzepp/vivi/releases),
-[notes](docs/release-v10.2.0.md)).
+[notes](docs/release-v11.0.0.md)).
 
 Release binaries are published as assets on this repository's GitHub releases,
 and that is the only distribution channel — there is no package-manager formula
@@ -1513,14 +1513,20 @@ Rules:
 
 ## Commands
 
-`vivi --help` is the live top-level list. In 10.2.0 that is: `board`, `boot`,
-`chat`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `goal`, `role`,
-`cycle`, `trace`, `graph`, `step`.
+`vivi --help` is the live top-level list. In 11.0.0 that is: `board`, `boot`,
+`chat`, `sync`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `rule`,
+`goal`, `pool`, `role`, `cycle`, `trace`, `graph`, `step`.
 
-After 10.2.0 the tree also has `pool` (remote lane pool: create, status, destroy, dispatch, wait, reconcile, doctor) and `rule`: project rules every seat can read.
-`--local` marks a rule that a later sync should skip. Nothing syncs rules yet.
+`pool` is the remote lane pool (create, status, destroy, scale, dispatch, wait,
+reconcile, doctor). `rule` holds project rules every seat can read; `--local`
+marks a rule that a later sync should skip, and nothing syncs rules yet.
 
-`chat` is new in 10.2.0: `vivi chat room create`, `join`, `rooms`, `send`,
+A worker's `done` is a report. Only the item's author, or a role of kind
+`mind`, accepts it; the acceptance completes the work, unlocks its dependents,
+and travels to every checkout as an event letter. `vivi step` lists reported
+work as `awaiting_acceptance`, and `vivi graph ready` has a `reported` line.
+
+`chat` (since 10.2.0): `vivi chat room create`, `join`, `rooms`, `send`,
 `read`, `watch`, `flush`, `pull`, `resync`, `prune`, `leave`, and `status`
 connect two vivi checkouts anywhere on the internet through a public
 rendezvous server — rooms are real mailspaces, identity is a transparent
