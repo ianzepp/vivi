@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tempfile::tempdir;
-use vivi::skills::{self, catalog};
+
+use crate::skills::{self, catalog};
 
 #[test]
 fn catalog_has_the_three_shipped_skills_at_crate_version() {
@@ -53,10 +54,14 @@ fn show_defaults_to_skill_md_and_rejects_escapes() {
     assert!(err.contains("unknown skill 'nope'"), "{err}");
     assert!(err.contains("vivi"), "{err}");
 
-    let err = skills::show("vivi", Some("../Cargo.toml")).unwrap_err().to_string();
+    let err = skills::show("vivi", Some("../Cargo.toml"))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("inside the skill"), "{err}");
 
-    let err = skills::show("vivi", Some("missing.md")).unwrap_err().to_string();
+    let err = skills::show("vivi", Some("missing.md"))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("unknown file 'missing.md'"), "{err}");
     assert!(err.contains("SKILL.md"), "{err}");
 }

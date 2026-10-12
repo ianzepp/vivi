@@ -244,15 +244,12 @@ fn escapes_skill(path: &str) -> bool {
 }
 
 fn unknown_file(name: &str, requested: &str, skill: &Skill) -> VivariumError {
-    let list = skill
-        .file_names()
-        .into_iter()
-        .map(|path| format!("  {path}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    VivariumError::Other(format!(
-        "unknown file '{requested}' in skill '{name}'\nfiles:\n{list}"
-    ))
+    let mut message = format!("unknown file '{requested}' in skill '{name}'\nfiles:");
+    for path in skill.file_names() {
+        message.push_str("\n  ");
+        message.push_str(path);
+    }
+    VivariumError::Other(message)
 }
 
 fn refuse_existing(dir: &Path, skills: &[Skill]) -> Result<(), VivariumError> {
@@ -284,10 +281,10 @@ fn write_skill(dir: &Path, skill: &Skill) -> Result<usize, VivariumError> {
 
 #[cfg(unix)]
 fn set_script_mode(dest: &Path, rel: &str) -> Result<(), VivariumError> {
+    use std::os::unix::fs::PermissionsExt;
     if !rel.starts_with("scripts/") {
         return Ok(());
     }
-    use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(dest)?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(dest, perms)?;
@@ -298,3 +295,7 @@ fn set_script_mode(dest: &Path, rel: &str) -> Result<(), VivariumError> {
 fn set_script_mode(_dest: &Path, _rel: &str) -> Result<(), VivariumError> {
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "skills_test.rs"]
+mod tests;

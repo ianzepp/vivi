@@ -1,6 +1,7 @@
 //! Embed every file under `skills/` so the binary's skill text matches its version.
 
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,9 +25,11 @@ fn main() -> io::Result<()> {
     );
     for rel in &files {
         println!("cargo:rerun-if-changed=skills/{rel}");
-        body.push_str(&format!(
-            "    ({rel:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/skills/{rel}\"))),\n"
-        ));
+        writeln!(
+            body,
+            "    ({rel:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/skills/{rel}\"))),",
+        )
+        .expect("write generated catalog line");
     }
     body.push_str("];\n");
     fs::write(out, body)?;
