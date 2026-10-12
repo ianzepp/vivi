@@ -790,7 +790,8 @@ checks fail; the Repository checks are shown but never block it.
   adds about 7 more). **On Docker it costs nothing**: two containers on your
   daemon, removed afterwards, about 1.5 minutes with a local daemon and an
   image that is present (`--long` adds about 7 more, the job really sleeps past
-  six minutes). On a local Docker daemon it is the free check to run after any
+  six minutes); a daemon reached over `ssh://` takes a little longer, one SSH
+  round trip per call. On a local Docker daemon it is the free check to run after any
   change to the pool code, whichever host the real pool uses. **On SSH it
   makes two slot directories** under `<root>/<mailspace>/<pool>-doctor/` and removes them
   (with the root, if Vivi made it): about 1 minute (`--long` adds about 7). **On local it makes two slot directories** under
@@ -887,6 +888,10 @@ facts    = ["gpu-query --name --driver --memory --csv", "uname -srm"]
   job**; it is recorded as failed (`timed out` for a time-out). Shown on the task
   result under `--- facts`, before the receipt, and in the `pool_collected`
   JSON as `facts: [{command, exit, output}]`. Not in `--porcelain` lines.
+  Prefer commands that print what the machine already holds: a fact that makes
+  a toolchain manager download (a rustup shim resolving `rustc --version` on a
+  rust image) meets the clean environment and the limits, and puts a failure
+  in every receipt; `cargo --version` prints without one.
 - Both are trusted configuration; their output is data (control characters
   dropped, escaped in the result file, never evaluated). `doctor --test`
   ignores both.
@@ -941,8 +946,10 @@ facts    = ["gpu-query --name --driver --memory --csv", "uname -srm"]
 client library is involved, so a local and a remote daemon go through the same
 code: `[pools.<name>.docker] host = "ssh://user@server"` is passed to the CLI as
 `DOCKER_HOST`; omit it for the local daemon (or whatever your own
-`DOCKER_HOST` names). (A plain SSH host without Docker is the separate `ssh`
-provider below; to use Docker on a remote host, set `[pools.<name>.docker].host`.)
+`DOCKER_HOST` names). An `ssh://` host can be a bare name your ssh config
+resolves (`ssh://server`); every shape the docker CLI accepts works. (A plain
+SSH host without Docker is the separate `ssh` provider below; to use Docker on
+a remote host, set `[pools.<name>.docker].host`.)
 
 - A slot is a container. A stopped container is a slot at rest and its writable
   layer is the persistent disk; its main process is the boot script, so it
@@ -951,7 +958,11 @@ provider below; to use Docker on a remote host, set `[pools.<name>.docker].host`
 - The memory disk over `build_dir` is a tmpfs mount declared when the container
   is created (`/work/repo/<build_dir>`, with `exec`), because the script cannot
   mount without privileges. The boot script skips its own mount when
-  `BUILD_MOUNTED` is set. The tmpfs counts against the container's memory limit.
+  `BUILD_MOUNTED` is set. The tmpfs counts against the container's memory
+  limit. Size `tmpfs` from the build output the seed actually produces
+  (measure the repository's build directory on a machine that has one) plus
+  headroom: a full tmpfs fails the build, and resizing means re-creating
+  the slots.
 - Labels cannot change after creation, so they hold only fixed facts:
   `vivi_pool` (pool name), `vivi_pool_mailspace` (mailspace slug), `vivi_pool_slot`, `vivi_pool_base`,
   `vivi_pool_role=slot`. The architecture and the seed mark (`vivi_pool_state`)
@@ -1073,6 +1084,34 @@ slots = 4
   hard link of a complete file, atomic across processes); nothing else is kept.
   Harness `env` values are read from the environment of the `vivi` process when
   the job runs; `doctor` names the unset names and no value is stored.
+
+### Bringing up a new pool
+
+The order that reaches a working pool with the least rework. Everything here
+is read-only or free except `doctor --test`, which spends only on Fly
+(billable machines for a few minutes) and RunPod (which refuses without
+`--allow-spend`).
+
+1. Configure the pool with **provider settings only** — no `repo`, `[github]`,
+   `[harness]`, `[committer]`. That much is valid: `status`, `doctor` and
+   `doctor --test` all run, so the host is proven before anything else exists.
+   On Docker the self-test is two throwaway containers on the daemon.
+2. Add `repo` and `[github]`, then `vivi pool doctor` again: it mints a real
+   repository token and resolves the default branch. Later steps depend on
+   this passing.
+3. Decide the harness and its key names **before** creating slots. `setup`
+   installs the harness once per slot at create, and on Docker the
+   `harness.env` values are read from your environment at create and live in
+   the container's config; changing either later means destroy and re-create.
+   A `facts` entry printing the harness `--version` names what each job ran.
+4. `vivi pool create --pool <name>` (RunPod has no create: dispatch rents),
+   then `vivi pool doctor` once more: every slot should read seeded and free.
+5. Smoke both dispatch modes, one throwaway task each: a `--read-only` recon
+   job (expect `read_only_unchanged`; read the receipt) and a one-file write
+   job to a scratch branch (expect `pushed`; verify the branch on the remote,
+   then delete it). Collect with `vivi pool wait`.
+6. Close the smoke tasks (`task done` by the author or a mind) so no backlog
+   node stays open.
 
 ### Using the pool (orchestrator procedure)
 
@@ -1304,7 +1343,10 @@ email = "lane-bot@users.noreply.github.com"
 `run` is a shell command; `{model}`, `{brief}` and `{rules}` are the only
 placeholders (the brief and rules are files inside the slot). Its standard
 output is the receipt. Use a print mode that writes only the final answer.
-Validation runs when a `vivi pool` command starts, and rejects misspelled keys.
+The harness a slot's `setup` installs is what its package source serves at
+create time — possibly newer than the copy on the machine you dispatch from —
+so a `facts` entry printing the harness `--version` names what each job
+actually ran. Validation runs when a `vivi pool` command starts, and rejects misspelled keys.
 The config holds a key path and variable names, never a key or a value.
 
 ### RunPod provider
