@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased — letters (2026-10-11)
+## 1.0.0 — 2026-10-11
+
+A project is now the unit of sync. Members of one project push and pull the
+letters of their vivi mailspaces through this server: stored sealed, byte for
+byte, never parsed, with per-member visibility, paged history, and lookup by
+handle. The rooms contract from 0.1.0 is unchanged, so vivi 10.2 chat clients
+keep working. The project wire needs the vivi 11 client (`vivi sync`).
+
+The server builds against vivi 11.0.0, pinned by tag; it followed `main`
+before. Acceptance: `scripts/project-sync-smoke.sh` (84 legs against a local
+server and two synced checkouts) and `scripts/two-checkout-smoke.sh` (rooms).
+The two sections below record how the wire arrived.
+
+### Letters (2026-10-11)
 
 Items travel as raw `.eml` letters, byte for byte (decided item 10). A push
 is `PUT /v1/projects/{id}/items/{message_id}` with the letter as the request
@@ -48,7 +61,7 @@ raw letters exceed 8 MiB), so a client must loop on `has_more`, saving
 `next_cursor` after each page. A client that ignored `has_more` and read one
 response will silently see only the first page of a long history.
 
-## Unreleased — phase 03 core (2026-10-10)
+### Project core (2026-10-10)
 
 The project, not the room, is the tenant: `/v1/projects` is the new wire,
 additive alongside the frozen rooms contract. One sealed vivi mailspace per

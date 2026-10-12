@@ -73,7 +73,7 @@ if [ "$LOCAL" = 1 ]; then
   : >/tmp/vc8-server.log
   boot_server
 fi
-curl -s -m 15 "$BASE/healthz" | grep -q '"ok"' && ok "server up" || bad "server up"
+curl -s -m 15 "$BASE/healthz" | grep '"ok"' >/dev/null && ok "server up" || bad "server up"
 
 # creator key + room (server wants the SPKI PUBLIC KEY pem, not PKCS#8 private)
 openssl genpkey -algorithm ed25519 -out /tmp/vc8-creator.pem 2>/dev/null
@@ -121,7 +121,9 @@ grep -q 'alpha.checkout-a' /tmp/vc8-read1.log && ok "origin label rendered" || b
 # and files on B under the same handle and the same bytes. Counts in `chat pull`
 # summaries are not asserted (earlier legs left traffic in the room); outcomes
 # are, through the mailspace itself.
-open_has() { "$VIVI" "$1" list --for mind --status open --project "$2" 2>&1 | grep -q "$3"; }
+# grep reads to the end (no -q): an early exit would close the pipe on vivi, which
+# fails on a broken pipe and, under pipefail, turns a match into a failure.
+open_has() { "$VIVI" "$1" list --for mind --status open --project "$2" 2>&1 | grep "$3" >/dev/null; }
 content_of() { "$VIVI" need show "$1" --project "$2" 2>&1 | grep -m1 '^Content:'; }
 PRIOR=$("$VIVI" need send --from mind --to mind --subject "prior local need" --body "an earlier local item" --project "$A" 2>/dev/null | awk '/^created/ {print $3}')
 [ -n "$PRIOR" ] && ok "A filed a prior local need ($PRIOR)" || bad "A prior local need"
@@ -141,7 +143,7 @@ grep -q "^done $NEED" /tmp/vc8-need-done.log && ! open_has need "$B" "$NEED" && 
 # No automatic receipt yet (vivi open item 2): the receipt is a reply sent by hand.
 "$VIVI" chat send "$ROOM" --reply-to "$NEED" --subject "done" --body "closed $NEED" --project "$B" >/tmp/vc8-receipt.log 2>&1
 "$VIVI" chat pull --project "$A" >/tmp/vc8-pull-a2.log 2>&1
-grep -q 'reply link' /tmp/vc8-pull-a2.log && "$VIVI" need show "$NEED" --project "$A" 2>&1 | grep -qE '^Thread \(([2-9]|[0-9]{2,}) message' \
+grep -q 'reply link' /tmp/vc8-pull-a2.log && "$VIVI" need show "$NEED" --project "$A" 2>&1 | grep -E '^Thread \(([2-9]|[0-9]{2,}) message' >/dev/null \
   && ok "the receipt lands on A and threads to the original" || { bad "receipt did not thread to the original"; cat /tmp/vc8-pull-a2.log; }
 # The server shows every seat the whole room; the client files only what is for it.
 "$VIVI" chat send "$ROOM" --kind task --to smoke-creator --subject "not for B" --body "directed elsewhere" --project "$A" >/tmp/vc8-dtask.log 2>&1
@@ -176,7 +178,7 @@ blob_set() { find "$B/.vivi/blobs" -type f -exec sha256sum {} + 2>/dev/null | so
 "$VIVI" chat pull --project "$B" >/dev/null 2>&1   # B must be caught up before the snapshot
 echo "waiting for the need to age past the 1m prune cutoff (polling the dry run)"
 for _ in $(seq 1 18); do
-  "$VIVI" chat prune --older-than 1m --dry-run --project "$B" 2>&1 | grep -q "$NEED" && break
+  "$VIVI" chat prune --older-than 1m --dry-run --project "$B" 2>&1 | grep "$NEED" >/dev/null && break
   sleep 10
 done
 BEFORE=$(blob_set); NBEFORE=$(echo "$BEFORE" | wc -l)

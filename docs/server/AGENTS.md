@@ -119,7 +119,9 @@ run it for changes that touch the wire or the `vivi` dependency.
 
 ## Dependency on `vivi`
 
-`Cargo.toml` tracks `vivi` on `branch = "main"` and `Cargo.lock` pins the
-exact commit. Keep the lockfile on the `vivi` git source: the `.cargo` path
+`Cargo.toml` pins `vivi` to a release tag (`tag = "v11.0.0"`) and `Cargo.lock`
+pins the exact commit. Move it by changing the tag, running
+`cargo update -p vivi`, and running both smokes. Keep the lockfile on the
+`vivi` git source: the `.cargo` path
 patch used for local development is git-ignored and must never be committed
 (a lockfile that resolved to the path patch fails on Railway).

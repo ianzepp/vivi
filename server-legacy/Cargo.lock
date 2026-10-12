@@ -2335,8 +2335,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vivi"
-version = "10.1.0"
-source = "git+https://github.com/ianzepp/vivi?branch=main#3b45ebd5914a2dc6871aaaff3b206e556d40635f"
+version = "11.0.0"
+source = "git+https://github.com/ianzepp/vivi?tag=v11.0.0#35ae100f798c7eef29b6fca550a48bcb20501e07"
 dependencies = [
  "chrono",
  "clap",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "axum",

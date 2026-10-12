@@ -1,6 +1,6 @@
 [package]
 name = "vivi-server"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Public chat substrate server hosting persistent vivi mailspace rooms"
 
@@ -19,7 +19,7 @@ subtle = "2"
 base64 = "0.22"
 chrono = "0.4"
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
-vivi = { git = "https://github.com/ianzepp/vivi", branch = "main" }
+vivi = { git = "https://github.com/ianzepp/vivi", tag = "v11.0.0" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
