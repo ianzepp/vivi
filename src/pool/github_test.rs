@@ -12,7 +12,7 @@ fn signing_input_carries_rs256_header_and_claims() {
     let input = jwt_signing_input(5_268_371, 1_000_000);
     let (header, claims) = input.split_once('.').unwrap();
     assert_eq!(header, b64url(br#"{"alg":"RS256","typ":"JWT"}"#));
-    let decoded = crate::chat::b64::decode(&pad(claims)).unwrap();
+    let decoded = crate::b64::decode(&pad(claims)).unwrap();
     let claims: Value = serde_json::from_slice(&decoded).unwrap();
     assert_eq!(claims["iss"], "5268371");
     assert_eq!(claims["iat"], 999_970);

@@ -5,14 +5,12 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 mod board_command;
-mod chat_command;
 mod mailspace_command;
 mod pool_command;
 mod role_command;
 mod sync_command;
 
 pub use board_command::BoardCommand;
-pub use chat_command::{ChatCommand, ChatSendCommand, ChatSubcommand, RoomSubcommand};
 pub use mailspace_command::{
     AbsorbCommand, CycleCommand, GoalCommand, GraphActivateCommand, GraphApplyCommand,
     GraphAuditCommand, GraphCommand, GraphCompleteCommand, GraphConnectCommand,
@@ -63,12 +61,6 @@ pub enum Command {
         /// Project root that owns .vivi/ (also accepted globally: vivi --project <ROOT> boot)
         #[arg(long)]
         project: Option<PathBuf>,
-    },
-
-    /// Chat client: identity, joined rooms, and outbox status
-    Chat {
-        #[command(subcommand)]
-        command: ChatSubcommand,
     },
 
     /// Push local letters to a project server, then pull what other members pushed

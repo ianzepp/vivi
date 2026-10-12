@@ -8,8 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::chat::b64;
-use crate::chat::item;
+use crate::b64;
 use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, prefix_of_domain};
 use crate::storage::{
@@ -119,7 +118,7 @@ impl<'a> Filer<'a> {
         }
         // Event letters and work items are settled against each other once
         // the page is filed and its reply links are made.
-        if headers.is_event || item::work_kind(record.kind.as_deref()).is_some() {
+        if headers.is_event || work_kind(record.kind.as_deref()).is_some() {
             report.touched.push(content_id.clone());
         }
         if let Some(parent) = headers.parent {
@@ -210,7 +209,7 @@ impl<'a> Filer<'a> {
         let (outcome, stored) = storage.ingest_if_absent(request, bytes, Some(&event))?;
         if let (true, Some(kind), true) = (
             outcome.wrote(),
-            item::work_kind(record.kind.as_deref()),
+            work_kind(record.kind.as_deref()),
             placement.attach,
         ) {
             self.mailspace.backlog_attach_letter(
@@ -248,7 +247,7 @@ impl<'a> Filer<'a> {
             }
             let (account, known) = self.role_account(local, report);
             if !placements.iter().any(|p| p.account == account) {
-                let role = item::role_for(kind, false);
+                let role = role_for(kind);
                 placements.push(Placement::delivered(account, role, known));
             }
         }
@@ -278,7 +277,7 @@ impl<'a> Filer<'a> {
                 .unwrap_or_else(|| record.from.clone());
             // Held for another mailspace's role: the rows and blobs are
             // kept, but the work is not this mailspace's backlog.
-            placements.push(Placement::held(account, item::role_for(kind, false)));
+            placements.push(Placement::held(account, role_for(kind)));
         }
         placements
     }
@@ -424,6 +423,29 @@ pub(crate) fn forged_from(stamped: Option<&str>, headers: &LetterHeaders) -> Opt
     ))
 }
 
+/// The mail kind a record's wire `kind` files under, if it is one the client
+/// knows. An unknown future kind degrades to plain mail instead of failing a
+/// pull.
+fn work_kind(kind: Option<&str>) -> Option<&'static str> {
+    match kind?.to_ascii_lowercase().as_str() {
+        "need" => Some("need"),
+        "task" => Some("task"),
+        "want" => Some("want"),
+        _ => None,
+    }
+}
+
+/// The local role a delivered letter files under: the work folder for
+/// need/task/want, and `inbox` otherwise.
+fn role_for(kind: Option<&str>) -> &'static str {
+    match work_kind(kind) {
+        Some("need") => "needs",
+        Some("task") => "tasks",
+        Some("want") => "wants",
+        _ => "inbox",
+    }
+}
+
 /// Count one row written by this run: by folder, and by the role name it is
 /// held for when this mailspace has no such role.
 fn count_written(report: &mut PullReport, placement: &Placement, outcome: IngestOutcome) {
@@ -445,3 +467,7 @@ fn refuse(report: &mut PullReport, record: &Record, reason: &str) {
         reason: reason.to_string(),
     });
 }
+
+#[cfg(test)]
+#[path = "filer_test.rs"]
+mod tests;

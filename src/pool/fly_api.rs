@@ -15,7 +15,7 @@ use super::fly::{RawMachine, record_from_raw};
 use super::fly_token::{TOKEN_MAX_AGE, TokenCache};
 use super::github::Secret;
 use super::provider::{ExecOutput, Hold, MachineRecord};
-use crate::chat::b64;
+use crate::b64;
 use crate::error::VivariumError;
 
 const BASE: &str = "https://api.machines.dev/v1/apps";

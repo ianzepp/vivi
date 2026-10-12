@@ -2,22 +2,10 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use vivi::cli::{
-    ChatSubcommand, Cli, Command, CycleCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
+    Cli, Command, CycleCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
     MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, TaskCommand,
     TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand, WantSendCommand,
 };
-
-#[test]
-fn parses_chat_status() {
-    let cli = Cli::try_parse_from(["vivi", "chat", "status", "--project", "/tmp/demo"]).unwrap();
-    let Command::Chat {
-        command: ChatSubcommand::Status { project },
-    } = cli.command
-    else {
-        panic!("expected chat status");
-    };
-    assert_eq!(project, Some(PathBuf::from("/tmp/demo")));
-}
 
 #[test]
 fn parses_mailspace_identity_add() {

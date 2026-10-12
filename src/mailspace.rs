@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::boot::probe::ProbeConfig;
-use crate::chat::ChatConfig;
 use crate::error::VivariumError;
 use crate::judgment::Judgment;
 use crate::pool::PoolConfig;
@@ -125,9 +124,6 @@ pub struct MailspaceConfig {
     /// Judgment provider settings. Absent means the shadow screen is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judgment: Option<Judgment>,
-    /// Chat client settings. Absent means chat defaults apply.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chat: Option<ChatConfig>,
     /// Project letter sync settings. Absent means `vivi sync` is not set up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
@@ -253,7 +249,6 @@ impl Mailspace {
             identities: Vec::new(),
             probes: Vec::new(),
             judgment: None,
-            chat: None,
             sync: None,
             pools: BTreeMap::new(),
             retired_pool: None,

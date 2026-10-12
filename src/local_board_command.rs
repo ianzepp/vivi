@@ -101,17 +101,6 @@ struct BoardEvent {
 pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(command.project.as_deref())?;
     let since = resolve_since(command)?;
-    // Chat badge probe runs in parallel with board assembly; it is
-    // internally bounded and silent, so a down server never slows or
-    // changes the rendered board. JSON output stays badge-free.
-    let chat_badge = if command.json {
-        None
-    } else {
-        let root = mailspace.root.clone();
-        std::thread::spawn(move || vivi::chat::board_probe::unread_summary(&root))
-            .join()
-            .unwrap_or(None)
-    };
     let board = build_board(
         &mailspace,
         command.for_identity.as_deref(),
@@ -123,7 +112,7 @@ pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), Vivariu
     if command.json {
         print_json(&board)?;
     } else {
-        print_board(&board, chat_badge.as_deref());
+        print_board(&board);
     }
     write_watermark(command)?;
     Ok(())
@@ -566,7 +555,7 @@ fn print_json(board: &Board) -> Result<(), VivariumError> {
     Ok(())
 }
 
-fn print_board(board: &Board, chat_badge: Option<&str>) {
+fn print_board(board: &Board) {
     println!("mailspace {}", board.name);
     println!("root      {}", board.root.display());
     println!(
@@ -583,8 +572,6 @@ fn print_board(board: &Board, chat_badge: Option<&str>) {
     if let Some(graphs) = &board.graphs {
         print_board_graphs(graphs);
     }
-    // Trailing badge only; absent must leave output byte-identical.
-    print!("{}", vivi::chat::board_probe::badge_fragment(chat_badge));
 }
 
 fn print_board_goals(goals: &[GoalView]) {

@@ -1,9 +1,8 @@
 //! The HTTP side of sync: identity registration, per-invocation bearer mint,
 //! append, read, and the member directory against a project server.
 //!
-//! The blocking request plumbing is the chat client's; only its error text is
-//! rebranded. Tokens live in memory for one invocation and are never written
-//! anywhere or printed.
+//! Tokens live in memory for one invocation and are never written anywhere or
+//! printed.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -11,10 +10,10 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::chat::client::{Body, request_json_with_timeout, request_with_body, sign_challenge};
-use crate::chat::identity::ChatIdentity;
+use crate::b64;
 use crate::error::VivariumError;
 use crate::sync::SyncSettings;
+use crate::sync::identity::SyncIdentity;
 use crate::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Lookup, Page, Transport,
 };
@@ -101,13 +100,13 @@ struct Accepted {
 /// The real [`Transport`]: one bearer per invocation, minted on first use.
 pub struct HttpTransport<'a> {
     settings: &'a SyncSettings,
-    identity: &'a ChatIdentity,
+    identity: &'a SyncIdentity,
     token: RefCell<Option<String>>,
 }
 
 impl<'a> HttpTransport<'a> {
     #[must_use]
-    pub fn new(settings: &'a SyncSettings, identity: &'a ChatIdentity) -> Self {
+    pub fn new(settings: &'a SyncSettings, identity: &'a SyncIdentity) -> Self {
         Self {
             settings,
             identity,
@@ -154,9 +153,8 @@ impl Transport for HttpTransport<'_> {
             .bearer()
             .map_err(|e| AppendFailure::Stop(e.to_string()))?;
         let put = append_request(self.settings, &token, message_id, envelope);
-        let (status, body) =
-            request_with_body("PUT", &put.url, Body::Raw(put.body), &put.headers, TIMEOUT)
-                .map_err(|e| AppendFailure::Stop(rebrand(e).to_string()))?;
+        let (status, body) = send("PUT", &put.url, Body::Raw(put.body), &put.headers)
+            .map_err(|e| AppendFailure::Stop(e.to_string()))?;
         classify_append(status, &body)
     }
 
@@ -286,7 +284,7 @@ pub(crate) fn classify_append(status: u16, body: &Value) -> Result<Appended, App
 /// unknown, the key has not been vouched for, or the name is taken.
 pub fn join(
     settings: &SyncSettings,
-    identity: &ChatIdentity,
+    identity: &SyncIdentity,
 ) -> Result<JoinReceipt, VivariumError> {
     let base = project_url(settings);
     let pem = identity.public_key_pem();
@@ -316,7 +314,7 @@ pub fn join(
 }
 
 /// Mint a bearer for `[sync] name`: challenge, sign, `auth/token`.
-fn mint_bearer(settings: &SyncSettings, identity: &ChatIdentity) -> Result<String, VivariumError> {
+fn mint_bearer(settings: &SyncSettings, identity: &SyncIdentity) -> Result<String, VivariumError> {
     let challenge = fetch_challenge(settings, identity)?;
     let signature = sign_challenge(identity, &challenge.challenge)?;
     let (status, body) = request(
@@ -347,7 +345,7 @@ fn mint_bearer(settings: &SyncSettings, identity: &ChatIdentity) -> Result<Strin
 
 fn fetch_challenge(
     settings: &SyncSettings,
-    identity: &ChatIdentity,
+    identity: &SyncIdentity,
 ) -> Result<Challenge, VivariumError> {
     let (status, body) = request(
         "POST",
@@ -365,31 +363,97 @@ fn project_url(settings: &SyncSettings) -> String {
     format!("{}/v1/projects/{}", settings.server, settings.project)
 }
 
-/// One blocking request through the chat client's plumbing, with its error
-/// text rebranded from "chat server" to "project server".
+/// What a request carries: nothing, a JSON document, or raw bytes sent as-is
+/// (the caller sets `Content-Type`).
+enum Body {
+    Empty,
+    Json(Value),
+    Raw(Vec<u8>),
+}
+
+/// One blocking JSON request, with a JSON body when `payload` is given.
 fn request(
     method: &str,
     url: &str,
     payload: Option<&Value>,
     headers: &[(&'static str, String)],
 ) -> Result<(u16, Value), VivariumError> {
-    request_json_with_timeout(method, url, payload, headers, TIMEOUT).map_err(rebrand)
+    let body = payload.map_or(Body::Empty, |payload| Body::Json(payload.clone()));
+    send(method, url, body, headers)
 }
 
-pub(crate) fn rebrand(error: VivariumError) -> VivariumError {
-    match error {
-        VivariumError::Message(text) => {
-            VivariumError::Message(text.replacen("chat server", "project server", 1))
-        }
-        other => other,
+/// The one blocking request plumbing: its own thread and runtime so callers
+/// stay synchronous, and a JSON response.
+fn send(
+    method: &str,
+    url: &str,
+    payload: Body,
+    headers: &[(&'static str, String)],
+) -> Result<(u16, Value), VivariumError> {
+    let url = url.to_string();
+    let method = method.to_string();
+    let headers = headers.to_vec();
+    let handle = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| VivariumError::Other(format!("failed to build runtime: {e}")))?;
+        runtime.block_on(async move {
+            let client = reqwest::Client::builder()
+                .timeout(TIMEOUT)
+                .build()
+                .map_err(|e| VivariumError::Other(format!("failed to build client: {e}")))?;
+            let method = reqwest::Method::from_bytes(method.as_bytes())
+                .map_err(|e| VivariumError::Other(format!("invalid HTTP method: {e}")))?;
+            let mut request = client.request(method, &url);
+            for (name, value) in &headers {
+                request = request.header(*name, value.as_str());
+            }
+            request = match payload {
+                Body::Empty => request,
+                Body::Json(payload) => request.json(&payload),
+                Body::Raw(bytes) => request.body(bytes),
+            };
+            let response = request.send().await.map_err(|e| {
+                if e.is_timeout() {
+                    VivariumError::Message(format!(
+                        "project server timed out after {}ms",
+                        TIMEOUT.as_millis()
+                    ))
+                } else {
+                    VivariumError::Message(format!("project server unreachable: {e}"))
+                }
+            })?;
+            let status = response.status().as_u16();
+            let body = response.json::<Value>().await.map_err(|e| {
+                VivariumError::Message(format!("invalid project server response: {e}"))
+            })?;
+            Ok((status, body))
+        })
+    });
+    handle
+        .join()
+        .map_err(|_| VivariumError::Message("sync client thread panicked".into()))?
+}
+
+/// Decode and sign an issued challenge (32 bytes), returning base64.
+fn sign_challenge(identity: &SyncIdentity, challenge_b64: &str) -> Result<String, VivariumError> {
+    let bytes = b64::decode(challenge_b64)
+        .ok_or_else(|| VivariumError::Message("server returned an undecodable challenge".into()))?;
+    if bytes.len() != 32 {
+        return Err(VivariumError::Message(format!(
+            "server challenge is {} bytes, expected 32",
+            bytes.len()
+        )));
     }
+    Ok(b64::encode(&identity.sign(&bytes)))
 }
 
 fn join_error(
     status: u16,
     body: &Value,
     settings: &SyncSettings,
-    identity: &ChatIdentity,
+    identity: &SyncIdentity,
 ) -> VivariumError {
     let code = error_code(body);
     match (status, code.as_str()) {

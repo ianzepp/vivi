@@ -675,11 +675,11 @@ fn request_in(
     }
 }
 
-fn room_binding(cursor: u32) -> RemoteBindingInput {
+fn letter_binding(cursor: u32) -> RemoteBindingInput {
     RemoteBindingInput {
         account: "acct-b".into(),
-        provider: "vivi-room".into(),
-        remote_mailbox: "room-x".into(),
+        provider: "vivi-project".into(),
+        remote_mailbox: "project-x".into(),
         remote_uid: cursor,
         remote_uidvalidity: 1,
     }
@@ -705,20 +705,11 @@ fn traveling_id_shape_is_strict() {
 }
 
 #[test]
-fn minted_traveling_ids_have_the_shape_and_no_store_local_seed() {
-    let id = mint_traveling_id("origin-fp", &[7u8; 16]);
-    assert!(is_traveling_id(&id), "{id}");
-    assert_eq!(id, mint_traveling_id("origin-fp", &[7u8; 16]));
-    assert_ne!(id, mint_traveling_id("origin-fp", &[8u8; 16]));
-    assert_ne!(id, mint_traveling_id("other-fp", &[7u8; 16]));
-}
-
-#[test]
 fn presented_id_wins_over_seeded_mints_and_agrees_across_stores() {
     let raw = message_bytes("travel@example.com", "a need");
     let content_id = sha256_hex(&raw);
     let local = request_in("acct-a", "inbox", "seed-a", None, None);
-    let bound = request_in("acct-b", "needs", "seed-b", None, Some(room_binding(5)));
+    let bound = request_in("acct-b", "needs", "seed-b", None, Some(letter_binding(5)));
     // The failure this exists to fix: namespace seeds give two ids.
     let seeded_local = ingest::ingest_message_id(&local, &content_id).unwrap();
     let seeded_bound = ingest::ingest_message_id(&bound, &content_id).unwrap();
@@ -742,7 +733,7 @@ fn presented_id_wins_over_seeded_mints_and_agrees_across_stores() {
                 "needs",
                 "seed-b",
                 Some(TRAVELING_ID),
-                Some(room_binding(5)),
+                Some(letter_binding(5)),
             ),
             &raw,
         )
@@ -764,7 +755,7 @@ fn local_only_ingest_keeps_namespace_seeded_ids() {
     let raw = message_bytes("local@example.com", "body");
     let content_id = sha256_hex(&raw);
     let local = request_in("acct", "inbox", "uid:1", None, None);
-    let bound = request_in("acct", "inbox", "uid:1", None, Some(room_binding(1)));
+    let bound = request_in("acct", "inbox", "uid:1", None, Some(letter_binding(1)));
 
     assert_eq!(
         ingest::ingest_message_id(&local, &content_id).unwrap(),
@@ -772,7 +763,7 @@ fn local_only_ingest_keeps_namespace_seeded_ids() {
     );
     assert_eq!(
         ingest::ingest_message_id(&bound, &content_id).unwrap(),
-        remote_bound_message_id("acct", "inbox", &content_id, &room_binding(1))
+        remote_bound_message_id("acct", "inbox", &content_id, &letter_binding(1))
     );
 }
 
@@ -859,13 +850,13 @@ fn ingest_if_absent_inserts_once_and_leaves_existing_rows_alone() {
         "needs",
         "s",
         Some(TRAVELING_ID),
-        Some(room_binding(3)),
+        Some(letter_binding(3)),
     );
     let event = IngestEvent {
-        command: "chat pull",
+        command: "sync pull",
         event_type: "delivered",
         subject: "subject",
-        note: Some("room x"),
+        note: Some("project x"),
     };
 
     let (first, stored) = storage
@@ -887,7 +878,7 @@ fn ingest_if_absent_inserts_once_and_leaves_existing_rows_alone() {
     let events = storage.list_mailspace_events(TRAVELING_ID).unwrap();
     assert_eq!(events.len(), 1, "only the insert logs a delivery");
     assert_eq!(events[0].to_role.as_deref(), Some("needs"));
-    assert_eq!(events[0].note.as_deref(), Some("room x"));
+    assert_eq!(events[0].note.as_deref(), Some("project x"));
 }
 
 #[test]
@@ -929,7 +920,7 @@ fn evicted_items_restore_in_place_with_their_blob_and_local_state() {
         "inbox",
         "s",
         Some(TRAVELING_ID),
-        Some(room_binding(4)),
+        Some(letter_binding(4)),
     );
     let (_, stored) = storage.ingest_if_absent(&request, &raw, None).unwrap();
     storage

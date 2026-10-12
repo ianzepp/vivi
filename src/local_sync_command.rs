@@ -1,17 +1,16 @@
 use std::path::Path;
 
 use vivi::VivariumError;
-use vivi::chat::chat_dir;
-use vivi::chat::identity::ChatIdentity;
 use vivi::cli::{SyncCommand, SyncSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::sync::fetch::fetch_handles;
 use vivi::sync::http::{self, HttpTransport};
+use vivi::sync::identity::SyncIdentity;
 use vivi::sync::lock::SyncLock;
 use vivi::sync::prune as sync_prune;
 use vivi::sync::pull::PullPlan;
 use vivi::sync::state::SyncState;
-use vivi::sync::window::parse_since;
+use vivi::sync::window::{parse_age, parse_since};
 use vivi::sync::{SyncSettings, pull, push, refs, sync_dir};
 
 /// How a pull differs from continuing at the stored cursor.
@@ -80,7 +79,7 @@ fn run_passes(
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let transport = HttpTransport::new(&settings, &identity);
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let mut failures = Vec::new();
@@ -154,7 +153,7 @@ fn print_pull(report: &pull::PullReport) {
 fn fetch(project: Option<&Path>, handles: &[String]) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let transport = HttpTransport::new(&settings, &identity);
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let report = fetch_handles(&mailspace, &settings, &transport, handles)?;
@@ -173,7 +172,7 @@ fn fetch(project: Option<&Path>, handles: &[String]) -> Result<(), VivariumError
 /// Local only: no server, no key.
 fn prune(project: Option<&Path>, older_than: &str, dry_run: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    let age = vivi::chat::prune::parse_age(older_than)?;
+    let age = parse_age(older_than)?;
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let report = sync_prune::prune(&mailspace, age, chrono::Utc::now(), dry_run)?;
     for line in sync_prune::report_lines(&report) {
@@ -186,7 +185,7 @@ fn join(project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     warn_if_config_tracked(&mailspace);
     let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let receipt = http::join(&settings, &identity)?;
     println!("joined project {} as {}", settings.project, receipt.name);
     println!("fingerprint {}", receipt.fingerprint);
@@ -202,7 +201,7 @@ fn warn_if_config_tracked(mailspace: &Mailspace) {
 fn status(project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     warn_if_config_tracked(&mailspace);
-    let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let config = mailspace.config.sync.clone().unwrap_or_default();
     let show = |value: &Option<String>| value.clone().unwrap_or_else(|| "(not set)".into());
     println!(
@@ -250,7 +249,7 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
 fn directory(project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let settings = SyncSettings::resolve(&mailspace)?;
-    let identity = ChatIdentity::ensure(&chat_dir(&mailspace.dir))?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let transport = HttpTransport::new(&settings, &identity);
     for member in transport.directory()? {
         println!("{}", member.line());

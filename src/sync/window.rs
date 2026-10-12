@@ -1,9 +1,31 @@
-//! The start of a pull window: `--since <age|date>`.
+//! Ages and dates: the start of a pull window (`--since <age|date>`) and the
+//! age `vivi sync prune --older-than` counts back from.
+
+use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 
-use crate::chat::prune::parse_age;
+use crate::duration::parse_duration;
 use crate::error::VivariumError;
+
+/// Parse an age such as `30d`, `12h`, `90m`. Days are accepted here because a
+/// letter's age is naturally counted in days; every other form goes through
+/// the shared interval parser.
+///
+/// # Errors
+/// Returns a config error for a zero, malformed, or unknown-unit age.
+pub fn parse_age(value: &str) -> Result<Duration, VivariumError> {
+    let trimmed = value.trim();
+    if let Some(days) = trimmed.strip_suffix('d') {
+        return match days.parse::<u64>() {
+            Ok(days) if days > 0 => Ok(Duration::from_secs(days.saturating_mul(24 * 60 * 60))),
+            _ => Err(VivariumError::Config(format!(
+                "invalid age '{value}'; use values like 30d, 12h, or 90m"
+            ))),
+        };
+    }
+    parse_duration(trimmed)
+}
 
 /// Resolve a `--since` value to an RFC 3339 UTC instant (whole seconds).
 ///

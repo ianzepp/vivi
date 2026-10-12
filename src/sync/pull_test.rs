@@ -1,4 +1,4 @@
-use crate::chat::b64;
+use crate::b64;
 use crate::storage::{
     MessageIngestRequest, RemoteBindingInput, StoredMessageView, is_traveling_id, sha256_hex,
 };

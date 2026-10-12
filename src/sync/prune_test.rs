@@ -1,11 +1,11 @@
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::chat::prune::parse_age;
 use crate::sync::fake_server::{World, handle, wire_id};
 use crate::sync::fetch::fetch_handles;
-use crate::sync::prune::{prune, report_lines};
+use crate::sync::prune::{PruneReport, prune, report_lines};
 use crate::sync::pull;
 use crate::sync::refs::follow_refs;
+use crate::sync::window::parse_age;
 
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap()
@@ -54,7 +54,7 @@ fn fixture() -> Fixture {
     Fixture { w, local_id }
 }
 
-fn handles(report: &crate::chat::prune::PruneReport) -> Vec<String> {
+fn handles(report: &PruneReport) -> Vec<String> {
     let mut found: Vec<String> = report.items.iter().map(|i| i.handle.clone()).collect();
     found.sort();
     found
@@ -222,4 +222,31 @@ fn the_sent_copy_of_open_work_is_kept_until_it_closes() {
 
     assert_eq!(handles(&closed), vec![sent], "closed work evicts as before");
     assert!(w.bob.row(&w.bob.id_of(&local)).is_some());
+}
+
+#[test]
+fn the_cutoff_is_the_letter_date_not_when_it_was_pulled() {
+    let w = World::new();
+    w.put_dated(1, "before", "body", "08 Sep 2099 23:59:59 +0000");
+    w.put_dated(2, "at", "body", "09 Sep 2099 00:00:00 +0000");
+    w.put_dated(3, "after", "body", "09 Sep 2099 00:00:01 +0000");
+    w.bob.pull(&w.bob_client);
+    {
+        let mut storage = w.bob.mailspace.storage().unwrap();
+        for n in 1..=3 {
+            storage
+                .move_message_to_role("mind", &wire_id(n, 0), "done")
+                .unwrap();
+        }
+    }
+    let now = Utc.with_ymd_and_hms(2099, 10, 9, 0, 0, 0).unwrap();
+
+    let report = prune(&w.bob.mailspace, thirty_days(), now, false).unwrap();
+
+    assert_eq!(report.cutoff, "2099-09-09T00:00:00+00:00");
+    assert_eq!(
+        handles(&report),
+        vec![handle(1)],
+        "strictly older than the cutoff"
+    );
 }

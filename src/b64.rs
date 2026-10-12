@@ -1,7 +1,7 @@
-//! Minimal standard base64 (RFC 4648, padded) for the chat wire contract.
+//! Minimal standard base64 (RFC 4648, padded) for the server wire contracts.
 //!
-//! The repo intentionally avoids a base64 dependency: chat needs exactly
-//! encode (signature, SPKI PEM) and decode (challenge bytes).
+//! The repo intentionally avoids a base64 dependency: it needs exactly
+//! encode (signature, SPKI PEM) and decode (challenge bytes, letter bytes).
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

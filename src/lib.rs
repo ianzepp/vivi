@@ -6,8 +6,8 @@
 //! wants, mail, memos, rules, goals, roles, and executable work graphs — plus the
 //! `vivi` binary.
 
+pub mod b64;
 pub mod boot;
-pub mod chat;
 pub mod cli;
 pub mod duration;
 pub mod error;

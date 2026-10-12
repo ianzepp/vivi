@@ -2,6 +2,17 @@ use chrono::TimeZone;
 
 use super::*;
 
+#[test]
+fn ages_accept_days_and_the_shared_interval_forms() {
+    assert_eq!(parse_age("30d").unwrap(), Duration::from_secs(30 * 86_400));
+    assert_eq!(parse_age(" 2d ").unwrap(), Duration::from_secs(2 * 86_400));
+    assert_eq!(parse_age("12h").unwrap(), Duration::from_secs(12 * 3_600));
+    assert_eq!(parse_age("90m").unwrap(), Duration::from_secs(5_400));
+    for bad in ["", "d", "0d", "-1d", "1w", "soon", "1.5d"] {
+        assert!(parse_age(bad).is_err(), "{bad:?} must be rejected");
+    }
+}
+
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 11, 12, 30, 0).unwrap()
 }

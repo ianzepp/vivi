@@ -1,9 +1,7 @@
 //! Recovery and robustness at the CLI: an unreadable sync state, two syncs at
-//! once, a rejected chat message, `memo delete` on work, and an import between
-//! two checkouts of one project.
+//! once, `memo delete` on work, and an import between two checkouts of one
+//! project.
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -11,7 +9,6 @@ use std::time::{Duration, Instant};
 use vivi::storage::{RemoteBindingInput, Storage};
 
 const PROJECT_ID: &str = "abcde-fghjk-mnpqr-stvwz-23456";
-const ROOM: &str = "abcde-fghjk-mnpqr-stvwz-23456";
 
 fn vivi(project: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vivi"))
@@ -114,100 +111,6 @@ fn a_sync_command_waits_for_the_lock_and_runs_once_it_is_free() {
         started.elapsed() >= Duration::from_millis(1400),
         "prune ran while another sync held the lock"
     );
-}
-
-/// A chat server that accepts the bearer handshake and refuses every message
-/// with a 400, as for an unknown recipient.
-fn refusing_chat_server() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let mut head = Vec::new();
-            let mut byte = [0u8; 1];
-            while !head.ends_with(b"\r\n\r\n") {
-                if stream.read(&mut byte).unwrap_or(0) == 0 {
-                    break;
-                }
-                head.push(byte[0]);
-            }
-            let head = String::from_utf8_lossy(&head).into_owned();
-            let length = head
-                .lines()
-                .filter_map(|line| line.split_once(':'))
-                .find(|(key, _)| key.trim().eq_ignore_ascii_case("content-length"))
-                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            let mut body = vec![0u8; length];
-            let _ = stream.read_exact(&mut body);
-            let path = head.split_whitespace().nth(1).unwrap_or_default();
-            let (status, payload) = if path.ends_with("/challenge") {
-                (
-                    200,
-                    r#"{"challenge_id":"c1","challenge":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}"#,
-                )
-            } else if path.ends_with("/auth/token") {
-                (200, r#"{"token":"tok"}"#)
-            } else {
-                (
-                    400,
-                    r#"{"error":{"code":"invalid_request","message":"unknown recipient label: nobody"}}"#,
-                )
-            };
-            let response = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                payload.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-    format!("http://{addr}")
-}
-
-#[test]
-fn a_rejected_chat_message_is_listed_fails_the_flush_and_blocks_nothing() {
-    let project = tempfile::tempdir().unwrap();
-    let dir = project.path().join(".vivi");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("mailspace.toml"),
-        format!(
-            "name = \"cli\"\n\n[[identities]]\nname = \"mind\"\n\n[chat]\nserver = \"{}\"\n",
-            refusing_chat_server()
-        ),
-    )
-    .unwrap();
-    let chat = vivi::chat::chat_dir(&dir);
-    vivi::chat::ensure_chat_dir(&chat).unwrap();
-    let state = vivi::chat::state::ChatState::open(&chat).unwrap();
-    state.join_room(ROOM, 2, "me.cli").unwrap();
-    state
-        .enqueue(
-            ROOM,
-            "msg_000000000000000000000001",
-            r#"{"to":"nobody","subject":"s","body":"b"}"#,
-        )
-        .unwrap();
-    drop(state);
-
-    let flush = failed(&vivi(project.path(), &["chat", "flush"]));
-    assert!(flush.contains("1 rejected"), "{flush}");
-    assert!(flush.contains("msg_000000000000000000000001"), "{flush}");
-    assert!(
-        flush.contains("unknown recipient label: nobody"),
-        "the server's reason is shown: {flush}"
-    );
-
-    let status = ok(&vivi(project.path(), &["chat", "status"]));
-    assert!(status.contains("chat outbox depth: 0"), "{status}");
-    assert!(status.contains("chat outbox rejected: 1"), "{status}");
-    assert!(status.contains("unknown recipient label"), "{status}");
-
-    // Still failing, still kept, and not retried into a different state.
-    let again = failed(&vivi(project.path(), &["chat", "flush"]));
-    assert!(again.contains("1 rejected"), "{again}");
 }
 
 fn init_roster(project: &Path) {

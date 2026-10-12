@@ -316,18 +316,6 @@ pub fn is_traveling_id(id: &str) -> bool {
     })
 }
 
-/// Mint a traveling id once, at creation.
-///
-/// Uses the same digest machinery as the namespace-seeded mints but excludes
-/// every store-local seed component (`account`, `local_role`, `seed_hint`),
-/// so the result means the same thing in every store it is presented to.
-/// `origin` names the creator (it travels with the item) and `entropy` makes
-/// the id unique; the caller owns the randomness, which keeps this pure.
-#[must_use]
-pub fn mint_traveling_id(origin: &str, entropy: &[u8]) -> String {
-    opaque_message_id(&format!("travel\0{origin}\0{}", hex::encode(entropy)))
-}
-
 /// Short-handle width in characters of the message id's basis.
 ///
 /// The basis is 24 hex characters (`opaque_message_id` keeps 12 bytes of a

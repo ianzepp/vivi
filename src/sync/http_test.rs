@@ -177,7 +177,7 @@ fn serve(
 }
 
 fn project_server(method: &str, path: &str) -> (u16, String) {
-    let challenge = crate::chat::b64::encode(&[7u8; 32]);
+    let challenge = crate::b64::encode(&[7u8; 32]);
     match (method, path.rsplit('/').next().unwrap_or_default()) {
         ("POST", "challenge") => (
             200,
@@ -216,7 +216,7 @@ fn append_over_the_wire_is_a_raw_put_with_a_minted_bearer() {
     let (port, listener) = serve(3, project_server);
     let settings = settings_for(&format!("http://127.0.0.1:{port}"));
     let dir = tempfile::tempdir().unwrap();
-    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
     let transport = HttpTransport::new(&settings, &identity);
     let bytes = b"letter bytes \r\n\xff";
 
@@ -268,7 +268,7 @@ fn append_over_the_wire_is_a_raw_put_with_a_minted_bearer() {
 }
 
 #[test]
-fn transport_errors_name_the_project_server_not_the_chat_server() {
+fn transport_errors_name_the_project_server() {
     // A port nothing listens on: bind, note it, drop.
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -279,22 +279,7 @@ fn transport_errors_name_the_project_server_not_the_chat_server() {
 
     let error = request("GET", &url, None, &[]).unwrap_err().to_string();
 
-    assert!(error.contains("project server"), "{error}");
-    assert!(!error.contains("chat server"), "{error}");
-}
-
-#[test]
-fn rebrand_leaves_other_errors_alone() {
-    let plain = rebrand(VivariumError::Other("failed to build runtime".into()));
-    assert_eq!(plain.to_string(), "failed to build runtime");
-
-    let timed = rebrand(VivariumError::Message(
-        "chat server timed out after 15000ms".into(),
-    ));
-    assert_eq!(
-        timed.to_string(),
-        "message error: project server timed out after 15000ms"
-    );
+    assert!(error.contains("project server unreachable"), "{error}");
 }
 
 #[test]
@@ -302,7 +287,7 @@ fn join_registers_the_mailspace_id_and_tolerates_extra_response_fields() {
     let (port, listener) = serve(2, project_server);
     let settings = settings_for(&format!("http://127.0.0.1:{port}"));
     let dir = tempfile::tempdir().unwrap();
-    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
 
     let receipt = join(&settings, &identity).unwrap();
 
@@ -320,7 +305,7 @@ fn a_taken_prefix_is_explained_at_join() {
     let body = error_body("mailspace_prefix_taken", "taken");
     let settings = settings_for("https://sync.example");
     let dir = tempfile::tempdir().unwrap();
-    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
 
     let error = join_error(409, &body, &settings, &identity).to_string();
 
@@ -338,7 +323,7 @@ fn a_lost_key_is_told_the_name_is_bound_and_who_can_help() {
     let body = error_body("admission_required", "not admitted");
     let settings = settings_for("https://sync.example");
     let dir = tempfile::tempdir().unwrap();
-    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
 
     let error = join_error(409, &body, &settings, &identity).to_string();
 
@@ -352,7 +337,7 @@ fn the_directory_lists_members_with_their_address_domains() {
     let (port, listener) = serve(3, project_server);
     let settings = settings_for(&format!("http://127.0.0.1:{port}"));
     let dir = tempfile::tempdir().unwrap();
-    let identity = ChatIdentity::ensure(dir.path()).unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
     let transport = HttpTransport::new(&settings, &identity);
 
     let members = transport.directory().unwrap();

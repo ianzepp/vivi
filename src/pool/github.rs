@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use super::config::RepoAccess;
-use crate::chat::b64;
+use crate::b64;
 use crate::error::VivariumError;
 
 const API: &str = "https://api.github.com";

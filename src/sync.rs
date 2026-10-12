@@ -18,6 +18,7 @@ use crate::mailspace::Mailspace;
 pub mod fetch;
 pub mod filer;
 pub mod http;
+pub mod identity;
 pub mod link;
 pub mod lock;
 pub mod prune;
