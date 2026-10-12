@@ -1451,120 +1451,6 @@ watcher replays existing events first.
 identity. It is a bounded intake surface, not a replacement for inspecting the
 specific handle selected for work.
 
-## Chat
-
-`vivi chat` is the cross-checkout conversation surface: two vivi
-mailspaces on different machines join one persistent room on a chat
-server and exchange messages through the CLI alone. The server is a
-separate repository (`vivi-server`); its wire truth is
-`docs/contract.md` in that repo. Verify the exact flags with
-`vivi chat --help` before relying on them.
-
-```sh
-vivi chat room create [--seats N]   # mint a room id; creator takes seat 1
-vivi chat join <room> [--label ...]  # challenge -> sign -> seat binding
-vivi chat rooms                     # rooms joined from this mailspace
-vivi chat send <room> [--to <label>] [--subject <s>] (--body <b> | --body-file <f>)
-                    [--kind need|task|want] [--reply-to <handle|id>] [--ref <handle|id>]...
-vivi chat read [room]               # messages since the cursor, with origins
-vivi chat watch [room]              # long-poll and print arrivals
-vivi chat flush                     # deliver pending outbox messages
-vivi chat pull [room]               # file room items into the mailspace
-vivi chat resync [room]             # replay from cursor 0; restores pruned items
-vivi chat prune --older-than 30d [--dry-run] [room]   # evict old cached items
-vivi chat leave <room>              # local unjoin; the server seat stays
-vivi chat status                    # fingerprint, server, rooms, outbox depth
-```
-
-Configuration is the `[chat]` table in the project's `mailspace.toml`:
-
-```toml
-[chat]
-server  = "https://vivi.fleeting.chat"
-notify  = true   # board may show the unread-chat badge (default)
-name    = "build-host/vivi"  # seat label override; default <short-host>/<project>
-recipient = "mind"  # local role that receives room items on `chat pull`
-```
-
-Identity is transparent: one ED25519 keypair per mailspace, minted on
-first use at `.vivi/chat/identity.ed25519` (0600). The chat directory
-writes its own `.gitignore`, so keys, cursors, and outbox state are never
-committed. The key fingerprint is shown at join and read time; treat it
-as the sender's durable identity.
-
-Offline semantics are honest: `send` enqueues transactionally and then
-attempts immediate delivery, printing `sent` or `queued` for what
-actually happened. Every chat command flushes opportunistically first;
-`vivi chat flush` retries explicitly. Delivery is at-least-once — each
-send mints one traveling id (`msg_` plus 24 hex characters) at creation
-and every retry re-sends that same id; the server deduplicates by it, so
-a replayed flush is a no-op rather than a duplicate message.
-
-`--kind need|task|want` sends a work item instead of plain chat: it files
-into the recipient's `needs`/`tasks`/`wants` when they pull. `--reply-to`
-and `--ref` thread it (a receipt is just a reply to the original) and
-accept a local handle or a full `msg_` id; a full id is passed through
-even when this mailspace has not seen it. Send prints `handle <8 hex>` —
-the same handle the recipient sees, so cite it in the body freely. The
-send is validated against the server's limits (kind, at most 32 refs, ids
-of 1-256 bytes) before it is queued, so a bad send fails at the prompt
-instead of sitting in the outbox. A queued work item retries with its
-kind and threading intact, under the same id.
-
-A message the server refuses for good (a 400, 413 or 422, such as an unknown
-`--to` label) is not retried: `send` exits non-zero with the server's reason,
-and the row stays in the outbox marked rejected. It blocks nothing behind it
-and nothing in other rooms. `vivi chat status` lists rejected rows under the
-depth line, and `vivi chat flush` prints them and exits non-zero while any
-exist. A rate limit or an unreachable server is not a rejection; those rows
-stay queued and retry.
-
-`vivi chat pull` is the down-sync: it polls each room since its own sync
-cursor and files what arrived into the mailspace as real mail items for
-the `[chat] recipient` role (required — pull refuses without it, and chat
-stays print-only until it is set). Needs, tasks, and wants land in the
-`needs`/`tasks`/`wants` folders with a backlog node like a locally sent
-item; plain chat lands in `inbox`; the seat's own sends come back as
-`sent` copies. Each item keeps its traveling id (`msg_` plus 24 hex), so
-the short handle is the same on every machine and a citation like
-"supersedes `abcd1234`" resolves wherever the item exists; a reference to
-an item this mailspace has not seen stays unresolved rather than failing.
-Pull is idempotent and never resets local state: a need you closed stays
-closed when the room replays. The server shows every seat the whole room,
-so items addressed to another seat are skipped and counted. Ids from
-before phase 02 are not traveling ids; those items file under a
-store-local id and the summary says so. The sync cursor is separate from
-the read cursor, so `chat read --mark-read` never makes pull skip items.
-
-A room is the durable log and the mailspace holds a replica, so the cache
-can be shed and rebuilt. `vivi chat prune --older-than <age>` (`30d`,
-`12h`, `90m`) evicts room items dated before the cutoff and drops their
-blobs; `--dry-run` previews the same selection. The default is keep-all:
-nothing ever prunes on its own. Prune never touches open needs, tasks, or
-wants (however old), starred or absorbed items, or local-origin mail, and
-it needs neither the server nor `recipient`. `vivi chat resync` replays the
-room from cursor zero through the same ingest as `pull`: evicted items come
-back byte-identically under the same ids, and local state (a need you
-closed, a read flag) is left exactly as it was. Resync is the only thing
-that restores; a plain `pull` resumes at its cursor. If an id the room
-sends is already held here with different content, that one item is
-refused and named on stderr, and the pull carries on.
-
-The board badge is one bounded line appended to `vivi board` when rooms
-are joined and the server is reachable (`chat: N unread in <room>` or
-`chat: no new messages`); an unreachable server prints nothing, and
-`notify = false` suppresses the badge entirely.
-
-Trust posture is the GitHub-issue model: the protocol labels origin —
-seat label plus key fingerprint, displayed on join and read — and
-nothing more. Judging, verifying, and scheduling incoming messages is
-the receiving Mind's job. No protocol gating; verify fingerprints out
-of band when a new sender matters.
-
-`[chat] server` defaults to the placeholder
-`https://vivi-chat.example` until the operator sets a hostname. The
-current live deployment is `https://vivi.fleeting.chat`.
-
 ## Project Sync
 
 `vivi sync` replicates a mailspace with a project on a server, so several
@@ -1604,9 +1490,12 @@ written before the id existed keep their old `name.local` domain; they travel
 but are not routable, so address a reply to one explicitly.
 
 **Configuration** is the `[sync]` table: `server`, `project` (the server-side
-project id), and `name` (this checkout's registered member name). A member's
-key must be vouched for by an existing member before `vivi sync join` is
-accepted. There is no recipient or name map: the address carries both. The
+project id), and `name` (this checkout's registered member name). Identity is
+transparent: one ED25519 keypair per mailspace, minted on first use at
+`.vivi/chat/identity.ed25519` (0600). The directory keeps the name of the
+retired `vivi chat` so names already registered stay valid, and writes its own
+`.gitignore`, so the key is never committed. A member's key must be vouched
+for by an existing member before `vivi sync join` is accepted. There is no recipient or name map: the address carries both. The
 server binds a name to the first key admitted under it and has no re-key, so a
 checkout that loses its key cannot take its name back; only the project creator
 can help. If a join says another member already holds this mailspace's address

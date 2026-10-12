@@ -1493,29 +1493,30 @@ Everything Vivi owns lives under the project's `.vivi/` directory:
 
 ```
 myproject/.vivi/
-├── mailspace.toml         # name, description, identities, archive, probes, judgment, chat
+├── mailspace.toml         # name, description, identities, archive, probes, judgment, sync
 ├── mail.sqlite            # items, events, goals, local links, and the work graphs
 ├── blobs/                 # content-addressed message payloads
-├── chat/                  # chat identity, room cursors, and the outbox; the directory gitignores itself
+├── chat/                  # the sync identity key; named for the retired `vivi chat`, kept so registered names stay valid
+├── sync/                  # sync cursor, floor, and lock; the directory gitignores itself
 └── judgment-corpus.jsonl  # shadow-screen answers, appended by `vivi step --apply`
 ```
 
 Rules:
 
 - `mail.sqlite` is the store; there is no separate index to rebuild
-- Message handles are the first eight characters of the id. A chat item keeps
-  that id, and so that handle, on every checkout that pulls it. Any other
+- Message handles are the first eight characters of the id. A synced letter
+  keeps that id, and so that handle, on every checkout that pulls it. Any other
   item's id is store-local, and its handle is stable inside that mailspace
-- Room items filed by `vivi chat pull` are a replica of the room. `chat prune`
-  can drop old ones, and `chat resync` rebuilds them
+- Letters filed by `vivi sync pull` are a replica of the project's history.
+  `sync prune` can drop old ones, and `sync resync` rebuilds them
 - Deleting `.vivi/` deletes that project's coordination state, its local mail,
-  and the chat replica
+  and the replica of synced letters
 
 ## Commands
 
-`vivi --help` is the live top-level list. In 11.0.0 that is: `board`, `boot`,
-`chat`, `sync`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `rule`,
-`goal`, `pool`, `role`, `cycle`, `trace`, `graph`, `step`.
+`vivi --help` is the live top-level list. Today that is: `board`, `boot`,
+`sync`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `rule`, `goal`,
+`pool`, `role`, `cycle`, `trace`, `graph`, `step`.
 
 `pool` is the remote lane pool (create, status, destroy, scale, dispatch, wait,
 reconcile, doctor). `rule` holds project rules every seat can read; `--local`
@@ -1526,19 +1527,9 @@ A worker's `done` is a report. Only the item's author, or a role of kind
 and travels to every checkout as an event letter. `vivi step` lists reported
 work as `awaiting_acceptance`, and `vivi graph ready` has a `reported` line.
 
-`chat` (since 10.2.0): `vivi chat room create`, `join`, `rooms`, `send`,
-`read`, `watch`, `flush`, `pull`, `resync`, `prune`, `leave`, and `status`
-connect two vivi checkouts anywhere on the internet through a public
-rendezvous server — rooms are real mailspaces, identity is a transparent
-per-project ED25519 key, offline sends queue and flush on reconnect, and the
-board appends an unread-chat line. `send --kind need|task|want` crosses a work
-item to another seat, and `pull` files room needs, tasks, and wants into the
-mailspace under traveling ids that keep one handle on every machine; `prune`
-sheds old cached items and `resync` rebuilds them byte-identically from the
-room. The server is a sibling repository, `vivi-server`.
-
-`sync` replicates a mailspace with a project on that server: `vivi sync` pushes
-local letters and pulls the others'. A pull reads pages of 500 and saves its
+`sync` replicates a mailspace with a project on a server, the sibling
+repository `vivi-server`: `vivi sync` pushes local letters and pulls the
+others'. Identity is a transparent per-mailspace ED25519 key. A pull reads pages of 500 and saves its
 cursor per page; `sync pull --since 7d` starts a new mailspace at a time and
 records where its history starts (`sync status` prints `history from: ...`);
 `sync resync` replays everything; `sync fetch <handle>` and
