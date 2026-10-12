@@ -133,7 +133,7 @@ pub fn compose_send(
         eml = add_header(&eml, "X-Vivi-Depends-On", dep)?;
     }
     let envelope_kind = match kind {
-        "need" | "task" | "want" => Some(kind.to_owned()),
+        "need" | "task" | "want" | "chat" => Some(kind.to_owned()),
         _ => None,
     };
     Ok(ComposedLetter {
@@ -180,7 +180,12 @@ pub fn compose_reply(
         "Message-ID",
         &format!("<{traveling_id}@{prefix}.local>"),
     )?;
-    eml = set_header(&eml, "X-Vivi-Kind", "mail")?;
+    let (header_kind, envelope_kind) = if parent.kind.as_deref() == Some("chat") {
+        ("chat", Some("chat".to_owned()))
+    } else {
+        ("mail", None)
+    };
+    eml = set_header(&eml, "X-Vivi-Kind", header_kind)?;
     if let Some(rfc_id) = parsed
         .rfc_id
         .as_deref()
@@ -215,7 +220,7 @@ pub fn compose_reply(
         traveling_id,
         raw_eml: eml.into_bytes(),
         to: to.join(","),
-        kind: None,
+        kind: envelope_kind,
     })
 }
 

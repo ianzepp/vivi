@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.0 — 2026-10-12
+
+Rooms are fleeting.chat-style channels again: a private, short-lived
+project you create by name, share by id, and reach through HTTP or the
+per-project MCP endpoint. Not a second tenant.
+
+- **`POST /v1/rooms`** `{name, ttl_seconds?}` creates a `mode=chat` project
+  (default TTL 24 h, min 60 s, max 7 d) and joins the creator. The room id
+  is the project id and the shareable capability.
+- **Keyless join.** `POST /v1/rooms/{id}/join` `{name}` mints a guest
+  identity and a bearer that lasts until the room expires. Confined to
+  chat projects; durable projects stay challenge/sign. Guests cannot mint
+  API keys.
+- **Send / read / close.** `POST/GET /v1/rooms/{id}/messages` write and
+  poll `kind=chat` letters (member-visible). `POST /v1/rooms/{id}/close`
+  ends the channel. After close or TTL, writes are `410`. `/v1/_health`
+  sweeps expired chat trees.
+- **MCP.** The same tools as 1.2.0, plus `kind=chat` on `send` / `list`.
+  `POST /v1/rooms/{id}/mcp` aliases `POST /v1/projects/{id}/mcp`.
+- **Removed.** Seat binding, ED25519 join/challenge on rooms, capacity
+  2–8, `DATA_DIR/rooms/` as the live store, and the sealed `messages.json`
+  sidecar. `vivi chat` has been gone since vivi 11.
+
 ## 1.2.0 — 2026-10-12
 
 A remote MCP endpoint per project, so an AI assistant added by URL can work

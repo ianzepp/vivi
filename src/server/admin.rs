@@ -32,12 +32,22 @@ pub async fn health_handler(State(state): State<AppState>, headers: HeaderMap) -
             "a valid moderation token is required",
         );
     }
+    let projects = state.projects.clone();
+    let (rooms, storage) = tokio::task::spawn_blocking(move || {
+        let swept = projects.sweep_expired_chats();
+        if swept > 0 {
+            tracing::info!("swept {swept} expired chat projects");
+        }
+        (projects.live_chat_count(), projects.storage_state())
+    })
+    .await
+    .unwrap_or((0, "error: health task failed".into()));
     Json(json!({
         "ok": true,
         "mode": BACKEND_MODE,
         "encryption": if state.store_cipher.is_some() { "aes-256-gcm" } else { "none" },
-        "rooms": state.rooms.room_count(),
-        "storage": state.rooms.storage_state(),
+        "rooms": rooms,
+        "storage": storage,
     }))
     .into_response()
 }

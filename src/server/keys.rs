@@ -326,6 +326,13 @@ pub async fn mint_handler(
         Ok(None) => return crate::projects_api::invalid_bearer(),
         Err(_) => return crate::projects_api::identity_lookup_failed(),
     };
+    if identity.guest {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "keyless chat members cannot mint API keys",
+        );
+    }
     let keys = state.keys.clone();
     match tokio::task::spawn_blocking(move || keys.mint(&id, &identity.name, &req.label)).await {
         Ok(Ok(minted)) => (

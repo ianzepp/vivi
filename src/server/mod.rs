@@ -1,6 +1,6 @@
-//! vivi-server library: room ids, the per-room mailspace store, seats/auth,
-//! safety rails, and the v1 HTTP router. Wire contract in docs/contract.md
-//! (frozen at U1; auth hardening summary authoritative for VC-3).
+//! vivi-server library: project mailspaces, lightweight chat rooms
+//! (item 17), identity, MCP, and the v1 HTTP router. Wire contract in
+//! docs/contract.md.
 
 pub mod admin;
 pub mod admissions;
@@ -10,13 +10,11 @@ pub mod identities;
 pub mod ids;
 pub mod keys;
 pub mod mcp;
-pub mod messages;
 pub mod project_wake;
 pub mod projects;
 pub mod projects_api;
 pub mod rooms;
 pub mod safety;
-pub mod seats;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,16 +29,13 @@ use crypto::StoreCipher;
 use identities::IdentityRegistry;
 use keys::ApiKeyRegistry;
 use projects::ProjectStore;
-use rooms::RoomStore;
 use safety::RateLimiter;
-use seats::SeatRegistry;
 
-/// Shared router state: room store, seat registry, challenges, rate limiter,
-/// the at-rest cipher (VC-5), and the moderation token for `/v1/_health`.
+/// Shared router state: project store (durable and chat), identities,
+/// challenges, rate limiter, the at-rest cipher (legacy rooms / VC-5),
+/// and the moderation token for `/v1/_health`.
 #[derive(Clone)]
 pub struct AppState {
-    pub rooms: RoomStore,
-    pub seats: SeatRegistry,
     pub projects: ProjectStore,
     pub identities: IdentityRegistry,
     pub keys: ApiKeyRegistry,
@@ -69,8 +64,6 @@ pub fn api_router(
         .expect("valid STORE_ENCRYPTION_KEY")
         .map(Arc::new);
     let state = AppState {
-        rooms: RoomStore::new(&data_dir),
-        seats: SeatRegistry::new(&data_dir),
         projects: ProjectStore::new(&data_dir),
         identities: IdentityRegistry::new(&data_dir),
         keys: ApiKeyRegistry::new(&data_dir),
@@ -108,6 +101,7 @@ pub fn api_router(
             delete(keys::revoke_handler),
         )
         .route("/v1/projects/{id}/mcp", post(mcp::mcp_handler))
+        .route("/v1/rooms/{id}/mcp", post(mcp::mcp_handler))
         // List and lookup responses are large JSON; gzip them when the
         // client asks for it.
         .route(
@@ -126,12 +120,11 @@ pub fn api_router(
         )
         .route("/v1/rooms", post(rooms::create_room_handler))
         .route("/v1/rooms/{id}", get(rooms::room_meta_handler))
-        .route("/v1/rooms/{id}/challenge", post(auth::challenge_handler))
-        .route("/v1/rooms/{id}/join", post(auth::join_handler))
-        .route("/v1/rooms/{id}/auth/token", post(auth::token_handler))
+        .route("/v1/rooms/{id}/join", post(rooms::join_room_handler))
+        .route("/v1/rooms/{id}/close", post(rooms::close_room_handler))
         .route(
             "/v1/rooms/{id}/messages",
-            post(messages::send_handler).get(messages::poll_handler),
+            post(rooms::send_handler).get(rooms::poll_handler),
         );
     // Disabled (unregistered) when no moderation token is configured.
     if state.moderation_token.is_some() {

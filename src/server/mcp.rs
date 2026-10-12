@@ -5,7 +5,7 @@
 //! Bearer (identity token or API key) is always the caller. Tools are a
 //! curated, parameterized subset of the vivi command tree.
 
-mod letters;
+pub mod letters;
 mod tools;
 
 use axum::Json;
@@ -42,6 +42,9 @@ pub async fn mcp_handler(
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
     if let Err(response) = require_existing_project(&state, &id).await {
+        return response;
+    }
+    if let Err(response) = crate::projects_api::require_live_chat(&state, &id).await {
         return response;
     }
     let identity = match authenticate(&state, &id, &headers).await {
@@ -203,7 +206,7 @@ fn tools_list() -> Value {
             tool("list", "List needs, tasks, wants, mail, or memos. Defaults to open work items.", json!({
                 "type": "object",
                 "properties": {
-                    "kind": { "type": "string", "enum": ["need", "task", "want", "mail", "memo"] },
+                    "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail", "memo"] },
                     "status": { "type": "string", "enum": ["open", "done", "all"], "default": "open" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
                 },
@@ -224,10 +227,10 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("send", "Send a need, task, want, or mail as the authenticated caller. The server composes the letter and mints its id.", json!({
+            tool("send", "Send a need, task, want, chat, or mail as the authenticated caller. The server composes the letter and mints its id. For kind=chat, to is optional.", json!({
                 "type": "object",
                 "properties": {
-                    "kind": { "type": "string", "enum": ["need", "task", "want", "mail"] },
+                    "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail"] },
                     "to": {
                         "oneOf": [
                             { "type": "string" },

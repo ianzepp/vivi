@@ -1,22 +1,17 @@
-//! Integration tests for VC-2: room store + room endpoints over the real
-//! vivi mailspace storage and the v1 router.
+//! Lightweight chat rooms (item 17): create, join, send, read, close, expire.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use ed25519_dalek::SigningKey;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::util::ServiceExt;
 
 use vivi_server::api_router;
-use vivi_server::rooms::{RoomError, RoomStore};
 
-fn scratch_data_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("vivi-server-vc2-{}-{name}", std::process::id()));
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("vivi-server-chat-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -25,185 +20,393 @@ async fn send(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    (status, serde_json::from_slice(&bytes).expect("JSON body"))
-}
-
-fn post_rooms(body: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder().method("POST").uri("/v1/rooms");
-    if let Some(body) = body {
-        builder = builder.header("content-type", "application/json");
-        return builder.body(Body::from(body.to_owned())).unwrap();
+    if bytes.is_empty() {
+        return (status, Value::Null);
     }
-    builder.body(Body::empty()).unwrap()
-}
-
-fn test_key(seed: u8) -> SigningKey {
-    SigningKey::from_bytes(&[seed; 32])
-}
-
-fn spki_pem(key: &SigningKey) -> String {
-    const ED25519_SPKI_PREFIX: &[u8] = &[
-        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-    ];
-    let mut der = ED25519_SPKI_PREFIX.to_vec();
-    der.extend_from_slice(key.verifying_key().as_bytes());
-    format!(
-        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
-        STANDARD.encode(der)
+    (
+        status,
+        serde_json::from_slice(&bytes)
+            .unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into_owned())),
     )
 }
 
-/// Creator payload per the frozen contract (VC-3 shape): seats + label + key.
-fn creator_payload(seats: u32, seed: u8, label: &str) -> String {
-    format!(
-        r#"{{"seats":{seats},"label":"{label}","public_key_pem":{:?}}}"#,
-        spki_pem(&test_key(seed))
+fn app(name: &str) -> (Router, PathBuf) {
+    let dir = scratch(name);
+    (api_router(dir.clone(), None, None), dir)
+}
+
+async fn create(app: &Router, name: &str) -> (StatusCode, Value) {
+    send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/rooms")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "name": name }).to_string()))
+            .unwrap(),
     )
+    .await
+}
+
+async fn join(app: &Router, room: &str, name: &str) -> (StatusCode, Value) {
+    send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/rooms/{room}/join"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "name": name }).to_string()))
+            .unwrap(),
+    )
+    .await
 }
 
 #[tokio::test]
-async fn two_rooms_get_distinct_ids_and_wal_mailspaces() {
-    let data_dir = scratch_data_dir("two-rooms");
-    let store = RoomStore::new(&data_dir);
-
-    let first = store.create_room(2).unwrap();
-    let second = store.create_room(2).unwrap();
-    assert_ne!(first.room_id, second.room_id, "two mints must differ");
-
-    for meta in [&first, &second] {
-        let room_dir = data_dir.join("rooms").join(&meta.room_id);
-        assert!(
-            room_dir.join(".vivi").is_dir(),
-            ".vivi mailspace dir missing for {}",
-            meta.room_id
-        );
-        assert!(
-            !room_dir.join("mailspace").exists(),
-            "stray U1 mailspace dir for {}",
-            meta.room_id
-        );
-        // Contract R2: exactly one sqlite store, under the .vivi root.
-        let dbs = sqlite_files(&room_dir);
-        assert_eq!(
-            dbs.len(),
-            1,
-            "expected one sqlite under rooms/{}, got {dbs:?}",
-            meta.room_id
-        );
-        assert_eq!(
-            dbs[0],
-            room_dir.join(".vivi").join("mail.sqlite"),
-            "sqlite not at the .vivi root for {}",
-            meta.room_id
-        );
-        assert_is_wal(&dbs[0]);
-    }
-    store
-        .open_mailspace(&first.room_id)
-        .expect("room mailspace reopens");
-}
-
-/// Every `*.sqlite` file under `dir`, recursively.
-fn sqlite_files(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).unwrap().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            out.extend(sqlite_files(&path));
-        } else if path.extension().is_some_and(|e| e == "sqlite") {
-            out.push(path);
-        }
-    }
-    out
-}
-
-/// SQLite persists the journal mode in the header: read/write version bytes
-/// at offsets 18/19 are 2 for WAL databases.
-fn assert_is_wal(db: &Path) {
-    let header = std::fs::read(db).unwrap()[..20].to_vec();
-    assert_eq!(
-        &header[18..20],
-        &[2, 2],
-        "db {} not in WAL mode",
-        db.display()
-    );
-}
-
-#[tokio::test]
-async fn create_room_handler_validates_capacity_and_mints_dir() {
-    let data_dir = scratch_data_dir("create-handler");
-    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
-
-    let (status, body) = send(&app, post_rooms(Some(&creator_payload(6, 7, "creator-a")))).await;
-    assert_eq!(status, StatusCode::CREATED);
-    let room_id = body["room_id"].as_str().unwrap().to_owned();
-    assert_eq!(room_id.split('-').count(), 5);
-    assert_eq!(body["seat"], 1, "creator binds seat 1 (contract)");
+async fn create_join_send_read() {
+    let (app, dir) = app("round-trip");
+    let (status, created) = create(&app, "alice").await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let room = created["room_id"].as_str().unwrap().to_owned();
+    assert_eq!(created["project_id"], room);
+    assert_eq!(created["mode"], "chat");
+    assert_eq!(created["name"], "alice");
+    assert!(created["token"].as_str().is_some());
+    assert_eq!(created["ttl_seconds"], 86400);
     assert!(
-        body["token"].as_str().is_some(),
-        "creator token in response"
+        dir.join("projects")
+            .join(&room)
+            .join("project.json")
+            .is_file(),
+        "chat lives under projects/, not rooms/"
     );
-    let room_dir = data_dir.join("rooms").join(&room_id);
-    assert!(room_dir.join(".vivi").join("mail.sqlite").is_file());
-    assert_eq!(sqlite_files(&room_dir).len(), 1);
+    assert!(
+        !dir.join("rooms").join(&room).exists(),
+        "must not create a second tenant under rooms/"
+    );
 
-    for bad in [r#"{"seats":9}"#, r#"{"seats":1}"#, r#"{"seats":0}"#] {
-        let (status, body) = send(&app, post_rooms(Some(bad))).await;
-        assert_eq!(
-            status,
-            StatusCode::BAD_REQUEST,
-            "seats {bad} must be rejected"
-        );
-        assert_eq!(body["error"]["code"], "invalid_request");
-    }
-    let (status, body) = send(&app, post_rooms(None)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_request");
+    let alice = created["token"].as_str().unwrap().to_owned();
+    let (status, joined) = join(&app, &room, "bob").await;
+    assert_eq!(status, StatusCode::CREATED, "{joined}");
+    let bob = joined["token"].as_str().unwrap().to_owned();
+
+    let (status, sent) = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/rooms/{room}/messages"))
+            .header("authorization", format!("Bearer {alice}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "body": "hello from alice" }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{sent}");
+    assert_eq!(sent["kind"], "chat");
+    assert!(sent["handle"].as_str().is_some());
+
+    let (status, page) = send(
+        &app,
+        Request::builder()
+            .uri(format!("/v1/rooms/{room}/messages?since=0"))
+            .header("authorization", format!("Bearer {bob}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(page["messages"][0]["from"], "alice");
+    assert_eq!(page["messages"][0]["body"], "hello from alice");
 }
 
 #[tokio::test]
-async fn room_metadata_endpoint_reports_and_distinguishes_errors() {
-    let data_dir = scratch_data_dir("meta-handler");
-    let app = api_router(data_dir.clone(), Some(STANDARD.encode([0x42u8; 32])), None);
+async fn join_requires_the_room_id_and_rejects_taken_names() {
+    let (app, _) = app("join-rules");
+    let (status, created) = create(&app, "alice").await;
+    assert_eq!(status, StatusCode::CREATED);
+    let room = created["room_id"].as_str().unwrap().to_owned();
 
-    let (_, created) = send(&app, post_rooms(Some(&creator_payload(4, 9, "creator-b")))).await;
-    let room_id = created["room_id"].as_str().unwrap().to_owned();
+    let (status, body) = join(&app, &room, "alice").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "name_taken");
 
-    let req = Request::builder()
-        .uri(format!("/v1/rooms/{room_id}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = send(&app, req).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["room_id"], room_id.as_str());
-    assert_eq!(body["capacity"], 4);
+    let (status, body) = join(&app, &room, "postmaster").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
     let unknown = "22222-22222-22222-22222-22222";
-    let req = Request::builder()
-        .uri(format!("/v1/rooms/{unknown}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = send(&app, req).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = join(&app, unknown, "carol").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], "room_not_found");
 
-    let req = Request::builder()
-        .uri("/v1/rooms/not-a-crockford-id!")
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = send(&app, req).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_room_id");
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/rooms")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "name": "x", "ttl_seconds": 10 }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 #[tokio::test]
-async fn store_rejects_capacity_out_of_range() {
-    let data_dir = scratch_data_dir("capacity");
-    let store = RoomStore::new(&data_dir);
-    assert!(matches!(store.create_room(1), Err(RoomError::Capacity(1))));
-    assert!(matches!(store.create_room(9), Err(RoomError::Capacity(9))));
+async fn messages_need_a_bearer_and_are_member_visible() {
+    let (app, _) = app("auth-vis");
+    let (_, created) = create(&app, "alice").await;
+    let room = created["room_id"].as_str().unwrap().to_owned();
+    let alice = created["token"].as_str().unwrap().to_owned();
+    let (_, joined) = join(&app, &room, "bob").await;
+    let bob = joined["token"].as_str().unwrap().to_owned();
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/rooms/{room}/messages"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "body": "nope" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let _ = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/rooms/{room}/messages"))
+            .header("authorization", format!("Bearer {alice}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "body": "visible to bob" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+
+    let (status, page) = send(
+        &app,
+        Request::builder()
+            .uri(format!("/v1/rooms/{room}/messages"))
+            .header("authorization", format!("Bearer {bob}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["messages"][0]["body"], "visible to bob");
+}
+
+#[tokio::test]
+async fn close_blocks_join_and_send() {
+    let (app, _) = app("close");
+    let (_, created) = create(&app, "alice").await;
+    let room = created["room_id"].as_str().unwrap().to_owned();
+    let token = created["token"].as_str().unwrap().to_owned();
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/rooms/{room}/close"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["closed"], true);
+
+    let (status, body) = join(&app, &room, "bob").await;
+    assert_eq!(status, StatusCode::GONE, "{body}");
+    assert_eq!(body["error"]["code"], "room_closed");
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/rooms/{room}/messages"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "body": "too late" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::GONE, "{body}");
+}
+
+#[tokio::test]
+async fn expire_blocks_writes_and_health_sweeps() {
+    let dir = scratch("expire");
+    let app = api_router(dir.clone(), None, Some("mod".into()));
+    let (_, created) = create(&app, "alice").await;
+    let room = created["room_id"].as_str().unwrap().to_owned();
+    let token = created["token"].as_str().unwrap().to_owned();
+
+    let path = dir.join("projects").join(&room).join("project.json");
+    let mut meta: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    meta["expires_at"] = json!("2020-01-01T00:00:00Z");
+    std::fs::write(&path, serde_json::to_vec(&meta).unwrap()).unwrap();
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/rooms/{room}/messages"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "body": "too late" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::GONE, "{body}");
+    assert_eq!(body["error"]["code"], "room_expired");
+
+    let (status, health) = send(
+        &app,
+        Request::builder()
+            .uri("/v1/_health")
+            .header("authorization", "Bearer mod")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{health}");
+    assert_eq!(health["rooms"], 0);
     assert!(
-        !data_dir.join("rooms").join("anything").exists(),
-        "no dir on rejection"
+        !dir.join("projects").join(&room).exists(),
+        "expired chat is swept on health"
     );
+}
+
+#[tokio::test]
+async fn mcp_alias_sends_chat() {
+    let (app, _) = app("mcp");
+    let (_, created) = create(&app, "alice").await;
+    let room = created["room_id"].as_str().unwrap().to_owned();
+    let token = created["token"].as_str().unwrap().to_owned();
+
+    let rpc = |uri: String, body: Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let (status, init) = send(
+        &app,
+        rpc(
+            format!("/v1/rooms/{room}/mcp"),
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-03-26","capabilities":{},
+                "clientInfo":{"name":"t","version":"0"}
+            }}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{init}");
+    assert!(
+        init["result"]["serverInfo"]["name"]
+            .as_str()
+            .unwrap()
+            .contains("vivi-server")
+    );
+
+    let (status, sent) = send(
+        &app,
+        rpc(
+            format!("/v1/projects/{room}/mcp"),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                "name":"send","arguments":{
+                    "kind":"chat","subject":"hi","body":"from mcp"
+                }
+            }}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    let text = sent["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("\"handle\""), "{text}");
+
+    let (status, listed) = send(
+        &app,
+        rpc(
+            format!("/v1/rooms/{room}/mcp"),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+                "name":"list","arguments":{"kind":"chat","status":"all"}
+            }}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let text = listed["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("from mcp") || text.contains("hi"), "{text}");
+}
+
+#[tokio::test]
+async fn guest_cannot_mint_api_keys() {
+    let (app, _) = app("no-keys");
+    let (_, created) = create(&app, "alice").await;
+    let room = created["room_id"].as_str().unwrap().to_owned();
+    let token = created["token"].as_str().unwrap().to_owned();
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/projects/{room}/keys"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "label": "bot" }).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[tokio::test]
+async fn metadata_distinguishes_bad_and_missing_ids() {
+    let (app, _) = app("meta");
+    let (_, created) = create(&app, "alice").await;
+    let room = created["room_id"].as_str().unwrap().to_owned();
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .uri(format!("/v1/rooms/{room}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["members"], 1);
+    assert_eq!(body["expired"], false);
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .uri("/v1/rooms/22222-22222-22222-22222-22222")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "room_not_found");
+
+    let (status, body) = send(
+        &app,
+        Request::builder()
+            .uri("/v1/rooms/not-a-crockford-id!")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_room_id");
 }

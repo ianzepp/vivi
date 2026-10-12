@@ -1,12 +1,100 @@
-# vivi-server Wire Contract — Phase 01 (FROZEN at U1)
+# vivi-server Wire Contract
 
-Wire truth for the vivi chat substrate. Client units (vivi `chat` family)
-build against this document; any change after U1 integration is an explicit
-recorded revision in the phase delivery doc.
+Wire truth for vivi-server. Phase 01 rooms (U1, seat/challenge) are
+**superseded in 1.3.0** by [Lightweight chat rooms](#lightweight-chat-rooms-130).
+The project letter wire and [Project MCP](#project-mcp-120) stay. Revisions
+after a freeze are recorded here.
 
-All bodies are JSON (`application/json`). All v1 routes live under `/v1/`.
-Storage per room is a real mailspace at `DATA_DIR/rooms/<room_id>/.vivi/`
-(R2), opened through the vivi crate; messages are mail items sent
+All bodies are JSON (`application/json`) unless a route says otherwise.
+All v1 routes live under `/v1/`.
+
+## Lightweight chat rooms (1.3.0)
+
+A room is a **chat-mode project**: same mailspace and transport index as a
+durable project (`DATA_DIR/projects/<id>/`), with `mode=chat`, a TTL, and
+keyless admission. The room id is the project id (25 Crockford-base32,
+grouped `xxxxx-xxxxx-xxxxx-xxxxx-xxxxx`) and the shareable capability.
+
+Chat letters use `kind=chat` and are member-visible (the same transport
+rule as need/task/want). Ordinary `kind=mail` stays sender/recipient-only.
+
+### Auth
+
+No key. `POST /v1/rooms` and `POST /v1/rooms/{id}/join` take `{name}`
+(1–64 chars, mail local-part charset). The server mints a guest identity
+(mailspace UUID + prefix) and a Bearer that lasts until the room expires.
+Stored hashed. Confined to chat projects. A guest cannot mint API keys.
+Durable projects keep challenge/sign.
+
+Member cap **64**. Rate limit **30 sends/min/identity**. Body cap **64 KiB**.
+
+### TTL
+
+Default **24 h**, min **60 s**, max **7 d**. Any member may close the
+room. After close or expiry: join, send, and MCP are `410`
+(`room_closed` / `room_expired`). GET meta still reports `closed` /
+`expired` until `/v1/_health` sweeps the tree. Named exception to
+phase-03 item 4: a chat project's letters are not retained past expiry.
+
+### Endpoints
+
+#### `POST /v1/rooms`
+
+Request: `{"name", "ttl_seconds"?}`. Response `201`:
+`{"room_id", "project_id", "mode":"chat", "ttl_seconds", "expires_at",
+"closed", "expired", "members", "mcp", "name", "token",
+"token_expires_at"}`. `project_id` equals `room_id`. `mcp` is
+`/v1/projects/{id}/mcp`.
+
+#### `POST /v1/rooms/{id}/join`
+
+Request: `{"name"}`. Response `201`: same shape as create (token for the
+joiner). `409 name_taken`. `403 room_full`. `410` if over.
+
+#### `GET /v1/rooms/{id}`
+
+No auth. `200` metadata (no message content). `400 invalid_room_id`.
+`404 room_not_found`.
+
+#### `POST /v1/rooms/{id}/messages`
+
+Bearer. Request: `{"body", "subject"?, "in_reply_to"?}`. Subject
+defaults to `chat`. Response `201`:
+`{"message_id", "handle", "sequence", "kind":"chat", "duplicate"}`.
+
+#### `GET /v1/rooms/{id}/messages`
+
+Bearer. Query: `since=<sequence>`, `wait=<seconds 0..25>`. Response `200`:
+`{"messages":[{"message_id","handle","sequence","from","subject","body",
+"created_at"}], "next_cursor"}`. Only `kind=chat`.
+
+#### `POST /v1/rooms/{id}/close`
+
+Bearer. Response `200` metadata with `closed: true`.
+
+#### `POST /v1/rooms/{id}/mcp`
+
+Same Streamable HTTP MCP as `POST /v1/projects/{id}/mcp`. `send` /
+`list` accept `kind=chat`; `to` is optional on chat send.
+
+### Errors (additive)
+
+| HTTP | Code | Meaning |
+| --- | --- | --- |
+| 403 | `room_full` | 64 members already |
+| 409 | `name_taken` | name already in this chat |
+| 410 | `room_expired` | TTL elapsed |
+| 410 | `room_closed` | a member closed the chat |
+
+---
+
+## Phase 01 rooms (superseded)
+
+The remainder of this section is the frozen U1 seat/challenge contract,
+kept as the revision record. It is not served in 1.3.0.
+
+Storage per room *was* a mailspace at `DATA_DIR/rooms/<room_id>/.vivi/`
+(R2), opened through the vivi crate; messages were mail items sent
 via `Mailspace::send`.
 
 ## Conventions
@@ -246,7 +334,9 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
 
 Writes share the 30/min/identity send budget. Tool failures are
-`isError: true` with a text body, HTTP 200.
+`isError: true` with a text body, HTTP 200. `kind=chat` is accepted on
+`send` and `list` (1.3.0); `to` may be omitted on a chat send. A closed
+or expired chat project is `410` before JSON-RPC.
 
 ### API keys
 
