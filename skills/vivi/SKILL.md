@@ -1480,7 +1480,7 @@ Configuration is the `[chat]` table in the project's `mailspace.toml`:
 
 ```toml
 [chat]
-server  = "https://vivi-server-production.up.railway.app"
+server  = "https://vivi.fleeting.chat"
 notify  = true   # board may show the unread-chat badge (default)
 name    = "build-host/vivi"  # seat label override; default <short-host>/<project>
 recipient = "mind"  # local role that receives room items on `chat pull`
@@ -1563,9 +1563,7 @@ of band when a new sender matters.
 
 `[chat] server` defaults to the placeholder
 `https://vivi-chat.example` until the operator sets a hostname. The
-current live deployment is
-`https://vivi-server-production.up.railway.app` (Railway default
-domain); a custom hostname is still open.
+current live deployment is `https://vivi.fleeting.chat`.
 
 ## Project Sync
 
