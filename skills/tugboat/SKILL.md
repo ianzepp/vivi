@@ -173,6 +173,21 @@ reports the weaker fact it can prove and the manual check still stands:
 | Armed scheduler list | Cadence and silence are Vivi's; the host's job list is not | The loops section shows declared cadence and silence; check the scheduler yourself |
 | Git dirt and ancestry | Vivi does not read repositories | Scan `git status` yourself; handle `stale` verdicts stay unavailable |
 
+**Sync is not part of boot.** `vivi boot` reads only the letters this
+mailspace already holds and never calls a server. Where the mailspace has
+`[sync]`, run `vivi sync status` (unsent count, history floor, letters held for
+unknown roles), then `vivi sync` (push, then pull), so reports, close and reopen
+events, and work other mailspaces sent are in the frame. A push that exits
+non-zero names letters that were never uploaded. A mailspace joining a project
+with history starts at a window, `vivi sync pull --since 7d`, not the whole
+record (refused once a cursor exists); `sync pull --refs [--depth N]` and
+`sync fetch <handle>...` bring in older letters a letter cites. Need, task, and
+want letters can be fetched by any member; a report or event is addressed mail
+that only its sender and addressees can fetch, so a seat in another mailspace
+gets the need and task by pointer and the report facts in its task body. A
+`held for unknown roles` line in the frame is letters for a role this mailspace
+lacks: `vivi role add <name>` adopts them.
+
 **Self-test (one line):**
 
 - **I am Mind** if I own the operator conversation and may spawn seats / arm loops.
@@ -212,7 +227,9 @@ schedulers should still be up — that is [Warm boot](#warm-boot-mind-only-post-
      bottom and re-run boot when you need it refreshed.
    - For each item: read once (`vivi mail show`), integrate any still-material
      signal into current posture (or a successor task/need), then
-     `vivi mail absorb --for mind <handle> [--note '…']`.
+     `vivi mail absorb --for mind <handle> [--note '…']`. A Hand's or
+     Auditor's report is a close duty first: reconcile it and close the handle
+     it answers (`done --for mind`, Rule 6), then absorb the report.
    - Absorb is read + acknowledge for cycle bookkeeping; it is **not** durable
      memory. A durable ruling or posture statement goes into a **fresh** memo;
      anything that is work goes into an open handle.
@@ -263,7 +280,9 @@ schedulers should still be up — that is [Warm boot](#warm-boot-mind-only-post-
    the interrupted owner's, not foreign dirt. Do not erase or commit it.
 6. **Reconcile committed-but-unclosed.** A unit whose code landed as a commit
    but whose task is still open and whose closeout mail never arrived is
-   half-finished: finish the tail the assignment named, then close. A probe
+   half-finished: finish the tail the assignment named, then close. A report
+   sitting unabsorbed in the Mind's inbox whose handle was never closed is the
+   same tail: reconcile it, then close it. A probe
    that checks git ancestry already reports these as `stale` handle verdicts in
    the boot digest; where none exists, find them by reading open handles
    against `git log`.
@@ -462,8 +481,9 @@ the seat still owns one handle.
 3. Confirm write_scope, validation, done_when, and any freeze/base/head fields.
 4. Inspect WIP **in scope**; classify foreign dirt A/B/C. Do not erase foreign
    work.
-5. Continue the unit, refuse improperly scoped work, or close/report through
-   the handle. Stop after done (Rule 6). No post-done thrash.
+5. Continue the unit, refuse improperly scoped work, or report through the
+   handle (`done` is a report; the Mind closes). Stop after done (Rule 6). No
+   post-done thrash.
 
 **Do not:**
 
@@ -528,7 +548,9 @@ a prior process. A seat row reports the stored binding, and a subagent-harness
 seat reads `unverified` because an OS pid is not a signal for one.
 
 One process owns one handle. Workers load that handle, not the class board.
-When finished, they close or reply through the same handle. Record decisions
+When finished, they report through the same handle: a worker's `done` is a
+report (the note is the letter the Mind reads), never the close. The Mind
+closes the handle after it reconciles the report (Rule 6). Record decisions
 before routing dependent work; a retroactive record does not repair an
 unrecorded handoff.
 
@@ -551,7 +573,8 @@ In [Direct](#operating-modes) the Mind commits the work it just did. It
 still does not commit for a Hand.
 
 In a pool lane (`vivi pool dispatch`) the runner makes the commit, as the
-lane's configured bot identity, and the orchestrator closes the task; a
+lane's configured bot identity, and the orchestrator closes the task
+(`task done --for mind`; collecting a result does not close it); a
 read-only dispatch commits nothing. The rule above governs a host-spawned seat.
 
 ### Rule 4: Route blockers; do not freeze
@@ -670,7 +693,7 @@ names only the protocol-level owners below.
 | Incremental check while coding | **Hand** | As needed | Narrowest check of the touched surface. Not a project ladder. |
 | Hand sanity | **Hand** | Once after the last product edit | Optional one focused check of this logical change. Not the project's integration, suite, or release gate. |
 | Integration / suite / release | **Project-defined seats** | As that project says | Named in the project's agents/charter docs. Tugboat does not invent the ladder. |
-| Completion reconcile | **Mind** | Once per finished handle | Paper only: commit exists, paths ⊆ write scope, Hand said done. |
+| Completion reconcile | **Mind** | Once per finished handle | Paper only: commit exists, paths ⊆ write scope, Hand reported done. Then the Mind closes the handle (`done --for mind`); a reconcile that fails reopens it instead. |
 | Delivery audit | **Auditor** | Once per delivery spec | Spec vs live repo. No product implementation exists yet. |
 | Implementation (aggregate) audit | **Auditor** | Goal or sub-goal close, declared wave or phase freeze, named risk gate, interval backstop, Warm-boot reacquaintance, or cadence-recommended range | Evidence honesty on frozen commits + paths + receipts: was the diff done correctly, were tests weakened or acceptance clauses left unexecuted, what architectural residual did it leave. Not a Hand closeout. |
 | Strategic architecture review | **Heads** — `head-cto` alone at a sub-goal or wave breakpoint | Phase close, goal close, and every sub-goal close; lighter CTO pass on Warm boot | Whether the implementation created architecture, frameworks, or durable commitments it should not have. Architecture and future pressure; no suite or device re-run. |
@@ -680,7 +703,7 @@ names only the protocol-level owners below.
 1. **V1 — Hand is not the Auditor, not the integrator, not the suite owner.** The Hand implements **one logical change** and turns the seat over. It does not re-verify the campaign, run sibling units, or sit on project-wide gates.
 2. **V2 — Incremental first.** While coding, use the narrowest check that can catch this change. Never climb the project's integration or suite command as a Hand closeout.
 3. **V3 — Sanity, then return.** After the last product edit, optional one focused check of the touched surface. Then commit, report done, stop. Build stability and suites belong to the seats the project names for them.
-4. **V4 — Zero verification thrash.** After the last product edit, sanity (if any), `vivi task done`, stop. Repeated "final check" or post-done runs are process violations. The seat must turn over.
+4. **V4 — Zero verification thrash.** After the last product edit, sanity (if any), `vivi task done --note` (the report), stop. Repeated "final check" or post-done runs are process violations. The seat must turn over.
 5. **V5 — Mind reconciles; Mind does not re-test.** Mind checks claims against commits and receipts. Mind does not re-run the unit ladder, full test suite, or real-device acceptance by default, and does not file an Auditor as a disguised re-execution of the Hand's suite.
 6. **V6 — Auditor default is evidence honesty.** Phase audit inputs are frozen base/head (or commit set), paths, Hand closeout receipts, and named authorities. The Auditor challenges whether claims are honest and complete (scope breach, weakened tests, missing receipt fields, architectural residual). Re-execution of product tests or real devices is **not** the default; it requires a named command and a `block_ship`-class reason that cannot be settled from artifacts.
 7. **V7 — Receipt is the interface.** Downstream roles (Mind, Auditor, Heads) consume the Hand's commit list, validation claim, and closeout receipt (hashes, machine, backend). They do not regenerate that evidence without a new product change or a named risk.
@@ -724,9 +747,10 @@ reader — including [Cadence](#cadence), which scores its [process
 catalog](#process-catalog) from board paper. The Mind's reconcile of an audit
 files one handle per finding: a repair task for the blocked work, or a debt
 task or need whose body carries the audit handle, the blocked paths, and the
-recheck trigger that closes it. `residual` findings get the same treatment. A
-verdict with no handle has no owner, and no later tick can tell it apart from a
-verdict that never happened.
+recheck trigger that closes it. `residual` findings get the same treatment. The
+Mind then closes the audit handle: the Auditor's `done` was a report, and a
+block routes to a repair, never to a re-file. A verdict with no handle has no
+owner, and no later tick can tell it apart from a verdict that never happened.
 
 **Still not per unit.** Nothing here re-introduces a per-unit audit. One aggregate range, one dispatch, up to four Auditors by path family or risk cluster. A Hand fix does not fire an audit; the next breakpoint covers it.
 
@@ -771,7 +795,11 @@ and the Mind re-dispatches unrelated eligible work in the same turn. Rule 4's
 applies to any other blocker.
 
 **The repair loop is bounded.** A repair is verified by a targeted re-review of
-**the repair diff only** — never a re-audit of the range.
+**the repair diff only** — never a re-audit of the range. The Mind opens a repair
+by reopening: `vivi task reopen --for mind <handle>` puts the same unit back on
+its assignee's board with its dependents re-locked (a bound need reopens with
+it), or `vivi need reopen` plus a second task bound to the need. Neither is a
+manual re-file; a reopen travels to a remote assignee as an event letter.
 
 1. One re-review per finding.
 2. A **different** defect the re-review surfaces is a **new finding with its own
@@ -848,9 +876,9 @@ Each role is a Vivi identity with a mailbox and role record.
 
 | Role | Does | Does not |
 |---|---|---|
-| **Mind** | Sees work, assigns roles, integrates results, reconciles completion paper and advances goal/campaign status as units land (Rules 1/6), performs operational capacity analysis, talks to the operator, manages the loop, and keeps every seat as full as possible (Rule 5). | Edit product files, run tests, builds, linters, formatters, or factory suites, re-execute Hand closeout, perform deep product/specialist analysis in its own context (that is Head/Planner/Auditor work), rewrite goal/campaign content, or commit for roles. |
-| **Hand** | Implements **one logical change**, optional sanity check, commits, reports done, turns the seat over. | Wait for GO stamps, erase other work, lower goals, rediscover architecture, run project-wide gates, sit on a multi-family bag, or run tools after `task done`. |
-| **Auditor** | Reviews settled delivery specs or frozen phase ranges; returns `admitted`/`revise` or `clean_pass`/`residual`/`block_range`/`block_ship` via **evidence honesty** (Rule 6). Standing procedure lives on the Vivi **role charter** (same packaging as Heads). | Implement code, commit product work, issue a GO stamp, or re-run the Hand's full validation ladder / real-device suite by default. |
+| **Mind** | Sees work, assigns roles, integrates results, reconciles completion paper, closes the handles it reconciled (only the Mind or the item's author closes; a worker's `done` is a report), and advances goal/campaign status as units land (Rules 1/6), performs operational capacity analysis, talks to the operator, manages the loop, and keeps every seat as full as possible (Rule 5). | Edit product files, run tests, builds, linters, formatters, or factory suites, re-execute Hand closeout, perform deep product/specialist analysis in its own context (that is Head/Planner/Auditor work), rewrite goal/campaign content, or commit for roles. |
+| **Hand** | Implements **one logical change**, optional sanity check, commits, reports done (`task done --note`: a report, not the close), turns the seat over. | Wait for GO stamps, erase other work, lower goals, rediscover architecture, run project-wide gates, sit on a multi-family bag, or run tools after `task done`. |
+| **Auditor** | Reviews settled delivery specs or frozen phase ranges; replies with `admitted`/`revise` or `clean_pass`/`residual`/`block_range`/`block_ship` via **evidence honesty** (Rule 6). Standing procedure lives on the Vivi **role charter** (same packaging as Heads). | Implement code, commit product work, issue a GO stamp, or re-run the Hand's full validation ladder / real-device suite by default. |
 | **Triage** | Reconciles the registered backlog (wants, needs, goals) against the live repository: is the claim still true, and are the requirements present? Returns one disposition per item. Standing procedure lives on the Vivi **role charter**. Cold boot is its standing trigger. | Implement, fix, lower, promote, close, audit a diff, or judge architecture, scope, purity, priority, or merit. |
 | **Planner** | Goal-forge, goal-check, and delivery lowering into unit graphs. Standing procedure lives on the Vivi **role charter**. | Implement product code, merge, review, or file Hand tasks. |
 | **Hater** | Runs one fresh hostile first-impression pass on one bounded surface for one skeptical audience and reports raw perception evidence. Standing procedure is the Vivi role charter, plus a hater skill if the workspace has one. | Judge merit, inspect hidden rationale, implement, audit, create tasks, or block acceptance or launch. |
@@ -896,7 +924,7 @@ The Mind uses the full role system through Vivi:
   instructions in the task body or a linked file — never in the spawn
   prompt. File **needs** and **wants** to the Mind (or the backlog owner)
   when discovering work; the Mind lowers them into tasks before spawn.
-- Hands execute and report back. They close tasks and reply with their result.
+- Hands execute and report back. `task done --note` is their report; the Mind closes the handle after it reconciles, or reopens it.
 - Review is optional in the simple loop but required when the planning or wave protocol calls for it.
 - Planners lower goals. A raw goal goes to a Planner, not a Hand.
 - Heads advise. They do not implement or lower goals.
@@ -1005,17 +1033,19 @@ one turn. On each turn, the Mind performs the short observation pass (steps
 releases the operator channel.
 
 **Observation is bounded and named.** The pass reads fixed-shape surfaces,
-not raw dumps: `vivi step --json` (the dispatch/exception manifest over the
+not raw dumps: on a synced mailspace, `vivi sync` first (nothing arrives
+otherwise); `vivi step --json` (the dispatch/exception manifest over the
 backlog graph), `vivi board --process --graph --json` when liveness matters,
-`vivi mailspace watch --once --write-cursor` for deltas, and `vivi task show`
-on the one handle selected for work. See [Context economy](#context-economy).
+`vivi mailspace watch --once --write-cursor` for deltas (letters filed by a
+pull arrive as `delivered` events), and `vivi task show` on the one handle
+selected for work. See [Context economy](#context-economy).
 
 1. Reconciles execution state under Rule 2: **running** (live process), **dispatching** (handle + spawn this turn), **idle** (no process), or **spawn debt** (executable open handle without a live owner). Use the project's occupancy signal when it has one.
-2. Inventories the Mind board by kind ([Board kinds](#board-kinds)): open **needs** (priority backlog), open **wants** (deferred backlog), open **tasks** (active assignment / spawn debt), and **mail** (communication to integrate). Drain needs before wants.
-3. Consumes the step manifest: `dispatches` are the ready independent implementation units (readiness is computed from the graph, including later-stage and cross-goal items whose named dependencies are met — the `pull_forward` fact); `exceptions` route by reason — `want_requires_promotion` (promotion stays a requested action), `lowered_awaiting_units` (dispatch the units, not the parent), `no_done_when` (back to the Planner), `item_missing` (hygiene), `not_settled` (settle first). Unlowered goals, completed frozen ranges eligible for audit, and spawn debt complete the inventory.
+2. Inventories the Mind board by kind ([Board kinds](#board-kinds)): open **needs** (priority backlog), open **wants** (deferred backlog), open **tasks** (active assignment / spawn debt), and **mail** (communication to integrate). Drain needs before wants. Work this mailspace sent to another mailspace's role lists as role `sent`: tracked here, dispatched there.
+3. Consumes the step manifest: `dispatches` are the ready independent implementation units (readiness is computed from the graph, including later-stage and cross-goal items whose named dependencies are met — the `pull_forward` fact); `exceptions` route by reason — `want_requires_promotion` (promotion stays a requested action), `lowered_awaiting_units` (dispatch the units, not the parent), `no_done_when` (back to the Planner), `item_missing` and `untracked_item` (hygiene: `vivi graph audit --repair`), `not_settled` (a `step --apply` on a copy that is not done), `awaiting_remote` (work handed to another mailspace: never dispatch or re-file it; the receiving mailspace runs it, the report returns as mail after `vivi sync`, and its dependents stay blocked until the Mind closes it). Work held for another mailspace's role mints no node, so it never appears here. Unlowered goals, completed frozen ranges eligible for audit, and spawn debt complete the inventory.
 4. Checks operator/role **mail**, dirty files; classifies dirt A/B/C. Integrate mail into needs/wants/tasks when it discovers work; do not leave must-do items as chat-only. For every claimed blocker, name the exact affected dependency boundary and separately inventory unaffected work. A blocker with no live repair/diagnostic/decision owner is the highest-priority spawn debt (Rule 4).
 5. Chooses the first material branch below and performs only that coherent batch:
-   - **Returned reports:** integrate one completed batch and route only its immediate repairs or successors. Integration means Rule 6 reconcile of paper (handle, commits, scope, validation claim) — plus advancing the goal/campaign status records for the landed units (Mind-owned lifecycle, Rule 1) — not re-running product tests. Dispatch a recoverable blocker to the correct Hand, Planner, Head, or project integration seat; unaffected seats remain eligible. Deferred follow-ups become **wants**.
+   - **Returned reports:** integrate one completed batch and route only its immediate repairs or successors. Integration means Rule 6 reconcile of paper (handle, commits, scope, validation claim), then **closing each reconciled handle** with `vivi task done --for mind <handle>` (or reopening it) — plus advancing the goal/campaign status records for the landed units (Mind-owned lifecycle, Rule 1) — not re-running product tests. A report is a reply in the Mind's inbox on the handle it answers: close that handle (the one `step` and `graph ready` listed for it; either copy's handle resolves). Dispatch a recoverable blocker to the correct Hand, Planner, Head, or project integration seat; unaffected seats remain eligible. Deferred follow-ups become **wants**.
    - **Open needs:** lower the highest-priority compatible need into assignable task(s), then dispatch that coherent burst. Needs precede wants. A blocker need requires a live owner.
    - **Ready implementation:** dispatch the current independent READY batch across idle Hands.
    - **Thin implementation frontier:** dispatch one coherent goal/child batch across idle Planners.
@@ -1170,8 +1200,9 @@ raw goal
   → Planner: goal-forge / goal-check / P3 delivery
   → Auditor: delivery audit
   → Mind: admit or return for lowering
-  → Hand: implement admitted units and unblock successors
-  → Mind: file the integration task — a project merge/release seat lands the commit
+  → Hand: implement admitted units and report (the report unlocks successors)
+  → Mind: reconcile the report and close the handle; file the integration task —
+    a project merge/release seat lands the commit
   → stage/phase cutoff: freeze aggregate range
   → Auditor: aggregate implementation audit — also at goal and sub-goal close
   → Mind: close, record residual debt, or route blocking repair — gated on that
@@ -1184,7 +1215,7 @@ completion reconcile (Rule 6), exactly as it files the next unit. A checkout or 
 released while its work is still ahead of the integration branch is **merge debt**:
 unowned, invisible on the task board, and it does not resolve itself — an orphaned
 commit sits behind a released lock and nothing in the loop will look for it. A seat
-that closes with unmerged work names it as merge debt in its report, with the branch
+that reports with unmerged work names it as merge debt in its report, with the branch
 and commit, so a Mind without that seat's context can act on it.
 
 The Planner produces the delivery artifact; it does not file Hand tasks. The Mind owns admission and creates Hand tasks only from an audited delivery unit. The Auditor receives either a settled delivery specification or the frozen aggregate range at the named phase boundary, never an informal request to "check it."
@@ -1212,6 +1243,23 @@ Do **not** put the project's integration, suite, or release gate on the Hand. Do
 
 If the body is missing a pointer, covers several families, assigns a project-wide gate to the Hand, or requires rediscovering the unit, the Hand refuses and Mind sends it back to a Planner. A Hand does not infer architecture from a raw campaign goal. A Hand that cannot start changing `write_scope` files stops and files a **need** — it does not tour the tree.
 
+**Work for another mailspace.** Address a remote role directly,
+`--to hand@<8hex>.local` (`vivi sync directory` lists each member's address
+domain). The sender's copy is tracked here and never dispatched
+(`awaiting_remote`); the receiving mailspace's own Mind or host dispatches it.
+Cite the handle `send` prints. A local send prints `created` (the recipient's
+copy: the one `step`, `graph activate`, `need bind`, and the spawn pointer use)
+and `sent` (the sender's copy); a remote send prints one `sent` handle, the
+same handle in the receiving mailspace once it pulls. The task body carries
+every fact the remote seat needs (a letter over 64 KiB is refused at compose
+when `[sync]` is configured). The reply is a letter `Re: <subject>` whose body
+is the note and nothing else: `--verdict`, `--repo`, and `--tip` stay in the
+reporter's own ledger, so a remote seat puts verdict, repo, tip, and commits in
+`--note`. The report and the Mind's close each travel at the next `vivi sync`.
+Closing the sent copy (`done --for mind <handle>`) is an event letter that
+closes the item in the receiving mailspace; a reopen reopens it there, same
+handle.
+
 ### Role to Mind
 
 Every role reports to the Mind through the handle it received. Tone matches
@@ -1223,24 +1271,38 @@ A Hand completes a task by:
 2. While coding: narrow checks only (Rule 6 V2).
 3. After the last product edit: optional one sanity check of this change (Rule 6 V3). Not a project-wide gate.
 4. Committing its work.
-5. Settling the task with `vivi task done --verdict <v> --repo <repo> --tip <sha>`
-   — the receipt flags are the validation claim the record carries; the item's
-   graph node completes and dependents unlock mechanically.
-6. Replying one line: `done handle <handle>. commit abc123. unit <id>.`
-7. **Stopping** (Rule 6 V4). The seat turns over. No further tests after done.
+5. Reporting with `vivi task done --for <role> <handle> --verdict <v> --repo
+   <repo> --tip <sha> --note 'done handle <handle>. commit abc123. unit <id>.'`.
+   The receipt flags are the validation claim the record carries in the
+   reporter's mailspace; the **note is the one-line reply** the Mind reads (a
+   `done` with no note leaves the Mind nothing to read). This is a **report,
+   not the close**: the item's graph node completes in the Hand's mailspace and
+   its dependents unlock there, and the owner's state is unchanged until the
+   Mind closes. A reply with `vivi mail reply` is for a question mid-unit, not
+   a second report.
+6. **Stopping** (Rule 6 V4). The seat turns over. No further tests after done.
+   In a sync-configured mailspace the report stays local until
+   `vivi sync push` runs; whoever hosts the seat runs it, and until then the
+   sender sees nothing.
 
-On the settle notification, the Mind (or host wrapper) runs
-`vivi step --apply <handle> --project $ROOT` once: idempotent, never settles
-work itself, records the `via=step-apply` decision, and — when a judgment
-provider is configured — screens the receipt into the calibration corpus in
-shadow. The Mind's completion reconcile is then reading the step decisions
-and exceptions, not re-deriving readiness.
+On the report, the Mind reconciles (Rule 6), then closes with
+`vivi task done --for mind <handle> --note '…' --project $ROOT` (an event
+letter that every holder applies; a reconcile that fails is `task reopen
+--for mind <handle>` instead), and closes the need the unit answered unless the
+need is bound: a bound need closes by join when its units are done, and a
+reopened unit reopens it. The Mind (or host wrapper) may then run
+`vivi step --apply <handle> --project $ROOT`: idempotent, never settles work
+itself, reports `via=lifecycle` when the report already completed the node,
+and — when a judgment provider is configured — screens the receipt into the
+calibration corpus in shadow. The completion reconcile reads the step
+decisions and exceptions, not re-derived readiness.
 
 A blocked Hand is also one line (what blocked, what follow-up). If the bag is
 wrong, file a **need** with must-do / repro / boundary, then stop.
 
-An Auditor closes with `clean_pass`, `residual`, `block_range`, or `block_ship` (delivery:
-`admitted` or `revise`). The reply on the assignment handle is a **doorbell**:
+An Auditor replies with `clean_pass`, `residual`, `block_range`, or `block_ship` (delivery:
+`admitted` or `revise`); like a Hand's `done`, its `done` is a report and the
+Mind closes the audit handle. The reply on the assignment handle is a **doorbell**:
 verdict, frozen range, mail handle of the full report if the body is long.
 Put the YAML report on that handle when it fits, or as a second mail to Mind
 that cites the assignment handle. Do not leave the only evidence in the host
@@ -1303,13 +1365,16 @@ check-first: if already true, close with evidence'
 # Load task: vivi task show task-handle-abc --project "$ROOT"
 # Unit resume only. Follow Tugboat. Report through that handle. Stop.
 
+# 3) The Hand reports: the note is the letter the Mind reads. Not the close.
 vivi task done --project "$ROOT" --for hand task-handle-abc \
-  --note 'commit def456. paths crates/parser/src/validate.rs crates/parser/tests/validate.rs.'
+  --verdict clean_pass --repo parser --tip def456 \
+  --note 'done handle task-handle-abc. commit def456. unit U-17. paths crates/parser/src/validate.rs crates/parser/tests/validate.rs.'
 
-vivi mail reply task-handle-abc --project "$ROOT" \
-  --from hand \
-  --body 'done handle task-handle-abc. commit def456. unit U-17.'
+# 4) The Mind reconciles the paper, then closes (or `task reopen --for mind`).
+vivi task done --project "$ROOT" --for mind task-handle-abc \
+  --note 'reconciled: commit def456, paths within scope'
 
+# 5) At the phase cutoff the Mind files the aggregate audit.
 vivi task send --project "$ROOT" \
   --from mind --to auditor \
   --subject 'audit phase P-4 implementation' \
@@ -1323,7 +1388,9 @@ receipts: hand closeout notes on those handles
 re_execute: none
 verdict: clean_pass | residual | block_range | block_ship
 do_not: implement; full ladder'
-# Spawn auditor with the same four-line pointer, handle of this task.
+# Spawn auditor with the same four-line pointer, handle of this task. The
+# Auditor replies with its verdict (`task done --for auditor --note …` is a
+# report); the Mind files one handle per finding, then closes the audit handle.
 ```
 
 ## Feature lifecycle and phase review
@@ -1334,7 +1401,7 @@ An individual feature runs a fixed role cycle; multiple features compose a **pha
 
 1. **Planner** forges the goal (goal-forge) → **Mind** verifies intent.
 2. **Planner** lowers to delivery (goal-check → P3 delivery) → **Auditor** verifies the delivery spec.
-3. **Mind** admits each audited delivery unit → **Hand** implements and commits it. Completed units may unblock successor units immediately.
+3. **Mind** admits each audited delivery unit → **Hand** implements, commits, and reports it (the Mind closes the handle). A reported unit unblocks successor units immediately.
 4. At the named stage/phase boundary and at goal close, **Auditor** reviews the aggregate frozen commit range → **Mind** closes the phase or goal, or routes only blocking repairs. A goal may not be closed without that verdict or a recorded waiver ([audit breakpoints](#audit-breakpoints-and-the-close-gate)).
 
 The Mind routes each step and integrates the result. An Auditor never issues a GO stamp; closing is the Mind's call.
@@ -1692,7 +1759,10 @@ for "I need help" or "I want something from someone."
 
 Work items are **graph citizens at send**: every task/need/want mints a node
 in the project's `backlog` graph, `--depends-on` (any work-kind handle)
-creates the prerequisite edge, and readiness is computed across kinds. An
+creates the prerequisite edge, and readiness is computed across kinds. Work
+held for another mailspace's role mints no node (it is that mailspace's
+backlog); the sender's copy of work sent there is a tracking node that is never
+dispatched (`awaiting_remote`) and completes only when its owner closes it. An
 unlocked want surfaces as a ready want node — promotion remains a requested
 action (`want promote`) and never fires because a dependency completed.
 Lowering is a graph fact: `vivi need bind` attaches unit tasks, and the
@@ -1748,7 +1818,11 @@ There are two kinds of "depends on" and they live in different places.
   validated before the send creates anything. Readiness across kinds — a
   task waiting on a need, a want waiting on a task — is computed from these
   edges, not inferred by reading. Multi-recipient items are one work item:
-  cite any copy; canonicalization and sibling completion are automatic.
+  cite any copy; canonicalization and sibling completion are automatic. The
+  edge is made in every mailspace that files the letter, including a receiving
+  mailspace, and a dependency not yet held is remembered and made when it
+  arrives. A dependent of work sent to another mailspace stays blocked until
+  the Mind closes the sender's copy.
 - **Ambient conditions** — "when a seat is free", "after the operator
   approves", time windows, capacity — stay prose in the body and are
   evaluated by the host at dispatch. They are **never encoded as topology**:
@@ -1824,15 +1898,25 @@ vivi mail reply <handle> --project "$ROOT" \
   --from hand \
   --body 'finding: …'
 
-# Close or reopen work
+# Report, close, reopen. A worker's `done` is a report (the note is the letter
+# the Mind reads); only the Mind, or the item's author, closes or reopens it.
 vivi task done --project "$ROOT" --for hand <handle> \
-  --note 'evidence: tests pass, commit abc123'
-vivi task reopen --project "$ROOT" --for hand <handle>
+  --verdict <v> --repo <repo> --tip <sha> \
+  --note 'done handle <handle>. commit abc123. unit <id>.'
+vivi task done --project "$ROOT" --for mind <handle> --note 'reconciled'   # the close
+vivi task reopen --project "$ROOT" --for mind <handle> --note 'defect: …'  # same handle, dependents re-lock
 vivi need done --project "$ROOT" --for mind <handle>
 vivi need reopen --project "$ROOT" --for mind <handle>
 vivi want done --project "$ROOT" --for mind <handle>
 vivi want drop --project "$ROOT" --for mind <handle>
 vivi want promote --project "$ROOT" --for mind <handle>   # when a want becomes must-do (need)
+
+# Sync (only where the mailspace has [sync]); nothing travels otherwise
+vivi sync status --project "$ROOT"          # unsent, history floor, held for unknown roles
+vivi sync --project "$ROOT"                 # push, then pull
+vivi sync pull --since 7d --project "$ROOT" # first pull of a mailspace: a window, not history
+vivi sync pull --refs --depth 2 --project "$ROOT"   # also look up letters the new ones cite
+vivi sync fetch <handle>... --project "$ROOT"       # one letter by 8-hex handle
 
 # Check for new events in one pass
 vivi mailspace watch --for mind --project "$ROOT" \
@@ -1840,7 +1924,7 @@ vivi mailspace watch --for mind --project "$ROOT" \
 
 # Bounded observation: the dispatch/exception manifest (loop intake)
 vivi step --project "$ROOT" --json
-vivi step --apply <settled-handle> --project "$ROOT"   # idempotent; records via=step-apply
+vivi step --apply <settled-handle> --project "$ROOT"   # idempotent; via=step-apply, or via=lifecycle if already settled
 
 # Dependency substrate (any work-kind handles; fail-fast validation)
 vivi task send ... --depends-on <handle>               # also need send / want send
@@ -1922,15 +2006,19 @@ reproduce, or the premise is wrong, report that and stop. In practice a
 meaningful share of defect briefs rest on a wrong premise, and a seat that
 reproduces first catches it before it edits anything.
 
-**Reply and close.** `vivi mail reply <handle> --from <role> --body '…'` (the
-body flag is `--body`; a wrong flag costs a turn), then `vivi task done --for
-<role> <handle> --repo <name> --tip <sha> --verdict <v>`. A seat reports merge
-debt explicitly: a commit on a lane branch is not a landing.
+**Report and close.** A seat reports with one command: `vivi task done --for
+<role> <handle> --repo <name> --tip <sha> --verdict <v> --note '<report>'`. The
+note is the reply letter; without it the Mind has nothing to read, and a
+separate `mail reply` is a second letter. The Mind then closes with `vivi task
+done --for mind <handle>`. A seat reports merge debt explicitly: a commit on a
+lane branch is not a landing.
 
-**Handles.** One `send` yields a created handle and a recipient copy, held by
-different identities. Claim, bind, and activate with the created handle, and
-close each copy with the identity that holds it. Binding a need to a task closes
-the need when the task is done, so a follow-up task needs `need reopen` first.
+**Handles.** A local `send` prints a `created` handle (the recipient's copy)
+and a `sent` handle (the sender's copy). Claim, bind, and activate with the
+created handle; the Mind may close with either. A send to another mailspace
+prints one handle, the same on both sides. A need bound to a task closes when
+the task's report lands, so a repair is `task reopen --for mind <unit>` (the
+need reopens with it) or `need reopen` plus a second bound task.
 
 **Operating mode.** Declare it in the Mind memo and keep it. A Claude Mind that
 also edits, runs gates, and resolves conflicts is in Direct whether or not it
@@ -1985,6 +2073,9 @@ standing rulings in the Mind memo so they survive.
   cost of observation and routing.
 - **Dispatch contract:** file the work, then spawn role + handle. No narrative
   brief in the opening prompt. Worker reports through the same handle.
+- **Report, then close:** a worker's `task done --note` is a report; the Mind
+  reconciles and closes (`done --for mind`) or reopens the same handle. State is
+  the letters held, so a close and a reopen travel to every mailspace by sync.
 - **Blocker routing (Rule 4):** recoverable blockers become live Hand, Planner, Head, or project-integration assignments immediately; block only their exact dependency boundary and keep unaffected seats moving. A fleet stop requires a proven operator/external deadlock, not uncertainty.
 - **Seat saturation (Rule 5):** dispatch instead of idling when honest work exists. Fill every pool (planning, implementation, audit) while READY work exists.
 - **Head boundary:** Heads advise. They do not lower goals or implement.
@@ -2018,6 +2109,11 @@ standing rulings in the Mind memo so they survive.
 - **Heads lower goals:** Heads advise. Planners lower goals.
 - **Warm Hater:** Reusing a context that already knows the rationale makes the Hater too charitable; start a fresh pass.
 - **Hater as verdict:** Raw hostility is treated as truth, a task list, or a launch gate instead of perception evidence for separate merit synthesis.
+- **Hand closes its own handle:** Treating the Hand's `done` as the close, or leaving a reconciled report unclosed. The owner's state, a remote item's `awaiting_remote` node, and its blocked dependents wait on the Mind's `done --for mind`.
+- **Report without a note, or a verdict only in flags:** A `done` with no `--note` sends the Mind nothing, and `--verdict/--repo/--tip` never leave the reporter's mailspace; a remote seat's verdict, repo, and tip belong in the note.
+- **Re-filing a rejected unit:** Sending a new copy of work the Mind could reopen. `task reopen` keeps the handle, the lineage, and the dependents' lock.
+- **Re-dispatching `awaiting_remote`:** Spawning a local seat, or re-sending, for work already handed to another mailspace. Run `vivi sync` and read its report.
+- **Booting an unsynced picture:** Running `vivi boot` or the loop on a `[sync]` mailspace without `vivi sync`, so reports and close events that exist are not in the frame.
 - **Foreign dirt is erased:** Git is used to clean files that may belong to another agent.
 - **Chat is the record:** A decision or handoff is treated as real even though it was never recorded on the board.
 - **Per-unit audit serialization:** Do not send every completed unit through an Auditor before starting its successors. Reconcile the completion, unblock eligible work, and defer ordinary implementation review to the aggregate phase audit or a cadence-recommended range.

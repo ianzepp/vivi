@@ -24,9 +24,10 @@ Operator -> Mind -> parallel Hands -> Mind integrates -> next small units
 ```
 
 The **Mind** reads goals and phases, slices work, dispatches, integrates, and
-grades turnaround. A **Hand** implements one small unit. The Mind owns commits
-by default; Hands do not commit unless the operator authorizes it. (In a pool
-lane the runner commits for its worker; see "Running Hands in a pool".)
+grades turnaround. A **Hand** implements one small unit and reports it. The
+Mind owns commits by default and is the only seat that closes a unit; Hands do
+not commit unless the operator authorizes it. (In a pool lane the runner
+commits for its worker; see "Running Hands in a pool".)
 
 Speedboat has no Planner pass, no delivery audit, no automatic Auditor or CTO
 review, no paired verdicts as routine gates, no phase freezes, no
@@ -88,9 +89,11 @@ process; an open handle alone is not running work.
 
 ## Mind loop
 
-1. **Orient once.** Read `vivi boot`, live harness state, and repository
-   status. Read the selected goal or phase and the code relevant to the next
-   edit. Treat prose as scope and intent; code establishes what exists.
+1. **Orient once.** If the project is synced, run `vivi sync pull` first so
+   the letters other checkouts pushed are applied. Read `vivi boot`, live
+   harness state, and repository status. Read the selected goal or phase and
+   the code relevant to the next edit. Treat prose as scope and intent; code
+   establishes what exists.
 2. **Pick one small outcome.** Name a concrete behavior or edit, its files,
    immediate dependencies, and the cheapest useful check. Do not commission
    a Planner or research the entire goal before dispatching the first unit.
@@ -102,12 +105,27 @@ process; an open handle alone is not running work.
    or integrate the isolated lane. Do not replay the Hand's check without a
    new code change or a concrete contradictory result.
 5. **Settle and continue.** Close the unit only after its done condition and
-   required landing are satisfied. Apply the Vivi completion receipt using
-   the installed CLI's lifecycle. Start eligible successors immediately.
+   required landing are satisfied: `vivi task done <handle> --for <mind>
+   --verdict <v> --note <landed commit>`. Any handle of the unit works (use
+   the one `step` shows); the close lands on the unit and prints
+   `done <handle>; event <id>`. Start eligible successors immediately.
 
 Take the first reasonable implementation consistent with settled decisions.
 Route an actual missing decision or observed failure immediately. Keep
 unaffected units moving. Do not request a review merely to increase confidence.
+
+`vivi step` lists what it will not dispatch under `exceptions`. Route them:
+
+| Reason | Meaning | Mind action |
+| --- | --- | --- |
+| `awaiting_remote` | Work you handed to a role in another mailspace; tracked, never dispatched here, and its dependents stay blocked | Let the receiver dispatch it; close your copy once accepted |
+| `want_requires_promotion` | A parked want | Promote it, or leave it parked |
+| `no_done_when` | The body has no `done_when:` line, so it cannot dispatch | Send the unit with one |
+
+Work held for another mailspace's role mints no node, so `step`, `graph ready`
+and `boot` leave it out. A letter for a role this mailspace lacks is held
+without a node and counted in `boot` and `sync status`; `vivi role add <name>`
+adopts it.
 
 Parallel writes must have disjoint scopes. Serialize a shared hot file or
 isolate overlapping work in worktrees. Never erase another agent's changes.
@@ -119,6 +137,13 @@ receipt is not a landing. Dependents requiring landed code must not unlock
 on an unmerged diff. If existing project topology separates implementation
 and merge handles, retain that dependency but let the Mind perform the
 integration directly; do not add another merge Hand by default.
+
+When Mind and Hand share one mailspace, a Hand's `task done` moves only the
+Hand's copy yet still completes the unit's node: dependents unlock and a bound
+need can join, while `task show` prints no `State:` line until the Mind closes
+the unit. To hold dependents for the landing, file a landing task to the Mind
+(`--to <mind> --depends-on <unit>`), point dependents at it, and close it after
+integrating.
 
 ## Assignment size and dispatch
 
@@ -151,9 +176,13 @@ process binding on the assignment. Send the Hand a pointer to this skill,
 its role charter, and its Vivi handle. The task holds the brief.
 `vivi task send` may print both `created <role> <handle>` and `sent <handle>`.
 The **created task handle** is the graph node and the Hand assignment; the
-`sent` handle is a delivery record. Activate and later close the created
-handle. Do not try to add it as a new graph node: sending the task already
-places it in the backlog graph.
+`sent` handle is a delivery record. Activate the created handle (`graph
+activate` refuses the `sent` one); the Mind may later close the unit by any of
+its handles. Work addressed to a role in another mailspace prints only
+`sent <handle>` and `queued for sync`: that handle is its node, tracked here
+and never dispatched (see "Hands in another mailspace"). Do not try to add a
+handle as a new graph node: sending the task already places it in the backlog
+graph.
 Keep control-plane output bounded: `vivi graph activate` can print the whole
 ready frontier, so extract only the activated task's result from structured
 output or cap the displayed response.
@@ -161,7 +190,9 @@ output or cap the displayed response.
 Do not bind an incomplete subset of units to a parent need whose automatic
 join would then falsely close the whole need. Keep the full goal open until
 every admitted requirement has landed. Small units sequence scope; they do
-not reduce it.
+not reduce it. A bound need joins when its units' nodes complete, which can be
+at the Hands' reports rather than the Mind's acceptance (see the
+shared-mailspace note in "Mind loop"), so bind only when that is acceptable.
 
 ### Running Hands in a pool
 
@@ -182,6 +213,18 @@ matter here:
   Which work goes to which pool is the Mind's call.
 - A review seat that needs a full shell but must change nothing runs with
   `--read-only`; its token cannot push.
+- Push the base commit to the remote before dispatch (a local worktree pool
+  has no remote). The worker files no report: `wait` records the receipt as a
+  reply on the task, and `vivi task show <task>` reads it.
+
+### Hands in another mailspace
+
+A Hand may work from another checkout of the same synced project. Address the
+task to its role by full address (`hand@<8hex>.local`; `vivi sync directory`
+lists the domains) and `vivi sync push`. The Hand runs `vivi sync pull`, works,
+reports on its handle (there a plain reply), and `sync push`es. The Mind pulls,
+accepts, closes, and pushes; the Hand's queue empties on its next pull. Briefs
+stay under 64 KiB (a larger letter is refused at compose).
 
 ## Hand procedure
 
@@ -193,8 +236,12 @@ You are judged on the speed of useful results, not the perfect solution.
    trace unrelated architecture, polish nearby code, or reread the whole goal.
 3. Run the assigned check once. If it exposes a local defect, fix that defect
    and repeat the same check. Do not broaden verification after a failure.
-4. Return the diff and a short receipt through the same handle. Stop. Let the
-   Mind integrate and settle the unit; do not mark unlanded work complete.
+4. Report on your own handle and stop. Ready: `vivi task done <handle> --for
+   <hand> --verdict ready --note "<receipt>"`, adding `--repo <r> --tip <sha>`
+   for a lane tip. Partial or blocked: `vivi mail reply <handle> --from <hand>
+   --body "<receipt>"` and leave the handle open. Your `done` is a report, not
+   the close: the Mind integrates, accepts, and closes the unit. Do not mark
+   unlanded work complete.
 
 If substantial research is necessary, return the precise missing fact or
 decision immediately. If a fix exceeds the unit, return the observed failure
@@ -238,6 +285,16 @@ incomplete unit, with an honest failure receipt and repair work. Partial code
 may be preserved or committed as WIP without claiming the goal is complete.
 
 ## Mind acceptance gates
+
+A unit passes its gate when the Mind closes it (Mind loop step 5); `vivi task
+show <handle>` then prints `State: done`. A failed gate reopens it: `vivi task
+reopen <handle> --for <mind> --note "<what failed>"` prints `State: reopened`,
+re-locks its dependents, and makes the handle ready again. File the repair as a
+second task whose body carries the failure, and activate both nodes
+(`graph activate <second> --task <second>`, `graph activate <reopened> --task
+<second>`) so `step` offers neither. Close both when the repair lands. An
+Auditor, if the operator asked for one, answers with `vivi mail reply` and
+never closes; its `task done` is a report like a Hand's.
 
 After integrating the Hands, run any ladder or end-to-end proof the operator
 explicitly requested, and only that.
@@ -353,3 +410,12 @@ workers, reset clocks, replan admitted scope, or launch reacquaintance audits.
 A Hand resumes only its own handle and remaining budget. Continue until the
 full admitted scope has landed or a real external or operator dependency
 remains.
+
+In a synced project, a unit that never arrives or closes is usually a letter
+stuck in transit. `vivi sync push` exits non-zero and lists a letter that can
+never be delivered (its From claims another mailspace); `vivi sync status`
+shows it on a `not uploaded` line. It will never upload: send the work again
+from the mailspace that owns the sender. A second sync on one checkout waits
+10 seconds on the lock, then exits 1: rerun it. A corrupt
+`.vivi/sync/state.json` is rebuilt by `vivi sync resync`. A letter for a role
+this mailspace lacks waits as described under "Mind loop".

@@ -86,6 +86,12 @@ Seats are listed for roles that hold open work or carry a bound process. The
 rest of the roster is counted in the totals line, so a role you expect and do
 not see is being summarized rather than omitted.
 
+Boot counts only this mailspace's own work. Work held for another
+mailspace's role, and your own copies of work you handed to one, are not in
+the totals or the handle list. Letters held for a role this mailspace lacks
+get a `held for unknown roles` section with a count per name (see Project
+Sync).
+
 Handles carry a closed verdict vocabulary: `open`, `blocked`, `stale`, `live`,
 `unbound`, `unverified`, `dead`, `zombie`, `remote`, `unknown`. `unverified`
 means a subagent harness owns liveness and an OS PID is not a valid signal;
@@ -202,8 +208,8 @@ They stay in this mailspace; nothing syncs them.
 
 Memos preserve durable role context. They are not routing, assignment, or
 completion evidence. Standing project rules belong in `vivi rule`. Delete
-superseded unsealed memos; absorb memos that should be retained as immutable
-history.
+superseded unsealed memos (`memo delete` refuses a handle that is not a
+memo); absorb memos that should be retained as immutable history.
 
 When a mailspace has a configured archive, absorption exports one Markdown
 record to that dedicated Git repository. Vivi does not stage or commit the
@@ -215,26 +221,32 @@ hand.
 Closing and reopening are letters, not local flags. Two kinds of role may
 close or reopen an item for everyone: the role that authored it (or holds its
 `sent` copy), and any role of kind `mind` (`role add <name> --kind mind`). Its
-`done`, `drop` and `reopen` write one small reply on the item, with
-`X-Vivi-Event: done|reopened`, `X-Vivi-Event-Of: <item Message-ID>` and
-`X-Vivi-Event-Prev: <the event it follows>` (absent for the first) beside the
-usual `In-Reply-To`. It is addressed to the item's To and Cc minus the sender
-and filed read; `--note` is its body. Every holder of the item applies it: the
-folder moves, the node completes or reopens, and the assignee's queue empties
-when the owner closes. A need that closes through `need bind` writes the same
-letter when this mailspace authored it.
+`done`, `reopen` and, on a want, `drop` (a close) write one small reply on the
+item, with `X-Vivi-Event: done|reopened`, `X-Vivi-Event-Of: <item
+Message-ID>` and `X-Vivi-Event-Prev: <the event it follows>` (absent for the
+first) beside the usual `In-Reply-To`. It is addressed to the item's To and Cc
+minus the sender and filed read (it still shows in `mail list` and boot's
+unabsorbed mail as `Re: <subject>`); `--note` is its body. Every holder of the
+item applies it: the folder moves, the node completes or reopens, and the
+assignee's queue empties when the owner closes. A need that closes or reopens
+through `need bind` writes the same letter when this mailspace authored it.
 
 Any handle of the item works for a role that may close it. A mind can name the
 delivered copy a hand holds, its own copy, or the author's `sent` copy; give
-`--for <your identity>` and the close lands on the item, not on the row named.
-The command prints `done <handle>; event <id>`. A role of any other kind (hand,
-auditor, head, ...) reports instead and prints `done <handle>; reported`: its
-own copy moves and the `--note` is a reply, nothing more, and a report never
-changes the item's state. Naming a copy another role holds is refused, and the
-error names the holder, the report command to retry with `--for <holder>`, and
-who may close. A report cannot reopen what its owner closed; ask in a reply.
-An event counts only in the item's own mailspace, so a mind in an assignee's
-mailspace reports on an item another mailspace authored; it does not close it.
+`--for <your identity>` and the event lands on the item, not on the row named.
+The command prints `done|reopened|dropped <handle>; event <id>`. A role of any
+other kind (hand, auditor, head, ...) reports instead and prints `done
+<handle>; reported` (or `reopened`): its own copy moves, the `--note` is a
+reply to the author, and in its own mailspace the node completes (dependents
+unlock) as for any close. A report writes no event: it never changes the
+item's `State:` or any other holder's copy, and the author's tracking node
+stays `awaiting` until the author closes. Naming a copy another role holds is
+refused, and the error names the holder, the report command to retry with
+`--for <holder>`, and who may close. A reporter may reopen its own report; it
+cannot reopen what the owner closed (`only the owner can reopen it`; ask in a
+reply). An event counts only in the item's own mailspace, so a mind in an
+assignee's mailspace reports on an item another mailspace authored; it does
+not close it.
 
 The state of an item is its chain head: the event no other held event names as
 `Prev`. A fork (two checkouts acted on the same event) leaves several heads and
@@ -245,10 +257,11 @@ the item's owner` in the pull summary), as is an event for an absorbed item.
 
 This is local-first. It works with no `[sync]`; the server only carries
 letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
-see, and an event that arrives before its item is applied when the item
-arrives. `graph audit` reports a folder that disagrees with its item's latest
-event as `event_state`, and `--repair` re-applies it. `need|task|want show`
-prints `State: done|reopened`.
+see (`N event(s) applied` in the pull summary), and an event that arrives
+before its item is applied when the item arrives. `graph audit` reports a
+folder that disagrees with its item's latest event as `event_state`, and
+`--repair` re-applies it. `need|task|want show` prints `State: done|reopened`
+once an event exists.
 
 ## Rules
 
@@ -358,26 +371,29 @@ every record's `show` output prints its `Content:` hash the same way.
 Bare source ids address the backlog graph; imported topologies use
 `graph:source-id`. Lifecycle moves act as the identity holding the item
 (`--for`): the send receipt's `created <recipient> <handle>` line names the
-holder, and closing under the wrong identity fails with the holder named in
-the error. **Settle sequence.** The worker settles with
+holder, and naming a copy another identity holds fails with the holder
+named in the error (the item's author or a mind may name any copy; see State
+as letters). **Settle sequence.** The worker settles with
 `task done --verdict/--repo/--tip` (the node completes, dependents unlock,
-a `step_decision via=lifecycle` event records the transition); the host
-then runs `vivi step --apply <handle>` — idempotent, never settles itself —
-which records `via=step-apply` and runs the receipt screen when a judgment
-provider is configured.
+a `step_decision via=lifecycle` event records the transition; the worker's
+`done` is a report, and the author's or a mind's `done` is what closes the
+item for everyone); the host then runs `vivi step --apply <handle>` —
+idempotent, never settles itself — which records `via=step-apply` and runs
+the receipt screen when a judgment provider is configured.
 
 Use `graph show`, `graph ready`, and `board --graph` for inspection.
 `graph ready` prints a `counts` line first — use it (or `--kind
 task|need|want|decision|stub|parked`) instead of reading long id lists.
 `awaiting` lists open work this mailspace handed to another one: it is
 tracked here so a sender can order it with `--depends-on` and see it with
-`need|task|want list --for <sender>` (the role column reads `sent`), but it is
-never ready here, `step` reports it as `awaiting_remote` naming the recipient,
-and `graph activate` refuses it. The receiving mailspace dispatches it; close
-your copy with `done` to settle the node. Work held for another mailspace's
-role (see Project Sync) is not this mailspace's backlog: `step`, `graph
-ready` and `boot` leave it out, and `graph audit` reports a node left for it
-as `foreign_held` and `--repair` settles it.
+`need|task|want list|dump --for <sender>` (the role column reads `sent`), but
+it is never ready here, its dependents stay blocked, `step` reports it as
+`awaiting_remote` naming the recipient, and `graph activate` refuses it. The
+receiving mailspace dispatches it; the author's (or a mind's) `done` on your
+copy settles the node. `board --graph` shows no `awaiting` row. Work held for
+another mailspace's role (see Project Sync) is not this mailspace's backlog:
+`step`, `graph ready` and `boot` leave it out; `mail list --to <address>
+--folder needs|tasks|wants` shows it.
 Use `vivi step [--json]` for a mechanical adjudication of the backlog into
 `dispatches` (ready, verifiable work with clause counts) and `exceptions`
 (reason vocabulary: `want_requires_promotion`, `lowered_awaiting_units`,
@@ -394,11 +410,16 @@ of silence. The coordination host decides which ready nodes to dispatch.
 **Citizenship audit.** `vivi graph audit [--repair]` checks the backlog
 invariant — every work item sent while the graph existed has a node in step
 with its folder state — and reports `missing_node`, `node_state`,
-`node_kind`, `missing_edge`, and `orphan_node` findings. `missing_edge` is a
-held open work letter whose `X-Vivi-Depends-On` header names held work the
-graph has no edge from. `--repair` mints missing nodes and edges (from folder
+`node_kind`, `missing_edge`, `foreign_held`, `event_state`, and `orphan_node`
+findings, with a one-line count per class. `missing_edge` is a held open work
+letter whose `X-Vivi-Depends-On` header names held work the graph has no edge
+from. `foreign_held` is a node still open for work held under another
+mailspace's role. `event_state` is a folder that disagrees with its item's
+latest event letter. `--repair` mints missing nodes and edges (from folder
 state and dependency headers), completes nodes for settled items, settles need
-mailboxes whose join fired, and corrects kinds.
+mailboxes whose join fired, settles `foreign_held` nodes, re-applies the latest
+event for `event_state`, and corrects kinds. `orphan_node` is reported, never
+repaired.
 `graph activate` / `need bind` errors point here. Stale vivi binaries
 silently skip node minting entirely (observed with an old Homebrew 8.1.0 on
 PATH): `mailspace status` prints the running binary's version — check it
@@ -426,10 +447,10 @@ it before lowering a multi-unit delivery. The load-bearing rules:
   dependents ready.
 - Do not stack units on one handle: stacked units are not separate nodes and
   one handle holds one lane lock.
-- `graph audit --repair` fixes missing nodes, kind drift, and node/folder state
-  drift (folder wins); read the audit first, because `node_state` repairs can
-  reverse a hand completion. The reference file lists exactly what each finding
-  repairs.
+- `graph audit --repair` fixes missing nodes and edges, kind drift, node/folder
+  state drift (folder wins), `foreign_held` nodes and `event_state` drift; read
+  the audit first, because `node_state` repairs can reverse a hand completion.
+  The reference file lists exactly what each finding repairs.
 
 ### Judgment provider (optional, off by default)
 
@@ -1402,7 +1423,10 @@ that publishes SSH. Measured on 2026-10-11: a working pod answered on SSH 35 to
 Project-local watch commands observe mailspace events. Prefer `--once` for
 fail-fast cycles or an explicit timeout for waiting. Use cursor or watermark
 files when repeated cycles must not replay old events. Add graph event filters
-only when node readiness or state changes are relevant.
+only when node readiness or state changes are relevant. Letters filed by
+`sync pull`, `fetch`, `resync` or `pull --refs` raise the same events as a
+local send, so a watcher wakes for them; without a cursor file or `--since` a
+watcher replays existing events first.
 
 `cycle intake` collects pending tasks, needs, mail, and recent memos for one
 identity. It is a bounded intake surface, not a replacement for inspecting the
@@ -1533,8 +1557,12 @@ of sync is the letter: the exact `.eml` file. It travels byte for byte, its
 The server stores and serves letters and never rewrites one. Verify the exact
 flags with `vivi sync --help`.
 
+A mailspace works with no `[sync]` and no server, and its state is a pure
+function of the letters it holds. Sync only moves letters; `pull` applies the
+close and reopen events among them (see State as letters).
+
 ```sh
-vivi sync                # push, then pull
+vivi sync                # push, then pull (the pull runs even when the push stopped)
 vivi sync push           # send local letters the server does not have
 vivi sync pull           # file what other members pushed
 vivi sync pull --since 7d      # first pull only: start at a time, not at the beginning
@@ -1567,7 +1595,10 @@ checkout that loses its key cannot take its name back; only the project creator
 can help. If a join says another member already holds this mailspace's address
 prefix, remove both the `id` line in `.vivi/mailspace.toml` and the file
 `.vivi/mailspace.id` (the copy that restores the id) so a new id is minted;
-letters sent after that carry the new prefix.
+letters sent after that carry the new prefix. The two copies must agree: a
+config id that disagrees with `.vivi/mailspace.id` is refused by every command
+with a message naming both files and the one edit that settles it; nothing is
+changed for you.
 
 **One sync at a time.** `push`, `pull`, `resync`, `fetch` and `prune` take an
 exclusive lock under `.vivi/sync/`, so a cron run and an interactive run
@@ -1612,12 +1643,13 @@ its summary line says `N held for unknown role(s): ghost` beside a stderr
 warning. Held work mints no backlog node, so `step` and `boot` do not dispatch
 or count it; `vivi sync status` and `vivi boot` list each unknown name with its
 letter count, and `vivi mail list --to <name>` (`--folder tasks|needs|wants` for
-work) shows them. `vivi role add <name>` or `role rename` to that name **adopts**
-them and says `adopted N held letters`: work gets its node and dependency
-edges then. A `retired` role still receives; the pull warns `role X is retired`
-once. A need, task, or want
-addressed to another mailspace's role is held under its address, so every member
-holds every work item without it landing in a local queue or the local backlog.
+work) shows them. `vivi role add <name>`, `role rename` or `mailspace identity
+add|rename` to that name **adopts** them and says `adopted N held letter(s)`:
+work gets its node and dependency edges then. A `retired` role still receives
+(with a node); the pull warns `role X is retired` once. A need, task, or want
+addressed to another mailspace's role is held under its address, so every
+member holds every work item without it landing in a local queue or the local
+backlog.
 
 **Windows and the floor.** A pull reads the project in pages of 500 and saves
 the cursor after every page, so an interrupted pull resumes where it stopped.
@@ -1651,13 +1683,17 @@ never evicts open needs, tasks, or wants (including your own `sent` copy of
 open work handed to another mailspace), starred or absorbed rows, or letters
 that never travelled. The rows and local state stay; `resync`, `fetch`, or
 `pull --refs` restores a letter byte for byte. It needs no server or key and
-runs only when asked.
+runs only when asked. Until restored, `show` on an evicted handle reports
+`message not found` and `graph audit` lists a done item's node as
+`orphan_node`.
 
-Not synced: memos, drafts, trash, rules, and local state (closing a need, marks,
-read flags). A letter is limited to 64 KiB, and a member may send 30 letters per
-minute, so a large first push stops cleanly and resumes on the next run. Mail
-is visible only to its sender and the addressed mailspace; work items and
-mail to `postmaster` are visible to every member.
+Not synced: memos, drafts, trash, rules, marks, and read flags. Closing and
+reopening are not in this list: they travel as event letters (State as
+letters). A letter is limited to 64 KiB, and a member may send 30 letters per
+minute: a push that hits the limit stops, prints how many letters are left
+unsent, exits non-zero, and the next run resumes. Mail is visible only to its
+sender and the addressed mailspace; work items and mail to `postmaster` are
+visible to every member.
 
 ## Safety
 

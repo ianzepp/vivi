@@ -255,13 +255,24 @@ backlog graph was created against the graph. It reports:
 - `node_kind`: the node's kind differs from the folder's kind (open items
   only), commonly a promoted want whose node is still `want`.
 - `node_state`: the node and the folder disagree on done versus not done.
-- `orphan_node`: a minted node whose message no longer resolves (deleted or
-  trashed). Reported only; never repaired.
+- `missing_edge`: a held open work letter's `X-Vivi-Depends-On` header names
+  held work the graph has no edge from (a dependency that arrived after the
+  dependent, or a letter filed by a route that did not link it).
+- `foreign_held`: a node still open or active for work held under another
+  mailspace's role. That work is not this mailspace's backlog.
+- `event_state`: an item's folders disagree with the latest `done`/`reopened`
+  event letter held for it (a checkout restored from before the event, or an
+  event filed by a binary that did not apply it).
+- `orphan_node`: a minted node whose message no longer resolves (deleted,
+  trashed, or evicted by `sync prune`; a fetch restores the letter and clears
+  it). Reported only; never repaired.
 
-**`graph audit --repair`** acts on the first three. It writes only graph rows
-and, in one narrow case, a need's mailbox copies; it never edits a message's
-content or headers, never deletes a node, never moves a task or want between
-folders, and never touches wants' promotion state.
+**`graph audit --repair`** acts on every class but `orphan_node`. It writes only
+graph rows and, in two narrow cases, mailbox copies (a need's, and an
+`event_state` item's); it never edits a message's content or headers, never
+deletes a node, never moves a task or want between folders except to apply an
+event letter it already holds (`event_state`), and never touches wants'
+promotion state.
 
 - `missing_node`: creates the node (label = subject, kind taken from the
   folder/header) and one solid edge per `X-Vivi-Depends-On` header that still
@@ -278,6 +289,11 @@ folders, and never touches wants' promotion state.
   hand completion with `graph complete` and re-blocks dependents that were not
   yet activated. The exception is a need whose bound units are all done: then it
   settles the need's mailbox copies from `needs` to `done` instead (`via=repair`).
+- `missing_edge`: makes the edges the header names, the way an arriving letter
+  would. Dependencies not yet held stay remembered until they arrive.
+- `foreign_held`: completes the node (`via=repair`); the letter stays held.
+- `event_state`: re-applies the latest event letter: the item's folders move to
+  match it and the node follows, as on arrival.
 
 The run is idempotent (a second run finds nothing it already fixed), purely
 additive for `missing_node`, and scales linearly in the number of items; it
@@ -416,9 +432,10 @@ Three things this arrangement must respect:
 
 ## 7. Known gaps
 
-- **No merged state.** `done` is the Hand's close. Landing is the merge task by
-  convention only; Vivi does not verify it, so the closer of a merge task is
-  trusted until the coordinator checks git.
+- **No merged state.** A Hand's `done` is a report; the author's or a mind's
+  `done` is the close. Landing is the merge task by convention only; Vivi does
+  not verify it, so the closer of a merge task is trusted until the coordinator
+  checks git.
 - **Stacking is invisible.** Several units delivered under one handle are not
   separate nodes, so nothing orders or tracks them. Do not stack; give each unit
   its own handle, node, and lane.
@@ -440,7 +457,8 @@ Three things this arrangement must respect:
   `graph audit --repair`. A stale `vivi` earlier on `PATH` is the usual cause;
   `mailspace status` prints the running binary's version.
 - **Board hygiene.** Run `graph audit` periodically and keep the counts of
-  `missing_node` and `node_kind` findings at zero. A backlog with drift gives
+  `missing_node`, `missing_edge`, `node_state` and `node_kind` findings at zero.
+  A backlog with drift gives
   step and readiness answers that are quietly wrong. Record the counts in the
   project's own agent docs, not here.
 - **Dual handles.** A send creates a sender copy and a recipient copy. Only the
