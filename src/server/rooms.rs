@@ -1,136 +1,31 @@
-//! Room store and v1 room endpoints: one persistent vivi mailspace per room
-//! at `DATA_DIR/rooms/<room_id>/.vivi/` (contract R2), provisioned through
-//! `vivi::mailspace::Mailspace::init` — the same root the message endpoints
-//! use. Seats/auth land in VC-3.
+//! Lightweight chat rooms (phase-03 item 17): a private, short-lived
+//! project with keyless join. The room id is the shareable capability.
+//! Storage is the project mailspace (`DATA_DIR/projects/<id>/`), not a
+//! second tenant. Chat letters are `kind=chat` (member-visible).
 
-use std::path::{Path, PathBuf};
+use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path as AxumPath, State};
-use axum::http::StatusCode;
+use axum::extract::{Path as AxumPath, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
+use chrono::DateTime;
+use serde::Deserialize;
 use serde_json::json;
-use vivi::mailspace::Mailspace;
 
 use crate::AppState;
-use crate::auth::map_auth_error;
-use crate::ids::{mint_room_id, normalize_room_id};
-use crate::seats::JoinError;
+use crate::identities::{IdentityRecord, RegisterError};
+use crate::mcp::letters::{append_composed, compose_reply, compose_send, handle_of, parse_letter};
+use crate::projects::{ListQuery, ProjectError, ProjectMeta, Viewer};
+use crate::projects_api::{authenticate, json_body, project_error};
 
-pub const MIN_CAPACITY: u32 = 2;
-pub const MAX_CAPACITY: u32 = 8;
-pub const DEFAULT_CAPACITY: u32 = 4;
-
-#[derive(Debug)]
-pub enum RoomError {
-    /// Capacity outside 2..8.
-    Capacity(u32),
-    /// Id not canonical Crockford-base32.
-    InvalidRoomId,
-    /// Unknown room id.
-    RoomNotFound,
-    /// Malformed request payload reached storage validation.
-    BadRequest(String),
-    /// Storage or IO failure.
-    Storage(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoomMeta {
-    pub room_id: String,
-    pub capacity: u32,
-}
-
-/// Per-room storage root under `DATA_DIR/rooms`. Opening a room (re)creates
-/// its mailspace; room metadata persists in `room.json` beside it.
-#[derive(Debug, Clone)]
-pub struct RoomStore {
-    rooms_root: PathBuf,
-}
-
-impl RoomStore {
-    pub fn new(data_dir: &Path) -> Self {
-        Self {
-            rooms_root: data_dir.join("rooms"),
-        }
-    }
-
-    /// Mint a collision-retried room id and create its mailspace.
-    pub fn create_room(&self, capacity: u32) -> Result<RoomMeta, RoomError> {
-        if !(MIN_CAPACITY..=MAX_CAPACITY).contains(&capacity) {
-            return Err(RoomError::Capacity(capacity));
-        }
-        for _ in 0..8 {
-            let room_id = mint_room_id()
-                .map_err(|_| RoomError::Storage("entropy source unavailable".into()))?;
-            let room_dir = self.rooms_root.join(&room_id);
-            if room_dir.exists() {
-                continue;
-            }
-            Mailspace::init(Some(&room_dir)).map_err(|e| RoomError::Storage(e.to_string()))?;
-            let meta = RoomMeta { room_id, capacity };
-            let bytes = serde_json::to_vec(&meta)
-                .map_err(|e| RoomError::Storage(format!("failed to encode room.json: {e}")))?;
-            std::fs::write(room_dir.join("room.json"), &bytes)
-                .map_err(|e| RoomError::Storage(format!("failed to write room.json: {e}")))?;
-            // Room files (room.json, mailspace sqlite, identities) stay
-            // owner-only (VC-5).
-            crate::crypto::harden_tree(&room_dir);
-            return Ok(meta);
-        }
-        Err(RoomError::Storage("room id mint retries exhausted".into()))
-    }
-
-    /// Canonical room directory for a raw id.
-    pub fn room_dir(&self, raw_id: &str) -> Result<PathBuf, RoomError> {
-        let id = normalize_room_id(raw_id).map_err(|_| RoomError::InvalidRoomId)?;
-        Ok(self.rooms_root.join(id))
-    }
-
-    /// Room metadata, or `RoomNotFound` when the room was never created.
-    pub fn room_meta(&self, raw_id: &str) -> Result<RoomMeta, RoomError> {
-        let dir = self.room_dir(raw_id)?;
-        let bytes = std::fs::read(dir.join("room.json")).map_err(|_| RoomError::RoomNotFound)?;
-        serde_json::from_slice(&bytes).map_err(|e| RoomError::Storage(e.to_string()))
-    }
-
-    /// Reopen a room's mailspace at its `.vivi` root.
-    pub fn open_mailspace(&self, raw_id: &str) -> Result<Mailspace, RoomError> {
-        let meta = self.room_meta(raw_id)?;
-        let dir = self.rooms_root.join(&meta.room_id);
-        Mailspace::init(Some(&dir)).map_err(|e| RoomError::Storage(e.to_string()))
-    }
-
-    /// Number of provisioned rooms (directories holding `room.json`).
-    pub fn room_count(&self) -> usize {
-        std::fs::read_dir(&self.rooms_root)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|entry| entry.path().join("room.json").is_file())
-                    .count()
-            })
-            .unwrap_or(0)
-    }
-
-    /// Storage state for `/v1/_health`: `ok` when the rooms root exists or
-    /// can be created, otherwise a short error description.
-    pub fn storage_state(&self) -> String {
-        std::fs::create_dir_all(&self.rooms_root)
-            .map(|_| "ok".to_owned())
-            .unwrap_or_else(|e| format!("error: {e}"))
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct CreateRoomRequest {
-    pub seats: Option<u32>,
-    pub label: Option<String>,
-    /// Creator identity per contract; the creator auto-binds seat 1.
-    pub public_key_pem: String,
-}
+pub const DEFAULT_TTL_SECS: u64 = 24 * 60 * 60;
+pub const MIN_TTL_SECS: u64 = 60;
+pub const MAX_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+pub const MAX_CHAT_MEMBERS: usize = 64;
+pub const MAX_WAIT_SECS: u64 = 25;
 
 pub(crate) fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
     (
@@ -140,99 +35,502 @@ pub(crate) fn error_response(status: StatusCode, code: &str, message: &str) -> R
         .into_response()
 }
 
-pub(crate) fn map_room_error(err: RoomError) -> Response {
+fn map_register(err: RegisterError) -> Response {
     match err {
-        RoomError::Capacity(n) => error_response(
+        RegisterError::InvalidName => error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            &format!("seats must be {MIN_CAPACITY}..{MAX_CAPACITY}, got {n}"),
+            "invalid identity name",
         ),
-        RoomError::InvalidRoomId => error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_room_id",
-            "id not canonical Crockford-base32",
+        RegisterError::ReservedName | RegisterError::NameTaken => error_response(
+            StatusCode::CONFLICT,
+            "name_taken",
+            "that name is already in this chat",
         ),
-        RoomError::RoomNotFound => {
-            error_response(StatusCode::NOT_FOUND, "room_not_found", "unknown room id")
-        }
-        RoomError::BadRequest(msg) => error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            &format!("invalid_request: {msg}"),
+        RegisterError::RoomFull => error_response(
+            StatusCode::FORBIDDEN,
+            "room_full",
+            "this chat is at its member cap",
         ),
-        RoomError::Storage(msg) => {
-            tracing::error!("room storage failure: {msg}");
+        RegisterError::PrefixTaken => error_response(
+            StatusCode::CONFLICT,
+            "mailspace_prefix_taken",
+            "could not mint a unique address prefix",
+        ),
+        RegisterError::Storage(message) => {
+            tracing::error!("chat identity storage failure: {message}");
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
                 "storage failure",
             )
         }
+        RegisterError::InvalidKey | RegisterError::InvalidMailspaceId => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "storage failure",
+        ),
     }
 }
 
-/// `POST /v1/rooms` — create a room. The creator auto-binds seat 1 and the
-/// response carries the contract seat/label/token/fingerprint fields.
+fn parse_expiry(stamp: &str) -> Option<DateTime<chrono::Utc>> {
+    DateTime::parse_from_rfc3339(stamp)
+        .ok()
+        .map(|stamp| stamp.with_timezone(&chrono::Utc))
+}
+
+fn room_json(meta: &ProjectMeta, members: usize) -> serde_json::Value {
+    json!({
+        "room_id": meta.project_id,
+        "project_id": meta.project_id,
+        "mode": "chat",
+        "ttl_seconds": meta.ttl_seconds,
+        "expires_at": meta.expires_at,
+        "closed": meta.closed,
+        "expired": meta.is_over() && !meta.closed,
+        "members": members,
+        "mcp": format!("/v1/projects/{}/mcp", meta.project_id),
+    })
+}
+
+fn join_json(
+    meta: &ProjectMeta,
+    name: &str,
+    token: &str,
+    token_expires_at: &str,
+) -> serde_json::Value {
+    let mut body = room_json(meta, 0);
+    body["name"] = json!(name);
+    body["token"] = json!(token);
+    body["token_expires_at"] = json!(token_expires_at);
+    body
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CreateRoomRequest {
+    pub name: String,
+    pub ttl_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JoinRoomRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendChatRequest {
+    pub body: String,
+    pub subject: Option<String>,
+    pub in_reply_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PollQuery {
+    pub since: Option<u64>,
+    pub wait: Option<u64>,
+}
+
+fn ttl_of(raw: Option<u64>) -> Result<u64, Response> {
+    let ttl = raw.unwrap_or(DEFAULT_TTL_SECS);
+    if !(MIN_TTL_SECS..=MAX_TTL_SECS).contains(&ttl) {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            &format!("ttl_seconds must be {MIN_TTL_SECS}..{MAX_TTL_SECS}"),
+        ));
+    }
+    Ok(ttl)
+}
+
+/// `POST /v1/rooms` — create a chat project and join the creator by name.
 pub async fn create_room_handler(
     State(state): State<AppState>,
     payload: Result<Json<CreateRoomRequest>, JsonRejection>,
 ) -> Response {
-    let Json(req) = match payload {
-        Ok(body) => body,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "malformed JSON body",
-            );
-        }
+    let req = match json_body(payload) {
+        Ok(req) => req,
+        Err(response) => return response,
     };
-    if req.public_key_pem.trim().is_empty() {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "public_key_pem required",
-        );
-    }
-    let capacity = req.seats.unwrap_or(DEFAULT_CAPACITY);
+    let ttl = match ttl_of(req.ttl_seconds) {
+        Ok(ttl) => ttl,
+        Err(response) => return response,
+    };
+    let name = req.name;
     let result = tokio::task::spawn_blocking(move || {
-        let meta = state.rooms.create_room(capacity)?;
-        state
-            .seats
-            .bind_creator(&meta.room_id, &req.public_key_pem, req.label.clone())
-            .map(|outcome| (meta, outcome))
+        let meta = state.projects.create_chat_project(ttl)?;
+        let expires_at = meta
+            .expires_at
+            .as_deref()
+            .and_then(parse_expiry)
+            .ok_or_else(|| ProjectError::Storage("chat project missing expires_at".into()))?;
+        let outcome = state
+            .identities
+            .register_guest(&meta.project_id, &name, expires_at, MAX_CHAT_MEMBERS)
+            .map_err(|err| match err {
+                RegisterError::Storage(message) => ProjectError::Storage(message),
+                other => ProjectError::BadRequest(format!("{other:?}")),
+            })?;
+        Ok::<_, ProjectError>((meta, outcome))
     })
     .await
-    .unwrap_or_else(|e| Err(JoinError::Storage(format!("create task failed: {e}"))));
+    .unwrap_or_else(|e| Err(ProjectError::Storage(format!("create chat failed: {e}"))));
     match result {
-        Ok((meta, outcome)) => (
-            StatusCode::CREATED,
-            Json(json!({
-                "room_id": meta.room_id,
-                "seat": outcome.seat,
-                "label": outcome.label,
-                "token": outcome.token,
-                "token_expires_at": outcome.expires_at,
-                "fingerprint": outcome.fingerprint,
-            })),
-        )
-            .into_response(),
-        Err(err) => map_auth_error(err),
+        Ok((meta, outcome)) => {
+            let mut body = join_json(&meta, &outcome.name, &outcome.token, &outcome.expires_at);
+            body["members"] = json!(1);
+            (StatusCode::CREATED, Json(body)).into_response()
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("NameTaken") => {
+            map_register(RegisterError::NameTaken)
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("InvalidName") => {
+            map_register(RegisterError::InvalidName)
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("ReservedName") => {
+            map_register(RegisterError::ReservedName)
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("RoomFull") => {
+            map_register(RegisterError::RoomFull)
+        }
+        Err(err) => project_error(err),
     }
 }
 
-/// `GET /v1/rooms/:id` — room metadata.
+/// `POST /v1/rooms/:id/join` — keyless join: the room id is the capability.
+pub async fn join_room_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    payload: Result<Json<JoinRoomRequest>, JsonRejection>,
+) -> Response {
+    let req = match json_body(payload) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    let name = req.name;
+    let identities = state.identities.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let meta = state.projects.refuse_if_chat_over(&id)?;
+        if !meta.is_chat() {
+            return Err(ProjectError::ProjectNotFound);
+        }
+        let expires_at = meta
+            .expires_at
+            .as_deref()
+            .and_then(parse_expiry)
+            .ok_or_else(|| ProjectError::Storage("chat project missing expires_at".into()))?;
+        match state
+            .identities
+            .register_guest(&meta.project_id, &name, expires_at, MAX_CHAT_MEMBERS)
+        {
+            Ok(outcome) => {
+                let members = identities.member_count(&meta.project_id);
+                Ok((meta, outcome, members))
+            }
+            Err(RegisterError::Storage(message)) => Err(ProjectError::Storage(message)),
+            Err(other) => Err(ProjectError::BadRequest(format!("{other:?}"))),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(ProjectError::Storage(format!("join chat failed: {e}"))));
+    match result {
+        Ok((meta, outcome, members)) => {
+            let mut body = join_json(&meta, &outcome.name, &outcome.token, &outcome.expires_at);
+            body["members"] = json!(members);
+            (StatusCode::CREATED, Json(body)).into_response()
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("NameTaken") => {
+            map_register(RegisterError::NameTaken)
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("InvalidName") => {
+            map_register(RegisterError::InvalidName)
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("ReservedName") => {
+            map_register(RegisterError::ReservedName)
+        }
+        Err(ProjectError::BadRequest(message)) if message.contains("RoomFull") => {
+            map_register(RegisterError::RoomFull)
+        }
+        Err(ProjectError::InvalidProjectId) => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_room_id",
+            "id not canonical Crockford-base32",
+        ),
+        Err(ProjectError::ProjectNotFound) => {
+            error_response(StatusCode::NOT_FOUND, "room_not_found", "unknown room id")
+        }
+        Err(err) => project_error(err),
+    }
+}
+
+/// `GET /v1/rooms/:id` — metadata. No auth: the id is the capability.
+/// An expired-but-not-yet-swept room still reports `expired: true`.
 pub async fn room_meta_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    match tokio::task::spawn_blocking(move || state.rooms.room_meta(&id))
-        .await
-        .unwrap_or_else(|e| Err(RoomError::Storage(format!("metadata task failed: {e}"))))
-    {
-        Ok(meta) => {
-            Json(json!({ "room_id": meta.room_id, "capacity": meta.capacity })).into_response()
+    let projects = state.projects.clone();
+    let identities = state.identities.clone();
+    match tokio::task::spawn_blocking(move || {
+        let meta = projects.load_meta(&id)?;
+        if !meta.is_chat() {
+            return Err(ProjectError::ProjectNotFound);
         }
-        Err(err) => map_room_error(err),
+        let members = identities.member_count(&meta.project_id);
+        Ok((meta, members))
+    })
+    .await
+    .unwrap_or_else(|e| Err(ProjectError::Storage(format!("room meta failed: {e}"))))
+    {
+        Ok((meta, members)) => Json(room_json(&meta, members)).into_response(),
+        Err(err) => match err {
+            ProjectError::ProjectNotFound | ProjectError::InvalidProjectId => error_response(
+                if matches!(err, ProjectError::InvalidProjectId) {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::NOT_FOUND
+                },
+                if matches!(err, ProjectError::InvalidProjectId) {
+                    "invalid_room_id"
+                } else {
+                    "room_not_found"
+                },
+                if matches!(err, ProjectError::InvalidProjectId) {
+                    "id not canonical Crockford-base32"
+                } else {
+                    "unknown room id"
+                },
+            ),
+            other => project_error(other),
+        },
+    }
+}
+
+/// `POST /v1/rooms/:id/close` — any member can close the chat.
+pub async fn close_room_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_chat_member(&state, &id, &headers).await {
+        return response;
+    }
+    let projects = state.projects.clone();
+    let identities = state.identities.clone();
+    match tokio::task::spawn_blocking(move || {
+        let meta = projects.close_chat(&id)?;
+        let members = identities.member_count(&meta.project_id);
+        Ok((meta, members))
+    })
+    .await
+    .unwrap_or_else(|e| Err(ProjectError::Storage(format!("close chat failed: {e}"))))
+    {
+        Ok((meta, members)) => Json(room_json(&meta, members)).into_response(),
+        Err(err) => project_error(err),
+    }
+}
+
+async fn require_chat_member(
+    state: &AppState,
+    id: &str,
+    headers: &HeaderMap,
+) -> Result<(ProjectMeta, IdentityRecord), Response> {
+    let projects = state.projects.clone();
+    let check_id = id.to_owned();
+    let meta = match tokio::task::spawn_blocking(move || projects.load_meta(&check_id)).await {
+        Ok(Ok(meta)) if meta.is_chat() => meta,
+        Ok(Ok(_)) | Ok(Err(ProjectError::ProjectNotFound)) => {
+            return Err(error_response(
+                StatusCode::NOT_FOUND,
+                "room_not_found",
+                "unknown room id",
+            ));
+        }
+        Ok(Err(ProjectError::InvalidProjectId)) => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_room_id",
+                "id not canonical Crockford-base32",
+            ));
+        }
+        Ok(Err(err)) => return Err(project_error(err)),
+        Err(err) => {
+            return Err(project_error(ProjectError::Storage(format!(
+                "room lookup failed: {err}"
+            ))));
+        }
+    };
+    if meta.is_over() {
+        return Err(project_error(ProjectError::Gone {
+            closed: meta.closed,
+        }));
+    }
+    let identity = authenticate(state, id, headers).await?;
+    Ok((meta, identity))
+}
+
+fn rate_limit(state: &AppState, project_id: &str, name: &str) -> Result<(), Response> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut hasher);
+    if state.limiter.allow_send(project_id, hasher.finish() as u32) {
+        Ok(())
+    } else {
+        Err(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "over 30 sends/min/identity",
+        ))
+    }
+}
+
+/// `POST /v1/rooms/:id/messages` — send a member-visible `kind=chat` letter.
+pub async fn send_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    payload: Result<Json<SendChatRequest>, JsonRejection>,
+) -> Response {
+    let req = match json_body(payload) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+    if req.body.trim().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "body must be non-empty",
+        );
+    }
+    let (_, identity) = match require_chat_member(&state, &id, &headers).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    if let Err(response) = rate_limit(&state, &id, &identity.name) {
+        return response;
+    }
+    let projects = state.projects.clone();
+    let in_reply_to = req.in_reply_to.clone();
+    let subject = req
+        .subject
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("chat")
+        .to_owned();
+    let body = req.body;
+    match tokio::task::spawn_blocking(move || {
+        let prefix = identity
+            .mailspace_prefix()
+            .ok_or_else(|| "guest is missing a mailspace prefix".to_owned())?;
+        let composed = if let Some(handle) = in_reply_to.as_deref() {
+            let viewer = Viewer::of(&identity);
+            let found = projects
+                .lookup_handles(&id, &[handle.to_owned()], &viewer)
+                .map_err(|e| format!("{e:?}"))?;
+            let parent = found
+                .records
+                .into_iter()
+                .next()
+                .ok_or_else(|| "in_reply_to did not match a visible letter".to_owned())?;
+            compose_reply(&identity, &parent, &body, None)
+        } else {
+            let to = format!("chat@{prefix}.local");
+            compose_send(&identity, &[to], &subject, &body, "chat", &[])
+        };
+        let composed = composed?;
+        append_composed(&projects, &id, &identity, composed).map_err(|e| format!("{e:?}"))
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "message_id": outcome.message_id,
+                "handle": handle_of(&outcome.message_id),
+                "sequence": outcome.sequence,
+                "kind": "chat",
+                "duplicate": outcome.duplicate,
+            })),
+        )
+            .into_response(),
+        Ok(Err(message)) => error_response(StatusCode::BAD_REQUEST, "invalid_request", &message),
+        Err(err) => project_error(ProjectError::Storage(format!("chat send failed: {err}"))),
+    }
+}
+
+/// `GET /v1/rooms/:id/messages` — poll / long-poll member-visible chat.
+pub async fn poll_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Query(params): Query<PollQuery>,
+) -> Response {
+    let (_, identity) = match require_chat_member(&state, &id, &headers).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    let since = params.since.unwrap_or(0);
+    let wait = params.wait.unwrap_or(0).min(MAX_WAIT_SECS);
+    if let Some(page) = match read_chat(&state, &id, &identity, since).await {
+        Ok(page) => page,
+        Err(response) => return response,
+    } {
+        if !page["messages"].as_array().is_some_and(|m| m.is_empty()) || wait == 0 {
+            return Json(page).into_response();
+        }
+    }
+    if wait > 0 {
+        state
+            .projects
+            .wake()
+            .wait(&id, Duration::from_secs(wait))
+            .await;
+    }
+    match read_chat(&state, &id, &identity, since).await {
+        Ok(Some(page)) => Json(page).into_response(),
+        Ok(None) => Json(json!({ "messages": [], "next_cursor": since })).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn read_chat(
+    state: &AppState,
+    id: &str,
+    identity: &IdentityRecord,
+    since: u64,
+) -> Result<Option<serde_json::Value>, Response> {
+    let projects = state.projects.clone();
+    let identity = identity.clone();
+    let project_id = id.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        let query = ListQuery::parse(since, None, None, Some("chat"), None)?;
+        let page = projects.read_page(&project_id, &query, &Viewer::of(&identity))?;
+        let messages: Vec<_> = page
+            .records
+            .iter()
+            .map(|record| {
+                let letter = parse_letter(&record.raw_eml);
+                json!({
+                    "message_id": record.message_id,
+                    "handle": handle_of(&record.message_id),
+                    "sequence": record.sequence,
+                    "from": record.from,
+                    "subject": letter.subject,
+                    "body": letter.body.trim(),
+                    "created_at": record.appended_at,
+                })
+            })
+            .collect();
+        Ok::<_, ProjectError>(json!({
+            "messages": messages,
+            "next_cursor": page.next_cursor,
+        }))
+    })
+    .await
+    {
+        Ok(Ok(page)) => Ok(Some(page)),
+        Ok(Err(err)) => Err(project_error(err)),
+        Err(err) => Err(project_error(ProjectError::Storage(format!(
+            "chat poll failed: {err}"
+        )))),
     }
 }

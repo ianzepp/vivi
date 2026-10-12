@@ -2,7 +2,8 @@
 
 Status: **CORE BUILT 2026-10-10, CLIENT BUILT 2026-10-11, MAILSPACE STORE
 BUILT 2026-10-12 (vivi-server 1.1.0), SERVER MCP BUILT 2026-10-12
-(vivi-server 1.2.0).** The server (project store, identity
+(vivi-server 1.2.0), LIGHTWEIGHT CHAT BUILT 2026-10-12 (vivi-server
+1.3.0).** The server (project store, identity
 registration, admission by introduction, governance mail, visibility
 scoping, directory, letters, mailspace addresses, history windows, lookup by
 handle) and the vivi client (`vivi sync`, including `pull --since`, `fetch`,
@@ -12,9 +13,9 @@ mailspace on the server (decided items 14 to 16). The wire as built is
 recorded at the end of this document. MCP over the server (item 15) is
 built in 1.2.0 as `POST /v1/projects/{id}/mcp`; `vivi mcp` (the stdio
 bridge) stays in the vivi repo. Transparent mode is superseded by it. The
-postmaster LLM loop remains a future phase. The room-based wire contract in
-[`contract.md`](contract.md) is unchanged and the rooms API stays alongside
-(migration is the open want `b4d07a2a`).
+postmaster LLM loop remains a future phase. Rooms are lightweight chat
+on a chat-mode project (item 17, 1.3.0); the seat/challenge rooms wire
+is replaced.
 **Correction 2026-10-12.** The Storage section written with the letter wire
 on 2026-10-11 had removed the server-side mailspace ("A project no longer
 uses a vivi mailspace on the server"). That was a misreading of decided
@@ -224,28 +225,36 @@ who the tenant is, what travels, and where the truth lives.
     metadata from the bytes it is given), it leaves subjects, addresses and
     timestamps in the index in the clear, and it is incompatible with
     body full-text search, whose index would itself be plaintext on disk.
-17. **Rooms are to be redirected to lightweight chat on a lightweight
-    project (direction decided 2026-10-12, repo owner; not built, rooms
-    unchanged today).** `vivi chat` is gone (vivi 11), and a chat command
-    line was not the useful part. The useful part is a fleeting shared
-    channel, exposed through the server MCP surface (item 15). It is to be
-    a project with a lighter admission mode and a lifetime, not a second
-    tenant model: chat is ordinary mail (item 2) on the same mailspace
-    store, transport index, and letter wire. A later release does this, and
-    until then the room API ships as it is. Open, to be settled when the
-    tool list is written:
-    - **Keyless participants.** An MCP client has no key, so a chat
-      identity is a name plus a server-minted bearer issued on presenting
-      the room id, not a signed challenge. This is a second auth path next
-      to key-bound admission; decide whether it is confined to chat
-      projects.
-    - **Chat visibility.** Mail is visible only to its sender and the
-      addressed prefix, and a keyless participant has no prefix. Chat needs
-      a member-visible rule like need/task/want have, probably a `chat`
-      kind (an older client files an unknown kind as plain mail).
-    - **Expiry.** A fleeting chat needs a TTL or an explicit close. That is
-      an exception to item 4 (append-only, the server is the truth) and
-      must be named, and it overlaps the open retention question.
+17. **Rooms are lightweight chat on a lightweight project (direction
+    decided 2026-10-12, repo owner; built 1.3.0).** `vivi chat` is gone
+    (vivi 11), and a chat command line was not the useful part. The useful
+    part is a fleeting shared channel, exposed through the server MCP
+    surface (item 15) and a small HTTP create/join/send/read/close API.
+    It is a project with a lighter admission mode and a lifetime, not a
+    second tenant: chat is ordinary mail (item 2) on the same mailspace
+    store, transport index, and letter wire (`DATA_DIR/projects/<id>/`,
+    `mode=chat` in `project.json`). Settled at build:
+    - **Keyless participants — confined to chat projects.** Knowing the
+      room id is the capability. `POST /v1/rooms` `{name, ttl_seconds?}`
+      and `POST /v1/rooms/{id}/join` `{name}` mint a guest identity
+      (server-chosen mailspace UUID so the caller has a From prefix) and a
+      bearer that lasts until the room expires. Durable projects stay
+      key-bound (challenge/sign, admission by introduction). Guests cannot
+      mint API keys.
+    - **Chat visibility — `kind=chat` is member-visible.** Same transport
+      rule as need/task/want (`kind IS NOT NULL`). Room HTTP send always
+      writes `kind=chat`. MCP `send` accepts `kind=chat` (`to` optional;
+      defaults to `chat@<caller-prefix>.local`). Replies to a chat letter
+      stay `kind=chat`. Ordinary `kind=mail` stays sender/recipient-only
+      even on a chat project. An older client files an unknown kind as
+      plain mail.
+    - **Expiry — named exception to item 4.** Default TTL 24 h, min 60 s,
+      max 7 d. Any member may `POST /v1/rooms/{id}/close`. After close or
+      TTL, join/send/MCP are `410 room_closed` / `room_expired`. GET meta
+      still reports the flags until sweep. `/v1/_health` deletes over
+      chat trees. Durable projects are never expired this way. The letters
+      of a chat project are not retained past expiry: the server is the
+      truth only while the channel is live.
 
 ## What carries over from phases 01 and 02
 
@@ -263,10 +272,10 @@ who the tenant is, what travels, and where the truth lives.
 
 ## What is replaced
 
-- The `/v1/rooms/*` API, room ids, seats, labels, and per-room cursors.
-  (Redirected, not yet removed: item 17 turns rooms into lightweight chat on
-  a lightweight project in a later release. Until then the room API ships
-  unchanged.)
+- The seat/challenge `/v1/rooms/*` API, room ids as a second tenant,
+  labels, and per-room cursors. **Replaced in 1.3.0** by lightweight chat
+  on a chat-mode project (item 17). The `/v1/rooms` prefix stays as the
+  easy create/join/send/read/close surface; storage is `projects/<id>/`.
 - The sidecar `messages.json` as the read path. The mailspace becomes the store
   (the deferred P2-8, now central).
 - Server-minted message ids (`m{cursor}`).
@@ -469,8 +478,9 @@ in the design conversation apply:
   mutex.)
 - Whether the wire stays HTTP or speaks IMAP/SMTP. (The item encoding is
   decided: the raw `.eml`, decided item 10. HTTP is the working assumption.)
-- Migration of the rooms and messages already on the staging and production
-  services, and how long the rooms API stays alongside the new one.
+- Migration of pre-1.3.0 seat-bound rooms already on staging/production.
+  Not migrated: `vivi chat` is gone and those rooms had no remaining
+  client. 1.3.0 leaves `DATA_DIR/rooms/` unread.
 - ~~The MCP tool list of the first cut and its role permissions (item 15).~~
   Built 1.2.0: see [Server MCP](#server-mcp-built-2026-10-12).
 - **Resolved by the 1.1.0 build (2026-10-12).** The server holds a project

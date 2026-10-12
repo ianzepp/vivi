@@ -96,6 +96,12 @@ pub(crate) fn project_error(err: ProjectError) -> Response {
                 "storage failure",
             )
         }
+        ProjectError::Gone { closed: true } => {
+            error_response(StatusCode::GONE, "room_closed", "this chat is closed")
+        }
+        ProjectError::Gone { closed: false } => {
+            error_response(StatusCode::GONE, "room_expired", "this chat has expired")
+        }
     }
 }
 
@@ -116,6 +122,11 @@ fn register_error(err: RegisterError) -> Response {
             StatusCode::CONFLICT,
             "conflict",
             "identity name is unavailable",
+        ),
+        RegisterError::RoomFull => error_response(
+            StatusCode::FORBIDDEN,
+            "room_full",
+            "this chat is at its member cap",
         ),
         RegisterError::Storage(message) => {
             tracing::error!("identity storage failure: {message}");
@@ -183,6 +194,19 @@ pub(crate) async fn require_existing_project(state: &AppState, id: &str) -> Resu
     let projects = state.projects.clone();
     let check_id = id.to_owned();
     match tokio::task::spawn_blocking(move || projects.existing_project_dir(&check_id)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(err)) => Err(project_error(err)),
+        Err(err) => Err(project_error(ProjectError::Storage(format!(
+            "project lookup failed: {err}"
+        )))),
+    }
+}
+
+/// Durable projects always pass. A closed or expired chat is `410`.
+pub(crate) async fn require_live_chat(state: &AppState, id: &str) -> Result<(), Response> {
+    let projects = state.projects.clone();
+    let check_id = id.to_owned();
+    match tokio::task::spawn_blocking(move || projects.refuse_if_chat_over(&check_id)).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(err)) => Err(project_error(err)),
         Err(err) => Err(project_error(ProjectError::Storage(format!(

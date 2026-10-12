@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::{
     AuthError, ChallengeBook, canonical_spki_hex, constant_time_eq, key_fingerprint, mint_token,
-    parse_verifying_key, rfc3339, sha256_hex, verify_signature, verifying_key_from_spki_hex,
+    mint_token_until, parse_verifying_key, rfc3339, sha256_hex, verify_signature,
+    verifying_key_from_spki_hex,
 };
 
 pub const MAX_IDENTITY_LEN: usize = 64;
@@ -48,6 +49,9 @@ pub struct IdentityRecord {
     /// prefix and cannot receive mail by prefix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mailspace_id: Option<String>,
+    /// Keyless chat participant (item 17). Confined to chat projects.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guest: bool,
 }
 
 impl IdentityRecord {
@@ -74,6 +78,8 @@ pub enum RegisterError {
     ReservedName,
     /// Another identity in the project already holds the id's prefix.
     PrefixTaken,
+    /// Chat project is at the member cap.
+    RoomFull,
     Storage(String),
 }
 
@@ -231,6 +237,7 @@ impl IdentityRegistry {
             spki_der,
             tokens: vec![record],
             mailspace_id: Some(mailspace_id.to_owned()),
+            guest: false,
         });
         self.save(project_id, &file)
             .map_err(RegisterError::Storage)?;
@@ -307,6 +314,54 @@ impl IdentityRegistry {
             .find(|identity| identity.name == name)
     }
 
+    /// Keyless chat join: a name plus a server-minted bearer that lasts
+    /// until `expires_at`. The server mints a mailspace id so the guest has
+    /// a From address. Confined to chat projects by the rooms API.
+    pub fn register_guest(
+        &self,
+        project_id: &str,
+        name: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+        member_cap: usize,
+    ) -> Result<RegisterOutcome, RegisterError> {
+        let _guard = self.lock();
+        let mut file = self.load(project_id);
+        if file.identities.len() >= member_cap {
+            return Err(RegisterError::RoomFull);
+        }
+        let name = validate_name(name, &file.identities)?;
+        let mailspace_id = mint_guest_mailspace_id(&file.identities)?;
+        let minted = mint_token_until(expires_at).map_err(|err| match err {
+            AuthError::Entropy => RegisterError::Storage("entropy unavailable".into()),
+            _ => RegisterError::Storage("token mint failed".into()),
+        })?;
+        let record = token_record(minted.digest.clone(), minted.expires_at);
+        let expires_at = record.expires_at.clone();
+        file.identities.push(IdentityRecord {
+            name: name.clone(),
+            fingerprint: format!("guest:{name}"),
+            spki_der: String::new(),
+            tokens: vec![record],
+            mailspace_id: Some(mailspace_id.clone()),
+            guest: true,
+        });
+        self.save(project_id, &file)
+            .map_err(RegisterError::Storage)?;
+        Ok(RegisterOutcome {
+            name: name.clone(),
+            token: minted.token,
+            expires_at,
+            fingerprint: format!("guest:{name}"),
+            mailspace_id,
+        })
+    }
+
+    /// How many identities are registered in the project.
+    pub fn member_count(&self, project_id: &str) -> usize {
+        let _guard = self.lock();
+        self.load(project_id).identities.len()
+    }
+
     /// Resolve a presented bearer to its identity record. Digest comparison
     /// is constant-time; expired records never match; other projects fail
     /// closed.
@@ -327,6 +382,44 @@ impl IdentityRegistry {
     fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
         self.lock.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// UUID v4 used as a guest's mailspace id so they have an address prefix.
+fn mint_guest_mailspace_id(identities: &[IdentityRecord]) -> Result<String, RegisterError> {
+    for _ in 0..8 {
+        let mut raw = [0u8; 16];
+        getrandom::fill(&mut raw)
+            .map_err(|_| RegisterError::Storage("entropy unavailable".into()))?;
+        raw[6] = (raw[6] & 0x0f) | 0x40;
+        raw[8] = (raw[8] & 0x3f) | 0x80;
+        let id = format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            raw[0],
+            raw[1],
+            raw[2],
+            raw[3],
+            raw[4],
+            raw[5],
+            raw[6],
+            raw[7],
+            raw[8],
+            raw[9],
+            raw[10],
+            raw[11],
+            raw[12],
+            raw[13],
+            raw[14],
+            raw[15]
+        );
+        let prefix = &id[..MAILSPACE_PREFIX_LEN];
+        if !identities
+            .iter()
+            .any(|identity| identity.mailspace_prefix() == Some(prefix))
+        {
+            return Ok(id);
+        }
+    }
+    Err(RegisterError::PrefixTaken)
 }
 
 #[cfg(unix)]

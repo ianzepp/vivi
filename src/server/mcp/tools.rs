@@ -80,6 +80,7 @@ fn overview(
             Some("need") if item_is_open(record, &states) => needs_open += 1,
             Some("task") if item_is_open(record, &states) => tasks_open += 1,
             Some("want") if item_is_open(record, &states) => wants_open += 1,
+            Some("chat") => mail += 1,
             None => mail += 1,
             _ => {}
         }
@@ -128,17 +129,17 @@ fn list_items(
     let states = fold_item_states(&records);
     let wanted_kind = match kind.as_deref() {
         None => None,
-        Some("need" | "task" | "want" | "mail") => kind.as_deref(),
+        Some("need" | "task" | "want" | "mail" | "chat") => kind.as_deref(),
         Some(other) => {
             return Err(ToolError::new(format!(
-                "kind must be need, task, want, mail, or memo; got '{other}'"
+                "kind must be need, task, want, chat, mail, or memo; got '{other}'"
             )));
         }
     };
     let mut items = Vec::new();
     for record in &records {
         let matches_kind = match (wanted_kind, record.kind.as_deref()) {
-            (None, Some("need" | "task" | "want")) => true,
+            (None, Some("need" | "task" | "want" | "chat")) => true,
             (Some("mail"), None) => true,
             (Some(k), Some(rk)) => k == rk,
             _ => false,
@@ -296,10 +297,19 @@ fn send(
 ) -> Result<Value, ToolError> {
     rate_limit(limiter, project_id, &identity.name)?;
     let kind = req_str(arguments, "kind")?;
-    if !matches!(kind, "need" | "task" | "want" | "mail") {
-        return Err(ToolError::new("kind must be need, task, want, or mail"));
+    if !matches!(kind, "need" | "task" | "want" | "mail" | "chat") {
+        return Err(ToolError::new(
+            "kind must be need, task, want, chat, or mail",
+        ));
     }
-    let to = parse_to(arguments)?;
+    let to = if kind == "chat" && arguments.get("to").is_none() {
+        let prefix = identity.mailspace_prefix().ok_or_else(|| {
+            ToolError::new("this identity has no mailspace prefix; it cannot send")
+        })?;
+        vec![format!("chat@{prefix}.local")]
+    } else {
+        parse_to(arguments)?
+    };
     let subject = req_str(arguments, "subject")?;
     let body = req_str(arguments, "body")?;
     if subject.trim().is_empty() || body.trim().is_empty() {
@@ -354,9 +364,9 @@ fn settle(
     let handle = req_str(arguments, "handle")?;
     let note = opt_str(arguments, "note")?.unwrap_or(event);
     let parent = lookup_one(store, project_id, identity, handle)?;
-    if parent.kind.is_none() {
+    if !matches!(parent.kind.as_deref(), Some("need" | "task" | "want")) {
         return Err(ToolError::new(format!(
-            "{handle} is mail, not a need, task, or want"
+            "{handle} is not a need, task, or want"
         )));
     }
     let records = visible_all(store, project_id, identity)?;
@@ -792,5 +802,7 @@ fn map_project(err: ProjectError) -> ToolError {
             tracing::error!("mcp project storage failure: {message}");
             ToolError::new("storage failure")
         }
+        ProjectError::Gone { closed: true } => ToolError::new("this chat is closed"),
+        ProjectError::Gone { closed: false } => ToolError::new("this chat has expired"),
     }
 }

@@ -83,11 +83,53 @@ pub enum ProjectError {
     Conflict(String),
     /// Storage or IO failure.
     Storage(String),
+    /// A chat project is closed or past its TTL (item 17).
+    Gone { closed: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectMeta {
     pub project_id: String,
+    /// `chat` for an ephemeral lightweight room; absent on a durable project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
+}
+
+impl ProjectMeta {
+    fn durable(project_id: String) -> Self {
+        Self {
+            project_id,
+            mode: None,
+            expires_at: None,
+            ttl_seconds: None,
+            closed: false,
+        }
+    }
+
+    /// True for an item-17 lightweight chat project.
+    pub fn is_chat(&self) -> bool {
+        self.mode.as_deref() == Some("chat")
+    }
+
+    /// Closed, or past `expires_at`. Durable projects are never over.
+    pub fn is_over(&self) -> bool {
+        if !self.is_chat() {
+            return false;
+        }
+        if self.closed {
+            return true;
+        }
+        self.expires_at
+            .as_deref()
+            .and_then(|stamp| DateTime::parse_from_rfc3339(stamp).ok())
+            .is_some_and(|stamp| stamp.with_timezone(&Utc) <= Utc::now())
+    }
 }
 
 /// One validated letter presented for append. `from` is the authenticated
@@ -202,10 +244,10 @@ impl AppendItem {
         }
         let kind = match kind.map(|k| k.trim().to_ascii_lowercase()).as_deref() {
             None | Some("" | "mail") => None,
-            Some(k @ ("need" | "task" | "want")) => Some(k.to_owned()),
+            Some(k @ ("need" | "task" | "want" | "chat")) => Some(k.to_owned()),
             Some(other) => {
                 return Err(ProjectError::BadRequest(format!(
-                    "unsupported kind '{other}'; expected need, task, want, or mail"
+                    "unsupported kind '{other}'; expected need, task, want, chat, or mail"
                 )));
             }
         };
@@ -430,8 +472,8 @@ fn parse_kinds(raw: &str) -> Result<Vec<Option<String>>, ProjectError> {
     raw.split(',')
         .map(|kind| match kind.trim().to_ascii_lowercase().as_str() {
             "mail" => Ok(None),
-            k @ ("need" | "task" | "want") => Ok(Some(k.to_owned())),
-            _ => Err(bad_param("kind must list need, task, want, or mail")),
+            k @ ("need" | "task" | "want" | "chat") => Ok(Some(k.to_owned())),
+            _ => Err(bad_param("kind must list need, task, want, chat, or mail")),
         })
         .collect()
 }
@@ -851,7 +893,7 @@ impl ProjectStore {
             }
             Mailspace::init(Some(&dir))
                 .map_err(storage_err("failed to create the project mailspace"))?;
-            let meta = ProjectMeta { project_id };
+            let meta = ProjectMeta::durable(project_id);
             let bytes = serde_json::to_vec(&meta).map_err(|e| {
                 ProjectError::Storage(format!("failed to encode project.json: {e}"))
             })?;
@@ -900,6 +942,109 @@ impl ProjectStore {
         }
     }
 
+    /// Load `project.json` for an existing project.
+    pub fn load_meta(&self, raw_id: &str) -> Result<ProjectMeta, ProjectError> {
+        let dir = self.existing_project_dir(raw_id)?;
+        let bytes =
+            std::fs::read(dir.join("project.json")).map_err(|_| ProjectError::ProjectNotFound)?;
+        serde_json::from_slice(&bytes).map_err(|e| ProjectError::Storage(e.to_string()))
+    }
+
+    fn write_meta(&self, meta: &ProjectMeta) -> Result<(), ProjectError> {
+        let dir = self.existing_project_dir(&meta.project_id)?;
+        let bytes = serde_json::to_vec(meta)
+            .map_err(|e| ProjectError::Storage(format!("failed to encode project.json: {e}")))?;
+        std::fs::write(dir.join("project.json"), &bytes)
+            .map_err(|e| ProjectError::Storage(format!("failed to write project.json: {e}")))
+    }
+
+    /// Mint a chat-mode project (item 17): same store as a durable project,
+    /// plus a TTL. The id is the shareable capability.
+    pub fn create_chat_project(&self, ttl_seconds: u64) -> Result<ProjectMeta, ProjectError> {
+        let meta = self.create_project()?;
+        let expires_at = Utc::now() + chrono::Duration::seconds(ttl_seconds as i64);
+        let meta = ProjectMeta {
+            project_id: meta.project_id,
+            mode: Some("chat".into()),
+            expires_at: Some(expires_at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            ttl_seconds: Some(ttl_seconds),
+            closed: false,
+        };
+        self.write_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Explicit close: further joins and writes are gone. The directory
+    /// stays until sweep.
+    pub fn close_chat(&self, raw_id: &str) -> Result<ProjectMeta, ProjectError> {
+        let mut meta = self.load_meta(raw_id)?;
+        if !meta.is_chat() {
+            return Err(ProjectError::BadRequest(
+                "only a chat project can be closed".into(),
+            ));
+        }
+        meta.closed = true;
+        self.write_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Refuse writes (and chat reads that require a live channel) when the
+    /// project is a closed or expired chat. Durable projects always pass.
+    pub fn refuse_if_chat_over(&self, raw_id: &str) -> Result<ProjectMeta, ProjectError> {
+        let meta = self.load_meta(raw_id)?;
+        if meta.is_over() {
+            return Err(ProjectError::Gone {
+                closed: meta.closed,
+            });
+        }
+        Ok(meta)
+    }
+
+    /// Delete closed or expired chat project directories. Durable projects
+    /// are never touched. Returns how many trees were removed.
+    pub fn sweep_expired_chats(&self) -> usize {
+        let Ok(entries) = std::fs::read_dir(&self.projects_root) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            let Ok(bytes) = std::fs::read(dir.join("project.json")) else {
+                continue;
+            };
+            let Ok(meta) = serde_json::from_slice::<ProjectMeta>(&bytes) else {
+                continue;
+            };
+            if meta.is_over() && std::fs::remove_dir_all(&dir).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// Live (not yet over) chat projects, for `/v1/_health`.
+    pub fn live_chat_count(&self) -> usize {
+        let Ok(entries) = std::fs::read_dir(&self.projects_root) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|entry| {
+                std::fs::read(entry.path().join("project.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<ProjectMeta>(&bytes).ok())
+                    .is_some_and(|meta| meta.is_chat() && !meta.is_over())
+            })
+            .count()
+    }
+
+    /// Storage state for `/v1/_health`.
+    pub fn storage_state(&self) -> String {
+        std::fs::create_dir_all(&self.projects_root)
+            .map(|_| "ok".to_owned())
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
     /// Process the governance vouch in a letter to postmaster: validate it
     /// and write the admission. Idempotent, so a replay after a crash
     /// between this and the transport write converges.
@@ -922,6 +1067,7 @@ impl ProjectStore {
     /// project mailspace first, then recorded as the next transport row.
     pub fn append(&self, raw_id: &str, item: &AppendItem) -> Result<AppendOutcome, ProjectError> {
         let _guard = append_lock();
+        self.refuse_if_chat_over(raw_id)?;
         let dir = self.existing_project_dir(raw_id)?;
         let project_id = dir
             .file_name()
