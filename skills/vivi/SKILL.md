@@ -1548,6 +1548,36 @@ config id that disagrees with `.vivi/mailspace.id` is refused by every command
 with a message naming both files and the one edit that settles it; nothing is
 changed for you.
 
+**Linking a mailspace to a server project.** This works for a new or an
+existing mailspace; an existing one keeps its id and history. Never copy a
+`.vivi` folder between machines.
+
+1. Add `[sync]` with `server` (e.g.
+   `https://vivi-server-main-production.up.railway.app` for staging),
+   `project` (the server project id), and a new `name` for this checkout.
+   Names bind to the first key admitted forever, so pick one you will keep.
+2. Run `vivi sync status`. This mints `.vivi/chat/identity.ed25519` if it is
+   missing and prints the short fingerprint and the wire fingerprint. Send
+   the matching SPKI public-key PEM (`-----BEGIN PUBLIC KEY-----` …), never
+   the private seed file, to an existing member. Status does not print the
+   PEM.
+3. The member vouches: mail whose envelope is the reserved address
+   `postmaster` and whose body (after the first blank line) is JSON
+   `{"vouch": {"name": "<name>", "public_key_pem": "<pem>"}}` — the PEM as a
+   JSON string. The working route today is the server MCP `send` tool (kind
+   `mail`, to `postmaster`); that path is untested. `vivi mail send --to
+   postmaster` is refused as an unknown local role, and a letter To
+   `postmaster@<prefix>.local` is not a vouch.
+4. Run `vivi sync join`, then `vivi sync`. The push uploads existing needs,
+   tasks, wants, and plain mail (never memos, drafts, trash, or rules).
+   Letters written before the mailspace had an id keep their old
+   `name.local` domain; they sync, but address replies to them explicitly.
+
+Errors: `admission_required` means no vouch yet, or the name was admitted
+with another key (the server binds a name to the first key admitted and has
+no re-key; only the project creator can help). `mailspace_prefix_taken`
+means a copied id; see Addresses above.
+
 **One sync at a time.** `push`, `pull`, `resync`, `fetch` and `prune` take an
 exclusive lock under `.vivi/sync/`, so a cron run and an interactive run
 serialize. The second waits up to 10 seconds, then exits 1 with `another vivi

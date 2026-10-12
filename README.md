@@ -1535,7 +1535,10 @@ records where its history starts (`sync status` prints `history from: ...`);
 `sync resync` replays everything; `sync fetch <handle>` and
 `sync pull --refs [--depth N]` bring in older letters by handle or by
 reference; `sync prune --older-than 30d [--dry-run]` evicts old letters
-locally, and any of the three restores them byte for byte.
+locally, and any of the three restores them byte for byte. To attach a
+checkout (new or existing) to a server project, see **Linking a mailspace
+to a server project** in the
+[vivi skill](skills/vivi/SKILL.md#project-sync).
 
 Everything Vivi does is project-scoped, so `--project <root>` is accepted either
 before or after the subcommand and every command resolves the same mailspace.
