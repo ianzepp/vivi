@@ -169,3 +169,52 @@ fn a_pool_name_that_would_not_fit_in_a_pod_name_is_refused() {
         "{said}"
     );
 }
+
+const CPU_BASE: &str = r#"
+provider = "runpod"
+slots = 2
+image = "rust:1.93-bookworm"
+
+[runpod]
+api_key_file = "/keys/runpod.key"
+compute = "cpu"
+container_disk_gb = 20
+"#;
+
+#[test]
+fn a_cpu_pool_validates_and_makes_one_create_attempt() {
+    let config = toml::from_str::<PoolConfig>(CPU_BASE).unwrap();
+    config.validate(&id()).unwrap();
+    assert!(config.runpod.is_cpu());
+    assert_eq!(config.runpod.attempt_count(), 1);
+}
+
+#[test]
+fn a_cpu_pool_refuses_the_gpu_settings() {
+    let with_types = format!("{CPU_BASE}gpu_types = [\"NVIDIA A100 80GB PCIe\"]\n");
+    assert!(refused(&with_types).contains("cpu"), "gpu_types");
+    let with_count = format!("{CPU_BASE}gpu_count = 2\n");
+    assert!(refused(&with_count).contains("cpu"), "gpu_count");
+    let with_cuda = format!("{CPU_BASE}min_cuda_version = \"12.8\"\n");
+    assert!(refused(&with_cuda).contains("cpu"), "min_cuda_version");
+}
+
+#[test]
+fn a_cpu_pool_caps_the_container_disk_where_the_hosts_do() {
+    let big = CPU_BASE.replace("container_disk_gb = 20", "container_disk_gb = 40");
+    let said = refused(&big);
+    assert!(said.contains("at most 20"), "{said}");
+    toml::from_str::<PoolConfig>(CPU_BASE)
+        .unwrap()
+        .validate(&id())
+        .unwrap();
+}
+
+#[test]
+fn compute_must_be_gpu_or_cpu_and_defaults_to_gpu() {
+    let config = parse("");
+    assert!(!config.runpod.is_cpu(), "the default is gpu");
+    assert_eq!(config.runpod.attempt_count(), 2, "one per gpu type");
+    let said = refused_with("compute = \"tpu\"\n");
+    assert!(said.contains("runpod.compute"), "{said}");
+}

@@ -197,6 +197,8 @@ fn create_argv_for_the_minimal_pool() {
             "vivi-rp1-n",
             "--image",
             "img:1",
+            "--compute-type",
+            "GPU",
             "--gpu-id",
             "NVIDIA A100 80GB PCIe",
             "--gpu-count",
@@ -262,6 +264,31 @@ fn the_api_key_never_appears_in_any_argument_list() {
     assert!(!argv.iter().any(|a| a.contains("rpa_")
         || a.to_lowercase().contains("api-key")
         || a.to_lowercase().contains("api_key")));
+}
+
+#[test]
+fn a_cpu_pool_creates_with_the_cpu_compute_type_and_no_gpu_flags() {
+    let cfg = PoolRunpod {
+        api_key_file: Some("/k".into()),
+        compute: "cpu".into(),
+        ..PoolRunpod::default()
+    };
+    let argv = create_args(&cfg, "img:1", "n", "CPU", ("T", 60));
+    let after = |flag: &str| {
+        let at = argv
+            .iter()
+            .position(|a| a == flag)
+            .unwrap_or_else(|| panic!("{flag} missing: {argv:?}"));
+        argv[at + 1].clone()
+    };
+    assert_eq!(after("--compute-type"), "CPU");
+    for absent in ["--gpu-id", "--gpu-count", "--min-cuda-version"] {
+        assert!(!argv.iter().any(|a| a == absent), "{absent}");
+    }
+    assert!(
+        argv.contains(&"--ssh".to_string()) && argv.contains(&"--wait".to_string()),
+        "the cpu pod still needs ssh and the wait: {argv:?}"
+    );
 }
 
 #[test]

@@ -9,10 +9,13 @@ fn the_lock_is_held_until_dropped_and_a_second_taker_waits_then_gives_up() {
     let told = Cell::new(0);
     let note = |_: &str| told.set(told.get() + 1);
     let first = acquire(&path, Duration::ZERO, Duration::ZERO, &note).unwrap();
+    // The margins are generous on purpose: under a full test suite's load a
+    // 30ms window can be descheduled away whole, and the protocol (wait,
+    // announce once, give up) is what is proven here, not the milliseconds.
     let err = acquire(
         &path,
-        Duration::from_millis(30),
-        Duration::from_millis(5),
+        Duration::from_millis(500),
+        Duration::from_millis(20),
         &note,
     )
     .unwrap_err()

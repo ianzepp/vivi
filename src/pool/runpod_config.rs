@@ -13,7 +13,14 @@ const DEFAULT_GPU_COUNT: u32 = 1;
 const MAX_GPU_COUNT: u32 = 8;
 const DEFAULT_DISK_GB: u32 = 40;
 const MAX_DISK_GB: u32 = 4096;
+/// CPU hosts cap the container disk lower than GPU hosts (observed live
+/// 2026-10-12: the API refuses with "Container Disk must be less than or
+/// equal to 20", some hosts 30).
+pub const MAX_CPU_DISK_GB: u32 = 20;
 const DEFAULT_CLOUD: &str = "secure";
+/// `gpu` or `cpu`: the tier each pod is rented on (`runpodctl pod create
+/// --compute-type`).
+const DEFAULT_COMPUTE: &str = "gpu";
 /// How long a new pod may take to answer on SSH, in seconds, when the pool does
 /// not say. A working pod answers in well under a minute; one that has not by
 /// now is not going to, and it bills until it is terminated.
@@ -29,8 +36,13 @@ pub struct PoolRunpod {
     /// reads the key. The file must not be readable by group or others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_file: Option<String>,
+    /// `gpu` or `cpu` (default `gpu`). `cpu` rents CPU-only pods: the pool
+    /// takes no `gpu_types`, `gpu_count` or `min_cuda_version`.
+    #[serde(default = "default_compute")]
+    pub compute: String,
     /// GPU type ids (as `runpodctl gpu list` spells them), best first: the
-    /// first one with stock wins and the rest are fallbacks. Required.
+    /// first one with stock wins and the rest are fallbacks. Required on a
+    /// GPU pool; refused on a CPU pool.
     #[serde(default)]
     pub gpu_types: Vec<String>,
     /// GPUs per pod.
@@ -59,6 +71,9 @@ pub struct PoolRunpod {
 
 fn default_gpu_count() -> u32 {
     DEFAULT_GPU_COUNT
+}
+fn default_compute() -> String {
+    DEFAULT_COMPUTE.to_string()
 }
 fn default_cloud() -> String {
     DEFAULT_CLOUD.to_string()
@@ -89,6 +104,7 @@ impl Default for PoolRunpod {
     fn default() -> Self {
         Self {
             api_key_file: None,
+            compute: default_compute(),
             gpu_types: Vec::new(),
             gpu_count: DEFAULT_GPU_COUNT,
             cloud: default_cloud(),
@@ -122,6 +138,23 @@ impl PoolRunpod {
         }
     }
 
+    /// Whether this pool rents CPU-only pods.
+    #[must_use]
+    pub fn is_cpu(&self) -> bool {
+        self.compute == "cpu"
+    }
+
+    /// How many create attempts a dispatch makes: one per GPU type, or the
+    /// single CPU attempt.
+    #[must_use]
+    pub fn attempt_count(&self) -> usize {
+        if self.is_cpu() {
+            1
+        } else {
+            self.gpu_types.len()
+        }
+    }
+
     pub(super) fn validate(&self, pool: &str) -> Result<(), VivariumError> {
         let Some(key) = self.api_key_file.as_deref() else {
             return Err(bad(
@@ -134,21 +167,13 @@ impl PoolRunpod {
     }
 
     fn validate_hardware(&self) -> Result<(), VivariumError> {
-        if self.gpu_types.is_empty() || self.gpu_types.iter().any(|g| !is_gpu_id(g)) {
-            return Err(bad(
-                "runpod.gpu_types must list at least one GPU type id, as `runpodctl gpu list` spells it (letters, digits, spaces and - . _ only)",
-            ));
+        if !matches!(self.compute.as_str(), "gpu" | "cpu") {
+            return Err(bad("runpod.compute must be \"gpu\" or \"cpu\""));
         }
-        let mut seen = self.gpu_types.clone();
-        seen.sort();
-        seen.dedup();
-        if seen.len() != self.gpu_types.len() {
-            return Err(bad("runpod.gpu_types holds a duplicate"));
-        }
-        if !(1..=MAX_GPU_COUNT).contains(&self.gpu_count) {
-            return Err(bad(format!(
-                "runpod.gpu_count must be between 1 and {MAX_GPU_COUNT}"
-            )));
+        if self.is_cpu() {
+            self.validate_cpu()?;
+        } else {
+            self.validate_gpu()?;
         }
         if !matches!(self.cloud.as_str(), "secure" | "community") {
             return Err(bad("runpod.cloud must be \"secure\" or \"community\""));
@@ -171,6 +196,50 @@ impl PoolRunpod {
             ));
         }
         check_ready_timeout(self.ready_timeout, "runpod.ready_timeout").map_err(bad)
+    }
+
+    fn validate_gpu(&self) -> Result<(), VivariumError> {
+        if self.gpu_types.is_empty() || self.gpu_types.iter().any(|g| !is_gpu_id(g)) {
+            return Err(bad(
+                "runpod.gpu_types must list at least one GPU type id, as `runpodctl gpu list` spells it (letters, digits, spaces and - . _ only)",
+            ));
+        }
+        let mut seen = self.gpu_types.clone();
+        seen.sort();
+        seen.dedup();
+        if seen.len() != self.gpu_types.len() {
+            return Err(bad("runpod.gpu_types holds a duplicate"));
+        }
+        if !(1..=MAX_GPU_COUNT).contains(&self.gpu_count) {
+            return Err(bad(format!(
+                "runpod.gpu_count must be between 1 and {MAX_GPU_COUNT}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_cpu(&self) -> Result<(), VivariumError> {
+        if !self.gpu_types.is_empty() {
+            return Err(bad(
+                "runpod.gpu_types is for GPU pools; a runpod.compute = \"cpu\" pool takes none",
+            ));
+        }
+        if self.gpu_count != DEFAULT_GPU_COUNT {
+            return Err(bad(
+                "runpod.gpu_count is for GPU pools; a runpod.compute = \"cpu\" pool takes none",
+            ));
+        }
+        if self.min_cuda_version.is_some() {
+            return Err(bad(
+                "runpod.min_cuda_version is for GPU pools; a runpod.compute = \"cpu\" pool takes none",
+            ));
+        }
+        if self.container_disk_gb > MAX_CPU_DISK_GB {
+            return Err(bad(format!(
+                "runpod.container_disk_gb must be at most {MAX_CPU_DISK_GB} on a runpod.compute = \"cpu\" pool (CPU hosts cap it)"
+            )));
+        }
+        Ok(())
     }
 }
 

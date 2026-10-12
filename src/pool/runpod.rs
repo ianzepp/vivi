@@ -357,7 +357,7 @@ impl PoolProvider for RunpodProvider {
     /// dispatch that passes a longer `--ready-timeout` is not covered.
     fn setup_grace_secs(&self) -> u64 {
         let cfg = &self.config.runpod;
-        super::runpod_open::setup_secs(cfg.gpu_types.len(), cfg.ready_timeout, self.pace.seed_limit)
+        super::runpod_open::setup_secs(cfg.attempt_count(), cfg.ready_timeout, self.pace.seed_limit)
             + 60
     }
 

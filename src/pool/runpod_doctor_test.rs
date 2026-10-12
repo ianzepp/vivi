@@ -27,6 +27,7 @@ fn good() -> RunpodFacts {
         .unwrap())),
         pods: Some(Ok(Survey::default())),
         types: vec!["NVIDIA A100 80GB PCIe".into()],
+        cpu: false,
         cloud: "SECURE".into(),
         centers: Vec::new(),
         gpu_count: 1,
@@ -148,6 +149,34 @@ fn a_gpu_type_is_checked_against_the_market() {
     assert_eq!(status(&list, "gpu NVIDIA Imaginary"), Status::Warn);
     assert_eq!(status(&list, "gpu NVIDIA H100 PCIe"), Status::Warn);
     assert!(detail(&list, "gpu NVIDIA H100 PCIe").contains("no stock"));
+}
+
+#[test]
+fn a_cpu_pool_checks_the_compute_tier_and_never_the_gpu_market() {
+    let mut f = good();
+    f.cpu = true;
+    f.types = Vec::new();
+    let list = checks(&f);
+    assert_eq!(status(&list, "compute"), Status::Ok);
+    assert!(
+        detail(&list, "compute").contains("cpu pods"),
+        "{}",
+        detail(&list, "compute")
+    );
+    assert!(
+        list.iter()
+            .all(|c| !c.name.starts_with("gpu ") && c.name != "gpu types"),
+        "no gpu check on a cpu pool: {list:#?}"
+    );
+}
+
+#[test]
+fn the_cpu_spend_refusal_names_the_cpu_tier_and_the_flag() {
+    let text = cpu_spend_text();
+    assert!(
+        text.contains("CPU pod") && text.contains("--allow-spend"),
+        "{text}"
+    );
 }
 
 #[test]

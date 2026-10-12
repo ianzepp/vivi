@@ -93,6 +93,7 @@ pub struct RunpodFacts {
     pub gpus: Option<Result<Vec<GpuType>, String>>,
     pub pods: Option<Result<Survey, String>>,
     pub types: Vec<String>,
+    pub cpu: bool,
     pub cloud: String,
     pub centers: Vec<String>,
     pub gpu_count: u32,
@@ -158,6 +159,7 @@ impl RunpodProvider {
             gpus,
             pods,
             types: cfg.gpu_types.clone(),
+            cpu: cfg.is_cpu(),
             cloud: cfg.cloud_type().to_string(),
             centers: cfg.data_centers.clone(),
             gpu_count: cfg.gpu_count,
@@ -182,6 +184,9 @@ impl RunpodProvider {
     #[must_use]
     pub fn spend_notice(&self) -> String {
         let cfg = &self.config.runpod;
+        if cfg.is_cpu() {
+            return cpu_spend_text();
+        }
         let market = self.market();
         let first = cfg.gpu_types.first().map_or("?", String::as_str);
         let price = market
@@ -212,6 +217,12 @@ pub fn spend_text(types: &[String], count: u32, cloud: &str, price: Option<f64>)
         "`vivi pool doctor --test` on a RunPod pool would rent a real GPU pod ({} tried in order), run a stand-in job on it for several minutes and terminate it; the pod bills by the second from the moment it exists, and a run that is interrupted or fails can leave a pod billing until `vivi pool reconcile` or its provider-side deadline. For the first type, {cost}. Nothing was rented. To run the test anyway, pass --allow-spend",
         types.join(", ")
     )
+}
+
+/// The refusal text of the live test on a CPU pool.
+#[must_use]
+pub fn cpu_spend_text() -> String {
+    "`vivi pool doctor --test` on a RunPod CPU pool would rent a real CPU pod, run a stand-in job on it for several minutes and terminate it; the pod bills by the second from the moment it exists (there is no CPU price list in `runpodctl`; the console shows it), and a run that is interrupted or fails can leave a pod billing until `vivi pool reconcile` or its provider-side deadline. Nothing was rented. To run the test anyway, pass --allow-spend".to_string()
 }
 
 fn missing_local_tools() -> Vec<String> {
@@ -330,6 +341,13 @@ fn tools_check(f: &RunpodFacts) -> Check {
 }
 
 fn gpu_checks(f: &RunpodFacts) -> Vec<Check> {
+    if f.cpu {
+        return vec![Check::ok(
+            GROUP,
+            "compute",
+            "cpu pods (`--compute-type CPU`); there is no GPU market to check",
+        )];
+    }
     let market = match &f.gpus {
         Some(Ok(market)) => market,
         Some(Err(e)) => {
@@ -384,7 +402,18 @@ fn gpu_check(f: &RunpodFacts, market: &[GpuType], wanted: &str) -> Check {
 }
 
 fn ready_timeout_check(f: &RunpodFacts) -> Check {
-    let worst = u64::try_from(f.types.len()).unwrap_or(u64::MAX) * f.ready_timeout;
+    let attempts = if f.cpu { 1 } else { f.types.len() };
+    let worst = u64::try_from(attempts).unwrap_or(u64::MAX) * f.ready_timeout;
+    if f.cpu {
+        return Check::ok(
+            GROUP,
+            "ready timeout",
+            format!(
+                "{}s for a new pod to answer on SSH, then it is terminated and the dispatch fails with no pod rented; `vivi pool dispatch --ready-timeout` overrides it for one dispatch",
+                f.ready_timeout
+            ),
+        );
+    }
     Check::ok(
         GROUP,
         "ready timeout",

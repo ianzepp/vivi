@@ -23,6 +23,7 @@ use super::run::ONCE_ENV;
 use super::runpod::{RunpodProvider, iso};
 use super::runpod_claim::{Entry, Verdict, lowest_free, verdict};
 use super::runpod_cli::{create_timeout, redact};
+use super::runpod_config::PoolRunpod;
 use super::runpod_lock;
 use super::runpod_name::{PodName, new_nonce, task_field};
 use super::runpod_pin;
@@ -51,7 +52,7 @@ impl RunpodProvider {
         let _held = runpod_lock::acquire(&lock, self.pace.lock_wait, self.pace.poll, &say)?;
         let cfg = &self.config.runpod;
         let ready_secs = request.ready_timeout_secs.unwrap_or(cfg.ready_timeout);
-        let setup = setup_secs(cfg.gpu_types.len(), ready_secs, self.pace.seed_limit);
+        let setup = setup_secs(cfg.attempt_count(), ready_secs, self.pace.seed_limit);
         let index = self.next_index(id)?;
         let name = PodName {
             mailspace: id.mailspace.clone(),
@@ -121,14 +122,8 @@ impl RunpodProvider {
         ready_secs: u64,
     ) -> Result<(Pod, Vec<Abandoned>), VivariumError> {
         let cfg = &self.config.runpod;
-        let market = self.market();
-        let types = order_types(
-            &cfg.gpu_types,
-            market.as_deref(),
-            cfg.cloud_type(),
-            &cfg.data_centers,
-        );
-        let mut last = String::from("no GPU type was tried");
+        let (types, first_word) = create_attempts(cfg, || self.market());
+        let mut last = String::from(first_word);
         let mut abandoned: Vec<Abandoned> = Vec::new();
         for gpu in &types {
             request.progress.say(&format!("trying {gpu}"));
@@ -156,11 +151,7 @@ impl RunpodProvider {
             }
         }
         Err(with_abandoned(
-            VivariumError::Message(format!(
-                "no pod could be rented ({} GPU type(s) tried; last: {})",
-                types.len(),
-                redact(&last)
-            )),
+            VivariumError::Message(refusal_text(cfg, &types, &last)),
             &abandoned,
         ))
     }
@@ -256,7 +247,7 @@ impl RunpodProvider {
                 "pod {} does not carry the name it was made with",
                 found.id
             ))
-        } else if found.gpu_count != wanted {
+        } else if !self.config.runpod.is_cpu() && found.gpu_count != wanted {
             Some(format!(
                 "pod {} has {} GPU(s), not the {wanted} asked for",
                 found.id, found.gpu_count
@@ -291,7 +282,7 @@ impl RunpodProvider {
         say(&format!(
             "pod {} is up on {}; pinning its SSH host key",
             pod.id,
-            pod.hardware()
+            pod.hardware_of_tier(self.config.runpod.is_cpu())
         ));
         let pin = runpod_pin::pin_path(&self.pins_dir(), &pod.id);
         runpod_pin::capture(self.scanner.as_ref(), (&ip, port), &pin, self.pace.scan_gap)?;
@@ -314,7 +305,7 @@ impl RunpodProvider {
             name: format!("{}-{}-slot-{}", name.mailspace, name.pool, name.index),
             index: name.index,
             hold,
-            hardware: pod.hardware(),
+            hardware: pod.hardware_of_tier(self.config.runpod.is_cpu()),
             created_at: iso(name.claimed),
             abandoned: Vec::new(),
         })
@@ -467,7 +458,7 @@ pub fn dispatch_deadline(
     (now, budget_secs): (u64, u64),
 ) -> u64 {
     let ready = ready_override.unwrap_or(config.ready_timeout);
-    let setup = setup_secs(config.gpu_types.len(), ready, super::runpod::SEED_LIMIT);
+    let setup = setup_secs(config.attempt_count(), ready, super::runpod::SEED_LIMIT);
     deadline_of(now, budget_secs, setup)
 }
 
@@ -496,6 +487,40 @@ pub fn charge_micros(price_per_hr: f64, waited: Duration) -> u64 {
     } else {
         0
     }
+}
+
+/// The create attempts of one dispatch: one CPU pseudo-type, or the pool's
+/// GPU types ordered against the market. The second element is the "nothing
+/// was tried" wording for that tier.
+fn create_attempts<F>(cfg: &PoolRunpod, market: F) -> (Vec<String>, &'static str)
+where
+    F: FnOnce() -> Option<Vec<GpuType>>,
+{
+    if cfg.is_cpu() {
+        return (vec![String::from("CPU")], "no CPU pod was tried");
+    }
+    let listed = market();
+    (
+        order_types(
+            &cfg.gpu_types,
+            listed.as_deref(),
+            cfg.cloud_type(),
+            &cfg.data_centers,
+        ),
+        "no GPU type was tried",
+    )
+}
+
+/// What a dispatch says when every create attempt was refused.
+fn refusal_text(cfg: &PoolRunpod, types: &[String], last: &str) -> String {
+    if cfg.is_cpu() {
+        return format!("no CPU pod could be rented (last: {})", redact(last));
+    }
+    format!(
+        "no pod could be rented ({} GPU type(s) tried; last: {})",
+        types.len(),
+        redact(last)
+    )
 }
 
 /// The progress line for a pod given up on.

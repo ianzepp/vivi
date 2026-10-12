@@ -78,7 +78,9 @@ impl Pod {
         Some((ssh.ip.as_str(), ssh.port))
     }
 
-    /// The hardware as one line: `NVIDIA A100-SXM4-80GB x1, $1.59/h`.
+    /// The hardware as one line: `NVIDIA A100-SXM4-80GB x1, $1.59/h`. A pod
+    /// with no GPU data reads `unknown GPU x0`, honestly: only the pool
+    /// config knows a pod was asked for as a CPU pod.
     #[must_use]
     pub fn hardware(&self) -> String {
         let gpu = self
@@ -91,6 +93,19 @@ impl Pod {
             .cost_per_hr
             .map_or_else(String::new, |c| format!(", ${c:.2}/h"));
         format!("{gpu} x{}{cost}", self.gpu_count)
+    }
+
+    /// The hardware line for a pod whose pool knows its own tier: a CPU pool
+    /// names the CPU, because only the config knows no GPU was asked for.
+    #[must_use]
+    pub fn hardware_of_tier(&self, cpu: bool) -> String {
+        if cpu && self.machine.as_ref().map_or(true, |m| m.gpu_id.is_empty()) {
+            let cost = self
+                .cost_per_hr
+                .map_or_else(String::new, |c| format!(", ${c:.2}/h"));
+            return format!("CPU pod{cost}");
+        }
+        self.hardware()
     }
 
     /// When the provider made the pod, in epoch milliseconds, if it said.
@@ -341,10 +356,13 @@ pub fn create_args(
     gpu_id: &str,
     (terminate_after, ready_secs): (&str, u64),
 ) -> Vec<String> {
-    let mut list = args(&[
-        "pod", "create", "--name", name, "--image", image, "--gpu-id", gpu_id,
-    ]);
-    list.extend(["--gpu-count".to_string(), config.gpu_count.to_string()]);
+    let mut list = args(&["pod", "create", "--name", name, "--image", image]);
+    let compute = if config.is_cpu() { "CPU" } else { "GPU" };
+    list.extend(["--compute-type".to_string(), compute.to_string()]);
+    if !config.is_cpu() {
+        list.extend(["--gpu-id".to_string(), gpu_id.to_string()]);
+        list.extend(["--gpu-count".to_string(), config.gpu_count.to_string()]);
+    }
     list.extend(["--cloud-type".to_string(), config.cloud_type().to_string()]);
     list.extend([
         "--container-disk-in-gb".to_string(),
