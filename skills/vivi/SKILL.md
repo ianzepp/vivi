@@ -236,17 +236,21 @@ delivered copy a hand holds, its own copy, or the author's `sent` copy; give
 `--for <your identity>` and the event lands on the item, not on the row named.
 The command prints `done|reopened|dropped <handle>; event <id>`. A role of any
 other kind (hand, auditor, head, ...) reports instead and prints `done
-<handle>; reported` (or `reopened`): its own copy moves, the `--note` is a
-reply to the author, and in its own mailspace the node completes (dependents
-unlock) as for any close. A report writes no event: it never changes the
+<handle>; reported` (or `reopened`): its own copy moves and the `--note` is a
+reply to the author. A report is not an acceptance. It completes no node,
+unlocks no dependents, fires no join and writes no event: it never changes the
 item's `State:` or any other holder's copy, and the author's tracking node
-stays `awaiting` until the author closes. Naming a copy another role holds is
-refused, and the error names the holder, the report command to retry with
-`--for <holder>`, and who may close. A reporter may reopen its own report; it
-cannot reopen what the owner closed (`only the owner can reopen it`; ask in a
-reply). An event counts only in the item's own mailspace, so a mind in an
-assignee's mailspace reports on an item another mailspace authored; it does
-not close it.
+stays `awaiting` until the author closes. The author, the `sent`-copy holder,
+or a role of kind `mind` accepts it by running `done` (any handle of the item
+works); that completes the node, unlocks dependents and fires a bound need's
+join (see Work Graphs). Naming a copy another role holds is refused, and the
+error names the holder, the report command to retry with `--for <holder>`, and
+who may close. A reporter may reopen its own report; it cannot reopen what the
+owner closed (`only the owner can reopen it`; ask in a reply). An event counts
+only in the item's own mailspace, so a mind in an assignee's mailspace reports
+on an item another mailspace authored: a local report to the author that does
+not close it there, though it accepts the item in this mailspace (the node
+completes here).
 
 The state of an item is its chain head: the event no other held event names as
 `Prev`. A fork (two checkouts acted on the same event) leaves several heads and
@@ -339,15 +343,17 @@ topologies never enter the step manifest — dispatch their nodes with
 ready` without an argument lists every graph's frontier, including backlog.
 
 Lifecycle moves keep backlog nodes in step: `task done` / `need done` /
-`want done|drop` complete the item's node and unlock dependents; `reopen`
+`want done|drop` run by an acceptor (the author, the `sent`-copy holder, or a
+role of kind `mind`) complete the item's node and unlock dependents; a
+report by any other role completes nothing (State as letters); `reopen`
 re-locks them (cascading through join parents and content siblings);
 `want promote` never changes node state and wants never dispatch in
 `vivi step` before explicit promotion. Lowering is a graph fact:
 `vivi need bind <need> <task>...` binds unit tasks to a need, and the need
-auto-completes when every bound unit lands — node and mailbox item together
-(`via=join` in the event log); reopening a bound unit restores the need to
-open the same way. `vivi need show <handle>` prints the bound units with
-their states. Imported Mermaid graphs are for
+auto-completes when every bound unit is accepted (a report does not count) —
+node and mailbox item together (`via=join` in the event log); reopening a
+bound unit restores the need to open the same way. `vivi need show <handle>`
+prints the bound units with their states. Imported Mermaid graphs are for
 non-item topology (pipelines, environment flows); delivery lowering uses
 `need bind` in the backlog, so work is never double-represented.
 
@@ -373,57 +379,68 @@ Bare source ids address the backlog graph; imported topologies use
 (`--for`): the send receipt's `created <recipient> <handle>` line names the
 holder, and naming a copy another identity holds fails with the holder
 named in the error (the item's author or a mind may name any copy; see State
-as letters). **Settle sequence.** The worker settles with
-`task done --verdict/--repo/--tip` (the node completes, dependents unlock,
-a `step_decision via=lifecycle` event records the transition; the worker's
-`done` is a report, and the author's or a mind's `done` is what closes the
-item for everyone); the host then runs `vivi step --apply <handle>` —
-idempotent, never settles itself — which records `via=step-apply` and runs
-the receipt screen when a judgment provider is configured.
+as letters). **Settle sequence.** The worker reports with
+`task done --verdict/--repo/--tip` (its own copy moves; the node stays open
+or active as `reported`, dependents stay blocked). The author, the
+`sent`-copy holder, or a mind accepts with `task done <handle> --for
+<acceptor>`: the node completes, dependents unlock, a bound need's join
+fires, and a `step_decision via=lifecycle` event records the transition. The
+host then runs `vivi step --apply <handle>` — idempotent, never settles
+itself — which runs the receipt screen when a judgment provider is
+configured and records `via=step-apply` only when the node was still open.
 
-Use `graph show`, `graph ready`, and `board --graph` for inspection.
-`graph ready` prints a `counts` line first — use it (or `--kind
-task|need|want|decision|stub|parked`) instead of reading long id lists.
-`awaiting` lists open work this mailspace handed to another one: it is
-tracked here so a sender can order it with `--depends-on` and see it with
-`need|task|want list|dump --for <sender>` (the role column reads `sent`), but
-it is never ready here, its dependents stay blocked, `step` reports it as
-`awaiting_remote` naming the recipient, and `graph activate` refuses it. The
-receiving mailspace dispatches it; the author's (or a mind's) `done` on your
-copy settles the node. `board --graph` shows no `awaiting` row. Work held for
-another mailspace's role (see Project Sync) is not this mailspace's backlog:
-`step`, `graph ready` and `boot` leave it out; `mail list --to <address>
---folder needs|tasks|wants` shows it.
-Use `vivi step [--json]` for a mechanical adjudication of the backlog into
-`dispatches` (ready, verifiable work with clause counts) and `exceptions`
-(reason vocabulary: `want_requires_promotion`, `lowered_awaiting_units`,
-`no_done_when`, `item_missing`, `not_settled`, `untracked_item`,
-`awaiting_remote`). Wants render as parked in their exception detail. A
-clauseless task/need body warns at send time, and a duplicate work send (same sender, same subject,
-still open in the recipient's folder) warns on stderr without blocking.
-`vivi step
---apply <handle>` completes an already-settled item's node and lists
-transitions under `decisions`; applying an item the lifecycle already
-settled records `via=lifecycle (already settled; nothing to apply)` instead
-of silence. The coordination host decides which ready nodes to dispatch.
+Use `graph show`, `graph ready`, and `board --graph` for inspection. `graph
+ready` prints a `counts` line first (`ready`, `blocked`, `active`, `awaiting`,
+`reported`, `gates`; `--json` has the same lists as fields) — use it (or
+`--kind task|need|want|decision|stub|parked`) instead of reading long id
+lists. `reported` lists open or active work a role reported done and nobody
+who may accept has: it is never ready, its dependents stay blocked, `step`
+reports it as `awaiting_acceptance` (who reported, and the `done` command that
+accepts it), and `graph activate` refuses it; an active node that was reported
+shows under `active` as well. `awaiting` lists open work this mailspace handed
+to another one: it is tracked here so a sender can order it with
+`--depends-on` and see it with `need|task|want list|dump --for <sender>` (the
+role column reads `sent`), but it is never ready here, its dependents stay
+blocked, `step` reports it as `awaiting_remote` naming the recipient, and
+`graph activate` refuses it. The receiving mailspace dispatches it; the
+author's (or a mind's) `done` on your copy settles the node. `board --graph`
+shows no `awaiting` or `reported` row. Work held for another mailspace's role
+(see Project Sync) is not this mailspace's backlog: `step`, `graph ready` and
+`boot` leave it out; `mail list --to <address> --folder needs|tasks|wants`
+shows it. Use `vivi step [--json]` for a mechanical adjudication of the
+backlog into `dispatches` (ready, verifiable work with clause counts) and
+`exceptions` (reason vocabulary: `want_requires_promotion`,
+`lowered_awaiting_units`, `no_done_when`, `item_missing`, `not_settled`,
+`untracked_item`, `awaiting_remote`, `awaiting_acceptance`). Wants render as
+parked in their exception detail. A clauseless task/need body warns at send
+time, and a duplicate work send (same sender, same subject, still open in the
+recipient's folder) warns on stderr without blocking. `vivi step --apply
+<handle>` completes an already-settled item's node and lists transitions under
+`decisions`; applying an item the lifecycle already settled records
+`via=lifecycle (already settled; nothing to apply)` instead of silence.
+Applying a reported item completes nothing and returns its
+`awaiting_acceptance` exception. The coordination host decides which ready
+nodes to dispatch.
 
 **Citizenship audit.** `vivi graph audit [--repair]` checks the backlog
 invariant — every work item sent while the graph existed has a node in step
-with its folder state — and reports `missing_node`, `node_state`,
-`node_kind`, `missing_edge`, `foreign_held`, `event_state`, and `orphan_node`
-findings, with a one-line count per class. `missing_edge` is a held open work
-letter whose `X-Vivi-Depends-On` header names held work the graph has no edge
-from. `foreign_held` is a node still open for work held under another
-mailspace's role. `event_state` is a folder that disagrees with its item's
-latest event letter. `--repair` mints missing nodes and edges (from folder
-state and dependency headers), completes nodes for settled items, settles need
-mailboxes whose join fired, settles `foreign_held` nodes, re-applies the latest
-event for `event_state`, and corrects kinds. `orphan_node` is reported, never
-repaired.
-`graph activate` / `need bind` errors point here. Stale vivi binaries
-silently skip node minting entirely (observed with an old Homebrew 8.1.0 on
-PATH): `mailspace status` prints the running binary's version — check it
-when nodes go missing, and keep one vivi on PATH.
+with its folder state — and reports `missing_node`, `node_state`, `node_kind`,
+`missing_edge`, `foreign_held`, `event_state`, and `orphan_node` findings,
+with a one-line count per class. `missing_edge` is a held open work letter
+whose `X-Vivi-Depends-On` header names held work the graph has no edge from.
+`foreign_held` is a node still open for work held under another mailspace's
+role. `event_state` is a folder that disagrees with its item's latest event
+letter. A `done` folder under an open or active node is a report awaiting
+acceptance, not `node_state` drift: audit neither reports nor repairs it, and
+`graph complete` is the manual override. `--repair` mints missing nodes and
+edges (from folder state and dependency headers), completes nodes for settled
+items, settles need mailboxes whose join fired, settles `foreign_held` nodes,
+re-applies the latest event for `event_state`, and corrects kinds.
+`orphan_node` is reported, never repaired. `graph activate` / `need bind`
+errors point here. Stale vivi binaries silently skip node minting entirely
+(observed with an old Homebrew 8.1.0 on PATH): `mailspace status` prints the
+running binary's version — check it when nodes go missing, and keep one vivi
+on PATH.
 
 ### Work-graph flow (dispatching ordered work)
 
@@ -433,23 +450,25 @@ it before lowering a multi-unit delivery. The load-bearing rules:
 
 - Every unit is its own task send with its own handle; the send mints the node.
   Cite prerequisites with `--depends-on`; an unknown handle fails the send.
-- `done` means the worker closed the handle. It does not mean the code is on
-  main, and Vivi has no merged state. "On main" is a **merge task** filed with
-  `--depends-on <unit>`; anything that needs the code `--depends-on` the merge
-  task, not the unit.
+- `done` by the worker is a report; the author's or a mind's `done` accepts
+  it. Neither means the code is on main, and Vivi has no merged state. "On
+  main" is a **merge task** filed with `--depends-on <unit>`; anything that
+  needs the code `--depends-on` the merge task, not the unit.
 - `vivi step` dispatches a ready node only if a line of its body begins with
   `done_when:` (a `write_scope:` line is reported, not required). One-line
   compressed forms, bullets, and bold labels do not match.
 - Per unit, in order: file with `--depends-on` and a valid body, `need bind`
   the need to its units (and their merge tasks), claim the lane, `graph
-  activate <handle> --task <handle>`, spawn the seat, and after it closes run
-  `step --apply <handle>`. A merge landing closes the merge task and turns its
-  dependents ready.
+  activate <handle> --task <handle>`, spawn the seat, and when it reports
+  accept it (`task done <handle> --for <mind>`), then run `step --apply
+  <handle>`. A merge landing is accepted the same way and turns the merge
+  task's dependents ready.
 - Do not stack units on one handle: stacked units are not separate nodes and
   one handle holds one lane lock.
 - `graph audit --repair` fixes missing nodes and edges, kind drift, node/folder
-  state drift (folder wins), `foreign_held` nodes and `event_state` drift; read
-  the audit first, because `node_state` repairs can reverse a hand completion.
+  state drift (folder wins; a report awaiting acceptance is not drift),
+  `foreign_held` nodes and `event_state` drift; read the audit first, because
+  `node_state` repairs can reverse a manual `graph complete`.
   The reference file lists exactly what each finding repairs.
 
 ### Judgment provider (optional, off by default)

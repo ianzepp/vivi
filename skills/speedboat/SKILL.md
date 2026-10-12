@@ -104,11 +104,12 @@ process; an open handle alone is not running work.
    scope, obvious defects, and the declared result. Commit the intended paths
    or integrate the isolated lane. Do not replay the Hand's check without a
    new code change or a concrete contradictory result.
-5. **Settle and continue.** Close the unit only after its done condition and
+5. **Settle and continue.** Accept the unit only after its done condition and
    required landing are satisfied: `vivi task done <handle> --for <mind>
    --verdict <v> --note <landed commit>`. Any handle of the unit works (use
-   the one `step` shows); the close lands on the unit and prints
-   `done <handle>; event <id>`. Start eligible successors immediately.
+   the one `step` shows). Acceptance completes the node, unlocks its
+   dependents, joins a bound need, and prints `done <handle>; event <id>`; a
+   Hand's `done` does none of these. Start eligible successors immediately.
 
 Take the first reasonable implementation consistent with settled decisions.
 Route an actual missing decision or observed failure immediately. Keep
@@ -119,6 +120,7 @@ unaffected units moving. Do not request a review merely to increase confidence.
 | Reason | Meaning | Mind action |
 | --- | --- | --- |
 | `awaiting_remote` | Work you handed to a role in another mailspace; tracked, never dispatched here, and its dependents stay blocked | Let the receiver dispatch it; close your copy once accepted |
+| `awaiting_acceptance` | A Hand or Auditor reported the unit done; the row names the reporter and the accept command. The node stays open and its dependents blocked; `step --apply` completes nothing | Integrate the work, then accept it with that command; a failed gate reopens it (see "Mind acceptance gates") |
 | `want_requires_promotion` | A parked want | Promote it, or leave it parked |
 | `no_done_when` | The body has no `done_when:` line, so it cannot dispatch | Send the unit with one |
 
@@ -132,18 +134,17 @@ isolate overlapping work in worktrees. Never erase another agent's changes.
 Mind Git mutations are serialized; do not run competing staging or commits.
 Reuse the project's integration mechanism without its optional review chain.
 
-Keep a unit active while its diff awaits integration. A Hand's readiness
-receipt is not a landing. Dependents requiring landed code must not unlock
-on an unmerged diff. If existing project topology separates implementation
-and merge handles, retain that dependency but let the Mind perform the
-integration directly; do not add another merge Hand by default.
+Keep a unit unaccepted while its diff awaits integration. A Hand's readiness
+receipt is not a landing, and it unlocks nothing: dependents requiring landed
+code stay blocked until the Mind accepts. If existing project topology
+separates implementation and merge handles, retain that dependency but let the
+Mind perform the integration directly; do not add another merge Hand by
+default.
 
-When Mind and Hand share one mailspace, a Hand's `task done` moves only the
-Hand's copy yet still completes the unit's node: dependents unlock and a bound
-need can join, while `task show` prints no `State:` line until the Mind closes
-the unit. To hold dependents for the landing, file a landing task to the Mind
-(`--to <mind> --depends-on <unit>`), point dependents at it, and close it after
-integrating.
+A Hand's `task done` moves only the Hand's copy, so a unit awaiting acceptance
+needs no landing task. `graph ready` lists it on its `reported` line
+(`reported=N`), `graph activate` refuses it, and `task show` prints no
+`State:` line until the Mind accepts.
 
 ## Assignment size and dispatch
 
@@ -190,9 +191,8 @@ output or cap the displayed response.
 Do not bind an incomplete subset of units to a parent need whose automatic
 join would then falsely close the whole need. Keep the full goal open until
 every admitted requirement has landed. Small units sequence scope; they do
-not reduce it. A bound need joins when its units' nodes complete, which can be
-at the Hands' reports rather than the Mind's acceptance (see the
-shared-mailspace note in "Mind loop"), so bind only when that is acceptable.
+not reduce it. A bound need joins and closes when the Mind accepts its last
+unit, never at a Hand's report.
 
 ### Running Hands in a pool
 
@@ -240,8 +240,8 @@ You are judged on the speed of useful results, not the perfect solution.
    <hand> --verdict ready --note "<receipt>"`, adding `--repo <r> --tip <sha>`
    for a lane tip. Partial or blocked: `vivi mail reply <handle> --from <hand>
    --body "<receipt>"` and leave the handle open. Your `done` is a report, not
-   the close: the Mind integrates, accepts, and closes the unit. Do not mark
-   unlanded work complete.
+   an acceptance: it completes no node and unlocks no dependents, and the Mind
+   integrates and accepts the unit. Do not mark unlanded work complete.
 
 If substantial research is necessary, return the precise missing fact or
 decision immediately. If a fix exceeds the unit, return the observed failure
@@ -286,15 +286,20 @@ may be preserved or committed as WIP without claiming the goal is complete.
 
 ## Mind acceptance gates
 
-A unit passes its gate when the Mind closes it (Mind loop step 5); `vivi task
+A unit passes its gate when the Mind accepts it (Mind loop step 5); `vivi task
 show <handle>` then prints `State: done`. A failed gate reopens it: `vivi task
 reopen <handle> --for <mind> --note "<what failed>"` prints `State: reopened`,
-re-locks its dependents, and makes the handle ready again. File the repair as a
-second task whose body carries the failure, and activate both nodes
-(`graph activate <second> --task <second>`, `graph activate <reopened> --task
-<second>`) so `step` offers neither. Close both when the repair lands. An
-Auditor, if the operator asked for one, answers with `vivi mail reply` and
-never closes; its `task done` is a report like a Hand's.
+re-locks its dependents, reopens its bound need if that had joined, and makes
+the handle ready again. File the repair as a second task whose body carries
+the failure, and activate both nodes (`graph activate <second> --task
+<second>`, `graph activate <reopened> --task <second>`) so `step` offers
+neither. Accept both when the repair lands. A finding against work whose need
+already joined is the same loop from the need: `vivi need reopen <need> --for
+<mind>`, file the repair task, and `need bind` the need to all its units plus
+the repair; it rejoins when the Mind accepts the repair. An Auditor, if the
+operator asked for one, answers with `vivi mail reply` and never accepts; its
+`task done` is a report like a Hand's, and `step` lists it as
+`awaiting_acceptance` until the Mind accepts that task too.
 
 After integrating the Hands, run any ladder or end-to-end proof the operator
 explicitly requested, and only that.
