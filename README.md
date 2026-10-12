@@ -34,9 +34,9 @@ what has actually been completed.
 
 ## Install
 
-Current release: **11.1.0**
+Current release: **11.2.0**
 ([GitHub releases](https://github.com/ianzepp/vivi/releases),
-[notes](docs/release-v11.1.0.md)).
+[notes](docs/release-v11.2.0.md)).
 
 Release binaries are published as assets on this repository's GitHub releases,
 and that is the only distribution channel — there is no package-manager formula
