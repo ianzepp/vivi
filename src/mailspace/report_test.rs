@@ -484,3 +484,49 @@ fn with_no_author_role_and_no_mind_step_names_the_manual_path() {
         "{exception:?}"
     );
 }
+
+#[test]
+fn a_report_after_a_reopen_is_not_event_drift_and_repair_leaves_it() {
+    let (_tmp, mailspace) = space();
+    let task = send(&mailspace, "task", "unit", &[]);
+    done(&mailspace, "hand", &task);
+    done(&mailspace, "mind", &task);
+    mailspace
+        .move_item("mind", &task, "tasks", None, "task reopen", None)
+        .unwrap();
+    assert_eq!(
+        role_of(&mailspace, &task),
+        "tasks",
+        "the reopen moved it back"
+    );
+
+    let outcome = done(&mailspace, "hand", &task);
+    assert!(outcome.reported, "{outcome:?}");
+    assert_eq!(role_of(&mailspace, &task), "done");
+    assert_eq!(node(&mailspace, &task).readiness, "reported");
+
+    let found = mailspace.backlog_audit(false).unwrap();
+    assert!(found.findings.is_empty(), "{:?}", found.findings);
+    let repaired = mailspace.backlog_audit(true).unwrap();
+    assert!(repaired.findings.is_empty(), "{:?}", repaired.findings);
+    assert_eq!(role_of(&mailspace, &task), "done", "the report stays");
+
+    let accepted = done(&mailspace, "mind", &task);
+    assert!(accepted.event.is_some(), "{accepted:?}");
+    assert_eq!(node(&mailspace, &task).state, "done");
+}
+
+#[test]
+fn a_reopen_still_moves_a_report_made_before_it() {
+    let (_tmp, mailspace) = space();
+    let task = send(&mailspace, "task", "unit", &[]);
+    done(&mailspace, "hand", &task);
+    assert_eq!(role_of(&mailspace, &task), "done");
+
+    mailspace
+        .move_item("mind", &task, "tasks", None, "task reopen", None)
+        .unwrap();
+
+    assert_eq!(role_of(&mailspace, &task), "tasks");
+    assert_eq!(node(&mailspace, &task).state, "open");
+}

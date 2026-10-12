@@ -95,7 +95,9 @@ impl Mailspace {
         if kind == ItemEventKind::Reopened
             && before.local_role == "sent"
             && head != Some(ItemEventKind::Done)
-            && self.plan_item_moves(storage, &item, kind)?.is_empty()
+            && self
+                .plan_item_moves(storage, &item, kind, false)?
+                .is_empty()
         {
             // Nothing is closed: reopening an open sent copy would land a
             // second owner here, which the local move refuses.
@@ -134,7 +136,10 @@ impl Mailspace {
         } else {
             ItemEventKind::Reopened
         };
-        if self.plan_item_moves(storage, &item, kind)?.is_empty() {
+        if self
+            .plan_item_moves(storage, &item, kind, false)?
+            .is_empty()
+        {
             return Ok(true);
         }
         let request = EmitRequest {
@@ -299,7 +304,7 @@ impl Mailspace {
         request: &EmitRequest<'_>,
     ) -> Result<Vec<RoleMove>, VivariumError> {
         let mut moves: Vec<RoleMove> = self
-            .plan_item_moves(storage, item, request.kind)?
+            .plan_item_moves(storage, item, request.kind, false)?
             .iter()
             .map(|planned| role_move(item, planned, request.kind, Some(request)))
             .collect();

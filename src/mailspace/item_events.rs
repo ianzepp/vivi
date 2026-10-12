@@ -351,11 +351,16 @@ impl Mailspace {
     /// follows only when it is the sender's only copy (every recipient is in
     /// another mailspace); with a local delivered copy the sent row is a
     /// record of the send, not the work.
+    ///
+    /// With `keep_reports`, a reopen leaves alone a `done` row held by a role
+    /// that cannot accept the item: once the reopen has been applied, such a
+    /// row is a later report, not state the event left behind.
     fn plan_item_moves(
         &self,
         storage: &Storage,
         item: &HeldItem,
         kind: ItemEventKind,
+        keep_reports: bool,
     ) -> Result<Vec<Planned>, VivariumError> {
         let mut planned = Vec::new();
         for row in &item.rows {
@@ -366,6 +371,11 @@ impl Mailspace {
                 (ItemEventKind::Done, "tasks" | "needs" | "wants") => "done".to_string(),
                 (ItemEventKind::Done, "sent") if self.all_recipients_remote(row) => {
                     "done".to_string()
+                }
+                (ItemEventKind::Reopened, "done")
+                    if keep_reports && self.is_report_row(item, row) =>
+                {
+                    continue;
                 }
                 (ItemEventKind::Reopened, "done") => self.reopen_role(storage, item, row)?,
                 _ => continue,
@@ -439,6 +449,7 @@ impl Mailspace {
         storage: &mut Storage,
         content_id: &str,
         tally: &mut EventTally,
+        keep_reports: bool,
     ) -> Result<(), VivariumError> {
         // Most work has no replies at all: skip the parse for it.
         if storage.reply_child_contents(content_id)?.is_empty() {
@@ -462,7 +473,7 @@ impl Mailspace {
             return Ok(());
         }
         let moves: Vec<RoleMove> = self
-            .plan_item_moves(storage, &item, kind)?
+            .plan_item_moves(storage, &item, kind, keep_reports)?
             .iter()
             .map(|planned| role_move(&item, planned, kind, None))
             .collect();
@@ -494,7 +505,11 @@ impl Mailspace {
             return Ok(tally);
         }
         let mut storage = self.storage()?;
-        let mut items: BTreeSet<String> = BTreeSet::new();
+        // An arriving event letter moves every row its head names; a work
+        // item that arrives is only checked against the events it holds, and
+        // a report made after a reopen stays.
+        let mut by_event: BTreeSet<String> = BTreeSet::new();
+        let mut by_item: BTreeSet<String> = BTreeSet::new();
         for content_id in content_ids {
             let Some(view) = storage.message_by_content_id(content_id)? else {
                 continue;
@@ -505,16 +520,20 @@ impl Mailspace {
             match parse_event(&bytes) {
                 Some(event) => {
                     if let Some(item) = storage.live_message_by_rfc_id(&event.of)? {
-                        items.insert(item.content_id);
+                        by_event.insert(item.content_id);
                     }
                 }
                 None => {
-                    items.insert(content_id.clone());
+                    by_item.insert(content_id.clone());
                 }
             }
         }
-        for content_id in items {
-            self.settle_item(&mut storage, &content_id, &mut tally)?;
+        by_item.retain(|content_id| !by_event.contains(content_id));
+        for content_id in &by_event {
+            self.settle_item(&mut storage, content_id, &mut tally, false)?;
+        }
+        for content_id in &by_item {
+            self.settle_item(&mut storage, content_id, &mut tally, true)?;
         }
         Ok(tally)
     }
@@ -562,7 +581,7 @@ impl Mailspace {
             return Ok(None);
         };
         let rows: Vec<StoredMessageView> = self
-            .plan_item_moves(storage, &item, kind)?
+            .plan_item_moves(storage, &item, kind, true)?
             .into_iter()
             .map(|planned| planned.row)
             .collect();
@@ -573,7 +592,7 @@ impl Mailspace {
     /// repair).
     pub(super) fn repair_event_drift(&self, content_id: &str) -> Result<(), VivariumError> {
         let mut storage = self.storage()?;
-        self.settle_item(&mut storage, content_id, &mut EventTally::default())
+        self.settle_item(&mut storage, content_id, &mut EventTally::default(), true)
     }
 }
 

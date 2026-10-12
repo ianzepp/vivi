@@ -80,6 +80,15 @@ impl Mailspace {
         self.item_author(item).as_deref() == Some(identity) || self.identity_is_mind(identity)
     }
 
+    /// Whether `row`, in `done`, is held by a role that cannot accept `item`:
+    /// a report, not a close.
+    pub(super) fn is_report_row(&self, item: &HeldItem, row: &StoredMessageView) -> bool {
+        let holder = self
+            .identity_owning_account(&row.account)
+            .unwrap_or_else(|| row.account.clone());
+        !self.is_acceptor(item, &holder)
+    }
+
     /// Keep the backlog node in step with a local folder move. A `done` by a
     /// role that is not an acceptor is a report and completes nothing. A
     /// `done` by an acceptor on a row already in `done` accepts the report
