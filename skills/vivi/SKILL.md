@@ -1105,7 +1105,11 @@ slots = 4
 - **State** is the marks (small files in the slot directory) and the claim (a
   hard link of a complete file, atomic across processes); nothing else is kept.
   Harness `env` values are read from the environment of the `vivi` process when
-  the job runs; `doctor` names the unset names and no value is stored.
+  the job runs; `doctor` names the unset names and no value is stored. The
+  slot's `PATH` is the `vivi` process's too, so a harness installed under a
+  user-only path (an nvm bin) resolves inside jobs whenever the dispatching
+  `vivi` can see it; `doctor`'s tool check reads the system `PATH` only — a
+  `facts` entry for the harness proves the job-side view.
 
 ### Bringing up a new pool
 
@@ -1139,7 +1143,10 @@ machine list first).
 5. Smoke both dispatch modes, one throwaway task each: a `--read-only` recon
    job (expect `read_only_unchanged`; read the receipt) and a one-file write
    job to a scratch branch (expect `pushed`; verify the branch on the remote,
-   then delete it). Collect with `vivi pool wait`.
+   then delete it — `committed <branch> <sha>` on a worktree pool: verify in
+   the source repository, then delete the branch there). Collect with
+   `vivi pool wait` — it returns when the first named dispatch finishes;
+   re-run it for any still open.
 6. Close the smoke tasks (`task done` by the author or a mind) so no backlog
    node stays open.
 
