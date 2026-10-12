@@ -29,5 +29,6 @@ This replaces the README's symlink instructions.
 ## Upgrading
 
 1. Install 11.1.0. No schema migration is needed.
-2. The [11.0.0](release-v11.0.0.md) upgrade steps still apply if you have
-   not taken them.
+2. The [11.0.1](release-v11.0.1.md) documentation patch and the
+   [11.0.0](release-v11.0.0.md) upgrade steps still apply if you have not
+   taken them.
