@@ -12,6 +12,14 @@ mode is decided and not built. The postmaster LLM loop remains a future
 phase. The room-based wire contract in [`contract.md`](contract.md) is
 unchanged and the rooms API stays alongside (migration is the open want
 `b4d07a2a`).
+**Correction 2026-10-12.** The Storage section below, written with the
+letter wire on 2026-10-11, removed the server-side mailspace ("A project no
+longer uses a vivi mailspace on the server"). That was a misreading of
+decided item 10, which fixes what travels (the raw `.eml`, byte for byte)
+and says nothing about the server dropping its mailspace. It is reversed by
+items 14 to 16: the project is a mailspace on the server again, and the
+sealed-blob store is to be replaced. Until that is built, the sealed-blob
+store is what runs.
 Recorded 2026-10-10 from a design conversation with the repo owner;
 admission by introduction and the reserved `postmaster` identity were
 decided in a follow-up conversation the same day. Each item is marked
@@ -146,8 +154,9 @@ who the tenant is, what travels, and where the truth lives.
     the mind can create and push that work before any slot exists. Three
     rulings: the store is always stateless; commands that change only
     local state are refused; the interim credential is the member's own
-    key. Local-first is unchanged. See
-    [Transparent mode](#transparent-mode-decided-2026-10-11).
+    key. Local-first is unchanged. **Superseded 2026-10-12 by item 15**:
+    pool slots reach the server through MCP, not a stateless local store.
+    See [Transparent mode](#transparent-mode-decided-2026-10-11).
 13. **History is pulled by window, and letters are fetched by handle
     (decided 2026-10-11, repo owner).** The common case is a hand that
     pulls a week of history for coverage, not a full clone and not a bulk
@@ -164,6 +173,48 @@ who the tenant is, what travels, and where the truth lives.
     byte. Bulk push (seeding a large existing mailspace at 30 letters per
     minute) is deferred and is not a current requirement. See
     [Windows, handles, and prune](#windows-handles-and-prune-decided-2026-10-11).
+
+14. **The project is a mailspace on the server (decided 2026-10-12, repo
+    owner).** The server holds one vivi mailspace per project under
+    `DATA_DIR/projects/<id>/`, and that mailspace is the store and the read
+    path. This restores the original item 1 and reverses the Storage
+    section's 2026-10-11 removal. The wire is unchanged: letters still PUT
+    and GET as raw `.eml`, byte for byte, with the same `content_sha256`
+    check, because a mailspace can hold a letter verbatim (the client
+    already ingests pulled bytes verbatim). The reason is MCP (item 15): a
+    server that answers "list my open needs" or "show the thread for this
+    handle" needs a real store, and a sealed blob plus a JSON index cannot
+    answer either.
+15. **Server MCP, with `vivi mcp` as its stdio bridge (decided 2026-10-12,
+    repo owner).** The server exposes one MCP tool surface over HTTP, for
+    LLMs that have MCP but no vivi binary. It mirrors, to a reasonable
+    extent, the vivi command tree: fetching needs, wants, tasks and mail,
+    threads, reply, send, and reports. `vivi mcp` is a thin stdio bridge to
+    that same endpoint: it holds the member key, signs the challenge,
+    renews the token, and forwards tool calls, so a pool slot needs only
+    the binary, a mailspace id, and a key, and has no local mailspace and
+    no sync. This supersedes transparent mode (item 12), which is not
+    built and is not to be built. Consequences:
+    - Reads are live queries on the server's mailspace; the recipient
+      filter, handle lookup and long-poll prerequisites of item 12 are
+      served by it and are not separate work.
+    - Because the HTTP endpoint serves callers that cannot sign or mint,
+      the server composes the letter and mints its id for an authenticated
+      member. This is a scoped exception to item 5, like `postmaster`
+      replies. The letter's `From` carries that member's registered prefix.
+    - The credential is the member's bearer token. No new pass type.
+    - Permissions are enforced on the server: a hand may file a report; a
+      close travels only from the mind's identity. A report is not an
+      acceptance.
+16. **Plain text on an encrypted volume; the index database answers
+    queries (decided 2026-10-12, repo owner).** The server mailspace holds
+    letters and indexes in the clear. Protection at rest is the encrypted
+    volume, not per-letter sealing; the server cipher still guards keys and
+    tokens. Sealed blobs can be layered on later if that becomes a
+    requirement. The design rule: search, listing, and filtering run
+    against the mailspace's indexed database, never by scanning `.eml`
+    files. The `.eml` is kept for byte-exact GET and hash verification and
+    is read only to serve a letter.
 
 ## What carries over from phases 01 and 02
 
@@ -202,9 +253,10 @@ who the tenant is, what travels, and where the truth lives.
 
 ## Transparent mode (decided 2026-10-11)
 
-Decided by the repo owner in conversation on 2026-10-11. Not built. This
-section is the design record and the build prerequisites; names marked
-provisional are expected to change while it is tested.
+Decided by the repo owner in conversation on 2026-10-11. Not built, and
+**superseded on 2026-10-12 by decided item 15** (server MCP and the `vivi
+mcp` stdio bridge). Kept as the design record and for the reasoning on
+pool kinds and seats; its rulings no longer bind.
 
 **Why.** The mind keeps needs in a priority order and, when it works one,
 writes a task for a hand. That hand is often a remote slot that does not exist
@@ -385,6 +437,11 @@ in the design conversation apply:
   decided: the raw `.eml`, decided item 10. HTTP is the working assumption.)
 - Migration of the rooms and messages already on the staging and production
   services, and how long the rooms API stays alongside the new one.
+- Whether any project on staging or production holds letters worth a replay
+  into the mailspace store, or can be recreated.
+- The MCP tool list of the first cut and its role permissions (item 15).
+- Which of the vivi crate's filing and ingest functions the server can call
+  as they are, and which need to be made public in `vivi`.
 
 ## Effect on pending work
 
@@ -702,14 +759,25 @@ through the in-process fake server. The numbers are reported, not asserted.
 
 ### Storage
 
-Letters are sealed whole at rest under the server key (AES-256-GCM, as
-VC-5) in per-project blobs named by `content_sha256`, with an index of
-envelope rows (`sequence`, `message_id`, `content_sha256`, `from`, `to`,
-`kind`). The envelope rows are metadata in the clear, like the room
-sidecar; letter content, including subject and body, is sealed. A project
-no longer uses a vivi mailspace on the server. This is a clean break: a
-project created on the pre-letter wire has an incompatible `items.json`
-and must be recreated; nothing speaks that wire yet.
+**As running today (to be replaced).** Letters are sealed whole at rest
+under the server key (AES-256-GCM, as VC-5) in per-project blobs named by
+`content_sha256`, with `items.json` holding envelope rows (`sequence`,
+`message_id`, `content_sha256`, `from`, `to`, `kind`, `appended_at`,
+`from_prefix`). A project does not use a vivi mailspace on the server. This
+was a misreading of item 10 (see the correction at the top).
+
+**Target (decided items 14 and 16).** One vivi mailspace per project under
+`DATA_DIR/projects/<id>/`, letters in the clear on an encrypted volume,
+ingested verbatim by address with the same filing rules as the client's
+pull, and queried through the mailspace's indexed database. The transport
+fields (`sequence`, `appended_at`, `from_prefix`, the envelope `to`, and
+`content_sha256`) are stored beside each letter and are never recomputed.
+The wire in this document does not change.
+
+**Migration.** Existing projects hold every letter's bytes and an index
+carrying the transport fields, so they can be replayed into a mailspace in
+sequence order with those fields preserved. Whether any production data
+needs this, or projects can be recreated, is open below.
 
 ### Token renewal
 
