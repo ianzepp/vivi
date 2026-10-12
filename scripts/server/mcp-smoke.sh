@@ -68,12 +68,16 @@ echo "$INIT" | grep -q '"vivi-server"' && ok "initialize" || bad "initialize: $I
 LIST=$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
 echo "$LIST" | grep -q '"overview"' && ok "tools/list" || bad "tools/list: $LIST"
 
+rpc_text() {
+  echo "$1" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r.get("result",{}).get("content",[{}])[0].get("text",""))'
+}
+
 OVER=$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"overview","arguments":{}}}')
-echo "$OVER" | grep -q '"creator"' && ok "overview via api key" || bad "overview: $OVER"
+echo "$(rpc_text "$OVER")" | grep -q '"creator"' && ok "overview via api key" || bad "overview: $OVER"
 
 PREFIX=$(python3 -c 'import hashlib; print(hashlib.sha256(b"creator").hexdigest()[:8])')
 SEND=$(rpc "$(python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send","arguments":{"kind":"need","to":"creator@%s.local"%sys.argv[1],"subject":"mcp-smoke","body":"from the smoke"}}}))' "$PREFIX")")
-echo "$SEND" | grep -q '"handle"' && ok "send need" || bad "send: $SEND"
+echo "$(rpc_text "$SEND")" | grep -q '"handle"' && ok "send need" || bad "send: $SEND"
 
 echo "RESULT pass=$PASS fail=$FAIL project=$PID"
 [ "$FAIL" = 0 ] || exit 1
