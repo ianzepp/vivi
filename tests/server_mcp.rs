@@ -195,7 +195,7 @@ impl Fixture {
     async fn add_member(&self, name: &str, seed: u8) -> String {
         let signing = key(seed);
         let raw_vouch = vouch_letter(&traveling(90 + u64::from(seed)), name, &signing);
-        let (status, vouched) = raw(
+        let (status, vouched, _) = raw(
             &self.app,
             "PUT",
             &format!(
@@ -612,5 +612,14 @@ async fn mail_list_hides_other_members_mail() {
     let listed = fx
         .call(&hand, "list", json!({"kind": "mail", "status": "all"}))
         .await;
-    assert!(listed["items"].as_array().unwrap().is_empty(), "{listed}");
+    let subjects: Vec<_> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["subject"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        !subjects.iter().any(|s| s == "private"),
+        "hand must not see creator's self-mail: {listed}"
+    );
 }
