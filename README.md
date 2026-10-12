@@ -34,9 +34,9 @@ what has actually been completed.
 
 ## Install
 
-Current release: **11.0.1**
+Current release: **11.1.0**
 ([GitHub releases](https://github.com/ianzepp/vivi/releases),
-[notes](docs/release-v11.0.1.md)).
+[notes](docs/release-v11.1.0.md)).
 
 Release binaries are published as assets on this repository's GitHub releases,
 and that is the only distribution channel — there is no package-manager formula
@@ -87,11 +87,22 @@ Agent-facing guidance ships as three skills under [`skills/`](skills/):
 | [`speedboat`](skills/speedboat/SKILL.md) | A fast delivery protocol on the same backlog: small parallel Hands, minimum verification, the Mind integrates. |
 
 `tugboat` and `speedboat` are alternatives; each needs only the `vivi` skill.
-Symlink the folders you want into a client skill directory:
+
+The same trees are embedded in the binary, so an installed `vivi` prints
+skill text that matches `vivi --version`. No mailspace is required:
 
 ```sh
-for s in vivi tugboat speedboat; do ln -s "$(pwd)/skills/$s" ~/.agents/skills/$s; done
+vivi skills list
+vivi skills show vivi
+vivi skills show vivi --file references/work-graph-flow.md
+vivi skills install ~/.agents/skills
 ```
+
+`show` without `--file` prints `SKILL.md` and lists every supporting file
+(so relative links can be requested). `install` writes the repository
+layout (`vivi/`, `tugboat/`, `speedboat/`) into the directory; `--force`
+overwrites. The checkout `skills/` tree remains the source that the next
+build embeds.
 
 ## Quick Start
 
@@ -1516,11 +1527,13 @@ Rules:
 
 `vivi --help` is the live top-level list. Today that is: `board`, `boot`,
 `sync`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `rule`, `goal`,
-`pool`, `role`, `cycle`, `trace`, `graph`, `step`.
+`pool`, `role`, `cycle`, `trace`, `graph`, `skills`, `step`.
 
 `pool` is the remote lane pool (create, status, destroy, scale, dispatch, wait,
 reconcile, doctor). `rule` holds project rules every seat can read; `--local`
 marks a rule that a later sync should skip, and nothing syncs rules yet.
+`skills` lists, shows, and installs the agent skills embedded in this binary
+(`vivi`, `tugboat`, `speedboat`); it does not need a mailspace.
 
 A worker's `done` is a report. Only the item's author, or a role of kind
 `mind`, accepts it; the acceptance completes the work, unlocks its dependents,
@@ -1540,8 +1553,9 @@ checkout (new or existing) to a server project, see **Linking a mailspace
 to a server project** in the
 [vivi skill](skills/vivi/SKILL.md#project-sync).
 
-Everything Vivi does is project-scoped, so `--project <root>` is accepted either
-before or after the subcommand and every command resolves the same mailspace.
+Almost everything Vivi does is project-scoped, so `--project <root>` is accepted
+either before or after the subcommand and those commands resolve the same
+mailspace. `vivi skills` is the exception: it reads the embedded catalog.
 The mailspace section above is the command reference; the most common entry
 points are:
 

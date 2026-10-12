@@ -8,6 +8,7 @@ mod board_command;
 mod mailspace_command;
 mod pool_command;
 mod role_command;
+mod skills_command;
 mod sync_command;
 
 pub use board_command::BoardCommand;
@@ -29,6 +30,7 @@ pub use pool_command::{
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
+pub use skills_command::SkillsCommand;
 pub use sync_command::{SyncCommand, SyncSubcommand};
 
 #[derive(Debug, Parser)]
@@ -139,6 +141,12 @@ pub enum Command {
     Graph {
         #[command(subcommand)]
         command: GraphCommand,
+    },
+
+    /// Show or install the agent skills embedded in this binary
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommand,
     },
 
     /// Adjudicate the backlog graph into a dispatch/exception manifest
