@@ -298,6 +298,15 @@ impl IdentityRegistry {
         identities
     }
 
+    /// The registered record for `name`, if any.
+    pub fn by_name(&self, project_id: &str, name: &str) -> Option<IdentityRecord> {
+        let _guard = self.lock();
+        self.load(project_id)
+            .identities
+            .into_iter()
+            .find(|identity| identity.name == name)
+    }
+
     /// Resolve a presented bearer to its identity record. Digest comparison
     /// is constant-time; expired records never match; other projects fail
     /// closed.

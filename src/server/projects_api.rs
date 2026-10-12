@@ -15,7 +15,8 @@ use vivi::storage::is_traveling_id;
 
 use crate::AppState;
 use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
-use crate::identities::{RefreshError, RegisterError, valid_mailspace_id};
+use crate::identities::{IdentityRecord, RefreshError, RegisterError, valid_mailspace_id};
+use crate::keys::resolve_project_identity;
 use crate::projects::{AppendItem, ListQuery, ProjectError, ProjectRecord, Viewer};
 use crate::rooms::error_response;
 
@@ -64,7 +65,7 @@ pub struct TokenRequest {
     signature_base64: String,
 }
 
-fn project_error(err: ProjectError) -> Response {
+pub(crate) fn project_error(err: ProjectError) -> Response {
     match err {
         ProjectError::InvalidProjectId => error_response(
             StatusCode::BAD_REQUEST,
@@ -135,7 +136,7 @@ fn invalid_mailspace_id() -> Response {
     )
 }
 
-fn json_body<T: for<'de> Deserialize<'de>>(
+pub(crate) fn json_body<T: for<'de> Deserialize<'de>>(
     payload: Result<Json<T>, JsonRejection>,
 ) -> Result<T, Response> {
     payload.map(|Json(value)| value).map_err(|_| {
@@ -145,6 +146,73 @@ fn json_body<T: for<'de> Deserialize<'de>>(
             "malformed JSON body",
         )
     })
+}
+
+pub(crate) fn presented_bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+pub(crate) fn missing_bearer() -> Response {
+    error_response(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "bearer token required",
+    )
+}
+
+pub(crate) fn invalid_bearer() -> Response {
+    error_response(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "invalid bearer token",
+    )
+}
+
+pub(crate) fn identity_lookup_failed() -> Response {
+    error_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal",
+        "identity lookup failed",
+    )
+}
+
+pub(crate) async fn require_existing_project(state: &AppState, id: &str) -> Result<(), Response> {
+    let projects = state.projects.clone();
+    let check_id = id.to_owned();
+    match tokio::task::spawn_blocking(move || projects.existing_project_dir(&check_id)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(err)) => Err(project_error(err)),
+        Err(err) => Err(project_error(ProjectError::Storage(format!(
+            "project lookup failed: {err}"
+        )))),
+    }
+}
+
+/// Identity-token or API-key Bearer, resolved to the bound identity.
+pub(crate) async fn authenticate(
+    state: &AppState,
+    project_id: &str,
+    headers: &HeaderMap,
+) -> Result<IdentityRecord, Response> {
+    let Some(token) = presented_bearer(headers) else {
+        return Err(missing_bearer());
+    };
+    let identities = state.identities.clone();
+    let keys = state.keys.clone();
+    let project_id = project_id.to_owned();
+    let token = token.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        resolve_project_identity(&identities, &keys, &project_id, &token)
+    })
+    .await
+    {
+        Ok(Some(identity)) => Ok(identity),
+        Ok(None) => Err(invalid_bearer()),
+        Err(_) => Err(identity_lookup_failed()),
+    }
 }
 
 pub async fn create_project_handler(
@@ -402,36 +470,8 @@ pub async fn directory_handler(
         }
     }
 
-    let Some(token) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    else {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    };
-    let identities = state.identities.clone();
-    let token = token.to_owned();
-    let project_id = id.clone();
-    match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token)).await {
-        Ok(Some(_)) => (),
-        Ok(None) => {
-            return error_response(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "invalid bearer token",
-            );
-        }
-        Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "identity lookup failed",
-            );
-        }
+    if let Err(response) = authenticate(&state, &id, &headers).await {
+        return response;
     }
 
     let identities = state.identities.clone();
@@ -451,40 +491,10 @@ pub async fn items_handler(
     headers: HeaderMap,
     Query(query): Query<ItemsQuery>,
 ) -> Response {
-    let Some(token) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    else {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
+    let identity = match authenticate(&state, &id, &headers).await {
+        Ok(identity) => identity,
+        Err(response) => return response,
     };
-    let identities = state.identities.clone();
-    let token = token.to_owned();
-    let project_id = id.clone();
-    let identity =
-        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
-            .await
-        {
-            Ok(Some(identity)) => identity,
-            Ok(None) => {
-                return error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "invalid bearer token",
-                );
-            }
-            Err(_) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "identity lookup failed",
-                );
-            }
-        };
     let list = match ListQuery::parse(
         query.since,
         query.limit.as_deref(),
@@ -557,40 +567,10 @@ pub async fn lookup_handler(
             )));
         }
     }
-    let Some(token) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    else {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
+    let identity = match authenticate(&state, &id, &headers).await {
+        Ok(identity) => identity,
+        Err(response) => return response,
     };
-    let identities = state.identities.clone();
-    let token = token.to_owned();
-    let project_id = id.clone();
-    let identity =
-        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
-            .await
-        {
-            Ok(Some(identity)) => identity,
-            Ok(None) => {
-                return error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "invalid bearer token",
-                );
-            }
-            Err(_) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "identity lookup failed",
-                );
-            }
-        };
     let projects = state.projects.clone();
     let looked_up = tokio::task::spawn_blocking(move || {
         projects.lookup_handles(&id, &req.handles, &Viewer::of(&identity))
@@ -638,40 +618,10 @@ pub async fn append_handler(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let Some(token) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    else {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
+    let identity = match authenticate(&state, &id, &headers).await {
+        Ok(identity) => identity,
+        Err(response) => return response,
     };
-    let identities = state.identities.clone();
-    let token = token.to_owned();
-    let project_id = id.clone();
-    let identity =
-        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
-            .await
-        {
-            Ok(Some(identity)) => identity,
-            Ok(None) => {
-                return error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "invalid bearer token",
-                );
-            }
-            Err(_) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "identity lookup failed",
-                );
-            }
-        };
     let raw_eml = match body {
         Ok(bytes) => bytes.to_vec(),
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
@@ -752,40 +702,10 @@ pub async fn letter_handler(
             )));
         }
     }
-    let Some(token) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    else {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
+    let identity = match authenticate(&state, &id, &headers).await {
+        Ok(identity) => identity,
+        Err(response) => return response,
     };
-    let identities = state.identities.clone();
-    let token = token.to_owned();
-    let project_id = id.clone();
-    let identity =
-        match tokio::task::spawn_blocking(move || identities.verify_bearer(&project_id, &token))
-            .await
-        {
-            Ok(Some(identity)) => identity,
-            Ok(None) => {
-                return error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "invalid bearer token",
-                );
-            }
-            Err(_) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "identity lookup failed",
-                );
-            }
-        };
     if !is_traveling_id(&message_id) {
         return error_response(
             StatusCode::BAD_REQUEST,
