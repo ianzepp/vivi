@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.2.0 — 2026-10-12
+
+A remote MCP endpoint per project, so an AI assistant added by URL can work
+the project's mailspace without the vivi CLI. The credential is still a
+Bearer bound to a member: either the existing one-hour identity token, or a
+project-scoped API key a member mints.
+
+- **`POST /v1/projects/{id}/mcp`.** Streamable HTTP (JSON-RPC 2.0). The
+  project is in the URL so a connector does not have to pass it. Ten
+  parameterized tools cover the core loop: `overview`, `list`, `show`,
+  `thread`, `send`, `reply`, `done`, `reopen`, `memo`, `graph`. Identity is
+  always the authenticated caller; the server composes letters and mints
+  their traveling ids (decided item 15). A close travels as an
+  `X-Vivi-Event` letter when the caller's prefix authored the item; anyone
+  else files a report.
+- **API keys.** `POST/GET /v1/projects/{id}/keys` and `DELETE .../keys/{key_id}`:
+  minted by an identity-token member, stored hashed, revocable, sent as
+  `Authorization: Bearer`. A key cannot mint or revoke keys. The same Bearer
+  works on the letter wire.
+- **Docs.** Contract and phase-03 record the endpoint, tools, and the
+  bot-key exception to item 15's "no new pass type" (that ruling was for
+  the deferred slot JWT; URL-added connectors cannot sign).
+- **`vivi mcp`** (the stdio bridge) stays in the vivi repo.
+
 ## 1.1.0 — 2026-10-12
 
 A project is a real vivi mailspace on the server again. 1.0.0 stored each

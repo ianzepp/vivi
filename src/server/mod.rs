@@ -8,6 +8,8 @@ pub mod auth;
 pub mod crypto;
 pub mod identities;
 pub mod ids;
+pub mod keys;
+pub mod mcp;
 pub mod messages;
 pub mod project_wake;
 pub mod projects;
@@ -21,12 +23,13 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use tower_http::compression::CompressionLayer;
 
 use auth::ChallengeBook;
 use crypto::StoreCipher;
 use identities::IdentityRegistry;
+use keys::ApiKeyRegistry;
 use projects::ProjectStore;
 use rooms::RoomStore;
 use safety::RateLimiter;
@@ -40,6 +43,7 @@ pub struct AppState {
     pub seats: SeatRegistry,
     pub projects: ProjectStore,
     pub identities: IdentityRegistry,
+    pub keys: ApiKeyRegistry,
     pub challenges: ChallengeBook,
     pub limiter: RateLimiter,
     pub store_cipher: Option<Arc<StoreCipher>>,
@@ -69,6 +73,7 @@ pub fn api_router(
         seats: SeatRegistry::new(&data_dir),
         projects: ProjectStore::new(&data_dir),
         identities: IdentityRegistry::new(&data_dir),
+        keys: ApiKeyRegistry::new(&data_dir),
         challenges: ChallengeBook::default(),
         limiter: RateLimiter::default(),
         store_cipher,
@@ -94,6 +99,15 @@ pub fn api_router(
             "/v1/projects/{id}/directory",
             get(projects_api::directory_handler),
         )
+        .route(
+            "/v1/projects/{id}/keys",
+            post(keys::mint_handler).get(keys::list_handler),
+        )
+        .route(
+            "/v1/projects/{id}/keys/{key_id}",
+            delete(keys::revoke_handler),
+        )
+        .route("/v1/projects/{id}/mcp", post(mcp::mcp_handler))
         // List and lookup responses are large JSON; gzip them when the
         // client asks for it.
         .route(

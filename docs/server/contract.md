@@ -208,3 +208,60 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   `refs`) and the traveling-id rule for kinded sends. Recorded in
   [`phase-02-identity-and-sync.md`](phase-02-identity-and-sync.md), the
   phase 02 delivery home.
+
+## Project MCP (1.2.0)
+
+Additive alongside the rooms contract and the project letter wire in
+[`phase-03-project-mailspace-hub.md`](phase-03-project-mailspace-hub.md).
+One Streamable HTTP MCP endpoint **per project**: the URL is the tenant,
+the Bearer is the caller.
+
+### `POST /v1/projects/{id}/mcp` — Streamable HTTP MCP (bearer)
+
+JSON-RPC 2.0. `Content-Type: application/json`. Response is
+`application/json` unless `Accept` is only `text/event-stream`, in which
+case the same JSON-RPC object is wrapped as one `event: message` SSE
+frame. Notifications (`notifications/*`) return `202` with an empty body.
+Supported protocol versions: `2024-11-05`, `2025-03-26`, `2025-11-25`.
+
+Auth: `Authorization: Bearer` — a live identity token **or** a live
+project API key. Both resolve to the minting / registered identity. A
+missing or bad bearer is `401 unauthorized`. An unknown project is
+`404 project_not_found`. Method errors are JSON-RPC (`-32601`, …), not
+HTTP 4xx.
+
+Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `overview` | — | Caller identity, open counts, ready handles, recent items |
+| `list` | `kind?` need\|task\|want\|mail\|memo, `status?` open\|done\|all, `limit?` | Summaries. Default: open work |
+| `show` | `handle` | One letter or memo |
+| `thread` | `handle`, `limit?` | Reply thread |
+| `send` | `kind`, `to`, `subject`, `body`, `depends_on?` | Server composes and mints the id; `From` is the caller |
+| `reply` | `handle`, `body` | Reply as the caller |
+| `done` | `handle`, `note?` | Event letter if the caller authored the item; else a report |
+| `reopen` | `handle`, `note?` | Same authority as `done` |
+| `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
+| `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
+
+Writes share the 30/min/identity send budget. Tool failures are
+`isError: true` with a text body, HTTP 200.
+
+### API keys
+
+Minting and revocation require an **identity token** (proof of
+possession), not another API key.
+
+- `POST /v1/projects/{id}/keys` `{label}` (1–64 chars) → `201`
+  `{key_id, key, label, created_by, created_at}`. The raw `key` is
+  returned once (`vivi_` + random). At most 32 live keys per project.
+- `GET /v1/projects/{id}/keys` (bearer) → `{keys: [{key_id, label,
+  created_by, created_at, revoked_at?}]}`. No secrets.
+- `DELETE /v1/projects/{id}/keys/{key_id}` (identity token of the
+  minting member) → `204`. Unknown or someone else's key is
+  `404 key_not_found`.
+
+Keys are stored as SHA-256 digests, 0600, next to the project. A revoked
+or unknown key is the same `401` as a bad identity token. A live key is
+accepted on every project bearer route, including the letter wire.

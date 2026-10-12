@@ -14,7 +14,10 @@ Projects (`/v1/projects`, vivi 11 `vivi sync`) are the other tenant: a
 project is one real vivi mailspace at `DATA_DIR/projects/<id>/.vivi/`.
 Members push and pull their letters as raw `.eml`, held byte for byte and in
 the clear (protect the volume), with a `transport.sqlite` index beside it for
-the sequence cursor, visibility and paging. See
+the sequence cursor, visibility and paging. Each project also exposes
+Streamable HTTP MCP at `POST /v1/projects/{id}/mcp` (identity token or a
+member-minted API key as Bearer) so a connector added by URL can work the
+mailspace without the vivi CLI. See
 [`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md).
 
 Rooms are unchanged in this release. They are to be redirected in a later
