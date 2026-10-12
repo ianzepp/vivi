@@ -18,6 +18,10 @@ Syncing needs `vivi-server` 1.0.0 or later.
   `mailspace.toml`. The first 8 characters are the domain of every address it
   mints (`role@3f9a1c7e.local`). Letters written under the old name domains
   still resolve.
+- **`vivi chat` is removed.** It shipped in 10.2.0. `vivi sync` is the
+  cross-checkout surface. A `[chat]` table in `mailspace.toml` is ignored, and
+  `vivi board` no longer ends with an unread-chat line. The sync key stays at
+  `.vivi/chat/identity.ed25519`, so names already registered keep working.
 - **`[pool]` is rejected.** A mailspace holds pools as `[pools.<name>]` tables,
   each written out in full. The error names the new form.
 - **A worker's `done` is a report.** Only the item's author, or a role of kind
@@ -116,8 +120,7 @@ letter whose From claims another mailspace is never uploaded: `sync push` exits
 non-zero and lists it, and `sync status` shows a `not uploaded` line. A push
 that hits the rate limit stops, says how many letters are left, exits non-zero,
 and resumes on the next run. `mail deliver` accepts remote recipients. `watch`
-wakes for letters that arrive by sync. A chat message the server will never
-accept is kept as rejected and does not block others.
+wakes for letters that arrive by sync.
 
 ## Pools
 
@@ -144,3 +147,6 @@ on the vivi skill.
 3. Rewrite a `[pool]` table as `[pools.<name>]`.
 4. Run `vivi graph audit` once per mailspace. `--repair` mints missing nodes
    and edges for work sent by older binaries.
+5. If you used `vivi chat` (10.2.0), move to `vivi sync`. Nothing under
+   `.vivi/chat/` needs to go: the key there is the sync key. The `[chat]`
+   table can be deleted; it is dropped the next time vivi rewrites the file.
