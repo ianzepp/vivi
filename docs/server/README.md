@@ -17,6 +17,10 @@ the clear (protect the volume), with a `transport.sqlite` index beside it for
 the sequence cursor, visibility and paging. See
 [`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md).
 
+Rooms are unchanged in this release. They are to be redirected in a later
+release to lightweight chat backed by a lightweight project, exposed through
+the server's MCP surface (decided item 17 in that document).
+
 ## Quickstart
 
 Requires Rust 1.93+ (toolchain pinned in `rust-toolchain.toml`).

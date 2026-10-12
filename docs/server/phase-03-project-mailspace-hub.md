@@ -208,19 +208,44 @@ who the tenant is, what travels, and where the truth lives.
 16. **Plain text on an encrypted volume; the index database answers
     queries (decided 2026-10-12, repo owner).** The server mailspace holds
     letters and indexes in the clear. Protection at rest is the encrypted
-    volume, not per-letter sealing; the server cipher still guards keys and
-    tokens. Sealed blobs can be layered on later if that becomes a
-    requirement. The design rule: search, listing, and filtering run
-    against the mailspace's indexed database, never by scanning `.eml`
+    volume, not per-letter sealing; the server cipher (`STORE_ENCRYPTION_KEY`)
+    is used only by rooms. The design rule: search, listing, and filtering
+    run against the mailspace's indexed database, never by scanning `.eml`
     files. The `.eml` is kept for byte-exact GET and hash verification and
-    is read only to serve a letter.
+    is read only to serve a letter. Sealing bodies later is possible but not
+    free: it needs a blob-codec hook in `vivi`'s Storage (ingest parses
+    metadata from the bytes it is given), it leaves subjects, addresses and
+    timestamps in the index in the clear, and it is incompatible with
+    body full-text search, whose index would itself be plaintext on disk.
+17. **Rooms are to be redirected to lightweight chat on a lightweight
+    project (direction decided 2026-10-12, repo owner; not built, rooms
+    unchanged today).** `vivi chat` is gone (vivi 11), and a chat command
+    line was not the useful part. The useful part is a fleeting shared
+    channel, exposed through the server MCP surface (item 15). It is to be
+    a project with a lighter admission mode and a lifetime, not a second
+    tenant model: chat is ordinary mail (item 2) on the same mailspace
+    store, transport index, and letter wire. A later release does this, and
+    until then the room API ships as it is. Open, to be settled when the
+    tool list is written:
+    - **Keyless participants.** An MCP client has no key, so a chat
+      identity is a name plus a server-minted bearer issued on presenting
+      the room id, not a signed challenge. This is a second auth path next
+      to key-bound admission; decide whether it is confined to chat
+      projects.
+    - **Chat visibility.** Mail is visible only to its sender and the
+      addressed prefix, and a keyless participant has no prefix. Chat needs
+      a member-visible rule like need/task/want have, probably a `chat`
+      kind (an older client files an unknown kind as plain mail).
+    - **Expiry.** A fleeting chat needs a TTL or an explicit close. That is
+      an exception to item 4 (append-only, the server is the truth) and
+      must be named, and it overlaps the open retention question.
 
 ## What carries over from phases 01 and 02
 
 | Piece | Why it survives |
 | --- | --- |
 | ED25519 challenge/sign, key-bound identity | Becomes registration of an identity name |
-| Sealed storage at rest and the boot key verifier | Unchanged |
+| Sealed storage at rest and the boot key verifier | Rooms only; projects hold plain letters (item 16) |
 | Traveling ids and presented-id ingest (P2-1, P2-2) | Exactly what "clients mint every id" needs |
 | `kind` headers, filing by kind, backlog nodes | The unit of sync is now the item itself |
 | Idempotent outbox, at-least-once delivery | Reusable for remote `vivi mail send` |
@@ -232,6 +257,9 @@ who the tenant is, what travels, and where the truth lives.
 ## What is replaced
 
 - The `/v1/rooms/*` API, room ids, seats, labels, and per-room cursors.
+  (Redirected, not yet removed: item 17 turns rooms into lightweight chat on
+  a lightweight project in a later release. Until then the room API ships
+  unchanged.)
 - The sidecar `messages.json` as the read path. The mailspace becomes the store
   (the deferred P2-8, now central).
 - Server-minted message ids (`m{cursor}`).

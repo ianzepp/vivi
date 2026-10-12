@@ -26,6 +26,10 @@ from, to, subject, handle and folder, as the base for an MCP surface.
 - **Dependency.** `vivi` is locked to the v11.0.0 tag as it now stands
   (`139d243`, which removes `vivi chat`); 1.0.0 had locked the commit before
   it. Adds `rusqlite` for the transport index (the version `vivi` uses).
+- **Rooms: unchanged, and to be redirected.** The room API ships as it was.
+  A later release redirects rooms to lightweight chat backed by a
+  lightweight project (decided item 17); there is no client for the room API
+  since `vivi chat` left vivi 11.
 - **Acceptance.** `scripts/project-sync-smoke.sh`: 84 of 84 legs pass
   against a local server. The script now mints the checkout key with
   `vivi sync status`, since `vivi chat` is gone in vivi 11.
