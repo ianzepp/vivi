@@ -41,6 +41,7 @@ mod merge;
 mod mermaid;
 mod pool_record;
 mod reply;
+mod report;
 mod rules;
 mod step;
 #[cfg(test)]

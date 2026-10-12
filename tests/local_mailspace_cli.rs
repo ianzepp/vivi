@@ -3431,7 +3431,8 @@ fn backlog_citizenship_mints_unlocks_and_never_promotes() {
     assert_eq!(node_readiness(&want), "blocked");
     assert_eq!(node_readiness(&dep), "ready");
 
-    let done = vivi(["need", "done", "--project", project_s, "--for", "cto", &dep]);
+    // The author accepts: an assignee's `done` is only a report.
+    let done = vivi(["need", "done", "--project", project_s, "--for", "ceo", &dep]);
     assert_success(&done);
 
     assert_eq!(node_readiness(&want), "ready");
@@ -3516,7 +3517,7 @@ fn task_depends_on_task_unlocks_via_graph() {
         "--project",
         project_s,
         "--for",
-        "cto",
+        "ceo",
         &first,
     ]);
     assert_success(&done);
@@ -3611,7 +3612,7 @@ fn need_bind_joins_completion_via_cli() {
         "--project",
         project_s,
         "--for",
-        "cto",
+        "ceo",
         &first,
     ]);
     assert_success(&done_one);
@@ -3623,7 +3624,7 @@ fn need_bind_joins_completion_via_cli() {
         "--project",
         project_s,
         "--for",
-        "cto",
+        "ceo",
         &second,
     ]);
     assert_success(&done_two);
@@ -3964,7 +3965,7 @@ fn graph_connect_adds_post_hoc_prerequisite() {
         "task",
         "done",
         "--for",
-        "cto",
+        "ceo",
         &prereq,
         "--project",
         project_s,
@@ -4026,7 +4027,7 @@ fn need_bind_join_settles_need_item_and_lists_units() {
         "task",
         "done",
         "--for",
-        "cto",
+        "ceo",
         &unit,
         "--project",
         project_s,

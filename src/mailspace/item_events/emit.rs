@@ -152,7 +152,8 @@ impl Mailspace {
     /// The row an identity acts on when it names work it does not hold: any
     /// row of the item here, when the move closes or reopens it and the
     /// identity may close it (its author or holder of the sent copy, or a
-    /// mind). `Ok(None)` otherwise; the caller reports who holds the row.
+    /// mind); also a mind naming a row already reported in `done`, which it
+    /// accepts. `Ok(None)` otherwise; the caller reports who holds the row.
     pub(in crate::mailspace) fn row_for_item_actor(
         &self,
         storage: &Storage,
@@ -173,7 +174,16 @@ impl Mailspace {
             return Ok(None);
         };
         if !self.may_close(&item, identity) {
-            return Ok(None);
+            // A mind accepts a report on another mailspace's item: the row
+            // already in `done` is the one it names, and its close is a local
+            // report that is still this mailspace's acceptance.
+            let accepts = row.local_role == "done"
+                && role == "done"
+                && self.identity_is_mind(identity)
+                && self.item_head(storage, &item)? != Some(ItemEventKind::Done);
+            if !accepts {
+                return Ok(None);
+            }
         }
         if row.local_role == "done"
             && role == "done"

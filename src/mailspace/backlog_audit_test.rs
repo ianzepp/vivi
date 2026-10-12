@@ -1,5 +1,5 @@
 use super::*;
-use crate::mailspace::SendRequest;
+use crate::mailspace::{RoleUpdate, SendRequest};
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
@@ -104,7 +104,18 @@ fn audit_repair_mints_done_items_as_done_nodes() {
 
 #[test]
 fn audit_flags_and_repairs_state_drift() {
-    let (mailspace, _tmp) = roster();
+    let (mut mailspace, _tmp) = roster();
+    // A mind's `done` is an acceptance, so a mind's done folder under an open
+    // node cannot be a report: it is drift.
+    mailspace
+        .set_role(
+            "cto",
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
     let task = send_item(&mailspace, "tasks", "task", "drifts");
 
     // Move the message behind the graph's back: folder done, node open.
@@ -148,7 +159,7 @@ fn audit_repair_settles_need_mailbox_when_join_fired_without_settle() {
     // mailbox settle — the exact state pre-fix joins left behind: need node
     // done via the join, need item still in the needs folder.
     mailspace
-        .move_item("cto", &unit, "done", None, "task done", None)
+        .move_item("ceo", &unit, "done", None, "task done", None)
         .unwrap();
     let mut storage = mailspace.storage().unwrap();
     let need_id = storage.resolve_message_token(&need).unwrap();

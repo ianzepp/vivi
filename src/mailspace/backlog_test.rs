@@ -94,7 +94,7 @@ fn done_dependency_mints_done_node_and_unlocks() {
     let (mailspace, _tmp) = roster();
     let dep = send_item(&mailspace, "needs", Some("need"), "old fix", Vec::new());
     mailspace
-        .move_item("cto", &dep, "done", None, "need done", None)
+        .move_item("ceo", &dep, "done", None, "need done", None)
         .unwrap();
 
     mailspace
@@ -135,13 +135,13 @@ fn task_send_mints_node_and_task_dep_unlocks() {
     assert_eq!(node(&mailspace, &second).readiness, "blocked");
 
     mailspace
-        .move_item("cto", &first, "done", None, "task done", None)
+        .move_item("ceo", &first, "done", None, "task done", None)
         .unwrap();
     assert_eq!(node(&mailspace, &first).state, "done");
     assert_eq!(node(&mailspace, &second).readiness, "ready");
 
     mailspace
-        .move_item("cto", &first, "tasks", None, "task reopen", None)
+        .move_item("ceo", &first, "tasks", None, "task reopen", None)
         .unwrap();
     assert_eq!(node(&mailspace, &first).state, "open");
     assert_eq!(node(&mailspace, &second).readiness, "blocked");
@@ -196,12 +196,12 @@ fn lifecycle_moves_sync_node_state() {
         .unwrap();
 
     mailspace
-        .move_item("cto", &need, "done", None, "need done", None)
+        .move_item("ceo", &need, "done", None, "need done", None)
         .unwrap();
     assert_eq!(node(&mailspace, &need).state, "done");
 
     mailspace
-        .move_item("cto", &need, "needs", None, "need reopen", None)
+        .move_item("ceo", &need, "needs", None, "need reopen", None)
         .unwrap();
     assert_eq!(node(&mailspace, &need).state, "open");
 }
@@ -353,10 +353,11 @@ fn join_settles_need_mailbox_and_reopen_restores() {
         .unwrap();
     assert_eq!(role_of(&mailspace, &need), "needs");
 
-    // Lifecycle settle by the seat completes the unit; the join must settle
-    // the need's mailbox copy too, not only its graph node.
+    // The author accepting the unit completes it (an assignee's `done` is
+    // only a report); the join must settle the need's mailbox copy too, not
+    // only its graph node.
     mailspace
-        .move_item("cto", &unit, "done", None, "task done", None)
+        .move_item("ceo", &unit, "done", None, "task done", None)
         .unwrap();
     assert_eq!(node(&mailspace, &need).state, "done");
     assert_eq!(
@@ -367,7 +368,7 @@ fn join_settles_need_mailbox_and_reopen_restores() {
 
     // Reopening the unit invalidates the join: node AND mailbox re-open.
     mailspace
-        .move_item("cto", &unit, "tasks", None, "task reopen", None)
+        .move_item("ceo", &unit, "tasks", None, "task reopen", None)
         .unwrap();
     assert_eq!(node(&mailspace, &need).state, "open");
     assert_eq!(role_of(&mailspace, &need), "needs");
@@ -398,7 +399,7 @@ fn join_settle_moves_every_recipient_copy() {
         .unwrap();
 
     mailspace
-        .move_item("cto", &unit, "done", None, "task done", None)
+        .move_item("ceo", &unit, "done", None, "task done", None)
         .unwrap();
     for copy in &copies {
         assert_eq!(role_of(&mailspace, copy), "done", "copy {copy} settled");

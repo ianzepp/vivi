@@ -725,7 +725,7 @@ impl Mailspace {
         }
         let shown = storage.display_handle(&before.message_id)?;
         if event.is_none() {
-            self.sync_backlog_node(&before.local_role, &role, &shown)?;
+            self.sync_backlog_after_move(&storage, &identity, &before, &role, &shown)?;
         }
         Ok(MoveOutcome {
             handle: shown,

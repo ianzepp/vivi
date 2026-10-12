@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::Mailspace;
 use super::graph::GraphNodeView;
-use super::holding::{Holding, READINESS_AWAITING};
+use super::holding::{Holding, READINESS_AWAITING, READINESS_REPORTED};
 use crate::error::VivariumError;
 use crate::storage::BACKLOG_GRAPH_CODE;
 
@@ -59,13 +59,19 @@ impl Mailspace {
         let show = self.graph_show(BACKLOG_GRAPH_CODE)?;
         let mut dispatches = Vec::new();
         let mut exceptions = Vec::new();
-        let frontier = show
-            .nodes
-            .iter()
-            .filter(|node| matches!(node.readiness.as_str(), "ready" | READINESS_AWAITING));
+        let frontier = show.nodes.iter().filter(|node| {
+            matches!(
+                node.readiness.as_str(),
+                "ready" | READINESS_AWAITING | READINESS_REPORTED
+            )
+        });
         for node in frontier {
             if node.readiness == READINESS_AWAITING {
                 exceptions.push(self.awaiting_remote(&storage, node)?);
+                continue;
+            }
+            if node.readiness == READINESS_REPORTED {
+                exceptions.push(self.awaiting_acceptance(&storage, node)?);
                 continue;
             }
             match adjudicate_node(&storage, &graph.handle, node)? {
@@ -146,6 +152,11 @@ impl Mailspace {
             return Ok(manifest);
         }
         let display = self.storage()?.display_handle(&message_id)?;
+        // A reported item is not accepted by apply: a hand's `done` is a
+        // report, and only its author or a mind completes the work.
+        if self.apply_awaits_acceptance(&display, &manifest.exceptions)? {
+            return Ok(manifest);
+        }
         // Screen every settled item — the lifecycle hook usually completed
         // the node at settle time, so the screen must not depend on apply
         // being the completer. Shadow: the corpus records the answers; only

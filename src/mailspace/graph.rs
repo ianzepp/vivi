@@ -158,6 +158,9 @@ pub struct GraphFrontier {
     /// Open work this mailspace handed to another one: tracked here, never
     /// dispatched here.
     pub awaiting: Vec<String>,
+    /// Work a role reported done that its author or a mind has not accepted:
+    /// open or active, with its dependents still blocked.
+    pub reported: Vec<String>,
     pub gates: Vec<GraphFrontierGate>,
 }
 
@@ -226,6 +229,12 @@ pub fn frontier_from_show(show: &GraphShow) -> GraphFrontier {
             .nodes
             .iter()
             .filter(|n| n.readiness == super::holding::READINESS_AWAITING)
+            .map(|n| n.source_id.clone())
+            .collect(),
+        reported: show
+            .nodes
+            .iter()
+            .filter(|n| n.readiness == super::holding::READINESS_REPORTED)
             .map(|n| n.source_id.clone())
             .collect(),
     }
@@ -359,11 +368,12 @@ pub fn print_frontier(
     println!("  handle   {}", frontier.handle);
     println!("  revision {}", frontier.revision);
     println!(
-        "  counts   ready={} blocked={} active={} awaiting={} gates={}",
+        "  counts   ready={} blocked={} active={} awaiting={} reported={} gates={}",
         frontier.ready.len(),
         frontier.blocked.len(),
         frontier.active.len(),
         frontier.awaiting.len(),
+        frontier.reported.len(),
         frontier.gates.len()
     );
     println!(
@@ -381,6 +391,10 @@ pub fn print_frontier(
     println!(
         "  awaiting {}",
         frontier.awaiting.join(", ").if_empty("(none)")
+    );
+    println!(
+        "  reported {}",
+        frontier.reported.join(", ").if_empty("(none)")
     );
     println!(
         "  gates    {}",

@@ -269,7 +269,14 @@ fn audit_item(
         return Ok(());
     };
     audit_kind(mailspace, graph_handle, &node, item, repair, findings)?;
-    audit_state(mailspace, graph_handle, &node, item, repair, findings)?;
+    // A `done` folder under an open node is a report awaiting its
+    // acceptance, not drift: the acceptor's `done` completes the node.
+    let reported = item.folder_done
+        && matches!(node.state.as_str(), "open" | "active")
+        && mailspace.audit_sees_report(storage, &item.content_id)?;
+    if !reported {
+        audit_state(mailspace, graph_handle, &node, item, repair, findings)?;
+    }
     Ok(())
 }
 
@@ -311,7 +318,9 @@ fn audit_foreign(
 fn repair_mint(mailspace: &Mailspace, item: &AuditItem) -> Result<(), VivariumError> {
     let letter = mailspace.storage()?.read_message(&item.message_id)?;
     mailspace.backlog_attach_letter(&item.kind, &item.message_id, &item.subject, &letter)?;
-    if item.folder_done {
+    let reported =
+        item.folder_done && mailspace.audit_sees_report(&mailspace.storage()?, &item.content_id)?;
+    if item.folder_done && !reported {
         mailspace.backlog_complete_item_via(&item.handle, "via=repair")?;
     }
     let arrived = (item.message_id.clone(), item.content_id.clone());

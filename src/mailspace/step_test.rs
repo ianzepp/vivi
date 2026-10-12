@@ -228,7 +228,7 @@ fn apply_completes_settled_task_and_records_decision() {
         "done_when: lands",
     );
     mailspace
-        .move_item("cto", &task, "done", None, "task done", None)
+        .move_item("ceo", &task, "done", None, "task done", None)
         .unwrap();
 
     // Rewind the node to open to model an out-of-band settle the hook
@@ -274,7 +274,7 @@ fn lifecycle_completion_records_decision_event() {
     let (mailspace, _tmp) = roster();
     let task = send_item(&mailspace, "tasks", "task", "unit work", "done_when: lands");
     mailspace
-        .move_item("cto", &task, "done", None, "task done", None)
+        .move_item("ceo", &task, "done", None, "task done", None)
         .unwrap();
     let storage = mailspace.storage().unwrap();
     let events = storage.list_work_graph_events_after(0).unwrap();
@@ -332,7 +332,7 @@ fn settled_rewound_task(mailspace: &Mailspace) -> String {
         "done_when: tests pass\ndone_when: lint clean\nwrite_scope: src/x.rs",
     );
     mailspace
-        .move_item("cto", &task, "done", None, "task done", None)
+        .move_item("ceo", &task, "done", None, "task done", None)
         .unwrap();
     let storage = mailspace.storage().unwrap();
     let graph = storage.work_graph_by_code("backlog").unwrap().unwrap();

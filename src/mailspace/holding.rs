@@ -26,6 +26,9 @@ use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView};
 
 /// Readiness of an open node that is the sender's copy of remote work.
 pub(crate) const READINESS_AWAITING: &str = "awaiting";
+/// Readiness of an open or active node whose work a role reported done and
+/// nobody who may accept it has accepted.
+pub(crate) const READINESS_REPORTED: &str = "reported";
 /// Readiness of an open node held for another mailspace's role.
 pub(crate) const READINESS_FOREIGN: &str = "foreign";
 /// Readiness of an open node held for a role this mailspace does not have.
@@ -170,23 +173,37 @@ impl Mailspace {
         storage: &Storage,
         source_id: &str,
     ) -> Result<Holding, VivariumError> {
-        let Ok(message_id) = storage.resolve_message_token(source_id) else {
-            return Ok(Holding::Local);
-        };
-        Ok(storage
-            .message_by_id(&message_id)?
-            .map_or(Holding::Local, |view| self.holding_of(&view)))
+        Ok(node_row(storage, source_id)?.map_or(Holding::Local, |view| self.holding_of(&view)))
     }
 
-    /// Mark the open nodes this mailspace does not dispatch: foreign ones
-    /// read `foreign`; a sent copy that would be ready reads `awaiting`.
+    /// Mark the nodes this mailspace does not dispatch: foreign ones read
+    /// `foreign`; a sent copy that would be ready reads `awaiting`. Work a
+    /// role reported done and nobody has accepted reads `reported`, open or
+    /// active alike.
     pub(super) fn mark_holdings(
         &self,
         storage: &Storage,
         nodes: &mut [GraphNodeView],
     ) -> Result<(), VivariumError> {
-        for node in nodes.iter_mut().filter(|node| node.state == "open") {
-            match self.node_holding(storage, &node.source_id)? {
+        for node in nodes
+            .iter_mut()
+            .filter(|node| matches!(node.state.as_str(), "open" | "active"))
+        {
+            let row = node_row(storage, &node.source_id)?;
+            let holding = row
+                .as_ref()
+                .map_or(Holding::Local, |view| self.holding_of(view));
+            if let Some(row) = &row
+                && matches!(holding, Holding::Local | Holding::Sent(_))
+                && self.report_of(storage, row)?.is_some()
+            {
+                node.readiness = READINESS_REPORTED.into();
+                continue;
+            }
+            if node.state != "open" {
+                continue;
+            }
+            match holding {
                 Holding::Local => {}
                 Holding::Foreign(_) => node.readiness = READINESS_FOREIGN.into(),
                 Holding::Unowned(_) => node.readiness = READINESS_UNOWNED.into(),
@@ -270,6 +287,17 @@ impl Mailspace {
         }
         Ok(ids)
     }
+}
+
+/// The row a node's source id names, when it still resolves.
+pub(super) fn node_row(
+    storage: &Storage,
+    source_id: &str,
+) -> Result<Option<StoredMessageView>, VivariumError> {
+    let Ok(message_id) = storage.resolve_message_token(source_id) else {
+        return Ok(None);
+    };
+    storage.message_by_id(&message_id)
 }
 
 /// The nodes of `nodes` whose readiness is `readiness`, in node order.
