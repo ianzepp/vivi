@@ -437,11 +437,17 @@ in the design conversation apply:
   decided: the raw `.eml`, decided item 10. HTTP is the working assumption.)
 - Migration of the rooms and messages already on the staging and production
   services, and how long the rooms API stays alongside the new one.
-- Whether any project on staging or production holds letters worth a replay
-  into the mailspace store, or can be recreated.
 - The MCP tool list of the first cut and its role permissions (item 15).
-- Which of the vivi crate's filing and ingest functions the server can call
-  as they are, and which need to be made public in `vivi`.
+- Where the transport fields live in the server mailspace. Verbatim ingest
+  is public API in `vivi` (`Storage::ingest_if_absent`, `ingest_message`,
+  and `Mailspace::deliver_raw`), but the client's filing (`sync::filer`) is
+  `pub(crate)` and tied to client pull types. The server holds every
+  member's letters, so it needs one row per letter and queries by
+  recipient prefix and kind, not per-role delivery. `sequence` maps onto
+  the existing `remote_bindings` uid; `appended_at` and `from_prefix` have
+  no column and need a decision (an ingest event, a table beside the
+  mailspace, or a small public addition to `vivi`). A spike settles this
+  before the store is built.
 
 ## Effect on pending work
 
@@ -774,10 +780,9 @@ fields (`sequence`, `appended_at`, `from_prefix`, the envelope `to`, and
 `content_sha256`) are stored beside each letter and are never recomputed.
 The wire in this document does not change.
 
-**Migration.** Existing projects hold every letter's bytes and an index
-carrying the transport fields, so they can be replayed into a mailspace in
-sequence order with those fields preserved. Whether any production data
-needs this, or projects can be recreated, is open below.
+**Migration (decided 2026-10-12): none.** Nothing on staging or production
+is worth keeping. The switch is a clean break: projects created on the
+sealed-blob store are recreated, and no replay is written.
 
 ### Token renewal
 
