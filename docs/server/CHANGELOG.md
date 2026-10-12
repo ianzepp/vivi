@@ -8,6 +8,9 @@ byte, never parsed, with per-member visibility, paged history, and lookup by
 handle. The rooms contract from 0.1.0 is unchanged, so vivi 10.2 chat clients
 keep working. The project wire needs the vivi 11 client (`vivi sync`).
 
+Production is served at `https://vivi.fleeting.chat`; the Railway default
+domain still answers.
+
 The server builds against vivi 11.0.0, pinned by tag; it followed `main`
 before. Acceptance: `scripts/project-sync-smoke.sh` (84 legs against a local
 server and two synced checkouts) and `scripts/two-checkout-smoke.sh` (rooms).

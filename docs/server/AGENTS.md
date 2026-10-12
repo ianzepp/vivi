@@ -53,9 +53,9 @@ Two Railway services, one per branch:
   SERVER_URL=https://vivi-server-main-production.up.railway.app scripts/two-checkout-smoke.sh
   ```
 
-- **Production** deploys `release` at
-  `https://vivi-server-production.up.railway.app`. A push to `main` does not
-  redeploy it.
+- **Production** deploys `release` at `https://vivi.fleeting.chat` (the
+  Railway default, `https://vivi-server-production.up.railway.app`, still
+  answers). A push to `main` does not redeploy it.
 
 Advancing `release` is a production deploy and is **not** covered by the
 standing authorization above: do it only when the repo owner asks. When
@@ -75,7 +75,7 @@ both services:
 | Service | ID | Deploys | URL |
 | --- | --- | --- | --- |
 | `vivi-server-main` (staging) | `0a95c904-f75c-475c-b9ab-564277307bce` | `main` | `https://vivi-server-main-production.up.railway.app` |
-| `vivi-server` (production) | `1a754647-ef11-42a7-a5ef-7ec0b7ba3ed6` | `release` | `https://vivi-server-production.up.railway.app` |
+| `vivi-server` (production) | `1a754647-ef11-42a7-a5ef-7ec0b7ba3ed6` | `release` | `https://vivi.fleeting.chat` |
 
 The Railway connector's grant is account-wide: it sees every project in every
 workspace the owner has, and both services share one environment, so nothing in

@@ -62,7 +62,7 @@ header.
 
 - Two Railway services, one per branch:
   - **Production** deploys the `release` branch at
-    <https://vivi-server-production.up.railway.app>. A push to `main` does
+    <https://vivi.fleeting.chat>. A push to `main` does
     not redeploy it. To release, fast-forward `release` to a `main` commit
     that has passed `cargo test` and the smoke
     (`git push origin <main-sha>:release`), then run the smoke against
@@ -79,8 +79,8 @@ header.
   (`https://github.com/ianzepp/vivi`). The `.cargo` path patch used for
   local development is local-only and uncommitted; a build whose lockfile
   resolved to the path patch will fail on Railway.
-- Deployed at <https://vivi-server-production.up.railway.app> (default
-  domain; custom hostname open).
+- Deployed at <https://vivi.fleeting.chat>. The Railway default domain,
+  `https://vivi-server-production.up.railway.app`, still answers.
 
 ## Contract
 
