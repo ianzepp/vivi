@@ -1291,6 +1291,17 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
   scripts means that directory (`WORK`). The build directory is a plain
   directory that persists: no memory disk, nothing packed or restored; a seeded
   slot keeps its warm build, and the runner's `git clean` spares `build_dir`.
+- **In-memory slots.** The root may sit on a memory filesystem the host
+  already mounts: `/dev/shm` (tmpfs, present on mainstream Linux by default,
+  usually half the RAM) makes every slot fully in-memory with no extra
+  setup — Vivi mounts nothing, the filesystem must already exist, and
+  `doctor` reports free space on it. `destroy` unlinks at once (the pages
+  return to RAM immediately); a reboot or unmount clears the whole root,
+  after which the slots are re-created. Collect finished jobs promptly: an
+  uncollected result leaves no disk residue. Size the mount from a fresh
+  seed, not from a long-lived workspace — a clean checkout plus build is
+  often several times smaller than a developer's accumulated build
+  directory.
 - **Start/stop.** Start launches the boot script detached (`setsid`, a pid
   file), so it outlives the SSH session. A slot "runs" while that process is
   alive and carries `VIVI_SLOT_ROOT=<slot dir>` in its environment (a reused pid
@@ -1306,8 +1317,11 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
   the slot runs (no restart).
 - **Harness environment.** The `harness.env` names take their values from
   the remote login user's environment at job time (a login shell: put
-  `export NAME=...` in `~/.profile`). Values never pass through Vivi or the
-  mailspace. `doctor`, `create` and `dispatch` name the ones unset on the host.
+  `export NAME=...` in `~/.profile`, or in `~/.bash_profile` when the host
+  has one — bash reads it first and skips `~/.profile`; `doctor` runs a real
+  login shell, so it proves whichever file you chose). Values never pass
+  through Vivi or the mailspace. `doctor`, `create` and `dispatch` name the
+  ones unset on the host.
 - **Destroy** removes the slot directory and is guarded on the host: only
   `<mailspace>/<pool>/slot-<n>`, only a plain directory inside the root, only
   with Vivi's own marks naming the pool **and** the mailspace, never with an empty or `/` root; anything else is
