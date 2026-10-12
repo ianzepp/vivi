@@ -392,7 +392,8 @@ base, pid, token = sys.argv[1:4]
 since, pages, ids, more_seen = 0, 0, [], []
 while True:
     req = urllib.request.Request(f"{base}/v1/projects/{pid}/items?since={since}&limit=2",
-                                 headers={"authorization": f"Bearer {token}"})
+                                 headers={"authorization": f"Bearer {token}",
+                                          "user-agent": "vivi-project-sync-smoke"})
     d = json.load(urllib.request.urlopen(req, timeout=15))
     pages += 1
     assert len(d["records"]) <= 2, "page larger than limit"
