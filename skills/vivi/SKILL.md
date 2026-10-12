@@ -945,7 +945,12 @@ facts    = ["gpu-query --name --driver --memory --csv", "uname -srm"]
   `create` and `dispatch` list the app's secret NAMES and warn, naming the
   harness `env` entries with no secret and the command shape
   `fly secrets set -a <app> NAME=<value>`. Vivi never reads or sets a secret
-  value; a name the image itself provides can be ignored.
+  value; a name the image itself provides can be ignored. Setting one on a
+  machine-only app: `fly secrets set` wants `NAME=VALUE` arguments, and
+  staging may then print an error about finding an image or a current
+  release (flyctl offering a Launch deployment the app does not use) — the
+  secret has landed anyway; `doctor` confirms. Piping `NAME=VALUE` lines to
+  `fly secrets import -a <app>` keeps values off the command line.
 - `destroy` requires `--yes` and only touches this pool's slots.
 - A slot can only fetch what the remote repository already has: push the base
   (the commit or branch passed as `from`) before dispatching.
@@ -1108,6 +1113,14 @@ The order that reaches a working pool with the least rework. Everything here
 is read-only or free except `doctor --test`, which spends only on Fly
 (billable machines for a few minutes) and RunPod (which refuses without
 `--allow-spend`).
+
+On Fly the order shifts by one step: the app is a Fly-side object, `doctor`
+fails while it does not exist, and only `create` makes it — so the step 1
+self-test cannot run first. Start with `vivi pool create --pool <name>
+--slots 1` (it makes the app and proves the provider with one machine), set
+the app secrets, then `doctor`, `doctor --test`, and `scale` to the full
+size. `scale` from an empty pool cannot make the app (it fails on the
+machine list first).
 
 1. Configure the pool with **provider settings only** — no `repo`, `[github]`,
    `[harness]`, `[committer]`. That much is valid: `status`, `doctor` and
