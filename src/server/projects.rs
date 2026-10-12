@@ -1,27 +1,34 @@
-//! Phase 03 project store (docs/phase-03-project-mailspace-hub.md, "Letter
-//! wire"): the project, not the room, is the tenant, and it holds an
-//! append-only log of sealed letters under `DATA_DIR/projects/<project_id>/`.
+//! Phase 03 project store (docs/phase-03-project-mailspace-hub.md, decided
+//! items 14 and 16): the project, not the room, is the tenant, and it is a
+//! real vivi mailspace under `DATA_DIR/projects/<project_id>/.vivi/`.
 //!
-//! A letter is the origin's exact `.eml` bytes. The server never parses,
-//! renders, or rewrites one (the single exception is mail addressed to
-//! `postmaster`, whose body carries a vouch). Each letter is sealed whole
-//! with the server cipher into `letters/<sha256>.sealed`; `items.json` holds
-//! the envelope rows (`message_id`, `sequence`, `content_sha256`, `from`,
-//! `to`, `kind`). The blob is written before its row, so a crash between the
-//! two leaves an orphan blob and no row, and a replay converges. Sequences
+//! A letter is the origin's exact `.eml` bytes. The server never rewrites
+//! one (the single exception is mail addressed to `postmaster`, whose body
+//! carries a vouch). Each letter is ingested verbatim into the project's
+//! mailspace under its presented id, so the mailspace index answers from, to,
+//! subject and handle without reading an `.eml`. The transport record the
+//! wire needs (`sequence`, `appended_at`, the sender's name and prefix, the
+//! envelope recipients) lives in `transport.sqlite` beside the mailspace,
+//! with indexed columns, so a list is one indexed query and never a scan.
+//! The mailspace write comes first, then the transport row; both are
+//! idempotent by id, so a crash between them converges on replay. Sequences
 //! are transport-only cursors; appends are serialized under a mutex.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Timelike, Utc};
+use rusqlite::types::Value;
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use vivi::storage::is_traveling_id;
+use vivi::mailspace::Mailspace;
+use vivi::storage::{IngestOutcome, MessageIngestRequest, Storage, is_traveling_id};
 
 use crate::admissions::{AdmissionError, AdmissionRegistry};
-use crate::crypto::{StoreCipher, harden_tree};
+use crate::crypto::harden_tree;
 use crate::identities::{IdentityRecord, MAILSPACE_PREFIX_LEN};
 use crate::ids::{mint_room_id, normalize_room_id};
 use crate::project_wake::ProjectWake;
@@ -30,11 +37,37 @@ use crate::safety::body_over_cap;
 /// Reserved administrative addressee (phase-03 item 9); a vouch travels as
 /// mail addressed to it.
 const POSTMASTER: &str = "postmaster";
-/// Envelope index beside `project.json`: sequence counter plus one row per
-/// letter (metadata only, no letter bytes).
-const INDEX_FILE: &str = "items.json";
-/// Directory of sealed letters, one `<content_sha256>.sealed` file each.
-const LETTERS_DIR: &str = "letters";
+/// Transport index beside `project.json`: one row per letter with the
+/// sequence, sender, envelope recipients, kind, and append stamp.
+const TRANSPORT_FILE: &str = "transport.sqlite";
+/// The mailspace directory inside a project directory, as for a room.
+const MAILSPACE_DIR: &str = ".vivi";
+
+const TRANSPORT_SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS items (
+      sequence INTEGER PRIMARY KEY,
+      message_id TEXT NOT NULL UNIQUE,
+      handle TEXT NOT NULL,
+      content_sha256 TEXT NOT NULL,
+      byte_size INTEGER NOT NULL,
+      from_name TEXT NOT NULL,
+      from_prefix TEXT,
+      to_raw TEXT,
+      kind TEXT,
+      appended_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS items_handle ON items(handle);
+    CREATE INDEX IF NOT EXISTS items_sender_content ON items(from_name, content_sha256);
+    CREATE INDEX IF NOT EXISTS items_appended ON items(appended_at);
+    CREATE TABLE IF NOT EXISTS recipients (
+      sequence INTEGER NOT NULL REFERENCES items(sequence),
+      address TEXT NOT NULL,
+      prefix TEXT,
+      PRIMARY KEY (sequence, address)
+    );
+    CREATE INDEX IF NOT EXISTS recipients_prefix ON recipients(prefix, sequence);
+    CREATE INDEX IF NOT EXISTS recipients_address ON recipients(address, sequence);
+";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProjectError {
@@ -126,14 +159,6 @@ fn domain_prefix(domain: &str) -> Option<&str> {
     .then_some(head)
 }
 
-/// True when any recipient address in `to` names `prefix`'s mailspace.
-fn names_prefix(to: &str, prefix: &str) -> bool {
-    recipients(to)
-        .filter_map(|address| address.split_once('@'))
-        .filter_map(|(_, domain)| domain_prefix(domain))
-        .any(|named| named.eq_ignore_ascii_case(prefix))
-}
-
 /// Who is reading: the authenticated identity name and the mailspace prefix
 /// bound to it at registration (none for a legacy identity).
 #[derive(Debug, Clone, Copy)]
@@ -208,6 +233,17 @@ impl AppendItem {
             .as_deref()
             .is_some_and(|to| to.eq_ignore_ascii_case(POSTMASTER))
     }
+
+    /// The mailspace folder this letter files under: the work folder for
+    /// need/task/want, `inbox` for mail (as the client files a pulled letter).
+    fn local_role(&self) -> &'static str {
+        match self.kind.as_deref() {
+            Some("need") => "needs",
+            Some("task") => "tasks",
+            Some("want") => "wants",
+            _ => "inbox",
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -236,9 +272,8 @@ pub struct ProjectRecord {
     pub to: Option<String>,
     pub kind: Option<String>,
     pub content_sha256: String,
-    /// Server clock at append, RFC 3339 UTC to the second; `None` for a row
-    /// written before the stamp existed.
-    pub appended_at: Option<String>,
+    /// Server clock at append, RFC 3339 UTC to the second.
+    pub appended_at: String,
     /// The exact bytes that were appended.
     pub raw_eml: Vec<u8>,
 }
@@ -334,28 +369,44 @@ impl ListQuery {
         Ok(query)
     }
 
-    /// True when the row passes every filter (visibility is separate).
-    fn matches(&self, row: &StoredRow) -> bool {
-        if let Some(kinds) = &self.kinds
-            && !kinds.iter().any(|k| k.as_deref() == row.kind.as_deref())
-        {
-            return false;
-        }
-        if let Some(after) = &self.after
-            && !row
-                .appended_at
-                .as_deref()
-                .is_some_and(|at| at >= after.as_str())
-        {
-            return false;
-        }
-        match (&self.to, row.to.as_deref()) {
-            (None, _) => true,
-            (Some(_), None) => false,
-            (Some(ToFilter::Address(wanted)), Some(to)) => {
-                recipients(to).any(|address| address.eq_ignore_ascii_case(wanted))
+    /// Append this query's narrowing filters to a WHERE clause list, each
+    /// with its bound parameters in order.
+    fn add_filters(&self, clauses: &mut Vec<String>, params: &mut Vec<Value>) {
+        if let Some(kinds) = &self.kinds {
+            let named: Vec<&str> = kinds.iter().flatten().map(String::as_str).collect();
+            let mut parts = Vec::new();
+            if kinds.iter().any(Option::is_none) {
+                parts.push("i.kind IS NULL".to_owned());
             }
-            (Some(ToFilter::Prefix(prefix)), Some(to)) => names_prefix(to, prefix),
+            if !named.is_empty() {
+                let marks = vec!["?"; named.len()].join(", ");
+                parts.push(format!("i.kind IN ({marks})"));
+                params.extend(named.iter().map(|k| Value::Text((*k).to_owned())));
+            }
+            clauses.push(format!("({})", parts.join(" OR ")));
+        }
+        if let Some(after) = &self.after {
+            clauses.push("i.appended_at >= ?".to_owned());
+            params.push(Value::Text(after.clone()));
+        }
+        match &self.to {
+            None => {}
+            Some(ToFilter::Address(address)) => {
+                clauses.push(
+                    "EXISTS (SELECT 1 FROM recipients r WHERE r.sequence = i.sequence \
+                     AND r.address = ?)"
+                        .to_owned(),
+                );
+                params.push(Value::Text(address.clone()));
+            }
+            Some(ToFilter::Prefix(prefix)) => {
+                clauses.push(
+                    "EXISTS (SELECT 1 FROM recipients r WHERE r.sequence = i.sequence \
+                     AND r.prefix = ?)"
+                        .to_owned(),
+                );
+                params.push(Value::Text(prefix.clone()));
+            }
         }
     }
 }
@@ -408,30 +459,271 @@ pub fn monotone_stamp(previous: Option<&str>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// One envelope row of the index.
-#[derive(Debug, Serialize, Deserialize)]
-struct StoredRow {
-    message_id: String,
+/// One row of the transport index.
+struct Row {
     sequence: u64,
-    content_sha256: String,
+    message_id: String,
     from: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     from_prefix: Option<String>,
     to: Option<String>,
     kind: Option<String>,
-    /// Absent on rows written before append time was stamped.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    appended_at: Option<String>,
+    content_sha256: String,
+    byte_size: u64,
+    appended_at: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct ItemIndex {
-    records: Vec<StoredRow>,
-    next_sequence: u64,
+/// The `items` columns [`Row`] reads, in order.
+const COLUMNS: &str = "i.sequence, i.message_id, i.from_name, i.from_prefix, i.to_raw, i.kind, \
+                       i.content_sha256, i.byte_size, i.appended_at";
+
+fn row_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
+    let sequence: i64 = row.get(0)?;
+    let byte_size: i64 = row.get(7)?;
+    Ok(Row {
+        sequence: u64::try_from(sequence).unwrap_or(0),
+        message_id: row.get(1)?,
+        from: row.get(2)?,
+        from_prefix: row.get(3)?,
+        to: row.get(4)?,
+        kind: row.get(5)?,
+        content_sha256: row.get(6)?,
+        byte_size: u64::try_from(byte_size).unwrap_or(0),
+        appended_at: row.get(8)?,
+    })
+}
+
+/// Scoped-read visibility (decided items 7 and 11 plus the governance
+/// carve-out), decided from the transport row alone: work items and mail
+/// addressed to postmaster are member-visible; every other letter only to
+/// its sender (by name) or to the member whose registered prefix is named by
+/// a recipient address. Pushes the clause's parameters in order.
+fn visible_clause(viewer: &Viewer<'_>, params: &mut Vec<Value>) -> String {
+    let mut clause =
+        String::from("(i.kind IS NOT NULL OR i.from_name = ? OR lower(i.to_raw) = 'postmaster'");
+    params.push(Value::Text(viewer.name.to_owned()));
+    if let Some(prefix) = viewer.prefix {
+        clause.push_str(
+            " OR EXISTS (SELECT 1 FROM recipients r WHERE r.sequence = i.sequence \
+             AND r.prefix = ?)",
+        );
+        params.push(Value::Text(prefix.to_ascii_lowercase()));
+    }
+    clause.push(')');
+    clause
+}
+
+fn storage_err<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> ProjectError {
+    move |error| ProjectError::Storage(format!("{context}: {error}"))
+}
+
+/// An open project: its transport index and its mailspace store.
+struct Project {
+    transport: Connection,
+    storage: Storage,
+}
+
+impl Project {
+    fn open(dir: &Path) -> Result<Self, ProjectError> {
+        let transport = Connection::open(dir.join(TRANSPORT_FILE))
+            .map_err(storage_err("failed to open the transport index"))?;
+        transport
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(storage_err("failed to set the transport timeout"))?;
+        transport
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(storage_err("failed to set the transport journal mode"))?;
+        transport
+            .execute_batch(TRANSPORT_SCHEMA)
+            .map_err(storage_err("failed to prepare the transport index"))?;
+        let storage = Storage::open_mailspace(&dir.join(MAILSPACE_DIR))
+            .map_err(storage_err("failed to open the project mailspace"))?;
+        Ok(Self { transport, storage })
+    }
+
+    fn select(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>, ProjectError> {
+        let mut statement = self
+            .transport
+            .prepare(sql)
+            .map_err(storage_err("failed to prepare a transport query"))?;
+        let rows = statement
+            .query_map(params_from_iter(params), row_of)
+            .map_err(storage_err("failed to run a transport query"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(storage_err("failed to read a transport row"))
+    }
+
+    /// The replay rules: the same id with the same bytes is a duplicate, the
+    /// same id with other bytes conflicts, and an unseen id with bytes the
+    /// SAME sender already holds under another id is a duplicate of that
+    /// original. The last rule is sender-scoped on purpose: answering any
+    /// member would let one who holds the exact bytes of mail they cannot see
+    /// confirm it exists and learn its id and sequence.
+    fn find_replay(
+        &self,
+        id: &str,
+        from: &str,
+        content_sha256: &str,
+    ) -> Result<Option<AppendOutcome>, ProjectError> {
+        let duplicate = |row: Row| AppendOutcome {
+            message_id: row.message_id,
+            sequence: row.sequence,
+            content_sha256: row.content_sha256,
+            duplicate: true,
+        };
+        let held = self.select(
+            &format!("SELECT {COLUMNS} FROM items i WHERE i.message_id = ?"),
+            vec![Value::Text(id.to_owned())],
+        )?;
+        if let Some(row) = held.into_iter().next() {
+            if row.content_sha256 == content_sha256 {
+                return Ok(Some(duplicate(row)));
+            }
+            return Err(ProjectError::Conflict(format!(
+                "item id {id} already names a different letter in this project"
+            )));
+        }
+        let same_bytes = self.select(
+            &format!(
+                "SELECT {COLUMNS} FROM items i WHERE i.from_name = ? AND i.content_sha256 = ? \
+                 ORDER BY i.sequence LIMIT 1"
+            ),
+            vec![
+                Value::Text(from.to_owned()),
+                Value::Text(content_sha256.to_owned()),
+            ],
+        )?;
+        Ok(same_bytes.into_iter().next().map(duplicate))
+    }
+
+    /// The next sequence and the previous row's stamp, read together.
+    fn tail(&self) -> Result<(u64, Option<String>), ProjectError> {
+        let last: Option<(i64, String)> = self
+            .transport
+            .query_row(
+                "SELECT sequence, appended_at FROM items ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(storage_err("failed to read the transport tail"))?;
+        Ok(match last {
+            Some((sequence, stamp)) => (u64::try_from(sequence).unwrap_or(0) + 1, Some(stamp)),
+            None => (1, None),
+        })
+    }
+
+    /// Ingest the letter verbatim into the project mailspace under its
+    /// presented id. Content already held under this id is not an error.
+    fn file_letter(&mut self, project_id: &str, item: &AppendItem) -> Result<(), ProjectError> {
+        let request = MessageIngestRequest {
+            account: project_id.to_owned(),
+            local_role: item.local_role().to_owned(),
+            read_state: false,
+            starred: false,
+            message_id_hint: None,
+            presented_id: Some(item.id.clone()),
+            seed_hint: String::new(),
+            remote: None,
+        };
+        match self.storage.ingest_if_absent(&request, &item.raw_eml, None) {
+            Ok((IngestOutcome::Conflict, _)) => Err(ProjectError::Conflict(format!(
+                "item id {} already names a different letter in this project",
+                item.id
+            ))),
+            Ok(_) => Ok(()),
+            Err(error) => Err(ProjectError::Storage(format!(
+                "failed to file the letter in the project mailspace: {error}"
+            ))),
+        }
+    }
+
+    /// Record the transport row and its recipients in one transaction.
+    fn record(
+        &mut self,
+        item: &AppendItem,
+        content_sha256: &str,
+        sequence: u64,
+        appended_at: &str,
+    ) -> Result<(), ProjectError> {
+        let tx = self
+            .transport
+            .transaction()
+            .map_err(storage_err("failed to open a transport transaction"))?;
+        let handle = handle_of(&item.id).unwrap_or_default();
+        tx.execute(
+            "INSERT INTO items (sequence, message_id, handle, content_sha256, byte_size, \
+             from_name, from_prefix, to_raw, kind, appended_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                i64::try_from(sequence).unwrap_or(i64::MAX),
+                item.id,
+                handle,
+                content_sha256,
+                i64::try_from(item.raw_eml.len()).unwrap_or(i64::MAX),
+                item.from,
+                item.from_prefix,
+                item.to,
+                item.kind,
+                appended_at,
+            ],
+        )
+        .map_err(storage_err("failed to record the letter's transport row"))?;
+        for address in item.to.iter().flat_map(|to| recipients(to)) {
+            let prefix = address
+                .split_once('@')
+                .and_then(|(_, domain)| domain_prefix(domain))
+                .map(str::to_ascii_lowercase);
+            tx.execute(
+                "INSERT OR IGNORE INTO recipients (sequence, address, prefix) VALUES (?1, ?2, ?3)",
+                params![
+                    i64::try_from(sequence).unwrap_or(i64::MAX),
+                    address.to_ascii_lowercase(),
+                    prefix,
+                ],
+            )
+            .map_err(storage_err("failed to record a recipient"))?;
+        }
+        tx.commit()
+            .map_err(storage_err("failed to commit the transport row"))
+    }
+
+    /// The exact bytes of a row's letter, checked against its content hash.
+    /// A missing or mismatched blob is a storage failure: never serve a
+    /// sequence the store cannot back.
+    fn letter(&self, row: &Row) -> Result<Vec<u8>, ProjectError> {
+        let raw_eml = self.storage.read_blob(&row.content_sha256).map_err(|e| {
+            ProjectError::Storage(format!(
+                "sequence {} names letter {} that cannot be read: {e}",
+                row.sequence, row.content_sha256
+            ))
+        })?;
+        if sha256_hex(&raw_eml) != row.content_sha256 {
+            return Err(ProjectError::Storage(format!(
+                "letter blob for sequence {} does not match its content hash",
+                row.sequence
+            )));
+        }
+        Ok(raw_eml)
+    }
+
+    fn record_of(&self, row: Row) -> Result<ProjectRecord, ProjectError> {
+        let raw_eml = self.letter(&row)?;
+        Ok(ProjectRecord {
+            sequence: row.sequence,
+            message_id: row.message_id,
+            from: row.from,
+            from_prefix: row.from_prefix,
+            to: row.to,
+            kind: row.kind,
+            content_sha256: row.content_sha256,
+            appended_at: row.appended_at,
+            raw_eml,
+        })
+    }
 }
 
 /// Per-project storage root under `DATA_DIR/projects`; project metadata
-/// persists in `project.json` beside the letter log.
+/// persists in `project.json` beside the mailspace and the transport index.
 #[derive(Debug, Clone)]
 pub struct ProjectStore {
     projects_root: PathBuf,
@@ -455,79 +747,6 @@ fn append_lock() -> MutexGuard<'static, ()> {
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-}
-
-fn read_index(project_dir: &Path) -> Result<ItemIndex, ProjectError> {
-    let bytes = match std::fs::read(project_dir.join(INDEX_FILE)) {
-        Ok(bytes) => bytes,
-        // A project with no appends has no index yet; any other failure must
-        // not read as "empty" or the next append would reuse sequences.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ItemIndex::default()),
-        Err(e) => {
-            return Err(ProjectError::Storage(format!(
-                "failed to read items.json: {e}"
-            )));
-        }
-    };
-    serde_json::from_slice(&bytes)
-        .map_err(|e| ProjectError::Storage(format!("bad items.json: {e}")))
-}
-
-fn write_index(project_dir: &Path, index: &ItemIndex) -> Result<(), ProjectError> {
-    let bytes = serde_json::to_vec(index)
-        .map_err(|e| ProjectError::Storage(format!("failed to encode items.json: {e}")))?;
-    write_atomic(&project_dir.join(INDEX_FILE), &bytes)
-}
-
-fn letter_path(project_dir: &Path, content_sha256: &str) -> PathBuf {
-    project_dir
-        .join(LETTERS_DIR)
-        .join(format!("{content_sha256}.sealed"))
-}
-
-/// Write `bytes` to `path` as one 0600 file: temp file, fsync, rename.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ProjectError> {
-    let tmp = path.with_extension("tmp");
-    write_private(&tmp, bytes)
-        .and_then(|()| std::fs::rename(&tmp, path))
-        .map_err(|e| ProjectError::Storage(format!("failed to write {}: {e}", path.display())))
-}
-
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
-}
-
-/// Scoped-read visibility (decided items 7 and 11 plus the governance
-/// carve-out), decided from the envelope row alone: work items and mail
-/// addressed to postmaster are member-visible; every other letter only to
-/// its sender (by name) or to the member whose registered prefix is named by
-/// a recipient address.
-fn scoped_visible(row: &StoredRow, viewer: &Viewer<'_>) -> bool {
-    match row.kind.as_deref() {
-        Some("need" | "task" | "want") => true,
-        _ => {
-            row.from == viewer.name
-                || row.to.as_deref().is_some_and(|to| {
-                    to.eq_ignore_ascii_case(POSTMASTER)
-                        || viewer.prefix.is_some_and(|prefix| names_prefix(to, prefix))
-                })
-        }
-    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -592,39 +811,6 @@ fn admission_error(err: AdmissionError) -> ProjectError {
     }
 }
 
-/// Replay rules against the index: the same id with the same bytes is a
-/// duplicate, the same id with other bytes conflicts, and an unseen id with
-/// bytes the SAME sender already holds under another id is a duplicate of
-/// that original. The last rule is sender-scoped on purpose: answering any
-/// member would let one who holds the exact bytes of mail they cannot see
-/// confirm it exists and learn its id and sequence.
-fn find_replay(
-    index: &ItemIndex,
-    id: &str,
-    from: &str,
-    content_sha256: &str,
-) -> Result<Option<AppendOutcome>, ProjectError> {
-    let duplicate = |row: &StoredRow| AppendOutcome {
-        message_id: row.message_id.clone(),
-        sequence: row.sequence,
-        content_sha256: row.content_sha256.clone(),
-        duplicate: true,
-    };
-    if let Some(row) = index.records.iter().find(|r| r.message_id == id) {
-        if row.content_sha256 == content_sha256 {
-            return Ok(Some(duplicate(row)));
-        }
-        return Err(ProjectError::Conflict(format!(
-            "item id {id} already names a different letter in this project"
-        )));
-    }
-    Ok(index
-        .records
-        .iter()
-        .find(|r| r.from == from && r.content_sha256 == content_sha256)
-        .map(duplicate))
-}
-
 impl ProjectStore {
     pub fn new(data_dir: &Path) -> Self {
         Self::with_clock(data_dir, Utc::now)
@@ -653,7 +839,8 @@ impl ProjectStore {
         &self.admissions
     }
 
-    /// Mint a collision-retried project id and create its letter log.
+    /// Mint a collision-retried project id and create its mailspace and
+    /// transport index.
     pub fn create_project(&self) -> Result<ProjectMeta, ProjectError> {
         for _ in 0..8 {
             let project_id = mint_room_id()
@@ -662,17 +849,19 @@ impl ProjectStore {
             if dir.exists() {
                 continue;
             }
-            std::fs::create_dir_all(dir.join(LETTERS_DIR)).map_err(|e| {
-                ProjectError::Storage(format!("failed to create project directory: {e}"))
-            })?;
+            Mailspace::init(Some(&dir))
+                .map_err(storage_err("failed to create the project mailspace"))?;
             let meta = ProjectMeta { project_id };
             let bytes = serde_json::to_vec(&meta).map_err(|e| {
                 ProjectError::Storage(format!("failed to encode project.json: {e}"))
             })?;
             std::fs::write(dir.join("project.json"), &bytes)
                 .map_err(|e| ProjectError::Storage(format!("failed to write project.json: {e}")))?;
-            // Project files (project.json, sidecars, letters) stay
-            // owner-only, like the room tree (VC-5).
+            // Prepare the transport index now so a project is fully formed
+            // before its first append.
+            Project::open(&dir)?;
+            // Project files (project.json, the mailspace, the transport
+            // index) stay owner-only, like the room tree (VC-5).
             harden_tree(&dir);
             return Ok(meta);
         }
@@ -713,7 +902,7 @@ impl ProjectStore {
 
     /// Process the governance vouch in a letter to postmaster: validate it
     /// and write the admission. Idempotent, so a replay after a crash
-    /// between this and the index write converges.
+    /// between this and the transport write converges.
     fn process_vouch(&self, project_id: &str, item: &AppendItem) -> Result<(), ProjectError> {
         let vouch = parse_vouch(&item.raw_eml)?;
         if !self.admissions.is_admitted(project_id, &item.from) {
@@ -729,14 +918,9 @@ impl ProjectStore {
 
     /// Append one letter under its presented traveling id. Appends are
     /// serialized by the append lock. The decision matrix is in
-    /// [`find_replay`]; a fresh letter is sealed whole into its blob first,
-    /// then recorded as the next index row.
-    pub fn append(
-        &self,
-        cipher: &StoreCipher,
-        raw_id: &str,
-        item: &AppendItem,
-    ) -> Result<AppendOutcome, ProjectError> {
+    /// [`Project::find_replay`]; a fresh letter is filed verbatim in the
+    /// project mailspace first, then recorded as the next transport row.
+    pub fn append(&self, raw_id: &str, item: &AppendItem) -> Result<AppendOutcome, ProjectError> {
         let _guard = append_lock();
         let dir = self.existing_project_dir(raw_id)?;
         let project_id = dir
@@ -745,8 +929,8 @@ impl ProjectStore {
             .unwrap_or_default()
             .to_owned();
         let content_sha256 = sha256_hex(&item.raw_eml);
-        let mut index = read_index(&dir)?;
-        if let Some(outcome) = find_replay(&index, &item.id, &item.from, &content_sha256)? {
+        let mut project = Project::open(&dir)?;
+        if let Some(outcome) = project.find_replay(&item.id, &item.from, &content_sha256)? {
             return Ok(outcome);
         }
         // Governance vouch (decided item 8): the admission is written FIRST,
@@ -755,32 +939,10 @@ impl ProjectStore {
         if item.is_governance() {
             self.process_vouch(&project_id, item)?;
         }
-        let sealed = cipher
-            .encrypt(&item.raw_eml)
-            .map_err(|e| ProjectError::Storage(format!("failed to seal letter: {e}")))?;
-        std::fs::create_dir_all(dir.join(LETTERS_DIR)).map_err(|e| {
-            ProjectError::Storage(format!("failed to prepare letters directory: {e}"))
-        })?;
-        write_atomic(&letter_path(&dir, &content_sha256), sealed.as_bytes())?;
-        let sequence = index.next_sequence + 1;
-        index.next_sequence = sequence;
-        let previous = index
-            .records
-            .iter()
-            .rev()
-            .find_map(|row| row.appended_at.as_deref());
-        let appended_at = monotone_stamp(previous, (self.clock.0)());
-        index.records.push(StoredRow {
-            message_id: item.id.clone(),
-            sequence,
-            content_sha256: content_sha256.clone(),
-            from: item.from.clone(),
-            from_prefix: item.from_prefix.clone(),
-            to: item.to.clone(),
-            kind: item.kind.clone(),
-            appended_at: Some(appended_at),
-        });
-        write_index(&dir, &index)?;
+        let (sequence, previous) = project.tail()?;
+        let appended_at = monotone_stamp(previous.as_deref(), (self.clock.0)());
+        project.file_letter(&project_id, item)?;
+        project.record(item, &content_sha256, sequence, &appended_at)?;
         // Fresh state arrived: wake long-poll waiters on this project.
         // Duplicates change nothing and wake nothing.
         self.wake.notify(&project_id);
@@ -796,54 +958,57 @@ impl ProjectStore {
     /// default page size and no filters. See [`read_page`](Self::read_page).
     pub fn read_after_scoped(
         &self,
-        cipher: &StoreCipher,
         raw_id: &str,
         since: u64,
         viewer: &Viewer<'_>,
     ) -> Result<ReadAfter, ProjectError> {
-        self.read_page(cipher, raw_id, &ListQuery::since(since), viewer)
+        self.read_page(raw_id, &ListQuery::since(since), viewer)
     }
 
     /// Read one page of letters scoped to `viewer` (decided items 7, 11, 13
     /// plus the governance carve-out): work items (need/task/want) and mail
     /// addressed to postmaster are member-visible; every other letter only
     /// to its sender or the recipient prefix's member. Visibility and the
-    /// query's filters are decided from the index row and applied before the
-    /// page limit, so a letter the viewer cannot see or the filters exclude
-    /// is never unsealed and never makes a page short. A page ends at the
-    /// limit or once its raw letters exceed [`PAGE_BYTE_CAP`], whichever
-    /// comes first, and always holds at least one record when any match.
-    /// `next_cursor` is the last returned sequence, or the query's `since`.
+    /// query's filters are applied in the transport query before the page
+    /// limit, so a letter the viewer cannot see or the filters exclude is
+    /// never read and never makes a page short. A page ends at the limit or
+    /// once its raw letters exceed [`PAGE_BYTE_CAP`], whichever comes first,
+    /// and always holds at least one record when any match. `next_cursor`
+    /// is the last returned sequence, or the query's `since`.
     pub fn read_page(
         &self,
-        cipher: &StoreCipher,
         raw_id: &str,
         query: &ListQuery,
         viewer: &Viewer<'_>,
     ) -> Result<ReadAfter, ProjectError> {
         let dir = self.existing_project_dir(raw_id)?;
-        let index = read_index(&dir)?;
-        let mut rows: Vec<&StoredRow> = index
-            .records
-            .iter()
-            .filter(|row| {
-                row.sequence > query.since && scoped_visible(row, viewer) && query.matches(row)
-            })
-            .collect();
-        rows.sort_by_key(|row| row.sequence);
-        let mut records = Vec::with_capacity(rows.len().min(query.limit));
+        let project = Project::open(&dir)?;
+        let mut params = vec![Value::Integer(
+            i64::try_from(query.since).unwrap_or(i64::MAX),
+        )];
+        let mut clauses = vec!["i.sequence > ?".to_owned()];
+        clauses.push(visible_clause(viewer, &mut params));
+        query.add_filters(&mut clauses, &mut params);
+        let sql = format!(
+            "SELECT {COLUMNS} FROM items i WHERE {} ORDER BY i.sequence LIMIT {}",
+            clauses.join(" AND "),
+            query.limit + 1
+        );
+        let rows = project.select(&sql, params)?;
+        let matched = rows.len();
+        let mut records = Vec::with_capacity(matched.min(query.limit));
         let mut next_cursor = query.since;
-        let mut bytes = 0usize;
-        for row in &rows {
-            if records.len() >= query.limit || (bytes > PAGE_BYTE_CAP && !records.is_empty()) {
+        let mut bytes = 0u64;
+        for row in rows {
+            if records.len() >= query.limit || (bytes > PAGE_BYTE_CAP as u64 && !records.is_empty())
+            {
                 break;
             }
-            let raw_eml = read_letter(cipher, &dir, row)?;
-            bytes += raw_eml.len();
+            bytes += row.byte_size;
             next_cursor = row.sequence;
-            records.push(record_of(row, raw_eml));
+            records.push(project.record_of(row)?);
         }
-        let has_more = records.len() < rows.len();
+        let has_more = records.len() < matched;
         Ok(ReadAfter {
             records,
             next_cursor,
@@ -854,34 +1019,31 @@ impl ProjectStore {
     /// Look letters up by handle (the 8 hex after `msg_`), scoped to
     /// `viewer` by the same rule as the list. A handle may name several
     /// ids; one that names nothing visible is `missing`, identically for an
-    /// unknown and a hidden id. Only matching, visible letters are unsealed.
+    /// unknown and a hidden id. Only matching, visible letters are read.
     pub fn lookup_handles(
         &self,
-        cipher: &StoreCipher,
         raw_id: &str,
         handles: &[String],
         viewer: &Viewer<'_>,
     ) -> Result<Lookup, ProjectError> {
         let wanted = parse_handles(handles)?;
         let dir = self.existing_project_dir(raw_id)?;
-        let index = read_index(&dir)?;
-        let mut rows: Vec<&StoredRow> = index
-            .records
-            .iter()
-            .filter(|row| {
-                handle_of(&row.message_id).is_some_and(|handle| wanted.contains(handle))
-                    && scoped_visible(row, viewer)
-            })
-            .collect();
-        rows.sort_by_key(|row| row.sequence);
+        let project = Project::open(&dir)?;
+        let mut params: Vec<Value> = wanted.iter().map(|h| Value::Text(h.clone())).collect();
+        let marks = vec!["?"; wanted.len()].join(", ");
+        let visible = visible_clause(viewer, &mut params);
+        let sql = format!(
+            "SELECT {COLUMNS} FROM items i WHERE i.handle IN ({marks}) AND {visible} \
+             ORDER BY i.sequence"
+        );
+        let rows = project.select(&sql, params)?;
         let mut found = HashSet::new();
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
             if let Some(handle) = handle_of(&row.message_id) {
                 found.insert(handle.to_owned());
             }
-            let raw_eml = read_letter(cipher, &dir, row)?;
-            records.push(record_of(row, raw_eml));
+            records.push(project.record_of(row)?);
         }
         let mut seen = HashSet::new();
         let missing = handles
@@ -897,25 +1059,22 @@ impl ProjectStore {
     /// Read one letter by id, scoped to `viewer` with the same rules as
     /// [`read_after_scoped`](Self::read_after_scoped). A letter the viewer
     /// may not see is `None`, exactly like an unknown id, and is decided
-    /// from the index row so it is never unsealed.
+    /// from the transport row so it is never read.
     pub fn read_one_scoped(
         &self,
-        cipher: &StoreCipher,
         raw_id: &str,
         message_id: &str,
         viewer: &Viewer<'_>,
     ) -> Result<Option<ProjectRecord>, ProjectError> {
         let dir = self.existing_project_dir(raw_id)?;
-        let index = read_index(&dir)?;
-        let Some(row) = index
-            .records
-            .iter()
-            .find(|row| row.message_id == message_id && scoped_visible(row, viewer))
-        else {
+        let project = Project::open(&dir)?;
+        let mut params = vec![Value::Text(message_id.to_owned())];
+        let visible = visible_clause(viewer, &mut params);
+        let sql = format!("SELECT {COLUMNS} FROM items i WHERE i.message_id = ? AND {visible}");
+        let Some(row) = project.select(&sql, params)?.into_iter().next() else {
             return Ok(None);
         };
-        let raw_eml = read_letter(cipher, &dir, row)?;
-        Ok(Some(record_of(row, raw_eml)))
+        project.record_of(row).map(Some)
     }
 }
 
@@ -944,44 +1103,4 @@ fn parse_handles(handles: &[String]) -> Result<HashSet<String>, ProjectError> {
             }
         })
         .collect()
-}
-
-fn record_of(row: &StoredRow, raw_eml: Vec<u8>) -> ProjectRecord {
-    ProjectRecord {
-        sequence: row.sequence,
-        message_id: row.message_id.clone(),
-        from: row.from.clone(),
-        from_prefix: row.from_prefix.clone(),
-        to: row.to.clone(),
-        kind: row.kind.clone(),
-        content_sha256: row.content_sha256.clone(),
-        appended_at: row.appended_at.clone(),
-        raw_eml,
-    }
-}
-
-/// Unseal the blob an index row names. A missing, unreadable, or mismatched
-/// blob is a storage failure: never serve a sequence the store cannot back.
-fn read_letter(
-    cipher: &StoreCipher,
-    project_dir: &Path,
-    row: &StoredRow,
-) -> Result<Vec<u8>, ProjectError> {
-    let sealed =
-        std::fs::read_to_string(letter_path(project_dir, &row.content_sha256)).map_err(|e| {
-            ProjectError::Storage(format!(
-                "sequence {} names letter {} that cannot be read: {e}",
-                row.sequence, row.content_sha256
-            ))
-        })?;
-    let raw_eml = cipher
-        .decrypt(&sealed)
-        .map_err(|e| ProjectError::Storage(format!("failed to unseal letter: {e}")))?;
-    if sha256_hex(&raw_eml) != row.content_sha256 {
-        return Err(ProjectError::Storage(format!(
-            "letter blob for sequence {} does not match its content hash",
-            row.sequence
-        )));
-    }
-    Ok(raw_eml)
 }

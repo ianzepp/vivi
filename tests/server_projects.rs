@@ -1,7 +1,8 @@
-//! Integration tests for the phase-03 project store: an append-only log of
-//! sealed letters per project, filed under presented traveling ids with a
-//! monotonic transport sequence, content-addressed duplicate handling,
-//! envelope-row visibility, and crash convergence between blob and index.
+//! Integration tests for the phase-03 project store: a real vivi mailspace
+//! per project holding each letter verbatim under its presented traveling
+//! id, with a transport index for the monotonic sequence, content-addressed
+//! duplicate handling, envelope-row visibility, and crash convergence
+//! between the mailspace and the index.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,7 @@ use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
-use vivi_server::crypto::StoreCipher;
+use vivi::storage::Storage;
 use vivi_server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
 
 fn scratch_data_dir(name: &str) -> PathBuf {
@@ -21,10 +22,6 @@ fn scratch_data_dir(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-fn cipher() -> StoreCipher {
-    StoreCipher::from_base64(&STANDARD.encode([0x42u8; 32])).unwrap()
 }
 
 /// Traveling id shape: `msg_` plus 24 lowercase hex.
@@ -91,8 +88,34 @@ fn project_dir(data_dir: &Path, project_id: &str) -> PathBuf {
     data_dir.join("projects").join(project_id)
 }
 
+/// Where the project mailspace keeps a letter's bytes.
+fn blob_path(data_dir: &Path, project_id: &str, content_sha256: &str) -> PathBuf {
+    project_dir(data_dir, project_id)
+        .join(".vivi")
+        .join("blobs")
+        .join(&content_sha256[..2])
+        .join(&content_sha256[2..4])
+        .join(format!("{content_sha256}.eml"))
+}
+
+/// The project mailspace, opened as any vivi client would.
+fn mailspace(data_dir: &Path, project_id: &str) -> Storage {
+    Storage::open_mailspace(&project_dir(data_dir, project_id).join(".vivi")).unwrap()
+}
+
+/// The project's transport index.
+fn transport(data_dir: &Path, project_id: &str) -> rusqlite::Connection {
+    rusqlite::Connection::open(project_dir(data_dir, project_id).join("transport.sqlite")).unwrap()
+}
+
+fn transport_rows(data_dir: &Path, project_id: &str) -> i64 {
+    transport(data_dir, project_id)
+        .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+        .unwrap()
+}
+
 #[test]
-fn created_projects_get_distinct_ids_and_letter_dirs_without_a_mailspace() {
+fn created_projects_get_distinct_ids_and_a_real_mailspace() {
     let data_dir = scratch_data_dir("create");
     let store = ProjectStore::new(&data_dir);
     let a = store.create_project().unwrap();
@@ -101,42 +124,49 @@ fn created_projects_get_distinct_ids_and_letter_dirs_without_a_mailspace() {
     for meta in [&a, &b] {
         let dir = project_dir(&data_dir, &meta.project_id);
         assert!(dir.join("project.json").is_file());
-        assert!(dir.join("letters").is_dir());
+        assert!(dir.join(".vivi").join("mailspace.toml").is_file());
+        assert!(dir.join(".vivi").join("mail.sqlite").is_file());
+        assert!(dir.join("transport.sqlite").is_file());
         assert!(
-            !dir.join(".vivi").exists(),
-            "no vivi mailspace for projects"
+            !dir.join("letters").exists(),
+            "no sealed letter directory remains"
         );
     }
 }
 
 #[test]
-fn append_assigns_sequence_and_seals_the_letter_whole() {
+fn append_assigns_sequence_and_files_the_letter_verbatim_in_the_mailspace() {
     let data_dir = scratch_data_dir("append");
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
     let id = traveling(1);
     let item = need(&id, "do the plaintext-marker thing");
-    let outcome = store.append(&cipher(), &meta.project_id, &item).unwrap();
+    let outcome = store.append(&meta.project_id, &item).unwrap();
     assert_eq!(outcome.sequence, 1);
     assert!(!outcome.duplicate);
     assert_eq!(outcome.message_id, id);
-    let hash = sha256_hex(&eml(&id, "do the plaintext-marker thing"));
+    let raw = eml(&id, "do the plaintext-marker thing");
+    let hash = sha256_hex(&raw);
     assert_eq!(outcome.content_sha256, hash);
 
-    let blob = project_dir(&data_dir, &meta.project_id)
-        .join("letters")
-        .join(format!("{hash}.sealed"));
-    let sealed = std::fs::read(&blob).unwrap();
-    assert!(
-        !String::from_utf8_lossy(&sealed).contains("plaintext-marker"),
-        "blob holds no plaintext"
-    );
+    // The mailspace holds the exact bytes, in the clear, under the hash.
+    let blob = blob_path(&data_dir, &meta.project_id, &hash);
+    assert_eq!(std::fs::read(&blob).unwrap(), raw);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&blob).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
+        assert_eq!(mode & 0o077, 0, "owner-only, got {mode:o}");
     }
+
+    // The mailspace index answers for it without reading the letter.
+    let rows = mailspace(&data_dir, &meta.project_id)
+        .list_messages_by_account_role(&meta.project_id, "needs")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].message_id, id);
+    assert_eq!(rows[0].content_id, hash);
+    assert_eq!(rows[0].from_addr, "hand@p.local");
 }
 
 #[test]
@@ -195,21 +225,26 @@ fn replay_same_id_same_bytes_is_duplicate_noop() {
     let meta = store.create_project().unwrap();
     let id = traveling(2);
     let first = store
-        .append(&cipher(), &meta.project_id, &need(&id, "same body"))
+        .append(&meta.project_id, &need(&id, "same body"))
         .unwrap();
     let replay = store
-        .append(&cipher(), &meta.project_id, &need(&id, "same body"))
+        .append(&meta.project_id, &need(&id, "same body"))
         .unwrap();
     assert!(replay.duplicate);
     assert_eq!(replay.sequence, first.sequence);
     assert_eq!(replay.content_sha256, first.content_sha256);
-    // Nothing new was stored: one blob, and the counter did not advance.
-    let blobs = std::fs::read_dir(project_dir(&data_dir, &meta.project_id).join("letters"))
-        .unwrap()
-        .count();
-    assert_eq!(blobs, 1);
+    // Nothing new was stored: one mailspace row, one transport row, and the
+    // counter did not advance.
+    assert_eq!(
+        mailspace(&data_dir, &meta.project_id)
+            .list_messages()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(transport_rows(&data_dir, &meta.project_id), 1);
     let other = store
-        .append(&cipher(), &meta.project_id, &need(&traveling(3), "next"))
+        .append(&meta.project_id, &need(&traveling(3), "next"))
         .unwrap();
     assert_eq!(other.sequence, first.sequence + 1);
 }
@@ -222,14 +257,12 @@ fn same_bytes_under_another_id_is_a_duplicate_of_the_original() {
     let bytes = eml(&traveling(1), "shared bytes");
     let first = store
         .append(
-            &cipher(),
             &meta.project_id,
             &letter(&traveling(1), "hand", None, None, bytes.clone()),
         )
         .unwrap();
     let alias = store
         .append(
-            &cipher(),
             &meta.project_id,
             &letter(&traveling(9), "hand", None, None, bytes),
         )
@@ -238,7 +271,7 @@ fn same_bytes_under_another_id_is_a_duplicate_of_the_original() {
     assert_eq!(alias.message_id, traveling(1));
     assert_eq!(alias.sequence, first.sequence);
     let read = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records.len(), 1, "the alias id was never stored");
 }
@@ -251,7 +284,6 @@ fn same_bytes_from_another_member_do_not_reveal_the_original() {
     let bytes = eml(&traveling(1), "private bytes");
     let original = store
         .append(
-            &cipher(),
             &meta.project_id,
             &letter(
                 &traveling(1),
@@ -266,7 +298,6 @@ fn same_bytes_from_another_member_do_not_reveal_the_original() {
     // gets an ordinary fresh append under her own id, not the original's.
     let probe = store
         .append(
-            &cipher(),
             &meta.project_id,
             &letter(
                 &traveling(9),
@@ -281,7 +312,7 @@ fn same_bytes_from_another_member_do_not_reveal_the_original() {
     assert_eq!(probe.message_id, traveling(9));
     assert_ne!(probe.sequence, original.sequence);
     let carol = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("carol"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("carol"))
         .unwrap();
     assert_eq!(carol.records.len(), 1);
     assert_eq!(carol.records[0].message_id, traveling(9));
@@ -294,18 +325,23 @@ fn same_id_different_bytes_is_refused_and_writes_nothing() {
     let meta = store.create_project().unwrap();
     let id = traveling(4);
     store
-        .append(&cipher(), &meta.project_id, &need(&id, "original body"))
+        .append(&meta.project_id, &need(&id, "original body"))
         .unwrap();
     let err = store
-        .append(&cipher(), &meta.project_id, &need(&id, "tampered body"))
+        .append(&meta.project_id, &need(&id, "tampered body"))
         .unwrap_err();
     assert!(matches!(err, ProjectError::Conflict(_)), "got {err:?}");
-    let blobs = std::fs::read_dir(project_dir(&data_dir, &meta.project_id).join("letters"))
-        .unwrap()
-        .count();
-    assert_eq!(blobs, 1, "the refused letter left no blob");
+    assert_eq!(
+        mailspace(&data_dir, &meta.project_id)
+            .list_messages()
+            .unwrap()
+            .len(),
+        1,
+        "the refused letter left no mailspace row"
+    );
+    assert_eq!(transport_rows(&data_dir, &meta.project_id), 1);
     let read = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records.len(), 1);
     assert_eq!(read.records[0].raw_eml, eml(&id, "original body"));
@@ -322,11 +358,11 @@ fn read_returns_suffix_with_exact_bytes_and_envelope() {
         // Non-UTF-8 bytes and CRLF must survive untouched.
         raw.extend_from_slice(b"\r\n\xff\xfe\x00");
         let item = letter(&id, "hand", Some("bob@aaaaaaaa.local"), Some("need"), raw);
-        store.append(&cipher(), &meta.project_id, &item).unwrap();
+        store.append(&meta.project_id, &item).unwrap();
     }
 
     let all = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(
         all.records.iter().map(|r| r.sequence).collect::<Vec<_>>(),
@@ -342,7 +378,7 @@ fn read_returns_suffix_with_exact_bytes_and_envelope() {
     assert_eq!(all.next_cursor, 3);
 
     let suffix = store
-        .read_after_scoped(&cipher(), &meta.project_id, 1, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 1, &viewer("hand"))
         .unwrap();
     assert_eq!(
         suffix
@@ -361,95 +397,110 @@ fn sequence_stays_monotonic_after_close_and_reopen() {
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
     let first = store
-        .append(&cipher(), &meta.project_id, &need(&traveling(5), "one"))
+        .append(&meta.project_id, &need(&traveling(5), "one"))
         .unwrap();
     assert_eq!(first.sequence, 1);
     drop(store);
     let reopened = ProjectStore::new(&data_dir);
     let second = reopened
-        .append(&cipher(), &meta.project_id, &need(&traveling(6), "two"))
+        .append(&meta.project_id, &need(&traveling(6), "two"))
         .unwrap();
     assert_eq!(second.sequence, 2);
     // The pre-restart id still dedups to its stored sequence.
     let replay = reopened
-        .append(&cipher(), &meta.project_id, &need(&traveling(5), "one"))
+        .append(&meta.project_id, &need(&traveling(5), "one"))
         .unwrap();
     assert!(replay.duplicate);
     assert_eq!(replay.sequence, 1);
     let read = reopened
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records[0].raw_eml, eml(&traveling(5), "one"));
 }
 
-/// A crash after the blob write and before the index write leaves an orphan
-/// blob and no row; a replay of the append converges on the same state a
-/// clean append would have produced.
+/// A crash between the mailspace write and the transport row leaves the
+/// letter in the mailspace and no row; a replay of the append converges on
+/// the same state a clean append would have produced.
 #[test]
-fn orphan_blob_without_index_row_converges_on_replay() {
+fn mailspace_letter_without_a_transport_row_converges_on_replay() {
     let data_dir = scratch_data_dir("orphan");
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
     store
-        .append(&cipher(), &meta.project_id, &need(&traveling(1), "kept"))
+        .append(&meta.project_id, &need(&traveling(1), "kept"))
         .unwrap();
     let lost = need(&traveling(2), "lost to the crash");
-    let outcome = store.append(&cipher(), &meta.project_id, &lost).unwrap();
+    let outcome = store.append(&meta.project_id, &lost).unwrap();
     assert_eq!(outcome.sequence, 2);
 
-    // Roll the index back to just before the second append: the blob stays.
-    let dir = project_dir(&data_dir, &meta.project_id);
-    let index_path = dir.join("items.json");
-    let mut index: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
-    index["records"].as_array_mut().unwrap().truncate(1);
-    index["next_sequence"] = 1.into();
-    std::fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
-    assert!(
-        dir.join("letters")
-            .join(format!("{}.sealed", outcome.content_sha256))
-            .is_file()
+    // Roll the transport index back to just before the second append: the
+    // letter stays in the mailspace.
+    let conn = transport(&data_dir, &meta.project_id);
+    conn.execute("DELETE FROM recipients WHERE sequence = 2", [])
+        .unwrap();
+    conn.execute("DELETE FROM items WHERE sequence = 2", [])
+        .unwrap();
+    drop(conn);
+    assert_eq!(
+        mailspace(&data_dir, &meta.project_id)
+            .list_messages()
+            .unwrap()
+            .len(),
+        2,
+        "the letter is still in the mailspace"
     );
     let hidden = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(hidden.records.len(), 1, "no row, so not served");
 
-    let replay = store.append(&cipher(), &meta.project_id, &lost).unwrap();
+    let replay = store.append(&meta.project_id, &lost).unwrap();
     assert!(!replay.duplicate, "the row was never written");
     assert_eq!(replay.sequence, 2);
     assert_eq!(replay.content_sha256, outcome.content_sha256);
     let read = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records.len(), 2);
     assert_eq!(
         read.records[1].raw_eml,
         eml(&traveling(2), "lost to the crash")
     );
+    assert_eq!(
+        mailspace(&data_dir, &meta.project_id)
+            .list_messages()
+            .unwrap()
+            .len(),
+        2,
+        "the replay did not file the letter twice"
+    );
 }
 
-/// An indexed row whose blob is gone is a storage error, never a skip.
+/// A transport row whose letter is gone is a storage error, never a skip.
 #[test]
 fn missing_blob_fails_the_read() {
     let data_dir = scratch_data_dir("missing-blob");
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
     store
-        .append(&cipher(), &meta.project_id, &need(&traveling(1), "one"))
+        .append(&meta.project_id, &need(&traveling(1), "one"))
         .unwrap();
     let second = store
-        .append(&cipher(), &meta.project_id, &need(&traveling(2), "two"))
+        .append(&meta.project_id, &need(&traveling(2), "two"))
         .unwrap();
-    let letters = project_dir(&data_dir, &meta.project_id).join("letters");
-    std::fs::remove_file(letters.join(format!("{}.sealed", second.content_sha256))).unwrap();
+    std::fs::remove_file(blob_path(
+        &data_dir,
+        &meta.project_id,
+        &second.content_sha256,
+    ))
+    .unwrap();
     let err = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap_err();
     assert!(matches!(err, ProjectError::Storage(_)), "got {err:?}");
 }
 
-/// A blob that unseals but does not hash to its row (another letter's blob
+/// A blob that reads but does not hash to its row (another letter's bytes
 /// copied over it) is a storage error too.
 #[test]
 fn swapped_blob_fails_the_hash_check() {
@@ -457,19 +508,20 @@ fn swapped_blob_fails_the_hash_check() {
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
     let first = store
-        .append(&cipher(), &meta.project_id, &need(&traveling(1), "one"))
+        .append(&meta.project_id, &need(&traveling(1), "one"))
         .unwrap();
     let second = store
-        .append(&cipher(), &meta.project_id, &need(&traveling(2), "two"))
+        .append(&meta.project_id, &need(&traveling(2), "two"))
         .unwrap();
-    let letters = project_dir(&data_dir, &meta.project_id).join("letters");
-    std::fs::copy(
-        letters.join(format!("{}.sealed", second.content_sha256)),
-        letters.join(format!("{}.sealed", first.content_sha256)),
-    )
-    .unwrap();
+    let first_blob = blob_path(&data_dir, &meta.project_id, &first.content_sha256);
+    let second_blob = blob_path(&data_dir, &meta.project_id, &second.content_sha256);
+    let mut perms = std::fs::metadata(&first_blob).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&first_blob, perms).unwrap();
+    std::fs::copy(&second_blob, &first_blob).unwrap();
     let err = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap_err();
     assert!(matches!(err, ProjectError::Storage(_)), "got {err:?}");
 }
@@ -481,15 +533,14 @@ fn read_order_follows_append_order_not_id_order() {
     let data_dir = scratch_data_dir("order");
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
-    let cipher = cipher();
     store
-        .append(&cipher, &meta.project_id, &need(&traveling(2), "first in"))
+        .append(&meta.project_id, &need(&traveling(2), "first in"))
         .unwrap();
     store
-        .append(&cipher, &meta.project_id, &need(&traveling(1), "second in"))
+        .append(&meta.project_id, &need(&traveling(1), "second in"))
         .unwrap();
     let read = store
-        .read_after_scoped(&cipher, &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     let ids: Vec<&str> = read.records.iter().map(|r| r.message_id.as_str()).collect();
     assert_eq!(ids, vec![traveling(2), traveling(1)]);
@@ -504,7 +555,6 @@ fn read_order_follows_append_order_not_id_order() {
 fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
     let data_dir = scratch_data_dir("scoped");
     let store = ProjectStore::new(&data_dir);
-    let cipher = cipher();
     // The creator is "hand", so the governance vouch below passes the
     // admitted-sender check.
     let meta = store
@@ -519,10 +569,10 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
         None,
         eml(&traveling(20), "for bob only"),
     );
-    store.append(&cipher, &meta.project_id, &first).unwrap();
+    store.append(&meta.project_id, &first).unwrap();
     // seq 2: unaddressed work item, member-visible by kind.
     store
-        .append(&cipher, &meta.project_id, &need(&traveling(21), "a need"))
+        .append(&meta.project_id, &need(&traveling(21), "a need"))
         .unwrap();
     // seq 3: governance mail to postmaster, member-visible by the carve-out.
     let gov = letter(
@@ -532,7 +582,7 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
         None,
         vouch_eml(&traveling(22), "bob", 2),
     );
-    store.append(&cipher, &meta.project_id, &gov).unwrap();
+    store.append(&meta.project_id, &gov).unwrap();
     // seq 4: plain mail alice -> bob again.
     let second = letter(
         &traveling(23),
@@ -541,11 +591,11 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
         Some("mail"),
         eml(&traveling(23), "again for bob"),
     );
-    store.append(&cipher, &meta.project_id, &second).unwrap();
+    store.append(&meta.project_id, &second).unwrap();
 
     let ids = |viewer: Viewer<'_>, since: u64| {
         let page = store
-            .read_after_scoped(&cipher, &meta.project_id, since, &viewer)
+            .read_after_scoped(&meta.project_id, since, &viewer)
             .unwrap();
         let ids: Vec<String> = page.records.iter().map(|r| r.message_id.clone()).collect();
         (ids, page.next_cursor)
@@ -578,7 +628,7 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
 /// A viewer is never served a letter they cannot see: a corrupt blob behind
 /// an invisible row does not affect their read.
 #[test]
-fn invisible_letters_are_not_unsealed() {
+fn invisible_letters_are_not_read() {
     let data_dir = scratch_data_dir("invisible");
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
@@ -589,26 +639,19 @@ fn invisible_letters_are_not_unsealed() {
         None,
         eml(&traveling(1), "private"),
     );
-    let outcome = store.append(&cipher(), &meta.project_id, &private).unwrap();
+    let outcome = store.append(&meta.project_id, &private).unwrap();
     std::fs::write(
-        project_dir(&data_dir, &meta.project_id)
-            .join("letters")
-            .join(format!("{}.sealed", outcome.content_sha256)),
-        b"not a sealed letter",
+        blob_path(&data_dir, &meta.project_id, &outcome.content_sha256),
+        b"not the letter",
     )
     .unwrap();
     let carol = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("carol"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("carol"))
         .unwrap();
     assert!(carol.records.is_empty());
     assert!(
         store
-            .read_after_scoped(
-                &cipher(),
-                &meta.project_id,
-                0,
-                &viewer_at("bob", "aaaaaaaa")
-            )
+            .read_after_scoped(&meta.project_id, 0, &viewer_at("bob", "aaaaaaaa"))
             .is_err()
     );
 }
@@ -619,7 +662,6 @@ async fn append_wakes_waiter() {
     let data_dir = scratch_data_dir("wake");
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
-    let cipher = cipher();
     let project_id = meta.project_id.clone();
     let waiter = {
         let store = store.clone();
@@ -633,7 +675,7 @@ async fn append_wakes_waiter() {
     };
     tokio::task::yield_now().await;
     tokio::task::spawn_blocking(move || {
-        store.append(&cipher, &meta.project_id, &need(&traveling(9), "wake"))
+        store.append(&meta.project_id, &need(&traveling(9), "wake"))
     })
     .await
     .unwrap()
@@ -647,9 +689,8 @@ async fn duplicate_append_does_not_wake_waiter() {
     let data_dir = scratch_data_dir("wake-dup");
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
-    let cipher = cipher();
     let item = need(&traveling(9), "wake");
-    store.append(&cipher, &meta.project_id, &item).unwrap();
+    store.append(&meta.project_id, &item).unwrap();
     let project_id = meta.project_id.clone();
     let waiter = {
         let store = store.clone();
@@ -661,11 +702,10 @@ async fn duplicate_append_does_not_wake_waiter() {
         })
     };
     tokio::task::yield_now().await;
-    let replay =
-        tokio::task::spawn_blocking(move || store.append(&cipher, &meta.project_id, &item))
-            .await
-            .unwrap()
-            .unwrap();
+    let replay = tokio::task::spawn_blocking(move || store.append(&meta.project_id, &item))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(replay.duplicate);
     assert!(!waiter.await.unwrap(), "a duplicate must not wake");
 }
@@ -678,12 +718,12 @@ fn from_prefix_is_recorded_at_append() {
     let store = ProjectStore::new(&data_dir);
     let meta = store.create_project().unwrap();
     let stamped = need(&traveling(1), "stamped").with_from_prefix(Some("3f9a1c7e"));
-    store.append(&cipher(), &meta.project_id, &stamped).unwrap();
+    store.append(&meta.project_id, &stamped).unwrap();
     store
-        .append(&cipher(), &meta.project_id, &need(&traveling(2), "plain"))
+        .append(&meta.project_id, &need(&traveling(2), "plain"))
         .unwrap();
     let read = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &viewer("hand"))
+        .read_after_scoped(&meta.project_id, 0, &viewer("hand"))
         .unwrap();
     assert_eq!(read.records[0].from_prefix.as_deref(), Some("3f9a1c7e"));
     assert_eq!(read.records[1].from_prefix, None);
@@ -727,7 +767,7 @@ fn page_ids(
     query: &ListQuery,
     who: &Viewer<'_>,
 ) -> (Vec<String>, u64, bool) {
-    let page = store.read_page(&cipher(), project, query, who).unwrap();
+    let page = store.read_page(project, query, who).unwrap();
     (
         page.records.iter().map(|r| r.message_id.clone()).collect(),
         page.next_cursor,
@@ -753,71 +793,28 @@ fn append_stamps_time_monotonically_and_a_replay_keeps_the_stamp() {
 
     clock.store(1_000, Ordering::SeqCst);
     let first = need(&traveling(1), "first");
-    store.append(&cipher(), &meta.project_id, &first).unwrap();
+    store.append(&meta.project_id, &first).unwrap();
     // The clock steps backward: the stamp holds at the previous value.
     clock.store(400, Ordering::SeqCst);
     store
-        .append(&cipher(), &meta.project_id, &need(&traveling(2), "second"))
+        .append(&meta.project_id, &need(&traveling(2), "second"))
         .unwrap();
     clock.store(2_000, Ordering::SeqCst);
     store
-        .append(&cipher(), &meta.project_id, &need(&traveling(3), "third"))
+        .append(&meta.project_id, &need(&traveling(3), "third"))
         .unwrap();
     // A replay (same id, same bytes) changes nothing, whatever the clock says.
     clock.store(9_000, Ordering::SeqCst);
-    let replay = store.append(&cipher(), &meta.project_id, &first).unwrap();
+    let replay = store.append(&meta.project_id, &first).unwrap();
     assert!(replay.duplicate);
 
-    let page = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &hand)
-        .unwrap();
-    let stamps: Vec<_> = page
-        .records
-        .iter()
-        .map(|r| r.appended_at.clone().unwrap())
-        .collect();
+    let page = store.read_after_scoped(&meta.project_id, 0, &hand).unwrap();
+    let stamps: Vec<_> = page.records.iter().map(|r| r.appended_at.clone()).collect();
     assert_eq!(
         stamps,
         vec![stamp_of(1_000), stamp_of(1_000), stamp_of(2_000)]
     );
     assert_eq!(page.records.len(), 3, "the replay stored no row");
-}
-
-#[test]
-fn an_index_without_appended_at_loads_and_after_excludes_those_rows() {
-    let (store, clock, data_dir) = stepped_store("old-index");
-    let meta = store.create_project().unwrap();
-    clock.store(5_000, Ordering::SeqCst);
-    for n in 1..=2 {
-        store
-            .append(&cipher(), &meta.project_id, &need(&traveling(n), "old"))
-            .unwrap();
-    }
-    // Rewrite the index as it was before stamps existed.
-    let path = project_dir(&data_dir, &meta.project_id).join("items.json");
-    let mut index: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    for row in index["records"].as_array_mut().unwrap() {
-        assert!(row.as_object_mut().unwrap().remove("appended_at").is_some());
-    }
-    std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
-
-    let hand = viewer("hand");
-    let page = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &hand)
-        .unwrap();
-    assert_eq!(page.records.len(), 2);
-    assert!(page.records.iter().all(|r| r.appended_at.is_none()));
-
-    // A new row is stamped; an `after` window keeps only stamped rows.
-    clock.store(6_000, Ordering::SeqCst);
-    store
-        .append(&cipher(), &meta.project_id, &need(&traveling(3), "new"))
-        .unwrap();
-    let after = ListQuery::parse(0, None, Some("1970-01-01T00:00:00Z"), None, None).unwrap();
-    let (ids, cursor, more) = page_ids(&store, &meta.project_id, &after, &hand);
-    assert_eq!(ids, vec![traveling(3)]);
-    assert_eq!((cursor, more), (3, false));
 }
 
 /// Eight letters at known times, kinds, and recipients, appended by "hand".
@@ -841,7 +838,7 @@ fn windowed_project(name: &str) -> (ProjectStore, String, Vec<String>) {
         clock.store(*at, Ordering::SeqCst);
         let id = traveling(n as u64 + 1);
         let item = letter(&id, "hand", *to, *kind, eml(&id, &format!("row {n}")));
-        store.append(&cipher(), &meta.project_id, &item).unwrap();
+        store.append(&meta.project_id, &item).unwrap();
         ids.push(id);
     }
     (store, meta.project_id, ids)
@@ -989,7 +986,7 @@ fn paging_with_hidden_and_filtered_rows_interleaved() {
             visible.push(id.clone());
             letter(&id, "alice", None, Some("need"), eml(&id, "shared"))
         };
-        store.append(&cipher(), &meta.project_id, &item).unwrap();
+        store.append(&meta.project_id, &item).unwrap();
     }
     let carol = viewer("carol");
     let mut cursor = 0;
@@ -1031,7 +1028,6 @@ fn a_page_stops_once_its_letters_exceed_the_byte_cap() {
         size = raw.len();
         store
             .append(
-                &cipher(),
                 &meta.project_id,
                 &letter(&id, "hand", None, Some("need"), raw),
             )
@@ -1040,16 +1036,13 @@ fn a_page_stops_once_its_letters_exceed_the_byte_cap() {
     let hand = viewer("hand");
     // Default limit (500) is far above the byte-bounded page.
     let query = ListQuery::since(0);
-    let first = store
-        .read_page(&cipher(), &meta.project_id, &query, &hand)
-        .unwrap();
+    let first = store.read_page(&meta.project_id, &query, &hand).unwrap();
     let expected = PAGE_BYTE_CAP / size + 1;
     assert_eq!(first.records.len(), expected, "stops once past the cap");
     assert!(first.has_more);
     assert_eq!(first.next_cursor, expected as u64);
     let rest = store
         .read_page(
-            &cipher(),
             &meta.project_id,
             &ListQuery::since(first.next_cursor),
             &hand,
@@ -1081,7 +1074,7 @@ fn lookup_by_handle_hits_misses_multiples_and_hidden() {
         ),
     ];
     for item in &appends {
-        store.append(&cipher(), project, item).unwrap();
+        store.append(project, item).unwrap();
     }
     let handles = |hs: &[&str]| hs.iter().map(|h| h.to_string()).collect::<Vec<_>>();
     let carol = viewer("carol");
@@ -1090,7 +1083,6 @@ fn lookup_by_handle_hits_misses_multiples_and_hidden() {
     // order; an unknown and a hidden handle are both missing.
     let found = store
         .lookup_handles(
-            &cipher(),
             project,
             &handles(&["AAAA0001", "4B8275CC", "00000000", "deadbeef", "00000000"]),
             &carol,
@@ -1104,7 +1096,7 @@ fn lookup_by_handle_hits_misses_multiples_and_hidden() {
     // The sender sees the private one; the recipient prefix's member too.
     for who in [viewer("alice"), viewer_at("dan", "dddddddd")] {
         let found = store
-            .lookup_handles(&cipher(), project, &handles(&["deadbeef"]), &who)
+            .lookup_handles(project, &handles(&["deadbeef"]), &who)
             .unwrap();
         assert_eq!(found.records.len(), 1);
         assert!(found.missing.is_empty());
@@ -1123,13 +1115,11 @@ fn lookup_by_handle_hits_misses_multiples_and_hidden() {
         handles(&["4b8275cg"]),
     ] {
         assert!(matches!(
-            store.lookup_handles(&cipher(), project, &bad, &carol),
+            store.lookup_handles(project, &bad, &carol),
             Err(ProjectError::BadRequest(_))
         ));
     }
-    let found = store
-        .lookup_handles(&cipher(), project, &max, &carol)
-        .unwrap();
+    let found = store.lookup_handles(project, &max, &carol).unwrap();
     assert!(found.records.is_empty());
     assert_eq!(found.missing.len(), 100);
 }

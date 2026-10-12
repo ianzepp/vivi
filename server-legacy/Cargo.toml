@@ -1,8 +1,8 @@
 [package]
 name = "vivi-server"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
-description = "Public chat substrate server hosting persistent vivi mailspace rooms"
+description = "Public server hosting vivi mailspace rooms and project mailspaces"
 
 [dependencies]
 axum = "0.8"
@@ -19,6 +19,7 @@ subtle = "2"
 base64 = "0.22"
 chrono = "0.4"
 tower-http = { version = "0.6", default-features = false, features = ["compression-gzip"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 vivi = { git = "https://github.com/ianzepp/vivi", tag = "v11.0.0" }
 
 [dev-dependencies]

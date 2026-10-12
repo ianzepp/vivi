@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.0 — 2026-10-12
+
+A project is a real vivi mailspace on the server again. 1.0.0 stored each
+project's letters as sealed blobs behind a JSON index, which no one could
+query; this release files every letter verbatim into the project's
+mailspace (`DATA_DIR/projects/<id>/.vivi/`) so the mailspace index answers
+from, to, subject, handle and folder, as the base for an MCP surface.
+
+- **Storage (breaking for data, not for the wire).** Letters are held in
+  the clear, byte for byte under their `content_sha256`, in the project
+  mailspace; protection at rest is the volume, not a per-letter seal
+  (decided item 16). Projects created by 1.0.0 are not read: recreate them.
+  Nothing on staging or production was kept.
+- **Transport index.** `transport.sqlite` beside the mailspace replaces
+  `items.json`: indexed sequence, sender, envelope recipients, kind and
+  append stamp. A list, a lookup, a visibility check and a replay check are
+  indexed queries; appends no longer read and rewrite a whole index file.
+  Measured at 20,000 letters (debug build): an append 8.8 ms (7 ms at 2,000,
+  so it does not grow), a 500-letter page 74 ms, a handle lookup 12 ms; the
+  whole project builds through `append` in 159 s.
+- **Wire: unchanged**, with one tightening: `appended_at` is always present
+  (the rows that lacked it came from before 1.0.0). The project endpoints no
+  longer require `STORE_ENCRYPTION_KEY`; rooms still do.
+- **Dependency.** `vivi` is locked to the v11.0.0 tag as it now stands
+  (`139d243`, which removes `vivi chat`); 1.0.0 had locked the commit before
+  it. Adds `rusqlite` for the transport index (the version `vivi` uses).
+- **Acceptance.** `scripts/project-sync-smoke.sh`: 84 of 84 legs pass
+  against a local server. The script now mints the checkout key with
+  `vivi sync status`, since `vivi chat` is gone in vivi 11.
+  `scripts/two-checkout-smoke.sh` (rooms) needs `vivi chat` and cannot run
+  against a vivi 11 binary.
+
 ## 1.0.0 — 2026-10-11
 
 A project is now the unit of sync. Members of one project push and pull the

@@ -10,6 +10,13 @@ and receipts over the same store. Identity is ED25519 challenge/sign seat
 binding with digest-only bearer tokens; message bodies are encrypted at
 rest (AES-256-GCM); the wire truth is [`docs/contract.md`](docs/contract.md).
 
+Projects (`/v1/projects`, vivi 11 `vivi sync`) are the other tenant: a
+project is one real vivi mailspace at `DATA_DIR/projects/<id>/.vivi/`.
+Members push and pull their letters as raw `.eml`, held byte for byte and in
+the clear (protect the volume), with a `transport.sqlite` index beside it for
+the sequence cursor, visibility and paging. See
+[`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md).
+
 ## Quickstart
 
 Requires Rust 1.93+ (toolchain pinned in `rust-toolchain.toml`).
@@ -28,13 +35,19 @@ curl http://localhost:8080/healthz   # -> ok
 | Env var | Meaning |
 | --- | --- |
 | `PORT` | Listen port |
-| `DATA_DIR` | Room storage root (`DATA_DIR/rooms/<id>/.vivi/`) |
+| `DATA_DIR` | Storage root: rooms at `DATA_DIR/rooms/<id>/.vivi/`, projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
 
 ## Acceptance
 
-`scripts/two-checkout-smoke.sh` is the end-to-end gate: two vivi
+`scripts/project-sync-smoke.sh` is the project gate: two synced vivi 11
+checkouts and a locally spawned server, 84 legs (letters byte for byte,
+addressing, visibility, windows, handles, prune and resync). Run it for any
+change to the project wire or store; `SERVER_URL` points it at a deployed
+server.
+
+`scripts/two-checkout-smoke.sh` is the rooms gate: two vivi
 checkouts, a locally spawned server, create → join → send → badge →
 watch → offline queue → flush, plus the phase 02 legs: a need that crosses
 the room and files on the far side under the same handle and the same bytes,

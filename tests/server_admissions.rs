@@ -12,7 +12,6 @@ use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::SigningKey;
 
 use vivi_server::admissions::AdmissionsFile;
-use vivi_server::crypto::StoreCipher;
 use vivi_server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
 
 /// The sender of every letter in this file; it has no mailspace prefix.
@@ -31,10 +30,6 @@ fn scratch_data_dir(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-fn cipher() -> StoreCipher {
-    StoreCipher::from_base64(&STANDARD.encode([0x42u8; 32])).unwrap()
 }
 
 fn key(seed: u8) -> SigningKey {
@@ -106,7 +101,6 @@ fn member_vouch_admits_new_name_and_lands_as_sequenced_item() {
         .unwrap();
     let outcome = store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(
                 &traveling(1),
@@ -128,7 +122,6 @@ fn member_vouch_admits_new_name_and_lands_as_sequenced_item() {
     // vouch for the next key.
     let outcome = store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(
                 &traveling(2),
@@ -156,7 +149,6 @@ fn vouch_from_unknown_voucher_is_refused_with_nothing_appended() {
         .unwrap();
     let err = store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(
                 &traveling(1),
@@ -169,7 +161,7 @@ fn vouch_from_unknown_voucher_is_refused_with_nothing_appended() {
     assert!(matches!(err, ProjectError::BadRequest(_)), "got {err:?}");
     assert_eq!(
         store
-            .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
+            .read_after_scoped(&meta.project_id, 0, &alice())
             .unwrap()
             .records
             .len(),
@@ -188,7 +180,6 @@ fn malformed_vouch_body_is_refused_with_nothing_appended() {
     for body in ["not json at all", r#"{"vouch":{"name":"bob"}}"#] {
         let err = store
             .append(
-                &cipher(),
                 &meta.project_id,
                 &item(&traveling(1), "alice", Some("postmaster"), body),
             )
@@ -197,7 +188,7 @@ fn malformed_vouch_body_is_refused_with_nothing_appended() {
     }
     assert_eq!(
         store
-            .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
+            .read_after_scoped(&meta.project_id, 0, &alice())
             .unwrap()
             .records
             .len(),
@@ -215,7 +206,6 @@ fn vouching_the_name_postmaster_is_refused() {
         .unwrap();
     let err = store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(
                 &traveling(1),
@@ -239,7 +229,6 @@ fn re_vouch_of_same_name_and_key_is_idempotent() {
     let body = vouch_body("bob", 2);
     store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(&traveling(1), "alice", Some("postmaster"), &body),
         )
@@ -248,7 +237,6 @@ fn re_vouch_of_same_name_and_key_is_idempotent() {
     // duplicate the admission.
     store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(&traveling(2), "alice", Some("postmaster"), &body),
         )
@@ -269,7 +257,6 @@ fn same_name_with_different_key_conflicts() {
         .unwrap();
     store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(
                 &traveling(1),
@@ -281,7 +268,6 @@ fn same_name_with_different_key_conflicts() {
         .unwrap();
     let err = store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(
                 &traveling(2),
@@ -295,7 +281,7 @@ fn same_name_with_different_key_conflicts() {
     // Only the first vouch was appended; bob still holds the first key.
     assert_eq!(
         store
-            .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
+            .read_after_scoped(&meta.project_id, 0, &alice())
             .unwrap()
             .records
             .len(),
@@ -328,7 +314,6 @@ fn vouch_body_is_read_after_the_first_blank_line_in_either_line_ending() {
     for (n, raw) in [(1, crlf), (2, lf)] {
         store
             .append(
-                &cipher(),
                 &meta.project_id,
                 &raw_letter(&traveling(n), raw.clone().into_bytes()),
             )
@@ -362,17 +347,13 @@ fn vouch_letters_without_a_usable_body_are_refused_with_nothing_appended() {
     ];
     for (n, raw) in cases.into_iter().enumerate() {
         let err = store
-            .append(
-                &cipher(),
-                &meta.project_id,
-                &raw_letter(&traveling(n as u64 + 1), raw),
-            )
+            .append(&meta.project_id, &raw_letter(&traveling(n as u64 + 1), raw))
             .unwrap_err();
         assert!(matches!(err, ProjectError::BadRequest(_)), "got {err:?}");
     }
     assert_eq!(admissions(&data_dir, &meta.project_id).admissions.len(), 1);
     let page = store
-        .read_after_scoped(&cipher(), &meta.project_id, 0, &alice())
+        .read_after_scoped(&meta.project_id, 0, &alice())
         .unwrap();
     assert!(page.records.is_empty());
 }
@@ -393,7 +374,6 @@ fn vouch_replay_after_admission_only_converges() {
         .unwrap();
     let outcome = store
         .append(
-            &cipher(),
             &meta.project_id,
             &item(
                 &traveling(1),

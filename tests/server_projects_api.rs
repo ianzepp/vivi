@@ -771,39 +771,70 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Where the project mailspace keeps a letter's bytes.
+fn blob_path(fx: &Fixture, content_sha256: &str) -> std::path::PathBuf {
+    fx.dir
+        .join("projects")
+        .join(&fx.project)
+        .join(".vivi")
+        .join("blobs")
+        .join(&content_sha256[..2])
+        .join(&content_sha256[2..4])
+        .join(format!("{content_sha256}.eml"))
+}
+
 #[tokio::test]
-async fn letters_are_sealed_at_rest() {
-    let fx = fixture("sealed", 91).await;
-    let marker = "PLAINTEXT-MARKER-7f3a9c41d2e8";
+async fn letters_are_held_verbatim_in_the_project_mailspace() {
+    let fx = fixture("verbatim", 91).await;
     let id = traveling(1);
-    let raw = eml(&id, &format!("secret {marker} secret"));
+    let raw = eml(&id, "a body held in the clear");
     let (status, created) = fx
         .append(&id, &raw, Some(&address("builder")), Some("need"))
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
 
+    // Decided item 16: plain text on an encrypted volume, in a real mailspace.
+    let blob = blob_path(&fx, created["content_sha256"].as_str().unwrap());
+    assert_eq!(std::fs::read(&blob).unwrap(), raw, "byte for byte");
     let project_dir = fx.dir.join("projects").join(&fx.project);
     let mut files = Vec::new();
     walk_files(&project_dir, &mut files);
-    let blob = project_dir.join("letters").join(format!(
-        "{}.sealed",
-        created["content_sha256"].as_str().unwrap()
-    ));
-    assert!(files.contains(&blob), "blob named by content hash exists");
-    for path in files {
-        let bytes = std::fs::read(&path).unwrap();
-        assert!(
-            !bytes.windows(marker.len()).any(|w| w == marker.as_bytes()),
-            "{} holds plaintext letter bytes",
-            path.display()
-        );
-        // The raw letter bytes (even sealed-then-b64 would not match).
-        assert!(
-            !bytes.windows(raw.len()).any(|w| w == raw.as_slice()),
-            "{} holds the whole letter",
-            path.display()
-        );
-    }
+    assert!(
+        files.iter().all(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            !name.ends_with(".sealed") && name != "items.json"
+        }),
+        "no sealed-blob store remains"
+    );
+}
+
+/// Projects hold plain letters on the volume (decided item 16), so they do
+/// not depend on the room storage key: a server booted without one still
+/// serves them.
+#[tokio::test]
+async fn projects_work_without_a_store_encryption_key() {
+    let dir = fresh_dir("no-key");
+    let app = api_router(dir, None, None);
+    let creator_key = key(93);
+    let (status, project) = send(
+        &app,
+        "POST",
+        "/v1/projects",
+        Some(json!({"public_key_pem": spki_pem(&creator_key), "creator_name": "creator"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{project}");
+    let project = project["project_id"].as_str().unwrap().to_owned();
+    let (status, creator) = register(&app, &project, &creator_key, "creator").await;
+    assert_eq!(status, StatusCode::CREATED, "{creator}");
+    let token = creator["token"].as_str().unwrap().to_owned();
+    let id = traveling(1);
+    let raw = eml(&id, "no key needed");
+    let (status, created) = append(&app, &project, &token, &id, &raw, None, Some("need")).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let items = read(&app, &project, &token, 0).await;
+    assert_eq!(items["records"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -867,15 +898,7 @@ async fn unreadable_blob_is_an_internal_error_not_a_skip() {
     let id = traveling(1);
     let (status, created) = fx.append(&id, &eml(&id, "one"), None, Some("need")).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
-    let blob = fx
-        .dir
-        .join("projects")
-        .join(&fx.project)
-        .join("letters")
-        .join(format!(
-            "{}.sealed",
-            created["content_sha256"].as_str().unwrap()
-        ));
+    let blob = blob_path(&fx, created["content_sha256"].as_str().unwrap());
     std::fs::remove_file(blob).unwrap();
     let (status, error) = send(
         &fx.app,
@@ -1352,16 +1375,15 @@ async fn single_letter_get_with_an_unreadable_blob_is_500_not_404() {
     let (_, other) = fx
         .append(&second, &eml(&second, "two"), None, Some("need"))
         .await;
-    let letters = fx.dir.join("projects").join(&fx.project).join("letters");
-    let blob = |value: &Value| {
-        letters.join(format!(
-            "{}.sealed",
-            value["content_sha256"].as_str().unwrap()
-        ))
-    };
+    let blob = |value: &Value| blob_path(&fx, value["content_sha256"].as_str().unwrap());
 
-    // Swapped blob: unseals fine, hash mismatch.
-    std::fs::copy(blob(&other), blob(&created)).unwrap();
+    // Swapped blob: reads fine, hash mismatch.
+    let target = blob(&created);
+    let mut perms = std::fs::metadata(&target).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&target, perms).unwrap();
+    std::fs::copy(blob(&other), &target).unwrap();
     let (status, _, body) = get_letter(&fx.app, &fx.project, Some(&fx.token), &first).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
@@ -1880,34 +1902,6 @@ async fn letters_are_stamped_with_the_authenticated_senders_prefix() {
         header(&headers, "x-vivi-from-prefix"),
         Some(creator_prefix.as_str())
     );
-}
-
-#[tokio::test]
-async fn an_index_written_without_from_prefix_still_loads() {
-    let fx = fixture("from-prefix-legacy-index", 248).await;
-    let id = traveling(1);
-    let raw = eml(&id, "old row");
-    let (status, value) = fx.append(&id, &raw, None, Some("need")).await;
-    assert_eq!(status, StatusCode::CREATED, "{value}");
-
-    let path = fx.dir.join("projects").join(&fx.project).join("items.json");
-    let mut index: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    for row in index["records"].as_array_mut().unwrap() {
-        assert!(row.as_object_mut().unwrap().remove("from_prefix").is_some());
-    }
-    std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
-
-    let items = read(&fx.app, &fx.project, &fx.token, 0).await;
-    assert_eq!(items["records"][0]["from_prefix"], Value::Null);
-    let (status, headers, body) = get_letter(&fx.app, &fx.project, Some(&fx.token), &id).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, raw);
-    assert!(headers.get("x-vivi-from-prefix").is_none());
-    // The next append still works against the rewritten index.
-    let next = traveling(2);
-    let (status, value) = fx.append(&next, &eml(&next, "next"), None, None).await;
-    assert_eq!(status, StatusCode::CREATED, "{value}");
-    assert_eq!(value["sequence"], 2);
 }
 
 // ---- append time, paged and filtered list, lookup by handle ----

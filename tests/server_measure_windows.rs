@@ -2,8 +2,8 @@
 //! store level, timed for the paged list, an `after` window, a `kind`
 //! filter, a `to` filter, and a 100-handle lookup (phase-03 item 13).
 //!
-//! Ignored by default (building the project takes minutes, because every
-//! append rewrites the whole index). Run with:
+//! Ignored by default (the build is one real append per letter, so it takes
+//! minutes at full size). Run with:
 //!
 //! ```text
 //! cargo test --release --test measure_windows -- --ignored --nocapture
@@ -16,12 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use chrono::{TimeZone, Utc};
-use sha2::{Digest, Sha256};
 
-use vivi_server::crypto::StoreCipher;
 use vivi_server::projects::{AppendItem, ListQuery, ProjectStore, Viewer};
 
 const PREFIXES: [&str; 10] = [
@@ -73,7 +69,6 @@ fn timed<T>(label: &str, work: impl FnOnce() -> T) -> (T, Duration) {
 /// Page `query_for(cursor)` to the end; returns (records, pages).
 fn drain(
     store: &ProjectStore,
-    cipher: &StoreCipher,
     project: &str,
     viewer: &Viewer<'_>,
     query_for: impl Fn(u64) -> ListQuery,
@@ -81,7 +76,7 @@ fn drain(
     let (mut records, mut pages, mut cursor) = (0, 0, 0);
     loop {
         let page = store
-            .read_page(cipher, project, &query_for(cursor), viewer)
+            .read_page(project, &query_for(cursor), viewer)
             .unwrap();
         records += page.records.len();
         pages += 1;
@@ -108,85 +103,43 @@ fn measure_windows_at_scale() {
         Utc.timestamp_opt(reading.load(Ordering::SeqCst), 0)
             .unwrap()
     });
-    let cipher = StoreCipher::from_base64(&STANDARD.encode([0x42u8; 32])).unwrap();
     let project = store.create_project().unwrap().project_id;
 
     println!("letters: {total}, rss before build: {} KiB", rss_kib());
-    // Every append rewrites the whole index (read, stamp, write, fsync), so
-    // a 20,000-letter build through `ProjectStore::append` takes several
-    // minutes (2,000 appends take about 20 s). The default build therefore
-    // writes the project directly in the store's own layout (sealed blobs
-    // named by content hash plus an index of envelope rows) and times one
-    // real append at full size; `VIVI_MEASURE_APPEND=1` builds through
-    // `append` instead, for the same reads.
+    // Every letter goes through `ProjectStore::append`: a verbatim ingest
+    // into the project mailspace plus one transport row.
     let kinds = [Some("need"), Some("task"), Some("want"), None];
     let project_dir = dir.join("projects").join(&project);
     let build_start = Instant::now();
     let mut ids = Vec::with_capacity(total as usize + 1);
-    if std::env::var("VIVI_MEASURE_APPEND").is_ok() {
-        for n in 0..total {
-            clock.store(BASE + n as i64 * STEP_SECONDS, Ordering::SeqCst);
-            let id = handle_id(n);
-            let to = format!("mind@{}.local", PREFIXES[(n % 10) as usize]);
-            let raw = letter_bytes(&id, n);
-            let item = AppendItem::new(&id, "hand", Some(&to), kinds[(n % 4) as usize], raw)
-                .unwrap()
-                .with_from_prefix(Some(PREFIXES[0]));
-            store.append(&cipher, &project, &item).unwrap();
-            ids.push(id);
-            if n > 0 && n % 2_000 == 0 {
-                println!(
-                    "  appended {n}, {:.0} s",
-                    build_start.elapsed().as_secs_f64()
-                );
-            }
+    for n in 0..total {
+        clock.store(BASE + n as i64 * STEP_SECONDS, Ordering::SeqCst);
+        let id = handle_id(n);
+        let to = format!("mind@{}.local", PREFIXES[(n % 10) as usize]);
+        let raw = letter_bytes(&id, n);
+        let item = AppendItem::new(&id, "hand", Some(&to), kinds[(n % 4) as usize], raw)
+            .unwrap()
+            .with_from_prefix(Some(PREFIXES[0]));
+        store.append(&project, &item).unwrap();
+        ids.push(id);
+        if n > 0 && n % 2_000 == 0 {
+            println!(
+                "  appended {n}, {:.0} s",
+                build_start.elapsed().as_secs_f64()
+            );
         }
-        println!(
-            "built through append in {:.0} s",
-            build_start.elapsed().as_secs_f64()
-        );
-    } else {
-        let mut rows = Vec::with_capacity(total as usize);
-        for n in 0..total {
-            let id = handle_id(n);
-            let raw = letter_bytes(&id, n);
-            let sha: String = Sha256::digest(&raw)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
-            let sealed = cipher.encrypt(&raw).unwrap();
-            let blob = project_dir.join("letters").join(format!("{sha}.sealed"));
-            std::fs::write(blob, sealed).unwrap();
-            let at = Utc
-                .timestamp_opt(BASE + n as i64 * STEP_SECONDS, 0)
-                .unwrap();
-            rows.push(serde_json::json!({
-                "message_id": id,
-                "sequence": n + 1,
-                "content_sha256": sha,
-                "from": "hand",
-                "from_prefix": PREFIXES[0],
-                "to": format!("mind@{}.local", PREFIXES[(n % 10) as usize]),
-                "kind": kinds[(n % 4) as usize],
-                "appended_at": at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-            }));
-            ids.push(id);
-        }
-        let index = serde_json::json!({"records": rows, "next_sequence": total});
-        let bytes = serde_json::to_vec(&index).unwrap();
-        std::fs::write(project_dir.join("items.json"), bytes).unwrap();
-        println!(
-            "wrote {total} letters in {:.1} s",
-            build_start.elapsed().as_secs_f64()
-        );
     }
+    println!(
+        "built through append in {:.0} s",
+        build_start.elapsed().as_secs_f64()
+    );
     println!("rss after build: {} KiB", rss_kib());
-    let index_bytes = std::fs::metadata(project_dir.join("items.json"))
+    let transport_bytes = std::fs::metadata(project_dir.join("transport.sqlite"))
         .map(|m| m.len())
         .unwrap_or(0);
-    println!("items.json: {index_bytes} bytes");
+    println!("transport.sqlite: {transport_bytes} bytes");
 
-    // One real append against the full-size index (the clock reads past
+    // One more append against the full-size project (the clock reads past
     // every stamped row).
     clock.store(BASE + total as i64 * STEP_SECONDS, Ordering::SeqCst);
     let id = handle_id(total);
@@ -194,8 +147,8 @@ fn measure_windows_at_scale() {
     let item =
         AppendItem::new(&id, "hand", Some("mind@3f9a1c7e.local"), Some("need"), raw).unwrap();
     let (outcome, _) = timed(
-        "one append at full size (index read, stamp, rewrite)",
-        || store.append(&cipher, &project, &item).unwrap(),
+        "one append at full size (replay check, mailspace ingest, transport row)",
+        || store.append(&project, &item).unwrap(),
     );
     assert_eq!(outcome.sequence, total + 1);
     ids.push(id);
@@ -212,7 +165,7 @@ fn measure_windows_at_scale() {
         "first page, default limit (what an unparameterized pull sees)",
         || {
             store
-                .read_page(&cipher, &project, &ListQuery::since(0), &viewer)
+                .read_page(&project, &ListQuery::since(0), &viewer)
                 .unwrap()
         },
     );
@@ -225,7 +178,7 @@ fn measure_windows_at_scale() {
 
     let limit500 = |cursor: u64| ListQuery::parse(cursor, Some("500"), None, None, None).unwrap();
     let ((records, pages), _) = timed("full list, limit=500, paged to the end", || {
-        drain(&store, &cipher, &project, &viewer, limit500)
+        drain(&store, &project, &viewer, limit500)
     });
     println!("  -> {records} records in {pages} pages");
 
@@ -236,21 +189,21 @@ fn measure_windows_at_scale() {
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
     let ((records, pages), _) = timed("after = last ~2% of letters, limit=500, paged", || {
-        drain(&store, &cipher, &project, &viewer, |cursor| {
+        drain(&store, &project, &viewer, |cursor| {
             ListQuery::parse(cursor, Some("500"), Some(&after), None, None).unwrap()
         })
     });
     println!("  -> {records} records in {pages} pages");
 
     let ((records, pages), _) = timed("kind=need, limit=500, paged", || {
-        drain(&store, &cipher, &project, &viewer, |cursor| {
+        drain(&store, &project, &viewer, |cursor| {
             ListQuery::parse(cursor, Some("500"), None, Some("need"), None).unwrap()
         })
     });
     println!("  -> {records} records in {pages} pages");
 
     let ((records, pages), _) = timed(&format!("to={}, limit=500, paged", PREFIXES[0]), || {
-        drain(&store, &cipher, &project, &viewer, |cursor| {
+        drain(&store, &project, &viewer, |cursor| {
             ListQuery::parse(cursor, Some("500"), None, None, Some(PREFIXES[0])).unwrap()
         })
     });
@@ -265,9 +218,7 @@ fn measure_windows_at_scale() {
         .map(|id| id[4..12].to_owned())
         .collect();
     let (found, _) = timed("lookup of 100 handles", || {
-        store
-            .lookup_handles(&cipher, &project, &handles, &viewer)
-            .unwrap()
+        store.lookup_handles(&project, &handles, &viewer).unwrap()
     });
     println!(
         "  -> {} found, {} missing (hidden mail to other prefixes)",

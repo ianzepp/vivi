@@ -485,13 +485,6 @@ pub async fn items_handler(
                 );
             }
         };
-    let Some(cipher) = state.store_cipher else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "storage encryption unavailable",
-        );
-    };
     let list = match ListQuery::parse(
         query.since,
         query.limit.as_deref(),
@@ -504,7 +497,7 @@ pub async fn items_handler(
     };
     let projects = state.projects.clone();
     match tokio::task::spawn_blocking(move || {
-        projects.read_page(&cipher, &id, &list, &Viewer::of(&identity))
+        projects.read_page(&id, &list, &Viewer::of(&identity))
     })
     .await
     {
@@ -598,16 +591,9 @@ pub async fn lookup_handler(
                 );
             }
         };
-    let Some(cipher) = state.store_cipher else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "storage encryption unavailable",
-        );
-    };
     let projects = state.projects.clone();
     let looked_up = tokio::task::spawn_blocking(move || {
-        projects.lookup_handles(&cipher, &id, &req.handles, &Viewer::of(&identity))
+        projects.lookup_handles(&id, &req.handles, &Viewer::of(&identity))
     })
     .await;
     match looked_up {
@@ -686,13 +672,6 @@ pub async fn append_handler(
                 );
             }
         };
-    let Some(cipher) = state.store_cipher else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "storage encryption unavailable",
-        );
-    };
     let raw_eml = match body {
         Ok(bytes) => bytes.to_vec(),
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
@@ -734,7 +713,7 @@ pub async fn append_handler(
         );
     }
     let projects = state.projects.clone();
-    match tokio::task::spawn_blocking(move || projects.append(&cipher, &id, &item)).await {
+    match tokio::task::spawn_blocking(move || projects.append(&id, &item)).await {
         Ok(Ok(outcome)) => {
             let mut body = json!({
                 "message_id": outcome.message_id,
@@ -814,16 +793,9 @@ pub async fn letter_handler(
             "message id must be msg_ plus 24 lowercase hex",
         );
     }
-    let Some(cipher) = state.store_cipher else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "storage encryption unavailable",
-        );
-    };
     let projects = state.projects.clone();
     let read = tokio::task::spawn_blocking(move || {
-        projects.read_one_scoped(&cipher, &id, &message_id, &Viewer::of(&identity))
+        projects.read_one_scoped(&id, &message_id, &Viewer::of(&identity))
     })
     .await;
     match read {
@@ -852,12 +824,10 @@ fn letter_response(record: ProjectRecord) -> Response {
         && put("x-vivi-from", &record.from)
         && put("x-vivi-sequence", &record.sequence.to_string())
         && put("x-vivi-content-sha256", &record.content_sha256)
+        && put("x-vivi-appended-at", &record.appended_at)
         && put("cache-control", "no-store");
     if let Some(prefix) = &record.from_prefix {
         ok = ok && put("x-vivi-from-prefix", prefix);
-    }
-    if let Some(at) = &record.appended_at {
-        ok = ok && put("x-vivi-appended-at", at);
     }
     if let Some(to) = &record.to {
         ok = ok && put("x-vivi-to", to);

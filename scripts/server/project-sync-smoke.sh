@@ -75,7 +75,7 @@ setup_checkout() { # dir
   "$VIVI" mailspace init --project "$1" >/dev/null 2>&1
   "$VIVI" role add mind --kind mind --project "$1" >/dev/null 2>&1
   "$VIVI" role add hand --kind hand --project "$1" >/dev/null 2>&1
-  "$VIVI" chat status --project "$1" >/dev/null 2>&1   # mints the checkout key
+  "$VIVI" sync status --project "$1" >/dev/null 2>&1   # mints the checkout key
 }
 for d in "$A" "$B" "$C" "$D"; do setup_checkout "$d"; done
 # key files: the 32-byte seed -> PKCS#8 -> private and public PEM

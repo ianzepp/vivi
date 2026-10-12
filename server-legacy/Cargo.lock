@@ -2336,7 +2336,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vivi"
 version = "11.0.0"
-source = "git+https://github.com/ianzepp/vivi?tag=v11.0.0#35ae100f798c7eef29b6fca550a48bcb20501e07"
+source = "git+https://github.com/ianzepp/vivi?tag=v11.0.0#139d243d4914846e141d85313fcab6d2c412feec"
 dependencies = [
  "chrono",
  "clap",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-server"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -2371,6 +2371,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "getrandom 0.4.3",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

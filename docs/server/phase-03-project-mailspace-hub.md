@@ -1,25 +1,24 @@
 # Phase 03 — Project mailspace hub
 
-Status: **CORE BUILT 2026-10-10, CLIENT BUILT 2026-10-11.** The server
-(project store, identity registration, admission by introduction,
-governance mail, visibility scoping, directory, letters, mailspace
-addresses, history windows, lookup by handle) and the vivi client (`vivi
-sync`, including `pull --since`, `fetch`, `pull --refs`, `resync`, and
-`prune`) interoperate end to end; the 84-leg
-`scripts/project-sync-smoke.sh` passes locally.
-The wire as built is recorded at the end of this document. Transparent
-mode is decided and not built. The postmaster LLM loop remains a future
-phase. The room-based wire contract in [`contract.md`](contract.md) is
-unchanged and the rooms API stays alongside (migration is the open want
-`b4d07a2a`).
-**Correction 2026-10-12.** The Storage section below, written with the
-letter wire on 2026-10-11, removed the server-side mailspace ("A project no
-longer uses a vivi mailspace on the server"). That was a misreading of
-decided item 10, which fixes what travels (the raw `.eml`, byte for byte)
-and says nothing about the server dropping its mailspace. It is reversed by
-items 14 to 16: the project is a mailspace on the server again, and the
-sealed-blob store is to be replaced. Until that is built, the sealed-blob
-store is what runs.
+Status: **CORE BUILT 2026-10-10, CLIENT BUILT 2026-10-11, MAILSPACE STORE
+BUILT 2026-10-12 (vivi-server 1.1.0).** The server (project store, identity
+registration, admission by introduction, governance mail, visibility
+scoping, directory, letters, mailspace addresses, history windows, lookup by
+handle) and the vivi client (`vivi sync`, including `pull --since`, `fetch`,
+`pull --refs`, `resync`, and `prune`) interoperate end to end; the 84-leg
+`scripts/project-sync-smoke.sh` passes locally. A project is a real vivi
+mailspace on the server (decided items 14 to 16). The wire as built is
+recorded at the end of this document. MCP over the server (item 15) is
+decided and not built. Transparent mode is superseded by it. The postmaster
+LLM loop remains a future phase. The room-based wire contract in
+[`contract.md`](contract.md) is unchanged and the rooms API stays alongside
+(migration is the open want `b4d07a2a`).
+**Correction 2026-10-12.** The Storage section written with the letter wire
+on 2026-10-11 had removed the server-side mailspace ("A project no longer
+uses a vivi mailspace on the server"). That was a misreading of decided
+item 10, which fixes what travels (the raw `.eml`, byte for byte) and says
+nothing about the server dropping its mailspace. Items 14 to 16 reverse it
+and 1.1.0 builds it.
 Recorded 2026-10-10 from a design conversation with the repo owner;
 admission by introduction and the reserved `postmaster` identity were
 decided in a follow-up conversation the same day. Each item is marked
@@ -431,33 +430,22 @@ in the design conversation apply:
   for another mailspace's role is held under that address.)
 - What supplies the sequence cursor (for example the per-store event log vivi
   already keeps) and how concurrent appends are serialized per project.
-  (Resolved: the project index's counter under one process-wide append
+  (Resolved: the transport index's sequence under one process-wide append
   mutex.)
 - Whether the wire stays HTTP or speaks IMAP/SMTP. (The item encoding is
   decided: the raw `.eml`, decided item 10. HTTP is the working assumption.)
 - Migration of the rooms and messages already on the staging and production
   services, and how long the rooms API stays alongside the new one.
 - The MCP tool list of the first cut and its role permissions (item 15).
-- **Spike result (2026-10-12, `tests/spike_mailspace_store.rs`).** The
-  server can hold a project as a real vivi mailspace with the public `vivi`
-  API alone; no `vivi` change is required to start. Verified: a letter
-  ingested through `Storage::ingest_if_absent` under its presented id is
-  stored byte for byte under its content hash; the index answers from,
-  to, subject, role and handle without reading the `.eml`; a replay is a
-  no-op and writes no event; a different body under a held id is refused
-  as a conflict; everything survives a reopen. `sequence` rides the
-  remote-binding uid. `appended_at`, `from_prefix` and the content hash
-  ride the ingest event's note, written in the same transaction and only
-  when a row is inserted. The filer is not needed: the server files every
-  letter under one account and a role by kind. Two gaps remain. First,
-  `ingest_if_absent` opens its own transaction, so it cannot be batched
-  with other writes. Second, there is no public cursor or recipient query
-  (`sequence > N LIMIT K`, `to = prefix`): listing filters index rows in
-  Rust, which never reads an `.eml` but is O(rows) per call, and the
-  transport fields sit in JSON note text rather than indexed columns. The
-  fix is either a small cursor/recipient query added to `vivi`, or SQL run
-  by the server beside the mailspace; decide at build time, since neither
-  blocks the store.
+- **Resolved by the 1.1.0 build (2026-10-12).** The server holds a project
+  as a real vivi mailspace through the public `vivi` API alone
+  (`Storage::ingest_if_absent`, `read_blob`, `list_messages_*`); no `vivi`
+  change was needed. The client's filer is not used. The two gaps a spike
+  found (no public cursor or recipient query, and no home for `appended_at`
+  and `from_prefix`) are closed by the server's own `transport.sqlite`
+  beside the mailspace. `ingest_if_absent` opens its own transaction, so the
+  mailspace write and the transport row are two steps, ordered and
+  idempotent, not one transaction.
 
 ## Effect on pending work
 
@@ -483,9 +471,8 @@ Endpoints under `/v1/projects`, additive alongside the frozen rooms
 contract. Authentication is per-identity ED25519 challenge/sign with digest
 bearer tokens, mirroring the rooms flow. All item content is sealed at rest
 with the server key; the project mailspace under `DATA_DIR/projects/<id>/`
-is the store and the read path (P2-8 closed); `items.json` beside it holds
-only the sequence counter and replay digests — transport state, never
-content.
+is the store and the read path (P2-8 closed). (As of 1.1.0 the transport
+record is `transport.sqlite`; see Storage.)
 
 - `POST /v1/projects` `{public_key_pem, creator_name}` → 201
   `{project_id, admission: {name, fingerprint}}`. The creator's key is the
@@ -540,7 +527,8 @@ content.
 - URL project ids are used raw by the challenge and identity paths rather
   than canonicalized. Harmless on a case-sensitive filesystem and not a
   signature bypass, but it should be canonicalized.
-- Appends and reads scan the whole `items.json` index linearly.
+- ~~Appends and reads scan the whole `items.json` index linearly.~~ Closed
+  2026-10-12: the transport index is indexed SQLite (see Storage).
 - Bulk append is deferred (decided item 13): seeding a large existing
   mailspace is one `PUT` per letter at 30 letters per minute per member,
   about eleven hours for 20,000 letters. A JSON batch action, resumable by
@@ -775,24 +763,53 @@ through the in-process fake server. The numbers are reported, not asserted.
 
 ### Storage
 
-**As running today (to be replaced).** Letters are sealed whole at rest
-under the server key (AES-256-GCM, as VC-5) in per-project blobs named by
-`content_sha256`, with `items.json` holding envelope rows (`sequence`,
-`message_id`, `content_sha256`, `from`, `to`, `kind`, `appended_at`,
-`from_prefix`). A project does not use a vivi mailspace on the server. This
-was a misreading of item 10 (see the correction at the top).
+**As built (1.1.0, decided items 14 and 16).** One real vivi mailspace per
+project under `DATA_DIR/projects/<id>/.vivi/`, created with
+`Mailspace::init` as a room's is, plus `transport.sqlite` beside it.
 
-**Target (decided items 14 and 16).** One vivi mailspace per project under
-`DATA_DIR/projects/<id>/`, letters in the clear on an encrypted volume,
-ingested verbatim by address with the same filing rules as the client's
-pull, and queried through the mailspace's indexed database. The transport
-fields (`sequence`, `appended_at`, `from_prefix`, the envelope `to`, and
-`content_sha256`) are stored beside each letter and are never recomputed.
-The wire in this document does not change.
+- **The letter.** Ingested verbatim with `Storage::ingest_if_absent` under
+  its presented id: the exact `.eml` bytes in the mailspace blob store under
+  their `content_sha256`, in the clear (plain text on an encrypted volume,
+  item 16). The server cipher is not used for projects. The mailspace's own
+  index carries from, to, subject, handle and the work folder (`needs`,
+  `tasks`, `wants`, or `inbox`), so the content of a project is queried
+  there, never by scanning `.eml` files.
+- **The transport record.** `transport.sqlite` holds one `items` row per
+  letter (`sequence`, `message_id`, `handle`, `content_sha256`,
+  `byte_size`, the authenticated sender's name, `from_prefix`, the envelope
+  `to`, `kind`, `appended_at`) and one `recipients` row per envelope
+  address (lowercased address and, for `<8 hex>.local`, its prefix). It is
+  indexed by id, handle, sender plus hash, append time, and recipient, so a
+  list, a lookup, a visibility check and a replay check are indexed
+  queries and none scans the log. It is transport state, never content.
+- **Order and crash safety.** The mailspace write comes first, then the
+  transport row, under the process-wide append mutex. Both are idempotent by
+  id, so a crash between them converges on replay. A letter with no
+  transport row is not served.
+- **Reads.** Visibility is a clause of the transport query; a letter the
+  caller may not see is never read. A letter's bytes are read from the
+  mailspace by hash and checked against `content_sha256` before they are
+  served; a missing or mismatched blob is a storage error, never a skip.
+- **No migration.** Nothing on staging or production was worth keeping, so
+  this is a clean break: projects created on the sealed-blob store
+  (1.0.0) are recreated.
 
-**Migration (decided 2026-10-12): none.** Nothing on staging or production
-is worth keeping. The switch is a clean break: projects created on the
-sealed-blob store are recreated, and no replay is written.
+**Measured (debug build, 20,000 letters of 3 KiB, 2026-10-12).** Building
+the project through `append` took 159 s; one append at full size 8.8 ms
+(7 ms at 2,000 letters, so append cost does not grow with the log: nothing
+reads or rewrites an index file). The first 500-letter page 74 ms (it reads
+500 letters). Paging all 15,001 visible letters in 31 pages 2.2 s. A `kind`
+filter 711 ms for 5,001 letters, a `to` filter 296 ms for 2,001, an `after`
+window of the last 2% 43 ms, a 100-handle lookup 12 ms. `transport.sqlite`
+is 9.7 MB. Reproduce with `cargo test --test measure_windows -- --ignored
+--nocapture`.
+
+**Filing, for MCP (open).** Every letter is filed under one account (the
+project id) and a folder by kind. That backs "list needs" and "show a
+thread" for any caller, with the recipient in `to_addr`. If the MCP surface
+wants a per-role queue as a mailspace query (`needs` of `hand@<prefix>`),
+letters would be filed per recipient address as the client's filer does.
+Decide when the tool list is written.
 
 ### Token renewal
 
