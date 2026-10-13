@@ -56,6 +56,9 @@ pub const RESULT_PATHS: [&str; 4] = [
 /// Result keys of the discarded paths of a read-only job: `<prefix>1`,
 /// `<prefix>2`, ... (capped by the runner; `discarded_count` has the total).
 pub const DISCARDED_PATH_PREFIX: &str = "discarded_path_";
+/// Result keys of the restored paths of a write job: `<prefix>1`,
+/// `<prefix>2`, ... (capped by the runner; `restored_count` has the total).
+pub const RESTORED_PATH_PREFIX: &str = "restored_path_";
 /// Outcome words of a read-only job (the `push` key of the result).
 pub const READ_ONLY_UNCHANGED: &str = "read_only_unchanged";
 pub const READ_ONLY_DISCARDED: &str = "read_only_discarded";
@@ -122,11 +125,24 @@ impl JobResult {
     /// total).
     #[must_use]
     pub fn discarded_paths(&self) -> Vec<String> {
+        self.numbered_paths(DISCARDED_PATH_PREFIX)
+    }
+
+    /// The configured paths a write job had changed and the runner put back
+    /// before committing, in order (the runner lists at most a fixed number;
+    /// `restored_count` has the total).
+    #[must_use]
+    pub fn restored_paths(&self) -> Vec<String> {
+        self.numbered_paths(RESTORED_PATH_PREFIX)
+    }
+
+    /// The values of `prefix1`, `prefix2`, ... in numeric order.
+    fn numbered_paths(&self, prefix: &str) -> Vec<String> {
         let mut found: Vec<(u64, &String)> = self
             .fields
             .iter()
             .filter_map(|(k, v)| {
-                let n = k.strip_prefix(DISCARDED_PATH_PREFIX)?;
+                let n = k.strip_prefix(prefix)?;
                 Some((n.parse::<u64>().into_iter().next()?, v))
             })
             .collect();

@@ -111,6 +111,22 @@ fn the_pool_depth_setting_reaches_the_plan() {
 }
 
 #[test]
+fn the_pool_restore_setting_reaches_the_plan() {
+    let mut config = config();
+    config.restore = vec!["runtime/llvm/Cargo.lock".into()];
+    let p = plan_job(
+        &config,
+        "p",
+        ("abcd1234", "Subject line", "body text"),
+        &flags("m/ok"),
+        "rules".into(),
+        "job000000001".into(),
+    )
+    .unwrap();
+    assert_eq!(p.restore, ["runtime/llvm/Cargo.lock"]);
+}
+
+#[test]
 fn an_unlisted_model_is_refused() {
     let err = plan(&flags("m/nope")).unwrap_err().to_string();
     assert!(err.contains("not in [harness].models"), "{err}");

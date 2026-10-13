@@ -16,6 +16,9 @@
 #   brief.md     the task body        rules.md  the standing rules
 #   facts.cmd    optional: commands to record before the harness starts, one
 #                per line (see run_facts below)
+#   restore.list optional: repository-relative paths to put back to the start
+#                commit before the runner commits, one per line (written jobs
+#                only; see the restore loop below)
 # Environment from the machine: BUILD_DIR, and any variable named in
 # ENV_NAMES (their values come from the machine's own environment).
 # UNPRIVILEGED, BUILD_PERSISTS and WORK are the ones of the boot script.
@@ -103,6 +106,7 @@ finish() { # finish <push-outcome> [sha]
     echo "model=$MODEL"
     echo "slot=$SLOT"
     [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
+    [ -z "${RESTORE_EXTRA:-}" ] || printf '%s\n' "$RESTORE_EXTRA"
     [ -z "${FACTS_EXTRA:-}" ] || printf '%s\n' "$FACTS_EXTRA"
   } > "$J/result.partial"
   mv "$J/result.partial" "$J/result"
@@ -216,6 +220,36 @@ finish_read_only() {
   finish read_only_discarded
 }
 [ -z "${READ_ONLY:-}" ] || finish_read_only
+# Written jobs only from here (a read-only job never commits, so nothing
+# applies). Files the pool lists in `restore` come back to START before
+# anything is committed: a build that rewrites a tracked file (a lock file,
+# say) must not publish the rewrite. A path is restored only when it is
+# tracked at START and the tree or the index differs from START for it; a
+# path that is not tracked at START is never touched, and an unchanged one
+# is never listed. The list is the pool's, never a guess.
+RESTORED=
+RESTORE_EXTRA=
+RESTORE_LIST_CAP=50
+if [ -f "$J/restore.list" ]; then
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if as_hand git cat-file -e "$START:$path" 2>/dev/null &&
+       ! as_hand git diff --quiet "$START" -- "$path" 2>/dev/null; then
+      as_hand git checkout -q "$START" -- "$path"
+      [ -z "$RESTORED" ] || RESTORED+=$'\n'
+      RESTORED+=$path
+    fi
+  done < "$J/restore.list"
+fi
+if [ -n "$RESTORED" ]; then
+  count=$(printf '%s\n' "$RESTORED" | grep -c .)
+  RESTORE_EXTRA="restored_count=$count"
+  i=0
+  while [ "$i" -lt "$RESTORE_LIST_CAP" ] && IFS= read -r path; do
+    i=$((i + 1))
+    RESTORE_EXTRA+=$'\n'"restored_path_$i=$path"
+  done <<< "$RESTORED"
+fi
 CHANGED=$(as_hand git status --porcelain -- "${EXCLUDE[@]}")
 # A worktree agent may have committed on its own: HEAD then moved off START.
 MOVED=

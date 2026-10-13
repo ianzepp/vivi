@@ -74,13 +74,19 @@ fn dispatch_note_round_trips() {
 }
 
 fn finished() -> Outcome {
-    let fields = BTreeMap::from([
+    finished_with(&[])
+}
+
+/// A finished write job whose result carries `extra` key=value lines.
+fn finished_with(extra: &[(&str, &str)]) -> Outcome {
+    let mut fields = BTreeMap::from([
         ("job".to_string(), "j1".to_string()),
         ("push".to_string(), "pushed".to_string()),
         ("branch".to_string(), "factory/a".to_string()),
         ("sha".to_string(), "b".repeat(40)),
         ("agent_rc".to_string(), "0".to_string()),
     ]);
+    fields.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     Outcome::Finished(Collected {
         result: JobResult { fields },
         receipt: "did the thing\n".into(),
@@ -223,8 +229,6 @@ fn facts_are_in_the_json_note_and_shown_before_the_receipt_not_as_flat_keys() {
         task: "aaaa1111".into(),
         record: read_only_record("j1"),
     };
-    let outcome = read_only_outcome(&[
-        ("push", "read_only_unchanged"),
         ("fact_1_cmd", "gpu-query --csv"),
         ("fact_1_exit", "0"),
         ("fact_1_out", r"Some GPU, 550.1\n8 GiB"),
