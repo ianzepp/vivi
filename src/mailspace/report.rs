@@ -72,12 +72,13 @@ impl Report {
 
 impl Mailspace {
     /// Whether `identity` accepts `item` when it closes it: the item's author
-    /// (or holder of its sent copy), or a role of kind `mind`. Unlike
-    /// [`Mailspace::may_close`], a mind accepts for this mailspace even when
-    /// another mailspace authored the item, in which case its close is a
-    /// local report that is still this mailspace's acceptance.
+    /// (or holder of its sent copy), or a role of kind `mind` or `operator`.
+    /// Unlike [`Mailspace::may_close`], a mind or operator accepts for this
+    /// mailspace even when another mailspace authored the item, in which case
+    /// its close is a local report that is still this mailspace's acceptance.
     pub(super) fn is_acceptor(&self, item: &HeldItem, identity: &str) -> bool {
-        self.item_author(item).as_deref() == Some(identity) || self.identity_is_mind(identity)
+        self.item_author(item).as_deref() == Some(identity)
+            || self.identity_may_close_for_all(identity)
     }
 
     /// Whether `row`, in `done`, is held by a role that cannot accept `item`:

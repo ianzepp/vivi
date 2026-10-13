@@ -252,12 +252,21 @@ impl Mailspace {
         })
     }
 
-    /// Whether a role is of kind `mind`: the kind that closes and reopens
-    /// work it did not author.
+    /// Whether a role is of kind `mind`.
     pub(super) fn identity_is_mind(&self, identity: &str) -> bool {
         self.find_role_by_name_or_alias(identity)
             .and_then(|role| role.kind.as_deref())
             .is_some_and(|kind| kind.eq_ignore_ascii_case("mind"))
+    }
+
+    /// Whether a role may close and reopen work it did not author: kind
+    /// `mind` or kind `operator`.
+    pub(super) fn identity_may_close_for_all(&self, identity: &str) -> bool {
+        self.find_role_by_name_or_alias(identity)
+            .and_then(|role| role.kind.as_deref())
+            .is_some_and(|kind| {
+                kind.eq_ignore_ascii_case("mind") || kind.eq_ignore_ascii_case("operator")
+            })
     }
 
     /// Resolve a string to a canonical identity name. Accepts `name`, aliases,

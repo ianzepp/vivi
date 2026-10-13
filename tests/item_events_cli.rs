@@ -370,6 +370,67 @@ fn a_mind_closes_an_operators_need_it_was_handed_with_no_sync() {
 }
 
 #[test]
+fn an_operator_reopens_and_closes_a_need_it_neither_authored_nor_holds() {
+    let tmp = project();
+    let p = tmp.path();
+    // The mind's need to the hand: the operator is neither author nor holder.
+    let (need, need_sent) = send_between(p, "need", "mind", "hand", "N past the operator");
+    assert_eq!(state_line(p, "need", &need), None);
+
+    // The operator's close is the event, exactly as a mind's is: the
+    // folders, the state lines, the node and the audit all follow.
+    let out = ok(p, &["need", "done", &need, "--for", "operator"]);
+    assert!(out.starts_with(&format!("done {need}; event ")), "{out}");
+    assert!(!out.contains("reported"), "{out}");
+
+    assert_eq!(role_of(p, "need", &need), "done");
+    assert_eq!(state_line(p, "need", &need).as_deref(), Some("done"));
+    assert_eq!(state_line(p, "need", &need_sent).as_deref(), Some("done"));
+    assert_eq!(thread_len(p, "need", &need), 2, "the item and its event");
+    assert!(counts(p).contains("ready=0"), "{}", counts(p));
+    audit_is_clean(p);
+
+    // And reopens it the same way.
+    let out = ok(p, &["need", "reopen", &need, "--for", "operator"]);
+    assert!(
+        out.starts_with(&format!("reopened {need}; event ")),
+        "{out}"
+    );
+    assert_eq!(role_of(p, "need", &need), "needs");
+    assert_eq!(state_line(p, "need", &need).as_deref(), Some("reopened"));
+    assert_eq!(thread_len(p, "need", &need), 3);
+    assert!(counts(p).contains("ready=1"), "{}", counts(p));
+    audit_is_clean(p);
+
+    // And closes it again.
+    let out = ok(p, &["need", "done", &need, "--for", "operator"]);
+    assert!(out.starts_with(&format!("done {need}; event ")), "{out}");
+    assert_eq!(role_of(p, "need", &need), "done");
+    assert_eq!(state_line(p, "need", &need).as_deref(), Some("done"));
+    assert_eq!(thread_len(p, "need", &need), 4);
+    assert!(counts(p).contains("ready=0"), "{}", counts(p));
+    audit_is_clean(p);
+}
+
+#[test]
+fn a_hand_is_still_refused_and_the_refusal_names_operator_kind_beside_mind_kind() {
+    let tmp = project();
+    let p = tmp.path();
+    let (_, need_sent) = send_between(p, "need", "mind", "hand", "N the need");
+
+    // The hand names the author's sent copy it does not hold: refused, and
+    // the refusal names operator-kind beside mind-kind.
+    let error = fails(p, &["need", "done", &need_sent, "--for", "hand"]);
+    assert!(error.contains("held by identity 'mind'"), "{error}");
+    assert!(error.contains("--for mind"), "{error}");
+    assert!(
+        error.contains("for its author 'mind', a mind-kind role or an operator-kind role"),
+        "{error}"
+    );
+    assert!(error.contains("'hand' is neither"), "{error}");
+}
+
+#[test]
 fn a_hands_close_reports_and_the_minds_close_of_the_same_handle_is_the_event() {
     let tmp = project();
     let p = tmp.path();
@@ -448,7 +509,10 @@ fn an_auditors_close_is_never_an_event_on_any_handle() {
     assert!(error.contains("held by identity 'hand'"), "{error}");
     assert!(error.contains("--for hand"), "{error}");
     assert!(error.contains("vivi task done"), "{error}");
-    assert!(error.contains("mind-kind role"), "{error}");
+    assert!(
+        error.contains("mind-kind role or an operator-kind role"),
+        "{error}"
+    );
     let error = fails(p, &["need", "done", &need_sent, "--for", "auditor"]);
     assert!(error.contains("held by identity 'operator'"), "{error}");
     let error = fails(p, &["task", "done", &task_sent, "--for", "auditor"]);
