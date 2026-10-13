@@ -6,8 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::collect::{Collected, DISCARDED_PATH_PREFIX, Outcome, RESTORED_PATH_PREFIX};
+use super::collect::{Collected, DISCARDED_PATH_PREFIX, JobResult, Outcome, RESTORED_PATH_PREFIX};
 use super::facts;
+use super::job::WITH_LIMIT;
 use crate::mailspace::PoolEventRow;
 
 /// The machine-readable record of a dispatch, as written to the task.
@@ -256,6 +257,7 @@ fn finished_text(done: &Collected) -> String {
             text.push_str(path);
         }
     }
+    text.push_str(&with_text(&done.result));
     for (title, body) in [
         ("facts", &facts::text(&done.result.facts())),
         ("receipt", &done.receipt),
@@ -270,6 +272,59 @@ fn finished_text(done: &Collected) -> String {
         }
     }
     text
+}
+
+/// The extra-ref lines of a finished result: one per named ref and the
+/// final fetch depth, when the job named extra refs at all.
+fn with_text(result: &JobResult) -> String {
+    let Some(count) = with_count(result) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for n in 1..=count {
+        text.push_str(&format!(
+            "\nextra ref {} -> {} at {}{}",
+            or_dash(result.get(&format!("with_{n}_ref"))),
+            or_dash(result.get(&format!("with_{n}_local"))),
+            short_or_dash(result.get(&format!("with_{n}_sha"))),
+            merge_base_clause(result, &format!("with_{n}_merge_base")),
+        ));
+    }
+    if !text.is_empty() && result.fields.contains_key("fetch_depth") {
+        text.push_str(&format!("\nfetched at depth {}", result.get("fetch_depth")));
+    }
+    text
+}
+
+/// How many extra-ref entries a result renders: no `with_count` at all means
+/// none; a count that is not a number or is above the limit is clamped to it.
+fn with_count(result: &JobResult) -> Option<usize> {
+    result.fields.contains_key("with_count").then(|| {
+        result
+            .get("with_count")
+            .parse::<usize>()
+            .unwrap_or(WITH_LIMIT)
+            .min(WITH_LIMIT)
+    })
+}
+
+/// A result value for the receipt, `-` when the key is missing.
+fn or_dash(value: &str) -> &str {
+    if value.is_empty() { "-" } else { value }
+}
+
+/// The first 12 characters of a result value, `-` when the key is missing.
+fn short_or_dash(value: &str) -> &str {
+    or_dash(value.get(..12).unwrap_or(value))
+}
+
+/// ` (merge base <first 12 characters or none>)`, left out entirely when the
+/// key is absent, as in worktree mode where nothing was fetched.
+fn merge_base_clause(result: &JobResult, key: &str) -> String {
+    if !result.fields.contains_key(key) {
+        return String::new();
+    }
+    format!(" (merge base {})", short_or_dash(result.get(key)))
 }
 
 #[cfg(test)]
