@@ -191,3 +191,7 @@ mod epoch_test;
 #[cfg(test)]
 #[path = "sync/epoch_binding_test.rs"]
 mod epoch_binding_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_status_test.rs"]
+mod epoch_status_test;

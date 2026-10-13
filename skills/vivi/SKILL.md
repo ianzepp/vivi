@@ -1613,7 +1613,7 @@ vivi sync create [--name <creator>]  # new project on the server; prints its id,
 vivi sync vouch <name> --key-file <pem>  # vouch for a member's key (or --key <pem>)
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
-vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded, held for unknown roles; not the PEM — `vivi sync key` prints it
+vivi sync status         # fingerprint, server, project, address, cursor, epoch, history, unsent, not uploaded, held for unknown roles; not the PEM — `vivi sync key` prints it
 ```
 
 **Draining.** The server allows 30 letters a minute per member, so a large
@@ -1766,6 +1766,17 @@ first pull records full history. `vivi sync status` prints it as
 `unknown (pulled before windows)` and is never guessed to be full. A letter
 older than the floor is not here, so a reply to one stays unlinked until it
 is fetched.
+
+**Server epoch.** The client accepts an optional `epoch` (an integer, 1 to
+4294967295) on every list response; it is recorded in the sync state and
+carried by new remote bindings. When it changes, the next pull says
+`server epoch changed (A -> B)`, resets the cursor and floor, and re-reads
+from sequence 0, filing nothing twice; a pull gives up after 2 resets in one
+run. A server that sends no epoch behaves as before, and `vivi sync status`
+shows the epoch. Wire contract: the list response carries a field named
+`epoch`, an integer from 1 to 4294967295, in the same JSON object as
+`records`, `next_cursor`, and `has_more`, and the server must change it
+whenever its log is wiped or restored.
 
 **Getting older letters.** `vivi sync resync` resets the cursor and floor to
 zero and replays everything; letters already held are left alone, evicted ones

@@ -301,6 +301,7 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
     if let Some(project) = config.project.as_deref().filter(|p| !p.trim().is_empty()) {
         let state = SyncState::load(&sync_dir(&mailspace.dir), project.trim())?;
         println!("sync cursor: {}", state.since);
+        println!("sync {}", state.epoch_line());
         println!("sync {}", state.history_line());
     } else {
         println!("sync cursor: (project not set)");
