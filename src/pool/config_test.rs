@@ -270,6 +270,58 @@ fn the_mcp_config_placeholder_is_accepted_and_needs_the_bridge() {
     config.validate(&id()).unwrap();
 }
 
+/// The bridge table is one boolean: `true` parses, the absent table is the
+/// same as off, and anything else is refused when the mailspace config
+/// loads.
+#[test]
+fn the_bridge_enabled_field_is_a_bool_and_the_absent_table_is_off() {
+    use crate::mailspace::MailspaceConfig;
+
+    let refused: Result<MailspaceConfig, _> = toml::from_str(
+        r#"
+name = "space"
+
+[pools.x]
+provider = "local"
+
+[pools.x.bridge]
+enabled = "yes"
+"#,
+    );
+    let message = match refused {
+        Ok(_) => panic!("the non-bool enabled parsed"),
+        Err(e) => e.to_string(),
+    };
+    assert!(message.contains("enabled"), "{message}");
+
+    let on: MailspaceConfig = toml::from_str(
+        r#"
+name = "space"
+
+[pools.x]
+provider = "local"
+slots = 1
+
+[pools.x.bridge]
+enabled = true
+"#,
+    )
+    .unwrap();
+    assert!(on.pools["x"].bridge.enabled);
+
+    let off: MailspaceConfig = toml::from_str(
+        r#"
+name = "space"
+
+[pools.x]
+provider = "local"
+slots = 1
+"#,
+    )
+    .unwrap();
+    assert!(!off.pools["x"].bridge.enabled);
+}
+
 #[test]
 fn model_slugs_are_restricted_to_safe_characters() {
     let mut config = full();
