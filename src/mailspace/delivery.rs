@@ -6,7 +6,7 @@ use super::event_log::{log_move_event, log_send_events};
 use super::kind::matches_kind;
 use super::reply::{add_reply_headers, resolve_reply_parent};
 use super::{
-    DeliveredMessage, DeliveryResult, Mailspace, RawDelivery, Recipient, SendRequest,
+    DeliveredMessage, DeliveryResult, Mailspace, MoveOutcome, RawDelivery, Recipient, SendRequest,
     canonical_local_role,
 };
 use crate::error::VivariumError;
@@ -21,32 +21,6 @@ pub(super) struct DeliveredMessageId {
     pub(super) identity: String,
     pub(super) message_id: String,
     pub(super) content_id: String,
-}
-
-/// What a `done`/`reopen`-style move did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MoveOutcome {
-    /// The handle of the row the move named.
-    pub handle: String,
-    /// The handle of the event letter, when the move closed or reopened work
-    /// as its author or a mind: the change travels to every holder.
-    pub event: Option<String>,
-    /// Whether a close or reopen of work stayed a local report: only this
-    /// mailspace's copy moved and the owner's state is unchanged.
-    pub reported: bool,
-}
-
-impl MoveOutcome {
-    /// The one-line receipt: `done <handle>; event <id>` for a close that
-    /// travelled, `done <handle>; reported` for one that did not.
-    #[must_use]
-    pub fn receipt(&self, verb: &str) -> String {
-        match &self.event {
-            Some(event) => format!("{verb} {}; event {event}", self.handle),
-            None if self.reported => format!("{verb} {}; reported", self.handle),
-            None => format!("{verb} {}", self.handle),
-        }
-    }
 }
 
 impl Mailspace {
@@ -688,7 +662,8 @@ impl Mailspace {
     }
 
     /// [`Mailspace::move_item`], reporting whether the move travelled as an
-    /// event letter or stayed a local report.
+    /// event letter or stayed a local report, plus the handles of any bound
+    /// needs the move completed through its join.
     ///
     /// # Errors
     /// Same as [`Mailspace::move_item`].
@@ -711,11 +686,19 @@ impl Mailspace {
             )));
         }
         let work_close = self.is_work_close(&storage, &before, &role)?;
+        let mut joined_needs = Vec::new();
         // A role that may close the work (its author, or a mind) writes an
         // event letter, which carries the move to every mailspace holding
         // the item; any other move is local, and a close is a report.
-        let event =
-            self.try_emit_for_move(&mut storage, &identity, &before, &role, note, command)?;
+        let event = self.try_emit_for_move(
+            &mut storage,
+            &identity,
+            &before,
+            &role,
+            note,
+            command,
+            &mut joined_needs,
+        )?;
         if event.is_none() {
             self.refuse_sent_copy_reopen(handle, &before, &role)?;
             self.move_row_locally(&mut storage, &identity, &before, &role, note, command)?;
@@ -725,12 +708,20 @@ impl Mailspace {
         }
         let shown = storage.display_handle(&before.message_id)?;
         if event.is_none() {
-            self.sync_backlog_after_move(&storage, &identity, &before, &role, &shown)?;
+            self.sync_backlog_after_move(
+                &storage,
+                &identity,
+                &before,
+                &role,
+                &shown,
+                &mut joined_needs,
+            )?;
         }
         Ok(MoveOutcome {
             handle: shown,
             reported: event.is_none() && work_close,
             event,
+            joined_needs,
         })
     }
 

@@ -65,7 +65,9 @@ impl Mailspace {
     /// may close the item (its author, or a mind or operator) and apply it; the result is
     /// the event letter's handle. `Ok(None)` when the move is not an event:
     /// not a close or reopen, not work, or the actor may not close the item
-    /// (an assignee's move is a local report).
+    /// (an assignee's move is a local report). Needs the applied event's
+    /// join rule completes are pushed onto `joined` as the mailspace shows
+    /// them.
     pub(in crate::mailspace) fn try_emit_for_move(
         &self,
         storage: &mut Storage,
@@ -74,6 +76,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
+        joined: &mut Vec<String>,
     ) -> Result<Option<String>, VivariumError> {
         let Some(kind) = event_kind_for_move(&before.local_role, role) else {
             return Ok(None);
@@ -111,12 +114,14 @@ impl Mailspace {
             command,
             via: None,
         };
-        self.emit_item_event(storage, &item, &request).map(Some)
+        self.emit_item_event(storage, &item, &request, joined)
+            .map(Some)
     }
 
     /// Settle a need's copies the way its owner closing or reopening it
     /// would: as an event letter. `Ok(false)` when this mailspace does not
-    /// own the need (the caller moves the copies locally).
+    /// own the need (the caller moves the copies locally). Needs the settle's
+    /// event application joins are pushed onto `joined`.
     pub(in crate::mailspace) fn settle_need_by_event(
         &self,
         storage: &mut Storage,
@@ -124,6 +129,7 @@ impl Mailspace {
         to_done: bool,
         command: &str,
         via: &str,
+        joined: &mut Vec<String>,
     ) -> Result<bool, VivariumError> {
         let Some(item) = held_item(storage, &view.content_id)? else {
             return Ok(false);
@@ -150,7 +156,7 @@ impl Mailspace {
             command,
             via: Some(via),
         };
-        self.emit_item_event(storage, &item, &request)?;
+        self.emit_item_event(storage, &item, &request, joined)?;
         Ok(true)
     }
 
@@ -277,6 +283,7 @@ impl Mailspace {
         storage: &mut Storage,
         item: &HeldItem,
         request: &EmitRequest<'_>,
+        joined: &mut Vec<String>,
     ) -> Result<String, VivariumError> {
         let chain = self.item_chain(storage, item)?;
         let prevs: Vec<String> = chain_heads(&chain.events)
@@ -293,7 +300,7 @@ impl Mailspace {
             parent_content_id: &item.content_id,
             moves: &moves,
         })?;
-        self.sync_item_nodes(storage, item, request.kind, "via=lifecycle")?;
+        self.sync_item_nodes(storage, item, request.kind, "via=lifecycle", joined)?;
         // The last row is the actor's own sent copy of the letter.
         let event = written
             .last()

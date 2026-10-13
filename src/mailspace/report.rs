@@ -21,6 +21,35 @@ use super::step::StepException;
 use crate::error::VivariumError;
 use crate::storage::{BACKLOG_GRAPH_CODE, Storage, StoredMessageView};
 
+/// What a `done`/`reopen`-style move did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveOutcome {
+    /// The handle of the row the move named.
+    pub handle: String,
+    /// The handle of the event letter, when the move closed or reopened work
+    /// as its author or a mind: the change travels to every holder.
+    pub event: Option<String>,
+    /// Whether a close or reopen of work stayed a local report: only this
+    /// mailspace's copy moved and the owner's state is unchanged.
+    pub reported: bool,
+    /// Handles of bound needs the move completed through its join, as the
+    /// mailspace shows them. Empty unless the join rule fired.
+    pub joined_needs: Vec<String>,
+}
+
+impl MoveOutcome {
+    /// The one-line receipt: `done <handle>; event <id>` for a close that
+    /// travelled, `done <handle>; reported` for one that did not.
+    #[must_use]
+    pub fn receipt(&self, verb: &str) -> String {
+        match &self.event {
+            Some(event) => format!("{verb} {}; event {event}", self.handle),
+            None if self.reported => format!("{verb} {}; reported", self.handle),
+            None => format!("{verb} {}", self.handle),
+        }
+    }
+}
+
 /// Why a step exception is raised for reported work.
 pub(super) const REASON_AWAITING_ACCEPTANCE: &str = "awaiting_acceptance";
 
@@ -101,6 +130,7 @@ impl Mailspace {
         before: &StoredMessageView,
         role: &str,
         handle: &str,
+        joined: &mut Vec<String>,
     ) -> Result<(), VivariumError> {
         if role == "done"
             && matches!(
@@ -111,12 +141,16 @@ impl Mailspace {
         {
             let accepts = self.is_acceptor(&item, identity);
             match (before.local_role == "done", accepts) {
-                (true, true) => return self.backlog_complete_item(handle).map(|_| ()),
+                (true, true) => {
+                    return self
+                        .backlog_complete_item_collect(handle, "via=lifecycle", joined)
+                        .map(|_| ());
+                }
                 (_, false) => return Ok(()),
                 (false, true) => {}
             }
         }
-        self.sync_backlog_node(&before.local_role, role, handle)
+        self.sync_backlog_node(&before.local_role, role, handle, joined)
     }
 
     /// The report behind `row`'s item, when one of this mailspace's own rows
