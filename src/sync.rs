@@ -35,7 +35,11 @@ pub mod window;
 /// Remote-binding provider for letters synced with a project server.
 pub const PROVIDER: &str = "vivi-project";
 
-/// Fixed `remote_uidvalidity`: a project id never needs a validity epoch.
+/// The validity remote bindings are written under when the server sends no
+/// epoch: a project id never needs a validity epoch of its own. Once the
+/// server does send an epoch, the epoch takes over as the validity, so a
+/// wiped and restored server's reused sequence numbers cannot collide with
+/// the previous log's bindings.
 pub const UIDVALIDITY: u32 = 1;
 
 /// Largest letter the server accepts (64 KiB, 413 above it).
@@ -208,3 +212,15 @@ mod tests;
 #[cfg(test)]
 #[path = "sync/vouch_test.rs"]
 mod vouch_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_test.rs"]
+mod epoch_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_binding_test.rs"]
+mod epoch_binding_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_status_test.rs"]
+mod epoch_status_test;

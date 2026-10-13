@@ -29,6 +29,12 @@ pub struct SyncState {
     /// before windows existed: the floor is then unknown, not "full".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub floor: Option<Floor>,
+    /// The server log's epoch this cursor was read under, when the server
+    /// sends one (see the wire contract on `Page::epoch`). Absent until the
+    /// first page carries an epoch; a changed epoch means the log restarted
+    /// and the cursor no longer names the same history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u32>,
     /// Replies held without a parent: child `content_id` -> the RFC
     /// `Message-ID` it answers. Retried on every pull.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -77,6 +83,15 @@ impl SyncState {
             (0, Some(time)) => format!("history from: {time} (no letters yet)"),
             (sequence, Some(time)) => format!("history from: {time} (sequence {sequence})"),
             (sequence, None) => format!("history from: sequence {sequence}"),
+        }
+    }
+
+    /// The `vivi sync status` line for the epoch.
+    #[must_use]
+    pub fn epoch_line(&self) -> String {
+        match self.epoch {
+            Some(epoch) => format!("epoch: {epoch}"),
+            None => "epoch: not sent by the server".into(),
         }
     }
 
