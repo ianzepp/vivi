@@ -419,3 +419,154 @@ fn a_refused_project_creation_names_the_status_and_the_reason() {
     assert!(error.contains("only three projects"), "{error}");
     listener.join().unwrap();
 }
+
+fn challenge_reply() -> String {
+    let challenge = crate::b64::encode(&[7u8; 32]);
+    format!(r#"{{"challenge_id":"c1","challenge":"{challenge}","expires_in":60}}"#)
+}
+
+/// `/auth/token` answers with a token and no `token_expires_at` field.
+fn bare_token_server(method: &str, path: &str) -> (u16, String) {
+    match (method, path.rsplit('/').next().unwrap_or_default()) {
+        ("POST", "challenge") => (200, challenge_reply()),
+        ("POST", "token") => (200, r#"{"token":"t"}"#.into()),
+        _ => (500, error_body("x", "y").to_string()),
+    }
+}
+
+/// `/auth/token` refuses the mint: this name is not admitted.
+fn refused_token_server(method: &str, path: &str) -> (u16, String) {
+    match (method, path.rsplit('/').next().unwrap_or_default()) {
+        ("POST", "challenge") => (200, challenge_reply()),
+        ("POST", "token") => (401, error_body("unauthorized", "not admitted").to_string()),
+        _ => (500, error_body("x", "y").to_string()),
+    }
+}
+
+fn accepted_empty_server(_method: &str, _path: &str) -> (u16, String) {
+    (202, String::new())
+}
+
+fn unauthorized_raw_server(_method: &str, _path: &str) -> (u16, String) {
+    (401, error_body("unauthorized", "not admitted").to_string())
+}
+
+#[test]
+fn mint_token_returns_the_token_and_the_expiry_the_server_sends() {
+    let (port, listener) = serve(2, project_server);
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+
+    let minted = mint_token(&settings, &identity).unwrap();
+
+    assert_eq!(minted.token, "tok-1");
+    assert_eq!(minted.expires_at.as_deref(), Some("later"));
+    let seen = listener.join().unwrap();
+    assert_eq!(seen[1].path, "/v1/projects/abcde-fghjk/auth/token");
+}
+
+#[test]
+fn mint_token_gives_no_expiry_when_the_field_is_absent() {
+    let (port, listener) = serve(2, bare_token_server);
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+
+    let minted = mint_token(&settings, &identity).unwrap();
+
+    assert_eq!(minted.token, "t");
+    assert_eq!(minted.expires_at, None);
+    listener.join().unwrap();
+}
+
+#[test]
+fn a_refused_mint_still_names_the_bearer_mint_and_mint_bearer_still_works() {
+    let (port, listener) = serve(2, refused_token_server);
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+
+    let error = mint_bearer(&settings, &identity).unwrap_err().to_string();
+
+    assert!(error.contains("refused the bearer mint"), "{error}");
+    listener.join().unwrap();
+
+    let (port, listener) = serve(2, project_server);
+    let settings = settings_for(&format!("http://127.0.0.1:{port}"));
+
+    let token = mint_bearer(&settings, &identity).unwrap();
+
+    assert_eq!(token, "tok-1");
+    listener.join().unwrap();
+}
+
+#[test]
+fn a_202_with_an_empty_body_is_a_fine_raw_answer() {
+    let (port, listener) = serve(1, accepted_empty_server);
+    let url = format!("http://127.0.0.1:{port}/v1/projects/abcde-fghjk/mcp");
+
+    let raw = send_raw(
+        "POST",
+        &url,
+        &[("Authorization", "Bearer tok".to_string())],
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(raw.status, 202);
+    assert!(raw.body.is_empty(), "no error, no bytes");
+    listener.join().unwrap();
+}
+
+#[test]
+fn a_401_json_body_comes_back_as_bytes_with_its_status() {
+    let (port, listener) = serve(1, unauthorized_raw_server);
+    let url = format!("http://127.0.0.1:{port}/v1/projects/abcde-fghjk/mcp");
+
+    let raw = send_raw("POST", &url, &[], None).unwrap();
+
+    assert_eq!(raw.status, 401);
+    assert_eq!(raw.content_type.as_deref(), Some("application/json"));
+    let body: Value = serde_json::from_slice(&raw.body).unwrap();
+    assert_eq!(body["error"]["code"], "unauthorized");
+    listener.join().unwrap();
+}
+
+#[test]
+fn send_raw_sends_exactly_the_bytes_and_headers_given() {
+    let (port, listener) = serve(1, accepted_empty_server);
+    let url = format!("http://127.0.0.1:{port}/v1/projects/abcde-fghjk/mcp");
+    let bytes = b"{\"jsonrpc\":\"2.0\",\"id\":1} \xff\x00".to_vec();
+
+    let raw = send_raw(
+        "POST",
+        &url,
+        &[
+            ("Authorization", "Bearer tok-9".to_string()),
+            ("Content-Type", "application/vnd.vivi.mcp+json".to_string()),
+        ],
+        Some(bytes.clone()),
+    )
+    .unwrap();
+
+    assert_eq!(raw.status, 202);
+    let seen = listener.join().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].path, "/v1/projects/abcde-fghjk/mcp");
+    assert_eq!(seen[0].body, bytes, "the request body is the exact bytes");
+    let get = |name: &str| {
+        seen[0]
+            .headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
+    assert_eq!(get("authorization"), Some("Bearer tok-9"));
+    assert_eq!(
+        get("content-type"),
+        Some("application/vnd.vivi.mcp+json"),
+        "the caller sets Content-Type; send_raw adds none"
+    );
+}
