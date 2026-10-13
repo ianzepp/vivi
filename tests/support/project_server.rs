@@ -81,13 +81,15 @@ struct Token {
     revoked: bool,
 }
 
-/// A minted API key, with the stamp the list route reports.
+/// A minted API key, with the stamps the list route reports. Revoked keys
+/// stay in the list with a `revoked_at`; live ones have none.
 struct StoredKey {
     key_id: String,
     label: String,
     created_by: String,
     secret: String,
     revoked: bool,
+    revoked_at: Option<String>,
     created_at: String,
 }
 
@@ -102,6 +104,7 @@ struct State {
     refuse_always: bool,
     token_lifetime_secs: i64,
     tokens_minted: usize,
+    requests_seen: usize,
     seq: u64,
     rng: u64,
 }
@@ -118,6 +121,7 @@ impl State {
             refuse_always: false,
             token_lifetime_secs: DEFAULT_TOKEN_LIFETIME_SECS,
             tokens_minted: 0,
+            requests_seen: 0,
             seq: 0,
             rng: now_nanos() | 1,
         }
@@ -200,6 +204,13 @@ impl ProjectServer {
         self.state.lock().unwrap().tokens_minted
     }
 
+    /// How many HTTP requests this fake has answered, whatever the route or
+    /// the answer: the counter a `before any request` claim is checked with.
+    #[must_use]
+    pub fn requests_seen(&self) -> usize {
+        self.state.lock().unwrap().requests_seen
+    }
+
     /// Every `/mcp` request so far, in arrival order.
     #[must_use]
     pub fn mcp_requests(&self) -> Vec<McpSeen> {
@@ -264,6 +275,7 @@ fn serve_connection(state: Arc<Mutex<State>>, mut stream: TcpStream) {
     let Some(request) = read_request(&mut stream) else {
         return;
     };
+    state.lock().unwrap().requests_seen += 1;
     let reply = route(&state, &request);
     let _ = write_response(&mut stream, &reply);
 }
@@ -508,17 +520,22 @@ fn mint_token(state: &Mutex<State>, request: &Request) -> Reply {
 }
 
 /// `POST /mcp`: record first, then refusal, then bearer auth, then dispatch.
+/// A body that is not valid JSON is a `-32700` parse error, answered before
+/// any bearer judgment. A JSON array is a batch, answered by the array of
+/// the individual replies.
 fn handle_mcp(state: &Mutex<State>, request: &Request) -> Reply {
     let bearer = request.bearer().unwrap_or_default().to_string();
-    let parsed = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
     let accept = request.header("accept").map(str::to_string);
+    let parsed = match serde_json::from_slice::<Value>(&request.body) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            record_mcp(state, &bearer, Value::Null, &accept);
+            return parse_error_reply();
+        }
+    };
+    record_mcp(state, &bearer, parsed.clone(), &accept);
     {
         let mut state = state.lock().unwrap();
-        state.mcp_seen.push(McpSeen {
-            bearer: bearer.clone(),
-            body: parsed.clone(),
-            accept: accept.clone(),
-        });
         if state.refuse_always || state.refuse_next > 0 {
             state.refuse_next = state.refuse_next.saturating_sub(1);
             return error_reply(401, "unauthorized", "the fake is refusing /mcp");
@@ -531,8 +548,33 @@ fn handle_mcp(state: &Mutex<State>, request: &Request) -> Reply {
             "the bearer is not a live token or API key",
         );
     };
-    let reply = dispatch_mcp(&caller, &parsed);
-    if accept.as_deref() == Some("text/event-stream") && !reply.body.is_empty() {
+    sse_wrapped(accept.as_deref(), dispatch_mcp(&caller, &parsed))
+}
+
+/// Record one `/mcp` request as it arrived, before any judgment.
+fn record_mcp(state: &Mutex<State>, bearer: &str, body: Value, accept: &Option<String>) {
+    state.lock().unwrap().mcp_seen.push(McpSeen {
+        bearer: bearer.to_string(),
+        body,
+        accept: accept.clone(),
+    });
+}
+
+/// The one parse-error reply for a body that is not valid JSON.
+fn parse_error_reply() -> Reply {
+    json_reply(
+        400,
+        json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": { "code": -32700, "message": "parse error" },
+        }),
+    )
+}
+
+/// Wrap a non-empty body in one SSE frame when the client asked for it.
+fn sse_wrapped(accept: Option<&str>, reply: Reply) -> Reply {
+    if accept == Some("text/event-stream") && !reply.body.is_empty() {
         Reply {
             status: reply.status,
             content_type: "text/event-stream",
@@ -543,14 +585,31 @@ fn handle_mcp(state: &Mutex<State>, request: &Request) -> Reply {
     }
 }
 
-/// JSON-RPC dispatch: notifications get 202, everything else HTTP 200.
+/// JSON-RPC dispatch: a batch (array) is answered by the array of the
+/// individual replies, notifications omitted; a lone notification is 202
+/// with an empty body; everything else HTTP 200.
 fn dispatch_mcp(caller: &str, parsed: &Value) -> Reply {
+    if let Value::Array(items) = parsed {
+        let replies: Vec<Value> = items
+            .iter()
+            .filter_map(|item| dispatch_one(caller, item))
+            .collect();
+        if replies.is_empty() {
+            return empty_reply(202);
+        }
+        return json_reply(200, Value::Array(replies));
+    }
+    dispatch_one(caller, parsed).map_or_else(|| empty_reply(202), |reply| json_reply(200, reply))
+}
+
+/// One JSON-RPC message's reply value; `None` for a notification.
+fn dispatch_one(caller: &str, parsed: &Value) -> Option<Value> {
     let method = parsed
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if method.starts_with("notifications/") {
-        return empty_reply(202);
+        return None;
     }
     let id = parsed.get("id").cloned().unwrap_or(Value::Null);
     let result = match method {
@@ -559,17 +618,14 @@ fn dispatch_mcp(caller: &str, parsed: &Value) -> Reply {
         "tools/list" => tools_list(),
         "tools/call" => call_tool(caller, parsed),
         other => {
-            return json_reply(
-                200,
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32601, "message": format!("method not found: {other}") },
-                }),
-            );
+            return Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": -32601, "message": format!("method not found: {other}") },
+            }));
         }
     };
-    json_reply(200, json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+    Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
 /// `initialize`: echo a supported protocol version, else the fallback.
@@ -678,6 +734,7 @@ fn create_key(state: &Mutex<State>, request: &Request) -> Reply {
         created_by: member.clone(),
         secret: secret.clone(),
         revoked: false,
+        revoked_at: None,
         created_at: created_at.clone(),
     });
     json_reply(
@@ -692,7 +749,9 @@ fn create_key(state: &Mutex<State>, request: &Request) -> Reply {
     )
 }
 
-/// `GET /keys`: identity token required; live keys only, never the secret.
+/// `GET /keys`: identity token required; the list keeps revoked keys (each
+/// with a `revoked_at`) so an audit can see them, live keys carry none.
+/// Never a secret.
 fn list_keys(state: &Mutex<State>, request: &Request) -> Reply {
     let bearer = request.bearer().unwrap_or_default();
     if token_member(state, bearer).is_none() {
@@ -707,20 +766,25 @@ fn list_keys(state: &Mutex<State>, request: &Request) -> Reply {
 fn keys_list_body(keys: &[StoredKey]) -> Value {
     let listed: Vec<Value> = keys
         .iter()
-        .filter(|key| !key.revoked)
         .map(|key| {
-            json!({
+            let mut item = json!({
                 "key_id": key.key_id,
                 "label": key.label,
                 "created_by": key.created_by,
                 "created_at": key.created_at,
-            })
+            });
+            if let Some(at) = &key.revoked_at {
+                item["revoked_at"] = json!(at);
+            }
+            item
         })
         .collect();
     json!({ "keys": listed })
 }
 
-/// `DELETE /keys/{key_id}`: the minting member revokes their live key.
+/// `DELETE /keys/{key_id}`: the minting member revokes their key.
+/// Idempotent on staging: revoking an already-revoked own key is 204 again.
+/// Only an id that never existed, or another member's, is 404.
 fn revoke_key(state: &Mutex<State>, request: &Request, key_id: &str) -> Reply {
     let bearer = request.bearer().unwrap_or_default();
     let Some(member) = token_member(state, bearer) else {
@@ -732,15 +796,14 @@ fn revoke_key(state: &Mutex<State>, request: &Request, key_id: &str) -> Reply {
     };
     let mut state = state.lock().unwrap();
     match state.keys.iter_mut().find(|key| key.key_id == key_id) {
-        Some(key) if key.created_by == member && !key.revoked => {
+        Some(key) if key.created_by == member => {
             key.revoked = true;
+            if key.revoked_at.is_none() {
+                key.revoked_at = Some(rfc3339(now_secs()));
+            }
             empty_reply(204)
         }
-        _ => error_reply(
-            404,
-            "key_not_found",
-            "no such live key minted by this member",
-        ),
+        _ => error_reply(404, "key_not_found", "no such key minted by this member"),
     }
 }
 

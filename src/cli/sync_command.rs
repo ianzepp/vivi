@@ -139,6 +139,13 @@ pub enum SyncSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Mint, list, and revoke PROJECT API keys (a bearer for `vivi mcp` and
+    /// the letter wire; not `vivi sync key`, which prints this mailspace's
+    /// public key)
+    ApiKey {
+        #[command(subcommand)]
+        command: ApiKeyCommand,
+    },
     /// Vouch for a member's key as the admitted member this mailspace is:
     /// sends one governance letter to the project's postmaster (needs
     /// [sync].server, project, and name); stores nothing locally
@@ -157,6 +164,39 @@ pub enum SyncSubcommand {
         /// The member's public key PEM, given inline
         #[arg(long, value_name = "PEM", required_unless_present = "key_file")]
         key: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ApiKeyCommand {
+    /// Mint a PROJECT API key: a bearer for `vivi mcp` and the letter wire
+    /// (not `vivi sync key`, which prints this mailspace's public key). The
+    /// raw key is printed once and never stored by vivi
+    Mint {
+        /// What the key is for, as the project's key list shows it (1 to 64
+        /// characters)
+        #[arg(long, value_name = "LABEL")]
+        label: String,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// List the project's live API keys: id, label, creator, and time;
+    /// revoked keys are not shown and no secret ever is
+    List {
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Revoke one PROJECT API key by its key id (the minting member's
+    /// identity token does the authorizing; the raw key is not needed)
+    Revoke {
+        /// The key id to revoke
+        #[arg(value_name = "KEY_ID")]
+        key_id: String,
         /// Project root that owns .vivi/
         #[arg(long)]
         project: Option<PathBuf>,
