@@ -215,3 +215,135 @@ fn a_bad_label_is_refused_before_any_request_reaches_the_fake() {
         "validation refuses before any request"
     );
 }
+
+/// With `--out` the raw key lands in the new file at mode 0600 and never
+/// on stdout or stderr; the fake's own record is the source of truth.
+#[test]
+fn mint_out_writes_the_key_to_a_new_0600_file_and_never_prints_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (project, server) = registered();
+    let out_path = project.path().join("mcp.key");
+
+    let out = run(
+        project.path(),
+        &[
+            "sync",
+            "api-key",
+            "mint",
+            "--label",
+            "ci",
+            "--out",
+            out_path.to_str().unwrap(),
+        ],
+    );
+    let printed = ok(&out);
+
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "exactly three lines, none the key: {printed}"
+    );
+    let key_id = lines[0].strip_prefix("key_id ").unwrap();
+    assert_eq!(lines[1], "label ci");
+    assert_eq!(lines[2], format!("out {}", out_path.display()));
+
+    let keys = server.keys();
+    assert_eq!(keys.len(), 1, "the fake minted exactly one key");
+    let raw = keys[0].secret.clone();
+    assert!(
+        !printed.contains(&raw),
+        "stdout never holds the key: {printed}"
+    );
+    let said = stderr(&out);
+    assert!(!said.contains(&raw), "stderr never holds the key: {said}");
+
+    let written = std::fs::read_to_string(&out_path).unwrap();
+    assert_eq!(written, format!("{raw}\n"), "the file holds the raw key");
+    let mode = std::fs::metadata(&out_path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "the key file is 0600");
+
+    assert_eq!(keys[0].key_id, key_id);
+    assert_eq!(keys[0].label, "ci");
+    assert_eq!(keys[0].created_by, "alice");
+}
+
+/// An existing `--out` file is refused before any server contact: nonzero
+/// exit, the file byte for byte untouched, and no key minted.
+#[test]
+fn mint_out_refuses_an_existing_file_and_mints_nothing() {
+    let (project, server) = registered();
+    let out_path = project.path().join("mcp.key");
+    std::fs::write(&out_path, b"keep me\n").unwrap();
+
+    let out = run(
+        project.path(),
+        &[
+            "sync",
+            "api-key",
+            "mint",
+            "--label",
+            "ci",
+            "--out",
+            out_path.to_str().unwrap(),
+        ],
+    );
+
+    assert!(!out.status.success());
+    assert_eq!(stdout(&out), "", "nothing on stdout");
+    let said = stderr(&out);
+    assert!(said.contains("mcp.key"), "names the path: {said}");
+    assert!(said.contains("already exists"), "names the problem: {said}");
+    assert_eq!(
+        std::fs::read(&out_path).unwrap(),
+        b"keep me\n",
+        "the file is byte for byte untouched"
+    );
+    assert!(server.keys().is_empty(), "no key was minted");
+    assert_eq!(
+        server.requests_seen(),
+        0,
+        "the file is checked before any request"
+    );
+}
+
+/// A `--out` path whose parent directory does not exist is refused before
+/// any server contact; the directory is not created and nothing is minted.
+#[test]
+fn mint_out_refuses_a_missing_parent_directory_and_mints_nothing() {
+    let (project, server) = registered();
+    let out_path = project.path().join("no-such-dir").join("mcp.key");
+
+    let out = run(
+        project.path(),
+        &[
+            "sync",
+            "api-key",
+            "mint",
+            "--label",
+            "ci",
+            "--out",
+            out_path.to_str().unwrap(),
+        ],
+    );
+
+    assert!(!out.status.success());
+    assert_eq!(stdout(&out), "", "nothing on stdout");
+    let said = stderr(&out);
+    assert!(said.contains("no-such-dir"), "names the path: {said}");
+    assert!(
+        said.contains("does not exist"),
+        "names the missing directory: {said}"
+    );
+    assert!(
+        !project.path().join("no-such-dir").exists(),
+        "no directory was created"
+    );
+    assert!(server.keys().is_empty(), "no key was minted");
+    assert_eq!(
+        server.requests_seen(),
+        0,
+        "the path is checked before any request"
+    );
+}

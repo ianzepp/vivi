@@ -1,3 +1,5 @@
+use std::io::Write as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 
 use vivi::VivariumError;
@@ -102,9 +104,11 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
             create(project.as_deref().or(top), name.as_deref())
         }
         Some(SyncSubcommand::ApiKey { command }) => match command {
-            ApiKeyCommand::Mint { label, project } => {
-                api_key_mint(project.as_deref().or(top), label)
-            }
+            ApiKeyCommand::Mint {
+                label,
+                out,
+                project,
+            } => api_key_mint(project.as_deref().or(top), label, out.as_deref()),
             ApiKeyCommand::List { project } => api_key_list(project.as_deref().or(top)),
             ApiKeyCommand::Revoke { key_id, project } => {
                 api_key_revoke(project.as_deref().or(top), key_id)
@@ -468,21 +472,107 @@ fn vouch(
 }
 
 /// Mint a PROJECT API key (a bearer for `vivi mcp` and the letter wire; not
-/// `vivi sync key`). The raw key is printed once on stdout and stored
-/// nowhere; the one stderr note says so and how to revoke.
-fn api_key_mint(project: Option<&Path>, label: &str) -> Result<(), VivariumError> {
+/// `vivi sync key`). Without `--out` the raw key is printed once on stdout
+/// and stored nowhere; the one stderr note says so and how to revoke. With
+/// `--out <file>` the key is written to a new 0600 file and stdout carries
+/// only the key id, the label, and the file path — never the key. The file
+/// is created before the server is contacted, so a refused path mints
+/// nothing; a mint that fails after the file was created removes it again.
+fn api_key_mint(
+    project: Option<&Path>,
+    label: &str,
+    out: Option<&Path>,
+) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let settings = SyncSettings::resolve(&mailspace)?;
     let identity = SyncIdentity::ensure(&mailspace.dir)?;
-    let minted = keys::mint_key(&settings, &identity, label)?;
-    println!("key_id {}", minted.record.key_id);
-    println!("label {}", minted.record.label);
-    println!("key {}", minted.key);
-    eprintln!(
-        "the key is shown once; Vivi does not store it. Revoke with: vivi sync api-key revoke {}",
-        minted.record.key_id
-    );
+    let target = match out {
+        Some(path) => Some((path, create_secret_file(path)?)),
+        None => None,
+    };
+    let minted = match keys::mint_key(&settings, &identity, label) {
+        Ok(minted) => minted,
+        Err(error) => {
+            if let Some((path, _)) = target {
+                remove_created_quietly(path);
+            }
+            return Err(error);
+        }
+    };
+    match target {
+        Some((path, file)) => {
+            if let Err(error) = write_secret_file(file, path, &minted.key) {
+                remove_created_quietly(path);
+                return Err(error);
+            }
+            println!("key_id {}", minted.record.key_id);
+            println!("label {}", minted.record.label);
+            println!("out {}", path.display());
+        }
+        None => {
+            println!("key_id {}", minted.record.key_id);
+            println!("label {}", minted.record.label);
+            println!("key {}", minted.key);
+            eprintln!(
+                "the key is shown once; Vivi does not store it. Revoke with: vivi sync api-key revoke {}",
+                minted.record.key_id
+            );
+        }
+    }
     Ok(())
+}
+
+/// Create `path` as a brand-new file with mode 0600: an existing file is
+/// refused (never overwritten) and a missing parent directory is refused
+/// (never created). Called before the server is contacted, so a refused
+/// path mints nothing.
+fn create_secret_file(path: &Path) -> Result<std::fs::File, VivariumError> {
+    let parent = path.parent().unwrap_or(Path::new(""));
+    if !parent.as_os_str().is_empty() && !parent.is_dir() {
+        return Err(VivariumError::Message(format!(
+            "cannot create {}: the parent directory {} does not exist",
+            path.display(),
+            parent.display()
+        )));
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => VivariumError::Message(format!(
+                "refusing to write the key: {} already exists",
+                path.display()
+            )),
+            _ => VivariumError::Message(format!("cannot create {}: {error}", path.display())),
+        })
+}
+
+/// Best-effort removal of the key file this command just created, after a
+/// failed mint or a failed write: the command's own error is what gets
+/// reported, and a file that cannot be removed is not worth a second one.
+fn remove_created_quietly(path: &Path) {
+    std::fs::remove_file(path).map(drop).unwrap_or_default();
+}
+
+/// Write the raw key and one newline to the fresh file, then pin the mode
+/// at 0600 whatever the umask allowed at creation.
+fn write_secret_file(mut file: std::fs::File, path: &Path, key: &str) -> Result<(), VivariumError> {
+    let mut write = || -> std::io::Result<()> {
+        file.write_all(key.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(path, permissions)
+    };
+    write().map_err(|error| {
+        VivariumError::Message(format!(
+            "cannot write the key to {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 /// List the project's live API keys; revoked ones are not shown and no
