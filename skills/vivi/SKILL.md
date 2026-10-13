@@ -1186,6 +1186,16 @@ integrates `committed <branch> <sha>` (merge or cherry-pick it in the source
 repository); Vivi never deletes the branch. A refusal at step 3 (see "Local
 provider") costs nothing: no slot was claimed.
 
+**Integration branch without git access** — the route for an orchestrating Mind
+that may not run git, and it needs no setup step for its integration branch.
+Dispatch each unit with `--from <base commit> --branch <unit branch>`. Dispatch
+the first merge job with `--from <base commit> --branch mind/<name>` (the
+integration branch) to merge the first approved unit branch: that job brings
+the integration branch into existence, and later merge jobs continue it with
+`--from mind/<name> --branch mind/<name>`. The cost: a unit cannot start from
+the integration tip until the first merge has landed, so units that need
+another unit's code start `--from` that unit's branch (stacking) instead.
+
 ### dispatch
 
 `vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>]
@@ -1201,6 +1211,14 @@ provider") costs nothing: no slot was claimed.
   `branch`), and stacking (`from` = one branch, `branch` = another). The push
   is never forced: if the branch moved or holds other work, the result is
   `push_refused`.
+
+  A `branch` name that does not exist yet is created from the starting point on
+  every provider: the job's published commit brings it into existence (a
+  `no_changes` job creates none). An existing `branch` with a different `from`
+  is where the hosts differ: a worktree pool refuses at dispatch, before a slot
+  is claimed (the table under "Local provider"); fly, docker, ssh, runpod and
+  local fetch mode do not check the branch when dispatching — the job runs, and
+  its final push, never forced, ends `push_refused`.
 - `--budget` is the agent's hard time limit in seconds (default 1800). Every job
   also runs under a hard limit enforced by the slot's boot script (budget plus
   ten minutes of slack).
