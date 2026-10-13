@@ -6,7 +6,9 @@
 //! raw key travels only inside the job archive (see [`crate::pool::job`]);
 //! the runner reads it and gives it to the agent as `VIVI_MCP_API_KEY`. The
 //! key is never printed and never stored; only its key id is. A dispatch
-//! that fails after the mint revokes the key.
+//! that fails after the mint revokes the key. A collected job's key is
+//! revoked at collect; the keys of everything else a pool left behind are
+//! swept by `pool destroy --all`.
 
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -17,6 +19,10 @@ use crate::sync::keys;
 
 /// The longest label the project server accepts.
 const LABEL_MAX: usize = 64;
+
+/// The length of the job id a mint label ends with
+/// ([`crate::pool::dispatch::new_job_id`]).
+const JOB_ID_LEN: usize = 12;
 
 /// One minted bridge grant: the raw key, its server record, and the server
 /// and project the agent will bridge to. The raw key never prints
@@ -71,6 +77,89 @@ pub fn revoke_grant(space: &Mailspace, grant: &Grant) -> Result<(), VivariumErro
     let settings = SyncSettings::resolve(space)?;
     let identity = SyncIdentity::ensure(&space.dir)?;
     keys::revoke_key(&settings, &identity, &grant.key_id)
+}
+
+/// Whether a listed key label is one of `pool`'s minted bridge keys: the
+/// pool's own `pool-<pool>-` prefix — the dash ends the pool, so pool `a`
+/// never matches pool `a-b`'s keys — and then exactly a job id (twelve
+/// hexadecimal characters, the shape of [`crate::pool::dispatch::new_job_id`])
+/// and nothing else. A hand-minted label can only match by wild coincidence,
+/// and another pool's never does.
+#[must_use]
+pub fn label_matches(label: &str, pool: &str) -> bool {
+    let prefix = format!("pool-{pool}-");
+    let Some(job) = label.strip_prefix(prefix.as_str()) else {
+        return false;
+    };
+    job.len() == JOB_ID_LEN && job.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The exact command that revokes one key by id: what a warning hands a
+/// human when a revoke the tool could not do is left to finish by hand.
+#[must_use]
+pub fn manual_revoke(key_id: &str) -> String {
+    format!("vivi sync api-key revoke {key_id}")
+}
+
+/// Revoke the key one collected dispatch minted: the live key labelled
+/// exactly [`label_for`]`(pool, job)` — never a sibling job's, never another
+/// pool's, never a hand-minted one. `Ok(None)` when no live key carries the
+/// label (the dispatch minted none, or a failed dispatch already revoked it).
+///
+/// # Errors
+/// Returns the resolve error, the identity error, or the list or revoke
+/// error; the caller turns a failure into a warning, never an error of the
+/// collect.
+pub fn revoke_for_job(
+    space: &Mailspace,
+    pool: &str,
+    job: &str,
+) -> Result<Option<String>, VivariumError> {
+    let settings = SyncSettings::resolve(space)?;
+    let identity = SyncIdentity::ensure(&space.dir)?;
+    let label = label_for(pool, job);
+    let mut revoked = None;
+    for key in keys::list_keys(&settings, &identity)?
+        .iter()
+        .filter(|key| key.label == label)
+    {
+        keys::revoke_key(&settings, &identity, &key.key_id)?;
+        revoked.get_or_insert_with(|| key.key_id.clone());
+    }
+    Ok(revoked)
+}
+
+/// Revoke every live key labelled for `pool` ([`label_matches`]) — the sweep
+/// `pool destroy --all` runs, so nothing a lost or uncollected job minted
+/// survives the pool. Each revoked key says so on standard error
+/// (`revoked bridge key <key_id> (<label>)`); a key that cannot be revoked
+/// only warns, naming the exact manual command. Returns the key ids revoked.
+///
+/// # Errors
+/// Returns the resolve error, the identity error, or the list error; the
+/// caller turns a failure into a warning, never an error of the destroy.
+pub fn revoke_pool(space: &Mailspace, pool: &str) -> Result<Vec<String>, VivariumError> {
+    let settings = SyncSettings::resolve(space)?;
+    let identity = SyncIdentity::ensure(&space.dir)?;
+    let mut revoked = Vec::new();
+    for key in keys::list_keys(&settings, &identity)?
+        .iter()
+        .filter(|key| label_matches(&key.label, pool))
+    {
+        match keys::revoke_key(&settings, &identity, &key.key_id) {
+            Ok(()) => {
+                eprintln!("revoked bridge key {} ({})", key.key_id, key.label);
+                revoked.push(key.key_id.clone());
+            }
+            Err(e) => eprintln!(
+                "warning: bridge key {} ({}) could not be revoked: {e}; revoke it by hand: {}",
+                key.key_id,
+                key.label,
+                manual_revoke(&key.key_id)
+            ),
+        }
+    }
+    Ok(revoked)
 }
 
 /// The MCP configuration the job archive carries when a grant exists: it

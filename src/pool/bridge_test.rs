@@ -22,6 +22,34 @@ fn a_long_job_id_still_fits_the_cap() {
 }
 
 #[test]
+fn a_label_matches_only_its_own_pool() {
+    assert!(label_matches("pool-a-abc012def456", "a"));
+    assert!(label_matches("pool-a-b-abc012def456", "a-b"));
+    // `pool-a-` is a prefix of `pool-a-b-<job>`: the dash must end the pool,
+    // or destroying pool a would sweep pool a-b's keys.
+    assert!(!label_matches("pool-a-b-abc012def456", "a"));
+    assert!(!label_matches("pool-a-abc012def456", "b"));
+    assert!(!label_matches("pool-a-abc012def456", "a-b"));
+}
+
+#[test]
+fn a_label_needs_twelve_hex_characters_after_the_pool_and_nothing_else() {
+    assert!(!label_matches("pool-a-abc012def45", "a"));
+    assert!(!label_matches("pool-a-abc012def4567", "a"));
+    assert!(!label_matches("pool-a-abc012def45g", "a"));
+    assert!(!label_matches("pool-a-abc012def456-x", "a"));
+    assert!(!label_matches("pool-a-", "a"));
+    assert!(!label_matches("hand-minted", "a"));
+    assert!(!label_matches("pool-a-abc012def456extra", "a"));
+    assert!(label_matches("pool-a-ABC012DEF456", "a"));
+}
+
+#[test]
+fn the_manual_revoke_command_names_the_subcommand_and_the_id() {
+    assert_eq!(manual_revoke("key_9"), "vivi sync api-key revoke key_9");
+}
+
+#[test]
 fn the_mcp_config_parses_and_names_the_key_only_by_reference() {
     let key = format!("vivi_bridge_{}{}", "S", "k".repeat(40));
     let json = mcp_config_json("http://127.0.0.1:8080", "abcde-fghjk");

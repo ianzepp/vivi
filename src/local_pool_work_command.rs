@@ -376,5 +376,8 @@ pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumEr
         report.out.iter().for_each(|l| println!("{l}"));
     }
     report.warnings.iter().for_each(|w| eprintln!("{w}"));
+    if !command.porcelain {
+        report.revoked.iter().for_each(|r| eprintln!("{r}"));
+    }
     report.error().map_or(Ok(()), Err)
 }

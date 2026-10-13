@@ -8,6 +8,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::bridge;
 use super::collect::{self, Missing, Outcome, Pacing, RoundLine};
 use super::dispatch::{self, Launch};
 use super::pools::PoolSet;
@@ -76,10 +77,15 @@ pub fn submit(
     Ok(made)
 }
 
-/// Record a settled dispatch on its task, unless another process already did.
-pub fn recorder(
-    space: &Mailspace,
-) -> impl FnMut(&OpenDispatch, &Outcome) -> Result<bool, VivariumError> + '_ {
+/// Record a settled dispatch on its task, unless another process already
+/// did. When the record lands, a bridge pool's key for the job is revoked
+/// (best effort, [`revoke_bridge_key_of`]); `human` gets the human-mode lines
+/// a caller may drop (`revoked bridge key ...`), while a failed revoke warns
+/// on standard error whatever the mode.
+pub fn recorder<'a>(
+    space: &'a Mailspace,
+    human: &'a mut dyn FnMut(&str),
+) -> impl FnMut(&OpenDispatch, &Outcome) -> Result<bool, VivariumError> + 'a {
     move |dispatch, outcome| {
         let still_open = open_dispatches(space)?
             .iter()
@@ -93,7 +99,42 @@ pub fn recorder(
             &record::collected_note(dispatch, outcome),
             &record::collected_text(dispatch, outcome),
         )?;
+        revoke_bridge_key_of(space, dispatch, outcome, human);
         Ok(true)
+    }
+}
+
+/// Revoke the bridge key of a settled dispatch, once its result is recorded:
+/// the record comes first, so a failed revoke can only warn, never lose the
+/// result. Only a finished job's key goes — a timed-out or lost job may still
+/// be running and using its key, and what survives it is `pool destroy
+/// --all`'s sweep. Silent when the pool mints no keys or no live key carries
+/// the job's label; a revoke that cannot be done only warns (never fails the
+/// round), naming the exact manual command.
+fn revoke_bridge_key_of(
+    space: &Mailspace,
+    dispatch: &OpenDispatch,
+    outcome: &Outcome,
+    human: &mut dyn FnMut(&str),
+) {
+    if !matches!(outcome, Outcome::Finished(_)) {
+        return;
+    }
+    let Some(config) = space.config.pools.get(&dispatch.record.pool) else {
+        return;
+    };
+    if !config.bridge.enabled {
+        return;
+    }
+    let (pool, job) = (&dispatch.record.pool, &dispatch.record.job);
+    match bridge::revoke_for_job(space, pool, job) {
+        Ok(Some(key_id)) => human(&format!("revoked bridge key {key_id}")),
+        Ok(None) => {}
+        Err(e) => eprintln!(
+            "warning: the bridge key of job {job} on pool {pool} (label {}) could not be \
+             revoked: {e}; revoke it by hand: vivi sync api-key revoke <key_id>",
+            bridge::label_for(pool, job)
+        ),
     }
 }
 
@@ -187,10 +228,12 @@ pub fn wait(
             notice(&start_text(&open, options));
             announced = true;
         }
-        let mut record = recorder(space);
         let pacing = &options.pacing;
         let missing = Missing::Report;
-        let lines = collect::run_round(set, &open, epoch_secs(), pacing, missing, &mut record)?;
+        let lines = {
+            let mut record = recorder(space, &mut *notice);
+            collect::run_round(set, &open, epoch_secs(), pacing, missing, &mut record)?
+        };
         watch
             .observe(&lines, epoch_secs())
             .iter()
@@ -270,6 +313,10 @@ pub struct ReconcileReport {
     pub idle: bool,
     /// Lines for standard error.
     pub warnings: Vec<String>,
+    /// Bridge keys revoked while collecting this round, as the human-mode
+    /// lines that say so (`revoked bridge key <key_id>`). Porcelain mode
+    /// prints none of them.
+    pub revoked: Vec<String>,
     /// Dispatches that could not be polled, plus slots that could not be freed.
     pub failures: usize,
     /// The first poll error's text.
@@ -314,7 +361,12 @@ pub fn reconcile(
     let open = scoped_open(space, set)?;
     let now = epoch_secs();
     let missing = Missing::Close;
-    let lines = collect::run_round(set, &open, now, pacing, missing, &mut recorder(space))?;
+    let mut revoked: Vec<String> = Vec::new();
+    let lines = {
+        let mut human = |line: &str| revoked.push(line.to_string());
+        let mut record = recorder(space, &mut human);
+        collect::run_round(set, &open, now, pacing, missing, &mut record)?
+    };
     let mut report = ReconcileReport {
         out: lines.iter().map(line_text).collect(),
         items: lines.clone(),
@@ -323,6 +375,7 @@ pub fn reconcile(
             .iter()
             .find(|l| l.state == "error")
             .map(|l| l.detail.clone()),
+        revoked,
         ..ReconcileReport::default()
     };
     for member in &set.members {
