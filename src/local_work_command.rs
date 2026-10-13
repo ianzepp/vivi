@@ -405,8 +405,19 @@ fn move_item(
         command,
         None,
     )?;
-    println!("{}", moved.receipt(verb));
+    print_move_receipt(&moved, verb);
     Ok(())
+}
+
+/// Print a move's one-line receipt, then one line per bound need the move
+/// completed through its join, so the acceptor sees the need close.
+pub(crate) fn print_move_receipt(moved: &vivi::mailspace::MoveOutcome, verb: &str) {
+    println!("{}", moved.receipt(verb));
+    let mut joined = moved.joined_needs.clone();
+    joined.dedup();
+    for need in joined {
+        println!("need {need} completed (all bound units accepted)");
+    }
 }
 
 fn show_local_message(

@@ -371,11 +371,14 @@ re-locks them (cascading through join parents and content siblings);
 `vivi step` before explicit promotion. Lowering is a graph fact:
 `vivi need bind <need> <task>...` binds unit tasks to a need, and the need
 auto-completes when every bound unit is accepted (a report does not count) —
-node and mailbox item together (`via=join` in the event log); reopening a
-bound unit restores the need to open the same way. `vivi need show <handle>`
-prints the bound units with their states. Imported Mermaid graphs are for
-non-item topology (pipelines, environment flows); delivery lowering uses
-`need bind` in the backlog, so work is never double-represented.
+node and mailbox item together (`via=join` in the event log); the accepting
+`done` prints `need <handle> completed (all bound units accepted)` when it
+closes the need, and a `done` that fires no join prints no such line.
+Reopening a bound unit restores the need to open the same way.
+`vivi need show <handle>` prints the bound units with their states. Imported
+Mermaid graphs are for non-item topology (pipelines, environment flows);
+delivery lowering uses `need bind` in the backlog, so work is never
+double-represented.
 
 **Dependency grammar.** Structural dependencies — a handle cited with
 `--depends-on` — become edges and derive readiness. Dependencies discovered

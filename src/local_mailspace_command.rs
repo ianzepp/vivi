@@ -801,7 +801,7 @@ fn move_task(
     let moved =
         mailspace.move_task_outcome(for_identity, handle, role, note, verdict, repo, tip)?;
     let verb = if role == "done" { "done" } else { "reopened" };
-    println!("{}", moved.receipt(verb));
+    crate::local_work_command::print_move_receipt(&moved, verb);
     Ok(())
 }
 
