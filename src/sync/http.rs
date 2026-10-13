@@ -85,6 +85,8 @@ struct Directory {
 #[derive(Debug, Deserialize)]
 struct Minted {
     token: String,
+    #[serde(default)]
+    token_expires_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,7 +131,7 @@ impl<'a> HttpTransport<'a> {
     /// Returns an error when the server cannot be reached, refuses the
     /// bearer, or answers something that is not a directory.
     pub fn directory(&self) -> Result<Vec<Member>, VivariumError> {
-        let url = format!("{}/directory", project_url(self.settings));
+        let url = format!("{}/directory", project_base_url(self.settings));
         let (status, body) = request("GET", &url, None, &self.authorized()?)?;
         if status != 200 {
             return Err(api_error(status, &body, self.settings));
@@ -168,7 +170,7 @@ impl Transport for HttpTransport<'_> {
     }
 
     fn lookup(&self, handles: &[String]) -> Result<Lookup, VivariumError> {
-        let url = format!("{}/items/lookup", project_url(self.settings));
+        let url = format!("{}/items/lookup", project_base_url(self.settings));
         let payload = json!({ "handles": handles });
         let (status, body) = request("POST", &url, Some(&payload), &self.authorized()?)?;
         if status != 200 {
@@ -183,7 +185,7 @@ impl Transport for HttpTransport<'_> {
 pub(crate) fn list_url(settings: &SyncSettings, query: &ListQuery<'_>) -> String {
     let mut url = format!(
         "{}/items?since={}&limit={}",
-        project_url(settings),
+        project_base_url(settings),
         query.since,
         query.limit
     );
@@ -237,7 +239,7 @@ pub(crate) fn append_request(
         headers.push(("X-Vivi-To", envelope.to.to_string()));
     }
     AppendRequest {
-        url: format!("{}/items/{message_id}", project_url(settings)),
+        url: format!("{}/items/{message_id}", project_base_url(settings)),
         headers,
         body: envelope.raw_eml.to_vec(),
     }
@@ -287,7 +289,7 @@ pub fn join(
     settings: &SyncSettings,
     identity: &SyncIdentity,
 ) -> Result<JoinReceipt, VivariumError> {
-    let base = project_url(settings);
+    let base = project_base_url(settings);
     let pem = identity.public_key_pem();
     let challenge = fetch_challenge(settings, identity)?;
     let signature = sign_challenge(identity, &challenge.challenge)?;
@@ -352,13 +354,32 @@ pub fn create_project(
     Ok(created.project_id)
 }
 
+/// A minted bearer and, when the server sends one, when it expires.
+#[derive(Debug, Clone)]
+pub struct MintedToken {
+    pub token: String,
+    pub expires_at: Option<String>,
+}
+
 /// Mint a bearer for `[sync] name`: challenge, sign, `auth/token`.
-fn mint_bearer(settings: &SyncSettings, identity: &SyncIdentity) -> Result<String, VivariumError> {
+///
+/// Only `settings.server`, `settings.project`, and `settings.name` are used;
+/// `mailspace_id` is not, so callers outside a mailspace pass an empty
+/// string. The token lives in memory for one invocation and is never written
+/// anywhere or printed.
+///
+/// # Errors
+/// Returns a friendly error when the server is unreachable, the name is not
+/// registered under this checkout's key (HTTP 401), or the mint is refused.
+pub fn mint_token(
+    settings: &SyncSettings,
+    identity: &SyncIdentity,
+) -> Result<MintedToken, VivariumError> {
     let challenge = fetch_challenge(settings, identity)?;
     let signature = sign_challenge(identity, &challenge.challenge)?;
     let (status, body) = request(
         "POST",
-        &format!("{}/auth/token", project_url(settings)),
+        &format!("{}/auth/token", project_base_url(settings)),
         Some(&json!({
             "name": settings.name,
             "challenge_id": challenge.challenge_id,
@@ -380,7 +401,15 @@ fn mint_bearer(settings: &SyncSettings, identity: &SyncIdentity) -> Result<Strin
         return Err(api_error(status, &body, settings));
     }
     let minted: Minted = parse(&body)?;
-    Ok(minted.token)
+    Ok(MintedToken {
+        token: minted.token,
+        expires_at: minted.token_expires_at,
+    })
+}
+
+/// The bearer string only, for callers that do not care about expiry.
+fn mint_bearer(settings: &SyncSettings, identity: &SyncIdentity) -> Result<String, VivariumError> {
+    Ok(mint_token(settings, identity)?.token)
 }
 
 fn fetch_challenge(
@@ -389,7 +418,7 @@ fn fetch_challenge(
 ) -> Result<Challenge, VivariumError> {
     let (status, body) = request(
         "POST",
-        &format!("{}/identities/challenge", project_url(settings)),
+        &format!("{}/identities/challenge", project_base_url(settings)),
         Some(&json!({ "public_key_pem": identity.public_key_pem() })),
         &[],
     )?;
@@ -399,7 +428,9 @@ fn fetch_challenge(
     parse(&body)
 }
 
-fn project_url(settings: &SyncSettings) -> String {
+/// The project's base URL on the server: {server}/v1/projects/{project}, with no trailing slash.
+#[must_use]
+pub fn project_base_url(settings: &SyncSettings) -> String {
     format!("{}/v1/projects/{}", settings.server, settings.project)
 }
 
@@ -409,6 +440,37 @@ enum Body {
     Empty,
     Json(Value),
     Raw(Vec<u8>),
+}
+
+/// The answer to one raw request: whatever status and body came back, an
+/// empty body included.
+#[derive(Debug, Clone)]
+pub struct RawResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
+/// One blocking request of the exact bytes given (the caller sets
+/// `Content-Type`), answered with any status and any body: an empty body is
+/// a fine answer. Same [`TIMEOUT`] as the JSON calls.
+///
+/// # Errors
+/// Returns an error when the server cannot be reached or times out; every
+/// HTTP status is returned as-is inside [`RawResponse`].
+pub fn send_raw(
+    method: &str,
+    url: &str,
+    headers: &[(&'static str, String)],
+    body: Option<Vec<u8>>,
+) -> Result<RawResponse, VivariumError> {
+    let payload = body.map_or(Body::Empty, Body::Raw);
+    let (status, content_type, body) = send_bytes(method, url, payload, headers)?;
+    Ok(RawResponse {
+        status,
+        content_type,
+        body,
+    })
 }
 
 /// One blocking JSON request, with a JSON body when `payload` is given.
@@ -422,14 +484,42 @@ fn request(
     send(method, url, body, headers)
 }
 
-/// The one blocking request plumbing: its own thread and runtime so callers
-/// stay synchronous, and a JSON response.
+/// One blocking request with a JSON response: status plus parsed body. An
+/// empty or non-JSON body is an error.
 fn send(
     method: &str,
     url: &str,
     payload: Body,
     headers: &[(&'static str, String)],
 ) -> Result<(u16, Value), VivariumError> {
+    let (status, _content_type, raw) = send_bytes(method, url, payload, headers)?;
+    let body: Value = serde_json::from_slice(&raw)
+        .map_err(|e| VivariumError::Message(format!("invalid project server response: {e}")))?;
+    Ok((status, body))
+}
+
+/// Why one request never got its response: a timeout or an unreachable
+/// server, each with its own message.
+fn transport_error(e: &reqwest::Error) -> VivariumError {
+    if e.is_timeout() {
+        VivariumError::Message(format!(
+            "project server timed out after {}ms",
+            TIMEOUT.as_millis()
+        ))
+    } else {
+        VivariumError::Message(format!("project server unreachable: {e}"))
+    }
+}
+
+/// The one blocking-request plumbing: its own thread and runtime so callers
+/// stay synchronous, answered with the status, the response Content-Type,
+/// and the raw body.
+fn send_bytes(
+    method: &str,
+    url: &str,
+    payload: Body,
+    headers: &[(&'static str, String)],
+) -> Result<(u16, Option<String>, Vec<u8>), VivariumError> {
     let url = url.to_string();
     let method = method.to_string();
     let headers = headers.to_vec();
@@ -454,21 +544,16 @@ fn send(
                 Body::Json(payload) => request.json(&payload),
                 Body::Raw(bytes) => request.body(bytes),
             };
-            let response = request.send().await.map_err(|e| {
-                if e.is_timeout() {
-                    VivariumError::Message(format!(
-                        "project server timed out after {}ms",
-                        TIMEOUT.as_millis()
-                    ))
-                } else {
-                    VivariumError::Message(format!("project server unreachable: {e}"))
-                }
-            })?;
+            let response = request.send().await.map_err(|e| transport_error(&e))?;
             let status = response.status().as_u16();
-            let body = response.json::<Value>().await.map_err(|e| {
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().map_or(None, |text| Some(text.to_string())));
+            let body = response.bytes().await.map_err(|e| {
                 VivariumError::Message(format!("invalid project server response: {e}"))
             })?;
-            Ok((status, body))
+            Ok((status, content_type, body.to_vec()))
         })
     });
     handle

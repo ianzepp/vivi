@@ -50,3 +50,57 @@ fn public_key_pem_matches_spki_shape() {
     assert_eq!(der.len(), 44, "12-byte SPKI prefix + 32-byte key");
     assert_eq!(&der[..12], ED25519_SPKI_PREFIX);
 }
+
+#[test]
+fn from_key_file_reads_the_same_key_ensure_wrote() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path();
+    let minted = SyncIdentity::ensure(dir).expect("mint identity");
+
+    let loaded = SyncIdentity::from_key_file(&identity_path(dir)).expect("load key file");
+
+    assert_eq!(minted.fingerprint(), loaded.fingerprint());
+    assert_eq!(minted.wire_fingerprint(), loaded.wire_fingerprint());
+}
+
+#[test]
+fn from_key_file_errors_name_the_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let missing = tmp.path().join("deeper").join("key.ed25519");
+
+    let error = SyncIdentity::from_key_file(&missing).expect_err("missing file");
+
+    assert!(error.to_string().contains("key.ed25519"), "{error}");
+
+    let short = tmp.path().join("short.ed25519");
+    std::fs::write(&short, [0u8; 31]).expect("write short file");
+
+    let error = SyncIdentity::from_key_file(&short).expect_err("31 bytes");
+
+    assert!(error.to_string().contains("short.ed25519"), "{error}");
+}
+
+#[test]
+fn from_key_file_creates_nothing_next_to_the_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let key = tmp.path().join("key.ed25519");
+    std::fs::write(&key, [7u8; 32]).expect("write key file");
+
+    SyncIdentity::from_key_file(&key).expect("32-byte key loads");
+
+    let names: Vec<String> = std::fs::read_dir(tmp.path())
+        .expect("read dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["key.ed25519"],
+        "no chat dir, no extra files: {names:?}"
+    );
+}

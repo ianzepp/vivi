@@ -54,8 +54,25 @@ impl SyncIdentity {
         Ok(identity)
     }
 
+    /// Load the 32-byte seed file at `path` (the format of
+    /// `.vivi/chat/identity.ed25519`) without creating anything: no
+    /// directory, no file. For a bridge member name plus key file there is
+    /// no mailspace to mint into.
+    ///
+    /// # Errors
+    /// Returns an error naming `path` when the file is missing, unreadable,
+    /// or does not hold 32 bytes.
+    pub fn from_key_file(path: &Path) -> Result<Self, VivariumError> {
+        Self::load(path)
+    }
+
     fn load(path: &Path) -> Result<Self, VivariumError> {
-        let bytes = fs::read(path)?;
+        let bytes = fs::read(path).map_err(|e| {
+            VivariumError::Message(format!(
+                "cannot read sync identity file {}: {e}",
+                path.display()
+            ))
+        })?;
         let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
             VivariumError::Message(format!(
                 "sync identity file must hold 32 bytes: {}",
