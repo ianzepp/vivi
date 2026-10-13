@@ -264,6 +264,7 @@ impl<'a> World<'a> {
             budget: Some(budget),
             allow_default_branch: true,
             read_only: false,
+            reasoning: None,
         };
         let id = dispatch::new_job_id(&task, u128::from(self.counter), std::process::id());
         let plan = dispatch::plan_job(
