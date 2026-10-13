@@ -57,6 +57,7 @@ fn flags(model: &str) -> DispatchFlags {
         budget: None,
         allow_default_branch: false,
         read_only: false,
+        reasoning: None,
     }
 }
 
@@ -132,6 +133,86 @@ fn an_unlisted_model_is_refused() {
     let err = plan(&flags("m/nope")).unwrap_err().to_string();
     assert!(err.contains("not in [harness].models"), "{err}");
     assert!(err.contains("m/ok, m/other"), "{err}");
+}
+
+fn reasoning_config(run: &str) -> PoolConfig {
+    let mut c = config();
+    c.harness.as_mut().unwrap().run = run.into();
+    c
+}
+
+#[test]
+fn a_template_using_reasoning_is_refused_without_a_level() {
+    let c = reasoning_config("fake --model {model} --thinking {reasoning}");
+    let err = plan_job(
+        &c,
+        "p",
+        ("t", "s", "b"),
+        &flags("m/ok"),
+        "r".into(),
+        "j".into(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains(
+            "harness.run uses {reasoning} but no reasoning level was chosen for this job; \
+             dispatch by band (a `band:` line in the task, or a role with a band) or remove \
+             {reasoning} from [pools.p.harness].run"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_chosen_reasoning_level_reaches_the_harness_command() {
+    let mut f = flags("m/ok");
+    f.reasoning = Some("xhigh".into());
+    let p = plan_job(
+        &reasoning_config("fake --model {model} --thinking {reasoning}"),
+        "p",
+        ("t", "s", "b"),
+        &f,
+        "r".into(),
+        "j".into(),
+    )
+    .unwrap();
+    assert_eq!(p.harness_cmd, "fake --model m/ok --thinking xhigh");
+}
+
+#[test]
+fn an_unsafe_reasoning_level_is_refused_by_name() {
+    for bad in [
+        "x; rm -rf",
+        "",
+        "a b",
+        "$(x)",
+        "thirty-three-characters-long-thing!!",
+    ] {
+        let mut f = flags("m/ok");
+        f.reasoning = Some(bad.into());
+        let err = plan_job(
+            &reasoning_config("fake --model {model} --thinking {reasoning}"),
+            "p",
+            ("t", "s", "b"),
+            &f,
+            "r".into(),
+            "j".into(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(bad), "{err}");
+        assert!(err.contains("reasoning"), "{err}");
+    }
+}
+
+#[test]
+fn a_template_without_the_reasoning_placeholder_plans_as_before() {
+    let mut f = flags("m/ok");
+    f.reasoning = Some("xhigh".into());
+    let p = plan(&f).unwrap();
+    assert_eq!(p.harness_cmd, "fake --model m/ok @/home/hand/brief.md");
+    assert_eq!(plan(&flags("m/ok")).unwrap().harness_cmd, p.harness_cmd);
 }
 
 #[test]

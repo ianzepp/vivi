@@ -248,6 +248,14 @@ fn harness_run_rejects_unknown_placeholders_but_not_shell_expansion() {
 }
 
 #[test]
+fn harness_run_accepts_the_reasoning_placeholder() {
+    let mut config = full();
+    config.harness.as_mut().unwrap().run =
+        "tool --model {model} --thinking {reasoning} {brief} {rules}".into();
+    config.validate(&id()).unwrap();
+}
+
+#[test]
 fn model_slugs_are_restricted_to_safe_characters() {
     let mut config = full();
     config.harness.as_mut().unwrap().models = vec!["a b".into()];

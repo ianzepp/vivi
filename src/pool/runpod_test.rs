@@ -33,6 +33,7 @@ fn plan(r: &Rig) -> JobPlan {
         budget: Some(600),
         allow_default_branch: false,
         read_only: false,
+        reasoning: None,
     };
     plan_job(
         &r.config,

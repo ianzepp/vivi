@@ -773,7 +773,7 @@ impl PoolHarness {
         }
         if let Some(unknown) = super::job::unknown_placeholder(&self.run) {
             return Err(bad(format!(
-                "harness.run holds the unknown placeholder {{{unknown}}} (use {{model}}, {{brief}}, {{rules}})"
+                "harness.run holds the unknown placeholder {{{unknown}}} (use {{model}}, {{brief}}, {{rules}}, {{reasoning}})"
             )));
         }
         if self.models.iter().any(|m| !is_model_slug(m)) {

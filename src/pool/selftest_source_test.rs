@@ -83,14 +83,14 @@ fn the_stand_in_harness_appends_a_line_and_prints_a_receipt() {
     assert!(quick.contains("{model}"));
     let slow = harness_command(120);
     assert!(slow.starts_with("sleep 120; echo "), "{slow}");
-    let rendered = crate::pool::job::render_harness(&slow, MODEL);
+    let rendered = crate::pool::job::render_harness(&slow, MODEL, None);
     assert!(!rendered.contains('{'), "{rendered}");
 }
 
 #[test]
 fn the_stand_in_harness_runs_under_a_real_shell() {
     let dir = tempfile::tempdir().unwrap();
-    let command = crate::pool::job::render_harness(&harness_command(0), MODEL);
+    let command = crate::pool::job::render_harness(&harness_command(0), MODEL, None);
     let out = std::process::Command::new("bash")
         .arg("-c")
         .arg(&command)

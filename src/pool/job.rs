@@ -32,7 +32,7 @@ pub const RUNNER_SLACK_SECS: u64 = 600;
 /// Largest archive a dispatch will deliver.
 pub const MAX_ARCHIVE_BYTES: usize = 512 * 1024;
 
-const PLACEHOLDERS: [&str; 3] = ["model", "brief", "rules"];
+const PLACEHOLDERS: [&str; 4] = ["model", "brief", "rules", "reasoning"];
 
 /// The first `{name}` in `run` that is not a known placeholder. `${NAME}`
 /// shell expansions are not placeholders.
@@ -53,13 +53,31 @@ pub fn unknown_placeholder(run: &str) -> Option<String> {
     None
 }
 
-/// Fill the harness template. `{model}` is a vetted slug; `{brief}` and
-/// `{rules}` are fixed paths inside the slot.
+/// Whether the harness template holds the `{reasoning}` placeholder (a
+/// `${reasoning}` shell expansion does not count).
 #[must_use]
-pub fn render_harness(run: &str, model: &str) -> String {
+pub fn uses_reasoning(run: &str) -> bool {
+    let mut from = 0;
+    while let Some(offset) = run[from..].find("{reasoning}") {
+        let open = from + offset;
+        let dollar = open > 0 && run.as_bytes()[open - 1] == b'$';
+        if !dollar {
+            return true;
+        }
+        from = open + 1;
+    }
+    false
+}
+
+/// Fill the harness template. `{model}` is a vetted slug; `{reasoning}` is
+/// the chosen reasoning level, if any; `{brief}` and `{rules}` are fixed
+/// paths inside the slot.
+#[must_use]
+pub fn render_harness(run: &str, model: &str, reasoning: Option<&str>) -> String {
     run.replace("{model}", model)
         .replace("{brief}", AGENT_BRIEF)
         .replace("{rules}", AGENT_RULES)
+        .replace("{reasoning}", reasoning.unwrap_or(""))
 }
 
 /// `from:` and `branch:` lines found in a task body.

@@ -30,6 +30,7 @@ fn plan() -> JobPlan {
         harness_cmd: render_harness(
             "pi -p --model {model} --append-system-prompt {rules} @{brief}",
             "zai/glm-5.3-flash",
+            None,
         ),
         env_names: vec!["ZAI_API_KEY".into()],
         committer: committer(),
@@ -57,7 +58,7 @@ fn the_bundle_carries_the_pool_fetch_depth() {
 
 #[test]
 fn harness_template_fills_model_brief_and_rules() {
-    let cmd = render_harness("h --model {model} --rules {rules} @{brief}", "a/b-1");
+    let cmd = render_harness("h --model {model} --rules {rules} @{brief}", "a/b-1", None);
     assert_eq!(
         cmd,
         "h --model a/b-1 --rules /home/hand/rules.md @/home/hand/brief.md"
@@ -66,11 +67,42 @@ fn harness_template_fills_model_brief_and_rules() {
 
 #[test]
 fn unknown_placeholders_are_found() {
-    assert_eq!(unknown_placeholder("x {model} {brief} {rules}"), None);
+    assert_eq!(
+        unknown_placeholder("x {model} {brief} {rules} {reasoning}"),
+        None
+    );
     assert_eq!(unknown_placeholder("x {mdoel}").as_deref(), Some("mdoel"));
+    assert_eq!(unknown_placeholder("x {foo}").as_deref(), Some("foo"));
     assert_eq!(unknown_placeholder("x ${home} {Upper} {} {a b}"), None);
     assert_eq!(unknown_placeholder("awk '{print $1}'"), None);
     assert_eq!(unknown_placeholder("trailing {open"), None);
+}
+
+#[test]
+fn the_reasoning_level_renders_into_the_harness_command_when_given() {
+    let cmd = render_harness(
+        "pi --model {model} --thinking {reasoning}",
+        "a/b-1",
+        Some("xhigh"),
+    );
+    assert_eq!(cmd, "pi --model a/b-1 --thinking xhigh");
+}
+
+#[test]
+fn a_template_without_the_placeholder_is_unchanged_without_a_reasoning() {
+    let cmd = render_harness("h --model {model} @{brief}", "a/b-1", None);
+    assert_eq!(cmd, "h --model a/b-1 @/home/hand/brief.md");
+}
+
+#[test]
+fn uses_reasoning_follows_the_placeholder() {
+    assert!(uses_reasoning("pi --thinking {reasoning}"));
+    assert!(uses_reasoning(
+        "pi --model {model} --thinking {reasoning} @{brief}"
+    ));
+    assert!(!uses_reasoning("pi --model {model}"));
+    assert!(!uses_reasoning(""));
+    assert!(!uses_reasoning("echo ${reasoning}"));
 }
 
 #[test]

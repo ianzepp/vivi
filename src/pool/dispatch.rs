@@ -37,6 +37,10 @@ pub struct DispatchFlags {
     /// The job publishes nothing: detached checkout, no commit, no push, a
     /// token that cannot push. Excludes `branch`.
     pub read_only: bool,
+    /// The reasoning effort level for `{reasoning}` in the harness template.
+    /// Chosen by band at dispatch time (unit B4b); `None` refuses a template
+    /// that needs one.
+    pub reasoning: Option<String>,
 }
 
 /// A fresh job id: twelve hex digits.
@@ -73,6 +77,7 @@ pub fn plan_job(
             "[pools.{pool}.committer] (name, email) is required to dispatch"
         ))
     })?;
+    let reasoning = plan_reasoning(pool, &harness.run, flags)?;
     job::check_model(&flags.model, &harness.models)?;
     let refs = plan_refs(flags, body)?;
     let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
@@ -103,13 +108,44 @@ pub fn plan_job(
         model: flags.model.clone(),
         budget,
         depth: config.fetch_depth(),
-        harness_cmd: job::render_harness(&harness.run, &flags.model),
+        harness_cmd: job::render_harness(&harness.run, &flags.model, reasoning.as_deref()),
         env_names: harness.env.clone(),
         committer,
         read_only: flags.read_only,
         facts: config.facts.clone(),
         restore: config.restore.clone(),
     })
+}
+
+/// The reasoning level a job runs at, when the harness template asks for
+/// one: `flags.reasoning`, checked before anything else in `plan_job`
+/// returns a plan so the refusal costs nothing. The value lands in a shell
+/// command, so it is held to a safe charset.
+fn plan_reasoning(
+    pool: &str,
+    run: &str,
+    flags: &DispatchFlags,
+) -> Result<Option<String>, VivariumError> {
+    if !job::uses_reasoning(run) {
+        return Ok(None);
+    }
+    let Some(level) = flags.reasoning.as_deref() else {
+        return Err(VivariumError::Message(format!(
+            "harness.run uses {{reasoning}} but no reasoning level was chosen for this job; \
+             dispatch by band (a `band:` line in the task, or a role with a band) or remove \
+             {{reasoning}} from [pools.{pool}.harness].run"
+        )));
+    };
+    let safe = (1..=32).contains(&level.chars().count())
+        && level
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !safe {
+        return Err(VivariumError::Message(format!(
+            "reasoning \"{level}\" is not allowed: use 1 to 32 characters from A-Z a-z 0-9 . _ -"
+        )));
+    }
+    Ok(Some(level.to_string()))
 }
 
 /// `from` and `branch` for the flags. A read-only job names no branch.
