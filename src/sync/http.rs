@@ -266,8 +266,9 @@ pub(crate) fn classify_append(status: u16, body: &Value) -> Result<Appended, App
             "project server rate limit hit (30 sends/min per member); the rest stays unsent".into(),
         )),
         401 => Err(AppendFailure::Stop(
-            "project server rejected the bearer; run vivi sync join if this identity has not \
-             registered"
+            "project server rejected the bearer; not admitted yet: run vivi sync key, an \
+             admitted member runs vivi sync vouch <name> --key-file <pem>, then run vivi sync \
+             join"
                 .into(),
         )),
         other => Err(AppendFailure::Stop(format!(
@@ -368,10 +369,11 @@ fn mint_bearer(settings: &SyncSettings, identity: &SyncIdentity) -> Result<Strin
     if status == 401 {
         return Err(VivariumError::Message(format!(
             "project server refused the bearer mint for '{}'; this checkout's key is not \
-             registered under that name (run vivi sync join; if this checkout's key was lost \
-             or replaced, the name stays bound to the old key and the server has no re-key: \
-             only the project creator can help)",
-            settings.name
+             registered under that name (run vivi sync key, an admitted member runs vivi sync \
+             vouch {} --key-file <pem>, then run vivi sync join; if this checkout's key was \
+             lost or replaced, the name stays bound to the old key and the server has no \
+             re-key: only the project creator can help)",
+            settings.name, settings.name
         )));
     }
     if status != 200 {
@@ -496,13 +498,18 @@ fn join_error(
     let code = error_code(body);
     match (status, code.as_str()) {
         (409, "admission_required") => VivariumError::Message(format!(
-            "this key has not been vouched for as '{}' in project {}. A member can vouch for \
-             fingerprint {} under that name, then run vivi sync join again. If that name was \
-             admitted before with a different key (this checkout's key was lost or replaced), \
-             the server binds a name to the first key admitted and has no way to re-key it: \
-             the vouch will be refused, and only the project creator can help",
+            "this key has not been vouched for as '{}' in project {}.\n  \
+             1. the new member runs: vivi sync key   (prints the public-key PEM; send it, \
+             never the seed file, to an admitted member)\n  \
+             2. an admitted member runs: vivi sync vouch {} --key-file <pem-file>   \
+             (fingerprint {})\n\
+             then run vivi sync join again. If that name was admitted before with a different \
+             key (this checkout's key was lost or replaced), the server binds a name to the \
+             first key admitted and has no way to re-key it: the vouch will be refused, and \
+             only the project creator can help",
             settings.name,
             settings.project,
+            settings.name,
             identity.wire_fingerprint()
         )),
         (409, "conflict") => VivariumError::Message(format!(
@@ -528,14 +535,16 @@ fn api_error(status: u16, body: &Value, settings: &SyncSettings) -> VivariumErro
     let code = error_code(body);
     match (status, code.as_str()) {
         (404, _) => VivariumError::Message(format!(
-            "project '{}' was not found on {}",
+            "project '{}' was not found on {}; vivi sync create makes a new project and \
+             prints its id: put the printed id in [sync] project, then run vivi sync join",
             settings.project, settings.server
         )),
-        (401, _) => VivariumError::Message(
-            "project server rejected the request (unauthorized); run vivi sync join if this \
-             identity has not registered"
-                .into(),
-        ),
+        (401, _) => VivariumError::Message(format!(
+            "project server rejected the request (unauthorized); if '{}' has not registered \
+             yet: run vivi sync key, an admitted member runs vivi sync vouch {} --key-file \
+             <pem>, then run vivi sync join",
+            settings.name, settings.name
+        )),
         _ => VivariumError::Message(format!(
             "project server error (HTTP {status}, {code}): {}",
             error_detail(body)
@@ -566,3 +575,7 @@ fn error_detail(body: &Value) -> String {
 #[cfg(test)]
 #[path = "http_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "refusal_messages_test.rs"]
+mod refusal_messages;

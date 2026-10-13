@@ -45,6 +45,8 @@ struct Inner {
     page_limit: Option<usize>,
     /// The server clock new appends are stamped with.
     clock: Option<String>,
+    /// The epoch reported on every list response; `None` sends none.
+    epoch: Option<u32>,
     /// Every list request seen: `(since, limit, after)`.
     lists: Vec<(u64, u32, Option<String>)>,
     /// The number of handles in every lookup request seen.
@@ -74,6 +76,17 @@ impl FakeServer {
     /// Stamp appends from now on with this server time (RFC 3339).
     pub fn set_clock(&self, time: &str) {
         self.inner.borrow_mut().clock = Some(time.to_string());
+    }
+
+    /// Set the epoch list responses report (`None` sends none, the default).
+    pub fn set_epoch(&self, epoch: Option<u32>) {
+        self.inner.borrow_mut().epoch = epoch;
+    }
+
+    /// Wipe the log, as when a server is restored from an earlier backup:
+    /// sequences restart from 1 at the next append.
+    pub fn wipe(&self) {
+        self.inner.borrow_mut().items.clear();
     }
 
     /// Forget the append time of an item, as for a row written before the
@@ -284,6 +297,8 @@ impl Transport for FakeClient {
             records,
             next_cursor,
             has_more: Some(has_more),
+            epoch: inner.epoch,
+            epoch_unusable: false,
         })
     }
 

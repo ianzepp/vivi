@@ -1638,12 +1638,13 @@ vivi sync pull --refs [--depth N]  # then look up the letters the new ones point
 vivi sync resync         # reset cursor and floor to zero, replay everything
 vivi sync fetch <handle>...    # file letters by their 8-hex handle
 vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
+vivi sync keep-local <handle>...  # stop pushing a stuck letter; it stays here; --undo tries it again
 vivi sync key            # print this mailspace's public-key PEM (mints the key file)
 vivi sync create [--name <creator>]  # new project on the server; prints its id, writes nothing
 vivi sync vouch <name> --key-file <pem>  # vouch for a member's key (or --key <pem>)
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
-vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded, held for unknown roles; not the PEM — `vivi sync key` prints it
+vivi sync status         # fingerprint, server, project, address, cursor, epoch, history, unsent, not uploaded, held for unknown roles; not the PEM — `vivi sync key` prints it
 ```
 
 **Draining.** The server allows 30 letters a minute per member, so a large
@@ -1713,9 +1714,14 @@ members' pulls file it under no role and hold nothing for it (see
 Governance letters below), so no role folder and no backlog sees it.
 
 Errors: `admission_required` means no vouch yet, or the name was admitted
-with another key (the server binds a name to the first key admitted and has
-no re-key; only the project creator can help). `mailspace_prefix_taken`
-means a copied id; see Addresses above.
+with another key: the join error prints the two commands to run — `vivi sync
+key` for the new member and `vivi sync vouch <name> --key-file <pem>` for an
+admitted member — with this mailspace's own `[sync] name` and the wire
+fingerprint filled in (the server binds a name to the first key admitted and
+has no re-key; only the project creator can help). A missing `[sync] project`
+is answered with `vivi sync create`, which makes a new project and prints the
+id to put in `[sync] project`. `mailspace_prefix_taken` means a copied id;
+see Addresses above.
 
 **One sync at a time.** `push`, `pull`, `resync`, `fetch` and `prune` take an
 exclusive lock under `.vivi/sync/`, so a cron run and an interactive run
@@ -1744,9 +1750,12 @@ refused when it is composed (`mail send`, `mail reply`, `need`/`task`/`want
 send`, `mail deliver`) and nothing is stored. Push never uploads a letter whose
 `From` claims another mailspace's prefix (every puller would refuse it), and
 it lists any stored letter that is too large or has such a `From` by handle and
-exits non-zero. `vivi sync status` counts them on a `not uploaded` line beside
-`unsent`. The server does not check that a recipient prefix belongs to anyone:
-compare it with `vivi sync directory`.
+exits non-zero, each with `vivi sync keep-local <handle>`. That command keeps
+the letter in this mailspace — nothing is moved, trashed, or rewritten — and
+the next push exits 0; `vivi sync keep-local --undo <handle>` reverses it.
+`vivi sync status` counts them on a `not uploaded` line beside `unsent` and
+repeats the keep-local command per letter. The server does not check that a
+recipient prefix belongs to anyone: compare it with `vivi sync directory`.
 
 **What pull does.** Each record is verified before it is filed: the bytes hash
 to the stated `content_sha256`, the envelope recipients equal the letter's own
@@ -1796,6 +1805,17 @@ first pull records full history. `vivi sync status` prints it as
 `unknown (pulled before windows)` and is never guessed to be full. A letter
 older than the floor is not here, so a reply to one stays unlinked until it
 is fetched.
+
+**Server epoch.** The client accepts an optional `epoch` (an integer, 1 to
+4294967295) on every list response; it is recorded in the sync state and
+carried by new remote bindings. When it changes, the next pull says
+`server epoch changed (A -> B)`, resets the cursor and floor, and re-reads
+from sequence 0, filing nothing twice; a pull gives up after 2 resets in one
+run. A server that sends no epoch behaves as before, and `vivi sync status`
+shows the epoch. Wire contract: the list response carries a field named
+`epoch`, an integer from 1 to 4294967295, in the same JSON object as
+`records`, `next_cursor`, and `has_more`, and the server must change it
+whenever its log is wiped or restored.
 
 **Getting older letters.** `vivi sync resync` resets the cursor and floor to
 zero and replays everything; letters already held are left alone, evicted ones

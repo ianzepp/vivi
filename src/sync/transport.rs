@@ -68,16 +68,82 @@ pub struct Record {
 }
 
 /// One page of records after a cursor.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
-    #[serde(default)]
     pub records: Vec<Record>,
     pub next_cursor: u64,
     /// Whether more records match after `next_cursor`. Absent from a server
     /// that does not page; the reader then falls back to "an empty page, or
     /// one that did not advance, ends the read".
-    #[serde(default)]
     pub has_more: Option<bool>,
+    /// The server log's epoch, from the top-level `epoch` field of the JSON
+    /// object the list request `GET .../letters?since=...` returns (the same
+    /// object that carries `records`, `next_cursor` and `has_more`).
+    ///
+    /// # Wire contract
+    ///
+    /// The field is an unsigned 32-bit integer, 1 to 4294967295, constant
+    /// for as long as the server's stored log lives. The server MUST mint a
+    /// different value whenever the log is wiped, recreated or restored from
+    /// a backup (so its sequence numbers may repeat), and sends the field on
+    /// EVERY list response, including an empty page and a request whose
+    /// `since` is past the head. An absent field, `null`, or 0 means this
+    /// server does not send an epoch (yet): the client behaves exactly as if
+    /// the field were not there. An unusable value (a string, a float, a
+    /// negative or too large number) is also treated as absent, and flags
+    /// [`Page::epoch_unusable`] so the pull warns once. An unusable value
+    /// never fails the page.
+    pub epoch: Option<u32>,
+    /// The list response carried an `epoch` that was not a usable unsigned
+    /// integer. It is treated as absent ([`Page::epoch`] is then `None`).
+    pub epoch_unusable: bool,
+}
+
+/// The page as the wire carries it, before the `epoch` is judged leniently.
+#[derive(Deserialize)]
+struct PageWire {
+    #[serde(default)]
+    records: Vec<Record>,
+    next_cursor: u64,
+    #[serde(default)]
+    has_more: Option<bool>,
+    /// Any JSON value: an unusable `epoch` must not fail the whole page.
+    #[serde(default)]
+    epoch: Option<serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for Page {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = PageWire::deserialize(deserializer)?;
+        let (epoch, epoch_unusable) = judged_epoch(wire.epoch);
+        Ok(Self {
+            records: wire.records,
+            next_cursor: wire.next_cursor,
+            has_more: wire.has_more,
+            epoch,
+            epoch_unusable,
+        })
+    }
+}
+
+/// Judge the raw `epoch` value by the wire contract on [`Page::epoch`].
+fn judged_epoch(raw: Option<serde_json::Value>) -> (Option<u32>, bool) {
+    let Some(value) = raw else {
+        return (None, false); // the field is absent.
+    };
+    let Some(number) = value.as_u64() else {
+        // `null` means no epoch; any other non-integer is unusable.
+        let unusable = !value.is_null();
+        return (None, unusable);
+    };
+    match u32::try_from(number) {
+        Ok(0) => (None, false),
+        Ok(epoch) => (Some(epoch), false),
+        Err(_) => (None, true), // negative or too large.
+    }
 }
 
 /// Records for a handle lookup, and the handles that matched nothing the

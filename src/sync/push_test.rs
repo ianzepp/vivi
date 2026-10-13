@@ -426,6 +426,8 @@ fn a_server_hash_that_differs_is_not_bound() {
                 records: Vec::new(),
                 next_cursor: query.since,
                 has_more: None,
+                epoch: None,
+                epoch_unusable: false,
             })
         }
     }
@@ -459,6 +461,8 @@ fn an_ack_without_a_content_hash_is_not_bound() {
                 records: Vec::new(),
                 next_cursor: query.since,
                 has_more: None,
+                epoch: None,
+                epoch_unusable: false,
             })
         }
     }
@@ -489,6 +493,8 @@ fn a_sequence_that_does_not_fit_a_binding_is_reported() {
                 records: Vec::new(),
                 next_cursor: query.since,
                 has_more: None,
+                epoch: None,
+                epoch_unusable: false,
             })
         }
     }

@@ -19,6 +19,7 @@ pub mod fetch;
 pub mod filer;
 pub mod http;
 pub mod identity;
+pub mod kept;
 pub mod link;
 pub mod lock;
 pub mod prune;
@@ -34,7 +35,11 @@ pub mod window;
 /// Remote-binding provider for letters synced with a project server.
 pub const PROVIDER: &str = "vivi-project";
 
-/// Fixed `remote_uidvalidity`: a project id never needs a validity epoch.
+/// The validity remote bindings are written under when the server sends no
+/// epoch: a project id never needs a validity epoch of its own. Once the
+/// server does send an epoch, the epoch takes over as the validity, so a
+/// wiped and restored server's reused sequence numbers cannot collide with
+/// the previous log's bindings.
 pub const UIDVALIDITY: u32 = 1;
 
 /// Largest letter the server accepts (64 KiB, 413 above it).
@@ -78,14 +83,24 @@ impl SyncSettings {
     pub fn resolve(mailspace: &Mailspace) -> Result<Self, VivariumError> {
         let config = mailspace.config.sync.as_ref().ok_or_else(|| {
             VivariumError::Config(
-                "no [sync] table in mailspace.toml; add server, project, and name".into(),
+                "no [sync] table in mailspace.toml; add server, project, and name. A new \
+                 project is made with vivi sync create, which prints the project id: put the \
+                 printed id in [sync] project, then run vivi sync join"
+                    .into(),
             )
         })?;
-        let server = required(config.server.as_deref(), "server", "the project server URL")?;
+        let server = required(
+            config.server.as_deref(),
+            "server",
+            "the project server URL",
+            "",
+        )?;
         let project = required(
             config.project.as_deref(),
             "project",
             "the server-side project id",
+            "vivi sync create makes a new project and prints its id: put the printed id in \
+             [sync] project, then run vivi sync join",
         )?;
         if !project
             .chars()
@@ -99,6 +114,7 @@ impl SyncSettings {
             config.name.as_deref(),
             "name",
             "this checkout's identity name",
+            "",
         )?;
         let mailspace_id = mailspace.mailspace_id();
         if mailspace_id.is_empty() {
@@ -126,15 +142,24 @@ impl SyncSettings {
     }
 }
 
-fn required(value: Option<&str>, key: &str, what: &str) -> Result<String, VivariumError> {
+fn required(
+    value: Option<&str>,
+    key: &str,
+    what: &str,
+    hint: &str,
+) -> Result<String, VivariumError> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(String::from)
         .ok_or_else(|| {
-            VivariumError::Config(format!(
-                "[sync] {key} is not set; set {key} = \"...\" in mailspace.toml ({what})"
-            ))
+            let base =
+                format!("[sync] {key} is not set; set {key} = \"...\" in mailspace.toml ({what})");
+            if hint.is_empty() {
+                VivariumError::Config(base)
+            } else {
+                VivariumError::Config(format!("{base}; {hint}"))
+            }
         })
 }
 
@@ -165,6 +190,10 @@ mod events;
 mod flow;
 
 #[cfg(test)]
+#[path = "sync/kept_flow_test.rs"]
+mod kept_flow;
+
+#[cfg(test)]
 #[path = "sync/windows_test.rs"]
 mod windows;
 
@@ -173,9 +202,25 @@ mod windows;
 mod watch;
 
 #[cfg(test)]
+#[path = "sync/status_hint_test.rs"]
+mod status_hint_test;
+
+#[cfg(test)]
 #[path = "sync/sync_test.rs"]
 mod tests;
 
 #[cfg(test)]
 #[path = "sync/vouch_test.rs"]
 mod vouch_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_test.rs"]
+mod epoch_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_binding_test.rs"]
+mod epoch_binding_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_status_test.rs"]
+mod epoch_status_test;

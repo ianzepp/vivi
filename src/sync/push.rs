@@ -13,9 +13,11 @@ use chrono::{DateTime, Utc};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::{RemoteBindingInput, Storage, sha256_hex};
+use crate::sync::kept::KeptLocal;
 use crate::sync::select::{self, Letter, Selection, Skipped};
+use crate::sync::state::SyncState;
 use crate::sync::transport::{AppendFailure, Appended, Envelope, Transport};
-use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY};
+use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY, sync_dir};
 
 /// Handles listed per detail group before the rest is summarized.
 const LISTED: usize = 10;
@@ -91,11 +93,11 @@ impl PushReport {
             actionable
                 .iter()
                 .take(LISTED)
-                .map(|skipped| format!("skipped {}: {}", skipped.handle, skipped.reason.label())),
+                .map(|skipped| skipped_line(skipped)),
         );
         if actionable.len() > LISTED {
             lines.push(format!(
-                "... and {} more skipped",
+                "... and {} more skipped; run vivi sync keep-local <handle> for each",
                 actionable.len() - LISTED
             ));
         }
@@ -166,6 +168,17 @@ impl PushReport {
     }
 }
 
+/// One skipped line. A letter that can never be delivered also names the
+/// command that clears it from every future push.
+fn skipped_line(skipped: &Skipped) -> String {
+    let base = format!("skipped {}: {}", skipped.handle, skipped.reason.label());
+    if skipped.reason.undeliverable() {
+        format!("{base}; run: vivi sync keep-local {}", skipped.handle)
+    } else {
+        base
+    }
+}
+
 /// Select and send the letters this mailspace has not pushed.
 ///
 /// # Errors
@@ -193,8 +206,13 @@ pub fn push_since(
     window: Option<DateTime<Utc>>,
 ) -> Result<PushReport, VivariumError> {
     let mut storage = mailspace.storage()?;
-    let selection = select::select(&storage, settings, window)?;
-    send_all(&mut storage, settings, transport, selection)
+    let selection = select::select(
+        &storage,
+        settings,
+        &KeptLocal::load(&sync_dir(&mailspace.dir))?,
+        window,
+    )?;
+    send_all(&mut storage, mailspace, settings, transport, selection)
 }
 
 /// How long a drain waits out the server's rate limit: a little over the
@@ -227,17 +245,18 @@ pub fn push_drain(
     progress: &mut dyn FnMut(&PushReport, usize),
 ) -> Result<PushReport, VivariumError> {
     let mut storage = mailspace.storage()?;
+    let kept = KeptLocal::load(&sync_dir(&mailspace.dir))?;
     let mut refused_handles: HashSet<String> = HashSet::new();
     let mut total = PushReport::default();
     let mut stalled = 0usize;
     let mut number = 0usize;
     loop {
         number += 1;
-        let mut selection = select::select(&storage, settings, window)?;
+        let mut selection = select::select(&storage, settings, &kept, window)?;
         selection
             .letters
             .retain(|letter| !refused_handles.contains(&letter.handle));
-        let report = send_all(&mut storage, settings, transport, selection)?;
+        let report = send_all(&mut storage, mailspace, settings, transport, selection)?;
         let rate_limited = report
             .stopped
             .as_ref()
@@ -271,10 +290,12 @@ pub fn push_drain(
 
 fn send_all(
     storage: &mut Storage,
+    mailspace: &Mailspace,
     settings: &SyncSettings,
     transport: &dyn Transport,
     selection: Selection,
 ) -> Result<PushReport, VivariumError> {
+    let validity = binding_validity(mailspace, settings)?;
     let mut report = PushReport {
         skipped: selection.skipped,
         held_back: selection.held_back,
@@ -296,7 +317,7 @@ fn send_all(
             kind: &letter.kind,
         };
         match transport.append(&letter.wire_id, &envelope) {
-            Ok(appended) => bind_sent(storage, settings, letter, &appended, &mut report)?,
+            Ok(appended) => bind_sent(storage, settings, validity, letter, &appended, &mut report)?,
             Err(AppendFailure::Refused(reason)) => report.refused.push(Refused {
                 handle: letter.handle.clone(),
                 reason,
@@ -322,11 +343,21 @@ fn send_all(
     Ok(report)
 }
 
+/// The validity bindings this pass writes: the server log's epoch when the
+/// stored state knows one, else [`UIDVALIDITY`], so a pushed letter binds
+/// under the same validity a pull of the same log files letters with. Read
+/// only: a push never saves state.
+fn binding_validity(mailspace: &Mailspace, settings: &SyncSettings) -> Result<u32, VivariumError> {
+    let state = SyncState::load(&sync_dir(&mailspace.dir), &settings.project)?;
+    Ok(state.epoch.unwrap_or(UIDVALIDITY))
+}
+
 /// Record the server position of an accepted letter on the row the wire id
 /// names, so the next pass sees it as pushed.
 fn bind_sent(
     storage: &mut Storage,
     settings: &SyncSettings,
+    validity: u32,
     letter: &Letter,
     appended: &Appended,
     report: &mut PushReport,
@@ -357,7 +388,7 @@ fn bind_sent(
         provider: PROVIDER.to_string(),
         remote_mailbox: settings.project.clone(),
         remote_uid: uid,
-        remote_uidvalidity: UIDVALIDITY,
+        remote_uidvalidity: validity,
     };
     match storage.bind_remote(&letter.wire_id, &binding) {
         Ok(true) => {
@@ -381,7 +412,8 @@ fn bind_sent(
 /// # Errors
 /// Returns an error on a storage failure.
 pub fn pending(mailspace: &Mailspace, settings: &SyncSettings) -> Result<Selection, VivariumError> {
-    select::select(&mailspace.storage()?, settings, None)
+    let kept = KeptLocal::load(&sync_dir(&mailspace.dir))?;
+    select::select(&mailspace.storage()?, settings, &kept, None)
 }
 
 /// Count the letters waiting to go, counting those a push cannot upload.

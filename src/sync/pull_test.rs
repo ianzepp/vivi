@@ -79,6 +79,8 @@ impl Transport for Canned {
                 records: Vec::new(),
                 next_cursor: query.since,
                 has_more: None,
+                epoch: None,
+                epoch_unusable: false,
             }))
     }
 }
@@ -90,6 +92,8 @@ fn pull_canned(fx: &Checkout, records: Vec<Record>) -> pull::PullReport {
             records,
             next_cursor,
             has_more: None,
+            epoch: None,
+            epoch_unusable: false,
         }],
     };
     pull::pull(&fx.mailspace, &fx.settings, &canned).unwrap()
