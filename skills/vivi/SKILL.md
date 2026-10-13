@@ -1284,6 +1284,9 @@ from it; units that need another unit's code start `--from` that unit's branch
   and `with_N_sha` for each ref, and on a fetching pool also
   `with_N_merge_base` (the merge base with the start commit, `none` when
   deepening found none) and `fetch_depth`, the depth the history reached. The
+  human receipt in the result reply says the same in plain text: an
+  `extra ref <ref> -> <local> at <commit12> (merge base <base12 or none>)`
+  line per ref, then `fetched at depth <depth>`. The
   agent holds no credential — the token never reaches its environment — but
   carries the pool's committer as its Git author and committer identity, so a
   plain `git merge` works unconfigured, and a merge the agent commits, or

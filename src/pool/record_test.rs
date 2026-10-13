@@ -287,6 +287,106 @@ fn a_result_without_restored_paths_has_no_restored_key_or_line() {
 }
 
 #[test]
+fn a_result_with_extra_refs_lists_each_then_the_depth_before_the_facts() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let commit = "c".repeat(40);
+    let outcome = finished_with(&[
+        ("restored_path_1", "Cargo.lock"),
+        ("with_count", "2"),
+        ("with_1_ref", "review"),
+        ("with_1_local", "refs/remotes/origin/review"),
+        ("with_1_sha", &"1".repeat(40)),
+        ("with_1_merge_base", &"2".repeat(40)),
+        ("with_2_ref", &commit),
+        ("with_2_local", &format!("refs/vivi/with/{commit}")),
+        ("with_2_sha", &"3".repeat(40)),
+        ("with_2_merge_base", "none"),
+        ("fetch_depth", "200"),
+    ]);
+    let text = collected_text(&d, &outcome);
+    assert!(
+        text.contains(&format!(
+            "restored 1 path before commit: Cargo.lock\n\
+             extra ref review -> refs/remotes/origin/review at 111111111111 \
+             (merge base 222222222222)\n\
+             extra ref {commit} -> refs/vivi/with/{commit} at 333333333333 \
+             (merge base none)\n\
+             fetched at depth 200"
+        )),
+        "{text}"
+    );
+    let depth = text.find("fetched at depth 200").unwrap();
+    assert!(depth < text.find("--- receipt").unwrap(), "{text}");
+}
+
+#[test]
+fn a_result_without_extra_refs_has_no_with_lines_or_depth() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let text = collected_text(&d, &finished());
+    assert!(!text.contains("extra ref"), "{text}");
+    assert!(!text.contains("merge base"), "{text}");
+    assert!(!text.contains("fetched at depth"), "{text}");
+}
+
+#[test]
+fn a_worktree_style_result_lists_refs_without_merge_base_or_depth() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let outcome = finished_with(&[
+        ("with_count", "1"),
+        ("with_1_ref", "B"),
+        ("with_1_local", "B"),
+        ("with_1_sha", &"b".repeat(40)),
+    ]);
+    let text = collected_text(&d, &outcome);
+    assert!(text.contains("extra ref B -> B at bbbbbbbbbbbb"), "{text}");
+    assert!(!text.contains("merge base"), "{text}");
+    assert!(!text.contains("fetched at depth"), "{text}");
+}
+
+#[test]
+fn a_count_above_the_limit_is_clamped_and_missing_keys_render_as_dashes() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    for count in ["99", "many"] {
+        let outcome = finished_with(&[("with_count", count)]);
+        let text = collected_text(&d, &outcome);
+        assert_eq!(text.matches("extra ref ").count(), WITH_LIMIT, "{text}");
+        assert!(text.contains("\nextra ref - -> - at -\n"), "{text}");
+    }
+}
+
+#[test]
+fn the_note_keeps_the_extra_ref_keys_flat() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let outcome = finished_with(&[
+        ("with_count", "1"),
+        ("with_1_ref", "review"),
+        ("with_1_local", "refs/remotes/origin/review"),
+        ("with_1_sha", &"1".repeat(40)),
+        ("with_1_merge_base", &"2".repeat(40)),
+        ("fetch_depth", "200"),
+    ]);
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    assert_eq!(note["with_count"], "1");
+    assert_eq!(note["with_1_sha"], "1".repeat(40));
+    assert_eq!(note["fetch_depth"], "200");
+}
+
+#[test]
 fn facts_are_in_the_json_note_and_shown_before_the_receipt_not_as_flat_keys() {
     let d = OpenDispatch {
         task: "aaaa1111".into(),
