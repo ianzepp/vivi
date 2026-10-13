@@ -311,6 +311,10 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
         identity.fingerprint(),
         identity.wire_fingerprint()
     );
+    println!(
+        "sync key: vivi sync key prints the public-key PEM to send to an admitted member; they \
+         run vivi sync vouch <name> --key-file <pem>"
+    );
     println!("sync server: {}", show(&config.server));
     println!("sync project: {}", show(&config.project));
     println!("sync name: {}", show(&config.name));
@@ -320,7 +324,7 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
         println!("sync cursor: {}", state.since);
         println!("sync {}", state.history_line());
     } else {
-        println!("sync cursor: (project not set)");
+        println!("sync cursor: (project not set; vivi sync create makes a new project)");
     }
     match SyncSettings::resolve(&mailspace) {
         Ok(settings) => {
