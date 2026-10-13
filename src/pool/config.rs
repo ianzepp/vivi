@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::config_bands::PoolBands;
 use super::runpod_config::PoolRunpod;
 use super::slot::{DOCTOR_SUFFIX, PoolId};
 use crate::error::VivariumError;
@@ -87,6 +88,11 @@ pub struct PoolConfig {
     /// must not publish the rewrite. Default empty.
     #[serde(default)]
     pub restore: Vec<String>,
+    /// The intelligence bands this pool serves. Optional: a pool with no
+    /// `bands` table serves nothing by band and dispatches only by an
+    /// explicit model. See [`super::config_bands`] and [`super::bands`].
+    #[serde(default, skip_serializing_if = "PoolBands::is_empty")]
+    pub bands: PoolBands,
     /// Settings that belong to the `fly` machine host.
     #[serde(default)]
     pub fly: PoolFly,
@@ -454,6 +460,7 @@ impl PoolConfig {
         if let Some(committer) = &self.committer {
             committer.validate(pool)?;
         }
+        self.check_bands(pool)?;
         reject_unknown(pool, "", &self.unknown)?;
         reject_unknown(pool, ".fly", &self.fly.unknown)?;
         reject_unknown(pool, ".docker", &self.docker.unknown)?;
