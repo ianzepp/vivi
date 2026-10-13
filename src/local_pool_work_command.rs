@@ -134,6 +134,11 @@ fn mint_bridge_grant(
     if !config.bridge.enabled {
         return Ok(());
     }
+    progress.say(&format!(
+        "note: the bridge worker reads {} from the server; run `vivi sync --drain` before \
+         dispatching so the task is there",
+        plan.task
+    ));
     let grant = bridge::mint_for_job(space, pool, job)?;
     progress.say(&format!("bridge key {} ({})", grant.key_id, grant.label));
     plan.bridge = Some(grant);

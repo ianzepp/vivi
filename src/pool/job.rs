@@ -5,8 +5,9 @@
 //! the Git token in exactly one file, `token`, which only the root-owned
 //! runner reads; the files the agent can see (`brief.md`, `rules.md`,
 //! `harness.cmd`) never hold it. A bridge grant, when the pool mints one, is
-//! delivered the same way, as `bridge.key`, and is exported to the agent
-//! only as the `VIVI_MCP_API_KEY` environment variable.
+//! delivered the same way, as `bridge.key`; the archive then also carries an
+//! agent-visible `mcp.json`, which names the key only by reference, and the
+//! brief the worker reads is a pointer at the task on the server.
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -25,6 +26,8 @@ pub const DEFAULT_RULES: &str = include_str!("rules.md");
 /// Where the agent finds its inputs inside the slot.
 pub const AGENT_BRIEF: &str = "/home/hand/brief.md";
 pub const AGENT_RULES: &str = "/home/hand/rules.md";
+/// Where the agent finds the MCP bridge configuration (a grant only).
+pub const AGENT_MCP: &str = "/home/hand/mcp.json";
 /// Where the job archive lands (config file; replaced by each dispatch).
 pub const JOB_ARCHIVE: &str = "/work/job.tgz";
 
@@ -33,7 +36,7 @@ pub const RUNNER_SLACK_SECS: u64 = 600;
 /// Largest archive a dispatch will deliver.
 pub const MAX_ARCHIVE_BYTES: usize = 512 * 1024;
 
-const PLACEHOLDERS: [&str; 3] = ["model", "brief", "rules"];
+const PLACEHOLDERS: [&str; 4] = ["model", "brief", "rules", "mcp_config"];
 
 /// The first `{name}` in `run` that is not a known placeholder. `${NAME}`
 /// shell expansions are not placeholders.
@@ -54,13 +57,15 @@ pub fn unknown_placeholder(run: &str) -> Option<String> {
     None
 }
 
-/// Fill the harness template. `{model}` is a vetted slug; `{brief}` and
-/// `{rules}` are fixed paths inside the slot.
+/// Fill the harness template. `{model}` is a vetted slug; `{brief}`, `{rules}`
+/// and `{mcp_config}` are fixed paths inside the slot (`mcp.json` is carried
+/// only when the job has a bridge grant).
 #[must_use]
 pub fn render_harness(run: &str, model: &str) -> String {
     run.replace("{model}", model)
         .replace("{brief}", AGENT_BRIEF)
         .replace("{rules}", AGENT_RULES)
+        .replace("{mcp_config}", AGENT_MCP)
 }
 
 /// `from:` and `branch:` lines found in a task body.
@@ -248,7 +253,8 @@ pub struct JobPlan {
     pub facts: Vec<String>,
     /// The MCP bridge grant minted at dispatch when the pool's bridge is
     /// enabled: delivered only as the archive's `bridge.key` file, its
-    /// server and project id also into `params.env`.
+    /// server and project id also into `params.env` and into the agent's
+    /// `mcp.json`.
     pub bridge: Option<Grant>,
 }
 
@@ -272,7 +278,7 @@ impl Bundle {
     pub fn agent_visible(&self) -> Vec<&BundleFile> {
         self.files
             .iter()
-            .filter(|f| matches!(f.name, "brief.md" | "rules.md" | "harness.cmd"))
+            .filter(|f| matches!(f.name, "brief.md" | "rules.md" | "harness.cmd" | "mcp.json"))
             .collect()
     }
 }
@@ -285,7 +291,8 @@ pub fn sh_quote(value: &str) -> String {
 
 /// Lay out the files of a job for `slot`. `token` goes into the `token` file
 /// and nowhere else; a minted bridge grant goes into `bridge.key` the same
-/// way, with its server and project id in `params.env`.
+/// way, with its server and project id in `params.env` and its no-secret MCP
+/// configuration in the agent-visible `mcp.json`.
 #[must_use]
 pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     let mut fields = vec![
@@ -338,7 +345,7 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         file("harness.cmd", &spec.harness_cmd, 0o644),
     ];
     if let Some(bridge) = &spec.bridge {
-        files.push(file("bridge.key", bridge.key.expose(), 0o600));
+        files.extend(bridge_files(bridge));
     }
     if !spec.facts.is_empty() {
         let list = spec.facts.join("\n") + "\n";
@@ -360,6 +367,25 @@ pub fn lf(text: &str) -> String {
 
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or_default().trim().to_string()
+}
+
+/// The two files a job with a bridge grant carries beyond the standard set:
+/// the root-only key, and the agent-visible MCP configuration that names the
+/// key only by reference.
+fn bridge_files(bridge: &Grant) -> Vec<BundleFile> {
+    let file = |name, content: &str, mode| BundleFile {
+        name,
+        content: content.as_bytes().to_vec(),
+        mode,
+    };
+    vec![
+        file("bridge.key", bridge.key.expose(), 0o600),
+        file(
+            "mcp.json",
+            &super::bridge::mcp_config_json(&bridge.server, &bridge.project_id),
+            0o644,
+        ),
+    ]
 }
 
 /// Pack a bundle into one gzip-compressed tar archive with a top-level

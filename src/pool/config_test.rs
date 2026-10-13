@@ -248,6 +248,21 @@ fn harness_run_rejects_unknown_placeholders_but_not_shell_expansion() {
 }
 
 #[test]
+fn the_mcp_config_placeholder_is_accepted_and_needs_the_bridge() {
+    let mut config = full();
+    config.harness.as_mut().unwrap().run = "h --mcp-config {mcp_config}".into();
+    let message = err(&config);
+    assert!(message.contains("{mcp_config}"), "{message}");
+    assert!(message.contains("[pools.main.bridge]"), "{message}");
+    config.bridge.enabled = true;
+    config.validate(&id()).unwrap();
+    config.harness.as_mut().unwrap().run = "tool --model {model}".into();
+    config.validate(&id()).unwrap();
+    config.bridge.enabled = false;
+    config.validate(&id()).unwrap();
+}
+
+#[test]
 fn model_slugs_are_restricted_to_safe_characters() {
     let mut config = full();
     config.harness.as_mut().unwrap().models = vec!["a b".into()];

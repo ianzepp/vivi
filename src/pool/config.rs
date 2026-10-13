@@ -447,6 +447,8 @@ impl PoolConfig {
             committer.validate(pool)?;
         }
         self.bridge.validate(pool)?;
+        self.bridge
+            .validate_harness(pool, self.harness.as_ref().map(|h| h.run.as_str()))?;
         reject_unknown(pool, "", &self.unknown)?;
         reject_unknown(pool, ".fly", &self.fly.unknown)?;
         reject_unknown(pool, ".docker", &self.docker.unknown)?;
@@ -759,7 +761,7 @@ impl PoolHarness {
         }
         if let Some(unknown) = super::job::unknown_placeholder(&self.run) {
             return Err(bad(format!(
-                "harness.run holds the unknown placeholder {{{unknown}}} (use {{model}}, {{brief}}, {{rules}})"
+                "harness.run holds the unknown placeholder {{{unknown}}} (use {{model}}, {{brief}}, {{rules}}, {{mcp_config}})"
             )));
         }
         if self.models.iter().any(|m| !is_model_slug(m)) {

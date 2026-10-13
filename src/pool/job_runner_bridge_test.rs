@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::RUNNER;
+use crate::pool::bridge::mcp_config_json;
 use crate::pool::collect::JobResult;
 use crate::pool::local_fixture::{Fixture, fixture, git};
 
@@ -61,6 +62,7 @@ impl Rig {
         }
         if let Some(key) = bridge {
             std::fs::write(job.join("bridge.key"), key).unwrap();
+            std::fs::write(job.join("mcp.json"), mcp_config_json(SERVER, PROJECT)).unwrap();
         }
         let out = Command::new("bash")
             .arg("-c")
@@ -169,6 +171,26 @@ fn a_job_without_a_grant_sets_none_of_the_three() {
         "no bridge variables without a grant"
     );
     assert!(!rig.job().join("bridge.key").exists());
+    assert!(
+        !rig.work.path().join("home/mcp.json").exists(),
+        "no mcp.json in the agent's home without a grant"
+    );
     let params = std::fs::read_to_string(rig.job().join("params.env")).unwrap();
     assert!(!params.contains("BRIDGE_"), "{params}");
+}
+
+#[test]
+fn the_agent_finds_the_mcp_json_at_the_path_the_harness_used() {
+    let rig = Rig::new();
+    let seen = rig.work.path().join("mcp-seen.txt");
+    let result = rig.run(
+        &format!("cat /home/hand/mcp.json > {}", seen.display()),
+        Some(KEY),
+    );
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    let text = std::fs::read_to_string(&seen).unwrap();
+    assert!(text.contains("VIVI_MCP_SERVER"), "{text}");
+    assert!(text.contains("VIVI_MCP_PROJECT_ID"), "{text}");
+    assert!(text.contains("${VIVI_MCP_API_KEY}"), "{text}");
+    assert!(!text.contains(KEY), "{text}");
 }

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::config::reject_unknown;
+use super::config::{bad, reject_unknown};
 use crate::error::VivariumError;
 
 /// MCP bridge settings for one pool.
@@ -33,5 +33,31 @@ impl PoolBridge {
     /// Returns a configuration error naming the first unknown field.
     pub fn validate(&self, pool: &str) -> Result<(), VivariumError> {
         reject_unknown(pool, ".bridge", &self.unknown)
+    }
+
+    /// Check the harness template against the bridge: the `{mcp_config}`
+    /// placeholder names the `mcp.json` file that travels only with a grant,
+    /// so a template that uses it on a pool whose bridge is off would run a
+    /// harness pointing at a file that is not there. A bridge pool whose
+    /// harness does not use the placeholder is fine.
+    ///
+    /// # Errors
+    /// Returns a configuration error naming the placeholder and the pool's
+    /// bridge table.
+    pub fn validate_harness(
+        &self,
+        pool: &str,
+        harness_run: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        let Some(run) = harness_run else {
+            return Ok(());
+        };
+        if run.contains("{mcp_config}") && !self.enabled {
+            return Err(bad(format!(
+                "harness.run uses the placeholder {{mcp_config}} but [pools.{pool}.bridge] is \
+                 not enabled: the mcp.json file it names is carried only when the bridge is on"
+            )));
+        }
+        Ok(())
     }
 }

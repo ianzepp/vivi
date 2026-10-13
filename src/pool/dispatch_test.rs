@@ -90,6 +90,29 @@ fn a_valid_request_plans_a_job() {
 }
 
 #[test]
+fn the_brief_is_a_pointer_with_the_bridge_and_the_body_without_it() {
+    let without = plan(&flags("m/ok")).unwrap();
+    assert_eq!(without.brief, "body text");
+    let mut config = config();
+    config.bridge.enabled = true;
+    let with = plan_job(
+        &config,
+        "p",
+        ("abcd1234", "Subject line", "body text"),
+        &flags("m/ok"),
+        "rules".into(),
+        "job000000001".into(),
+    )
+    .unwrap();
+    assert!(with.brief.contains("abcd1234"), "{}", with.brief);
+    assert!(with.brief.contains("Subject line"), "{}", with.brief);
+    assert!(!with.brief.contains("body text"), "{}", with.brief);
+    for tool in ["show", "thread", "reply", "done"] {
+        assert!(with.brief.contains(tool), "{tool}: {}", with.brief);
+    }
+}
+
+#[test]
 fn an_unlisted_model_is_refused() {
     let err = plan(&flags("m/nope")).unwrap_err().to_string();
     assert!(err.contains("not in [harness].models"), "{err}");

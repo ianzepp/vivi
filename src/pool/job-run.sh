@@ -18,8 +18,14 @@
 #                given to the harness only as VIVI_MCP_API_KEY (with
 #                VIVI_MCP_SERVER and VIVI_MCP_PROJECT_ID) and never to the
 #                facts
+#   mcp.json     present only with a bridge grant: the MCP configuration,
+#                which names the key only by reference (${VIVI_MCP_API_KEY}),
+#                copied into the agent's home next to brief.md and rules.md
+#                (a harness template names it as {mcp_config})
 #   harness.cmd  the rendered harness command
-#   brief.md     the task body        rules.md  the standing rules
+#   brief.md     the task body (with a grant: a pointer naming the task
+#                handle; the text is on the server)
+#   rules.md     the standing rules
 #   facts.cmd    optional: commands to record before the harness starts, one
 #                per line (see run_facts below)
 # Environment from the machine: BUILD_DIR, and any variable named in
@@ -150,7 +156,10 @@ fi
 echo "from $FROM at ${START:0:12} prepared_s $(( $(now) - T0 ))"
 
 mkdir -p "$AGENT_HOME" && cp "$J/brief.md" "$J/rules.md" "$AGENT_HOME/" || finish workdir_missing
-[ -n "${UNPRIVILEGED:-}" ] || chown hand:hand "$AGENT_HOME/brief.md" "$AGENT_HOME/rules.md"
+[ ! -f "$J/mcp.json" ] || cp "$J/mcp.json" "$AGENT_HOME/" || finish workdir_missing
+HAND_FILES="$AGENT_HOME/brief.md $AGENT_HOME/rules.md"
+[ ! -f "$AGENT_HOME/mcp.json" ] || HAND_FILES="$HAND_FILES $AGENT_HOME/mcp.json"
+[ -n "${UNPRIVILEGED:-}" ] || chown hand:hand $HAND_FILES
 HARNESS_CMD=$(cat "$J/harness.cmd")
 HARNESS_CMD=${HARNESS_CMD//\/home\/hand\//$AGENT_HOME/}
 
