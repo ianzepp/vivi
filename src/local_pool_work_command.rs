@@ -181,7 +181,9 @@ fn refuse_second_dispatch(space: &Mailspace, handle: &str) -> Result<(), Vivariu
 /// band, kind and charter and the operator's flags go through
 /// `role_dispatch::resolve` against the pool's band table, so every refusal
 /// there costs nothing. The rules gain the role's charter as a standing
-/// prompt; a role with no charter leaves the pool rules unchanged.
+/// prompt whose pool note follows the pool's bridge: with the bridge on it
+/// names the server's vivi tools, without it the receipt ending. A role with
+/// no charter leaves the pool rules unchanged.
 fn resolve_dispatch(
     command: &PoolDispatchCommand,
     config: &PoolConfig,
@@ -220,7 +222,12 @@ fn resolve_dispatch(
         },
     )?;
     let rules = role.as_ref().map_or(pool_rules.clone(), |role| {
-        role_dispatch::standing_prompt(&role.name, &role.charter, &pool_rules, false)
+        role_dispatch::standing_prompt(
+            &role.name,
+            &role.charter,
+            &pool_rules,
+            config.bridge.enabled,
+        )
     });
     let role_line = role_line(command, role.as_ref(), &resolved);
     let flags = DispatchFlags {

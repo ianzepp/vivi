@@ -66,6 +66,9 @@ const ECHO_HARNESS: &str = "echo {model} >> a.txt";
 /// A harness that keeps the one slot busy while a second dispatch runs.
 const SLEEPING_HARNESS: &str = "sleep 5; echo {model} >> a.txt";
 
+/// The charter of the role fixture, as in the role dispatch tests.
+const CHARTER: &str = "Audit faithfully.\nReport every finding.\n";
+
 /// A mailspace with member `alice` registered on `server`, a `[sync]` table
 /// naming `sync_server` (a closed port when the bridge must find the server
 /// down), and a one-slot local worktree pool `p` carrying `bridge` as its
@@ -158,6 +161,90 @@ fn dispatch(rig: &Rig, branch: &str) -> Output {
         "--project",
         rig.project.to_str().unwrap(),
     ])
+}
+
+/// Give the rig a role `helper` of kind hand carrying a charter, so a task
+/// addressed to it dispatches with the charter as its standing prompt.
+fn with_chartered_role(rig: &Rig) {
+    let root = rig.project.to_str().unwrap();
+    ok(&vivi(&[
+        "role",
+        "add",
+        "helper",
+        "--kind",
+        "hand",
+        "--project",
+        root,
+    ]));
+    let charter = rig.project.parent().unwrap().join("charter.md");
+    std::fs::write(&charter, CHARTER).unwrap();
+    ok(&vivi(&[
+        "role",
+        "charter",
+        "set",
+        "helper",
+        "--body-file",
+        charter.to_str().unwrap(),
+        "--project",
+        root,
+    ]));
+}
+
+/// Send a task addressed to `to` and dispatch it on pool `p` with the plain
+/// standin model, like [`dispatch`] but to a role.
+fn dispatch_to(rig: &Rig, to: &str, branch: &str) -> Output {
+    let sent = vivi(&[
+        "task",
+        "send",
+        "--project",
+        rig.project.to_str().unwrap(),
+        "--from",
+        "mind",
+        "--to",
+        to,
+        "--subject",
+        branch,
+        "--body",
+        "work",
+    ]);
+    let task = String::from_utf8_lossy(&sent.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("created "))
+        .and_then(|r| r.split_whitespace().nth(1))
+        .map(str::to_string)
+        .expect("a task handle");
+    vivi(&[
+        "pool",
+        "dispatch",
+        "--pool",
+        "p",
+        &task,
+        "--model",
+        "standin",
+        "--from",
+        "main",
+        "--branch",
+        branch,
+        "--project",
+        rig.project.to_str().unwrap(),
+    ])
+}
+
+/// The one `<name>` file under the slots' `job` directories (e.g. rules.md).
+fn job_file(rig: &Rig, name: &str) -> PathBuf {
+    let lanes = rig.project.parent().unwrap().join("lanes");
+    let mut found = Vec::new();
+    for dir in walk_dirs(&lanes) {
+        if dir.file_name().is_some_and(|n| n == "job") {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                if entry.file_name().to_str() == Some(name) {
+                    found.push(entry.path());
+                }
+            }
+        }
+    }
+    assert_eq!(found.len(), 1, "one job/{name} under the slots: {found:?}");
+    found.pop().unwrap()
 }
 
 /// The `job <id>` token of the human dispatch line.
@@ -694,5 +781,49 @@ fn a_failed_dispatch_revokes_the_minted_key_and_names_only_its_id() {
             .find(|k| k.key_id == live.key_id)
             .is_some_and(|k| k.revoked),
         "collection revoked the collected job's key: {listed:?}"
+    );
+}
+
+#[test]
+fn a_chartered_role_on_a_bridge_pool_gets_the_bridge_note_and_off_the_no_bridge_note() {
+    let server = ProjectServer::start();
+    let bridged = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
+    with_chartered_role(&bridged);
+    let said = ok(&dispatch_to(&bridged, "helper", "feat/role-bridge"));
+    assert!(
+        said.contains("bridge key"),
+        "the bridge minted a key: {said}"
+    );
+    settle(&bridged);
+    let rules = std::fs::read_to_string(job_file(&bridged, "rules.md")).unwrap();
+    assert!(rules.contains("Standing charter (role helper)"), "{rules}");
+    assert!(
+        rules.contains("vivi tools of the project server"),
+        "the bridge note tells the worker its vivi tools: {rules}"
+    );
+    assert!(
+        !rules.contains("no `vivi` command"),
+        "the no-bridge note is gone with the bridge on: {rules}"
+    );
+
+    let plain = rig(&server, &server.url(), "", ECHO_HARNESS);
+    with_chartered_role(&plain);
+    let said = ok(&dispatch_to(&plain, "helper", "feat/role-plain"));
+    assert!(!said.contains("bridge key"), "no bridge, no mint: {said}");
+    settle(&plain);
+    let rules = std::fs::read_to_string(job_file(&plain, "rules.md")).unwrap();
+    assert!(rules.contains("Standing charter (role helper)"), "{rules}");
+    assert!(
+        rules.contains("no `vivi` command"),
+        "without the bridge the worker is told it has no vivi: {rules}"
+    );
+    assert!(
+        !rules.contains("vivi tools of the project server"),
+        "the bridge note is gone with the bridge off: {rules}"
     );
 }
