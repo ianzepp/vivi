@@ -1541,6 +1541,7 @@ app = "my-fly-app"            # REQUIRED, no default; created by `pool create` i
 # size = "performance-8x"     # default
 # memory = 32768              # MB; default 32768
 # tmpfs = "16g"               # memory disk over build_dir; default 16g
+# rootfs_gb = 24             # optional root disk size in GB, for an image too large for the provider default (Fly: "Not enough space to unpack image")
 
 # [pools.lanes.docker]        # only with provider = "docker"; every key optional
 # host = "ssh://user@server"  # a remote daemon; omit for the local one

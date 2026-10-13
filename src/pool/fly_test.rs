@@ -161,3 +161,27 @@ fn a_taken_app_name_is_said_plainly_with_the_line_to_set() {
     }
     assert!(!is_name_taken("organization not found"));
 }
+
+#[test]
+fn a_root_disk_size_is_passed_only_when_the_pool_sets_one() {
+    let spec = CreateSpec {
+        name: "faber-slot-1".into(),
+        image: "registry.example/app:full".into(),
+        metadata: BTreeMap::new(),
+        env: BTreeMap::new(),
+        once_env: BTreeMap::new(),
+        passthrough_env: Vec::new(),
+        files: Vec::new(),
+        command: vec!["bash".into()],
+        build_dir: None,
+        tmpfs: "16g".into(),
+    };
+    let plain = run_args("lane-pool", &PoolFly::default(), &spec).join(" ");
+    assert!(!plain.contains("--rootfs-size"), "{plain}");
+    let host = PoolFly {
+        rootfs_gb: Some(24),
+        ..PoolFly::default()
+    };
+    let sized = run_args("lane-pool", &host, &spec).join(" ");
+    assert!(sized.contains("--rootfs-size 24"), "{sized}");
+}

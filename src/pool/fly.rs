@@ -291,6 +291,9 @@ pub fn run_args(app: &str, host: &PoolFly, spec: &CreateSpec) -> Vec<String> {
     ]
     .map(str::to_string)
     .to_vec();
+    if let Some(size) = host.rootfs_gb {
+        args.extend(["--rootfs-size".to_string(), size.to_string()]);
+    }
     for (key, value) in &spec.metadata {
         args.extend(["--metadata".to_string(), format!("{key}={value}")]);
     }

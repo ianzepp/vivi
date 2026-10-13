@@ -169,6 +169,10 @@ pub struct PoolFly {
     /// Size of the memory disk mounted over the build output, e.g. `16g`.
     #[serde(default = "default_tmpfs")]
     pub tmpfs: String,
+    /// Root disk size in GB, for an image too large to unpack into the
+    /// provider's default root disk. Unset leaves the provider's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rootfs_gb: Option<u32>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
 }
@@ -182,6 +186,7 @@ impl Default for PoolFly {
             size: default_size(),
             memory: default_memory(),
             tmpfs: default_tmpfs(),
+            rootfs_gb: None,
             unknown: BTreeMap::new(),
         }
     }
