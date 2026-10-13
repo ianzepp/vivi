@@ -20,6 +20,10 @@ hand to others.
   seat's checkout, then spawn the seat with the dispatch pointer: the role and
   one handle. Triage the board. Do not implement product. Do not erase other
   agents' work.
+- **Dispatch by role.** File the task to the class role; `vivi pool dispatch
+  <handle>` then takes the charter, the read-only kind and the band's model
+  from that role. `--model` and `--read-only` are overrides only, and a
+  `band:` line in the task body moves this one assignment to a different band.
 - Capacity and charters live on Vivi class roles: `vivi role list`, `vivi role
   show <role>`, and the project frame from `vivi boot`. Do not mint numbered
   roles; a class is one role, and the handle carries the unit.
