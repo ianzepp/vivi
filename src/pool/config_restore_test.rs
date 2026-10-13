@@ -77,7 +77,9 @@ fn a_control_character_is_refused() {
 #[test]
 fn more_than_a_hundred_paths_are_refused() {
     let mut config = config(&[]);
-    config.restore = (0..=MAX_RESTORE_PATHS).map(|i| format!("f{i}.txt")).collect();
+    config.restore = (0..=MAX_RESTORE_PATHS)
+        .map(|i| format!("f{i}.txt"))
+        .collect();
     let err = config.validate(&id()).unwrap_err().to_string();
     assert!(err.contains("[pools.main] restore"), "got: {err}");
     assert!(err.contains("100"), "got: {err}");

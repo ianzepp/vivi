@@ -378,7 +378,19 @@ fn the_restore_list_travels_as_one_path_per_line_and_only_when_there_are_some() 
         text(&bundle, "restore.list"),
         "runtime/llvm/Cargo.lock\na b.txt\n"
     );
-    let file = bundle.files.iter().find(|f| f.name == "restore.list").unwrap();
-    assert_eq!(file.mode, 0o600, "the list is the runner's, not the agent's");
-    assert!(!bundle.agent_visible().iter().any(|f| f.name == "restore.list"));
+    let file = bundle
+        .files
+        .iter()
+        .find(|f| f.name == "restore.list")
+        .unwrap();
+    assert_eq!(
+        file.mode, 0o600,
+        "the list is the runner's, not the agent's"
+    );
+    assert!(
+        !bundle
+            .agent_visible()
+            .iter()
+            .any(|f| f.name == "restore.list")
+    );
 }

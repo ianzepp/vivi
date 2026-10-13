@@ -30,9 +30,8 @@ impl PoolConfig {
 }
 
 fn check_restore_path(pool: &str, path: &str) -> Result<(), VivariumError> {
-    let refused = |why: String| {
-        VivariumError::Config(format!("[pools.{pool}] restore: {why}: {path:?}"))
-    };
+    let refused =
+        |why: String| VivariumError::Config(format!("[pools.{pool}] restore: {why}: {path:?}"));
     if path.is_empty() {
         return Err(refused("a path is empty".into()));
     }

@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::collect::{Collected, DISCARDED_PATH_PREFIX, RESTORED_PATH_PREFIX, Outcome};
+use super::collect::{Collected, DISCARDED_PATH_PREFIX, Outcome, RESTORED_PATH_PREFIX};
 use super::facts;
 use crate::mailspace::PoolEventRow;
 

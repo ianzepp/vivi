@@ -224,11 +224,53 @@ fn a_discarding_read_only_result_lists_the_paths_in_order() {
 }
 
 #[test]
+fn a_restoring_result_lists_the_paths_in_order_and_names_them_in_the_text() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let outcome = finished_with(&[
+        ("restored_count", "12"),
+        ("restored_path_1", "runtime/llvm/Cargo.lock"),
+        ("restored_path_2", "dir/b c.txt"),
+        ("restored_path_10", "z.txt"),
+    ]);
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    assert_eq!(note["restored_count"], "12");
+    assert_eq!(
+        note["restored"],
+        serde_json::json!(["runtime/llvm/Cargo.lock", "dir/b c.txt", "z.txt"]),
+        "numeric order, not text order"
+    );
+    assert!(note.get("restored_path_1").is_none(), "{note}");
+    let text = collected_text(&d, &outcome);
+    assert!(
+        text.contains(
+            "restored 3 paths before commit: runtime/llvm/Cargo.lock, dir/b c.txt, z.txt"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_result_without_restored_paths_has_no_restored_key_or_line() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    assert!(note.get("restored").is_none());
+    assert!(!collected_text(&d, &finished()).contains("restored"));
+}
+
+#[test]
 fn facts_are_in_the_json_note_and_shown_before_the_receipt_not_as_flat_keys() {
     let d = OpenDispatch {
         task: "aaaa1111".into(),
         record: read_only_record("j1"),
     };
+    let outcome = read_only_outcome(&[
+        ("push", "read_only_unchanged"),
         ("fact_1_cmd", "gpu-query --csv"),
         ("fact_1_exit", "0"),
         ("fact_1_out", r"Some GPU, 550.1\n8 GiB"),
