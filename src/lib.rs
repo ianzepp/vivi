@@ -14,6 +14,7 @@ pub mod error;
 pub mod extract;
 pub mod judgment;
 pub mod mailspace;
+pub mod mcp;
 pub mod message;
 pub mod pool;
 pub mod role_schedule;
