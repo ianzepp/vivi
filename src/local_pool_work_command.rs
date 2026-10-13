@@ -8,6 +8,7 @@ use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::PoolTask;
+use vivi::pool::bridge;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::dispatch::{self, DispatchFlags};
 use vivi::pool::github::Secret;
@@ -46,10 +47,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         dispatch::check_ready_timeout(provider.slot_lifetime(), command.ready_timeout)?;
     let task = space.pool_task(&command.task)?;
     refuse_second_dispatch(&space, &task.handle)?;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let job_id = dispatch::new_job_id(&task.handle, nanos, std::process::id());
+    let job_id = fresh_job_id(&task.handle);
     let (flags, rules, role_line) = resolve_dispatch(
         command,
         config,
@@ -64,7 +62,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (&task.handle, &task.subject, &task.body),
         &flags,
         rules,
-        job_id,
+        job_id.clone(),
     )?;
     read_only_notes(flags.read_only, config, &task.body, &progress);
     let (token, start) = match (config.worktree_source(), flags.read_only) {
@@ -75,31 +73,81 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (None, _) => remote_start(config, &id.pool, &mut plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
+    mint_bridge_grant(config, &space, &id.pool, &job_id, &mut plan, &progress)?;
     claim_note(provider, &id.pool, &progress);
-    let pacing = Pacing::default();
-    let launch = dispatch::Launch {
+    let made = submit_job(
+        &space,
+        provider,
+        id,
         config,
-        plan: &plan,
-        token: &token,
-        start: &start,
-        progress: &progress,
+        &plan,
+        &token,
+        &start,
+        &progress,
         ready_timeout,
-    };
-    let made = work::submit(&space, provider, id, &launch, &pacing)?;
-    if provider.slot_lifetime() == SlotLifetime::PerDispatch {
-        let deadline = vivi::pool::runpod_open::dispatch_deadline(
-            &config.runpod,
-            ready_timeout,
-            (made.at, made.budget),
-        );
-        progress.say(&vivi::pool::runpod_open::uncollected_note(&made, deadline));
-    }
+    )?;
+    note_uncollected(provider, config, ready_timeout, &made, &progress);
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
     } else {
-        println!("{}", dispatched_text(&task.handle, &made, &role_line));
+        println!(
+            "{}",
+            dispatched_text(&task.handle, &made, plan.bridge.as_ref(), &role_line)
+        );
     }
     Ok(())
+}
+
+/// A fresh job id for this dispatch: the task handle, the wall clock and the
+/// process id.
+fn fresh_job_id(handle: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    dispatch::new_job_id(handle, nanos, std::process::id())
+}
+
+/// Submit the job and revoke a minted bridge grant when the submission
+/// fails: the key must not outlive a dispatch that never happened.
+#[allow(clippy::too_many_arguments)]
+fn submit_job(
+    space: &Mailspace,
+    provider: &dyn vivi::pool::PoolProvider,
+    id: &vivi::pool::slot::PoolId,
+    config: &PoolConfig,
+    plan: &job::JobPlan,
+    token: &Secret,
+    start: &str,
+    progress: &Progress,
+    ready_timeout: Option<u64>,
+) -> Result<vivi::pool::record::DispatchRecord, VivariumError> {
+    let pacing = Pacing::default();
+    let launch = dispatch::Launch {
+        config,
+        plan,
+        token,
+        start,
+        progress,
+        ready_timeout,
+    };
+    work::submit(space, provider, id, &launch, &pacing)
+        .inspect_err(|_| undo_bridge_grant(space, plan.bridge.as_ref()))
+}
+
+/// Note, on a per-dispatch host, when an uncollected pod gives up its job.
+fn note_uncollected(
+    provider: &dyn vivi::pool::PoolProvider,
+    config: &PoolConfig,
+    ready_timeout: Option<u64>,
+    made: &vivi::pool::record::DispatchRecord,
+    progress: &Progress,
+) {
+    if provider.slot_lifetime() != SlotLifetime::PerDispatch {
+        return;
+    }
+    let deadline =
+        vivi::pool::runpod_open::dispatch_deadline(&config.runpod, ready_timeout, (made.at, made.budget));
+    progress.say(&vivi::pool::runpod_open::uncollected_note(made, deadline));
 }
 
 /// What the dispatch says it is about to do to the pool: rent a pod (slots
@@ -214,8 +262,59 @@ fn role_line(
     line
 }
 
-/// The human line of a dispatch, with the role suffix when a role was used.
-fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord, role: &str) -> String {
+
+/// Mint the job's bridge grant when the pool's bridge is enabled. Every
+/// refusal check has passed by now, so the very next step is the claim; a
+/// failure here refuses the dispatch before any slot is touched, and a
+/// failure of the dispatch itself revokes the minted key (see
+/// [`undo_bridge_grant`]). The grant rides in the plan, is delivered only
+/// inside the job archive, and only its key id is ever named.
+fn mint_bridge_grant(
+    config: &PoolConfig,
+    space: &Mailspace,
+    pool: &str,
+    job: &str,
+    plan: &mut job::JobPlan,
+    progress: &Progress,
+) -> Result<(), VivariumError> {
+    if !config.bridge.enabled {
+        return Ok(());
+    }
+    progress.say(&format!(
+        "note: the bridge worker reads {} from the server; run `vivi sync --drain` before \
+         dispatching so the task is there",
+        plan.task
+    ));
+    let grant = bridge::mint_for_job(space, pool, job)?;
+    progress.say(&format!("bridge key {} ({})", grant.key_id, grant.label));
+    plan.bridge = Some(grant);
+    Ok(())
+}
+
+/// Revoke a minted bridge grant after the dispatch failed — the claim, the
+/// delivery, or the record: the key must not outlive the attempt. Only the
+/// key id is named, never the key.
+fn undo_bridge_grant(space: &Mailspace, grant: Option<&bridge::Grant>) {
+    let Some(grant) = grant else {
+        return;
+    };
+    match bridge::revoke_grant(space, grant) {
+        Ok(()) => eprintln!("revoked bridge key {} ({})", grant.key_id, grant.label),
+        Err(e) => eprintln!(
+            "warning: the dispatch failed and bridge key {} ({}) could not be revoked: {e}",
+            grant.key_id, grant.label
+        ),
+    }
+}
+
+/// The human line of a dispatch, with the bridge key and the role suffix when
+/// they apply.
+fn dispatched_text(
+    task: &str,
+    made: &vivi::pool::record::DispatchRecord,
+    bridge: Option<&bridge::Grant>,
+    role: &str,
+) -> String {
     format!(
         "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s{}{}",
         made.pool,
@@ -236,7 +335,8 @@ fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord, role: 
             format!("  hardware {}", made.hardware)
         },
         with_suffix(made),
-    ) + role
+    ) + &bridge_suffix(bridge)
+        + role
         + &abandoned_suffix(made)
 }
 
@@ -247,6 +347,14 @@ fn with_suffix(made: &vivi::pool::record::DispatchRecord) -> String {
     } else {
         format!("  with {}", made.with.join(" "))
     }
+}
+
+/// `  bridge key <key_id> (<label>)` when the job carries a grant; the key
+/// itself is never printed.
+fn bridge_suffix(grant: Option<&bridge::Grant>) -> String {
+    grant.map_or(String::new(), |g| {
+        format!("  bridge key {} ({})", g.key_id, g.label)
+    })
 }
 
 /// `  abandoned ...` when pods were given up on before the one that works.
@@ -460,6 +568,9 @@ pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumEr
         report.out.iter().for_each(|l| println!("{l}"));
     }
     report.warnings.iter().for_each(|w| eprintln!("{w}"));
+    if !command.porcelain {
+        report.revoked.iter().for_each(|r| eprintln!("{r}"));
+    }
     report.error().map_or(Ok(()), Err)
 }
 

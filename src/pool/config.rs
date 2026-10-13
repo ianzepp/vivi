@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::config_bands::PoolBands;
+use super::config_bridge::PoolBridge;
 use super::runpod_config::PoolRunpod;
 use super::slot::{DOCTOR_SUFFIX, PoolId};
 use crate::error::VivariumError;
@@ -118,6 +119,10 @@ pub struct PoolConfig {
     /// Identity the remote runner commits as; `dispatch` needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committer: Option<PoolCommitter>,
+    /// MCP bridge settings (`[pools.<name>.bridge]`); off when absent. A
+    /// dispatch on the pool then mints one project API key for the job.
+    #[serde(default)]
+    pub bridge: PoolBridge,
     /// Source delivered with each slot instead of fetched from `repo`. Never
     /// read from TOML: only the live self-test of `vivi pool doctor --test`
     /// sets it.
@@ -461,6 +466,9 @@ impl PoolConfig {
             committer.validate(pool)?;
         }
         self.check_bands(pool)?;
+        self.bridge.validate(pool)?;
+        self.bridge
+            .validate_harness(pool, self.harness.as_ref().map(|h| h.run.as_str()))?;
         reject_unknown(pool, "", &self.unknown)?;
         reject_unknown(pool, ".fly", &self.fly.unknown)?;
         reject_unknown(pool, ".docker", &self.docker.unknown)?;
@@ -773,7 +781,7 @@ impl PoolHarness {
         }
         if let Some(unknown) = super::job::unknown_placeholder(&self.run) {
             return Err(bad(format!(
-                "harness.run holds the unknown placeholder {{{unknown}}} (use {{model}}, {{brief}}, {{rules}}, {{reasoning}})"
+                "harness.run holds the unknown placeholder {{{unknown}}} (use {{model}}, {{brief}}, {{rules}}, {{reasoning}}, {{mcp_config}})"
             )));
         }
         if self.models.iter().any(|m| !is_model_slug(m)) {

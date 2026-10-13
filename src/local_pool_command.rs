@@ -5,6 +5,7 @@ use crate::local_pool_work_command as work;
 use vivi::VivariumError;
 use vivi::cli::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
 use vivi::mailspace::Mailspace;
+use vivi::pool::bridge;
 use vivi::pool::github::{self, Secret};
 use vivi::pool::local_branch;
 use vivi::pool::local_git::Repo;
@@ -313,5 +314,22 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
         destroyed.len(),
         handle.id.pool
     );
+    if matches!(target, DestroyTarget::All) && handle.config.bridge.enabled {
+        revoke_bridge_keys(&space, &handle.id.pool);
+    }
     Ok(())
+}
+
+/// Sweep a destroyed bridge pool's leftover keys: every live key labelled for
+/// the pool ([`bridge::revoke_pool`], which says which key went, one line
+/// each). Best effort: a revoke that cannot be done only warns, naming the
+/// exact manual command; it never fails a destroy that already succeeded.
+fn revoke_bridge_keys(space: &Mailspace, pool: &str) {
+    if let Err(e) = bridge::revoke_pool(space, pool) {
+        eprintln!(
+            "warning: the bridge keys of pool {pool} could not be revoked: {e}; when the \
+             server answers, list the keys and revoke every one labelled \
+             pool-{pool}-<job> by hand: vivi sync api-key revoke <key_id>"
+        );
+    }
 }

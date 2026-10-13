@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use sha2::{Digest, Sha256};
 
+use super::bridge::bridge_brief;
 use super::claim::{Claim, claim_slot, open_slot, unclaim};
 use super::collect::Pacing;
 use super::config::PoolConfig;
@@ -51,7 +52,9 @@ pub fn new_job_id(task: &str, nanos: u128, pid: u32) -> String {
 }
 
 /// Validate everything that can be checked without touching a machine and
-/// assemble the job. `rules` is the standing-rules text to deliver.
+/// assemble the job. `rules` is the standing-rules text to deliver. With the
+/// pool's bridge enabled the brief is a pointer at the task on the server
+/// ([`bridge_brief`]); without it, the task body itself.
 ///
 /// # Errors
 /// Returns an error if the harness or committer is not configured, the model
@@ -101,7 +104,7 @@ pub fn plan_job(
         checkout: None,
         task: handle.to_string(),
         subject: subject.to_string(),
-        brief: body.to_string(),
+        brief: brief_for(config, handle, subject, body),
         rules,
         refs,
         with,
@@ -114,6 +117,7 @@ pub fn plan_job(
         read_only: flags.read_only,
         facts: config.facts.clone(),
         restore: config.restore.clone(),
+        bridge: None,
     })
 }
 
@@ -146,6 +150,17 @@ fn plan_reasoning(
         )));
     }
     Ok(Some(level.to_string()))
+}
+
+/// The brief the worker reads: with the bridge on, a pointer at the task on
+/// the server (the worker reads it with the vivi tools); without it, the
+/// task body itself.
+fn brief_for(config: &PoolConfig, handle: &str, subject: &str, body: &str) -> String {
+    if config.bridge.enabled {
+        bridge_brief(handle, subject)
+    } else {
+        body.to_string()
+    }
 }
 
 /// `from` and `branch` for the flags. A read-only job names no branch.

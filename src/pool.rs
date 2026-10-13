@@ -24,10 +24,12 @@
 
 pub mod bands;
 pub mod bootscript;
+pub mod bridge;
 pub mod claim;
 pub mod collect;
 pub mod config;
 pub mod config_bands;
+pub mod config_bridge;
 pub mod config_depth;
 pub mod config_restore;
 pub mod dispatch;
