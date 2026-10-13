@@ -60,6 +60,35 @@ pub struct HttpReply {
     pub body: String,
 }
 
+/// One reply appended to a seeded item: who said it and what.
+#[derive(Clone)]
+pub struct ReplyRecord {
+    pub by: String,
+    pub body: String,
+}
+
+/// One seeded item: the stand-in of a task the fake serves through its
+/// `show` and `thread` tools.
+#[derive(Clone)]
+pub struct Item {
+    pub handle: String,
+    pub subject: String,
+    pub body: String,
+    pub state: String,
+    pub replies: Vec<ReplyRecord>,
+}
+
+/// One report the fake recorded: a `reply` or a `done` tool call, with the
+/// member that made it (`kind` is `"reply"` or `"done"`; a `done` carries
+/// no body).
+#[derive(Clone)]
+pub struct Report {
+    pub kind: &'static str,
+    pub item: String,
+    pub by: String,
+    pub body: String,
+}
+
 /// A registered member: the name is bound to the first PEM admitted.
 struct Member {
     name: String,
@@ -100,6 +129,8 @@ struct State {
     tokens: Vec<Token>,
     keys: Vec<StoredKey>,
     mcp_seen: Vec<McpSeen>,
+    items: Vec<Item>,
+    reports: Vec<Report>,
     refuse_next: usize,
     refuse_always: bool,
     token_lifetime_secs: i64,
@@ -117,6 +148,8 @@ impl State {
             tokens: Vec::new(),
             keys: Vec::new(),
             mcp_seen: Vec::new(),
+            items: Vec::new(),
+            reports: Vec::new(),
             refuse_next: 0,
             refuse_always: false,
             token_lifetime_secs: DEFAULT_TOKEN_LIFETIME_SECS,
@@ -235,6 +268,30 @@ impl ProjectServer {
     #[must_use]
     pub fn mcp_requests(&self) -> Vec<McpSeen> {
         self.state.lock().unwrap().mcp_seen.clone()
+    }
+
+    /// Seed one item the `show` and `thread` tools serve. Seeding the same
+    /// handle again replaces the item.
+    pub fn seed_item(&self, handle: &str, subject: &str, body: &str) {
+        let mut state = self.state.lock().unwrap();
+        let item = Item {
+            handle: handle.to_string(),
+            subject: subject.to_string(),
+            body: body.to_string(),
+            state: "open".to_string(),
+            replies: Vec::new(),
+        };
+        match state.items.iter().position(|one| one.handle == handle) {
+            Some(index) => state.items[index] = item,
+            None => state.items.push(item),
+        }
+    }
+
+    /// Every `reply` and `done` the fake recorded, in arrival order, with
+    /// the member that made each.
+    #[must_use]
+    pub fn reports(&self) -> Vec<Report> {
+        self.state.lock().unwrap().reports.clone()
     }
 
     /// Every API key this fake minted, with secrets.
@@ -577,7 +634,7 @@ fn handle_mcp(state: &Mutex<State>, request: &Request) -> Reply {
             "the bearer is not a live token or API key",
         );
     };
-    sse_wrapped(accept.as_deref(), dispatch_mcp(&caller, &parsed))
+    sse_wrapped(accept.as_deref(), dispatch_mcp(state, &caller, &parsed))
 }
 
 /// Record one `/mcp` request as it arrived, before any judgment.
@@ -617,22 +674,23 @@ fn sse_wrapped(accept: Option<&str>, reply: Reply) -> Reply {
 /// JSON-RPC dispatch: a batch (array) is answered by the array of the
 /// individual replies, notifications omitted; a lone notification is 202
 /// with an empty body; everything else HTTP 200.
-fn dispatch_mcp(caller: &str, parsed: &Value) -> Reply {
+fn dispatch_mcp(state: &Mutex<State>, caller: &str, parsed: &Value) -> Reply {
     if let Value::Array(items) = parsed {
         let replies: Vec<Value> = items
             .iter()
-            .filter_map(|item| dispatch_one(caller, item))
+            .filter_map(|item| dispatch_one(state, caller, item))
             .collect();
         if replies.is_empty() {
             return empty_reply(202);
         }
         return json_reply(200, Value::Array(replies));
     }
-    dispatch_one(caller, parsed).map_or_else(|| empty_reply(202), |reply| json_reply(200, reply))
+    dispatch_one(state, caller, parsed)
+        .map_or_else(|| empty_reply(202), |reply| json_reply(200, reply))
 }
 
 /// One JSON-RPC message's reply value; `None` for a notification.
-fn dispatch_one(caller: &str, parsed: &Value) -> Option<Value> {
+fn dispatch_one(state: &Mutex<State>, caller: &str, parsed: &Value) -> Option<Value> {
     let method = parsed
         .get("method")
         .and_then(Value::as_str)
@@ -645,7 +703,7 @@ fn dispatch_one(caller: &str, parsed: &Value) -> Option<Value> {
         "initialize" => initialize_result(parsed),
         "ping" => json!({}),
         "tools/list" => tools_list(),
-        "tools/call" => call_tool(caller, parsed),
+        "tools/call" => call_tool(state, caller, parsed),
         other => {
             return Some(json!({
                 "jsonrpc": "2.0",
@@ -676,36 +734,130 @@ fn initialize_result(parsed: &Value) -> Value {
 }
 
 fn tools_list() -> Value {
+    let tool = |name: &str, description: &str, properties: Value| {
+        json!({
+            "name": name,
+            "description": description,
+            "inputSchema": { "type": "object", "properties": properties },
+        })
+    };
     json!({
-        "tools": [{
-            "name": "echo",
-            "description": "echo",
-            "inputSchema": { "type": "object", "properties": { "text": { "type": "string" } } },
-        }],
+        "tools": [
+            tool("echo", "echo", json!({ "text": { "type": "string" } })),
+            tool("show", "show one item", json!({ "handle": { "type": "string" } })),
+            tool(
+                "thread",
+                "show one item and its replies",
+                json!({ "handle": { "type": "string" } }),
+            ),
+            tool(
+                "reply",
+                "append a reply to one item",
+                json!({ "handle": { "type": "string" }, "body": { "type": "string" } }),
+            ),
+            tool("done", "mark one item done", json!({ "handle": { "type": "string" } })),
+        ],
     })
 }
 
-/// `tools/call`: `echo` reflects `<caller>: <text>`; unknown tools are a
-/// tool-level error, still HTTP 200.
-fn call_tool(caller: &str, parsed: &Value) -> Value {
+/// A successful tool result carrying one text block.
+fn tool_text(text: String) -> Value {
+    json!({ "content": [{ "type": "text", "text": text }], "isError": false })
+}
+
+/// A failed tool result: still HTTP 200, `isError` true.
+fn tool_error(text: String) -> Value {
+    json!({ "content": [{ "type": "text", "text": text }], "isError": true })
+}
+
+/// `tools/call`: `echo` reflects `<caller>: <text>`; the item tools read
+/// and record against the seeded items, with the caller; unknown tools are
+/// a tool-level error, still HTTP 200.
+fn call_tool(state: &Mutex<State>, caller: &str, parsed: &Value) -> Value {
     let name = parsed
         .pointer("/params/name")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if name != "echo" {
-        return json!({
-            "content": [{ "type": "text", "text": format!("unknown tool: {name}") }],
-            "isError": true,
-        });
+    let mut state = state.lock().unwrap();
+    match name {
+        "echo" => {
+            let text = parsed
+                .pointer("/params/arguments/text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            tool_text(format!("{caller}: {text}"))
+        }
+        "show" | "thread" | "reply" | "done" => item_tool(&mut state, caller, name, parsed),
+        other => tool_error(format!("unknown tool: {other}")),
     }
-    let text = parsed
-        .pointer("/params/arguments/text")
+}
+
+/// The item tools. `show` renders the item, `thread` the item and its
+/// replies, `reply` appends a reply, `done` marks the item done; a reply
+/// and a done are recorded as reports with the caller. A missing handle or
+/// an unknown one is a tool-level error.
+fn item_tool(state: &mut State, caller: &str, name: &str, parsed: &Value) -> Value {
+    let Some(handle) = parsed
+        .pointer("/params/arguments/handle")
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    json!({
-        "content": [{ "type": "text", "text": format!("{caller}: {text}") }],
-        "isError": false,
-    })
+    else {
+        return tool_error(format!("{name} needs a handle"));
+    };
+    let Some(index) = state.items.iter().position(|item| item.handle == handle) else {
+        return tool_error(format!("unknown item: {handle}"));
+    };
+    match name {
+        "show" => tool_text(item_text(&state.items[index], false)),
+        "thread" => tool_text(item_text(&state.items[index], true)),
+        "reply" => {
+            let body = parsed
+                .pointer("/params/arguments/body")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            state.items[index].replies.push(ReplyRecord {
+                by: caller.to_string(),
+                body: body.clone(),
+            });
+            state.reports.push(Report {
+                kind: "reply",
+                item: handle.to_string(),
+                by: caller.to_string(),
+                body,
+            });
+            tool_text(format!("reply recorded on {handle} by {caller}"))
+        }
+        "done" => {
+            state.items[index].state = "done".to_string();
+            state.reports.push(Report {
+                kind: "done",
+                item: handle.to_string(),
+                by: caller.to_string(),
+                body: String::new(),
+            });
+            tool_text(format!("done {handle} by {caller}"))
+        }
+        _ => tool_error(format!("unknown item tool: {name}")),
+    }
+}
+
+/// One item as the `show`/`thread` text: handle, subject, body and state,
+/// and, for `thread`, the replies in order.
+fn item_text(item: &Item, with_replies: bool) -> String {
+    let mut text = format!(
+        "handle: {}\nsubject: {}\nbody: {}\nstate: {}",
+        item.handle, item.subject, item.body, item.state
+    );
+    if with_replies {
+        text.push_str("\nreplies:");
+        if item.replies.is_empty() {
+            text.push_str(" none");
+        }
+        for reply in &item.replies {
+            text.push_str(&format!("\n- {}: {}", reply.by, reply.body));
+        }
+    }
+    text
 }
 
 /// The member name behind a live bearer: an unrevoked token, or the creator
