@@ -28,11 +28,14 @@ mod local_step_command;
 mod local_sync_command;
 mod local_work_command;
 mod local_work_list;
+mod quiet_pipe;
 
 use local_mailspace_command::run_mailspace_command;
 
 #[tokio::main]
 async fn main() {
+    quiet_pipe::install();
+
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
