@@ -179,6 +179,15 @@ fn with_refs_drop_duplicates_and_refuse_the_rest() {
         err.contains("at most 8") && err.contains("9 given"),
         "{err}"
     );
+    let mut nine_and_a_repeat = nine;
+    nine_and_a_repeat.push("review/1".into());
+    let err = resolve_with(&nine_and_a_repeat, "", "main", "factory/x")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("9 given") && !err.contains("10 given"),
+        "the count is of distinct refs, not raw values: {err}"
+    );
     let eight: Vec<String> = (1..=8).map(|i| format!("review/{i}")).collect();
     assert_eq!(
         resolve_with(&eight, "", "main", "factory/x").unwrap().len(),

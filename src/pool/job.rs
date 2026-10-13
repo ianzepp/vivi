@@ -192,7 +192,10 @@ pub fn resolve_with(
         if refs.len() > WITH_LIMIT {
             return Err(VivariumError::Message(format!(
                 "at most {WITH_LIMIT} with refs are allowed ({n} given)",
-                n = values.len()
+                n = values
+                    .iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
             )));
         }
     }
@@ -417,17 +420,25 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         let list = spec.facts.join("\n") + "\n";
         files.push(file("facts.cmd", &list, 0o600));
     }
-    if !spec.with.is_empty() {
-        let list = spec
-            .with
-            .iter()
-            .map(|w| format!("{} {}", w.name, w.commit))
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
+    if let Some(list) = with_list(&spec.with) {
         files.push(file("with.list", &list, 0o600));
     }
     Bundle { files }
+}
+
+/// The text of `with.list`: one `<ref> <commit>` line per extra ref,
+/// LF-terminated; `None` when the job names none, so no file is written.
+fn with_list(with: &[WithRef]) -> Option<String> {
+    if with.is_empty() {
+        return None;
+    }
+    Some(
+        with.iter()
+            .map(|w| format!("{} {}", w.name, w.commit))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
 }
 
 /// Line endings as LF. A stored task body has CRLF (and CR CR LF where the

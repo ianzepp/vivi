@@ -121,3 +121,44 @@ fn an_unknown_ref_is_an_error_naming_the_ref_and_the_repository() {
         "{err}"
     );
 }
+
+/// A finished dispatch record, the way `dispatch` builds one: the `with`
+/// entries already carry their resolved commit, cut to 12 hex digits.
+fn record(with: &[String]) -> vivi::pool::record::DispatchRecord {
+    vivi::pool::record::DispatchRecord {
+        pool: "p".into(),
+        slot: "p-slot-1".into(),
+        machine: "m1".into(),
+        job: "0123456789ab".into(),
+        model: "m/x".into(),
+        from: "main".into(),
+        branch: "factory/a".into(),
+        start: "a".repeat(40),
+        with: with.to_vec(),
+        budget: 600,
+        at: 1000,
+        read_only: false,
+        hardware: String::new(),
+        abandoned: 0,
+        abandoned_cost_micros: 0,
+    }
+}
+
+#[test]
+fn the_human_dispatch_line_carries_the_extra_refs_when_there_are_some() {
+    let made = record(&[
+        "review/aaa@aaaa1111aaaa".into(),
+        "bb034af1@bbbb2222bbbb".into(),
+    ]);
+    let text = dispatched_text("abcd1234", &made);
+    assert!(
+        text.contains("  with review/aaa@aaaa1111aaaa bb034af1@bbbb2222bbbb"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_human_dispatch_line_has_no_with_segment_when_the_job_has_none() {
+    let text = dispatched_text("abcd1234", &record(&[]));
+    assert!(!text.contains("with"), "{text}");
+}
