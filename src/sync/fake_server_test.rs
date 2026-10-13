@@ -49,6 +49,11 @@ struct Inner {
     lists: Vec<(u64, u32, Option<String>)>,
     /// The number of handles in every lookup request seen.
     lookups: Vec<usize>,
+    /// Projects minted by `create_project`, for unique ids.
+    projects: usize,
+    /// Admitted members: name -> the key PEM admitted under it. The first
+    /// key admitted for a name wins.
+    admitted: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -150,6 +155,18 @@ impl FakeServer {
             prefix: None,
         }
     }
+
+    /// Mint a project id and admit `creator_name` with `public_key_pem`,
+    /// as the real server's project-creation route does.
+    #[must_use]
+    pub fn create_project(&self, public_key_pem: &str, creator_name: &str) -> String {
+        let mut inner = self.inner.borrow_mut();
+        inner.projects += 1;
+        inner
+            .admitted
+            .insert(creator_name.to_string(), public_key_pem.to_string());
+        format!("proj-{:04}", inner.projects)
+    }
 }
 
 pub struct FakeClient {
@@ -218,6 +235,7 @@ impl Transport for FakeClient {
             bytes: bytes.to_vec(),
             sha: sha.clone(),
         });
+        admit_vouch(&mut inner, &self.member, envelope.to, bytes);
         Ok(Appended {
             message_id: message_id.to_string(),
             sequence,
@@ -297,6 +315,22 @@ impl Transport for FakeClient {
 }
 
 impl FakeClient {
+    /// Join as `name` with this key: the fake's admission check, and the
+    /// only place admission is enforced. The name must already be admitted
+    /// with exactly this key, as creator or by a vouch.
+    pub fn join(&self, name: &str, public_key_pem: &str) -> Result<(), String> {
+        let inner = self.server.inner.borrow();
+        match inner.admitted.get(name) {
+            Some(key) if key == public_key_pem => Ok(()),
+            Some(_) => Err(format!(
+                "HTTP 409 admission_required: '{name}' was admitted with another key"
+            )),
+            None => Err(format!(
+                "HTTP 409 admission_required: no vouch for '{name}'"
+            )),
+        }
+    }
+
     /// The visibility rule: work items to everyone, mail to its sender and
     /// to the member whose prefix is on a recipient address.
     fn visible(&self, item: &Item) -> bool {
@@ -331,6 +365,34 @@ impl FakeClient {
                 .any(|(_, found)| found == domain)
         })
     }
+}
+
+/// A letter to `postmaster` whose body is the vouch JSON admits the named
+/// member's key when the sender is admitted; anything else is not a vouch.
+/// The first key admitted under a name wins.
+fn admit_vouch(inner: &mut Inner, from: &str, to: &str, bytes: &[u8]) {
+    if to != "postmaster" || !inner.admitted.contains_key(from) {
+        return;
+    }
+    let Some(split) = bytes.windows(2).position(|pair| pair == b"\n\n") else {
+        return;
+    };
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&bytes[split + 2..]) else {
+        return;
+    };
+    let vouch = body.get("vouch");
+    let (Some(name), Some(pem)) = (
+        vouch.and_then(|v| v.get("name")).and_then(|v| v.as_str()),
+        vouch
+            .and_then(|v| v.get("public_key_pem"))
+            .and_then(|v| v.as_str()),
+    ) else {
+        return;
+    };
+    inner
+        .admitted
+        .entry(name.to_string())
+        .or_insert_with(|| pem.to_string());
 }
 
 /// A real temp mailspace with sync settings, standing in for one member's

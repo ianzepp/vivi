@@ -1598,9 +1598,12 @@ vivi sync pull --refs [--depth N]  # then look up the letters the new ones point
 vivi sync resync         # reset cursor and floor to zero, replay everything
 vivi sync fetch <handle>...    # file letters by their 8-hex handle
 vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
+vivi sync key            # print this mailspace's public-key PEM (mints the key file)
+vivi sync create [--name <creator>]  # new project on the server; prints its id, writes nothing
+vivi sync vouch <name> --key-file <pem>  # vouch for a member's key (or --key <pem>)
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
-vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded, held for unknown roles
+vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded, held for unknown roles; not the PEM — `vivi sync key` prints it
 ```
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
@@ -1639,22 +1642,28 @@ existing mailspace; an existing one keeps its id and history. Never copy a
    `https://vivi-server-main-production.up.railway.app` for staging),
    `project` (the server project id), and a new `name` for this checkout.
    Names bind to the first key admitted forever, so pick one you will keep.
-2. Run `vivi sync status`. This mints `.vivi/chat/identity.ed25519` if it is
-   missing and prints the short fingerprint and the wire fingerprint. Send
-   the matching SPKI public-key PEM (`-----BEGIN PUBLIC KEY-----` …), never
-   the private seed file, to an existing member. Status does not print the
-   PEM.
-3. The member vouches: mail whose envelope is the reserved address
-   `postmaster` and whose body (after the first blank line) is JSON
-   `{"vouch": {"name": "<name>", "public_key_pem": "<pem>"}}` — the PEM as a
-   JSON string. The working route today is the server MCP `send` tool (kind
-   `mail`, to `postmaster`); that path is untested. `vivi mail send --to
-   postmaster` is refused as an unknown local role, and a letter To
-   `postmaster@<prefix>.local` is not a vouch.
+   A brand new project is made with `vivi sync create [--name <creator>]`:
+   it prints the project id and writes nothing — put that id in `[sync]`
+   and run `vivi sync join` as the creator.
+2. Run `vivi sync key`. This mints `.vivi/chat/identity.ed25519` if it is
+   missing and prints the public-key PEM (`-----BEGIN PUBLIC KEY-----` …).
+   Send that PEM, never the private seed file, to an existing member.
+   (`vivi sync status` shows the fingerprints; it does not print the PEM —
+   `vivi sync key` does.)
+3. The existing member runs `vivi sync vouch <name> --key-file <pem-file>`
+   (or `--key <pem>`) with the PEM you sent. `vouch` composes and sends
+   the vouch letter itself: one governance letter to the project's
+   reserved `postmaster` address. `vivi mail send --to postmaster` is
+   still refused as an unknown local role; `vouch` is the verb for it.
 4. Run `vivi sync join`, then `vivi sync`. The push uploads existing needs,
    tasks, wants, and plain mail (never memos, drafts, trash, or rules).
    Letters written before the mailspace had an id keep their old
    `name.local` domain; they sync, but address replies to them explicitly.
+
+The vouch letter is addressed to `postmaster@<own address domain>`, and
+members' pulls do not file it under any role: a pull holds it for the
+unknown `postmaster` name instead, so no role folder and no backlog sees
+it.
 
 Errors: `admission_required` means no vouch yet, or the name was admitted
 with another key (the server binds a name to the first key admitted and has
