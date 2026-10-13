@@ -129,7 +129,7 @@ if [ -n "${LOCAL_ACTION:-}" ]; then
     START=$(as_hand git rev-parse HEAD)
   fi
 else
-  as_hand git fetch -q --depth "${DEPTH:-1}" "$URL" "$FROM" || finish fetch_failed
+  as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "$FROM" || finish fetch_failed
   START=$(as_hand git rev-parse FETCH_HEAD)
   as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
   [ -n "${READ_ONLY:-}" ] || as_hand git checkout -q -B "$BRANCH" || finish checkout_failed

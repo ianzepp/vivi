@@ -615,6 +615,15 @@ vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porce
   would create) and `dispatch` fail naming the missing setting, and `dispatch`
   also needs `harness` and `committer`.
 
+#### Fetch depth
+
+A pool fetches shallow and never the full history. The default fetch depth is
+50: at create the slot's seed fetch is `git fetch --depth 50`, and at dispatch
+the job's fetch of its `from` ref is `--depth 50`. A `depth` setting in the
+`[pools.<name>]` table (1 to 100000) overrides the default for both. A
+worktree pool (`local.worktree_of`) fetches nothing, so `depth` has no effect
+there.
+
 #### Read-only dispatch (reviewers and auditors)
 
 `vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>]

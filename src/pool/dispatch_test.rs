@@ -90,6 +90,27 @@ fn a_valid_request_plans_a_job() {
 }
 
 #[test]
+fn a_pool_with_no_depth_setting_plans_jobs_at_fetch_depth_fifty() {
+    assert_eq!(plan(&flags("m/ok")).unwrap().depth, 50);
+}
+
+#[test]
+fn the_pool_depth_setting_reaches_the_plan() {
+    let mut config = config();
+    config.depth = Some(7);
+    let p = plan_job(
+        &config,
+        "p",
+        ("abcd1234", "Subject line", "body text"),
+        &flags("m/ok"),
+        "rules".into(),
+        "job000000001".into(),
+    )
+    .unwrap();
+    assert_eq!(p.depth, 7);
+}
+
+#[test]
 fn an_unlisted_model_is_refused() {
     let err = plan(&flags("m/nope")).unwrap_err().to_string();
     assert!(err.contains("not in [harness].models"), "{err}");

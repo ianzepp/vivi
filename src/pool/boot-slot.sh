@@ -150,7 +150,7 @@ if [ ! -f "$W/seeded" ]; then
     cd "$RD"
   else
     mkdir -p "$RD" && cd "$RD" && git init -q . \
-      && git fetch -q --depth 1 "$(remote_url)" "$BASE" 2> "$W/fetch.err" \
+      && git fetch -q --depth "${DEPTH:-50}" "$(remote_url)" "$BASE" 2> "$W/fetch.err" \
       && git checkout -q FETCH_HEAD || {
         # Say why, without the address: it can carry the fetch token.
         echo "seed_failed fetch: $(grep -v '://' "$W/fetch.err" 2>/dev/null | tail -1 | cut -c1-160)" >> $L; exit 4; }

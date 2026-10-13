@@ -51,6 +51,22 @@ fn env_is_parameterised_not_baked_into_the_script() {
     assert_eq!(env["TMPFS_SIZE"], "8g");
     assert_eq!(env["GH_TOKEN"], "tok");
     assert_eq!(env["BASE"], "b".repeat(40));
+    assert_eq!(env["DEPTH"], "50");
+}
+
+#[test]
+fn the_slot_env_carries_a_configured_fetch_depth() {
+    let token = crate::pool::github::Secret::new("tok".to_string());
+    let mut config = config();
+    config.depth = Some(7);
+    let env = slot_env(&config, &token, &"b".repeat(40), SlotMode::default());
+    assert_eq!(env["DEPTH"], "7");
+}
+
+#[test]
+fn the_seed_fetch_is_shallow_and_defaults_to_the_pool_depth() {
+    assert!(BOOT_SCRIPT.contains(r#"git fetch -q --depth "${DEPTH:-50}""#));
+    assert!(!BOOT_SCRIPT.contains("--depth 1"));
 }
 
 #[test]
@@ -203,7 +219,7 @@ fn the_boot_script_turns_the_delivered_source_into_a_bare_remote() {
         r#"git init -q --bare "$LOCAL_REMOTE""#,
         r#"symbolic-ref HEAD refs/heads/main"#,
         r#"git push -q "$LOCAL_REMOTE" HEAD:refs/heads/main"#,
-        r#"git fetch -q --depth 1 "$(remote_url)" "$BASE""#,
+        r#"git fetch -q --depth "${DEPTH:-50}" "$(remote_url)" "$BASE""#,
         r#"file://*) LOCAL_REMOTE=$(real "${REMOTE#file://}")"#,
         "seed_failed source",
         r#"chown -R hand:hand /home/hand "$RD" ${LOCAL_REMOTE:+"$LOCAL_REMOTE"}"#,
@@ -219,7 +235,7 @@ fn the_runner_takes_a_full_remote_and_adds_the_token_only_to_https() {
     for needed in [
         r#"URL=$REMOTE"#,
         r#"https://*) [ -n "$TOKEN" ] && URL="https://x-access-token:${TOKEN}@${REMOTE#https://}""#,
-        r#"git fetch -q --depth "${DEPTH:-1}" "$URL" "$FROM""#,
+        r#"git fetch -q --depth "${DEPTH:-50}" "$URL" "$FROM""#,
         r#"git push -q "$URL" "HEAD:refs/heads/$BRANCH""#,
     ] {
         assert!(job::RUNNER.contains(needed), "runner lacks {needed}");
