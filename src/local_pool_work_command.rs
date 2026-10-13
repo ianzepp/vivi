@@ -7,9 +7,9 @@ use std::time::Duration;
 use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
+use vivi::pool::bridge;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::dispatch::{self, DispatchFlags};
-use vivi::pool::bridge;
 use vivi::pool::github::Secret;
 use vivi::pool::local_branch;
 use vivi::pool::local_git::Repo;
@@ -65,7 +65,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (&task.handle, &task.subject, &task.body),
         &flags,
         rules,
-        job_id,
+        job_id.clone(),
     )?;
     read_only_notes(command, config, &task.body, &progress);
     let (token, start) = match (config.worktree_source(), flags.read_only) {
@@ -109,7 +109,10 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
     } else {
-        println!("{}", dispatched_text(&task.handle, &made, plan.bridge.as_ref()));
+        println!(
+            "{}",
+            dispatched_text(&task.handle, &made, plan.bridge.as_ref())
+        );
     }
     Ok(())
 }

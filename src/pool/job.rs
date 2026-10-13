@@ -410,3 +410,7 @@ mod tests;
 #[cfg(test)]
 #[path = "job_runner_test.rs"]
 mod runner_tests;
+
+#[cfg(test)]
+#[path = "job_runner_bridge_test.rs"]
+mod runner_bridge_tests;

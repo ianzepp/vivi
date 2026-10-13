@@ -190,7 +190,11 @@ fn the_bridge_key_is_delivered_only_as_bridge_key_and_not_where_the_agent_looks(
         .map(|f| f.name)
         .collect();
     assert_eq!(holders, ["bridge.key"]);
-    let file = bundle.files.iter().find(|f| f.name == "bridge.key").unwrap();
+    let file = bundle
+        .files
+        .iter()
+        .find(|f| f.name == "bridge.key")
+        .unwrap();
     assert_eq!(file.mode, 0o600);
     assert_eq!(String::from_utf8_lossy(&file.content), BRIDGE_KEY);
     let names: Vec<&str> = bundle.agent_visible().iter().map(|f| f.name).collect();
@@ -202,7 +206,10 @@ fn the_bridge_key_is_delivered_only_as_bridge_key_and_not_where_the_agent_looks(
 
 #[test]
 fn the_bridge_params_appear_only_when_a_grant_exists_and_never_hold_the_key() {
-    let without = text(&build_bundle(&plan(), "s", &Secret::new("t".into())), "params.env");
+    let without = text(
+        &build_bundle(&plan(), "s", &Secret::new("t".into())),
+        "params.env",
+    );
     assert!(!without.contains("BRIDGE_"), "{without}");
     assert!(
         !build_bundle(&plan(), "s", &Secret::new("t".into()))
@@ -212,9 +219,18 @@ fn the_bridge_params_appear_only_when_a_grant_exists_and_never_hold_the_key() {
     );
     let mut p = plan();
     p.bridge = Some(bridge_grant());
-    let params = text(&build_bundle(&p, "s", &Secret::new("t".into())), "params.env");
-    assert!(params.contains("BRIDGE_SERVER='http://127.0.0.1:8080'\n"), "{params}");
-    assert!(params.contains("BRIDGE_PROJECT='abcde-fghjk'\n"), "{params}");
+    let params = text(
+        &build_bundle(&p, "s", &Secret::new("t".into())),
+        "params.env",
+    );
+    assert!(
+        params.contains("BRIDGE_SERVER='http://127.0.0.1:8080'\n"),
+        "{params}"
+    );
+    assert!(
+        params.contains("BRIDGE_PROJECT='abcde-fghjk'\n"),
+        "{params}"
+    );
     assert!(!params.contains(BRIDGE_KEY), "{params}");
 }
 
