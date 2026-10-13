@@ -20,10 +20,13 @@ use crate::sync::pull::{PullReport, RefusedRecord};
 use crate::sync::transport::Record;
 use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY};
 
-/// The fixed inputs of filing one record.
+/// The inputs of filing one record. The validity bindings are written
+/// under starts at [`UIDVALIDITY`] and is kept in step with the server
+/// epoch by the pull (see [`Filer::set_validity`]).
 pub(crate) struct Filer<'a> {
     mailspace: &'a Mailspace,
     settings: &'a SyncSettings,
+    validity: u32,
 }
 
 /// Where one row of a letter goes.
@@ -76,7 +79,16 @@ impl<'a> Filer<'a> {
         Self {
             mailspace,
             settings,
+            validity: UIDVALIDITY,
         }
+    }
+
+    /// Set the validity bindings are written under: the epoch the current
+    /// pull has just seen for the first time or reset to. A wiped and
+    /// restored server reuses sequence numbers, so the epoch it mints for
+    /// the new log is the validity that keeps the old log's bindings apart.
+    pub(crate) fn set_validity(&mut self, validity: u32) {
+        self.validity = validity;
     }
 
     /// Verify one record, then file it or note that it is already held.
@@ -346,7 +358,7 @@ impl<'a> Filer<'a> {
             provider: PROVIDER.to_string(),
             remote_mailbox: self.settings.project.clone(),
             remote_uid: uid,
-            remote_uidvalidity: UIDVALIDITY,
+            remote_uidvalidity: self.validity,
         }
     }
 

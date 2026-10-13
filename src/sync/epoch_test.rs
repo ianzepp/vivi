@@ -4,6 +4,7 @@
 
 use super::*;
 
+use crate::VivariumError;
 use crate::b64;
 use crate::storage::sha256_hex;
 use crate::sync::fake_server::{Checkout, PROJECT, World, checkout, wire_id};
@@ -13,8 +14,11 @@ use crate::sync::sync_dir;
 use crate::sync::transport::{
     AppendFailure, Appended, Envelope, ListQuery, Page, Record, Transport,
 };
-use crate::VivariumError;
+use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::rc::Rc;
+
+use crate::sync::fake_server::{FakeClient, FakeServer};
 
 #[test]
 fn an_epoch_change_mid_life_resets_the_cursor_and_refiles_from_zero() {
@@ -62,6 +66,20 @@ fn an_epoch_change_mid_life_resets_the_cursor_and_refiles_from_zero() {
             "{expected} held exactly once: {ids:?}"
         );
     }
+    // The epoch is the validity: the letter filed after the wipe carries
+    // the new epoch, and the old log's letters keep their old bindings.
+    let validity_of = |id: &str| {
+        world
+            .bob
+            .row(id)
+            .unwrap_or_else(|| panic!("{id} is held"))
+            .remote
+            .expect("bound to the project")
+            .remote_uidvalidity
+    };
+    assert_eq!(validity_of(&wire_id(3, 0)), 2, "filed under the new epoch");
+    assert_eq!(validity_of(&wire_id(1, 0)), 1, "the old log's binding");
+    assert_eq!(validity_of(&wire_id(2, 0)), 1, "the old log's binding");
 }
 
 #[test]
@@ -171,7 +189,11 @@ impl Transport for Canned {
         Ok(self
             .pages
             .iter()
-            .find(|page| page.records.first().is_some_and(|r| r.sequence > query.since))
+            .find(|page| {
+                page.records
+                    .first()
+                    .is_some_and(|r| r.sequence > query.since)
+            })
             .cloned()
             .unwrap_or(Page {
                 records: Vec::new(),
@@ -304,4 +326,61 @@ fn an_epoch_change_between_two_pages_of_one_pull_resets() {
         );
     }
     assert_eq!(world.state().epoch, Some(2));
+}
+
+/// A transport that mints a fresh epoch for every list response, as a
+/// server whose log never stops changing.
+struct Bumping {
+    server: Rc<FakeServer>,
+    client: FakeClient,
+    epoch: Cell<u32>,
+    fetches: Cell<u32>,
+}
+
+impl Transport for Bumping {
+    fn append(&self, _: &str, _: &Envelope<'_>) -> Result<Appended, AppendFailure> {
+        Err(AppendFailure::Stop("canned".into()))
+    }
+
+    fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, VivariumError> {
+        self.fetches.set(self.fetches.get() + 1);
+        self.epoch.set(self.epoch.get() + 1);
+        self.server.set_epoch(Some(self.epoch.get()));
+        self.client.fetch(query)
+    }
+}
+
+#[test]
+fn an_epoch_that_changes_on_every_response_ends_the_pull_with_an_error() {
+    let world = World::new();
+    world.put(1, "first", "b1");
+    world.server.set_epoch(Some(1));
+    world.bob.pull(&world.bob_client);
+    // Every response from now on carries an epoch the client has never
+    // seen, so every page of the pull reads a log that no longer exists.
+    let bumping = Bumping {
+        server: Rc::clone(&world.server),
+        client: world.bob.client(&world.server),
+        epoch: Cell::new(1),
+        fetches: Cell::new(0),
+    };
+
+    let error = pull::pull(&world.bob.mailspace, &world.bob.settings, &bumping)
+        .expect_err("an unstable log ends the pull");
+
+    assert!(
+        error.to_string().contains(
+            "server epoch changed 3 times during one pull; the server log is unstable; try again \
+             later"
+        ),
+        "{error}"
+    );
+    assert!(
+        bumping.fetches.get() <= 3,
+        "at most three fetch rounds: {}",
+        bumping.fetches.get()
+    );
+    let state = world.state();
+    assert_eq!(state.since, 0, "the reset cursor stays saved");
+    assert_eq!(state.epoch, Some(4), "the latest epoch stays saved");
 }

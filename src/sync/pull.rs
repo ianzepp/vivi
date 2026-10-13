@@ -25,7 +25,7 @@ use crate::sync::filer::Filer;
 use crate::sync::link::{self, LinkOutcome};
 use crate::sync::state::{Floor, SyncState};
 use crate::sync::transport::{ListQuery, PAGE_LIMIT, Page, Record, Transport};
-use crate::sync::{SyncSettings, sync_dir};
+use crate::sync::{SyncSettings, UIDVALIDITY, sync_dir};
 
 /// A record this pass would not file, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,11 +114,12 @@ impl PullReport {
         let epoch = self
             .epoch_reset
             .as_ref()
+            // A reset always names the epoch it replaced.
+            .and_then(|(old, new)| old.map(|old| (old, *new)))
             .map_or(String::new(), |(old, new)| {
                 format!(
-                    ", server epoch changed ({} -> {new}): cursor and floor reset, \
-                     re-read from sequence 0",
-                    old.map_or("none".into(), |epoch| epoch.to_string())
+                    ", server epoch changed ({old} -> {new}): cursor and floor reset, \
+                     re-read from sequence 0"
                 )
             });
         let held = self
@@ -245,18 +246,20 @@ pub fn pull_with(
     // failed read leaves the state file exactly as it was.
     let mut unsaved = state != before_plan;
     let mut storage = mailspace.storage()?;
-    let filer = Filer::new(mailspace, settings);
+    let mut filer = Filer::new(mailspace, settings);
     let mut report = PullReport::default();
+    let mut epoch_resets = 0usize;
     loop {
-        let query = next_query(&state);
-        let page = transport.fetch(&query)?;
+        let page = transport.fetch(&next_query(&state))?;
         report.pages += 1;
-        if react_epoch(&mut state, &page, &mut report, &dir)? {
+        if react_epoch(&mut state, &page, &mut report, &mut epoch_resets, &dir)? {
             // The page was read with a cursor into a log that no longer
             // exists: discarded unfiled, and the re-read starts at once.
             unsaved = false;
             continue;
         }
+        // Letters bind under the epoch their page was read under.
+        filer.set_validity(state.epoch.unwrap_or(UIDVALIDITY));
         report.fetched += page.records.len();
         let before = state.clone();
         refine_floor(&mut state, page.records.first());
@@ -350,6 +353,18 @@ fn next_query(state: &SyncState) -> ListQuery<'_> {
     }
 }
 
+/// The most epoch resets one pull tolerates: a server that changes its
+/// epoch again and again has no stable log to read from.
+const MAX_EPOCH_RESETS: usize = 2;
+
+/// The error a pull gives up with when the epoch keeps changing.
+fn unstable_epoch(changes: usize) -> VivariumError {
+    VivariumError::Message(format!(
+        "server epoch changed {changes} times during one pull; the server log is unstable; try \
+         again later"
+    ))
+}
+
 /// The warning an unusable epoch adds once per pull.
 const UNUSABLE_EPOCH: &str = "server sent an unusable epoch; ignoring it";
 
@@ -358,13 +373,16 @@ const UNUSABLE_EPOCH: &str = "server sent an unusable epoch; ignoring it";
 /// page was read with a cursor into a log that no longer exists: the page is
 /// discarded unfiled, the cursor and floor reset to a full re-read, and the
 /// state saved at once, so an interrupted pull resumes from sequence 0. An
-/// unusable epoch value warns once and changes nothing.
+/// unusable epoch value warns once and changes nothing. A third change in
+/// one pull is an error: the server log is unstable. The count so far
+/// arrives in `resets` and leaves bumped when a reset was handled.
 ///
 /// Returns whether the pull must skip the page and start over.
 fn react_epoch(
     state: &mut SyncState,
     page: &Page,
     report: &mut PullReport,
+    resets: &mut usize,
     dir: &std::path::Path,
 ) -> Result<bool, VivariumError> {
     if page.epoch_unusable && !report.warnings.iter().any(|w| w == UNUSABLE_EPOCH) {
@@ -396,6 +414,11 @@ fn react_epoch(
     state.floor = Some(Floor::full());
     state.epoch = Some(new);
     state.save(dir)?;
+    *resets += 1;
+    if *resets > MAX_EPOCH_RESETS {
+        // The state stays as saved: cursor 0 and the latest epoch.
+        return Err(unstable_epoch(*resets));
+    }
     Ok(true)
 }
 
