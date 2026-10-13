@@ -179,3 +179,7 @@ mod tests;
 #[cfg(test)]
 #[path = "sync/vouch_test.rs"]
 mod vouch_test;
+
+#[cfg(test)]
+#[path = "sync/epoch_test.rs"]
+mod epoch_test;

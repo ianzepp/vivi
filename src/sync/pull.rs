@@ -24,7 +24,7 @@ use crate::storage::Storage;
 use crate::sync::filer::Filer;
 use crate::sync::link::{self, LinkOutcome};
 use crate::sync::state::{Floor, SyncState};
-use crate::sync::transport::{ListQuery, PAGE_LIMIT, Record, Transport};
+use crate::sync::transport::{ListQuery, PAGE_LIMIT, Page, Record, Transport};
 use crate::sync::{SyncSettings, sync_dir};
 
 /// A record this pass would not file, and why.
@@ -62,6 +62,11 @@ pub struct PullReport {
     /// Governance letters: envelope or To/Cc names the reserved
     /// `postmaster`. They are counted and filed under no role.
     pub governance: usize,
+    /// The server log's epoch changed mid-pull: `(old, new)`. The page that
+    /// carried the new epoch was read with a stale cursor and discarded
+    /// unfiled; the cursor and floor were reset and the pull re-read from
+    /// sequence 0.
+    pub epoch_reset: Option<(Option<u32>, u32)>,
     /// Content ids of the event letters and work items handled since the
     /// last settle, new or already held. Drained by [`settle_events`].
     pub touched: Vec<String>,
@@ -106,17 +111,28 @@ impl PullReport {
         let governance = (self.governance > 0)
             .then(|| format!(", {} governance letter(s)", self.governance))
             .unwrap_or_default();
+        let epoch = self
+            .epoch_reset
+            .as_ref()
+            .map_or(String::new(), |(old, new)| {
+                format!(
+                    ", server epoch changed ({} -> {new}): cursor and floor reset, \
+                     re-read from sequence 0",
+                    old.map_or("none".into(), |epoch| epoch.to_string())
+                )
+            });
         let held = self
             .held_note()
             .map(|note| format!(", {note}"))
             .unwrap_or_default();
         format!(
             "sync pull: {} fetched, {new}, {} already present, {} reply link(s), \
-             {refused}{governance}{held}{}, cursor {}",
+             {refused}{governance}{held}{}{}, cursor {}",
             self.fetched,
             self.existing,
             self.linked,
             self.event_note(),
+            epoch,
             self.cursor
         )
     }
@@ -232,17 +248,16 @@ pub fn pull_with(
     let filer = Filer::new(mailspace, settings);
     let mut report = PullReport::default();
     loop {
-        let after = (state.since == 0)
-            .then(|| state.floor.as_ref().and_then(|floor| floor.time.clone()))
-            .flatten();
-        let query = ListQuery {
-            since: state.since,
-            limit: PAGE_LIMIT,
-            after: after.as_deref(),
-        };
+        let query = next_query(&state);
         let page = transport.fetch(&query)?;
-        report.fetched += page.records.len();
         report.pages += 1;
+        if react_epoch(&mut state, &page, &mut report, &dir)? {
+            // The page was read with a cursor into a log that no longer
+            // exists: discarded unfiled, and the re-read starts at once.
+            unsaved = false;
+            continue;
+        }
+        report.fetched += page.records.len();
         let before = state.clone();
         refine_floor(&mut state, page.records.first());
         let mut pending = Vec::new();
@@ -320,6 +335,68 @@ fn apply_plan(
         state.floor = Some(Floor::full());
     }
     Ok(())
+}
+
+/// The next list request: records after the cursor, or after the window
+/// floor's time while the cursor is still zero.
+fn next_query(state: &SyncState) -> ListQuery<'_> {
+    let after = (state.since == 0)
+        .then(|| state.floor.as_ref().and_then(|floor| floor.time.as_deref()))
+        .flatten();
+    ListQuery {
+        since: state.since,
+        limit: PAGE_LIMIT,
+        after,
+    }
+}
+
+/// The warning an unusable epoch adds once per pull.
+const UNUSABLE_EPOCH: &str = "server sent an unusable epoch; ignoring it";
+
+/// React to the page's `epoch`, per the wire contract on [`Page::epoch`].
+/// First sight records the epoch with no reset. A changed epoch means the
+/// page was read with a cursor into a log that no longer exists: the page is
+/// discarded unfiled, the cursor and floor reset to a full re-read, and the
+/// state saved at once, so an interrupted pull resumes from sequence 0. An
+/// unusable epoch value warns once and changes nothing.
+///
+/// Returns whether the pull must skip the page and start over.
+fn react_epoch(
+    state: &mut SyncState,
+    page: &Page,
+    report: &mut PullReport,
+    dir: &std::path::Path,
+) -> Result<bool, VivariumError> {
+    if page.epoch_unusable && !report.warnings.iter().any(|w| w == UNUSABLE_EPOCH) {
+        report.warnings.push(UNUSABLE_EPOCH.into());
+    }
+    let Some(new) = page.epoch else {
+        return Ok(false);
+    };
+    let Some(old) = state.epoch else {
+        // First sight: the checkout learns the epoch, the cursor stays.
+        state.epoch = Some(new);
+        return Ok(false);
+    };
+    if old == new {
+        return Ok(false);
+    }
+    if state
+        .floor
+        .as_ref()
+        .is_some_and(|floor| floor.time.is_some() && !floor.is_full())
+    {
+        report.warnings.push(format!(
+            "server epoch changed ({old} -> {new}): the --since window floor was dropped; \
+             the re-read covers full history"
+        ));
+    }
+    report.epoch_reset = Some((Some(old), new));
+    state.since = 0;
+    state.floor = Some(Floor::full());
+    state.epoch = Some(new);
+    state.save(dir)?;
+    Ok(true)
 }
 
 /// A window's floor is its first record: its sequence and `appended_at`.
