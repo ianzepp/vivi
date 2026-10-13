@@ -19,6 +19,10 @@
 #   restore.list optional: repository-relative paths to put back to the start
 #                commit before the runner commits, one per line (written jobs
 #                only; see the restore loop below)
+#   with.list    optional: extra refs the agent must see, one `<ref> <commit>`
+#                per line -- a branch name, or a 40-hex commit, then the
+#                commit dispatch resolved it to (or `-`); see the with loop
+#                below
 # Environment from the machine: BUILD_DIR, and any variable named in
 # ENV_NAMES (their values come from the machine's own environment).
 # UNPRIVILEGED, BUILD_PERSISTS and WORK are the ones of the boot script.
@@ -138,6 +142,41 @@ else
   as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
   [ -n "${READ_ONLY:-}" ] || as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
   rm -f "$RD/.git/FETCH_HEAD"
+fi
+
+# Extra refs the pool names in with.list: a second branch the agent must be
+# able to see (and later merge). Fetch mode fetches each into a local ref --
+# a branch name to refs/remotes/origin/<ref>, a 40-hex commit to
+# refs/vivi/with/<commit> -- at the pool's depth. Every fetch, like the FROM
+# fetch, leaves the URL, which holds the token, in .git/FETCH_HEAD, so
+# FETCH_HEAD is removed after each one, and nothing is written to .git/config
+# or the agent's home. The result records where each ref landed. A worktree
+# job fetches nothing: the refs are already refs of the shared repository,
+# and the agent sees them as named. A ref the remote does not have ends the
+# job fetch_failed.
+WITH_N=0
+WITH_EXTRA=
+if [ -f "$J/with.list" ]; then
+  while IFS=' ' read -r wref wsha || [ -n "$wref" ]; do
+    [ -n "$wref" ] || continue
+    WITH_N=$((WITH_N + 1))
+    if [ -n "${LOCAL_ACTION:-}" ]; then
+      wlocal=$wref
+      wsha_now=$(as_hand git rev-parse --verify "$wref^{commit}" 2>/dev/null) || wsha_now=
+    else
+      if [ "${#wref}" -eq 40 ] && [ -z "${wref//[0-9a-f]/}" ]; then
+        wlocal="refs/vivi/with/$wref"
+      else
+        wlocal="refs/remotes/origin/$wref"
+      fi
+      as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "+$wref:$wlocal" || finish fetch_failed
+      rm -f "$RD/.git/FETCH_HEAD"
+      wsha_now=$(as_hand git rev-parse "$wlocal")
+    fi
+    [ -z "$WITH_EXTRA" ] || WITH_EXTRA+=$'\n'
+    WITH_EXTRA+="with_${WITH_N}_ref=$wref"$'\n'"with_${WITH_N}_local=$wlocal"$'\n'"with_${WITH_N}_sha=$wsha_now"
+  done < "$J/with.list"
+  [ -z "$WITH_EXTRA" ] || RESULT_EXTRA="with_count=$WITH_N"$'\n'"$WITH_EXTRA"
 fi
 echo "from $FROM at ${START:0:12} prepared_s $(( $(now) - T0 ))"
 

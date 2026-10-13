@@ -406,3 +406,7 @@ mod runner_tests;
 #[cfg(test)]
 #[path = "job_runner_restore_test.rs"]
 mod runner_restore_tests;
+
+#[cfg(test)]
+#[path = "job_runner_with_test.rs"]
+mod with_runner_tests;

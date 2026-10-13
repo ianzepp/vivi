@@ -115,7 +115,7 @@ impl Rig {
         let job = self.work.path().join("job");
         std::fs::create_dir_all(&job).unwrap();
         for (name, content) in [
-            ("params.env", params.as_str()),
+            ("params.env", params),
             ("token", ""),
             ("harness.cmd", harness),
             ("brief.md", "review it\n"),
