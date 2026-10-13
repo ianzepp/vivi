@@ -37,6 +37,10 @@ struct ThreadCandidate {
 
 /// Print a thread of messages by handle.
 ///
+/// With `latest`, print only the newest message of the thread (the last one
+/// in the default output order); a thread with no reply reports `No replies
+/// yet` instead.
+///
 /// # Errors
 /// Returns an error if the handle cannot be resolved, thread assembly fails,
 /// or JSON serialization fails when `--json` is used.
@@ -47,8 +51,12 @@ pub fn print_thread(
     limit: usize,
     max_depth: usize,
     json: bool,
+    latest: bool,
 ) -> Result<(), VivariumError> {
     let messages = mailspace.thread(handle, infer, limit, max_depth)?;
+    if latest {
+        return print_latest_thread(&messages, json);
+    }
     if json {
         println!(
             "{}",
@@ -60,6 +68,32 @@ pub fn print_thread(
         if let Some(state) = mailspace.item_event_state(handle)? {
             println!("\nState: {} (event {})", state.state, state.event);
         }
+    }
+    Ok(())
+}
+
+/// `--latest`: the thread limited to its newest message. JSON keeps the
+/// default shape; text prints the one per-message block, or a `No replies
+/// yet` line when only the root exists.
+fn print_latest_thread(
+    messages: &[MailspaceThreadMessage],
+    json: bool,
+) -> Result<(), VivariumError> {
+    if json {
+        let newest = messages.len().saturating_sub(1)..;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&messages[newest])
+                .map_err(|e| VivariumError::Other(format!("failed to encode thread JSON: {e}")))?
+        );
+        return Ok(());
+    }
+    if messages.len() <= 1 {
+        println!("No replies yet (thread has 1 message)");
+        return Ok(());
+    }
+    if let Some(message) = messages.last() {
+        print_text_message(message);
     }
     Ok(())
 }
@@ -291,28 +325,32 @@ fn print_text_thread(messages: &[MailspaceThreadMessage]) {
     }
     println!("Thread ({} message(s))", messages.len());
     for message in messages {
-        let source = message
-            .link_source
-            .as_deref()
-            .map(|source| format!(" {source}"))
-            .unwrap_or_default();
-        println!(
-            "\n## {} - {} [{}{}]",
-            message.date,
-            message.handle,
-            message.kind.as_deref().unwrap_or("mail"),
-            source
-        );
-        println!("From: {}", message.from);
-        println!("To: {}", message.to);
-        println!("Content: {}", message.content_id);
-        println!("Subject: {}", message.subject);
-        if !message.marks.is_empty() {
-            println!("Marks: {}", message.marks.join(" "));
-        }
-        println!();
-        println!("{}", message.body.trim());
+        print_text_message(message);
     }
+}
+
+fn print_text_message(message: &MailspaceThreadMessage) {
+    let source = message
+        .link_source
+        .as_deref()
+        .map(|source| format!(" {source}"))
+        .unwrap_or_default();
+    println!(
+        "\n## {} - {} [{}{}]",
+        message.date,
+        message.handle,
+        message.kind.as_deref().unwrap_or("mail"),
+        source
+    );
+    println!("From: {}", message.from);
+    println!("To: {}", message.to);
+    println!("Content: {}", message.content_id);
+    println!("Subject: {}", message.subject);
+    if !message.marks.is_empty() {
+        println!("Marks: {}", message.marks.join(" "));
+    }
+    println!();
+    println!("{}", message.body.trim());
 }
 
 pub(super) fn text_body(data: &[u8]) -> String {

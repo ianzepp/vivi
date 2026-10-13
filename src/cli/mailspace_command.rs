@@ -631,6 +631,10 @@ pub enum TaskCommand {
         #[arg(long)]
         json: bool,
 
+        /// Print only the newest message of the thread
+        #[arg(long)]
+        latest: bool,
+
         /// Project root to use
         #[arg(long)]
         project: Option<PathBuf>,

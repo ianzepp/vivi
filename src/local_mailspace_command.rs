@@ -316,6 +316,7 @@ fn print_local_thread(command: &vivi::cli::MailThreadCommand) -> Result<(), Viva
         command.limit,
         command.max_depth,
         command.json,
+        false,
     )
 }
 
@@ -401,6 +402,7 @@ fn handle_memo_command(command: &MemoCommand) -> Result<(), VivariumError> {
                 50,
                 50,
                 *json,
+                false,
             )?;
         }
         MemoCommand::Dump { for_identity, json, output, confirm_large, project } => {
@@ -478,8 +480,9 @@ fn handle_task_command(command: &TaskCommand) -> Result<(), VivariumError> {
         TaskCommand::Show {
             handle,
             json,
+            latest,
             project,
-        } => show_task(handle, *json, project.as_deref())?,
+        } => show_task(handle, *json, *latest, project.as_deref())?,
         TaskCommand::Dump(command) => crate::local_work_command::dump_tasks(command)?,
         TaskCommand::Absorb(command) => absorb_record("task", command)?,
         TaskCommand::Done {
@@ -620,10 +623,11 @@ fn list_tasks_with_deps(
 fn show_task(
     handle: &str,
     json: bool,
+    latest: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json)?;
+    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
     Ok(())
 }
 
