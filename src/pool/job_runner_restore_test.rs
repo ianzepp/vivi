@@ -18,10 +18,6 @@ struct Rig {
 }
 
 impl Rig {
-    fn new() -> Self {
-        Self::with_files(&[])
-    }
-
     /// A rig whose repository also tracks `files`, committed on `main`.
     fn with_files(files: &[(&str, &str)]) -> Self {
         let f = fixture();
@@ -42,7 +38,7 @@ impl Rig {
     /// Point the checkout at a Git worktree of the fixture repository, the
     /// way a worktree slot is laid out: the runner then runs with
     /// LOCAL_ACTION=create and no remote.
-    fn as_worktree(mut self) -> Self {
+    fn as_worktree(self) -> Self {
         let repo = self.repo();
         std::fs::remove_dir_all(&repo).unwrap();
         git(
@@ -115,7 +111,7 @@ impl Rig {
         let job = self.work.path().join("job");
         std::fs::create_dir_all(&job).unwrap();
         for (name, content) in [
-            ("params.env", params.as_str()),
+            ("params.env", params),
             ("token", ""),
             ("harness.cmd", harness),
             ("brief.md", "review it\n"),
