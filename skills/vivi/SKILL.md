@@ -235,9 +235,10 @@ hand.
 
 ### State as letters
 
-Closing and reopening are letters, not local flags. Two kinds of role may
+Closing and reopening are letters, not local flags. Three kinds of role may
 close or reopen an item for everyone: the role that authored it (or holds its
-`sent` copy), and any role of kind `mind` (`role add <name> --kind mind`). Its
+`sent` copy), any role of kind `mind`, and any role of kind `operator`
+(`role add <name> --kind operator`). Its
 `done`, `reopen` and, on a want, `drop` (a close) write one small reply on the
 item, with `X-Vivi-Event: done|reopened`, `X-Vivi-Event-Of: <item
 Message-ID>` and `X-Vivi-Event-Prev: <the event it follows>` (absent for the
@@ -258,7 +259,8 @@ reply to the author. A report is not an acceptance. It completes no node,
 unlocks no dependents, fires no join and writes no event: it never changes the
 item's `State:` or any other holder's copy, and the author's tracking node
 stays `awaiting` until the author closes. The author, the `sent`-copy holder,
-or a role of kind `mind` accepts it by running `done` (any handle of the item
+or a role of kind `mind` or kind `operator` accepts it by running `done` (any
+handle of the item
 works); that completes the node, unlocks dependents and fires a bound need's
 join (see Work Graphs). Naming a copy another role holds is refused, and the
 error names the holder, the report command to retry with `--for <holder>`, and
@@ -361,7 +363,8 @@ ready` without an argument lists every graph's frontier, including backlog.
 
 Lifecycle moves keep backlog nodes in step: `task done` / `need done` /
 `want done|drop` run by an acceptor (the author, the `sent`-copy holder, or a
-role of kind `mind`) complete the item's node and unlock dependents; a
+role of kind `mind` or kind `operator`) complete the item's node and unlock
+dependents; a
 report by any other role completes nothing (State as letters); `reopen`
 re-locks them (cascading through join parents and content siblings);
 `want promote` never changes node state and wants never dispatch in
@@ -395,12 +398,12 @@ Bare source ids address the backlog graph; imported topologies use
 `graph:source-id`. Lifecycle moves act as the identity holding the item
 (`--for`): the send receipt's `created <recipient> <handle>` line names the
 holder, and naming a copy another identity holds fails with the holder
-named in the error (the item's author or a mind may name any copy; see State
-as letters). **Settle sequence.** The worker reports with
+named in the error (the item's author, a mind or an operator may name any
+copy; see State as letters). **Settle sequence.** The worker reports with
 `task done --verdict/--repo/--tip` (its own copy moves; the node stays open
 or active as `reported`, dependents stay blocked). The author, the
-`sent`-copy holder, or a mind accepts with `task done <handle> --for
-<acceptor>`: the node completes, dependents unlock, a bound need's join
+`sent`-copy holder, or a mind or an operator accepts with `task done <handle>
+--for <acceptor>`: the node completes, dependents unlock, a bound need's join
 fires, and a `step_decision via=lifecycle` event records the transition. The
 host then runs `vivi step --apply <handle>` — idempotent, never settles
 itself — which runs the receipt screen when a judgment provider is

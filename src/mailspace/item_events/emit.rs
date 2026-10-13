@@ -62,7 +62,7 @@ struct EventLetterDraft {
 
 impl Mailspace {
     /// Write the event letter for a `done` or `reopen` move by a role that
-    /// may close the item (its author, or a mind) and apply it; the result is
+    /// may close the item (its author, or a mind or operator) and apply it; the result is
     /// the event letter's handle. `Ok(None)` when the move is not an event:
     /// not a close or reopen, not work, or the actor may not close the item
     /// (an assignee's move is a local report).
@@ -157,8 +157,9 @@ impl Mailspace {
     /// The row an identity acts on when it names work it does not hold: any
     /// row of the item here, when the move closes or reopens it and the
     /// identity may close it (its author or holder of the sent copy, or a
-    /// mind); also a mind naming a row already reported in `done`, which it
-    /// accepts. `Ok(None)` otherwise; the caller reports who holds the row.
+    /// mind or operator); also a mind or operator naming a row already
+    /// reported in `done`, which it accepts. `Ok(None)` otherwise; the
+    /// caller reports who holds the row.
     pub(in crate::mailspace) fn row_for_item_actor(
         &self,
         storage: &Storage,
@@ -179,12 +180,13 @@ impl Mailspace {
             return Ok(None);
         };
         if !self.may_close(&item, identity) {
-            // A mind accepts a report on another mailspace's item: the row
-            // already in `done` is the one it names, and its close is a local
-            // report that is still this mailspace's acceptance.
+            // A mind or operator accepts a report on another mailspace's
+            // item: the row already in `done` is the one it names, and its
+            // close is a local report that is still this mailspace's
+            // acceptance.
             let accepts = row.local_role == "done"
                 && role == "done"
-                && self.identity_is_mind(identity)
+                && self.identity_may_close_for_all(identity)
                 && self.item_head(storage, &item)? != Some(ItemEventKind::Done);
             if !accepts {
                 return Ok(None);
@@ -255,13 +257,18 @@ impl Mailspace {
                 "'{identity}' is a mind, but {author} is in another mailspace, so a close \
                  here stays a local report"
             )
+        } else if self.identity_may_close_for_all(identity) {
+            format!(
+                "'{identity}' is an operator-kind role, but {author} is in another mailspace, \
+                 so a close here stays a local report"
+            )
         } else {
             format!("'{identity}' is neither")
         };
         VivariumError::Message(format!(
             "message '{token}' is held by identity '{holder}'; to report on it retry with \
              {report}, which moves only that copy. Closing or reopening it for everyone is \
-             for its author {author} or a mind-kind role; {why}"
+             for its author {author}, a mind-kind role or an operator-kind role; {why}"
         ))
     }
 
