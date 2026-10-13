@@ -26,6 +26,7 @@ pub mod bootscript;
 pub mod claim;
 pub mod collect;
 pub mod config;
+pub mod config_depth;
 pub mod dispatch;
 pub mod docker;
 pub mod docker_cli;

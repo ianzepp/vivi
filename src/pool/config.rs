@@ -76,6 +76,12 @@ pub struct PoolConfig {
     /// a pool that sets none has no build directory handling at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_dir: Option<String>,
+    /// Git fetch depth for the seed fetch at create and every job's fetch at
+    /// dispatch. Optional: the default is [`DEFAULT_FETCH_DEPTH`] recent
+    /// commits, never the full history. No effect on a worktree pool, which
+    /// fetches nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
     /// Settings that belong to the `fly` machine host.
     #[serde(default)]
     pub fly: PoolFly,
@@ -423,7 +429,8 @@ impl PoolConfig {
                 VivariumError::Config(format!("[pools.{}] {message}", id.pool))
             }
             other => other,
-        })
+        })?;
+        self.check_depth(&id.pool)
     }
 
     fn validate_fields(&self, id: &PoolId) -> Result<(), VivariumError> {

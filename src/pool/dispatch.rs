@@ -91,7 +91,7 @@ pub fn plan_job(
         refs,
         model: flags.model.clone(),
         budget,
-        depth: 1,
+        depth: config.fetch_depth(),
         harness_cmd: job::render_harness(&harness.run, &flags.model),
         env_names: harness.env.clone(),
         committer,

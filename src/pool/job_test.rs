@@ -43,6 +43,17 @@ fn text(bundle: &Bundle, name: &str) -> String {
 }
 
 #[test]
+fn the_bundle_carries_the_pool_fetch_depth() {
+    let mut p = plan();
+    p.depth = 50;
+    let params = text(
+        &build_bundle(&p, "p-slot-2", &Secret::new(SECRET.into())),
+        "params.env",
+    );
+    assert!(params.contains("DEPTH='50'\n"));
+}
+
+#[test]
 fn harness_template_fills_model_brief_and_rules() {
     let cmd = render_harness("h --model {model} --rules {rules} @{brief}", "a/b-1");
     assert_eq!(

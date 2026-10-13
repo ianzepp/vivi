@@ -74,7 +74,8 @@ pub struct SlotMode {
 /// is a token; an embedded source needs none. `BUILD_DIR` and `TMPFS_SIZE`
 /// are set only for a pool with a build directory. `WORKTREE_OF` is set only
 /// for a pool whose slots are Git worktrees of a local repository: the
-/// provider makes the checkout from it before the boot script runs. `mode` is what the machine host
+/// provider makes the checkout from it before the boot script runs. `DEPTH`
+/// is the pool's fetch depth. `mode` is what the machine host
 /// does for the slot (see [`SlotMode`]).
 #[must_use]
 pub fn slot_env(
@@ -86,6 +87,7 @@ pub fn slot_env(
     let mut env = BTreeMap::from([
         ("REMOTE".to_string(), config.remote_address()),
         ("BASE".to_string(), base.to_string()),
+        ("DEPTH".to_string(), config.fetch_depth().to_string()),
     ]);
     if let Some(dir) = &config.build_dir {
         env.insert("BUILD_DIR".to_string(), dir.clone());
