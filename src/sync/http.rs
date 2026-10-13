@@ -428,7 +428,9 @@ fn fetch_challenge(
     parse(&body)
 }
 
-fn project_base_url(settings: &SyncSettings) -> String {
+/// The project's base URL on the server: {server}/v1/projects/{project}, with no trailing slash.
+#[must_use]
+pub fn project_base_url(settings: &SyncSettings) -> String {
     format!("{}/v1/projects/{}", settings.server, settings.project)
 }
 

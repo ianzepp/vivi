@@ -69,6 +69,14 @@ fn settings_for(server: &str) -> SyncSettings {
     }
 }
 
+#[test]
+fn project_base_url_joins_the_server_and_the_project_path() {
+    assert_eq!(
+        project_base_url(&settings_for("https://sync.example")),
+        "https://sync.example/v1/projects/abcde-fghjk"
+    );
+}
+
 fn header<'a>(headers: &'a [(&'static str, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
