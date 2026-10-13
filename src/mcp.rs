@@ -9,8 +9,9 @@
 //! in-protocol (-32700 / -32600 / -32000) and the session continues. Bearer
 //! tokens live in memory for one serve and are never written anywhere.
 //!
-//! The CLI (flags, environment, the `[sync]` fallback) is a later unit;
-//! this module is the engine and its tests.
+//! The CLI (flags, environment, the `[sync]` fallback) lives in
+//! [`resolve`] and the binary's command handlers; this module is the engine
+//! and its tests.
 
 use std::io::{BufRead, Write};
 
@@ -19,8 +20,10 @@ use serde_json::{Value, json};
 
 use crate::error::VivariumError;
 use crate::sync::SyncSettings;
-use crate::sync::http::{MintedToken, RawResponse, mint_token, send_raw};
+use crate::sync::http::{MintedToken, RawResponse, mint_token, project_base_url, send_raw};
 use crate::sync::identity::SyncIdentity;
+
+pub mod resolve;
 
 /// A member token is renewed when it is within this window of expiry.
 const EXPIRY_SLACK_SECS: i64 = 30;
@@ -99,7 +102,7 @@ impl Upstream for HttpUpstream<'_> {
     fn post(&self, bearer: &str, body: &[u8]) -> Result<RawResponse, VivariumError> {
         send_raw(
             "POST",
-            &format!("{}/mcp", mcp_base_url(self.settings)),
+            &format!("{}/mcp", project_base_url(self.settings)),
             &[
                 ("Authorization", format!("Bearer {bearer}")),
                 ("Content-Type", "application/json".to_string()),
@@ -117,12 +120,6 @@ impl Upstream for HttpUpstream<'_> {
         })?;
         mint_token(self.settings, identity)
     }
-}
-
-/// The project's MCP endpoint: `{server}/v1/projects/{project}/mcp`.
-#[must_use]
-fn mcp_base_url(settings: &SyncSettings) -> String {
-    format!("{}/v1/projects/{}/mcp", settings.server, settings.project)
 }
 
 /// Serve one bridge session: read newline-delimited JSON-RPC 2.0 from

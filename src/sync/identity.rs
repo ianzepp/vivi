@@ -131,6 +131,14 @@ fn identity_path(vivi_dir: &Path) -> PathBuf {
     vivi_dir.join(IDENTITY_DIR).join(IDENTITY_FILE)
 }
 
+/// The path of this mailspace's own key under its `.vivi` directory:
+/// `<vivi_dir>/chat/identity.ed25519`. The `vivi mcp` bridge loads it as a
+/// fallback credential; it never mints one.
+#[must_use]
+pub fn key_path(vivi_dir: &Path) -> PathBuf {
+    identity_path(vivi_dir)
+}
+
 #[cfg(unix)]
 fn restrict_mode(path: &Path) -> Result<(), VivariumError> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
