@@ -1332,7 +1332,9 @@ a `band:` line. From the role it takes:
   reaches the mailspace. Without the MCP bridge the slot has no `vivi`
   command, so a charter line that tells the role to settle its own handle
   cannot be followed: the note tells the worker to end with its receipt on
-  standard output instead, and the Mind settles the handle. A role with no
+  standard output instead, and the Mind settles the handle. With
+  `[pools.<name>.bridge] enabled` the pool note instead tells the worker to
+  read and settle its handle through the vivi tools. A role with no
   charter leaves the pool rules unchanged.
 - **Read-only mode from the kind.** A role whose kind is `auditor`, `triage`
   or `cadence` (case-insensitive) is dispatched read-only whatever the flags
