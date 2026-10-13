@@ -613,6 +613,168 @@ fn dated(subject: &str, date: &str) -> Vec<u8> {
 }
 
 #[test]
+fn a_drain_waits_out_the_rate_limit_and_sends_everything_in_one_call() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let server = FakeServer::new();
+    let a = alice();
+    let client = a.client(&server);
+    for n in 0..25 {
+        a.send_need("mind", "hand", &format!("letter-{n}"));
+    }
+    server.rate_limit_after(10);
+    let waits = Rc::new(Cell::new(0usize));
+    let mut passes: Vec<(usize, usize)> = Vec::new();
+    let mut wait = {
+        let waits = Rc::clone(&waits);
+        let server = Rc::clone(&server);
+        move |_: Duration| {
+            waits.set(waits.get() + 1);
+            server.allow_more(10);
+        }
+    };
+
+    let report = push::push_drain(
+        &a.mailspace,
+        &a.settings,
+        &client,
+        None,
+        &mut wait,
+        &mut |pass_report, pass| passes.push((pass, pass_report.sent)),
+    )
+    .unwrap();
+
+    assert_eq!(report.sent, 25, "one call sends every letter");
+    assert_eq!(server.items().len(), 25);
+    assert!(report.stopped.is_none());
+    assert!(report.failure().is_none());
+    assert_eq!(
+        waits.get(),
+        2,
+        "one wait per rate limit, no real time passed"
+    );
+    // The fake counts a rejected append too: pass 2 loses its first slot to
+    // the attempt that pass 1's 429 consumed.
+    assert_eq!(passes, vec![(1, 10), (2, 9), (3, 6)]);
+}
+
+#[test]
+fn a_drain_stops_for_good_on_a_401_and_never_waits() {
+    use crate::sync::fake_server::FakeClient;
+    use crate::sync::transport::{AppendFailure, Appended, ListQuery, Page};
+    use std::cell::Cell;
+    struct StopsAt401<'a> {
+        inner: &'a FakeClient,
+        after: usize,
+        calls: Cell<usize>,
+    }
+    impl Transport for StopsAt401<'_> {
+        fn append(&self, id: &str, envelope: &Envelope<'_>) -> Result<Appended, AppendFailure> {
+            self.calls.set(self.calls.get() + 1);
+            if self.calls.get() > self.after {
+                return Err(AppendFailure::Stop("HTTP 401 unauthorized".into()));
+            }
+            self.inner.append(id, envelope)
+        }
+        fn fetch(&self, query: &ListQuery<'_>) -> Result<Page, crate::VivariumError> {
+            self.inner.fetch(query)
+        }
+    }
+    let server = FakeServer::new();
+    let a = alice();
+    let inner = a.client(&server);
+    for n in 0..4 {
+        a.send_need("mind", "hand", &format!("halt-{n}"));
+    }
+    server.rate_limit_after(100);
+    let client = StopsAt401 {
+        inner: &inner,
+        after: 2,
+        calls: Cell::new(0),
+    };
+    let waits = Cell::new(0usize);
+    let mut passes: Vec<usize> = Vec::new();
+
+    let report = push::push_drain(
+        &a.mailspace,
+        &a.settings,
+        &client,
+        None,
+        &mut |_| waits.set(waits.get() + 1),
+        &mut |_: &push::PushReport, pass| passes.push(pass),
+    )
+    .unwrap();
+
+    let stopped = report.stopped.as_ref().expect("the drain stopped");
+    assert!(stopped.reason.contains("401"), "{}", stopped.reason);
+    assert!(!stopped.rate_limited);
+    assert_eq!(report.sent, 2);
+    assert!(report.failure().unwrap().contains("2 letter(s) unsent"));
+    assert_eq!(passes, vec![1], "the drain ended at once");
+    assert_eq!(waits.get(), 0, "a 401 never waits");
+}
+
+#[test]
+fn a_drain_keeps_holding_letters_older_than_its_window_back() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    let server = FakeServer::new();
+    let a = alice();
+    let client = a.client(&server);
+    put(
+        &a,
+        "mind",
+        "sent",
+        None,
+        &dated("old", "Thu, 01 Oct 2026 08:00:00 +0000"),
+    );
+    for n in 0..12 {
+        a.send_need("mind", "hand", &format!("fresh-{n}"));
+    }
+    server.rate_limit_after(5);
+    let waits = Rc::new(Cell::new(0usize));
+    let mut held: Vec<usize> = Vec::new();
+    let mut wait = {
+        let waits = Rc::clone(&waits);
+        let server = Rc::clone(&server);
+        move |_: Duration| {
+            waits.set(waits.get() + 1);
+            server.allow_more(5);
+        }
+    };
+    let window = chrono::DateTime::parse_from_rfc3339("2026-10-10T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let report = push::push_drain(
+        &a.mailspace,
+        &a.settings,
+        &client,
+        Some(window),
+        &mut wait,
+        &mut |pass_report, _| held.push(pass_report.held_back),
+    )
+    .unwrap();
+
+    assert_eq!(report.sent, 12);
+    assert_eq!(report.held_back, 1);
+    assert!(report.stopped.is_none());
+    assert_eq!(held, vec![1, 1, 1], "the old letter stays held every pass");
+    assert_eq!(waits.get(), 2);
+    assert_eq!(server.items().len(), 12, "the old letter never leaves");
+    assert!(
+        server
+            .items()
+            .iter()
+            .all(|item| !String::from_utf8_lossy(&item.bytes).contains("Subject: old"))
+    );
+}
+
+#[test]
 fn a_window_sends_only_letters_dated_at_or_after_it_and_leaves_the_rest_unsent() {
     let server = FakeServer::new();
     let a = alice();

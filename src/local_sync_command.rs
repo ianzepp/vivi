@@ -21,14 +21,36 @@ struct PullOptions {
     refs_depth: Option<u8>,
 }
 
+/// The push pass: its `--since` window and whether to drain.
+struct PushPass {
+    since: Option<String>,
+    drain: bool,
+}
+
 pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumError> {
     let top = command.project.as_deref();
     let plain = Some(PullOptions::default());
     match &command.command {
-        None => run_passes(top, Some(None), plain),
-        Some(SyncSubcommand::Push { since, project }) => {
-            run_passes(project.as_deref().or(top), Some(since.as_deref()), None)
-        }
+        None => run_passes(
+            top,
+            Some(PushPass {
+                since: None,
+                drain: command.drain,
+            }),
+            plain,
+        ),
+        Some(SyncSubcommand::Push {
+            since,
+            drain,
+            project,
+        }) => run_passes(
+            project.as_deref().or(top),
+            Some(PushPass {
+                since: since.clone(),
+                drain: *drain,
+            }),
+            None,
+        ),
         Some(SyncSubcommand::Pull {
             since,
             refs,
@@ -73,11 +95,11 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
 /// Push, then pull. A stopped or refused push does not skip the pull; every
 /// failure is reported and the command exits non-zero at the end.
 ///
-/// `push` is `None` for no push pass, `Some(None)` for a push of everything
-/// unsent, and `Some(Some(since))` for a push limited to a window.
+/// `push` is `None` for no push pass, `Some` for one with a `--since` window
+/// and a `--drain` flag.
 fn run_passes(
     project: Option<&Path>,
-    push: Option<Option<&str>>,
+    push: Option<PushPass>,
     pull: Option<PullOptions>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
@@ -86,9 +108,9 @@ fn run_passes(
     let transport = HttpTransport::new(&settings, &identity);
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let mut failures = Vec::new();
-    if let Some(since) = push {
-        let window = since.map(push_window).transpose()?;
-        let report = push::push_since(&mailspace, &settings, &transport, window)?;
+    if let Some(pass) = push {
+        let window = pass.since.as_deref().map(push_window).transpose()?;
+        let report = run_push(&mailspace, &settings, &transport, window, pass.drain)?;
         for line in report.lines() {
             println!("{line}");
         }
@@ -116,6 +138,41 @@ fn push_window(since: &str) -> Result<chrono::DateTime<chrono::Utc>, VivariumErr
     chrono::DateTime::parse_from_rfc3339(&start)
         .map(|time| time.with_timezone(&chrono::Utc))
         .map_err(|error| VivariumError::Config(format!("invalid --since '{since}': {error}")))
+}
+
+/// One push pass; with `drain`, wait out the rate limit between passes. The
+/// sync lock is the caller's and stays held across all passes. The real wait
+/// is the only sleep in the codebase's sync paths; tests pass a no-op.
+fn run_push(
+    mailspace: &Mailspace,
+    settings: &SyncSettings,
+    transport: &HttpTransport<'_>,
+    window: Option<chrono::DateTime<chrono::Utc>>,
+    drain: bool,
+) -> Result<push::PushReport, VivariumError> {
+    if !drain {
+        return push::push_since(mailspace, settings, transport, window);
+    }
+    push::push_drain(
+        mailspace,
+        settings,
+        transport,
+        window,
+        &mut |duration| {
+            println!(
+                "sync push: rate limit reached; waiting {}s",
+                duration.as_secs()
+            );
+            std::thread::sleep(duration);
+        },
+        &mut |report, pass| {
+            let left = report.stopped.as_ref().map_or(0, |stop| stop.remaining);
+            println!(
+                "sync push: pass {pass}: sent {}, duplicates {}, {left} left",
+                report.sent, report.duplicates
+            );
+        },
+    )
 }
 
 fn run_pull(

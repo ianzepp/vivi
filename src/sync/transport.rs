@@ -36,7 +36,10 @@ pub struct Appended {
 pub enum AppendFailure {
     /// The server refused this one letter (400, 409, 413): the pass goes on.
     Refused(String),
-    /// The pass cannot continue (429, 401, network failure, server error).
+    /// The server said slow down (429): the pass stops, and a drain may wait
+    /// and run another one.
+    RateLimited(String),
+    /// The pass cannot continue (401, network failure, server error).
     Stop(String),
 }
 
