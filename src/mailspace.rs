@@ -38,6 +38,9 @@ mod lifecycle;
 mod marks;
 mod merge;
 mod mermaid;
+#[cfg(test)]
+#[path = "mailspace/message_id_test.rs"]
+mod message_id_test;
 mod pool_record;
 mod reply;
 mod report;

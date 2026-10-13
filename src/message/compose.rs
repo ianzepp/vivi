@@ -1,4 +1,11 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::error::VivariumError;
+
+/// Process-wide counter that keeps Message-ID local parts distinct even when
+/// two letters are composed within the same nanosecond tick.
+static MESSAGE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct ComposeDraft {
@@ -49,6 +56,7 @@ pub fn build_compose_draft_with_attachments(
         ));
     }
     let mut builder = mail_builder::MessageBuilder::new()
+        .message_id(next_message_id(&draft.from))
         .from(draft.from.clone())
         .subject(draft.subject.clone())
         .text_body(normalize_body(&draft.body));
@@ -93,6 +101,7 @@ pub fn build_reply(original: &[u8], draft: &ReplyDraft) -> Result<String, Vivari
     let subject = reply_subject(parsed.subject().unwrap_or("(no subject)"));
     let text_body = format!("{}{}", normalize_body(&draft.body), quoted_body(&parsed));
     let mut builder = mail_builder::MessageBuilder::new()
+        .message_id(next_message_id(&draft.from))
         .from(draft.from.clone())
         .to(reply_to.to_string())
         .subject(subject)
@@ -264,3 +273,32 @@ fn reply_subject(subject: &str) -> String {
         format!("Re: {subject}")
     }
 }
+
+/// The RFC domain for a letter's Message-ID: the domain of the draft's From
+/// address, or the literal `vivi.local` when the address carries no domain.
+/// Never a hostname: a letter pushed to a shared server must not publish the
+/// machine's name, which is what the builder's own fallback writes.
+fn message_id_domain(from: &str) -> &str {
+    from.trim()
+        .rsplit_once('@')
+        .map(|(_, domain)| domain.trim())
+        .filter(|domain| !domain.is_empty())
+        .unwrap_or("vivi.local")
+}
+
+/// A unique Message-ID header value for one letter, built from the current
+/// time in nanoseconds, a process-wide counter, and the process id. The
+/// local part carries no host name.
+fn next_message_id(from: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let counter = MESSAGE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    format!("{nanos:x}.{counter:x}.{pid:x}@{}", message_id_domain(from))
+}
+
+#[cfg(test)]
+#[path = "compose_test.rs"]
+mod compose_test;
