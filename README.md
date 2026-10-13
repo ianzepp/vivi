@@ -1535,8 +1535,8 @@ Rules:
 ## Commands
 
 `vivi --help` is the live top-level list. Today that is: `board`, `boot`,
-`sync`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `rule`, `goal`,
-`pool`, `role`, `cycle`, `trace`, `graph`, `skills`, `step`.
+`sync`, `mcp`, `mailspace`, `mail`, `task`, `need`, `want`, `memo`, `rule`,
+`goal`, `pool`, `role`, `cycle`, `trace`, `graph`, `skills`, `step`.
 
 `pool` is the remote lane pool (create, status, destroy, scale, dispatch, wait,
 reconcile, doctor). `rule` holds project rules every seat can read; `--local`
@@ -1561,6 +1561,67 @@ locally, and any of the three restores them byte for byte. To attach a
 checkout (new or existing) to a server project, see **Linking a mailspace
 to a server project** in the
 [vivi skill](skills/vivi/SKILL.md#project-sync).
+
+### `vivi mcp` and project API keys
+
+`vivi mcp` is a thin stdio bridge to the project server's MCP endpoint
+(`POST /v1/projects/{id}/mcp`): it speaks MCP on stdin/stdout
+(newline-delimited JSON-RPC 2.0, the standard stdio transport) and forwards
+each message to that endpoint unchanged. It is a pass-through — it does not
+know the tool list, so new server tools need no new bridge — and writes
+nothing but protocol messages to stdout (diagnostics go to stderr; a
+notification gets no reply). A machine needs only the binary, a server URL, a
+project id, and a credential: no local mailspace, no sync, and the bridge
+never creates `.vivi/`. When the server refuses a request after the one
+allowed renewal (or at once for an API key), the bridge answers that request
+with a JSON-RPC error (code `-32000`, `data.http_status`) instead of hanging,
+and keeps serving. The server's Project MCP tools are `overview`, `list`,
+`show`, `thread`, `send`, `reply`, `done`, `reopen`, `memo`, `graph`; writes
+share the server's 30-per-minute-per-identity send budget, and a tool failure
+is a result with `isError: true`.
+
+Credentials are either a member name plus key file
+(`--name`/`VIVI_MCP_NAME` plus `--key-file`/`VIVI_MCP_KEY_FILE`; the 32-byte
+seed file a mailspace keeps at `.vivi/chat/identity.ed25519`; the bridge mints
+the identity token as `vivi sync` does and renews it once when the server
+refuses it (401) and ahead of time when `token_expires_at` is within 30
+seconds) or a project API key in `VIVI_MCP_API_KEY` (sent as the bearer as it
+is; no minting, no renewal, a 401 is final). Giving both is an error. A flag
+beats its variable (`--server <URL>`, `--project-id <ID>`, `--name <NAME>`,
+`--key-file <PATH>`; `VIVI_MCP_SERVER`, `VIVI_MCP_PROJECT_ID`, `VIVI_MCP_NAME`,
+`VIVI_MCP_KEY_FILE`), a variable beats the `[sync]` table, and the API key is
+read from the environment only (no flag), so it does not show in a process
+list. The global `--project <ROOT>` still names a mailspace root (used only to
+find a `[sync]` table); it is not the server project id. Inside a mailspace
+that has a `[sync]` table, `vivi mcp` with no flags uses its server, project,
+name, and own key.
+
+Example client configuration for Claude Code's `--mcp-config` (a JSON file):
+
+```json
+{"mcpServers":{"vivi":{"command":"vivi","args":["mcp"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>","VIVI_MCP_API_KEY":"<key from vivi sync api-key mint>"}}}}
+```
+
+The member-name variant replaces the API key with
+`"args":["mcp","--name","<name>","--key-file","<path>"]`. pi connects to
+stdio MCP servers through its `mcp.json`; the same `command`, `args`, and
+`env` work there: `pi mcp add vivi --env VIVI_MCP_SERVER='https://<server>'
+--env VIVI_MCP_PROJECT_ID='<project id>' --env
+VIVI_MCP_API_KEY='<key from vivi sync api-key mint>' -- vivi mcp`.
+
+Project API keys: `vivi sync api-key mint --label <LABEL>` prints `key_id`,
+`label`, and the raw `key` once (Vivi never stores the key; label 1 to 64
+characters); `vivi sync api-key list` shows `key_id`, `label`, `created_by`,
+`created_at`, never the secret; `vivi sync api-key revoke <KEY_ID>` retires a
+key. They run from a mailspace with a `[sync]` table and use that mailspace's
+identity (the server accepts only an identity token for these routes, never
+another key). At most 32 live keys per project, and a live key works on every
+project bearer route, including the letter wire.
+
+Not built here: how a pool slot is handed its credential, and how the pool
+harness is told to load the bridge (tracked as need `8e39ed90` on the
+operator's board). The bridge has been run against a staging server only; no
+production use.
 
 Almost everything Vivi does is project-scoped, so `--project <root>` is accepted
 either before or after the subcommand and those commands resolve the same
