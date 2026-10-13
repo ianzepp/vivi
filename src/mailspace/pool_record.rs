@@ -17,6 +17,9 @@ pub struct PoolTask {
     pub subject: String,
     /// The task body: the brief handed to the remote worker.
     pub body: String,
+    /// The canonical name of the local role the task copy is held under or
+    /// addressed to, when that role exists.
+    pub addressee: Option<String>,
 }
 
 /// One pool event on a task, oldest first in listings.
@@ -51,10 +54,14 @@ impl Mailspace {
             )));
         }
         let data = storage.read_message(&id)?;
+        // The copy is held under the recipient's account; a recipient that
+        // is not a known local role leaves no addressee.
+        let addressee = self.resolve_identity(&view.account).ok();
         Ok(PoolTask {
             handle: storage.display_handle(&id)?,
             subject: view.subject,
             body: text_body(&data),
+            addressee,
         })
     }
 

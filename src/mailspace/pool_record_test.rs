@@ -87,3 +87,14 @@ fn handles_resolve_for_matching() {
     let (_tmp, space, handle) = space_with_task("mind", "hand");
     assert_eq!(space.pool_handle(&handle).unwrap(), handle);
 }
+
+#[test]
+fn the_addressee_is_the_role_the_task_copy_is_held_under() {
+    let (_tmp, mut space, handle) = space_with_task("mind", "hand");
+    let task = space.pool_task(&handle).unwrap();
+    assert_eq!(task.addressee.as_deref(), Some("hand"));
+    // A task whose recipient is not a known local role has no addressee.
+    space.config.identities.retain(|role| role.name != "hand");
+    let task = space.pool_task(&handle).unwrap();
+    assert_eq!(task.addressee, None);
+}
