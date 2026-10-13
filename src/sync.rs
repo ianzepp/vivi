@@ -28,6 +28,7 @@ pub mod refs;
 pub mod select;
 pub mod state;
 pub mod transport;
+pub mod vouch;
 pub mod window;
 
 /// Remote-binding provider for letters synced with a project server.
@@ -170,3 +171,7 @@ mod watch;
 #[cfg(test)]
 #[path = "sync/sync_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "sync/vouch_test.rs"]
+mod vouch_test;

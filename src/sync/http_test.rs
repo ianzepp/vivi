@@ -201,6 +201,7 @@ fn project_server(method: &str, path: &str) -> (u16, String) {
             r#"{"name":"alice","token":"t","token_expires_at":"later","fingerprint":"f","mailspace_id":"3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b","extra":true}"#
                 .into(),
         ),
+        ("POST", "projects") => (201, r#"{"project_id":"prj-123","extra":1}"#.into()),
         _ => (
             201,
             format!(
@@ -362,4 +363,54 @@ fn the_directory_lists_members_with_their_address_domains() {
 fn a_directory_without_members_is_an_empty_list() {
     assert!(parse_directory(&json!({})).unwrap().is_empty());
     assert!(parse_directory(&json!({"members": "no"})).is_err());
+}
+
+#[test]
+fn create_project_posts_the_key_and_creator_without_a_bearer() {
+    let (port, listener) = serve(1, project_server);
+    let server = format!("http://127.0.0.1:{port}");
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+
+    let project_id = create_project(&server, &identity, "alice").unwrap();
+
+    assert_eq!(project_id, "prj-123");
+    let seen = listener.join().unwrap();
+    assert_eq!(seen.len(), 1, "one request, no challenge or token");
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].path, "/v1/projects");
+    assert!(
+        seen[0]
+            .headers
+            .iter()
+            .all(|(key, _)| key != "authorization"),
+        "the creator has no bearer yet"
+    );
+    let body: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    assert_eq!(body["creator_name"], "alice");
+    assert_eq!(body["public_key_pem"], identity.public_key_pem());
+}
+
+fn refused_project_server(_method: &str, _path: &str) -> (u16, String) {
+    (
+        403,
+        error_body("forbidden", "only three projects").to_string(),
+    )
+}
+
+#[test]
+fn a_refused_project_creation_names_the_status_and_the_reason() {
+    let (port, listener) = serve(1, refused_project_server);
+    let server = format!("http://127.0.0.1:{port}");
+    let dir = tempfile::tempdir().unwrap();
+    let identity = SyncIdentity::ensure(dir.path()).unwrap();
+
+    let error = create_project(&server, &identity, "alice")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("403"), "{error}");
+    assert!(error.contains("forbidden"), "{error}");
+    assert!(error.contains("only three projects"), "{error}");
+    listener.join().unwrap();
 }

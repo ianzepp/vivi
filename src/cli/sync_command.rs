@@ -97,4 +97,44 @@ pub enum SyncSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Print this mailspace's public key as an SPKI PEM (mints the key when
+    /// missing); needs no [sync] table, server, or network
+    Key {
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Create a project on [sync].server with this mailspace's key as the
+    /// creator's, and print the new project id; writes nothing locally —
+    /// put the printed id in [sync] yourself, then run vivi sync join
+    Create {
+        /// The creator name to register (defaults to [sync].name)
+        #[arg(long, value_name = "CREATOR")]
+        name: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Vouch for a member's key as the admitted member this mailspace is:
+    /// sends one governance letter to the project's postmaster (needs
+    /// [sync].server, project, and name); stores nothing locally
+    Vouch {
+        /// The member name the vouch admits
+        #[arg(value_name = "NAME")]
+        member: String,
+        /// File holding the member's public key PEM
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present = "key",
+            conflicts_with = "key"
+        )]
+        key_file: Option<PathBuf>,
+        /// The member's public key PEM, given inline
+        #[arg(long, value_name = "PEM", required_unless_present = "key_file")]
+        key: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }
