@@ -58,11 +58,17 @@ struct Rig {
     project: PathBuf,
 }
 
+/// The standin harness: finishes at once, so `settle` is quick.
+const ECHO_HARNESS: &str = "echo {model} >> a.txt";
+/// A harness that keeps the one slot busy while a second dispatch runs.
+const SLEEPING_HARNESS: &str = "sleep 5; echo {model} >> a.txt";
+
 /// A mailspace with member `alice` registered on `server`, a `[sync]` table
 /// naming `sync_server` (a closed port when the bridge must find the server
 /// down), and a one-slot local worktree pool `p` carrying `bridge` as its
-/// `[pools.p.bridge]` table (empty for no bridge at all).
-fn rig(server: &ProjectServer, sync_server: &str, bridge: &str) -> Rig {
+/// `[pools.p.bridge]` table (empty for no bridge at all) and `harness` as
+/// its standin command.
+fn rig(server: &ProjectServer, sync_server: &str, bridge: &str, harness: &str) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().canonicalize().unwrap();
     let (project, repo) = (base.join("project"), base.join("repo"));
@@ -86,7 +92,7 @@ fn rig(server: &ProjectServer, sync_server: &str, bridge: &str) -> Rig {
          \n[pools.p]\nprovider = \"local\"\nslots = 1\n\
          \n[pools.p.local]\nroot = \"{}\"\nworktree_of = \"{}\"\n\
          {bridge}\
-         \n[pools.p.harness]\nname = \"standin\"\nrun = \"echo {{model}} >> a.txt\"\n\
+         \n[pools.p.harness]\nname = \"standin\"\nrun = \"{harness}\"\n\
          models = [\"standin\"]\n\
          \n[pools.p.committer]\nname = \"bot\"\nemail = \"bot@example.com\"\n",
         server.project(),
@@ -216,7 +222,12 @@ fn walk_dirs(dir: &Path) -> Vec<PathBuf> {
 #[test]
 fn a_bridge_dispatch_mints_exactly_one_key_and_names_only_its_id() {
     let server = ProjectServer::start();
-    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n");
+    let rig = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
     let out = dispatch(&rig, "feat/bridge");
     let said = ok(&out);
 
@@ -246,7 +257,12 @@ fn a_bridge_dispatch_mints_exactly_one_key_and_names_only_its_id() {
 fn a_bridge_dispatch_with_the_server_down_is_refused_before_the_claim() {
     let server = ProjectServer::start();
     let down = format!("http://127.0.0.1:{}", closed_port());
-    let rig = rig(&server, &down, "[pools.p.bridge]\nenabled = true\n");
+    let rig = rig(
+        &server,
+        &down,
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
     let out = dispatch(&rig, "feat/bridge");
 
     assert!(!out.status.success(), "{}", text(&out));
@@ -277,7 +293,7 @@ fn a_bridge_dispatch_with_the_server_down_is_refused_before_the_claim() {
 #[test]
 fn a_pool_without_a_bridge_table_mints_nothing_and_contacts_nothing() {
     let server = ProjectServer::start();
-    let rig = rig(&server, &server.url(), "");
+    let rig = rig(&server, &server.url(), "", ECHO_HARNESS);
     let out = dispatch(&rig, "feat/plain");
     let said = ok(&out);
 
@@ -288,4 +304,77 @@ fn a_pool_without_a_bridge_table_mints_nothing_and_contacts_nothing() {
     settle(&rig);
     assert_eq!(server.requests_seen(), 0);
     assert!(server.keys().is_empty());
+}
+
+#[test]
+fn a_failed_dispatch_revokes_the_minted_key_and_names_only_its_id() {
+    let server = ProjectServer::start();
+    let rig = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        SLEEPING_HARNESS,
+    );
+    let first = ok(&dispatch(&rig, "feat/bridge"));
+    let first_job = job_of(&first);
+    let minted = server.keys();
+    assert_eq!(minted.len(), 1, "the running dispatch minted one: {first}");
+    assert!(!minted[0].revoked, "{first}");
+
+    // The one slot is busy with the sleeping job: the second dispatch mints
+    // its own key and only then fails to claim a slot.
+    let out = dispatch(&rig, "feat/busy");
+    assert!(
+        !out.status.success(),
+        "the busy slot must refuse the dispatch: {}",
+        text(&out)
+    );
+    let said = text(&out);
+    assert!(
+        said.contains("no free slot"),
+        "the failure is the claim: {said}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let Some(key_id) = stderr
+        .lines()
+        .find_map(|l| {
+            l.split("revoked bridge key ")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+        })
+        .map(str::to_string)
+    else {
+        panic!("the stderr names the revoked key id: {stderr}");
+    };
+    let keys = server.keys();
+    let listed: Vec<String> = keys.iter().map(|k| k.key_id.clone()).collect();
+    assert_eq!(keys.len(), 2, "each attempt minted exactly once: {said}");
+    let Some(revoked) = keys.iter().find(|k| k.key_id == key_id) else {
+        panic!("the fake lists the minted key {key_id}: {listed:?}");
+    };
+    assert!(
+        revoked.revoked,
+        "the failed dispatch revoked its key: {listed:?}"
+    );
+    let live = keys
+        .iter()
+        .find(|k| k.key_id != key_id)
+        .expect("the running dispatch's key");
+    assert!(!live.revoked, "the running dispatch keeps its key");
+    assert_eq!(live.label, format!("pool-p-{first_job}"), "{first}");
+    assert!(
+        !said.contains(&revoked.secret),
+        "the raw key is never printed: {said}"
+    );
+
+    settle(&rig);
+    let keys = server.keys();
+    let listed: Vec<String> = keys.iter().map(|k| k.key_id.clone()).collect();
+    assert_eq!(keys.len(), 2, "collection mints and revokes nothing more");
+    assert!(
+        keys.iter()
+            .find(|k| k.key_id == live.key_id)
+            .is_some_and(|k| !k.revoked),
+        "the collected dispatch keeps its key: {listed:?}"
+    );
 }
