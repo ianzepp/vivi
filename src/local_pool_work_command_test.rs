@@ -68,6 +68,7 @@ fn plan_with(names: &[&str]) -> job::JobPlan {
         },
         read_only: false,
         facts: Vec::new(),
+        restore: Vec::new(),
     }
 }
 
