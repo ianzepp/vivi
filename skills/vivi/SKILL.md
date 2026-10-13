@@ -1219,9 +1219,17 @@ Dispatch each unit with `--from <base commit> --branch <unit branch>`. Dispatch
 the first merge job with `--from <base commit> --branch mind/<name>` (the
 integration branch) to merge the first approved unit branch: that job brings
 the integration branch into existence, and later merge jobs continue it with
-`--from mind/<name> --branch mind/<name>`. The cost: a unit cannot start from
-the integration tip until the first merge has landed, so units that need
-another unit's code start `--from` that unit's branch (stacking) instead.
+`--from mind/<name> --branch mind/<name>`. A merge job on a remote pool (Fly,
+Docker, SSH, local fetch mode) names the branches to merge with `--with` — for
+example `vivi pool dispatch <task> --from mind/<name> --branch mind/<name>
+--with pool/<unit-a> --with pool/<unit-b>` — and those branches must be on the
+remote the pool fetches from; the seat finds them already fetched as
+`refs/remotes/origin/<branch>` and merges with plain Git (on a worktree pool
+`--with` works too and fetches nothing — the branches are already local refs,
+seen by name). The one remaining cost: the integration branch does not exist
+on the remote until the first merge has landed, so until then no job can start
+from it; units that need another unit's code start `--from` that unit's branch
+(stacking) instead.
 
 ### dispatch
 
@@ -1249,6 +1257,40 @@ another unit's code start `--from` that unit's branch (stacking) instead.
   is claimed (the table under "Local provider"); fly, docker, ssh, runpod and
   local fetch mode do not check the branch when dispatching — the job runs, and
   its final push, never forced, ends `push_refused`.
+- Extra refs a job must see besides `from` travel with the dispatch:
+  `--with <ref>`, repeatable, at most 8, or `with: <ref>` lines in the task
+  body. Each is resolved to a commit before a slot is claimed, so an unknown
+  ref refuses the dispatch and claims nothing (a worktree pool resolves in its
+  source repository the same way). Body lines follow the same trimming and
+  list-dash rules as `from:`/`branch:` and every `with: <ref>` line counts — a
+  line whose value is empty or holds a space is not a `with` line; when any
+  `--with` is given, the flags win and the body lines are ignored. Duplicates
+  are dropped keeping the first; a value that is not a plain ref name, or that
+  names `from` or `branch`, is refused. An abbreviated hash is resolved to the
+  full hash like `from`, and the job's `with.list` and the dispatch record
+  carry the full hash. A `--read-only` job accepts `--with` too.
+- The runner fetches the listed refs before the agent starts. On a pool that
+  fetches from a remote, a branch name lands at `refs/remotes/origin/<ref>`
+  and a 40-hex commit at `refs/vivi/with/<commit>`, each fetched at the pool's
+  fetch depth; a ref the remote does not have ends the job `fetch_failed`.
+  The fetches are shallow, so the runner then deepens — doubling the depth and
+  fetching again, `from` by its commit and every extra ref — until each extra
+  ref has a merge base with the start commit, capped at a total depth of 5000;
+  never `--unshallow`, never the whole history. A ref that still has no merge
+  base at the cap is only recorded: merging it is the agent's move. On a
+  worktree pool nothing is fetched — the refs are local refs of the shared
+  repository and the agent sees them by name.
+- The result names the list: `with_count`, then `with_N_ref`, `with_N_local`
+  and `with_N_sha` for each ref, and on a fetching pool also
+  `with_N_merge_base` (the merge base with the start commit, `none` when
+  deepening found none) and `fetch_depth`, the depth the history reached. The
+  agent holds no credential — the token never reaches its environment — but
+  carries the pool's committer as its Git author and committer identity, so a
+  plain `git merge` works unconfigured, and a merge the agent commits, or
+  prepares with `git merge --no-commit` and leaves staged, is published on the
+  job's branch with both parents. The dispatch record on the task names the
+  resolved refs as `ref@commit12` entries, and the human dispatch line
+  appends `with <ref>@<commit12> ...`.
 - `--budget` is the agent's hard time limit in seconds (default 1800). Every job
   also runs under a hard limit enforced by the slot's boot script (budget plus
   ten minutes of slack).
