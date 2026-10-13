@@ -19,14 +19,20 @@
 #   restore.list optional: repository-relative paths to put back to the start
 #                commit before the runner commits, one per line (written jobs
 #                only; see the restore loop below)
+#   with.list    optional: extra refs the agent must see, one `<ref> <commit>`
+#                per line -- a branch name, or a 40-hex commit, then the
+#                commit dispatch resolved it to (or `-`); fetch mode deepens
+#                until each has a merge base with FROM (see the with loop
+#                below)
 # Environment from the machine: BUILD_DIR, and any variable named in
 # ENV_NAMES (their values come from the machine's own environment).
 # UNPRIVILEGED, BUILD_PERSISTS and WORK are the ones of the boot script.
 #
 # Start from FROM (a commit or a branch), run the harness as the unprivileged
 # user `hand` (the current user when UNPRIVILEGED) under BUDGET seconds, then
-# commit what changed and push to BRANCH without force. The outcome goes to
-# $WORK/job/result as key=value lines.
+# commit what changed and push to BRANCH without force. A commit the agent
+# made on its own -- a merge of an extra ref, say -- is pushed the same way.
+# The outcome goes to $WORK/job/result as key=value lines.
 #
 # A worktree slot (LOCAL_ACTION set) has no remote: the checkout is a Git
 # worktree of a repository on this machine, so nothing is fetched or pushed.
@@ -139,6 +145,88 @@ else
   [ -n "${READ_ONLY:-}" ] || as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
   rm -f "$RD/.git/FETCH_HEAD"
 fi
+
+# Extra refs the pool names in with.list: a second branch the agent must be
+# able to see (and later merge). Fetch mode fetches each into a local ref --
+# a branch name to refs/remotes/origin/<ref>, a 40-hex commit to
+# refs/vivi/with/<commit> -- at the pool's depth. Every fetch, like the FROM
+# fetch, leaves the URL, which holds the token, in .git/FETCH_HEAD, so
+# FETCH_HEAD is removed after each one, and nothing is written to .git/config
+# or the agent's home. The result records where each ref landed. A worktree
+# job fetches nothing: the refs are already refs of the shared repository,
+# and the agent sees them as named. A ref the remote does not have ends the
+# job fetch_failed.
+WITH_N=0
+WITH_EXTRA=
+WITH_PAIRS=
+if [ -f "$J/with.list" ]; then
+  while IFS=' ' read -r wref wsha || [ -n "$wref" ]; do
+    [ -n "$wref" ] || continue
+    WITH_N=$((WITH_N + 1))
+    if [ -n "${LOCAL_ACTION:-}" ]; then
+      wlocal=$wref
+      wsha_now=$(as_hand git rev-parse --verify "$wref^{commit}" 2>/dev/null) || wsha_now=
+    else
+      if [ "${#wref}" -eq 40 ] && [ -z "${wref//[0-9a-f]/}" ]; then
+        wlocal="refs/vivi/with/$wref"
+      else
+        wlocal="refs/remotes/origin/$wref"
+      fi
+      as_hand git fetch -q --depth "${DEPTH:-50}" "$URL" "+$wref:$wlocal" || finish fetch_failed
+      rm -f "$RD/.git/FETCH_HEAD"
+      wsha_now=$(as_hand git rev-parse "$wlocal")
+    fi
+    [ -z "$WITH_PAIRS" ] || WITH_PAIRS+=$'\n'
+    WITH_PAIRS+="$wref $wlocal"
+    [ -z "$WITH_EXTRA" ] || WITH_EXTRA+=$'\n'
+    WITH_EXTRA+="with_${WITH_N}_ref=$wref"$'\n'"with_${WITH_N}_local=$wlocal"$'\n'"with_${WITH_N}_sha=$wsha_now"
+  done < "$J/with.list"
+  # The fetches are shallow: a merge base further back than the pool's depth
+  # would make `git merge` of an extra ref refuse unrelated histories. While
+  # any ref has no merge base with START, double the depth and fetch again --
+  # FROM by its commit and every extra ref -- up to a total depth of 5000;
+  # never --unshallow, never the whole history. A ref that still has no merge
+  # base at the cap is only recorded: merging it is the agent's move. The
+  # checkout persists between jobs, so a deeper fetch is incremental. The
+  # result says to what depth the history reached and where each base sits.
+  if [ -z "${LOCAL_ACTION:-}" ] && [ -n "$WITH_N" ]; then
+    D=${DEPTH:-50}
+    while :; do
+      PENDING=
+      while IFS= read -r pair; do
+        [ -n "$pair" ] || continue
+        as_hand git merge-base "$START" "${pair#* }" > /dev/null 2>&1 || {
+          [ -z "$PENDING" ] || PENDING+=$'\n'
+          PENDING+=$pair
+        }
+      done <<< "$WITH_PAIRS"
+      { [ -z "$PENDING" ] || [ "$D" -ge 5000 ]; } && break
+      D=$((D * 2)); [ "$D" -le 5000 ] || D=5000
+      as_hand git fetch -q --depth "$D" "$URL" "$START" || finish fetch_failed
+      rm -f "$RD/.git/FETCH_HEAD"
+      while IFS= read -r pair; do
+        [ -n "$pair" ] || continue
+        as_hand git fetch -q --depth "$D" "$URL" "+${pair%% *}:${pair#* }" || finish fetch_failed
+        rm -f "$RD/.git/FETCH_HEAD"
+      done <<< "$PENDING"
+    done
+    WITH_BASE=
+    i=0
+    while IFS= read -r pair; do
+      [ -n "$pair" ] || continue
+      i=$((i + 1))
+      base=$(as_hand git merge-base "$START" "${pair#* }" 2> /dev/null) || base=none
+      [ -z "$WITH_BASE" ] || WITH_BASE+=$'\n'
+      WITH_BASE+="with_${i}_merge_base=$base"
+    done <<< "$WITH_PAIRS"
+  fi
+  if [ -n "$WITH_EXTRA" ]; then
+    RESULT_EXTRA="with_count=$WITH_N"$'\n'"$WITH_EXTRA"
+    if [ -z "${LOCAL_ACTION:-}" ]; then
+      RESULT_EXTRA+=$'\n'"fetch_depth=$D"$'\n'"$WITH_BASE"
+    fi
+  fi
+fi
 echo "from $FROM at ${START:0:12} prepared_s $(( $(now) - T0 ))"
 
 mkdir -p "$AGENT_HOME" && cp "$J/brief.md" "$J/rules.md" "$AGENT_HOME/" || finish workdir_missing
@@ -146,8 +234,12 @@ mkdir -p "$AGENT_HOME" && cp "$J/brief.md" "$J/rules.md" "$AGENT_HOME/" || finis
 HARNESS_CMD=$(cat "$J/harness.cmd")
 HARNESS_CMD=${HARNESS_CMD//\/home\/hand\//$AGENT_HOME/}
 
-# Clean environment: HOME, PATH, and only the names the config lists.
+# Clean environment: HOME, PATH, and only the names the config lists. The
+# pool's commit identity travels under its Git names, so `git merge` and
+# `git commit` work unconfigured; it is not a secret.
 HARNESS_ENV=("HOME=$AGENT_USER_HOME" "PATH=$PATH" "VIVI_AGENT_JOB=$JOB")
+HARNESS_ENV+=("GIT_AUTHOR_NAME=$COMMIT_NAME" "GIT_AUTHOR_EMAIL=$COMMIT_EMAIL")
+HARNESS_ENV+=("GIT_COMMITTER_NAME=$COMMIT_NAME" "GIT_COMMITTER_EMAIL=$COMMIT_EMAIL")
 [ -z "${VIVI_SLOT_ROOT:-}" ] || HARNESS_ENV+=("VIVI_SLOT_ROOT=$VIVI_SLOT_ROOT")
 for name in $ENV_NAMES; do
   [ -n "${!name+x}" ] && HARNESS_ENV+=("$name=${!name}")
@@ -251,9 +343,12 @@ if [ -n "$RESTORED" ]; then
   done <<< "$RESTORED"
 fi
 CHANGED=$(as_hand git status --porcelain -- "${EXCLUDE[@]}")
-# A worktree agent may have committed on its own: HEAD then moved off START.
+# The agent may have committed on its own: HEAD then moved off START. Fetch
+# mode counts this too -- the push below is what publishes the agent's own
+# commits, a merge of an extra ref with both parents included. A read-only
+# job never reaches this point.
 MOVED=
-[ -z "${LOCAL_ACTION:-}" ] || [ "$(as_hand git rev-parse HEAD)" = "$START" ] || MOVED=1
+[ -n "${READ_ONLY:-}" ] || [ "$(as_hand git rev-parse HEAD)" = "$START" ] || MOVED=1
 if [ -z "$CHANGED" ] && [ -z "$MOVED" ]; then
   finish no_changes
 fi
