@@ -1,25 +1,18 @@
 # vivi-server
 
-Public chat substrate server for vivi checkouts: a rendezvous point where
-two `vivi` installations, anywhere on the internet, join one persistent
-room and exchange messages through the `vivi chat` CLI alone. Rooms are
-real mailspaces — server storage for room `<id>` is
-`DATA_DIR/rooms/<id>/.vivi/`, opened through the vivi crate, with chat
-messages stored as ordinary mail items so future phases can cross needs
-and receipts over the same store. Identity is ED25519 challenge/sign seat
-binding with digest-only bearer tokens; message bodies are encrypted at
-rest (AES-256-GCM); the wire truth is [`docs/contract.md`](docs/contract.md).
+Public chat substrate server for vivi checkouts. Durable **projects**
+(`/v1/projects`, vivi 11 `vivi sync`) are the tenant: one real vivi
+mailspace at `DATA_DIR/projects/<id>/.vivi/` with a `transport.sqlite`
+index beside it. Each project exposes Streamable HTTP MCP at
+`POST /v1/projects/{id}/mcp`.
 
-Projects (`/v1/projects`, vivi 11 `vivi sync`) are the other tenant: a
-project is one real vivi mailspace at `DATA_DIR/projects/<id>/.vivi/`.
-Members push and pull their letters as raw `.eml`, held byte for byte and in
-the clear (protect the volume), with a `transport.sqlite` index beside it for
-the sequence cursor, visibility and paging. See
-[`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md).
-
-Rooms are unchanged in this release. They are to be redirected in a later
-release to lightweight chat backed by a lightweight project, exposed through
-the server's MCP surface (decided item 17 in that document).
+**Rooms** are fleeting.chat-style channels on that same store: a
+lightweight project (`mode=chat`) with a TTL, keyless join by name, and
+member-visible `kind=chat` letters. Create with `POST /v1/rooms`, share
+the id, send and poll at `/v1/rooms/{id}/messages`, or point a connector
+at `/v1/rooms/{id}/mcp` (same tools as the project endpoint). See
+[`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md)
+item 17 and [`docs/contract.md`](docs/contract.md).
 
 ## Quickstart
 
@@ -39,7 +32,7 @@ curl http://localhost:8080/healthz   # -> ok
 | Env var | Meaning |
 | --- | --- |
 | `PORT` | Listen port |
-| `DATA_DIR` | Storage root: rooms at `DATA_DIR/rooms/<id>/.vivi/`, projects at `DATA_DIR/projects/<id>/.vivi/` |
+| `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
 
@@ -51,29 +44,17 @@ addressing, visibility, windows, handles, prune and resync). Run it for any
 change to the project wire or store; `SERVER_URL` points it at a deployed
 server.
 
-`scripts/two-checkout-smoke.sh` is the rooms gate: two vivi
-checkouts, a locally spawned server, create → join → send → badge →
-watch → offline queue → flush, plus the phase 02 legs: a need that crosses
-the room and files on the far side under the same handle and the same bytes,
-close and receipt, a task for another seat that is skipped rather than filed,
-prune and resync restoring the replica byte-for-byte, and a raw kinded-send
-probe. It is the deploy acceptance; the deployed URLs must pass it too. It
-needs a vivi build with `chat pull` (vivi `3b45ebd` or later) and takes about
-two minutes: prune's smallest cutoff is `1m`, so the prune leg waits for the
-need to age.
+`scripts/chat-room-smoke.sh` is the rooms gate: create → join → send →
+poll → MCP `kind=chat` against a local or deployed server. Each run leaves
+one throwaway chat project behind.
 
 ```sh
-# local: boots target/debug/vivi-server itself
-VIVI_REPO=../vivi scripts/two-checkout-smoke.sh
-# deployed: same legs against a running server
-SERVER_URL=https://vivi-server-main-production.up.railway.app scripts/two-checkout-smoke.sh
+scripts/chat-room-smoke.sh
+SERVER_URL=https://vivi-server-main-production.up.railway.app scripts/chat-room-smoke.sh
 ```
 
-Against a deployed server the offline queue → flush leg is skipped (it has to
-restart the server) and reported as `SKIP`; the exit status is non-zero on any
-`FAIL`. Each deployed run leaves one throwaway room behind. `SRV`,
-`VIVI_REPO`, `VIVI` and `PORT` override the paths and port; see the script
-header.
+`scripts/two-checkout-smoke.sh` is the old seat-bound rooms gate. It needs
+`vivi chat`, which left in vivi 11, and does not apply to 1.3.0 rooms.
 
 ## Railway deploy
 

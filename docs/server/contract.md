@@ -1,12 +1,100 @@
-# vivi-server Wire Contract — Phase 01 (FROZEN at U1)
+# vivi-server Wire Contract
 
-Wire truth for the vivi chat substrate. Client units (vivi `chat` family)
-build against this document; any change after U1 integration is an explicit
-recorded revision in the phase delivery doc.
+Wire truth for vivi-server. Phase 01 rooms (U1, seat/challenge) are
+**superseded in 1.3.0** by [Lightweight chat rooms](#lightweight-chat-rooms-130).
+The project letter wire and [Project MCP](#project-mcp-120) stay. Revisions
+after a freeze are recorded here.
 
-All bodies are JSON (`application/json`). All v1 routes live under `/v1/`.
-Storage per room is a real mailspace at `DATA_DIR/rooms/<room_id>/.vivi/`
-(R2), opened through the vivi crate; messages are mail items sent
+All bodies are JSON (`application/json`) unless a route says otherwise.
+All v1 routes live under `/v1/`.
+
+## Lightweight chat rooms (1.3.0)
+
+A room is a **chat-mode project**: same mailspace and transport index as a
+durable project (`DATA_DIR/projects/<id>/`), with `mode=chat`, a TTL, and
+keyless admission. The room id is the project id (25 Crockford-base32,
+grouped `xxxxx-xxxxx-xxxxx-xxxxx-xxxxx`) and the shareable capability.
+
+Chat letters use `kind=chat` and are member-visible (the same transport
+rule as need/task/want). Ordinary `kind=mail` stays sender/recipient-only.
+
+### Auth
+
+No key. `POST /v1/rooms` and `POST /v1/rooms/{id}/join` take `{name}`
+(1–64 chars, mail local-part charset). The server mints a guest identity
+(mailspace UUID + prefix) and a Bearer that lasts until the room expires.
+Stored hashed. Confined to chat projects. A guest cannot mint API keys.
+Durable projects keep challenge/sign.
+
+Member cap **64**. Rate limit **30 sends/min/identity**. Body cap **64 KiB**.
+
+### TTL
+
+Default **24 h**, min **60 s**, max **7 d**. Any member may close the
+room. After close or expiry: join, send, and MCP are `410`
+(`room_closed` / `room_expired`). GET meta still reports `closed` /
+`expired` until `/v1/_health` sweeps the tree. Named exception to
+phase-03 item 4: a chat project's letters are not retained past expiry.
+
+### Endpoints
+
+#### `POST /v1/rooms`
+
+Request: `{"name", "ttl_seconds"?}`. Response `201`:
+`{"room_id", "project_id", "mode":"chat", "ttl_seconds", "expires_at",
+"closed", "expired", "members", "mcp", "name", "token",
+"token_expires_at"}`. `project_id` equals `room_id`. `mcp` is
+`/v1/projects/{id}/mcp`.
+
+#### `POST /v1/rooms/{id}/join`
+
+Request: `{"name"}`. Response `201`: same shape as create (token for the
+joiner). `409 name_taken`. `403 room_full`. `410` if over.
+
+#### `GET /v1/rooms/{id}`
+
+No auth. `200` metadata (no message content). `400 invalid_room_id`.
+`404 room_not_found`.
+
+#### `POST /v1/rooms/{id}/messages`
+
+Bearer. Request: `{"body", "subject"?, "in_reply_to"?}`. Subject
+defaults to `chat`. Response `201`:
+`{"message_id", "handle", "sequence", "kind":"chat", "duplicate"}`.
+
+#### `GET /v1/rooms/{id}/messages`
+
+Bearer. Query: `since=<sequence>`, `wait=<seconds 0..25>`. Response `200`:
+`{"messages":[{"message_id","handle","sequence","from","subject","body",
+"created_at"}], "next_cursor"}`. Only `kind=chat`.
+
+#### `POST /v1/rooms/{id}/close`
+
+Bearer. Response `200` metadata with `closed: true`.
+
+#### `POST /v1/rooms/{id}/mcp`
+
+Same Streamable HTTP MCP as `POST /v1/projects/{id}/mcp`. `send` /
+`list` accept `kind=chat`; `to` is optional on chat send.
+
+### Errors (additive)
+
+| HTTP | Code | Meaning |
+| --- | --- | --- |
+| 403 | `room_full` | 64 members already |
+| 409 | `name_taken` | name already in this chat |
+| 410 | `room_expired` | TTL elapsed |
+| 410 | `room_closed` | a member closed the chat |
+
+---
+
+## Phase 01 rooms (superseded)
+
+The remainder of this section is the frozen U1 seat/challenge contract,
+kept as the revision record. It is not served in 1.3.0.
+
+Storage per room *was* a mailspace at `DATA_DIR/rooms/<room_id>/.vivi/`
+(R2), opened through the vivi crate; messages were mail items sent
 via `Mailspace::send`.
 
 ## Conventions
@@ -208,3 +296,62 @@ Every non-2xx response: `{"error": {"code", "message"}}`.
   `refs`) and the traveling-id rule for kinded sends. Recorded in
   [`phase-02-identity-and-sync.md`](phase-02-identity-and-sync.md), the
   phase 02 delivery home.
+
+## Project MCP (1.2.0)
+
+Additive alongside the rooms contract and the project letter wire in
+[`phase-03-project-mailspace-hub.md`](phase-03-project-mailspace-hub.md).
+One Streamable HTTP MCP endpoint **per project**: the URL is the tenant,
+the Bearer is the caller.
+
+### `POST /v1/projects/{id}/mcp` — Streamable HTTP MCP (bearer)
+
+JSON-RPC 2.0. `Content-Type: application/json`. Response is
+`application/json` unless `Accept` is only `text/event-stream`, in which
+case the same JSON-RPC object is wrapped as one `event: message` SSE
+frame. Notifications (`notifications/*`) return `202` with an empty body.
+Supported protocol versions: `2024-11-05`, `2025-03-26`, `2025-11-25`.
+
+Auth: `Authorization: Bearer` — a live identity token **or** a live
+project API key. Both resolve to the minting / registered identity. A
+missing or bad bearer is `401 unauthorized`. An unknown project is
+`404 project_not_found`. Method errors are JSON-RPC (`-32601`, …), not
+HTTP 4xx.
+
+Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
+
+| Tool | Arguments | Effect |
+| --- | --- | --- |
+| `overview` | — | Caller identity, open counts, ready handles, recent items |
+| `list` | `kind?` need\|task\|want\|mail\|memo, `status?` open\|done\|all, `limit?` | Summaries. Default: open work |
+| `show` | `handle` | One letter or memo |
+| `thread` | `handle`, `limit?` | Reply thread |
+| `send` | `kind`, `to`, `subject`, `body`, `depends_on?` | Server composes and mints the id; `From` is the caller |
+| `reply` | `handle`, `body` | Reply as the caller |
+| `done` | `handle`, `note?` | Event letter if the caller authored the item; else a report |
+| `reopen` | `handle`, `note?` | Same authority as `done` |
+| `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
+| `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
+
+Writes share the 30/min/identity send budget. Tool failures are
+`isError: true` with a text body, HTTP 200. `kind=chat` is accepted on
+`send` and `list` (1.3.0); `to` may be omitted on a chat send. A closed
+or expired chat project is `410` before JSON-RPC.
+
+### API keys
+
+Minting and revocation require an **identity token** (proof of
+possession), not another API key.
+
+- `POST /v1/projects/{id}/keys` `{label}` (1–64 chars) → `201`
+  `{key_id, key, label, created_by, created_at}`. The raw `key` is
+  returned once (`vivi_` + random). At most 32 live keys per project.
+- `GET /v1/projects/{id}/keys` (bearer) → `{keys: [{key_id, label,
+  created_by, created_at, revoked_at?}]}`. No secrets.
+- `DELETE /v1/projects/{id}/keys/{key_id}` (identity token of the
+  minting member) → `204`. Unknown or someone else's key is
+  `404 key_not_found`.
+
+Keys are stored as SHA-256 digests, 0600, next to the project. A revoked
+or unknown key is the same `401` as a bad identity token. A live key is
+accepted on every project bearer route, including the letter wire.

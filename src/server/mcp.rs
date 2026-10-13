@@ -1,0 +1,339 @@
+//! Streamable HTTP MCP for a project mailspace (phase-03 decided item 15).
+//!
+//! One endpoint per project: `POST /v1/projects/{id}/mcp`. The URL names the
+//! project so a connector added by URL does not have to pass it, and the
+//! Bearer (identity token or API key) is always the caller. Tools are a
+//! curated, parameterized subset of the vivi command tree.
+
+pub mod letters;
+mod tools;
+
+use axum::Json;
+use axum::body::Bytes;
+use axum::extract::rejection::BytesRejection;
+use axum::extract::{Path as AxumPath, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::AppState;
+use crate::identities::IdentityRecord;
+use crate::projects_api::{authenticate, project_error, require_existing_project};
+use crate::rooms::error_response;
+
+const PROTOCOL_LATEST: &str = "2025-03-26";
+const SUPPORTED: &[&str] = &["2024-11-05", "2025-03-26", "2025-11-25"];
+
+#[derive(Debug, Deserialize)]
+struct JsonRpcRequest {
+    jsonrpc: Option<String>,
+    id: Option<Value>,
+    method: Option<String>,
+    #[serde(default)]
+    params: Value,
+}
+
+/// `POST /v1/projects/:id/mcp` — Streamable HTTP MCP (JSON-RPC 2.0).
+pub async fn mcp_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if let Err(response) = require_existing_project(&state, &id).await {
+        return response;
+    }
+    if let Err(response) = crate::projects_api::require_live_chat(&state, &id).await {
+        return response;
+    }
+    let identity = match authenticate(&state, &id, &headers).await {
+        Ok(identity) => identity,
+        Err(response) => return response,
+    };
+    let bytes = match body {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "request body could not be read",
+            );
+        }
+    };
+    let parsed: Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            return rpc_http(
+                StatusCode::BAD_REQUEST,
+                jsonrpc_error(Value::Null, -32700, "parse error"),
+                prefers_sse(&headers),
+            );
+        }
+    };
+    let sse = prefers_sse(&headers);
+    if let Some(items) = parsed.as_array() {
+        let mut responses = Vec::new();
+        for item in items {
+            match handle_one(&state, &id, &identity, item).await {
+                Ok(Some(response)) => responses.push(response),
+                Ok(None) => {}
+                Err(response) => return response,
+            }
+        }
+        return rpc_http(StatusCode::OK, Value::Array(responses), sse);
+    }
+    match handle_one(&state, &id, &identity, &parsed).await {
+        Ok(Some(value)) => rpc_http(StatusCode::OK, value, sse),
+        Ok(None) => StatusCode::ACCEPTED.into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn handle_one(
+    state: &AppState,
+    project_id: &str,
+    identity: &IdentityRecord,
+    value: &Value,
+) -> Result<Option<Value>, Response> {
+    let req: JsonRpcRequest = match serde_json::from_value(value.clone()) {
+        Ok(req) => req,
+        Err(_) => {
+            return Ok(Some(jsonrpc_error(Value::Null, -32600, "invalid request")));
+        }
+    };
+    if req.jsonrpc.as_deref() != Some("2.0") {
+        return Ok(Some(jsonrpc_error(
+            req.id.clone().unwrap_or(Value::Null),
+            -32600,
+            "invalid request",
+        )));
+    }
+    let Some(method) = req.method.as_deref() else {
+        return Ok(Some(jsonrpc_error(
+            req.id.clone().unwrap_or(Value::Null),
+            -32600,
+            "invalid request",
+        )));
+    };
+    if method.starts_with("notifications/") {
+        return Ok(None);
+    }
+    let id = req.id.clone().unwrap_or(Value::Null);
+    let result = match method {
+        "initialize" => initialize(&req.params),
+        "ping" => json!({}),
+        "tools/list" => tools_list(),
+        "tools/call" => {
+            let name = req.params.get("name").and_then(Value::as_str).unwrap_or("");
+            let arguments = req.params.get("arguments").cloned().unwrap_or(json!({}));
+            call_tool(state, project_id, identity, name, arguments).await?
+        }
+        _ => return Ok(Some(jsonrpc_error(id, -32601, "method not found"))),
+    };
+    Ok(Some(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })))
+}
+
+async fn call_tool(
+    state: &AppState,
+    project_id: &str,
+    identity: &IdentityRecord,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, Response> {
+    let store = state.projects.clone();
+    let limiter = state.limiter.clone();
+    let project_id = project_id.to_owned();
+    let identity = identity.clone();
+    let name = name.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        tools::dispatch(&store, &limiter, &project_id, &identity, &name, &arguments)
+    })
+    .await
+    {
+        Ok(Ok(value)) => Ok(tool_result(value, false)),
+        Ok(Err(err)) => Ok(tool_result(json!({ "error": err.message }), true)),
+        Err(err) => Err(project_error(crate::projects::ProjectError::Storage(
+            format!("mcp tool task failed: {err}"),
+        ))),
+    }
+}
+
+fn tool_result(value: Value, is_error: bool) -> Value {
+    let text = match serde_json::to_string_pretty(&value) {
+        Ok(text) => text,
+        Err(_) => value.to_string(),
+    };
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": is_error,
+    })
+}
+
+fn initialize(params: &Value) -> Value {
+    let requested = params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .unwrap_or(PROTOCOL_LATEST);
+    let protocol = if SUPPORTED.contains(&requested) {
+        requested
+    } else {
+        PROTOCOL_LATEST
+    };
+    json!({
+        "protocolVersion": protocol,
+        "capabilities": { "tools": { "listChanged": false } },
+        "serverInfo": {
+            "name": "vivi-server",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "instructions": "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked.",
+    })
+}
+
+fn tools_list() -> Value {
+    json!({
+        "tools": [
+            tool("overview", "Board/boot digest: who you are, open counts, ready handles, recent items.", json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            tool("list", "List needs, tasks, wants, mail, or memos. Defaults to open work items.", json!({
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail", "memo"] },
+                    "status": { "type": "string", "enum": ["open", "done", "all"], "default": "open" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+                },
+                "additionalProperties": false
+            })),
+            tool("show", "Show one letter or memo by 8-hex handle.", json!({
+                "type": "object",
+                "properties": { "handle": { "type": "string" } },
+                "required": ["handle"],
+                "additionalProperties": false
+            })),
+            tool("thread", "Show the reply thread around a handle.", json!({
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 }
+                },
+                "required": ["handle"],
+                "additionalProperties": false
+            })),
+            tool("send", "Send a need, task, want, chat, or mail as the authenticated caller. The server composes the letter and mints its id. For kind=chat, to is optional.", json!({
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["need", "task", "want", "chat", "mail"] },
+                    "to": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ]
+                    },
+                    "subject": { "type": "string" },
+                    "body": { "type": "string" },
+                    "depends_on": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" } }
+                        ]
+                    }
+                },
+                "required": ["kind", "to", "subject", "body"],
+                "additionalProperties": false
+            })),
+            tool("reply", "Reply to a letter by handle as the authenticated caller.", json!({
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string" },
+                    "body": { "type": "string" }
+                },
+                "required": ["handle", "body"],
+                "additionalProperties": false
+            })),
+            tool("done", "Close a need, task, or want. Travels as an event letter when you authored it (same mailspace prefix); otherwise files a report reply.", json!({
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string" },
+                    "note": { "type": "string" }
+                },
+                "required": ["handle"],
+                "additionalProperties": false
+            })),
+            tool("reopen", "Reopen a closed need, task, or want. Same authority rule as done.", json!({
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string" },
+                    "note": { "type": "string" }
+                },
+                "required": ["handle"],
+                "additionalProperties": false
+            })),
+            tool("memo", "List, show, or save a durable memo on the server mailspace (memos do not sync to checkouts).", json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["list", "show", "save"], "default": "list" },
+                    "handle": { "type": "string" },
+                    "subject": { "type": "string" },
+                    "body": { "type": "string" }
+                },
+                "additionalProperties": false
+            })),
+            tool("graph", "Ready/blocked/done projection of work items from depends-on headers and event letters.", json!({
+                "type": "object",
+                "properties": {
+                    "view": { "type": "string", "enum": ["ready", "status"], "default": "status" }
+                },
+                "additionalProperties": false
+            })),
+        ]
+    })
+}
+
+fn tool(name: &str, description: &str, input_schema: Value) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": input_schema,
+    })
+}
+
+fn jsonrpc_error(id: Value, code: i64, message: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message }
+    })
+}
+
+fn prefers_sse(headers: &HeaderMap) -> bool {
+    let accept = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    accept.contains("text/event-stream") && !accept.contains("application/json")
+}
+
+fn rpc_http(status: StatusCode, body: Value, sse: bool) -> Response {
+    if sse {
+        let data = body.to_string();
+        (
+            status,
+            [
+                (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+                (axum::http::header::CACHE_CONTROL, "no-store"),
+            ],
+            format!("event: message\ndata: {data}\n\n"),
+        )
+            .into_response()
+    } else {
+        (status, Json(body)).into_response()
+    }
+}

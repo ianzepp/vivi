@@ -9,9 +9,9 @@ Phase 03 is built (1.1.0), recorded in
 [`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md):
 the project, not the room, is the tenant, and a project is a real vivi
 mailspace on the server (`DATA_DIR/projects/<id>/.vivi/`) with a
-`transport.sqlite` index beside it. The room-based contract stays alongside
-it. Do not optimize or extend the rooms API (polling, cleanup, privacy)
-without checking that document first.
+`transport.sqlite` index beside it. Rooms are lightweight chat on a chat-mode project (item 17, 1.3.0).
+Do not revive the seat/challenge rooms API or store chat under
+`DATA_DIR/rooms/`.
 
 ## Vivi Mailspace
 
@@ -115,8 +115,10 @@ Measured baselines (burgus, 18-core Mac, 2026-10-10, warm target):
 unmeasured; the smoke script takes about two minutes (the prune leg waits
 for a 1 m cutoff).
 
-`scripts/two-checkout-smoke.sh` is the end-to-end acceptance (see the README);
-run it for changes that touch the wire or the `vivi` dependency.
+`scripts/two-checkout-smoke.sh` is the old seat-bound rooms acceptance and
+needs `vivi chat` (gone in vivi 11). For the 1.3.0 rooms wire use
+`scripts/chat-room-smoke.sh`. For durable projects and MCP,
+`scripts/project-sync-smoke.sh` and `scripts/mcp-smoke.sh`.
 
 ## Dependency on `vivi`
 

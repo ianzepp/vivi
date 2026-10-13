@@ -1,8 +1,8 @@
 [package]
 name = "vivi-server"
-version = "1.1.0"
+version = "1.3.0"
 edition = "2024"
-description = "Public server hosting vivi mailspace rooms and project mailspaces"
+description = "Public server hosting vivi project mailspaces and lightweight chat rooms"
 
 [dependencies]
 axum = "0.8"
