@@ -17,6 +17,7 @@ mod local_graph_command;
 mod local_mail_list;
 mod local_mailspace_command;
 mod local_mailspace_dump;
+mod local_mcp_command;
 mod local_pool_command;
 mod local_pool_doctor_command;
 mod local_pool_scale_command;
@@ -39,6 +40,7 @@ async fn main() {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             if cli.verbose {
                 EnvFilter::new("vivi=debug")

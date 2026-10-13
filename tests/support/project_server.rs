@@ -200,6 +200,25 @@ impl ProjectServer {
         self.state.lock().unwrap().tokens_minted
     }
 
+    /// Mint an API key for `member` directly, skipping the token dance, so
+    /// a test can hand `VIVI_MCP_API_KEY` to a child without minting a
+    /// bearer token first. Returns the secret.
+    pub fn issue_api_key(&self, member: &str) -> String {
+        let mut state = self.state.lock().unwrap();
+        state.seq += 1;
+        let key_id = format!("key_{}", state.seq);
+        let secret = format!("vivi_{}", hex_chars(&mut state.rng, 32));
+        state.keys.push(StoredKey {
+            key_id,
+            label: "test".to_string(),
+            created_by: member.to_string(),
+            secret: secret.clone(),
+            revoked: false,
+            created_at: rfc3339(now_secs()),
+        });
+        secret
+    }
+
     /// Every `/mcp` request so far, in arrival order.
     #[must_use]
     pub fn mcp_requests(&self) -> Vec<McpSeen> {

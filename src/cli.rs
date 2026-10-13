@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 mod board_command;
 mod mailspace_command;
+mod mcp_command;
 mod pool_command;
 mod role_command;
 mod skills_command;
@@ -25,6 +26,7 @@ pub use mailspace_command::{
     TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand, WantStatus,
     WatchCommon,
 };
+pub use mcp_command::McpCommand;
 pub use pool_command::{
     PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand,
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
@@ -67,6 +69,9 @@ pub enum Command {
 
     /// Push local letters to a project server, then pull what other members pushed
     Sync(SyncCommand),
+
+    /// Bridge MCP over stdio to a project server's MCP endpoint (a pass-through; needs no mailspace)
+    Mcp(McpCommand),
 
     /// Manage a project-local Vivi mailspace
     Mailspace {
