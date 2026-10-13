@@ -80,8 +80,8 @@ pub fn compose_vouch(
 /// Append the letter to the project with the transport's bearer.
 ///
 /// # Errors
-/// Maps every append failure (refusal, stop, transport error) into an error
-/// carrying the server's reason.
+/// Maps every append failure (refusal, rate limit, stop, transport error)
+/// into an error carrying the server's reason.
 pub fn send_vouch(
     transport: &dyn Transport,
     letter: &VouchLetter,
@@ -95,7 +95,9 @@ pub fn send_vouch(
         .append(&letter.message_id, &envelope)
         .map_err(|failure| {
             VivariumError::Message(match failure {
-                AppendFailure::Refused(reason) | AppendFailure::Stop(reason) => reason,
+                AppendFailure::Refused(reason)
+                | AppendFailure::RateLimited(reason)
+                | AppendFailure::Stop(reason) => reason,
             })
         })
 }
