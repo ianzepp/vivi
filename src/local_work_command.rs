@@ -374,6 +374,7 @@ fn send_local_item(
         println!("{verb} {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
+    crate::local_mailspace_command::print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
     if lacks_clause {
         eprintln!(

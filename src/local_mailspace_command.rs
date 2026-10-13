@@ -5,8 +5,8 @@ use vivi::cli::{
     MailspaceImportCommand, MemoCommand, TaskCommand, TaskSendCommand, TraceCommand,
 };
 use vivi::mailspace::{
-    DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace, MailspaceWatchRequest, SendRequest,
-    SourceTaskRequest,
+    DeliveredMessage, DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace,
+    MailspaceWatchRequest, SendRequest, SourceTaskRequest,
 };
 use vivi::message;
 use vivi::storage::StoredMessageView;
@@ -640,13 +640,28 @@ fn task_from_source(command: &vivi::cli::TaskFromCommand) -> Result<(), Vivarium
             command.body_file.as_deref(),
         )?,
     })?;
-    for delivered in result.delivered {
+    for delivered in &result.delivered {
         println!("created {} {}", delivered.identity, delivered.handle);
     }
     println!("source {} {}", result.source_kind, result.source_handle);
     println!("sent {}", result.sent);
+    print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
     Ok(())
+}
+
+/// Print one `node <handle>` line per backlog node a work send minted: the
+/// delivered copies hold the nodes when any local recipient exists,
+/// otherwise the sent copy does (mirrors `attach_sent_work`). Printed after
+/// the `sent` line so every pre-existing line keeps its position.
+pub(crate) fn print_send_node_lines(delivered: &[DeliveredMessage], sent: &str) {
+    if delivered.is_empty() {
+        println!("node {sent}");
+        return;
+    }
+    for delivered in delivered {
+        println!("node {}", delivered.handle);
+    }
 }
 
 fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
@@ -668,10 +683,11 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         reply_to: command.send.reply_to.clone(),
         depends_on: command.depends_on.clone(),
     })?;
-    for delivered in result.delivered {
+    for delivered in &result.delivered {
         println!("created {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
+    print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
     if lacks_clause {
         eprintln!(

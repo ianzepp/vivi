@@ -397,7 +397,8 @@ every record's `show` output prints its `Content:` hash the same way.
 Bare source ids address the backlog graph; imported topologies use
 `graph:source-id`. Lifecycle moves act as the identity holding the item
 (`--for`): the send receipt's `created <recipient> <handle>` line names the
-holder, and naming a copy another identity holds fails with the holder
+holder, the `node <handle>` line names that copy as the backlog node, and
+naming a copy another identity holds fails with the holder
 named in the error (the item's author, a mind or an operator may name any
 copy; see State as letters). **Settle sequence.** The worker reports with
 `task done --verdict/--repo/--tip` (its own copy moves; the node stays open
@@ -470,6 +471,12 @@ it before lowering a multi-unit delivery. The load-bearing rules:
 
 - Every unit is its own task send with its own handle; the send mints the node.
   Cite prerequisites with `--depends-on`; an unknown handle fails the send.
+- A send prints `created <recipient> <handle>`, `node <handle>` and
+  `sent <handle>`: the delivered handle (the `created` / `node` one) is the
+  backlog node — the handle to `pool dispatch`, `need bind`, `graph activate`
+  and `task done` — while the `sent` handle is the sender's own copy and is
+  not a node. (When every recipient is in another mailspace there is no
+  delivered copy and the node lives on the sent copy.)
 - `done` by the worker is a report; the author's or a mind's `done` accepts
   it. Neither means the code is on main, and Vivi has no merged state. "On
   main" is a **merge task** filed with `--depends-on <unit>`; anything that
