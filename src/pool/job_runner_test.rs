@@ -180,6 +180,25 @@ fn a_change_inside_the_build_directory_is_not_a_change_and_is_kept() {
 }
 
 #[test]
+fn without_build_dir_the_clean_spares_a_gitignored_directory_and_deletes_an_untracked_one() {
+    let rig = Rig::new();
+    let harness = "mkdir -p build; echo o > build/obj.o; mkdir junk; echo y > junk/y";
+    // An empty BUILD_DIR is what the runner sees when the pool has none:
+    // the clean is then `git clean -fdq`, with no `-x` and no `-e`.
+    let result = rig.run(harness, "");
+    assert_eq!(result.discarded_paths(), ["junk/y"], "{:?}", result.fields);
+    assert!(
+        rig.repo().join("build/obj.o").is_file(),
+        "gitignored build output survives the runner's clean"
+    );
+    assert!(
+        !rig.repo().join("junk").exists(),
+        "an untracked directory the .gitignore does not cover does not survive"
+    );
+    rig.assert_clean_and_detached();
+}
+
+#[test]
 fn the_list_of_paths_is_capped_and_the_count_is_not() {
     let rig = Rig::new();
     let harness = "mkdir many; for i in $(seq 1 60); do echo $i > many/f$i.txt; done";

@@ -586,8 +586,14 @@ vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porce
   with every other character turned into a dash. The SSH and local destroy
   guards check the pool mark and the mailspace mark.
 - **`build_dir` is optional and has no default.** A pool without one has no
-  build-directory handling at all (no memory disk, no pack or restore, nothing
-  spared by the runner's clean). Fly and Docker work with or without it.
+  memory disk, no pack or restore, and the runner's clean names no directory.
+  The clean is `git clean -fd` (no `-x`) on every provider: it deletes
+  untracked files that are not gitignored and leaves gitignored ones alone, so
+  a normal `target/` survives between jobs with or without `build_dir`. With
+  `build_dir` on a pool whose build directory persists (ssh, local, runpod) the
+  clean additionally names it (`-e /$BUILD_DIR`), so it survives even when not
+  gitignored; on fly and docker it is a memory disk packed at seed and
+  restored before every job instead. Fly and Docker work with or without it.
 - **A pool with only provider settings.** `repo`, `github`, `harness` and
   `committer` are optional in a pool table (`github` goes with `repo`). Such a
   pool is for testing the provider: `status`, `destroy`, `reconcile`, `wait`,
@@ -1351,7 +1357,7 @@ setup = ["npm install -g some-harness"]   # root, once, before the checkout (log
 seed = ["cargo build"]                    # in the checkout, once, warms build_dir
 # requires = ["command -v some-tool"]     # must exit 0 on a slot, at seed time (see Requirements and facts)
 # facts = ["some-tool --version"]         # recorded in every job's result, before the harness starts
-# build_dir = "target"        # optional, relative to the repo; NO default: a pool without one has no build-directory handling
+# build_dir = "target"        # optional, relative to the repo; NO default: without one there is no memory disk, no pack or restore, and the clean (git clean -fd, no -x) leaves gitignored output like target/ alone on every provider
 
 [pools.lanes.fly]
 app = "my-fly-app"            # REQUIRED, no default; created by `pool create` if missing; a taken name is for you to change
