@@ -1165,7 +1165,8 @@ machine list first).
 2. Push the base commit or branch to the remote.
 3. `vivi pool dispatch --porcelain --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>]`.
 4. Run `vivi pool wait --porcelain <task>` in the background.
-5. When it returns, read the receipt with `vivi task show <task>`.
+5. When it returns, read the receipt with `vivi task show <task> --latest`,
+   which prints only the newest reply (the result) and not the brief.
 6. Integrate the pushed branch.
 7. Delete the remote branch.
 8. Close the task (`wait` and `reconcile` never do).
@@ -1240,7 +1241,8 @@ provider") costs nothing: no slot was claimed.
   token from `fly auth token` stops working after about six minutes).
   `reconcile` also stops any running slot that no task holds and no dispatch
   explains. Read the receipt
-  with `vivi task show <handle>`.
+  with `vivi task show <handle> --latest`, which prints only the newest reply
+  (the result) and not the brief.
 - Push outcomes: `pushed <branch> <sha>` (a worktree pool says
   `committed <branch> <sha>`: a commit on the local branch, nothing pushed),
   `push_refused`, `no_changes`,

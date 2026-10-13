@@ -44,8 +44,9 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
         NeedCommand::Show {
             handle,
             json,
+            latest,
             project,
-        } => show_need(handle, *json, project.as_deref())?,
+        } => show_need(handle, *json, *latest, project.as_deref())?,
         NeedCommand::Dump(command) => dump_work_items(command, "needs", "need", "Vivi Need Dump")?,
         NeedCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("need", command)?;
@@ -133,8 +134,9 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
         WantCommand::Show {
             handle,
             json,
+            latest,
             project,
-        } => show_local_message(handle, *json, project.as_deref())?,
+        } => show_local_message(handle, *json, *latest, project.as_deref())?,
         WantCommand::Dump(command) => dump_work_items(command, "wants", "want", "Vivi Want Dump")?,
         WantCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("want", command)?;
@@ -409,10 +411,11 @@ fn move_item(
 fn show_local_message(
     handle: &str,
     json: bool,
+    latest: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json)
+    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)
 }
 
 /// Need show: the thread plus a bound-units block, so a need's lowering
@@ -420,11 +423,12 @@ fn show_local_message(
 fn show_need(
     handle: &str,
     json: bool,
+    latest: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json)?;
-    if json {
+    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
+    if json || latest {
         return Ok(());
     }
     let units = mailspace.backlog_bound_units(handle)?;
