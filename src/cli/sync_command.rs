@@ -19,6 +19,11 @@ pub enum SyncSubcommand {
     /// Send local letters the server does not have yet (needs, tasks, wants,
     /// and plain mail; never memos, drafts, or trash)
     Push {
+        /// Send only letters dated at or after this: an age (7d, 12h, 90m),
+        /// an RFC 3339 time, or a YYYY-MM-DD date (midnight UTC). Older
+        /// unpushed letters stay unsent until a push without --since
+        #[arg(long, value_name = "AGE|DATE")]
+        since: Option<String>,
         /// Project root that owns .vivi/
         #[arg(long)]
         project: Option<PathBuf>,

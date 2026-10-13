@@ -5,6 +5,8 @@
 //! recorded and the pass goes on. Nothing local is deleted or altered except
 //! the remote binding written on an accepted letter.
 
+use chrono::{DateTime, Utc};
+
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::{RemoteBindingInput, Storage, sha256_hex};
@@ -42,6 +44,8 @@ pub struct PushReport {
     /// Accepted letters whose binding could not be written.
     pub unbound: Vec<Refused>,
     pub stopped: Option<Stopped>,
+    /// Unpushed letters older than the push window; left for a later push.
+    pub held_back: usize,
 }
 
 impl PushReport {
@@ -53,6 +57,13 @@ impl PushReport {
             lines.push(format!(
                 "stopped: {}; {} letter(s) left unsent",
                 stopped.reason, stopped.remaining
+            ));
+        }
+        if self.held_back > 0 {
+            lines.push(format!(
+                "{} older letter(s) are before the window and stay unsent; a push without \
+                 --since sends them",
+                self.held_back
             ));
         }
         for (what, list) in [("refused", &self.refused), ("not bound", &self.unbound)] {
@@ -159,8 +170,24 @@ pub fn push(
     settings: &SyncSettings,
     transport: &dyn Transport,
 ) -> Result<PushReport, VivariumError> {
+    push_since(mailspace, settings, transport, None)
+}
+
+/// Like [`push`], but with a `window` only letters dated at or after it go.
+/// Older unpushed letters are counted in the report and left for a later
+/// push; nothing marks them, so a push without a window sends them.
+///
+/// # Errors
+/// Returns an error on a storage failure. Server refusals and stops are in
+/// the report, not errors.
+pub fn push_since(
+    mailspace: &Mailspace,
+    settings: &SyncSettings,
+    transport: &dyn Transport,
+    window: Option<DateTime<Utc>>,
+) -> Result<PushReport, VivariumError> {
     let mut storage = mailspace.storage()?;
-    let selection = select::select(&storage, settings)?;
+    let selection = select::select(&storage, settings, window)?;
     send_all(&mut storage, settings, transport, selection)
 }
 
@@ -172,6 +199,7 @@ fn send_all(
 ) -> Result<PushReport, VivariumError> {
     let mut report = PushReport {
         skipped: selection.skipped,
+        held_back: selection.held_back,
         ..PushReport::default()
     };
     let total = selection.letters.len();
@@ -266,7 +294,7 @@ fn bind_sent(
 /// # Errors
 /// Returns an error on a storage failure.
 pub fn pending(mailspace: &Mailspace, settings: &SyncSettings) -> Result<Selection, VivariumError> {
-    select::select(&mailspace.storage()?, settings)
+    select::select(&mailspace.storage()?, settings, None)
 }
 
 /// Count the letters waiting to go, counting those a push cannot upload.

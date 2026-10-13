@@ -25,9 +25,9 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
     let top = command.project.as_deref();
     let plain = Some(PullOptions::default());
     match &command.command {
-        None => run_passes(top, true, plain),
-        Some(SyncSubcommand::Push { project }) => {
-            run_passes(project.as_deref().or(top), true, None)
+        None => run_passes(top, Some(None), plain),
+        Some(SyncSubcommand::Push { since, project }) => {
+            run_passes(project.as_deref().or(top), Some(since.as_deref()), None)
         }
         Some(SyncSubcommand::Pull {
             since,
@@ -40,7 +40,7 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
             }
             run_passes(
                 project.as_deref().or(top),
-                false,
+                None,
                 Some(PullOptions {
                     since: since.clone(),
                     resync: false,
@@ -50,7 +50,7 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
         }
         Some(SyncSubcommand::Resync { project }) => run_passes(
             project.as_deref().or(top),
-            false,
+            None,
             Some(PullOptions {
                 resync: true,
                 ..PullOptions::default()
@@ -72,9 +72,12 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
 
 /// Push, then pull. A stopped or refused push does not skip the pull; every
 /// failure is reported and the command exits non-zero at the end.
+///
+/// `push` is `None` for no push pass, `Some(None)` for a push of everything
+/// unsent, and `Some(Some(since))` for a push limited to a window.
 fn run_passes(
     project: Option<&Path>,
-    push: bool,
+    push: Option<Option<&str>>,
     pull: Option<PullOptions>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
@@ -83,8 +86,9 @@ fn run_passes(
     let transport = HttpTransport::new(&settings, &identity);
     let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
     let mut failures = Vec::new();
-    if push {
-        let report = push::push(&mailspace, &settings, &transport)?;
+    if let Some(since) = push {
+        let window = since.map(push_window).transpose()?;
+        let report = push::push_since(&mailspace, &settings, &transport, window)?;
         for line in report.lines() {
             println!("{line}");
         }
@@ -104,6 +108,14 @@ fn run_passes(
     } else {
         Err(VivariumError::Message(failures.join("; ")))
     }
+}
+
+/// Resolve a push `--since` value to the instant the window starts at.
+fn push_window(since: &str) -> Result<chrono::DateTime<chrono::Utc>, VivariumError> {
+    let start = parse_since(since, chrono::Utc::now())?;
+    chrono::DateTime::parse_from_rfc3339(&start)
+        .map(|time| time.with_timezone(&chrono::Utc))
+        .map_err(|error| VivariumError::Config(format!("invalid --since '{since}': {error}")))
 }
 
 fn run_pull(

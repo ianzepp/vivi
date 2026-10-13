@@ -1591,6 +1591,7 @@ close and reopen events among them (see State as letters).
 ```sh
 vivi sync                # push, then pull (the pull runs even when the push stopped)
 vivi sync push           # send local letters the server does not have
+vivi sync push --since 1d      # only letters dated in the window; older ones stay unsent for a later push
 vivi sync pull           # file what other members pushed
 vivi sync pull --since 7d      # first pull only: start at a time, not at the beginning
 vivi sync pull --refs [--depth N]  # then look up the letters the new ones point at
@@ -1710,6 +1711,15 @@ work gets its node and dependency edges then. A `retired` role still receives
 addressed to another mailspace's role is held under its address, so every
 member holds every work item without it landing in a local queue or the local
 backlog.
+
+**A push window.** `vivi sync push --since <age|date>` (the same forms as the
+pull window) sends only letters dated at or after that time. A push goes oldest
+first and a member may send 30 letters a minute, so a mailspace with a long
+history that joins late would otherwise make its newest letters wait behind all
+the old ones. Older unpushed letters are counted on a line of the report, stay
+in `sync status` as unsent, and go on any later push without `--since`. A
+letter with no readable date is never held back. A reply to a letter that was
+held back arrives unlinked on the far side until the older letter is pushed.
 
 **Windows and the floor.** A pull reads the project in pages of 500 and saves
 the cursor after every page, so an interrupted pull resumes where it stopped.

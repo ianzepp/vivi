@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
+
 use crate::error::VivariumError;
 use crate::mailspace::effective_kind;
 use crate::storage::{Storage, StoredMessageView, is_traveling_id};
@@ -97,6 +99,9 @@ pub struct Skipped {
 pub struct Selection {
     pub letters: Vec<Letter>,
     pub skipped: Vec<Skipped>,
+    /// Letters a push would send that are dated before the push window. They
+    /// stay unsent for a push without a window.
+    pub held_back: usize,
 }
 
 impl Selection {
@@ -106,7 +111,7 @@ impl Selection {
     #[must_use]
     pub fn unsent(&self) -> usize {
         let stuck = self.skipped.iter().filter(|s| s.reason.undeliverable());
-        self.letters.len() + stuck.count()
+        self.letters.len() + stuck.count() + self.held_back
     }
 
     /// One line counting the actionable skips by reason, or `None` when a
@@ -138,11 +143,26 @@ impl Selection {
     }
 }
 
+/// Whether a stored date (RFC 3339) is strictly before `start`. An empty or
+/// unreadable date is not before anything.
+fn dated_before(date: &str, start: DateTime<Utc>) -> bool {
+    DateTime::parse_from_rfc3339(date).is_ok_and(|date| date.with_timezone(&Utc) < start)
+}
+
 /// Choose the letters to push, oldest first.
+///
+/// With a `window`, a letter dated before it is not sent: one a push would
+/// have sent is counted in `held_back`, and one a push would have skipped is
+/// left out of the report. A letter whose date cannot be read is never held
+/// back: its age is unknown, so it travels.
 ///
 /// # Errors
 /// Returns an error on a storage failure.
-pub fn select(storage: &Storage, settings: &SyncSettings) -> Result<Selection, VivariumError> {
+pub fn select(
+    storage: &Storage,
+    settings: &SyncSettings,
+    window: Option<DateTime<Utc>>,
+) -> Result<Selection, VivariumError> {
     let mut groups: BTreeMap<String, Vec<StoredMessageView>> = BTreeMap::new();
     for row in storage.list_messages()? {
         groups.entry(row.content_id.clone()).or_default().push(row);
@@ -157,8 +177,13 @@ pub fn select(storage: &Storage, settings: &SyncSettings) -> Result<Selection, V
         if rows.iter().any(|row| bound_here(row, &settings.project)) {
             continue;
         }
+        let outside = window.is_some_and(|start| dated_before(&rows[0].date, start));
         match classify(storage, &rows, settings.address_prefix())? {
+            Ok(_) if outside => selection.held_back += 1,
             Ok(letter) => selection.letters.push(letter),
+            // Outside the window nothing is reported: a letter that would be
+            // skipped is not this push's business.
+            Err(_) if outside => {}
             Err(skipped) => selection.skipped.push(skipped),
         }
     }

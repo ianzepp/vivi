@@ -603,3 +603,85 @@ fn unsent_counts_the_stuck_letters_and_says_why() {
         "{line}"
     );
 }
+
+fn dated(subject: &str, date: &str) -> Vec<u8> {
+    format!(
+        "From: mind@x.test\r\nTo: hand@x.test\r\nSubject: {subject}\r\n\
+         Message-ID: <{subject}@x.test>\r\nDate: {date}\r\n\r\nbody\r\n"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn a_window_sends_only_letters_dated_at_or_after_it_and_leaves_the_rest_unsent() {
+    let server = FakeServer::new();
+    let a = alice();
+    let client = a.client(&server);
+    put(
+        &a,
+        "mind",
+        "sent",
+        None,
+        &dated("old", "Thu, 01 Oct 2026 08:00:00 +0000"),
+    );
+    put(
+        &a,
+        "mind",
+        "sent",
+        None,
+        &dated("edge", "Sat, 10 Oct 2026 00:00:00 +0000"),
+    );
+    put(
+        &a,
+        "mind",
+        "sent",
+        None,
+        &dated("new", "Mon, 12 Oct 2026 09:30:00 +0000"),
+    );
+    put(
+        &a,
+        "mind",
+        "sent",
+        None,
+        b"From: mind@x.test\r\nTo: hand@x.test\r\nSubject: undated\r\n\r\nbody\r\n",
+    );
+    put(
+        &a,
+        "mind",
+        "memos",
+        None,
+        &dated("old-memo", "Thu, 01 Oct 2026 09:00:00 +0000"),
+    );
+    let window = chrono::DateTime::parse_from_rfc3339("2026-10-10T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let report = push::push_since(&a.mailspace, &a.settings, &client, Some(window)).unwrap();
+
+    assert_eq!(
+        report.sent, 3,
+        "the edge, the new and the undated letter go"
+    );
+    assert_eq!(report.held_back, 1);
+    assert!(
+        report.failure().is_none(),
+        "held-back letters are not a failure"
+    );
+    assert!(
+        report
+            .lines()
+            .join("\n")
+            .contains("1 older letter(s) are before the window")
+    );
+    assert_eq!(
+        push::unsent(&a.mailspace, &a.settings).unwrap(),
+        1,
+        "status still counts it"
+    );
+
+    let rest = a.push(&client);
+
+    assert_eq!(rest.sent, 1, "a push without a window sends the old letter");
+    assert_eq!(rest.held_back, 0);
+    assert_eq!(server.items().len(), 4);
+}
