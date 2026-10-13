@@ -108,6 +108,7 @@ pub fn plan_job(
         committer,
         read_only: flags.read_only,
         facts: config.facts.clone(),
+        restore: config.restore.clone(),
     })
 }
 

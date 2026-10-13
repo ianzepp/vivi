@@ -35,6 +35,7 @@ fn plan() -> JobPlan {
         committer: committer(),
         read_only: false,
         facts: Vec::new(),
+        restore: Vec::new(),
     }
 }
 
@@ -465,5 +466,41 @@ fn the_extra_refs_travel_as_with_list_and_only_when_there_are_some() {
     assert!(
         !visible,
         "the refs are the runner's to fetch, not the brief"
+    );
+}
+
+#[test]
+fn the_restore_list_travels_as_one_path_per_line_and_only_when_there_are_some() {
+    let names = |p: &JobPlan| -> Vec<&'static str> {
+        build_bundle(p, "s", &Secret::new("t".into()))
+            .files
+            .iter()
+            .map(|f| f.name)
+            .collect()
+    };
+    assert!(!names(&plan()).contains(&"restore.list"));
+    let p = JobPlan {
+        restore: vec!["runtime/llvm/Cargo.lock".into(), "a b.txt".into()],
+        ..plan()
+    };
+    let bundle = build_bundle(&p, "s", &Secret::new("tok".into()));
+    assert_eq!(
+        text(&bundle, "restore.list"),
+        "runtime/llvm/Cargo.lock\na b.txt\n"
+    );
+    let file = bundle
+        .files
+        .iter()
+        .find(|f| f.name == "restore.list")
+        .unwrap();
+    assert_eq!(
+        file.mode, 0o600,
+        "the list is the runner's, not the agent's"
+    );
+    assert!(
+        !bundle
+            .agent_visible()
+            .iter()
+            .any(|f| f.name == "restore.list")
     );
 }

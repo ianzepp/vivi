@@ -334,6 +334,9 @@ pub struct JobPlan {
     /// Commands the runner records the output of before the harness starts
     /// (the pool's `facts`).
     pub facts: Vec<String>,
+    /// Tracked file paths the runner puts back to the start commit before it
+    /// commits (the pool's `restore`).
+    pub restore: Vec<String>,
 }
 
 /// One file inside the job archive, under `job/`.
@@ -423,6 +426,10 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     if let Some(list) = with_list(&spec.with) {
         files.push(file("with.list", &list, 0o600));
     }
+    if !spec.restore.is_empty() {
+        let list = spec.restore.join("\n") + "\n";
+        files.push(file("restore.list", &list, 0o600));
+    }
     Bundle { files }
 }
 
@@ -504,3 +511,7 @@ mod tests;
 #[cfg(test)]
 #[path = "job_runner_test.rs"]
 mod runner_tests;
+
+#[cfg(test)]
+#[path = "job_runner_restore_test.rs"]
+mod runner_restore_tests;

@@ -92,6 +92,21 @@ fn the_two_read_only_outcomes_are_their_own_words() {
 }
 
 #[test]
+fn restored_paths_are_parsed_in_numeric_order_and_a_count_alone_is_not_one() {
+    let done = parse_collected(
+        "@@vivi-pool result\njob=j1\nstate=done\npush=pushed\nbranch=factory/a\nsha=0123456789abcdef0123456789abcdef01234567\nstart=fedcba9876543210\nrestored_count=3\nrestored_path_1=runtime/llvm/Cargo.lock\nrestored_path_2=dir/b c.txt\nrestored_path_10=z.txt\n@@vivi-pool receipt\nreviewed\n\n@@vivi-pool stderr\n\n@@vivi-pool log\n\n",
+    )
+    .unwrap();
+    assert_eq!(
+        done.result.restored_paths(),
+        ["runtime/llvm/Cargo.lock", "dir/b c.txt", "z.txt"]
+    );
+    let none = JobResult::parse("push=pushed\nrestored_count=0\n");
+    assert_eq!(none.get("restored_count"), "0");
+    assert!(none.restored_paths().is_empty());
+}
+
+#[test]
 fn a_read_only_result_is_collected_from_a_running_slot() {
     let fake = fake_with("started", RESULT_READ_ONLY);
     let Some(Outcome::Finished(done)) =

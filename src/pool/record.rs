@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::collect::{Collected, DISCARDED_PATH_PREFIX, Outcome};
+use super::collect::{Collected, DISCARDED_PATH_PREFIX, Outcome, RESTORED_PATH_PREFIX};
 use super::facts;
 use crate::mailspace::PoolEventRow;
 
@@ -183,7 +183,10 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
     }
     if let Outcome::Finished(done) = outcome {
         for (key, value) in &done.result.fields {
-            if !key.starts_with(DISCARDED_PATH_PREFIX) && !key.starts_with(facts::KEY_PREFIX) {
+            if !key.starts_with(DISCARDED_PATH_PREFIX)
+                && !key.starts_with(RESTORED_PATH_PREFIX)
+                && !key.starts_with(facts::KEY_PREFIX)
+            {
                 note[key] = serde_json::Value::String(value.clone());
             }
         }
@@ -194,6 +197,10 @@ pub fn collected_note(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
         let discarded = done.result.discarded_paths();
         if !discarded.is_empty() {
             note["discarded"] = serde_json::json!(discarded);
+        }
+        let restored = done.result.restored_paths();
+        if !restored.is_empty() {
+            note["restored"] = serde_json::json!(restored);
         }
     }
     note.to_string()
@@ -228,6 +235,15 @@ pub fn collected_text(dispatch: &OpenDispatch, outcome: &Outcome) -> String {
 fn finished_text(done: &Collected) -> String {
     let mut text = String::from("\n");
     text.push_str(&done.result.summary());
+    let restored = done.result.restored_paths();
+    if !restored.is_empty() {
+        text.push_str(&format!(
+            "\nrestored {} path{} before commit: {}",
+            restored.len(),
+            if restored.len() == 1 { "" } else { "s" },
+            restored.join(", ")
+        ));
+    }
     let discarded = done.result.discarded_paths();
     if !discarded.is_empty() {
         text.push_str(&format!(

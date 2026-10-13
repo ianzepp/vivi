@@ -82,6 +82,11 @@ pub struct PoolConfig {
     /// fetches nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
+    /// Repository-relative file paths put back to the start commit before a
+    /// job commits: a build that rewrites a tracked file (a lock file, say)
+    /// must not publish the rewrite. Default empty.
+    #[serde(default)]
+    pub restore: Vec<String>,
     /// Settings that belong to the `fly` machine host.
     #[serde(default)]
     pub fly: PoolFly,
@@ -430,7 +435,8 @@ impl PoolConfig {
             }
             other => other,
         })?;
-        self.check_depth(&id.pool)
+        self.check_depth(&id.pool)?;
+        self.check_restore(&id.pool)
     }
 
     fn validate_fields(&self, id: &PoolId) -> Result<(), VivariumError> {

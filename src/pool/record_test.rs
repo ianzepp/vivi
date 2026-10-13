@@ -97,13 +97,19 @@ fn a_record_round_trips_with_and_without_extra_refs() {
 }
 
 fn finished() -> Outcome {
-    let fields = BTreeMap::from([
+    finished_with(&[])
+}
+
+/// A finished write job whose result carries `extra` key=value lines.
+fn finished_with(extra: &[(&str, &str)]) -> Outcome {
+    let mut fields = BTreeMap::from([
         ("job".to_string(), "j1".to_string()),
         ("push".to_string(), "pushed".to_string()),
         ("branch".to_string(), "factory/a".to_string()),
         ("sha".to_string(), "b".repeat(40)),
         ("agent_rc".to_string(), "0".to_string()),
     ]);
+    fields.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     Outcome::Finished(Collected {
         result: JobResult { fields },
         receipt: "did the thing\n".into(),
@@ -238,6 +244,46 @@ fn a_discarding_read_only_result_lists_the_paths_in_order() {
         text.contains("discarded paths (3 of 12):\n  a.txt\n  dir/b c.txt\n  z.txt"),
         "{text}"
     );
+}
+
+#[test]
+fn a_restoring_result_lists_the_paths_in_order_and_names_them_in_the_text() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let outcome = finished_with(&[
+        ("restored_count", "12"),
+        ("restored_path_1", "runtime/llvm/Cargo.lock"),
+        ("restored_path_2", "dir/b c.txt"),
+        ("restored_path_10", "z.txt"),
+    ]);
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &outcome)).unwrap();
+    assert_eq!(note["restored_count"], "12");
+    assert_eq!(
+        note["restored"],
+        serde_json::json!(["runtime/llvm/Cargo.lock", "dir/b c.txt", "z.txt"]),
+        "numeric order, not text order"
+    );
+    assert!(note.get("restored_path_1").is_none(), "{note}");
+    let text = collected_text(&d, &outcome);
+    assert!(
+        text.contains(
+            "restored 3 paths before commit: runtime/llvm/Cargo.lock, dir/b c.txt, z.txt"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_result_without_restored_paths_has_no_restored_key_or_line() {
+    let d = OpenDispatch {
+        task: "aaaa1111".into(),
+        record: record("j1"),
+    };
+    let note: serde_json::Value = serde_json::from_str(&collected_note(&d, &finished())).unwrap();
+    assert!(note.get("restored").is_none());
+    assert!(!collected_text(&d, &finished()).contains("restored"));
 }
 
 #[test]
