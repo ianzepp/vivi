@@ -692,7 +692,7 @@ fn a_failed_dispatch_revokes_the_minted_key_and_names_only_its_id() {
     assert!(
         keys.iter()
             .find(|k| k.key_id == live.key_id)
-            .is_some_and(|k| !k.revoked),
-        "the collected dispatch keeps its key: {listed:?}"
+            .is_some_and(|k| k.revoked),
+        "collection revoked the collected job's key: {listed:?}"
     );
 }

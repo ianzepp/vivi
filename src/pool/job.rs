@@ -407,33 +407,7 @@ pub fn sh_quote(value: &str) -> String {
 /// configuration in the agent-visible `mcp.json`.
 #[must_use]
 pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
-    let mut fields = vec![
-        ("REMOTE", spec.remote.clone()),
-        ("JOB", spec.job.clone()),
-        ("TASK", spec.task.clone()),
-        ("FROM", spec.refs.from.clone()),
-        ("BRANCH", spec.refs.branch.clone()),
-        ("DEPTH", spec.depth.to_string()),
-        ("BUDGET", spec.budget.to_string()),
-        ("MODEL", spec.model.clone()),
-        ("SLOT", slot.to_string()),
-        ("SUBJECT", first_line(&spec.subject)),
-        ("COMMIT_NAME", spec.committer.name.clone()),
-        ("COMMIT_EMAIL", spec.committer.email.clone()),
-        ("ENV_NAMES", spec.env_names.join(" ")),
-    ];
-    if spec.read_only {
-        fields.push(("READ_ONLY", "1".to_string()));
-    }
-    if let Some(checkout) = &spec.checkout {
-        fields.push(("LOCAL_ACTION", checkout.action.word().to_string()));
-        fields.push(("LOCAL_START", checkout.start.clone()));
-    }
-    if let Some(bridge) = &spec.bridge {
-        fields.push(("BRIDGE_SERVER", bridge.server.clone()));
-        fields.push(("BRIDGE_PROJECT", bridge.project_id.clone()));
-    }
-    let params: String = fields
+    let params: String = params_fields(spec, slot)
         .into_iter()
         .map(|(k, v)| format!("{k}={}\n", sh_quote(&v)))
         .collect();
@@ -471,6 +445,39 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         files.push(file("restore.list", &list, 0o600));
     }
     Bundle { files }
+}
+
+/// The `params.env` key/value fields of a job: identity, refs, model, slot,
+/// commit identity, and the flags that switch runner behavior (read-only,
+/// a local checkout, a bridge grant).
+fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
+    let mut fields = vec![
+        ("REMOTE", spec.remote.clone()),
+        ("JOB", spec.job.clone()),
+        ("TASK", spec.task.clone()),
+        ("FROM", spec.refs.from.clone()),
+        ("BRANCH", spec.refs.branch.clone()),
+        ("DEPTH", spec.depth.to_string()),
+        ("BUDGET", spec.budget.to_string()),
+        ("MODEL", spec.model.clone()),
+        ("SLOT", slot.to_string()),
+        ("SUBJECT", first_line(&spec.subject)),
+        ("COMMIT_NAME", spec.committer.name.clone()),
+        ("COMMIT_EMAIL", spec.committer.email.clone()),
+        ("ENV_NAMES", spec.env_names.join(" ")),
+    ];
+    if spec.read_only {
+        fields.push(("READ_ONLY", "1".to_string()));
+    }
+    if let Some(checkout) = &spec.checkout {
+        fields.push(("LOCAL_ACTION", checkout.action.word().to_string()));
+        fields.push(("LOCAL_START", checkout.start.clone()));
+    }
+    if let Some(bridge) = &spec.bridge {
+        fields.push(("BRIDGE_SERVER", bridge.server.clone()));
+        fields.push(("BRIDGE_PROJECT", bridge.project_id.clone()));
+    }
+    fields
 }
 
 /// The text of `with.list`: one `<ref> <commit>` line per extra ref,
