@@ -63,6 +63,7 @@ pub mod progress;
 pub mod provider;
 pub mod record;
 pub mod requires;
+pub mod role_dispatch;
 pub mod run;
 pub mod runpod;
 pub mod runpod_claim;
