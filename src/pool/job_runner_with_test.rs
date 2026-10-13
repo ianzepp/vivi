@@ -176,7 +176,7 @@ impl Rig {
 }
 
 /// Whether any file under `dir` mentions the https credential prefix.
-fn tree_mentions_token(dir: &Path) -> bool {
+pub(super) fn tree_mentions_token(dir: &Path) -> bool {
     let mut hit = false;
     for entry in std::fs::read_dir(dir).into_iter().flatten() {
         let path = entry.unwrap().path();
