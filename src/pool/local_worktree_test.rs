@@ -145,6 +145,7 @@ impl Rig {
             budget: Some(budget),
             allow_default_branch: false,
             read_only: branch.is_none(),
+            reasoning: None,
         };
         let job = dispatch::new_job_id(&task, u128::from(self.sent), std::process::id());
         let mut plan = dispatch::plan_job(
@@ -404,6 +405,7 @@ fn a_branch_that_appeared_after_the_decision_is_refused_by_the_runner_and_never_
                 budget: Some(120),
                 allow_default_branch: false,
                 read_only: false,
+                reasoning: None,
             },
             DEFAULT_RULES.into(),
             "0123456789ab".into(),

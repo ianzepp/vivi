@@ -114,6 +114,7 @@ fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
         budget: command.budget,
         allow_default_branch: command.allow_default_branch,
         read_only: command.read_only,
+        reasoning: None,
     }
 }
 
