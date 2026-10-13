@@ -289,6 +289,15 @@ fn accept_loop(
 
 /// Answer one keep-alive-free HTTP/1.1 request, then close.
 fn serve_connection(state: Arc<Mutex<State>>, mut stream: TcpStream) {
+    // BSD/macOS hand `O_NONBLOCK` down from the nonblocking listener to
+    // every accepted socket; a read on such a stream returns `WouldBlock`
+    // while the request bytes are still in flight, which `read_request`
+    // treats as a closed connection, so the fake would close without
+    // replying. Clear the flag so reads block, bounded by `READ_TIMEOUT`,
+    // on every platform (Linux already accepts blocking sockets).
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
     if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err() {
         return;
     }
