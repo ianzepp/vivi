@@ -78,14 +78,24 @@ impl SyncSettings {
     pub fn resolve(mailspace: &Mailspace) -> Result<Self, VivariumError> {
         let config = mailspace.config.sync.as_ref().ok_or_else(|| {
             VivariumError::Config(
-                "no [sync] table in mailspace.toml; add server, project, and name".into(),
+                "no [sync] table in mailspace.toml; add server, project, and name. A new \
+                 project is made with vivi sync create, which prints the project id: put the \
+                 printed id in [sync] project, then run vivi sync join"
+                    .into(),
             )
         })?;
-        let server = required(config.server.as_deref(), "server", "the project server URL")?;
+        let server = required(
+            config.server.as_deref(),
+            "server",
+            "the project server URL",
+            "",
+        )?;
         let project = required(
             config.project.as_deref(),
             "project",
             "the server-side project id",
+            "vivi sync create makes a new project and prints its id: put the printed id in \
+             [sync] project, then run vivi sync join",
         )?;
         if !project
             .chars()
@@ -99,6 +109,7 @@ impl SyncSettings {
             config.name.as_deref(),
             "name",
             "this checkout's identity name",
+            "",
         )?;
         let mailspace_id = mailspace.mailspace_id();
         if mailspace_id.is_empty() {
@@ -126,15 +137,24 @@ impl SyncSettings {
     }
 }
 
-fn required(value: Option<&str>, key: &str, what: &str) -> Result<String, VivariumError> {
+fn required(
+    value: Option<&str>,
+    key: &str,
+    what: &str,
+    hint: &str,
+) -> Result<String, VivariumError> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(String::from)
         .ok_or_else(|| {
-            VivariumError::Config(format!(
-                "[sync] {key} is not set; set {key} = \"...\" in mailspace.toml ({what})"
-            ))
+            let base =
+                format!("[sync] {key} is not set; set {key} = \"...\" in mailspace.toml ({what})");
+            if hint.is_empty() {
+                VivariumError::Config(base)
+            } else {
+                VivariumError::Config(format!("{base}; {hint}"))
+            }
         })
 }
 

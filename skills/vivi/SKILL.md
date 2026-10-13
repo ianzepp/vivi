@@ -1683,9 +1683,14 @@ members' pulls file it under no role and hold nothing for it (see
 Governance letters below), so no role folder and no backlog sees it.
 
 Errors: `admission_required` means no vouch yet, or the name was admitted
-with another key (the server binds a name to the first key admitted and has
-no re-key; only the project creator can help). `mailspace_prefix_taken`
-means a copied id; see Addresses above.
+with another key: the join error prints the two commands to run — `vivi sync
+key` for the new member and `vivi sync vouch <name> --key-file <pem>` for an
+admitted member — with this mailspace's own `[sync] name` and the wire
+fingerprint filled in (the server binds a name to the first key admitted and
+has no re-key; only the project creator can help). A missing `[sync] project`
+is answered with `vivi sync create`, which makes a new project and prints the
+id to put in `[sync] project`. `mailspace_prefix_taken` means a copied id;
+see Addresses above.
 
 **One sync at a time.** `push`, `pull`, `resync`, `fetch` and `prune` take an
 exclusive lock under `.vivi/sync/`, so a cron run and an interactive run
