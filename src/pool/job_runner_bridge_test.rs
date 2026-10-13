@@ -109,10 +109,12 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// What the harness prints for the three bridge variables, in order.
+/// What the harness prints for the bridge variables: the values of every
+/// `VIVI_MCP_*` variable it has, in name order (API key, project, server),
+/// and nothing when it has none. Portable: BSD `printenv` takes one name.
 fn printenv_harness(to: &Path) -> String {
     format!(
-        "printenv VIVI_MCP_API_KEY VIVI_MCP_SERVER VIVI_MCP_PROJECT_ID > {}",
+        "(env | grep '^VIVI_MCP_' | sort | cut -d= -f2- > {}) || true",
         to.display()
     )
 }
@@ -124,7 +126,7 @@ fn the_harness_sees_the_bridge_as_exactly_the_three_variables() {
     let result = rig.run(&printenv_harness(&seen), Some(KEY));
     assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
     let got = std::fs::read_to_string(&seen).unwrap();
-    assert_eq!(got, format!("{KEY}\n{SERVER}\n{PROJECT}\n"), "all three");
+    assert_eq!(got, format!("{KEY}\n{PROJECT}\n{SERVER}\n"), "all three");
 }
 
 #[test]
