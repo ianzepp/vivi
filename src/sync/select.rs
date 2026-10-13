@@ -147,6 +147,18 @@ impl Selection {
             .collect();
         (!parts.is_empty()).then(|| parts.join(", "))
     }
+
+    /// The stuck letters: those that can never be delivered as they are
+    /// (too large, or a From that claims another mailspace), as handle and
+    /// label — the letters `vivi sync keep-local` can clear.
+    #[must_use]
+    pub fn stuck(&self) -> Vec<(&str, String)> {
+        self.skipped
+            .iter()
+            .filter(|skipped| skipped.reason.undeliverable())
+            .map(|skipped| (skipped.handle.as_str(), skipped.reason.label()))
+            .collect()
+    }
 }
 
 /// Whether a stored date (RFC 3339) is strictly before `start`. An empty or

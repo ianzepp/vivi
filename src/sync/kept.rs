@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::Storage;
-use crate::sync::select::{self, Skipped};
+use crate::sync::select::{self, Selection, Skipped};
 use crate::sync::{SyncSettings, sync_dir};
 
 const KEPT_FILE: &str = "kept-local.json";
@@ -183,6 +183,43 @@ fn stuck_letters(
         }
     }
     Ok(stuck)
+}
+
+/// At most this many stuck letters get their own `sync stuck` line before
+/// the status reports a bare count instead.
+const MAX_STATUS_STUCK: usize = 10;
+
+/// The `vivi sync status` lines about letters push cannot upload: the
+/// not-uploaded count naming the clearing command, one line per stuck letter
+/// (at most [`MAX_STATUS_STUCK`], then a count), and the kept-local count
+/// when anything is kept.
+#[must_use]
+pub fn status_lines(selection: &Selection, kept_count: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(counts) = selection.not_uploaded_line() {
+        lines.push(format!(
+            "sync not uploaded: {counts}; run vivi sync keep-local <handle> for each, \
+             or vivi sync push to list them"
+        ));
+    }
+    let stuck = selection.stuck();
+    for (handle, label) in stuck.iter().take(MAX_STATUS_STUCK) {
+        lines.push(format!(
+            "sync stuck {handle}: {label}; clear it with: vivi sync keep-local {handle}"
+        ));
+    }
+    if stuck.len() > MAX_STATUS_STUCK {
+        lines.push(format!(
+            "sync stuck: ... and {} more",
+            stuck.len() - MAX_STATUS_STUCK
+        ));
+    }
+    if kept_count > 0 {
+        lines.push(format!(
+            "sync kept local: {kept_count} letter(s); vivi sync keep-local --undo <handle> lifts it"
+        ));
+    }
+    lines
 }
 
 #[cfg(test)]

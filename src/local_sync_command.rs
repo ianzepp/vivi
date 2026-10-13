@@ -6,6 +6,7 @@ use vivi::mailspace::Mailspace;
 use vivi::sync::fetch::fetch_handles;
 use vivi::sync::http::{self, HttpTransport};
 use vivi::sync::identity::SyncIdentity;
+use vivi::sync::kept::{self as sync_kept, KeptLocal};
 use vivi::sync::lock::SyncLock;
 use vivi::sync::prune as sync_prune;
 use vivi::sync::pull::PullPlan;
@@ -87,6 +88,11 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
             dry_run,
             project,
         }) => prune(project.as_deref().or(top), older_than, *dry_run),
+        Some(SyncSubcommand::KeepLocal {
+            handles,
+            undo,
+            project,
+        }) => keep_local(project.as_deref().or(top), handles, *undo),
         Some(SyncSubcommand::Join { project }) => join(project.as_deref().or(top)),
         Some(SyncSubcommand::Status { project }) => status(project.as_deref().or(top)),
         Some(SyncSubcommand::Directory { project }) => directory(project.as_deref().or(top)),
@@ -266,6 +272,17 @@ fn prune(project: Option<&Path>, older_than: &str, dry_run: bool) -> Result<(), 
     Ok(())
 }
 
+/// Local only: no server, no key.
+fn keep_local(project: Option<&Path>, handles: &[String], undo: bool) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
+    let _lock = SyncLock::acquire(&sync_dir(&mailspace.dir))?;
+    for line in sync_kept::keep_local(&mailspace, &settings, handles, undo)? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 fn join(project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     warn_if_config_tracked(&mailspace);
@@ -308,9 +325,10 @@ fn status(project: Option<&Path>) -> Result<(), VivariumError> {
     match SyncSettings::resolve(&mailspace) {
         Ok(settings) => {
             let pending = push::pending(&mailspace, &settings)?;
+            let kept = KeptLocal::load(&sync_dir(&mailspace.dir))?;
             println!("sync unsent: {} letter(s)", pending.unsent());
-            if let Some(line) = pending.not_uploaded_line() {
-                println!("sync not uploaded: {line}; `vivi sync push` lists them");
+            for line in sync_kept::status_lines(&pending, kept.len()) {
+                println!("{line}");
             }
         }
         Err(error) => println!("sync unsent: unknown ({error})"),

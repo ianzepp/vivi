@@ -1608,6 +1608,7 @@ vivi sync pull --refs [--depth N]  # then look up the letters the new ones point
 vivi sync resync         # reset cursor and floor to zero, replay everything
 vivi sync fetch <handle>...    # file letters by their 8-hex handle
 vivi sync prune --older-than 30d [--dry-run]  # evict old letters, locally
+vivi sync keep-local <handle>...  # stop pushing a stuck letter; it stays here; --undo tries it again
 vivi sync key            # print this mailspace's public-key PEM (mints the key file)
 vivi sync create [--name <creator>]  # new project on the server; prints its id, writes nothing
 vivi sync vouch <name> --key-file <pem>  # vouch for a member's key (or --key <pem>)
@@ -1714,9 +1715,12 @@ refused when it is composed (`mail send`, `mail reply`, `need`/`task`/`want
 send`, `mail deliver`) and nothing is stored. Push never uploads a letter whose
 `From` claims another mailspace's prefix (every puller would refuse it), and
 it lists any stored letter that is too large or has such a `From` by handle and
-exits non-zero. `vivi sync status` counts them on a `not uploaded` line beside
-`unsent`. The server does not check that a recipient prefix belongs to anyone:
-compare it with `vivi sync directory`.
+exits non-zero, each with `vivi sync keep-local <handle>`. That command keeps
+the letter in this mailspace — nothing is moved, trashed, or rewritten — and
+the next push exits 0; `vivi sync keep-local --undo <handle>` reverses it.
+`vivi sync status` counts them on a `not uploaded` line beside `unsent` and
+repeats the keep-local command per letter. The server does not check that a
+recipient prefix belongs to anyone: compare it with `vivi sync directory`.
 
 **What pull does.** Each record is verified before it is filed: the bytes hash
 to the stated `content_sha256`, the envelope recipients equal the letter's own

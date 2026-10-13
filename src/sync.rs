@@ -178,6 +178,10 @@ mod windows;
 mod watch;
 
 #[cfg(test)]
+#[path = "sync/status_hint_test.rs"]
+mod status_hint_test;
+
+#[cfg(test)]
 #[path = "sync/sync_test.rs"]
 mod tests;
 
