@@ -107,6 +107,10 @@ impl<'a> Filer<'a> {
             refuse(report, record, &reason);
             return Ok(());
         }
+        if is_governance(record, &headers) {
+            report.governance += 1;
+            return Ok(());
+        }
         let held = storage.live_messages_for_content(&content_id)?;
         if held.is_empty() {
             if !self.file_new(storage, record, &bytes, &headers, report)? {
@@ -383,6 +387,28 @@ impl<'a> Filer<'a> {
 }
 
 const ENVELOPE_MISMATCH: &str = "envelope recipients do not match the letter's To/Cc";
+
+/// Whether a letter is project governance: its envelope `to` is the reserved
+/// `postmaster`, or its To or Cc names `postmaster` as the local part of any
+/// address, case aside. A pull counts such a letter and files it under no
+/// role: no delivered row, no sent copy, nothing held.
+fn is_governance(record: &Record, headers: &LetterHeaders) -> bool {
+    let envelope = record
+        .to
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|to| to.eq_ignore_ascii_case("postmaster"));
+    envelope
+        || headers
+            .recipients
+            .iter()
+            .any(|address| local_part(address).eq_ignore_ascii_case("postmaster"))
+}
+
+/// The part of an address before its `@`, or the whole bare name.
+fn local_part(address: &str) -> &str {
+    address.rsplit_once('@').map_or(address, |(local, _)| local)
+}
 
 /// Whether the envelope's recipient list is the letter's own To and Cc. An
 /// absent (or empty) envelope `to`, and `postmaster`, are not checked.
