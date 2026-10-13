@@ -145,8 +145,11 @@ fn note_uncollected(
     if provider.slot_lifetime() != SlotLifetime::PerDispatch {
         return;
     }
-    let deadline =
-        vivi::pool::runpod_open::dispatch_deadline(&config.runpod, ready_timeout, (made.at, made.budget));
+    let deadline = vivi::pool::runpod_open::dispatch_deadline(
+        &config.runpod,
+        ready_timeout,
+        (made.at, made.budget),
+    );
     progress.say(&vivi::pool::runpod_open::uncollected_note(made, deadline));
 }
 
@@ -261,7 +264,6 @@ fn role_line(
     }
     line
 }
-
 
 /// Mint the job's bridge grant when the pool's bridge is enabled. Every
 /// refusal check has passed by now, so the very next step is the claim; a

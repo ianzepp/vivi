@@ -423,7 +423,12 @@ fn a_pool_without_a_bridge_table_mints_nothing_and_contacts_nothing() {
 #[test]
 fn a_collected_bridge_job_s_key_is_revoked_right_away_and_a_hand_minted_key_stays_live() {
     let server = ProjectServer::start();
-    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n", ECHO_HARNESS);
+    let rig = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
     mint(rig.project.as_path(), "hand-made");
 
     let said = ok(&dispatch(&rig, "feat/collect"));
@@ -455,7 +460,12 @@ fn a_collected_bridge_job_s_key_is_revoked_right_away_and_a_hand_minted_key_stay
 #[test]
 fn destroying_the_pool_sweeps_its_labels_and_leaves_every_other_key_alone() {
     let server = ProjectServer::start();
-    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n", ECHO_HARNESS);
+    let rig = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
     mint(rig.project.as_path(), "hand-made");
     let said = ok(&dispatch(&rig, "feat/sweep"));
     let job_label = format!("pool-p-{}", job_of(&said));
@@ -494,7 +504,12 @@ fn destroying_the_pool_sweeps_its_labels_and_leaves_every_other_key_alone() {
 #[test]
 fn with_the_server_down_a_collect_still_succeeds_and_warns_the_manual_command() {
     let server = ProjectServer::start();
-    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n", ECHO_HARNESS);
+    let rig = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
     let said = ok(&dispatch(&rig, "feat/down"));
     let label = format!("pool-p-{}", job_of(&said));
 
@@ -523,7 +538,12 @@ fn with_the_server_down_a_collect_still_succeeds_and_warns_the_manual_command() 
 #[test]
 fn with_the_server_down_a_destroy_still_succeeds_and_warns_the_manual_command() {
     let server = ProjectServer::start();
-    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n", ECHO_HARNESS);
+    let rig = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
     mint(rig.project.as_path(), "pool-p-abc012def456");
 
     repoint_sync(&rig, &format!("http://127.0.0.1:{}", closed_port()));
@@ -550,7 +570,12 @@ fn with_the_server_down_a_destroy_still_succeeds_and_warns_the_manual_command() 
 #[test]
 fn a_key_the_tool_may_not_revoke_is_warned_by_id_and_left_to_the_manual_command() {
     let server = ProjectServer::start();
-    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n", ECHO_HARNESS);
+    let rig = rig(
+        &server,
+        &server.url(),
+        "[pools.p.bridge]\nenabled = true\n",
+        ECHO_HARNESS,
+    );
     mint(rig.project.as_path(), "pool-p-ffffffffffff");
     let bob = member_mailspace(&server, "bob");
     let foreign = mint(bob.path(), "pool-p-abc012def456");
