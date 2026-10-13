@@ -151,7 +151,7 @@ fn the_human_dispatch_line_carries_the_extra_refs_when_there_are_some() {
         "review/aaa@aaaa1111aaaa".into(),
         "bb034af1@bbbb2222bbbb".into(),
     ]);
-    let text = dispatched_text("abcd1234", &made);
+    let text = dispatched_text("abcd1234", &made, "");
     assert!(
         text.contains("  with review/aaa@aaaa1111aaaa bb034af1@bbbb2222bbbb"),
         "{text}"
@@ -160,6 +160,6 @@ fn the_human_dispatch_line_carries_the_extra_refs_when_there_are_some() {
 
 #[test]
 fn the_human_dispatch_line_has_no_with_segment_when_the_job_has_none() {
-    let text = dispatched_text("abcd1234", &record(&[]));
+    let text = dispatched_text("abcd1234", &record(&[]), "");
     assert!(!text.contains("with"), "{text}");
 }

@@ -70,8 +70,9 @@ pub struct PoolDispatchCommand {
     pub task: String,
 
     /// Model slug; must be one of `[pools.<name>.harness].models`
+    /// (default: the model the task's role band picks from the pool's band table)
     #[arg(long)]
-    pub model: String,
+    pub model: Option<String>,
 
     /// Commit or branch to start from (default: a `from:` line in the task body)
     #[arg(long)]

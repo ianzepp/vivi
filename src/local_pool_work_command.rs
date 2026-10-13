@@ -7,6 +7,7 @@ use std::time::Duration;
 use vivi::VivariumError;
 use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
+use vivi::mailspace::PoolTask;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::dispatch::{self, DispatchFlags};
 use vivi::pool::github::Secret;
@@ -16,6 +17,7 @@ use vivi::pool::pools::{self, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::{HEARTBEAT, Progress};
 use vivi::pool::provider::SlotLifetime;
+use vivi::pool::role_dispatch::{self, RoleFacts};
 use vivi::pool::work::{self, WaitOptions, Waited};
 use vivi::pool::{PoolConfig, github, job, run};
 
@@ -43,21 +45,19 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     let ready_timeout =
         dispatch::check_ready_timeout(provider.slot_lifetime(), command.ready_timeout)?;
     let task = space.pool_task(&command.task)?;
-    if work::open_dispatches(&space)?
-        .iter()
-        .any(|d| d.task == task.handle)
-    {
-        return Err(VivariumError::Message(format!(
-            "task {} already has an open dispatch; run `vivi pool wait` or `reconcile` first",
-            task.handle
-        )));
-    }
+    refuse_second_dispatch(&space, &task.handle)?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let flags = dispatch_flags(command);
     let job_id = dispatch::new_job_id(&task.handle, nanos, std::process::id());
-    let rules = load_rules(config, &space)?;
+    let (flags, rules, role_line) = resolve_dispatch(
+        command,
+        config,
+        &id.pool,
+        &space,
+        &task,
+        load_rules(config, &space)?,
+    )?;
     let mut plan = dispatch::plan_job(
         config,
         &id.pool,
@@ -66,7 +66,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         rules,
         job_id,
     )?;
-    read_only_notes(command, config, &task.body, &progress);
+    read_only_notes(flags.read_only, config, &task.body, &progress);
     let (token, start) = match (config.worktree_source(), flags.read_only) {
         (Some(path), true) => worktree_read_only_start(&path, &mut plan, &progress)?,
         (Some(path), false) => {
@@ -75,11 +75,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (None, _) => remote_start(config, &id.pool, &mut plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
-    progress.say(&if provider.slot_lifetime() == SlotLifetime::PerDispatch {
-        format!("{}: renting a pod and starting the job", id.pool)
-    } else {
-        format!("{}: claiming a free slot and starting the job", id.pool)
-    });
+    claim_note(provider, &id.pool, &progress);
     let pacing = Pacing::default();
     let launch = dispatch::Launch {
         config,
@@ -101,26 +97,125 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
     } else {
-        println!("{}", dispatched_text(&task.handle, &made));
+        println!("{}", dispatched_text(&task.handle, &made, &role_line));
     }
     Ok(())
 }
 
-fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
-    DispatchFlags {
-        model: command.model.clone(),
+/// What the dispatch says it is about to do to the pool: rent a pod (slots
+/// made per dispatch) or claim a free resting slot.
+fn claim_note(provider: &dyn vivi::pool::PoolProvider, pool: &str, progress: &Progress) {
+    progress.say(&if provider.slot_lifetime() == SlotLifetime::PerDispatch {
+        format!("{pool}: renting a pod and starting the job")
+    } else {
+        format!("{pool}: claiming a free slot and starting the job")
+    });
+}
+
+/// Refuse a second dispatch of a task that already has one open.
+fn refuse_second_dispatch(space: &Mailspace, handle: &str) -> Result<(), VivariumError> {
+    if work::open_dispatches(space)?
+        .iter()
+        .any(|d| d.task == handle)
+    {
+        return Err(VivariumError::Message(format!(
+            "task {handle} already has an open dispatch; run `vivi pool wait` or `reconcile` first"
+        )));
+    }
+    Ok(())
+}
+
+/// The flags, rules text and human suffix of one dispatch, with the role the
+/// task is addressed to folded in before anything is claimed: the role's
+/// band, kind and charter and the operator's flags go through
+/// `role_dispatch::resolve` against the pool's band table, so every refusal
+/// there costs nothing. The rules gain the role's charter as a standing
+/// prompt; a role with no charter leaves the pool rules unchanged.
+fn resolve_dispatch(
+    command: &PoolDispatchCommand,
+    config: &PoolConfig,
+    pool: &str,
+    space: &Mailspace,
+    task: &PoolTask,
+    pool_rules: String,
+) -> Result<(DispatchFlags, String, String), VivariumError> {
+    if let Some(slug) = &command.model {
+        if let Some(harness) = &config.harness {
+            job::check_model(slug, &harness.models)?;
+        }
+    }
+    // An addressee that is not a known local role is no role at all, not an
+    // error: the dispatch then runs without one.
+    let role = task
+        .addressee
+        .as_deref()
+        .and_then(|name| match space.role_view(name) {
+            Ok(view) => Some(RoleFacts {
+                name: view.name,
+                kind: view.kind,
+                band: view.model,
+                charter: view.charter,
+            }),
+            Err(_) => None,
+        });
+    let resolved = role_dispatch::resolve(
+        config,
+        pool,
+        &role_dispatch::Input {
+            model_flag: command.model.as_deref(),
+            read_only_flag: command.read_only,
+            role: role.as_ref(),
+            body: &task.body,
+        },
+    )?;
+    let rules = role.as_ref().map_or(pool_rules.clone(), |role| {
+        role_dispatch::standing_prompt(&role.name, &role.charter, &pool_rules, false)
+    });
+    let role_line = role_line(command, role.as_ref(), &resolved);
+    let flags = DispatchFlags {
+        model: resolved.model,
         from: command.from.clone(),
         branch: command.branch.clone(),
         with: command.with.clone(),
         budget: command.budget,
         allow_default_branch: command.allow_default_branch,
-        read_only: command.read_only,
-        reasoning: None,
-    }
+        read_only: resolved.read_only,
+        reasoning: resolved.reasoning,
+    };
+    Ok((flags, rules, role_line))
 }
 
-/// The human line of a dispatch.
-fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> String {
+/// The `  role ...` suffix of the human dispatch line: the role, the band
+/// that chose the model (`-` when none did), the model and its reasoning,
+/// and a note when the role's kind, not the flag, forced read-only. Empty
+/// without a role.
+fn role_line(
+    command: &PoolDispatchCommand,
+    role: Option<&RoleFacts>,
+    resolved: &role_dispatch::Resolved,
+) -> String {
+    let Some(role) = role else {
+        return String::new();
+    };
+    let band = resolved
+        .band
+        .map_or_else(|| "-".to_string(), |b| format!("P{b}"));
+    let mut line = format!("  role {} band {band} -> {}", role.name, resolved.model);
+    if let Some(reasoning) = &resolved.reasoning {
+        line.push(' ');
+        line.push_str(reasoning);
+    }
+    if resolved.read_only && !command.read_only {
+        line.push_str(&format!(
+            " read-only (role kind {})",
+            role.kind.as_deref().unwrap_or("none")
+        ));
+    }
+    line
+}
+
+/// The human line of a dispatch, with the role suffix when a role was used.
+fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord, role: &str) -> String {
     format!(
         "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s{}{}",
         made.pool,
@@ -141,7 +236,8 @@ fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> Str
             format!("  hardware {}", made.hardware)
         },
         with_suffix(made),
-    ) + &abandoned_suffix(made)
+    ) + role
+        + &abandoned_suffix(made)
 }
 
 /// `  with ref@commit12 ...` when the job names extra refs.
@@ -165,14 +261,10 @@ fn abandoned_suffix(made: &vivi::pool::record::DispatchRecord) -> String {
 
 /// What a read-only dispatch tells the caller: that a `branch:` body line is
 /// ignored (human output only), and what the provider cannot promise (always,
-/// on standard error).
-fn read_only_notes(
-    command: &PoolDispatchCommand,
-    config: &PoolConfig,
-    body: &str,
-    progress: &Progress,
-) {
-    if !command.read_only {
+/// on standard error). A read-only mode a role kind forced gets the same
+/// notes as one the flag forced.
+fn read_only_notes(read_only: bool, config: &PoolConfig, body: &str, progress: &Progress) {
+    if !read_only {
         return;
     }
     if let Some(branch) = job::body_refs(body).branch {

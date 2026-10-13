@@ -553,8 +553,8 @@ vivi pool create --pool <name> [--slots N] [--base <commit|branch>] [--timeout S
 vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool status [--pool <name>] [--json | --porcelain]
 vivi pool destroy --pool <name> (--slot <name-or-id> | --all) --yes
-vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--ready-timeout SECS] [--porcelain]   # --ready-timeout: RunPod pools only
-vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>] [--budget SECS] [--porcelain]
+vivi pool dispatch --pool <name> <task> [--model <slug>] [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--ready-timeout SECS] [--porcelain]   # --ready-timeout: RunPod pools only
+vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>] [--budget SECS] [--porcelain]
 vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
 vivi pool reconcile [--pool <name>] [--porcelain]
 vivi pool doctor [--pool <name>] [--json | --porcelain]
@@ -641,7 +641,7 @@ the `pool_collected` JSON the array `restored`).
 
 #### Read-only dispatch (reviewers and auditors)
 
-`vivi pool dispatch --pool <name> <task> --model <slug> --read-only [--from <ref>]
+`vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>]
 [--budget SECS]` runs a job that publishes nothing, so a review role can have a
 full shell (git, builds, tests) safely. `--from` (or a `from:` body line) is
 required; `--branch` and `--allow-default-branch` are refused with it, and a
@@ -1233,12 +1233,14 @@ from it; units that need another unit's code start `--from` that unit's branch
 
 ### dispatch
 
-`vivi pool dispatch --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>]
+`vivi pool dispatch --pool <name> <task> [--model <slug>] [--from <ref>] [--branch <name>]
 [--budget SECS]` hands an open task to a free slot and returns at once.
 
-- The brief is the task body, read from the mailspace. `--model` is required,
-  has no default, and must be one of the pool's `[harness].models`; it is checked
-  before any machine is touched.
+- The brief is the task body, read from the mailspace. `--model` is optional:
+  without it the model (and reasoning) come from the task's role through the
+  pool's band table (see "Dispatching by role and band" below); with it the
+  slug must be one of the pool's `[harness].models`. Every model, band and
+  read-only check runs before any machine is touched.
 - `from` is what to start from (a commit or a branch); `branch` is where to
   push. Each comes from its flag, else from a `from: <ref>` / `branch: <name>`
   line in the task body; both are required one way or the other. One rule covers
@@ -1307,6 +1309,66 @@ from it; units that need another unit's code start `--from` that unit's branch
 - A task with an open dispatch cannot be dispatched again until it is collected.
   After collection it can be dispatched again (for example to continue its
   branch).
+
+#### Dispatching by role and band
+
+A task addressed to a known role is dispatched from that role.
+`vivi pool dispatch --pool <name> <task>` looks the addressee up; an absent or
+unknown addressee is no role at all, and the dispatch then needs `--model` or
+a `band:` line. From the role it takes:
+
+- **The charter as the worker's standing prompt.** The rules file the job runs
+  under is composed charter first, then the pool note, then the pool rules
+  (which bound the charter). The pool note tells the worker how the slot
+  reaches the mailspace. Without the MCP bridge the slot has no `vivi`
+  command, so a charter line that tells the role to settle its own handle
+  cannot be followed: the note tells the worker to end with its receipt on
+  standard output instead, and the Mind settles the handle. A role with no
+  charter leaves the pool rules unchanged.
+- **Read-only mode from the kind.** A role whose kind is `auditor`, `triage`
+  or `cadence` (case-insensitive) is dispatched read-only whatever the flags
+  say; a `hand` role writes.
+- **The model and reasoning from the band.** The role's `model` field holds a
+  band string such as `P2-S0` (set it with `vivi role set <role> --model P2`),
+  not a model slug. The pool's `bands` table says which model-and-reasoning
+  pair serves each band, and the job runs at that pair.
+
+Bands: `P0` to `P5` is the intelligence axis (P0 the most capable); the
+optional `-S0` to `-S3` speed suffix is parsed and ignored for now. The
+plain-language gloss: P0 can make complex decisions, P1 understands anything
+inside its area, and P2 executes a tightly constrained scope. A `band:` line
+in the task body overrides the role's band for this one assignment (the first
+one wins; the same trimming rules as `from:`). `--model` and `--read-only`
+remain the overrides: `--model` wins over any band and takes the band's
+reasoning only when the pool's choice for that band names the same model;
+`--read-only` forces read-only on any role.
+
+The bands table is per pool:
+
+```toml
+[pools.local.bands]
+P1 = [{ model = "provider/model-a", reasoning = "xhigh" }]
+P2 = [{ model = "provider/model-b", reasoning = "low" }]
+```
+
+Keys are `P0` to `P5`, each holding an ordered list of `model` + `reasoning`
+choices. The **first** entry of a band's list serves the band; later entries
+are reserved for in-band failover, which is **not built**: no failover, no
+health tracking, no retry on another model — the first choice is the only one.
+When the harness template uses a `{reasoning}` placeholder beside `{model}`,
+a job dispatched by band runs at its band's reasoning; a job dispatched with
+`--model` that is not the band's model has no reasoning, and a `{reasoning}`
+harness refuses it.
+
+A pool with nothing for the band refuses before a slot is claimed, naming the
+band and the pool (and the bands it does serve): send that job to a pool that
+has the band, or pass `--model`. No refused check consumes a slot. The human
+dispatch line names what was used (`role <name> band P1 -> <model> <reasoning>`,
+with `read-only (role kind <kind>)` appended when the kind, not the flag,
+forced read-only).
+
+Also not built: `vivi step` does not yet offer tasks addressed to `auditor` or
+`merge` roles to those roles.
 
 ### wait and reconcile
 

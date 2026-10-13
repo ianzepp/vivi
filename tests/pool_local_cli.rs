@@ -54,7 +54,7 @@ name = "bot"
 email = "bot@example.com"
 "#;
 
-fn rig(extra_local: &str) -> Rig {
+fn scaffold() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().canonicalize().unwrap();
     let (project, repo) = (base.join("project"), base.join("repo"));
@@ -72,9 +72,14 @@ fn rig(extra_local: &str) -> Rig {
     for identity in ["mind", "hand"] {
         vivi(&["mailspace", "identity", "add", identity, "--project", root]);
     }
+    (dir, project, repo)
+}
+
+fn rig(extra_local: &str) -> Rig {
+    let (dir, project, repo) = scaffold();
     let table = format!(
         "\n[pools.wt]\nprovider = \"local\"\nslots = 1\n\n[pools.wt.local]\nroot = \"{}\"\nworktree_of = \"{}\"\n{extra_local}{HARNESS}",
-        base.join("lanes").display(),
+        project.parent().unwrap().join("lanes").display(),
         repo.display()
     );
     let config = project.join(".vivi/mailspace.toml");
@@ -299,4 +304,320 @@ fn the_doctor_reports_the_source_and_unset_harness_names_without_creating_the_ro
     );
     assert!(said.contains("VIVI_TEST_SURELY_UNSET_NAME"), "{said}");
     assert!(!rig.project.parent().unwrap().join("lanes").exists());
+}
+
+/// The pool table of the role dispatch tests: a band table (P1, P2) and a
+/// harness whose run text needs the `{reasoning}` a band picks.
+const ROLE_TABLE: &str = r#"
+[pools.wt.bands]
+P1 = [{ model = "standin", reasoning = "mid" }]
+P2 = [{ model = "writer", reasoning = "xhigh" }]
+
+[pools.wt.harness]
+name = "standin"
+run = "echo work >> standin.txt; echo model={model} reasoning={reasoning} @{brief}"
+models = ["standin", "writer"]
+
+[pools.wt.committer]
+name = "bot"
+email = "bot@example.com"
+"#;
+
+const CHARTER: &str = "Audit faithfully.\nReport every finding.\n";
+
+/// A rig with roles: `auditor` (kind auditor, band P1, a charter) and
+/// `helper` (kind hand, no band), a bands table and a `{reasoning}` harness,
+/// and one resting slot, so a refusal can be shown to leave it free.
+fn role_rig() -> Rig {
+    let (dir, project, repo) = scaffold();
+    let root = project.to_str().unwrap();
+    let table = format!(
+        "\n[pools.wt]\nprovider = \"local\"\nslots = 1\n\n[pools.wt.local]\nroot = \"{}\"\nworktree_of = \"{}\"\n{ROLE_TABLE}",
+        project.parent().unwrap().join("lanes").display(),
+        repo.display()
+    );
+    let config = project.join(".vivi/mailspace.toml");
+    let mut written = std::fs::read_to_string(&config).unwrap();
+    written.push_str(&table);
+    std::fs::write(&config, written).unwrap();
+    vivi(&[
+        "role",
+        "add",
+        "auditor",
+        "--kind",
+        "auditor",
+        "--model",
+        "P1",
+        "--project",
+        root,
+    ]);
+    vivi(&["role", "add", "helper", "--kind", "hand", "--project", root]);
+    let charter = dir.path().join("charter.md");
+    std::fs::write(&charter, CHARTER).unwrap();
+    vivi(&[
+        "role",
+        "charter",
+        "set",
+        "auditor",
+        "--body-file",
+        charter.to_str().unwrap(),
+        "--project",
+        root,
+    ]);
+    let made = vivi(&["pool", "create", "--pool", "wt", "--project", root]);
+    assert!(made.status.success(), "{}", text(&made));
+    Rig {
+        _dir: dir,
+        project,
+        repo,
+    }
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Send a task to `to` and return its handle.
+fn send_to(rig: &Rig, to: &str, subject: &str, body: &str) -> String {
+    let sent = vivi(&[
+        "task",
+        "send",
+        "--project",
+        rig.project.to_str().unwrap(),
+        "--from",
+        "mind",
+        "--to",
+        to,
+        "--subject",
+        subject,
+        "--body",
+        body,
+    ]);
+    assert!(sent.status.success(), "{}", text(&sent));
+    String::from_utf8_lossy(&sent.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("created "))
+        .and_then(|r| r.split_whitespace().nth(1))
+        .map(str::to_string)
+        .expect("a task handle")
+}
+
+/// Dispatch `task` on the role pool with no model and no read-only flag
+/// unless `more` says otherwise; returns (success, output).
+fn dispatch_to(rig: &Rig, task: &str, more: &[&str]) -> (bool, String) {
+    let mut args = vec![
+        "pool",
+        "dispatch",
+        "--pool",
+        "wt",
+        task,
+        "--project",
+        rig.project.to_str().unwrap(),
+    ];
+    args.extend_from_slice(more);
+    let out = vivi(&args);
+    (out.status.success(), text(&out))
+}
+
+/// Block on the task's dispatch and return the output (the settled line).
+fn wait(rig: &Rig, task: &str) -> String {
+    let out = vivi(&[
+        "pool",
+        "wait",
+        "--pool",
+        "wt",
+        "--timeout",
+        "60",
+        "--project",
+        rig.project.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", text(&out));
+    let said = text(&out);
+    assert!(
+        said.lines()
+            .any(|l| l.starts_with(task) && l.contains("finished")),
+        "{said}"
+    );
+    said
+}
+
+fn slot_free(rig: &Rig) -> bool {
+    let out = vivi(&[
+        "pool",
+        "status",
+        "--pool",
+        "wt",
+        "--project",
+        rig.project.to_str().unwrap(),
+    ]);
+    text(&out).contains("free")
+}
+
+/// The one `job/<name>` file under the pool's slot directories.
+fn job_file(rig: &Rig, name: &str) -> PathBuf {
+    let mut found = Vec::new();
+    let mut stack = vec![rig.project.parent().unwrap().join("lanes")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some(name)
+                && path
+                    .parent()
+                    .is_some_and(|p| p.file_name().and_then(|n| n.to_str()) == Some("job"))
+            {
+                found.push(path);
+            }
+        }
+    }
+    assert_eq!(found.len(), 1, "one {name} under the slots: {found:?}");
+    found.pop().unwrap()
+}
+
+#[test]
+fn an_auditor_role_task_runs_read_only_on_the_band_model_with_the_charter_above_the_rules() {
+    let rig = role_rig();
+    let task = send_to(&rig, "auditor", "Audit it", "work\nfrom: main\n");
+    let (ok, said) = dispatch_to(&rig, &task, &["--from", "main"]);
+    assert!(ok, "{said}");
+    assert!(said.contains("model standin"), "{said}");
+    assert!(said.contains("read-only"), "{said}");
+    assert!(
+        said.contains("role auditor band P1 -> standin mid read-only (role kind auditor)"),
+        "{said}"
+    );
+    let waited = wait(&rig, &task);
+    assert!(waited.contains("read_only_"), "{waited}");
+    // Nothing was committed and no branch appeared.
+    let heads = git_out(
+        &rig.repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads"],
+    );
+    assert_eq!(heads.lines().count(), 2, "{heads}");
+    // The standing prompt: the charter above the pool rules.
+    let rules = std::fs::read_to_string(job_file(&rig, "rules.md")).unwrap();
+    assert!(rules.contains("Audit faithfully."), "{rules}");
+    assert!(
+        rules.contains("Standing rules for the remote worker"),
+        "{rules}"
+    );
+    assert!(
+        rules.contains("# Standing charter (role auditor)"),
+        "{rules}"
+    );
+    assert!(rules.contains("# Pool rules"), "{rules}");
+}
+
+#[test]
+fn a_hand_role_task_with_a_band_line_writes_on_the_band_model() {
+    let rig = role_rig();
+    let task = send_to(
+        &rig,
+        "helper",
+        "Write it",
+        "work\nband: P2\nfrom: main\nbranch: feat/b\n",
+    );
+    let (ok, said) = dispatch_to(&rig, &task, &[]);
+    assert!(ok, "{said}");
+    assert!(said.contains("model writer"), "{said}");
+    assert!(said.contains("branch feat/b"), "{said}");
+    assert!(
+        said.contains("role helper band P2 -> writer xhigh"),
+        "{said}"
+    );
+    let waited = wait(&rig, &task);
+    assert!(waited.contains("committed feat/b"), "{waited}");
+    let heads = git_out(
+        &rig.repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads"],
+    );
+    assert!(heads.contains("refs/heads/feat/b"), "{heads}");
+}
+
+#[test]
+fn a_task_with_neither_band_nor_model_is_refused_and_the_slot_stays_free() {
+    let rig = role_rig();
+    let task = send_to(
+        &rig,
+        "helper",
+        "No band",
+        "work\nfrom: main\nbranch: feat/c\n",
+    );
+    let (ok, said) = dispatch_to(&rig, &task, &[]);
+    assert!(!ok && said.contains("no model:"), "{said}");
+    assert!(slot_free(&rig), "the slot was consumed by a refusal");
+}
+
+#[test]
+fn a_pool_without_the_band_refuses_naming_it_and_the_slot_stays_free() {
+    let rig = role_rig();
+    let task = send_to(
+        &rig,
+        "helper",
+        "Bad band",
+        "work\nband: P5\nfrom: main\nbranch: feat/d\n",
+    );
+    let (ok, said) = dispatch_to(&rig, &task, &[]);
+    assert!(!ok && said.contains("band P5"), "{said}");
+    assert!(slot_free(&rig), "the slot was consumed by a refusal");
+}
+
+#[test]
+fn a_model_flag_still_works_on_a_role_task_and_read_only_still_forces() {
+    let rig = role_rig();
+    let banded = vivi(&[
+        "role",
+        "set",
+        "helper",
+        "--model",
+        "P1",
+        "--project",
+        rig.project.to_str().unwrap(),
+    ]);
+    assert!(banded.status.success(), "{}", text(&banded));
+    // `--model` still wins over the role's band and the job writes.
+    let write = send_to(
+        &rig,
+        "helper",
+        "Flag write",
+        "work\nfrom: main\nbranch: feat/e\n",
+    );
+    let (ok, said) = dispatch_to(&rig, &write, &["--model", "standin"]);
+    assert!(ok && said.contains("model standin"), "{said}");
+    assert!(
+        said.contains("role helper band P1 -> standin mid"),
+        "{said}"
+    );
+    let waited = wait(&rig, &write);
+    assert!(waited.contains("committed feat/e"), "{waited}");
+    // `--read-only` still forces a read-only job on a hand-kind role.
+    let ro = send_to(&rig, "helper", "Flag ro", "work\nfrom: main\n");
+    let (ok, said) = dispatch_to(
+        &rig,
+        &ro,
+        &["--model", "standin", "--read-only", "--from", "main"],
+    );
+    assert!(ok && said.contains("read-only"), "{said}");
+    let waited = wait(&rig, &ro);
+    assert!(waited.contains("read_only_"), "{waited}");
+    // The read-only job added no branch: only main, feat/a and feat/e exist.
+    let heads = git_out(
+        &rig.repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads"],
+    );
+    assert_eq!(heads.lines().count(), 3, "{heads}");
 }
