@@ -536,6 +536,10 @@ fn api_keys_follow_the_documented_lifecycle() {
     assert!(entries[0]["created_at"].as_str().is_some());
     assert!(entries[0].get("key").is_none());
     assert!(
+        entries[0].get("revoked_at").is_none(),
+        "live keys carry none"
+    );
+    assert!(
         !listed.body.contains("vivi_"),
         "the list never carries a secret"
     );
@@ -552,12 +556,21 @@ fn api_keys_follow_the_documented_lifecycle() {
     assert_eq!(after.status, 401, "a revoked key stops working");
 
     let again = delete(&server, &format!("keys/{key_id}"), Some(&alice_token));
-    assert_eq!(again.status, 404);
-    assert_eq!(error_code(&again), "key_not_found");
+    assert_eq!(again.status, 204, "revoking again is idempotent on staging");
+    assert!(again.body.is_empty());
 
-    let empty = get(&server, "keys", Some(&alice_token));
-    let empty_value: Value = serde_json::from_str(&empty.body).unwrap();
-    assert_eq!(empty_value["keys"].as_array().unwrap().len(), 0);
+    let listed_after = get(&server, "keys", Some(&alice_token));
+    assert_eq!(listed_after.status, 200);
+    let after_value: Value = serde_json::from_str(&listed_after.body).unwrap();
+    let entries = after_value["keys"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "staging keeps revoked keys in the list");
+    assert_eq!(entries[0]["key_id"], key_id.as_str());
+    let revoked_at = entries[0]["revoked_at"].as_str().unwrap();
+    assert!(revoked_at.contains('T'), "an RFC 3339 stamp: {revoked_at}");
+    assert!(
+        !listed_after.body.contains("vivi_"),
+        "even revoked, the list never carries a secret"
+    );
 }
 
 #[test]
@@ -575,6 +588,20 @@ fn a_65_character_label_is_an_invalid_request_and_64_is_fine() {
     );
     assert_eq!(too_long.status, 400);
     assert_eq!(error_code(&too_long), "invalid_request");
+
+    let empty = post(&server, "keys", Some(&token), json!({ "label": "" }));
+    assert_eq!(empty.status, 400);
+    assert_eq!(error_code(&empty), "invalid_request");
+
+    let no_json = http(
+        &server.url(),
+        "POST",
+        &format!("/v1/projects/{}/keys", server.project()),
+        &[("Authorization", &format!("Bearer {token}"))],
+        Some("not json at all"),
+    );
+    assert_eq!(no_json.status, 400, "a missing/invalid body is 400");
+    assert_eq!(error_code(&no_json), "invalid_request");
 
     let ok = post(
         &server,
@@ -616,4 +643,107 @@ fn another_project_id_is_project_not_found() {
 
     assert_eq!(reply.status, 404);
     assert_eq!(error_code(&reply), "project_not_found");
+}
+
+#[test]
+fn a_batch_is_answered_by_the_array_of_individual_replies() {
+    let server = ProjectServer::start();
+    let identity = identity();
+    server.register("alice", &identity.public_key_pem());
+    let token = mint_token(&server, &identity, "alice");
+
+    let batch = json!([
+        ping(7),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        json!({ "jsonrpc": "2.0", "id": "abc", "method": "tools/list" }),
+    ]);
+    let reply = mcp(&server, &token, batch, None);
+    assert_eq!(reply.status, 200);
+    let parsed: Value = serde_json::from_str(&reply.body).unwrap();
+    let replies = parsed.as_array().unwrap();
+    assert_eq!(replies.len(), 2, "the notification is omitted");
+    assert_eq!(replies[0]["id"], 7);
+    assert_eq!(replies[0]["result"], json!({}));
+    assert_eq!(replies[1]["id"], "abc");
+    assert_eq!(replies[1]["result"]["tools"][0]["name"], "echo");
+
+    let only = mcp(
+        &server,
+        &token,
+        json!([{ "jsonrpc": "2.0", "method": "notifications/initialized" }]),
+        None,
+    );
+    assert_eq!(
+        only.status, 202,
+        "a batch of only notifications has no reply"
+    );
+    assert!(only.body.is_empty());
+}
+
+#[test]
+fn a_body_that_is_not_json_is_a_32700_parse_error() {
+    let server = ProjectServer::start();
+    let identity = identity();
+    server.register("alice", &identity.public_key_pem());
+    let token = mint_token(&server, &identity, "alice");
+    let bearer_header = format!("Bearer {token}");
+
+    let reply = http(
+        &server.url(),
+        "POST",
+        &format!("/v1/projects/{}/mcp", server.project()),
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", bearer_header.as_str()),
+        ],
+        Some("this is not json"),
+    );
+
+    assert_eq!(reply.status, 400);
+    let parsed: Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(parsed["id"], Value::Null);
+    assert_eq!(parsed["error"]["code"], -32700);
+    assert_eq!(parsed["error"]["message"], "parse error");
+}
+
+#[test]
+fn a_mint_reply_is_exactly_token_and_token_expires_at() {
+    let server = ProjectServer::start();
+    let identity = identity();
+    server.register("alice", &identity.public_key_pem());
+
+    let challenge = post(
+        &server,
+        "identities/challenge",
+        None,
+        json!({ "public_key_pem": identity.public_key_pem() }),
+    );
+    assert_eq!(challenge.status, 200);
+    let parsed: Value = serde_json::from_str(&challenge.body).unwrap();
+    let bytes = b64::decode(parsed["challenge"].as_str().unwrap()).unwrap();
+    let minted = post(
+        &server,
+        "auth/token",
+        None,
+        json!({
+            "name": "alice",
+            "challenge_id": parsed["challenge_id"].as_str().unwrap(),
+            "signature_base64": b64::encode(&identity.sign(&bytes)),
+        }),
+    );
+
+    assert_eq!(minted.status, 200);
+    let minted_value: Value = serde_json::from_str(&minted.body).unwrap();
+    let mut fields: Vec<String> = minted_value.as_object().unwrap().keys().cloned().collect();
+    fields.sort();
+    assert_eq!(
+        fields,
+        ["token", "token_expires_at"],
+        "the mint reply is exactly these two fields"
+    );
+    assert_eq!(
+        server.requests_seen(),
+        2,
+        "the counter counts every request"
+    );
 }

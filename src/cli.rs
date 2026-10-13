@@ -31,7 +31,7 @@ pub use pool_command::{
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
-pub use sync_command::{SyncCommand, SyncSubcommand};
+pub use sync_command::{ApiKeyCommand, SyncCommand, SyncSubcommand};
 
 #[derive(Debug, Parser)]
 #[command(

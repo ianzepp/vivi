@@ -20,6 +20,7 @@ pub mod filer;
 pub mod http;
 pub mod identity;
 pub mod kept;
+pub mod keys;
 pub mod link;
 pub mod lock;
 pub mod prune;

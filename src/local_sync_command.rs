@@ -1,12 +1,13 @@
 use std::path::Path;
 
 use vivi::VivariumError;
-use vivi::cli::{SyncCommand, SyncSubcommand};
+use vivi::cli::{ApiKeyCommand, SyncCommand, SyncSubcommand};
 use vivi::mailspace::Mailspace;
 use vivi::sync::fetch::fetch_handles;
 use vivi::sync::http::{self, HttpTransport};
 use vivi::sync::identity::SyncIdentity;
 use vivi::sync::kept::{self as sync_kept, KeptLocal};
+use vivi::sync::keys;
 use vivi::sync::lock::SyncLock;
 use vivi::sync::prune as sync_prune;
 use vivi::sync::pull::PullPlan;
@@ -100,6 +101,15 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
         Some(SyncSubcommand::Create { name, project }) => {
             create(project.as_deref().or(top), name.as_deref())
         }
+        Some(SyncSubcommand::ApiKey { command }) => match command {
+            ApiKeyCommand::Mint { label, project } => {
+                api_key_mint(project.as_deref().or(top), label)
+            }
+            ApiKeyCommand::List { project } => api_key_list(project.as_deref().or(top)),
+            ApiKeyCommand::Revoke { key_id, project } => {
+                api_key_revoke(project.as_deref().or(top), key_id)
+            }
+        },
         Some(SyncSubcommand::Vouch {
             member,
             key_file,
@@ -454,5 +464,53 @@ fn vouch(
     let transport = HttpTransport::new(&settings, &identity);
     let appended = send_vouch(&transport, &letter)?;
     println!("vouched {member} as {}", appended.message_id);
+    Ok(())
+}
+
+/// Mint a PROJECT API key (a bearer for `vivi mcp` and the letter wire; not
+/// `vivi sync key`). The raw key is printed once on stdout and stored
+/// nowhere; the one stderr note says so and how to revoke.
+fn api_key_mint(project: Option<&Path>, label: &str) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let minted = keys::mint_key(&settings, &identity, label)?;
+    println!("key_id {}", minted.record.key_id);
+    println!("label {}", minted.record.label);
+    println!("key {}", minted.key);
+    eprintln!(
+        "the key is shown once; Vivi does not store it. Revoke with: vivi sync api-key revoke {}",
+        minted.record.key_id
+    );
+    Ok(())
+}
+
+/// List the project's live API keys; revoked ones are not shown and no
+/// secret ever is.
+fn api_key_list(project: Option<&Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let records = keys::list_keys(&settings, &identity)?;
+    if records.is_empty() {
+        println!("no api keys");
+        return Ok(());
+    }
+    for record in records {
+        println!(
+            "{}  {}  {}  {}",
+            record.key_id, record.label, record.created_by, record.created_at
+        );
+    }
+    Ok(())
+}
+
+/// Revoke one PROJECT API key by its key id.
+fn api_key_revoke(project: Option<&Path>, key_id: &str) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    keys::revoke_key(&settings, &identity, key_id)?;
+    println!("revoked {key_id}");
     Ok(())
 }
