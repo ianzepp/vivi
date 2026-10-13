@@ -9,6 +9,11 @@ pub struct SyncCommand {
     #[command(subcommand)]
     pub command: Option<SyncSubcommand>,
 
+    /// Keep the push pass sending through the server's rate limit: wait 61 s
+    /// after a 429 and send the rest, until nothing sendable is left
+    #[arg(long)]
+    pub drain: bool,
+
     /// Project root that owns .vivi/ (also accepted after a subcommand)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -24,6 +29,11 @@ pub enum SyncSubcommand {
         /// unpushed letters stay unsent until a push without --since
         #[arg(long, value_name = "AGE|DATE")]
         since: Option<String>,
+        /// Wait out the server's rate limit: 61 s after each 429, one
+        /// progress line per pass, until nothing sendable is left. Still
+        /// stops on a 401, a network failure, or another server error
+        #[arg(long)]
+        drain: bool,
         /// Project root that owns .vivi/
         #[arg(long)]
         project: Option<PathBuf>,

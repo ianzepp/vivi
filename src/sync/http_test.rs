@@ -36,13 +36,18 @@ fn per_letter_refusals_continue_the_pass_and_the_rest_stop_it() {
             other => panic!("{status}: {other:?}"),
         }
     }
-    for status in [401, 403, 404, 429, 500, 503] {
+    for status in [401, 403, 404, 500, 503] {
         let stopped = classify_append(status, &error_body("x", "y"));
         assert!(
             matches!(stopped, Err(AppendFailure::Stop(_))),
             "{status}: {stopped:?}"
         );
     }
+    let limited = classify_append(429, &error_body("x", "y"));
+    assert!(
+        matches!(limited, Err(AppendFailure::RateLimited(_))),
+        "{limited:?}"
+    );
 }
 
 #[test]

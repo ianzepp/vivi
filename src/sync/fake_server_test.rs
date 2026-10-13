@@ -104,6 +104,13 @@ impl FakeServer {
         self.inner.borrow_mut().rate_limit_after = Some(n);
     }
 
+    /// Let `n` more appends through before the next 429.
+    pub fn allow_more(&self, n: usize) {
+        let mut inner = self.inner.borrow_mut();
+        let limit = inner.rate_limit_after.unwrap_or(inner.appends);
+        inner.rate_limit_after = Some(limit + n);
+    }
+
     pub fn lift_rate_limit(&self) {
         self.inner.borrow_mut().rate_limit_after = None;
     }
@@ -165,7 +172,7 @@ impl Transport for FakeClient {
         let mut inner = self.server.inner.borrow_mut();
         inner.appends += 1;
         if inner.rate_limit_after.is_some_and(|n| inner.appends > n) {
-            return Err(AppendFailure::Stop("HTTP 429 rate_limited".into()));
+            return Err(AppendFailure::RateLimited("HTTP 429 rate_limited".into()));
         }
         if let Some(status) = inner.refuse.get(message_id) {
             return Err(AppendFailure::Refused(format!("HTTP {status} scripted")));

@@ -1591,6 +1591,7 @@ close and reopen events among them (see State as letters).
 ```sh
 vivi sync                # push, then pull (the pull runs even when the push stopped)
 vivi sync push           # send local letters the server does not have
+vivi sync push --drain   # wait out the rate limit and keep sending until nothing sendable is left
 vivi sync push --since 1d      # only letters dated in the window; older ones stay unsent for a later push
 vivi sync pull           # file what other members pushed
 vivi sync pull --since 7d      # first pull only: start at a time, not at the beginning
@@ -1602,6 +1603,14 @@ vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
 vivi sync status         # fingerprint, server, project, address, cursor, history, unsent, not uploaded, held for unknown roles
 ```
+
+**Draining.** The server allows 30 letters a minute per member, so a large
+push stops at the first 429 with the rest unsent. `vivi sync push --drain`
+waits it out: it prints one `sync push: pass N` line per pass, waits 61 s
+after a rate limit, and keeps sending until nothing sendable is left. It
+still stops non-zero on a 401, a network failure, or another server error,
+and it holds the sync lock across all passes. It composes with `push
+--since`, and bare `vivi sync --drain` drains its push pass.
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
 `mailspace.toml`. Its first 8 characters are the domain of every address it

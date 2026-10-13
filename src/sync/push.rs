@@ -5,6 +5,9 @@
 //! recorded and the pass goes on. Nothing local is deleted or altered except
 //! the remote binding written on an accepted letter.
 
+use std::collections::HashSet;
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 
 use crate::error::VivariumError;
@@ -29,6 +32,9 @@ pub struct Refused {
 pub struct Stopped {
     pub reason: String,
     pub remaining: usize,
+    /// The server said slow down (429); a drain may wait and run another
+    /// pass. Every other stop sets this false.
+    pub rate_limited: bool,
 }
 
 /// What one push did, for the operator.
@@ -191,6 +197,78 @@ pub fn push_since(
     send_all(&mut storage, settings, transport, selection)
 }
 
+/// How long a drain waits out the server's rate limit: a little over the
+/// server's one-minute window.
+pub const RATE_WAIT: Duration = Duration::from_secs(61);
+
+/// Like [`push_since`], but keeps pushing through the server's rate limit:
+/// after a pass stopped rate limited it calls `wait` and runs another pass,
+/// until a pass sends nothing and stops for nothing. Any other stop (401, a
+/// network failure, a server error) ends the drain at once with that stop in
+/// the returned report. A letter one pass refused is not selected again.
+/// Three consecutive rate-limited passes that sent nothing end the drain
+/// with the last stop in place, so a stuck server cannot spin it forever.
+///
+/// `progress` is called once per pass with that pass's report and the
+/// 1-based pass number; `wait` is called with [`RATE_WAIT`] before every
+/// further pass. The returned report accumulates `sent`, `duplicates`,
+/// `refused`, and `unbound` over all passes; `skipped`, `held_back`, and
+/// `stopped` come from the last pass.
+///
+/// # Errors
+/// Returns an error on a storage failure. Server refusals and stops are in
+/// the report, not errors.
+pub fn push_drain(
+    mailspace: &Mailspace,
+    settings: &SyncSettings,
+    transport: &dyn Transport,
+    window: Option<DateTime<Utc>>,
+    wait: &mut dyn FnMut(Duration),
+    progress: &mut dyn FnMut(&PushReport, usize),
+) -> Result<PushReport, VivariumError> {
+    let mut storage = mailspace.storage()?;
+    let mut refused_handles: HashSet<String> = HashSet::new();
+    let mut total = PushReport::default();
+    let mut stalled = 0usize;
+    let mut number = 0usize;
+    loop {
+        number += 1;
+        let mut selection = select::select(&storage, settings, window)?;
+        selection
+            .letters
+            .retain(|letter| !refused_handles.contains(&letter.handle));
+        let report = send_all(&mut storage, settings, transport, selection)?;
+        let rate_limited = report
+            .stopped
+            .as_ref()
+            .is_some_and(|stop| stop.rate_limited);
+        let progressed = report.sent + report.duplicates > 0;
+        progress(&report, number);
+        for refused in &report.refused {
+            refused_handles.insert(refused.handle.clone());
+        }
+        total.sent += report.sent;
+        total.duplicates += report.duplicates;
+        total.refused.extend(report.refused);
+        total.unbound.extend(report.unbound);
+        total.skipped = report.skipped;
+        total.held_back = report.held_back;
+        total.stopped = report.stopped;
+        if !rate_limited {
+            return Ok(total);
+        }
+        if progressed {
+            stalled = 0;
+        } else {
+            stalled += 1;
+            if stalled >= 3 {
+                return Ok(total);
+            }
+        }
+        wait(RATE_WAIT);
+    }
+}
+
 fn send_all(
     storage: &mut Storage,
     settings: &SyncSettings,
@@ -223,8 +301,17 @@ fn send_all(
                 handle: letter.handle.clone(),
                 reason,
             }),
+            Err(AppendFailure::RateLimited(reason)) => {
+                report.stopped = Some(Stopped {
+                    rate_limited: true,
+                    reason,
+                    remaining: total - index,
+                });
+                break;
+            }
             Err(AppendFailure::Stop(reason)) => {
                 report.stopped = Some(Stopped {
+                    rate_limited: false,
                     reason,
                     remaining: total - index,
                 });

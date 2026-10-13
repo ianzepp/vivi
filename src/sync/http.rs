@@ -262,7 +262,7 @@ pub(crate) fn classify_append(status: u16, body: &Value) -> Result<Appended, App
         400 | 409 | 413 => Err(AppendFailure::Refused(format!(
             "HTTP {status} {code}: {detail}"
         ))),
-        429 => Err(AppendFailure::Stop(
+        429 => Err(AppendFailure::RateLimited(
             "project server rate limit hit (30 sends/min per member); the rest stays unsent".into(),
         )),
         401 => Err(AppendFailure::Stop(
