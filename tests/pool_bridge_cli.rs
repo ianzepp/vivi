@@ -1,8 +1,11 @@
 //! `vivi pool dispatch` and the MCP bridge: a dispatch on a pool with
 //! `[pools.<name>.bridge] enabled = true` mints exactly one project API key
 //! through the dispatching mailspace's own member, names only its key id,
-//! and a refused dispatch touches neither the server nor the slot. Child
-//! processes against the loopback fake of the project server.
+//! and a refused dispatch touches neither the server nor the slot. A
+//! collected job's key is revoked at once and only that key; `pool destroy
+//! --all` sweeps every live key labelled for the pool and only those; a
+//! revoke that cannot be done warns and never fails the collect or the
+//! destroy. Child processes against the loopback fake of the project server.
 
 #[path = "support/project_server.rs"]
 mod project_server;
@@ -180,6 +183,117 @@ fn settle(rig: &Rig) {
     assert!(waited.contains("collected"), "{waited}");
 }
 
+/// `pool wait` in human mode, so the `revoked bridge key` line reaches
+/// standard error (porcelain mode drops it).
+fn wait_human(rig: &Rig) -> Output {
+    vivi(&[
+        "pool",
+        "wait",
+        "--timeout",
+        "120",
+        "--project",
+        rig.project.to_str().unwrap(),
+    ])
+}
+
+/// `pool destroy --pool p --all --yes`.
+fn destroy_all(rig: &Rig) -> Output {
+    vivi(&[
+        "pool",
+        "destroy",
+        "--pool",
+        "p",
+        "--all",
+        "--yes",
+        "--project",
+        rig.project.to_str().unwrap(),
+    ])
+}
+
+/// Hand-mint a key with `label` through the CLI, as the mailspace's own
+/// member; returns its key id.
+fn mint(project: &Path, label: &str) -> String {
+    let said = ok(&vivi(&[
+        "sync",
+        "api-key",
+        "mint",
+        "--label",
+        label,
+        "--project",
+        project.to_str().unwrap(),
+    ]));
+    said.lines()
+        .find_map(|l| l.strip_prefix("key_id "))
+        .map(str::to_string)
+        .expect("the mint prints its key id")
+}
+
+/// The id the fake gave the key minted with `label` (it must exist).
+fn key_id_by_label(server: &ProjectServer, label: &str) -> String {
+    server
+        .keys()
+        .iter()
+        .find(|key| key.label == label)
+        .unwrap_or_else(|| panic!("no key labelled {label}"))
+        .key_id
+        .clone()
+}
+
+/// Whether the fake holds the key minted with `label` as revoked (it must
+/// exist).
+fn revoked_by_label(server: &ProjectServer, label: &str) -> bool {
+    server
+        .keys()
+        .iter()
+        .find(|key| key.label == label)
+        .unwrap_or_else(|| panic!("no key labelled {label}"))
+        .revoked
+}
+
+/// Point the mailspace's `[sync]` at `url` — after the dispatch, so a collect
+/// or a destroy finds the server gone.
+fn repoint_sync(rig: &Rig, url: &str) {
+    let config = rig.project.join(".vivi/mailspace.toml");
+    let current = std::fs::read_to_string(&config).unwrap();
+    let changed: Vec<String> = current
+        .lines()
+        .map(|l| {
+            if l.starts_with("server = ") {
+                format!("server = \"{url}\"")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    std::fs::write(&config, format!("{}\n", changed.join("\n"))).unwrap();
+}
+
+/// A second mailspace on the same fake, admitted as `name`, so a key can be
+/// minted that the rig's own member is not allowed to revoke.
+fn member_mailspace(server: &ProjectServer, name: &str) -> tempfile::TempDir {
+    let project = tempfile::tempdir().unwrap();
+    let dir = project.path().join(".vivi");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mailspace.toml"),
+        format!(
+            "name = \"neighbour\"\n\n[[identities]]\nname = \"mind\"\n\n[sync]\n\
+             server = \"{}\"\nproject = \"{}\"\nname = \"{name}\"\n",
+            server.url(),
+            server.project(),
+        ),
+    )
+    .unwrap();
+    let pem = ok(&vivi(&[
+        "sync",
+        "key",
+        "--project",
+        project.path().to_str().unwrap(),
+    ]));
+    server.register(name, pem.trim());
+    project
+}
+
 /// A loopback port nothing listens on.
 fn closed_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -288,4 +402,183 @@ fn a_pool_without_a_bridge_table_mints_nothing_and_contacts_nothing() {
     settle(&rig);
     assert_eq!(server.requests_seen(), 0);
     assert!(server.keys().is_empty());
+}
+
+#[test]
+fn a_collected_bridge_job_s_key_is_revoked_right_away_and_a_hand_minted_key_stays_live() {
+    let server = ProjectServer::start();
+    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n");
+    mint(rig.project.as_path(), "hand-made");
+
+    let said = ok(&dispatch(&rig, "feat/collect"));
+    let label = format!("pool-p-{}", job_of(&said));
+    let key_id = key_id_by_label(&server, &label);
+
+    let out = wait_human(&rig);
+    let said = text(&out);
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains(&format!("revoked bridge key {key_id}")),
+        "the human wait says which key went: {said}"
+    );
+    assert_eq!(
+        server.keys().iter().filter(|key| key.revoked).count(),
+        1,
+        "exactly the job's key: {said}"
+    );
+    assert!(
+        revoked_by_label(&server, &label),
+        "the job's key is revoked"
+    );
+    assert!(
+        !revoked_by_label(&server, "hand-made"),
+        "a hand-minted key is not the pool's to revoke"
+    );
+}
+
+#[test]
+fn destroying_the_pool_sweeps_its_labels_and_leaves_every_other_key_alone() {
+    let server = ProjectServer::start();
+    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n");
+    mint(rig.project.as_path(), "hand-made");
+    let said = ok(&dispatch(&rig, "feat/sweep"));
+    let job_label = format!("pool-p-{}", job_of(&said));
+    settle(&rig);
+
+    // A live key wearing the pool's own label shape: what a lost or
+    // uncollected job leaves behind.
+    let own = mint(rig.project.as_path(), "pool-p-abc012def456");
+    mint(rig.project.as_path(), "pool-q-abc012def456");
+
+    let out = destroy_all(&rig);
+    let said = text(&out);
+    assert!(out.status.success(), "{said}");
+    assert!(
+        said.contains(&format!("revoked bridge key {own} (pool-p-abc012def456)")),
+        "{said}"
+    );
+    assert!(
+        revoked_by_label(&server, "pool-p-abc012def456"),
+        "the pool's own leftover key is swept"
+    );
+    assert!(
+        revoked_by_label(&server, &job_label),
+        "the collected job's key (revoked at collect)"
+    );
+    assert!(
+        !revoked_by_label(&server, "pool-q-abc012def456"),
+        "another pool's key is not touched"
+    );
+    assert!(
+        !revoked_by_label(&server, "hand-made"),
+        "a hand-minted key is not touched"
+    );
+}
+
+#[test]
+fn with_the_server_down_a_collect_still_succeeds_and_warns_the_manual_command() {
+    let server = ProjectServer::start();
+    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n");
+    let said = ok(&dispatch(&rig, "feat/down"));
+    let label = format!("pool-p-{}", job_of(&said));
+
+    repoint_sync(&rig, &format!("http://127.0.0.1:{}", closed_port()));
+    let out = wait_human(&rig);
+    let said = text(&out);
+    assert!(
+        out.status.success(),
+        "the collect is not the revoke's hostage: {said}"
+    );
+    assert!(said.contains("warning: the bridge key of job"), "{said}");
+    assert!(
+        said.contains(&label),
+        "the server being down, the warning names the key by its label: {said}"
+    );
+    assert!(
+        said.contains("vivi sync api-key revoke <key_id>"),
+        "the warning names the exact manual command: {said}"
+    );
+    assert!(
+        !revoked_by_label(&server, &label),
+        "nothing was revoked through the dead server"
+    );
+}
+
+#[test]
+fn with_the_server_down_a_destroy_still_succeeds_and_warns_the_manual_command() {
+    let server = ProjectServer::start();
+    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n");
+    mint(rig.project.as_path(), "pool-p-abc012def456");
+
+    repoint_sync(&rig, &format!("http://127.0.0.1:{}", closed_port()));
+    let out = destroy_all(&rig);
+    let said = text(&out);
+    assert!(
+        out.status.success(),
+        "the destroy is not the sweep's hostage: {said}"
+    );
+    assert!(
+        said.contains("warning: the bridge keys of pool p could not be revoked"),
+        "{said}"
+    );
+    assert!(
+        said.contains("vivi sync api-key revoke <key_id>"),
+        "the warning names the exact manual command: {said}"
+    );
+    assert!(
+        !revoked_by_label(&server, "pool-p-abc012def456"),
+        "nothing was revoked through the dead server"
+    );
+}
+
+#[test]
+fn a_key_the_tool_may_not_revoke_is_warned_by_id_and_left_to_the_manual_command() {
+    let server = ProjectServer::start();
+    let rig = rig(&server, &server.url(), "[pools.p.bridge]\nenabled = true\n");
+    mint(rig.project.as_path(), "pool-p-ffffffffffff");
+    let bob = member_mailspace(&server, "bob");
+    let foreign = mint(bob.path(), "pool-p-abc012def456");
+
+    let out = destroy_all(&rig);
+    let said = text(&out);
+    assert!(
+        out.status.success(),
+        "the destroy is not the sweep's hostage: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "warning: bridge key {foreign} (pool-p-abc012def456) could not be revoked"
+        )),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("vivi sync api-key revoke {foreign}")),
+        "the warning names the exact manual command: {said}"
+    );
+    assert!(
+        revoked_by_label(&server, "pool-p-ffffffffffff"),
+        "the pool's own keys still go"
+    );
+    assert!(
+        !revoked_by_label(&server, "pool-p-abc012def456"),
+        "only its minter can revoke it"
+    );
+}
+
+#[test]
+fn a_pool_without_a_bridge_table_never_contacts_the_server_while_waiting_or_destroying() {
+    let server = ProjectServer::start();
+    let rig = rig(&server, &server.url(), "");
+    let said = ok(&dispatch(&rig, "feat/quiet"));
+    assert!(!said.contains("bridge key"), "{said}");
+
+    settle(&rig);
+    assert_eq!(server.requests_seen(), 0, "the wait never called");
+
+    ok(&destroy_all(&rig));
+    assert_eq!(server.requests_seen(), 0, "the destroy never called");
+    assert!(
+        server.keys().is_empty(),
+        "there was never anything to revoke"
+    );
 }
