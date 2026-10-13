@@ -144,15 +144,19 @@ fn resolve_dispatch(
             job::check_model(slug, &harness.models)?;
         }
     }
+    // An addressee that is not a known local role is no role at all, not an
+    // error: the dispatch then runs without one.
     let role = task
         .addressee
         .as_deref()
-        .and_then(|name| space.role_view(name).ok())
-        .map(|view| RoleFacts {
-            name: view.name,
-            kind: view.kind,
-            band: view.model,
-            charter: view.charter,
+        .and_then(|name| match space.role_view(name) {
+            Ok(view) => Some(RoleFacts {
+                name: view.name,
+                kind: view.kind,
+                band: view.model,
+                charter: view.charter,
+            }),
+            Err(_) => None,
         });
     let resolved = role_dispatch::resolve(
         config,

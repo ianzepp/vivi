@@ -56,7 +56,10 @@ impl Mailspace {
         let data = storage.read_message(&id)?;
         // The copy is held under the recipient's account; a recipient that
         // is not a known local role leaves no addressee.
-        let addressee = self.resolve_identity(&view.account).ok();
+        let addressee = match self.resolve_identity(&view.account) {
+            Ok(name) => Some(name),
+            Err(_) => None,
+        };
         Ok(PoolTask {
             handle: storage.display_handle(&id)?,
             subject: view.subject,
