@@ -9,6 +9,7 @@ use vivi::cli::{PoolDispatchCommand, PoolReconcileCommand, PoolWaitCommand};
 use vivi::mailspace::Mailspace;
 use vivi::pool::collect::{ErrorWatch, Pacing};
 use vivi::pool::dispatch::{self, DispatchFlags};
+use vivi::pool::bridge;
 use vivi::pool::github::Secret;
 use vivi::pool::local_branch;
 use vivi::pool::local_git::Repo;
@@ -75,6 +76,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (None, _) => remote_start(config, &id.pool, &plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
+    mint_bridge_grant(config, &space, &id.pool, &job_id, &mut plan, &progress)?;
     progress.say(&if provider.slot_lifetime() == SlotLifetime::PerDispatch {
         format!("{}: renting a pod and starting the job", id.pool)
     } else {
@@ -89,7 +91,13 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         progress: &progress,
         ready_timeout,
     };
-    let made = work::submit(&space, provider, id, &launch, &pacing)?;
+    let made = match work::submit(&space, provider, id, &launch, &pacing) {
+        Ok(made) => made,
+        Err(e) => {
+            undo_bridge_grant(&space, plan.bridge.as_ref());
+            return Err(e);
+        }
+    };
     if provider.slot_lifetime() == SlotLifetime::PerDispatch {
         let deadline = vivi::pool::runpod_open::dispatch_deadline(
             &config.runpod,
@@ -101,9 +109,48 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
     } else {
-        println!("{}", dispatched_text(&task.handle, &made));
+        println!("{}", dispatched_text(&task.handle, &made, plan.bridge.as_ref()));
     }
     Ok(())
+}
+
+/// Mint the job's bridge grant when the pool's bridge is enabled. Every
+/// refusal check has passed by now, so the very next step is the claim; a
+/// failure here refuses the dispatch before any slot is touched, and a
+/// failure of the dispatch itself revokes the minted key (see
+/// [`undo_bridge_grant`]). The grant rides in the plan, is delivered only
+/// inside the job archive, and only its key id is ever named.
+fn mint_bridge_grant(
+    config: &PoolConfig,
+    space: &Mailspace,
+    pool: &str,
+    job: &str,
+    plan: &mut job::JobPlan,
+    progress: &Progress,
+) -> Result<(), VivariumError> {
+    if !config.bridge.enabled {
+        return Ok(());
+    }
+    let grant = bridge::mint_for_job(space, pool, job)?;
+    progress.say(&format!("bridge key {} ({})", grant.key_id, grant.label));
+    plan.bridge = Some(grant);
+    Ok(())
+}
+
+/// Revoke a minted bridge grant after the dispatch failed — the claim, the
+/// delivery, or the record: the key must not outlive the attempt. Only the
+/// key id is named, never the key.
+fn undo_bridge_grant(space: &Mailspace, grant: Option<&bridge::Grant>) {
+    let Some(grant) = grant else {
+        return;
+    };
+    match bridge::revoke_grant(space, grant) {
+        Ok(()) => eprintln!("revoked bridge key {} ({})", grant.key_id, grant.label),
+        Err(e) => eprintln!(
+            "warning: the dispatch failed and bridge key {} ({}) could not be revoked: {e}",
+            grant.key_id, grant.label
+        ),
+    }
 }
 
 fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
@@ -118,7 +165,11 @@ fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
 }
 
 /// The human line of a dispatch.
-fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> String {
+fn dispatched_text(
+    task: &str,
+    made: &vivi::pool::record::DispatchRecord,
+    bridge: Option<&bridge::Grant>,
+) -> String {
     format!(
         "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s{}",
         made.pool,
@@ -138,7 +189,16 @@ fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> Str
         } else {
             format!("  hardware {}", made.hardware)
         }
-    ) + &abandoned_suffix(made)
+    ) + &bridge_suffix(bridge)
+        + &abandoned_suffix(made)
+}
+
+/// `  bridge key <key_id> (<label>)` when the job carries a grant; the key
+/// itself is never printed.
+fn bridge_suffix(grant: Option<&bridge::Grant>) -> String {
+    grant.map_or(String::new(), |g| {
+        format!("  bridge key {} ({})", g.key_id, g.label)
+    })
 }
 
 /// `  abandoned ...` when pods were given up on before the one that works.

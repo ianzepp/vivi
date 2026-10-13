@@ -4,12 +4,15 @@
 //! The runner and the default rules are embedded and generic. A job carries
 //! the Git token in exactly one file, `token`, which only the root-owned
 //! runner reads; the files the agent can see (`brief.md`, `rules.md`,
-//! `harness.cmd`) never hold it.
+//! `harness.cmd`) never hold it. A bridge grant, when the pool mints one, is
+//! delivered the same way, as `bridge.key`, and is exported to the agent
+//! only as the `VIVI_MCP_API_KEY` environment variable.
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
+use super::bridge::Grant;
 use super::config::PoolCommitter;
 use super::github::Secret;
 use crate::error::VivariumError;
@@ -243,6 +246,10 @@ pub struct JobPlan {
     /// Commands the runner records the output of before the harness starts
     /// (the pool's `facts`).
     pub facts: Vec<String>,
+    /// The MCP bridge grant minted at dispatch when the pool's bridge is
+    /// enabled: delivered only as the archive's `bridge.key` file, its
+    /// server and project id also into `params.env`.
+    pub bridge: Option<Grant>,
 }
 
 /// One file inside the job archive, under `job/`.
@@ -277,7 +284,8 @@ pub fn sh_quote(value: &str) -> String {
 }
 
 /// Lay out the files of a job for `slot`. `token` goes into the `token` file
-/// and nowhere else.
+/// and nowhere else; a minted bridge grant goes into `bridge.key` the same
+/// way, with its server and project id in `params.env`.
 #[must_use]
 pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     let mut fields = vec![
@@ -302,6 +310,10 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         fields.push(("LOCAL_ACTION", checkout.action.word().to_string()));
         fields.push(("LOCAL_START", checkout.start.clone()));
     }
+    if let Some(bridge) = &spec.bridge {
+        fields.push(("BRIDGE_SERVER", bridge.server.clone()));
+        fields.push(("BRIDGE_PROJECT", bridge.project_id.clone()));
+    }
     let params: String = fields
         .into_iter()
         .map(|(k, v)| format!("{k}={}\n", sh_quote(&v)))
@@ -325,6 +337,9 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         file("rules.md", &spec.rules, 0o644),
         file("harness.cmd", &spec.harness_cmd, 0o644),
     ];
+    if let Some(bridge) = &spec.bridge {
+        files.push(file("bridge.key", bridge.key.expose(), 0o600));
+    }
     if !spec.facts.is_empty() {
         let list = spec.facts.join("\n") + "\n";
         files.push(file("facts.cmd", &list, 0o600));

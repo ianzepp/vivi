@@ -1,6 +1,9 @@
 use super::*;
 
+use crate::pool::bridge::Grant;
+
 const SECRET: &str = "ghs_SUPERsecretTOKEN0123456789";
+const BRIDGE_KEY: &str = "vivi_bridge_SECRET0123456789abcdef";
 
 fn committer() -> PoolCommitter {
     PoolCommitter {
@@ -34,6 +37,17 @@ fn plan() -> JobPlan {
         committer: committer(),
         read_only: false,
         facts: Vec::new(),
+        bridge: None,
+    }
+}
+
+fn bridge_grant() -> Grant {
+    Grant {
+        key: Secret::new(BRIDGE_KEY.to_string()),
+        key_id: "key_bridge01".into(),
+        label: "pool-wt-0123456789ab".into(),
+        server: "http://127.0.0.1:8080".into(),
+        project_id: "abcde-fghjk".into(),
     }
 }
 
@@ -162,6 +176,46 @@ fn the_token_lives_in_exactly_one_file_and_not_where_the_agent_looks() {
     }
     let names: Vec<&str> = bundle.agent_visible().iter().map(|f| f.name).collect();
     assert_eq!(names, ["brief.md", "rules.md", "harness.cmd"]);
+}
+
+#[test]
+fn the_bridge_key_is_delivered_only_as_bridge_key_and_not_where_the_agent_looks() {
+    let mut p = plan();
+    p.bridge = Some(bridge_grant());
+    let bundle = build_bundle(&p, "p-slot-2", &Secret::new(SECRET.to_string()));
+    let holders: Vec<&str> = bundle
+        .files
+        .iter()
+        .filter(|f| String::from_utf8_lossy(&f.content).contains(BRIDGE_KEY))
+        .map(|f| f.name)
+        .collect();
+    assert_eq!(holders, ["bridge.key"]);
+    let file = bundle.files.iter().find(|f| f.name == "bridge.key").unwrap();
+    assert_eq!(file.mode, 0o600);
+    assert_eq!(String::from_utf8_lossy(&file.content), BRIDGE_KEY);
+    let names: Vec<&str> = bundle.agent_visible().iter().map(|f| f.name).collect();
+    assert_eq!(names, ["brief.md", "rules.md", "harness.cmd"]);
+    for visible in bundle.agent_visible() {
+        assert!(!String::from_utf8_lossy(&visible.content).contains(BRIDGE_KEY));
+    }
+}
+
+#[test]
+fn the_bridge_params_appear_only_when_a_grant_exists_and_never_hold_the_key() {
+    let without = text(&build_bundle(&plan(), "s", &Secret::new("t".into())), "params.env");
+    assert!(!without.contains("BRIDGE_"), "{without}");
+    assert!(
+        !build_bundle(&plan(), "s", &Secret::new("t".into()))
+            .files
+            .iter()
+            .any(|f| f.name == "bridge.key")
+    );
+    let mut p = plan();
+    p.bridge = Some(bridge_grant());
+    let params = text(&build_bundle(&p, "s", &Secret::new("t".into())), "params.env");
+    assert!(params.contains("BRIDGE_SERVER='http://127.0.0.1:8080'\n"), "{params}");
+    assert!(params.contains("BRIDGE_PROJECT='abcde-fghjk'\n"), "{params}");
+    assert!(!params.contains(BRIDGE_KEY), "{params}");
 }
 
 #[test]

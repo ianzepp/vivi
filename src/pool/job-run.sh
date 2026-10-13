@@ -9,9 +9,15 @@
 #                (REMOTE is the full Git address; https gets the token below,
 #                a file:// address is used as given). A worktree slot has no
 #                REMOTE and also gets LOCAL_ACTION (create | continue) and
-#                LOCAL_START (the commit FROM resolved to).
+#                LOCAL_START (the commit FROM resolved to). With a bridge
+#                grant also BRIDGE_SERVER and BRIDGE_PROJECT (not secret).
 #   token        Git token, empty for a file:// remote; root-only, never
 #                copied to the agent
+#   bridge.key   the job's project API key for `vivi mcp`, present only when
+#                the pool mints one; root-only, never copied to the agent,
+#                given to the harness only as VIVI_MCP_API_KEY (with
+#                VIVI_MCP_SERVER and VIVI_MCP_PROJECT_ID) and never to the
+#                facts
 #   harness.cmd  the rendered harness command
 #   brief.md     the task body        rules.md  the standing rules
 #   facts.cmd    optional: commands to record before the harness starts, one
@@ -48,7 +54,8 @@
 # harness command's /home/hand/ paths are rewritten to it), the agent keeps the
 # user's own HOME and PATH, the Git token file is removed as soon as it is read,
 # and whatever the agent left running is found by the VIVI_AGENT_JOB variable
-# that only its environment carries.
+# that only its environment carries. The bridge.key file, when there is one,
+# is removed as soon as it is read, like the token.
 W=${WORK:-/work}
 J=$W/job
 RD=$W/repo
@@ -112,6 +119,11 @@ finish() { # finish <push-outcome> [sha]
 cd "$RD" || finish workdir_missing
 TOKEN=$(cat "$J/token")
 [ -z "${UNPRIVILEGED:-}" ] || rm -f "$J/token"
+BRIDGE_KEY=
+if [ -f "$J/bridge.key" ]; then
+  BRIDGE_KEY=$(cat "$J/bridge.key")
+  [ -z "${UNPRIVILEGED:-}" ] || rm -f "$J/bridge.key"
+fi
 URL=$REMOTE
 case "$REMOTE" in
   https://*) [ -n "$TOKEN" ] && URL="https://x-access-token:${TOKEN}@${REMOTE#https://}" ;;
@@ -148,6 +160,14 @@ HARNESS_ENV=("HOME=$AGENT_USER_HOME" "PATH=$PATH" "VIVI_AGENT_JOB=$JOB")
 for name in $ENV_NAMES; do
   [ -n "${!name+x}" ] && HARNESS_ENV+=("$name=${!name}")
 done
+# The MCP bridge, when the job carries a grant: the agent reads its task and
+# reports as the dispatching member. The facts (run_fact) keep their own
+# minimal environment and do not get these.
+[ -z "$BRIDGE_KEY" ] || HARNESS_ENV+=(
+  "VIVI_MCP_API_KEY=$BRIDGE_KEY"
+  "VIVI_MCP_SERVER=$BRIDGE_SERVER"
+  "VIVI_MCP_PROJECT_ID=$BRIDGE_PROJECT"
+)
 
 # Facts: each command of $J/facts.cmd (one per line) runs in the checkout as the
 # agent's user, with a clean environment, before the harness starts. Per command

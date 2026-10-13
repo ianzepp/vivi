@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::config_bridge::PoolBridge;
 use super::runpod_config::PoolRunpod;
 use super::slot::{DOCTOR_SUFFIX, PoolId};
 use crate::error::VivariumError;
@@ -101,6 +102,10 @@ pub struct PoolConfig {
     /// Identity the remote runner commits as; `dispatch` needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committer: Option<PoolCommitter>,
+    /// MCP bridge settings (`[pools.<name>.bridge]`); off when absent. A
+    /// dispatch on the pool then mints one project API key for the job.
+    #[serde(default)]
+    pub bridge: PoolBridge,
     /// Source delivered with each slot instead of fetched from `repo`. Never
     /// read from TOML: only the live self-test of `vivi pool doctor --test`
     /// sets it.
@@ -441,6 +446,7 @@ impl PoolConfig {
         if let Some(committer) = &self.committer {
             committer.validate(pool)?;
         }
+        self.bridge.validate(pool)?;
         reject_unknown(pool, "", &self.unknown)?;
         reject_unknown(pool, ".fly", &self.fly.unknown)?;
         reject_unknown(pool, ".docker", &self.docker.unknown)?;

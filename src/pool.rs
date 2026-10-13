@@ -23,9 +23,11 @@
 //! runs a live exercise of all of this (see [`selftest`]).
 
 pub mod bootscript;
+pub mod bridge;
 pub mod claim;
 pub mod collect;
 pub mod config;
+pub mod config_bridge;
 pub mod dispatch;
 pub mod docker;
 pub mod docker_cli;
