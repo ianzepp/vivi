@@ -19,6 +19,7 @@ pub mod fetch;
 pub mod filer;
 pub mod http;
 pub mod identity;
+pub mod kept;
 pub mod link;
 pub mod lock;
 pub mod prune;
@@ -165,12 +166,20 @@ mod events;
 mod flow;
 
 #[cfg(test)]
+#[path = "sync/kept_flow_test.rs"]
+mod kept_flow;
+
+#[cfg(test)]
 #[path = "sync/windows_test.rs"]
 mod windows;
 
 #[cfg(test)]
 #[path = "sync/watch_test.rs"]
 mod watch;
+
+#[cfg(test)]
+#[path = "sync/status_hint_test.rs"]
+mod status_hint_test;
 
 #[cfg(test)]
 #[path = "sync/sync_test.rs"]

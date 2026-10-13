@@ -13,9 +13,10 @@ use chrono::{DateTime, Utc};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
 use crate::storage::{RemoteBindingInput, Storage, sha256_hex};
+use crate::sync::kept::KeptLocal;
 use crate::sync::select::{self, Letter, Selection, Skipped};
 use crate::sync::transport::{AppendFailure, Appended, Envelope, Transport};
-use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY};
+use crate::sync::{PROVIDER, SyncSettings, UIDVALIDITY, sync_dir};
 
 /// Handles listed per detail group before the rest is summarized.
 const LISTED: usize = 10;
@@ -91,11 +92,11 @@ impl PushReport {
             actionable
                 .iter()
                 .take(LISTED)
-                .map(|skipped| format!("skipped {}: {}", skipped.handle, skipped.reason.label())),
+                .map(|skipped| skipped_line(skipped)),
         );
         if actionable.len() > LISTED {
             lines.push(format!(
-                "... and {} more skipped",
+                "... and {} more skipped; run vivi sync keep-local <handle> for each",
                 actionable.len() - LISTED
             ));
         }
@@ -166,6 +167,17 @@ impl PushReport {
     }
 }
 
+/// One skipped line. A letter that can never be delivered also names the
+/// command that clears it from every future push.
+fn skipped_line(skipped: &Skipped) -> String {
+    let base = format!("skipped {}: {}", skipped.handle, skipped.reason.label());
+    if skipped.reason.undeliverable() {
+        format!("{base}; run: vivi sync keep-local {}", skipped.handle)
+    } else {
+        base
+    }
+}
+
 /// Select and send the letters this mailspace has not pushed.
 ///
 /// # Errors
@@ -193,7 +205,12 @@ pub fn push_since(
     window: Option<DateTime<Utc>>,
 ) -> Result<PushReport, VivariumError> {
     let mut storage = mailspace.storage()?;
-    let selection = select::select(&storage, settings, window)?;
+    let selection = select::select(
+        &storage,
+        settings,
+        &KeptLocal::load(&sync_dir(&mailspace.dir))?,
+        window,
+    )?;
     send_all(&mut storage, settings, transport, selection)
 }
 
@@ -227,13 +244,14 @@ pub fn push_drain(
     progress: &mut dyn FnMut(&PushReport, usize),
 ) -> Result<PushReport, VivariumError> {
     let mut storage = mailspace.storage()?;
+    let kept = KeptLocal::load(&sync_dir(&mailspace.dir))?;
     let mut refused_handles: HashSet<String> = HashSet::new();
     let mut total = PushReport::default();
     let mut stalled = 0usize;
     let mut number = 0usize;
     loop {
         number += 1;
-        let mut selection = select::select(&storage, settings, window)?;
+        let mut selection = select::select(&storage, settings, &kept, window)?;
         selection
             .letters
             .retain(|letter| !refused_handles.contains(&letter.handle));
@@ -381,7 +399,8 @@ fn bind_sent(
 /// # Errors
 /// Returns an error on a storage failure.
 pub fn pending(mailspace: &Mailspace, settings: &SyncSettings) -> Result<Selection, VivariumError> {
-    select::select(&mailspace.storage()?, settings, None)
+    let kept = KeptLocal::load(&sync_dir(&mailspace.dir))?;
+    select::select(&mailspace.storage()?, settings, &kept, None)
 }
 
 /// Count the letters waiting to go, counting those a push cannot upload.

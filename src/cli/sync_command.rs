@@ -88,6 +88,20 @@ pub enum SyncSubcommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Stop pushing a stuck letter (over the 64 KiB cap, or a From that claims
+    /// another mailspace); it stays in this mailspace. --undo makes push try
+    /// it again
+    KeepLocal {
+        /// Handles of the letters to keep local (or, with --undo, to try again)
+        #[arg(required = true, value_name = "HANDLE")]
+        handles: Vec<String>,
+        /// Make push try the letters again: lift the kept-local record
+        #[arg(long)]
+        undo: bool,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Register [sync] name with the project server (the key must be vouched for)
     Join {
         /// Project root that owns .vivi/
