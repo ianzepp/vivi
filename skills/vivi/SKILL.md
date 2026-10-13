@@ -1645,6 +1645,10 @@ vivi sync vouch <name> --key-file <pem>  # vouch for a member's key (or --key <p
 vivi sync join           # register [sync] name (the key must be vouched for)
 vivi sync directory      # members: name, address domain, fingerprint
 vivi sync status         # fingerprint, server, project, address, cursor, epoch, history, unsent, not uploaded, held for unknown roles; not the PEM — `vivi sync key` prints it
+vivi sync api-key mint --label <LABEL>  # project API key: prints key_id, label, and the raw key once; Vivi never stores the key (label 1 to 64 characters)
+vivi sync api-key list   # live project API keys: key_id, label, created_by, created_at; never the secret
+vivi sync api-key revoke <KEY_ID>  # retire a live key
+vivi mcp                 # stdio MCP bridge to the project server's tools (see MCP bridge below)
 ```
 
 **Draining.** The server allows 30 letters a minute per member, so a large
@@ -1703,7 +1707,9 @@ existing mailspace; an existing one keeps its id and history. Never copy a
    (or `--key <pem>`) with the PEM you sent. `vouch` composes and sends
    the vouch letter itself: one governance letter to the project's
    reserved `postmaster` address. `vivi mail send --to postmaster` is
-   still refused as an unknown local role; `vouch` is the verb for it.
+   still refused as an unknown local role; `vouch` is the verb for it. The
+   project server also has an MCP surface whose `send` tool can carry a
+   vouch; `vivi sync vouch` is the CLI route.
 4. Run `vivi sync join`, then `vivi sync`. The push uploads existing needs,
    tasks, wants, and plain mail (never memos, drafts, trash, or rules).
    Letters written before the mailspace had an id keep their old
@@ -1847,6 +1853,70 @@ minute: a push that hits the limit stops, prints how many letters are left
 unsent, exits non-zero, and the next run resumes. Mail is visible only to its
 sender and the addressed mailspace; work items and mail to `postmaster` are
 visible to every member.
+
+### MCP bridge
+
+`vivi mcp` is a thin stdio bridge to the project server's MCP endpoint
+(`POST /v1/projects/{id}/mcp`). It speaks MCP on stdin/stdout
+(newline-delimited JSON-RPC 2.0, the standard stdio transport) and forwards
+each message to that endpoint unchanged. It is a pass-through: it does not
+know the tool list, so `tools/list` and `tools/call` go to the server as they
+are, and new server tools need no new bridge. Nothing but protocol messages is
+written to stdout; diagnostics go to stderr; a notification gets no reply. A
+pool slot needs only the binary, a server URL, a project id, and a credential:
+no local mailspace, no sync, and the bridge never creates `.vivi/`. When the
+server refuses a request after the one allowed renewal (or at once for an API
+key), the bridge answers that request with a JSON-RPC error (code `-32000`,
+`data.http_status`) instead of hanging, and keeps serving.
+
+The server's Project MCP tools: `overview`, `list`, `show`, `thread`, `send`,
+`reply`, `done`, `reopen`, `memo`, `graph`. Writes share the server's
+30-per-minute-per-identity send budget; a tool failure is a result with
+`isError: true`.
+
+**Flags and environment.** `--server <URL>`, `--project-id <ID>`,
+`--name <NAME>`, and `--key-file <PATH>`, each with a variable:
+`VIVI_MCP_SERVER`, `VIVI_MCP_PROJECT_ID`, `VIVI_MCP_NAME`, `VIVI_MCP_KEY_FILE`.
+A flag beats its variable, a variable beats the `[sync]` table. The global
+`--project <ROOT>` still names a mailspace root (used only to find a `[sync]`
+table); it is not the server project id. `VIVI_MCP_API_KEY` is read from the
+environment only — there is no flag — so it does not show in a process list.
+
+**Credentials** (either one):
+
+1. A member name and a key file: `--name`/`VIVI_MCP_NAME` plus
+   `--key-file`/`VIVI_MCP_KEY_FILE`, the 32-byte seed file a mailspace keeps
+   at `.vivi/chat/identity.ed25519`. The bridge mints the identity token by
+   the challenge, sign, token route (as `vivi sync` does), renews it once
+   when the server refuses it (401), and renews ahead of time when
+   `token_expires_at` is within 30 seconds.
+2. A project API key in `VIVI_MCP_API_KEY`: sent as the bearer as it is; no
+   minting, no renewal, a 401 is final.
+
+Giving both is an error. With neither, inside a mailspace that has a `[sync]`
+table, `vivi mcp` with no flags uses the `[sync]` server, project, and name
+and the mailspace's own key, so a person can try it.
+
+**Client configuration.** Claude Code takes a JSON file via `--mcp-config`:
+
+```json
+{"mcpServers":{"vivi":{"command":"vivi","args":["mcp"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>","VIVI_MCP_API_KEY":"<key from vivi sync api-key mint>"}}}}
+```
+
+The member-name variant:
+
+```json
+{"mcpServers":{"vivi":{"command":"vivi","args":["mcp","--name","<name>","--key-file","<path>"],"env":{"VIVI_MCP_SERVER":"https://<server>","VIVI_MCP_PROJECT_ID":"<project id>"}}}}
+```
+
+pi connects to stdio MCP servers through its `mcp.json`; the same `command`,
+`args`, and `env` work there: `pi mcp add vivi --env
+VIVI_MCP_SERVER='https://<server>' --env VIVI_MCP_PROJECT_ID='<project id>'
+--env VIVI_MCP_API_KEY='<key from vivi sync api-key mint>' -- vivi mcp`.
+
+**Not built.** How a pool slot is handed its credential, and how the pool
+harness is told to load the bridge, are not part of this delivery. The bridge
+has been run against a staging server only; no production use.
 
 ## Safety
 
