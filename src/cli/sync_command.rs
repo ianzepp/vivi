@@ -173,13 +173,20 @@ pub enum SyncSubcommand {
 #[derive(Debug, Subcommand)]
 pub enum ApiKeyCommand {
     /// Mint a PROJECT API key: a bearer for `vivi mcp` and the letter wire
-    /// (not `vivi sync key`, which prints this mailspace's public key). The
-    /// raw key is printed once and never stored by vivi
+    /// (not `vivi sync key`, which prints this mailspace's public key).
+    /// Without --out the raw key is printed once and never stored by vivi;
+    /// with --out it is written only to the file you name
     Mint {
         /// What the key is for, as the project's key list shows it (1 to 64
         /// characters)
         #[arg(long, value_name = "LABEL")]
         label: String,
+        /// Write the raw key to this new file (created with mode 0600; it
+        /// must not exist) instead of printing it; stdout then carries only
+        /// key_id, label, and the file path. Automation and agents should
+        /// always pass --out so the key never lands in a transcript
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
         /// Project root that owns .vivi/
         #[arg(long)]
         project: Option<PathBuf>,
