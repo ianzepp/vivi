@@ -411,6 +411,7 @@ fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
             from: "main".into(),
             branch: "b".into(),
             start: "s".into(),
+            with: Vec::new(),
             budget: 1800,
             at: 1000,
             read_only: false,

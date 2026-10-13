@@ -18,6 +18,8 @@ use crate::error::VivariumError;
 pub const RUNNER: &str = include_str!("job-run.sh");
 /// The standing rules a worker gets when the config names none.
 pub const DEFAULT_RULES: &str = include_str!("rules.md");
+/// Most extra refs (`--with`) a job may name.
+pub const WITH_LIMIT: usize = 8;
 
 /// Where the agent finds its inputs inside the slot.
 pub const AGENT_BRIEF: &str = "/home/hand/brief.md";
@@ -98,6 +100,15 @@ pub struct Refs {
     pub branch: String,
 }
 
+/// An extra ref a job may read (`--with`, a `with:` body line) and the commit
+/// it resolved to. `commit` is empty until resolution, which happens before
+/// any slot is claimed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithRef {
+    pub name: String,
+    pub commit: String,
+}
+
 /// The commit or branch a job starts from: the flag, else the body line.
 ///
 /// # Errors
@@ -136,6 +147,83 @@ pub fn resolve_refs(
         return Err(bad_ref("branch", &branch));
     }
     Ok(Refs { from, branch })
+}
+
+/// Every `with: <ref>` line of a task body, in order: the same trimming and
+/// list-dash rules as [`body_refs`], but every line counts.
+#[must_use]
+pub fn body_with_refs(body: &str) -> Vec<String> {
+    body.lines()
+        .filter_map(|line| {
+            let line = line.trim().trim_start_matches(['-', '*']).trim();
+            let (key, value) = line.split_once(':')?;
+            let value = value.trim();
+            (key.trim().eq_ignore_ascii_case("with")
+                && !value.is_empty()
+                && !value.contains(char::is_whitespace))
+            .then(|| value.to_string())
+        })
+        .collect()
+}
+
+/// The extra refs a job may read: the `--with` flags when any are given, else
+/// every `with: <ref>` body line in order. Duplicates are dropped keeping the
+/// first, at most [`WITH_LIMIT`] are kept, and each value must be a plain ref
+/// that is neither the start ref (`from`) nor the push target (`branch`).
+///
+/// # Errors
+/// Returns an error naming the offending value when one is not a plain ref,
+/// names `from` or `branch`, or when more than [`WITH_LIMIT`] remain.
+pub fn resolve_with(
+    flags: &[String],
+    body: &str,
+    from: &str,
+    branch: &str,
+) -> Result<Vec<String>, VivariumError> {
+    let listed = body_with_refs(body);
+    let values = if flags.is_empty() { &listed } else { flags };
+    let mut refs: Vec<String> = Vec::new();
+    for value in values {
+        check_with(value, from, branch)?;
+        if refs.contains(value) {
+            continue;
+        }
+        refs.push(value.clone());
+        if refs.len() > WITH_LIMIT {
+            return Err(VivariumError::Message(format!(
+                "at most {WITH_LIMIT} with refs are allowed ({n} given)",
+                n = values
+                    .iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            )));
+        }
+    }
+    Ok(refs)
+}
+
+/// One extra ref must be a plain ref that is neither the start ref nor the
+/// push target (both already travel with the job).
+///
+/// # Errors
+/// Returns an error naming the value when a rule is broken.
+fn check_with(value: &str, from: &str, branch: &str) -> Result<(), VivariumError> {
+    if !plain_ref(value) {
+        return Err(VivariumError::Message(format!(
+            "with \"{value}\" is not a plain commit or branch name"
+        )));
+    }
+    if value == from {
+        return Err(VivariumError::Message(format!(
+            "with \"{value}\" is the start ref (from); name a different ref"
+        )));
+    }
+    if value == branch {
+        return Err(VivariumError::Message(format!(
+            "with \"{value}\" is the push target (branch); name a different ref"
+        )));
+    }
+    Ok(())
 }
 
 fn missing(what: &str) -> VivariumError {
@@ -232,6 +320,9 @@ pub struct JobPlan {
     pub brief: String,
     pub rules: String,
     pub refs: Refs,
+    /// Extra refs the job may read; `commit` is filled before a slot is
+    /// claimed (empty in a plan that is not resolved yet).
+    pub with: Vec<WithRef>,
     pub model: String,
     pub budget: u64,
     pub depth: u32,
@@ -329,7 +420,25 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         let list = spec.facts.join("\n") + "\n";
         files.push(file("facts.cmd", &list, 0o600));
     }
+    if let Some(list) = with_list(&spec.with) {
+        files.push(file("with.list", &list, 0o600));
+    }
     Bundle { files }
+}
+
+/// The text of `with.list`: one `<ref> <commit>` line per extra ref,
+/// LF-terminated; `None` when the job names none, so no file is written.
+fn with_list(with: &[WithRef]) -> Option<String> {
+    if with.is_empty() {
+        return None;
+    }
+    Some(
+        with.iter()
+            .map(|w| format!("{} {}", w.name, w.commit))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
 }
 
 /// Line endings as LF. A stored task body has CRLF (and CR CR LF where the

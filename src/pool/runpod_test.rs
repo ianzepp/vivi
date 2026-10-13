@@ -29,6 +29,7 @@ fn plan(r: &Rig) -> JobPlan {
         model: "m/ok".into(),
         from: Some("main".into()),
         branch: Some("factory/a".into()),
+        with: Vec::new(),
         budget: Some(600),
         allow_default_branch: false,
         read_only: false,

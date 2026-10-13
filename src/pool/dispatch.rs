@@ -28,6 +28,9 @@ pub struct DispatchFlags {
     pub model: String,
     pub from: Option<String>,
     pub branch: Option<String>,
+    /// Extra refs the job may read (`--with`); when any are given they beat
+    /// `with:` body lines, which [`job::resolve_with`] applies otherwise.
+    pub with: Vec<String>,
     pub budget: Option<u64>,
     /// Allow pushing to the repository's default branch.
     pub allow_default_branch: bool,
@@ -72,6 +75,13 @@ pub fn plan_job(
     })?;
     job::check_model(&flags.model, &harness.models)?;
     let refs = plan_refs(flags, body)?;
+    let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
+        .into_iter()
+        .map(|name| job::WithRef {
+            name,
+            commit: String::new(),
+        })
+        .collect();
     let budget = flags.budget.unwrap_or(DEFAULT_BUDGET_SECS);
     if !BUDGET_RANGE.contains(&budget) {
         return Err(VivariumError::Message(format!(
@@ -89,6 +99,7 @@ pub fn plan_job(
         brief: body.to_string(),
         rules,
         refs,
+        with,
         model: flags.model.clone(),
         budget,
         depth: config.fetch_depth(),
@@ -242,6 +253,11 @@ pub fn dispatch(
         from: plan.refs.from.clone(),
         branch: plan.refs.branch.clone(),
         start: launch.start.to_string(),
+        with: plan
+            .with
+            .iter()
+            .map(|w| format!("{}@{}", w.name, w.commit.get(..12).unwrap_or(&w.commit)))
+            .collect(),
         budget: plan.budget,
         at: now,
         read_only: plan.read_only,

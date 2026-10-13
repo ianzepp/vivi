@@ -13,6 +13,7 @@ fn record(job: &str) -> DispatchRecord {
         from: "main".into(),
         branch: "factory/a".into(),
         start: "a".repeat(40),
+        with: Vec::new(),
         budget: 600,
         at: 1000,
         read_only: false,
@@ -71,6 +72,28 @@ fn dispatch_note_round_trips() {
     let back: DispatchRecord = serde_json::from_str(&dispatch_note(&r)).unwrap();
     assert_eq!(back, r);
     assert!(dispatch_text(&r).contains("branch factory/a"));
+}
+
+#[test]
+fn a_record_round_trips_with_and_without_extra_refs() {
+    let mut r = record("j1");
+    r.with = vec!["review/aaa@aaaaaaaaaaaa".into(), "b@bbbbbbbbbbbb".into()];
+    let back: DispatchRecord = serde_json::from_str(&dispatch_note(&r)).unwrap();
+    assert_eq!(back, r);
+    let none = record("j1");
+    assert!(
+        !dispatch_note(&none).contains("\"with\""),
+        "a record with none carries no field"
+    );
+    let old: DispatchRecord = serde_json::from_str(
+        "{\"slot\":\"s\",\"machine\":\"m\",\"job\":\"j\",\"model\":\"m/x\",\
+         \"from\":\"main\",\"branch\":\"b\",\"start\":\"c\",\"budget\":1,\"at\":0}",
+    )
+    .unwrap();
+    assert!(
+        old.with.is_empty(),
+        "a record made before extra refs existed reads as none"
+    );
 }
 
 fn finished() -> Outcome {

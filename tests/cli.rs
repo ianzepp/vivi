@@ -1306,6 +1306,31 @@ fn parses_pool_dispatch_read_only_and_refuses_a_branch_with_it() {
 }
 
 #[test]
+fn parses_pool_dispatch_with_refs() {
+    use vivi::cli::PoolSubcommand;
+    let parse = |extra: &[&str]| {
+        let mut args = vec!["vivi", "pool", "dispatch", "abcd1234", "--model", "m/x"];
+        args.extend(extra);
+        Cli::try_parse_from(args).map(|cli| match cli.command {
+            Command::Pool {
+                command: PoolSubcommand::Dispatch(d),
+            } => d.with,
+            _ => panic!("expected pool dispatch"),
+        })
+    };
+    assert!(parse(&[]).unwrap().is_empty());
+    assert_eq!(
+        parse(&["--with", "review/aaa", "--with", "review/bbb"]).unwrap(),
+        ["review/aaa", "review/bbb"]
+    );
+    assert_eq!(
+        parse(&["--read-only", "--with", "review/aaa"]).unwrap(),
+        ["review/aaa"],
+        "a read-only job may name extra refs"
+    );
+}
+
+#[test]
 fn parses_pool_doctor_test_and_long() {
     use vivi::cli::PoolSubcommand;
     let parse = |extra: &[&str]| {

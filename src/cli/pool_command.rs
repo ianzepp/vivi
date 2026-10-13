@@ -81,6 +81,13 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub branch: Option<String>,
 
+    /// Extra ref the job may read besides where it starts, repeatable, at
+    /// most 8 (default: every `with: <ref>` line of the task body, in order;
+    /// flags win when both are given). Each is resolved to a commit before a
+    /// slot is claimed
+    #[arg(long, value_name = "REF")]
+    pub with: Vec<String>,
+
     /// Publish nothing: check `--from` out detached, run the agent, then
     /// discard whatever it changed (listed on the result); no commit, no
     /// push, a token that cannot push. Excludes `--branch`

@@ -207,6 +207,58 @@ fn a_continue_of_a_branch_that_does_not_exist_is_refused() {
 }
 
 #[test]
+fn an_unknown_with_ref_is_refused_before_a_slot_is_claimed() {
+    let rig = rig("");
+    let (ok, said) = dispatch(&rig, "main", "feat/new", &["--with", "nope/ref"]);
+    assert!(!ok && said.contains("nope/ref"), "{said}");
+    assert!(
+        said.contains(rig.repo.to_str().unwrap()),
+        "the refusal names the repository: {said}"
+    );
+    nothing_was_made(&rig);
+}
+
+#[test]
+fn an_unknown_with_ref_in_the_body_is_refused_before_a_slot_is_claimed() {
+    let rig = rig("");
+    let sent = vivi(&[
+        "task",
+        "send",
+        "--project",
+        rig.project.to_str().unwrap(),
+        "--from",
+        "mind",
+        "--to",
+        "hand",
+        "--subject",
+        "body names a ref",
+        "--body",
+        "from: main\nbranch: feat/new\nwith: nope/ref\n",
+    ]);
+    assert!(sent.status.success());
+    let task = String::from_utf8_lossy(&sent.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("created hand "))
+        .and_then(|r| r.split_whitespace().next())
+        .map(str::to_string)
+        .expect("a task handle");
+    let out = vivi(&[
+        "pool",
+        "dispatch",
+        "--pool",
+        "wt",
+        &task,
+        "--model",
+        "standin",
+        "--project",
+        rig.project.to_str().unwrap(),
+    ]);
+    let said = text(&out);
+    assert!(!out.status.success() && said.contains("nope/ref"), "{said}");
+    nothing_was_made(&rig);
+}
+
+#[test]
 fn a_pool_table_with_both_worktree_of_and_repo_is_an_error_before_anything_runs() {
     let rig = rig("");
     let config = rig.project.join(".vivi/mailspace.toml");
