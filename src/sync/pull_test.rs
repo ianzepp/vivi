@@ -371,8 +371,78 @@ fn a_letter_naming_no_role_here_is_held_under_its_first_to_address() {
     );
 }
 
+/// A vouch letter as the vouch verb writes it: From the sender's own member
+/// name, To `postmaster` in its own domain, envelope `postmaster`.
+fn vouch(fx: &Checkout, sequence: u64, id: &str) -> Record {
+    let domain = fx.mailspace.legacy_domain();
+    let bytes = eml_from(
+        &format!("burgus@{domain}"),
+        &format!("postmaster@{domain}"),
+        "vouch pharos",
+    );
+    let mut record = record(sequence, id, "burgus", Some("mail"), &bytes);
+    record.to = Some("postmaster".into());
+    record
+}
+
+#[test]
+fn a_vouch_letter_to_postmaster_is_governance_and_files_nothing() {
+    let fx = bob();
+
+    let report = pull_canned(&fx, vec![vouch(&fx, 1, ID_A)]);
+
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert_eq!(
+        report.governance, 1,
+        "counted, not silent: {:?}",
+        report.filed
+    );
+    assert!(report.filed.is_empty(), "{:?}", report.filed);
+    assert!(
+        report.unknown_roles.is_empty(),
+        "{:?}",
+        report.unknown_roles
+    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(fx.rows().is_empty(), "no row at all: {:?}", fx.rows());
+    let summary = report.summary();
+    assert!(summary.contains("1 governance letter(s)"), "{summary}");
+    assert!(!summary.contains("held for unknown role(s)"), "{summary}");
+
+    // Case aside, and by the To header alone: any domain names governance.
+    let bytes = eml_from(
+        "alice@example.com",
+        "POSTMASTER@Example.ORG",
+        "to the office",
+    );
+    let report = pull_canned(&fx, vec![record(2, ID_B, "alice", Some("mail"), &bytes)]);
+    assert_eq!(report.governance, 1);
+    assert!(
+        report.unknown_roles.is_empty(),
+        "{:?}",
+        report.unknown_roles
+    );
+    assert!(fx.rows().is_empty(), "{:?}", fx.rows());
+}
+
+#[test]
+fn the_cursor_moves_past_a_governance_letter_and_a_second_pull_fetches_nothing() {
+    let fx = bob();
+
+    let report = pull_canned(&fx, vec![vouch(&fx, 4, ID_A)]);
+    assert_eq!(report.cursor, 4, "the cursor advanced past it");
+    let state = SyncState::load(&sync_dir(&fx.mailspace.dir), PROJECT).unwrap();
+    assert_eq!(state.since, 4);
+
+    let second = pull_canned(&fx, Vec::new());
+    assert_eq!(second.fetched, 0, "a second pull fetches nothing new");
+    assert_eq!(second.governance, 0);
+    assert_eq!(second.cursor, 4);
+    assert!(fx.rows().is_empty());
+}
+
 /// A pulled world with one need for a local role, one for another
-/// mailspace's role, and a governance letter held under `postmaster`.
+/// mailspace's role, and a governance letter no role files.
 fn foreign_world() -> (Checkout, StoredMessageView, StoredMessageView) {
     let fx = bob();
     let letters = vec![
@@ -549,7 +619,11 @@ fn envelope_case_order_duplicates_absence_and_postmaster_are_not_mismatches() {
     let report = pull_canned(&fx, vec![shuffled, absent, governance]);
 
     assert!(report.refused.is_empty(), "{:?}", report.refused);
-    assert_eq!(report.filed.get("inbox"), Some(&4), "{:?}", report.filed);
+    assert_eq!(report.filed.get("inbox"), Some(&3), "{:?}", report.filed);
+    assert_eq!(
+        report.governance, 1,
+        "the postmaster envelope is governance"
+    );
 }
 
 #[test]

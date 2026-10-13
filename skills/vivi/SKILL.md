@@ -1712,6 +1712,13 @@ addressed to another mailspace's role is held under its address, so every
 member holds every work item without it landing in a local queue or the local
 backlog.
 
+**Governance letters.** A letter addressed to the reserved `postmaster` (any
+domain, case aside, by `To`, `Cc`, or envelope) is project governance — the
+vouch letter travels this way. A pull files it under no role: no inbox or sent
+copy, nothing held for an unknown name, and no unknown-role warning. It is not
+silent: the pull summary counts it as `N governance letter(s)`, and the cursor
+moves past it.
+
 **A push window.** `vivi sync push --since <age|date>` (the same forms as the
 pull window) sends only letters dated at or after that time. A push goes oldest
 first and a member may send 30 letters a minute, so a mailspace with a long

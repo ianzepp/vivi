@@ -13,7 +13,8 @@
 //! that role. If the From address names this mailspace too, also a `sent` row
 //! under the From role: exactly what a local send writes, so a restore from
 //! an empty store reproduces both. A letter with neither is held under its
-//! first To address.
+//! first To address. A letter addressed to the reserved `postmaster` is
+//! project governance: the pull counts it and files it under no role.
 
 use std::collections::BTreeMap;
 
@@ -58,6 +59,9 @@ pub struct PullReport {
     /// Letters filed this run under a role name this mailspace does not have,
     /// by name. They are held, not refused.
     pub unknown_roles: BTreeMap<String, usize>,
+    /// Governance letters: envelope or To/Cc names the reserved
+    /// `postmaster`. They are counted and filed under no role.
+    pub governance: usize,
     /// Content ids of the event letters and work items handled since the
     /// last settle, new or already held. Drained by [`settle_events`].
     pub touched: Vec<String>,
@@ -99,13 +103,16 @@ impl PullReport {
             };
             format!("{} refused: {ids}{tail}", self.refused.len())
         };
+        let governance = (self.governance > 0)
+            .then(|| format!(", {} governance letter(s)", self.governance))
+            .unwrap_or_default();
         let held = self
             .held_note()
             .map(|note| format!(", {note}"))
             .unwrap_or_default();
         format!(
-            "sync pull: {} fetched, {new}, {} already present, {} reply link(s), {refused}{held}{}, \
-             cursor {}",
+            "sync pull: {} fetched, {new}, {} already present, {} reply link(s), \
+             {refused}{governance}{held}{}, cursor {}",
             self.fetched,
             self.existing,
             self.linked,
