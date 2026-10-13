@@ -614,6 +614,12 @@ vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porce
   line, "no repository configured for this pool"). `create`, `scale` (when it
   would create) and `dispatch` fail naming the missing setting, and `dispatch`
   also needs `harness` and `committer`.
+- **The MCP bridge is a per-pool table too.** `[pools.<name>.bridge] enabled
+  = true` has every dispatch on the pool mint the job one project API key,
+  delivered only inside the job archive, so the slot reads its task from the
+  server and reports through `vivi mcp` as the minting member; the key is
+  revoked at collect and `pool destroy --all` sweeps the pool's leftovers.
+  See "MCP bridge" under Project Sync.
 
 #### Fetch depth
 
@@ -2048,9 +2054,57 @@ pi connects to stdio MCP servers through its `mcp.json`; the same `command`,
 VIVI_MCP_SERVER='https://<server>' --env VIVI_MCP_PROJECT_ID='<project id>'
 --env VIVI_MCP_API_KEY='<key from vivi sync api-key mint>' -- vivi mcp`.
 
-**Not built.** How a pool slot is handed its credential, and how the pool
-harness is told to load the bridge, are not part of this delivery. The bridge
-has been run against a staging server only; no production use.
+**The pool bridge.** A pool can hand each dispatched worker a credential, so
+the slot reads its task from the server and reports through the server's own
+tools instead of publishing only a Git branch. Turn it on per pool with
+`[pools.<name>.bridge] enabled = true`; there are no other settings — the
+server and the project the grant is for come from the mailspace's own `[sync]`
+table. A dispatch on a bridge pool mints exactly one project API key, labelled
+`pool-<pool>-<job>`, through the dispatching mailspace's member identity,
+after every refusal check and before a slot is claimed: a refused dispatch
+mints nothing, and a dispatch that fails after the mint revokes its key at
+once. The mint does talk to the `[sync]` server, so a dispatch on a bridge
+pool needs it reachable and is refused before a slot is touched when it is
+not. Only the key id is ever named: the raw key is never printed, never
+stored, and never in the mailspace config.
+
+Delivery is the job archive, like the Git token: the key is one root-only
+file in the archive (`bridge.key`), not a member of the harness `env` list,
+so it never appears on a command line. The runner reads it and hands the
+harness process three environment variables — `VIVI_MCP_API_KEY` plus
+`VIVI_MCP_SERVER` and `VIVI_MCP_PROJECT_ID` — and the agent sees the key only
+there; no file it can read holds it. The archive also carries an
+agent-visible `mcp.json`, the client configuration above with the key named
+only by reference (`${VIVI_MCP_API_KEY}`), so the generated file holds no
+secret; a harness template reaches it with the `{mcp_config}` placeholder,
+and a template that uses the placeholder on a pool whose bridge is off is
+refused. With a grant the brief is not the task text: it names the task
+handle and the tools — `show` for the task, `thread` for the conversation,
+`reply` with the receipt, `done` when the task says so — and the task text
+stays on the server.
+
+Two requirements. The `vivi` binary must exist on the slot's PATH, since the
+generated `mcp.json` runs `vivi mcp`: a Docker or Fly image installs it in
+`setup`, which runs as root once at seed time. And the task must have reached
+the server before dispatch — run `vivi sync --drain` first; the dispatch
+prints a reminder, since the worker reads the task from the server, not from
+the archive.
+
+The key does not outlive its job: it is revoked when its dispatch is
+collected — exactly the job's own key, never a sibling job's, another pool's,
+or a hand-minted one — and `pool destroy --all` revokes every live key still
+labelled for the pool, so nothing a lost or uncollected job minted survives
+the pool. A revoke that cannot be done only warns and names the manual
+command (`vivi sync api-key revoke <key_id>`); it never fails the collect or
+the destroy.
+
+Say plainly what identity the bridge works under: every slot action through
+it carries the minting member's identity, because the key was minted by that
+member — the server cannot tell a hand's report from the Mind's close — and
+per-role vouched members are a later refinement. The runner's own result is
+recorded on the task at collect whether or not the worker reports through
+the tools, so the fallback record exists even when the worker never reached
+the server.
 
 ## Safety
 
