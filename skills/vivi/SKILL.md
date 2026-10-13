@@ -1679,9 +1679,8 @@ existing mailspace; an existing one keeps its id and history. Never copy a
    `name.local` domain; they sync, but address replies to them explicitly.
 
 The vouch letter is addressed to `postmaster@<own address domain>`, and
-members' pulls do not file it under any role: a pull holds it for the
-unknown `postmaster` name instead, so no role folder and no backlog sees
-it.
+members' pulls file it under no role and hold nothing for it (see
+Governance letters below), so no role folder and no backlog sees it.
 
 Errors: `admission_required` means no vouch yet, or the name was admitted
 with another key (the server binds a name to the first key admitted and has

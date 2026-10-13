@@ -394,9 +394,9 @@ fn collect_unabsorbed(
             ..Default::default()
         },
     })?;
-    // Mail held under another mailspace's address (the governance vouch
-    // letter, other members' traffic) or for a role name this mailspace does
-    // not have is nobody's here to absorb.
+    // Mail held under another mailspace's address (other members' traffic)
+    // or for a role name this mailspace does not have is nobody's here to
+    // absorb.
     let records: Vec<_> = records
         .into_iter()
         .filter(|record| mailspace.is_local_account(&record.account))

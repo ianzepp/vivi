@@ -157,8 +157,8 @@ fn push_window(since: &str) -> Result<chrono::DateTime<chrono::Utc>, VivariumErr
 }
 
 /// One push pass; with `drain`, wait out the rate limit between passes. The
-/// sync lock is the caller's and stays held across all passes. The real wait
-/// is the only sleep in the codebase's sync paths; tests pass a no-op.
+/// sync lock is the caller's and stays held across all passes. The wait is a
+/// real sleep here; tests pass a no-op.
 fn run_push(
     mailspace: &Mailspace,
     settings: &SyncSettings,
