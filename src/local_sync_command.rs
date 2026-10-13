@@ -10,6 +10,7 @@ use vivi::sync::lock::SyncLock;
 use vivi::sync::prune as sync_prune;
 use vivi::sync::pull::PullPlan;
 use vivi::sync::state::SyncState;
+use vivi::sync::vouch::{compose_vouch, send_vouch};
 use vivi::sync::window::{parse_age, parse_since};
 use vivi::sync::{SyncSettings, pull, push, refs, sync_dir};
 
@@ -89,6 +90,21 @@ pub(crate) fn handle_sync_command(command: &SyncCommand) -> Result<(), VivariumE
         Some(SyncSubcommand::Join { project }) => join(project.as_deref().or(top)),
         Some(SyncSubcommand::Status { project }) => status(project.as_deref().or(top)),
         Some(SyncSubcommand::Directory { project }) => directory(project.as_deref().or(top)),
+        Some(SyncSubcommand::Key { project }) => key(project.as_deref().or(top)),
+        Some(SyncSubcommand::Create { name, project }) => {
+            create(project.as_deref().or(top), name.as_deref())
+        }
+        Some(SyncSubcommand::Vouch {
+            member,
+            key_file,
+            key,
+            project,
+        }) => vouch(
+            project.as_deref().or(top),
+            member,
+            key_file.as_deref(),
+            key.as_deref(),
+        ),
     }
 }
 
@@ -323,5 +339,97 @@ fn directory(project: Option<&Path>) -> Result<(), VivariumError> {
     for member in transport.directory()? {
         println!("{}", member.line());
     }
+    Ok(())
+}
+
+/// Local only: no [sync] table, no server, no network. Mints the key when
+/// the mailspace has none.
+fn key(project: Option<&Path>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    println!("{}", identity.public_key_pem());
+    Ok(())
+}
+
+/// Create the project on the server and print its id. Writes nothing: the
+/// operator puts the printed id into [sync] and runs `vivi sync join`.
+fn create(project: Option<&Path>, creator: Option<&str>) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let config = mailspace.config.sync.clone().unwrap_or_default();
+    let server = config
+        .server
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            VivariumError::Config(
+                "[sync] server is not set; set server = \"...\" in mailspace.toml (the project \
+                 server URL)"
+                    .into(),
+            )
+        })?;
+    let creator_name = creator
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || {
+                config
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(String::from)
+                    .ok_or_else(|| {
+                        VivariumError::Config(
+                            "no creator name: pass --name CREATOR or set [sync] name in \
+                             mailspace.toml"
+                                .into(),
+                        )
+                    })
+            },
+            |value| Ok(value.to_string()),
+        )?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let project_id = http::create_project(server, &identity, &creator_name)?;
+    println!("project {project_id}");
+    println!("creator {creator_name}");
+    println!(
+        "write project = \"{project_id}\" to the [sync] table in mailspace.toml, then run \
+         vivi sync join"
+    );
+    Ok(())
+}
+
+/// Vouch for a member as this mailspace, already admitted: one governance
+/// letter to the postmaster. Nothing is stored or filed locally, so no sync
+/// lock is taken; the name and key are checked before any request is made.
+fn vouch(
+    project: Option<&Path>,
+    member: &str,
+    key_file: Option<&Path>,
+    key: Option<&str>,
+) -> Result<(), VivariumError> {
+    let pem = match (key_file, key) {
+        (Some(path), _) => std::fs::read_to_string(path)?,
+        (None, Some(key)) => key.to_string(),
+        (None, None) => {
+            return Err(VivariumError::Config(
+                "nothing to vouch: pass --key-file PATH or --key PEM".into(),
+            ));
+        }
+    };
+    let mailspace = Mailspace::discover(project)?;
+    let settings = SyncSettings::resolve(&mailspace)?;
+    let identity = SyncIdentity::ensure(&mailspace.dir)?;
+    let letter = compose_vouch(
+        &settings.name,
+        &mailspace.address_domain(),
+        member,
+        pem.trim(),
+        chrono::Utc::now(),
+    )?;
+    let transport = HttpTransport::new(&settings, &identity);
+    let appended = send_vouch(&transport, &letter)?;
+    println!("vouched {member} as {}", appended.message_id);
     Ok(())
 }

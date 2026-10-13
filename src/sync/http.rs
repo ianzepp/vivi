@@ -313,6 +313,44 @@ pub fn join(
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct Created {
+    project_id: String,
+}
+
+/// Create a project on `server` with this identity's public key and
+/// `creator_name` as the creator. No authorization header: the creator is
+/// not a member yet. Returns the server's new project id.
+///
+/// # Errors
+/// Returns an error when the server cannot be reached or answers anything
+/// but 200 or 201, naming the status and the server's code/detail.
+pub fn create_project(
+    server: &str,
+    identity: &SyncIdentity,
+    creator_name: &str,
+) -> Result<String, VivariumError> {
+    let base = server.trim_end_matches('/');
+    let (status, body) = request(
+        "POST",
+        &format!("{base}/v1/projects"),
+        Some(&json!({
+            "public_key_pem": identity.public_key_pem(),
+            "creator_name": creator_name,
+        })),
+        &[],
+    )?;
+    if status != 200 && status != 201 {
+        return Err(VivariumError::Message(format!(
+            "project server refused to create the project (HTTP {status}, {}): {}",
+            error_code(&body),
+            error_detail(&body)
+        )));
+    }
+    let created: Created = parse(&body)?;
+    Ok(created.project_id)
+}
+
 /// Mint a bearer for `[sync] name`: challenge, sign, `auth/token`.
 fn mint_bearer(settings: &SyncSettings, identity: &SyncIdentity) -> Result<String, VivariumError> {
     let challenge = fetch_challenge(settings, identity)?;
