@@ -186,14 +186,13 @@ fn handle(rig: &Rig, subject: &str) -> String {
         .expect("a task handle")
 }
 
-fn dispatch(rig: &Rig, subject: &str, branch: &str) -> (String, Output) {
-    let task = handle(rig, subject);
-    let out = vivi(&[
+fn dispatch_task(rig: &Rig, task: &str, branch: &str) -> Output {
+    vivi(&[
         "pool",
         "dispatch",
         "--pool",
         "p",
-        &task,
+        task,
         "--model",
         "m",
         "--from",
@@ -202,7 +201,12 @@ fn dispatch(rig: &Rig, subject: &str, branch: &str) -> (String, Output) {
         branch,
         "--project",
         rig.project.to_str().unwrap(),
-    ]);
+    ])
+}
+
+fn dispatch(rig: &Rig, subject: &str, branch: &str) -> (String, Output) {
+    let task = handle(rig, subject);
+    let out = dispatch_task(rig, &task, branch);
     (task, out)
 }
 
@@ -286,9 +290,10 @@ fn thread_bodies(rig: &Rig, task: &str) -> Vec<String> {
         .collect()
 }
 
-/// The push outcome the runner recorded on the task: the `push=` value in
-/// the collected reply of `job` (the reply whose first line is
-/// `pool result <job>: <outcome word>`).
+/// The push outcome the runner recorded on the task: the first word after
+/// `push: ` in the collected reply of `job` (the reply whose first line is
+/// `pool result <job>: <outcome word>`; the outcome line reads e.g.
+/// `push: committed <branch> <sha>` or `push: no_changes`).
 fn runner_result_word(rig: &Rig, task: &str, job: &str) -> String {
     let marker = format!("pool result {job}:");
     thread_bodies(rig, task)
@@ -296,10 +301,11 @@ fn runner_result_word(rig: &Rig, task: &str, job: &str) -> String {
         .find(|body| body.contains(&marker))
         .and_then(|body| {
             body.lines()
-                .find_map(|line| line.strip_prefix("push="))
+                .find_map(|line| line.strip_prefix("push: "))
+                .and_then(|rest| rest.split_whitespace().next())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| panic!("no `pool result {job}` with a `push=` on the thread of {task}"))
+        .unwrap_or_else(|| panic!("no `pool result {job}` with a `push: ` on the thread of {task}"))
 }
 
 /// Every file under `dir`, however deep (`dir` itself may be absent).
@@ -452,9 +458,14 @@ fn the_item_tools_read_and_record_against_a_seeded_item() {
 fn a_bridge_job_reads_its_task_and_reports_as_the_member() {
     let server = ProjectServer::start();
     let rig = rig(&server, true);
-    server.seed_item("t-e2e", "bridge work", "do the thing end to end");
 
-    let (task, out) = dispatch(&rig, "bridge work", "feat/e2e");
+    // The brief names the real mailspace task handle, so the fake must
+    // hold that same item: create the task, seed the fake with its
+    // handle, then dispatch.
+    let task = handle(&rig, "bridge work");
+    server.seed_item(&task, "bridge work", "do the thing end to end");
+
+    let out = dispatch_task(&rig, &task, "feat/e2e");
     let said = ok(&out);
     let job = job_of(&said);
 
@@ -490,7 +501,7 @@ fn a_bridge_job_reads_its_task_and_reports_as_the_member() {
     let show = &calls[0].body;
     assert_eq!(
         show["params"]["arguments"]["handle"].as_str(),
-        Some("t-e2e"),
+        Some(task.as_str()),
         "the brief's handle: {}",
         show
     );
@@ -510,11 +521,12 @@ fn a_bridge_job_reads_its_task_and_reports_as_the_member() {
             reports[0].by.as_str(),
             reports[0].item.as_str()
         ),
-        ("reply", "alice", "t-e2e"),
+        ("reply", "alice", task.as_str()),
         "the reply is recorded with the caller the key resolves to"
     );
     assert_eq!(reports[1].kind, "done");
     assert_eq!(reports[1].by, "alice");
+    assert_eq!(reports[1].item, task, "done targets the same item");
 
     no_file_holds(&rig.lanes, &key.secret, &key.key_id, "the job's slot");
     no_file_holds(
