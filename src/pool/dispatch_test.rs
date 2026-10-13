@@ -53,6 +53,7 @@ fn flags(model: &str) -> DispatchFlags {
         model: model.into(),
         from: Some("main".into()),
         branch: Some("factory/a".into()),
+        with: Vec::new(),
         budget: None,
         allow_default_branch: false,
         read_only: false,
@@ -380,6 +381,84 @@ fn a_read_only_job_needs_a_from_and_has_no_branch() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("not a plain commit or branch"), "{err}");
+}
+
+#[test]
+fn the_plan_carries_the_with_names_from_flags_or_body() {
+    let mut f = flags("m/ok");
+    f.with = vec!["review/aaa".into(), "review/bbb".into()];
+    let p = plan(&f).unwrap();
+    assert_eq!(
+        p.with
+            .iter()
+            .map(|w| (w.name.as_str(), w.commit.as_str()))
+            .collect::<Vec<_>>(),
+        [("review/aaa", ""), ("review/bbb", "")],
+        "the commit is filled later, before a slot is claimed"
+    );
+    let body = "work\nwith: review/ccc\n- with: review/ddd\n";
+    let p = plan_job(
+        &config(),
+        "p",
+        ("t", "s", body),
+        &flags("m/ok"),
+        "r".into(),
+        "j".into(),
+    )
+    .unwrap();
+    let names: Vec<&str> = p.with.iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(names, ["review/ccc", "review/ddd"]);
+    let mut f = flags("m/ok");
+    f.with = vec!["review/eee".into()];
+    let p = plan_job(&config(), "p", ("t", "s", body), &f, "r".into(), "j".into()).unwrap();
+    let names: Vec<&str> = p.with.iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(names, ["review/eee"], "flags beat the body");
+    let mut f = flags("m/ok");
+    f.with = vec!["main".into()];
+    let err = plan(&f).unwrap_err().to_string();
+    assert!(err.contains("main") && err.contains("start ref"), "{err}");
+}
+
+#[test]
+fn a_read_only_plan_accepts_with_refs() {
+    let mut f = read_only(Some("main"), None);
+    f.with = vec!["review/aaa".into()];
+    let p = plan(&f).unwrap();
+    assert!(p.read_only);
+    assert_eq!(p.with[0].name, "review/aaa");
+}
+
+#[test]
+fn the_dispatch_record_carries_the_extra_refs() {
+    let fake = Fake::default();
+    fake.add(slot("m1", "p-slot-1", "stopped", "p", 1));
+    let mut p = plan(&flags("m/ok")).unwrap();
+    p.with = vec![
+        job::WithRef {
+            name: "review/aaa".into(),
+            commit: "a".repeat(40),
+        },
+        job::WithRef {
+            name: "bb034af1".into(),
+            commit: FULL.to_string(),
+        },
+    ];
+    let made = go(
+        &fake,
+        &pid("p"),
+        &p,
+        &Secret::new("t".into()),
+        &"c".repeat(40),
+        5000,
+    )
+    .unwrap();
+    assert_eq!(
+        made.with,
+        [
+            format!("review/aaa@{}", "a".repeat(12)),
+            format!("bb034af1@{}", &FULL[..12]),
+        ]
+    );
 }
 
 #[test]

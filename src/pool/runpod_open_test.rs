@@ -463,6 +463,7 @@ fn the_uncollected_note_states_the_cost_and_the_unverified_deadline() {
         from: "main".into(),
         branch: "b".into(),
         start: "a".repeat(40),
+        with: Vec::new(),
         budget: 600,
         at: NOW,
         read_only: false,

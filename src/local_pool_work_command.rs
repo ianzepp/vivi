@@ -111,6 +111,7 @@ fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
         model: command.model.clone(),
         from: command.from.clone(),
         branch: command.branch.clone(),
+        with: command.with.clone(),
         budget: command.budget,
         allow_default_branch: command.allow_default_branch,
         read_only: command.read_only,
@@ -120,7 +121,7 @@ fn dispatch_flags(command: &PoolDispatchCommand) -> DispatchFlags {
 /// The human line of a dispatch.
 fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> String {
     format!(
-        "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s{}",
+        "dispatched {task}  {}  {}  job {}  model {}  from {} ({})  {}  budget {}s{}{}",
         made.pool,
         made.slot,
         made.job,
@@ -137,8 +138,18 @@ fn dispatched_text(task: &str, made: &vivi::pool::record::DispatchRecord) -> Str
             String::new()
         } else {
             format!("  hardware {}", made.hardware)
-        }
+        },
+        with_suffix(made),
     ) + &abandoned_suffix(made)
+}
+
+/// `  with ref@commit12 ...` when the job names extra refs.
+fn with_suffix(made: &vivi::pool::record::DispatchRecord) -> String {
+    if made.with.is_empty() {
+        String::new()
+    } else {
+        format!("  with {}", made.with.join(" "))
+    }
 }
 
 /// `  abandoned ...` when pods were given up on before the one that works.
@@ -200,7 +211,51 @@ fn remote_start(
     progress.say(&format!("resolving {}", plan.refs.from));
     let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
     plan.refs.from = dispatch::full_from(&plan.refs.from, &start);
+    resolve_with_github(&token, access.repo, plan, progress)?;
     Ok((token, start))
+}
+
+/// Resolve each extra ref of the plan against the remote repository, with the
+/// same token, before any slot is claimed: an unknown ref is a refusal and
+/// never a spent job. An abbreviated hash becomes the full commit, which the
+/// job then carries in `with.list`.
+fn resolve_with_github(
+    token: &Secret,
+    repo: &str,
+    plan: &mut job::JobPlan,
+    progress: &Progress,
+) -> Result<(), VivariumError> {
+    for with in &mut plan.with {
+        progress.say(&format!("resolving {}", with.name));
+        let commit = github::resolve_base(token, repo, Some(&with.name))?;
+        with.name = dispatch::full_from(&with.name, &commit);
+        with.commit = commit;
+    }
+    Ok(())
+}
+
+/// Resolve each extra ref of the plan in the source repository of a worktree
+/// pool, before any slot is claimed. The refs live in the shared repository,
+/// so nothing is fetched later, but the job records them in `with.list`.
+fn resolve_with_local(
+    path: &std::path::Path,
+    plan: &mut job::JobPlan,
+    progress: &Progress,
+) -> Result<(), VivariumError> {
+    let repo = Repo::new(path);
+    for with in &mut plan.with {
+        progress.say(&format!("resolving {} in {}", with.name, path.display()));
+        let Some(commit) = repo.commit_of(&with.name) else {
+            return Err(VivariumError::Message(format!(
+                "cannot resolve with ref \"{}\" to a commit in {}",
+                with.name,
+                path.display()
+            )));
+        };
+        with.name = dispatch::full_from(&with.name, &commit);
+        with.commit = commit;
+    }
+    Ok(())
 }
 
 /// Where a job on a worktree pool starts: the branch decision, made against
@@ -219,6 +274,7 @@ fn worktree_start(
     let checkout = local_branch::prepare(&Repo::new(path), &plan.refs, allow_default)?;
     let start = checkout.start.clone();
     plan.checkout = Some(checkout);
+    resolve_with_local(path, plan, progress)?;
     Ok((Secret::new(String::new()), start))
 }
 
@@ -237,6 +293,7 @@ fn worktree_read_only_start(
     let checkout = local_branch::prepare_read_only(&Repo::new(path), &plan.refs.from)?;
     let start = checkout.start.clone();
     plan.checkout = Some(checkout);
+    resolve_with_local(path, plan, progress)?;
     Ok((Secret::new(String::new()), start))
 }
 
@@ -312,3 +369,7 @@ pub(crate) fn reconcile(command: &PoolReconcileCommand) -> Result<(), VivariumEr
     report.warnings.iter().for_each(|w| eprintln!("{w}"));
     report.error().map_or(Ok(()), Err)
 }
+
+#[cfg(test)]
+#[path = "local_pool_work_command_test.rs"]
+mod tests;

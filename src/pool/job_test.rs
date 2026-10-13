@@ -23,6 +23,7 @@ fn plan() -> JobPlan {
             from: "main".into(),
             branch: "factory/x".into(),
         },
+        with: Vec::new(),
         model: "zai/glm-5.3-flash".into(),
         budget: 900,
         depth: 1,
@@ -122,6 +123,67 @@ fn refs_must_be_plain_names() {
     assert!(plain_ref("factory/vivi-pool-smoke-1.a_b"));
     assert!(resolve_refs(Some("main"), Some("b.lock"), "").is_err());
     assert!(resolve_refs(Some("-evil"), Some("b"), "").is_err());
+}
+
+#[test]
+fn with_flags_beat_the_body_and_body_lines_keep_their_order() {
+    let body = "do it\n- with: review/bbb\n* WITH: review/aaa\n\
+        with: ignored, flags won\nwith:\nwith: two words\nfrom: main\n";
+    assert_eq!(
+        resolve_with(&[], body, "main", "factory/x").unwrap(),
+        ["review/bbb", "review/aaa"]
+    );
+    assert_eq!(
+        resolve_with(&["review/zzz".into()], body, "main", "factory/x").unwrap(),
+        ["review/zzz"]
+    );
+    assert!(
+        resolve_with(&[], "nothing here", "main", "factory/x")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn with_refs_drop_duplicates_and_refuse_the_rest() {
+    assert_eq!(
+        resolve_with(
+            &["review/a".into(), "review/b".into(), "review/a".into()],
+            "",
+            "main",
+            "factory/x"
+        )
+        .unwrap(),
+        ["review/a", "review/b"]
+    );
+    assert_eq!(
+        resolve_with(&[], "with: r/a\nwith: r/a\n", "main", "b").unwrap(),
+        ["r/a"]
+    );
+    for (value, needle) in [
+        ("main", "start ref"),
+        ("factory/x", "push target"),
+        ("-evil", "not a plain"),
+        ("a..b", "not a plain"),
+    ] {
+        let err = resolve_with(&[value.into()], "", "main", "factory/x")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(value) && err.contains(needle), "{err}");
+    }
+    let nine: Vec<String> = (1..=9).map(|i| format!("review/{i}")).collect();
+    let err = resolve_with(&nine, "", "main", "factory/x")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("at most 8") && err.contains("9 given"),
+        "{err}"
+    );
+    let eight: Vec<String> = (1..=8).map(|i| format!("review/{i}")).collect();
+    assert_eq!(
+        resolve_with(&eight, "", "main", "factory/x").unwrap().len(),
+        8
+    );
 }
 
 #[test]
@@ -344,5 +406,44 @@ fn the_facts_travel_as_one_command_per_line_and_only_when_there_are_some() {
     assert!(
         !bundle.agent_visible().iter().any(|f| f.name == "facts.cmd"),
         "facts are the runner's, not the agent's"
+    );
+}
+
+#[test]
+fn the_extra_refs_travel_as_with_list_and_only_when_there_are_some() {
+    let names = |p: &JobPlan| -> Vec<&'static str> {
+        build_bundle(p, "s", &Secret::new("t".into()))
+            .files
+            .iter()
+            .map(|f| f.name)
+            .collect()
+    };
+    assert!(!names(&plan()).contains(&"with.list"));
+    let mut p = plan();
+    p.with = vec![
+        WithRef {
+            name: "bb034af1".into(),
+            commit: "b".repeat(40),
+        },
+        WithRef {
+            name: "review/aaa".into(),
+            commit: "a".repeat(40),
+        },
+    ];
+    let bundle = build_bundle(&p, "s", &Secret::new("t".into()));
+    let file = bundle.files.iter().find(|f| f.name == "with.list").unwrap();
+    assert_eq!(file.mode, 0o600);
+    assert_eq!(
+        String::from_utf8_lossy(&file.content),
+        format!(
+            "bb034af1 {}\nreview/aaa {}\n",
+            "b".repeat(40),
+            "a".repeat(40)
+        )
+    );
+    let visible = bundle.agent_visible().iter().any(|f| f.name == "with.list");
+    assert!(
+        !visible,
+        "the refs are the runner's to fetch, not the brief"
     );
 }

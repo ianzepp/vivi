@@ -20,6 +20,7 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
             from: "main".into(),
             branch: "factory/a".into(),
             start: "f".repeat(40),
+            with: Vec::new(),
             budget: 600,
             at,
             read_only: false,

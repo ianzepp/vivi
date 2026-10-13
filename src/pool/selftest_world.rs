@@ -261,6 +261,7 @@ impl<'a> World<'a> {
             model: source::MODEL.to_string(),
             from: Some(refs.0.to_string()),
             branch: Some(refs.1.to_string()),
+            with: Vec::new(),
             budget: Some(budget),
             allow_default_branch: true,
             read_only: false,

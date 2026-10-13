@@ -25,6 +25,10 @@ pub struct DispatchRecord {
     pub branch: String,
     /// Commit `from` resolved to when the job was dispatched.
     pub start: String,
+    /// Extra refs the job may read, each as `ref@<12 characters of the
+    /// commit>`. A record made before extra refs existed reads as none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with: Vec<String>,
     pub budget: u64,
     /// Dispatch time, epoch seconds.
     pub at: u64,
