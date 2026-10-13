@@ -12,7 +12,7 @@ fn no_env() -> impl Fn(&str) -> Option<String> {
 }
 
 /// An environment lookup backed by a fixed table.
-fn env_of(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + '_ {
+fn env_of<'a>(vars: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
     let table: Vec<(String, String)> = vars
         .iter()
         .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
@@ -22,6 +22,7 @@ fn env_of(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + '_ {
             .iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.clone())
+            .filter(|value| !value.is_empty())
     }
 }
 
@@ -182,7 +183,7 @@ fn an_api_key_with_a_name_or_key_file_is_refused() {
         flags_with(Some("http://s"), Some("p"), Some("alice"), None),
         flags_with(Some("http://s"), Some("p"), None, Some("/keys/alice.key")),
     ] {
-        let error = resolve(&flags, env, nothing()).expect_err("refused");
+        let error = resolve(&flags, &env, nothing()).expect_err("refused");
         assert!(
             error.to_string().contains("not both"),
             "unexpected refusal: {error}"
@@ -304,9 +305,51 @@ fn a_mailspace_lookup_error_is_passed_through() {
 #[test]
 fn an_empty_environment_value_counts_as_unset() {
     let flags = flags_with(None, None, None, None);
-    let env = env_of(&[(ENV_SERVER, ""), (ENV_PROJECT_ID, ""), (ENV_NAME, "")]);
+    let env = env_of(&[
+        (ENV_SERVER, ""),
+        (ENV_PROJECT_ID, ""),
+        (ENV_NAME, ""),
+        (ENV_KEY_FILE, ""),
+        (ENV_API_KEY, ""),
+    ]);
 
     let error = resolve(&flags, env, nothing()).expect_err("empty means unset");
 
     assert!(error.to_string().contains("VIVI_MCP_SERVER"), "{error}");
+}
+
+#[test]
+fn resolve_itself_treats_an_empty_value_as_unset() {
+    // No filtering in the lookup at all: every variable is Some("").
+    let flags = flags_with(
+        Some("http://server"),
+        Some("proj"),
+        Some("alice"),
+        Some("/keys/alice.key"),
+    );
+
+    let resolved = resolve(&flags, |_| Some(String::new()), nothing()).expect("resolves");
+
+    assert!(matches!(resolved.credential, PendingCredential::KeyFile(_)));
+}
+
+#[test]
+fn the_mailspace_key_without_a_name_anywhere_is_refused() {
+    let flags = McpFlags::default();
+
+    let error = resolve(
+        &flags,
+        no_env(),
+        finding(space(Some("http://sync"), Some("syncproj"), None)),
+    )
+    .expect_err("refused");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("the mailspace key needs its member name"),
+        "{message}"
+    );
+    assert!(message.contains("--name"), "{message}");
+    assert!(message.contains("VIVI_MCP_NAME"), "{message}");
+    assert!(message.contains("[sync] name"), "{message}");
 }

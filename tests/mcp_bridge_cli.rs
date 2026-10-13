@@ -11,7 +11,7 @@ mod project_server;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -59,10 +59,35 @@ impl Bridge {
         self.read_json(context)
     }
 
-    /// Close stdin and wait for the child to exit on its own; a child that
-    /// will not die is killed and fails the test.
+    /// Close stdin, drain stdout to EOF through the same timeout reader,
+    /// then wait for the child to exit on its own; every line still arriving
+    /// must be a JSON object speaking JSON-RPC 2.0, and a child that will
+    /// not die is killed and fails the test.
     fn finish(mut self) -> (ExitStatus, String) {
         drop(self.stdin);
+        loop {
+            match self.lines.recv_timeout(HANG) {
+                Ok(line) => {
+                    let parsed: Value = serde_json::from_str(&line).unwrap_or_else(|error| {
+                        panic!("stdout after stdin closed is not JSON ({error}): {line}")
+                    });
+                    assert!(
+                        parsed.is_object(),
+                        "stdout after stdin closed is not a JSON object: {line}"
+                    );
+                    assert_eq!(
+                        parsed["jsonrpc"], "2.0",
+                        "stdout after stdin closed is not JSON-RPC 2.0: {line}"
+                    );
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!(
+                        "stdout did not reach EOF within 20s after stdin closed; the bridge hung"
+                    );
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
         let deadline = Instant::now() + HANG;
         loop {
             match self.child.try_wait().expect("poll the bridge") {
@@ -118,7 +143,7 @@ fn spawn(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Bridge {
 
 /// A `vivi mcp` command for a run with no interactive stdio: stdin is null,
 /// so the bridge sees an immediate EOF, and stdout/stderr are captured.
-fn run_mcp(cwd: Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+fn run_mcp(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     mcp_command(&cwd, args, envs)
         .output()
         .expect("run vivi mcp")
@@ -206,16 +231,16 @@ fn assert_no_token(server: &ProjectServer, stderr: &str, context: &str) {
 
 /// The identity flags every member-credential child run needs, pointing at
 /// the scratch mailspace's seed file.
-fn identity_flags<'a>(server: &'a ProjectServer, key_file: &'a Path) -> Vec<&'a str> {
+fn identity_flags(server: &ProjectServer, key_file: &Path) -> Vec<String> {
     vec![
-        "--server",
-        &server.url(),
-        "--project-id",
-        server.project(),
-        "--name",
-        "alice",
-        "--key-file",
-        &key_file.to_string_lossy(),
+        "--server".to_string(),
+        server.url(),
+        "--project-id".to_string(),
+        server.project().to_string(),
+        "--name".to_string(),
+        "alice".to_string(),
+        "--key-file".to_string(),
+        key_file.to_string_lossy().into_owned(),
     ]
 }
 
@@ -226,7 +251,9 @@ fn identity_flags_only_in_an_empty_directory_serve_the_pass_through() {
     let key_file = scratch.path().join(".vivi/chat/identity.ed25519");
     let empty = tempfile::tempdir().expect("empty tempdir");
 
-    let mut bridge = spawn(empty.path(), &identity_flags(&server, &key_file), &[]);
+    let identity = identity_flags(&server, &key_file);
+    let identity: Vec<&str> = identity.iter().map(String::as_str).collect();
+    let mut bridge = spawn(empty.path(), &identity, &[]);
 
     let init = bridge.exchange(&initialize_request(1), "initialize");
     assert_eq!(init["id"], 1);
@@ -273,7 +300,9 @@ fn a_401_renews_once_and_the_call_still_is_answered() {
     let key_file = scratch.path().join(".vivi/chat/identity.ed25519");
     let empty = tempfile::tempdir().expect("empty tempdir");
 
-    let mut bridge = spawn(empty.path(), &identity_flags(&server, &key_file), &[]);
+    let identity = identity_flags(&server, &key_file);
+    let identity: Vec<&str> = identity.iter().map(String::as_str).collect();
+    let mut bridge = spawn(empty.path(), &identity, &[]);
     bridge.exchange(&initialize_request(1), "initialize");
     server.refuse_mcp_next(1);
 
@@ -301,7 +330,9 @@ fn a_server_that_keeps_refusing_answers_errors_and_keeps_serving() {
     let key_file = scratch.path().join(".vivi/chat/identity.ed25519");
     let empty = tempfile::tempdir().expect("empty tempdir");
 
-    let mut bridge = spawn(empty.path(), &identity_flags(&server, &key_file), &[]);
+    let identity = identity_flags(&server, &key_file);
+    let identity: Vec<&str> = identity.iter().map(String::as_str).collect();
+    let mut bridge = spawn(empty.path(), &identity, &[]);
     server.refuse_mcp_always();
 
     let numeric = bridge.exchange(

@@ -97,14 +97,14 @@ pub fn resolve(
     env: impl Fn(&str) -> Option<String>,
     mailspace: impl Fn() -> Result<Option<MailspaceSource>, VivariumError>,
 ) -> Result<Resolved, VivariumError> {
-    let env_server = env(ENV_SERVER);
-    let env_project = env(ENV_PROJECT_ID);
-    let env_name = env(ENV_NAME);
-    let api_key = env(ENV_API_KEY);
+    let env_server = non_empty(env(ENV_SERVER));
+    let env_project = non_empty(env(ENV_PROJECT_ID));
+    let env_name = non_empty(env(ENV_NAME));
+    let api_key = non_empty(env(ENV_API_KEY));
     let key_file = flags
         .key_file
         .clone()
-        .or_else(|| env(ENV_KEY_FILE).map(PathBuf::from));
+        .or_else(|| non_empty(env(ENV_KEY_FILE)).map(PathBuf::from));
     if api_key.is_some() && (key_file.is_some() || flags.name.is_some() || env_name.is_some()) {
         return Err(VivariumError::Message(
             "give an API key or a member name and key file, not both: VIVI_MCP_API_KEY \
@@ -117,25 +117,7 @@ pub fn resolve(
         || (flags.project_id.is_none() && env_project.is_none())
         || (named && (key_file.is_none() || (flags.name.is_none() && env_name.is_none())));
     let source = if needed { mailspace()? } else { None };
-    let server = flags
-        .server
-        .clone()
-        .or(env_server)
-        .or_else(|| source.as_ref().and_then(|space| space.server.clone()));
-    let project = flags
-        .project_id
-        .clone()
-        .or(env_project)
-        .or_else(|| source.as_ref().and_then(|space| space.project.clone()));
-    let name = if named {
-        flags
-            .name
-            .clone()
-            .or(env_name)
-            .or_else(|| source.as_ref().and_then(|space| space.name.clone()))
-    } else {
-        None
-    };
+    let (server, project, name) = layered(flags, env_server, env_project, env_name, &source, named);
     let mut missing: Vec<String> = Vec::new();
     let server = required(
         server,
@@ -164,6 +146,40 @@ pub fn resolve(
     }
 }
 
+/// Each value as flag, else variable, else the `[sync]` table.
+fn layered(
+    flags: &McpFlags,
+    env_server: Option<String>,
+    env_project: Option<String>,
+    env_name: Option<String>,
+    source: &Option<MailspaceSource>,
+    named: bool,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let from_space = |pick: fn(&MailspaceSource) -> &Option<String>| {
+        source.as_ref().and_then(|space| pick(space).clone())
+    };
+    let server = flags
+        .server
+        .clone()
+        .or(env_server)
+        .or_else(|| from_space(|s| &s.server));
+    let project = flags
+        .project_id
+        .clone()
+        .or(env_project)
+        .or_else(|| from_space(|s| &s.project));
+    let name = if named {
+        flags
+            .name
+            .clone()
+            .or(env_name)
+            .or_else(|| from_space(|s| &s.name))
+    } else {
+        None
+    };
+    (server, project, name)
+}
+
 /// The credential to load, or `None` with a line in `missing` saying what
 /// would provide one.
 fn pick_credential(
@@ -188,7 +204,17 @@ fn pick_credential(
         return Some(PendingCredential::KeyFile(path.clone()));
     }
     match source {
-        Some(space) => Some(PendingCredential::MailspaceKey(key_path(&space.vivi_dir))),
+        Some(space) => {
+            if name.is_none() {
+                missing.push(
+                    "name: the mailspace key needs its member name; give --name <NAME>, or \
+                     set VIVI_MCP_NAME, or set [sync] name in mailspace.toml"
+                        .into(),
+                );
+                return None;
+            }
+            Some(PendingCredential::MailspaceKey(key_path(&space.vivi_dir)))
+        }
         None => {
             missing.push(
                 "credential: set VIVI_MCP_API_KEY, or give --name and --key-file \
@@ -199,6 +225,11 @@ fn pick_credential(
             None
         }
     }
+}
+
+/// An empty value counts as unset, whatever the caller's lookup returns.
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.is_empty())
 }
 
 /// Keep `value` or record `text` among the missing pieces.
