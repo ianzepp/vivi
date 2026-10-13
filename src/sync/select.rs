@@ -15,6 +15,7 @@ use crate::error::VivariumError;
 use crate::mailspace::effective_kind;
 use crate::storage::{Storage, StoredMessageView, is_traveling_id};
 use crate::sync::filer::forged_from;
+use crate::sync::kept::KeptLocal;
 use crate::sync::link;
 use crate::sync::{MAX_LETTER_BYTES, PROVIDER, SyncSettings};
 
@@ -51,6 +52,9 @@ pub enum SkipReason {
     NotTravelingId(String),
     /// Every sendable row already holds a binding to another remote.
     BoundElsewhere(String),
+    /// The operator recorded the letter as kept local: push no longer
+    /// tries it.
+    KeptLocal,
 }
 
 impl SkipReason {
@@ -85,6 +89,7 @@ impl SkipReason {
             Self::ForeignFrom(reason) => format!("{reason}; not uploaded"),
             Self::NotTravelingId(id) => format!("id {id} is not a traveling id"),
             Self::BoundElsewhere(remote) => format!("already bound to {remote}"),
+            Self::KeptLocal => "kept local".into(),
         }
     }
 }
@@ -107,7 +112,8 @@ pub struct Selection {
 impl Selection {
     /// Letters waiting to go: those a push would send, plus those it cannot
     /// (too large, or a From that claims another mailspace), which stay
-    /// unsent until someone acts.
+    /// unsent until someone acts. A letter kept local is settled by design
+    /// and not waiting.
     #[must_use]
     pub fn unsent(&self) -> usize {
         let stuck = self.skipped.iter().filter(|s| s.reason.undeliverable());
@@ -149,7 +155,9 @@ fn dated_before(date: &str, start: DateTime<Utc>) -> bool {
     DateTime::parse_from_rfc3339(date).is_ok_and(|date| date.with_timezone(&Utc) < start)
 }
 
-/// Choose the letters to push, oldest first.
+/// Choose the letters to push, oldest first. A letter whose content id is
+/// kept local is skipped as [`SkipReason::KeptLocal`] instead of classified:
+/// push no longer tries it.
 ///
 /// With a `window`, a letter dated before it is not sent: one a push would
 /// have sent is counted in `held_back`, and one a push would have skipped is
@@ -161,6 +169,7 @@ fn dated_before(date: &str, start: DateTime<Utc>) -> bool {
 pub fn select(
     storage: &Storage,
     settings: &SyncSettings,
+    kept: &KeptLocal,
     window: Option<DateTime<Utc>>,
 ) -> Result<Selection, VivariumError> {
     let mut groups: BTreeMap<String, Vec<StoredMessageView>> = BTreeMap::new();
@@ -178,6 +187,17 @@ pub fn select(
             continue;
         }
         let outside = window.is_some_and(|start| dated_before(&rows[0].date, start));
+        if kept.contains(&rows[0].content_id) {
+            // Kept local is settled by design, not this push's business;
+            // outside a window nothing is reported, as for any skip.
+            if !outside {
+                selection.skipped.push(Skipped {
+                    handle: wire_handle(&rows).to_string(),
+                    reason: SkipReason::KeptLocal,
+                });
+            }
+            continue;
+        }
         match classify(storage, &rows, settings.address_prefix())? {
             Ok(_) if outside => selection.held_back += 1,
             Ok(letter) => selection.letters.push(letter),
@@ -194,6 +214,16 @@ fn bound_here(row: &StoredMessageView, project: &str) -> bool {
     row.remote
         .as_ref()
         .is_some_and(|remote| remote.provider == PROVIDER && remote.remote_mailbox == project)
+}
+
+/// The row that names a kept letter: the first row no role excludes, else
+/// the first row — the same row [`classify`] would name first.
+fn wire_handle(rows: &[StoredMessageView]) -> &str {
+    rows.iter()
+        .find(|row| excluded_role(&row.local_role).is_none())
+        .unwrap_or(&rows[0])
+        .handle
+        .as_str()
 }
 
 fn excluded_role(role: &str) -> Option<SkipReason> {
