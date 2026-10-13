@@ -225,6 +225,7 @@ impl ProjectServer {
             created_by: member.to_string(),
             secret: secret.clone(),
             revoked: false,
+            revoked_at: None,
             created_at: rfc3339(now_secs()),
         });
         secret
