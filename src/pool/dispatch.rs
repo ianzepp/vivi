@@ -116,6 +116,25 @@ fn plan_refs(flags: &DispatchFlags, body: &str) -> Result<job::Refs, VivariumErr
     })
 }
 
+/// The `from` the job carries: `resolved` when `requested` is an abbreviated
+/// hash (4 to 39 hexadecimal characters, case-insensitive) whose commit
+/// `resolved` begins with, `requested` unchanged otherwise (a branch, a tag,
+/// a full hash). A Git server cannot resolve an abbreviated hash during
+/// `git fetch`, so the job must be handed the whole thing.
+#[must_use]
+pub fn full_from(requested: &str, resolved: &str) -> String {
+    let abbreviated = (4..40).contains(&requested.len())
+        && requested.chars().all(|c| c.is_ascii_hexdigit())
+        && resolved
+            .get(..requested.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(requested));
+    if abbreviated {
+        resolved.to_string()
+    } else {
+        requested.to_string()
+    }
+}
+
 /// What a read-only dispatch cannot promise on this pool, if anything: the
 /// confined providers (Docker, Fly) hold no credentials, so there is nothing
 /// to say there.

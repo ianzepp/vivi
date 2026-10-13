@@ -266,6 +266,57 @@ fn the_default_branch_is_refused_unless_allowed() {
     check_push_target("main", "trunk", false).unwrap();
 }
 
+const FULL: &str = "bb034af1000000000000000000000000000000ff";
+
+#[test]
+fn an_abbreviated_lowercase_hash_becomes_the_full_commit() {
+    assert_eq!(full_from("bb034af1", FULL), FULL);
+}
+
+#[test]
+fn an_abbreviated_uppercase_hash_becomes_the_full_commit() {
+    assert_eq!(full_from("BB034AF1", FULL), FULL);
+}
+
+#[test]
+fn a_full_hash_is_left_alone() {
+    assert_eq!(full_from(FULL, FULL), FULL);
+}
+
+#[test]
+fn a_branch_name_is_left_alone() {
+    assert_eq!(full_from("main", FULL), "main");
+    assert_eq!(full_from("factory/a", FULL), "factory/a");
+}
+
+#[test]
+fn a_hexadecimal_looking_branch_that_is_no_prefix_is_left_alone() {
+    assert_eq!(full_from("deadbeef", FULL), "deadbeef");
+}
+
+#[test]
+fn a_three_character_value_is_left_alone() {
+    assert_eq!(full_from("abc", FULL), "abc");
+}
+
+#[test]
+fn the_bundle_carries_whatever_from_the_plan_was_given() {
+    let mut p = plan(&flags("m/ok")).unwrap();
+    p.refs.from = "bb034af1".into();
+    // What remote_start does on a pool that fetches from the remote: the
+    // abbreviated hash is replaced by the resolved commit before the job is
+    // built, so params.env carries the full hash.
+    p.refs.from = full_from(&p.refs.from, FULL);
+    let bundle = build_bundle(&p, "p-slot-1", &Secret::new("t".into()));
+    let params = bundle
+        .files
+        .iter()
+        .find(|f| f.name == "params.env")
+        .unwrap();
+    let params = String::from_utf8_lossy(&params.content);
+    assert!(params.contains(&format!("FROM='{FULL}'\n")), "{params}");
+}
+
 #[test]
 fn the_dispatch_record_names_its_pool() {
     let fake = Fake::default();

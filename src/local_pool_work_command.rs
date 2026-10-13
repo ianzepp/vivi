@@ -72,7 +72,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (Some(path), false) => {
             worktree_start(&path, &mut plan, flags.allow_default_branch, &progress)?
         }
-        (None, _) => remote_start(config, &id.pool, &plan, &flags, &progress)?,
+        (None, _) => remote_start(config, &id.pool, &mut plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
     progress.say(&if provider.slot_lifetime() == SlotLifetime::PerDispatch {
@@ -174,12 +174,13 @@ fn read_only_notes(
 }
 
 /// Where a job on a remote pool starts: a GitHub token, the push target
-/// checked against the default branch, and `from` resolved to a commit. A
-/// read-only job gets a token that cannot push and has no push target.
+/// checked against the default branch, and `from` resolved to a commit, which
+/// replaces an abbreviated `from` in the plan (a Git server cannot fetch one).
+/// A read-only job gets a token that cannot push and has no push target.
 fn remote_start(
     config: &PoolConfig,
     pool: &str,
-    plan: &job::JobPlan,
+    plan: &mut job::JobPlan,
     flags: &dispatch::DispatchFlags,
     progress: &Progress,
 ) -> Result<(Secret, String), VivariumError> {
@@ -198,6 +199,7 @@ fn remote_start(
     }
     progress.say(&format!("resolving {}", plan.refs.from));
     let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
+    plan.refs.from = dispatch::full_from(&plan.refs.from, &start);
     Ok((token, start))
 }
 

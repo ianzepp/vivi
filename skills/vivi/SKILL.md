@@ -1220,7 +1220,10 @@ another unit's code start `--from` that unit's branch (stacking) instead.
   push. Each comes from its flag, else from a `from: <ref>` / `branch: <name>`
   line in the task body; both are required one way or the other. One rule covers
   three cases: a new branch (`from` = commit), continuing a branch (`from` =
-  `branch`), and stacking (`from` = one branch, `branch` = another). The push
+  `branch`), and stacking (`from` = one branch, `branch` = another). On a pool
+  that fetches from a remote, an abbreviated commit hash is resolved to the
+  full hash at dispatch (through GitHub), and the job and the dispatch record
+  carry the full hash. The push
   is never forced: if the branch moved or holds other work, the result is
   `push_refused`.
 
