@@ -371,11 +371,14 @@ re-locks them (cascading through join parents and content siblings);
 `vivi step` before explicit promotion. Lowering is a graph fact:
 `vivi need bind <need> <task>...` binds unit tasks to a need, and the need
 auto-completes when every bound unit is accepted (a report does not count) —
-node and mailbox item together (`via=join` in the event log); reopening a
-bound unit restores the need to open the same way. `vivi need show <handle>`
-prints the bound units with their states. Imported Mermaid graphs are for
-non-item topology (pipelines, environment flows); delivery lowering uses
-`need bind` in the backlog, so work is never double-represented.
+node and mailbox item together (`via=join` in the event log); the accepting
+`done` prints `need <handle> completed (all bound units accepted)` when it
+closes the need, and a `done` that fires no join prints no such line.
+Reopening a bound unit restores the need to open the same way.
+`vivi need show <handle>` prints the bound units with their states. Imported
+Mermaid graphs are for non-item topology (pipelines, environment flows);
+delivery lowering uses `need bind` in the backlog, so work is never
+double-represented.
 
 **Dependency grammar.** Structural dependencies — a handle cited with
 `--depends-on` — become edges and derive readiness. Dependencies discovered
@@ -397,7 +400,8 @@ every record's `show` output prints its `Content:` hash the same way.
 Bare source ids address the backlog graph; imported topologies use
 `graph:source-id`. Lifecycle moves act as the identity holding the item
 (`--for`): the send receipt's `created <recipient> <handle>` line names the
-holder, and naming a copy another identity holds fails with the holder
+holder, the `node <handle>` line names that copy as the backlog node, and
+naming a copy another identity holds fails with the holder
 named in the error (the item's author, a mind or an operator may name any
 copy; see State as letters). **Settle sequence.** The worker reports with
 `task done --verdict/--repo/--tip` (its own copy moves; the node stays open
@@ -470,6 +474,12 @@ it before lowering a multi-unit delivery. The load-bearing rules:
 
 - Every unit is its own task send with its own handle; the send mints the node.
   Cite prerequisites with `--depends-on`; an unknown handle fails the send.
+- A send prints `created <recipient> <handle>`, `node <handle>` and
+  `sent <handle>`: the delivered handle (the `created` / `node` one) is the
+  backlog node — the handle to `pool dispatch`, `need bind`, `graph activate`
+  and `task done` — while the `sent` handle is the sender's own copy and is
+  not a node. (When every recipient is in another mailspace there is no
+  delivered copy and the node lives on the sent copy.)
 - `done` by the worker is a report; the author's or a mind's `done` accepts
   it. Neither means the code is on main, and Vivi has no merged state. "On
   main" is a **merge task** filed with `--depends-on <unit>`; anything that
@@ -1165,7 +1175,8 @@ machine list first).
 2. Push the base commit or branch to the remote.
 3. `vivi pool dispatch --porcelain --pool <name> <task> --model <slug> [--from <ref>] [--branch <name>]`.
 4. Run `vivi pool wait --porcelain <task>` in the background.
-5. When it returns, read the receipt with `vivi task show <task>`.
+5. When it returns, read the receipt with `vivi task show <task> --latest`,
+   which prints only the newest reply (the result) and not the brief.
 6. Integrate the pushed branch.
 7. Delete the remote branch.
 8. Close the task (`wait` and `reconcile` never do).
@@ -1177,6 +1188,16 @@ first), and the result is a local branch with no remote branch to delete. Step 6
 integrates `committed <branch> <sha>` (merge or cherry-pick it in the source
 repository); Vivi never deletes the branch. A refusal at step 3 (see "Local
 provider") costs nothing: no slot was claimed.
+
+**Integration branch without git access** — the route for an orchestrating Mind
+that may not run git, and it needs no setup step for its integration branch.
+Dispatch each unit with `--from <base commit> --branch <unit branch>`. Dispatch
+the first merge job with `--from <base commit> --branch mind/<name>` (the
+integration branch) to merge the first approved unit branch: that job brings
+the integration branch into existence, and later merge jobs continue it with
+`--from mind/<name> --branch mind/<name>`. The cost: a unit cannot start from
+the integration tip until the first merge has landed, so units that need
+another unit's code start `--from` that unit's branch (stacking) instead.
 
 ### dispatch
 
@@ -1193,6 +1214,14 @@ provider") costs nothing: no slot was claimed.
   `branch`), and stacking (`from` = one branch, `branch` = another). The push
   is never forced: if the branch moved or holds other work, the result is
   `push_refused`.
+
+  A `branch` name that does not exist yet is created from the starting point on
+  every provider: the job's published commit brings it into existence (a
+  `no_changes` job creates none). An existing `branch` with a different `from`
+  is where the hosts differ: a worktree pool refuses at dispatch, before a slot
+  is claimed (the table under "Local provider"); fly, docker, ssh, runpod and
+  local fetch mode do not check the branch when dispatching — the job runs, and
+  its final push, never forced, ends `push_refused`.
 - `--budget` is the agent's hard time limit in seconds (default 1800). Every job
   also runs under a hard limit enforced by the slot's boot script (budget plus
   ten minutes of slack).
@@ -1240,7 +1269,8 @@ provider") costs nothing: no slot was claimed.
   token from `fly auth token` stops working after about six minutes).
   `reconcile` also stops any running slot that no task holds and no dispatch
   explains. Read the receipt
-  with `vivi task show <handle>`.
+  with `vivi task show <handle> --latest`, which prints only the newest reply
+  (the result) and not the brief.
 - Push outcomes: `pushed <branch> <sha>` (a worktree pool says
   `committed <branch> <sha>`: a commit on the local branch, nothing pushed),
   `push_refused`, `no_changes`,

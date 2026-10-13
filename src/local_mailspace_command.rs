@@ -5,8 +5,8 @@ use vivi::cli::{
     MailspaceImportCommand, MemoCommand, TaskCommand, TaskSendCommand, TraceCommand,
 };
 use vivi::mailspace::{
-    DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace, MailspaceWatchRequest, SendRequest,
-    SourceTaskRequest,
+    DeliveredMessage, DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace,
+    MailspaceWatchRequest, SendRequest, SourceTaskRequest,
 };
 use vivi::message;
 use vivi::storage::StoredMessageView;
@@ -316,6 +316,7 @@ fn print_local_thread(command: &vivi::cli::MailThreadCommand) -> Result<(), Viva
         command.limit,
         command.max_depth,
         command.json,
+        false,
     )
 }
 
@@ -401,6 +402,7 @@ fn handle_memo_command(command: &MemoCommand) -> Result<(), VivariumError> {
                 50,
                 50,
                 *json,
+                false,
             )?;
         }
         MemoCommand::Dump { for_identity, json, output, confirm_large, project } => {
@@ -478,8 +480,9 @@ fn handle_task_command(command: &TaskCommand) -> Result<(), VivariumError> {
         TaskCommand::Show {
             handle,
             json,
+            latest,
             project,
-        } => show_task(handle, *json, project.as_deref())?,
+        } => show_task(handle, *json, *latest, project.as_deref())?,
         TaskCommand::Dump(command) => crate::local_work_command::dump_tasks(command)?,
         TaskCommand::Absorb(command) => absorb_record("task", command)?,
         TaskCommand::Done {
@@ -620,10 +623,11 @@ fn list_tasks_with_deps(
 fn show_task(
     handle: &str,
     json: bool,
+    latest: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json)?;
+    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
     Ok(())
 }
 
@@ -640,13 +644,28 @@ fn task_from_source(command: &vivi::cli::TaskFromCommand) -> Result<(), Vivarium
             command.body_file.as_deref(),
         )?,
     })?;
-    for delivered in result.delivered {
+    for delivered in &result.delivered {
         println!("created {} {}", delivered.identity, delivered.handle);
     }
     println!("source {} {}", result.source_kind, result.source_handle);
     println!("sent {}", result.sent);
+    print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
     Ok(())
+}
+
+/// Print one `node <handle>` line per backlog node a work send minted: the
+/// delivered copies hold the nodes when any local recipient exists,
+/// otherwise the sent copy does (mirrors `attach_sent_work`). Printed after
+/// the `sent` line so every pre-existing line keeps its position.
+pub(crate) fn print_send_node_lines(delivered: &[DeliveredMessage], sent: &str) {
+    if delivered.is_empty() {
+        println!("node {sent}");
+        return;
+    }
+    for delivered in delivered {
+        println!("node {}", delivered.handle);
+    }
 }
 
 fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
@@ -668,10 +687,11 @@ fn send_task(command: &TaskSendCommand) -> Result<(), VivariumError> {
         reply_to: command.send.reply_to.clone(),
         depends_on: command.depends_on.clone(),
     })?;
-    for delivered in result.delivered {
+    for delivered in &result.delivered {
         println!("created {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
+    print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
     if lacks_clause {
         eprintln!(
@@ -781,7 +801,7 @@ fn move_task(
     let moved =
         mailspace.move_task_outcome(for_identity, handle, role, note, verdict, repo, tip)?;
     let verb = if role == "done" { "done" } else { "reopened" };
-    println!("{}", moved.receipt(verb));
+    crate::local_work_command::print_move_receipt(&moved, verb);
     Ok(())
 }
 

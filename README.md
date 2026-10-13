@@ -690,9 +690,15 @@ ends above N; run it again once they are free). N above the pool's configured
 its free slots.
 
 **`build_dir` is optional and has no default.** A pool that names none has no
-build-directory handling at all: no memory disk, no pack or restore, and the
-job runner's clean has nothing to spare. Name one (`build_dir = "target"`) to
-get the warm build described below.
+memory disk and no pack or restore, and the job runner's clean names no
+directory. That clean is `git clean -fd` (no `-x`) on every provider: it
+removes untracked files the repository does not ignore and leaves gitignored
+ones alone, so a plain `target/` survives between jobs whether or not
+`build_dir` is set. When `build_dir` is set on a pool whose build directory
+persists (ssh, local, runpod), the clean also names it, so it survives even
+when the repository does not ignore it; on fly and docker it is a memory disk
+packed at seed and restored before every job instead. Name one
+(`build_dir = "target"`) to get the warm build described below.
 
 **A pool can be defined with only its provider settings**, for testing: `repo`,
 `github`, `harness` and `committer` are all optional (`github` is required
@@ -1398,7 +1404,10 @@ branch at a time.
 directory (a plain directory; nothing is packed or restored), so a pool of N
 slots holds at most N build directories however many jobs run. The job
 runner's clean spares it even when the repository does not ignore it. A pool
-with no `build_dir` has none.
+with no `build_dir` runs the same `git clean -fd` without `-x`, so gitignored
+output such as `target/` is left alone; it is simply one more
+untracked-but-ignored directory per slot, so the bound of N slots and N build
+directories still holds for it.
 
 **Processes.** Starting runs the boot script detached, in a process group of
 its own, so it outlives `vivi`; a slot is running while that process is alive

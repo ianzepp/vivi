@@ -54,7 +54,6 @@ pub use archive::ArchiveExportReport;
 pub use backlog::BacklogBoundUnit;
 pub use backlog_audit::{BacklogAuditFinding, BacklogAuditReport, print_backlog_audit};
 pub use body::{read_body_arg, read_body_input};
-pub use delivery::MoveOutcome;
 pub use dump::{
     DumpFilters, DumpRecord, MailDumpRequest, TaskDumpRequest, TaskDumpStatus, parse_time_bound,
 };
@@ -81,6 +80,7 @@ pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
 pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask};
+pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
 pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};
 pub use thread::{MailspaceThreadMessage, print_thread};

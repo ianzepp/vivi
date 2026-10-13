@@ -426,6 +426,7 @@ impl Mailspace {
         item: &HeldItem,
         kind: ItemEventKind,
         via: &str,
+        joined: &mut Vec<String>,
     ) -> Result<usize, VivariumError> {
         let mut changed = 0;
         for row in &item.rows {
@@ -434,7 +435,7 @@ impl Mailspace {
             }
             let handle = storage.display_handle(&row.message_id)?;
             let moved = match kind {
-                ItemEventKind::Done => self.backlog_complete_item_via(&handle, via)?,
+                ItemEventKind::Done => self.backlog_complete_item_collect(&handle, via, joined)?,
                 ItemEventKind::Reopened => self.backlog_reopen_item_changed(&handle)?,
             };
             changed += usize::from(moved);
@@ -485,7 +486,7 @@ impl Mailspace {
                 moves: &moves,
             })?;
         }
-        let nodes = self.sync_item_nodes(storage, &item, kind, "via=event")?;
+        let nodes = self.sync_item_nodes(storage, &item, kind, "via=event", &mut Vec::new())?;
         tally.applied += usize::from(!moves.is_empty() || nodes > 0);
         Ok(())
     }

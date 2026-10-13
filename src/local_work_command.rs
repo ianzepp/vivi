@@ -44,8 +44,9 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
         NeedCommand::Show {
             handle,
             json,
+            latest,
             project,
-        } => show_need(handle, *json, project.as_deref())?,
+        } => show_need(handle, *json, *latest, project.as_deref())?,
         NeedCommand::Dump(command) => dump_work_items(command, "needs", "need", "Vivi Need Dump")?,
         NeedCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("need", command)?;
@@ -133,8 +134,9 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
         WantCommand::Show {
             handle,
             json,
+            latest,
             project,
-        } => show_local_message(handle, *json, project.as_deref())?,
+        } => show_local_message(handle, *json, *latest, project.as_deref())?,
         WantCommand::Dump(command) => dump_work_items(command, "wants", "want", "Vivi Want Dump")?,
         WantCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("want", command)?;
@@ -374,6 +376,7 @@ fn send_local_item(
         println!("{verb} {} {}", delivered.identity, delivered.handle);
     }
     println!("sent {}", result.sent);
+    crate::local_mailspace_command::print_send_node_lines(&result.delivered, &result.sent);
     mailspace.announce_remote(&result.remote);
     if lacks_clause {
         eprintln!(
@@ -402,17 +405,29 @@ fn move_item(
         command,
         None,
     )?;
-    println!("{}", moved.receipt(verb));
+    print_move_receipt(&moved, verb);
     Ok(())
+}
+
+/// Print a move's one-line receipt, then one line per bound need the move
+/// completed through its join, so the acceptor sees the need close.
+pub(crate) fn print_move_receipt(moved: &vivi::mailspace::MoveOutcome, verb: &str) {
+    println!("{}", moved.receipt(verb));
+    let mut joined = moved.joined_needs.clone();
+    joined.dedup();
+    for need in joined {
+        println!("need {need} completed (all bound units accepted)");
+    }
 }
 
 fn show_local_message(
     handle: &str,
     json: bool,
+    latest: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json)
+    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)
 }
 
 /// Need show: the thread plus a bound-units block, so a need's lowering
@@ -420,11 +435,12 @@ fn show_local_message(
 fn show_need(
     handle: &str,
     json: bool,
+    latest: bool,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
-    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json)?;
-    if json {
+    vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
+    if json || latest {
         return Ok(());
     }
     let units = mailspace.backlog_bound_units(handle)?;

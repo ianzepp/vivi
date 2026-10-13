@@ -82,21 +82,23 @@ impl Mailspace {
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
     pub fn backlog_complete_item(&self, handle: &str) -> Result<bool, VivariumError> {
-        self.backlog_complete_item_via(handle, "via=lifecycle")
+        self.backlog_complete_item_collect(handle, "via=lifecycle", &mut Vec::new())
     }
 
     /// Complete the backlog node for `handle`, recording the decision
     /// (`via=<origin>`) atomically with the transition, then cascade the join
     /// rule. Returns whether a transition occurred; no-op when the backlog
     /// graph or the node does not exist (pre-feature items) or the node is
-    /// not completable.
+    /// not completable. Needs the join rule completes are pushed onto
+    /// `joined` as the mailspace shows them.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
-    pub fn backlog_complete_item_via(
+    pub fn backlog_complete_item_collect(
         &self,
         handle: &str,
         via: &str,
+        joined: &mut Vec<String>,
     ) -> Result<bool, VivariumError> {
         let mut storage = self.storage()?;
         let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
@@ -124,12 +126,25 @@ impl Mailspace {
         // A multi-recipient item is one work item with per-copy nodes:
         // completing any copy completes the copies' nodes too.
         for sibling in siblings {
-            self.backlog_complete_item_via(&sibling, "via=sibling")?;
+            self.backlog_complete_item_collect(&sibling, "via=sibling", joined)?;
         }
         if let Some(parent) = target.subgraph.clone() {
-            self.backlog_complete_if_join_complete(&parent)?;
+            self.backlog_complete_if_join_complete(&parent, joined)?;
         }
         Ok(true)
+    }
+
+    /// [`Mailspace::backlog_complete_item_collect`] with the join record
+    /// discarded.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on storage failure.
+    pub fn backlog_complete_item_via(
+        &self,
+        handle: &str,
+        via: &str,
+    ) -> Result<bool, VivariumError> {
+        self.backlog_complete_item_collect(handle, via, &mut Vec::new())
     }
 
     /// Bind unit tasks to a parent need: each unit node's `subgraph` becomes
@@ -177,16 +192,22 @@ impl Mailspace {
         }
         storage.bind_backlog_units(&graph.handle, parent, &unit_handles)?;
         drop(storage);
-        self.backlog_complete_if_join_complete(parent)
+        self.backlog_complete_if_join_complete(parent, &mut Vec::new())
     }
 
     /// Complete `parent` when every unit bound to it is done, then settle the
     /// need's mailbox copies so folder state matches the node transition —
     /// the join automates the need's completion, not only its graph node.
+    /// Each need completed here is pushed onto `joined` as the mailspace
+    /// shows it.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
-    fn backlog_complete_if_join_complete(&self, parent: &str) -> Result<(), VivariumError> {
+    fn backlog_complete_if_join_complete(
+        &self,
+        parent: &str,
+        joined: &mut Vec<String>,
+    ) -> Result<(), VivariumError> {
         let storage = self.storage()?;
         let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
             return Ok(());
@@ -196,10 +217,26 @@ impl Mailspace {
             return Ok(());
         }
         drop(storage);
-        if self.backlog_complete_item(parent)? {
-            self.settle_need_mailbox(parent, true, "join")?;
+        if self.backlog_complete_item_collect(parent, "via=lifecycle", joined)? {
+            self.settle_need_mailbox_collect(parent, true, "join", joined)?;
+            joined.push(self.shown_handle(parent));
         }
         Ok(())
+    }
+
+    /// The handle the mailspace shows for the item `handle` names — the same
+    /// string `need show` prints — falling back to the token when the item's
+    /// mail cannot be resolved.
+    fn shown_handle(&self, handle: &str) -> String {
+        let Ok(storage) = self.storage() else {
+            return handle.to_string();
+        };
+        let Ok(message_id) = storage.resolve_message_token(handle) else {
+            return handle.to_string();
+        };
+        storage
+            .display_handle(&message_id)
+            .unwrap_or_else(|_| handle.to_string())
     }
 
     /// Move every active copy of the need named by `handle` between `needs`
@@ -215,6 +252,22 @@ impl Mailspace {
         to_done: bool,
         via: &str,
     ) -> Result<(), VivariumError> {
+        self.settle_need_mailbox_collect(handle, to_done, via, &mut Vec::new())
+    }
+
+    /// [`Mailspace::settle_need_mailbox`], collecting any further needs the
+    /// settle's event application joins (a need bound as another need's
+    /// unit) into `joined`.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on storage failure.
+    pub(super) fn settle_need_mailbox_collect(
+        &self,
+        handle: &str,
+        to_done: bool,
+        via: &str,
+        joined: &mut Vec<String>,
+    ) -> Result<(), VivariumError> {
         let mut storage = self.storage()?;
         let message_id = match storage.resolve_message_token(handle) {
             Ok(message_id) => message_id,
@@ -228,7 +281,7 @@ impl Mailspace {
         } else {
             ("done", "needs", "need reopen")
         };
-        if self.settle_need_by_event(&mut storage, &view, to_done, command, via)? {
+        if self.settle_need_by_event(&mut storage, &view, to_done, command, via, joined)? {
             return Ok(());
         }
         for sibling_id in storage.message_ids_by_content(&view.content_id)? {
@@ -324,11 +377,12 @@ impl Mailspace {
         from_role: &str,
         to_role: &str,
         handle: &str,
+        joined: &mut Vec<String>,
     ) -> Result<(), VivariumError> {
         match (from_role, to_role) {
-            ("tasks" | "needs" | "wants" | "sent", "done") => {
-                self.backlog_complete_item(handle).map(|_| ())
-            }
+            ("tasks" | "needs" | "wants" | "sent", "done") => self
+                .backlog_complete_item_collect(handle, "via=lifecycle", joined)
+                .map(|_| ()),
             ("done", "tasks" | "needs" | "wants") => self.backlog_reopen_item(handle),
             _ => Ok(()),
         }
