@@ -310,8 +310,7 @@ fn header_time(line: &str) -> Option<&str> {
 /// True when RFC 3339 `stamp` parses and is strictly later than `since`.
 fn newer_than(stamp: &str, since: u64) -> bool {
     chrono::DateTime::parse_from_rfc3339(stamp)
-        .map(|time| u64::try_from(time.timestamp()).unwrap_or(0) > since)
-        .unwrap_or(false)
+        .is_ok_and(|time| u64::try_from(time.timestamp()).unwrap_or(0) > since)
 }
 
 /// Epoch seconds of a file's mtime; 0 when the clock sits before the epoch.

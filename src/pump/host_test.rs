@@ -85,10 +85,7 @@ fn real_spawn_writes_the_output_file_without_waiting() {
     );
     let mut saw = false;
     while started.elapsed() < Duration::from_secs(4) {
-        if fs::read_to_string(&out_file)
-            .map(|text| text.contains("started"))
-            .unwrap_or(false)
-        {
+        if fs::read_to_string(&out_file).is_ok_and(|text| text.contains("started")) {
             saw = true;
             break;
         }

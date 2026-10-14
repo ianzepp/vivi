@@ -228,3 +228,63 @@ fn an_unparseable_result_file_returns_none() {
             .any(|l| l.contains("unparseable result file"))
     );
 }
+
+#[test]
+fn an_offer_waits_while_an_earlier_batch_is_claimed_and_unanswered() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), cfg());
+    flag_on(&ctx);
+    host.set_now(START);
+    let jobs = jobs_dir(&ctx);
+    fs::create_dir_all(&jobs).unwrap();
+    // A batch an earlier pump process offered, still being merged elsewhere.
+    fs::write(jobs.join("b1999900.claimed.json"), "[]").unwrap();
+    let earlier = jobs.join("b1999900.result.json");
+    let ours = jobs.join(format!("{BID}.job.json"));
+    let watch = ours.clone();
+    let answer = earlier.clone();
+    let probe = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(100));
+        // No new batch may be offered while the earlier one is open.
+        let offered_early = watch.exists();
+        fs::write(&answer, "[]").unwrap();
+        offered_early
+    });
+    let body =
+        json!([{"uid": "u1", "ok": true, "tip": "cafe123", "outside": [], "secs": 1}]).to_string();
+    merger(ctx.home.clone(), Some(body), 0, Arc::clone(&host));
+    let results = offer_with(&ctx, &[job("u1")], 0).unwrap();
+    assert!(
+        !probe.join().unwrap(),
+        "offered a batch while another was claimed"
+    );
+    assert_eq!(results.len(), 1);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("waiting for claimed batch b1999900"))
+    );
+}
+
+#[test]
+fn a_claim_older_than_remote_limit_does_not_hold_the_offer() {
+    let dir = tempdir().unwrap();
+    let mut cfg = cfg();
+    cfg.merge.remote_limit = 300;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    flag_on(&ctx);
+    host.set_now(START);
+    let jobs = jobs_dir(&ctx);
+    fs::create_dir_all(&jobs).unwrap();
+    fs::write(jobs.join(format!("b{}.claimed.json", START - 301)), "[]").unwrap();
+    let body =
+        json!([{"uid": "u1", "ok": true, "tip": "cafe123", "outside": [], "secs": 1}]).to_string();
+    merger(ctx.home.clone(), Some(body), 0, Arc::clone(&host));
+    assert!(offer(&ctx, &[job("u1")]).is_some());
+    assert!(
+        !host
+            .logs()
+            .iter()
+            .any(|l| l.contains("waiting for claimed batch"))
+    );
+}

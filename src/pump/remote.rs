@@ -45,6 +45,7 @@ pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<
         ctx.log("remote merge: cannot create merge-jobs; merging here");
         return None;
     }
+    wait_for_open_claims(ctx, &dir, poll);
     let bid = format!("b{}", ctx.now());
     let job = dir.join(format!("{bid}.job.json"));
     if !write_job_file(ctx, &job, jobs) {
@@ -79,6 +80,62 @@ pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<
         results.len()
     ));
     Some(results)
+}
+
+/// Batches a remote merger has claimed and not answered: a file named
+/// `b<secs>.<anything>` other than the job, result or temp file, with no
+/// `b<secs>.result.json` beside it, offered less than `merge.remote_limit`
+/// seconds ago. Such a batch can outlive the pump that offered it (a restart),
+/// and its merger will still push the integration branch.
+fn open_claims(ctx: &Ctx, dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut open: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let is_tmp = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"));
+        if name.ends_with(".job.json") || name.ends_with(".result.json") || is_tmp {
+            continue;
+        }
+        let Some(bid) = name.split('.').next() else {
+            continue;
+        };
+        let Some(Ok(secs)) = bid.strip_prefix('b').map(str::parse::<u64>) else {
+            continue;
+        };
+        let answered = dir.join(format!("{bid}.result.json")).exists();
+        let live = ctx.now().saturating_sub(secs) < ctx.cfg.merge.remote_limit;
+        if !answered && live {
+            open.push(bid.to_owned());
+        }
+    }
+    open.sort();
+    open.dedup();
+    open
+}
+
+/// Before offering a new batch, wait while an earlier batch is still claimed
+/// and unanswered, so two mergers never push the integration branch at once.
+/// The wait ends when every open claim is answered or ages past
+/// `merge.remote_limit`.
+fn wait_for_open_claims(ctx: &Ctx, dir: &Path, poll: u64) {
+    let open = open_claims(ctx, dir);
+    if open.is_empty() {
+        return;
+    }
+    ctx.log(&format!(
+        "remote merge: waiting for claimed batch {} before offering another",
+        open.join(", ")
+    ));
+    while !open_claims(ctx, dir).is_empty() {
+        sleep(poll);
+    }
 }
 
 /// Write the batch as a JSON array: `.tmp` first, then rename into place.
