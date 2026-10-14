@@ -420,7 +420,7 @@ impl Mailspace {
             return false;
         };
         let domain = domain.trim().to_ascii_lowercase();
-        if domain != "local" && self.is_own_domain(&domain) {
+        if domain != "local" && domain == self.address_domain().to_ascii_lowercase() {
             return self.may_close(item, role.trim());
         }
         prefix_of_domain(&domain).is_some()

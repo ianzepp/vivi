@@ -17,8 +17,10 @@ use crate::sync::fake_server::{Checkout, FakeServer, LETTER_DATE, checkout, lett
 use crate::sync::push::PushReport;
 use crate::sync::transport::{Envelope, Transport};
 
-/// One hour in microseconds: the clear gap between two conflicting events.
-const HOUR_US: i64 = 3_600 * 1_000_000;
+/// Five minutes in microseconds: the clear gap between two conflicting
+/// events, inside the ten minutes of clock skew a receiver still counts —
+/// an event dated past that window is ignored, never ordered.
+const GAP_US: i64 = 5 * 60 * 1_000_000;
 
 fn alice() -> Checkout {
     checkout("alice", &["mind"])
@@ -308,7 +310,8 @@ fn closed_at(p: &Pair) -> (i64, String) {
     (event_at(&p.a.bytes_of(&letter)), rfc_id(&p.a, &p.need))
 }
 
-/// A reopen letter from B stamped a clear hour newer than `at`.
+/// A reopen letter from B stamped a clear five minutes newer than `at` —
+/// newer by more than skew, yet inside the window a receiver counts.
 fn b_reopens_newer(p: &Pair, at: i64, n: u64) {
     put_event_letter(
         &p.server,
@@ -316,7 +319,7 @@ fn b_reopens_newer(p: &Pair, at: i64, n: u64) {
         &p.a.address("mind"),
         &rfc_id(&p.a, &p.need),
         "reopened",
-        at + HOUR_US,
+        at + GAP_US,
         n,
     );
 }
@@ -385,7 +388,7 @@ fn an_absorb_on_a_seals_b_and_an_older_event_after_it_is_ignored() {
         &p.b.address("hand"),
         &rfc_id(&p.a, &p.need),
         "reopened",
-        seal_at - HOUR_US,
+        seal_at - GAP_US,
         703,
     );
     let ignored = p.b.pull(&p.b.client(&p.server));
@@ -416,6 +419,12 @@ fn marks_travel_only_from_a_role_that_may_close() {
     let marked = p.a_to_b();
     assert_eq!(marked.events_applied, 1, "{}", marked.summary());
     assert_eq!(marks_of(&p.b, &p.need), vec!["ruling".to_string()]);
+
+    // A settles its own mark letter once — its sent copy of the need folds
+    // to the letter too — so the tally below speaks only about the hand.
+    let settled = p.b_to_a();
+    assert_eq!(settled.events_applied, 1, "{}", settled.summary());
+    assert_eq!(marks_of(&p.a, &p.need), vec!["ruling".to_string()]);
 
     // B's `hand` may not close the need, so its unmark is a private row
     // mark: no letter is written, and the mark does not travel — A still

@@ -838,8 +838,15 @@ fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
     let mut w = World::new();
     minds(&mut w.bob, "lead");
     w.put(1, "item", "done_when: x\n");
-    // A held event stamped far ahead of any machine clock.
-    let held_at = "2099-06-01T00:00:00.000000Z";
+    // A held event stamped five minutes ahead of the machine clock: far
+    // enough that the clock alone would stamp below it, and inside the ten
+    // minutes of skew a receiver still counts — a later stamp would be
+    // ignored, not ordered, so it could not be a floor either.
+    let held_at = chrono::DateTime::from_timestamp_micros(
+        chrono::Utc::now().timestamp_micros() + 5 * 60 * 1_000_000,
+    )
+    .unwrap()
+    .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
     put_stamped_event(
         &w,
         2,
@@ -847,7 +854,7 @@ fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
         "done",
         &[],
         "Sun, 11 Oct 2026 12:00:00 +0000",
-        held_at,
+        &held_at,
     );
     w.bob.pull(&w.bob_client);
     let handle = crate::sync::fake_server::handle(1);
@@ -855,7 +862,7 @@ fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
 
     // The mind reopens the item: the new letter carries a stamp, and the
     // stamp is at least one microsecond past the newest held event even
-    // though the machine clock is far earlier.
+    // though the machine clock is five minutes earlier.
     let moved = w
         .bob
         .mailspace
@@ -863,7 +870,7 @@ fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
         .unwrap();
     let event = moved.event.expect("the mind writes an event letter");
     let at = at_of(&w.bob.bytes_of(&event)).expect("every event letter carries X-Vivi-Event-At");
-    let floor = chrono::DateTime::parse_from_rfc3339(held_at)
+    let floor = chrono::DateTime::parse_from_rfc3339(&held_at)
         .unwrap()
         .timestamp_micros()
         + 1;
