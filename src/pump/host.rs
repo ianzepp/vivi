@@ -509,7 +509,7 @@ fn run_command(cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
             return CmdOutput {
                 code: 127,
                 text: err.to_string(),
-            }
+            };
         }
     };
     let pgid = child.id();

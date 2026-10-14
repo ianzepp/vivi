@@ -1,6 +1,6 @@
 //! `vivi pump` dispatch: `run`, `once`, and `status` over the run module.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use vivi::VivariumError;
 use vivi::cli::PumpSubcommand;

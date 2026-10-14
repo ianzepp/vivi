@@ -52,8 +52,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
 /// a UTC timestamp, unit counts, plan verdict counts, and the merge/gate
 /// counters. A write failure is logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State) {
-    let mut verdicts: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
+    let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for need in st.needs.values() {
         *verdicts.entry(need.verdict.clone()).or_default() += 1;
     }
@@ -210,8 +209,9 @@ fn counts_line(label: &str, counts: &std::collections::BTreeMap<String, usize>) 
 /// `%Y-%m-%dT%H:%M:%SZ` in UTC for epoch seconds.
 fn utc_stamp(secs: u64) -> String {
     let stamp = i64::try_from(secs).unwrap_or(0);
-    chrono::DateTime::<chrono::Utc>::from_timestamp(stamp, 0)
-        .map_or_else(String::new, |time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    chrono::DateTime::<chrono::Utc>::from_timestamp(stamp, 0).map_or_else(String::new, |time| {
+        time.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    })
 }
 
 /// The panic payload as one logged line: newlines folded to `" | "`, cut at
