@@ -66,7 +66,7 @@ pub fn ingest(ctx: &Ctx, st: &mut State) {
     let mut names: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|e| e.file_name().to_str().map(ToOwned::to_owned))
         .collect();
     names.sort();
     for name in names {
