@@ -734,13 +734,27 @@ fn an_external_build_failure_raises_gate_build_failed() {
 }
 
 #[test]
-fn an_unparseable_external_result_is_left_in_place_and_no_dir_means_no_intake() {
-    let (dir, ctx, _host) = external_setup();
+fn an_unparseable_external_result_is_set_aside_once_and_no_dir_means_no_intake() {
+    let (dir, ctx, host) = external_setup();
     let mut st = fresh_state();
     let path = write_result(&ctx, "bad", "{not json");
     external_gates(&ctx, &mut st);
-    assert!(path.exists());
+    assert!(!path.exists());
+    assert!(
+        path.parent()
+            .unwrap()
+            .join("bad")
+            .join(path.file_name().unwrap())
+            .exists()
+    );
     assert!(st.gates.is_empty());
+    external_gates(&ctx, &mut st);
+    let noted = host
+        .logs()
+        .iter()
+        .filter(|line| line.contains("unreadable"))
+        .count();
+    assert_eq!(noted, 1, "{:?}", host.logs());
 
     let (dir2, plain, _host2) = setup();
     let stray = plain.home.join("gate-results");

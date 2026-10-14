@@ -177,7 +177,7 @@ pub fn external_gates(ctx: &Ctx, st: &mut State) {
     let Some(dir) = ctx.cfg.results_dir(&ctx.project) else {
         return;
     };
-    for (path, result) in pending_results(&dir) {
+    for (path, result) in pending_results(ctx, &dir) {
         let done = dir.join("done");
         let moved = fs::create_dir_all(&done)
             .and_then(|()| fs::rename(&path, done.join(path.file_name().unwrap_or_default())));
@@ -249,9 +249,10 @@ impl ExternalResult {
     }
 }
 
-/// Parsed `*.json` results in `dir`, oldest modification time first.
-/// Unreadable or unparseable files are skipped.
-fn pending_results(dir: &Path) -> Vec<(PathBuf, ExternalResult)> {
+/// Parsed `*.json` results in `dir`, oldest modification time first. A file
+/// that cannot be read or parsed is logged once and moved to `<dir>/bad/`, so
+/// an operator sees it and it is not re-read every tick.
+fn pending_results(ctx: &Ctx, dir: &Path) -> Vec<(PathBuf, ExternalResult)> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -260,8 +261,16 @@ fn pending_results(dir: &Path) -> Vec<(PathBuf, ExternalResult)> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "json") && path.is_file())
         .filter_map(|path| {
-            let result = serde_json::from_str(&fs::read_to_string(&path).ok()?).ok()?;
-            Some((file_mtime(&path), path, result))
+            let parsed = fs::read_to_string(&path)
+                .map_err(|err| err.to_string())
+                .and_then(|text| serde_json::from_str(&text).map_err(|err| err.to_string()));
+            match parsed {
+                Ok(result) => Some((file_mtime(&path), path, result)),
+                Err(err) => {
+                    set_aside(ctx, dir, &path, &err);
+                    None
+                }
+            }
         })
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
@@ -269,6 +278,23 @@ fn pending_results(dir: &Path) -> Vec<(PathBuf, ExternalResult)> {
         .into_iter()
         .map(|(_, path, result)| (path, result))
         .collect()
+}
+
+/// Moves an unusable external result to `<dir>/bad/` and logs why.
+fn set_aside(ctx: &Ctx, dir: &Path, path: &Path, why: &str) {
+    let bad = dir.join("bad");
+    let moved = fs::create_dir_all(&bad)
+        .and_then(|()| fs::rename(path, bad.join(path.file_name().unwrap_or_default())));
+    match moved {
+        Ok(()) => ctx.log(&format!(
+            "external gate result {} unreadable ({why}); moved to bad/",
+            path.display()
+        )),
+        Err(err) => ctx.log(&format!(
+            "external gate result {} unreadable ({why}); move to bad/ failed: {err}",
+            path.display()
+        )),
+    }
 }
 
 /// `true` while a due gate should keep waiting for an external result:
