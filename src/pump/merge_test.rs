@@ -1,1 +1,512 @@
-//! Tests for [`super::merge`] (scaffolding only; behaviour lands with later units).
+//! Tests for [`super::merge`] part 1: `failure_text`, `reset_repo` and
+//! `merge_work`.
+
+use std::sync::Arc;
+
+use tempfile::{TempDir, tempdir};
+
+use crate::pump::config::PumpConfig;
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::merge::{batch_work, failure_text, merge_work};
+use crate::pump::state::{MergeJob, MergeResult};
+
+/// A context whose integration branch is `next`, with one shared check,
+/// an optional formatter, and a fake host.
+fn setup(format: &str) -> (TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.branch = String::from("next");
+    cfg.merge.format = format.to_string();
+    cfg.merge.shared_checks = vec![String::from("cargo test --lib")];
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    (dir, ctx, host)
+}
+
+/// A plain unit job for branch `work/u1`.
+fn job() -> MergeJob {
+    MergeJob {
+        uid: String::from("u1"),
+        branch: String::from("work/u1"),
+        title: String::from("A unit"),
+        need: String::from("n1"),
+        proof: vec![String::from("./proof-u1.sh")],
+        tools: String::from("plain"),
+        write_scope: vec![
+            String::from("src/pump/merge.rs"),
+            String::from("src/pump/merge_test.rs"),
+        ],
+    }
+}
+
+/// Index of the first recorded command containing `fragment`.
+fn index_of(cmds: &[String], fragment: &str) -> usize {
+    cmds.iter().position(|c| c.contains(fragment)).unwrap()
+}
+
+#[test]
+fn failure_text_keeps_panic_and_error_lines_with_context() {
+    let out = "running 3 tests\ntest a ... ok\ntest b ... FAILED\n---- b stdout ----\nvalue is 3\nexpected 2\nfiller line\nerror[E0308]: mismatched types\n --> src/x.rs:2:3\nassertion `left == right` failed\nleft: 3\nright: 2\n";
+    let text = failure_text(out);
+    assert!(text.contains("test b ... FAILED"));
+    assert!(text.contains("---- b stdout ----"));
+    assert!(text.contains("value is 3"));
+    assert!(text.contains("expected 2"));
+    assert!(text.contains("error[E0308]: mismatched types"));
+    assert!(text.contains(" --> src/x.rs:2:3"));
+    assert!(text.contains("assertion `left == right` failed"));
+    assert!(text.contains("left: 3"));
+    assert!(text.contains("right: 2"));
+    let (head, _) = text.split_once("\n...\n").unwrap();
+    assert!(!head.contains("running 3 tests"));
+    assert!(!head.contains("test a ... ok"));
+    assert!(text.ends_with("right: 2\n"));
+}
+
+#[test]
+fn failure_text_falls_back_to_the_tail_when_nothing_matches() {
+    let out = "nothing to see here\n".repeat(200);
+    let text = failure_text(&out);
+    assert_eq!(text.chars().count(), 1800);
+    let expected: String = out.chars().skip(out.chars().count() - 1800).collect();
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true));
+    assert_eq!(result.tip.as_deref(), Some("tip123"));
+    assert!(result.outside.is_empty());
+    assert_eq!(result.secs, Some(0));
+    assert_eq!(result.why, None);
+    assert_eq!(
+        host.commands(),
+        vec![
+            "git merge --abort",
+            "git fetch origin next",
+            "git checkout -q next",
+            "git reset -q --hard origin/next",
+            "git fetch origin refs/heads/work/u1:refs/remotes/origin/work/u1",
+            "git merge --no-ff --no-edit -m 'merge u1: A unit (need n1)' origin/work/u1",
+            "git diff --name-only HEAD~1 HEAD",
+            "cargo test --lib",
+            "./proof-u1.sh",
+            "git status --porcelain",
+            "git push origin HEAD:refs/heads/next",
+            "git rev-parse HEAD",
+        ]
+    );
+    assert_eq!(
+        host.logs(),
+        vec![
+            "proof u1 rc=0 0s: cargo test --lib",
+            "proof u1 rc=0 0s: ./proof-u1.sh",
+        ]
+    );
+}
+
+#[test]
+fn a_fetch_failure_is_reported_as_fetch_failed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("refs/heads/work/u1", 1, "fatal: could not fetch\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("fetch-failed"));
+    assert_eq!(result.detail.as_deref(), Some("fatal: could not fetch\n"));
+    assert_eq!(result.tip, None);
+    assert_eq!(result.secs, None);
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git fetch origin refs/heads/work/u1:refs/remotes/origin/work/u1")
+    );
+}
+
+#[test]
+fn a_merge_conflict_lists_the_conflicting_files_and_resets_the_repo() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "merge --no-ff",
+        1,
+        "Auto-merging src/a.rs\nCONFLICT (content): merge conflict in src/a.rs\n",
+    );
+    host.reply(
+        "diff --name-only --diff-filter=U",
+        0,
+        "src/a.rs\nsrc/b.rs\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("merge-conflict"));
+    assert_eq!(
+        result.detail.as_deref(),
+        Some(
+            "The branch no longer merges into the integration branch. \
+             Conflicting files: src/a.rs\nsrc/b.rs\n"
+        )
+    );
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+    assert_eq!(index_of(&host.commands(), "merge --no-ff"), 5);
+}
+
+#[test]
+fn files_changed_outside_the_write_scope_are_listed_in_outside() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "diff --name-only HEAD~1 HEAD",
+        0,
+        "src/pump/merge.rs\nREADME.md\nCargo.lock\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true));
+    assert_eq!(
+        result.outside,
+        vec![String::from("README.md"), String::from("Cargo.lock")]
+    );
+}
+
+#[test]
+fn a_failing_shared_check_is_proof_failed_and_names_the_command() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("cargo test --lib", 1, "error[E0308]: mismatched types\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(detail.contains("this command failed (exit 1):\ncargo test --lib"));
+    assert!(detail.contains("Last output:\nerror[E0308]: mismatched types"));
+    assert_eq!(
+        host.logs().first().map(String::as_str),
+        Some("proof u1 rc=1 0s: cargo test --lib")
+    );
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
+#[test]
+fn a_failing_unit_proof_is_proof_failed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "./proof-u1.sh",
+        1,
+        "thread 'main' panicked at 'boom', src/main.rs:4:5\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(detail.contains("this command failed (exit 1):\n./proof-u1.sh"));
+    assert!(detail.contains("Last output:\nthread 'main' panicked at 'boom'"));
+}
+
+#[test]
+fn a_full_tools_unit_skips_its_own_proof() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("./proof-u1.sh", 1, "boom");
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let mut j = job();
+    j.tools = String::from("full");
+    let result = merge_work(&ctx, &j);
+    assert_eq!(result.ok, Some(true));
+    assert!(host.commands().iter().all(|c| !c.contains("./proof-u1.sh")));
+}
+
+#[test]
+fn a_formatter_change_is_committed_as_a_style_commit_before_the_checks() {
+    let (_dir, ctx, host) = setup("cargo fmt --all");
+    host.reply_once("status --porcelain", 0, " M src/lib.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true));
+    let cmds = host.commands();
+    let fmt = index_of(&cmds, "cargo fmt --all");
+    let commit = index_of(&cmds, "commit -q -am 'style: cargo fmt after u1'");
+    let check = index_of(&cmds, "cargo test --lib");
+    assert!(fmt < commit);
+    assert!(commit < check);
+    assert_eq!(
+        cmds[commit],
+        "git commit -q -am 'style: cargo fmt after u1'"
+    );
+}
+
+#[test]
+fn a_rejected_push_is_ok_null_with_push_failed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "push origin HEAD",
+        1,
+        "remote: rejected\n ! [remote rejected] (fetch first)\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, None);
+    assert_eq!(result.why.as_deref(), Some("push-failed"));
+    assert_eq!(
+        result.detail.as_deref(),
+        Some("remote: rejected\n ! [remote rejected] (fetch first)\n")
+    );
+    assert_eq!(result.tip, None);
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
+/// A batch of two clean jobs on distinct branches.
+fn batch() -> Vec<MergeJob> {
+    vec![unit("u1", "work/u1"), unit("u2", "work/u2")]
+}
+
+/// A plain unit job for branch `work/<uid>`.
+fn unit(uid: &str, branch: &str) -> MergeJob {
+    MergeJob {
+        uid: uid.to_string(),
+        branch: branch.to_string(),
+        title: format!("Unit {uid}"),
+        need: String::from("n1"),
+        proof: vec![format!("./proof-{uid}.sh")],
+        tools: String::from("plain"),
+        write_scope: vec![
+            String::from("src/pump/merge.rs"),
+            String::from("src/pump/merge_test.rs"),
+        ],
+    }
+}
+
+/// The result for `uid`.
+fn for_uid<'a>(results: &'a [MergeResult], uid: &str) -> &'a MergeResult {
+    results.iter().find(|r| r.uid == uid).unwrap()
+}
+
+/// How many recorded commands contain `fragment`.
+fn count(cmds: &[String], fragment: &str) -> usize {
+    cmds.iter().filter(|c| c.contains(fragment)).count()
+}
+
+#[test]
+fn a_batch_of_clean_jobs_is_pushed_once_and_every_job_gets_the_same_tip() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "diff --name-only HEAD~1 HEAD",
+        0,
+        "src/pump/merge.rs\nREADME.md\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip9\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok == Some(true)));
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| r.tip.as_deref() == Some("tip9"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| r.outside == vec![String::from("README.md")])
+            .count(),
+        2
+    );
+    assert_eq!(results.iter().filter(|r| r.secs == Some(1)).count(), 2);
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "git push origin HEAD:refs/heads/next"), 1);
+    assert_eq!(count(&cmds, "merge u1"), 1);
+    assert_eq!(count(&cmds, "merge u2"), 1);
+}
+
+#[test]
+fn main_is_merged_into_the_integration_branch_first_when_it_is_not_an_ancestor() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("merge-base --is-ancestor origin/main HEAD", 1, "");
+    host.reply("rev-parse HEAD", 0, "tipM\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok == Some(true)));
+    let cmds = host.commands();
+    let fetch = index_of(&cmds, "git fetch -q origin main");
+    let base = index_of(&cmds, "git merge-base --is-ancestor origin/main HEAD");
+    let main = index_of(
+        &cmds,
+        "merge --no-ff --no-edit -m 'merge main into next' origin/main",
+    );
+    let u1 = index_of(&cmds, "merge --no-ff --no-edit -m 'merge u1:");
+    assert!(fetch < base && base < main && main < u1);
+    assert_eq!(
+        host.logs().first().map(String::as_str),
+        Some("merged main into next")
+    );
+}
+
+#[test]
+fn a_main_that_does_not_merge_cleanly_is_aborted_and_logged_and_the_batch_continues() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("merge-base --is-ancestor origin/main HEAD", 1, "");
+    host.reply(
+        "merge main into next",
+        1,
+        "Auto-merging Cargo.toml\nCONFLICT: merge conflict in Cargo.toml\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip3\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok == Some(true)));
+    let cmds = host.commands();
+    let bad = index_of(&cmds, "merge main into next");
+    assert_eq!(cmds[bad + 1], "git merge --abort");
+    assert!(index_of(&cmds, "merge --no-ff --no-edit -m 'merge u1:") > bad);
+    assert_eq!(
+        host.logs().first().map(String::as_str),
+        Some(
+            "main does not merge into next cleanly: \
+             Auto-merging Cargo.toml | CONFLICT: merge conflict in Cargo.toml | "
+        )
+    );
+}
+
+#[test]
+fn a_conflicting_job_is_a_merge_conflict_result_and_the_others_still_merge() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "merge u1",
+        1,
+        "CONFLICT (content): merge conflict in src/a.rs\n",
+    );
+    host.reply("diff --name-only --diff-filter=U", 0, "src/a.rs\n");
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "src/pump/merge.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip4\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, Some(false));
+    assert_eq!(u1.why.as_deref(), Some("merge-conflict"));
+    assert_eq!(
+        u1.detail.as_deref(),
+        Some(
+            "The branch no longer merges into the integration branch. \
+             Conflicting files: src/a.rs\n"
+        )
+    );
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, Some(true));
+    assert_eq!(u2.tip.as_deref(), Some("tip4"));
+    let cmds = host.commands();
+    let bad = index_of(&cmds, "merge u1");
+    assert_eq!(cmds[bad + 1], "git diff --name-only --diff-filter=U");
+    assert_eq!(cmds[bad + 2], "git merge --abort");
+    assert!(index_of(&cmds, "merge --no-ff --no-edit -m 'merge u2:") > bad);
+}
+
+#[test]
+fn a_job_whose_own_proof_fails_is_the_culprit_and_the_rest_are_retried_in_round_two() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("./proof-u1.sh", 1, "panicked at 'boom'\n");
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "src/pump/merge.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip5\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, Some(false));
+    assert_eq!(u1.why.as_deref(), Some("proof-failed"));
+    let detail = u1.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("./proof-u1.sh"));
+    assert!(detail.contains("What failed:\npanicked at 'boom'"));
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, Some(true));
+    assert_eq!(u2.tip.as_deref(), Some("tip5"));
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "merge u1"), 1);
+    assert_eq!(count(&cmds, "merge u2"), 2);
+    assert_eq!(count(&cmds, "git push origin HEAD:refs/heads/next"), 1);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "proof u1 rc=1 0s: ./proof-u1.sh")
+    );
+}
+
+#[test]
+fn a_shared_check_failure_with_several_jobs_falls_back_to_one_at_a_time() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("cargo test --lib", 1, "error[E0308]: mismatched types\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok == Some(false)));
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() == Some("proof-failed"))
+    );
+    let detail = for_uid(&results, "u1")
+        .detail
+        .as_deref()
+        .unwrap_or_default();
+    assert!(detail.contains("Last output:\nerror[E0308]: mismatched types"));
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "merge --no-ff"), 4);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "batch 2 shared rc=1 0s: cargo test --lib")
+    );
+}
+
+#[test]
+fn a_shared_check_failure_with_one_job_is_proof_failed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("cargo test --lib", 1, "error: boom\n");
+    let results = batch_work(&ctx, &[unit("u1", "work/u1")]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].ok, Some(false));
+    assert_eq!(results[0].why.as_deref(), Some("proof-failed"));
+    let detail = results[0].detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("What failed:\nerror: boom"));
+    assert_eq!(
+        host.logs(),
+        vec![String::from("batch 1 shared rc=1 0s: cargo test --lib")]
+    );
+    let cmds = host.commands();
+    assert!(cmds.iter().all(|c| !c.contains("./proof-u1.sh")));
+    assert!(cmds.iter().all(|c| !c.contains("push")));
+    assert_eq!(
+        cmds.last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
+#[test]
+fn a_refused_push_leaves_every_job_undecided_with_push_failed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "push origin HEAD",
+        1,
+        " ! [remote rejected] next (fetch first)\n",
+    );
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "src/pump/merge.rs\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok.is_none()));
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() == Some("push-failed"))
+    );
+    assert!(
+        results
+            .iter()
+            .all(|r| r.detail.as_deref() == Some(" ! [remote rejected] next (fetch first)\n"))
+    );
+    assert!(results.iter().all(|r| r.tip.is_none()));
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
