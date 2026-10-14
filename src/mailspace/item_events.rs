@@ -329,17 +329,6 @@ impl Mailspace {
         prefix_of_domain(event_domain).is_some()
     }
 
-    /// The write-side authority: whether an event this mailspace would write
-    /// speaks for an item from `item_domain` — its own prefix domain on an
-    /// item it authored, also under its legacy name or `local`. The read
-    /// side ([`Self::event_speaks_for`]) believes any member's prefix
-    /// domain; writing stays with the owner.
-    fn write_speaks_for(&self, item_domain: &str) -> bool {
-        let own = self.address_domain();
-        prefix_of_domain(&own).is_some()
-            && (own.eq_ignore_ascii_case(item_domain) || self.is_own_domain(item_domain))
-    }
-
     fn item_chain(&self, storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
         let mut chain = Chain {
             events: Vec::new(),
@@ -392,14 +381,12 @@ impl Mailspace {
 
     /// Whether `identity` may close or reopen `item` for everyone: the role
     /// that authored it (or holds its sent copy), or a role of kind `mind`
-    /// or `operator`. Such an event is believed only when this mailspace
-    /// authored the item (the write-side rule); on another mailspace's item
-    /// the close stays a local report.
+    /// or `operator` — whichever mailspace authored the item. The read side
+    /// ([`Self::event_speaks_for`]) believes any member's prefix domain, so
+    /// no member owns an item's state.
     pub(super) fn may_close(&self, item: &HeldItem, identity: &str) -> bool {
-        if self.item_author(item).as_deref() == Some(identity) {
-            return true;
-        }
-        self.identity_may_close_for_all(identity) && self.write_speaks_for(&item.from_domain)
+        self.item_author(item).as_deref() == Some(identity)
+            || self.identity_may_close_for_all(identity)
     }
 
     /// The rows the head `kind` moves: open work to `done` on a close, done
