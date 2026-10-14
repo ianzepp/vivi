@@ -37,19 +37,20 @@ fn mk(id: &str, status: Status, scope: &[&str]) -> (String, Unit) {
 
 /// A config with the given dispatch lanes and last-resort model.
 fn lane_cfg(lanes: Vec<(&str, u32)>, last_resort: &str) -> PumpConfig {
-    let mut cfg = PumpConfig::default();
-    cfg.dispatch = DispatchConfig {
-        lanes: lanes
-            .into_iter()
-            .map(|(model, cap)| Lane {
-                model: model.to_string(),
-                cap,
-            })
-            .collect(),
-        last_resort: last_resort.to_string(),
-        ..DispatchConfig::default()
-    };
-    cfg
+    PumpConfig {
+        dispatch: DispatchConfig {
+            lanes: lanes
+                .into_iter()
+                .map(|(model, cap)| Lane {
+                    model: model.to_string(),
+                    cap,
+                })
+                .collect(),
+            last_resort: last_resort.to_string(),
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    }
 }
 
 #[test]
@@ -178,11 +179,15 @@ fn pick_model_alternates_lanes_by_attempt_parity() {
         ..Unit::default()
     };
     assert_eq!(pick_model(&ctx, &st, &even).as_deref(), Some("m-a"));
-    let mut odd = Unit::default();
-    odd.attempts = 1;
+    let odd = Unit {
+        attempts: 1,
+        ..Unit::default()
+    };
     assert_eq!(pick_model(&ctx, &st, &odd).as_deref(), Some("m-b"));
-    let mut even_again = Unit::default();
-    even_again.attempts = 2;
+    let even_again = Unit {
+        attempts: 2,
+        ..Unit::default()
+    };
     assert_eq!(pick_model(&ctx, &st, &even_again).as_deref(), Some("m-a"));
 }
 

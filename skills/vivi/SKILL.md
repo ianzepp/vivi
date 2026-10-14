@@ -1987,6 +1987,7 @@ per_tick      = 6                      # units started per tick at most
 from          = "<branch>"             # absent: the `branch` value
 pool_plain    = "<pool>"               # units with tools = "plain"; must name a [pools.<name>] table
 pool_full     = "<pool>"               # units with tools = "full"; same
+full_max      = 0                      # units allowed in flight on pool_full at once; 0 = no cap
 
 [pump.merge]
 batch         = 8                      # jobs merged together at most

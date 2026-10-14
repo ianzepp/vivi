@@ -143,7 +143,7 @@ at startup. Top-level keys, from the live state (read-only inspection):
 | `red` | object: failing name → owning fix-need prefix | failures owned by a gate-fix plan; later gates ignore owned names | pump.py:992, 1002 finish_gate |
 | `red_reported` | array `owner:name` | owned names already reported `red-after-fix` once | pump.py:978–979 finish_gate (absent until first use) |
 | `promotions` | array `{tip, at}` | fast-forwards of main | pump.py:959–960 promote (absent until first promotion) |
-| `rr` | int | observed in the live state; pump.py never reads or writes this key | NOTE: unknown key, preserved by save |
+| `rr` | int | observed in the live state; removed from pump.py by commit 13eb290 — the Rust pump never reads or writes it | NOTE: unknown key, preserved by save |
 
 Per-unit fields (all units carry the ingest-time fields; runtime fields appear
 as marked):
@@ -299,7 +299,12 @@ Model choice (`pick_model`, pump.py:546–561):
   this tick (pump.py:582–583).
 
 Pool choice (pump.py:585–588): `full` tools go to `pool_full`, everything else
-to `pool_plain`. Free slot counts come from `pool status --porcelain`
+to `pool_plain`. When `full_max > 0`, a `full` unit is skipped — not failed,
+not counted as started — while at least `full_max` units are already inflight
+on `pool_full` (`FULL_UNITS_MAX = 2`, pump.py commit 7718a9f); same-tick
+starts count toward the cap, and the skipped unit is simply retried next
+tick. The cap keeps one full-toolchain machine free for gates. Free slot
+counts come from `pool status --porcelain`
 (pump.py:506–514 slots). At most `per_tick` units start per tick
 (pump.py:579–580, literal `6`), and fix units are offered first
 (`sorted` key at pump.py:579).
@@ -393,6 +398,7 @@ replaces.
 | `from` | string | the `branch` value | `--from %s` filled with `BRANCH` (pump.py:605) | `--from` of a unit dispatch |
 | `pool_plain` | pool name | `fly4` | `pool = "fly4"` (pump.py:588) | pool for units with `tools = "plain"` |
 | `pool_full` | pool name | `flyfull` | `pool = "flyfull"` (pump.py:586) | pool for units with `tools = "full"` |
+| `full_max` | int | `0` | `FULL_UNITS_MAX = 2` (pump.py:43, as of commit 7718a9f) | units allowed in flight on `pool_full` at once; `0` = no cap; keeps one full-toolchain machine free for gates (§8) |
 
 `[pump.merge]`:
 

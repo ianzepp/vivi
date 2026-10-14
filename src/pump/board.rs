@@ -285,7 +285,7 @@ pub fn operator_replied_after(ctx: &Ctx, handle: &str, since: u64) -> bool {
     let mut when = String::new();
     for line in out.text.lines() {
         if let Some(stamp) = header_time(line) {
-            when = stamp.to_owned();
+            stamp.clone_into(&mut when);
         } else if !when.is_empty() && line.starts_with(&sender) && newer_than(&when, since) {
             return true;
         }

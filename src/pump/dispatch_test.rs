@@ -194,6 +194,86 @@ fn a_full_tools_unit_goes_to_the_full_pool() {
 }
 
 #[test]
+fn a_full_unit_waits_while_full_max_units_are_inflight_on_the_full_pool() {
+    let mut cfg = dispatch_cfg();
+    cfg.dispatch.per_tick = 3;
+    cfg.dispatch.full_max = 2;
+    let (_dir, ctx, host) = setup_with(cfg);
+    // Three free slots on the full pool, so only `full_max` can gate.
+    host.reply(
+        "pool status",
+        0,
+        "slot fly4 bridge slot-1 free\nslot flyfull bridge slot-1 free\n\
+         slot flyfull bridge slot-2 free\nslot flyfull bridge slot-3 free\n",
+    );
+    host.reply("task send", 0, "created hand 1a2b3c4d\nnode 1a2b3c4d");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched 1a2b3c4d bridge slot-1 m/a unit/x-a1",
+    );
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2", "u3", "u4"]);
+    for uid in ["u1", "u2", "u3"] {
+        st.units.get_mut(uid).unwrap().tools = String::from("full");
+    }
+    dispatch(&ctx, &mut st);
+    // u1 and u2 fill the cap (same-tick starts count); u3 waits, unsent and
+    // unstarted; the plain unit u4 is not held back by the full-pool cap.
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u2"].status, Status::Inflight);
+    assert_eq!(st.units["u3"].status, Status::Pending);
+    assert_eq!(st.units["u3"].task, None);
+    assert_eq!(st.units["u4"].status, Status::Inflight);
+    assert_eq!(st.units["u4"].pool.as_deref(), Some("fly4"));
+    assert_eq!(commands_with(&host, "task send").len(), 3);
+    assert_eq!(
+        commands_with(&host, "pool dispatch --pool flyfull").len(),
+        2
+    );
+    assert_eq!(commands_with(&host, "pool dispatch --pool fly4").len(), 1);
+}
+
+#[test]
+fn full_max_zero_means_no_cap() {
+    let (_dir, ctx, host) = setup();
+    // `dispatch_cfg` leaves `full_max` at the default 0; give the full pool
+    // three free slots so nothing but the cap could hold a unit back.
+    host.reply(
+        "pool status",
+        0,
+        "slot fly4 bridge slot-1 free\nslot flyfull bridge slot-1 free\n\
+         slot flyfull bridge slot-2 free\nslot flyfull bridge slot-3 free\n",
+    );
+    host.reply("task send", 0, "created hand 1a2b3c4d\nnode 1a2b3c4d");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched 1a2b3c4d bridge slot-1 m/a unit/x-a1",
+    );
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2", "u3"]);
+    for uid in ["u1", "u2", "u3"] {
+        st.units.get_mut(uid).unwrap().tools = String::from("full");
+    }
+    dispatch(&ctx, &mut st);
+    assert!(
+        ["u1", "u2", "u3"]
+            .iter()
+            .all(|uid| st.units[*uid].status == Status::Inflight)
+    );
+    assert!(
+        ["u1", "u2", "u3"]
+            .iter()
+            .all(|uid| st.units[*uid].pool.as_deref() == Some("flyfull"))
+    );
+    assert_eq!(
+        commands_with(&host, "pool dispatch --pool flyfull").len(),
+        3
+    );
+}
+
+#[test]
 fn a_pool_without_a_free_slot_leaves_the_unit_pending() {
     let (_dir, ctx, host) = setup();
     wire(&host);

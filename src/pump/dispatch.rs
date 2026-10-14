@@ -113,15 +113,24 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
 }
 
 /// Decide whether `uid` may start this tick and where: pending and ready,
-/// its pool has a free slot, and a lane is open (reported separately, since a
-/// closed lane set breaks the loop rather than skipping the unit).
+/// under the full-pool cap for `full` tools, and its pool has a free slot; a
+/// closed lane set is reported separately, since it breaks the loop rather
+/// than skipping the unit.
 fn plan_unit(ctx: &Ctx, st: &State, uid: &str, free: &BTreeMap<String, u32>) -> Option<Plan> {
     let unit = st.units.get(uid)?;
     if !is_ready(ctx, st, uid) {
         return None;
     }
     let pool = if unit.tools == "full" {
-        ctx.cfg.dispatch.pool_full.clone()
+        let pool_full = ctx.cfg.dispatch.pool_full.clone();
+        // Keep one full-toolchain machine free for gates: while `full_max`
+        // units are inflight on the full pool, a further `full` unit waits.
+        if ctx.cfg.dispatch.full_max > 0
+            && inflight_on(st, &pool_full) >= ctx.cfg.dispatch.full_max as usize
+        {
+            return None;
+        }
+        pool_full
     } else {
         ctx.cfg.dispatch.pool_plain.clone()
     };
@@ -135,6 +144,14 @@ fn plan_unit(ctx: &Ctx, st: &State, uid: &str, free: &BTreeMap<String, u32>) -> 
         attempt,
         branch: format!("unit/{uid}-a{attempt}"),
     })
+}
+
+/// Units with status `Inflight` dispatched to `pool`.
+fn inflight_on(st: &State, pool: &str) -> usize {
+    st.units
+        .values()
+        .filter(|u| u.status == Status::Inflight && u.pool.as_deref() == Some(pool))
+        .count()
 }
 
 /// Write `<home>/briefs/<uid>.txt` and send the unit's task; returns the
@@ -237,7 +254,7 @@ fn dispatch_failed(
         shell_quote(task),
         shell_quote(&ctx.cfg.from),
     );
-    ctx.vivi(&cmd, 120);
+    drop(ctx.vivi(&cmd, 120));
     if text.contains("no free slot") {
         free.insert(pool.to_owned(), 0);
     }

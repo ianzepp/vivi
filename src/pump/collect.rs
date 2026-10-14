@@ -77,6 +77,7 @@ pub fn parse_reconcile(out: &str) -> BTreeMap<String, (String, String)> {
 }
 
 /// The last 6000 chars of `vivi task show <task> --latest` (pump.py:400).
+#[must_use]
 pub fn receipt(ctx: &Ctx, task: &str) -> String {
     let out = ctx.vivi(&format!("task show {task} --latest"), 60);
     tail(&out.text, 6000)
@@ -308,7 +309,7 @@ fn fail_from_receipt(
 fn expire_splits(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.planner.split_timeout;
     let now = ctx.now();
-    for (uid, unit) in st.units.iter_mut() {
+    for (uid, unit) in &mut st.units {
         if unit.status == Status::Splitting && now.saturating_sub(unit.since) > timeout {
             unit.status = Status::Stuck;
             ctx.exception(
