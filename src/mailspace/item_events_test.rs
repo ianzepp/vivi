@@ -1,3 +1,4 @@
+use super::property::{PropertyKind, parse_property_event};
 use super::*;
 use crate::mailspace::SendRequest;
 
@@ -51,6 +52,60 @@ fn letter(headers: &str) -> Vec<u8> {
          Message-ID: <ev-1@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n{headers}\r\nbody\r\n"
     )
     .into_bytes()
+}
+
+#[test]
+fn a_property_event_letter_carries_the_payload_its_kind_needs() {
+    let marked = letter(
+        "In-Reply-To: <item-1@x.test>\r\nX-Vivi-Event: marked\r\n\
+         X-Vivi-Event-Of: <Item-1@x.test>\r\nX-Vivi-Event-Slug: ready\r\n",
+    );
+    let marked = parse_property_event(&marked).unwrap();
+    assert_eq!(marked.kind, PropertyKind::Marked);
+    assert_eq!(marked.of, "item-1@x.test");
+    assert_eq!(marked.id, "ev-1@x.test");
+    assert_eq!(marked.slug.as_deref(), Some("ready"));
+    assert_eq!(marked.from_domain, "aaaaaaaa.local");
+
+    let bound = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: bound\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-Unit: <u1@x.test>\r\nX-Vivi-Event-Unit: <U1@x.test>\r\n",
+    );
+    let bound = parse_property_event(&bound).unwrap();
+    assert_eq!(bound.units, ["u1@x.test"], "deduplicated");
+
+    let sealed = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: Done\r\nX-Vivi-Event-At: 2026-10-14T02:21:03.123456Z\r\n",
+    );
+    let sealed = parse_property_event(&sealed).unwrap();
+    assert_eq!(sealed.kind, PropertyKind::Absorbed);
+    assert_eq!(sealed.state.as_deref(), Some("done"));
+    assert_eq!(sealed.at, 1_791_944_463_123_456);
+    assert!(parse_event(&letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: done\r\n",
+    ))
+    .is_none(), "a state event ignores the property kinds");
+}
+
+#[test]
+fn a_property_event_without_its_payload_or_a_matching_reply_is_plain_mail() {
+    let no_payload = [
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: cancelled\r\n",
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: marked\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: bound\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+        "In-Reply-To: <other@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: done\r\n",
+    ];
+    for headers in no_payload {
+        assert!(
+            parse_property_event(&letter(headers)).is_none(),
+            "{headers}"
+        );
+    }
 }
 
 /// The event letters held for `item`, oldest first, as `(kind, prev count)`.

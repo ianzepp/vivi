@@ -2,6 +2,9 @@
 //! reply letters that travel through the fake project server and move the
 //! assignee's rows and nodes; an assignee's report does not move the owner's.
 
+#[path = "property_events_test.rs"]
+mod property;
+
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest, is_foreign_account};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{

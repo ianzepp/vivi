@@ -47,6 +47,9 @@ use crate::message::normalize_message_id;
 use crate::storage::{ItemEventWrite, MailspaceEventInput, RoleMove, Storage, StoredMessageView};
 
 mod emit;
+mod property;
+
+pub(crate) use property::parse_property_event;
 
 pub(crate) const EVENT_HEADER: &str = "X-Vivi-Event";
 const EVENT_OF_HEADER: &str = "X-Vivi-Event-Of";
@@ -519,6 +522,16 @@ impl Mailspace {
         };
         let chain = self.item_chain(storage, &item)?;
         tally.ignored += chain.unauthorized;
+        // A counted absorbed event seals the item with the state it names, so
+        // the state events held beside it are only letters: none of them
+        // moves a row, however new it is. A state event older than the seal
+        // is ignored the same way — the absorb letter already named the
+        // state.
+        let sealed = property::counted_absorb(storage, &item)?.is_some();
+        self.apply_property_events(storage, &item, tally)?;
+        if sealed {
+            return Ok(());
+        }
         let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(());
         };
@@ -580,9 +593,19 @@ impl Mailspace {
                         by_event.insert(item.content_id);
                     }
                 }
-                None => {
-                    by_item.insert(content_id.clone());
-                }
+                // A property event settles its item the same way, by the
+                // item it names; when the item is not held yet, the letter
+                // waits for it as a state event does.
+                None => match parse_property_event(&bytes).map(|event| event.of) {
+                    Some(of) => {
+                        if let Some(item) = storage.live_message_by_rfc_id(&of)? {
+                            by_event.insert(item.content_id);
+                        }
+                    }
+                    None => {
+                        by_item.insert(content_id.clone());
+                    }
+                },
             }
         }
         by_item.retain(|content_id| !by_event.contains(content_id));
