@@ -396,3 +396,18 @@ fn the_second_attempt_uses_a_new_branch_name_and_carries_the_failure_in_the_brie
     assert!(brief.contains("A PREVIOUS ATTEMPT AT THIS UNIT FAILED (proof-failed)"));
     assert!(brief.contains("cargo test exploded"));
 }
+
+#[test]
+fn a_final_attempt_unit_without_a_last_resort_does_not_block_later_units() {
+    let mut cfg = dispatch_cfg();
+    cfg.dispatch.last_resort = String::new();
+    let (_dir, ctx, host) = setup_with(cfg);
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2"]);
+    st.units.get_mut("u1").unwrap().attempts = 2; // the final attempt
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].attempts, 3);
+    assert_eq!(st.units["u2"].status, Status::Inflight);
+}

@@ -247,3 +247,52 @@ fn pick_model_returns_none_when_every_lane_is_full() {
     let u = Unit::default();
     assert_eq!(pick_model(&ctx, &st, &u), None);
 }
+
+#[test]
+fn pick_model_uses_the_normal_lanes_on_the_final_attempt_without_a_last_resort() {
+    let (_dir, ctx, _host, st) = setup_cfg(lane_cfg(vec![("m-a", 1)], ""));
+    let final_attempt = Unit {
+        attempts: 2,
+        ..Unit::default()
+    };
+    assert_eq!(
+        pick_model(&ctx, &st, &final_attempt).as_deref(),
+        Some("m-a")
+    );
+}
+
+/// Write `<home>/reserved.txt`.
+fn write_reserved(ctx: &Ctx, text: &str) {
+    std::fs::write(ctx.home.join("reserved.txt"), text).unwrap();
+}
+
+#[test]
+fn a_reserved_glob_blocks_an_overlapping_unit_but_not_a_disjoint_one() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_reserved(
+        &ctx,
+        "# held for another session\n\n  crates/held/*.rs  \n#src/a\n",
+    );
+    let (a, ua) = mk("a-1", Status::Pending, &["crates/held/lib.rs"]);
+    let (b, ub) = mk("b-1", Status::Pending, &["crates/other/lib.rs"]);
+    let (c, uc) = mk("c-1", Status::Pending, &["src/a"]);
+    st.units.insert(a.clone(), ua);
+    st.units.insert(b.clone(), ub);
+    st.units.insert(c.clone(), uc);
+    assert!(!is_ready(&ctx, &st, &a));
+    assert!(is_ready(&ctx, &st, &b));
+    // A commented-out line holds nothing.
+    assert!(is_ready(&ctx, &st, &c));
+}
+
+#[test]
+fn reserved_txt_is_re_read_each_call_and_may_be_absent() {
+    let (_dir, ctx, _host, mut st) = setup();
+    let (id, u) = mk("a-1", Status::Pending, &["src/a/x.rs"]);
+    st.units.insert(id.clone(), u);
+    assert!(is_ready(&ctx, &st, &id)); // no file
+    write_reserved(&ctx, "src/a\n");
+    assert!(!is_ready(&ctx, &st, &id));
+    write_reserved(&ctx, "src/b\n");
+    assert!(is_ready(&ctx, &st, &id));
+}
