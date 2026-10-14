@@ -57,6 +57,17 @@ pub enum PropertyKind {
 }
 
 impl PropertyKind {
+    /// The `X-Vivi-Event` value.
+    #[must_use]
+    pub fn header(self) -> &'static str {
+        match self {
+            Self::Absorbed => "absorbed",
+            Self::Marked => "marked",
+            Self::Unmarked => "unmarked",
+            Self::Bound => "bound",
+        }
+    }
+
     fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "absorbed" => Some(Self::Absorbed),

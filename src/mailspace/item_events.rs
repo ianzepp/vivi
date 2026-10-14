@@ -48,8 +48,9 @@ use crate::storage::{ItemEventWrite, MailspaceEventInput, RoleMove, Storage, Sto
 
 mod emit;
 mod property;
+mod property_emit;
 
-pub(crate) use property::parse_property_event;
+pub(crate) use property::{PropertyKind, parse_property_event};
 
 pub(crate) const EVENT_HEADER: &str = "X-Vivi-Event";
 const EVENT_OF_HEADER: &str = "X-Vivi-Event-Of";
