@@ -393,6 +393,8 @@ scale or latency:
 - Closing a need is an appended event. Every client derives open or closed by
   folding events in the server's append order, so everyone converges. A receipt
   carrying evidence can still be a normal mail, but it is not the mechanism.
+  (Built as event letters. The fold is by each event's instant, not the
+  server's append order: see `contract.md`, Item events.)
 - Mail to an unpublished identity is rejected at submit time, with a hard error to
   the sender. (Not built: the server accepts a recipient prefix that has not
   registered, so a mailspace can be addressed before it joins. Revisit if
@@ -888,7 +890,8 @@ change.
 **Tools.** `overview`, `list`, `show`, `thread`, `send`, `reply`, `done`,
 `reopen`, `memo`, `graph`. Identity is the Bearer. A close travels only
 when the caller's registered prefix is the item's From domain (the
-author's mailspace); a hand's `done` is a report reply and does not
+author's mailspace), stamped with `X-Vivi-Event-At` and carrying the
+item's envelope kind; a hand's `done` is a report reply and does not
 change the owner's state. Memos are stored on the server mailspace under
 the caller's name and do not sync. Graph ready/status is projected from
 work items, `X-Vivi-Depends-On`, and event letters — not from the
