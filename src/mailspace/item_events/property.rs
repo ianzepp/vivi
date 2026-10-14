@@ -242,7 +242,7 @@ impl Mailspace {
         let chain = property_chain(storage, item)?;
         tally.ignored += chain.unauthorized;
         let Some(seal) = earliest_absorb(&chain.events).cloned() else {
-            self.apply_mark_letters(storage, item, &chain.events, tally)?;
+            Self::apply_mark_letters(storage, item, &chain.events, tally)?;
             return self.apply_bound_events(storage, item, &chain.events, tally);
         };
         if item.rows.iter().all(|row| row.absorbed_at.is_some()) {
@@ -342,7 +342,6 @@ impl Mailspace {
     /// an older letter that arrives late. Idempotent: a state that already
     /// matches appends nothing.
     fn apply_mark_letters(
-        &self,
         storage: &mut Storage,
         item: &HeldItem,
         events: &[PropertyEvent],
