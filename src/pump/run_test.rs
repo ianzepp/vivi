@@ -15,11 +15,13 @@ use crate::pump::state::{GateRun, NeedRecord, State, Status, Unit};
 /// The fake clock's start (1970-01-12T13:46:40Z).
 const T0: u64 = 1_000_000;
 
-/// A mailspace whose `[pump]` table passes `validate`.
+/// A mailspace whose `[pump]` table passes `validate`: the default
+/// `board.mark` is set, so `planner.run` must be non-empty.
 const PUMP_TOML: &str = concat!(
     "name = \"pump\"\n\n",
     "[pump]\nbranch = \"next\"\ntick = 1\n\n",
-    "[pump.dispatch]\nlanes = [{ model = \"m\", cap = 2 }]\n",
+    "[pump.dispatch]\nlanes = [{ model = \"m\", cap = 2 }]\n\n",
+    "[pump.planner]\nrun = \"planner-model\"\n",
 );
 
 /// A context with the default config, home at `dir/home`.
@@ -161,16 +163,14 @@ fn a_finished_gate_task_reaches_finish_gate_through_collect() {
     };
     let (merger, _results, _jobs) = Merger::detached();
     tick(&ctx, &mut st, &merger);
-    assert_eq!(
-        st.baseline,
-        Some(vec![String::from("crate::a::t")])
-    );
+    assert_eq!(st.baseline, Some(vec![String::from("crate::a::t")]));
     assert_eq!(st.gates.len(), 1);
     assert_eq!(st.last_gate.task, None);
-    assert!(host
-        .commands()
-        .iter()
-        .any(|c| c.contains("task show g1a2b3c4d")));
+    assert!(
+        host.commands()
+            .iter()
+            .any(|c| c.contains("task show g1a2b3c4d"))
+    );
 }
 
 #[test]
@@ -188,12 +188,15 @@ fn a_second_instance_is_refused_by_the_lock() {
 fn once_runs_exactly_one_tick() {
     let (dir, ctx, host) = setup();
     run_with(&ctx, true).unwrap();
-    let ticks = host
+    // One tick makes exactly two `pool status --porcelain` calls, as in
+    // pump.py: the dispatch slot count and the gate's pool pick. One tick
+    // is two; a second tick would make four.
+    let statuses = host
         .commands()
         .iter()
         .filter(|c| c.contains("pool status --porcelain"))
         .count();
-    assert_eq!(ticks, 1);
+    assert_eq!(statuses, 2);
     assert!(dir.path().join("home/state.json").is_file());
 }
 
@@ -202,16 +205,19 @@ fn the_stop_flag_ends_the_run_loop_after_a_tick() {
     let (dir, ctx, host) = setup();
     fs::write(ctx.home.join("STOP"), b"").unwrap();
     run_with(&ctx, false).unwrap();
-    let ticks = host
+    // One tick makes exactly two `pool status --porcelain` calls (see
+    // `once_runs_exactly_one_tick`); a second tick would make four.
+    let statuses = host
         .commands()
         .iter()
         .filter(|c| c.contains("pool status --porcelain"))
         .count();
-    assert_eq!(ticks, 1);
-    assert!(host
-        .logs()
-        .iter()
-        .any(|line| line.contains("STOP file seen; exiting")));
+    assert_eq!(statuses, 2);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("STOP file seen; exiting"))
+    );
     assert!(dir.path().join("home/state.json").is_file());
 }
 
