@@ -17,6 +17,8 @@ fn setup(format: &str) -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
         branch: String::from("next"),
+        committer_name: String::from("Pump Tester"),
+        committer_email: String::from("pump@example.com"),
         merge: MergeConfig {
             format: format.to_string(),
             shared_checks: vec![String::from("cargo test --lib")],
@@ -43,6 +45,9 @@ fn job() -> MergeJob {
         ],
     }
 }
+
+/// The identity options every commit-making command carries.
+const IDENTITY: &str = "-c 'user.name=Pump Tester' -c user.email=pump@example.com";
 
 /// Index of the first recorded command containing `fragment`.
 fn index_of(cmds: &[String], fragment: &str) -> usize {
@@ -95,7 +100,9 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
             "git checkout -q next",
             "git reset -q --hard origin/next",
             "git fetch origin refs/heads/work/u1:refs/remotes/origin/work/u1",
-            "git merge --no-ff --no-edit -m 'merge u1: A unit (need n1)' origin/work/u1",
+            &format!(
+                "git {IDENTITY} merge --no-ff --no-edit -m 'merge u1: A unit (need n1)' origin/work/u1"
+            )[..],
             "git diff --name-only HEAD~1 HEAD",
             "cargo test --lib",
             "./proof-u1.sh",
@@ -114,11 +121,11 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
 }
 
 #[test]
-fn a_fetch_failure_is_reported_as_fetch_failed() {
+fn a_fetch_failure_is_reported_as_undecided_fetch_failed() {
     let (_dir, ctx, host) = setup("");
     host.reply("refs/heads/work/u1", 1, "fatal: could not fetch\n");
     let result = merge_work(&ctx, &job());
-    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.ok, None, "an infrastructure failure retries later");
     assert_eq!(result.why.as_deref(), Some("fetch-failed"));
     assert_eq!(result.detail.as_deref(), Some("fatal: could not fetch\n"));
     assert_eq!(result.tip, None);
@@ -239,7 +246,7 @@ fn a_formatter_change_is_committed_as_a_style_commit_before_the_checks() {
     assert!(commit < check);
     assert_eq!(
         cmds[commit],
-        "git commit -q -am 'style: cargo fmt after u1'"
+        format!("git {IDENTITY} commit -q -am 'style: cargo fmt after u1'")
     );
 }
 
@@ -750,4 +757,38 @@ fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
     );
     // nothing else is waiting on the channel
     assert!(merger.results.try_recv().is_err());
+}
+
+#[test]
+fn a_batch_fetch_failure_is_undecided_and_does_not_fail_the_unit() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("refs/heads/work/u1", 1, "fatal: could not fetch\n");
+    let results = batch_work(&ctx, &batch());
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, None);
+    assert_eq!(u1.why.as_deref(), Some("fetch-failed"));
+}
+
+#[test]
+fn every_commit_making_command_carries_the_configured_identity() {
+    let (_dir, ctx, host) = setup("cargo fmt --all");
+    host.reply("status --porcelain", 0, " M src/lib.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip\n");
+    host.reply("merge-base --is-ancestor", 1, "");
+    let _single = merge_work(&ctx, &job());
+    let _batch = batch_work(&ctx, &batch());
+    let commits: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|c| c.contains(" merge --no-ff") || c.contains(" commit -q"))
+        .collect();
+    assert!(
+        commits.len() >= 4,
+        "expected merge and style commits: {commits:?}"
+    );
+    for cmd in &commits {
+        assert!(cmd.starts_with(&format!("git {IDENTITY} ")), "{cmd}");
+    }
+    assert!(commits.iter().any(|c| c.contains(" commit -q")));
+    assert!(commits.iter().any(|c| c.contains("merge main into next")));
 }

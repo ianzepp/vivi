@@ -69,6 +69,18 @@ fn tail(out: &str, n: usize) -> String {
     out.chars().skip(len.saturating_sub(n)).collect()
 }
 
+/// The `git -c` options that give a commit-making command the configured
+/// identity: `-c user.name=<name> -c user.email=<email>`, shell-quoted. Used
+/// as `ctx.git(&format!("{} merge ...", identity_args(ctx)), ..)`.
+#[must_use]
+pub fn identity_args(ctx: &Ctx) -> String {
+    format!(
+        "-c {} -c {}",
+        shell_quote(&format!("user.name={}", ctx.cfg.committer_name)),
+        shell_quote(&format!("user.email={}", ctx.cfg.committer_email)),
+    )
+}
+
 /// Abort any merge in progress and hard-reset the integration clone to
 /// `remote/branch` (pump.py `reset_repo`).
 pub fn reset_repo(ctx: &Ctx) {
@@ -94,7 +106,7 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     );
     let out = ctx.git(&fetch, 180);
     if out.code != 0 {
-        return failed(&job.uid, "fetch-failed", out.text);
+        return undecided_result(&job.uid, "fetch-failed", &out.text);
     }
     if let Some(result) = merge_branch(ctx, job) {
         return result;
@@ -126,8 +138,10 @@ fn merge_branch(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     let title: String = job.title.chars().take(80).collect();
     let msg = shell_quote(&format!("merge {}: {} (need {})", job.uid, title, job.need));
     let cmd = format!(
-        "merge --no-ff --no-edit -m {msg} {}/{}",
-        ctx.cfg.remote, job.branch
+        "{} merge --no-ff --no-edit -m {msg} {}/{}",
+        identity_args(ctx),
+        ctx.cfg.remote,
+        job.branch
     );
     let out = ctx.git(&cmd, GIT_TIMEOUT);
     if out.code == 0 {
@@ -163,7 +177,8 @@ fn format_style_commit(ctx: &Ctx, uid: &str) {
     let dirty = ctx.git("status --porcelain", GIT_TIMEOUT).text;
     if !dirty.trim().is_empty() {
         let msg = shell_quote(&format!("style: cargo fmt after {uid}"));
-        drop(ctx.git(&format!("commit -q -am {msg}"), GIT_TIMEOUT));
+        let commit = format!("{} commit -q -am {msg}", identity_args(ctx));
+        drop(ctx.git(&commit, GIT_TIMEOUT));
     }
 }
 
@@ -341,7 +356,10 @@ fn merge_main_in(ctx: &Ctx) {
     }
     let msg = shell_quote(&format!("merge {main} into {}", ctx.cfg.branch));
     let out = ctx.git(
-        &format!("merge --no-ff --no-edit -m {msg} {reference}"),
+        &format!(
+            "{} merge --no-ff --no-edit -m {msg} {reference}",
+            identity_args(ctx)
+        ),
         GIT_TIMEOUT,
     );
     if out.code == 0 {
@@ -384,13 +402,15 @@ fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     );
     let out = ctx.git(&fetch, 180);
     if out.code != 0 {
-        return Some(failed(&job.uid, "fetch-failed", out.text));
+        return Some(undecided_result(&job.uid, "fetch-failed", &out.text));
     }
     let title: String = job.title.chars().take(80).collect();
     let msg = shell_quote(&format!("merge {}: {} (need {})", job.uid, title, job.need));
     let cmd = format!(
-        "merge --no-ff --no-edit -m {msg} {}/{}",
-        ctx.cfg.remote, job.branch
+        "{} merge --no-ff --no-edit -m {msg} {}/{}",
+        identity_args(ctx),
+        ctx.cfg.remote,
+        job.branch
     );
     let out = ctx.git(&cmd, GIT_TIMEOUT);
     if out.code == 0 {

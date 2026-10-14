@@ -10,11 +10,21 @@ pub struct PumpConfig {
     /// Pump home directory; relative paths join the project root and `~` is
     /// not expanded. Default `<project>/.vivi/pump`.
     pub home: Option<String>,
-    /// The integration clone; cloned from `remote` when absent. Default
-    /// `<home>/repo`.
+    /// The integration clone; cloned from `remote_url` at startup when
+    /// absent. Default `<home>/repo`.
     pub repo: Option<String>,
-    /// Git remote the integration branch and main live on.
+    /// Git remote (name) the integration branch and main live on.
     pub remote: String,
+    /// URL or path the integration clone is created from when `repo` is
+    /// missing at startup; the clone's remote is named `remote`. With none
+    /// set, a missing `repo` stops the pump with an error.
+    pub remote_url: Option<String>,
+    /// Git author and committer name of every commit and merge the pump
+    /// makes. Required: `validate` rejects an empty one.
+    pub committer_name: String,
+    /// Git author and committer email of every commit and merge the pump
+    /// makes. Required: `validate` rejects an empty one.
+    pub committer_email: String,
     /// The integration branch. Required: `validate` rejects an empty one.
     pub branch: String,
     /// Main branch merged into the integration branch each batch; empty
@@ -27,8 +37,13 @@ pub struct PumpConfig {
     /// Shell fragment prepended to every command line.
     pub shell_prefix: String,
     /// File whose text opens every unit brief; absent means the embedded
-    /// generic text.
+    /// default text. A relative path joins the project root. `validate`
+    /// rejects a path that cannot be read.
     pub hand_rules: Option<String>,
+    /// Paths held by another session; units overlapping them are not
+    /// dispatched. A relative value resolves against `home`. Default
+    /// `reserved.txt`.
+    pub reserved_file: String,
     /// Unit ids with this prefix are fix units.
     pub fix_prefix: String,
     /// Role the pump sends unit tasks from.
@@ -55,12 +70,16 @@ impl Default for PumpConfig {
             home: None,
             repo: None,
             remote: "origin".into(),
+            remote_url: None,
+            committer_name: String::new(),
+            committer_email: String::new(),
             branch: String::new(),
             main: "main".into(),
             promote: true,
             tick: 20,
             shell_prefix: String::new(),
             hand_rules: None,
+            reserved_file: "reserved.txt".into(),
             fix_prefix: "pumpfix".into(),
             from: "operator".into(),
             to: "hand".into(),
@@ -199,6 +218,7 @@ pub struct MergeConfig {
     /// Format command run after merging.
     pub format: String,
     /// Shared checks run after every merge, before the units' own proof.
+    /// `validate` rejects an empty list while promotion is enabled.
     pub shared_checks: Vec<String>,
     /// Seconds per check command.
     pub proof_timeout: u64,
@@ -225,7 +245,8 @@ impl Default for MergeConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct GateConfig {
-    /// Gate command run by a read-only gate worker.
+    /// Gate command run by a read-only gate worker. Required: `validate`
+    /// rejects an empty one.
     pub command: String,
     /// A gate is due after this many merges.
     pub every_merges: u32,
@@ -269,12 +290,28 @@ impl PumpConfig {
     ///
     /// `pools` holds the names of the mailspace's `[pools.<name>]` tables.
     ///
+    /// `project` is the base a relative `hand_rules` path resolves against.
+    ///
     /// # Errors
     /// [`VivariumError::Config`] naming every violated key when a rule fails.
-    pub fn validate(&self, pools: &[String]) -> Result<(), VivariumError> {
+    pub fn validate(&self, project: &Path, pools: &[String]) -> Result<(), VivariumError> {
         let mut bad: Vec<String> = Vec::new();
         if self.branch.is_empty() {
             bad.push("[pump] branch must not be empty".into());
+        }
+        if self.committer_name.trim().is_empty() {
+            bad.push("[pump] committer_name must not be empty".into());
+        }
+        if self.committer_email.trim().is_empty() {
+            bad.push("[pump] committer_email must not be empty".into());
+        }
+        if let Some(path) = self.hand_rules_path(project)
+            && let Err(err) = std::fs::read_to_string(&path)
+        {
+            bad.push(format!(
+                "[pump] hand_rules `{}` cannot be read: {err}",
+                path.display()
+            ));
         }
         if self.tick == 0 {
             bad.push("[pump] tick must be >= 1".into());
@@ -334,6 +371,22 @@ impl PumpConfig {
             .map(|file| resolve(project, file))
     }
 
+    /// The hand-rules file: `hand_rules` (relative paths join `project`), or
+    /// `None` when unset.
+    #[must_use]
+    pub fn hand_rules_path(&self, project: &Path) -> Option<PathBuf> {
+        self.hand_rules
+            .as_deref()
+            .map(|rules| resolve(project, rules))
+    }
+
+    /// The reserved-paths file: `reserved_file`, a relative value joining
+    /// `home`.
+    #[must_use]
+    pub fn reserved_path(&self, project: &Path) -> PathBuf {
+        resolve(&self.home_dir(project), &self.reserved_file)
+    }
+
     /// `--from` of a unit dispatch: `dispatch.from`, else `branch`.
     #[must_use]
     pub fn dispatch_from(&self) -> &str {
@@ -388,6 +441,16 @@ impl PumpConfig {
     fn validate_merge_and_gate(&self, pools: &[String], bad: &mut Vec<String>) {
         if self.merge.batch == 0 {
             bad.push("[pump.merge] batch must be >= 1".into());
+        }
+        if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
+            bad.push(
+                "[pump.merge] shared_checks must not be empty while promotion is enabled \
+                 (promote = true and main set)"
+                    .into(),
+            );
+        }
+        if self.gate.command.trim().is_empty() {
+            bad.push("[pump.gate] command must not be empty".into());
         }
         if self.gate.every_merges == 0 {
             bad.push("[pump.gate] every_merges must be >= 1".into());

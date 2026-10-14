@@ -1947,14 +1947,18 @@ belong to your project, and the engine has no default for them.
 ```toml
 [pump]
 home         = "<project>/.vivi/pump"  # relative paths join the project root
-repo         = "<home>/repo"           # cloned from `remote` when absent
-remote       = "origin"                # git remote of the integration branch and main
+repo         = "<home>/repo"           # the integration clone; relative paths join the project root
+remote       = "origin"                # git remote name of the integration branch and main
+remote_url   = "<url>"                 # clone source when `repo` is missing at startup; absent: a missing repo stops the pump
+committer_name  = "<name>"             # required: git identity of every commit and merge the pump makes
+committer_email = "<email>"            # required: same
 branch       = "next"                  # required: the integration branch
 main         = "main"                  # "" disables merging main in and promotion
 promote      = true                    # a clean gate fast-forwards main to the gated tip
 tick         = 20                      # seconds between ticks
 shell_prefix = ""                      # prepended to every command line
-hand_rules   = "<path>"                # absent: the embedded generic hand-rules text
+hand_rules   = "<path>"                # absent: the embedded generic hand-rules text; relative paths join the project root; must be readable
+reserved_file = "reserved.txt"         # paths held by another session; units overlapping them are not dispatched; relative paths join `home`
 fix_prefix   = "pumpfix"               # ids with this prefix are fix units
 from         = "operator"              # role unit tasks are sent from
 to           = "hand"                  # recipient role of a unit dispatch
@@ -2008,7 +2012,10 @@ results_wait_seconds = 2700            # with results_dir: wait this long for on
 ignore_file   = "<file>"               # optional: test names dropped from every gate, one per line, # comments
 ```
 
-Validation rejects an empty `branch`, a `tick` below 1, empty `lanes` or a
+Validation rejects an empty `branch`, an empty `committer_name` or
+`committer_email`, an empty `gate.command`, empty `merge.shared_checks` while
+promotion is enabled (`promote = true` and `main` set), a `hand_rules` file
+that cannot be read, a `tick` below 1, empty `lanes` or a
 lane cap below 1, a `max_attempts` below 1, and any pool name that is not a
 `[pools.<name>]` table. Rules that are not obvious from the keys:
 

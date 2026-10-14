@@ -65,6 +65,20 @@ fn hand_rules_reads_the_configured_file() {
 }
 
 #[test]
+fn a_relative_hand_rules_path_resolves_against_the_project_root() {
+    let dir = tempdir().unwrap();
+    let project = dir.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join("rules.txt"), "project-relative rules").unwrap();
+    let cfg = PumpConfig {
+        hand_rules: Some(String::from("rules.txt")),
+        ..PumpConfig::default()
+    };
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    assert_eq!(hand_rules(&ctx), "project-relative rules");
+}
+
+#[test]
 fn hand_rules_falls_back_to_the_default_when_the_file_is_missing() {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
