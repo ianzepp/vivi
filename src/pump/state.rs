@@ -1,6 +1,6 @@
 //! The pump's `state.json` model, load and save.
 //!
-//! The shapes here are exactly pump.py's `state.json` (docs/pump/contract.md,
+//! The shapes here are the `state.json` shape (docs/pump/contract.md,
 //! section "State file"): every field is `#[serde(default)]` so a state file
 //! written by an older pump still loads, and unknown keys — top level or
 //! inside a unit — land in `extra` and are written back untouched.
@@ -137,7 +137,7 @@ pub struct Attempt {
 
 /// One schedulable unit of work.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)] // field names are pump.py's state.json keys
+#[allow(clippy::struct_field_names)] // field names are the state.json keys
 pub struct Unit {
     /// The need this unit serves (handle without the `-N` suffix).
     #[serde(default)]
@@ -157,7 +157,8 @@ pub struct Unit {
     /// Proof commands that gate the merge.
     #[serde(default)]
     pub proof: Vec<String>,
-    /// `plain` or `full`.
+    /// The unit's kind (`[pump.dispatch.kinds.<name>]`); empty means
+    /// `default_kind`.
     #[serde(default)]
     pub tools: String,
     /// Lifecycle position.
@@ -199,6 +200,9 @@ pub struct Unit {
     /// The agent's verdict text, when it replied with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_text: Option<String>,
+    /// The unit's unknown-kind exception was raised already.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kind_reported: bool,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -288,7 +292,7 @@ pub struct Promotion {
 
 /// The whole pump state: `state.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)] // field names are pump.py's state.json keys
+#[allow(clippy::struct_field_names)] // field names are the state.json keys
 pub struct State {
     /// Every known unit, by handle.
     #[serde(default)]
@@ -352,7 +356,8 @@ pub struct MergeJob {
     /// Proof commands to run on the integration branch.
     #[serde(default)]
     pub proof: Vec<String>,
-    /// `plain` or `full`.
+    /// The unit's kind (`[pump.dispatch.kinds.<name>]`); empty means
+    /// `default_kind`.
     #[serde(default)]
     pub tools: String,
     /// Files this unit may write.
@@ -391,8 +396,8 @@ impl State {
     ///
     /// A missing file yields the empty state. Units left `merging` by a
     /// crashed run fold back to `delivered`, and an empty `plans_seen` with
-    /// known needs is rebuilt as `"<need>.json"` per need — both as pump.py
-    /// does at startup.
+    /// known needs is rebuilt as `"<need>.json"` per need — both done
+    /// at startup.
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the file exists but cannot be read or

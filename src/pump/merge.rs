@@ -1,8 +1,8 @@
 //! The merge paths: one unit branch at a time, and the batch path with
 //! culprit isolation.
 //!
-//! Behaviour port of pump.py `failure_text` (:179), `reset_repo` (:625),
-//! `merge_work` (:632), `batch_round` (:675) and `batch_work` (:749): reset
+//! `failure_text`, `reset_repo`, `merge_work`, `batch_round` and
+//! `batch_work`: reset
 //! the integration clone, merge unit branches, format, run the checks, and
 //! push — or report why it did not land.
 
@@ -20,7 +20,7 @@ use crate::pump::ready::satisfied;
 use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
-/// Default git timeout in seconds, as pump.py's `git()` helper.
+/// Default git timeout in seconds, for git commands.
 const GIT_TIMEOUT: u64 = 300;
 
 /// Distill a raw command output down to the lines that explain a failure:
@@ -82,7 +82,7 @@ pub fn identity_args(ctx: &Ctx) -> String {
 }
 
 /// Abort any merge in progress and hard-reset the integration clone to
-/// `remote/branch` (pump.py `reset_repo`).
+/// `remote/branch`.
 pub fn reset_repo(ctx: &Ctx) {
     let branch = ctx.cfg.branch.as_str();
     let remote = ctx.cfg.remote.as_str();
@@ -93,7 +93,7 @@ pub fn reset_repo(ctx: &Ctx) {
 }
 
 /// Merge one unit branch into the integration branch, run the checks and
-/// push (pump.py `merge_work`). Runs on the merge thread and touches only
+/// push. Runs on the merge thread and touches only
 /// the repository, never the pump state.
 #[must_use]
 pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
@@ -106,7 +106,7 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     );
     let out = ctx.git(&fetch, 180);
     if out.code != 0 {
-        return undecided_result(&job.uid, "fetch-failed", &out.text);
+        return fetch_failure(&job.uid, &out.text);
     }
     if let Some(result) = merge_branch(ctx, job) {
         return result;
@@ -117,6 +117,17 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
         return result;
     }
     push(ctx, &job.uid, outside, t0)
+}
+
+/// The result of a failed fetch of a unit branch. A branch that does not
+/// exist on the remote (git's "couldn't find remote ref") will never appear
+/// by retrying, so it is a decided `branch-missing` failure; any other fetch
+/// error (network, auth, ...) stays undecided and is retried.
+fn fetch_failure(uid: &str, text: &str) -> MergeResult {
+    if text.contains("couldn't find remote ref") {
+        return failed(uid, "branch-missing", text.to_string());
+    }
+    undecided_result(uid, "fetch-failed", text)
 }
 
 /// A decided failure result (`ok=false`) with `why` and `detail`.
@@ -176,17 +187,17 @@ fn format_style_commit(ctx: &Ctx, uid: &str) {
     drop(ctx.sh(&ctx.cfg.merge.format, Some(&ctx.repo), 180));
     let dirty = ctx.git("status --porcelain", GIT_TIMEOUT).text;
     if !dirty.trim().is_empty() {
-        let msg = shell_quote(&format!("style: cargo fmt after {uid}"));
+        let msg = shell_quote(&format!("style: format after {uid}"));
         let commit = format!("{} commit -q -am {msg}", identity_args(ctx));
         drop(ctx.git(&commit, GIT_TIMEOUT));
     }
 }
 
-/// Shared checks, then the unit's own proof (skipped for `full` tools). The
+/// Shared checks, then the unit's own proof (skipped for a `skip_proof` kind). The
 /// first failure resets the repo and decides the job.
 fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     let mut checks = ctx.cfg.merge.shared_checks.clone();
-    if job.tools != "full" {
+    if !skips_proof(ctx, &job.tools) {
         checks.extend(job.proof.iter().cloned());
     }
     for cmd in &checks {
@@ -197,7 +208,7 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
             "proof {} rc={} {}s: {head}",
             job.uid,
             out.code,
-            ctx.now() - t1
+            ctx.now().saturating_sub(t1)
         ));
         if out.code != 0 {
             reset_repo(ctx);
@@ -243,7 +254,7 @@ fn push(ctx: &Ctx, uid: &str, outside: Vec<String>, t0: u64) -> MergeResult {
         ok: Some(true),
         tip: Some(tip),
         outside,
-        secs: Some(ctx.now() - t0),
+        secs: Some(ctx.now().saturating_sub(t0)),
         why: None,
         detail: None,
     }
@@ -266,7 +277,7 @@ enum SharedOutcome {
 }
 
 /// Merge a batch of unit branches together, check the result once and push
-/// once (pump.py `batch_round`). Returns the results for the decided jobs
+/// once. Returns the results for the decided jobs
 /// and the undecided ones: `Some` lists the jobs a second round should retry
 /// (empty when none remain), `None` when no culprit is known.
 #[must_use]
@@ -301,7 +312,7 @@ pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Option<Ve
     (results, Some(Vec::new()))
 }
 
-/// Drive the batch rounds (pump.py `batch_work`): one round over all jobs, a
+/// Drive the batch rounds: one round over all jobs, a
 /// second over the survivors, and anything still undecided merged one at a
 /// time with [`merge_work`].
 #[must_use]
@@ -402,7 +413,7 @@ fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     );
     let out = ctx.git(&fetch, 180);
     if out.code != 0 {
-        return Some(undecided_result(&job.uid, "fetch-failed", &out.text));
+        return Some(fetch_failure(&job.uid, &out.text));
     }
     let title: String = job.title.chars().take(80).collect();
     let msg = shell_quote(&format!("merge {}: {} (need {})", job.uid, title, job.need));
@@ -436,7 +447,7 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
             "batch {} shared rc={} {}s: {cmd}",
             merged.len(),
             out.code,
-            ctx.now() - t1
+            ctx.now().saturating_sub(t1)
         ));
         if out.code != 0 {
             return shared_failure(ctx, merged, cmd, out.code, &out.text);
@@ -456,12 +467,17 @@ fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str
     SharedOutcome::Many
 }
 
-/// Run each merged job's own proof (skipping `full` tools); a failing job
+/// Whether the kind a `tools` value selects skips its units' own proof.
+fn skips_proof(ctx: &Ctx, tools: &str) -> bool {
+    ctx.cfg.kind_of(tools).is_some_and(|kind| kind.skip_proof)
+}
+
+/// Run each merged job's own proof (skipping `skip_proof` kinds); a failing job
 /// becomes a `proof-failed` result and joins the culprits.
 fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> Vec<String> {
     let mut culprits = Vec::new();
     for m in merged {
-        if m.job.tools == "full" {
+        if skips_proof(ctx, &m.job.tools) {
             continue;
         }
         for cmd in &m.job.proof {
@@ -472,7 +488,7 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
                 "proof {} rc={} {}s: {head}",
                 m.job.uid,
                 out.code,
-                ctx.now() - t1
+                ctx.now().saturating_sub(t1)
             ));
             if out.code != 0 {
                 culprits.push(m.job.uid.clone());
@@ -514,7 +530,7 @@ fn push_batch(ctx: &Ctx, merged: Vec<Merged>, t0: u64) -> Vec<MergeResult> {
         .text
         .trim()
         .to_string();
-    let per = std::cmp::max(1, (ctx.now() - t0) / (merged.len() as u64));
+    let per = std::cmp::max(1, (ctx.now().saturating_sub(t0)) / (merged.len() as u64));
     merged
         .into_iter()
         .map(|m| MergeResult {
@@ -548,8 +564,8 @@ fn push_failed(uid: &str, out: &str) -> MergeResult {
 /// The merge worker: one background thread that owns the integration clone,
 /// fed by [`Merger::feed`] and drained by [`Merger::apply`].
 ///
-/// Ports pump.py's `MERGE_IN`/`MERGE_OUT` queues (`pump.py:764-765`) and
-/// `merge_thread` (`pump.py:803`): the thread blocks on one job, drains up
+/// The merge queues and
+/// the merge thread: the thread blocks on one job, drains up
 /// to `merge.batch` more, offers the batch to the remote merger and falls
 /// back to [`batch_work`] or [`merge_work`]. It never touches the state;
 /// every effect on units flows back through the results channel.
@@ -583,8 +599,8 @@ impl Merger {
         (Merger { to_merge, results }, out, jobs)
     }
 
-    /// Queue every `delivered` unit for merging and move it to `merging`
-    /// (pump.py `merge_feed`, :858). Under the `HOLD-MERGE` flag only units
+    /// Queue every `delivered` unit for merging and move it to `merging`.
+    /// Under the `HOLD-MERGE` flag only units
     /// whose id starts with `fix_prefix` are fed.
     ///
     /// State change only: the merge thread touches the repository, never
@@ -619,8 +635,7 @@ impl Merger {
         }
     }
 
-    /// Drain finished merge results into state (pump.py `merge_apply`,
-    /// :830): undecided units return to `delivered`, decided failures go
+    /// Drain finished merge results into state (`apply`): undecided units return to `delivered`, decided failures go
     /// through [`collect::fail`], and merges land with their tip and outside
     /// files — closing the need and appending `needs-ready.txt` when its
     /// last unit just became satisfied.
@@ -635,7 +650,7 @@ impl Merger {
     }
 }
 
-/// The worker loop (pump.py `merge_thread`, :803): block on one job — the
+/// The worker loop: block on one job — the
 /// loop ends when the sender is dropped — drain up to `merge.batch` more,
 /// merge the batch, and hand out exactly one result per job. A panic in the
 /// work becomes one `merge-error` result per job, never a dead loop.
@@ -678,7 +693,7 @@ fn run_batch(ctx: &Ctx, jobs: &[MergeJob]) -> Vec<MergeResult> {
     done
 }
 
-/// Send one result per job (pump.py :818-827): results deduplicated by uid,
+/// Send one result per job results deduplicated by uid,
 /// and every job the batch's results never named gets an
 /// `ok=None, why="merge-undecided"` result.
 fn dispatch_results(out: &Sender<MergeResult>, jobs: &[MergeJob], done: Vec<MergeResult>) {
@@ -789,7 +804,7 @@ fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
 
 /// Close the unit's need and append its `needs-ready.txt` line when the
 /// need record exists, is not closed yet, and every one of its units is
-/// satisfied (pump.py :846-855).
+/// satisfied.
 fn close_need(ctx: &Ctx, st: &mut State, uid: &str, tip: &str) {
     let Some(need_id) = st.units.get(uid).map(|u| u.need.clone()) else {
         return;

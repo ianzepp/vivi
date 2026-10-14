@@ -1,7 +1,6 @@
 //! Unit readiness and model choice.
 //!
-//! Behaviour port of pump.py `satisfied` (:516), `reserved_paths`, `ready`
-//! (:527) and `pick_model` (:546).
+//! `satisfied`, `reserved_paths`, `ready` and `pick_model`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -35,12 +34,12 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
     }
 }
 
-/// Paths another session holds for now: one path or glob per line in
-/// `<home>/reserved.txt`. Blank lines and lines whose first character is `#`
-/// (checked before trimming, as pump.py does) are ignored. The file is read
+/// Paths another session holds for now: one path or glob per line in the
+/// configured `reserved_file` (see `PumpConfig::reserved_path`). Blank lines and lines whose first character is `#`
+/// (checked before trimming) are ignored. The file is read
 /// afresh on every call; an unreadable or absent file holds nothing.
 fn reserved_paths(ctx: &Ctx) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(ctx.home.join("reserved.txt")) else {
+    let Ok(text) = fs::read_to_string(ctx.cfg.reserved_path(&ctx.project)) else {
         return Vec::new();
     };
     text.lines()

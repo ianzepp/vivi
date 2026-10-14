@@ -1,4 +1,4 @@
-//! The remote merger file protocol (`pump.py:773 remote_merge`).
+//! The remote merger file protocol (`remote_merge`).
 //!
 //! When the flag file `<home>/REMOTE-MERGE` exists, merge batches are offered
 //! to a remote merger through `<home>/merge-jobs/`: this host writes
@@ -54,7 +54,7 @@ pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<
     let t0 = ctx.now();
     // The remote merger claims a batch by renaming or removing the job file;
     // whoever makes it disappear first owns it.
-    while ctx.now() - t0 < ctx.cfg.merge.remote_wait && job.exists() {
+    while ctx.now().saturating_sub(t0) < ctx.cfg.merge.remote_wait && job.exists() {
         sleep(poll);
     }
     if fs::remove_file(&job).is_ok() {
@@ -63,7 +63,7 @@ pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<
         ));
         return None;
     }
-    while ctx.now() - t0 < ctx.cfg.merge.remote_limit && !result.exists() {
+    while ctx.now().saturating_sub(t0) < ctx.cfg.merge.remote_limit && !result.exists() {
         sleep(poll);
     }
     if !result.exists() {
@@ -73,7 +73,7 @@ pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<
         return None;
     }
     let results = read_result_file(ctx, &result)?;
-    let secs = ctx.now() - t0;
+    let secs = ctx.now().saturating_sub(t0);
     ctx.log(&format!(
         "remote batch {bid}: {} results in {secs}s",
         results.len()

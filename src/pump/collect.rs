@@ -1,6 +1,6 @@
 //! Dispatch reconcile parsing and outcome classification.
 //!
-//! `collect` (pump.py:444) reconciles the pool once per tick, classifies every
+//! `collect` reconciles the pool once per tick, classifies every
 //! in-flight unit (deliver, fail, split, no-defect), expires unanswered split
 //! planners, and returns the gate task's receipt when the gate finished; the
 //! caller hands that receipt to the gate module.
@@ -16,17 +16,17 @@ use crate::pump::host::{Ctx, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status};
 
 /// Seconds a unit may stay unreported by reconcile before the pool-status
-/// fallback decides (pump.py:470).
+/// fallback decides.
 const RECONCILE_GRACE: u64 = 90;
-/// Receipt marker of a worker that found nothing to fix (pump.py:489).
+/// Receipt marker of a worker that found nothing to fix.
 const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
-/// Receipt fragments of an agent killed by its budget timeout (pump.py:477).
+/// Receipt fragments of an agent killed by its budget timeout.
 const EXIT_124_MARKERS: [&str; 2] = ["agent exit 124", "agent_rc 124"];
 /// Seconds a gate task may stay unreported before it is finished from its
-/// receipt (pump.py:502).
+/// receipt.
 const GATE_GRACE: u64 = 2400;
 
-/// `SPLIT_PROMPT` (pump.py:417); `{home}` and `{uid}` are substituted.
+/// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
 
 The unit is in {home}/resplit/{uid}.json (id, need, title, brief, write_scope, proof, and what the worker last said). Read the code it names. Write {home}/plans/{uid}.split.json (write .tmp, then mv) in the plan format of your system prompt, with these extra rules:
@@ -52,7 +52,7 @@ struct ResplitRecord {
     write_scope: Vec<String>,
     /// Proof commands the unit must pass.
     proof: Vec<String>,
-    /// `plain` or `full`.
+    /// The unit's kind; empty means `default_kind`.
     tools: String,
     /// Last 3000 chars of the text that triggered the split.
     worker_said: String,
@@ -63,7 +63,7 @@ struct ResplitRecord {
 ///
 /// Only lines whose first word is `reconciled` or `collected` and that carry
 /// at least six shell words count; word 1 is the task, word 4 the state,
-/// word 5 the detail (pump.py:453-459). A later line for the same task wins.
+/// word 5 the detail. A later line for the same task wins.
 #[must_use]
 pub fn parse_reconcile(out: &str) -> BTreeMap<String, (String, String)> {
     let mut seen = BTreeMap::new();
@@ -76,7 +76,7 @@ pub fn parse_reconcile(out: &str) -> BTreeMap<String, (String, String)> {
     seen
 }
 
-/// The last 6000 chars of `vivi task show <task> --latest` (pump.py:400).
+/// The last 6000 chars of `vivi task show <task> --latest`.
 #[must_use]
 pub fn receipt(ctx: &Ctx, task: &str) -> String {
     let out = ctx.vivi(&format!("task show {task} --latest"), 60);
@@ -86,7 +86,7 @@ pub fn receipt(ctx: &Ctx, task: &str) -> String {
 /// Write the planner prompt to `<home>/<dir>/<id>.prompt` and start the
 /// configured planner detached: stdin is the prompt file, output lands in
 /// `<home>/<dir>/<id>.out`, the working directory is the pump home
-/// (pump.py:353 shape). Used by `split`, the board and gate fixes.
+/// Used by `split`, the board and gate fixes.
 pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) {
     let dir_path = ctx.home.join(dir);
     drop(fs::create_dir_all(&dir_path));
@@ -109,7 +109,7 @@ pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) {
 
 /// Record a failed attempt: append the history entry, clear the task, and
 /// either return the unit to `pending` or park it as `stuck` with an
-/// exception once `max_attempts` is reached (pump.py:405).
+/// exception once `max_attempts` is reached.
 pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
     let now = ctx.now();
     let max = ctx.cfg.dispatch.max_attempts;
@@ -137,7 +137,7 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
     ctx.log(&format!("fail {uid} attempt={attempts} {why}"));
 }
 
-/// Send a unit to the split planner (pump.py:428): write the resplit record,
+/// Send a unit to the split planner: write the resplit record,
 /// spawn the planner, and move the unit to `splitting` with a fresh clock.
 pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     let now = ctx.now();
@@ -176,8 +176,8 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     ctx.log(&format!("split-requested {uid}"));
 }
 
-/// Reconcile the pool against in-flight units and the gate task
-/// (pump.py:444). Returns the gate task's receipt when the gate finished
+/// Reconcile the pool against in-flight units and the gate task.
+/// Returns the gate task's receipt when the gate finished
 /// (reported so, or unreported for more than 2400 s since it started); the
 /// caller passes that receipt to the gate module.
 pub fn collect(ctx: &Ctx, st: &mut State) -> Option<String> {
@@ -201,8 +201,7 @@ pub fn collect(ctx: &Ctx, st: &mut State) -> Option<String> {
     gate_receipt(ctx, st, &seen, gate_task.as_deref())
 }
 
-/// Classify one in-flight unit in pump.py's strict order
-/// (pump.py:460-494).
+/// Classify one in-flight unit in a strict order.
 fn collect_one(
     ctx: &Ctx,
     st: &mut State,
@@ -246,7 +245,7 @@ fn collect_one(
 
 /// The delivered path: the worker's branch reached the remote, so the unit
 /// is delivered — unless the receipt shows the agent was killed by its
-/// budget, which means split (pump.py:475-484).
+/// budget, which means split.
 fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state: Option<&str>) {
     let text = if state == Some("finished") {
         receipt(ctx, task)
@@ -277,7 +276,7 @@ fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state
 }
 
 /// No remote branch: split on exit 124, accept a no-defect verdict, else
-/// fail the attempt (pump.py:485-493).
+/// fail the attempt.
 fn fail_from_receipt(
     ctx: &Ctx,
     st: &mut State,
@@ -305,7 +304,7 @@ fn fail_from_receipt(
     fail(ctx, st, uid, &why, &text);
 }
 
-/// Park units whose split planner never answered (pump.py:496-499).
+/// Park units whose split planner never answered.
 fn expire_splits(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.planner.split_timeout;
     let now = ctx.now();
@@ -321,7 +320,7 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
     }
 }
 
-/// The gate task's receipt when the gate finished (pump.py:501-504); `None`
+/// The gate task's receipt when the gate finished; `None`
 /// leaves it running for the next tick.
 fn gate_receipt(
     ctx: &Ctx,
@@ -338,14 +337,13 @@ fn gate_receipt(
 }
 
 /// True while the task still holds a pool slot (`" <task> "` appears in
-/// `vivi pool status --porcelain`, pump.py:473-475).
+/// `vivi pool status --porcelain`).
 fn still_on_pool(ctx: &Ctx, task: &str) -> bool {
     let status = ctx.vivi("pool status --porcelain", 120);
     status.text.contains(&format!(" {task} "))
 }
 
-/// True when `git ls-remote` lists the branch on the configured remote
-/// (pump.py:395).
+/// True when `git ls-remote` lists the branch on the configured remote.
 #[must_use]
 fn remote_has(ctx: &Ctx, branch: &str) -> bool {
     let out = ctx.git(

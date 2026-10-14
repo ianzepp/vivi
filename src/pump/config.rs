@@ -1,6 +1,7 @@
 //! Pump configuration (the `[pump]` table of `mailspace.toml`).
 
 use crate::VivariumError;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Pump settings (the `[pump]` table in `mailspace.toml`).
@@ -182,14 +183,28 @@ pub struct DispatchConfig {
     pub per_tick: u32,
     /// `--from` of a unit dispatch; absent means `branch`.
     pub from: Option<String>,
-    /// Pool for units with `tools = "plain"`; must name a `[pools.*]` table.
-    pub pool_plain: String,
-    /// Pool for units with `tools = "full"`; must name a `[pools.*]` table.
-    pub pool_full: String,
-    /// Units allowed in flight on `pool_full` at once; `0` = no cap. While
-    /// this many are inflight there, a further `full` unit waits (skipped,
-    /// not failed), keeping one full-toolchain machine free for gates.
-    pub full_max: u32,
+    /// Unit kinds (`[pump.dispatch.kinds.<name>]`): a unit's `tools` value
+    /// names its kind, and the kind names the pool the unit goes to.
+    pub kinds: BTreeMap<String, Kind>,
+    /// Kind of a unit with no `tools` value. Required (and must be a defined
+    /// kind) when `kinds` is non-empty.
+    pub default_kind: String,
+}
+
+/// One unit kind (a `[pump.dispatch.kinds.<name>]` table).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Kind {
+    /// Pool units of this kind are dispatched to; must name a `[pools.*]`
+    /// table. Required.
+    pub pool: String,
+    /// Units of this kind allowed in flight at once; absent = no cap. While
+    /// this many are inflight, a further unit of the kind waits (skipped,
+    /// not failed).
+    pub max: Option<u32>,
+    /// Units of this kind skip their own proof commands at merge; only the
+    /// shared checks run for them.
+    pub skip_proof: bool,
 }
 
 impl Default for DispatchConfig {
@@ -202,9 +217,8 @@ impl Default for DispatchConfig {
             overdue_grace: 900,
             per_tick: 6,
             from: None,
-            pool_plain: String::new(),
-            pool_full: String::new(),
-            full_max: 0,
+            kinds: BTreeMap::new(),
+            default_kind: String::new(),
         }
     }
 }
@@ -428,14 +442,52 @@ impl PumpConfig {
         if self.dispatch.per_tick == 0 {
             bad.push("[pump.dispatch] per_tick must be >= 1".into());
         }
-        for (key, name) in [
-            ("[pump.dispatch] pool_plain", &self.dispatch.pool_plain),
-            ("[pump.dispatch] pool_full", &self.dispatch.pool_full),
-        ] {
-            if !name.is_empty() && !known(pools, name) {
-                bad.push(format!("{key} names unknown pool `{name}`"));
+        self.validate_kinds(pools, bad);
+    }
+
+    fn validate_kinds(&self, pools: &[String], bad: &mut Vec<String>) {
+        for (name, kind) in &self.dispatch.kinds {
+            if kind.pool.is_empty() {
+                bad.push(format!(
+                    "[pump.dispatch.kinds.{name}] pool must not be empty"
+                ));
+            } else if !known(pools, &kind.pool) {
+                bad.push(format!(
+                    "[pump.dispatch.kinds.{name}] pool names unknown pool `{}`",
+                    kind.pool
+                ));
+            }
+            if kind.max == Some(0) {
+                bad.push(format!("[pump.dispatch.kinds.{name}] max must be >= 1"));
             }
         }
+        if !self.dispatch.kinds.is_empty() {
+            let default = &self.dispatch.default_kind;
+            if default.is_empty() {
+                bad.push("[pump.dispatch] default_kind must be set when kinds is non-empty".into());
+            } else if !self.dispatch.kinds.contains_key(default) {
+                bad.push(format!(
+                    "[pump.dispatch] default_kind names undefined kind `{default}`"
+                ));
+            }
+        }
+    }
+
+    /// The name of the kind a unit's `tools` value selects: `tools`, or
+    /// `default_kind` when `tools` is empty.
+    #[must_use]
+    pub fn kind_name<'a>(&'a self, tools: &'a str) -> &'a str {
+        if tools.is_empty() {
+            &self.dispatch.default_kind
+        } else {
+            tools
+        }
+    }
+
+    /// The kind a unit's `tools` value selects; `None` when it is not defined.
+    #[must_use]
+    pub fn kind_of(&self, tools: &str) -> Option<&Kind> {
+        self.dispatch.kinds.get(self.kind_name(tools))
     }
 
     fn validate_merge_and_gate(&self, pools: &[String], bad: &mut Vec<String>) {

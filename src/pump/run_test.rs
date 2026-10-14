@@ -191,7 +191,7 @@ fn once_runs_exactly_one_tick() {
     let (dir, ctx, host) = setup();
     run_with(&ctx, true).unwrap();
     // One tick makes exactly two `pool status --porcelain` calls, as in
-    // pump.py: the dispatch slot count and the gate's pool pick. One tick
+    // The dispatch slot count and the gate's pool pick. One tick
     // is two; a second tick would make four.
     let statuses = host
         .commands()

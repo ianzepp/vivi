@@ -1,8 +1,17 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{DispatchConfig, Lane, PumpConfig};
+use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig};
+use std::collections::BTreeMap;
 use std::path::Path;
+
+/// A kind dispatching to `pool`.
+fn kind(pool: &str) -> Kind {
+    Kind {
+        pool: pool.to_string(),
+        ..Kind::default()
+    }
+}
 
 /// The whole `[pump]` block of the design file, verbatim.
 const FULL: &str = r#"
@@ -48,9 +57,15 @@ budget       = 600
 overdue_grace = 900
 per_tick     = 6
 from         = "next"
-pool_plain   = "fly4"
-pool_full    = "flyfull"
-full_max     = 2
+default_kind = "plain"
+
+[pump.dispatch.kinds.plain]
+pool = "fly4"
+
+[pump.dispatch.kinds.full]
+pool = "flyfull"
+max  = 2
+skip_proof = true
 
 [pump.merge]
 batch         = 8
@@ -87,11 +102,18 @@ fn an_absent_pump_table_is_none() {
 }
 
 #[test]
-fn full_max_defaults_to_zero_and_parses() {
+fn a_kind_parses_with_optional_max_and_skip_proof() {
     let none = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
-    assert_eq!(none.dispatch.full_max, 0, "absent full_max means no cap");
-    let set = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.dispatch]\nfull_max = 2\n");
-    assert_eq!(set.dispatch.full_max, 2);
+    assert!(none.dispatch.kinds.is_empty());
+    let set = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.dispatch]\ndefault_kind = \"a\"\n\
+         [pump.dispatch.kinds.a]\npool = \"p\"\n[pump.dispatch.kinds.b]\npool = \"q\"\nmax = 2\n",
+    );
+    assert_eq!(set.dispatch.kinds["a"].pool, "p");
+    assert_eq!(set.dispatch.kinds["a"].max, None, "absent max means no cap");
+    assert!(!set.dispatch.kinds["a"].skip_proof);
+    assert_eq!(set.dispatch.kinds["b"].max, Some(2));
+    assert_eq!(set.dispatch.default_kind, "a");
 }
 
 #[test]
@@ -129,9 +151,8 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.overdue_grace, 900);
     assert_eq!(cfg.dispatch.per_tick, 6);
     assert_eq!(cfg.dispatch.from, None);
-    assert_eq!(cfg.dispatch.pool_plain, "");
-    assert_eq!(cfg.dispatch.pool_full, "");
-    assert_eq!(cfg.dispatch.full_max, 0);
+    assert!(cfg.dispatch.kinds.is_empty());
+    assert_eq!(cfg.dispatch.default_kind, "");
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.merge.format, "");
     assert!(cfg.merge.shared_checks.is_empty());
@@ -163,7 +184,10 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.dispatch.lanes[0].cap, 30);
     assert_eq!(cfg.dispatch.lanes[1].model, "zai/glm-5.3-flash");
     assert_eq!(cfg.dispatch.lanes[1].cap, 10);
-    assert_eq!(cfg.dispatch.full_max, 2);
+    assert_eq!(cfg.dispatch.default_kind, "plain");
+    assert_eq!(cfg.dispatch.kinds["plain"].pool, "fly4");
+    assert_eq!(cfg.dispatch.kinds["full"].max, Some(2));
+    assert!(cfg.dispatch.kinds["full"].skip_proof);
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.gate.model, "zai/glm-5.3-flash");
     assert_eq!(cfg.reply_to(), "operator@bd371d96.local");
@@ -252,6 +276,70 @@ fn validate_rejects_empty_lanes_and_zero_caps() {
 }
 
 #[test]
+fn validate_checks_default_kind_and_kind_pools() {
+    let mut cfg = PumpConfig {
+        branch: "next".into(),
+        committer_name: "Test".into(),
+        committer_email: "test@example.com".into(),
+        board: crate::pump::config::BoardConfig {
+            mark: String::new(),
+            ..Default::default()
+        },
+        dispatch: DispatchConfig {
+            lanes: vec![Lane {
+                model: "m".into(),
+                cap: 1,
+            }],
+            kinds: BTreeMap::from([("a".to_string(), kind("p"))]),
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    cfg.gate.command = "./gate".into();
+    cfg.merge.shared_checks = vec!["./check".into()];
+    let all = pools(&["p"]);
+    let err = cfg.validate(Path::new("."), &all).expect_err("no default");
+    assert!(
+        err.to_string().contains("default_kind must be set"),
+        "{err}"
+    );
+    cfg.dispatch.default_kind = "missing".into();
+    let err = cfg.validate(Path::new("."), &all).expect_err("undefined");
+    assert!(
+        err.to_string()
+            .contains("default_kind names undefined kind"),
+        "{err}"
+    );
+    cfg.dispatch.default_kind = "a".into();
+    assert!(cfg.validate(Path::new("."), &all).is_ok());
+    cfg.dispatch.kinds.get_mut("a").unwrap().max = Some(0);
+    let err = cfg.validate(Path::new("."), &all).expect_err("max 0");
+    assert!(err.to_string().contains("max must be >= 1"), "{err}");
+    cfg.dispatch.kinds.get_mut("a").unwrap().max = None;
+    cfg.dispatch.kinds.insert("b".into(), kind(""));
+    let err = cfg.validate(Path::new("."), &all).expect_err("empty pool");
+    assert!(
+        err.to_string().contains("kinds.b] pool must not be empty"),
+        "{err}"
+    );
+}
+
+#[test]
+fn kind_of_resolves_tools_or_the_default_kind() {
+    let cfg = PumpConfig {
+        dispatch: DispatchConfig {
+            kinds: BTreeMap::from([("a".to_string(), kind("p")), ("b".to_string(), kind("q"))]),
+            default_kind: "a".into(),
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    assert_eq!(cfg.kind_of("").unwrap().pool, "p");
+    assert_eq!(cfg.kind_of("b").unwrap().pool, "q");
+    assert!(cfg.kind_of("nope").is_none());
+}
+
+#[test]
 fn validate_rejects_an_unknown_pool_name() {
     let mut cfg = PumpConfig {
         branch: "next".into(),
@@ -260,7 +348,8 @@ fn validate_rejects_an_unknown_pool_name() {
                 model: "m".into(),
                 cap: 1,
             }],
-            pool_plain: "fly".into(),
+            kinds: BTreeMap::from([("a".to_string(), kind("fly"))]),
+            default_kind: "a".into(),
             ..DispatchConfig::default()
         },
         ..PumpConfig::default()
@@ -269,19 +358,11 @@ fn validate_rejects_an_unknown_pool_name() {
         .validate(Path::new("."), &pools(&["other"]))
         .expect_err("unknown pool must fail");
     assert!(
-        err.to_string().contains("[pump.dispatch] pool_plain"),
+        err.to_string().contains("[pump.dispatch.kinds.a] pool"),
         "{err}"
     );
-    cfg.dispatch.pool_plain = String::new();
-    cfg.dispatch.pool_full = "flyfull".into();
-    let err = cfg
-        .validate(Path::new("."), &pools(&["other"]))
-        .expect_err("unknown pool must fail");
-    assert!(
-        err.to_string().contains("[pump.dispatch] pool_full"),
-        "{err}"
-    );
-    cfg.dispatch.pool_full = String::new();
+    cfg.dispatch.kinds.clear();
+    cfg.dispatch.default_kind = String::new();
     cfg.gate.pools = vec!["flygate".into()];
     let err = cfg
         .validate(Path::new("."), &pools(&["other"]))

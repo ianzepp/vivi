@@ -1,4 +1,4 @@
-//! Pump tick, status, and the run/once entry points (pump.py:1014-1078).
+//! Pump tick, status, and the run/once entry points.
 
 use std::fs::{self, File};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -19,9 +19,9 @@ use crate::pump::merge::Merger;
 use crate::pump::plan;
 use crate::pump::state::State;
 
-/// One pump tick (pump.py:1029-1050): board, ingest, collect, the merge
+/// One pump tick: board, ingest, collect, the merge
 /// feed, and — unless the `PAUSE` flag exists — dispatch, the hold cycle,
-/// the gate start, and a second merge pass, saving at pump.py's three save
+/// the gate start, and a second merge pass, saving at three save
 /// points and ending in [`write_status`].
 pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     merger.apply(ctx, st);
@@ -49,7 +49,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     write_status(ctx, st);
 }
 
-/// Write the four status lines to `<home>/status.txt` (pump.py:1014-1027):
+/// Write the four status lines to `<home>/status.txt`:
 /// a UTC timestamp, unit counts, plan verdict counts, and the merge/gate
 /// counters. A write failure is logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State) {
@@ -81,7 +81,7 @@ pub fn write_status(ctx: &Ctx, st: &State) {
 
 /// Run the pump over `project`: load the mailspace's `[pump]` table, take
 /// the exclusive home lock, and loop [`tick`] until `once` or the `STOP`
-/// flag ends it (pump.py:1053-1078).
+/// flag ends it.
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when the mailspace has no `[pump]`
@@ -105,7 +105,7 @@ pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
 }
 
 /// The pump's status text: `<home>/status.txt`, or `no status yet` when
-/// absent (pump.py:1054-1057). A peek only: no lock, no state load.
+/// absent. A peek only: no lock, no state load.
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when a mailspace is found but carries
@@ -184,7 +184,7 @@ fn clone_command(ctx: &Ctx, url: &str) -> String {
     )
 }
 
-/// The run/once loop (pump.py:1065-1078): tick, then return when `once`,
+/// The run/once loop: tick, then return when `once`,
 /// save and return on the `STOP` flag, else sleep `tick` seconds. A panic
 /// inside a tick is caught, logged as `TICK ERROR`, and the state saved.
 fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) {
@@ -213,8 +213,7 @@ fn pump_config(mailspace: &Mailspace) -> Result<PumpConfig, VivariumError> {
     })
 }
 
-/// Create `<home>/lock` and take the exclusive non-blocking flock
-/// (pump.py:1058-1059).
+/// Create `<home>/lock` and take the exclusive non-blocking flock.
 ///
 /// # Errors
 /// Returns an error naming the other pump when the lock is already held,
@@ -242,8 +241,8 @@ fn state_path(ctx: &Ctx) -> PathBuf {
     ctx.home.join("state.json")
 }
 
-/// `"label k=v k=v"` from sorted counts, exactly pump.py's
-/// `" ".join("%s=%d")` (an empty map leaves the trailing space).
+/// `"label k=v k=v"` from sorted counts, joined with single spaces
+/// (an empty map leaves the trailing space).
 fn counts_line(label: &str, counts: &std::collections::BTreeMap<String, usize>) -> String {
     let joined = counts
         .iter()
@@ -262,7 +261,7 @@ fn utc_stamp(secs: u64) -> String {
 }
 
 /// The panic payload as one logged line: newlines folded to `" | "`, cut at
-/// 900 characters like pump.py's traceback tail.
+/// 900 characters like a traceback tail.
 fn panic_note(err: &(dyn std::any::Any + Send)) -> String {
     let text = err
         .downcast_ref::<String>()

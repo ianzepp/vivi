@@ -1,7 +1,7 @@
 //! Gate start, finish, gate-fix, the hold cycle and promotion.
 //!
-//! Ports pump.py's gate: `start_gate` (872-904), `finish_gate` (962-1009)
-//! with `gatefix` (919) and `promote` (949), and the hold cycle (931).
+//! The gate: `start_gate`, `finish_gate`, `gatefix`, `promote` and the
+//! hold cycle.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -31,7 +31,7 @@ const WAIT_KEY: &str = "external_wait_since";
 /// The payload the hold cycle writes into `FORCE-GATE`.
 const FORCE_TEXT: &str = "after fixes\n";
 
-/// Read the failing-test names from a gate reply (pump.py:962).
+/// Read the failing-test names from a gate reply.
 ///
 /// The last `FAILING-BEGIN ... FAILING-END` block that is usable supplies the
 /// names: an entirely empty block means zero failures, and `<`-prefixed
@@ -103,7 +103,7 @@ fn is_crate_byte(b: u8) -> bool {
     b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
 }
 
-/// The fallback of pump.py:969: every `<crate> <path>` pair where the crate
+/// The fallback: every `<crate> <path>` pair where the crate
 /// starts on a word boundary and is at least two `[a-z0-9_-]` characters, the
 /// path is two or more `::`-joined `[A-Za-z0-9_]+` segments, and punctuation
 /// around the tokens (`\b` on both ends) does not count. Deduplicated and
@@ -163,7 +163,7 @@ fn parse_path(bytes: &[u8], start: usize) -> Option<usize> {
     if leading >= 2 { after_last } else { None }
 }
 
-/// Take the gate results an external runner wrote (pump.py:891), oldest
+/// Take the gate results an external runner wrote, oldest
 /// first, as ordinary gates.
 ///
 /// Does nothing unless `[pump.gate] results_dir` is set. Each `<tip>.json` in
@@ -237,7 +237,7 @@ struct ExternalResult {
 }
 
 impl ExternalResult {
-    /// The result as the reply text [`finish_gate`] reads (pump.py:905-908).
+    /// The result as the reply text [`finish_gate`] reads.
     fn reply(&self) -> String {
         if self.build_failed {
             return format!("{BEGIN}\n{BUILD_FAILED}\n{END}\n{}", self.tail);
@@ -294,7 +294,7 @@ fn waiting_for_external(ctx: &Ctx, st: &mut State) -> bool {
     false
 }
 
-/// Start a gate when one is due (pump.py:872): send the gate brief as a task
+/// Start a gate when one is due: send the gate brief as a task
 /// and dispatch it read-only on the first gate pool with a free slot. Does
 /// nothing while a gate task is open, when no pool is free, when the remote
 /// tip is not a 40-hex commit, or while a due gate is still inside its
@@ -451,7 +451,7 @@ fn tip_short(tip: &str) -> String {
     tip.chars().take(10).collect()
 }
 
-/// Finish the open gate from its receipt (pump.py:962): classify the reply,
+/// Finish the open gate from its receipt: classify the reply,
 /// keep the owned-red map honest, then set the baseline, report new failures
 /// with a gate-fix planner, or promote a clean gate. The gate task is cleared
 /// whatever the reply said.
@@ -506,7 +506,7 @@ fn unreadable_kind(names: Option<&[String]>) -> Option<&'static str> {
 }
 
 /// The log line python emits when the names came from the reply text rather
-/// than the markers (pump.py:970).
+/// than the markers.
 fn log_markerless(ctx: &Ctx, text: &str, names: Option<&[String]>) {
     if let Some(names) = names
         && last_usable_block(text).is_none()
@@ -519,7 +519,7 @@ fn log_markerless(ctx: &Ctx, text: &str, names: Option<&[String]>) {
     }
 }
 
-/// The `red-after-fix` screen (pump.py:976-980): an owned name that still
+/// The `red-after-fix` screen: an owned name that still
 /// fails while every unit of its owner need is settled is reported once.
 fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
     let Some(names) = names else {
@@ -552,7 +552,7 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
     }
 }
 
-/// A readable gate against an existing baseline (pump.py:988-1006): release
+/// A readable gate against an existing baseline: release
 /// owned names that pass again, compute the new failures, then either report
 /// them (owning each and starting a gate-fix planner) or promote.
 fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[String]) {
@@ -589,7 +589,7 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
 }
 
 /// How many owned failures (names in `st.red`) the gate still reports
-/// (pump.py:1041, `set(names) & set(owned)`). Main is promoted only when this
+/// (`names` intersected with `owned`). Main is promoted only when this
 /// is zero: main never gets redder.
 fn outstanding_owned(st: &State, names: &[String]) -> usize {
     names
@@ -608,7 +608,7 @@ fn gate_summary(rec: &GateRecord, names: &[String], new: usize) -> String {
     )
 }
 
-/// Owned names that no longer fail are released (pump.py:991-993).
+/// Owned names that no longer fail are released.
 fn drop_fixed_names(ctx: &Ctx, st: &mut State, names: &[String]) {
     let fixed: Vec<String> = st
         .red
@@ -624,7 +624,7 @@ fn drop_fixed_names(ctx: &Ctx, st: &mut State, names: &[String]) {
 }
 
 /// The names in neither the baseline nor the owned map,
-/// sorted (pump.py:994).
+/// sorted.
 fn new_failures(st: &State, names: &[String]) -> Vec<String> {
     names
         .iter()
@@ -654,7 +654,7 @@ fn ignored_names(ctx: &Ctx) -> BTreeSet<String> {
     }
 }
 
-/// The merged units in `st.order[prev..merges]` (pump.py:996): the merges
+/// The merged units in `st.order[prev..merges]`: the merges
 /// between the previous gate and this one.
 fn suspect_ids(st: &State, prev: u64, merges: u64) -> Vec<String> {
     let list: Vec<&String> = st
@@ -681,7 +681,7 @@ fn suspect_ids(st: &State, prev: u64, merges: u64) -> Vec<String> {
 }
 
 /// Own every new name, then raise the `gate-new-failures` exception with the
-/// suspect merge window (pump.py:1001-1005).
+/// suspect merge window.
 fn report_new_failures(ctx: &Ctx, rec: &GateRecord, new: &[String], suspects: &[String]) {
     let joined = cut_chars(&new.join("; "), 350);
     let ids = cut_chars(&suspects.join(" "), 200);
@@ -693,7 +693,7 @@ fn report_new_failures(ctx: &Ctx, rec: &GateRecord, new: &[String], suspects: &[
 }
 
 /// The tip of the last gate with readable names and no new failure, else the
-/// first gate's tip, else the current one (pump.py:1000).
+/// first gate's tip, else the current one.
 fn last_clean_tip(st: &State, current: &str) -> String {
     for gate in st.gates.iter().rev() {
         if gate.names.is_some() && gate.new.as_ref().is_none_or(Vec::is_empty) {
@@ -711,7 +711,7 @@ fn fix_need(ctx: &Ctx, tip: &str) -> String {
     format!("{}-g{short}", ctx.cfg.fix_prefix)
 }
 
-/// Start the gate-fix planner for a red gate (pump.py:919): need id
+/// Start the gate-fix planner for a red gate: need id
 /// `<fix_prefix>-g<tip8>`, skipped when its plan file already exists.
 fn gatefix(ctx: &Ctx, _st: &State, tip: &str, clean: &str, new: &[String]) {
     let need = fix_need(ctx, tip);
@@ -726,7 +726,7 @@ fn gatefix(ctx: &Ctx, _st: &State, tip: &str, clean: &str, new: &[String]) {
     ));
 }
 
-/// The gate-fix planner prompt (pump.py:907), with the repo, home and plan
+/// The gate-fix planner prompt, with the repo, home and plan
 /// paths taken from the context.
 fn gatefix_prompt(ctx: &Ctx, tip: &str, clean: &str, need: &str, new: &[String]) -> String {
     let names = new
@@ -751,7 +751,7 @@ Your final message is one line.
     )
 }
 
-/// Fast-forward main to a gated tip of the integration branch (pump.py:949).
+/// Fast-forward main to a gated tip of the integration branch.
 /// Never forces: a main that moved elsewhere waits for the next batch.
 fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
     if !ctx.cfg.promote || ctx.cfg.main.is_empty() {
@@ -801,7 +801,7 @@ fn last_line(text: &str) -> String {
         .map_or_else(String::new, String::from)
 }
 
-/// While merging is held (pump.py:931): once every fix unit has settled, a
+/// While merging is held: once every fix unit has settled, a
 /// clean gate newer than the `HOLD-MERGE` flag lifts the hold; fixes merged
 /// after the last gate (or an unreadable one) force a new gate.
 pub fn hold_cycle(ctx: &Ctx, st: &mut State) {

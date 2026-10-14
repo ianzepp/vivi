@@ -7,7 +7,7 @@ use tempfile::tempdir;
 
 use crate::pump::state::{MergeResult, Promotion, State, Status, Unit};
 
-/// A `state.json` exactly as pump.py writes it: one-space indent, `null`s
+/// A `state.json` as the pump writes it: one-space indent, `null`s
 /// for absent models, `baseline` null before the first gate, `rr` an int.
 /// Units `2aab941d-1` (merged) and `2499da76-1` (no-defect) are copied from
 /// a real pump state.
@@ -404,7 +404,7 @@ fn a_merge_result_serialises_without_its_empty_optionals() {
 }
 
 /// A trimmed copy of the live pump state (1325 units cut to 19, one or two
-/// of every status including three hand-set `withdrawn`), written by pump.py.
+/// of every status including three hand-set `withdrawn`), written by the pump.
 const LIVE_SNAPSHOT: &str = include_str!("state_snapshot.json");
 
 fn status_map(st: &State) -> Vec<(String, String)> {
@@ -479,7 +479,7 @@ fn absent_optional_unit_fields_stay_absent_on_save() {
     for key in ["commit", "pool", "verdict_text", "since_dispatch"] {
         assert!(!unit.contains_key(key), "{key} must stay absent");
     }
-    // pump.py indexes these directly, so they stay present as null.
+    // consumers index these directly, so they stay present as null.
     for key in ["task", "branch", "model"] {
         assert!(unit[key].is_null(), "{key} must stay null");
     }

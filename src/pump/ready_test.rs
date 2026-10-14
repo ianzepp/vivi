@@ -261,9 +261,11 @@ fn pick_model_uses_the_normal_lanes_on_the_final_attempt_without_a_last_resort()
     );
 }
 
-/// Write `<home>/reserved.txt`.
+/// Write the configured reserved-paths file.
 fn write_reserved(ctx: &Ctx, text: &str) {
-    std::fs::write(ctx.home.join("reserved.txt"), text).unwrap();
+    let path = ctx.cfg.reserved_path(&ctx.project);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
 }
 
 #[test]
@@ -283,6 +285,26 @@ fn a_reserved_glob_blocks_an_overlapping_unit_but_not_a_disjoint_one() {
     assert!(is_ready(&ctx, &st, &b));
     // A commented-out line holds nothing.
     assert!(is_ready(&ctx, &st, &c));
+}
+
+#[test]
+fn the_configured_reserved_file_is_read_not_a_fixed_name() {
+    let (_dir, mut ctx, _host, mut st) = setup();
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.reserved_file = String::from("held/paths.list");
+    ctx.cfg = std::sync::Arc::new(cfg);
+    let (id, u) = mk("a-1", Status::Pending, &["src/a/x.rs"]);
+    st.units.insert(id.clone(), u);
+    // A file under the old fixed name holds nothing any more.
+    std::fs::write(ctx.home.join("reserved.txt"), "src/a\n").unwrap();
+    assert!(is_ready(&ctx, &st, &id));
+    write_reserved(&ctx, "src/a\n");
+    assert!(
+        ctx.cfg
+            .reserved_path(&ctx.project)
+            .ends_with("held/paths.list")
+    );
+    assert!(!is_ready(&ctx, &st, &id));
 }
 
 #[test]

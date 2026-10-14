@@ -6,13 +6,24 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 
-use crate::pump::config::{DispatchConfig, Lane, PumpConfig};
+use std::collections::BTreeMap;
+
+use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig};
 use crate::pump::dispatch::*;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{Attempt, State, Status, Unit};
 
 /// The fake clock's start; units are created "now".
 const T0: u64 = 1_000_000;
+
+/// A kind dispatching to `pool`, capped at `max` units in flight.
+fn kind(pool: &str, max: Option<u32>) -> Kind {
+    Kind {
+        pool: pool.to_owned(),
+        max,
+        ..Kind::default()
+    }
+}
 
 /// A dispatch config with two lanes, both pools and the default per-tick cap.
 fn dispatch_cfg() -> PumpConfig {
@@ -30,8 +41,11 @@ fn dispatch_cfg() -> PumpConfig {
                 },
             ],
             last_resort: String::from("m/last"),
-            pool_plain: String::from("fly4"),
-            pool_full: String::from("flyfull"),
+            kinds: BTreeMap::from([
+                (String::from("plain"), kind("fly4", None)),
+                (String::from("full"), kind("flyfull", None)),
+            ]),
+            default_kind: String::from("plain"),
             ..DispatchConfig::default()
         },
         ..PumpConfig::default()
@@ -194,12 +208,12 @@ fn a_full_tools_unit_goes_to_the_full_pool() {
 }
 
 #[test]
-fn a_full_unit_waits_while_full_max_units_are_inflight_on_the_full_pool() {
+fn a_unit_waits_while_its_kinds_max_units_are_inflight() {
     let mut cfg = dispatch_cfg();
     cfg.dispatch.per_tick = 3;
-    cfg.dispatch.full_max = 2;
+    cfg.dispatch.kinds.get_mut("full").unwrap().max = Some(2);
     let (_dir, ctx, host) = setup_with(cfg);
-    // Three free slots on the full pool, so only `full_max` can gate.
+    // Three free slots on the full pool, so only the kind `max` can gate.
     host.reply(
         "pool status",
         0,
@@ -219,7 +233,7 @@ fn a_full_unit_waits_while_full_max_units_are_inflight_on_the_full_pool() {
     }
     dispatch(&ctx, &mut st);
     // u1 and u2 fill the cap (same-tick starts count); u3 waits, unsent and
-    // unstarted; the plain unit u4 is not held back by the full-pool cap.
+    // unstarted; the plain unit u4 is not held back by the full kind cap.
     assert_eq!(st.units["u1"].status, Status::Inflight);
     assert_eq!(st.units["u2"].status, Status::Inflight);
     assert_eq!(st.units["u3"].status, Status::Pending);
@@ -235,9 +249,38 @@ fn a_full_unit_waits_while_full_max_units_are_inflight_on_the_full_pool() {
 }
 
 #[test]
-fn full_max_zero_means_no_cap() {
+fn a_unit_without_tools_takes_the_default_kind() {
     let (_dir, ctx, host) = setup();
-    // `dispatch_cfg` leaves `full_max` at the default 0; give the full pool
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    st.units.get_mut("u1").unwrap().tools = String::new();
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("fly4"));
+}
+
+#[test]
+fn a_unit_naming_an_unknown_kind_is_not_dispatched_and_reported_once() {
+    let (dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2"]);
+    st.units.get_mut("u1").unwrap().tools = String::from("exotic");
+    dispatch(&ctx, &mut st);
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["u1"].task, None);
+    assert_eq!(st.units["u2"].status, Status::Inflight, "others still go");
+    let text = fs::read_to_string(dir.path().join("home/exceptions.txt")).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("unknown-kind u1"), "{text}");
+    assert!(text.contains("exotic"), "{text}");
+}
+
+#[test]
+fn a_kind_without_max_has_no_cap() {
+    let (_dir, ctx, host) = setup();
+    // `dispatch_cfg` gives the kinds no `max`; give the full pool
     // three free slots so nothing but the cap could hold a unit back.
     host.reply(
         "pool status",

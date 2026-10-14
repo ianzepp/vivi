@@ -108,7 +108,7 @@ fn ingest_creates_pending_units_and_a_need_record() {
     assert_eq!(u.tools, "plain");
     let u2 = &st.units["56f1d749-2"];
     assert_eq!(u2.title, "");
-    assert_eq!(u2.tools, "plain");
+    assert_eq!(u2.tools, "", "no tools value means the default kind");
     assert_eq!(st.order, vec!["56f1d749-1", "56f1d749-2"]);
     let rec = &st.needs["56f1d749"];
     assert_eq!(rec.verdict, "units");

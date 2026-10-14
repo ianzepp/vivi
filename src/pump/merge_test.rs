@@ -121,7 +121,7 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
 }
 
 #[test]
-fn a_fetch_failure_is_reported_as_undecided_fetch_failed() {
+fn a_network_fetch_failure_is_reported_as_undecided_fetch_failed() {
     let (_dir, ctx, host) = setup("");
     host.reply("refs/heads/work/u1", 1, "fatal: could not fetch\n");
     let result = merge_work(&ctx, &job());
@@ -134,6 +134,21 @@ fn a_fetch_failure_is_reported_as_undecided_fetch_failed() {
         host.commands().last().map(String::as_str),
         Some("git fetch origin refs/heads/work/u1:refs/remotes/origin/work/u1")
     );
+}
+
+#[test]
+fn a_missing_remote_branch_is_a_decided_branch_missing_failure() {
+    let (_dir, ctx, host) = setup("");
+    let text = "fatal: couldn't find remote ref refs/heads/work/u1\n";
+    host.reply("refs/heads/work/u1", 128, text);
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false), "retrying cannot make it appear");
+    assert_eq!(result.why.as_deref(), Some("branch-missing"));
+    assert_eq!(result.detail.as_deref(), Some(text));
+    let batch = batch_work(&ctx, &batch());
+    let u1 = for_uid(&batch, "u1");
+    assert_eq!(u1.ok, Some(false));
+    assert_eq!(u1.why.as_deref(), Some("branch-missing"));
 }
 
 #[test]
@@ -220,8 +235,18 @@ fn a_failing_unit_proof_is_proof_failed() {
 }
 
 #[test]
-fn a_full_tools_unit_skips_its_own_proof() {
-    let (_dir, ctx, host) = setup("");
+fn a_skip_proof_kind_skips_its_own_proof() {
+    let (_dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.dispatch.kinds.insert(
+        String::from("full"),
+        crate::pump::config::Kind {
+            pool: String::from("p"),
+            skip_proof: true,
+            ..Default::default()
+        },
+    );
+    ctx.cfg = Arc::new(cfg);
     host.reply("./proof-u1.sh", 1, "boom");
     host.reply("rev-parse HEAD", 0, "tip123\n");
     let mut j = job();
@@ -240,13 +265,13 @@ fn a_formatter_change_is_committed_as_a_style_commit_before_the_checks() {
     assert_eq!(result.ok, Some(true));
     let cmds = host.commands();
     let fmt = index_of(&cmds, "cargo fmt --all");
-    let commit = index_of(&cmds, "commit -q -am 'style: cargo fmt after u1'");
+    let commit = index_of(&cmds, "commit -q -am 'style: format after u1'");
     let check = index_of(&cmds, "cargo test --lib");
     assert!(fmt < commit);
     assert!(commit < check);
     assert_eq!(
         cmds[commit],
-        format!("git {IDENTITY} commit -q -am 'style: cargo fmt after u1'")
+        format!("git {IDENTITY} commit -q -am 'style: format after u1'")
     );
 }
 

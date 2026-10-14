@@ -1,7 +1,7 @@
 //! Plan files, ingest and scope overlap.
 //!
-//! Behaviour port of pump.py `scope_root` (:134), `overlaps` (:143) and
-//! `ingest` (:191): every `plans/*.json` file under the pump home is read
+//! `scope_root`, `overlaps` and
+//! `ingest`: every `plans/*.json` file under the pump home is read
 //! leniently, validated, and minted into pending units.
 
 use std::fs;
@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::pump::host::Ctx;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 
-/// Message filed when a plan unit fails validation (pump.py:215).
+/// Message filed when a plan unit fails validation.
 const BAD_UNIT: &str = "unit missing id, brief or write_scope";
 
 /// The directory root of a scope path: leading `.` and `/` characters are
@@ -158,7 +158,7 @@ fn mint(ctx: &Ctx, st: &mut State, need: &str, minted: &[(&str, &Value)]) {
             write_scope: str_list(u.get("write_scope")),
             after: str_list(u.get("after")),
             proof: str_list(u.get("proof")),
-            tools: str_field(u, "tools").unwrap_or("plain").to_string(),
+            tools: str_field(u, "tools").unwrap_or("").to_string(),
             status: Status::Pending,
             since: ctx.now(),
             ..Unit::default()

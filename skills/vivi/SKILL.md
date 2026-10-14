@@ -1880,7 +1880,6 @@ vivi pump status   # print <home>/status.txt ("no status yet" when absent); no l
 | `status.txt` | pump, `pump status` | four lines: timestamp, units, plans, merges and gates |
 | `lock` | pump (flock only) | empty; the single-instance lock |
 | `skip.txt` | operator, board pass | need handles to never plan |
-| `hygiene.on` | operator | not carried to the engine; a shared check belongs in `merge.shared_checks` |
 | `plans/` | planner writes `<need>.json` and `<unit>.split.json`; re-plans move old plans to `plans/superseded/` | plan files, below |
 | `needs/` | board dumps the need thread, planner reads | `{need, subject, triage, thread}` |
 | `board/`, `resplit/`, `gatefix/` | pump writes `*.prompt`, planner writes `*.out` | prompts and planner output; `resplit/` also `<unit>.json` |
@@ -1897,7 +1896,7 @@ All flags live in `home`; the operator creates them:
 | flag | exact effect | removed by |
 | --- | --- | --- |
 | `PAUSE` | the tick returns early after its first save point: no dispatch, hold cycle, gate start or second merge feed; already-fed units keep merging | operator |
-| `STOP` | after the current tick: save and exit the loop | operator (or the restart script) |
+| `STOP` | after the current tick: save and exit the loop | operator |
 | `HOLD-MERGE` | only fix units are fed to the merge thread; once every fix unit has settled, the pump writes `FORCE-GATE`, and a clean gate newer than the hold lifts it | pump or operator |
 | `FORCE-GATE` | the gate is due now, whatever the counters say | pump, when the gate dispatches |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (the file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
@@ -1912,14 +1911,15 @@ ingests every new file exactly once:
 {"need": "<handle>", "verdict": "units", "reason": "…",
  "units": [{"id": "<need>-1", "title": "…", "brief": "…",
             "write_scope": ["<path>"], "after": [],
-            "proof": ["<command>"], "tools": "plain"}]}
+            "proof": ["<command>"], "tools": "<kind>"}]}
 ```
 
 - `verdict` `units` mints pending units; `delivered` records the reason with no
   units; `operator`, `design` and `hold` park the need; `invalid` is the pump's
   own mark for a rejected plan.
 - Each unit needs `id`, `brief`, `write_scope` and a `proof` list, and a fresh
-  id; `after` lists prerequisite unit ids, `tools` is `plain` or `full`.
+  id; `after` lists prerequisite unit ids, `tools` names the unit's kind (a key of
+  `[pump.dispatch.kinds]`; absent means `default_kind`).
 
 #### Unit states
 
@@ -1952,7 +1952,7 @@ remote       = "origin"                # git remote name of the integration bran
 remote_url   = "<url>"                 # clone source when `repo` is missing at startup; absent: a missing repo stops the pump
 committer_name  = "<name>"             # required: git identity of every commit and merge the pump makes
 committer_email = "<email>"            # required: same
-branch       = "next"                  # required: the integration branch
+branch       = "<branch>"             # required: the integration branch
 main         = "main"                  # "" disables merging main in and promotion
 promote      = true                    # a clean gate fast-forwards main to the gated tip
 tick         = 20                      # seconds between ticks
@@ -1988,13 +1988,16 @@ budget        = 600                    # `--budget` of a unit dispatch
 overdue_grace = 900                    # running past budget plus this means split
 per_tick      = 6                      # units started per tick at most
 from          = "<branch>"             # absent: the `branch` value
-pool_plain    = "<pool>"               # units with tools = "plain"; must name a [pools.<name>] table
-pool_full     = "<pool>"               # units with tools = "full"; same
-full_max      = 0                      # units allowed in flight on pool_full at once; 0 = no cap
+default_kind  = "<kind>"               # required when `kinds` is non-empty: the kind of a unit with no `tools`
+
+[pump.dispatch.kinds.<kind>]           # one table per unit kind; a unit's `tools` value names its kind
+pool          = "<pool>"               # required: must name a [pools.<name>] table
+max           = 2                      # optional: units of this kind in flight at once; absent = no cap
+skip_proof    = false                  # optional: units of this kind skip their own proof at merge
 
 [pump.merge]
 batch         = 8                      # jobs merged together at most
-format        = "cargo fmt --all"      # run after merging; a change becomes a style commit
+format        = "<command>"            # run after merging; a change becomes a style commit
 shared_checks = ["<command>"]          # after every merge, before each unit's own proof
 proof_timeout = 300                    # seconds per check command
 remote_wait   = 90                     # seconds for a remote merger to claim a batch
@@ -2012,12 +2015,31 @@ results_wait_seconds = 2700            # with results_dir: wait this long for on
 ignore_file   = "<file>"               # optional: test names dropped from every gate, one per line, # comments
 ```
 
+Example with two kinds (names and pools are the project's own):
+
+```toml
+[pump.dispatch]
+default_kind = "plain"
+
+[pump.dispatch.kinds.plain]
+pool = "fly4"              # small workers, no cap
+
+[pump.dispatch.kinds.full]
+pool = "flyfull"           # full-toolchain machines
+max = 2                    # keep one free for gates
+skip_proof = true          # the worker already proved the unit
+```
+
+A plan unit with `"tools": "full"` goes to `flyfull`; one with no `tools` goes
+to `fly4`.
+
 Validation rejects an empty `branch`, an empty `committer_name` or
 `committer_email`, an empty `gate.command`, empty `merge.shared_checks` while
 promotion is enabled (`promote = true` and `main` set), a `hand_rules` file
 that cannot be read, a `tick` below 1, empty `lanes` or a
-lane cap below 1, a `max_attempts` below 1, and any pool name that is not a
-`[pools.<name>]` table. Rules that are not obvious from the keys:
+lane cap below 1, a `max_attempts` below 1, a kind with no `pool` or a `max` of 0, a
+`default_kind` that is unset (with kinds defined) or not a defined kind, and any
+pool name that is not a `[pools.<name>]` table. Rules that are not obvious from the keys:
 
 - An open need carrying the approval mark is plannable whatever its sender or
   date.
@@ -2035,6 +2057,10 @@ lane cap below 1, a `max_attempts` below 1, and any pool name that is not a
   worker gate and moves the file to `<results_dir>/done/`. A due gate waits
   `results_wait_seconds` for one before dispatching a pool gate; without
   `results_dir` only pool gates run.
+- A unit whose `tools` names an undefined kind is not dispatched; the pump
+  files one `unknown-kind` exception for it.
+- A unit branch missing on the remote is a decided `branch-missing` failure;
+  any other fetch error is undecided and retried.
 - A timeout means split the unit, never retry it.
 - No environment variables: configuration lives in `[pump]` and CLI flags
   only.
@@ -2044,9 +2070,7 @@ lane cap below 1, a `max_attempts` below 1, and any pool name that is not a
 From the contract: the decision hook (the one gap is extracting failing names
 from a gate reply with no marked block); pump state visible through
 `vivi boot`, `vivi board` or `vivi trace` — the state stays a private
-`state.json` in home; the cargo-specific `fix_proof` rewrite, the legacy
-`unexpected argument` load repair, and `hygiene.on`; the cutover retiring the
-original pump script.
+`state.json` in home.
 
 ## Watches and Cycle Intake
 

@@ -54,7 +54,14 @@ fn config() -> PumpConfig {
                 cap: 5,
             }],
             max_attempts: 3,
-            pool_plain: String::from("p1"),
+            kinds: std::collections::BTreeMap::from([(
+                String::from("plain"),
+                crate::pump::config::Kind {
+                    pool: String::from("p1"),
+                    ..Default::default()
+                },
+            )]),
+            default_kind: String::from("plain"),
             ..DispatchConfig::default()
         },
         merge: MergeConfig {

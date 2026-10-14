@@ -13,7 +13,7 @@ use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::ready::satisfied;
 use crate::pump::state::State;
 
-/// One row of `vivi need list --json` (pump.py:304-360).
+/// One row of `vivi need list --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedRow {
     /// The need handle.
@@ -70,7 +70,7 @@ fn row_from(value: &Value) -> NeedRow {
     }
 }
 
-/// Open needs, from any sender, that carry the approval mark (pump.py:301):
+/// Open needs, from any sender, that carry the approval mark:
 /// held needs first, then needs addressed to the reply identity; duplicate
 /// handles keep the first row. An empty mark means no marked rows at all.
 #[must_use]
@@ -107,7 +107,7 @@ pub fn marked_rows(ctx: &Ctx) -> Vec<NeedRow> {
     unique
 }
 
-/// The board's candidate rows (pump.py:325-333): every configured sender's
+/// The board's candidate rows: every configured sender's
 /// open needs, then marked rows not already present; plus the set of
 /// marked (approved) handles.
 #[must_use]
@@ -148,7 +148,7 @@ pub fn read_skip(ctx: &Ctx) -> BTreeSet<String> {
 
 /// Drop planner entries whose plan file exists (done) or that ran longer
 /// than `plan_timeout`; a timed-out planner without a plan file raises
-/// `plan-no-answer` (pump.py:338-341).
+/// `plan-no-answer`.
 pub fn expire_planning(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.board.plan_timeout;
     let mins = timeout / 60;
@@ -174,7 +174,7 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
     }
 }
 
-/// Plan the new needs among `rows` (pump.py:343-360): skip old, skipped,
+/// Plan the new needs among `rows`: skip old, skipped,
 /// known, already-planning or already-planned handles, respect the
 /// concurrent-planner cap, then write the need file, spawn the planner and
 /// record the planning entry. `replan` bypasses the date cutoff; launched
@@ -269,14 +269,13 @@ fn tail_note(text: &str, max: usize) -> String {
     tail.replace('\n', " | ")
 }
 
-/// Verdicts that wait for an operator ruling before anything moves
-/// (pump.py:253).
+/// Verdicts that wait for an operator ruling before anything moves.
 const PARKED: [&str; 3] = ["operator", "design", "hold"];
 
 /// True when the need's thread holds an operator message newer than `since`
 /// (epoch seconds): `## <rfc3339> - <hex> [` header lines set the current
-/// message time, and a following `From: <cfg.from>@` line decides it
-/// (pump.py:256). A nonzero exit, or an unparseable stamp, means false.
+/// message time, and a following `From: <cfg.from>@` line decides it.
+/// A nonzero exit, or an unparseable stamp, means false.
 #[must_use]
 pub fn operator_replied_after(ctx: &Ctx, handle: &str, since: u64) -> bool {
     let out = ctx.vivi(&format!("need show {handle}"), 60);
@@ -327,8 +326,8 @@ fn mtime_secs(meta: &fs::Metadata) -> u64 {
 /// thread gained an operator reply after its plan was written is planned
 /// again: the plan moves to `plans/superseded/`, the basename leaves
 /// `plans_seen`, the need record and its `planned` reply key are dropped, and
-/// the handle joins the replan set, which bypasses the since cutoff
-/// (pump.py:275). Returns the replan set, mirrored sorted in
+/// the handle joins the replan set, which bypasses the since cutoff.
+/// Returns the replan set, mirrored sorted in
 /// `st.board.replan`.
 pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> BTreeSet<String> {
     let mut replan: BTreeSet<String> = st.board.replan.iter().cloned().collect();
@@ -371,8 +370,8 @@ fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
 }
 
 /// Reply once on every candidate need's thread that has a verdict: stage
-/// `planned` always, stage `merged` when every unit is satisfied
-/// (pump.py:361-390). Returns whether any reply was sent.
+/// `planned` always, stage `merged` when every unit is satisfied.
+/// Returns whether any reply was sent.
 pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
     let mut said = false;
     for row in rows {
@@ -486,7 +485,7 @@ fn send_reply(ctx: &Ctx, handle: &str, stage: &str, body: &str) -> bool {
     out.code == 0
 }
 
-/// pump.py's `out.strip().splitlines()[-1][:max]`: the last line cut to
+/// The last line of `text` cut to
 /// `max` chars, empty when the output is blank.
 fn last_line(text: &str, max: usize) -> String {
     text.trim()
@@ -498,7 +497,7 @@ fn last_line(text: &str, max: usize) -> String {
         .collect()
 }
 
-/// One board pass (pump.py:319): pull, expire, re-plan answered parked
+/// One board pass: pull, expire, re-plan answered parked
 /// needs, plan new needs, and push replies — at most one pass per
 /// `board.every` seconds.
 pub fn board(ctx: &Ctx, st: &mut State) {

@@ -4,8 +4,7 @@
 //! then the unit's title, brief, write scope and proof commands, and — on a
 //! retry — the last attempt's failure detail. The gate brief sends a
 //! read-only gate worker to measure the tree and report failing test names
-//! in a marker block. Both mirror pump.py (`RULES`, `brief_for`,
-//! `GATE_BRIEF`).
+//! in a marker block. Both are composed from configuration.
 
 use std::fs;
 
@@ -55,8 +54,8 @@ pub fn hand_rules(ctx: &Ctx) -> String {
     }
 }
 
-/// The brief one dispatched agent receives for `uid`, mirroring pump.py's
-/// `brief_for`: rules, unit header, brief, write scope, proof commands, the
+/// The brief one dispatched agent receives for `uid`, composed of the
+/// hand rules, unit header, brief, write scope, proof commands, the
 /// last failure's detail on a retry, and the closing `done_when` line.
 #[must_use]
 pub fn brief_for(ctx: &Ctx, uid: &str, unit: &Unit) -> String {
@@ -86,8 +85,8 @@ pub fn brief_for(ctx: &Ctx, uid: &str, unit: &Unit) -> String {
     parts.join("\n")
 }
 
-/// The measurement-only brief sent to the read-only gate worker, mirroring
-/// pump.py's `GATE_BRIEF` with the configured gate command in place.
+/// The measurement-only brief sent to the read-only gate worker, with
+/// the configured gate command in place.
 #[must_use]
 pub fn gate_brief(ctx: &Ctx) -> String {
     let command = format!(

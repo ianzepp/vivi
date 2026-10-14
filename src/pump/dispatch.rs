@@ -1,6 +1,6 @@
 //! Slots, task send and pool dispatch.
 //!
-//! Ports pump.py's `slots` (line 506) and `dispatch` (lines 576-616): count
+//! Slot counting and dispatch: count
 //! free pool slots, offer ready units to the pools fix-units first, send each
 //! unit's brief as a task, then hand the task to a pool with a model, branch
 //! and budget.
@@ -15,7 +15,7 @@ use crate::pump::state::{State, Status};
 
 /// One unit's dispatch plan decided before anything is sent.
 struct Plan {
-    /// Pool the unit goes to (`pool_full` for `full` tools, else `pool_plain`).
+    /// Pool of the unit's kind (`[pump.dispatch.kinds.<name>] pool`).
     pool: String,
     /// Lane chosen by [`pick_model`]; `None` means every lane is full.
     model: Option<String>,
@@ -97,6 +97,9 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         if started >= ctx.cfg.dispatch.per_tick {
             break;
         }
+        if report_unknown_kind(ctx, st, &uid) {
+            continue;
+        }
         let Some(plan) = plan_unit(ctx, st, &uid, &free) else {
             continue;
         };
@@ -112,8 +115,34 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
     }
 }
 
+/// `true` when the unit names a kind that is not defined, so it cannot be
+/// dispatched. A pending unit raises one `unknown-kind` exception, the first
+/// time only (recorded on the unit, so a restart does not repeat it).
+fn report_unknown_kind(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
+    let Some(unit) = st.units.get_mut(uid) else {
+        return false;
+    };
+    if ctx.cfg.kind_of(&unit.tools).is_some() {
+        return false;
+    }
+    if unit.status == Status::Pending && !unit.kind_reported {
+        unit.kind_reported = true;
+        let name = ctx.cfg.kind_name(&unit.tools);
+        let text = if name.is_empty() {
+            String::from("unit has no tools value and no default_kind is set; not dispatched")
+        } else {
+            format!(
+                "unit names kind `{name}`, which is not defined under \
+                 [pump.dispatch.kinds]; not dispatched"
+            )
+        };
+        ctx.exception("unknown-kind", uid, &text);
+    }
+    true
+}
+
 /// Decide whether `uid` may start this tick and where: pending and ready,
-/// under the full-pool cap for `full` tools, and its pool has a free slot; a
+/// under its kind's `max`, and the kind's pool has a free slot; a
 /// closed lane set is reported separately, since it breaks the loop rather
 /// than skipping the unit.
 fn plan_unit(ctx: &Ctx, st: &State, uid: &str, free: &BTreeMap<String, u32>) -> Option<Plan> {
@@ -121,19 +150,14 @@ fn plan_unit(ctx: &Ctx, st: &State, uid: &str, free: &BTreeMap<String, u32>) -> 
     if !is_ready(ctx, st, uid) {
         return None;
     }
-    let pool = if unit.tools == "full" {
-        let pool_full = ctx.cfg.dispatch.pool_full.clone();
-        // Keep one full-toolchain machine free for gates: while `full_max`
-        // units are inflight on the full pool, a further `full` unit waits.
-        if ctx.cfg.dispatch.full_max > 0
-            && inflight_on(st, &pool_full) >= ctx.cfg.dispatch.full_max as usize
-        {
-            return None;
-        }
-        pool_full
-    } else {
-        ctx.cfg.dispatch.pool_plain.clone()
-    };
+    let kind = ctx.cfg.kind_of(&unit.tools)?;
+    // While `max` units of this kind are inflight, a further one waits.
+    if let Some(max) = kind.max
+        && inflight_of_kind(ctx, st, ctx.cfg.kind_name(&unit.tools)) >= max as usize
+    {
+        return None;
+    }
+    let pool = kind.pool.clone();
     if free.get(&pool).copied().unwrap_or(0) < 1 {
         return None;
     }
@@ -146,11 +170,11 @@ fn plan_unit(ctx: &Ctx, st: &State, uid: &str, free: &BTreeMap<String, u32>) -> 
     })
 }
 
-/// Units with status `Inflight` dispatched to `pool`.
-fn inflight_on(st: &State, pool: &str) -> usize {
+/// Units with status `Inflight` whose `tools` select the kind `name`.
+fn inflight_of_kind(ctx: &Ctx, st: &State, name: &str) -> usize {
     st.units
         .values()
-        .filter(|u| u.status == Status::Inflight && u.pool.as_deref() == Some(pool))
+        .filter(|u| u.status == Status::Inflight && ctx.cfg.kind_name(&u.tools) == name)
         .count()
 }
 
