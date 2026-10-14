@@ -173,7 +173,7 @@ impl Mailspace {
         if !self.may_close(&item, identity) {
             return Ok(());
         }
-        let state = match Self::folded_item_state(storage, &item)? {
+        let state = match self.folded_item_state(storage, &item)? {
             ItemEventKind::Done => "done",
             ItemEventKind::Reopened => "open",
         };
@@ -207,7 +207,7 @@ impl Mailspace {
         if !self.may_close(&item, identity) {
             return Ok(());
         }
-        if Self::folded_item_state(storage, &item)? != ItemEventKind::Done {
+        if self.folded_item_state(storage, &item)? != ItemEventKind::Done {
             return Err(VivariumError::Message(format!(
                 "{handle} is open; close it before absorbing"
             )));
@@ -236,10 +236,11 @@ impl Mailspace {
     /// (`done` or `reopened`); with no event letter, `done` when any live
     /// row of the item sits in the `done` folder, else open.
     fn folded_item_state(
+        &self,
         storage: &Storage,
         item: &HeldItem,
     ) -> Result<ItemEventKind, VivariumError> {
-        let folded = Self::item_head(storage, item)?.unwrap_or_else(|| {
+        let folded = self.item_head(storage, item)?.unwrap_or_else(|| {
             if item.rows.iter().any(|row| row.local_role == "done") {
                 ItemEventKind::Done
             } else {
@@ -609,9 +610,10 @@ fn newest_done_move_at(storage: &Storage, item: &HeldItem) -> Result<Option<i64>
 
 /// An RFC 3339 instant in Unix microseconds.
 fn parse_rfc3339_micros(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value.trim())
-        .ok()
-        .map(|time| time.timestamp_micros())
+    let Ok(time) = chrono::DateTime::parse_from_rfc3339(value.trim()) else {
+        return None;
+    };
+    Some(time.timestamp_micros())
 }
 
 /// The wait left, as `3h 12m`: whole minutes, rounded up.

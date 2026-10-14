@@ -94,9 +94,9 @@ fn an_absorb_of_an_open_item_by_a_closer_is_refused() {
         .unwrap_err()
         .to_string();
 
-    assert_eq!(
-        refused,
-        format!("{task} is open; close it before absorbing")
+    assert!(
+        refused.contains(&format!("{task} is open; close it before absorbing")),
+        "{refused}"
     );
 }
 

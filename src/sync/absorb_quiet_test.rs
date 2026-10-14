@@ -12,7 +12,9 @@ const BODY: &str = "done_when: it works\n";
 /// The value of a letter's header, when it has one.
 fn header_of(bytes: &[u8], name: &str) -> Option<String> {
     let parsed = mail_parser::MessageParser::default().parse(bytes)?;
-    parsed.headers().iter()
+    parsed
+        .headers()
+        .iter()
         .find(|header| header.name().eq_ignore_ascii_case(name))
         .and_then(|header| match header.value() {
             mail_parser::HeaderValue::Text(text) => Some(text.trim().to_string()),
@@ -165,7 +167,10 @@ fn the_authors_absorb_of_its_sent_row_names_done_and_members_seal_done() {
         .move_item("mind", &sent, "done", None, "task done", None)
         .unwrap();
     let author_row = a.row(&a.id_of(&sent)).unwrap();
-    assert_eq!(author_row.local_role, "sent", "the author's copy stays a sent row");
+    assert_eq!(
+        author_row.local_role, "sent",
+        "the author's copy stays a sent row"
+    );
     a.push(&a.client(&server));
     b.pull(&b.client(&server));
     c.pull(&c.client(&server));
