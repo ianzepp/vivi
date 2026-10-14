@@ -800,8 +800,8 @@ run = "pi -p --model {model} @{brief}"
 models = ["provider/model"]
 env = ["MODEL_API_KEY"]
 [pools.local.committer]
-name = "lane-bot"
-email = "lane-bot@users.noreply.github.com"
+name = "Your Name"
+email = "you@example.com"
 
 [pools.lanes]
 provider = "fly"
@@ -1671,8 +1671,8 @@ env = ["MODEL_API_KEY"]       # names only; values come from the machine's envir
 # rules = "docs/worker-rules.md"          # default: a short embedded rules file
 
 [pools.lanes.committer]       # required to dispatch; not needed to test
-name = "lane-bot"
-email = "lane-bot@users.noreply.github.com"
+name = "Your Name"
+email = "you@example.com"
 ```
 
 `run` is a shell command; `{model}`, `{brief}` and `{rules}` are the only
