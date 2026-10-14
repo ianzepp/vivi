@@ -6,9 +6,9 @@ is [`protocols.md`](protocols.md) (merge, remote merger, gate, board, plan
 files, collect rules). Where this document needs those details it links there
 instead of duplicating them.
 
-References look like `pump.py:632 merge_work`. The design decisions live in the
-Mind's design file; the contract states them as decided and does not reopen
-them.
+References look like `pump.py:632 merge_work`. The design decisions are
+decided in this contract; the contract states them as decided and does not
+reopen them.
 
 ## 1. Purpose and non-goals
 
@@ -467,7 +467,7 @@ Validation rules (pump.py has none — the engine adds them):
 
 ## 11. Not built in this step, and the first decision-hook event
 
-Not built in this step (from the design file):
+Not built in this step, as decided in this contract:
 
 - The decision hook.
 - State visible through `vivi boot|board|trace`; state stays a private
@@ -491,7 +491,7 @@ project-specific. Proposed closed verdict set: `{"failing": ["<crate> <test>",
 …]}` or `{"build_failed": true}`; a nonzero exit, invalid JSON, or an unknown
 verdict fails closed (exception, no action). Not built in this step.
 
-pump.py behaviours found that the design file does not list:
+pump.py behaviours found that the decisions above do not list:
 
 - The once-only `red-after-fix` report: an owned failing name still failing
   after its fix units all settled raises one exception per `owner:name`, then
@@ -512,3 +512,35 @@ pump.py behaviours found that the design file does not list:
   zeroes the pool's free count for the rest of the tick (pump.py:607–612).
 - The split history entry carries `why="timeout"` with an empty `detail`
   (pump.py:441).
+
+## 12. Implementation map
+
+The engine is a Rust binary; each module ports one region of `pump.py`.
+
+| Module (`src/pump/`) | Ports (pump.py functions and lines) |
+| --- | --- |
+| `config.rs` | The `[pump]` table; no pump.py equivalent: replaces the constants of pump.py:25–43, 246–253, 301, 768–771. |
+| `state.rs` | load/save (pump.py:105–123); the `MergeJob`/`MergeResult` records. |
+| `plan.rs` | `scope_root`, `overlaps`, `ingest` (pump.py:134–150, 191–241). |
+| `ready.rs` | `satisfied`, `ready`, `pick_model` (pump.py:516–561). |
+| `brief.rs` | `RULES`, `brief_for`, `GATE_BRIEF` (pump.py:45–75, 564–574). |
+| `host.rs` | `sh`, `vivi`, `git`, `log`, `exception` (pump.py:78–102, 126–131, 621): the command-line seam and its test fake. |
+| `collect.rs` | `receipt`, `fail`, `split`, `collect` (pump.py:395–501). |
+| `dispatch.rs` | `slots`, `dispatch` (pump.py:506–617). |
+| `merge.rs` | `merge_work`, `batch_round`, `batch_work`, the merge thread, `feed`, `apply` (pump.py:625–761, 803–867). |
+| `remote.rs` | `remote_merge` (pump.py:768–800). |
+| `gate.rs` | `start_gate`, `finish_gate`, `gatefix`, `hold_cycle`, `promote` (pump.py:872–1009). |
+| `board.rs` | `board`, `replan`, `replies` (pump.py:244–390). |
+| `run.rs` | `tick`, `write_status`, `main` (pump.py:1014–1078). |
+
+Rust-specific decisions:
+
+- The pump runs its own binary (`std::env::current_exe`) and `git`; it never
+  links to pool internals.
+- Every external effect goes through the `Host` seam, so tests script command
+  lines instead of touching a real pool.
+- No regex crate: the created-handle line and the gate name fallback use
+  hand-written matchers.
+- `state.json` keeps pump.py's field names and preserves unknown keys.
+- The merge thread owns the repo and never the state.
+- No environment variable is read.
