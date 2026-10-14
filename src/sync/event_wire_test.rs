@@ -1,6 +1,6 @@
-//! The event wire: an event letter rides its item's kind so every member
-//! that holds the item — not only the sender and the addressees — is served
-//! its close and reopen, and files as mail whatever kind it carries.
+//! The event wire: an event letter is served to every member that holds
+//! the item — the server shows it by its `X-Vivi-Event` header, whatever
+//! kind its envelope carries — and files as mail whatever kind it carries.
 
 use crate::mailspace::{Mailspace, RoleUpdate};
 use crate::sync::events::{role_of, state};
@@ -98,10 +98,11 @@ fn an_event_letter_reaches_every_holder_of_the_item_and_files_as_mail() {
     close(&a, "mind", &need);
     a.push(&a.client(&server));
 
-    // The event rides the item's kind on the wire, so the server's
-    // visibility rule (work is shown to every member) serves it to carol,
-    // who is neither its sender nor an addressee.
-    assert_eq!(event_item(&server).kind.as_deref(), Some("need"));
+    // The event travels as plain mail: the server shows it by its
+    // X-Vivi-Event header, so carol — neither its sender nor an addressee
+    // of the letter — is served it, and no member can hold phantom work
+    // for it by envelope kind.
+    assert_eq!(event_item(&server).kind.as_deref(), Some("mail"));
 
     let pulled = c.pull(&c.client(&server));
     assert_eq!(pulled.filed.get("inbox"), Some(&1), "{}", pulled.summary());
@@ -133,7 +134,7 @@ fn an_event_letter_reaches_every_holder_of_the_item_and_files_as_mail() {
 }
 
 /// [`World::put_full`] with the envelope kind chosen: an event letter put
-/// on the wire under its item's kind, as a newer vivi pushes it.
+/// on the wire under its item's kind, as a mind/sync2-era vivi pushed it.
 fn put_kind_event(w: &World, id: u64, item: u64, kind: &str) {
     let item_id = format!("{}@x.test", wire_id(item, 0));
     let headers = format!(
@@ -157,8 +158,9 @@ fn an_event_letter_files_as_mail_and_mints_no_node_whatever_kind_it_carries() {
     w.bob.pull(&w.bob_client);
     assert_eq!(nodes(&w.bob.mailspace), vec![(handle(1), "open".into())]);
 
-    // A done event riding the need's kind: the filer must see no kind for
-    // it, or it would file work rows and mint a backlog node of its own.
+    // A done event riding the need's kind, as a mind/sync2-era client sent
+    // it: the filer must see no kind for it, or it would file work rows and
+    // mint a backlog node of its own.
     put_kind_event(&w, 2, 1, "done");
 
     let pulled = w.bob.pull(&w.bob_client);

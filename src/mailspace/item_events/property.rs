@@ -26,10 +26,13 @@
 //! units the letter names bind to the item's backlog node, as they bound
 //! where the letter was written.
 //!
-//! As with state events, only a letter from a prefix domain counts
-//! (`event_speaks_for`): such a From names a real member. A bare `local`
-//! or legacy name domain is a claim anyone can make: it is filed as plain
-//! mail and counted ignored.
+//! As with state events, the From address names a role and the receiver
+//! judges it (`event_may_speak`): a letter from another member's prefix
+//! domain counts, the receiver cannot see that mailspace's roles; a letter
+//! from this mailspace's own domain counts only when its role may close the
+//! item. A bare `local` or a legacy name domain that is not this
+//! mailspace's own is a claim anyone can make: it is filed as plain mail
+//! and counted ignored.
 
 use std::collections::BTreeMap;
 
@@ -40,6 +43,7 @@ use super::{
     date_micros, from_domain_of, rfc3339_micros, role_move,
 };
 use crate::error::VivariumError;
+use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::marks::{folded_marks, mark_event};
 use crate::message::normalize_message_id;
 use crate::storage::{
@@ -179,7 +183,11 @@ struct PropertyChain {
 /// counts, plus the count of the others. State events and property events
 /// are read apart: a state event letter never parses as a property event,
 /// and the reverse too.
-fn property_chain(storage: &Storage, item: &HeldItem) -> Result<PropertyChain, VivariumError> {
+fn property_chain(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    item: &HeldItem,
+) -> Result<PropertyChain, VivariumError> {
     let mut chain = PropertyChain {
         events: Vec::new(),
         unauthorized: 0,
@@ -196,7 +204,8 @@ fn property_chain(storage: &Storage, item: &HeldItem) -> Result<PropertyChain, V
         else {
             continue;
         };
-        if Mailspace::event_speaks_for(&event.from_domain)
+        if let Some(from) = first_bare_address(&view.from_addr)
+            && mailspace.event_may_speak(item, &from)
             && super::dated_within_clock(event.at, now)
         {
             chain.events.push(event);
@@ -218,10 +227,11 @@ fn earliest_absorb(events: &[PropertyEvent]) -> Option<&PropertyEvent> {
 
 /// The earliest counted `absorbed` event held for `item`, if any.
 pub(super) fn counted_absorb(
+    mailspace: &Mailspace,
     storage: &Storage,
     item: &HeldItem,
 ) -> Result<Option<PropertyEvent>, VivariumError> {
-    let chain = property_chain(storage, item)?;
+    let chain = property_chain(mailspace, storage, item)?;
     Ok(earliest_absorb(&chain.events).cloned())
 }
 
@@ -243,7 +253,7 @@ impl Mailspace {
         item: &HeldItem,
         tally: &mut EventTally,
     ) -> Result<(), VivariumError> {
-        let chain = property_chain(storage, item)?;
+        let chain = property_chain(self, storage, item)?;
         tally.ignored += chain.unauthorized;
         let Some(seal) = earliest_absorb(&chain.events).cloned() else {
             Self::apply_mark_letters(storage, item, &chain.events, tally)?;
@@ -259,11 +269,14 @@ impl Mailspace {
     /// Apply the counted `bound` events held for `item` (a need): every unit
     /// the letter names that this mailspace holds as work with a backlog
     /// node binds to the item's node, as it bound where the letter was
-    /// written — unless the unit is already bound to the need, or a newer
-    /// local bind moved it after the letter's instant. The join rule then
-    /// runs, so a need whose units are all done completes here as it would
-    /// where the bind was made. A unit not held yet, and a need with no
-    /// node here (held foreign), are skipped.
+    /// written — unless the unit's controlling bind, the newest `bound`
+    /// letter that moved it anywhere, is newer than this letter. The bind's
+    /// `unit_bound` event carries the letter's own instant and
+    /// `Message-ID`, so the floor a letter must beat is the same on every
+    /// member that holds the same letters, never a receiver clock. The join
+    /// rule then runs, so a need whose units are all done completes here as
+    /// it would where the bind was made. A unit not held yet, and a need
+    /// with no node here (held foreign), are skipped.
     fn apply_bound_events(
         &self,
         storage: &mut Storage,
@@ -287,11 +300,17 @@ impl Mailspace {
         };
         let mut bound = false;
         for event in binds {
-            let handles = units_to_bind(storage, &backlog.handle, &need, event)?;
+            let handles = units_to_bind(storage, &backlog.handle, event)?;
             if handles.is_empty() {
                 continue;
             }
-            storage.bind_backlog_units(&backlog.handle, &need.source_id, &handles)?;
+            storage.bind_backlog_units(
+                &backlog.handle,
+                &need.source_id,
+                &handles,
+                event.at,
+                &event.id,
+            )?;
             bound = true;
         }
         tally.applied += usize::from(bound);
@@ -445,12 +464,13 @@ fn item_node(
 }
 
 /// The node handles of the units `event` binds here: held as work with a
-/// backlog node, not already bound to the need, and named by a letter newer
-/// than the unit's newest local bind.
+/// backlog node, and named by a letter newer than the unit's controlling
+/// bind — the newest `bound` letter that moved it, wherever that bind was
+/// made — so an older letter arriving late moves nothing and a newer one
+/// re-targets.
 fn units_to_bind(
     storage: &Storage,
     graph_handle: &str,
-    need: &WorkGraphNodeRow,
     event: &PropertyEvent,
 ) -> Result<Vec<String>, VivariumError> {
     let mut handles = Vec::new();
@@ -461,25 +481,25 @@ fn units_to_bind(
         let Some(node) = Mailspace::backlog_node_of(storage, &row.handle)? else {
             continue;
         };
-        if node.subgraph.as_deref() == Some(need.source_id.as_str()) {
-            continue;
-        }
-        let floor = newest_unit_bound_at(storage, graph_handle, &node.handle)?;
-        if floor.is_none_or(|at| event.at > at) {
+        let floor = newest_unit_bound(storage, graph_handle, &node.handle)?;
+        if floor.is_none_or(|(at, id)| (event.at, event.id.as_str()) > (at, id.as_str())) {
             handles.push(node.handle.clone());
         }
     }
     Ok(handles)
 }
 
-/// The instant of the unit's newest `unit_bound` graph event, in Unix
-/// microseconds — the floor a letter must be newer than to move the unit.
-fn newest_unit_bound_at(
+/// The unit's controlling bind — the `(instant, Message-ID)` of its newest
+/// `unit_bound` graph event, the floor a letter must be newer than to move
+/// the unit. Every stamp names the `bound` letter that made the bind (an
+/// empty id for a bind that wrote no letter), so the floor is a function
+/// of the letters held, the same on every member that pulled them.
+fn newest_unit_bound(
     storage: &Storage,
     graph_handle: &str,
     node_handle: &str,
-) -> Result<Option<i64>, VivariumError> {
-    let mut newest: Option<i64> = None;
+) -> Result<Option<(i64, String)>, VivariumError> {
+    let mut newest: Option<(i64, String)> = None;
     for event in storage.list_work_graph_events_after(0)? {
         if event.graph_handle != graph_handle
             || event.node_handle.as_deref() != Some(node_handle)
@@ -490,10 +510,23 @@ fn newest_unit_bound_at(
         let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.occurred_at) else {
             continue;
         };
-        let at = at.timestamp_micros();
-        if newest.is_none_or(|seen| at > seen) {
-            newest = Some(at);
+        let stamp = (at.timestamp_micros(), letter_of(&event.note));
+        if newest.as_ref().is_none_or(|held| &stamp > held) {
+            newest = Some(stamp);
         }
     }
     Ok(newest)
+}
+
+/// The `Message-ID` a `unit_bound` event's note names, or an empty string
+/// when the bind wrote no letter.
+fn letter_of(note: &Option<String>) -> String {
+    note.as_deref()
+        .and_then(|note| note.split(' ').find(|part| part.starts_with("letter=<")))
+        .and_then(|part| {
+            part.strip_prefix("letter=<")
+                .and_then(|id| id.strip_suffix('>'))
+        })
+        .map(str::to_string)
+        .unwrap_or_default()
 }

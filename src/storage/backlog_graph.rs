@@ -65,7 +65,11 @@ impl Storage {
 
     /// Bind unit nodes to a parent need node by setting each unit's
     /// `subgraph` to the parent's source id, in one transaction with one
-    /// `unit_bound` event per unit.
+    /// `unit_bound` event per unit. Each event carries the controlling
+    /// bind — `at` (Unix microseconds) and the `bound` letter's
+    /// `Message-ID` (`letter`, empty when the bind wrote no letter) — so
+    /// every member that applies the same letters holds the same floor,
+    /// never a receiver clock.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if any update fails.
@@ -74,8 +78,11 @@ impl Storage {
         graph_handle: &str,
         parent_source_id: &str,
         unit_handles: &[String],
+        at: i64,
+        letter: &str,
     ) -> Result<(), VivariumError> {
         let now = Utc::now().to_rfc3339();
+        let occurred = occurred_at(at);
         let tx = self
             .conn
             .transaction()
@@ -99,9 +106,9 @@ impl Storage {
                  VALUES (?1, ?2, 'unit_bound', ?3, ?4)",
                 params![
                     graph_handle,
-                    now,
+                    occurred,
                     unit_handle,
-                    format!("parent={parent_source_id}")
+                    bind_note(parent_source_id, letter)
                 ],
             )
             .map_err(|e| VivariumError::Other(format!("failed to insert bind event: {e}")))?;
@@ -174,6 +181,24 @@ impl Storage {
             );
         }
         Ok(out)
+    }
+}
+
+/// The controlling instant as a `unit_bound` event's `occurred_at` stamp,
+/// in RFC 3339 with microseconds so it reads back to the same instant.
+fn occurred_at(at: i64) -> String {
+    chrono::DateTime::from_timestamp_micros(at)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+}
+
+/// The `unit_bound` note: the parent the units landed on, and the `bound`
+/// letter that moved them when one exists.
+fn bind_note(parent_source_id: &str, letter: &str) -> String {
+    if letter.is_empty() {
+        format!("parent={parent_source_id}")
+    } else {
+        format!("parent={parent_source_id} letter=<{letter}>")
     }
 }
 

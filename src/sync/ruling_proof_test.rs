@@ -170,9 +170,9 @@ fn rfc_id(checkout: &Checkout, handle: &str) -> String {
 }
 
 /// A hand-built event letter on the wire, the way its author's vivi pushes
-/// one: from `author`'s mailspace (so the server stamps its prefix), riding
-/// the item's kind, replying to the item, stamped `at` — an offline writer
-/// whose clock reads `at`.
+/// one: from `author`'s mailspace (so the server stamps its prefix),
+/// traveling as plain mail like every event letter, replying to the item,
+/// stamped `at` — an offline writer whose clock reads `at`.
 fn put_event_letter(
     server: &Rc<FakeServer>,
     author: &Checkout,
@@ -205,7 +205,7 @@ fn put_event_letter(
             &Envelope {
                 raw_eml: &bytes,
                 to,
-                kind: "need",
+                kind: "mail",
             },
         )
         .expect("the fake server takes the letter");
@@ -399,14 +399,16 @@ fn an_absorb_on_a_seals_b_and_an_older_event_after_it_is_ignored() {
     assert_eq!(state(&p.b, &p.need).as_deref(), Some("done"));
 }
 
-/// Marks travel because a mark or unmark is a reply letter; the bind is a
-/// graph fact of this mailspace in the current base (no `bound` letter is
-/// written), so the mark letters are what crosses the wire here.
+/// Marks travel because a mark or unmark by a role that may close the item
+/// is a reply letter; a role that may not keeps a private row mark that
+/// does not cross the wire. The bind is a graph fact of this mailspace in
+/// the current base (no `bound` letter is written), so the mark letters are
+/// what crosses the wire here.
 #[test]
-fn marks_and_the_bind_travel() {
+fn marks_travel_only_from_a_role_that_may_close() {
     let p = pair();
 
-    // A mark on A is on B after a pull.
+    // A mark on A (whose mind authored the need) is on B after a pull.
     p.a.mailspace
         .set_marks("mind", &p.need, "need", true, &["ruling".into()])
         .unwrap();
@@ -415,12 +417,18 @@ fn marks_and_the_bind_travel() {
     assert_eq!(marked.events_applied, 1, "{}", marked.summary());
     assert_eq!(marks_of(&p.b, &p.need), vec!["ruling".to_string()]);
 
-    // An unmark on B is off on A after a pull.
+    // B's `hand` may not close the need, so its unmark is a private row
+    // mark: no letter is written, and the mark does not travel — A still
+    // carries it after both pulls.
     p.b.mailspace
         .set_marks("hand", &p.need, "need", false, &["ruling".into()])
         .unwrap();
     assert_eq!(marks_of(&p.b, &p.need), Vec::<String>::new());
     let unmarked = p.b_to_a();
-    assert_eq!(unmarked.events_applied, 1, "{}", unmarked.summary());
-    assert_eq!(marks_of(&p.a, &p.need), Vec::<String>::new(), "off on A");
+    assert_eq!(unmarked.events_applied, 0, "{}", unmarked.summary());
+    assert_eq!(
+        marks_of(&p.a, &p.need),
+        vec!["ruling".to_string()],
+        "still on A"
+    );
 }
