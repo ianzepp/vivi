@@ -20,14 +20,18 @@
 //! named state — the state of every row of the item when the seal was
 //! written. A member that holds the item brings its rows to that state and
 //! seals them too; the writer's mailspace exports the archive copy, so a
-//! receiver never exports on its own. `marked`, `unmarked`, and `bound`
-//! are parsed and authorized here and applied by later units; for them the
-//! letter is held, and only counted.
+//! receiver never exports on its own. `marked` and `unmarked` are applied
+//! here: the letters are folded per slug and the newest one per slug moves
+//! the unabsorbed rows' folded marks. `bound` is parsed and authorized
+//! here and applied by a later unit; for it the letter is held, and only
+//! counted.
 //!
 //! As with state events, only a letter from a prefix domain counts
 //! (`event_speaks_for`): such a From names a real member. A bare `local`
 //! or legacy name domain is a claim anyone can make: it is filed as plain
 //! mail and counted ignored.
+
+use std::collections::BTreeMap;
 
 use mail_parser::{HeaderValue, MessageParser};
 
@@ -36,8 +40,11 @@ use super::{
     date_micros, from_domain_of, rfc3339_micros, role_move,
 };
 use crate::error::VivariumError;
+use crate::mailspace::marks::{folded_marks, mark_event};
 use crate::message::normalize_message_id;
-use crate::storage::{ItemEventWrite, RoleMove, Storage};
+use crate::storage::{
+    ItemEventWrite, MailspaceEvent, MailspaceEventInput, RoleMove, Storage, StoredMessageView,
+};
 
 const EVENT_UNIT_HEADER: &str = "X-Vivi-Event-Unit";
 const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
@@ -220,8 +227,10 @@ impl Mailspace {
     /// however new — and each unabsorbed row is then sealed, without
     /// exporting to the archive (the writer's mailspace exports). When the
     /// item is already sealed, every later event of any kind is counted
-    /// ignored, as for state events. The other kinds are parsed and
-    /// authorized, and applied by later units.
+    /// ignored, as for state events. With no seal, the counted
+    /// `marked`/`unmarked` letters are folded per slug and the newest one
+    /// per slug moves the unabsorbed rows' folded marks. `bound` letters
+    /// are parsed and authorized, and applied by later units.
     pub(super) fn apply_property_events(
         &self,
         storage: &mut Storage,
@@ -231,7 +240,7 @@ impl Mailspace {
         let chain = property_chain(storage, item)?;
         tally.ignored += chain.unauthorized;
         let Some(seal) = earliest_absorb(&chain.events).cloned() else {
-            return Ok(());
+            return self.apply_mark_letters(storage, item, &chain.events, tally);
         };
         if item.rows.iter().all(|row| row.absorbed_at.is_some()) {
             tally.ignored += 1;
@@ -275,4 +284,88 @@ impl Mailspace {
         tally.applied += 1;
         Ok(())
     }
+
+    /// Bring the unabsorbed rows of `item` — own or foreign-held — to what
+    /// the newest `marked`/`unmarked` letter per slug says, appending one
+    /// local mark event per row so `folded_marks` yields the letter's state.
+    /// A letter older than a row's newest local mark event for its slug
+    /// changes nothing: a later local change by a person is not undone by
+    /// an older letter that arrives late. Idempotent: a state that already
+    /// matches appends nothing.
+    fn apply_mark_letters(
+        &self,
+        storage: &mut Storage,
+        item: &HeldItem,
+        events: &[PropertyEvent],
+        tally: &mut EventTally,
+    ) -> Result<(), VivariumError> {
+        let mut inputs: Vec<MailspaceEventInput> = Vec::new();
+        for letter in newest_mark_letters(events) {
+            let slug = letter.slug.as_deref().unwrap_or_default();
+            let marked = letter.kind == PropertyKind::Marked;
+            for row in &item.rows {
+                if row.absorbed_at.is_some() {
+                    continue;
+                }
+                inputs.extend(row_mark_input(storage, row, item, slug, marked, letter.at)?);
+            }
+        }
+        storage.append_mailspace_events(&inputs)?;
+        tally.applied += usize::from(!inputs.is_empty());
+        Ok(())
+    }
+}
+
+/// The newest `marked`/`unmarked` letter per slug by `(at, Message-ID)`,
+/// sorted by slug: the one whose word the row's folded marks follow.
+fn newest_mark_letters(events: &[PropertyEvent]) -> Vec<&PropertyEvent> {
+    let mut newest: BTreeMap<&str, &PropertyEvent> = BTreeMap::new();
+    for event in events {
+        if !matches!(event.kind, PropertyKind::Marked | PropertyKind::Unmarked) {
+            continue;
+        }
+        let Some(slug) = event.slug.as_deref() else {
+            continue;
+        };
+        let newer = newest
+            .get(slug)
+            .is_none_or(|held| (event.at, &event.id) > (held.at, &held.id));
+        if newer {
+            newest.insert(slug, event);
+        }
+    }
+    newest.into_values().collect()
+}
+
+/// The local mark event `row` needs to match `marked` for `slug`, or `None`
+/// when the row already folds to that state or the letter is older than the
+/// row's newest local mark event for the slug.
+fn row_mark_input(
+    storage: &Storage,
+    row: &StoredMessageView,
+    item: &HeldItem,
+    slug: &str,
+    marked: bool,
+    letter_at: i64,
+) -> Result<Option<MailspaceEventInput>, VivariumError> {
+    let events = storage.list_mailspace_events(&row.message_id)?;
+    let carries = folded_marks(&events).iter().any(|held| held == slug);
+    if carries == marked {
+        return Ok(None);
+    }
+    let local = events
+        .iter()
+        .filter(|event| mark_event_of(event, slug))
+        .filter_map(|event| rfc3339_micros(&event.occurred_at))
+        .max();
+    if local.is_some_and(|at| letter_at <= at) {
+        return Ok(None);
+    }
+    Ok(Some(mark_event(row, None, item.kind, marked, slug)))
+}
+
+/// Whether `event` is a mark event for `slug`.
+fn mark_event_of(event: &MailspaceEvent, slug: &str) -> bool {
+    matches!(event.event_type.as_str(), "marked" | "unmarked")
+        && event.note.as_deref() == Some(slug)
 }
