@@ -54,7 +54,8 @@ const TRANSPORT_SCHEMA: &str = "
       from_prefix TEXT,
       to_raw TEXT,
       kind TEXT,
-      appended_at TEXT NOT NULL
+      appended_at TEXT NOT NULL,
+      event INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS items_handle ON items(handle);
     CREATE INDEX IF NOT EXISTS items_sender_content ON items(from_name, content_sha256);
@@ -141,6 +142,9 @@ pub struct AppendItem {
     from_prefix: Option<String>,
     to: Option<String>,
     kind: Option<String>,
+    /// The letter carries an `X-Vivi-Event` header: an item event letter,
+    /// decided from the letter's own bytes and never from its envelope kind.
+    event: bool,
     raw_eml: Vec<u8>,
 }
 
@@ -252,12 +256,14 @@ impl AppendItem {
             }
         };
         let to = parse_to(to)?;
+        let event = carries_event_header(&raw_eml);
         Ok(Self {
             id: id.to_owned(),
             from: from.to_owned(),
             from_prefix: None,
             to,
             kind,
+            event,
             raw_eml,
         })
     }
@@ -278,11 +284,10 @@ impl AppendItem {
 
     /// The mailspace folder this letter files under: the work folder for
     /// need/task/want, `inbox` for mail (as the client files a pulled letter).
-    /// An item event letter rides its item's kind so every member is served
-    /// it, but it is a record and not work: it files as mail, as the client
-    /// files it, whatever kind the envelope carries.
+    /// An item event letter is a record and not work: it files as mail, as
+    /// the client files it, whatever kind the envelope carries.
     fn local_role(&self) -> &'static str {
-        if carries_event_header(&self.raw_eml) {
+        if self.event {
             return "inbox";
         }
         match self.kind.as_deref() {
@@ -541,13 +546,17 @@ fn row_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
 }
 
 /// Scoped-read visibility (decided items 7 and 11 plus the governance
-/// carve-out), decided from the transport row alone: work items and mail
-/// addressed to postmaster are member-visible; every other letter only to
-/// its sender (by name) or to the member whose registered prefix is named by
-/// a recipient address. Pushes the clause's parameters in order.
+/// carve-out), decided from the transport row alone: work items, item event
+/// letters, and mail addressed to postmaster are member-visible; every other
+/// letter only to its sender (by name) or to the member whose registered
+/// prefix is named by a recipient address. An event letter is decided by its
+/// `X-Vivi-Event` header (the `event` column), not by its envelope kind: the
+/// client sends it as `mail`, and every member that holds the item must see
+/// it. Pushes the clause's parameters in order.
 fn visible_clause(viewer: &Viewer<'_>, params: &mut Vec<Value>) -> String {
-    let mut clause =
-        String::from("(i.kind IS NOT NULL OR i.from_name = ? OR lower(i.to_raw) = 'postmaster'");
+    let mut clause = String::from(
+        "(i.kind IS NOT NULL OR i.event = 1 OR i.from_name = ? OR lower(i.to_raw) = 'postmaster'",
+    );
     params.push(Value::Text(viewer.name.to_owned()));
     if let Some(prefix) = viewer.prefix {
         clause.push_str(
@@ -558,6 +567,72 @@ fn visible_clause(viewer: &Viewer<'_>, params: &mut Vec<Value>) -> String {
     }
     clause.push(')');
     clause
+}
+
+/// Whether the transport index has its `event` column yet.
+fn has_event_column(transport: &Connection) -> Result<bool, ProjectError> {
+    transport
+        .prepare("SELECT 1 FROM pragma_table_info('items') WHERE name = 'event'")
+        .and_then(|mut statement| statement.exists([]))
+        .map_err(storage_err("failed to inspect the transport index"))
+}
+
+/// Bring an index created before the `event` column existed up to date: add
+/// the column, then mark every held mail letter (no envelope kind) whose
+/// bytes carry `X-Vivi-Event`, so such a letter is member-visible from the
+/// first read after an upgrade. Runs once per index, under the write lock,
+/// and re-checks under it so two openers racing past the first check do not
+/// both alter the table.
+fn ensure_event_column(transport: &Connection, storage: &Storage) -> Result<(), ProjectError> {
+    if has_event_column(transport)? {
+        return Ok(());
+    }
+    transport
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(storage_err("failed to lock the transport index"))?;
+    match add_event_column(transport, storage) {
+        Ok(()) => transport
+            .execute_batch("COMMIT")
+            .map_err(storage_err("failed to commit the transport migration")),
+        Err(error) => {
+            let _ = transport.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+fn add_event_column(transport: &Connection, storage: &Storage) -> Result<(), ProjectError> {
+    if has_event_column(transport)? {
+        return Ok(());
+    }
+    transport
+        .execute_batch("ALTER TABLE items ADD COLUMN event INTEGER NOT NULL DEFAULT 0")
+        .map_err(storage_err("failed to add the transport event column"))?;
+    let mail: Vec<(i64, String)> = {
+        let mut statement = transport
+            .prepare("SELECT sequence, content_sha256 FROM items WHERE kind IS NULL")
+            .map_err(storage_err("failed to prepare the event backfill"))?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .and_then(Iterator::collect)
+            .map_err(storage_err("failed to read the event backfill"))?
+    };
+    for (sequence, content_sha256) in mail {
+        // A letter the store cannot read is left unmarked: the read path
+        // reports it when it is served, as it always has.
+        let Ok(raw) = storage.read_blob(&content_sha256) else {
+            continue;
+        };
+        if carries_event_header(&raw) {
+            transport
+                .execute(
+                    "UPDATE items SET event = 1 WHERE sequence = ?1",
+                    params![sequence],
+                )
+                .map_err(storage_err("failed to mark an event letter"))?;
+        }
+    }
+    Ok(())
 }
 
 fn storage_err<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> ProjectError {
@@ -585,6 +660,7 @@ impl Project {
             .map_err(storage_err("failed to prepare the transport index"))?;
         let storage = Storage::open_mailspace(&dir.join(MAILSPACE_DIR))
             .map_err(storage_err("failed to open the project mailspace"))?;
+        ensure_event_column(&transport, &storage)?;
         Ok(Self { transport, storage })
     }
 
@@ -700,8 +776,8 @@ impl Project {
         let handle = handle_of(&item.id).unwrap_or_default();
         tx.execute(
             "INSERT INTO items (sequence, message_id, handle, content_sha256, byte_size, \
-             from_name, from_prefix, to_raw, kind, appended_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             from_name, from_prefix, to_raw, kind, appended_at, event) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 i64::try_from(sequence).unwrap_or(i64::MAX),
                 item.id,
@@ -713,6 +789,7 @@ impl Project {
                 item.to,
                 item.kind,
                 appended_at,
+                item.event,
             ],
         )
         .map_err(storage_err("failed to record the letter's transport row"))?;
@@ -813,7 +890,9 @@ fn carries_event_header(raw: &[u8]) -> bool {
             return false;
         }
         if let Some(colon) = line.iter().position(|byte| *byte == b':')
-            && line[..colon].eq_ignore_ascii_case(b"x-vivi-event")
+            && line[..colon]
+                .trim_ascii_end()
+                .eq_ignore_ascii_case(b"x-vivi-event")
         {
             return true;
         }
@@ -1137,9 +1216,10 @@ impl ProjectStore {
     }
 
     /// Read one page of letters scoped to `viewer` (decided items 7, 11, 13
-    /// plus the governance carve-out): work items (need/task/want) and mail
-    /// addressed to postmaster are member-visible; every other letter only
-    /// to its sender or the recipient prefix's member. Visibility and the
+    /// plus the governance carve-out): work items (need/task/want), item
+    /// event letters (by their `X-Vivi-Event` header, whatever the envelope
+    /// kind) and mail addressed to postmaster are member-visible; every
+    /// other letter only to its sender or the recipient prefix's member. Visibility and the
     /// query's filters are applied in the transport query before the page
     /// limit, so a letter the viewer cannot see or the filters exclude is
     /// never read and never makes a page short. A page ends at the limit or
