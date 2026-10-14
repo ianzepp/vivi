@@ -67,7 +67,7 @@ impl Mailspace {
         item: &HeldItem,
     ) -> Result<String, VivariumError> {
         let mut floor = chrono::Utc::now().timestamp_micros();
-        for event in &self.item_chain(storage, item)?.events {
+        for event in &Self::item_chain(storage, item)?.events {
             floor = floor.max(event.at.saturating_add(1));
         }
         for at in held_property_ats(storage, item)? {
