@@ -40,7 +40,7 @@ impl Mailspace {
         extras: &[(&str, String)],
         note: Option<&str>,
     ) -> Result<String, VivariumError> {
-        let at = self.property_event_at(storage, item)?;
+        let at = Self::property_event_at(storage, item)?;
         let letter = self.compose_property_letter(item, identity, kind, extras, note, &at)?;
         self.check_letter_size(letter.data.len())?;
         let rows = emit::event_rows(identity, &letter.local, &item.content_id);
@@ -61,11 +61,7 @@ impl Mailspace {
     /// microsecond past the newest state or property event this mailspace
     /// holds for the item, whichever is later — the same floor a state
     /// event is stamped with, so a writer never stamps below what it holds.
-    fn property_event_at(
-        &self,
-        storage: &Storage,
-        item: &HeldItem,
-    ) -> Result<String, VivariumError> {
+    fn property_event_at(storage: &Storage, item: &HeldItem) -> Result<String, VivariumError> {
         let mut floor = chrono::Utc::now().timestamp_micros();
         for event in &Self::item_chain(storage, item)?.events {
             floor = floor.max(event.at.saturating_add(1));
