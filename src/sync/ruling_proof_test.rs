@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use crate::mailspace::{ItemEventState, Mailspace, MoveOutcome, SendRequest};
+use crate::mailspace::{ItemEventState, Mailspace, MoveOutcome, RoleUpdate, SendRequest};
 use crate::sync::events::{role_of, state};
 use crate::sync::fake_server::{Checkout, FakeServer, LETTER_DATE, checkout, letter, wire_id};
 use crate::sync::push::PushReport;
@@ -22,8 +22,22 @@ fn alice() -> Checkout {
     checkout("alice", &["mind"])
 }
 
+/// B's `mind` is of kind `mind`: the voice that may close or reopen work
+/// for everyone on any member — the ruling's "no member owns an item's
+/// state" — the same for-everyone right `event_wire_test` grants its
+/// cross-member mind.
 fn bob() -> Checkout {
-    checkout("bob", &["mind", "hand"])
+    let mut b = checkout("bob", &["mind", "hand"]);
+    b.mailspace
+        .set_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    b
 }
 
 /// Two mailspaces and one need: A's `mind` files it (a local `needs` row,
