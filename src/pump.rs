@@ -1,0 +1,71 @@
+//! `vivi pump`: the pump as a state machine; see docs/pump/contract.md.
+
+pub mod board;
+pub mod brief;
+pub mod collect;
+pub mod config;
+pub mod dispatch;
+pub mod gate;
+pub mod host;
+pub mod merge;
+pub mod plan;
+pub mod ready;
+pub mod remote;
+pub mod run;
+pub mod state;
+
+#[cfg(test)]
+#[path = "pump/config_test.rs"]
+mod config_test;
+
+#[cfg(test)]
+#[path = "pump/state_test.rs"]
+mod state_test;
+
+#[cfg(test)]
+#[path = "pump/plan_test.rs"]
+mod plan_test;
+
+#[cfg(test)]
+#[path = "pump/ready_test.rs"]
+mod ready_test;
+
+#[cfg(test)]
+#[path = "pump/brief_test.rs"]
+mod brief_test;
+
+#[cfg(test)]
+#[path = "pump/host_test.rs"]
+mod host_test;
+
+#[cfg(test)]
+#[path = "pump/collect_test.rs"]
+mod collect_test;
+
+#[cfg(test)]
+#[path = "pump/dispatch_test.rs"]
+mod dispatch_test;
+
+#[cfg(test)]
+#[path = "pump/merge_test.rs"]
+mod merge_test;
+
+#[cfg(test)]
+#[path = "pump/remote_test.rs"]
+mod remote_test;
+
+#[cfg(test)]
+#[path = "pump/gate_test.rs"]
+mod gate_test;
+
+#[cfg(test)]
+#[path = "pump/board_test.rs"]
+mod board_test;
+
+#[cfg(test)]
+#[path = "pump/run_test.rs"]
+mod run_test;
+
+#[cfg(test)]
+#[path = "pump/lifecycle_test.rs"]
+mod lifecycle_test;
