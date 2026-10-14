@@ -560,12 +560,19 @@ pub struct BacklogBoundUnit {
 
 /// The normalized `Message-ID`s of the unit items `sources` name here.
 fn unit_rfc_ids(storage: &Storage, sources: &[String]) -> Vec<String> {
-    sources
-        .iter()
-        .filter_map(|source| storage.resolve_message_token(source).ok())
-        .filter_map(|id| storage.message_by_id(&id).ok().flatten())
-        .filter_map(|view| view.normalized_message_id)
-        .collect()
+    let mut ids = Vec::new();
+    for source in sources {
+        let Ok(id) = storage.resolve_message_token(source) else {
+            continue;
+        };
+        let Ok(Some(view)) = storage.message_by_id(&id) else {
+            continue;
+        };
+        if let Some(id) = view.normalized_message_id {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 /// Find the backlog node for a mail token. Falls back to matching the

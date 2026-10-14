@@ -468,15 +468,21 @@ fn newest_unit_bound_at(
     graph_handle: &str,
     node_handle: &str,
 ) -> Result<Option<i64>, VivariumError> {
-    Ok(storage
-        .list_work_graph_events_after(0)?
-        .into_iter()
-        .filter(|event| {
-            event.graph_handle == graph_handle
-                && event.node_handle.as_deref() == Some(node_handle)
-                && event.event_type == "unit_bound"
-        })
-        .filter_map(|event| chrono::DateTime::parse_from_rfc3339(&event.occurred_at).ok())
-        .map(|at| at.timestamp_micros())
-        .max())
+    let mut newest: Option<i64> = None;
+    for event in storage.list_work_graph_events_after(0)? {
+        if event.graph_handle != graph_handle
+            || event.node_handle.as_deref() != Some(node_handle)
+            || event.event_type != "unit_bound"
+        {
+            continue;
+        }
+        let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.occurred_at) else {
+            continue;
+        };
+        let at = at.timestamp_micros();
+        if newest.is_none_or(|seen| at > seen) {
+            newest = Some(at);
+        }
+    }
+    Ok(newest)
 }
