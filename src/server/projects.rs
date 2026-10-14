@@ -278,7 +278,13 @@ impl AppendItem {
 
     /// The mailspace folder this letter files under: the work folder for
     /// need/task/want, `inbox` for mail (as the client files a pulled letter).
+    /// An item event letter rides its item's kind so every member is served
+    /// it, but it is a record and not work: it files as mail, as the client
+    /// files it, whatever kind the envelope carries.
     fn local_role(&self) -> &'static str {
+        if carries_event_header(&self.raw_eml) {
+            return "inbox";
+        }
         match self.kind.as_deref() {
             Some("need") => "needs",
             Some("task") => "tasks",
@@ -794,6 +800,25 @@ fn append_lock() -> MutexGuard<'static, ()> {
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether the letter's header block carries an `X-Vivi-Event` header: an
+/// item event letter (`done`, `reopened`, `absorbed`, `marked`, `unmarked`,
+/// `bound`, or a kind a later client adds). Only the header name counts;
+/// `X-Vivi-Event-Of` and the other payload headers are other names.
+fn carries_event_header(raw: &[u8]) -> bool {
+    for line in raw.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            return false;
+        }
+        if let Some(colon) = line.iter().position(|byte| *byte == b':')
+            && line[..colon].eq_ignore_ascii_case(b"x-vivi-event")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// The bytes after the first blank line (`\r\n\r\n` or `\n\n`, whichever

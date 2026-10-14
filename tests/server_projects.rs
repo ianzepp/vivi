@@ -170,6 +170,52 @@ fn append_assigns_sequence_and_files_the_letter_verbatim_in_the_mailspace() {
 }
 
 #[test]
+fn an_event_letter_files_as_mail_in_the_mailspace_not_as_work() {
+    let data_dir = scratch_data_dir("event-role");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let item_id = traveling(1);
+    store
+        .append(&meta.project_id, &need(&item_id, "an item"))
+        .unwrap();
+    // The event rides the need's kind, as a client pushes it.
+    let event_id = traveling(2);
+    let raw = format!(
+        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{event_id}@p.local>\n\
+         In-Reply-To: <{item_id}@p.local>\nX-Vivi-Event: done\n\
+         X-Vivi-Event-Of: <{item_id}@p.local>\n\nclosed\n"
+    )
+    .into_bytes();
+    let event = AppendItem::new(&event_id, "hand", Some("a@p.local"), Some("need"), raw).unwrap();
+    store.append(&meta.project_id, &event).unwrap();
+    // A letter that merely names the header in its body is still work.
+    let decoy_id = traveling(3);
+    let decoy = format!(
+        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{decoy_id}@p.local>\n\n\
+         X-Vivi-Event: done\n"
+    )
+    .into_bytes();
+    let decoy = AppendItem::new(&decoy_id, "hand", Some("a@p.local"), Some("need"), decoy).unwrap();
+    store.append(&meta.project_id, &decoy).unwrap();
+
+    let storage = mailspace(&data_dir, &meta.project_id);
+    let needs: Vec<_> = storage
+        .list_messages_by_account_role(&meta.project_id, "needs")
+        .unwrap()
+        .into_iter()
+        .map(|row| row.message_id)
+        .collect();
+    assert_eq!(needs, [item_id, decoy_id]);
+    let inbox: Vec<_> = storage
+        .list_messages_by_account_role(&meta.project_id, "inbox")
+        .unwrap()
+        .into_iter()
+        .map(|row| row.message_id)
+        .collect();
+    assert_eq!(inbox, [event_id]);
+}
+
+#[test]
 fn item_validation_rejects_bad_id_empty_oversize_kind_and_recipient() {
     let ok = |to: Option<&str>, kind: Option<&str>| {
         AppendItem::new(&traveling(1), "hand", to, kind, b"x".to_vec())
