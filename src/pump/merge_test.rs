@@ -620,6 +620,46 @@ fn feed_under_hold_merge_sends_only_fix_units() {
     assert!(jobs.try_recv().is_err());
 }
 
+/// Write the configured priority file.
+fn write_priority(ctx: &Ctx, text: &str) {
+    let path = ctx.cfg.priority_path(&ctx.project);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn feed_sends_priority_units_first_then_fix_units_then_the_rest() {
+    let (_dir, ctx, _host) = setup("");
+    write_priority(&ctx, "# hot\nhot\n");
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[
+        ("u1", Status::Delivered),
+        ("pumpfix9", Status::Delivered),
+        ("u3", Status::Delivered),
+    ]);
+    st.units.get_mut("u3").unwrap().need = String::from("hot");
+    merger.feed(&ctx, &mut st);
+    let order: Vec<String> = (0..3)
+        .map(|_| jobs.recv_timeout(Duration::from_secs(5)).unwrap().uid)
+        .collect();
+    assert_eq!(order, ["u3", "pumpfix9", "u1"]);
+}
+
+#[test]
+fn feed_under_hold_merge_also_sends_priority_units() {
+    let (_dir, ctx, _host) = setup("");
+    std::fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
+    write_priority(&ctx, "hot\n");
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Delivered), ("u2", Status::Delivered)]);
+    st.units.get_mut("u2").unwrap().need = String::from("hot");
+    merger.feed(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Delivered);
+    assert_eq!(st.units["u2"].status, Status::Merging);
+    assert_eq!(jobs.recv_timeout(Duration::from_secs(5)).unwrap().uid, "u2");
+    assert!(jobs.try_recv().is_err());
+}
+
 #[test]
 fn apply_ok_true_marks_the_unit_merged_and_counts_the_merge() {
     let (_dir, ctx, host) = setup("");

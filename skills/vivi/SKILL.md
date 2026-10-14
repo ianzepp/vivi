@@ -1939,7 +1939,9 @@ blocks its dependents until a person unblocks it.
    a plan not written (`board/<need>.out`, `plan-no-answer`), a need not
    plannable (sender, `since`, mark, `skip.txt`) or a rejected plan
    (`bad-plan`).
-2. `PAUSE` exists in the home.
+2. `PAUSE` exists in the home. A unit's need listed in `priority.txt` (the
+   priority file, below) goes first in dispatch and merge order; if a priority
+   need is not moving, check that file for a typo in the handle.
 3. The unit waits on `after`: a prerequisite that is not `merged` or
    `no-defect`, including a `stuck` one.
 4. The reserved file (`reserved.txt` in the home by default, one path or glob
@@ -1998,6 +2000,7 @@ is in doubt.
 | `lock` | pump (flock only) | empty; the single-instance lock |
 | `skip.txt` | operator, board pass | need handles to never plan |
 | `reserved.txt` (`reserved_file`) | operator, dispatch | paths held by another session, one path or glob per line, `#` comments; read afresh on every check |
+| `priority.txt` (`priority_file`) | operator | need handles, one per line, blank lines and `#` comments skipped; read afresh every tick, may be absent. A unit whose `need` is listed is a priority unit: dispatched and fed to the merge queue before fix units and everything else, fed even under `HOLD-MERGE`, and scope-checked like a fix unit (only against in-flight fix units) |
 | `plans/` | planner writes `<need>.json` and `<unit>.split.json`; re-plans move old plans to `plans/superseded/` | plan files, below |
 | `needs/` | board dumps the need thread, planner reads | `{need, subject, triage, thread}` |
 | `briefs/` | pump writes `<unit>.txt`, sent as the unit's task body | the composed unit brief |
@@ -2016,7 +2019,7 @@ All flags live in `home`; the operator creates them:
 | --- | --- | --- |
 | `PAUSE` | the tick returns early after its first save point: no dispatch, hold cycle, gate start or second merge feed; already-fed units keep merging | operator |
 | `STOP` | after the current tick: save and exit the loop | operator |
-| `HOLD-MERGE` | only fix units are fed to the merge thread; once every fix unit has settled, the pump writes `FORCE-GATE`, and a clean gate newer than the hold lifts it | pump or operator |
+| `HOLD-MERGE` | only fix units and priority units are fed to the merge thread; once every fix unit has settled, the pump writes `FORCE-GATE`, and a clean gate newer than the hold lifts it | pump or operator |
 | `FORCE-GATE` | the gate is due now, whatever the counters say | pump, when the gate dispatches |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (the file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
 
@@ -2080,6 +2083,7 @@ tick         = 20                      # seconds between ticks
 shell_prefix = ""                      # prepended to every command line
 hand_rules   = "<path>"                # absent: the embedded generic hand-rules text; relative paths join the project root; must be readable
 reserved_file = "reserved.txt"         # paths held by another session; units overlapping them are not dispatched; relative paths join `home`
+priority_file = "priority.txt"         # need handles to dispatch and merge first, one per line; relative paths join `home`; the file may be absent
 fix_prefix   = "pumpfix"               # ids with this prefix are fix units
 from         = "operator"              # role unit tasks are sent from
 to           = "hand"                  # recipient role of a unit dispatch
@@ -2134,6 +2138,7 @@ budget        = 1800                   # the gate dispatch budget
 results_dir   = "<dir>"                # optional: an external runner drops <tip>.json gate results here
 results_wait_seconds = 2700            # with results_dir: wait this long for one before a pool gate
 ignore_file   = "<file>"               # optional: test names dropped from every gate, one per line, # comments
+max_replans   = 2                      # times a name still failing after its owner's units all settled goes to a fresh gate-fix planner; 0 never re-plans
 ```
 
 Example with two kinds (names and pools are the project's own):
@@ -2169,6 +2174,13 @@ lane cap below 1, a `max_attempts` below 1, a kind with no `pool` or a `max` of 
   the operator replies on its thread; the old plan is superseded.
 - A red gate never stops merging: new failing names are owned by a gate-fix
   plan and subtracted from later gates.
+- Residual failures are re-planned: when every unit of an owning plan has
+  settled and a gate still shows some of its names failing, the names are
+  released, counted per name in `state.extra["replans"]`, and handed to a new
+  gate-fix planner at that tip together with any new failures (need
+  `<fix_prefix>-g<tip8>`, or `-r<k>` with the first free `k` when that plan
+  already exists). They stay owned, so promotion stays held. After
+  `max_replans` re-plans a name is left owned and raises `red-after-fix`.
 - Main moves by fast-forward only: a gate with no new failure and no owned
   failure still red pushes the gated tip to main (otherwise it logs `promote
   held`: main never gets redder), and a main with commits the tip lacks waits

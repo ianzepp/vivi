@@ -111,7 +111,7 @@ All flags live in `home`. The operator creates them; removal is per flag:
 | --- | --- | --- |
 | `PAUSE` | `tick` returns early after the first save point: no dispatch, no hold cycle, no external gate intake, no gate start, no post-dispatch merge apply/feed. The steps before the check (merge apply, board, ingest, collect, first feed) still run, so already-fed units keep merging | operator |
 | `STOP` | after the current tick completes, save and exit the loop | operator |
-| `HOLD-MERGE` | `merge_feed` feeds only units whose id starts with the fix prefix; once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`) | pump (`hold_cycle`) or operator |
+| `HOLD-MERGE` | `merge_feed` feeds only units whose id starts with the fix prefix, or whose need is in the priority file; once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`) | pump (`hold_cycle`) or operator |
 | `FORCE-GATE` | `start_gate` treats the gate as due now, whatever the counters say | pump, when the gate dispatches; also written by `hold_cycle` |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
 
@@ -203,7 +203,7 @@ Transitions (from, to, trigger, guard, action):
 | `inflight` | `splitting` | timeout: reconcile state `timeout`, or still running past `budget + overdue_grace`, or the receipt shows agent exit 124 | — | `split`: `resplit/` files written, split planner spawned detached, `task=null`, history entry `why="timeout"`, `since=now` |
 | `splitting` | `stuck` | split planner wrote no plan in `split_timeout` | — | `split-no-answer` exception |
 | `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
-| `delivered` | `merging` | merge feed after collect | not `HOLD-MERGE`, or the id starts with the fix prefix | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
+| `delivered` | `merging` | merge feed after collect | not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `outside`, `merges+=1`; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
@@ -258,7 +258,9 @@ Readiness (`ready`):
 - Write-scope exclusivity: no other unit whose write scope overlaps may be
   busy. Busy is `inflight` for fix units and
   `inflight`+`delivered`+`merging` for normal units. A fix unit
-  (id starting with `fix_prefix`) ignores overlap against non-fix units.
+  (id starting with `fix_prefix`) ignores overlap against non-fix units. A
+  priority unit (its `need` is listed in the priority file) gets the same
+  bypass.
 
 - The unit's write scope must not overlap any path in the reserved file
   (`reserved_file`, read afresh on every check; blank lines and lines starting
@@ -346,6 +348,7 @@ unless marked.
 | `shell_prefix` | string | `""` | prepended to every command line (§2) |
 | `hand_rules` | path | embedded generic text | file whose text opens every unit brief; a relative path joins the project root like `home`; `validate` rejects a file that cannot be read |
 | `reserved_file` | path | `reserved.txt` | paths held by another session; units overlapping them are not dispatched; a relative value joins `home` |
+| `priority_file` | path | `priority.txt` | need handles dispatched and merged first: one per line, blank lines and `#` comment lines skipped, read afresh every tick, may be absent; a relative value joins `home`. Dispatch and merge-feed order is priority units, then fix units, then the rest (stable); priority units are also fed under `HOLD-MERGE` and get the fix-unit scope bypass |
 | `fix_prefix` | string | `pumpfix` | unit ids with this prefix are fix units: dispatched first, merged even under `HOLD-MERGE`, scope-checked only against in-flight units |
 | `from` | role | `operator` | role the pump sends unit tasks from |
 | `to` | role | `hand` | recipient role of a unit dispatch |
@@ -444,6 +447,7 @@ A plan unit with `"tools": "full"` goes to the `flyfull` pool; one with no
 | `budget` | int seconds | `1800` | the gate dispatch budget |
 | `results_dir` | path, optional | unset | directory an external runner drops `<tip>.json` gate results in; relative paths join the project root like `home`. Unset: pool gates only |
 | `results_wait_seconds` | int seconds | `0`; must be >= 1 when `results_dir` is set | how long a due gate waits for an external result before a pool gate is dispatched instead |
+| `max_replans` | int | `2` | how many times a name that still fails after every unit of its owner settled is handed to a fresh gate-fix planner (counted per name in `state.extra["replans"]`); `0` never re-plans |
 | `ignore_file` | path, optional | unset | test names dropped from every gate's failing set: one per line, blank lines and `#` comment lines skipped; relative paths join the project root |
 
 External gate results: when `results_dir` is set, every tick takes each
@@ -534,9 +538,18 @@ action). Not built.
 
 Behaviours the decisions above do not list:
 
+- Residual re-plan: after the owned-red release, each owner whose units (ids
+  `<owner>-*`) all settled and whose names still fail at this gate has those
+  names released, counted in `state.extra["replans"]`, and re-owned by a new
+  gate-fix need planned at this tip together with any new failures. The need
+  is `<fix_prefix>-g<tip8>`, or `<fix_prefix>-g<tip8>-r<k>` (first free `k`)
+  when a plan or planner prompt for the base id exists. The prompt gives
+  residual names their own section naming the old owner. One log line per
+  owner: `replan: N residual failures of <owner> -> <need>`. A name past
+  `max_replans` is not re-planned.
 - The once-only `red-after-fix` report: an owned failing name still failing
-  after its fix units all settled raises one exception per `owner:name`, then
-  never again.
+  after its fix units all settled, and not re-planned (re-plans exhausted or
+  `max_replans = 0`), raises one exception per `owner:name`, then never again.
 - The reconcile-miss re-check: a task absent from reconcile output is first
   given a 90-second grace, then re-checked against `pool status --porcelain`
   before the pump decides from the remote branch.
@@ -586,7 +599,8 @@ Behaviours the decisions above do not list:
 | `dispatch.rs` | `slots`, `dispatch`, kind resolution. |
 | `merge.rs` | `merge_work`, `batch_round`, `batch_work`, the merge thread, `feed`, `apply`. |
 | `remote.rs` | `remote_merge`. |
-| `gate.rs` | `start_gate`, `finish_gate`, `gatefix`, `hold_cycle`, `promote`. |
+| `gate.rs` | `start_gate`, `finish_gate`, `hold_cycle`, `promote`. |
+| `gatefix.rs` | `gatefix`, the planner prompt, the fix need id, the residual re-plan. |
 | `board.rs` | `board`, `replan`, `replies`. |
 | `run.rs` | `tick`, `write_status`, the run/once loop. |
 

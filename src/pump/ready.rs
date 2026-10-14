@@ -2,7 +2,7 @@
 //!
 //! `satisfied`, `reserved_paths`, `ready` and `pick_model`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use crate::pump::config::Lane;
@@ -48,10 +48,45 @@ fn reserved_paths(ctx: &Ctx) -> Vec<String> {
         .collect()
 }
 
+/// The need handles in the configured `priority_file`: one per line, trimmed,
+/// blank lines and `#` comments skipped. Re-read on every call; an unreadable
+/// or absent file lists nothing.
+#[must_use]
+pub fn priority_needs(ctx: &Ctx) -> BTreeSet<String> {
+    let Ok(text) = fs::read_to_string(ctx.cfg.priority_path(&ctx.project)) else {
+        return BTreeSet::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect()
+}
+
+/// `uids` in dispatch and merge order: priority units (their need is in
+/// `priority_file`) first, then fix units, then the rest; stable within each
+/// group.
+#[must_use]
+pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
+    let needs = priority_needs(ctx);
+    let rank = |uid: &String| -> u8 {
+        if st.units.get(uid).is_some_and(|u| needs.contains(&u.need)) {
+            0
+        } else if uid.starts_with(&ctx.cfg.fix_prefix) {
+            1
+        } else {
+            2
+        }
+    };
+    uids.sort_by_key(rank);
+    uids
+}
+
 /// A unit is ready to dispatch when it is pending, its write scope overlaps
 /// no reserved path, every `after` dependency is satisfied, and no other unit with an overlapping write scope is busy.
-/// Fix units (ids starting with `fix_prefix`) only clash with other fix
-/// units, and only while those are inflight.
+/// Fix units (ids starting with `fix_prefix`) and priority units (their need
+/// is in `priority_file`) only clash with other fix units, and only while
+/// those are inflight.
 #[must_use]
 pub fn is_ready(ctx: &Ctx, st: &State, uid: &str) -> bool {
     let Some(u) = st.units.get(uid) else {
@@ -74,7 +109,7 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str) -> bool {
 /// `inflight` for fix units and `inflight` + `delivered` + `merging` for
 /// normal units; a fix unit ignores overlap against non-fix units.
 fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
-    let fix = uid.starts_with(ctx.cfg.fix_prefix.as_str());
+    let fix = uid.starts_with(ctx.cfg.fix_prefix.as_str()) || priority_needs(ctx).contains(&u.need);
     for (oid, o) in &st.units {
         if oid == uid {
             continue;

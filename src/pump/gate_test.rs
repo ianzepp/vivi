@@ -496,7 +496,10 @@ fn a_build_failed_reply_raises_gate_build_failed() {
 
 #[test]
 fn red_after_fix_is_reported_once_when_the_fix_units_are_settled_and_the_name_still_fails() {
-    let (dir, ctx, _host) = setup();
+    let dir = tempdir().unwrap();
+    let mut cfg = gate_cfg();
+    cfg.gate.max_replans = 0;
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
     let name = "vivi pump::gate::still_red";
     let mut st = gate_state(4);
     st.baseline = Some(vec![String::from(name)]);
@@ -793,5 +796,144 @@ fn a_due_gate_waits_for_an_external_result_then_falls_back_to_a_pool() {
     assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
     assert_eq!(st.last_gate.pool.as_deref(), Some("flygate"));
     assert!(!st.extra.contains_key("external_wait_since"));
+    drop(dir);
+}
+
+/// The old plan's owner in the re-plan tests.
+const OLD_OWNER: &str = "pumpfix-gold";
+/// A residual failing name.
+const RESIDUAL: &str = "crate::residual";
+/// A gate reply listing the baseline name and [`RESIDUAL`].
+const RESIDUAL_REPLY: &str = "FAILING-BEGIN\nold crate::base\ncrate::residual\nFAILING-END\n";
+
+/// A state where [`RESIDUAL`] is owned by [`OLD_OWNER`], whose one unit has
+/// the given status.
+fn residual_state(unit: Status) -> State {
+    let mut st = gate_state(4);
+    st.red
+        .insert(String::from(RESIDUAL), String::from(OLD_OWNER));
+    st.units.insert(
+        format!("{OLD_OWNER}-1"),
+        Unit {
+            status: unit,
+            ..Unit::default()
+        },
+    );
+    st
+}
+
+/// A context with a planner and promotion wired.
+fn residual_setup(max_replans: u32) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let mut cfg = planner_cfg();
+    cfg.gate.max_replans = max_replans;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    wire_promote(&host);
+    (dir, ctx, host)
+}
+
+#[test]
+fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
+    let (dir, ctx, host) = residual_setup(2);
+    let mut st = residual_state(Status::Merged);
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert_eq!(
+        st.red.get(RESIDUAL),
+        Some(&String::from("pumpfix-g01234567"))
+    );
+    assert_eq!(st.extra["replans"][RESIDUAL], 1);
+    assert_eq!(host.spawned().len(), 1);
+    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
+    assert!(prompt.contains(&format!("owned by fix plan {OLD_OWNER}")));
+    assert!(prompt.contains(&format!("still fail at commit {TIP}")));
+    assert!(prompt.contains("- crate::residual"));
+    assert!(prompt.contains(&format!("log --grep {OLD_OWNER}")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("replan: 1 residual failures of pumpfix-gold"))
+    );
+    assert!(host.commands().iter().all(|c| !c.contains("git push")));
+    assert!(st.promotions.is_empty());
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(!exceptions.contains("red-after-fix"));
+    drop(dir);
+}
+
+#[test]
+fn residual_planning_takes_the_next_free_id_when_the_tip_plan_exists() {
+    let (dir, ctx, host) = residual_setup(2);
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/pumpfix-g01234567.json"), "{}").unwrap();
+    let mut st = residual_state(Status::Stuck);
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert_eq!(
+        st.red.get(RESIDUAL),
+        Some(&String::from("pumpfix-g01234567-r1"))
+    );
+    assert_eq!(host.spawned().len(), 1);
+    assert!(
+        ctx.home
+            .join("gatefix/pumpfix-g01234567-r1.prompt")
+            .exists()
+    );
+    drop(dir);
+}
+
+#[test]
+fn new_and_residual_failures_are_planned_together() {
+    let (dir, ctx, host) = residual_setup(2);
+    let mut st = residual_state(Status::Merged);
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nold crate::base\ncrate::residual\ncrate::fresh\nFAILING-END\n",
+    );
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(
+        st.red.get("crate::fresh"),
+        st.red.get(RESIDUAL),
+        "one need owns both"
+    );
+    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
+    assert!(prompt.contains("- crate::fresh"));
+    assert!(prompt.contains(&format!("owned by fix plan {OLD_OWNER}")));
+    drop(dir);
+}
+
+#[test]
+fn residual_failures_stop_replanning_at_max_replans_and_raise_red_after_fix() {
+    let (dir, ctx, host) = residual_setup(1);
+    let mut st = residual_state(Status::Merged);
+    st.extra
+        .insert(String::from("replans"), serde_json::json!({ RESIDUAL: 1 }));
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert!(host.spawned().is_empty());
+    assert_eq!(st.red.get(RESIDUAL), Some(&String::from(OLD_OWNER)));
+    assert_eq!(st.extra["replans"][RESIDUAL], 1);
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains(&format!("red-after-fix {OLD_OWNER} {RESIDUAL}")));
+    assert!(st.promotions.is_empty());
+    drop(dir);
+}
+
+#[test]
+fn zero_max_replans_never_replans() {
+    let (dir, ctx, host) = residual_setup(0);
+    let mut st = residual_state(Status::Merged);
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert!(host.spawned().is_empty());
+    assert_eq!(st.red.get(RESIDUAL), Some(&String::from(OLD_OWNER)));
+    drop(dir);
+}
+
+#[test]
+fn an_unsettled_owner_is_not_replanned() {
+    let (dir, ctx, host) = residual_setup(2);
+    let mut st = residual_state(Status::Inflight);
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert!(host.spawned().is_empty());
+    assert_eq!(st.red.get(RESIDUAL), Some(&String::from(OLD_OWNER)));
+    assert!(!st.extra.contains_key("replans"));
     drop(dir);
 }

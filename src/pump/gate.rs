@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::pump::brief::gate_brief;
-use crate::pump::collect::spawn_planner;
 use crate::pump::dispatch::{parse_created_handle, slots};
+use crate::pump::gatefix::{gatefix, plan_need, replans_left, residual_failures, take_residuals};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status};
 
@@ -570,6 +570,7 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
             || !failing
             || !statuses.iter().all(|&s| is_settled(s))
             || st.red_reported.contains(&mark)
+            || replans_left(ctx, st, &name)
         {
             continue;
         }
@@ -579,12 +580,23 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
 }
 
 /// A readable gate against an existing baseline: release
-/// owned names that pass again, compute the new failures, then either report
-/// them (owning each and starting a gate-fix planner) or promote.
+/// owned names that pass again, compute the new failures and the residual
+/// ones (owned names whose owner settled but that still fail), then either
+/// plan them (owning each name and starting a gate-fix planner) or promote.
 fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[String]) {
     drop_fixed_names(ctx, st, names);
     let new = new_failures(st, names);
     rec.new = Some(new.clone());
+    let residual = residual_failures(ctx, st, names);
+    let owner = plan_need(ctx, &rec.tip, !residual.is_empty());
+    if !new.is_empty() || !residual.is_empty() {
+        for name in &new {
+            st.red.insert(name.clone(), owner.clone());
+        }
+        let clean = last_clean_tip(st, &rec.tip);
+        take_residuals(ctx, st, &owner, &residual);
+        gatefix(ctx, &rec.tip, &clean, &owner, &new, &residual);
+    }
     if new.is_empty() {
         ctx.log(&gate_summary(rec, names, 0));
         let outstanding = outstanding_owned(st, names);
@@ -599,12 +611,6 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
         }
         return;
     }
-    let owner = fix_need(ctx, &rec.tip);
-    for name in &new {
-        st.red.insert(name.clone(), owner.clone());
-    }
-    let clean = last_clean_tip(st, &rec.tip);
-    gatefix(ctx, st, &rec.tip, &clean, &new);
     report_new_failures(
         ctx,
         rec,
@@ -731,52 +737,6 @@ fn last_clean_tip(st: &State, current: &str) -> String {
         .map_or_else(|| current.to_owned(), |gate| gate.tip.clone())
 }
 
-/// The gate-fix need id for a tip: `<fix_prefix>-g<tip8>`.
-fn fix_need(ctx: &Ctx, tip: &str) -> String {
-    let short: String = tip.chars().take(8).collect();
-    format!("{}-g{short}", ctx.cfg.fix_prefix)
-}
-
-/// Start the gate-fix planner for a red gate: need id
-/// `<fix_prefix>-g<tip8>`, skipped when its plan file already exists.
-fn gatefix(ctx: &Ctx, _st: &State, tip: &str, clean: &str, new: &[String]) {
-    let need = fix_need(ctx, tip);
-    if ctx.home.join("plans").join(format!("{need}.json")).exists() {
-        return;
-    }
-    let prompt = gatefix_prompt(ctx, tip, clean, &need, new);
-    spawn_planner(ctx, "gatefix", &need, &prompt);
-    ctx.log(&format!(
-        "gatefix planner started for {need} ({} new)",
-        new.len()
-    ));
-}
-
-/// The gate-fix planner prompt, with the repo, home and plan
-/// paths taken from the context.
-fn gatefix_prompt(ctx: &Ctx, tip: &str, clean: &str, need: &str, new: &[String]) -> String {
-    let names = new
-        .iter()
-        .map(|name| format!("- {name}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let repo = ctx.repo.display();
-    let home = ctx.home.display();
-    let remote = &ctx.cfg.remote;
-    format!(
-        "The integration branch went red. Plan the fix units, as your system prompt describes, with these rules.
-
-A full test run at integration-branch commit {tip} shows these failing tests that were NOT failing at the last clean run (commit {clean}):
-{names}
-
-The commits merged between the two are `git log --oneline {clean}..{tip}` in {repo} (run `git -C {repo} fetch -q {remote}` first; each merge subject names its unit and need). Read the failing tests and the merged diffs and find, for each failure, the merge that most likely caused it.
-
-Write {home}/plans/{need}.json (write .tmp, then mv): {{\"need\": \"{need}\", \"verdict\": \"units\", \"reason\": \"...\", \"units\": [...]}}. Unit ids \"{need}-1\", \"{need}-2\", ... . Group failures with one likely cause into one unit; one cause per unit. Each brief names the failing tests, the suspected merge commit and why, and says: run the tests first; fix the CAUSE forward; change a test only if the suspected unit implemented a ruling that deliberately changed the pinned behaviour, and name the ruling; never delete, ignore or weaken a test; name the culprit commit in the reply. Proof: the failing tests by name (one `cargo test` filter per command). Keep write scopes as narrow as you can.
-Your final message is one line.
-"
-    )
-}
-
 /// Fast-forward main to a gated tip of the integration branch.
 /// Never forces: a main that moved elsewhere waits for the next batch.
 fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
@@ -880,7 +840,7 @@ fn clean_gate(gate: &GateRecord) -> bool {
 
 /// `true` for the statuses a fix unit ends in without further work: merged,
 /// stuck, no-defect or replaced.
-fn is_settled(status: Status) -> bool {
+pub(crate) fn is_settled(status: Status) -> bool {
     matches!(
         status,
         Status::Merged | Status::Stuck | Status::NoDefect | Status::Replaced

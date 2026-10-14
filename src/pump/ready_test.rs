@@ -318,3 +318,20 @@ fn reserved_txt_is_re_read_each_call_and_may_be_absent() {
     write_reserved(&ctx, "src/b\n");
     assert!(is_ready(&ctx, &st, &id));
 }
+
+#[test]
+fn a_priority_unit_ignores_delivered_overlaps_like_a_fix_unit() {
+    let (_dir, ctx, _host, mut st) = setup();
+    let path = ctx.cfg.priority_path(&ctx.project);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "# hot\nhot\n").unwrap();
+    let (did, du) = mk("d", Status::Delivered, &["src/ovl"]);
+    let (uid, mut uu) = mk("u", Status::Pending, &["src/ovl/x.rs"]);
+    let (vid, vu) = mk("v", Status::Pending, &["src/ovl/y.rs"]);
+    uu.need = String::from("hot");
+    st.units.insert(did, du);
+    st.units.insert(uid, uu);
+    st.units.insert(vid, vu);
+    assert!(is_ready(&ctx, &st, "u"));
+    assert!(!is_ready(&ctx, &st, "v"));
+}

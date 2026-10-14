@@ -16,7 +16,7 @@ use std::thread;
 use crate::pump::collect;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
-use crate::pump::ready::satisfied;
+use crate::pump::ready::{priority_needs, ranked, satisfied};
 use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
@@ -600,18 +600,19 @@ impl Merger {
     }
 
     /// Queue every `delivered` unit for merging and move it to `merging`.
-    /// Under the `HOLD-MERGE` flag only units
-    /// whose id starts with `fix_prefix` are fed.
+    /// Priority units are fed first, then fix units, then the rest. Under
+    /// the `HOLD-MERGE` flag only fix units and priority units are fed.
     ///
     /// State change only: the merge thread touches the repository, never
     /// the state, so a job sent here is applied later by [`Merger::apply`].
     pub fn feed(&self, ctx: &Ctx, st: &mut State) {
         let hold = ctx.flag("HOLD-MERGE");
-        for uid in st.order.clone() {
+        let needs = priority_needs(ctx);
+        for uid in ranked(ctx, st, st.order.clone()) {
             let Some(unit) = st.units.get_mut(&uid) else {
                 continue;
             };
-            if hold && !uid.starts_with(&ctx.cfg.fix_prefix) {
+            if hold && !uid.starts_with(&ctx.cfg.fix_prefix) && !needs.contains(&unit.need) {
                 continue;
             }
             if unit.status != Status::Delivered {

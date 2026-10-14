@@ -10,7 +10,7 @@ use std::fs;
 
 use crate::pump::brief::brief_for;
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::ready::{is_ready, pick_model};
+use crate::pump::ready::{is_ready, pick_model, ranked};
 use crate::pump::state::{State, Status};
 
 /// One unit's dispatch plan decided before anything is sent.
@@ -83,7 +83,7 @@ fn tail(s: &str, n: usize) -> String {
     s.chars().skip(count - n).collect()
 }
 
-/// Offer ready units to the pools: fix units first, at most `per_tick` starts
+/// Offer ready units to the pools: priority units first, then fix units, at most `per_tick` starts
 /// per tick. A unit with no free pool slot waits; a full lane set breaks the
 /// loop for this tick. On success the unit goes inflight with its task,
 /// branch, model, pool and dispatch timestamp; a failed pool dispatch closes
@@ -91,8 +91,7 @@ fn tail(s: &str, n: usize) -> String {
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
     let mut started: u32 = 0;
-    let mut order = st.order.clone();
-    order.sort_by_key(|uid| !uid.starts_with(&ctx.cfg.fix_prefix));
+    let order = ranked(ctx, st, st.order.clone());
     for uid in order {
         if started >= ctx.cfg.dispatch.per_tick {
             break;

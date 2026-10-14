@@ -45,6 +45,10 @@ pub struct PumpConfig {
     /// dispatched. A relative value resolves against `home`. Default
     /// `reserved.txt`.
     pub reserved_file: String,
+    /// Need handles dispatched and merged ahead of everything else, one per
+    /// line, `#` comments. A relative value resolves against `home`. Default
+    /// `priority.txt`; the file may be absent.
+    pub priority_file: String,
     /// Unit ids with this prefix are fix units.
     pub fix_prefix: String,
     /// Role the pump sends unit tasks from.
@@ -81,6 +85,7 @@ impl Default for PumpConfig {
             shell_prefix: String::new(),
             hand_rules: None,
             reserved_file: "reserved.txt".into(),
+            priority_file: "priority.txt".into(),
             fix_prefix: "pumpfix".into(),
             from: "operator".into(),
             to: "hand".into(),
@@ -281,6 +286,9 @@ pub struct GateConfig {
     /// File of test names dropped from every gate's failing set, one per
     /// line, `#` comments; relative paths join the project root.
     pub ignore_file: Option<String>,
+    /// How many times a name that still fails after every unit of its owner
+    /// settled is handed to a fresh gate-fix planner. 0 never re-plans.
+    pub max_replans: u32,
 }
 
 impl Default for GateConfig {
@@ -295,6 +303,7 @@ impl Default for GateConfig {
             results_dir: None,
             results_wait_seconds: 0,
             ignore_file: None,
+            max_replans: 2,
         }
     }
 }
@@ -399,6 +408,12 @@ impl PumpConfig {
     #[must_use]
     pub fn reserved_path(&self, project: &Path) -> PathBuf {
         resolve(&self.home_dir(project), &self.reserved_file)
+    }
+
+    /// The priority file: `priority_file`, a relative value joining `home`.
+    #[must_use]
+    pub fn priority_path(&self, project: &Path) -> PathBuf {
+        resolve(&self.home_dir(project), &self.priority_file)
     }
 
     /// `--from` of a unit dispatch: `dispatch.from`, else `branch`.

@@ -6,6 +6,7 @@ pub mod collect;
 pub mod config;
 pub mod dispatch;
 pub mod gate;
+pub mod gatefix;
 pub mod host;
 pub mod merge;
 pub mod plan;
