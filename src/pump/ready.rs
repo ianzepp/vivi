@@ -28,7 +28,9 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
         | Status::Delivered
         | Status::Merging
         | Status::Stuck
-        | Status::Splitting => false,
+        | Status::Splitting
+        | Status::Withdrawn
+        | Status::Other(_) => false,
     }
 }
 

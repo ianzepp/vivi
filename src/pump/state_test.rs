@@ -402,3 +402,134 @@ fn a_merge_result_serialises_without_its_empty_optionals() {
         json!({"uid": "84e6122f-10.1", "ok": null, "outside": []})
     );
 }
+
+/// A trimmed copy of the live pump state (1325 units cut to 19, one or two
+/// of every status including three hand-set `withdrawn`), written by pump.py.
+const LIVE_SNAPSHOT: &str = include_str!("state_snapshot.json");
+
+fn status_map(st: &State) -> Vec<(String, String)> {
+    st.units
+        .iter()
+        .map(|(uid, unit)| (uid.clone(), unit.status.as_str().to_owned()))
+        .collect()
+}
+
+#[test]
+fn the_live_snapshot_round_trips_through_load_and_save() {
+    let dir = tempdir().unwrap();
+    let first = write_state(dir.path(), "state.json", LIVE_SNAPSHOT);
+    let before = State::load(&first).unwrap();
+    assert_eq!(before.units.len(), 19);
+    assert_eq!(before.counts().get("withdrawn"), Some(&3));
+
+    let second = dir.path().join("saved.json");
+    before.save(&second).unwrap();
+    let after = State::load(&second).unwrap();
+    assert_eq!(after.units.len(), before.units.len());
+    assert_eq!(status_map(&after), status_map(&before));
+    assert_eq!(after.counts(), before.counts());
+
+    // The JSON itself is unchanged apart from the merging -> delivered fold
+    // and the empty `outside` / `replaced_by` lists the model always writes.
+    let mut want: serde_json::Value = serde_json::from_str(LIVE_SNAPSHOT).unwrap();
+    for unit in want["units"].as_object_mut().unwrap().values_mut() {
+        if unit["status"] == "merging" {
+            unit["status"] = json!("delivered");
+        }
+        for key in ["outside", "replaced_by"] {
+            unit.as_object_mut()
+                .unwrap()
+                .entry(key)
+                .or_insert(json!([]));
+        }
+    }
+    let got: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn an_unknown_status_loads_and_is_written_back_verbatim() {
+    let dir = tempdir().unwrap();
+    let text = r#"{"units": {"a-1": {"status": "parked-by-hand", "need": "a"}}}"#;
+    let path = write_state(dir.path(), "state.json", text);
+    let st = State::load(&path).unwrap();
+    assert_eq!(st.units["a-1"].status.as_str(), "parked-by-hand");
+    assert_eq!(st.counts().get("parked-by-hand"), Some(&1));
+
+    st.save(&path).unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved["units"]["a-1"]["status"], "parked-by-hand");
+    // The same string interns to an equal status.
+    assert_eq!(st.units["a-1"].status, Status::from_name("parked-by-hand"));
+    assert_eq!(Status::from_name("withdrawn"), Status::Withdrawn);
+}
+
+#[test]
+fn absent_optional_unit_fields_stay_absent_on_save() {
+    let dir = tempdir().unwrap();
+    let text = r#"{"units": {"a-1": {"status": "pending", "need": "a", "task": null, "branch": null, "model": null}}}"#;
+    let path = write_state(dir.path(), "state.json", text);
+    let st = State::load(&path).unwrap();
+    st.save(&path).unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let unit = saved["units"]["a-1"].as_object().unwrap();
+    for key in ["commit", "pool", "verdict_text", "since_dispatch"] {
+        assert!(!unit.contains_key(key), "{key} must stay absent");
+    }
+    // pump.py indexes these directly, so they stay present as null.
+    for key in ["task", "branch", "model"] {
+        assert!(unit[key].is_null(), "{key} must stay null");
+    }
+}
+
+#[test]
+fn a_withdrawn_or_unknown_unit_is_not_dispatched_and_does_not_satisfy_after() {
+    use crate::pump::config::PumpConfig;
+    use crate::pump::host::test_ctx;
+    use crate::pump::ready::{is_ready, satisfied};
+
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let mut st = State::default();
+    for (uid, status) in [
+        ("w-1", Status::Withdrawn),
+        ("o-1", Status::from_name("parked-by-hand")),
+    ] {
+        st.units.insert(
+            uid.to_owned(),
+            Unit {
+                status,
+                ..Unit::default()
+            },
+        );
+        let dependent = format!("dep-{uid}");
+        st.units.insert(
+            dependent.clone(),
+            Unit {
+                after: vec![uid.to_owned()],
+                write_scope: vec![format!("src/{uid}")],
+                ..Unit::default()
+            },
+        );
+        assert!(!is_ready(&ctx, &st, uid), "{uid} must not be dispatched");
+        assert!(!satisfied(&st, uid, 0), "{uid} must not satisfy after");
+        assert!(
+            !is_ready(&ctx, &st, &dependent),
+            "{dependent} waits on {uid}"
+        );
+    }
+
+    // A replaced unit whose replacement is withdrawn is unsatisfied too.
+    st.units.insert(
+        "r-1".to_owned(),
+        Unit {
+            status: Status::Replaced,
+            replaced_by: vec!["w-1".to_owned()],
+            ..Unit::default()
+        },
+    );
+    assert!(!satisfied(&st, "r-1", 0));
+}

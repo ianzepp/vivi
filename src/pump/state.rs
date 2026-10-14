@@ -5,18 +5,23 @@
 //! written by an older pump still loads, and unknown keys — top level or
 //! inside a unit — land in `extra` and are written back untouched.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::VivariumError;
 
 /// Where a unit sits in the pump lifecycle (kebab-case in `state.json`).
-#[derive(Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "kebab-case")]
+///
+/// The set is open: a status the pump does not know (set by hand, or by a
+/// newer pump) loads as [`Status::Other`] and is written back exactly as it
+/// was read. Such a unit is never dispatched and never satisfies an `after`
+/// dependency, exactly like [`Status::Withdrawn`].
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     /// Planned, waiting to be dispatched.
     #[default]
@@ -38,6 +43,11 @@ pub enum Status {
     Splitting,
     /// Superseded by a replacement unit.
     Replaced,
+    /// Taken out of the queue by hand; the pump leaves it alone.
+    Withdrawn,
+    /// Any other status string, kept verbatim. The text is interned (see
+    /// [`intern_status`]) so the enum stays `Copy`.
+    Other(&'static str),
 }
 
 impl Status {
@@ -54,7 +64,54 @@ impl Status {
             Self::Stuck => "stuck",
             Self::Splitting => "splitting",
             Self::Replaced => "replaced",
+            Self::Withdrawn => "withdrawn",
+            Self::Other(name) => name,
         }
+    }
+
+    /// The status named `name`; an unknown name becomes [`Status::Other`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "pending" => Self::Pending,
+            "inflight" => Self::Inflight,
+            "delivered" => Self::Delivered,
+            "merging" => Self::Merging,
+            "merged" => Self::Merged,
+            "no-defect" => Self::NoDefect,
+            "stuck" => Self::Stuck,
+            "splitting" => Self::Splitting,
+            "replaced" => Self::Replaced,
+            "withdrawn" => Self::Withdrawn,
+            other => Self::Other(intern_status(other)),
+        }
+    }
+}
+
+/// Intern an unknown status string so [`Status`] can stay `Copy`. One leaked
+/// allocation per distinct string for the life of the process; the set of
+/// hand-set statuses in a state file is tiny.
+fn intern_status(name: &str) -> &'static str {
+    static NAMES: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+    let mut names = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(known) = names.get(name) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.insert(leaked);
+    leaked
+}
+
+impl Serialize for Status {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Status {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(Self::from_name(&name))
     }
 }
 
@@ -125,13 +182,13 @@ pub struct Unit {
     #[serde(default)]
     pub since: u64,
     /// Epoch seconds of the last dispatch.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_dispatch: Option<u64>,
     /// Pool the task was dispatched to.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
     /// Commit produced by the last merge.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
     /// Files the agent touched outside its write scope.
     #[serde(default)]
@@ -140,7 +197,7 @@ pub struct Unit {
     #[serde(default)]
     pub replaced_by: Vec<String>,
     /// The agent's verdict text, when it replied with one.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_text: Option<String>,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
