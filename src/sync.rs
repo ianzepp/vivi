@@ -234,6 +234,10 @@ mod events;
 mod event_wire_test;
 
 #[cfg(test)]
+#[path = "sync/ruling_proof_test.rs"]
+mod ruling_proof_test;
+
+#[cfg(test)]
 #[path = "sync/events_foreign_test.rs"]
 mod events_foreign;
 
