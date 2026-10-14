@@ -3,6 +3,7 @@ name = "vivi"
 version = "11.2.0"
 edition = "2024"
 description = "Local-first project mailspace for LLM agents"
+license = "MIT"
 autobins = false
 
 # This package is its own workspace root, so a worktree checked out under

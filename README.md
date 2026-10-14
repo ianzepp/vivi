@@ -435,4 +435,4 @@ vivi skills install ~/.agents/skills     # writes vivi/, tugboat/, speedboat/
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
