@@ -96,7 +96,6 @@ pump.py:25 = `/mnt/agents/pump`). One table, every file and directory:
 | `status.txt` | pump `write_status` (pump.py:1014–1027) | `pump status` (pump.py:1055) | 4 lines: timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …` |
 | `lock` | pump opens for flock (pump.py:1058) | none (lock only) | empty |
 | `skip.txt` | operator | board pass (pump.py:337) | need handles to never plan, whitespace separated |
-| `known-red.txt` | operator | gate arithmetic (pump.py:991) | failing test names to always ignore, one per line |
 | `hygiene.on` | operator | batch shared checks (pump.py:712) | existence toggle; adds one cargo hygiene test. NOT carried to the engine (§11) |
 | `plans/` | planner writes `<need>.json` (and `<uid>.split.json`) | pump ingest (pump.py:191) | plan JSON; see [`protocols.md`](protocols.md) |
 | `plans/superseded/` | re-plan moves old plans here (pump.py:290–292) | operator | `<need>.<epoch>.json` |
@@ -354,7 +353,7 @@ replaces.
 | `remote` | string | `origin` | `origin` literals (pump.py:626–629, 637, 664, 683, 743) | the git remote the integration branch and main live on |
 | `branch` | string | `next` — **required** | `BRANCH = "next"` (pump.py:29) | the integration branch |
 | `main` | string | `main` | `main` literals (pump.py:683, 950) | main branch merged into the integration branch each batch; `""` disables both merging main in and promotion |
-| `promote` | bool | `true` | `promote()` called on a clean gate (pump.py:1007–1008) | a gate with no new unowned failure fast-forwards main to the gated tip |
+| `promote` | bool | `true` | `promote()` called on a clean gate (pump.py:1007–1008) | a gate with no new failure and no owned failure still red fast-forwards main to the gated tip (pump.py:1041–1046) |
 | `tick` | int seconds | `20` | `TICK = 20` (pump.py:42) | sleep between ticks (pump.py:1078) |
 | `shell_prefix` | string | `""` | `ENV = "/mnt/agents/faber-runs/pharos-env.sh"` (pump.py:28, used at pump.py:90) | prepended to every command line (§2) |
 | `hand_rules` | path | embedded generic text | `RULES` (pump.py:45–58, used at pump.py:565) | file whose text opens every unit brief |
@@ -421,6 +420,21 @@ replaces.
 | `pools` | list of pool names | `["flyfull", "flygate"]` | `flyfull`/`flygate` fallback (pump.py:882) | first with a free slot wins |
 | `model` | string | `zai/glm-5.3-flash` | `--model zai/glm-5.3-flash` (pump.py:896) | the gate worker's model |
 | `budget` | int seconds | `1800` | `--budget 1800` (pump.py:896) | the gate dispatch budget |
+| `results_dir` | path, optional | unset | none (generalises pump.py:891) | directory an external runner drops `<tip>.json` gate results in; relative paths join the project root like `home`. Unset: pool gates only |
+| `results_wait_seconds` | int seconds | none; must be >= 1 when `results_dir` is set | none (pump.py:877 uses 2700 as its example) | how long a due gate waits for an external result before a pool gate is dispatched instead |
+| `ignore_file` | path, optional | unset | none (generalises pump.py:991 `known-red.txt`) | test names dropped from every gate's failing set: one per line, blank lines and `#` comment lines skipped; relative paths join the project root |
+
+External gate results: when `results_dir` is set, every tick takes each
+`*.json` there, oldest first, as a finished gate. The file is
+`{"tip", "rc", "names", "build_failed", "tail", "seconds", "host"}`: `names` is
+the failing test names or `null`, `build_failed: true` finishes the gate as a
+build failure carrying `tail`, `seconds` and `host` are only logged (`host` is
+free text and optional), and the other keys are not read. The gate then goes
+through the same classification as a worker's reply, and the consumed file moves to
+`<results_dir>/done/`. A file that does not parse stays where it is. A due gate
+that finds no result starts a wait (`external_wait_since` in `state.json`);
+only after `results_wait_seconds` does it dispatch a pool gate, and a consumed
+result clears the wait.
 
 One pump.py constant has no config key: the 2400-second gate collection grace
 (pump.py:500) — a gate task absent from reconcile is finished from the receipt
@@ -442,7 +456,9 @@ Validation rules (pump.py has none — the engine adds them):
    names (pump.py:996). Merging, dispatch, and feeding continue while red.
 2. **Main moves continuously.** Every merge batch first merges main into the
    integration branch (pump.py:683–690 batch_round), and a gate with no new
-   unowned failure fast-forwards main — never forces; a main with commits the
+   failure and no owned failure still red fast-forwards main — never forces
+   (a gate that still shows an owned failure logs `promote held` and main waits
+   for a clean one: main never gets redder, pump.py:1041–1046); a main with commits the
    tip lacks waits for the next batch (`merge-base --is-ancestor` check,
    pump.py:951–954 promote). NOTE: a single-job batch skips the batch path and
    goes straight to `merge_work` (pump.py:811–815 merge_thread), which does not
@@ -496,7 +512,7 @@ classifying a gate worker's reply into failing test names when it carries no
 FAILING-BEGIN/FAILING-END block. History: three `gate-unreadable` exceptions;
 pump.py's regex fallback
 `\b([a-z][a-z0-9_-]+) ((?:[A-Za-z0-9_]+::)+[A-Za-z0-9_]+)\b` is cargo-test-output
-specific. Set arithmetic (new = names − baseline − known-red − owned) is
+specific. Set arithmetic (new = names − baseline − owned, after the ignore file is dropped) is
 generic and stays in the engine; only name extraction from an unmarked log is
 project-specific. Proposed closed verdict set: `{"failing": ["<crate> <test>",
 …]}` or `{"build_failed": true}`; a nonzero exit, invalid JSON, or an unknown
