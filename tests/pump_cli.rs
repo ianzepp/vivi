@@ -83,13 +83,25 @@ fn temp_mailspace() -> tempfile::TempDir {
     let config = project.path().join(".vivi").join("mailspace.toml");
     let root = project.path().to_str().unwrap();
     let table = format!(
-        "\n[pump]\nbranch = \"next\"\nhome = \"{root}/.vivi/pump-home\"\ntick = 1\n\n\
+        "\n[pump]\nbranch = \"next\"\nhome = \"{root}/.vivi/pump-home\"\ntick = 1\n\
+         committer_name = \"Test\"\ncommitter_email = \"test@example.com\"\n\n\
          [pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n\
-         [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n"
+         [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
+         [pump.merge]\nshared_checks = [\"true\"]\n\n\
+         [pump.gate]\ncommand = \"true\"\n"
     );
     let mut text = fs::read_to_string(&config).unwrap();
     text.push_str(&table);
     fs::write(config, text).unwrap();
+    // The pump refuses to start without its integration clone; an empty repository stands in.
+    let repo = pump_home(&project).join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    let init = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_success(&init);
     project
 }
 
