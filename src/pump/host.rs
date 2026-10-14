@@ -92,8 +92,8 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// Build a context from explicit parts; `Ctx::new` derives the tail from
-    /// the config and is added by the run unit.
+    /// Build a context from explicit parts; [`Ctx::new`] derives the tail
+    /// from the config.
     #[allow(clippy::too_many_arguments)] // matches the shared pump interface
     #[must_use]
     pub fn with_parts(
@@ -114,6 +114,16 @@ impl Ctx {
             vivi,
             shell_prefix,
         }
+    }
+
+    /// Build a context from the config alone: the shell prefix, home, and
+    /// repo derive from `cfg` and `project`.
+    #[must_use]
+    pub fn new(cfg: PumpConfig, host: Arc<dyn Host>, project: PathBuf, vivi: String) -> Ctx {
+        let shell_prefix = cfg.shell_prefix.clone();
+        let home = cfg.home_dir(&project);
+        let repo = cfg.repo_dir(&project);
+        Ctx::with_parts(cfg, host, project, vivi, shell_prefix, home, repo)
     }
 
     /// Run `cmd` through the host with `shell_prefix` applied:
