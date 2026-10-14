@@ -258,7 +258,7 @@ fn tools_list() -> Value {
                 "required": ["handle", "body"],
                 "additionalProperties": false
             })),
-            tool("done", "Close a need, task, or want. Travels as an event letter when you authored it (same mailspace prefix); otherwise files a report reply.", json!({
+            tool("done", "Close a need, task, or want. Travels as a stamped event letter when you authored it (same mailspace prefix); otherwise files a report reply. The newest event against an item controls its state, whichever member wrote it.", json!({
                 "type": "object",
                 "properties": {
                     "handle": { "type": "string" },
@@ -267,7 +267,7 @@ fn tools_list() -> Value {
                 "required": ["handle"],
                 "additionalProperties": false
             })),
-            tool("reopen", "Reopen a closed need, task, or want. Same authority rule as done.", json!({
+            tool("reopen", "Reopen a closed need, task, or want. Same authority rule as done. An absorbed item is final and is refused.", json!({
                 "type": "object",
                 "properties": {
                     "handle": { "type": "string" },

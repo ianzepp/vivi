@@ -623,3 +623,509 @@ async fn mail_list_hides_other_members_mail() {
         "hand must not see creator's self-mail: {listed}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Item events: letters are folded by the client's rule, never listed as work.
+// ---------------------------------------------------------------------------
+
+/// The `Message-ID` an MCP-composed letter carries for traveling id `id`
+/// written by `name`.
+fn rfc_id(id: &str, name: &str) -> String {
+    format!("{id}@{}.local", prefix_for(name))
+}
+
+/// An item event letter as a client writes it: a reply to `of` carrying
+/// `X-Vivi-Event: <kind>`, addressed to the item's author.
+fn event_letter(
+    from: &str,
+    id: &str,
+    of: &str,
+    to: &str,
+    kind: &str,
+    extra: &[(&str, &str)],
+) -> Vec<u8> {
+    let mut text = format!(
+        "From: {}\nTo: {to}\nSubject: Re: item\nMessage-ID: <{}>\nIn-Reply-To: <{of}>\n\
+         X-Vivi-Kind: mail\nX-Vivi-Event: {kind}\nX-Vivi-Event-Of: <{of}>\n",
+        address(from),
+        rfc_id(id, from),
+    );
+    for (name, value) in extra {
+        text.push_str(&format!("{name}: {value}\n"));
+    }
+    text.push_str("\nnote\n");
+    text.into_bytes()
+}
+
+fn stamp(offset_seconds: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::seconds(offset_seconds))
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+}
+
+impl Fixture {
+    /// PUT a letter under traveling id number `n` as `token`'s member, with
+    /// envelope `kind`. Returns the stored message id.
+    async fn put_letter(&self, token: &str, n: u64, eml: Vec<u8>, kind: &str, to: &str) -> String {
+        let id = traveling(n);
+        let (status, body, _) = raw(
+            &self.app,
+            "PUT",
+            &format!("/v1/projects/{}/items/{id}", self.project),
+            eml,
+            Some(token),
+            &[
+                ("content-type", "message/rfc822"),
+                ("x-vivi-kind", kind),
+                ("x-vivi-to", to),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        id
+    }
+
+    /// The raw `.eml` of a stored letter.
+    async fn raw_letter(&self, token: &str, message_id: &str) -> String {
+        let (status, _, text) = raw(
+            &self.app,
+            "GET",
+            &format!("/v1/projects/{}/items/{message_id}", self.project),
+            Vec::new(),
+            Some(token),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        text
+    }
+
+    /// Send a need or task from `token`'s member to `to` and return
+    /// `(handle, message_id)`.
+    async fn send_item(
+        &self,
+        token: &str,
+        kind: &str,
+        to: &str,
+        subject: &str,
+    ) -> (String, String) {
+        let sent = self
+            .call(
+                token,
+                "send",
+                json!({"kind": kind, "to": to, "subject": subject, "body": "do the thing"}),
+            )
+            .await;
+        (
+            sent["handle"].as_str().unwrap().to_owned(),
+            sent["message_id"].as_str().unwrap().to_owned(),
+        )
+    }
+}
+
+fn handles(listed: &Value) -> Vec<String> {
+    listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["handle"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_event_letter_is_absent_from_list_overview_and_ready() {
+    let fx = fixture("event-not-work").await;
+    let hand = fx.add_member("hand", 2).await;
+    let (open_handle, open_id) = fx
+        .send_item(&fx.token, "need", &address("hand"), "stays open")
+        .await;
+    let (_, closed_id) = fx
+        .send_item(&fx.token, "need", &address("hand"), "gets closed")
+        .await;
+    // hand's event letters travel under the item's kind, as the client's do.
+    let reopened = fx
+        .put_letter(
+            &hand,
+            301,
+            event_letter(
+                "hand",
+                &traveling(301),
+                &rfc_id(&open_id, "creator"),
+                &address("creator"),
+                "reopened",
+                &[("X-Vivi-Event-At", &stamp(0))],
+            ),
+            "need",
+            &address("creator"),
+        )
+        .await;
+    fx.put_letter(
+        &hand,
+        302,
+        event_letter(
+            "hand",
+            &traveling(302),
+            &rfc_id(&closed_id, "creator"),
+            &address("creator"),
+            "done",
+            &[("X-Vivi-Event-At", &stamp(0))],
+        ),
+        "need",
+        &address("creator"),
+    )
+    .await;
+
+    for viewer in [&fx.token, &hand] {
+        let all = fx
+            .call(viewer, "list", json!({"status": "all", "limit": 100}))
+            .await;
+        assert_eq!(all["items"].as_array().unwrap().len(), 2, "{all}");
+        let needs = fx
+            .call(viewer, "list", json!({"kind": "need", "status": "all"}))
+            .await;
+        assert_eq!(needs["items"].as_array().unwrap().len(), 2, "{needs}");
+        let open = fx.call(viewer, "list", json!({"status": "open"})).await;
+        assert_eq!(handles(&open), vec![open_handle.clone()], "{open}");
+        let overview = fx.call(viewer, "overview", json!({})).await;
+        assert_eq!(overview["totals"]["needs_open"], 1, "{overview}");
+        assert_eq!(overview["totals"]["ready"], 1, "{overview}");
+        // The only mail is the fixture's vouch letter to postmaster.
+        assert_eq!(overview["totals"]["mail_visible"], 1, "{overview}");
+        assert_eq!(
+            overview["ready"],
+            json!([open_handle.clone()]),
+            "{overview}"
+        );
+        let recent = overview["recent"].as_array().unwrap();
+        assert_eq!(recent.len(), 3, "two needs and the vouch: {overview}");
+        assert!(
+            recent.iter().all(|item| item["kind"] != "event"),
+            "no event letter in recent: {overview}"
+        );
+        let graph = fx.call(viewer, "graph", json!({"view": "status"})).await;
+        assert_eq!(graph["totals"]["ready"], 1, "{graph}");
+        assert_eq!(graph["totals"]["done"], 1, "{graph}");
+        assert_eq!(graph["totals"]["blocked"], 0, "{graph}");
+    }
+
+    // An event letter cannot be settled as if it were an item.
+    let event_handle = reopened[4..12].to_owned();
+    let err = fx
+        .call_err(&fx.token, "done", json!({"handle": event_handle}))
+        .await;
+    assert!(err.contains("event letter"), "{err}");
+    let err = fx
+        .call_err(&fx.token, "reopen", json!({"handle": event_handle}))
+        .await;
+    assert!(err.contains("event letter"), "{err}");
+
+    // `show` and `thread` name it for what it is.
+    let shown = fx
+        .call(&fx.token, "show", json!({"handle": event_handle}))
+        .await;
+    assert_eq!(shown["item"]["kind"], "event", "{shown}");
+    assert_eq!(shown["item"]["status"], "event", "{shown}");
+}
+
+#[tokio::test]
+async fn a_cross_member_close_folds_to_done() {
+    let fx = fixture("cross-close").await;
+    let hand = fx.add_member("hand", 2).await;
+    let (handle, id) = fx
+        .send_item(&fx.token, "task", &address("hand"), "cross close")
+        .await;
+    // hand does not hold the item, and the author is a different mailspace:
+    // under the old author-domain rule this event did not count.
+    fx.put_letter(
+        &hand,
+        310,
+        event_letter(
+            "hand",
+            &traveling(310),
+            &rfc_id(&id, "creator"),
+            &address("creator"),
+            "done",
+            &[("X-Vivi-Event-At", &stamp(0))],
+        ),
+        "task",
+        &address("creator"),
+    )
+    .await;
+    for viewer in [&fx.token, &hand] {
+        let done = fx
+            .call(viewer, "list", json!({"kind": "task", "status": "done"}))
+            .await;
+        assert_eq!(handles(&done), vec![handle.clone()], "{done}");
+        let open = fx
+            .call(viewer, "list", json!({"kind": "task", "status": "open"}))
+            .await;
+        assert!(open["items"].as_array().unwrap().is_empty(), "{open}");
+        let shown = fx.call(viewer, "show", json!({"handle": handle})).await;
+        assert_eq!(shown["item"]["status"], "done", "{shown}");
+    }
+}
+
+#[tokio::test]
+async fn two_conflicting_events_fold_to_the_newer() {
+    let fx = fixture("conflict").await;
+    let hand = fx.add_member("hand", 2).await;
+    let (handle, id) = fx
+        .send_item(&fx.token, "need", &address("hand"), "conflict")
+        .await;
+    let of = rfc_id(&id, "creator");
+    // The reopen is stamped later but appended first; the older close is
+    // appended last. Append order is not the clock.
+    fx.put_letter(
+        &hand,
+        320,
+        event_letter(
+            "hand",
+            &traveling(320),
+            &of,
+            &address("creator"),
+            "reopened",
+            &[("X-Vivi-Event-At", &stamp(20))],
+        ),
+        "need",
+        &address("creator"),
+    )
+    .await;
+    fx.put_letter(
+        &fx.token,
+        321,
+        event_letter(
+            "creator",
+            &traveling(321),
+            &of,
+            &address("hand"),
+            "done",
+            &[("X-Vivi-Event-At", &stamp(10))],
+        ),
+        "need",
+        &address("hand"),
+    )
+    .await;
+    let open = fx
+        .call(&fx.token, "list", json!({"kind": "need", "status": "open"}))
+        .await;
+    assert_eq!(handles(&open), vec![handle.clone()], "{open}");
+
+    // Now a newer close arrives last and wins.
+    fx.put_letter(
+        &hand,
+        322,
+        event_letter(
+            "hand",
+            &traveling(322),
+            &of,
+            &address("creator"),
+            "done",
+            &[("X-Vivi-Event-At", &stamp(30))],
+        ),
+        "need",
+        &address("creator"),
+    )
+    .await;
+    let done = fx
+        .call(&fx.token, "list", json!({"kind": "need", "status": "done"}))
+        .await;
+    assert_eq!(handles(&done), [handle], "{done}");
+}
+
+#[tokio::test]
+async fn a_far_future_at_cannot_lock_an_item() {
+    let fx = fixture("far-future").await;
+    let hand = fx.add_member("hand", 2).await;
+    let (handle, id) = fx
+        .send_item(&fx.token, "need", &address("hand"), "locked?")
+        .await;
+    let of = rfc_id(&id, "creator");
+    fx.put_letter(
+        &hand,
+        330,
+        event_letter(
+            "hand",
+            &traveling(330),
+            &of,
+            &address("creator"),
+            "done",
+            &[("X-Vivi-Event-At", "2099-01-01T00:00:00.000000Z")],
+        ),
+        "need",
+        &address("creator"),
+    )
+    .await;
+    let done = fx
+        .call(&fx.token, "list", json!({"kind": "need", "status": "done"}))
+        .await;
+    assert_eq!(handles(&done), vec![handle.clone()], "{done}");
+
+    // The author reopens through MCP. The stamp is the clock, not 2099, and
+    // the reopen outranks the bounded close.
+    let reopened = fx
+        .call(&fx.token, "reopen", json!({"handle": handle}))
+        .await;
+    assert_eq!(reopened["mode"], "reopened", "{reopened}");
+    let letter = fx
+        .raw_letter(&fx.token, reopened["message_id"].as_str().unwrap())
+        .await;
+    let at = letter
+        .lines()
+        .find_map(|line| line.strip_prefix("X-Vivi-Event-At: "))
+        .expect("event stamp");
+    assert!(at.starts_with("20") && !at.starts_with("2099"), "{at}");
+    let open = fx
+        .call(&fx.token, "list", json!({"kind": "need", "status": "open"}))
+        .await;
+    assert_eq!(handles(&open), [handle], "{open}");
+}
+
+#[tokio::test]
+async fn mcp_events_are_stamped_above_the_newest_and_carry_the_items_kind() {
+    let fx = fixture("event-letters").await;
+    let hand = fx.add_member("hand", 2).await;
+    let (handle, id) = fx
+        .send_item(&fx.token, "task", &address("hand"), "write events")
+        .await;
+    let of = rfc_id(&id, "creator");
+    // hand's close is stamped two minutes ahead (believed: inside the bound).
+    let ahead = chrono::Utc::now() + chrono::Duration::seconds(120);
+    fx.put_letter(
+        &hand,
+        340,
+        event_letter(
+            "hand",
+            &traveling(340),
+            &of,
+            &address("creator"),
+            "done",
+            &[(
+                "X-Vivi-Event-At",
+                &ahead.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            )],
+        ),
+        "task",
+        &address("creator"),
+    )
+    .await;
+    let reopened = fx
+        .call(&fx.token, "reopen", json!({"handle": handle}))
+        .await;
+    assert_eq!(reopened["mode"], "reopened", "{reopened}");
+    let event_id = reopened["message_id"].as_str().unwrap();
+    let letter = fx.raw_letter(&fx.token, event_id).await;
+    let header = |name: &str| {
+        letter
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+            .map(str::to_owned)
+    };
+    assert_eq!(header("X-Vivi-Event").as_deref(), Some("reopened"));
+    assert_eq!(header("X-Vivi-Kind").as_deref(), Some("mail"));
+    assert_eq!(
+        header("X-Vivi-Event-Of").as_deref(),
+        Some(format!("<{of}>").as_str())
+    );
+    assert_eq!(
+        header("In-Reply-To").as_deref(),
+        Some(format!("<{of}>").as_str())
+    );
+    assert_eq!(
+        header("X-Vivi-Event-Prev").as_deref(),
+        Some(format!("<{}>", rfc_id(&traveling(340), "hand")).as_str()),
+        "names the head it follows"
+    );
+    let at = chrono::DateTime::parse_from_rfc3339(&header("X-Vivi-Event-At").unwrap()).unwrap();
+    assert!(
+        at.timestamp_micros() > ahead.timestamp_micros(),
+        "{at} <= {ahead}"
+    );
+    // Addressed to the item's recipient, not just to the writer.
+    assert!(header("To").unwrap().contains(&address("hand")), "{letter}");
+
+    // It travels under the item's kind, so the other member is served it.
+    let (status, page) = send_json(
+        &fx.app,
+        "GET",
+        &format!("/v1/projects/{}/items?since=0", fx.project),
+        None,
+        Some(&hand),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let record = page["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["message_id"] == event_id)
+        .expect("hand is served the event");
+    assert_eq!(record["kind"], "task", "{record}");
+    let shown = fx.call(&hand, "show", json!({"handle": handle})).await;
+    assert_eq!(shown["item"]["status"], "open", "{shown}");
+}
+
+#[tokio::test]
+async fn mcp_reopen_of_an_absorbed_item_is_refused() {
+    let fx = fixture("absorbed").await;
+    let (done_handle, done_id) = fx
+        .send_item(&fx.token, "need", &address("creator"), "sealed done")
+        .await;
+    let (open_handle, open_id) = fx
+        .send_item(&fx.token, "need", &address("creator"), "sealed open")
+        .await;
+    let seal = |n: u64, of: &str, state: &str| {
+        event_letter(
+            "creator",
+            &traveling(n),
+            &rfc_id(of, "creator"),
+            &address("creator"),
+            "absorbed",
+            &[
+                ("X-Vivi-Event-State", state),
+                ("X-Vivi-Event-At", &stamp(0)),
+            ],
+        )
+    };
+    fx.put_letter(
+        &fx.token,
+        350,
+        seal(350, &done_id, "done"),
+        "need",
+        &address("creator"),
+    )
+    .await;
+    fx.put_letter(
+        &fx.token,
+        351,
+        seal(351, &open_id, "open"),
+        "need",
+        &address("creator"),
+    )
+    .await;
+
+    // Sealed done: reopen is refused; done is already done.
+    let err = fx
+        .call_err(&fx.token, "reopen", json!({"handle": done_handle}))
+        .await;
+    assert!(err.contains("absorbed"), "{err}");
+    let again = fx
+        .call(&fx.token, "done", json!({"handle": done_handle}))
+        .await;
+    assert_eq!(again["mode"], "already_done", "{again}");
+
+    // Sealed open: nothing can be written against it.
+    let err = fx
+        .call_err(&fx.token, "reopen", json!({"handle": open_handle}))
+        .await;
+    assert!(err.contains("absorbed"), "{err}");
+    let err = fx
+        .call_err(&fx.token, "done", json!({"handle": open_handle}))
+        .await;
+    assert!(err.contains("absorbed"), "{err}");
+
+    // The seal names the state: the open one is still open, flagged.
+    let open = fx
+        .call(&fx.token, "list", json!({"kind": "need", "status": "open"}))
+        .await;
+    assert_eq!(handles(&open), [open_handle], "{open}");
+    assert_eq!(open["items"][0]["absorbed"], true, "{open}");
+}

@@ -15,8 +15,8 @@ use crate::projects::{ListQuery, ProjectError, ProjectRecord, ProjectStore, View
 use crate::safety::RateLimiter;
 
 use super::letters::{
-    append_composed, caller_address, compose_reply, compose_send, fold_item_states, handle_of,
-    item_status, parse_letter, valid_handle,
+    ItemState, ParsedLetter, append_composed, caller_address, compose_event, compose_reply,
+    compose_send, fold_item_states, handle_of, item_status, parse_letter, state_of, valid_handle,
 };
 
 const LIST_DEFAULT: usize = 50;
@@ -64,8 +64,10 @@ fn overview(
     project_id: &str,
     identity: &IdentityRecord,
 ) -> Result<Value, ToolError> {
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    let all = visible_all(store, project_id, identity)?;
+    let states = fold_item_states(&all);
+    // Event letters are not work and not mail: they only move item state.
+    let records = without_events(&all);
     let mut needs_open = 0;
     let mut tasks_open = 0;
     let mut wants_open = 0;
@@ -125,8 +127,9 @@ fn list_items(
         memos.truncate(limit);
         return Ok(json!({ "kind": "memo", "items": memos }));
     }
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    let all = visible_all(store, project_id, identity)?;
+    let states = fold_item_states(&all);
+    let records = without_events(&all);
     let wanted_kind = match kind.as_deref() {
         None => None,
         Some("need" | "task" | "want" | "mail" | "chat") => kind.as_deref(),
@@ -179,7 +182,7 @@ fn show(
         return Ok(memo);
     }
     let record = lookup_one(store, project_id, identity, handle)?;
-    let states = fold_item_states(std::slice::from_ref(&record));
+    let states = fold_item_states(&visible_all(store, project_id, identity)?);
     let rendered = render_message(&record.raw_eml).unwrap_or_default();
     let parsed = to_json_message(&record.message_id, &record.raw_eml).ok();
     Ok(json!({
@@ -342,7 +345,7 @@ fn reply(
         return Err(ToolError::new("body must be non-empty"));
     }
     let parent = lookup_one(store, project_id, identity, handle)?;
-    let composed = compose_reply(identity, &parent, body, None).map_err(ToolError::new)?;
+    let composed = compose_reply(identity, &parent, body).map_err(ToolError::new)?;
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     Ok(json!({
         "message_id": outcome.message_id,
@@ -364,6 +367,12 @@ fn settle(
     let handle = req_str(arguments, "handle")?;
     let note = opt_str(arguments, "note")?.unwrap_or(event);
     let parent = lookup_one(store, project_id, identity, handle)?;
+    let parsed = parse_letter(&parent.raw_eml);
+    if parsed.event.is_some() {
+        return Err(ToolError::new(format!(
+            "{handle} is an event letter, not a need, task, or want"
+        )));
+    }
     if !matches!(parent.kind.as_deref(), Some("need" | "task" | "want")) {
         return Err(ToolError::new(format!(
             "{handle} is not a need, task, or want"
@@ -371,8 +380,21 @@ fn settle(
     }
     let records = visible_all(store, project_id, identity)?;
     let states = fold_item_states(&records);
-    let parsed = parse_letter(&parent.raw_eml);
+    let state = state_of(&parent, &parsed, &states);
     let current = item_status(&parent, &parsed, &states);
+    if state.is_some_and(|state| state.absorbed) {
+        // A sealed item is final: an event would be ignored everywhere.
+        if event == "reopened" {
+            return Err(ToolError::new(format!(
+                "{handle} is absorbed; an absorbed item is final and cannot be reopened"
+            )));
+        }
+        if current != "done" {
+            return Err(ToolError::new(format!(
+                "{handle} is absorbed open; an absorbed item is final and cannot be closed"
+            )));
+        }
+    }
     if event == "done" && current == "done" {
         return Ok(json!({
             "handle": handle,
@@ -391,15 +413,19 @@ fn settle(
         (Some(prefix), Some(domain)) => domain.eq_ignore_ascii_case(&format!("{prefix}.local")),
         _ => false,
     };
-    let prev = parsed
-        .rfc_id
-        .as_deref()
-        .and_then(|rfc| states.get(rfc))
-        .and_then(|state| state.event.as_deref());
     let composed = if may_close {
-        compose_reply(identity, &parent, note, Some((event, prev))).map_err(ToolError::new)?
+        // Stamped like the client: the clock, but never at or below the
+        // newest event held for the item, so a causal successor still wins.
+        let at = event_at(
+            chrono::Utc::now().timestamp_micros(),
+            state.map(|state| state.newest_at),
+        );
+        let prevs = state
+            .map(|state| state.heads.as_slice())
+            .unwrap_or_default();
+        compose_event(identity, &parent, note, event, &at, prevs).map_err(ToolError::new)?
     } else {
-        compose_reply(identity, &parent, note, None).map_err(ToolError::new)?
+        compose_reply(identity, &parent, note).map_err(ToolError::new)?
     };
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     let mode = if may_close { "closed" } else { "reported" };
@@ -458,8 +484,9 @@ fn graph(
     if !matches!(view, "ready" | "status") {
         return Err(ToolError::new("view must be ready or status"));
     }
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    let all = visible_all(store, project_id, identity)?;
+    let states = fold_item_states(&all);
+    let records = without_events(&all);
     let mut ready = Vec::new();
     let mut blocked = Vec::new();
     let mut done = Vec::new();
@@ -474,7 +501,7 @@ fn graph(
             done.push(item);
             continue;
         }
-        let open_deps = open_dependencies(record, &letter, &records, &states);
+        let open_deps = open_dependencies(&letter, &records, &states);
         if open_deps.is_empty() {
             ready.push(item);
         } else {
@@ -528,48 +555,65 @@ fn lookup_one(
         .ok_or_else(|| ToolError::new(format!("not found: {handle}")))
 }
 
-fn summary(record: &ProjectRecord, states: &HashMap<String, super::letters::ItemState>) -> Value {
+fn summary(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> Value {
     let letter = parse_letter(&record.raw_eml);
-    json!({
+    let mut item = json!({
         "handle": handle_of(&record.message_id),
         "message_id": record.message_id,
-        "kind": record.kind.as_deref().unwrap_or("mail"),
+        "kind": if letter.event.is_some() { "event" } else { record.kind.as_deref().unwrap_or("mail") },
         "from": record.from,
         "to": record.to,
         "subject": letter.subject,
         "status": item_status(record, &letter, states),
         "appended_at": record.appended_at,
         "depends_on": letter.depends_on,
-    })
+    });
+    if let Some(event) = &letter.event {
+        item["event"] = json!(event);
+    } else if let Some(state) = state_of(record, &letter, states) {
+        if !state.marks.is_empty() {
+            item["marks"] = json!(state.marks);
+        }
+        if !state.units.is_empty() {
+            item["units"] = json!(state.units);
+        }
+        if state.absorbed {
+            item["absorbed"] = json!(true);
+        }
+    }
+    item
 }
 
-fn item_is_open(
-    record: &ProjectRecord,
-    states: &HashMap<String, super::letters::ItemState>,
-) -> bool {
+/// The records that are not event letters: an `X-Vivi-Event` letter moves
+/// the state of the item it names and is never itself an item to list,
+/// count, route, or settle, whatever envelope kind it travels under.
+fn without_events(records: &[ProjectRecord]) -> Vec<&ProjectRecord> {
+    records
+        .iter()
+        .filter(|record| parse_letter(&record.raw_eml).event.is_none())
+        .collect()
+}
+
+fn item_is_open(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> bool {
     item_status(record, &parse_letter(&record.raw_eml), states) == "open"
 }
 
-fn ready_handles(
-    records: &[ProjectRecord],
-    states: &HashMap<String, super::letters::ItemState>,
-) -> Vec<String> {
+fn ready_handles(records: &[&ProjectRecord], states: &HashMap<String, ItemState>) -> Vec<String> {
     records
         .iter()
         .filter(|record| record.kind.is_some() && item_is_open(record, states))
         .filter(|record| {
             let letter = parse_letter(&record.raw_eml);
-            open_dependencies(record, &letter, records, states).is_empty()
+            open_dependencies(&letter, records, states).is_empty()
         })
         .filter_map(|record| handle_of(&record.message_id).map(str::to_owned))
         .collect()
 }
 
 fn open_dependencies(
-    _record: &ProjectRecord,
-    letter: &super::letters::ParsedLetter,
-    records: &[ProjectRecord],
-    states: &HashMap<String, super::letters::ItemState>,
+    letter: &ParsedLetter,
+    records: &[&ProjectRecord],
+    states: &HashMap<String, ItemState>,
 ) -> Vec<String> {
     letter
         .depends_on
@@ -585,6 +629,16 @@ fn open_dependencies(
         })
         .cloned()
         .collect()
+}
+
+/// The `X-Vivi-Event-At` of a new event: the clock, or one microsecond past
+/// the newest event held for the item, whichever is later. A writer never
+/// stamps an event older than one it has seen.
+fn event_at(now_micros: i64, newest: Option<i64>) -> String {
+    let floor = newest.map_or(now_micros, |at| at.saturating_add(1));
+    chrono::DateTime::from_timestamp_micros(now_micros.max(floor))
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
 fn open_mailspace(store: &ProjectStore, project_id: &str) -> Result<Storage, ToolError> {
