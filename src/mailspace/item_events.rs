@@ -22,12 +22,18 @@
 //! alike. An instant more than ten minutes past the receiver's clock counts
 //! for nothing at all: no letter can lock an item from the future.
 //!
-//! An event counts when its From domain is a prefix domain (`<8 hex>.local`),
-//! whoever authored the item: the server stamps every record with the
-//! sender's registered prefix and the pull refuses a prefix-form From it did
-//! not stamp, so such a From names a real member, and no member owns an
-//! item's state. A bare `local` or a legacy name domain is a claim anyone
-//! can make: it is filed as plain mail and never counts.
+//! An event counts when the From address names a role that may write it.
+//! From this mailspace's own domain (`<prefix>.local`, or the legacy
+//! `<name>.local` when it has no id), the local part names a role here, and
+//! the event counts only when that role may close the item: its author, or
+//! a role of kind `mind` or `operator`. An unknown role, or one of another
+//! kind, is ignored. From another member's prefix domain (`<8 hex>.local`)
+//! the event counts, whoever authored the item: the receiver cannot see
+//! that mailspace's roles; the writing CLI there enforced the same rule,
+//! and the sync server's `from_prefix` stamp, which pull already checks,
+//! authenticates the mailspace, not the role. A bare `local` or a legacy
+//! name domain that is not this mailspace's own is a claim anyone can make:
+//! it is filed as plain mail and never counts.
 //!
 //! One function projects a head onto the rows and the backlog node. The owner
 //! calls it when it writes an event; every other route (pull, fetch, resync,
@@ -194,8 +200,9 @@ pub struct ItemEventState {
 pub struct EventTally {
     /// Items whose rows or node moved to match their newest event.
     pub applied: usize,
-    /// Events that were not applied: from a domain that is not a member's
-    /// prefix domain, dated past the clock, or for an item sealed by absorb.
+    /// Events that were not applied: from a sender that speaks for no role
+    /// here (a foreign domain, or an own-domain role that may not close the
+    /// item), dated past the clock, or for an item sealed by absorb.
     pub ignored: usize,
 }
 
@@ -274,7 +281,7 @@ fn work_kind(
 }
 
 /// The events of one item that count here, and how many named it from a
-/// domain that speaks for no member or dated it past the clock.
+/// sender that speaks for no role here or dated it past the clock.
 struct Chain {
     events: Vec<EventLetter>,
     unauthorized: usize,
@@ -387,17 +394,39 @@ struct Planned {
 }
 
 impl Mailspace {
-    /// Whether an event written from `event_domain` speaks for the state of
-    /// an item: any prefix domain (`<8 hex>.local`) can, whoever authored
-    /// the item. The server stamps every record with the sender's registered
-    /// prefix and the pull refuses a prefix-form From it did not stamp, so
-    /// such a From names a real member. A bare `local` or a legacy name
-    /// domain is a claim anyone can make, so it never counts.
-    fn event_speaks_for(event_domain: &str) -> bool {
-        prefix_of_domain(event_domain).is_some()
+    /// Whether an event letter From `from_addr` speaks for `item`: whose
+    /// word an arriving state or property event is. The From address names
+    /// a role:
+    ///
+    /// * The domain is this mailspace's own — `<prefix>.local`, or the
+    ///   legacy `<name>.local` when it has no id — so the local part names a
+    ///   role here, and the event counts only when that role may write it:
+    ///   the item's author ([`Self::item_author`]) or a role of kind `mind`
+    ///   or `operator` ([`Self::identity_may_close_for_all`]) — the same
+    ///   right [`Self::may_close`] grants, for every event kind. An unknown
+    ///   role, or one of another kind (`hand`, `auditor`, `head`, ...),
+    ///   speaks for no one: the letter is ignored and counted in the
+    ///   ignored tally.
+    /// * The domain is another member's prefix domain (`<8 hex>.local`):
+    ///   the event counts. The receiver cannot see that mailspace's roles;
+    ///   the writing CLI there enforced the same rule, and the sync
+    ///   server's `from_prefix` stamp, which pull already checks,
+    ///   authenticates the mailspace, not the role.
+    /// * Any other domain — a bare `local`, or a legacy name domain that is
+    ///   not this mailspace's own — is a claim anyone can make, so it never
+    ///   counts.
+    fn event_may_speak(&self, item: &HeldItem, from_addr: &str) -> bool {
+        let Some((role, domain)) = from_addr.rsplit_once('@') else {
+            return false;
+        };
+        let domain = domain.trim().to_ascii_lowercase();
+        if domain != "local" && self.is_own_domain(&domain) {
+            return self.may_close(item, role.trim());
+        }
+        prefix_of_domain(&domain).is_some()
     }
 
-    fn item_chain(storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
+    fn item_chain(&self, storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
         let mut chain = Chain {
             events: Vec::new(),
             unauthorized: 0,
@@ -413,7 +442,10 @@ impl Mailspace {
             let Some(event) = parse_event(&bytes).filter(|event| event.of == item.rfc_id) else {
                 continue;
             };
-            if Self::event_speaks_for(&event.from_domain) && dated_within_clock(event.at, now) {
+            if let Some(from) = first_bare_address(&view.from_addr)
+                && self.event_may_speak(item, &from)
+                && dated_within_clock(event.at, now)
+            {
                 chain.events.push(event);
             } else {
                 chain.unauthorized += 1;
@@ -424,10 +456,11 @@ impl Mailspace {
 
     /// The state the latest authorized event of an item says, if any.
     pub(super) fn item_head(
+        &self,
         storage: &Storage,
         item: &HeldItem,
     ) -> Result<Option<ItemEventKind>, VivariumError> {
-        let chain = Self::item_chain(storage, item)?;
+        let chain = self.item_chain(storage, item)?;
         Ok(newest_event(&chain.events).map(|head| head.kind))
     }
 
@@ -450,8 +483,9 @@ impl Mailspace {
     /// Whether `identity` may close or reopen `item` for everyone: the role
     /// that authored it (or holds its sent copy), or a role of kind `mind`
     /// or `operator` — whichever mailspace authored the item. The read side
-    /// ([`Self::event_speaks_for`]) believes any member's prefix domain, so
-    /// no member owns an item's state.
+    /// ([`Self::event_may_speak`]) believes any member's prefix domain
+    /// unseen, and this mailspace's own roles by this same right, so no
+    /// member owns an item's state.
     pub(super) fn may_close(&self, item: &HeldItem, identity: &str) -> bool {
         self.item_author(item).as_deref() == Some(identity)
             || self.identity_may_close_for_all(identity)
@@ -572,14 +606,14 @@ impl Mailspace {
         let Some(item) = held_item(storage, content_id)? else {
             return Ok(());
         };
-        let chain = Self::item_chain(storage, &item)?;
+        let chain = self.item_chain(storage, &item)?;
         tally.ignored += chain.unauthorized;
         // A counted absorbed event seals the item with the state it names, so
         // the state events held beside it are only letters: none of them
         // moves a row, however new it is. A state event older than the seal
         // is ignored the same way — the absorb letter already named the
         // state.
-        let sealed = property::counted_absorb(storage, &item)?.is_some();
+        let sealed = property::counted_absorb(self, storage, &item)?.is_some();
         self.apply_property_events(storage, &item, tally)?;
         if sealed {
             return Ok(());
@@ -686,7 +720,7 @@ impl Mailspace {
         let Some(item) = held_item(&storage, &view.content_id)? else {
             return Ok(None);
         };
-        let chain = Self::item_chain(&storage, &item)?;
+        let chain = self.item_chain(&storage, &item)?;
         let heads = chain_heads(&chain.events).len();
         Ok(newest_event(&chain.events).map(|newest| ItemEventState {
             state: newest.kind.header().to_string(),
@@ -709,7 +743,7 @@ impl Mailspace {
         let Some(item) = held_item(storage, content_id)? else {
             return Ok(None);
         };
-        let chain = Self::item_chain(storage, &item)?;
+        let chain = self.item_chain(storage, &item)?;
         let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(None);
         };
@@ -775,3 +809,7 @@ mod tests;
 #[cfg(test)]
 #[path = "item_events_order_test.rs"]
 mod order_tests;
+
+#[cfg(test)]
+#[path = "item_events_roles_test.rs"]
+mod roles_tests;

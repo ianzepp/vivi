@@ -17,6 +17,7 @@ use super::{
 };
 use crate::error::VivariumError;
 use crate::mailspace::delivery::add_header;
+use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::reply::{add_reply_headers, reply_subject};
 use crate::message::{ComposeDraft, build_compose_draft};
 use crate::storage::{ItemEventWrite, Storage};
@@ -41,7 +42,7 @@ impl Mailspace {
         extras: &[(&str, String)],
         note: Option<&str>,
     ) -> Result<String, VivariumError> {
-        let at = Self::property_event_at(storage, item)?;
+        let at = self.property_event_at(storage, item)?;
         let letter = self.compose_property_letter(item, identity, kind, extras, note, &at)?;
         self.check_letter_size(letter.data.len())?;
         let rows = emit::event_rows(identity, &letter.local, &item.content_id);
@@ -63,14 +64,18 @@ impl Mailspace {
     /// mailspace holds for the item, whichever is later — the same floor a
     /// state event is stamped with, so a writer never stamps below what it
     /// has seen or above what a reader will not count.
-    fn property_event_at(storage: &Storage, item: &HeldItem) -> Result<String, VivariumError> {
+    fn property_event_at(
+        &self,
+        storage: &Storage,
+        item: &HeldItem,
+    ) -> Result<String, VivariumError> {
         let mut floor = chrono::Utc::now().timestamp_micros();
         // The chain holds counted events only; the property instants are
         // filtered here.
-        for event in &Self::item_chain(storage, item)?.events {
+        for event in &self.item_chain(storage, item)?.events {
             floor = floor.max(event.at.saturating_add(1));
         }
-        for at in held_property_ats(storage, item)? {
+        for at in self.held_property_ats(storage, item)? {
             floor = floor.max(at.saturating_add(1));
         }
         Ok(emit::stamp_micros(floor))
@@ -126,25 +131,34 @@ impl Mailspace {
     }
 }
 
-/// The instants of the property events held for `item` that a member wrote
-/// and the clock still counts.
-fn held_property_ats(storage: &Storage, item: &HeldItem) -> Result<Vec<i64>, VivariumError> {
-    let now = chrono::Utc::now().timestamp_micros();
-    let mut ats = Vec::new();
-    for child in storage.reply_child_contents(&item.content_id)? {
-        let Some(view) = storage.message_by_content_id(&child)? else {
-            continue;
-        };
-        let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
-            continue;
-        };
-        let Some(event) = parse_property_event(&bytes).filter(|event| event.of == item.rfc_id)
-        else {
-            continue;
-        };
-        if Mailspace::event_speaks_for(&event.from_domain) && dated_within_clock(event.at, now) {
-            ats.push(event.at);
+impl Mailspace {
+    /// The instants of the property events held for `item` that a member
+    /// wrote and the clock still counts.
+    fn held_property_ats(
+        &self,
+        storage: &Storage,
+        item: &HeldItem,
+    ) -> Result<Vec<i64>, VivariumError> {
+        let now = chrono::Utc::now().timestamp_micros();
+        let mut ats = Vec::new();
+        for child in storage.reply_child_contents(&item.content_id)? {
+            let Some(view) = storage.message_by_content_id(&child)? else {
+                continue;
+            };
+            let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
+                continue;
+            };
+            let Some(event) = parse_property_event(&bytes).filter(|event| event.of == item.rfc_id)
+            else {
+                continue;
+            };
+            if let Some(from) = first_bare_address(&view.from_addr)
+                && self.event_may_speak(item, &from)
+                && dated_within_clock(event.at, now)
+            {
+                ats.push(event.at);
+            }
         }
+        Ok(ats)
     }
-    Ok(ats)
 }
