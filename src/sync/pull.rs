@@ -106,19 +106,7 @@ impl PullReport {
         if self.restored > 0 {
             new = format!("{new}, {} restored", self.restored);
         }
-        let refused = if self.refused.is_empty() {
-            "0 refused".to_string()
-        } else {
-            let shown = self.refused.iter().take(5).map(|r| r.message_id.as_str());
-            let ids = shown.collect::<Vec<_>>().join(", ");
-            let more = self.refused.len().saturating_sub(5);
-            let tail = if more > 0 {
-                format!(", ... and {more} more")
-            } else {
-                String::new()
-            };
-            format!("{} refused: {ids}{tail}", self.refused.len())
-        };
+        let refused = self.refused_note();
         let governance = (self.governance > 0)
             .then(|| format!(", {} governance letter(s)", self.governance))
             .unwrap_or_default();
@@ -161,6 +149,24 @@ impl PullReport {
     /// jumped over letters this member is not shown, where every moved
     /// sequence number went.
     #[must_use]
+    /// `N refused: id, ...` for the first five, then a tail count; plain
+    /// `0 refused` when nothing was refused.
+    #[must_use]
+    fn refused_note(&self) -> String {
+        if self.refused.is_empty() {
+            return "0 refused".to_string();
+        }
+        let shown = self.refused.iter().take(5).map(|r| r.message_id.as_str());
+        let ids = shown.collect::<Vec<_>>().join(", ");
+        let more = self.refused.len().saturating_sub(5);
+        let tail = if more > 0 {
+            format!(", ... and {more} more")
+        } else {
+            String::new()
+        };
+        format!("{} refused: {ids}{tail}", self.refused.len())
+    }
+
     fn cursor_tail(&self) -> String {
         if self.skipped_by_server == 0 {
             return format!("cursor {}", self.cursor);

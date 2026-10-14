@@ -4,9 +4,7 @@
 
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
-use crate::sync::fake_server::{
-    Checkout, FakeServer, LETTER_DATE, World, checkout, handle, wire_id,
-};
+use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
 
 pub(super) const BODY: &str = "done_when: it works\n";
