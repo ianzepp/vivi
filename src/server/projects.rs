@@ -348,6 +348,19 @@ pub struct Lookup {
     pub missing: Vec<String>,
 }
 
+/// Which visible letters [`ProjectStore::scan_visible`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scan {
+    /// Every letter the viewer may see.
+    All,
+    /// Work items (any envelope kind) and event letters: what a state fold
+    /// and a work listing need. Plain mail is neither read nor returned.
+    WorkAndEvents,
+}
+
+/// Rows a scan takes from the transport index per query.
+const SCAN_CHUNK: usize = 500;
+
 /// Default page size of a list.
 pub const DEFAULT_LIMIT: usize = 500;
 /// Largest page size a list will honor.
@@ -1265,6 +1278,72 @@ impl ProjectStore {
             next_cursor,
             has_more,
         })
+    }
+
+    /// Visit every letter `viewer` may see, in append order, handing each to
+    /// `visit` as it is read and keeping none: the caller keeps what it needs,
+    /// so a fold over a project of any size holds only its own result. The
+    /// same visibility as [`read_page`](Self::read_page), with no page
+    /// limit and no byte cap: the transport index is walked by cursor in
+    /// chunks of [`SCAN_CHUNK`] until it is exhausted, so a letter past the
+    /// first page is seen. A letter the store cannot back is a storage
+    /// failure, as on a page.
+    pub fn scan_visible<F>(
+        &self,
+        raw_id: &str,
+        viewer: &Viewer<'_>,
+        scan: Scan,
+        visit: F,
+    ) -> Result<(), ProjectError>
+    where
+        F: FnMut(ProjectRecord),
+    {
+        self.scan_visible_in_chunks(raw_id, viewer, scan, SCAN_CHUNK, visit)
+    }
+
+    /// [`scan_visible`](Self::scan_visible) taking `chunk` rows (at least
+    /// one) from the index per query. The result does not depend on the
+    /// chunk; it is a parameter so a test can cross chunk boundaries with a
+    /// handful of letters.
+    pub fn scan_visible_in_chunks<F>(
+        &self,
+        raw_id: &str,
+        viewer: &Viewer<'_>,
+        scan: Scan,
+        chunk: usize,
+        mut visit: F,
+    ) -> Result<(), ProjectError>
+    where
+        F: FnMut(ProjectRecord),
+    {
+        let chunk = chunk.max(1);
+        let dir = self.existing_project_dir(raw_id)?;
+        let project = Project::open(&dir)?;
+        let mut cursor = 0i64;
+        loop {
+            let mut params = vec![Value::Integer(cursor)];
+            let mut clauses = vec!["i.sequence > ?".to_owned()];
+            clauses.push(visible_clause(viewer, &mut params));
+            if scan == Scan::WorkAndEvents {
+                clauses.push("(i.kind IS NOT NULL OR i.event = 1)".to_owned());
+            }
+            let sql = format!(
+                "SELECT {COLUMNS} FROM items i WHERE {} ORDER BY i.sequence LIMIT {chunk}",
+                clauses.join(" AND ")
+            );
+            let rows = project.select(&sql, params)?;
+            let last = rows.last().map(|row| row.sequence);
+            let full = rows.len() == chunk;
+            for row in rows {
+                visit(project.record_of(row)?);
+            }
+            match last {
+                Some(sequence) if full => {
+                    cursor = i64::try_from(sequence).unwrap_or(i64::MAX);
+                }
+                _ => return Ok(()),
+            }
+        }
     }
 
     /// Look letters up by handle (the 8 hex after `msg_`), scoped to

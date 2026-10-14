@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
 use vivi::storage::Storage;
-use vivi_server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
+use vivi_server::projects::{AppendItem, ListQuery, ProjectError, ProjectStore, Scan, Viewer};
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -167,6 +167,90 @@ fn append_assigns_sequence_and_files_the_letter_verbatim_in_the_mailspace() {
     assert_eq!(rows[0].message_id, id);
     assert_eq!(rows[0].content_id, hash);
     assert_eq!(rows[0].from_addr, "hand@p.local");
+}
+
+/// Every letter a viewer may see, whatever the chunk the index is walked
+/// in, in append order: the same letters a single wide page serves, and with
+/// `WorkAndEvents` only the work items and event letters among them.
+#[test]
+fn a_scan_visits_every_visible_letter_across_chunk_boundaries() {
+    let data_dir = scratch_data_dir("scan-chunks");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let project = &meta.project_id;
+    let event = |n: u64, of: u64, kind: Option<&str>| {
+        let (id, item) = (traveling(n), traveling(of));
+        let raw = format!(
+            "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{id}@p.local>\n\
+             In-Reply-To: <{item}@p.local>\nX-Vivi-Event: done\n\
+             X-Vivi-Event-Of: <{item}@p.local>\n\nclosed\n"
+        )
+        .into_bytes();
+        letter(&id, "hand", Some("a@p.local"), kind, raw)
+    };
+    let mail = |n: u64, from: &str, to: &str| {
+        let id = traveling(n);
+        letter(&id, from, Some(to), None, eml(&id, &format!("mail {n}")))
+    };
+    let items = [
+        need(&traveling(1), "an item"),
+        mail(2, "hand", "a@p.local"),
+        event(3, 1, Some("mail")),
+        letter(
+            &traveling(4),
+            "hand",
+            None,
+            Some("task"),
+            eml(&traveling(4), "a task"),
+        ),
+        event(6, 4, Some("task")),
+        mail(7, "stranger", "hand@p.local"),
+        need(&traveling(8), "another item"),
+        mail(9, "hand", "b@p.local"),
+        event(10, 8, None),
+    ];
+    for item in &items {
+        store.append(project, item).unwrap();
+    }
+    let reader = viewer("stranger");
+    // The stranger holds no prefix: the work items, the event letters (by
+    // their header, under any envelope kind), and its own mail. Other
+    // members' private mail (2, 9) is never visited.
+    let everything: Vec<String> = [1, 3, 4, 6, 7, 8, 10].map(traveling).into();
+    let work_and_events: Vec<String> = [1, 3, 4, 6, 8, 10].map(traveling).into();
+
+    let page = store
+        .read_page(project, &ListQuery::since(0), &reader)
+        .unwrap();
+    let paged: Vec<String> = page.records.into_iter().map(|r| r.message_id).collect();
+    assert_eq!(paged, everything, "the page is the baseline");
+
+    for chunk in [1, 2, 3, 4, 7, 8, 500] {
+        for (scan, expected) in [
+            (Scan::All, &everything),
+            (Scan::WorkAndEvents, &work_and_events),
+        ] {
+            let mut seen = Vec::new();
+            store
+                .scan_visible_in_chunks(project, &reader, scan, chunk, |record| {
+                    seen.push((record.sequence, record.message_id));
+                })
+                .unwrap();
+            let ids: Vec<String> = seen.iter().map(|(_, id)| id.clone()).collect();
+            assert_eq!(&ids, expected, "chunk {chunk}, {scan:?}");
+            assert!(
+                seen.windows(2).all(|pair| pair[0].0 < pair[1].0),
+                "append order, chunk {chunk}, {scan:?}"
+            );
+        }
+    }
+    // An empty project is a scan of nothing.
+    let empty = store.create_project().unwrap();
+    store
+        .scan_visible(&empty.project_id, &reader, Scan::All, |_| {
+            panic!("an empty project holds no letter")
+        })
+        .unwrap();
 }
 
 #[test]
@@ -994,7 +1078,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{TimeZone, Utc};
-use vivi_server::projects::{ListQuery, PAGE_BYTE_CAP, monotone_stamp};
+use vivi_server::projects::{PAGE_BYTE_CAP, monotone_stamp};
 
 /// A store whose clock reads `seconds` (unix), which the test steps.
 fn stepped_store(name: &str) -> (ProjectStore, Arc<AtomicI64>, PathBuf) {
