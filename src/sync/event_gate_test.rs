@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use crate::mailspace::{Mailspace, SendRequest};
+use crate::mailspace::{AbsorbConfig, Mailspace, SendRequest};
 use crate::sync::events::state;
 use crate::sync::fake_server::{
     Checkout, FakeServer, Item, LETTER_DATE, World, checkout, handle, wire_id,
@@ -132,8 +132,8 @@ fn close(a: &Checkout, handle: &str) {
 }
 
 /// Alice drives a need through its whole lifecycle — mark, done, reopen,
-/// bind, absorb — writing one event letter per move. Bob holds the work and
-/// carol witnesses it; the work has been pushed and pulled once.
+/// bind, done, absorb — writing one event letter per move. Bob holds the
+/// work and carol witnesses it; the work has been pushed and pulled once.
 struct Gate {
     server: Rc<FakeServer>,
     a: Checkout,
@@ -145,7 +145,10 @@ struct Gate {
 
 fn gate() -> Gate {
     let server = FakeServer::new();
-    let (a, b, c) = (alice(), bob(), carol());
+    let (mut a, b, c) = (alice(), bob(), carol());
+    // The round closes and absorbs in one breath, so the operator ruling's
+    // quiet wait is off here; absorb_quiet_test covers the wait itself.
+    a.mailspace.config.absorb = Some(AbsorbConfig { quiet_hours: 0 });
     let need = a.send_need("mind", &b.address("hand"), "gate the wire");
     let task = send_task(&a, &b.address("hand"), "its unit");
     a.push(&a.client(&server));
@@ -161,6 +164,7 @@ fn gate() -> Gate {
     a.mailspace
         .backlog_bind_units(&need, std::slice::from_ref(&task))
         .unwrap();
+    close(&a, &need);
     a.mailspace
         .absorb("mind", &need, Some("sealed"), "need")
         .unwrap();
@@ -184,8 +188,8 @@ fn every_lifecycle_letter_pushes_with_envelope_kind_mail() {
 
     assert_eq!(
         event_records(&g.server).len(),
-        5,
-        "one letter per move: marked, done, reopened, bound, absorbed"
+        6,
+        "one letter per move: marked, done, reopened, bound, done, absorbed"
     );
     assert_envelopes_are_mail(&g.server);
     let mut work: Vec<String> = g
@@ -210,10 +214,10 @@ fn a_full_round_holds_no_event_record_as_work_on_any_member() {
 
     // By header, every member is served the events: on the assignee they
     // apply, on the witness they are plain letters.
-    assert_eq!(pulled.filed.get("inbox"), Some(&5), "{}", pulled.summary());
+    assert_eq!(pulled.filed.get("inbox"), Some(&6), "{}", pulled.summary());
     assert_eq!(
         witness.filed.get("inbox"),
-        Some(&5),
+        Some(&6),
         "{}",
         witness.summary()
     );
