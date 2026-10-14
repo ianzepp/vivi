@@ -1,17 +1,17 @@
 //! Gate start, finish, gate-fix, the hold cycle and promotion.
 //!
-//! Ports pump.py's gate: `start_gate` (lines 872-904) and the reply parsing
-//! at the top of `finish_gate` (lines 962-975). `finish_gate`, `hold_cycle`
-//! and promotion land with later units.
+//! Ports pump.py's gate: `start_gate` (872-904), `finish_gate` (962-1009)
+//! with `gatefix` (919) and `promote` (949), and the hold cycle (931).
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::pump::brief::gate_brief;
+use crate::pump::collect::spawn_planner;
 use crate::pump::dispatch::{parse_created_handle, slots};
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::state::{GateRun, State};
+use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status};
 
 /// The `FAILING-BEGIN` reply marker.
 const BEGIN: &str = "FAILING-BEGIN";
@@ -21,6 +21,10 @@ const END: &str = "FAILING-END";
 const BUILD_FAILED: &str = "BUILD-FAILED";
 /// Flag file that makes the next tick start a gate whatever the due rules.
 const FORCE_FLAG: &str = "FORCE-GATE";
+/// Flag file that holds the merge queue until a clean gate.
+const HOLD_FLAG: &str = "HOLD-MERGE";
+/// The payload the hold cycle writes into `FORCE-GATE`.
+const FORCE_TEXT: &str = "after fixes\n";
 
 /// Read the failing-test names from a gate reply (pump.py:962).
 ///
@@ -240,11 +244,11 @@ fn remote_tip(ctx: &Ctx) -> Option<String> {
 /// Write the rendered gate brief to `<home>/briefs/gate.txt`.
 fn write_gate_brief(ctx: &Ctx) -> Option<PathBuf> {
     let path = ctx.home.join("briefs").join("gate.txt");
-    if let Some(dir) = path.parent() {
-        if let Err(err) = fs::create_dir_all(dir) {
-            ctx.log(&format!("gate brief dir failed: {err}"));
-            return None;
-        }
+    if let Some(dir) = path.parent()
+        && let Err(err) = fs::create_dir_all(dir)
+    {
+        ctx.log(&format!("gate brief dir failed: {err}"));
+        return None;
     }
     if let Err(err) = fs::write(&path, gate_brief(ctx)) {
         ctx.log(&format!("gate brief write failed: {err}"));
@@ -312,4 +316,391 @@ fn remove_force_flag(ctx: &Ctx) {
 /// The first ten characters of a tip, for log and subject lines.
 fn tip_short(tip: &str) -> String {
     tip.chars().take(10).collect()
+}
+
+/// Finish the open gate from its receipt (pump.py:962): classify the reply,
+/// keep the owned-red map honest, then set the baseline, report new failures
+/// with a gate-fix planner, or promote a clean gate. The gate task is cleared
+/// whatever the reply said.
+pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
+    let names = parse_failing(text);
+    log_markerless(ctx, text, names.as_deref());
+    record_red_after_fix(ctx, st, names.as_deref());
+    let run = st.last_gate.clone();
+    let tip = run.tip.clone().unwrap_or_default();
+    let mut rec = GateRecord {
+        tip: tip.clone(),
+        at: ctx.now(),
+        merges: run.merges,
+        names: names.clone(),
+        new: None,
+    };
+    st.last_gate.task = None;
+    if let Some(kind) = unreadable_kind(names.as_deref()) {
+        ctx.exception(kind, &tip_short(&tip), &tail_chars(text, 500));
+        st.gates.push(rec);
+        return;
+    }
+    let names = names.unwrap_or_default();
+    if st.baseline.is_none() {
+        st.baseline = Some(names.clone());
+        ctx.log(&format!(
+            "gate baseline at {}: {} failing names",
+            tip_short(&tip),
+            names.len()
+        ));
+        st.gates.push(rec);
+        return;
+    }
+    finish_known_gate(ctx, st, &mut rec, &names);
+    st.gates.push(rec);
+}
+
+/// `Some(kind)` when the reply cannot be trusted: no names at all is
+/// `gate-unreadable`, a lone `BUILD-FAILED` line is `gate-build-failed`.
+fn unreadable_kind(names: Option<&[String]>) -> Option<&'static str> {
+    match names {
+        None => Some("gate-unreadable"),
+        Some([one]) if one.as_str() == BUILD_FAILED => Some("gate-build-failed"),
+        Some(_) => None,
+    }
+}
+
+/// The log line python emits when the names came from the reply text rather
+/// than the markers (pump.py:970).
+fn log_markerless(ctx: &Ctx, text: &str, names: Option<&[String]>) {
+    if let Some(names) = names
+        && last_usable_block(text).is_none()
+        && !names.is_empty()
+    {
+        ctx.log(&format!(
+            "gate markers missing; read {} names from the reply text",
+            names.len()
+        ));
+    }
+}
+
+/// The `red-after-fix` screen (pump.py:976-980): an owned name that still
+/// fails while every unit of its owner need is settled is reported once.
+fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
+    let Some(names) = names else {
+        return;
+    };
+    let owned: Vec<(String, String)> = st
+        .red
+        .iter()
+        .map(|(name, owner)| (name.clone(), owner.clone()))
+        .collect();
+    for (name, owner) in owned {
+        let prefix = format!("{owner}-");
+        let statuses: Vec<Status> = st
+            .units
+            .iter()
+            .filter(|(uid, _)| uid.starts_with(&prefix))
+            .map(|(_, unit)| unit.status)
+            .collect();
+        let mark = format!("{owner}:{name}");
+        let failing = names.iter().any(|n| n == &name);
+        if statuses.is_empty()
+            || !failing
+            || !statuses.iter().all(|&s| is_settled(s))
+            || st.red_reported.contains(&mark)
+        {
+            continue;
+        }
+        st.red_reported.push(mark);
+        ctx.exception("red-after-fix", &owner, &name);
+    }
+}
+
+/// A readable gate against an existing baseline (pump.py:988-1006): release
+/// owned names that pass again, compute the new failures, then either report
+/// them (owning each and starting a gate-fix planner) or promote.
+fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[String]) {
+    drop_fixed_names(ctx, st, names);
+    let new = new_failures(ctx, st, names);
+    rec.new = Some(new.clone());
+    if new.is_empty() {
+        ctx.log(&gate_summary(rec, names, 0));
+        promote(ctx, st, &rec.tip);
+        return;
+    }
+    let owner = fix_need(ctx, &rec.tip);
+    for name in &new {
+        st.red.insert(name.clone(), owner.clone());
+    }
+    let clean = last_clean_tip(st, &rec.tip);
+    gatefix(ctx, st, &rec.tip, &clean, &new);
+    report_new_failures(ctx, rec, &new, &suspect_ids(st, st.gates.last().map_or(0, |g| g.merges), rec.merges));
+    ctx.log(&gate_summary(rec, names, new.len()));
+}
+
+/// The `gate at <tip10>: <n> failing, <m> new` log line.
+fn gate_summary(rec: &GateRecord, names: &[String], new: usize) -> String {
+    format!(
+        "gate at {}: {} failing, {new} new",
+        tip_short(&rec.tip),
+        names.len()
+    )
+}
+
+/// Owned names that no longer fail are released (pump.py:991-993).
+fn drop_fixed_names(ctx: &Ctx, st: &mut State, names: &[String]) {
+    let fixed: Vec<String> = st
+        .red
+        .keys()
+        .filter(|name| !names.iter().any(|n| n == *name))
+        .cloned()
+        .collect();
+    for name in fixed {
+        if let Some(owner) = st.red.remove(&name) {
+            ctx.log(&format!("red fixed: {name} (owner {owner})"));
+        }
+    }
+}
+
+/// The names in neither the baseline, the known-red list nor the owned map,
+/// sorted (pump.py:994).
+fn new_failures(ctx: &Ctx, st: &State, names: &[String]) -> Vec<String> {
+    let known = known_red(ctx);
+    names
+        .iter()
+        .filter(|name| {
+            !known.contains(*name)
+                && !st.baseline.as_ref().is_some_and(|b| b.contains(*name))
+                && !st.red.contains_key(*name)
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The lines of `<home>/known-red.txt`, when it exists.
+fn known_red(ctx: &Ctx) -> BTreeSet<String> {
+    match fs::read_to_string(ctx.home.join("known-red.txt")) {
+        Ok(text) => text.lines().map(String::from).collect(),
+        Err(_) => BTreeSet::new(),
+    }
+}
+
+/// The merged units in `st.order[prev..merges]` (pump.py:996): the merges
+/// between the previous gate and this one.
+fn suspect_ids(st: &State, prev: u64, merges: u64) -> Vec<String> {
+    let list: Vec<&String> = st
+        .order
+        .iter()
+        .filter(|uid| st.units.get(*uid).is_some_and(|u| u.status == Status::Merged))
+        .collect();
+    let start = usize::try_from(prev).unwrap_or(usize::MAX).min(list.len());
+    let end = usize::try_from(merges).unwrap_or(usize::MAX).min(list.len());
+    if start >= end {
+        Vec::new()
+    } else {
+        list[start..end].iter().map(|s| String::from(s.as_str())).collect()
+    }
+}
+
+/// Own every new name, then raise the `gate-new-failures` exception with the
+/// suspect merge window (pump.py:1001-1005).
+fn report_new_failures(ctx: &Ctx, rec: &GateRecord, new: &[String], suspects: &[String]) {
+    let joined = cut_chars(&new.join("; "), 350);
+    let ids = cut_chars(&suspects.join(" "), 200);
+    ctx.exception(
+        "gate-new-failures",
+        &tip_short(&rec.tip),
+        &format!("{} new: {joined} ; suspects: {ids}", new.len()),
+    );
+}
+
+/// The tip of the last gate with readable names and no new failure, else the
+/// first gate's tip, else the current one (pump.py:1000).
+fn last_clean_tip(st: &State, current: &str) -> String {
+    for gate in st.gates.iter().rev() {
+        if gate.names.is_some() && gate.new.as_ref().is_none_or(Vec::is_empty) {
+            return gate.tip.clone();
+        }
+    }
+    st.gates
+        .first()
+        .map_or_else(|| current.to_owned(), |gate| gate.tip.clone())
+}
+
+/// The gate-fix need id for a tip: `<fix_prefix>-g<tip8>`.
+fn fix_need(ctx: &Ctx, tip: &str) -> String {
+    let short: String = tip.chars().take(8).collect();
+    format!("{}-g{short}", ctx.cfg.fix_prefix)
+}
+
+/// Start the gate-fix planner for a red gate (pump.py:919): need id
+/// `<fix_prefix>-g<tip8>`, skipped when its plan file already exists.
+fn gatefix(ctx: &Ctx, _st: &State, tip: &str, clean: &str, new: &[String]) {
+    let need = fix_need(ctx, tip);
+    if ctx.home.join("plans").join(format!("{need}.json")).exists() {
+        return;
+    }
+    let prompt = gatefix_prompt(ctx, tip, clean, &need, new);
+    spawn_planner(ctx, "gatefix", &need, &prompt);
+    ctx.log(&format!("gatefix planner started for {need} ({} new)", new.len()));
+}
+
+/// The gate-fix planner prompt (pump.py:907), with the repo, home and plan
+/// paths taken from the context.
+fn gatefix_prompt(ctx: &Ctx, tip: &str, clean: &str, need: &str, new: &[String]) -> String {
+    let names = new
+        .iter()
+        .map(|name| format!("- {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let repo = ctx.repo.display();
+    let home = ctx.home.display();
+    let remote = &ctx.cfg.remote;
+    format!(
+        "The integration branch went red. Plan the fix units, as your system prompt describes, with these rules.
+
+A full test run at integration-branch commit {tip} shows these failing tests that were NOT failing at the last clean run (commit {clean}):
+{names}
+
+The commits merged between the two are `git log --oneline {clean}..{tip}` in {repo} (run `git -C {repo} fetch -q {remote}` first; each merge subject names its unit and need). Read the failing tests and the merged diffs and find, for each failure, the merge that most likely caused it.
+
+Write {home}/plans/{need}.json (write .tmp, then mv): {{\"need\": \"{need}\", \"verdict\": \"units\", \"reason\": \"...\", \"units\": [...]}}. Unit ids \"{need}-1\", \"{need}-2\", ... . Group failures with one likely cause into one unit; one cause per unit. Each brief names the failing tests, the suspected merge commit and why, and says: run the tests first; fix the CAUSE forward; change a test only if the suspected unit implemented a ruling that deliberately changed the pinned behaviour, and name the ruling; never delete, ignore or weaken a test; name the culprit commit in the reply. Proof: the failing tests by name (one `cargo test` filter per command). Keep write scopes as narrow as you can.
+Your final message is one line.
+"
+    )
+}
+
+/// Fast-forward main to a gated tip of the integration branch (pump.py:949).
+/// Never forces: a main that moved elsewhere waits for the next batch.
+fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
+    if !ctx.cfg.promote || ctx.cfg.main.is_empty() {
+        return;
+    }
+    ctx.git(&format!("fetch -q {} {}", ctx.cfg.remote, ctx.cfg.main), 120);
+    let head = format!("{}/{}", ctx.cfg.remote, ctx.cfg.main);
+    if ctx.git(&format!("merge-base --is-ancestor {head} {tip}"), 120).code != 0 {
+        ctx.log(&format!(
+            "promote skipped: main has commits {} does not have yet",
+            ctx.cfg.branch
+        ));
+        return;
+    }
+    let out = ctx.git(
+        &format!("push {} {tip}:refs/heads/{}", ctx.cfg.remote, ctx.cfg.main),
+        180,
+    );
+    let tail = cut_chars(last_line(&out.text).trim(), 120);
+    ctx.log(&format!(
+        "promote {} -> {} rc={} {tail}",
+        ctx.cfg.main,
+        tip_short(tip),
+        out.code
+    ));
+    if out.code == 0 {
+        st.promotions
+            .push(Promotion { tip: tip.to_owned(), at: ctx.now() });
+    }
+}
+
+/// The last line of a command's output, python's
+/// `out.strip().splitlines()[-1]`.
+fn last_line(text: &str) -> String {
+    text.trim()
+        .lines()
+        .next_back()
+        .map_or_else(String::new, String::from)
+}
+
+/// While merging is held (pump.py:931): once every fix unit has settled, a
+/// clean gate newer than the `HOLD-MERGE` flag lifts the hold; fixes merged
+/// after the last gate (or an unreadable one) force a new gate.
+pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
+    if !ctx.flag(HOLD_FLAG) || st.last_gate.task.is_some() || ctx.flag(FORCE_FLAG) {
+        return;
+    }
+    let prefix = ctx.cfg.fix_prefix.as_str();
+    if !all_fixes_settled(st, prefix) {
+        return;
+    }
+    let Some(last) = st.gates.last().cloned() else {
+        return;
+    };
+    if clean_gate(&last) && last.at > file_mtime(&ctx.home.join(HOLD_FLAG)) {
+        remove_flag(ctx, HOLD_FLAG);
+        ctx.log(&format!("hold lifted: gate at {} is clean", tip_short(&last.tip)));
+        return;
+    }
+    if newest_merged_fix(st, prefix) > last.at || last.names.is_none() {
+        write_force_flag(ctx);
+        ctx.log("hold: fixes merged, forcing a gate");
+    }
+}
+
+/// Every `<fix_prefix>`-prefixed unit has a settled status.
+fn all_fixes_settled(st: &State, prefix: &str) -> bool {
+    st.units
+        .iter()
+        .filter(|(uid, _)| uid.starts_with(prefix))
+        .all(|(_, unit)| is_settled(unit.status))
+}
+
+/// The newest `since` among merged fix units, or 0.
+fn newest_merged_fix(st: &State, prefix: &str) -> u64 {
+    st.units
+        .iter()
+        .filter(|(uid, unit)| uid.starts_with(prefix) && unit.status == Status::Merged)
+        .map(|(_, unit)| unit.since)
+        .max()
+        .unwrap_or(0)
+}
+
+/// A gate record with readable names and no new failure.
+fn clean_gate(gate: &GateRecord) -> bool {
+    gate.names.is_some() && gate.new.as_ref().is_none_or(Vec::is_empty)
+}
+
+/// `true` for the statuses a fix unit ends in without further work: merged,
+/// stuck, no-defect or replaced.
+fn is_settled(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Merged | Status::Stuck | Status::NoDefect | Status::Replaced
+    )
+}
+
+/// The flag file's modification time as epoch seconds, 0 when unknown.
+fn file_mtime(path: &Path) -> u64 {
+    match fs::metadata(path) {
+        Ok(meta) => match meta.modified() {
+            Ok(when) => when
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |span| span.as_secs()),
+            Err(_) => 0,
+        },
+        Err(_) => 0,
+    }
+}
+
+/// Write the `FORCE-GATE` flag with its payload, logging a failure.
+fn write_force_flag(ctx: &Ctx) {
+    if let Err(err) = fs::write(ctx.home.join(FORCE_FLAG), FORCE_TEXT) {
+        ctx.log(&format!("gate flag write failed: {err}"));
+    }
+}
+
+/// Remove a flag file, logging a failure.
+fn remove_flag(ctx: &Ctx, name: &str) {
+    if let Err(err) = fs::remove_file(ctx.home.join(name)) {
+        ctx.log(&format!("gate flag remove failed: {err}"));
+    }
+}
+
+/// The last `limit` characters of `text`.
+fn tail_chars(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    text.chars().skip(count.saturating_sub(limit)).collect()
+}
+
+/// The first `limit` characters of `text`.
+fn cut_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
 }
