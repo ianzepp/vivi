@@ -11,13 +11,13 @@ use vivi::message::{render_message, to_json_message};
 use vivi::storage::{MessageIngestRequest, Storage};
 
 use crate::identities::IdentityRecord;
-use crate::projects::{ListQuery, ProjectError, ProjectRecord, ProjectStore, Viewer};
+use crate::projects::{ProjectError, ProjectRecord, ProjectStore, Scan, Viewer};
 use crate::safety::RateLimiter;
 
 use super::letters::{
-    ItemState, ParsedLetter, append_composed, caller_address, compose_event, compose_reply,
-    compose_send, fold_item_states, fold_item_states_at, handle_of, item_status, parse_letter,
-    state_of, valid_handle,
+    EventFold, ItemState, ParsedLetter, append_composed, caller_address, compose_event,
+    compose_reply, compose_send, handle_of, item_status, parse_headers, parse_letter, state_of,
+    valid_handle,
 };
 
 const LIST_DEFAULT: usize = 50;
@@ -65,10 +65,9 @@ fn overview(
     project_id: &str,
     identity: &IdentityRecord,
 ) -> Result<Value, ToolError> {
-    let all = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&all);
-    // Event letters are not work and not mail: they only move item state.
-    let records = without_events(&all);
+    // Event letters are not work and not mail: they only move item state, so
+    // the view holds none of them.
+    let View { records, states } = read_view(store, project_id, identity, Scan::All, false)?;
     let mut needs_open = 0;
     let mut tasks_open = 0;
     let mut wants_open = 0;
@@ -128,9 +127,6 @@ fn list_items(
         memos.truncate(limit);
         return Ok(json!({ "kind": "memo", "items": memos }));
     }
-    let all = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&all);
-    let records = without_events(&all);
     let wanted_kind = match kind.as_deref() {
         None => None,
         Some("need" | "task" | "want" | "mail" | "chat") => kind.as_deref(),
@@ -140,6 +136,13 @@ fn list_items(
             )));
         }
     };
+    // Plain mail is read only when mail is what is listed.
+    let scan = if wanted_kind == Some("mail") {
+        Scan::All
+    } else {
+        Scan::WorkAndEvents
+    };
+    let View { records, states } = read_view(store, project_id, identity, scan, false)?;
     let mut items = Vec::new();
     for record in &records {
         let matches_kind = match (wanted_kind, record.kind.as_deref()) {
@@ -151,7 +154,7 @@ fn list_items(
         if !matches_kind {
             continue;
         }
-        let item_status = item_status(record, &parse_letter(&record.raw_eml), &states);
+        let item_status = item_status(record, &parse_headers(&record.raw_eml), &states);
         if wanted_kind != Some("mail") {
             if status == "open" && item_status != "open" {
                 continue;
@@ -183,7 +186,7 @@ fn show(
         return Ok(memo);
     }
     let record = lookup_one(store, project_id, identity, handle)?;
-    let states = fold_item_states(&visible_all(store, project_id, identity)?);
+    let states = read_view(store, project_id, identity, Scan::WorkAndEvents, false)?.states;
     let rendered = render_message(&record.raw_eml).unwrap_or_default();
     let parsed = to_json_message(&record.message_id, &record.raw_eml).ok();
     Ok(json!({
@@ -202,8 +205,8 @@ fn thread(
     let handle = req_str(arguments, "handle")?;
     let limit = opt_usize(arguments, "limit", THREAD_DEFAULT, THREAD_MAX)?;
     let seed = lookup_one(store, project_id, identity, handle)?;
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    // A thread is made of event letters too, so the view keeps them.
+    let View { records, states } = read_view(store, project_id, identity, Scan::All, true)?;
     let seed_letter = parse_letter(&seed.raw_eml);
     let seed_rfc = seed_letter
         .rfc_id
@@ -212,7 +215,7 @@ fn thread(
     let mut by_rfc: HashMap<String, &ProjectRecord> = HashMap::new();
     let mut children: HashMap<String, Vec<&ProjectRecord>> = HashMap::new();
     for record in &records {
-        let letter = parse_letter(&record.raw_eml);
+        let letter = parse_headers(&record.raw_eml);
         if let Some(rfc) = letter.rfc_id.clone() {
             by_rfc.insert(rfc, record);
         }
@@ -231,7 +234,7 @@ fn thread(
     while let Some(Some(parent)) = current {
         if let Some(record) = by_rfc.get(&parent) {
             root_rfc = parent.clone();
-            current = Some(parse_letter(&record.raw_eml).in_reply_to);
+            current = Some(parse_headers(&record.raw_eml).in_reply_to);
         } else {
             break;
         }
@@ -264,7 +267,7 @@ fn thread(
                 if ordered.len() >= limit {
                     return;
                 }
-                let letter = parse_letter(&kid.raw_eml);
+                let letter = parse_headers(&kid.raw_eml);
                 if let Some(child_rfc) = letter.rfc_id.as_deref() {
                     walk(child_rfc, children, by_rfc, ordered, limit);
                 } else if !ordered.iter().any(|seen| seen.message_id == kid.message_id) {
@@ -382,8 +385,7 @@ fn settle(
     // One clock for the whole call: the fold's future bound and the new
     // event's stamp are read at the same instant.
     let now = chrono::Utc::now().timestamp_micros();
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states_at(&records, now);
+    let states = read_view_at(store, project_id, identity, Scan::WorkAndEvents, false, now)?.states;
     let state = state_of(&parent, &parsed, &states);
     let current = item_status(&parent, &parsed, &states);
     if state.is_some_and(|state| state.absorbed) {
@@ -485,9 +487,8 @@ fn graph(
     if !matches!(view, "ready" | "status") {
         return Err(ToolError::new("view must be ready or status"));
     }
-    let all = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&all);
-    let records = without_events(&all);
+    let View { records, states } = read_view(store, project_id, identity, Scan::All, false)?;
+    let by_handle = handle_index(&records);
     let mut ready = Vec::new();
     let mut blocked = Vec::new();
     let mut done = Vec::new();
@@ -495,14 +496,14 @@ fn graph(
         if record.kind.is_none() {
             continue;
         }
-        let letter = parse_letter(&record.raw_eml);
+        let letter = parse_headers(&record.raw_eml);
         let status = item_status(record, &letter, &states);
         let item = summary(record, &states);
         if status == "done" {
             done.push(item);
             continue;
         }
-        let open_deps = open_dependencies(&letter, &records, &states);
+        let open_deps = open_dependencies(&letter, &by_handle, &states);
         if open_deps.is_empty() {
             ready.push(item);
         } else {
@@ -526,15 +527,55 @@ fn graph(
     }))
 }
 
-fn visible_all(
+/// What a tool reads of a project as the caller: the letters it may see, in
+/// append order, and the item states folded from every event letter it may
+/// see.
+struct View {
+    /// The letters the scan returned, event letters left out unless the
+    /// read asked to keep them.
+    records: Vec<ProjectRecord>,
+    states: HashMap<String, ItemState>,
+}
+
+/// [`read_view_at`] at the clock now.
+fn read_view(
     store: &ProjectStore,
     project_id: &str,
     identity: &IdentityRecord,
-) -> Result<Vec<ProjectRecord>, ToolError> {
-    let page = store
-        .read_page(project_id, &ListQuery::since(0), &Viewer::of(identity))
+    scan: Scan,
+    keep_events: bool,
+) -> Result<View, ToolError> {
+    let now = chrono::Utc::now().timestamp_micros();
+    read_view_at(store, project_id, identity, scan, keep_events, now)
+}
+
+/// Walk every letter the caller may see, past the first page and the last,
+/// folding the events as they go and keeping only what a caller needs: an
+/// event letter is dropped once folded unless `keep_events`, so memory holds
+/// the work and mail the tool lists and never the events that fold into it.
+/// `now` is the fold's clock for the future bound.
+fn read_view_at(
+    store: &ProjectStore,
+    project_id: &str,
+    identity: &IdentityRecord,
+    scan: Scan,
+    keep_events: bool,
+    now: i64,
+) -> Result<View, ToolError> {
+    let mut fold = EventFold::new(now);
+    let mut records = Vec::new();
+    store
+        .scan_visible(project_id, &Viewer::of(identity), scan, |record| {
+            let is_event = fold.observe(&record);
+            if keep_events || !is_event {
+                records.push(record);
+            }
+        })
         .map_err(map_project)?;
-    Ok(page.records)
+    Ok(View {
+        records,
+        states: fold.finish(),
+    })
 }
 
 fn lookup_one(
@@ -557,7 +598,7 @@ fn lookup_one(
 }
 
 fn summary(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> Value {
-    let letter = parse_letter(&record.raw_eml);
+    let letter = parse_headers(&record.raw_eml);
     let mut item = json!({
         "handle": handle_of(&record.message_id),
         "message_id": record.message_id,
@@ -585,27 +626,30 @@ fn summary(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> Value
     item
 }
 
-/// The records that are not event letters: an `X-Vivi-Event` letter moves
-/// the state of the item it names and is never itself an item to list,
-/// count, route, or settle, whatever envelope kind it travels under.
-fn without_events(records: &[ProjectRecord]) -> Vec<&ProjectRecord> {
-    records
-        .iter()
-        .filter(|record| parse_letter(&record.raw_eml).event.is_none())
-        .collect()
-}
-
 fn item_is_open(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> bool {
-    item_status(record, &parse_letter(&record.raw_eml), states) == "open"
+    item_status(record, &parse_headers(&record.raw_eml), states) == "open"
 }
 
-fn ready_handles(records: &[&ProjectRecord], states: &HashMap<String, ItemState>) -> Vec<String> {
+/// The first record of each handle, by lowercase handle: what a dependency
+/// names, found without a scan per dependency.
+fn handle_index(records: &[ProjectRecord]) -> HashMap<String, &ProjectRecord> {
+    let mut index = HashMap::with_capacity(records.len());
+    for record in records {
+        if let Some(handle) = handle_of(&record.message_id) {
+            index.entry(handle.to_ascii_lowercase()).or_insert(record);
+        }
+    }
+    index
+}
+
+fn ready_handles(records: &[ProjectRecord], states: &HashMap<String, ItemState>) -> Vec<String> {
+    let by_handle = handle_index(records);
     records
         .iter()
         .filter(|record| record.kind.is_some() && item_is_open(record, states))
         .filter(|record| {
-            let letter = parse_letter(&record.raw_eml);
-            open_dependencies(&letter, records, states).is_empty()
+            let letter = parse_headers(&record.raw_eml);
+            open_dependencies(&letter, &by_handle, states).is_empty()
         })
         .filter_map(|record| handle_of(&record.message_id).map(str::to_owned))
         .collect()
@@ -613,20 +657,15 @@ fn ready_handles(records: &[&ProjectRecord], states: &HashMap<String, ItemState>
 
 fn open_dependencies(
     letter: &ParsedLetter,
-    records: &[&ProjectRecord],
+    by_handle: &HashMap<String, &ProjectRecord>,
     states: &HashMap<String, ItemState>,
 ) -> Vec<String> {
     letter
         .depends_on
         .iter()
-        .filter(|dep| {
-            let handle = dep.to_ascii_lowercase();
-            let Some(dep_record) = records.iter().find(|r| {
-                handle_of(&r.message_id).is_some_and(|h| h.eq_ignore_ascii_case(&handle))
-            }) else {
-                return true;
-            };
-            item_is_open(dep_record, states)
+        .filter(|dep| match by_handle.get(&dep.to_ascii_lowercase()) {
+            Some(dep_record) => item_is_open(dep_record, states),
+            None => true,
         })
         .cloned()
         .collect()

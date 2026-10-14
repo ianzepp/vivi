@@ -107,13 +107,25 @@ pub fn mint_traveling_id() -> Result<String, AuthError> {
     Ok(format!("msg_{}", hex_encode(&raw)))
 }
 
+/// The headers of a letter and its body.
 pub fn parse_letter(raw: &[u8]) -> ParsedLetter {
     let text = String::from_utf8_lossy(raw);
     let (header_text, body) = split_headers(&text);
-    let mut parsed = ParsedLetter {
-        body: body.to_owned(),
-        ..ParsedLetter::default()
-    };
+    let mut parsed = parse_header_block(header_text);
+    parsed.body = body.to_owned();
+    parsed
+}
+
+/// The headers of a letter alone, `body` left empty: what a fold, a status,
+/// or a listing reads, without a copy of every body it passes over.
+pub fn parse_headers(raw: &[u8]) -> ParsedLetter {
+    let text = String::from_utf8_lossy(raw);
+    let (header_text, _) = split_headers(&text);
+    parse_header_block(header_text)
+}
+
+fn parse_header_block(header_text: &str) -> ParsedLetter {
+    let mut parsed = ParsedLetter::default();
     for (name, value) in folded_headers(header_text) {
         let lower = name.to_ascii_lowercase();
         match lower.as_str() {
@@ -624,13 +636,57 @@ pub fn fold_item_states(records: &[ProjectRecord]) -> HashMap<String, ItemState>
 ///   item that letter names. A property event carries no `Prev` that the
 ///   client reads, so its depth is always 0 and the key is the same one.
 pub fn fold_item_states_at(records: &[ProjectRecord], now: i64) -> HashMap<String, ItemState> {
-    let mut by_item: HashMap<String, Vec<CountedEvent>> = HashMap::new();
+    let mut fold = EventFold::new(now);
     for record in records {
-        let letter = parse_letter(&record.raw_eml);
-        if let Some(event) = counted_event(record, &letter, now) {
-            by_item.entry(event.of.clone()).or_default().push(event);
+        fold.observe(record);
+    }
+    fold.finish()
+}
+
+/// The event letters of a project gathered one record at a time, so a read
+/// that pages through every letter folds as it goes and keeps only the
+/// counted events, never the letters: [`fold_item_states_at`] over a slice
+/// and a scan that [`observe`](Self::observe)s each letter fold the same.
+pub struct EventFold {
+    now: i64,
+    by_item: HashMap<String, Vec<CountedEvent>>,
+}
+
+impl EventFold {
+    /// A fold at the clock `now` (Unix microseconds), the instant the future
+    /// bound is read against for every letter it is shown.
+    pub fn new(now: i64) -> Self {
+        Self {
+            now,
+            by_item: HashMap::new(),
         }
     }
+
+    /// Take `record` in when it counts as an event. Returns whether the
+    /// letter carries `X-Vivi-Event` at all, counted or not: such a letter
+    /// is never an item.
+    pub fn observe(&mut self, record: &ProjectRecord) -> bool {
+        let letter = parse_headers(&record.raw_eml);
+        if letter.event.is_none() {
+            return false;
+        }
+        if let Some(event) = counted_event(record, &letter, self.now) {
+            self.by_item
+                .entry(event.of.clone())
+                .or_default()
+                .push(event);
+        }
+        true
+    }
+
+    /// Fold the events held onto their items, by [`fold_item_states_at`]'s
+    /// rule.
+    pub fn finish(self) -> HashMap<String, ItemState> {
+        fold_events(self.by_item)
+    }
+}
+
+fn fold_events(by_item: HashMap<String, Vec<CountedEvent>>) -> HashMap<String, ItemState> {
     // A unit belongs to the item named by its newest bind, across items.
     let mut newest_bind: HashMap<&str, &CountedEvent> = HashMap::new();
     for events in by_item.values() {

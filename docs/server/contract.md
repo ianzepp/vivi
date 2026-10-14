@@ -427,6 +427,15 @@ under the item's own kind; that still works and is folded the same way.
   key. Both are shown on a work item's summary (`marks`, `units`) when
   present, and `absorbed: true` on a sealed one.
 
+- **Every letter, not a page.** The MCP tools fold the event letters of
+  *every* letter the caller may see, however many: the index is walked by
+  cursor in chunks of 500 until it is exhausted, never the first page a
+  list serves (500 letters, 8 MiB). `list` (work kinds), `show` and the
+  settle path of `done`/`reopen` read only work items and event letters;
+  `overview`, `graph`, `thread` and `list kind=mail` also read the caller's
+  plain mail. A project's events are folded as they are read and dropped, so
+  memory holds the listed letters and not the events folded into them.
+
 ### MCP `done` / `reopen`
 
 The authoring mailspace (the caller's prefix is the item's `From` domain)

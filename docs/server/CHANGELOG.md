@@ -25,6 +25,11 @@ them as work. Wire detail in [`docs/contract.md`](docs/contract.md#item-events-1
   owns the prefix counts an own-domain event only from the item's author or
   a `mind`/`operator` role, and a registration name is neither. Reopening an
   absorbed item is refused.
+- **The fold reads every letter.** `list`, `overview`, `graph`, `show`,
+  `thread` and `done`/`reopen` folded only the first page of visible
+  letters (500, or 8 MiB), so an event past it was invisible to MCP and a
+  new event's stamp and `X-Vivi-Event-Prev` were wrong. They now walk the
+  index by cursor to the end, folding events as they go and keeping none.
 - **`item_events: 1`** on `GET /v1/projects/{id}/items` stays, advisory: the
   client does not read it.
 

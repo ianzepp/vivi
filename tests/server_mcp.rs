@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::util::ServiceExt;
 use vivi_server::api_router;
+use vivi_server::projects::{AppendItem, ProjectStore};
 
 fn store_key() -> String {
     STANDARD.encode([0x42u8; 32])
@@ -132,13 +133,16 @@ async fn send_json(
 
 struct Fixture {
     app: Router,
+    /// The data directory the app serves, for a test that fills a project
+    /// straight through a [`ProjectStore`] on the same files.
+    dir: PathBuf,
     project: String,
     token: String,
 }
 
 async fn fixture(name: &str) -> Fixture {
     let dir = fresh_dir(name);
-    let app = api_router(dir, Some(store_key()), None);
+    let app = api_router(dir.clone(), Some(store_key()), None);
     let creator_key = key(1);
     let (status, project) = send_json(
         &app,
@@ -186,6 +190,7 @@ async fn fixture(name: &str) -> Fixture {
     assert_eq!(status, StatusCode::CREATED, "{identity}");
     Fixture {
         app,
+        dir,
         project,
         token: identity["token"].as_str().unwrap().to_owned(),
     }
@@ -1415,4 +1420,232 @@ async fn mcp_reopen_of_an_absorbed_item_is_refused() {
         .await;
     assert_eq!(handles(&open), [open_handle], "{open}");
     assert_eq!(open["items"][0]["absorbed"], true, "{open}");
+}
+
+// ---------------------------------------------------------------------------
+// A long project: the fold reads every letter, not the first page of them.
+// ---------------------------------------------------------------------------
+
+/// A project whose closing event lies past the first page a list serves.
+struct Long {
+    fx: Fixture,
+    /// The handle of the first letter, closed by the project's last one.
+    handle: String,
+    /// The `Message-ID` of that closing event.
+    late_rfc: String,
+    /// When it is stamped: two minutes ahead (counted), the item's newest.
+    late: chrono::DateTime<chrono::Utc>,
+    /// Handles of the tasks nothing closes.
+    open: Vec<String>,
+    /// Tasks something closes, not counting the first letter.
+    closed: u64,
+}
+
+impl Fixture {
+    /// Append a task from `creator` of at least `bytes` bytes straight to the
+    /// project store; returns its message id.
+    fn append_task(&self, store: &ProjectStore, n: u64, bytes: usize) -> String {
+        let id = traveling(n);
+        let mut text = format!(
+            "From: {}\nTo: {}\nSubject: filler {n}\nMessage-ID: <{}>\n\nletter {n}\n",
+            address("creator"),
+            address("hand"),
+            rfc_id(&id, "creator"),
+        );
+        while text.len() < bytes {
+            text.push_str("a line of filler text so the letter has a realistic size\n");
+        }
+        self.append_as_creator(store, &id, "task", text.into_bytes());
+        id
+    }
+
+    fn append_as_creator(&self, store: &ProjectStore, id: &str, kind: &str, raw: Vec<u8>) {
+        let item = AppendItem::new(id, "creator", Some(&address("hand")), Some(kind), raw)
+            .unwrap()
+            .with_from_prefix(Some(&prefix_for("creator")));
+        store.append(&self.project, &item).unwrap();
+    }
+}
+
+/// Fill a project through its store: one task sent over MCP, then `closed`
+/// tasks each followed by its `done` event, then `open` tasks of `bytes`
+/// bytes, then last of all an event that closes the first task.
+async fn long_project(name: &str, closed: u64, open: u64, bytes: usize) -> Long {
+    let fx = fixture(name).await;
+    fx.add_member("hand", 2).await;
+    let store = ProjectStore::new(&fx.dir);
+    let (handle, id) = fx
+        .send_item(&fx.token, "task", &address("hand"), "closed far away")
+        .await;
+    let of = rfc_id(&id, "creator");
+    let begun = std::time::Instant::now();
+    let mut n = 1_000_000u64;
+    for _ in 0..closed {
+        let task = fx.append_task(&store, n, 1024);
+        n += 1;
+        let done = event_letter(
+            "creator",
+            &traveling(n),
+            &rfc_id(&task, "creator"),
+            &address("hand"),
+            "done",
+            &[("X-Vivi-Event-At", &stamp(-3600))],
+        );
+        fx.append_as_creator(&store, &traveling(n), "mail", done);
+        n += 1;
+    }
+    let mut opened = Vec::new();
+    for _ in 0..open {
+        opened.push(fx.append_task(&store, n, bytes)[4..12].to_owned());
+        n += 1;
+    }
+    let late = chrono::Utc::now() + chrono::Duration::seconds(120);
+    let late_at = late.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let closing = event_letter(
+        "creator",
+        &traveling(n),
+        &of,
+        &address("hand"),
+        "done",
+        &[("X-Vivi-Event-At", &late_at)],
+    );
+    fx.append_as_creator(&store, &traveling(n), "mail", closing);
+    eprintln!(
+        "long project {name}: {} letters appended in {:?}",
+        closed * 2 + open + 2,
+        begun.elapsed()
+    );
+    Long {
+        late_rfc: rfc_id(&traveling(n), "creator"),
+        fx,
+        handle,
+        late,
+        open: opened,
+        closed,
+    }
+}
+
+/// Every tool that folds sees the closing event, and the fold's clock and
+/// heads are the late event's: a reopen follows it.
+async fn assert_every_tool_folds_the_late_event(long: &Long) {
+    let Long {
+        fx,
+        handle,
+        late_rfc,
+        late,
+        open,
+        closed,
+    } = long;
+    let timed = |what: &str, started: std::time::Instant| {
+        eprintln!("long project: {what} in {:?}", started.elapsed());
+    };
+
+    let started = std::time::Instant::now();
+    let shown = fx.call(&fx.token, "show", json!({"handle": handle})).await;
+    timed("show (one fold)", started);
+    assert_eq!(shown["item"]["status"], "done", "{shown}");
+
+    let started = std::time::Instant::now();
+    let listed = fx
+        .call(
+            &fx.token,
+            "list",
+            json!({"kind": "task", "status": "open", "limit": 100}),
+        )
+        .await;
+    timed("list open", started);
+    if open.len() <= 100 {
+        let mut got = handles(&listed);
+        let mut want = open.clone();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "{listed}");
+    } else {
+        assert_eq!(handles(&listed).len(), 100, "{listed}");
+    }
+    let done = fx
+        .call(
+            &fx.token,
+            "list",
+            json!({"kind": "task", "status": "done", "limit": 100}),
+        )
+        .await;
+    assert!(handles(&done).contains(handle), "{done}");
+
+    let started = std::time::Instant::now();
+    let overview = fx.call(&fx.token, "overview", json!({})).await;
+    timed("overview", started);
+    assert_eq!(
+        overview["totals"]["tasks_open"],
+        open.len(),
+        "the first task is closed by the last letter: {overview}"
+    );
+    assert_eq!(overview["totals"]["ready"], open.len(), "{overview}");
+
+    let started = std::time::Instant::now();
+    let graph = fx.call(&fx.token, "graph", json!({})).await;
+    timed("graph", started);
+    assert_eq!(graph["totals"]["ready"], open.len(), "{graph}");
+    assert_eq!(graph["totals"]["done"], closed + 1, "{graph}");
+
+    // Settling folds the same way: the item is already closed, so a close
+    // writes nothing, and a reopen follows the late event.
+    let started = std::time::Instant::now();
+    let again = fx.call(&fx.token, "done", json!({"handle": handle})).await;
+    timed("done (fold, no write)", started);
+    assert_eq!(again["mode"], "already_done", "{again}");
+    let reopened = fx
+        .call(&fx.token, "reopen", json!({"handle": handle}))
+        .await;
+    assert_eq!(reopened["mode"], "reopened", "{reopened}");
+    let letter = fx
+        .raw_letter(&fx.token, reopened["message_id"].as_str().unwrap())
+        .await;
+    let header = |name: &str| {
+        letter
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        header("X-Vivi-Event-Prev").as_deref(),
+        Some(format!("<{late_rfc}>").as_str()),
+        "names the event past the first page as its head"
+    );
+    let at = chrono::DateTime::parse_from_rfc3339(&header("X-Vivi-Event-At").unwrap()).unwrap();
+    assert!(
+        at.timestamp_micros() > late.timestamp_micros(),
+        "{at} is not past {late}"
+    );
+    let shown = fx.call(&fx.token, "show", json!({"handle": handle})).await;
+    assert_eq!(shown["item"]["status"], "open", "{shown}");
+}
+
+/// A first page ends at 8 MiB of letters: 140 tasks of 60 KiB do not fit,
+/// and the event after them used to be out of every fold.
+#[tokio::test]
+async fn an_event_past_the_byte_capped_first_page_is_folded_by_every_tool() {
+    let long = long_project("long-bytes", 0, 140, 60 * 1024).await;
+    assert_every_tool_folds_the_late_event(&long).await;
+}
+
+/// A first page ends at 500 letters: 2,600 of them, with the event last.
+/// Writing them is the cost (one durable append each, about a minute and a
+/// half), so it runs on request, and reports how long each fold took:
+///
+/// ```text
+/// cargo test --release --test mcp -- --ignored --nocapture long_project
+/// ```
+///
+/// `VIVI_FOLD_LETTERS` overrides the letter count.
+#[tokio::test]
+#[ignore = "writes thousands of letters; run with --ignored"]
+async fn an_event_past_the_record_capped_first_page_is_folded_in_a_long_project() {
+    let letters: u64 = std::env::var("VIVI_FOLD_LETTERS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(2_600);
+    // Pairs of a task and its close, and one task left open.
+    let long = long_project("long-records", (letters - 2) / 2, 1, 1024).await;
+    assert_every_tool_folds_the_late_event(&long).await;
 }
