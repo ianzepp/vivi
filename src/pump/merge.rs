@@ -6,9 +6,19 @@
 //! the integration clone, merge unit branches, format, run the checks, and
 //! push — or report why it did not land.
 
+use std::any::Any;
+use std::fs;
+use std::io::Write;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread;
+
+use crate::pump::collect;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
-use crate::pump::state::{MergeJob, MergeResult};
+use crate::pump::ready::satisfied;
+use crate::pump::remote;
+use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
 /// Default git timeout in seconds, as pump.py's `git()` helper.
 const GIT_TIMEOUT: u64 = 300;
@@ -511,4 +521,280 @@ fn push_failed(uid: &str, out: &str) -> MergeResult {
         why: Some(String::from("push-failed")),
         detail: Some(tail(out, 200)),
     }
+}
+
+// ------------------------------------------------------------ the merge thread
+
+/// The merge worker: one background thread that owns the integration clone,
+/// fed by [`Merger::feed`] and drained by [`Merger::apply`].
+///
+/// Ports pump.py's `MERGE_IN`/`MERGE_OUT` queues (`pump.py:764-765`) and
+/// `merge_thread` (`pump.py:803`): the thread blocks on one job, drains up
+/// to `merge.batch` more, offers the batch to the remote merger and falls
+/// back to [`batch_work`] or [`merge_work`]. It never touches the state;
+/// every effect on units flows back through the results channel.
+pub struct Merger {
+    to_merge: Sender<MergeJob>,
+    pub(crate) results: Receiver<MergeResult>,
+}
+
+impl Merger {
+    /// Start the merge thread for `ctx`. It runs until this `Merger` is
+    /// dropped: dropping closes the job channel, which ends the loop.
+    #[must_use]
+    pub fn start(ctx: Ctx) -> Merger {
+        let (to_merge, jobs) = channel();
+        let (out, results) = channel();
+        let worker = ctx.clone();
+        let spawned = thread::Builder::new()
+            .name(String::from("pump-merge"))
+            .spawn(move || merge_loop(&worker, &jobs, &out));
+        if spawned.is_err() {
+            ctx.log("merge thread did not start; units stay delivered");
+        }
+        Merger { to_merge, results }
+    }
+
+    /// Channel ends a test drives itself: no thread is started.
+    #[cfg(test)]
+    pub(crate) fn detached() -> (Merger, Sender<MergeResult>, Receiver<MergeJob>) {
+        let (to_merge, jobs) = channel();
+        let (out, results) = channel();
+        (Merger { to_merge, results }, out, jobs)
+    }
+
+    /// Queue every `delivered` unit for merging and move it to `merging`
+    /// (pump.py `merge_feed`, :858). Under the `HOLD-MERGE` flag only units
+    /// whose id starts with `fix_prefix` are fed.
+    ///
+    /// State change only: the merge thread touches the repository, never
+    /// the state, so a job sent here is applied later by [`Merger::apply`].
+    pub fn feed(&self, ctx: &Ctx, st: &mut State) {
+        let hold = ctx.flag("HOLD-MERGE");
+        for uid in st.order.clone() {
+            let Some(unit) = st.units.get_mut(&uid) else {
+                continue;
+            };
+            if hold && !uid.starts_with(&ctx.cfg.fix_prefix) {
+                continue;
+            }
+            if unit.status != Status::Delivered {
+                continue;
+            }
+            unit.status = Status::Merging;
+            let job = MergeJob {
+                uid: uid.clone(),
+                branch: unit.branch.clone().unwrap_or_default(),
+                title: unit.title.clone(),
+                need: unit.need.clone(),
+                proof: unit.proof.clone(),
+                tools: unit.tools.clone(),
+                write_scope: unit.write_scope.clone(),
+            };
+            if self.to_merge.send(job).is_err() {
+                if let Some(unit) = st.units.get_mut(&uid) {
+                    unit.status = Status::Delivered;
+                }
+            }
+        }
+    }
+
+    /// Drain finished merge results into state (pump.py `merge_apply`,
+    /// :830): undecided units return to `delivered`, decided failures go
+    /// through [`collect::fail`], and merges land with their tip and outside
+    /// files — closing the need and appending `needs-ready.txt` when its
+    /// last unit just became satisfied.
+    pub fn apply(&self, ctx: &Ctx, st: &mut State) {
+        while let Ok(result) = self.results.try_recv() {
+            match result.ok {
+                None => apply_undecided(ctx, st, &result),
+                Some(false) => apply_failure(ctx, st, &result),
+                Some(true) => apply_merged(ctx, st, &result),
+            }
+        }
+    }
+}
+
+/// The worker loop (pump.py `merge_thread`, :803): block on one job — the
+/// loop ends when the sender is dropped — drain up to `merge.batch` more,
+/// merge the batch, and hand out exactly one result per job. A panic in the
+/// work becomes one `merge-error` result per job, never a dead loop.
+fn merge_loop(ctx: &Ctx, jobs: &Receiver<MergeJob>, out: &Sender<MergeResult>) {
+    while let Ok(first) = jobs.recv() {
+        let mut batch = vec![first];
+        while batch.len() < ctx.cfg.merge.batch as usize {
+            match jobs.try_recv() {
+                Ok(job) => batch.push(job),
+                Err(_) => break,
+            }
+        }
+        let work = AssertUnwindSafe(|| run_batch(ctx, &batch));
+        let done = match catch_unwind(work) {
+            Ok(results) => results,
+            Err(err) => {
+                let detail = panic_text(err);
+                ctx.log(&format!("MERGE ERROR {detail}"));
+                batch
+                    .iter()
+                    .map(|j| undecided_result(&j.uid, "merge-error", &detail))
+                    .collect()
+            }
+        };
+        dispatch_results(out, &batch, done);
+    }
+}
+
+/// Offer the batch to the remote merger, else merge here: [`batch_work`]
+/// for more than one job, [`merge_work`] for exactly one, then the
+/// `batch of <n>: <m> merged` log line.
+fn run_batch(ctx: &Ctx, jobs: &[MergeJob]) -> Vec<MergeResult> {
+    let done = match remote::offer(ctx, jobs) {
+        Some(results) => results,
+        None if jobs.len() > 1 => batch_work(ctx, jobs),
+        None => vec![merge_work(ctx, &jobs[0])],
+    };
+    let merged = done.iter().filter(|r| r.ok == Some(true)).count();
+    ctx.log(&format!("batch of {}: {merged} merged", jobs.len()));
+    done
+}
+
+/// Send one result per job (pump.py :818-827): results deduplicated by uid,
+/// and every job the batch's results never named gets an
+/// `ok=None, why="merge-undecided"` result.
+fn dispatch_results(out: &Sender<MergeResult>, jobs: &[MergeJob], done: Vec<MergeResult>) {
+    let mut seen: Vec<String> = Vec::new();
+    for result in done {
+        if seen.contains(&result.uid) {
+            continue;
+        }
+        seen.push(result.uid.clone());
+        if out.send(result).is_err() {
+            return;
+        }
+    }
+    for job in jobs {
+        if seen.iter().any(|uid| uid == &job.uid) {
+            continue;
+        }
+        let result = undecided_result(&job.uid, "merge-undecided", "");
+        if out.send(result).is_err() {
+            return;
+        }
+    }
+}
+
+/// An `ok=None` result: the unit returns to `delivered` and is retried by a
+/// later feed.
+fn undecided_result(uid: &str, why: &str, detail: &str) -> MergeResult {
+    MergeResult {
+        uid: uid.to_string(),
+        ok: None,
+        tip: None,
+        outside: Vec::new(),
+        secs: None,
+        why: Some(why.to_string()),
+        detail: Some(detail.to_string()),
+    }
+}
+
+/// The panic payload as one line of at most 600 chars, like python's
+/// flattened traceback tail.
+fn panic_text(err: Box<dyn Any + Send>) -> String {
+    let text = err
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_else(|| String::from("unknown panic"));
+    tail(&text.replace('\n', " | "), 600)
+}
+
+/// `ok=null`: the unit returns to `delivered` for a later retry, and the
+/// log line is `<why> <uid>: <first 200 chars of detail>`.
+fn apply_undecided(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    if let Some(unit) = st.units.get_mut(&result.uid) {
+        unit.status = Status::Delivered;
+    }
+    let why = result.why.as_deref().unwrap_or("");
+    let head: String = result
+        .detail
+        .clone()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    ctx.log(&format!("{why} {}: {head}", result.uid));
+}
+
+/// `ok=false`: a decided failure — the unit is failed through
+/// [`collect::fail`], which retries it or marks it stuck.
+fn apply_failure(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    let why = result.why.clone().unwrap_or_default();
+    let detail = result.detail.clone().unwrap_or_default();
+    collect::fail(ctx, st, &result.uid, &why, &detail);
+}
+
+/// `ok=true`: the unit becomes `merged` with its tip and outside files, the
+/// merge counter ticks, and the `scope-warn` and `merged` lines are logged.
+fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    let now = ctx.now();
+    if let Some(unit) = st.units.get_mut(&result.uid) {
+        unit.status = Status::Merged;
+        unit.commit = result.tip.clone();
+        unit.since = now;
+        unit.outside = result.outside.clone();
+    }
+    st.merges += 1;
+    if !result.outside.is_empty() {
+        let files: String = result.outside.join(" ").chars().take(300).collect();
+        ctx.log(&format!(
+            "scope-warn {} touched outside scope: {files}",
+            result.uid
+        ));
+    }
+    let tip: String = result
+        .tip
+        .as_deref()
+        .unwrap_or_default()
+        .chars()
+        .take(10)
+        .collect();
+    ctx.log(&format!(
+        "merged {} tip={} in {}s",
+        result.uid,
+        tip,
+        result.secs.unwrap_or(0)
+    ));
+    close_need(ctx, st, &result.uid, &tip);
+}
+
+/// Close the unit's need and append its `needs-ready.txt` line when the
+/// need record exists, is not closed yet, and every one of its units is
+/// satisfied (pump.py :846-855).
+fn close_need(ctx: &Ctx, st: &mut State, uid: &str, tip: &str) {
+    let Some(need_id) = st.units.get(uid).map(|u| u.need.clone()) else {
+        return;
+    };
+    let Some(need) = st.needs.get(&need_id) else {
+        return;
+    };
+    if st.closed_needs.contains(&need_id) || !need.units.iter().all(|x| satisfied(st, x, 0)) {
+        return;
+    }
+    let units = need.units.join(",");
+    st.closed_needs.push(need_id.clone());
+    let line = format!("{need_id} {tip} {units}\n");
+    if append_needs_ready(ctx, &line).is_err() {
+        ctx.log(&format!("needs-ready: cannot append {need_id}"));
+    }
+}
+
+/// Append one line to `<home>/needs-ready.txt`, creating the file when it
+/// does not exist yet.
+fn append_needs_ready(ctx: &Ctx, line: &str) -> std::io::Result<()> {
+    let path = ctx.home.join("needs-ready.txt");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line.as_bytes())
 }
