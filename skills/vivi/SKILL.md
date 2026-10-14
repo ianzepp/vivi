@@ -234,6 +234,22 @@ dash, and underscore, compared exactly. Marks survive promote, done, reopen,
 and drop. They do not change graph readiness, `vivi step`, or `need bind`.
 They stay in this mailspace; nothing syncs them.
 
+**Bind.** Lowering is a letter too. A `need bind` writes one `bound` event
+letter on the need — `X-Vivi-Event: bound` beside the usual event headers,
+with one `X-Vivi-Event-Unit: <unit Message-ID>` header per unit — and it
+travels like any event letter (State as letters). Every member applies it
+where it holds the work: each unit the letter names that the member holds
+with a backlog node binds to its own node for the need (the unit's
+`subgraph` becomes the need), and the join then runs there, so a need whose
+units are all done completes on that member, wherever the bind was made.
+Binding already-done units can complete the need at once, the same way. The
+newest bind controls a unit: a `bound` letter older than a newer bind of
+that unit moves nothing. A unit this mailspace does not hold yet is skipped;
+the letter stays counted on the need and re-applies on its next settle, so a
+unit that arrives later binds then. A need with no node here (held foreign)
+is skipped; and a bind made where no role here authored the need writes no
+letter — that lowering stays local.
+
 Memos preserve durable role context. They are not routing, assignment, or
 completion evidence. Standing project rules belong in `vivi rule`. Delete
 superseded unsealed memos (`memo delete` refuses a handle that is not a
@@ -1977,9 +1993,9 @@ send = "addressed"
 `all` sends every letter, as before the key existed. `addressed` sends only
 letters a `To` or `Cc` address in another mailspace's domain names — a domain
 other than this mailspace's own `<prefix>.local` or the bare `local`; an
-address with no domain counts as local — plus event letters (close/reopen)
-for work already on the server: an event whose item is held here bound to
-this project follows the work that left. Everything else stays machine-local
+address with no domain counts as local — plus event letters (close/reopen,
+and a `need bind`'s `bound` letter) for work already on the server: an event
+whose item is held here bound to this project follows the work that left. Everything else stays machine-local
 by policy: the push summary counts it under `not synced by design` as
 `N local only (send = addressed)`, and it is not unsent — `vivi sync status`
 does not count it and no later push waits on it. Any other value is a config
