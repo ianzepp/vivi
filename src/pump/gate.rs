@@ -23,6 +23,11 @@ const BUILD_FAILED: &str = "BUILD-FAILED";
 const FORCE_FLAG: &str = "FORCE-GATE";
 /// Flag file that holds the merge queue until a clean gate.
 const HOLD_FLAG: &str = "HOLD-MERGE";
+/// The pool name an external gate run is recorded under.
+const EXTERNAL_POOL: &str = "external";
+/// The `state.json` key holding the epoch seconds a due gate began waiting
+/// for an external result.
+const WAIT_KEY: &str = "external_wait_since";
 /// The payload the hold cycle writes into `FORCE-GATE`.
 const FORCE_TEXT: &str = "after fixes\n";
 
@@ -158,10 +163,143 @@ fn parse_path(bytes: &[u8], start: usize) -> Option<usize> {
     if leading >= 2 { after_last } else { None }
 }
 
+/// Take the gate results an external runner wrote (pump.py:891), oldest
+/// first, as ordinary gates.
+///
+/// Does nothing unless `[pump.gate] results_dir` is set. Each `<tip>.json` in
+/// it is moved to `done/` and finished like a worker's reply: `last_gate`
+/// becomes an `external` run at that tip, the wait marker is cleared, and the
+/// names (or a `BUILD-FAILED` line plus the tail) go through [`finish_gate`].
+/// A file that does not parse is left where it is. A result with neither
+/// names nor `build_failed` is finished with an empty reply, which raises
+/// `gate-unreadable`.
+pub fn external_gates(ctx: &Ctx, st: &mut State) {
+    let Some(dir) = ctx.cfg.results_dir(&ctx.project) else {
+        return;
+    };
+    for (path, result) in pending_results(&dir) {
+        let done = dir.join("done");
+        let moved = fs::create_dir_all(&done)
+            .and_then(|()| fs::rename(&path, done.join(path.file_name().unwrap_or_default())));
+        if let Err(err) = moved {
+            ctx.log(&format!(
+                "external gate result move failed at {}: {err}",
+                path.display()
+            ));
+            continue;
+        }
+        let short = tip_short(&result.tip);
+        if st.last_gate.task.is_some() && st.last_gate.pool.as_deref() != Some(EXTERNAL_POOL) {
+            ctx.log(&format!(
+                "external gate {short} taken while a pool gate is running; the pool result will follow"
+            ));
+        }
+        st.last_gate = GateRun {
+            at: ctx.now(),
+            merges: st.merges,
+            task: Some(String::from(EXTERNAL_POOL)),
+            tip: Some(result.tip.clone()),
+            pool: Some(String::from(EXTERNAL_POOL)),
+        };
+        st.extra.remove(WAIT_KEY);
+        let host = result
+            .host
+            .as_deref()
+            .map_or_else(String::new, |host| format!(" host={host}"));
+        ctx.log(&format!(
+            "external gate at {short} ({}s){host}",
+            result.seconds
+        ));
+        finish_gate(ctx, st, &result.reply());
+    }
+}
+
+/// A gate result file an external runner writes.
+#[derive(Debug, serde::Deserialize)]
+struct ExternalResult {
+    /// The integration tip that was gated.
+    tip: String,
+    /// Wall seconds the run took.
+    #[serde(default)]
+    seconds: u64,
+    /// Free text naming the machine that ran it; only logged.
+    #[serde(default)]
+    host: Option<String>,
+    /// Failing test names; null when the build failed.
+    #[serde(default)]
+    names: Option<Vec<String>>,
+    /// The build itself broke.
+    #[serde(default)]
+    build_failed: bool,
+    /// Output tail kept for a failed build.
+    #[serde(default)]
+    tail: String,
+}
+
+impl ExternalResult {
+    /// The result as the reply text [`finish_gate`] reads (pump.py:905-908).
+    fn reply(&self) -> String {
+        if self.build_failed {
+            return format!("{BEGIN}\n{BUILD_FAILED}\n{END}\n{}", self.tail);
+        }
+        match &self.names {
+            Some(names) => format!("{BEGIN}\n{}\n{END}", names.join("\n")),
+            None => String::new(),
+        }
+    }
+}
+
+/// Parsed `*.json` results in `dir`, oldest modification time first.
+/// Unreadable or unparseable files are skipped.
+fn pending_results(dir: &Path) -> Vec<(PathBuf, ExternalResult)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u64, PathBuf, ExternalResult)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json") && path.is_file())
+        .filter_map(|path| {
+            let result = serde_json::from_str(&fs::read_to_string(&path).ok()?).ok()?;
+            Some((file_mtime(&path), path, result))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    found
+        .into_iter()
+        .map(|(_, path, result)| (path, result))
+        .collect()
+}
+
+/// `true` while a due gate should keep waiting for an external result:
+/// `results_dir` is set and the wait, started the first time a gate was due,
+/// is younger than `results_wait_seconds`. Starts the wait when it is not
+/// running yet; an elapsed wait is cleared so the pool gate goes out.
+fn waiting_for_external(ctx: &Ctx, st: &mut State) -> bool {
+    if ctx.cfg.gate.results_dir.is_none() {
+        return false;
+    }
+    let now = ctx.now();
+    let since = st
+        .extra
+        .get(WAIT_KEY)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(now);
+    if now.saturating_sub(since) < ctx.cfg.gate.results_wait_seconds {
+        st.extra
+            .insert(String::from(WAIT_KEY), serde_json::json!(since));
+        return true;
+    }
+    st.extra.remove(WAIT_KEY);
+    false
+}
+
 /// Start a gate when one is due (pump.py:872): send the gate brief as a task
 /// and dispatch it read-only on the first gate pool with a free slot. Does
-/// nothing while a gate task is open, when no pool is free, or when the
-/// remote tip is not a 40-hex commit. A failed dispatch closes the task and
+/// nothing while a gate task is open, when no pool is free, when the remote
+/// tip is not a 40-hex commit, or while a due gate is still inside its
+/// `results_wait_seconds` wait for an external result (a pool gate is only
+/// the fallback). A failed dispatch closes the task and
 /// records nothing; a successful one clears `FORCE-GATE` (when it forced the
 /// gate) and stores the run in `last_gate`.
 pub fn start_gate(ctx: &Ctx, st: &mut State) {
@@ -169,7 +307,7 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
         return;
     }
     let force = ctx.flag(FORCE_FLAG);
-    if !gate_due(ctx, st, force) {
+    if !gate_due(ctx, st, force) || waiting_for_external(ctx, st) {
         return;
     }
     let Some(pool) = pick_pool(ctx) else {
@@ -336,7 +474,13 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
         st.gates.push(rec);
         return;
     }
-    let names = names.unwrap_or_default();
+    let ignored = ignored_names(ctx);
+    let names: Vec<String> = names
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| !ignored.contains(name))
+        .collect();
+    rec.names = Some(names.clone());
     if st.baseline.is_none() {
         st.baseline = Some(names.clone());
         ctx.log(&format!(
@@ -413,11 +557,20 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
 /// them (owning each and starting a gate-fix planner) or promote.
 fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[String]) {
     drop_fixed_names(ctx, st, names);
-    let new = new_failures(ctx, st, names);
+    let new = new_failures(st, names);
     rec.new = Some(new.clone());
     if new.is_empty() {
         ctx.log(&gate_summary(rec, names, 0));
-        promote(ctx, st, &rec.tip);
+        let outstanding = outstanding_owned(st, names);
+        if outstanding == 0 {
+            promote(ctx, st, &rec.tip);
+        } else {
+            ctx.log(&format!(
+                "promote held: {outstanding} owned failures still red at {} \
+                 (main never gets redder)",
+                tip_short(&rec.tip)
+            ));
+        }
         return;
     }
     let owner = fix_need(ctx, &rec.tip);
@@ -433,6 +586,17 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
         &suspect_ids(st, st.gates.last().map_or(0, |g| g.merges), rec.merges),
     );
     ctx.log(&gate_summary(rec, names, new.len()));
+}
+
+/// How many owned failures (names in `st.red`) the gate still reports
+/// (pump.py:1041, `set(names) & set(owned)`). Main is promoted only when this
+/// is zero: main never gets redder.
+fn outstanding_owned(st: &State, names: &[String]) -> usize {
+    names
+        .iter()
+        .filter(|name| st.red.contains_key(*name))
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 /// The `gate at <tip10>: <n> failing, <m> new` log line.
@@ -459,16 +623,13 @@ fn drop_fixed_names(ctx: &Ctx, st: &mut State, names: &[String]) {
     }
 }
 
-/// The names in neither the baseline, the known-red list nor the owned map,
+/// The names in neither the baseline nor the owned map,
 /// sorted (pump.py:994).
-fn new_failures(ctx: &Ctx, st: &State, names: &[String]) -> Vec<String> {
-    let known = known_red(ctx);
+fn new_failures(st: &State, names: &[String]) -> Vec<String> {
     names
         .iter()
         .filter(|name| {
-            !known.contains(*name)
-                && !st.baseline.as_ref().is_some_and(|b| b.contains(*name))
-                && !st.red.contains_key(*name)
+            !st.baseline.as_ref().is_some_and(|b| b.contains(*name)) && !st.red.contains_key(*name)
         })
         .cloned()
         .collect::<BTreeSet<_>>()
@@ -476,10 +637,19 @@ fn new_failures(ctx: &Ctx, st: &State, names: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The lines of `<home>/known-red.txt`, when it exists.
-fn known_red(ctx: &Ctx) -> BTreeSet<String> {
-    match fs::read_to_string(ctx.home.join("known-red.txt")) {
-        Ok(text) => text.lines().map(String::from).collect(),
+/// The names in `[pump.gate] ignore_file`: one per line, trimmed, blank lines
+/// and `#` comments skipped. Empty when unset or unreadable.
+fn ignored_names(ctx: &Ctx) -> BTreeSet<String> {
+    let Some(path) = ctx.cfg.ignore_file(&ctx.project) else {
+        return BTreeSet::new();
+    };
+    match fs::read_to_string(path) {
+        Ok(text) => text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(String::from)
+            .collect(),
         Err(_) => BTreeSet::new(),
     }
 }

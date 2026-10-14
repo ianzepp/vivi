@@ -237,6 +237,15 @@ pub struct GateConfig {
     pub model: String,
     /// Gate worker budget, in seconds.
     pub budget: u64,
+    /// Directory an external runner drops `<tip>.json` gate results in;
+    /// relative paths join the project root. Absent means pool gates only.
+    pub results_dir: Option<String>,
+    /// With `results_dir` set, seconds a due gate waits for an external
+    /// result before a pool gate is dispatched instead. Must be >= 1 then.
+    pub results_wait_seconds: u64,
+    /// File of test names dropped from every gate's failing set, one per
+    /// line, `#` comments; relative paths join the project root.
+    pub ignore_file: Option<String>,
 }
 
 impl Default for GateConfig {
@@ -248,6 +257,9 @@ impl Default for GateConfig {
             pools: Vec::new(),
             model: String::new(),
             budget: 1800,
+            results_dir: None,
+            results_wait_seconds: 0,
+            ignore_file: None,
         }
     }
 }
@@ -302,6 +314,24 @@ impl PumpConfig {
             Some(repo) => resolve(project, repo),
             None => self.home_dir(project).join("repo"),
         }
+    }
+
+    /// The external gate results directory, when configured.
+    #[must_use]
+    pub fn results_dir(&self, project: &Path) -> Option<PathBuf> {
+        self.gate
+            .results_dir
+            .as_deref()
+            .map(|dir| resolve(project, dir))
+    }
+
+    /// The gate ignore file, when configured.
+    #[must_use]
+    pub fn ignore_file(&self, project: &Path) -> Option<PathBuf> {
+        self.gate
+            .ignore_file
+            .as_deref()
+            .map(|file| resolve(project, file))
     }
 
     /// `--from` of a unit dispatch: `dispatch.from`, else `branch`.
@@ -361,6 +391,9 @@ impl PumpConfig {
         }
         if self.gate.every_merges == 0 {
             bad.push("[pump.gate] every_merges must be >= 1".into());
+        }
+        if self.gate.results_dir.is_some() && self.gate.results_wait_seconds == 0 {
+            bad.push("[pump.gate] results_dir needs results_wait_seconds >= 1".into());
         }
         for name in &self.gate.pools {
             if !known(pools, name) {

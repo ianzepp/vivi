@@ -41,6 +41,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     dispatch::dispatch(ctx, st);
     save(ctx, st);
     gate::hold_cycle(ctx, st);
+    gate::external_gates(ctx, st);
     gate::start_gate(ctx, st);
     merger.apply(ctx, st);
     merger.feed(ctx, st);

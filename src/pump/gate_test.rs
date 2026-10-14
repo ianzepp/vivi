@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use crate::pump::config::{GateConfig, PumpConfig};
-use crate::pump::gate::{finish_gate, hold_cycle, parse_failing, start_gate};
+use crate::pump::gate::{external_gates, finish_gate, hold_cycle, parse_failing, start_gate};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{GateRecord, GateRun, State, Status, Unit};
 
@@ -29,6 +29,7 @@ fn gate_cfg() -> PumpConfig {
             pools: vec![String::from("flyfull"), String::from("flygate")],
             model: String::from("zai/glm-5.3-flash"),
             budget: 1800,
+            ..GateConfig::default()
         },
         ..PumpConfig::default()
     }
@@ -326,9 +327,13 @@ fn the_first_gate_sets_the_baseline_and_does_not_promote() {
 }
 
 #[test]
-fn names_in_the_baseline_known_red_or_owned_are_not_new() {
-    let (dir, ctx, _host) = setup();
-    fs::write(ctx.home.join("known-red.txt"), "known crate::b\n").unwrap();
+fn names_in_the_baseline_the_ignore_file_or_owned_are_not_new() {
+    let dir = tempdir().unwrap();
+    let ignore = dir.path().join("ignore.txt");
+    fs::write(&ignore, "# flaky\n\n  known crate::b  \n").unwrap();
+    let mut cfg = gate_cfg();
+    cfg.gate.ignore_file = Some(ignore.display().to_string());
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
     let mut st = gate_state(4);
     st.red
         .insert(String::from("owned crate::c"), String::from("pumpfix-old"));
@@ -337,6 +342,13 @@ fn names_in_the_baseline_known_red_or_owned_are_not_new() {
     finish_gate(&ctx, &mut st, text);
     let rec = st.gates.last().unwrap();
     assert_eq!(rec.new, Some(vec![String::from("fresh crate::d")]));
+    assert!(
+        !rec.names
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|n| n == "known crate::b")
+    );
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exceptions.contains("gate-new-failures 0123456789 1 new: fresh crate::d"));
     drop(dir);
@@ -588,5 +600,184 @@ fn a_red_gate_never_stops_the_merge_queue() {
     );
     assert_eq!(statuses(&st), before);
     assert!(!st.gates.is_empty());
+    drop(dir);
+}
+
+/// Replies that make a promote succeed, and a state that owns `crate::c`.
+fn owned_red_state() -> State {
+    let mut st = gate_state(4);
+    st.baseline = Some(vec![String::from("old")]);
+    st.red
+        .insert(String::from("crate::c"), String::from("pumpfix-gabcdef01"));
+    st
+}
+
+#[test]
+fn promote_is_held_while_an_owned_failure_is_still_red() {
+    let (dir, ctx, host) = setup();
+    wire_promote(&host);
+    let mut st = owned_red_state();
+    finish_gate(&ctx, &mut st, "FAILING-BEGIN\nold\ncrate::c\nFAILING-END\n");
+    assert!(host.commands().iter().all(|c| !c.contains("git push")));
+    assert!(st.promotions.is_empty());
+    assert!(st.red.contains_key("crate::c"));
+    assert!(host.logs().iter().any(|l| {
+        l.contains(
+            "promote held: 1 owned failures still red at 0123456789 (main never gets redder)",
+        )
+    }));
+    assert_eq!(st.gates.last().unwrap().new, Some(Vec::new()));
+    drop(dir);
+}
+
+#[test]
+fn promote_goes_once_the_owned_failure_is_gone_from_the_gate() {
+    let (dir, ctx, host) = setup();
+    wire_promote(&host);
+    let mut st = owned_red_state();
+    finish_gate(&ctx, &mut st, "FAILING-BEGIN\nold\nFAILING-END\n");
+    assert!(st.red.is_empty());
+    assert_eq!(st.promotions.len(), 1);
+    assert_eq!(st.promotions[0].tip, TIP);
+    assert!(host.logs().iter().all(|l| !l.contains("promote held")));
+    drop(dir);
+}
+
+/// A context whose gate takes external results from `dir/results` and waits
+/// 600 s for one before a pool gate.
+fn external_setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let mut cfg = gate_cfg();
+    cfg.gate.results_dir = Some(dir.path().join("results").display().to_string());
+    cfg.gate.results_wait_seconds = 600;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    (dir, ctx, host)
+}
+
+/// Write an external result for `tip` into the results directory.
+fn write_result(ctx: &Ctx, tip: &str, body: &str) -> std::path::PathBuf {
+    let dir = ctx.cfg.results_dir(&ctx.project).unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{tip}.json"));
+    fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn an_external_result_for_the_tip_finishes_the_gate_and_promotes() {
+    let (dir, ctx, host) = external_setup();
+    wire_promote(&host);
+    let mut st = gate_state(6);
+    st.last_gate.task = None;
+    st.baseline = Some(vec![String::from("old")]);
+    let body = format!(
+        r#"{{"tip": "{TIP}", "host": "runner-1", "seconds": 412, "rc": 0, "names": ["old"], "build_failed": false, "tail": ""}}"#
+    );
+    let path = write_result(&ctx, TIP, &body);
+    external_gates(&ctx, &mut st);
+    assert!(!path.exists());
+    assert!(
+        path.parent()
+            .unwrap()
+            .join(format!("done/{TIP}.json"))
+            .exists()
+    );
+    assert_eq!(st.gates.len(), 1);
+    assert_eq!(st.gates[0].tip, TIP);
+    assert_eq!(st.gates[0].merges, 6);
+    assert_eq!(st.last_gate.task, None);
+    assert_eq!(st.last_gate.pool.as_deref(), Some("external"));
+    assert_eq!(st.promotions.len(), 1);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("external gate at 0123456789 (412s) host=runner-1"))
+    );
+    drop(dir);
+}
+
+#[test]
+fn an_external_result_holds_promotion_while_an_owned_failure_is_red() {
+    let (dir, ctx, host) = external_setup();
+    wire_promote(&host);
+    let mut st = owned_red_state();
+    st.last_gate.task = None;
+    let body = format!(
+        r#"{{"tip": "{TIP}", "seconds": 1, "names": ["old", "crate::c"], "build_failed": false}}"#
+    );
+    write_result(&ctx, TIP, &body);
+    external_gates(&ctx, &mut st);
+    assert!(st.promotions.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("promote held: 1 owned failures"))
+    );
+    drop(dir);
+}
+
+#[test]
+fn an_external_build_failure_raises_gate_build_failed() {
+    let (dir, ctx, host) = external_setup();
+    wire_promote(&host);
+    let mut st = fresh_state();
+    let body = format!(
+        r#"{{"tip": "{TIP}", "names": null, "build_failed": true, "tail": "error: could not compile"}}"#
+    );
+    write_result(&ctx, TIP, &body);
+    external_gates(&ctx, &mut st);
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("gate-build-failed 0123456789"));
+    assert!(exceptions.contains("error: could not compile"));
+    assert!(st.promotions.is_empty());
+    drop(dir);
+}
+
+#[test]
+fn an_unparseable_external_result_is_left_in_place_and_no_dir_means_no_intake() {
+    let (dir, ctx, _host) = external_setup();
+    let mut st = fresh_state();
+    let path = write_result(&ctx, "bad", "{not json");
+    external_gates(&ctx, &mut st);
+    assert!(path.exists());
+    assert!(st.gates.is_empty());
+
+    let (dir2, plain, _host2) = setup();
+    let stray = plain.home.join("gate-results");
+    fs::create_dir_all(&stray).unwrap();
+    fs::write(
+        stray.join(format!("{TIP}.json")),
+        r#"{"tip": "x", "names": []}"#,
+    )
+    .unwrap();
+    external_gates(&plain, &mut st);
+    assert!(st.gates.is_empty());
+    drop((dir, dir2));
+}
+
+#[test]
+fn a_due_gate_waits_for_an_external_result_then_falls_back_to_a_pool() {
+    let (dir, ctx, host) = external_setup();
+    wire(&host);
+    let mut st = State {
+        baseline: None,
+        ..fresh_state()
+    };
+    start_gate(&ctx, &mut st);
+    assert!(host.commands().is_empty());
+    assert_eq!(
+        st.extra["external_wait_since"],
+        serde_json::json!(ctx.now())
+    );
+
+    host.advance(599);
+    start_gate(&ctx, &mut st);
+    assert!(host.commands().is_empty());
+
+    host.advance(1);
+    start_gate(&ctx, &mut st);
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert_eq!(st.last_gate.pool.as_deref(), Some("flygate"));
+    assert!(!st.extra.contains_key("external_wait_since"));
     drop(dir);
 }

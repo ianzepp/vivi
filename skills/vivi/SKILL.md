@@ -1880,7 +1880,6 @@ vivi pump status   # print <home>/status.txt ("no status yet" when absent); no l
 | `status.txt` | pump, `pump status` | four lines: timestamp, units, plans, merges and gates |
 | `lock` | pump (flock only) | empty; the single-instance lock |
 | `skip.txt` | operator, board pass | need handles to never plan |
-| `known-red.txt` | operator, gate arithmetic | failing test names to always ignore, one per line |
 | `hygiene.on` | operator | not carried to the engine; a shared check belongs in `merge.shared_checks` |
 | `plans/` | planner writes `<need>.json` and `<unit>.split.json`; re-plans move old plans to `plans/superseded/` | plan files, below |
 | `needs/` | board dumps the need thread, planner reads | `{need, subject, triage, thread}` |
@@ -2004,6 +2003,9 @@ every_seconds = 1800                   # also due after this long with new merge
 pools         = ["<pool>"]             # first with a free slot wins
 model         = "provider/model-c"     # the gate worker's model
 budget        = 1800                   # the gate dispatch budget
+results_dir   = "<dir>"                # optional: an external runner drops <tip>.json gate results here
+results_wait_seconds = 2700            # with results_dir: wait this long for one before a pool gate
+ignore_file   = "<file>"               # optional: test names dropped from every gate, one per line, # comments
 ```
 
 Validation rejects an empty `branch`, a `tick` below 1, empty `lanes` or a
@@ -2016,9 +2018,16 @@ lane cap below 1, a `max_attempts` below 1, and any pool name that is not a
   the operator replies on its thread; the old plan is superseded.
 - A red gate never stops merging: new failing names are owned by a gate-fix
   plan and subtracted from later gates.
-- Main moves by fast-forward only: a gate with no new unowned failure pushes
-  the gated tip to main, and a main with commits the tip lacks waits for the
-  next batch.
+- Main moves by fast-forward only: a gate with no new failure and no owned
+  failure still red pushes the gated tip to main (otherwise it logs `promote
+  held`: main never gets redder), and a main with commits the tip lacks waits
+  for the next batch.
+- External gate results: with `results_dir` set, an outside runner may drop
+  `<tip>.json` (`{tip, rc, names|null, build_failed, tail, seconds, host?}`;
+  `host` is free text, only logged). The pump finishes the gate from it like a
+  worker gate and moves the file to `<results_dir>/done/`. A due gate waits
+  `results_wait_seconds` for one before dispatching a pool gate; without
+  `results_dir` only pool gates run.
 - A timeout means split the unit, never retry it.
 - No environment variables: configuration lives in `[pump]` and CLI flags
   only.
