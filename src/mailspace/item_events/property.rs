@@ -175,14 +175,16 @@ struct PropertyChain {
     unauthorized: usize,
 }
 
-/// Every property event held for `item` that a member wrote, plus the count
-/// of the others. State events and property events are read apart: a state
-/// event letter never parses as a property event, and the reverse too.
+/// Every property event held for `item` that a member wrote and the clock
+/// counts, plus the count of the others. State events and property events
+/// are read apart: a state event letter never parses as a property event,
+/// and the reverse too.
 fn property_chain(storage: &Storage, item: &HeldItem) -> Result<PropertyChain, VivariumError> {
     let mut chain = PropertyChain {
         events: Vec::new(),
         unauthorized: 0,
     };
+    let now = chrono::Utc::now().timestamp_micros();
     for child in storage.reply_child_contents(&item.content_id)? {
         let Some(view) = storage.message_by_content_id(&child)? else {
             continue;
@@ -194,7 +196,9 @@ fn property_chain(storage: &Storage, item: &HeldItem) -> Result<PropertyChain, V
         else {
             continue;
         };
-        if Mailspace::event_speaks_for(&event.from_domain) {
+        if Mailspace::event_speaks_for(&event.from_domain)
+            && super::dated_within_clock(event.at, now)
+        {
             chain.events.push(event);
         } else {
             chain.unauthorized += 1;

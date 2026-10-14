@@ -6,7 +6,7 @@ use mail_parser::{Address, Message, MessageParser};
 
 use super::{
     EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, EVENT_PREV_HEADER, EventLetter, HeldItem,
-    ItemEventKind, chain_heads, held_item, role_move,
+    ItemEventKind, chain_heads, dated_within_clock, held_item, role_move,
 };
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -428,20 +428,33 @@ impl Mailspace {
 }
 
 /// The `X-Vivi-Event-At` value for a new event: the clock, or one
-/// microsecond past the newest event this mailspace holds for the item,
-/// whichever is later — a writer never stamps an event older than one it
-/// has seen.
+/// microsecond past the newest counted event this mailspace holds for the
+/// item, whichever is later — a writer never stamps an event older than
+/// one it has seen, and never below an instant a reader will not count.
 fn event_at(now_micros: i64, events: &[EventLetter]) -> String {
     let floor = events
         .iter()
+        .filter(|event| dated_within_clock(event.at, now_micros))
         .map(|event| event.at.saturating_add(1))
         .max()
         .unwrap_or(now_micros);
     stamp_micros(now_micros.max(floor))
 }
 
-/// An instant in Unix microseconds as RFC 3339 UTC with microseconds.
-fn stamp_micros(micros: i64) -> String {
+/// An instant in Unix microseconds as RFC 3339 UTC with microseconds, as
+/// long as a reader parses it back: past 9999 the year overflows four
+/// digits (`+10000-...`), so the clock is stamped instead.
+pub(super) fn stamp_micros(micros: i64) -> String {
+    let stamp = stamped(micros);
+    if chrono::DateTime::parse_from_rfc3339(&stamp).is_ok() {
+        return stamp;
+    }
+    stamped(chrono::Utc::now().timestamp_micros())
+}
+
+/// An instant as RFC 3339 UTC with microseconds; the clock when the instant
+/// is outside what `chrono` can hold.
+fn stamped(micros: i64) -> String {
     chrono::DateTime::from_timestamp_micros(micros)
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)

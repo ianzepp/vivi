@@ -13,11 +13,14 @@
 //! The state of an item is a pure function of the letters held. Order is
 //! the clock, never the server: every event carries an instant — its
 //! `X-Vivi-Event-At` (RFC 3339), else its `Date` — and the newest event is
-//! the state. On equal instants a direct successor (it names the other as
-//! its `Prev`) wins, else the larger normalized `Message-ID`, so every
-//! checkout that holds the same letters agrees. A chain no longer beats a
-//! later clock: a later instant wins even over an event that names it as
-//! `Prev`, and a fork is settled the same way on every checkout alike.
+//! the state. On equal instants the deeper chain wins (a direct successor
+//! names the other as its `Prev`, so it carries strictly more history),
+//! else the larger normalized `Message-ID`, so every checkout that holds
+//! the same letters agrees whatever order they arrived in. A chain no
+//! longer beats a later clock: a later instant wins even over an event that
+//! names it as `Prev`, and a fork is settled the same way on every checkout
+//! alike. An instant more than ten minutes past the receiver's clock counts
+//! for nothing at all: no letter can lock an item from the future.
 //!
 //! An event counts when its From domain is a prefix domain (`<8 hex>.local`),
 //! whoever authored the item: the server stamps every record with the
@@ -34,7 +37,7 @@
 //! item arrives and the link is made.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use mail_parser::{HeaderValue, MessageParser};
 use serde::Serialize;
@@ -192,7 +195,7 @@ pub struct EventTally {
     /// Items whose rows or node moved to match their newest event.
     pub applied: usize,
     /// Events that were not applied: from a domain that is not a member's
-    /// prefix domain, or for an item sealed by absorb.
+    /// prefix domain, dated past the clock, or for an item sealed by absorb.
     pub ignored: usize,
 }
 
@@ -270,51 +273,111 @@ fn work_kind(
     Ok(None)
 }
 
-/// The authorized events of one item, and how many named it from a domain
-/// that speaks for no member.
+/// The events of one item that count here, and how many named it from a
+/// domain that speaks for no member or dated it past the clock.
 struct Chain {
     events: Vec<EventLetter>,
     unauthorized: usize,
 }
 
-/// Every event head of the chain, oldest to newest by `(Date, Message-ID)`:
-/// how wide a fork is, and the events the next letter names as `Prev`. The
-/// state is the newest event by [`newer`], not the last head. A cycle (which
-/// no honest writer makes) has no head, so every event is a candidate then.
+/// Every event head of the chain, oldest to newest by the total order
+/// [`newer`] keeps: how wide a fork is, and the events the next letter
+/// names as `Prev`. The state is the newest event by that order, not the
+/// last head. A cycle (which no honest writer makes) has no head, so every
+/// event is a candidate then.
 fn chain_heads(events: &[EventLetter]) -> Vec<&EventLetter> {
     let named: HashSet<&str> = events
         .iter()
         .flat_map(|event| event.prev.iter().map(String::as_str))
         .collect();
-    let mut heads: Vec<&EventLetter> = events
-        .iter()
-        .filter(|event| !named.contains(event.id.as_str()))
+    let depths = event_depths(events);
+    let mut heads: Vec<usize> = (0..events.len())
+        .filter(|&index| !named.contains(events[index].id.as_str()))
         .collect();
     if heads.is_empty() {
-        heads = events.iter().collect();
+        heads = (0..events.len()).collect();
     }
-    heads.sort_by(|a, b| (a.date, &a.id).cmp(&(b.date, &b.id)));
-    heads
+    heads.sort_by_key(|&index| (events[index].at, depths[index], &events[index].id));
+    heads.into_iter().map(|index| &events[index]).collect()
 }
 
-/// How `a` stands against `b` in age: the larger `at` wins, and on equal
-/// `at` a direct successor (it names the other as `Prev`) wins, else the
-/// larger normalized `Message-ID`. A later clock beats the chain: `a` stays
-/// newer even when `b` names it as `Prev`.
-fn newer(a: &EventLetter, b: &EventLetter) -> Ordering {
-    let successor = |x: &EventLetter, y: &EventLetter| x.prev.iter().any(|prev| prev == &y.id);
-    a.at.cmp(&b.at)
-        .then_with(|| match (successor(a, b), successor(b, a)) {
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-            _ => Ordering::Equal,
-        })
-        .then_with(|| a.id.cmp(&b.id))
+/// How `a` stands against `b` in age: the larger `at` wins, then the deeper
+/// chain (a direct successor has strictly more history than the event it
+/// names), then the larger normalized `Message-ID`. A total order, so
+/// [`newest_event`] picks the same event for every ordering of the same
+/// letters. A later clock still beats the chain: `a` stays newer even when
+/// `b` names it as `Prev`.
+fn newer(a: &EventLetter, a_depth: usize, b: &EventLetter, b_depth: usize) -> Ordering {
+    (a.at, a_depth, &a.id).cmp(&(b.at, b_depth, &b.id))
 }
 
 /// The newest event of an item by [`newer`]: the one whose word the state is.
 fn newest_event(events: &[EventLetter]) -> Option<&EventLetter> {
-    events.iter().max_by(|a, b| newer(a, b))
+    let depths = event_depths(events);
+    events
+        .iter()
+        .zip(depths)
+        .enumerate()
+        .max_by(|(_, (a, a_depth)), (_, (b, b_depth))| newer(a, *a_depth, b, *b_depth))
+        .map(|(_, (event, _))| event)
+}
+
+/// The causal depth of every event among `events`: 0 for an event none of
+/// whose `prev` names a held event, else one past the deepest held event it
+/// names. A cycle (which no honest writer makes) is cut where it is met
+/// again, so depth stays finite.
+fn event_depths(events: &[EventLetter]) -> Vec<usize> {
+    let mut held: HashMap<&str, usize> = HashMap::new();
+    for (index, event) in events.iter().enumerate() {
+        held.entry(event.id.as_str()).or_insert(index);
+    }
+    let mut depths: Vec<Option<usize>> = vec![None; events.len()];
+    let mut walking: HashSet<usize> = HashSet::new();
+    (0..events.len())
+        .map(|index| depth_of(index, events, &held, &mut depths, &mut walking))
+        .collect()
+}
+
+/// The causal depth of the event at `index`, computing the held events it
+/// names first. An event met again while it is being computed counts 0.
+fn depth_of(
+    index: usize,
+    events: &[EventLetter],
+    held: &HashMap<&str, usize>,
+    depths: &mut [Option<usize>],
+    walking: &mut HashSet<usize>,
+) -> usize {
+    if let Some(depth) = depths[index] {
+        return depth;
+    }
+    if !walking.insert(index) {
+        return 0;
+    }
+    let mut deepest: Option<usize> = None;
+    for prev in &events[index].prev {
+        let Some(&named) = held.get(prev.as_str()) else {
+            continue;
+        };
+        let depth = depth_of(named, events, held, depths, walking);
+        deepest = Some(deepest.map_or(depth, |seen| seen.max(depth)));
+    }
+    walking.remove(&index);
+    let depth = deepest.map_or(0, |seen| seen + 1);
+    depths[index] = Some(depth);
+    depth
+}
+
+/// How far an event's instant may run past the clock and still count: ten
+/// minutes of clock skew, no more.
+const FUTURE_LIMIT_MICROS: i64 = 10 * 60 * 1_000_000;
+
+/// Whether an event dated `at` counts at fold time. An instant more than
+/// ten minutes past the receiver's clock is a claim about the future, not
+/// an order: it is skipped the way an unauthorized event is, so no letter
+/// can lock an item from the future.
+#[must_use]
+pub(super) fn dated_within_clock(at: i64, now_micros: i64) -> bool {
+    at <= now_micros.saturating_add(FUTURE_LIMIT_MICROS)
 }
 
 /// One folder change the head asks for.
@@ -339,6 +402,7 @@ impl Mailspace {
             events: Vec::new(),
             unauthorized: 0,
         };
+        let now = chrono::Utc::now().timestamp_micros();
         for child in storage.reply_child_contents(&item.content_id)? {
             let Some(view) = storage.message_by_content_id(&child)? else {
                 continue;
@@ -349,7 +413,7 @@ impl Mailspace {
             let Some(event) = parse_event(&bytes).filter(|event| event.of == item.rfc_id) else {
                 continue;
             };
-            if Self::event_speaks_for(&event.from_domain) {
+            if Self::event_speaks_for(&event.from_domain) && dated_within_clock(event.at, now) {
                 chain.events.push(event);
             } else {
                 chain.unauthorized += 1;
@@ -707,3 +771,7 @@ fn role_move(
 #[cfg(test)]
 #[path = "item_events_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "item_events_order_test.rs"]
+mod order_tests;

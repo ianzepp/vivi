@@ -12,7 +12,8 @@ use mail_parser::MessageParser;
 use super::emit;
 use super::property::PropertyKind;
 use super::{
-    EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, HeldItem, Mailspace, parse_property_event,
+    EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, HeldItem, Mailspace, dated_within_clock,
+    parse_property_event,
 };
 use crate::error::VivariumError;
 use crate::mailspace::delivery::add_header;
@@ -58,18 +59,21 @@ impl Mailspace {
     }
 
     /// The `X-Vivi-Event-At` of a new property event: the clock, or one
-    /// microsecond past the newest state or property event this mailspace
-    /// holds for the item, whichever is later — the same floor a state
-    /// event is stamped with, so a writer never stamps below what it holds.
+    /// microsecond past the newest counted state or property event this
+    /// mailspace holds for the item, whichever is later — the same floor a
+    /// state event is stamped with, so a writer never stamps below what it
+    /// has seen or above what a reader will not count.
     fn property_event_at(storage: &Storage, item: &HeldItem) -> Result<String, VivariumError> {
         let mut floor = chrono::Utc::now().timestamp_micros();
+        // The chain holds counted events only; the property instants are
+        // filtered here.
         for event in &Self::item_chain(storage, item)?.events {
             floor = floor.max(event.at.saturating_add(1));
         }
         for at in held_property_ats(storage, item)? {
             floor = floor.max(at.saturating_add(1));
         }
-        Ok(stamp_micros(floor))
+        Ok(emit::stamp_micros(floor))
     }
 
     /// The letter itself: the item's From, To and Cc minus the sender, the
@@ -122,8 +126,10 @@ impl Mailspace {
     }
 }
 
-/// The instants of the property events held for `item` that a member wrote.
+/// The instants of the property events held for `item` that a member wrote
+/// and the clock still counts.
 fn held_property_ats(storage: &Storage, item: &HeldItem) -> Result<Vec<i64>, VivariumError> {
+    let now = chrono::Utc::now().timestamp_micros();
     let mut ats = Vec::new();
     for child in storage.reply_child_contents(&item.content_id)? {
         let Some(view) = storage.message_by_content_id(&child)? else {
@@ -136,16 +142,9 @@ fn held_property_ats(storage: &Storage, item: &HeldItem) -> Result<Vec<i64>, Viv
         else {
             continue;
         };
-        if Mailspace::event_speaks_for(&event.from_domain) {
+        if Mailspace::event_speaks_for(&event.from_domain) && dated_within_clock(event.at, now) {
             ats.push(event.at);
         }
     }
     Ok(ats)
-}
-
-/// An instant in Unix microseconds as RFC 3339 UTC with microseconds.
-fn stamp_micros(micros: i64) -> String {
-    chrono::DateTime::from_timestamp_micros(micros)
-        .unwrap_or_else(chrono::Utc::now)
-        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
