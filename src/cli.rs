@@ -8,6 +8,7 @@ mod board_command;
 mod mailspace_command;
 mod mcp_command;
 mod pool_command;
+mod pump_command;
 mod role_command;
 mod skills_command;
 mod sync_command;
@@ -31,6 +32,7 @@ pub use pool_command::{
     PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand,
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
 };
+pub use pump_command::{PumpOnceCommand, PumpRunCommand, PumpStatusCommand, PumpSubcommand};
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
 pub use sync_command::{ApiKeyCommand, SyncCommand, SyncSubcommand};
@@ -125,6 +127,12 @@ pub enum Command {
     Pool {
         #[command(subcommand)]
         command: PoolSubcommand,
+    },
+
+    /// Run the pump: dispatch, merge and gate the planned units of a backlog
+    Pump {
+        #[command(subcommand)]
+        command: PumpSubcommand,
     },
 
     /// Manage first-class mailspace agent seats (roles)

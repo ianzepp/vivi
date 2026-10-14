@@ -136,6 +136,10 @@ pub struct MailspaceConfig {
     /// defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub absorb: Option<AbsorbConfig>,
+    /// `[pump]`: settings of `vivi pump`. Absent means the pump is not
+    /// configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pump: Option<crate::pump::config::PumpConfig>,
     /// Remote lane pools, by name: one `[pools.<name>]` table each. Absent
     /// means no pool.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -260,6 +264,7 @@ impl Mailspace {
             judgment: None,
             sync: None,
             absorb: None,
+            pump: None,
             pools: BTreeMap::new(),
             retired_pool: None,
         };
