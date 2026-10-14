@@ -157,7 +157,10 @@ impl Mailspace {
     /// One `marked` or `unmarked` property letter per changed slug, so the
     /// mark travels through sync like any letter and the newest event per
     /// slug controls on every member. Written only while the item is held
-    /// work; nothing is written when no slug changed.
+    /// work and only for a role that may close it (its author, or a mind or
+    /// operator): any other role keeps a private row mark with no letter,
+    /// and that mark does not travel. Nothing is written when no slug
+    /// changed.
     fn emit_mark_letters(
         &self,
         storage: &mut Storage,
@@ -172,6 +175,9 @@ impl Mailspace {
         let Some(item) = held_item(storage, &message.content_id)? else {
             return Ok(());
         };
+        if !self.may_close(&item, identity) {
+            return Ok(());
+        }
         let letter = if add {
             PropertyKind::Marked
         } else {

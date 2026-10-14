@@ -26,10 +26,13 @@
 //! units the letter names bind to the item's backlog node, as they bound
 //! where the letter was written.
 //!
-//! As with state events, only a letter from a prefix domain counts
-//! (`event_speaks_for`): such a From names a real member. A bare `local`
-//! or legacy name domain is a claim anyone can make: it is filed as plain
-//! mail and counted ignored.
+//! As with state events, the From address names a role and the receiver
+//! judges it (`event_may_speak`): a letter from another member's prefix
+//! domain counts, the receiver cannot see that mailspace's roles; a letter
+//! from this mailspace's own domain counts only when its role may close the
+//! item. A bare `local` or a legacy name domain that is not this
+//! mailspace's own is a claim anyone can make: it is filed as plain mail
+//! and counted ignored.
 
 use std::collections::BTreeMap;
 
@@ -40,6 +43,7 @@ use super::{
     date_micros, from_domain_of, rfc3339_micros, role_move,
 };
 use crate::error::VivariumError;
+use crate::mailspace::holding::first_bare_address;
 use crate::mailspace::marks::{folded_marks, mark_event};
 use crate::message::normalize_message_id;
 use crate::storage::{
@@ -179,7 +183,11 @@ struct PropertyChain {
 /// counts, plus the count of the others. State events and property events
 /// are read apart: a state event letter never parses as a property event,
 /// and the reverse too.
-fn property_chain(storage: &Storage, item: &HeldItem) -> Result<PropertyChain, VivariumError> {
+fn property_chain(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    item: &HeldItem,
+) -> Result<PropertyChain, VivariumError> {
     let mut chain = PropertyChain {
         events: Vec::new(),
         unauthorized: 0,
@@ -196,7 +204,8 @@ fn property_chain(storage: &Storage, item: &HeldItem) -> Result<PropertyChain, V
         else {
             continue;
         };
-        if Mailspace::event_speaks_for(&event.from_domain)
+        if let Some(from) = first_bare_address(&view.from_addr)
+            && mailspace.event_may_speak(item, &from)
             && super::dated_within_clock(event.at, now)
         {
             chain.events.push(event);
@@ -218,10 +227,11 @@ fn earliest_absorb(events: &[PropertyEvent]) -> Option<&PropertyEvent> {
 
 /// The earliest counted `absorbed` event held for `item`, if any.
 pub(super) fn counted_absorb(
+    mailspace: &Mailspace,
     storage: &Storage,
     item: &HeldItem,
 ) -> Result<Option<PropertyEvent>, VivariumError> {
-    let chain = property_chain(storage, item)?;
+    let chain = property_chain(mailspace, storage, item)?;
     Ok(earliest_absorb(&chain.events).cloned())
 }
 
@@ -243,7 +253,7 @@ impl Mailspace {
         item: &HeldItem,
         tally: &mut EventTally,
     ) -> Result<(), VivariumError> {
-        let chain = property_chain(storage, item)?;
+        let chain = property_chain(self, storage, item)?;
         tally.ignored += chain.unauthorized;
         let Some(seal) = earliest_absorb(&chain.events).cloned() else {
             Self::apply_mark_letters(storage, item, &chain.events, tally)?;
