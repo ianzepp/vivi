@@ -289,11 +289,14 @@ Each tick the pump:
    planner (`[pump.planner] run`, prompt on stdin, at most `planners_max` at a
    time). The planner writes `plans/<need>.json`: a verdict and a list of units,
    each with `id`, `brief` and `write_scope`, and optionally `title`, `after`
-   (units it waits for), `proof` (commands) and `tools` (`plain` or `full`).
+   (units it waits for), `proof` (commands) and `tools` (the unit's kind).
 2. **Dispatches.** Sends each ready unit as a task and hands it to a pool with
-   `vivi pool dispatch` (`pool_plain` or `pool_full`, by `tools`), on a model
-   from the configured `lanes`, to a branch `unit/<id>-a<attempt>`. Units whose
-   write scopes overlap do not run at the same time. A failed attempt is retried
+   `vivi pool dispatch` to the pool of the unit's kind (`[pump.dispatch.kinds]`;
+   `default_kind` when `tools` is empty), on a model from the configured
+   `lanes`, to a branch `unit/<id>-a<attempt>`. Units whose write scopes overlap
+   do not run at the same time, nor do units touching a path listed in the
+   reserved file (paths another session holds). A unit naming an unknown kind
+   is held and reported. A failed attempt is retried
    up to `max_attempts`, then the unit is marked stuck and written to
    `exceptions.txt`.
 3. **Merges.** Merges returned unit branches into an integration branch
@@ -303,9 +306,14 @@ Each tick the pump:
 4. **Gates.** After `every_merges` merges, or after `every_seconds` with new
    merges, a read-only gate worker (`[pump.gate] command`, on one of
    `gate.pools`) measures the tree and reports failing test names between
-   `FAILING-BEGIN` and `FAILING-END` markers. The first readable gate becomes the
-   baseline; failures that are new against it go to a gate-fix planner.
-5. **Promotes.** A clean gate fast-forwards `main` to the gated tip. It never
+   `FAILING-BEGIN` and `FAILING-END` markers. With `results_dir` set, an
+   external runner on any machine can supply the result instead by writing
+   `<tip>.json` there; the pool gate is the fallback after
+   `results_wait_seconds`. Names in `ignore_file` never count. The first
+   readable gate becomes the baseline; failures that are new against it are
+   owned by a gate-fix planner, and merging never stops for a red gate.
+5. **Promotes.** A gate with no new failure and no owned failure still red
+   fast-forwards `main` to the gated tip, so `main` never gets redder. It never
    forces, and skips the push when `main` has moved. `promote = false` turns it
    off.
 
@@ -315,16 +323,20 @@ A second pump on the same home refuses to start. Defaults:
 
 | Table | Keys (default) |
 | --- | --- |
-| `[pump]` | `branch` (required), `remote` (`origin`), `main` (`main`; empty turns off merging main in and promotion), `promote` (`true`), `tick` (20 s), `home` (`<project>/.vivi/pump`), `repo` (`<home>/repo`), `shell_prefix`, `hand_rules` (a file; default is an embedded generic text), `fix_prefix` (`pumpfix`), `from` (`operator`), `to` (`hand`), `reply_from` (`mind`) |
+| `[pump]` | `branch` (required), `committer_name` and `committer_email` (required; every pump commit uses them), `remote_url` (clone source when `repo` is missing), `reserved_file` (`reserved.txt` in home), `remote` (`origin`), `main` (`main`; empty turns off merging main in and promotion), `promote` (`true`), `tick` (20 s), `home` (`<project>/.vivi/pump`), `repo` (`<home>/repo`), `shell_prefix`, `hand_rules` (a file; default is an embedded generic text), `fix_prefix` (`pumpfix`), `from` (`operator`), `to` (`hand`), `reply_from` (`mind`) |
 | `[pump.board]` | `from` (list), `since`, `mark` (`pump`), `every` (300 s), `planners_max` (3), `plan_timeout` (1800 s), `reply_to`, `pull` (`true`: run `vivi sync pull` first), `push_since` (`30m`) |
 | `[pump.planner]` | `run` (command; `{charter}` becomes `charter`), `charter` (file), `split_timeout` (1500 s) |
-| `[pump.dispatch]` | `lanes` (list of `{ model, cap }`, required), `last_resort` (model), `max_attempts` (3), `budget` (600 s), `overdue_grace` (900 s), `per_tick` (6), `from`, `pool_plain`, `pool_full`, `full_max` (0 = no cap) |
+| `[pump.dispatch]` | `lanes` (list of `{ model, cap }`, required), `last_resort` (model), `max_attempts` (3), `budget` (600 s), `overdue_grace` (900 s), `per_tick` (6), `from`, `default_kind` |
+| `[pump.dispatch.kinds.<name>]` | `pool` (required), `max` (cap on that kind in flight), `skip_proof` (`false`) |
 | `[pump.merge]` | `batch` (8), `format`, `shared_checks` (list), `proof_timeout` (300 s), `remote_wait` (90 s), `remote_limit` (1800 s) |
-| `[pump.gate]` | `command`, `every_merges` (8), `every_seconds` (1800), `pools` (list), `model`, `budget` (1800 s) |
+| `[pump.gate]` | `command` (required), `every_merges` (8), `every_seconds` (1800), `pools` (list), `model`, `budget` (1800 s), `results_dir`, `results_wait_seconds`, `ignore_file` |
 
 The config is validated at start and every violation is named: an empty
 `branch`, no `lanes`, a zero `tick`, `per_tick`, `batch`, `max_attempts` or
-`every_merges`, or a pool name that is not a `[pools.*]` table. The pump needs
+`every_merges`, a missing committer or gate command, no `shared_checks` while
+promotion is on, an unreadable `hand_rules` file, an undefined `default_kind`,
+or a pool name that is not a `[pools.*]` table. A missing integration clone is
+cloned from `remote_url`, or the pump refuses to start. The pump needs
 those pools to dispatch to and a Git remote it can reach.
 
 The home holds `state.json` (the pump's whole memory, saved atomically),
@@ -335,13 +347,12 @@ integration clone). Operators steer it with files in the home: `STOP` (exit
 after the tick), `PAUSE` (merge and collect but dispatch nothing), `HOLD-MERGE`
 (feed only fix units to the merger until a clean gate), `FORCE-GATE` (start a
 gate now), `REMOTE-MERGE` (offer merge batches to a remote merger first),
-`skip.txt` (need handles never to plan) and `known-red.txt` (failing test names
-to always ignore).
+`skip.txt` (need handles never to plan) and the reserved file (paths whose
+units wait).
 
 The design record is [`docs/pump/contract.md`](docs/pump/contract.md) and
-[`docs/pump/protocols.md`](docs/pump/protocols.md). They were written from the
-script this engine replaced and still quote its names and paths, so check any
-detail in them against the code.
+[`docs/pump/protocols.md`](docs/pump/protocols.md). As with any design record,
+check a detail against the code before relying on it.
 
 ## Sync, the server and MCP
 
