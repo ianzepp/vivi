@@ -151,8 +151,12 @@ impl Mailspace {
     /// Bind unit tasks to a parent need: each unit node's `subgraph` becomes
     /// the need's source id, and one `bound` property letter travels on the
     /// need naming every unit, so each member that holds the units binds
-    /// them to its own node for the need. Binding already-done units may
-    /// complete the need immediately via the join rule.
+    /// them to its own node for the need. The letter is written first, and
+    /// the `unit_bound` events it leaves carry the letter's instant and
+    /// `Message-ID` — the same floor every receiver of the letter holds —
+    /// or the local clock when no letter travels (a bind that stays local).
+    /// Binding already-done units may complete the need immediately via the
+    /// join rule.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] naming the first missing node, or on
@@ -164,7 +168,7 @@ impl Mailspace {
                 "bind needs at least one unit handle".into(),
             ));
         }
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let graph = storage
             .work_graph_by_code(BACKLOG_GRAPH_CODE)?
             .ok_or_else(|| VivariumError::Message(format!("need not found: {parent}")))?;
@@ -195,18 +199,29 @@ impl Mailspace {
             unit_handles.push(unit_node.handle.clone());
             unit_sources.push(unit_node.source_id.clone());
         }
-        storage.bind_backlog_units(&graph.handle, parent, &unit_handles)?;
+        drop(storage);
+        let stamp = self.emit_bound_letter(&parent_node.source_id, &unit_sources)?;
+        let mut storage = self.storage()?;
+        storage.bind_backlog_units(
+            &graph.handle,
+            parent,
+            &unit_handles,
+            stamp.at,
+            &stamp.letter,
+        )?;
         drop(storage);
         self.backlog_complete_if_join_complete(parent, &mut Vec::new())?;
-        self.emit_bound_letter(&parent_node.source_id, &unit_sources)
+        Ok(())
     }
 
     /// The `bound` property letter a successful bind writes on the need: one
     /// letter with one `X-Vivi-Event-Unit` header per unit, so the lowering
     /// travels like any letter and every member that holds the units binds
-    /// them to its own node for the need. Nothing is written when the need
-    /// is not held work here, or no role here authored it (the bind by the
-    /// holder of a foreign need stays local).
+    /// them to its own node for the need. Returns the stamp its
+    /// `unit_bound` events carry: the letter's instant and `Message-ID` or,
+    /// when nothing is written — the need is not held work here, or no role
+    /// here authored it (the bind by the holder of a foreign need stays
+    /// local) — the local clock with no letter id.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
@@ -214,29 +229,30 @@ impl Mailspace {
         &self,
         need_source: &str,
         unit_sources: &[String],
-    ) -> Result<(), VivariumError> {
+    ) -> Result<BindStamp, VivariumError> {
+        let local = local_bind_stamp();
         let mut storage = self.storage()?;
         let Ok(message_id) = storage.resolve_message_token(need_source) else {
-            return Ok(());
+            return Ok(local);
         };
         let Some(view) = storage.message_by_id(&message_id)? else {
-            return Ok(());
+            return Ok(local);
         };
         let Some(item) = super::item_events::held_item(&storage, &view.content_id)? else {
-            return Ok(());
+            return Ok(local);
         };
         let Some(identity) = self.item_author(&item) else {
-            return Ok(());
+            return Ok(local);
         };
         let units = unit_rfc_ids(&storage, unit_sources);
         if units.is_empty() {
-            return Ok(());
+            return Ok(local);
         }
         let extras: Vec<(&str, String)> = units
             .iter()
             .map(|id| ("X-Vivi-Event-Unit", format!("<{id}>")))
             .collect();
-        self.emit_property_event(
+        let handle = self.emit_property_event(
             &mut storage,
             &item,
             &identity,
@@ -244,7 +260,7 @@ impl Mailspace {
             &extras,
             None,
         )?;
-        Ok(())
+        Ok(letter_stamp(&storage, &handle)?.unwrap_or(local))
     }
 
     /// Complete `parent` when every unit bound to it is done, then settle the
@@ -556,6 +572,39 @@ impl Mailspace {
 pub struct BacklogBoundUnit {
     pub handle: String,
     pub state: String,
+}
+
+/// The stamp a `unit_bound` event carries: the instant and `Message-ID` of
+/// the `bound` letter the bind wrote, so the floor it leaves is the same
+/// on every member that holds the letter. A bind that wrote no letter (the
+/// holder of a foreign need binds locally) stamps the local clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BindStamp {
+    pub(super) at: i64,
+    pub(super) letter: String,
+}
+
+/// The stamp of a bind that wrote no letter: the local clock, no id.
+fn local_bind_stamp() -> BindStamp {
+    BindStamp {
+        at: chrono::Utc::now().timestamp_micros(),
+        letter: String::new(),
+    }
+}
+
+/// The stamp of the `bound` letter `handle` names — its `X-Vivi-Event-At`
+/// instant and its `Message-ID` — the pair its `unit_bound` events carry.
+fn letter_stamp(storage: &Storage, handle: &str) -> Result<Option<BindStamp>, VivariumError> {
+    let Ok(id) = storage.resolve_message_token(handle) else {
+        return Ok(None);
+    };
+    let bytes = storage.read_message(&id)?;
+    Ok(
+        super::item_events::parse_property_event(&bytes).map(|event| BindStamp {
+            at: event.at,
+            letter: event.id,
+        }),
+    )
 }
 
 /// The normalized `Message-ID`s of the unit items `sources` name here.
