@@ -237,7 +237,7 @@ fn dispatch_failed(
         shell_quote(task),
         shell_quote(&ctx.cfg.from),
     );
-    ctx.vivi(&cmd, 120);
+    drop(ctx.vivi(&cmd, 120));
     if text.contains("no free slot") {
         free.insert(pool.to_owned(), 0);
     }

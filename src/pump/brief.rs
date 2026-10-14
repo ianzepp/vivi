@@ -38,10 +38,10 @@ const GATE_DONE_WHEN: &str = "done_when: the marker block is in the reply";
 /// readable, otherwise [`DEFAULT_HAND_RULES`].
 #[must_use]
 pub fn hand_rules(ctx: &Ctx) -> String {
-    if let Some(path) = ctx.cfg.hand_rules.as_deref() {
-        if let Ok(text) = fs::read_to_string(path) {
-            return text;
-        }
+    if let Some(path) = ctx.cfg.hand_rules.as_deref()
+        && let Ok(text) = fs::read_to_string(path)
+    {
+        return text;
     }
     DEFAULT_HAND_RULES.to_owned()
 }
@@ -81,7 +81,10 @@ pub fn brief_for(ctx: &Ctx, uid: &str, unit: &Unit) -> String {
 /// pump.py's `GATE_BRIEF` with the configured gate command in place.
 #[must_use]
 pub fn gate_brief(ctx: &Ctx) -> String {
-    let command = format!("{} > /tmp/pump-gate.log 2>&1; echo \"rc=$?\"", ctx.cfg.gate.command);
+    let command = format!(
+        "{} > /tmp/pump-gate.log 2>&1; echo \"rc=$?\"",
+        ctx.cfg.gate.command
+    );
     [
         "Measurement only. Change nothing in the repository; scratch files go under /tmp.",
         "",

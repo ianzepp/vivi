@@ -264,8 +264,7 @@ impl PumpConfig {
         }
         self.validate_dispatch(pools, &mut bad);
         self.validate_merge_and_gate(pools, &mut bad);
-        if (self.board.from.iter().any(|from| !from.is_empty())
-            || !self.board.mark.is_empty())
+        if (self.board.from.iter().any(|from| !from.is_empty()) || !self.board.mark.is_empty())
             && self.planner.run.is_empty()
         {
             bad.push(
@@ -323,7 +322,10 @@ impl PumpConfig {
         }
         for lane in &self.dispatch.lanes {
             if lane.cap == 0 {
-                bad.push(format!("[pump.dispatch] lanes: lane `{}` needs cap >= 1", lane.model));
+                bad.push(format!(
+                    "[pump.dispatch] lanes: lane `{}` needs cap >= 1",
+                    lane.model
+                ));
             }
             if lane.model.is_empty() {
                 bad.push("[pump.dispatch] lanes: lane model must not be empty".into());

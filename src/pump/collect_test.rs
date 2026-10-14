@@ -360,11 +360,13 @@ fn a_finished_gate_task_returns_its_receipt_text() {
         "collected gate9 bridge slot-2 finished \"gate done\"",
     );
     host.reply("task show", 0, "GATE RECEIPT");
-    let mut st = State::default();
-    st.last_gate = GateRun {
-        at: T0,
-        task: Some(String::from("gate9")),
-        ..GateRun::default()
+    let mut st = State {
+        last_gate: GateRun {
+            at: T0,
+            task: Some(String::from("gate9")),
+            ..GateRun::default()
+        },
+        ..State::default()
     };
     assert_eq!(collect(&ctx, &mut st), Some(String::from("GATE RECEIPT")));
 }

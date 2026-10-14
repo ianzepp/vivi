@@ -4,7 +4,7 @@ use std::fs;
 
 use tempfile::tempdir;
 
-use crate::pump::brief::{brief_for, gate_brief, hand_rules, DEFAULT_HAND_RULES};
+use crate::pump::brief::{DEFAULT_HAND_RULES, brief_for, gate_brief, hand_rules};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::test_ctx;
 use crate::pump::state::{Attempt, Unit};
@@ -22,7 +22,10 @@ fn sample_unit() -> Unit {
         title: "own the rows".to_owned(),
         brief: "fix the thing described here".to_owned(),
         write_scope: vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()],
-        proof: vec!["cargo test --lib a".to_owned(), "cargo test --lib b".to_owned()],
+        proof: vec![
+            "cargo test --lib a".to_owned(),
+            "cargo test --lib b".to_owned(),
+        ],
         ..Unit::default()
     }
 }
@@ -53,8 +56,10 @@ fn hand_rules_reads_the_configured_file() {
     let dir = tempdir().unwrap();
     let rules = dir.path().join("rules.txt");
     fs::write(&rules, "house rules: keep it tidy").unwrap();
-    let mut cfg = PumpConfig::default();
-    cfg.hand_rules = Some(rules.to_string_lossy().into_owned());
+    let cfg = PumpConfig {
+        hand_rules: Some(rules.to_string_lossy().into_owned()),
+        ..PumpConfig::default()
+    };
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     assert_eq!(hand_rules(&ctx), "house rules: keep it tidy");
 }
@@ -62,8 +67,10 @@ fn hand_rules_reads_the_configured_file() {
 #[test]
 fn hand_rules_falls_back_to_the_default_when_the_file_is_missing() {
     let dir = tempdir().unwrap();
-    let mut cfg = PumpConfig::default();
-    cfg.hand_rules = Some(dir.path().join("absent.txt").to_string_lossy().into_owned());
+    let cfg = PumpConfig {
+        hand_rules: Some(dir.path().join("absent.txt").to_string_lossy().into_owned()),
+        ..PumpConfig::default()
+    };
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     assert_eq!(hand_rules(&ctx), DEFAULT_HAND_RULES);
 }
@@ -97,7 +104,9 @@ fn brief_for_an_empty_proof_says_shared_checks_only() {
         ..sample_unit()
     };
     let text = brief_for(&ctx, "56f1d749-2", &unit);
-    assert!(text.contains("PROOF (each must exit 0):\n- (no unit proof; the shared checks only)\n"));
+    assert!(
+        text.contains("PROOF (each must exit 0):\n- (no unit proof; the shared checks only)\n")
+    );
 }
 
 #[test]
@@ -128,9 +137,11 @@ fn brief_for_a_retry_carries_the_last_failure_cut_to_1800_chars() {
     let marker = "What went wrong:\n\n";
     let tail = &text[text.find(marker).unwrap() + marker.len()..];
     let body = tail
-        .strip_suffix("\n\ndone_when: every PROOF command exits 0 on your checkout and the \
+        .strip_suffix(
+            "\n\ndone_when: every PROOF command exits 0 on your checkout and the \
                        checks named in the rules above pass, or the reply ends with \
-                       `VERDICT: no-defect` and evidence")
+                       `VERDICT: no-defect` and evidence",
+        )
         .unwrap();
     // Byte 1800 from the end is byte 501, inside a two-byte character; the
     // cut moves to 502, keeping 649 of the accented characters.
@@ -145,10 +156,10 @@ fn gate_brief_names_the_gate_command_and_the_marker_block() {
     let dir = tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), cfg_with_gate("make gate"));
     let text = gate_brief(&ctx);
-    assert!(
-        text.starts_with("Measurement only. Change nothing in the repository; scratch files \
-                          go under /tmp.")
-    );
+    assert!(text.starts_with(
+        "Measurement only. Change nothing in the repository; scratch files \
+                          go under /tmp."
+    ));
     assert!(text.contains("    make gate > /tmp/pump-gate.log 2>&1; echo \"rc=$?\""));
     assert!(text.contains("FAILING-BEGIN\n<crate> <test name>\nFAILING-END"));
     assert!(text.contains("BUILD-FAILED"));

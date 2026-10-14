@@ -1,7 +1,7 @@
 //! Tests for [`super::remote`].
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -46,7 +46,7 @@ fn jobs_dir(ctx: &Ctx) -> PathBuf {
     ctx.home.join("merge-jobs")
 }
 
-fn wait_for(path: &PathBuf) {
+fn wait_for(path: &Path) {
     for _ in 0..5_000 {
         if path.exists() {
             return;

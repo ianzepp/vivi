@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -444,7 +445,7 @@ fn replan_answered_supersedes_the_plan_and_reopens_the_need_for_planning() {
     assert_eq!(replan, BTreeSet::from([String::from("park1")]));
     assert_eq!(st.board.replan, vec![String::from("park1")]);
     assert_eq!(st.plans_seen, vec![String::from("other.json")]);
-    assert!(st.needs.get("park1").is_none());
+    assert!(!st.needs.contains_key("park1"));
     assert!(st.board.replied.is_empty());
     assert!(!ctx.home.join("plans/park1.json").exists());
     let superseded: Vec<String> = fs::read_dir(ctx.home.join("plans/superseded"))
@@ -453,7 +454,12 @@ fn replan_answered_supersedes_the_plan_and_reopens_the_need_for_planning() {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(superseded.len(), 1);
-    assert!(superseded[0].starts_with("park1.") && superseded[0].ends_with(".json"));
+    assert!(
+        superseded[0].starts_with("park1.")
+            && Path::new(superseded[0].as_str())
+                .extension()
+                .is_some_and(|ext| ext == "json")
+    );
     assert!(host.logs().contains(
         &"board: operator replied on parked need park1 (was hold); re-planning".to_string()
     ));
