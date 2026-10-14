@@ -230,6 +230,10 @@ mod deps;
 mod events;
 
 #[cfg(test)]
+#[path = "sync/event_wire_test.rs"]
+mod event_wire_test;
+
+#[cfg(test)]
 #[path = "sync/events_foreign_test.rs"]
 mod events_foreign;
 
