@@ -79,6 +79,17 @@ vivi mail list --project <root> --for <role>
 vivi task show --project <root> <handle>
 ```
 
+`need|task|want list` scopes by holder. `--for <role>` (a value without `@`)
+lists this mailspace's own role; `--for <address>` (any value with an `@`)
+lists work held under that other mailspace's address, and `--held` lists work
+held under any other mailspace's address. Use one, never both: `--held` with
+`--for` is refused (`--held and --for both scope the list; use one of them`).
+A need addressed to `mind@<other>.local` is another mailspace's work, so list
+it with `--held` or `--for mind@<other>.local` — `--for mind` means this
+mailspace's own `mind` role and will not show it. Held rows carry their
+holder in a `held_for` JSON field (own rows omit the field; the human listing
+shows a `held_for` column).
+
 ## Boot
 
 `vivi boot` prints the whole project frame in one read: seat bindings against
@@ -1795,12 +1806,20 @@ vivi mcp                 # stdio MCP bridge to the project server's tools (see M
 ```
 
 **Draining.** The server allows 30 letters a minute per member, so a large
-push stops at the first 429 with the rest unsent. `vivi sync push --drain`
-waits it out: it prints one `sync push: pass N` line per pass, waits 61 s
-after a rate limit, and keeps sending until nothing sendable is left. It
-still stops non-zero on a 401, a network failure, or another server error,
-and it holds the sync lock across all passes. It composes with `push
---since`, and bare `vivi sync --drain` drains its push pass.
+push stops at the first 429 with the rest unsent. That stop is a limit, not
+a failure: the push prints
+`stopped: rate limited; N letter(s) left unsent; run again later or use --drain`
+and exits 0. A script tells it from a failure by that line and by the letters
+that stay on `vivi sync status`'s `unsent` count. Every other stop prints
+`stopped: <reason>; N letter(s) left unsent` and exits non-zero; the letters
+stay queued and the next run resumes. `vivi sync push --drain` waits the
+limit out: it prints `sync push: rate limit reached; waiting 61s`, then one
+`sync push: pass N: sent S, duplicates D, L left` line per pass, and keeps
+sending until nothing sendable is left. It still stops non-zero on a 401, a
+network failure, or another server error, and a drain that three passes in a
+row got nothing through gives up and ends non-zero. It holds the sync lock
+across all passes. It composes with `push --since`, and bare
+`vivi sync --drain` drains its push pass.
 
 **Addresses.** Every mailspace has a UUID `id`, minted once into its
 `mailspace.toml`. Its first 8 characters are the domain of every address it
@@ -1926,12 +1945,46 @@ addressed to another mailspace's role is held under its address, so every
 member holds every work item without it landing in a local queue or the local
 backlog.
 
+The summary's tail is worth reading. Plainly it ends `cursor N`. When the
+server's cursor jumped over sequence numbers it never served this member —
+the server shows a member only what it sent, what is addressed to it, and
+work items — the tail names them:
+`cursor N (moved D: F shown, S not shown to this member: mail addressed to
+other mailspaces)`. Replies filed whose parent letter is still not held here
+are counted as `N repl(ies) to letters not held here (vivi sync pull --refs
+finds them)`, and item-state events as `N event(s) applied, M event(s)
+ignored: not from a member mailspace, or for a sealed item`.
+
 **Governance letters.** A letter addressed to the reserved `postmaster` (any
 domain, case aside, by `To`, `Cc`, or envelope) is project governance — the
 vouch letter travels this way. A pull files it under no role: no inbox or sent
 copy, nothing held for an unknown name, and no unknown-role warning. It is not
 silent: the pull summary counts it as `N governance letter(s)`, and the cursor
 moves past it.
+
+**What leaves this machine.** The `[sync]` `send` key picks what a push
+uploads: `all` (the default; absent or blank means `all`) or `addressed`.
+
+```toml
+# .vivi/mailspace.toml
+[sync]
+server = "https://vivi.example"
+project = "my-project"
+name = "this-checkout"
+send = "addressed"
+```
+
+`all` sends every letter, as before the key existed. `addressed` sends only
+letters a `To` or `Cc` address in another mailspace's domain names — a domain
+other than this mailspace's own `<prefix>.local` or the bare `local`; an
+address with no domain counts as local — plus event letters (close/reopen)
+for work already on the server: an event whose item is held here bound to
+this project follows the work that left. Everything else stays machine-local
+by policy: the push summary counts it under `not synced by design` as
+`N local only (send = addressed)`, and it is not unsent — `vivi sync status`
+does not count it and no later push waits on it. Any other value is a config
+error: `[sync] send = "<value>" is not a send value; use send = "all" or
+send = "addressed" in mailspace.toml`.
 
 **A push window.** `vivi sync push --since <age|date>` (the same forms as the
 pull window) sends only letters dated at or after that time. A push goes oldest
@@ -1941,6 +1994,10 @@ the old ones. Older unpushed letters are counted on a line of the report, stay
 in `sync status` as unsent, and go on any later push without `--since`. A
 letter with no readable date is never held back. A reply to a letter that was
 held back arrives unlinked on the far side until the older letter is pushed.
+With `send = "addressed"` the machine-local history never counts as unsent
+(see What leaves this machine above: it is skipped by design, not held back),
+so a bare `vivi sync push` is usable there; `--since` stays for the letters
+that do qualify.
 
 **Windows and the floor.** A pull reads the project in pages of 500 and saves
 the cursor after every page, so an interrupted pull resumes where it stopped.
@@ -1992,10 +2049,12 @@ runs only when asked. Until restored, `show` on an evicted handle reports
 Not synced: memos, drafts, trash, rules, marks, and read flags. Closing and
 reopening are not in this list: they travel as event letters (State as
 letters). A letter is limited to 64 KiB, and a member may send 30 letters per
-minute: a push that hits the limit stops, prints how many letters are left
-unsent, exits non-zero, and the next run resumes. Mail is visible only to its
-sender and the addressed mailspace; work items and mail to `postmaster` are
-visible to every member.
+minute: a push that hits the limit stops, prints
+`stopped: rate limited; N letter(s) left unsent; run again later or use --drain`,
+and exits 0 — a limit, not a failure; the letters stay queued for a later run
+or `--drain`. Any other stop exits non-zero, and the next run resumes. Mail is
+visible only to its sender and the addressed mailspace; work items and mail to
+`postmaster` are visible to every member.
 
 ### MCP bridge
 
