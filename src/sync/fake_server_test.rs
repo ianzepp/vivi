@@ -13,6 +13,7 @@ use crate::b64;
 use crate::error::VivariumError;
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::{StoredMessageView, is_traveling_id, sha256_hex};
+use crate::sync::link;
 use crate::sync::pull::{self, PullReport};
 use crate::sync::push::{self, PushReport};
 use crate::sync::transport::{
@@ -35,7 +36,6 @@ pub struct Item {
     pub sha: String,
 }
 
-#[derive(Default)]
 struct Inner {
     items: Vec<Item>,
     appends: usize,
@@ -60,6 +60,34 @@ struct Inner {
     /// Admitted members: name -> the key PEM admitted under it. The first
     /// key admitted for a name wins.
     admitted: HashMap<String, String>,
+    /// Whether a letter that carries an `X-Vivi-Event` header is shown to
+    /// every member whatever its envelope kind. True (the default) is the
+    /// server rule the reply on need a53ea7c9 asks for: the letter carries
+    /// its own evidence that it is a record, not work. False models a
+    /// server that has not caught up and serves an event letter to its
+    /// sender and addressed members only, by envelope kind.
+    events_by_header: bool,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            appends: 0,
+            rate_limit_after: None,
+            refuse: HashMap::new(),
+            tampered: HashMap::new(),
+            page_limit: None,
+            clock: None,
+            epoch: None,
+            lists: Vec::new(),
+            lookups: Vec::new(),
+            skip_hidden: false,
+            projects: 0,
+            admitted: HashMap::new(),
+            events_by_header: true,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -85,6 +113,13 @@ impl FakeServer {
     /// Set the epoch list responses report (`None` sends none, the default).
     pub fn set_epoch(&self, epoch: Option<u32>) {
         self.inner.borrow_mut().epoch = epoch;
+    }
+
+    /// Model a server that serves a letter carrying an `X-Vivi-Event` header
+    /// to every member by header (the default), or one that has not caught
+    /// up and serves event letters to their addressed members only.
+    pub fn set_events_by_header(&self, yes: bool) {
+        self.inner.borrow_mut().events_by_header = yes;
     }
 
     /// Wipe the log, as when a server is restored from an earlier backup:
@@ -280,6 +315,7 @@ impl Transport for FakeClient {
         inner
             .lists
             .push((query.since, query.limit, query.after.map(String::from)));
+        let events_by_header = inner.events_by_header;
         let after = query
             .after
             .map(|time| DateTime::parse_from_rfc3339(time).unwrap());
@@ -305,7 +341,7 @@ impl Transport for FakeClient {
             .max();
         let matching: Vec<&Item> = candidates
             .into_iter()
-            .filter(|item| self.visible(item))
+            .filter(|item| self.visible(item, events_by_header))
             .collect();
         let has_more = matching.len() > limit;
         let records: Vec<Record> = matching
@@ -332,6 +368,7 @@ impl Transport for FakeClient {
     fn lookup(&self, handles: &[String]) -> Result<Lookup, VivariumError> {
         let mut inner = self.server.inner.borrow_mut();
         inner.lookups.push(handles.len());
+        let events_by_header = inner.events_by_header;
         assert!(handles.len() <= 100, "the server takes at most 100 handles");
         let handle_of = |item: &Item| {
             item.message_id
@@ -347,7 +384,7 @@ impl Transport for FakeClient {
                 .items
                 .iter()
                 .filter(|item| handle_of(item).as_deref() == Some(wanted.as_str()))
-                .filter(|item| self.visible(item))
+                .filter(|item| self.visible(item, events_by_header))
                 .collect();
             if found.is_empty() {
                 missing.push(handle.clone());
@@ -380,9 +417,15 @@ impl FakeClient {
         }
     }
 
-    /// The visibility rule: work items to everyone, mail to its sender and
-    /// to the member whose prefix is on a recipient address.
-    fn visible(&self, item: &Item) -> bool {
+    /// The visibility rule: a letter that carries an `X-Vivi-Event` header
+    /// is a record, not work, and when the server serves events by header it
+    /// is shown to every member whatever its envelope kind; then work items
+    /// to everyone, mail to its sender and to the member whose prefix is on
+    /// a recipient address.
+    fn visible(&self, item: &Item, events_by_header: bool) -> bool {
+        if events_by_header && link::parse_headers(&item.bytes).is_event {
+            return true;
+        }
         let work = matches!(item.kind.as_deref(), Some("need" | "task" | "want"));
         work || item.from == self.member || self.addressed(item)
     }

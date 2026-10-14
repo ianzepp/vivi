@@ -319,7 +319,11 @@ fn classify(
         return skip(row, SkipReason::ForeignFrom(reason));
     }
     let kind = if headers.is_event {
-        event_item_kind(storage, &data)?
+        // An event is a record, not work: it travels as plain mail whatever
+        // kind its item holds or its envelope carries. An old client files a
+        // pulled letter by envelope kind, so a work kind here would have it
+        // hold phantom work for the event (need 3b41bf3e, review item 4).
+        "mail".to_string()
     } else {
         let events = storage.list_mailspace_events(&row.message_id)?;
         match effective_kind(&row.local_role, &data, &events).as_deref() {
@@ -339,32 +343,6 @@ fn classify(
         kind,
         to: headers.envelope_to(),
     }))
-}
-
-/// The envelope kind an event letter travels under: the effective kind of
-/// the item its `X-Vivi-Event-Of` names. The event must reach every member
-/// that holds the item, not only the sender and the addressees, and the
-/// server shows work to every member — so the event rides the item's kind
-/// on the wire. An item not held here, or not work, leaves it `mail`; the
-/// filer files an event as mail whatever kind it carries.
-///
-/// # Errors
-/// Returns an error on a storage failure.
-fn event_item_kind(storage: &Storage, data: &[u8]) -> Result<String, VivariumError> {
-    let Some(item_id) = event_of_header(data) else {
-        return Ok("mail".into());
-    };
-    let Some(item) = storage.live_message_by_rfc_id(&item_id)? else {
-        return Ok("mail".into());
-    };
-    let bytes = storage.read_message(&item.message_id)?;
-    let events = storage.list_mailspace_events(&item.message_id)?;
-    Ok(
-        match effective_kind(&item.local_role, &bytes, &events).as_deref() {
-            Some(kind @ ("need" | "task" | "want")) => kind.to_string(),
-            _ => "mail".into(),
-        },
-    )
 }
 
 /// Whether the letter leaves this machine under `send = "addressed"`: a
