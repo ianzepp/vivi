@@ -65,3 +65,7 @@ mod board_test;
 #[cfg(test)]
 #[path = "pump/run_test.rs"]
 mod run_test;
+
+#[cfg(test)]
+#[path = "pump/lifecycle_test.rs"]
+mod lifecycle_test;
