@@ -41,6 +41,7 @@ fn event(kind: ItemEventKind, id: &str, prev: &[&str], date: i64) -> EventLetter
         prev: prev.iter().map(ToString::to_string).collect(),
         from_domain: "a.local".into(),
         date,
+        at: date * 1_000_000,
     }
 }
 
@@ -142,6 +143,51 @@ fn a_cycle_has_no_head_so_every_event_is_a_candidate() {
     let heads = chain_heads(&events);
 
     assert_eq!(heads.last().unwrap().id, "b");
+}
+
+#[test]
+fn the_newest_event_is_decided_by_the_clock_then_the_chain_then_the_id() {
+    // A later clock beats the chain: the successor loses to a later `at`.
+    let later = event(ItemEventKind::Done, "d", &[], 200);
+    let skewed = event(ItemEventKind::Reopened, "r", &["d"], 100);
+    assert_eq!(
+        newest_event(&[skewed.clone(), later.clone()]).unwrap().id,
+        "d"
+    );
+
+    // Equal clock: the successor wins even over a larger Message-ID.
+    let larger = event(ItemEventKind::Done, "z", &[], 100);
+    let successor = event(ItemEventKind::Reopened, "r", &["z"], 100);
+    assert_eq!(newest_event(&[larger, successor.clone()]).unwrap().id, "r");
+
+    // Equal clock and no Prev between two: the larger Message-ID wins.
+    let small = event(ItemEventKind::Reopened, "a", &[], 100);
+    let fork = event(ItemEventKind::Done, "y", &[], 100);
+    assert_eq!(newest_event(&[small, fork]).unwrap().id, "y");
+
+    // A stamp from `X-Vivi-Event-At` is an `at` like any other.
+    let stamped = EventLetter {
+        at: 201 * 1_000_000,
+        ..later
+    };
+    assert_eq!(newest_event(&[successor, stamped]).unwrap().id, "d");
+}
+
+#[test]
+fn an_event_at_stamp_beats_the_date_header() {
+    let stamped = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: done\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-At: 2026-10-14T02:21:03.123456Z\r\n",
+    );
+    let unparsable = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: done\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-At: sometime\r\n",
+    );
+
+    let parsed = parse_event(&stamped).unwrap();
+    assert_eq!(parsed.at, 1_791_944_463_123_456);
+    let fallback = parse_event(&unparsable).unwrap();
+    assert_eq!(fallback.at, fallback.date * 1_000_000, "falls back to Date");
 }
 
 #[test]
