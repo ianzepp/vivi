@@ -438,6 +438,7 @@ pub fn checkout(name: &str, roles: &[&str]) -> Checkout {
         server: Some("http://sync.test".into()),
         project: Some(PROJECT.into()),
         name: Some(name.into()),
+        send: None,
     });
     let settings = SyncSettings::resolve(&mailspace).unwrap();
     Checkout {
