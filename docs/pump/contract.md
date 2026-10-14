@@ -476,15 +476,20 @@ Validation rules (pump.py has none — the engine adds them):
 Not built in this step, as decided in this contract:
 
 - The decision hook.
-- State visible through `vivi boot|board|trace`; state stays a private
-  `state.json` in `home`, shaped like pump.py's so a cutover can adopt it.
+- The pump's state is not shown by `vivi boot`, `board` or `trace`; state
+  stays a private `state.json` in `home`, shaped like pump.py's so a cutover
+  can adopt it.
+- Units and plans are plan files, not Vivi graph nodes.
 - The cargo-specific `fix_proof` rewrite (splitting `cargo test a b` into one
   command per filter; pump.py:152–177, applied at pump.py:109 and 228): the
   planner charter already demands one filter per command.
 - The legacy `unexpected argument` history repair at load (pump.py:110–112).
 - `hygiene.on` (pump.py:712): that check is just another entry of
   `merge.shared_checks`.
-- Step 3, the cutover retiring pump.py.
+- Step 3, the cutover retiring pump.py, is the operator's.
+
+What is built is verified by unit tests against a scripted fake host and by a
+CLI smoke test; not yet run against live pools or a remote.
 
 The first decision-hook event (the one config cannot express): `gate_result` —
 classifying a gate worker's reply into failing test names when it carries no
@@ -522,6 +527,25 @@ pump.py behaviours found that the decisions above do not list:
 ## 12. Implementation map
 
 The engine is a Rust binary; each module ports one region of `pump.py`.
+
+### Build status
+
+| module | status | proven by |
+| --- | --- | --- |
+| `config.rs` | built | `config_test.rs` |
+| `state.rs` | built | `state_test.rs` |
+| `plan.rs` | built | `plan_test.rs` |
+| `ready.rs` | built | `ready_test.rs` |
+| `brief.rs` | built | `brief_test.rs` |
+| `host.rs` | built | `host_test.rs` |
+| `collect.rs` | built | `collect_test.rs` |
+| `dispatch.rs` | built | `dispatch_test.rs` |
+| `merge.rs` | built | `merge_test.rs` |
+| `remote.rs` | built | `remote_test.rs` |
+| `gate.rs` | built | `gate_test.rs` |
+| `board.rs` | built | `board_test.rs` |
+| `run.rs` | built | `run_test.rs` |
+| CLI `vivi pump run \| once \| status` | built | `src/cli/pump_command.rs`, `src/local_pump_command.rs`, `tests/pump_cli.rs` |
 
 | Module (`src/pump/`) | Ports (pump.py functions and lines) |
 | --- | --- |
