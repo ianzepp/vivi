@@ -5,6 +5,9 @@
 #[path = "property_events_test.rs"]
 mod property;
 
+#[path = "property_bind_test.rs"]
+mod property_bind;
+
 #[path = "property_emit_test.rs"]
 mod property_emit;
 

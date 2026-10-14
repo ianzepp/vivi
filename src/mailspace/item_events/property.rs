@@ -20,9 +20,11 @@
 //! named state — the state of every row of the item when the seal was
 //! written. A member that holds the item brings its rows to that state and
 //! seals them too; the writer's mailspace exports the archive copy, so a
-//! receiver never exports on its own. `marked`, `unmarked`, and `bound`
-//! are parsed and authorized here and applied by later units; for them the
-//! letter is held, and only counted.
+//! receiver never exports on its own. `bound` is applied here too: the
+//! units the letter names bind to the item's backlog node, as they bound
+//! where the letter was written. `marked` and `unmarked` are parsed and
+//! authorized here and applied by later units; for them the letter is held,
+//! and only counted.
 //!
 //! As with state events, only a letter from a prefix domain counts
 //! (`event_speaks_for`): such a From names a real member. A bare `local`
@@ -37,7 +39,7 @@ use super::{
 };
 use crate::error::VivariumError;
 use crate::message::normalize_message_id;
-use crate::storage::{ItemEventWrite, RoleMove, Storage};
+use crate::storage::{BACKLOG_GRAPH_CODE, ItemEventWrite, RoleMove, Storage, WorkGraphNodeRow};
 
 const EVENT_UNIT_HEADER: &str = "X-Vivi-Event-Unit";
 const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
@@ -220,8 +222,10 @@ impl Mailspace {
     /// however new — and each unabsorbed row is then sealed, without
     /// exporting to the archive (the writer's mailspace exports). When the
     /// item is already sealed, every later event of any kind is counted
-    /// ignored, as for state events. The other kinds are parsed and
-    /// authorized, and applied by later units.
+    /// ignored, as for state events. With no seal, the counted `bound`
+    /// events are applied: their units bind to the item's backlog node.
+    /// The other kinds are parsed and authorized, and applied by later
+    /// units.
     pub(super) fn apply_property_events(
         &self,
         storage: &mut Storage,
@@ -231,13 +235,59 @@ impl Mailspace {
         let chain = property_chain(storage, item)?;
         tally.ignored += chain.unauthorized;
         let Some(seal) = earliest_absorb(&chain.events).cloned() else {
-            return Ok(());
+            return self.apply_bound_events(storage, item, &chain.events, tally);
         };
         if item.rows.iter().all(|row| row.absorbed_at.is_some()) {
             tally.ignored += 1;
             return Ok(());
         }
         self.seal_item(storage, item, &seal, tally)
+    }
+
+    /// Apply the counted `bound` events held for `item` (a need): every unit
+    /// the letter names that this mailspace holds as work with a backlog
+    /// node binds to the item's node, as it bound where the letter was
+    /// written — unless the unit is already bound to the need, or a newer
+    /// local bind moved it after the letter's instant. The join rule then
+    /// runs, so a need whose units are all done completes here as it would
+    /// where the bind was made. A unit not held yet, and a need with no
+    /// node here (held foreign), are skipped.
+    fn apply_bound_events(
+        &self,
+        storage: &mut Storage,
+        item: &HeldItem,
+        events: &[PropertyEvent],
+        tally: &mut EventTally,
+    ) -> Result<(), VivariumError> {
+        let mut binds: Vec<&PropertyEvent> = events
+            .iter()
+            .filter(|event| event.kind == PropertyKind::Bound)
+            .collect();
+        if binds.is_empty() {
+            return Ok(());
+        }
+        binds.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
+        let Some(backlog) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
+            return Ok(());
+        };
+        let Some(need) = item_node(storage, item)? else {
+            return Ok(());
+        };
+        let mut bound = false;
+        for event in binds {
+            let handles = units_to_bind(storage, &backlog.handle, &need, event)?;
+            if handles.is_empty() {
+                continue;
+            }
+            storage.bind_backlog_units(&backlog.handle, &need.source_id, &handles)?;
+            bound = true;
+        }
+        tally.applied += usize::from(bound);
+        if bound {
+            let need_source = need.source_id.clone();
+            self.backlog_complete_if_join_complete(&need_source, &mut Vec::new())?;
+        }
+        Ok(())
     }
 
     /// Bring `item` to the state `seal` names and seal every unabsorbed row
@@ -275,4 +325,67 @@ impl Mailspace {
         tally.applied += 1;
         Ok(())
     }
+}
+
+/// The item's own backlog node, if this mailspace tracks it; a held
+/// foreign item with no node here is skipped.
+fn item_node(
+    storage: &Storage,
+    item: &HeldItem,
+) -> Result<Option<WorkGraphNodeRow>, VivariumError> {
+    for row in &item.rows {
+        let handle = storage.display_handle(&row.message_id)?;
+        if let Some(node) = Mailspace::backlog_node_of(storage, &handle)? {
+            return Ok(Some(node));
+        }
+    }
+    Ok(None)
+}
+
+/// The node handles of the units `event` binds here: held as work with a
+/// backlog node, not already bound to the need, and named by a letter newer
+/// than the unit's newest local bind.
+fn units_to_bind(
+    storage: &Storage,
+    graph_handle: &str,
+    need: &WorkGraphNodeRow,
+    event: &PropertyEvent,
+) -> Result<Vec<String>, VivariumError> {
+    let mut handles = Vec::new();
+    for unit_id in &event.units {
+        let Some(row) = storage.live_message_by_rfc_id(unit_id)? else {
+            continue;
+        };
+        let Some(node) = Mailspace::backlog_node_of(storage, &row.handle)? else {
+            continue;
+        };
+        if node.subgraph.as_deref() == Some(need.source_id.as_str()) {
+            continue;
+        }
+        let floor = newest_unit_bound_at(storage, graph_handle, &node.handle)?;
+        if floor.is_none_or(|at| event.at > at) {
+            handles.push(node.handle.clone());
+        }
+    }
+    Ok(handles)
+}
+
+/// The instant of the unit's newest `unit_bound` graph event, in Unix
+/// microseconds — the floor a letter must be newer than to move the unit.
+fn newest_unit_bound_at(
+    storage: &Storage,
+    graph_handle: &str,
+    node_handle: &str,
+) -> Result<Option<i64>, VivariumError> {
+    Ok(storage
+        .list_work_graph_events_after(0)?
+        .into_iter()
+        .filter(|event| {
+            event.graph_handle == graph_handle
+                && event.node_handle.as_deref() == Some(node_handle)
+                && event.event_type == "unit_bound"
+        })
+        .filter_map(|event| chrono::DateTime::parse_from_rfc3339(&event.occurred_at).ok())
+        .map(|at| at.timestamp_micros())
+        .max())
 }
