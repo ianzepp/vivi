@@ -16,7 +16,8 @@ use crate::safety::RateLimiter;
 
 use super::letters::{
     ItemState, ParsedLetter, append_composed, caller_address, compose_event, compose_reply,
-    compose_send, fold_item_states, handle_of, item_status, parse_letter, state_of, valid_handle,
+    compose_send, fold_item_states, fold_item_states_at, handle_of, item_status, parse_letter,
+    state_of, valid_handle,
 };
 
 const LIST_DEFAULT: usize = 50;
@@ -378,8 +379,11 @@ fn settle(
             "{handle} is not a need, task, or want"
         )));
     }
+    // One clock for the whole call: the fold's future bound and the new
+    // event's stamp are read at the same instant.
+    let now = chrono::Utc::now().timestamp_micros();
     let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    let states = fold_item_states_at(&records, now);
     let state = state_of(&parent, &parsed, &states);
     let current = item_status(&parent, &parsed, &states);
     if state.is_some_and(|state| state.absorbed) {
@@ -415,11 +419,8 @@ fn settle(
     };
     let composed = if may_close {
         // Stamped like the client: the clock, but never at or below the
-        // newest event held for the item, so a causal successor still wins.
-        let at = event_at(
-            chrono::Utc::now().timestamp_micros(),
-            state.map(|state| state.newest_at),
-        );
+        // newest event counted for the item, so a causal successor still wins.
+        let at = event_at(now, state.map(|state| state.newest_at));
         let prevs = state
             .map(|state| state.heads.as_slice())
             .unwrap_or_default();
@@ -632,11 +633,23 @@ fn open_dependencies(
 }
 
 /// The `X-Vivi-Event-At` of a new event: the clock, or one microsecond past
-/// the newest event held for the item, whichever is later. A writer never
-/// stamps an event older than one it has seen.
+/// the newest counted event of the item, whichever is later. A writer never
+/// stamps an event older than one it has seen. The stamp is RFC 3339 UTC in
+/// microseconds, as long as a reader parses it back: past the year 9999 the
+/// year takes five digits, so the clock is stamped instead.
 fn event_at(now_micros: i64, newest: Option<i64>) -> String {
     let floor = newest.map_or(now_micros, |at| at.saturating_add(1));
-    chrono::DateTime::from_timestamp_micros(now_micros.max(floor))
+    let stamp = stamped(now_micros.max(floor));
+    if chrono::DateTime::parse_from_rfc3339(&stamp).is_ok() {
+        return stamp;
+    }
+    stamped(chrono::Utc::now().timestamp_micros())
+}
+
+/// An instant in Unix microseconds as RFC 3339 UTC with microseconds; the
+/// clock when the instant is outside what `chrono` can hold.
+fn stamped(micros: i64) -> String {
+    chrono::DateTime::from_timestamp_micros(micros)
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
@@ -858,5 +871,56 @@ fn map_project(err: ProjectError) -> ToolError {
         }
         ProjectError::Gone { closed: true } => ToolError::new("this chat is closed"),
         ProjectError::Gone { closed: false } => ToolError::new("this chat has expired"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn micros(stamp: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(stamp)
+            .unwrap()
+            .timestamp_micros()
+    }
+
+    #[test]
+    fn an_event_is_stamped_at_the_clock_when_nothing_is_newer() {
+        let now = micros("2026-10-12T12:00:00Z");
+        assert_eq!(event_at(now, None), "2026-10-12T12:00:00.000000Z");
+        // The newest counted event is older than the clock: the clock wins.
+        assert_eq!(
+            event_at(now, Some(micros("2026-10-12T11:59:00Z"))),
+            "2026-10-12T12:00:00.000000Z"
+        );
+    }
+
+    #[test]
+    fn an_event_is_stamped_one_microsecond_past_the_newest() {
+        let now = micros("2026-10-12T12:00:00Z");
+        let ahead = micros("2026-10-12T12:03:00Z");
+        assert_eq!(event_at(now, Some(ahead)), "2026-10-12T12:03:00.000001Z");
+        // Equal to the clock is not enough: strictly above.
+        assert_eq!(event_at(now, Some(now)), "2026-10-12T12:00:00.000001Z");
+    }
+
+    #[test]
+    fn a_stamp_that_cannot_be_read_back_falls_back_to_the_clock() {
+        // Year 10000 formats with a five-digit year; a reader would not
+        // parse it, so the writer stamps the clock instead.
+        let year_10000 = 253_402_300_800_000_000;
+        let stamp = event_at(year_10000, None);
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&stamp).is_ok(),
+            "{stamp}"
+        );
+        assert!(stamp.starts_with("20"), "{stamp}");
+        // So does an instant chrono cannot hold at all.
+        let stamp = event_at(i64::MAX, None);
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&stamp).is_ok(),
+            "{stamp}"
+        );
+        assert!(stamp.starts_with("20"), "{stamp}");
     }
 }

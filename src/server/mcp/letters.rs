@@ -4,9 +4,11 @@
 //! `X-Vivi-Event` / `Of` / `At` / `Prev` shape so a checkout that pulls the
 //! letter folds the same state, and [`fold_item_states`] folds them by the
 //! same rule: "When two machines disagree about a need state, by definition,
-//! the last update or event created against that need is controlling."
+//! the last update or event created against that need is controlling." The
+//! order is the client's: the event's instant, then its causal depth through
+//! `X-Vivi-Event-Prev`, then its `Message-ID`; an event more than ten
+//! minutes ahead of the clock at fold time is not counted.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use vivi::message::{ComposeDraft, build_compose_draft, normalize_message_id};
@@ -53,11 +55,12 @@ pub struct ItemState {
     /// The `Message-ID` of the event that decided `state`: the newest
     /// `done`/`reopened`, or the `absorbed` event that sealed the item.
     pub event: Option<String>,
-    /// The state events no later event names as `Prev`, oldest first: what a
-    /// new event names as its own `X-Vivi-Event-Prev`.
+    /// The state events no later event names as `Prev`, oldest first by the
+    /// order key: what a new event names as its own `X-Vivi-Event-Prev`.
     pub heads: Vec<String>,
-    /// The newest counted event's instant in Unix microseconds (after the
-    /// append-time bound): a new event is never stamped below it.
+    /// The newest counted `done`/`reopened` event's instant in Unix
+    /// microseconds, 0 when there is none: a new event is never stamped at
+    /// or below it, as the client stamps one.
     pub newest_at: i64,
     /// A counted `absorbed` event sealed the item; it is final.
     pub absorbed: bool,
@@ -254,10 +257,12 @@ pub fn compose_reply(
 
 /// An item-state event on `parent` (a need, task, or want), composed the way
 /// the client composes one: addressed to the item's From first, then its To
-/// and Cc minus the sender; carrying the item's own envelope kind so every
-/// member receives it (the header kind is `mail`, as the client writes it);
-/// and stamped with `X-Vivi-Event-At` (`at`, RFC 3339) and one
-/// `X-Vivi-Event-Prev` per head the item's chain has (`prevs`).
+/// and Cc minus the sender; `X-Vivi-Kind: mail` and envelope kind `mail`, as
+/// the client sends every event letter, so an old client files it as mail
+/// and never as work (the server serves it to every member by its
+/// `X-Vivi-Event` header, not its kind); and stamped with
+/// `X-Vivi-Event-At` (`at`, RFC 3339) and one `X-Vivi-Event-Prev` per head
+/// the item's chain has (`prevs`).
 pub fn compose_event(
     identity: &IdentityRecord,
     parent: &ProjectRecord,
@@ -266,10 +271,9 @@ pub fn compose_event(
     at: &str,
     prevs: &[String],
 ) -> Result<ComposedLetter, String> {
-    let kind = match parent.kind.as_deref() {
-        Some(kind @ ("need" | "task" | "want")) => kind.to_owned(),
-        _ => return Err("an event letter names a need, task, or want".to_owned()),
-    };
+    if !matches!(parent.kind.as_deref(), Some("need" | "task" | "want")) {
+        return Err("an event letter names a need, task, or want".to_owned());
+    }
     let from = caller_address(identity)?;
     let parsed = parse_letter(&parent.raw_eml);
     let mut seen: Vec<String> = Vec::new();
@@ -344,7 +348,7 @@ pub fn compose_event(
         traveling_id,
         raw_eml: eml.into_bytes(),
         to: envelope,
-        kind: Some(kind),
+        kind: None,
     })
 }
 
@@ -365,20 +369,14 @@ pub fn append_composed(
     store.append(project_id, &item)
 }
 
-/// How far past a letter's server append time its own event instant may claim
-/// to be before the server stops believing it, in microseconds.
-///
-/// Chosen: five minutes, applied to the event's resolved instant — its
-/// `X-Vivi-Event-At`, or its `Date` when it carries none. An instant later
-/// than `appended_at + 5 minutes` is treated as the append time itself, so a
-/// far-future stamp cannot outrank every later event and lock the item; an
-/// earlier or merely ahead-by-a-little stamp is kept as written. Five minutes
-/// is room for a member's clock running ahead of the server's, not room for a
-/// forged year. The bound moves the instant to the append time rather than
-/// discarding the letter: the event still counts, as the newest thing that
-/// verifiably happened when it arrived. A client that folds without this
-/// bound can disagree with the server about a letter the bound moved.
-pub const EVENT_AT_SKEW_MICROS: i64 = 5 * 60 * 1_000_000;
+/// How far an event's instant may run past the server clock at fold time
+/// and still count, in microseconds: ten minutes of clock skew, no more —
+/// the client's bound, applied the same way. An event dated further ahead is
+/// not counted at all, as the client does not count it, so no letter can
+/// lock an item from the future. The test is made against the clock at the
+/// moment of the fold and never against the letter's append time, so the
+/// same letters fold the same on the server and on every checkout.
+pub const EVENT_FUTURE_LIMIT_MICROS: i64 = 10 * 60 * 1_000_000;
 
 /// What an item event says. `done`, `reopened` and `absorbed` decide state;
 /// `marked`/`unmarked` and `bound` ride beside it.
@@ -414,8 +412,8 @@ struct CountedEvent {
     /// Normalized `Message-ID` of the item.
     of: String,
     kind: EventKind,
-    /// The instant it counts at, in Unix microseconds, after the append-time
-    /// bound ([`EVENT_AT_SKEW_MICROS`]).
+    /// The instant it counts at, in Unix microseconds: `X-Vivi-Event-At`,
+    /// else the `Date` in whole seconds.
     at: i64,
     prev: Vec<String>,
     slug: Option<String>,
@@ -439,20 +437,20 @@ fn from_member(record: &ProjectRecord, letter: &ParsedLetter) -> bool {
     domain.eq_ignore_ascii_case(&format!("{prefix}.local"))
 }
 
-/// An instant bounded by the letter's append time; see
-/// [`EVENT_AT_SKEW_MICROS`].
-fn bounded_at(at: i64, appended_at: &str) -> i64 {
-    match rfc3339_micros(appended_at) {
-        Some(appended) if at > appended.saturating_add(EVENT_AT_SKEW_MICROS) => appended,
-        _ => at,
-    }
+/// Whether an event dated `at` counts at fold time `now` (both Unix
+/// microseconds): an instant more than [`EVENT_FUTURE_LIMIT_MICROS`] past the
+/// clock is a claim about the future, not an order.
+fn dated_within_clock(at: i64, now: i64) -> bool {
+    at <= now.saturating_add(EVENT_FUTURE_LIMIT_MICROS)
 }
 
-/// The event `record` is, when it counts: a member's letter that names its
-/// item both as `X-Vivi-Event-Of` and as the message it replies to, of a
-/// kind this server folds, with the payload that kind needs. Anything else
-/// is plain mail to the fold (an unknown kind is skipped, not an error).
-fn counted_event(record: &ProjectRecord, letter: &ParsedLetter) -> Option<CountedEvent> {
+/// The event `record` is, when it counts at fold time `now`: a member's
+/// letter that names its item both as `X-Vivi-Event-Of` and as the message
+/// it replies to, of a kind this server folds, with the payload that kind
+/// needs, dated no further than [`EVENT_FUTURE_LIMIT_MICROS`] ahead of
+/// `now`. Anything else is plain mail to the fold (an unknown kind is
+/// skipped, not an error).
+fn counted_event(record: &ProjectRecord, letter: &ParsedLetter, now: i64) -> Option<CountedEvent> {
     let kind = EventKind::parse(letter.event.as_deref()?)?;
     let of = letter.event_of.clone()?;
     if letter.in_reply_to.as_deref() != Some(of.as_str()) {
@@ -472,11 +470,14 @@ fn counted_event(record: &ProjectRecord, letter: &ParsedLetter) -> Option<Counte
         return None;
     }
     let at = letter.event_at.or(letter.date).unwrap_or(0);
+    if !dated_within_clock(at, now) {
+        return None;
+    }
     Some(CountedEvent {
         id,
         of,
         kind,
-        at: bounded_at(at, &record.appended_at),
+        at,
         prev: letter.event_prev.clone(),
         slug: letter.event_slug.clone(),
         units: letter.event_units.clone(),
@@ -484,38 +485,86 @@ fn counted_event(record: &ProjectRecord, letter: &ParsedLetter) -> Option<Counte
     })
 }
 
-/// How `a` stands against `b` in age, as the client orders events: the
-/// larger instant wins; on equal instants a direct successor (it names the
-/// other as `Prev`) wins; then the larger `Message-ID`. The clock beats the
-/// chain, so a later instant stays newer even over an event that names it.
-fn newer(a: &CountedEvent, b: &CountedEvent) -> Ordering {
-    let successor = |x: &CountedEvent, y: &CountedEvent| x.prev.iter().any(|prev| prev == &y.id);
-    a.at.cmp(&b.at)
-        .then_with(|| match (successor(a, b), successor(b, a)) {
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-            _ => Ordering::Equal,
-        })
-        .then_with(|| a.id.cmp(&b.id))
+/// The order key of an event, as the client keys it: the instant, then the
+/// causal depth (see [`event_depths`]), then the `Message-ID`, compared
+/// lexicographically. A total order, so every ordering of the same letters
+/// picks the same newest event. The clock beats the chain: a later instant
+/// stays newer even over an event that names it as `Prev`.
+fn order_key(event: &CountedEvent, depth: usize) -> (i64, usize, &str) {
+    (event.at, depth, event.id.as_str())
 }
 
-/// The state events no other names as `Prev`, oldest first. A cycle (which
-/// no honest writer makes) has no head, so every event is one then.
-fn chain_heads(events: &[&CountedEvent]) -> Vec<String> {
+/// The causal depth of every state event among `events`: 0 for an event
+/// none of whose `Prev` names a held event, else one past the deepest held
+/// event it names. A `Prev` that names no counted state event (a property
+/// event, an event not held, one dated past the clock) adds nothing. A
+/// cycle, which no honest writer makes, is cut where it is met again, so
+/// depth stays finite. Walks with an explicit stack: a chain a member makes
+/// as long as it likes must not be able to overflow the server's.
+fn event_depths(events: &[&CountedEvent]) -> Vec<usize> {
+    let mut held: HashMap<&str, usize> = HashMap::new();
+    for (index, event) in events.iter().enumerate() {
+        held.entry(event.id.as_str()).or_insert(index);
+    }
+    let mut depths: Vec<Option<usize>> = vec![None; events.len()];
+    let mut walking = vec![false; events.len()];
+    for start in 0..events.len() {
+        if depths[start].is_some() {
+            continue;
+        }
+        // One frame per event being computed: its index, the position of
+        // the next `Prev` to look at, and the deepest held event seen.
+        let mut stack: Vec<(usize, usize, Option<usize>)> = vec![(start, 0, None)];
+        walking[start] = true;
+        while let Some(frame) = stack.last_mut() {
+            let (index, next, deepest) = *frame;
+            let Some(prev) = events[index].prev.get(next) else {
+                walking[index] = false;
+                let depth = deepest.map_or(0, |seen| seen + 1);
+                depths[index] = Some(depth);
+                stack.pop();
+                if let Some(parent) = stack.last_mut() {
+                    parent.2 = Some(parent.2.map_or(depth, |seen| seen.max(depth)));
+                }
+                continue;
+            };
+            frame.1 += 1;
+            let Some(&named) = held.get(prev.as_str()) else {
+                continue;
+            };
+            match depths[named] {
+                Some(depth) => frame.2 = Some(deepest.map_or(depth, |seen| seen.max(depth))),
+                // Met again while it is being computed: counts 0.
+                None if walking[named] => frame.2 = Some(deepest.unwrap_or(0)),
+                None => {
+                    walking[named] = true;
+                    stack.push((named, 0, None));
+                }
+            }
+        }
+    }
+    depths.into_iter().map(|depth| depth.unwrap_or(0)).collect()
+}
+
+/// The state events no other names as `Prev`, oldest first by the order key:
+/// the events a new event names as its own `X-Vivi-Event-Prev`. A cycle
+/// (which no honest writer makes) has no head, so every event is one then.
+fn chain_heads(events: &[&CountedEvent], depths: &[usize]) -> Vec<String> {
     let named: HashSet<&str> = events
         .iter()
         .flat_map(|event| event.prev.iter().map(String::as_str))
         .collect();
-    let mut heads: Vec<&CountedEvent> = events
-        .iter()
-        .copied()
-        .filter(|event| !named.contains(event.id.as_str()))
+    let mut heads: Vec<usize> = (0..events.len())
+        .filter(|&index| !named.contains(events[index].id.as_str()))
         .collect();
     if heads.is_empty() {
-        heads = events.to_vec();
+        heads = (0..events.len()).collect();
     }
-    heads.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
-    heads.into_iter().map(|head| head.id.clone()).collect()
+    heads.sort_by_key(|&index| order_key(events[index], depths[index]));
+    heads
+        .into_iter()
+        .map(|index| events[index].id.clone())
+        .collect()
 }
 
 /// The seal of an item: its earliest `absorbed` event by `(at, Message-ID)`,
@@ -535,23 +584,33 @@ fn before_seal(event: &CountedEvent, seal: Option<&CountedEvent>) -> bool {
 
 /// Fold the event letters onto their items, keyed by the item's normalized
 /// `Message-ID`, by the client's rule: the last event created against an item
-/// controls.
+/// controls. Reads the server clock for the future bound; see
+/// [`fold_item_states_at`].
+pub fn fold_item_states(records: &[ProjectRecord]) -> HashMap<String, ItemState> {
+    fold_item_states_at(records, chrono::Utc::now().timestamp_micros())
+}
+
+/// [`fold_item_states`] at the clock `now` (Unix microseconds), the same
+/// function of the letters held that the client folds:
 ///
 /// - Any member's event counts, whoever authored the item ([`from_member`]).
-/// - The newest `done`/`reopened` wins by its `X-Vivi-Event-At`, else its
-///   `Date`; never by `appended_at`. Ties go to the direct successor, then to
-///   the larger `Message-ID` ([`newer`]).
-/// - An instant more than [`EVENT_AT_SKEW_MICROS`] after the letter's append
-///   time counts as the append time.
+/// - An event whose instant is more than [`EVENT_FUTURE_LIMIT_MICROS`] past
+///   `now` is not counted at all.
+/// - The newest `done`/`reopened` wins by its order key: the instant
+///   (`X-Vivi-Event-At`, else `Date`; never `appended_at`), then the causal
+///   depth through `X-Vivi-Event-Prev`, then the larger `Message-ID`
+///   ([`order_key`]).
 /// - `absorbed` is final: the earliest seal names the state, and no later
 ///   event of any kind moves anything.
-/// - Marks: the newest `marked`/`unmarked` per slug. Bind: the newest
-///   `bound` per unit, which belongs to the item that letter names.
-pub fn fold_item_states(records: &[ProjectRecord]) -> HashMap<String, ItemState> {
+/// - Marks: the newest `marked`/`unmarked` per slug, by `(instant,
+///   Message-ID)`. Bind: the newest `bound` per unit, which belongs to the
+///   item that letter names. A property event carries no `Prev` that the
+///   client reads, so its depth is always 0 and the key is the same one.
+pub fn fold_item_states_at(records: &[ProjectRecord], now: i64) -> HashMap<String, ItemState> {
     let mut by_item: HashMap<String, Vec<CountedEvent>> = HashMap::new();
     for record in records {
         let letter = parse_letter(&record.raw_eml);
-        if let Some(event) = counted_event(record, &letter) {
+        if let Some(event) = counted_event(record, &letter, now) {
             by_item.entry(event.of.clone()).or_default().push(event);
         }
     }
@@ -587,7 +646,12 @@ pub fn fold_item_states(records: &[ProjectRecord]) -> HashMap<String, ItemState>
             .iter()
             .filter(|event| matches!(event.kind, EventKind::Done | EventKind::Reopened))
             .collect();
-        let head = state_events.iter().copied().max_by(|a, b| newer(a, b));
+        let depths = event_depths(&state_events);
+        let head = state_events
+            .iter()
+            .zip(&depths)
+            .max_by_key(|(event, depth)| order_key(event, **depth))
+            .map(|(event, _)| *event);
         let (state, event) = match (seal, head) {
             (Some(seal), _) => (seal.state.as_deref() == Some("done"), Some(seal.id.clone())),
             (None, Some(head)) => (head.kind == EventKind::Done, Some(head.id.clone())),
@@ -618,8 +682,8 @@ pub fn fold_item_states(records: &[ProjectRecord]) -> HashMap<String, ItemState>
             ItemState {
                 state: if state { "done" } else { "open" }.to_owned(),
                 event,
-                heads: chain_heads(&state_events),
-                newest_at: events.iter().map(|event| event.at).max().unwrap_or(0),
+                heads: chain_heads(&state_events, &depths),
+                newest_at: state_events.iter().map(|event| event.at).max().unwrap_or(0),
                 absorbed: seal.is_some(),
                 marks: marks
                     .into_iter()
@@ -919,8 +983,8 @@ mod tests {
         )
     }
 
-    /// An event letter on `of`, written by `sender`, travelling under the
-    /// item's kind like the client's.
+    /// An event letter on `of`, written by `sender`, travelling as `mail`
+    /// like the client's.
     fn event(
         sequence: u64,
         rfc_id: &str,
@@ -934,7 +998,7 @@ mod tests {
             sequence,
             rfc_id,
             sender,
-            Some("need"),
+            None,
             appended_at,
             &format!(
                 "In-Reply-To: <{of}>\nX-Vivi-Event: {kind}\nX-Vivi-Event-Of: <{of}>\n{extra}\n"
@@ -1150,11 +1214,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_far_future_at_counts_as_the_append_time() {
-        // done is stamped in 2099 but appended at 12:00:00; the reopen at
-        // 12:03:00 is genuinely later and must win.
-        let records = [
+    /// The fold clock the tests below use: just after the fixture's `AT`.
+    const NOW: &str = "2026-10-12T12:10:00Z";
+
+    fn micros(stamp: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(stamp)
+            .unwrap()
+            .timestamp_micros()
+    }
+
+    fn fold_at(records: &[ProjectRecord], now: &str) -> HashMap<String, ItemState> {
+        fold_item_states_at(records, micros(now))
+    }
+
+    /// A close by bob stamped `at`, appended long ago, next to a reopen by
+    /// alice stamped at the clock.
+    fn close_then_reopen(at: &str) -> [ProjectRecord; 3] {
+        [
             need(1, "need-1@aaaaaaaa.local"),
             event(
                 2,
@@ -1163,7 +1239,7 @@ mod tests {
                 BOB,
                 "done",
                 "2026-10-12T12:00:00Z",
-                "X-Vivi-Event-At: 2099-01-01T00:00:00.000000Z\n",
+                &format!("X-Vivi-Event-At: {at}\n"),
             ),
             event(
                 3,
@@ -1171,65 +1247,309 @@ mod tests {
                 "need-1@aaaaaaaa.local",
                 "alice@aaaaaaaa.local",
                 "reopened",
-                "2026-10-12T12:03:00Z",
-                "X-Vivi-Event-At: 2026-10-12T12:03:00.000000Z\n",
+                "2026-10-12T12:00:30Z",
+                "X-Vivi-Event-At: 2026-10-12T12:00:00.000000Z\n",
             ),
-        ];
-        let states = fold_item_states(&records);
-        assert_eq!(states["need-1@aaaaaaaa.local"].state, "open");
-        // On its own the 2099 stamp counts as its append time, which is what
-        // a new event must be stamped above.
-        let states = fold_item_states(&records[..2]);
-        let appended = chrono::DateTime::parse_from_rfc3339("2026-10-12T12:00:00Z")
-            .unwrap()
-            .timestamp_micros();
-        assert_eq!(states["need-1@aaaaaaaa.local"].state, "done");
-        assert_eq!(states["need-1@aaaaaaaa.local"].newest_at, appended);
+        ]
     }
 
     #[test]
-    fn an_at_within_five_minutes_of_the_append_time_is_kept() {
-        let near = |at: &str| {
-            [
-                need(1, "need-1@aaaaaaaa.local"),
-                event(
-                    2,
-                    "ev-1@bbbbbbbb.local",
-                    "need-1@aaaaaaaa.local",
-                    BOB,
-                    "done",
-                    "2026-10-12T12:00:00Z",
-                    &format!("X-Vivi-Event-At: {at}\n"),
-                ),
-                event(
-                    3,
-                    "ev-2@aaaaaaaa.local",
-                    "need-1@aaaaaaaa.local",
-                    "alice@aaaaaaaa.local",
-                    "reopened",
-                    "2026-10-12T12:03:30Z",
-                    "X-Vivi-Event-At: 2026-10-12T12:03:00.000000Z\n",
-                ),
-            ]
-        };
-        // Four minutes ahead: believed, so the later-stamped done wins.
+    fn an_event_eleven_minutes_ahead_is_not_counted_and_nine_is() {
+        // The clock is 12:10:00: 12:19 is nine minutes ahead, 12:21 is eleven.
+        let nine = close_then_reopen("2026-10-12T12:19:00.000000Z");
+        let states = fold_at(&nine, NOW);
+        let state = &states["need-1@aaaaaaaa.local"];
+        assert_eq!(state.state, "done", "nine minutes ahead counts");
+        assert_eq!(state.event.as_deref(), Some("ev-1@bbbbbbbb.local"));
+        assert_eq!(state.newest_at, micros("2026-10-12T12:19:00Z"));
+
+        let eleven = close_then_reopen("2026-10-12T12:21:00.000000Z");
+        let states = fold_at(&eleven, NOW);
+        let state = &states["need-1@aaaaaaaa.local"];
+        assert_eq!(state.state, "open", "eleven minutes ahead is not counted");
+        assert_eq!(state.event.as_deref(), Some("ev-2@aaaaaaaa.local"));
+        // Not counted means not there: the instant is not a floor either.
+        assert_eq!(state.newest_at, micros("2026-10-12T12:00:00Z"));
+        assert_eq!(state.heads, ["ev-2@aaaaaaaa.local"]);
+
+        // Alone, an event that is not counted leaves no state at all.
+        let states = fold_at(&eleven[..2], NOW);
+        assert!(!states.contains_key("need-1@aaaaaaaa.local"));
+    }
+
+    #[test]
+    fn the_future_bound_is_exactly_ten_minutes_of_the_clock() {
+        let at_limit = close_then_reopen("2026-10-12T12:20:00.000000Z");
         assert_eq!(
-            state_of_item(
-                &near("2026-10-12T12:04:00.000000Z"),
-                "need-1@aaaaaaaa.local"
-            )
-            .as_deref(),
-            Some("done")
+            fold_at(&at_limit, NOW)["need-1@aaaaaaaa.local"].state,
+            "done",
+            "exactly ten minutes ahead still counts"
         );
-        // Six minutes ahead: bounded to 12:00:00, so the reopen wins.
+        let past = close_then_reopen("2026-10-12T12:20:00.000001Z");
         assert_eq!(
-            state_of_item(
-                &near("2026-10-12T12:06:00.000000Z"),
-                "need-1@aaaaaaaa.local"
-            )
-            .as_deref(),
+            fold_at(&past, NOW)["need-1@aaaaaaaa.local"].state,
+            "open",
+            "one microsecond more does not"
+        );
+    }
+
+    #[test]
+    fn the_bound_is_read_at_fold_time_not_at_append_time() {
+        // Appended at 12:00:00 and stamped 12:21: eleven minutes ahead of a
+        // 12:10 clock, but only nine of a 12:12 clock. The same letters fold
+        // differently as the clock moves, as on the client.
+        let records = close_then_reopen("2026-10-12T12:21:00.000000Z");
+        assert_eq!(
+            fold_at(&records, "2026-10-12T12:10:00Z")["need-1@aaaaaaaa.local"].state,
+            "open"
+        );
+        assert_eq!(
+            fold_at(&records, "2026-10-12T12:12:00Z")["need-1@aaaaaaaa.local"].state,
+            "done"
+        );
+        // And a far-future stamp is not the append time: it counts for nothing
+        // at any clock short of its own.
+        let forever = close_then_reopen("2099-01-01T00:00:00.000000Z");
+        assert_eq!(
+            fold_at(&forever, "2026-10-12T12:59:00Z")["need-1@aaaaaaaa.local"].state,
+            "open"
+        );
+        assert!(
+            !fold_at(&forever[..2], "2026-10-12T12:59:00Z").contains_key("need-1@aaaaaaaa.local")
+        );
+    }
+
+    #[test]
+    fn a_future_property_event_is_not_counted_either() {
+        let records = [
+            need(1, "need-1@aaaaaaaa.local"),
+            event(
+                2,
+                "m1@bbbbbbbb.local",
+                "need-1@aaaaaaaa.local",
+                BOB,
+                "marked",
+                AT,
+                "X-Vivi-Event-Slug: soon\nX-Vivi-Event-At: 2026-10-12T12:21:00.000000Z\n",
+            ),
+            event(
+                3,
+                "m2@bbbbbbbb.local",
+                "need-1@aaaaaaaa.local",
+                BOB,
+                "marked",
+                AT,
+                "X-Vivi-Event-Slug: now\nX-Vivi-Event-At: 2026-10-12T12:19:00.000000Z\n",
+            ),
+        ];
+        let states = fold_at(&records, NOW);
+        assert_eq!(states["need-1@aaaaaaaa.local"].marks, ["now"]);
+    }
+
+    /// A state event on need-1 with the instant every event below shares.
+    fn tied(sequence: u64, id: &str, sender: &str, kind: &str, prev: &[&str]) -> ProjectRecord {
+        let prevs: String = prev
+            .iter()
+            .map(|id| format!("X-Vivi-Event-Prev: <{id}>\n"))
+            .collect();
+        event(
+            sequence,
+            id,
+            "need-1@aaaaaaaa.local",
+            sender,
+            kind,
+            AT,
+            &format!("X-Vivi-Event-At: 2026-10-12T12:00:05.000000Z\n{prevs}"),
+        )
+    }
+
+    #[test]
+    fn causal_depth_orders_a_three_event_chain_with_equal_instants() {
+        // done -> reopened -> done, every instant equal. The last names the
+        // middle as Prev and the middle names the first, so depths are 0, 1,
+        // 2 and the last wins. Its Message-ID is the smallest of the three:
+        // neither a direct-successor test (the last does not name the first)
+        // nor the id alone can pick it.
+        let held = |index: usize| match index {
+            0 => tied(2, "zzz-first@bbbbbbbb.local", BOB, "done", &[]),
+            1 => tied(
+                3,
+                "mmm-middle@aaaaaaaa.local",
+                "alice@aaaaaaaa.local",
+                "reopened",
+                &["zzz-first@bbbbbbbb.local"],
+            ),
+            _ => tied(
+                4,
+                "aaa-last@bbbbbbbb.local",
+                BOB,
+                "done",
+                &["mmm-middle@aaaaaaaa.local"],
+            ),
+        };
+        let orders: [[usize; 3]; 6] = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        for order in orders {
+            let mut records = vec![need(1, "need-1@aaaaaaaa.local")];
+            records.extend(order.iter().map(|&index| held(index)));
+            let states = fold_at(&records, NOW);
+            let state = &states["need-1@aaaaaaaa.local"];
+            assert_eq!(state.state, "done", "order {order:?}");
+            assert_eq!(
+                state.event.as_deref(),
+                Some("aaa-last@bbbbbbbb.local"),
+                "order {order:?}"
+            );
+            assert_eq!(state.heads, ["aaa-last@bbbbbbbb.local"], "order {order:?}");
+        }
+
+        // Flip the end of the chain: the deeper event is the reopen now.
+        let flipped = tied(
+            4,
+            "aaa-last@bbbbbbbb.local",
+            BOB,
+            "reopened",
+            &["mmm-middle@aaaaaaaa.local"],
+        );
+        let records = [need(1, "need-1@aaaaaaaa.local"), held(0), held(1), flipped];
+        assert_eq!(
+            state_of_item(&records, "need-1@aaaaaaaa.local").as_deref(),
             Some("open")
         );
+    }
+
+    #[test]
+    fn a_fork_with_equal_instants_and_depths_goes_to_the_larger_message_id() {
+        let root = tied(2, "root@bbbbbbbb.local", BOB, "done", &[]);
+        let left = tied(
+            3,
+            "left@aaaaaaaa.local",
+            "alice@aaaaaaaa.local",
+            "reopened",
+            &["root@bbbbbbbb.local"],
+        );
+        let right = tied(
+            4,
+            "right@bbbbbbbb.local",
+            BOB,
+            "done",
+            &["root@bbbbbbbb.local"],
+        );
+        let states = fold_at(&[need(1, "need-1@aaaaaaaa.local"), root, left, right], NOW);
+        let state = &states["need-1@aaaaaaaa.local"];
+        // Both children sit at depth 1: the larger id, `right`, decides.
+        assert_eq!(state.state, "done");
+        assert_eq!(state.event.as_deref(), Some("right@bbbbbbbb.local"));
+        // A new event follows both heads, oldest first by the order key.
+        assert_eq!(state.heads, ["left@aaaaaaaa.local", "right@bbbbbbbb.local"]);
+    }
+
+    #[test]
+    fn a_later_instant_beats_a_deeper_chain() {
+        // The reopen names the close as Prev (depth 1) but is stamped before
+        // an unrelated close: the clock beats the chain.
+        let first = tied(2, "first@bbbbbbbb.local", BOB, "done", &[]);
+        let reopen = tied(
+            3,
+            "reopen@aaaaaaaa.local",
+            "alice@aaaaaaaa.local",
+            "reopened",
+            &["first@bbbbbbbb.local"],
+        );
+        let later = event(
+            4,
+            "later@bbbbbbbb.local",
+            "need-1@aaaaaaaa.local",
+            BOB,
+            "done",
+            AT,
+            "X-Vivi-Event-At: 2026-10-12T12:00:06.000000Z\n",
+        );
+        let states = fold_at(
+            &[need(1, "need-1@aaaaaaaa.local"), first, reopen, later],
+            NOW,
+        );
+        assert_eq!(states["need-1@aaaaaaaa.local"].state, "done");
+        assert_eq!(
+            states["need-1@aaaaaaaa.local"].event.as_deref(),
+            Some("later@bbbbbbbb.local")
+        );
+    }
+
+    #[test]
+    fn a_prev_that_names_nothing_counted_adds_no_depth() {
+        // `early` names a future-dated event and one never held: depth 0, so
+        // an unrelated depth-0 event with the larger id beats it.
+        let future = event(
+            2,
+            "future@bbbbbbbb.local",
+            "need-1@aaaaaaaa.local",
+            BOB,
+            "done",
+            AT,
+            "X-Vivi-Event-At: 2026-10-12T13:00:00.000000Z\n",
+        );
+        let early = tied(
+            3,
+            "aaa-early@aaaaaaaa.local",
+            "alice@aaaaaaaa.local",
+            "reopened",
+            &["future@bbbbbbbb.local", "never-held@bbbbbbbb.local"],
+        );
+        let rival = tied(4, "zzz-rival@bbbbbbbb.local", BOB, "done", &[]);
+        let states = fold_at(
+            &[need(1, "need-1@aaaaaaaa.local"), future, early, rival],
+            NOW,
+        );
+        let state = &states["need-1@aaaaaaaa.local"];
+        assert_eq!(state.event.as_deref(), Some("zzz-rival@bbbbbbbb.local"));
+        assert_eq!(state.state, "done");
+    }
+
+    #[test]
+    fn a_cycle_of_prevs_folds_and_a_long_chain_does_not_overflow() {
+        // Two events naming each other: no honest writer makes one, but the
+        // fold must still end, and name one of them.
+        let a = tied(2, "a@bbbbbbbb.local", BOB, "done", &["b@aaaaaaaa.local"]);
+        let b = tied(
+            3,
+            "b@aaaaaaaa.local",
+            "alice@aaaaaaaa.local",
+            "reopened",
+            &["a@bbbbbbbb.local"],
+        );
+        let states = fold_at(&[need(1, "need-1@aaaaaaaa.local"), a, b], NOW);
+        assert!(states.contains_key("need-1@aaaaaaaa.local"));
+
+        // A member can append as long a chain as it likes; depth is walked
+        // without recursion, so this does not run the stack out.
+        let mut records = vec![need(1, "need-1@aaaaaaaa.local")];
+        let length = 50_000u64;
+        for n in 0..length {
+            let prev = format!("link-{}@bbbbbbbb.local", n.wrapping_sub(1));
+            let prevs: Vec<&str> = if n == 0 { Vec::new() } else { vec![&prev] };
+            let kind = if n % 2 == 0 { "done" } else { "reopened" };
+            records.push(tied(
+                2 + n,
+                &format!("link-{n}@bbbbbbbb.local"),
+                BOB,
+                kind,
+                &prevs,
+            ));
+        }
+        let states = fold_at(&records, NOW);
+        let state = &states["need-1@aaaaaaaa.local"];
+        assert_eq!(
+            state.event.as_deref(),
+            Some(format!("link-{}@bbbbbbbb.local", length - 1).as_str())
+        );
+        assert_eq!(state.heads.len(), 1);
     }
 
     #[test]
@@ -1561,10 +1881,25 @@ mod tests {
             item_status(&item, &parse_letter(&item.raw_eml), &states),
             "done"
         );
-        // The event carries the item's envelope kind and is still no item.
-        assert_eq!(done.kind.as_deref(), Some("need"));
+        // The event is no item under any envelope kind: `mail`, as the
+        // client sends it, or the item's own kind, as an older one did.
+        assert_eq!(done.kind, None);
         assert_eq!(
             item_status(&done, &parse_letter(&done.raw_eml), &states),
+            "event"
+        );
+        let mut riding = event(
+            3,
+            "ev-2@bbbbbbbb.local",
+            "need-1@aaaaaaaa.local",
+            BOB,
+            "reopened",
+            AT,
+            "",
+        );
+        riding.kind = Some("need".into());
+        assert_eq!(
+            item_status(&riding, &parse_letter(&riding.raw_eml), &states),
             "event"
         );
     }
