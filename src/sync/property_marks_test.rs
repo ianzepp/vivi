@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use super::{alice, bob};
-use crate::mailspace::is_foreign_account;
+use crate::mailspace::{RoleUpdate, is_foreign_account};
 use crate::sync::fake_server::{
     Checkout, FakeServer, LETTER_DATE, World, checkout, handle, wire_id,
 };
@@ -25,11 +25,30 @@ struct Pair {
 
 fn pair() -> Pair {
     let server = FakeServer::new();
-    let (a, b) = (alice(), bob());
+    let (mut a, mut b) = (alice(), bob());
+    minds(&mut a);
+    minds(&mut b);
     let need = a.send_need("mind", &b.address("mind"), "travel policy");
     a.push(&a.client(&server));
     b.pull(&b.client(&server));
     Pair { server, a, b, need }
+}
+
+/// Bind each member's `mind` seat to kind `mind`, the way
+/// `event_wire_test::minds` does: only the item's author or a role of that
+/// kind may close work for everyone, so a mark by any other seat stays
+/// private and never travels.
+fn minds(checkout: &mut Checkout) {
+    checkout
+        .mailspace
+        .set_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
 }
 
 impl Pair {

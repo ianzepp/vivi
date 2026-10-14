@@ -8,21 +8,40 @@
 use std::rc::Rc;
 
 use super::fake_server::{Checkout, FakeServer, checkout};
-use crate::mailspace::SendRequest;
+use crate::mailspace::{RoleUpdate, SendRequest};
 use crate::sync::pull::PullReport;
 
 const TRAVEL: &str = "travel";
 
 fn alice() -> Checkout {
-    checkout("alice", &["mind"])
+    member("alice")
 }
 
 fn bob() -> Checkout {
-    checkout("bob", &["mind"])
+    member("bob")
 }
 
 fn carol() -> Checkout {
-    checkout("carol", &["mind"])
+    member("carol")
+}
+
+/// A member whose `mind` seat is of kind `mind`, the way
+/// `event_wire_test::minds` binds a role: only the item's author or a role
+/// of that kind may close work for everyone, so a mark by any other seat
+/// stays private and never travels.
+fn member(name: &str) -> Checkout {
+    let mut checkout = checkout(name, &["mind"]);
+    checkout
+        .mailspace
+        .set_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+    checkout
 }
 
 /// Three members of one project server holding the same need, which alice
