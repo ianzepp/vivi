@@ -11,7 +11,7 @@
 
 use std::rc::Rc;
 
-use crate::mailspace::SendRequest;
+use crate::mailspace::{AbsorbConfig, SendRequest};
 use crate::sync::fake_server::{Checkout, FakeServer, PROJECT, checkout};
 use crate::sync::push;
 use crate::sync::select::{Selection, SkipReason};
@@ -95,6 +95,31 @@ fn the_event_letter(selection: &Selection, item: &str) -> String {
     let others = handles_except(selection, item);
     assert_eq!(others.len(), 1, "{selection:?}");
     others.into_iter().next().unwrap()
+}
+
+/// The value of a letter's `X-Vivi-Event` header, when it has one.
+fn event_of(co: &Checkout, handle: &str) -> Option<String> {
+    let bytes = co.bytes_of(&co.id_of(handle));
+    let parsed = mail_parser::MessageParser::default().parse(&bytes)?;
+    parsed
+        .headers()
+        .iter()
+        .find(|header| header.name().eq_ignore_ascii_case("X-Vivi-Event"))
+        .and_then(|header| match header.value() {
+            mail_parser::HeaderValue::Text(text) => Some(text.trim().to_string()),
+            _ => None,
+        })
+}
+
+/// The one handle in `handles` whose letter is an `event` letter.
+fn the_letter_of_event(co: &Checkout, handles: &[String], event: &str) -> String {
+    let matched: Vec<String> = handles
+        .iter()
+        .filter(|handle| event_of(co, handle).as_deref() == Some(event))
+        .cloned()
+        .collect();
+    assert_eq!(matched.len(), 1, "{handles:?}");
+    matched.into_iter().next().unwrap()
 }
 
 /// Record `handles` in the kept-local list push reads — without the stuck
@@ -221,23 +246,36 @@ fn local_only_reopened_letters_are_selected_once_their_need_is_bound() {
 fn a_local_only_absorbed_letter_is_selected_once_its_need_is_bound() {
     let server = FakeServer::new();
     let mut a = addressed("cecil", &["mind", "hand"]);
+    // The need is closed and absorbed in one breath here, so the operator
+    // ruling's quiet wait is off; absorb_quiet_test covers the wait itself.
+    a.mailspace.config.absorb = Some(AbsorbConfig { quiet_hours: 0 });
     let need = send_item_to_own_hand(&a, "needs", "need", "seal me");
+    a.mailspace
+        .move_task("mind", &need, "done", None, None, &[], &[])
+        .unwrap();
     a.mailspace
         .absorb("mind", &sent_copy_handle(&a, &need), None, "need")
         .unwrap();
 
     let selection = pending(&a);
     assert!(selection.letters.is_empty(), "{selection:?}");
-    assert_eq!(selection.skipped.len(), 2, "{selection:?}");
+    assert_eq!(selection.skipped.len(), 3, "{selection:?}");
     assert_all_local_only(&selection);
-    let absorbed = the_event_letter(&selection, &need);
+    let events = handles_except(&selection, &need);
+    assert_eq!(events.len(), 2, "the done and absorbed letters");
+    let absorbed = the_letter_of_event(&a, &events, "absorbed");
 
-    push_item_alone(&mut a, &server, &need, std::slice::from_ref(&absorbed), 1);
+    push_item_alone(&mut a, &server, &need, &events, 1);
 
     let selection = pending(&a);
-    assert_eq!(selection.letters.len(), 1, "{selection:?}");
-    assert_eq!(selection.letters[0].handle, absorbed);
-    assert_eq!(a.push(&a.client(&server)).sent, 1);
+    assert_eq!(selection.letters.len(), 2, "{selection:?}");
+    let handles: Vec<&str> = selection
+        .letters
+        .iter()
+        .map(|letter| letter.handle.as_str())
+        .collect();
+    assert!(handles.contains(&absorbed.as_str()), "{handles:?}");
+    assert_eq!(a.push(&a.client(&server)).sent, 2);
 }
 
 #[test]

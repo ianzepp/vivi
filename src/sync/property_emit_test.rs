@@ -71,20 +71,31 @@ fn the_authors_absorb_letter_seals_the_assignees_copy_done_and_blocks_reopen() {
 }
 
 #[test]
-fn an_absorb_of_an_open_item_names_open_and_seals_it_open() {
+fn an_absorb_of_an_open_item_is_refused_and_a_closed_absorb_seals_every_member_done() {
     let p = super::pair();
+
+    let refused =
+        p.a.mailspace
+            .absorb("mind", &p.task, None, "task")
+            .unwrap_err()
+            .to_string();
+    assert!(refused.contains("close it before absorbing"), "{refused}");
+    assert!(event_letters(&p.a, "absorbed").is_empty(), "no letter");
+
+    super::close(&p.a, "mind", &p.task, None);
 
     p.a.mailspace.absorb("mind", &p.task, None, "task").unwrap();
 
     let letters = event_letters(&p.a, "absorbed");
     assert_eq!(letters.len(), 1);
-    assert_eq!(header_of(&letters[0], STATE).as_deref(), Some("open"));
+    assert_eq!(header_of(&letters[0], STATE).as_deref(), Some("done"));
 
     let pulled = p.sync_a_to_b();
 
     assert_eq!(pulled.events_applied, 1, "{}", pulled.summary());
-    assert_eq!(item_row(&p.b, &p.task), ("tasks".into(), true));
-    assert_eq!(super::node_state(&p.b.mailspace, &p.task), "open");
+    assert_eq!(item_row(&p.a, &p.task), ("done".into(), true));
+    assert_eq!(item_row(&p.b, &p.task), ("done".into(), true));
+    assert_eq!(super::node_state(&p.b.mailspace, &p.task), "done");
 }
 
 #[test]
