@@ -3,10 +3,11 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use super::item_events::PropertyKind;
 use super::kind::effective_kind;
 use super::{DeliveryResult, Mailspace, SendRequest};
 use crate::error::VivariumError;
-use crate::storage::{MailspaceEvent, MailspaceEventInput, StoredMessageView};
+use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MailAbsorbFilter {
@@ -109,10 +110,51 @@ impl Mailspace {
                 &message,
                 note,
             ))?;
+            if matches!(expected_kind, "need" | "task" | "want") {
+                // A reply is a new record, so the letter can be stored under
+                // the seal it reports.
+                self.emit_absorbed_letter(&mut storage, &identity, &message, note)?;
+            }
         }
         drop(storage);
         super::archive::export_absorbed(self, &message.message_id, expected_kind)?;
         self.storage()?.display_handle(&message.message_id)
+    }
+
+    /// The `absorbed` letter an absorb by a role that may close the item
+    /// writes: a reply on the item naming the state the sealed row was in,
+    /// so every member that holds the item seals its own rows the same
+    /// way. A role that may not close the item (a hand, an auditor) seals
+    /// only its own copy and writes no letter; nothing is written for a
+    /// row that is not held work either.
+    fn emit_absorbed_letter(
+        &self,
+        storage: &mut Storage,
+        identity: &str,
+        message: &StoredMessageView,
+        note: Option<&str>,
+    ) -> Result<(), VivariumError> {
+        let Some(item) = super::item_events::held_item(storage, &message.content_id)? else {
+            return Ok(());
+        };
+        if !self.may_close(&item, identity) {
+            return Ok(());
+        }
+        let state = if message.local_role == "done" {
+            "done"
+        } else {
+            "open"
+        };
+        let extras = [("X-Vivi-Event-State", state.to_string())];
+        self.emit_property_event(
+            storage,
+            &item,
+            identity,
+            PropertyKind::Absorbed,
+            &extras,
+            note,
+        )?;
+        Ok(())
     }
 
     /// Move a memo to the trash. Only a memo goes: a need, task, want, or

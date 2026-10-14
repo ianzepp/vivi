@@ -5,6 +5,9 @@
 #[path = "property_events_test.rs"]
 mod property;
 
+#[path = "property_emit_test.rs"]
+mod property_emit;
+
 use crate::mailspace::{Mailspace, RoleUpdate, SendRequest, is_foreign_account};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};

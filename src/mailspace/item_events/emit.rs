@@ -379,7 +379,7 @@ impl Mailspace {
     /// To, so an event written outside the author's mailspace reaches the
     /// author, then the item's To, with the item's Cc as Cc and no
     /// duplicates anywhere.
-    fn event_addresses(
+    pub(super) fn event_addresses(
         &self,
         parsed: &Message<'_>,
         identity: &str,
@@ -411,7 +411,7 @@ impl Mailspace {
     }
 
     /// The roles of this mailspace the letter is delivered to.
-    fn local_event_recipients(
+    pub(super) fn local_event_recipients(
         &self,
         to: &[String],
         cc: &[String],
@@ -480,7 +480,7 @@ fn target_role(item: &HeldItem, kind: ItemEventKind) -> &'static str {
 
 /// The rows an event letter takes here: a read delivered copy for each local
 /// recipient (events do not pile up in inboxes) and the owner's sent copy.
-fn event_rows(
+pub(super) fn event_rows(
     identity: &str,
     local: &BTreeSet<String>,
     item_content_id: &str,
