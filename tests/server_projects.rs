@@ -188,6 +188,16 @@ fn an_event_letter_files_as_mail_in_the_mailspace_not_as_work() {
     .into_bytes();
     let event = AppendItem::new(&event_id, "hand", Some("a@p.local"), Some("need"), raw).unwrap();
     store.append(&meta.project_id, &event).unwrap();
+    // The current client sends it as kind mail.
+    let mail_id = traveling(4);
+    let raw = format!(
+        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{mail_id}@p.local>\n\
+         In-Reply-To: <{item_id}@p.local>\nX-Vivi-Event: reopened\n\
+         X-Vivi-Event-Of: <{item_id}@p.local>\n\nreopened\n"
+    )
+    .into_bytes();
+    let mail = AppendItem::new(&mail_id, "hand", Some("a@p.local"), Some("mail"), raw).unwrap();
+    store.append(&meta.project_id, &mail).unwrap();
     // A letter that merely names the header in its body is still work.
     let decoy_id = traveling(3);
     let decoy = format!(
@@ -212,7 +222,7 @@ fn an_event_letter_files_as_mail_in_the_mailspace_not_as_work() {
         .into_iter()
         .map(|row| row.message_id)
         .collect();
-    assert_eq!(inbox, [event_id]);
+    assert_eq!(inbox, [event_id, mail_id]);
 }
 
 #[test]

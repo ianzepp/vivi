@@ -890,8 +890,9 @@ change.
 **Tools.** `overview`, `list`, `show`, `thread`, `send`, `reply`, `done`,
 `reopen`, `memo`, `graph`. Identity is the Bearer. A close travels only
 when the caller's registered prefix is the item's From domain (the
-author's mailspace), stamped with `X-Vivi-Event-At` and carrying the
-item's envelope kind; a hand's `done` is a report reply and does not
+author's mailspace), stamped with `X-Vivi-Event-At` and sent as kind
+`mail` (served to every member by its `X-Vivi-Event` header); a hand's
+`done` is a report reply and does not
 change the owner's state. Memos are stored on the server mailspace under
 the caller's name and do not sync. Graph ready/status is projected from
 work items, `X-Vivi-Depends-On`, and event letters — not from the

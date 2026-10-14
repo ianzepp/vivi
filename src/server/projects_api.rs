@@ -512,10 +512,11 @@ pub async fn directory_handler(
 /// The item-event capability advertised on every list response as the
 /// top-level field `item_events`. `1` means this server folds `X-Vivi-Event`
 /// letters (`done`, `reopened`, `absorbed`, `marked`, `unmarked`, `bound`) by
-/// the client's rule — the newest event against an item controls — and never
-/// lists, counts, or routes one as work. A client that writes event letters
-/// waits for this field before it pushes one; a server that predates it
-/// would file each as an open work item.
+/// the client's rule — the newest event against an item controls — serves
+/// them to every member by their header, and never lists, counts, or routes
+/// one as work. Advisory: the client sends event letters as kind `mail`
+/// (which a server that predates this files as plain mail) and does not
+/// read the field.
 pub const ITEM_EVENTS: u32 = 1;
 
 /// `GET /v1/projects/:id/items` — the list of letters visible to the caller

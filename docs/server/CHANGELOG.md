@@ -5,18 +5,25 @@
 The server folds item-state events by the client's rule and stops showing
 them as work. Wire detail in [`docs/contract.md`](docs/contract.md#item-events-140).
 
+- **Event letters reach every member.** A letter whose header block carries
+  `X-Vivi-Event` is served to every member of the project, decided by the
+  header and not by its envelope kind: the client sends every event letter
+  as kind `mail`, which used to reach only the sender and the addressed
+  prefixes. The transport index gains an `event` column, upgraded and
+  backfilled on first open.
 - **Event letters are not work.** A record with `X-Vivi-Event` is never
-  listed, counted in `overview`, routed as ready, graphed, or settled. They
-  file in the server mailspace as mail.
+  listed, counted in `overview`, routed as ready, graphed, or settled,
+  under any envelope kind. They file in the server mailspace as mail.
 - **One fold, the client's rule.** Any member's event counts; the newest by
-  `X-Vivi-Event-At` (else `Date`) wins, then successor, then larger
-  `Message-ID`; `absorbed` is final; marks fold newest per slug and binds
-  newest per unit. An instant over five minutes past the append time
-  counts as the append time.
+  `(instant, causal depth through X-Vivi-Event-Prev, Message-ID)` wins, the
+  instant being `X-Vivi-Event-At` else `Date`; `absorbed` is final; marks
+  fold newest per slug and binds newest per unit. An event more than ten
+  minutes ahead of the server clock at fold time is not counted (it was
+  "five minutes after append time, moved to the append time").
 - **MCP `done` / `reopen`** write stamped event letters addressed like the
-  client's, under the item's envelope kind. Reopening an absorbed item is
-  refused.
-- **Version gate.** `GET /v1/projects/{id}/items` carries `item_events: 1`.
+  client's, as kind `mail`. Reopening an absorbed item is refused.
+- **`item_events: 1`** on `GET /v1/projects/{id}/items` stays, advisory: the
+  client does not read it.
 
 ## 1.3.0 — 2026-10-12
 
