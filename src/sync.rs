@@ -237,6 +237,7 @@ mod event_wire_test;
 #[path = "sync/property_bind_converge_test.rs"]
 mod property_bind_converge;
 
+#[cfg(test)]
 #[path = "sync/event_gate_test.rs"]
 mod event_gate_test;
 

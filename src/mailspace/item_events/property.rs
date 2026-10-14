@@ -510,7 +510,7 @@ fn newest_unit_bound(
         let Ok(at) = chrono::DateTime::parse_from_rfc3339(&event.occurred_at) else {
             continue;
         };
-        let stamp = (at.timestamp_micros(), letter_of(&event.note));
+        let stamp = (at.timestamp_micros(), letter_of(event.note.as_deref()));
         if newest.as_ref().is_none_or(|held| &stamp > held) {
             newest = Some(stamp);
         }
@@ -520,9 +520,8 @@ fn newest_unit_bound(
 
 /// The `Message-ID` a `unit_bound` event's note names, or an empty string
 /// when the bind wrote no letter.
-fn letter_of(note: &Option<String>) -> String {
-    note.as_deref()
-        .and_then(|note| note.split(' ').find(|part| part.starts_with("letter=<")))
+fn letter_of(note: Option<&str>) -> String {
+    note.and_then(|note| note.split(' ').find(|part| part.starts_with("letter=<")))
         .and_then(|part| {
             part.strip_prefix("letter=<")
                 .and_then(|id| id.strip_suffix('>'))

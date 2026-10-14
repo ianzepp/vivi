@@ -159,7 +159,7 @@ fn gate() -> Gate {
         .move_item_outcome("mind", &need, "needs", None, "need reopen", None)
         .unwrap();
     a.mailspace
-        .backlog_bind_units(&need, &[task.clone()])
+        .backlog_bind_units(&need, std::slice::from_ref(&task))
         .unwrap();
     a.mailspace
         .absorb("mind", &need, Some("sealed"), "need")
