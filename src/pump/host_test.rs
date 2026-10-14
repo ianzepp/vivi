@@ -110,10 +110,10 @@ fn ctx_sh_prepends_the_shell_prefix() {
         dir.path().join("home"),
         dir.path().join("home").join("repo"),
     );
-    ctx.sh("echo hi", None, 5);
+    drop(ctx.sh("echo hi", None, 5));
     assert_eq!(host.commands(), vec!["cd /somewhere; echo hi"]);
     let (plain, plain_host) = test_ctx(dir.path(), PumpConfig::default());
-    plain.sh("echo bare", None, 5);
+    drop(plain.sh("echo bare", None, 5));
     assert_eq!(plain_host.commands(), vec!["echo bare"]);
 }
 

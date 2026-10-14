@@ -1,7 +1,7 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{Lane, PumpConfig};
+use crate::pump::config::{DispatchConfig, Lane, PumpConfig};
 use std::path::Path;
 
 /// The whole `[pump]` block of the design file, verbatim.
@@ -47,6 +47,7 @@ per_tick     = 6
 from         = "next"
 pool_plain   = "fly4"
 pool_full    = "flyfull"
+full_max     = 2
 
 [pump.merge]
 batch         = 8
@@ -80,6 +81,14 @@ fn pools(names: &[&str]) -> Vec<String> {
 #[test]
 fn an_absent_pump_table_is_none() {
     assert!(mailspace("name = \"t\"\n").pump.is_none());
+}
+
+#[test]
+fn full_max_defaults_to_zero_and_parses() {
+    let none = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(none.dispatch.full_max, 0, "absent full_max means no cap");
+    let set = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.dispatch]\nfull_max = 2\n");
+    assert_eq!(set.dispatch.full_max, 2);
 }
 
 #[test]
@@ -119,6 +128,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.from, None);
     assert_eq!(cfg.dispatch.pool_plain, "");
     assert_eq!(cfg.dispatch.pool_full, "");
+    assert_eq!(cfg.dispatch.full_max, 0);
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.merge.format, "");
     assert!(cfg.merge.shared_checks.is_empty());
@@ -150,11 +160,13 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.dispatch.lanes[0].cap, 30);
     assert_eq!(cfg.dispatch.lanes[1].model, "zai/glm-5.3-flash");
     assert_eq!(cfg.dispatch.lanes[1].cap, 10);
+    assert_eq!(cfg.dispatch.full_max, 2);
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.gate.model, "zai/glm-5.3-flash");
     assert_eq!(cfg.reply_to(), "operator@bd371d96.local");
     assert!(
-        cfg.validate(&pools(&["fly4", "flyfull", "flygate"])).is_ok(),
+        cfg.validate(&pools(&["fly4", "flyfull", "flygate"]))
+            .is_ok(),
         "the design values should validate"
     );
 }
@@ -167,7 +179,7 @@ fn a_config_round_trips_through_the_mailspace_file_without_losing_a_key() {
     file.insert("name".into(), toml::Value::from("t"));
     file.insert("pump".into(), before.clone());
     let text = toml::to_string(&file).expect("table should serialize");
-    let again = toml::Value::try_from(&pump(&text)).expect("pump config should serialize");
+    let again = toml::Value::try_from(pump(&text)).expect("pump config should serialize");
     assert_eq!(before, again, "a rewrite must not lose or change a key");
 }
 
@@ -187,38 +199,83 @@ fn an_unknown_key_is_ignored() {
 
 #[test]
 fn validate_rejects_a_missing_branch_and_names_the_key() {
-    let err = PumpConfig::default().validate(&[]).expect_err("empty branch must fail");
+    let err = PumpConfig::default()
+        .validate(&[])
+        .expect_err("empty branch must fail");
     assert!(err.to_string().contains("[pump] branch"), "{err}");
 }
 
 #[test]
 fn validate_rejects_empty_lanes_and_zero_caps() {
-    let err = PumpConfig::default().validate(&[]).expect_err("no lanes must fail");
+    let err = PumpConfig::default()
+        .validate(&[])
+        .expect_err("no lanes must fail");
     assert!(err.to_string().contains("[pump.dispatch] lanes"), "{err}");
-    let mut cfg = PumpConfig::default();
-    cfg.dispatch.lanes = vec![Lane { model: "m".into(), cap: 0 }];
-    let err = cfg.validate(&pools(&["p"])).expect_err("cap 0 must fail");
+    let zero_cap = PumpConfig {
+        dispatch: DispatchConfig {
+            lanes: vec![Lane {
+                model: "m".into(),
+                cap: 0,
+            }],
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = zero_cap
+        .validate(&pools(&["p"]))
+        .expect_err("cap 0 must fail");
     assert!(err.to_string().contains("cap >= 1"), "{err}");
-    cfg.dispatch.lanes = vec![Lane { model: String::new(), cap: 1 }];
-    let err = cfg.validate(&pools(&["p"])).expect_err("empty model must fail");
+    let empty_model = PumpConfig {
+        dispatch: DispatchConfig {
+            lanes: vec![Lane {
+                model: String::new(),
+                cap: 1,
+            }],
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = empty_model
+        .validate(&pools(&["p"]))
+        .expect_err("empty model must fail");
     assert!(err.to_string().contains("model"), "{err}");
 }
 
 #[test]
 fn validate_rejects_an_unknown_pool_name() {
-    let mut cfg = PumpConfig::default();
-    cfg.branch = "next".into();
-    cfg.dispatch.lanes = vec![Lane { model: "m".into(), cap: 1 }];
-    cfg.dispatch.pool_plain = "fly".into();
-    let err = cfg.validate(&pools(&["other"])).expect_err("unknown pool must fail");
-    assert!(err.to_string().contains("[pump.dispatch] pool_plain"), "{err}");
+    let mut cfg = PumpConfig {
+        branch: "next".into(),
+        dispatch: DispatchConfig {
+            lanes: vec![Lane {
+                model: "m".into(),
+                cap: 1,
+            }],
+            pool_plain: "fly".into(),
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = cfg
+        .validate(&pools(&["other"]))
+        .expect_err("unknown pool must fail");
+    assert!(
+        err.to_string().contains("[pump.dispatch] pool_plain"),
+        "{err}"
+    );
     cfg.dispatch.pool_plain = String::new();
     cfg.dispatch.pool_full = "flyfull".into();
-    let err = cfg.validate(&pools(&["other"])).expect_err("unknown pool must fail");
-    assert!(err.to_string().contains("[pump.dispatch] pool_full"), "{err}");
+    let err = cfg
+        .validate(&pools(&["other"]))
+        .expect_err("unknown pool must fail");
+    assert!(
+        err.to_string().contains("[pump.dispatch] pool_full"),
+        "{err}"
+    );
     cfg.dispatch.pool_full = String::new();
     cfg.gate.pools = vec!["flygate".into()];
-    let err = cfg.validate(&pools(&["other"])).expect_err("unknown pool must fail");
+    let err = cfg
+        .validate(&pools(&["other"]))
+        .expect_err("unknown pool must fail");
     assert!(err.to_string().contains("[pump.gate] pools"), "{err}");
     cfg.gate.pools = vec!["flygate".into(), "flyfull".into()];
     cfg.board.mark = String::new(); // not under test here
@@ -230,11 +287,19 @@ fn home_and_repo_default_under_the_project_and_follow_overrides() {
     let project = std::env::temp_dir().join("vivi-config-test-project");
     let cfg = PumpConfig::default();
     assert_eq!(cfg.home_dir(&project), project.join(".vivi").join("pump"));
-    assert_eq!(cfg.repo_dir(&project), project.join(".vivi").join("pump").join("repo"));
-    let mut over = PumpConfig::default();
-    over.home = Some("pump-home".into());
+    assert_eq!(
+        cfg.repo_dir(&project),
+        project.join(".vivi").join("pump").join("repo")
+    );
+    let mut over = PumpConfig {
+        home: Some("pump-home".into()),
+        ..PumpConfig::default()
+    };
     assert_eq!(over.home_dir(&project), project.join("pump-home"));
-    assert_eq!(over.repo_dir(&project), project.join("pump-home").join("repo"));
+    assert_eq!(
+        over.repo_dir(&project),
+        project.join("pump-home").join("repo")
+    );
     over.home = Some("/tmp/pump-abs".into());
     assert_eq!(over.home_dir(&project), Path::new("/tmp/pump-abs"));
     over.home = Some("~/.pump".into());

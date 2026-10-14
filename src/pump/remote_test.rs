@@ -1,7 +1,7 @@
 //! Tests for [`super::remote`].
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -21,8 +21,11 @@ const BID: &str = "b2000000";
 
 fn cfg() -> PumpConfig {
     let mut cfg = PumpConfig::default();
-    cfg.merge.remote_wait = 60;
-    cfg.merge.remote_limit = 300;
+    // Far beyond any clock movement these tests make, so an offer only ends
+    // when the merger acts — never because the fake clock ran out under
+    // load. Only the two timeout tests shrink a value below.
+    cfg.merge.remote_wait = 100_000;
+    cfg.merge.remote_limit = 100_000;
     cfg
 }
 
@@ -46,12 +49,13 @@ fn jobs_dir(ctx: &Ctx) -> PathBuf {
     ctx.home.join("merge-jobs")
 }
 
-fn wait_for(path: &PathBuf) {
+/// Real-time wait for `path`, polling every 2 ms for up to 10 s.
+fn wait_for(path: &Path) {
     for _ in 0..5_000 {
         if path.exists() {
             return;
         }
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(2));
     }
 }
 
@@ -65,7 +69,11 @@ fn merger(home: PathBuf, result: Option<String>, advance: u64, host: Arc<FakeHos
         wait_for(&job);
         fs::rename(&job, dir.join(format!("{BID}.claimed.json"))).unwrap();
         if let Some(body) = result {
-            fs::write(dir.join(format!("{BID}.result.json")), body).unwrap();
+            // Publish atomically: the offer polls for the result file, so a
+            // bare create-then-write could be read half-written.
+            let tmp = dir.join(format!("{BID}.result.tmp"));
+            fs::write(&tmp, body).unwrap();
+            fs::rename(&tmp, dir.join(format!("{BID}.result.json"))).unwrap();
         }
         if advance > 0 {
             host.advance(advance);
@@ -84,7 +92,9 @@ fn no_remote_merge_flag_returns_none_and_writes_nothing() {
 #[test]
 fn an_unclaimed_batch_is_withdrawn_after_remote_wait_and_returns_none() {
     let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), cfg());
+    let mut cfg = cfg();
+    cfg.merge.remote_wait = 60;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     flag_on(&ctx);
     host.set_now(START);
     let dir = jobs_dir(&ctx);
@@ -127,7 +137,9 @@ fn a_claimed_batch_with_a_result_returns_the_results() {
 #[test]
 fn a_claimed_batch_without_a_result_times_out_and_returns_none() {
     let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), cfg());
+    let mut cfg = cfg();
+    cfg.merge.remote_limit = 300;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
     flag_on(&ctx);
     host.set_now(START);
     merger(ctx.home.clone(), None, 301, Arc::clone(&host));

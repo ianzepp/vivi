@@ -243,14 +243,18 @@ fn save_then_load_round_trips_and_leaves_no_tmp_file() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("nested").join("state.json");
     let mut st = State::default();
-    let mut unit = Unit::default();
-    unit.need = "2aab941d".to_owned();
-    unit.title = "sexp: tag dispatched genus constructs".to_owned();
-    unit.write_scope = vec!["crates/radix-mir-sexp/src/emit.rs".to_owned()];
-    unit.tools = "plain".to_owned();
-    unit.status = Status::Merged;
-    unit.since = 1_791_939_851;
-    st.units.insert("2aab941d-1".to_owned(), unit);
+    st.units.insert(
+        "2aab941d-1".to_owned(),
+        Unit {
+            need: "2aab941d".to_owned(),
+            title: "sexp: tag dispatched genus constructs".to_owned(),
+            write_scope: vec!["crates/radix-mir-sexp/src/emit.rs".to_owned()],
+            tools: "plain".to_owned(),
+            status: Status::Merged,
+            since: 1_791_939_851,
+            ..Unit::default()
+        },
+    );
     st.order.push("2aab941d-1".to_owned());
     st.merges = 371;
     st.baseline = Some(vec!["old failing test".to_owned()]);

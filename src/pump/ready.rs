@@ -85,10 +85,10 @@ fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
 pub fn pick_model(ctx: &Ctx, st: &State, unit: &Unit) -> Option<String> {
     let mut load: BTreeMap<&str, u32> = BTreeMap::new();
     for o in st.units.values() {
-        if o.status == Status::Inflight {
-            if let Some(m) = o.model.as_deref() {
-                *load.entry(m).or_insert(0) += 1;
-            }
+        if o.status == Status::Inflight
+            && let Some(m) = o.model.as_deref()
+        {
+            *load.entry(m).or_insert(0) += 1;
         }
     }
     if unit.attempts >= ctx.cfg.dispatch.max_attempts.saturating_sub(1) {

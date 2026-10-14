@@ -21,10 +21,7 @@ const BAD_UNIT: &str = "unit missing id, brief or write_scope";
 /// part gives the empty root, which overlaps everything.
 #[must_use]
 pub fn scope_root(path: &str) -> String {
-    let mut trimmed = path
-        .trim()
-        .trim_start_matches(|c| c == '.' || c == '/')
-        .to_string();
+    let mut trimmed = path.trim().trim_start_matches(['.', '/']).to_string();
     if let Some(pos) = trimmed.find(['*', '?', '[']) {
         trimmed.truncate(pos);
         trimmed = match trimmed.rfind('/') {
@@ -69,10 +66,7 @@ pub fn ingest(ctx: &Ctx, st: &mut State) {
     let mut names: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|e| match e.file_name().into_string() {
-            Ok(name) => Some(name),
-            Err(_) => None,
-        })
+        .filter_map(|e| e.file_name().to_str().map(ToOwned::to_owned))
         .collect();
     names.sort();
     for name in names {
@@ -101,7 +95,7 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     }
     st.plans_seen.push(key.to_string());
     let units = plan.get("units").and_then(Value::as_array);
-    let (minted, bad) = validate_units(st, units.map(Vec::as_slice).unwrap_or(&[]));
+    let (minted, bad) = validate_units(st, units.map_or(&[], Vec::as_slice));
     if let Some(bad) = bad {
         if replaces.is_none() {
             st.needs.insert(
@@ -186,29 +180,29 @@ fn record(
 ) {
     let ids: Vec<String> = minted.iter().map(|(uid, _)| (*uid).to_string()).collect();
     let count = ids.len();
-    if let Some(replaces) = replaces {
-        if let Some(old) = st.units.get_mut(replaces) {
-            old.status = Status::Replaced;
-            old.replaced_by = ids.clone();
-            let rec = st
-                .needs
-                .entry(need.to_string())
-                .or_insert_with(|| NeedRecord {
-                    verdict: "units".to_string(),
-                    reason: String::new(),
-                    units: Vec::new(),
-                });
-            rec.units.extend(ids.iter().cloned());
-            if ids.is_empty() {
-                ctx.exception(
-                    "split-empty",
-                    replaces,
-                    str_field(plan, "reason").unwrap_or(""),
-                );
-            }
-            ctx.log(&format!("split {replaces} into {count} units"));
-            return;
+    if let Some(replaces) = replaces
+        && let Some(old) = st.units.get_mut(replaces)
+    {
+        old.status = Status::Replaced;
+        old.replaced_by.clone_from(&ids);
+        let rec = st
+            .needs
+            .entry(need.to_string())
+            .or_insert_with(|| NeedRecord {
+                verdict: "units".to_string(),
+                reason: String::new(),
+                units: Vec::new(),
+            });
+        rec.units.extend(ids.iter().cloned());
+        if ids.is_empty() {
+            ctx.exception(
+                "split-empty",
+                replaces,
+                str_field(plan, "reason").unwrap_or(""),
+            );
         }
+        ctx.log(&format!("split {replaces} into {count} units"));
+        return;
     }
     let verdict = str_field(plan, "verdict").unwrap_or("units").to_string();
     let reason: String = str_field(plan, "reason")

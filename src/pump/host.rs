@@ -92,8 +92,8 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// Build a context from explicit parts; `Ctx::new` derives the tail from
-    /// the config and is added by the run unit.
+    /// Build a context from explicit parts; [`Ctx::new`] derives the tail
+    /// from the config.
     #[allow(clippy::too_many_arguments)] // matches the shared pump interface
     #[must_use]
     pub fn with_parts(
@@ -116,8 +116,19 @@ impl Ctx {
         }
     }
 
+    /// Build a context from the config alone: the shell prefix, home, and
+    /// repo derive from `cfg` and `project`.
+    #[must_use]
+    pub fn new(cfg: PumpConfig, host: Arc<dyn Host>, project: PathBuf, vivi: String) -> Ctx {
+        let shell_prefix = cfg.shell_prefix.clone();
+        let home = cfg.home_dir(&project);
+        let repo = cfg.repo_dir(&project);
+        Ctx::with_parts(cfg, host, project, vivi, shell_prefix, home, repo)
+    }
+
     /// Run `cmd` through the host with `shell_prefix` applied:
     /// `"<prefix>; <cmd>"`, or just `<cmd>` when the prefix is empty.
+    #[must_use]
     pub fn sh(&self, cmd: &str, cwd: Option<&Path>, timeout: u64) -> CmdOutput {
         let full = if self.shell_prefix.is_empty() {
             cmd.to_string()
@@ -129,6 +140,7 @@ impl Ctx {
 
     /// Run the `vivi` CLI against this project:
     /// `<vivi> <args> --project <quoted project>`.
+    #[must_use]
     pub fn vivi(&self, args: &str, timeout: u64) -> CmdOutput {
         let project = shell_quote(&self.project.to_string_lossy());
         self.sh(
@@ -139,6 +151,7 @@ impl Ctx {
     }
 
     /// Run `git <args>` with the repository as working directory.
+    #[must_use]
     pub fn git(&self, args: &str, timeout: u64) -> CmdOutput {
         self.sh(&format!("git {args}"), Some(&self.repo), timeout)
     }
@@ -288,7 +301,7 @@ pub struct FakeHost {
 }
 
 impl FakeHost {
-    /// A fake host whose clock starts at 1_000_000.
+    /// A fake host whose clock starts at `1_000_000`.
     #[must_use]
     pub fn new() -> Arc<FakeHost> {
         Arc::new(FakeHost {
@@ -350,7 +363,7 @@ impl FakeHost {
         let guard = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         read(&guard)
     }
 }
@@ -367,10 +380,10 @@ impl Host for FakeHost {
                 .once
                 .iter()
                 .position(|(fragment, _, _)| cmd.contains(fragment.as_str()));
-            if let Some(index) = once {
-                if let Some((_, code, text)) = state.once.remove(index) {
-                    return CmdOutput { code, text };
-                }
+            if let Some(index) = once
+                && let Some((_, code, text)) = state.once.remove(index)
+            {
+                return CmdOutput { code, text };
             }
             for (fragment, code, text) in state.rules.iter().rev() {
                 if cmd.contains(fragment.as_str()) {
@@ -467,7 +480,9 @@ fn kill_group(pgid: u32) {
 
 /// Lossy UTF-8 snapshot of a shared buffer.
 fn snapshot(buf: &SharedBuf) -> String {
-    let guard = buf.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = buf
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     String::from_utf8_lossy(guard.as_slice()).into_owned()
 }
 
@@ -499,7 +514,7 @@ fn run_command(cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
             return CmdOutput {
                 code: 127,
                 text: err.to_string(),
-            }
+            };
         }
     };
     let pgid = child.id();
@@ -536,7 +551,9 @@ fn run_command(cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
             drop(child.wait());
             wait_readers(handles, Duration::from_secs(5));
             let mut text = joined_output(&out_buf, &err_buf);
-            text.push_str(&format!("\n[timeout after {timeout_secs}s]"));
+            text.push_str("\n[timeout after ");
+            text.push_str(&timeout_secs.to_string());
+            text.push_str("s]");
             return CmdOutput { code: 124, text };
         }
         thread::sleep(Duration::from_millis(50));
@@ -562,19 +579,16 @@ fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Pat
         },
         None => Stdio::null(),
     });
-    match OpenOptions::new().create(true).append(true).open(out) {
-        Ok(file) => {
-            let clone = file.try_clone();
-            command.stdout(Stdio::from(file));
-            command.stderr(match clone {
-                Ok(dup) => Stdio::from(dup),
-                Err(_) => Stdio::null(),
-            });
-        }
-        Err(_) => {
-            command.stdout(Stdio::null());
-            command.stderr(Stdio::null());
-        }
+    if let Ok(file) = OpenOptions::new().create(true).append(true).open(out) {
+        let clone = file.try_clone();
+        command.stdout(Stdio::from(file));
+        command.stderr(match clone {
+            Ok(dup) => Stdio::from(dup),
+            Err(_) => Stdio::null(),
+        });
+    } else {
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
     }
     // Safety: only sets the child's own process group; no invariants involved.
     command.process_group(0);
