@@ -18,6 +18,8 @@ use crate::identities::IdentityRecord;
 use crate::projects::{AppendItem, AppendOutcome, ProjectError, ProjectRecord, ProjectStore};
 
 const HANDLE_LEN: usize = 8;
+/// The role every mailspace has that may close or reopen any item.
+const OPERATOR_ROLE: &str = "operator";
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedLetter {
@@ -83,6 +85,20 @@ pub fn caller_address(identity: &IdentityRecord) -> Result<String, String> {
         "this identity has no mailspace prefix; it cannot send from MCP".to_owned()
     })?;
     Ok(format!("{}@{prefix}.local", identity.name))
+}
+
+/// The address an MCP state change is written From: the conventional
+/// `operator` role of the caller's mailspace. The member that owns the prefix
+/// counts an own-domain event only when its local part is the item's author
+/// or a role of kind `mind` or `operator` there, and a registration name is
+/// neither, so an event From `name@<prefix>.local` would be ignored by the
+/// very member that holds the item while the server and every other member
+/// counted it. The state change is the member's, taken in its operator role.
+pub fn operator_address(identity: &IdentityRecord) -> Result<String, String> {
+    let prefix = identity.mailspace_prefix().ok_or_else(|| {
+        "this identity has no mailspace prefix; it cannot send from MCP".to_owned()
+    })?;
+    Ok(format!("{OPERATOR_ROLE}@{prefix}.local"))
 }
 
 pub fn mint_traveling_id() -> Result<String, AuthError> {
@@ -256,7 +272,8 @@ pub fn compose_reply(
 }
 
 /// An item-state event on `parent` (a need, task, or want), composed the way
-/// the client composes one: addressed to the item's From first, then its To
+/// the client composes one: written From the caller's `operator` role
+/// ([`operator_address`]), addressed to the item's From first, then its To
 /// and Cc minus the sender; `X-Vivi-Kind: mail` and envelope kind `mail`, as
 /// the client sends every event letter, so an old client files it as mail
 /// and never as work (the server serves it to every member by its
@@ -274,7 +291,7 @@ pub fn compose_event(
     if !matches!(parent.kind.as_deref(), Some("need" | "task" | "want")) {
         return Err("an event letter names a need, task, or want".to_owned());
     }
-    let from = caller_address(identity)?;
+    let from = operator_address(identity)?;
     let parsed = parse_letter(&parent.raw_eml);
     let mut seen: Vec<String> = Vec::new();
     let mut keep = |addresses: Vec<String>| -> Vec<String> {

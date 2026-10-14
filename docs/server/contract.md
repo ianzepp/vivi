@@ -328,7 +328,7 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `thread` | `handle`, `limit?` | Reply thread |
 | `send` | `kind`, `to`, `subject`, `body`, `depends_on?` | Server composes and mints the id; `From` is the caller |
 | `reply` | `handle`, `body` | Reply as the caller |
-| `done` | `handle`, `note?` | Stamped event letter if the caller authored the item; else a report |
+| `done` | `handle`, `note?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report |
 | `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
 | `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
 | `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
@@ -435,7 +435,18 @@ writes an event letter the way the client does: envelope kind `mail`,
 `X-Vivi-Event-At` (the clock, never at or below the newest counted
 `done`/`reopened` event of the item plus one microsecond; the clock again if
 that stamp would not parse back), one `X-Vivi-Event-Prev` per head, addressed
-to the item's `From` first and then its `To`/`Cc` minus the caller. Every
-member is served it by its header. Any other caller files a plain report
-reply and writes no event. `reopen` of an absorbed item is an error; so is
+to the item's `From` first and then its `To`/`Cc` minus the sender.
+
+**MCP state changes act as the member's operator role.** The event is
+written `From: operator@<prefix>.local`, never `<name>@<prefix>.local`. The
+member that owns the prefix counts an own-domain event only when its local
+part is the item's author or a role of kind `mind` or `operator` in that
+mailspace; a registration name is none of those, so a letter From the name
+would be counted by the server and by every other member and ignored by the
+member that holds the item. `operator` is the conventional role every
+mailspace has. The caller's prefix must still own the item (above); `send`,
+`reply`, `memo` and a report reply stay From the caller's name.
+
+Every member is served the event by its header. Any other caller files a
+plain report reply and writes no event. `reopen` of an absorbed item is an error; so is
 `done` of an item absorbed open.

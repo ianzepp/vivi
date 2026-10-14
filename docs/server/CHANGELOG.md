@@ -21,7 +21,10 @@ them as work. Wire detail in [`docs/contract.md`](docs/contract.md#item-events-1
   minutes ahead of the server clock at fold time is not counted (it was
   "five minutes after append time, moved to the append time").
 - **MCP `done` / `reopen`** write stamped event letters addressed like the
-  client's, as kind `mail`. Reopening an absorbed item is refused.
+  client's, as kind `mail`, From `operator@<prefix>.local`: the member that
+  owns the prefix counts an own-domain event only from the item's author or
+  a `mind`/`operator` role, and a registration name is neither. Reopening an
+  absorbed item is refused.
 - **`item_events: 1`** on `GET /v1/projects/{id}/items` stays, advisory: the
   client does not read it.
 

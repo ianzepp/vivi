@@ -1217,6 +1217,54 @@ async fn mcp_events_are_stamped_above_the_newest_and_travel_as_mail() {
     }
 }
 
+/// The `From` header of a stored letter, with its angle brackets and name
+/// part removed.
+fn from_address(letter: &str) -> String {
+    let from = letter
+        .lines()
+        .find_map(|line| line.strip_prefix("From: "))
+        .expect("a From header");
+    match (from.find('<'), from.find('>')) {
+        (Some(start), Some(end)) if start < end => from[start + 1..end].to_owned(),
+        _ => from.trim().to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn an_mcp_state_change_is_written_from_the_operator_role() {
+    let fx = fixture("event-operator").await;
+    fx.add_member("hand", 2).await;
+    let (handle, _) = fx
+        .send_item(&fx.token, "task", &address("hand"), "close as operator")
+        .await;
+    // The creator's registration name is not a role the member's own rule
+    // lets close an item for everyone; its `operator` role is.
+    let operator = format!("operator@{}.local", prefix_for("creator"));
+    let closed = fx.call(&fx.token, "done", json!({"handle": handle})).await;
+    assert_eq!(closed["mode"], "closed", "{closed}");
+    let reopened = fx
+        .call(&fx.token, "reopen", json!({"handle": handle}))
+        .await;
+    assert_eq!(reopened["mode"], "reopened", "{reopened}");
+    for event in [&closed, &reopened] {
+        let letter = fx
+            .raw_letter(&fx.token, event["message_id"].as_str().unwrap())
+            .await;
+        assert_eq!(from_address(&letter), operator, "{letter}");
+        assert!(
+            letter
+                .lines()
+                .any(|line| line.starts_with("X-Vivi-Event: ")),
+            "{letter}"
+        );
+    }
+    // The server counts it as before: closed then reopened is open.
+    let open = fx
+        .call(&fx.token, "list", json!({"kind": "task", "status": "open"}))
+        .await;
+    assert_eq!(handles(&open), [handle], "{open}");
+}
+
 #[tokio::test]
 async fn a_mail_kind_event_reaches_a_member_that_is_neither_sender_nor_addressee() {
     let fx = fixture("event-bystander").await;
