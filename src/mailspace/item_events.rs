@@ -403,10 +403,12 @@ impl Mailspace {
     }
 
     /// The rows the head `kind` moves: open work to `done` on a close, done
-    /// rows back to the folder they closed from on a reopen. A `sent` row
-    /// follows only when it is the sender's only copy (every recipient is in
-    /// another mailspace); with a local delivered copy the sent row is a
-    /// record of the send, not the work.
+    /// rows back to the folder they closed from on a reopen. A row held for
+    /// another mailspace's role moves like an own row: the state is the
+    /// item's, not the holder's. A `sent` row follows only when it is the
+    /// sender's only copy (every recipient is in another mailspace); with a
+    /// local delivered copy the sent row is a record of the send, not the
+    /// work.
     ///
     /// With `keep_reports`, a reopen leaves alone a `done` row held by a role
     /// that cannot accept the item: once the reopen has been applied, such a
@@ -420,7 +422,7 @@ impl Mailspace {
     ) -> Result<Vec<Planned>, VivariumError> {
         let mut planned = Vec::new();
         for row in &item.rows {
-            if row.absorbed_at.is_some() || is_foreign_account(&row.account) {
+            if row.absorbed_at.is_some() {
                 continue;
             }
             let to_role = match (kind, row.local_role.as_str()) {
@@ -520,12 +522,10 @@ impl Mailspace {
         let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(());
         };
-        let own: Vec<&StoredMessageView> = item
-            .rows
-            .iter()
-            .filter(|row| !is_foreign_account(&row.account))
-            .collect();
-        if !own.is_empty() && own.iter().all(|row| row.absorbed_at.is_some()) {
+        // Sealed work stays sealed only when every row of it is absorbed:
+        // an item held only as foreign rows settles too, and its unabsorbed
+        // rows move.
+        if !item.rows.is_empty() && item.rows.iter().all(|row| row.absorbed_at.is_some()) {
             tally.ignored += 1;
             return Ok(());
         }
