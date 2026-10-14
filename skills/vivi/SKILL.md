@@ -1845,6 +1845,192 @@ is not a million-line build.
   no-capacity failure text, creation-time ordering and list lag, and state words of
   stopped or terminating pods. The self-test does not run a pool's `requires` or `facts`.
 
+## Pump
+
+`vivi pump` is a Mind written as a state machine over planned units. It reads
+plan files from `plans/` in its home and dispatches each ready unit as a pool
+task on a model lane. Delivered units merge in batches into an integration
+branch, where the shared checks and each unit's own proof run before the push.
+A periodic gate measures the branch and fast-forwards main when it is clean,
+and everything that needs a person is appended to `exceptions.txt`. The full
+contract is docs/pump/contract.md, its wire protocols docs/pump/protocols.md;
+this section is a summary, not a replacement.
+
+```sh
+vivi pump run      # loop: one tick, then sleep `tick` seconds, until the STOP file appears
+vivi pump once     # exactly one tick, then exit; STOP is honoured after the tick
+vivi pump status   # print <home>/status.txt ("no status yet" when absent); no lock, no state load
+```
+
+- `run` and `once` take an exclusive non-blocking flock on `<home>/lock`
+  first, so there is one instance; a second exits non-zero. Exit 0 is a clean
+  exit (STOP seen, or `once` finished); a crashing tick is logged, not an exit.
+- Every `vivi` call the pump makes carries the global `--project` too.
+
+#### The home directory
+
+`[pump] home`, default `<project>/.vivi/pump`. Every file and directory:
+
+| path | written by, read by | format |
+| --- | --- | --- |
+| `state.json` | pump (atomic rename via `state.json.tmp`), pump at startup | JSON; the whole memory: units, needs, gates, board bookkeeping |
+| `log.txt` | pump, operator | one `HH:MM:SS msg` line per event, UTC |
+| `exceptions.txt` | pump, operator | `HH:MM:SS kind unit text`; newlines become ` \| `; text capped at 600 chars |
+| `needs-ready.txt` | pump on need completion, operator | `need tip10 unit,unit` per line |
+| `status.txt` | pump, `pump status` | four lines: timestamp, units, plans, merges and gates |
+| `lock` | pump (flock only) | empty; the single-instance lock |
+| `skip.txt` | operator, board pass | need handles to never plan |
+| `known-red.txt` | operator, gate arithmetic | failing test names to always ignore, one per line |
+| `hygiene.on` | operator | not carried to the engine; a shared check belongs in `merge.shared_checks` |
+| `plans/` | planner writes `<need>.json` and `<unit>.split.json`; re-plans move old plans to `plans/superseded/` | plan files, below |
+| `needs/` | board dumps the need thread, planner reads | `{need, subject, triage, thread}` |
+| `board/`, `resplit/`, `gatefix/` | pump writes `*.prompt`, planner writes `*.out` | prompts and planner output; `resplit/` also `<unit>.json` |
+| `merge-jobs/` | pump writes `<bid>.job.json`, remote merger claims and answers | the remote-merge batch protocol |
+| `repo/` | git operations, pump | the integration clone; `[pump] repo` overrides |
+| `planner-charter.md` | operator, planner command lines | the planner's system prompt, substituted for `{charter}` |
+| `sync-push.log` | detached `vivi sync push`, operator | shell redirect |
+| operator scripts, `planners/`, logs, backups | operator | not engine state |
+
+#### Flag files
+
+All flags live in `home`; the operator creates them:
+
+| flag | exact effect | removed by |
+| --- | --- | --- |
+| `PAUSE` | the tick returns early after its first save point: no dispatch, hold cycle, gate start or second merge feed; already-fed units keep merging | operator |
+| `STOP` | after the current tick: save and exit the loop | operator (or the restart script) |
+| `HOLD-MERGE` | only fix units are fed to the merge thread; once every fix unit has settled, the pump writes `FORCE-GATE`, and a clean gate newer than the hold lifts it | pump or operator |
+| `FORCE-GATE` | the gate is due now, whatever the counters say | pump, when the gate dispatches |
+| `REMOTE-MERGE` | merge batches are offered to a remote merger first (the file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
+
+#### Plan files
+
+A planner writes `plans/<need>.json`; a split planner writes
+`plans/<unit>.split.json`, which adds `replaces` at the top level. The pump
+ingests every new file exactly once:
+
+```json
+{"need": "<handle>", "verdict": "units", "reason": "…",
+ "units": [{"id": "<need>-1", "title": "…", "brief": "…",
+            "write_scope": ["<path>"], "after": [],
+            "proof": ["<command>"], "tools": "plain"}]}
+```
+
+- `verdict` `units` mints pending units; `delivered` records the reason with no
+  units; `operator`, `design` and `hold` park the need; `invalid` is the pump's
+  own mark for a rejected plan.
+- Each unit needs `id`, `brief`, `write_scope` and a `proof` list, and a fresh
+  id; `after` lists prerequisite unit ids, `tools` is `plain` or `full`.
+
+#### Unit states
+
+- `pending` — waiting to dispatch.
+- `inflight` — dispatched to a pool slot; a task handle exists.
+- `delivered` — the worker's branch exists on the remote; waiting to merge.
+- `merging` — queued to or being handled by the merge thread.
+- `merged` — merged into the integration branch, proof passed, pushed.
+- `no-defect` — the receipt carried `VERDICT: no-defect`; nothing merged.
+- `stuck` — attempts exhausted, or the split planner never answered.
+- `splitting` — a split planner is writing a replacement plan.
+- `replaced` — superseded by split successors; satisfied only when every
+  successor is.
+
+`merged` and `no-defect` are satisfied; `replaced` delegates to its
+successors; everything else, `stuck` included, is not, so a stuck unit blocks
+its dependents until a person unblocks it.
+
+#### Config
+
+Every key lives in the `[pump]` tables of `.vivi/mailspace.toml`. Model
+slugs, pool names, addresses, commands and paths below are placeholders: they
+belong to your project, and the engine has no default for them.
+
+```toml
+[pump]
+home         = "<project>/.vivi/pump"  # relative paths join the project root
+repo         = "<home>/repo"           # cloned from `remote` when absent
+remote       = "origin"                # git remote of the integration branch and main
+branch       = "next"                  # required: the integration branch
+main         = "main"                  # "" disables merging main in and promotion
+promote      = true                    # a clean gate fast-forwards main to the gated tip
+tick         = 20                      # seconds between ticks
+shell_prefix = ""                      # prepended to every command line
+hand_rules   = "<path>"                # absent: the embedded generic hand-rules text
+fix_prefix   = "pumpfix"               # ids with this prefix are fix units
+from         = "operator"              # role unit tasks are sent from
+to           = "hand"                  # recipient role of a unit dispatch
+reply_from   = "mind"                  # role that replies on need threads
+
+[pump.board]
+from         = ["<address>"]           # senders whose open needs are plannable
+since        = "<ISO datetime>"        # needs dated before this are skipped
+mark         = "pump"                  # a marked open need is plannable whatever sender or date
+every        = 300                     # seconds between board passes
+planners_max = 3                       # concurrent planners
+plan_timeout = 1800                    # seconds to write plans/<need>.json
+reply_to     = "<address>"             # absent: the first of `from`
+pull         = true                    # `vivi sync pull` at the start of a pass
+push_since   = "30m"                   # `vivi sync push --since` after replying
+
+[pump.planner]
+run           = "<command>"            # required while board from or mark is set; stdin is the prompt file
+charter       = "<path>"               # substituted for {charter} in `run`
+split_timeout = 1500                   # seconds before a splitting unit is stuck
+
+[pump.dispatch]
+lanes         = [{ model = "provider/model-a", cap = 30 }]  # required, at least one lane, cap >= 1
+last_resort   = "provider/model-b"     # used at attempts >= max_attempts - 1
+max_attempts  = 3                      # attempts before a unit is stuck
+budget        = 600                    # `--budget` of a unit dispatch
+overdue_grace = 900                    # running past budget plus this means split
+per_tick      = 6                      # units started per tick at most
+from          = "<branch>"             # absent: the `branch` value
+pool_plain    = "<pool>"               # units with tools = "plain"; must name a [pools.<name>] table
+pool_full     = "<pool>"               # units with tools = "full"; same
+
+[pump.merge]
+batch         = 8                      # jobs merged together at most
+format        = "cargo fmt --all"      # run after merging; a change becomes a style commit
+shared_checks = ["<command>"]          # after every merge, before each unit's own proof
+proof_timeout = 300                    # seconds per check command
+remote_wait   = 90                     # seconds for a remote merger to claim a batch
+remote_limit  = 1800                   # seconds a claimed batch may take
+
+[pump.gate]
+command       = "<command>"            # run by a read-only gate worker
+every_merges  = 8                      # merges since the last gate that make one due
+every_seconds = 1800                   # also due after this long with new merges
+pools         = ["<pool>"]             # first with a free slot wins
+model         = "provider/model-c"     # the gate worker's model
+budget        = 1800                   # the gate dispatch budget
+```
+
+Validation rejects an empty `branch`, a `tick` below 1, empty `lanes` or a
+lane cap below 1, a `max_attempts` below 1, and any pool name that is not a
+`[pools.<name>]` table. Rules that are not obvious from the keys:
+
+- An open need carrying the approval mark is plannable whatever its sender or
+  date.
+- A parked need (verdict `operator`, `design` or `hold`) is re-planned when
+  the operator replies on its thread; the old plan is superseded.
+- A red gate never stops merging: new failing names are owned by a gate-fix
+  plan and subtracted from later gates.
+- Main moves by fast-forward only: a gate with no new unowned failure pushes
+  the gated tip to main, and a main with commits the tip lacks waits for the
+  next batch.
+- A timeout means split the unit, never retry it.
+- No environment variables: configuration lives in `[pump]` and CLI flags
+  only.
+
+#### Not built
+
+From the contract: the decision hook (the one gap is extracting failing names
+from a gate reply with no marked block); pump state visible through
+`vivi boot`, `vivi board` or `vivi trace` — the state stays a private
+`state.json` in home; the cargo-specific `fix_proof` rewrite, the legacy
+`unexpected argument` load repair, and `hygiene.on`; the cutover retiring the
+original pump script.
+
 ## Watches and Cycle Intake
 
 Project-local watch commands observe mailspace events. Prefer `--once` for
