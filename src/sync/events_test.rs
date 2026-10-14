@@ -278,7 +278,7 @@ fn a_forged_event_is_filed_as_mail_and_counted_not_applied() {
     assert!(
         pulled
             .summary()
-            .contains("1 event(s) ignored: not from the item's owner"),
+            .contains("1 event(s) ignored: not from a member mailspace, or for a sealed item"),
         "{}",
         pulled.summary()
     );

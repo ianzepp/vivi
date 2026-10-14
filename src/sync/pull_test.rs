@@ -11,6 +11,9 @@ use crate::sync::transport::{
 };
 use crate::{VivariumError, sync::pull};
 
+#[path = "pull_summary_test.rs"]
+mod summary;
+
 const ID_A: &str = "msg_0000000000000000000000a1";
 const ID_B: &str = "msg_0000000000000000000000b2";
 const ID_C: &str = "msg_0000000000000000000000c3";
