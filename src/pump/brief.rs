@@ -24,7 +24,7 @@ Rules:
 - Do NOT run `git commit` or `git push`: the runner commits what you leave in the checkout. Scratch files go under /tmp.
 - Run every PROOF command and make it pass.
 - Never weaken, delete, ignore or cfg-gate a test to make it pass.
-- Aim to finish in 5 minutes. Hard stop at 9 minutes. If you cannot finish, leave the tree in the best passing state and say exactly what is left.
+- Aim to finish in 5 minutes. Hard stop at 9 minutes. If you cannot finish the whole change in that time, leave only consistent work in the checkout, stop, and end your reply with `VERDICT: blocked` plus what is done and what is left, with counts (for example: asked to change 300 call sites, finished 48). Never leave a half-applied rename.
 ";
 
 /// The closing line of every hand brief: what the agent must prove.

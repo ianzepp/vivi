@@ -214,6 +214,76 @@ fn a_finished_unit_with_exit_124_in_the_receipt_is_split_even_with_a_branch() {
     assert_eq!(u.history.last().unwrap().why, "timeout");
 }
 
+/// The resplit record file for `uid`, as text.
+fn resplit_record(ctx: &Ctx, uid: &str) -> String {
+    fs::read_to_string(ctx.home.join(format!("resplit/{uid}.json"))).unwrap()
+}
+
+#[test]
+fn a_blocked_receipt_with_a_pushed_branch_is_never_delivered_and_starts_a_continuation() {
+    let (dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/x-a1 abc\"",
+    );
+    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/x-a1\n");
+    host.reply(
+        "task show",
+        0,
+        "VERDICT: blocked\nasked to change 300 call sites, finished 48",
+    );
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.task, None);
+    assert_eq!(u.blocked_branch.as_deref(), Some("unit/x-a1"));
+    assert_eq!(u.history.last().unwrap().why, "blocked");
+    assert!(u.verdict_text.as_deref().unwrap().contains("finished 48"));
+    assert!(resplit_record(&ctx, "u-1").contains("\"blocked_branch\": \"unit/x-a1\""));
+    let prompt = fs::read_to_string(dir.path().join("home/resplit/u-1.prompt")).unwrap();
+    assert!(prompt.contains("BLOCKED"));
+    assert!(prompt.contains("branch unit/x-a1"));
+    assert!(prompt.contains("finished 48"));
+    assert!(prompt.contains("\"replaces\": \"u-1\""));
+    assert!(prompt.contains("\"u-1.1\", \"u-1.2\""));
+    assert!(prompt.contains("no aliases"));
+    assert_eq!(host.spawned().len(), 1);
+    assert!(!host.logs().iter().any(|l| l.starts_with("delivered")));
+}
+
+#[test]
+fn a_blocked_receipt_with_nothing_pushed_splits_without_a_continuation() {
+    let (dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"no push\"",
+    );
+    host.reply("ls-remote", 0, "");
+    host.reply("task show", 0, "VERDICT: blocked\nfinished 0 of 300");
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.blocked_branch, None);
+    assert!(!resplit_record(&ctx, "u-1").contains("blocked_branch"));
+    let prompt = fs::read_to_string(dir.path().join("home/resplit/u-1.prompt")).unwrap();
+    assert!(!prompt.contains("BLOCKED"));
+    assert_eq!(host.spawned().len(), 1);
+}
+
 #[test]
 fn a_finished_unit_without_a_branch_and_with_the_no_defect_marker_becomes_no_defect_and_raises_an_exception()
  {

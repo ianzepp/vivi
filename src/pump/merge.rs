@@ -13,6 +13,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
+use crate::pump::chain;
 use crate::pump::collect;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
@@ -609,6 +610,16 @@ impl Merger {
         let hold = ctx.flag("HOLD-MERGE");
         let needs = priority_needs(ctx);
         for uid in ranked(ctx, st, st.order.clone()) {
+            if st
+                .units
+                .get(&uid)
+                .is_some_and(|u| u.status == Status::Delivered)
+                && chain::hand_on(st, &uid)
+            {
+                ctx.log(&format!("chain {uid} handed on, not merged"));
+                continue;
+            }
+            let write_scope = chain::chain_scope(st, &uid);
             let Some(unit) = st.units.get_mut(&uid) else {
                 continue;
             };
@@ -626,7 +637,7 @@ impl Merger {
                 need: unit.need.clone(),
                 proof: unit.proof.clone(),
                 tools: unit.tools.clone(),
-                write_scope: unit.write_scope.clone(),
+                write_scope,
             };
             if self.to_merge.send(job).is_err()
                 && let Some(unit) = st.units.get_mut(&uid)

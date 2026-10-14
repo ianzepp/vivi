@@ -19,8 +19,9 @@ back into the integration branch, runs the unit's proof on the merged tree,
 retries failures on another model, and writes what needs a person to
 `exceptions.txt`.
 
-- It never reads a receipt to decide anything except the literal marker
-  `VERDICT: no-defect`. Every other receipt text is used
+- It never reads a receipt to decide anything except the literal markers
+  `VERDICT: no-defect` and `VERDICT: blocked` (and the exit-124 patterns).
+  Every other receipt text is used
   only as failure detail to feed back into the next attempt or to file an
   exception.
 - It is a generic engine. Project specifics (which project, which branch, which
@@ -160,7 +161,9 @@ as marked):
 | `commit` | string | runtime (merged): integration-branch tip the merge landed on |
 | `outside` | array of files | runtime (merged): files the branch touched outside `write_scope` |
 | `replaced_by` | array of unit ids | runtime (replaced): the split's successor ids |
-| `verdict_text` | string | runtime (no-defect): tail of the no-defect receipt |
+| `verdict_text` | string | runtime (no-defect, blocked): tail of the receipt |
+| `blocked_branch` | string | runtime (blocked): the branch the worker pushed before it reported `VERDICT: blocked`; absent when nothing was pushed. Read at plan ingest to chain the follow-up units |
+| `continues` | unit id | runtime (continuation): the unit whose branch this unit starts from instead of the integration branch; absent for an ordinary unit |
 
 Compatibility rule: the pump reads and writes exactly this shape. Unknown
 top-level and per-unit keys are preserved on save. At load, a state older than
@@ -182,7 +185,7 @@ States:
 | `no-defect` | the receipt carried `VERDICT: no-defect`; nothing merged | yes | yes |
 | `stuck` | attempts exhausted (or the split planner never answered); a person is needed | yes | no |
 | `splitting` | a split planner is writing a replacement plan | no | no |
-| `replaced` | superseded by split successor units | yes | only if every successor is satisfied (satisfied, recursion depth capped at 6) |
+| `replaced` | superseded by split successor units; also a delivered unit that other units continue from (never merged) | yes | only if every successor is satisfied (satisfied, recursion depth capped at 32) |
 | `withdrawn` | taken out of the queue by hand; the pump leaves it alone | no | no |
 
 `satisfied` is the readiness predicate used everywhere:
@@ -197,16 +200,54 @@ Transitions (from, to, trigger, guard, action):
 | --- | --- | --- | --- | --- |
 | — | `pending` | a new plan file in `plans/` | each unit has `id`, `brief`, `write_scope`, a list `proof`; no duplicate id | unit record minted with `since=now`, appended to `order`; need recorded |
 | `pending` | `inflight` | dispatch loop reaches it | `ready` (§8); a free pool slot; `pick_model` returns a model | task sent, pool dispatched, unit updated (`attempts+1`, `task`, `branch`, `model`, `since`, `since_dispatch`, `pool`) |
-| `inflight` | `delivered` | collect: the task is not running and not reported, or reported `finished`, and the worker branch exists on the remote | receipt does not contain `agent exit 124` / `agent_rc 124` | `since=now`, log `delivered` |
+| `inflight` | `delivered` | collect: the task is not running and not reported, or reported `finished`, and the worker branch exists on the remote | receipt contains neither `agent exit 124` / `agent_rc 124` nor `VERDICT: blocked` | `since=now`, log `delivered` |
+| `inflight` | `splitting` | collect: the receipt contains `VERDICT: blocked` (before the no-defect check, after the exit-124 check) | — | `split` with `why="blocked"`: when the worker branch exists on the remote it is recorded as `blocked_branch` and the planner gets the continuation prompt; otherwise (nothing pushed) the ordinary split prompt. `verdict_text` kept, `resplit/<uid>.json` carries `blocked_branch` when set |
 | `inflight` | `no-defect` | collect: no remote branch, and the receipt contains `VERDICT: no-defect` | — | `verdict_text` kept, `no-defect` exception filed |
 | `inflight` | `pending` or `stuck` | collect: no branch, no verdict marker | — | `fail`: history entry `{attempt, model, why, detail≤2500, at}`; `task=null`; `stuck` when `attempts >= max_attempts` (plus a `stuck` exception), else back to `pending` |
 | `inflight` | `splitting` | timeout: reconcile state `timeout`, or still running past `budget + overdue_grace`, or the receipt shows agent exit 124 | — | `split`: `resplit/` files written, split planner spawned detached, `task=null`, history entry `why="timeout"`, `since=now` |
 | `splitting` | `stuck` | split planner wrote no plan in `split_timeout` | — | `split-no-answer` exception |
-| `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
+| `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending`. When the old unit has `blocked_branch`, or is itself part of a continuation chain (it has `continues`, or other units continue from it), the successors form a chain (see "Continuation chains" below) |
+| `delivered` | `replaced` | merge feed: another unit has `continues` set to this unit | — | `replaced_by=<the units that continue from it>`; nothing is queued for the merger |
 | `delivered` | `merging` | merge feed after collect | not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `outside`, `merges+=1`; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
+
+### Continuation chains
+
+A unit whose worker cannot finish its whole change reports `VERDICT: blocked`
+with counts of what is done and what is left. Its partial work never reaches
+the integration branch; the pump continues it from the unit's own branch.
+
+- `collect` sends a blocked unit to the split planner (`splitting`). With a
+  pushed branch the prompt is the continuation prompt: it quotes the worker's
+  report, names the branch, and asks for one chain of two to six units, each
+  `after` the previous, each finishable in 5 minutes, the last carrying the
+  original unit's proof, no aliases or second spellings. Ids are
+  `<uid>.1`, `<uid>.2`, …. Without a pushed branch the ordinary split prompt is
+  used and the successors start from the integration branch.
+- At ingest of that plan, the minted units are linked: the first has
+  `continues=<blocked uid>`, each later one `continues=<previous>`, and `after`
+  entries between units of the plan are dropped (the chain carries the order;
+  an `after` on a unit that is handed on would otherwise never be satisfied).
+  A chained split also happens for a timeout split or a second block of a unit
+  that already belongs to a chain: the successors start from that unit's own
+  `continues`, and every unit that continued from it is re-pointed to the last
+  successor.
+- Readiness adds one test: a unit with `continues` is ready only when that unit
+  has a pushed `branch` and is `delivered`, `merging`, `merged` or `replaced`.
+  A unit never waits, by write-scope overlap, on the chain it continues.
+- Dispatch passes `--from <predecessor branch>` instead of the integration
+  branch (`vivi pool dispatch --from` takes a branch name as well as a
+  commit).
+- Merge feed: a `delivered` unit that another unit continues from becomes
+  `replaced` (`replaced_by` those units) and is not queued. Only the last unit
+  of the chain is queued; its merge job's `write_scope` is the union of the
+  chain's scopes. A `stuck` middle unit leaves the whole chain unmerged.
+- `after` on the blocked original is satisfied by the existing `replaced` rule:
+  every successor, middle ones included, must be satisfied, and a middle unit
+  is satisfied only when the unit that continues it is, so the last unit's
+  merge releases the lot.
 
 The merge batch itself (which units go together, the remote merger, promotion)
 is [`pump-protocols.md`](pump-protocols.md); the state machine above only records what
@@ -255,6 +296,8 @@ Readiness (`ready`):
 
 - The unit must be `pending`.
 - Every id in `after` must be `satisfied`.
+- A unit with `continues` needs its predecessor delivered (see "Continuation
+  chains"); the predecessor chain is exempt from the overlap check below.
 - Write-scope exclusivity: no other unit whose write scope overlaps may be
   busy. Busy is `inflight` for fix units and
   `inflight`+`delivered`+`merging` for normal units. A fix unit
@@ -309,7 +352,9 @@ Brief composition (`brief_for`), in order:
 6. When history exists: the `A PREVIOUS ATTEMPT … FAILED` block with the last
    entry's `why` and the last 1800 chars of its `detail`.
 7. The `done_when:` line: the PROOF commands pass, or the reply ends with
-   `VERDICT: no-defect` and evidence.
+   `VERDICT: no-defect` and evidence. (The default hand rules also tell the
+   worker to end with `VERDICT: blocked` plus done/left counts when it cannot
+   finish the whole change in its time.)
 
 Task send and dispatch command lines:
 
@@ -319,6 +364,9 @@ vivi task send --from operator --to hand --subject "[<uid> a<N>] <title>" \
 vivi pool dispatch --pool <pool> <task> --model <model> --from <branch> \
     --branch unit/<uid>-a<N> --budget 600 --porcelain
 ```
+
+`--from` is the integration branch, or for a unit with `continues` the branch of
+the unit it continues.
 
 with `--from`/`--to`/budget from config (§9). The created handle is read with
 the regex `^(?:node|created)\s+(?:\S+\s+)?([0-9a-f]{8})\s*$` in multiline mode; no match logs `task send failed` and skips the unit. A failed
@@ -502,6 +550,9 @@ Validation rules (`vivi pump` refuses to start when one fails):
    merger runs the shared checks plus the unit's proof on the merged result
    (the proof is skipped for a `skip_proof` kind). A timeout means split the
    unit, never retry it.
+   A unit that reports `VERDICT: blocked` is continued from its own branch
+   through a chain; only the completed chain merges, once, so the integration
+   branch never sees a half-done change.
 4. **An open need carrying the approval mark is plannable** whatever its sender
    or date: `marked_rows` lists held and to-mind open needs carrying `mark`,
    and the board adds them past the `since` cutoff.

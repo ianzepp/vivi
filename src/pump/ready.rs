@@ -5,19 +5,24 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
+use crate::pump::chain;
 use crate::pump::config::Lane;
 use crate::pump::host::Ctx;
 use crate::pump::plan::overlaps;
 use crate::pump::state::{State, Status, Unit};
 
+/// Deepest `replaced_by` chain [`satisfied`] follows.
+const MAX_DEPTH: u32 = 32;
+
 /// A unit is satisfied when it merged, found no defect, or was replaced and
-/// every replacement is itself satisfied (recursion depth capped at 6).
+/// every replacement is itself satisfied (recursion depth capped at 32, deep
+/// enough for nested continuation chains).
 #[must_use]
 pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
     let Some(u) = st.units.get(uid) else {
         return false;
     };
-    if depth > 6 {
+    if depth > MAX_DEPTH {
         return false;
     }
     match u.status {
@@ -102,6 +107,9 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str) -> bool {
     if u.after.iter().any(|dep| !satisfied(st, dep, 0)) {
         return false;
     }
+    if !chain::base_ready(st, u) {
+        return false;
+    }
     !overlap_busy(ctx, st, uid, u)
 }
 
@@ -110,8 +118,10 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str) -> bool {
 /// normal units; a fix unit ignores overlap against non-fix units.
 fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
     let fix = uid.starts_with(ctx.cfg.fix_prefix.as_str()) || priority_needs(ctx).contains(&u.need);
+    // A unit never waits on the chain it continues: that work is its base.
+    let chain = chain::ancestors(st, u);
     for (oid, o) in &st.units {
-        if oid == uid {
+        if oid == uid || chain.contains(&oid.as_str()) {
             continue;
         }
         let busy = if fix {

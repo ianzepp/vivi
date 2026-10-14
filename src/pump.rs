@@ -2,6 +2,7 @@
 
 pub mod board;
 pub mod brief;
+pub mod chain;
 pub mod collect;
 pub mod config;
 pub mod dispatch;
@@ -30,6 +31,10 @@ mod plan_test;
 #[cfg(test)]
 #[path = "pump/ready_test.rs"]
 mod ready_test;
+
+#[cfg(test)]
+#[path = "pump/chain_test.rs"]
+mod chain_test;
 
 #[cfg(test)]
 #[path = "pump/brief_test.rs"]

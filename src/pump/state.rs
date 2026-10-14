@@ -200,6 +200,16 @@ pub struct Unit {
     /// The agent's verdict text, when it replied with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_text: Option<String>,
+    /// The branch a worker pushed before it reported `VERDICT: blocked`.
+    /// Set while the unit goes to the continuation planner; the units that
+    /// replace it continue from this branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_branch: Option<String>,
+    /// The unit whose branch this unit starts from instead of the
+    /// integration branch (a continuation chain). Absent for an ordinary
+    /// unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<String>,
     /// The unit's unknown-kind exception was raised already.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kind_reported: bool,

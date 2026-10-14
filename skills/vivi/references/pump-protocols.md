@@ -188,12 +188,17 @@ unit strictly in this order:
 5. **branch on the remote** (`remote_has`) — the work arrived:
    when the reconcile said `finished`, read the receipt and check whether it contains `agent exit 124` or
    `agent_rc 124`; if so → `split`.
+   If the receipt contains `VERDICT: blocked` → `split` as a continuation
+   (the pushed branch is recorded as `blocked_branch`; see pump-contract,
+   "Continuation chains").
    Otherwise the unit becomes `delivered` and the log line
    `delivered <uid> <branch> secs=<n> model=<model> pool=<pool>` is written
    (secs from `since_dispatch`, `-1` when missing). NOTE: the
    `VERDICT: no-defect` marker is **not** checked on this path — a worker that
    both pushed a branch and claimed no-defect is counted `delivered`.
 6. **no remote branch** — read the receipt: exit-124 patterns → `split`; the
+   literal marker `VERDICT: blocked` → `split` with nothing to continue from
+   (ordinary split prompt, successors from the integration branch); the
    literal marker `VERDICT: no-defect` in the text → status `no-defect`,
    `verdict_text` = last 1500 chars, exception `no-defect` with the last 400
    chars; anything else → `fail(st, uid, "<state>/<detail>", text)`.
@@ -244,6 +249,13 @@ When a unit times out or overruns, `split`:
    now, appends a history record `{"attempt": …, "model": …, "why":
    "timeout", "detail": "", "at": …}`, and logs `split-requested <uid>`.
 
+A blocked unit (`VERDICT: blocked`) takes the same path with `why="blocked"`:
+`resplit/<unit>.json` also carries `blocked_branch` (when the worker pushed),
+and the prompt is `CONTINUE_PROMPT`, which quotes the worker's report and asks
+for one `after`-chained list of units that continue on top of that branch; the
+pump links them with `continues` at ingest (pump-contract, "Continuation
+chains").
+
 The no-answer rule: a unit still `splitting` `planner.split_timeout` seconds after the request
 becomes `stuck` with exception `split-no-answer`, text
 `the split planner wrote no plan in 25 minutes` (with the default timeout).
@@ -261,7 +273,8 @@ replaced unit with no successors is satisfied for scheduling purposes
 ## 5. Merge
 
 Merging runs on a single worker thread fed by two queues (jobs in, results out). `merge_feed` moves every
-`delivered` unit to `merging` and puts its job on `MERGE_IN` — under the
+`delivered` unit to `merging` and puts its job on `MERGE_IN` (except a unit that
+another unit `continues`, which becomes `replaced` and is not queued) — under the
 `HOLD-MERGE` flag only units whose id starts with `fix_prefix` are fed. The
 thread (`merge_thread`) takes one job, drains up to `merge.batch` (default 8) more, then offers the batch to the remote merger (section 6)
 and, if that declines, runs `batch_work` for more than one job or `merge_work`

@@ -9,6 +9,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::pump::chain;
 use crate::pump::host::Ctx;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 
@@ -139,8 +140,13 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
         ctx.exception("bad-plan", key, &bad);
         return;
     }
+    let chained = replaces.and_then(|old| chain::chain_base(st, old));
     mint(ctx, st, need, &minted);
     record(ctx, st, &plan, need, replaces, &minted);
+    if let (Some(old), Some(base)) = (replaces, chained) {
+        let ids: Vec<String> = minted.iter().map(|(uid, _)| (*uid).to_string()).collect();
+        chain::link(st, old, base, &ids);
+    }
 }
 
 /// Check every unit of a plan before anything is minted: `id`, `brief` and a

@@ -1,7 +1,7 @@
 //! Dispatch reconcile parsing and outcome classification.
 //!
 //! `collect` reconciles the pool once per tick, classifies every
-//! in-flight unit (deliver, fail, split, no-defect), expires unanswered split
+//! in-flight unit (deliver, fail, split, blocked, no-defect), expires unanswered split
 //! planners, and returns the gate task's receipt when the gate finished; the
 //! caller hands that receipt to the gate module.
 
@@ -20,6 +20,9 @@ use crate::pump::state::{Attempt, State, Status};
 const RECONCILE_GRACE: u64 = 90;
 /// Receipt marker of a worker that found nothing to fix.
 const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
+/// Receipt marker of a worker that stopped on purpose with the change
+/// unfinished.
+const BLOCKED_MARKER: &str = "VERDICT: blocked";
 /// Receipt fragments of an agent killed by its budget timeout.
 const EXIT_124_MARKERS: [&str; 2] = ["agent exit 124", "agent_rc 124"];
 /// Seconds a gate task may stay unreported before it is finished from its
@@ -34,6 +37,27 @@ The unit is in {home}/resplit/{uid}.json (id, need, title, brief, write_scope, p
 - unit ids are "{uid}.1", "{uid}.2", ... ; two to four units; each one must be finishable in 5 minutes by a mid-level model
 - chain them with `after` when they touch the same file
 - if the worker's last message shows the work is in fact already done or not a defect, write "units": [] and say why in "reason"
+Your final message is one line.
+"#;
+
+/// `CONTINUE_PROMPT`; `{home}`, `{uid}`, `{branch}` and `{said}` are
+/// substituted. The prompt for a unit whose worker reported `VERDICT: blocked`
+/// after pushing partial work.
+const CONTINUE_PROMPT: &str = r#"One unit was BLOCKED. Its worker could not finish the whole change in its time box and stopped on purpose, leaving consistent partial work on branch {branch}. Continue that SAME change in follow-up units. Do not start over and do not redo what the branch already holds.
+
+The worker said:
+---
+{said}
+---
+
+The unit is in {home}/resplit/{uid}.json (id, need, title, brief, write_scope, proof, blocked_branch, and what the worker last said). Read the code it names, and the work already on branch {branch} (fetch it and diff it against the integration branch). Write {home}/plans/{uid}.split.json (write .tmp, then mv) in the plan format of your system prompt, with these extra rules:
+- top level: {"need": "<the unit's need>", "replaces": "{uid}", "verdict": "units", "reason": "...", "units": [...]}
+- unit ids are "{uid}.1", "{uid}.2", ... ; two to six units, only for the work that is LEFT (use the worker's counts)
+- the units continue the change on top of branch {branch}: they form ONE chain, each `after` the previous, run in that order, and each one starts from the previous one's branch, so it already holds all earlier work
+- each unit must be finishable in 5 minutes by a mid-level model
+- the LAST unit carries the original unit's `proof` unchanged; earlier units may carry a narrower proof
+- no aliases, shims or second spellings, ever: each unit finishes whole renames and replacements it starts, and says so in its brief
+- if the worker's message shows the work is in fact already done, write "units": [] and say why in "reason"
 Your final message is one line.
 "#;
 
@@ -56,6 +80,10 @@ struct ResplitRecord {
     tools: String,
     /// Last 3000 chars of the text that triggered the split.
     worker_said: String,
+    /// The branch a blocked worker pushed; its follow-up units continue from
+    /// it. Absent for a timeout split.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_branch: Option<String>,
 }
 
 /// Parse `vivi pool reconcile --porcelain` output into task handles mapped
@@ -140,6 +168,27 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
 /// Send a unit to the split planner: write the resplit record,
 /// spawn the planner, and move the unit to `splitting` with a fresh clock.
 pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
+    request_split(ctx, st, uid, text, "timeout", None);
+}
+
+/// Send a unit whose worker reported `VERDICT: blocked` to the split
+/// planner. With a pushed `branch` the planner writes a continuation chain on
+/// top of it; without one there is nothing to continue from and the split is
+/// an ordinary one.
+fn split_blocked(ctx: &Ctx, st: &mut State, uid: &str, text: &str, branch: Option<&str>) {
+    request_split(ctx, st, uid, text, "blocked", branch);
+}
+
+/// Write the resplit record, spawn the planner (the continuation prompt when
+/// `blocked_branch` is set), and move the unit to `splitting`.
+fn request_split(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    text: &str,
+    why: &str,
+    blocked_branch: Option<&str>,
+) {
     let now = ctx.now();
     let record = {
         let Some(unit) = st.units.get(uid) else {
@@ -154,22 +203,31 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
             proof: unit.proof.clone(),
             tools: unit.tools.clone(),
             worker_said: tail(text, 3000),
+            blocked_branch: blocked_branch.map(str::to_owned),
         }
     };
     let dir = ctx.home.join("resplit");
     drop(fs::create_dir_all(&dir));
     drop(write_json(&dir.join(format!("{uid}.json")), &record));
-    spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    let prompt = match blocked_branch {
+        Some(branch) => continue_prompt(ctx, uid, branch, text),
+        None => split_prompt(ctx, uid),
+    };
+    spawn_planner(ctx, "resplit", uid, &prompt);
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
     unit.status = Status::Splitting;
     unit.task = None;
     unit.since = now;
+    unit.blocked_branch = blocked_branch.map(str::to_owned);
+    if why == "blocked" {
+        unit.verdict_text = Some(tail(text, 1500));
+    }
     unit.history.push(Attempt {
         attempt: unit.attempts,
         model: unit.model.clone(),
-        why: "timeout".to_owned(),
+        why: why.to_owned(),
         detail: String::new(),
         at: now,
     });
@@ -256,6 +314,10 @@ fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state
         split(ctx, st, uid, &text);
         return;
     }
+    if text.contains(BLOCKED_MARKER) {
+        split_blocked(ctx, st, uid, &text, Some(branch));
+        return;
+    }
     let now = ctx.now();
     let (secs, model, pool) = {
         let Some(unit) = st.units.get_mut(uid) else {
@@ -298,6 +360,10 @@ fn fail_from_receipt(
             unit.verdict_text = Some(verdict);
         }
         ctx.exception("no-defect", uid, &exc);
+        return;
+    }
+    if text.contains(BLOCKED_MARKER) {
+        split_blocked(ctx, st, uid, &text, None);
         return;
     }
     let why = format!("{}/{}", state.unwrap_or("None"), detail.unwrap_or("None"));
@@ -369,6 +435,18 @@ fn split_prompt(ctx: &Ctx, uid: &str) -> String {
     SPLIT_PROMPT
         .replace("{home}", &ctx.home.to_string_lossy())
         .replace("{uid}", uid)
+}
+
+/// `CONTINUE_PROMPT` with the pump home, unit handle, pushed branch and the
+/// blocked worker's report substituted. The report goes in last, so text in it
+/// that looks like a placeholder is left alone.
+#[must_use]
+fn continue_prompt(ctx: &Ctx, uid: &str, branch: &str, said: &str) -> String {
+    CONTINUE_PROMPT
+        .replace("{home}", &ctx.home.to_string_lossy())
+        .replace("{uid}", uid)
+        .replace("{branch}", branch)
+        .replace("{said}", tail(said, 1500).trim())
 }
 
 /// The last `max` characters of `text` (Python's `text[-max:]`).

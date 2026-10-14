@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use crate::pump::brief::brief_for;
+use crate::pump::chain;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::ready::{is_ready, pick_model, ranked};
 use crate::pump::state::{State, Status};
@@ -23,6 +24,9 @@ struct Plan {
     attempt: u32,
     /// `unit/<uid>-a<attempt>`.
     branch: String,
+    /// The ref the unit starts from: its predecessor's branch in a
+    /// continuation chain, else the integration branch.
+    from: String,
 }
 
 /// Free slot counts per pool: run `pool status --porcelain` and count the
@@ -166,6 +170,9 @@ fn plan_unit(ctx: &Ctx, st: &State, uid: &str, free: &BTreeMap<String, u32>) -> 
         model: pick_model(ctx, st, unit),
         attempt,
         branch: format!("unit/{uid}-a{attempt}"),
+        from: chain::base_branch(st, unit)
+            .unwrap_or_else(|| ctx.cfg.dispatch_from())
+            .to_owned(),
     })
 }
 
@@ -229,7 +236,7 @@ fn dispatch_one(
         shell_quote(&plan.pool),
         shell_quote(task),
         shell_quote(model),
-        shell_quote(ctx.cfg.dispatch_from()),
+        shell_quote(&plan.from),
         shell_quote(&plan.branch),
         ctx.cfg.dispatch.budget,
     );

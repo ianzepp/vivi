@@ -1943,7 +1943,9 @@ blocks its dependents until a person unblocks it.
    priority file, below) goes first in dispatch and merge order; if a priority
    need is not moving, check that file for a typo in the handle.
 3. The unit waits on `after`: a prerequisite that is not `merged` or
-   `no-defect`, including a `stuck` one.
+   `no-defect`, including a `stuck` one. A chain unit also waits until the unit
+   it `continues` has delivered, and an `after` on a blocked unit waits for the
+   whole continuation chain to merge.
 4. The reserved file (`reserved.txt` in the home by default, one path or glob
    per line, `#` comments) holds a path the unit's `write_scope` overlaps.
    Another unit that is `inflight`, `delivered` or `merging` on an
@@ -2054,13 +2056,59 @@ ingests every new file exactly once:
 - `stuck` — attempts exhausted, or the split planner never answered.
 - `splitting` — a split planner is writing a replacement plan.
 - `replaced` — superseded by split successors; satisfied only when every
-  successor is.
+  successor is. Also the state of a delivered unit that a continuation unit
+  starts from (see "Blocked work"): it is never merged itself.
 - `withdrawn` — taken out of the queue by hand; the pump leaves it alone and it
   never satisfies an `after`.
 
 `merged` and `no-defect` are satisfied; `replaced` delegates to its
 successors; everything else, `stuck` and `withdrawn` included, is not, so a stuck unit blocks
 its dependents until a person unblocks it.
+
+#### Receipt markers
+
+The pump reads a worker's final reply for exactly these literal markers and
+nothing else:
+
+- `VERDICT: no-defect` — the worker found nothing to fix. With no pushed branch
+  the unit becomes `no-defect`.
+- `VERDICT: blocked` — the worker could not finish the whole change in its time
+  box, stopped on purpose, and said what is done and what is left, with counts
+  (for example "asked to change 300 call sites, finished 48"). The unit is
+  never delivered and never merged; see "Blocked work".
+- `agent exit 124` / `agent_rc 124` — the agent hit its budget. The unit is
+  split into fresh units from the integration branch; its partial work is
+  discarded.
+
+#### Blocked work
+
+Partial work never reaches the integration branch. A worker that cannot finish
+its change in one time box ends its reply with `VERDICT: blocked`. The pump
+sends the unit to the split planner with a continuation prompt that quotes the
+worker's report and names the branch the worker pushed. The planner writes a
+plan (`replaces` the blocked unit) of follow-up units that form one chain, each
+`after` the previous, each finishable in five minutes; the last unit carries
+the original unit's proof. There are no aliases or second spellings.
+
+- The pump records the chain on each unit as `continues` (the unit whose branch
+  it starts from). The first follow-up starts from the blocked unit's branch,
+  each later one from its predecessor's delivered branch: dispatch passes that
+  branch as `--from`. A unit whose predecessor has not delivered is not ready.
+  Chain units do not wait on each other through `after`; the pump drops `after`
+  entries between units of one continuation plan.
+- A delivered unit that another unit continues from is not merged. It becomes
+  `replaced` by the units that continue from it. Only the last unit of the
+  chain is merged, once, and its branch holds the whole chain. The merge scope
+  covers every unit of the chain.
+- A unit with `after` on the blocked original is satisfied only when the last
+  unit of the chain has merged. A middle unit that gets `stuck` leaves the
+  chain unmerged.
+- A chain unit that is itself blocked (or splits on a timeout) continues
+  again: its follow-ups chain from its own start point, and the units that
+  were to continue from it move to the end of the new chain.
+- A blocked worker that pushed nothing has nothing to continue from: the
+  follow-up units start fresh from the integration branch, like a timeout
+  split.
 
 #### Config
 
@@ -2195,7 +2243,9 @@ lane cap below 1, a `max_attempts` below 1, a kind with no `pool` or a `max` of 
   files one `unknown-kind` exception for it.
 - A unit branch missing on the remote is a decided `branch-missing` failure;
   any other fetch error is undecided and retried.
-- A timeout means split the unit, never retry it.
+- A timeout means split the unit, never retry it. A `VERDICT: blocked` receipt
+  continues the unit from its own branch through a chain; only the completed
+  chain merges, once.
 - No environment variables: configuration lives in `[pump]` and CLI flags
   only.
 
