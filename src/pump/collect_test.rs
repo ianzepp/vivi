@@ -1,1 +1,405 @@
-//! Tests for [`super::collect`] (scaffolding only; behaviour lands with later units).
+//! Tests for [`crate::pump::collect`]: the reconcile parser and the
+//! in-flight unit state machine, driven through [`FakeHost`] replies.
+
+use std::fs;
+use std::sync::Arc;
+
+use tempfile::tempdir;
+
+use crate::pump::collect::*;
+use crate::pump::config::{PlannerConfig, PumpConfig};
+use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::state::{GateRun, State, Status, Unit};
+
+/// The fake clock's start; units are created "now".
+const T0: u64 = 1_000_000;
+
+/// A context with default config, home at `dir/home`.
+fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
+    setup_with(PumpConfig::default())
+}
+
+/// A context with `planner` swapped into an otherwise default config.
+fn setup_with(cfg: PumpConfig) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    (dir, ctx, host)
+}
+
+/// A planner config that marks its charter in the spawned command line.
+fn planner_cfg() -> PumpConfig {
+    PumpConfig {
+        planner: PlannerConfig {
+            run: String::from("plan-it {charter} --quiet"),
+            charter: String::from("/charter/path.md"),
+            split_timeout: 1500,
+        },
+        ..PumpConfig::default()
+    }
+}
+
+/// One unit at the fake clock's start.
+fn unit(status: Status, task: Option<&str>, branch: Option<&str>) -> Unit {
+    Unit {
+        status,
+        task: task.map(str::to_owned),
+        branch: branch.map(str::to_owned),
+        since: T0,
+        ..Unit::default()
+    }
+}
+
+/// Insert `unit` under `uid` into `st`.
+fn put(st: &mut State, uid: &str, unit: Unit) {
+    st.units.insert(uid.to_owned(), unit);
+}
+
+/// The recorded exception lines (`<home>/exceptions.txt`).
+fn exceptions(ctx: &Ctx) -> String {
+    fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()
+}
+
+/// The resplit record's `worker_said` value.
+fn worker_said(ctx: &Ctx, uid: &str) -> String {
+    let text = fs::read_to_string(ctx.home.join(format!("resplit/{uid}.json"))).unwrap();
+    text.split("\"worker_said\": \"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn parse_reconcile_reads_reconciled_and_collected_lines() {
+    let out = "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/x-a1 abc\"\n\
+               reconciled 9f8e7d6c bridge slot-2 running \"agent pid 42\" extra\n\
+               noise line ignored\n\
+               collected toofew tokens\n";
+    let seen = parse_reconcile(out);
+    assert_eq!(seen.len(), 2);
+    let (state, detail) = seen.get("1a2b3c4d").unwrap();
+    assert_eq!(state, "finished");
+    assert_eq!(detail, "pushed unit/x-a1 abc");
+    let (state, detail) = seen.get("9f8e7d6c").unwrap();
+    assert_eq!(state, "running");
+    assert_eq!(detail, "agent pid 42");
+}
+
+#[test]
+fn a_running_unit_stays_inflight() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 running \"agent pid 7\"",
+    );
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Inflight);
+    assert_eq!(
+        st.units.get("u-1").unwrap().task.as_deref(),
+        Some("1a2b3c4d")
+    );
+}
+
+#[test]
+fn a_running_unit_past_budget_plus_grace_is_split() {
+    let (dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 running \"agent pid 7\"",
+    );
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    host.advance(600 + 900 + 1);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.task, None);
+    assert_eq!(u.history.last().unwrap().why, "timeout");
+    assert_eq!(
+        worker_said(&ctx, "u-1"),
+        "overdue: still running long past its budget"
+    );
+    assert!(dir.path().join("home/resplit/u-1.prompt").exists());
+}
+
+#[test]
+fn a_timeout_state_requests_a_split_and_writes_the_resplit_files() {
+    let (dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 timeout \"budget exceeded\"",
+    );
+    host.reply("task show", 0, "the worker ran out of time");
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.task, None);
+    assert_eq!(u.since, T0);
+    assert_eq!(u.history.last().unwrap().why, "timeout");
+    assert_eq!(worker_said(&ctx, "u-1"), "the worker ran out of time");
+    let prompt = fs::read_to_string(dir.path().join("home/resplit/u-1.prompt")).unwrap();
+    assert!(prompt.contains("home/resplit/u-1.json"));
+    assert!(prompt.contains("home/plans/u-1.split.json"));
+    assert!(prompt.contains("\"replaces\": \"u-1\""));
+    assert_eq!(host.spawned().len(), 1);
+}
+
+#[test]
+fn a_finished_unit_whose_branch_is_on_the_remote_is_delivered() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/x-a1 abc\"",
+    );
+    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/x-a1\n");
+    host.reply("task show", 0, "all good, pushed");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
+    u.model = Some(String::from("zai/glm-5.3-flash"));
+    u.pool = Some(String::from("fly4"));
+    u.since_dispatch = Some(T0 - 500);
+    put(&mut st, "u-1", u);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Delivered);
+    assert_eq!(u.since, T0);
+    assert_eq!(
+        host.logs().last().unwrap(),
+        "delivered u-1 unit/x-a1 secs=500 model=zai/glm-5.3-flash pool=fly4"
+    );
+}
+
+#[test]
+fn a_finished_unit_with_exit_124_in_the_receipt_is_split_even_with_a_branch() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/x-a1 abc\"",
+    );
+    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/x-a1\n");
+    host.reply("task show", 0, "agent exit 124 after 600s");
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.task, None);
+    assert_eq!(u.history.last().unwrap().why, "timeout");
+}
+
+#[test]
+fn a_finished_unit_without_a_branch_and_with_the_no_defect_marker_becomes_no_defect_and_raises_an_exception()
+ {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"no push\"",
+    );
+    host.reply("ls-remote", 0, "");
+    host.reply(
+        "task show",
+        0,
+        "VERDICT: no-defect\nthe code is already correct",
+    );
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::NoDefect);
+    assert_eq!(
+        u.verdict_text.as_deref(),
+        Some("VERDICT: no-defect\nthe code is already correct")
+    );
+    assert!(exceptions(&ctx).contains("no-defect u-1 VERDICT: no-defect"));
+}
+
+#[test]
+fn a_finished_unit_without_a_branch_fails_and_goes_back_to_pending_with_a_history_record() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"pushed nothing\"",
+    );
+    host.reply("ls-remote", 0, "");
+    host.reply("task show", 0, "agent replied: did nothing");
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Pending);
+    assert_eq!(u.task, None);
+    let record = u.history.last().unwrap();
+    assert_eq!(record.attempt, 0);
+    assert_eq!(record.why, "finished/pushed nothing");
+    assert_eq!(record.detail, "agent replied: did nothing");
+    assert_eq!(record.at, T0);
+}
+
+#[test]
+fn the_third_failed_attempt_makes_the_unit_stuck_and_raises_an_exception() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"pushed nothing\"",
+    );
+    host.reply("ls-remote", 0, "");
+    host.reply("task show", 0, "broke it again");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
+    u.attempts = 3;
+    put(&mut st, "u-1", u);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Stuck);
+    assert_eq!(u.task, None);
+    assert_eq!(u.history.last().unwrap().why, "finished/pushed nothing");
+    assert!(exceptions(&ctx).contains("stuck u-1 finished/pushed nothing: broke it again"));
+}
+
+#[test]
+fn a_unit_unreported_for_under_90_seconds_is_left_alone() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected deadbeef bridge slot-9 finished \"someone else\"",
+    );
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Inflight);
+    assert!(!host.commands().iter().any(|c| c.contains("pool status")));
+    assert!(!host.commands().iter().any(|c| c.contains("ls-remote")));
+}
+
+#[test]
+fn an_unreported_unit_still_listed_by_pool_status_is_left_alone() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool status",
+        0,
+        "pool fly4 slot-1 1a2b3c4d running since 100\n",
+    );
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    host.advance(91);
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Inflight);
+    assert!(host.commands().iter().any(|c| c.contains("pool status")));
+    assert!(!host.commands().iter().any(|c| c.contains("ls-remote")));
+    assert!(!host.commands().iter().any(|c| c.contains("task show")));
+}
+
+#[test]
+fn a_splitting_unit_with_no_answer_for_1500_seconds_is_stuck() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    host.advance(1501);
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
+    assert!(host.commands().is_empty());
+    assert!(
+        exceptions(&ctx)
+            .contains("split-no-answer u-1 the split planner wrote no plan in 25 minutes")
+    );
+}
+
+#[test]
+fn a_finished_gate_task_returns_its_receipt_text() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected gate9 bridge slot-2 finished \"gate done\"",
+    );
+    host.reply("task show", 0, "GATE RECEIPT");
+    let mut st = State::default();
+    st.last_gate = GateRun {
+        at: T0,
+        task: Some(String::from("gate9")),
+        ..GateRun::default()
+    };
+    assert_eq!(collect(&ctx, &mut st), Some(String::from("GATE RECEIPT")));
+}
+
+#[test]
+fn spawn_planner_writes_the_prompt_and_spawns_with_the_charter_substituted() {
+    let (dir, ctx, host) = setup_with(planner_cfg());
+    spawn_planner(&ctx, "resplit", "u-9", "prompt body");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("home/resplit/u-9.prompt")).unwrap(),
+        "prompt body"
+    );
+    assert_eq!(
+        host.spawned(),
+        vec![String::from("plan-it /charter/path.md --quiet")]
+    );
+
+    let dir2 = tempdir().unwrap();
+    let mut cfg = planner_cfg();
+    cfg.shell_prefix = String::from("source env.sh");
+    let host2 = FakeHost::new();
+    let ctx2 = Ctx::with_parts(
+        cfg,
+        host2.clone(),
+        dir2.path().join("project"),
+        String::from("vivi"),
+        String::from("source env.sh"),
+        dir2.path().join("home"),
+        dir2.path().join("home/repo"),
+    );
+    spawn_planner(&ctx2, "plans", "u-9", "p2");
+    assert_eq!(
+        host2.spawned(),
+        vec![String::from(
+            "source env.sh; plan-it /charter/path.md --quiet"
+        )]
+    );
+}
