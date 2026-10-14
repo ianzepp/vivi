@@ -84,7 +84,7 @@ impl Mailspace {
         let Some(item) = held_item(storage, &before.content_id)? else {
             return Ok(None);
         };
-        let head = self.item_head(storage, &item)?;
+        let head = Self::item_head(storage, &item)?;
         if !self.may_close(&item, identity) {
             return refuse_assignee_reopen(before, kind, head, &item);
         }
@@ -189,7 +189,7 @@ impl Mailspace {
         }
         if row.local_role == "done"
             && role == "done"
-            && self.item_head(storage, &item)? == Some(ItemEventKind::Done)
+            && Self::item_head(storage, &item)? == Some(ItemEventKind::Done)
         {
             return Err(VivariumError::Message(format!(
                 "{token} is already closed by its owner; reopen it to change it"
@@ -262,7 +262,7 @@ impl Mailspace {
         request: &EmitRequest<'_>,
         joined: &mut Vec<String>,
     ) -> Result<String, VivariumError> {
-        let chain = self.item_chain(storage, item)?;
+        let chain = Self::item_chain(storage, item)?;
         let prevs: Vec<String> = chain_heads(&chain.events)
             .iter()
             .map(|head| head.id.clone())

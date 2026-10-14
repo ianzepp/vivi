@@ -172,7 +172,7 @@ impl Mailspace {
         let Some(item) = held_item(storage, &row.content_id)? else {
             return Ok(None);
         };
-        if self.item_head(storage, &item)? == Some(ItemEventKind::Done) {
+        if Self::item_head(storage, &item)? == Some(ItemEventKind::Done) {
             return Ok(None);
         }
         let mut reporters: Vec<String> = Vec::new();
