@@ -218,6 +218,10 @@ mod fake_server;
 mod send_filter_test;
 
 #[cfg(test)]
+#[path = "sync/send_filter_local_only_test.rs"]
+mod send_filter_local_only_test;
+
+#[cfg(test)]
 #[path = "sync/admission_test.rs"]
 mod admission_test;
 
