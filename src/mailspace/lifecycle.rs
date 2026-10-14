@@ -1,13 +1,43 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use super::item_events::PropertyKind;
+use super::item_events::{
+    HeldItem, ItemEventKind, PropertyKind, dated_within_clock, parse_event, parse_property_event,
+};
 use super::kind::effective_kind;
-use super::{DeliveryResult, Mailspace, SendRequest};
+use super::{DeliveryResult, Mailspace, SendRequest, prefix_of_domain};
 use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
+
+/// Absorb ruling settings (the `[absorb]` table in `mailspace.toml`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbsorbConfig {
+    /// How long the newest event held for an item must have been the last
+    /// one before a role that may close it absorbs it. `0` turns the wait
+    /// off.
+    #[serde(default = "default_quiet_hours")]
+    pub quiet_hours: u32,
+}
+
+/// The quiet period when `[absorb]` names none: 24 hours.
+const DEFAULT_QUIET_HOURS: u32 = 24;
+
+/// One hour in Unix microseconds.
+const HOUR_MICROS: i64 = 3_600_000_000;
+
+fn default_quiet_hours() -> u32 {
+    DEFAULT_QUIET_HOURS
+}
+
+impl AbsorbConfig {
+    /// The quiet period in hours: the `[absorb]` value, else the default.
+    #[must_use]
+    pub fn quiet_hours_of(config: Option<&Self>) -> u32 {
+        config.map_or(DEFAULT_QUIET_HOURS, |absorb| absorb.quiet_hours)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MailAbsorbFilter {
@@ -101,6 +131,9 @@ impl Mailspace {
                 "{handle} is {kind}, not {expected_kind}"
             )));
         }
+        if message.absorbed_at.is_none() && matches!(expected_kind, "need" | "task" | "want") {
+            self.require_quiet_absorb(&storage, &identity, &message, handle)?;
+        }
         let mut storage = storage;
         let newly = storage.absorb_message(&message.account, &message.message_id, &identity)?;
         if newly {
@@ -140,10 +173,9 @@ impl Mailspace {
         if !self.may_close(&item, identity) {
             return Ok(());
         }
-        let state = if message.local_role == "done" {
-            "done"
-        } else {
-            "open"
+        let state = match Self::folded_item_state(storage, &item)? {
+            ItemEventKind::Done => "done",
+            ItemEventKind::Reopened => "open",
         };
         let extras = [("X-Vivi-Event-State", state.to_string())];
         self.emit_property_event(
@@ -155,6 +187,66 @@ impl Mailspace {
             note,
         )?;
         Ok(())
+    }
+
+    /// Hold back an absorb the operator ruling of 2026-10-14 refuses: a
+    /// role that may close a need, task, or want absorbs it only when its
+    /// folded state is `done` and its newest held event is at least the
+    /// quiet period old (`[absorb]` `quiet_hours`, 24 hours by default).
+    /// A role that may not close the item, and any other kind, is untouched.
+    fn require_quiet_absorb(
+        &self,
+        storage: &Storage,
+        identity: &str,
+        message: &StoredMessageView,
+        handle: &str,
+    ) -> Result<(), VivariumError> {
+        let Some(item) = super::item_events::held_item(storage, &message.content_id)? else {
+            return Ok(());
+        };
+        if !self.may_close(&item, identity) {
+            return Ok(());
+        }
+        if Self::folded_item_state(storage, &item)? != ItemEventKind::Done {
+            return Err(VivariumError::Message(format!(
+                "{handle} is open; close it before absorbing"
+            )));
+        }
+        let hours = AbsorbConfig::quiet_hours_of(self.config.absorb.as_ref());
+        let quiet = i64::from(hours).saturating_mul(HOUR_MICROS);
+        if quiet == 0 {
+            return Ok(());
+        }
+        let Some(newest) = newest_item_event_at(storage, &item)? else {
+            return Ok(());
+        };
+        let age = chrono::Utc::now().timestamp_micros().saturating_sub(newest);
+        let left = quiet.saturating_sub(age);
+        if left <= 0 {
+            return Ok(());
+        }
+        Err(VivariumError::Message(format!(
+            "{handle} is done but not quiet yet: {} left (newest event {}; quiet period {hours}h)",
+            quiet_left_text(left),
+            rfc3339_secs(newest),
+        )))
+    }
+
+    /// The item's folded state: what the newest counted state event says
+    /// (`done` or `reopened`); with no event letter, `done` when any live
+    /// row of the item sits in the `done` folder, else open.
+    fn folded_item_state(
+        storage: &Storage,
+        item: &HeldItem,
+    ) -> Result<ItemEventKind, VivariumError> {
+        let folded = Self::item_head(storage, item)?.unwrap_or_else(|| {
+            if item.rows.iter().any(|row| row.local_role == "done") {
+                ItemEventKind::Done
+            } else {
+                ItemEventKind::Reopened
+            }
+        });
+        Ok(folded)
     }
 
     /// Move a memo to the trash. Only a memo goes: a need, task, want, or
@@ -461,6 +553,81 @@ fn insert_optional(map: &mut BTreeMap<String, String>, key: &str, value: Option<
     }
 }
 
+/// The instant of the newest event of any kind held for `item` — a state
+/// event or an `absorbed`, `marked`, `unmarked` or `bound` letter a member
+/// wrote and the clock counts — or, for an item closed with no event
+/// letter, the instant of its `done` move in the mailspace event log.
+fn newest_item_event_at(storage: &Storage, item: &HeldItem) -> Result<Option<i64>, VivariumError> {
+    let now = chrono::Utc::now().timestamp_micros();
+    let mut newest: Option<i64> = None;
+    for child in storage.reply_child_contents(&item.content_id)? {
+        let Some(view) = storage.message_by_content_id(&child)? else {
+            continue;
+        };
+        let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
+            continue;
+        };
+        let letter = parse_event(&bytes)
+            .map(|event| (event.of, event.from_domain, event.at))
+            .or_else(|| {
+                parse_property_event(&bytes).map(|event| (event.of, event.from_domain, event.at))
+            });
+        let Some((of, from_domain, at)) = letter else {
+            continue;
+        };
+        if of != item.rfc_id
+            || prefix_of_domain(&from_domain).is_none()
+            || !dated_within_clock(at, now)
+        {
+            continue;
+        }
+        newest = Some(newest.map_or(at, |seen| seen.max(at)));
+    }
+    if newest.is_none() {
+        return newest_done_move_at(storage, item);
+    }
+    Ok(newest)
+}
+
+/// The instant of the newest `done` move in the mailspace event log for
+/// the item's rows: the quiet floor of an item closed with no event
+/// letter.
+fn newest_done_move_at(storage: &Storage, item: &HeldItem) -> Result<Option<i64>, VivariumError> {
+    let mut newest: Option<i64> = None;
+    for row in &item.rows {
+        for event in storage.list_mailspace_events(&row.message_id)? {
+            if event.to_role.as_deref() != Some("done") || !event.command.ends_with(" done") {
+                continue;
+            }
+            if let Some(at) = parse_rfc3339_micros(&event.occurred_at) {
+                newest = Some(newest.map_or(at, |seen| seen.max(at)));
+            }
+        }
+    }
+    Ok(newest)
+}
+
+/// An RFC 3339 instant in Unix microseconds.
+fn parse_rfc3339_micros(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .ok()
+        .map(|time| time.timestamp_micros())
+}
+
+/// The wait left, as `3h 12m`: whole minutes, rounded up.
+fn quiet_left_text(left_micros: i64) -> String {
+    let minutes = left_micros.saturating_add(59_999_999) / 60_000_000;
+    format!("{}h {}m", minutes / 60, minutes % 60)
+}
+
+/// An instant in Unix microseconds as RFC 3339 UTC with a `Z`.
+fn rfc3339_secs(at: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_micros(at).map_or_else(
+        || at.to_string(),
+        |time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )
+}
+
 fn wants_for_roles(
     mailspace: &Mailspace,
     identity: Option<&str>,
@@ -600,3 +767,7 @@ fn write_cursor_file(path: Option<&Path>, cursor: i64) -> Result<(), VivariumErr
     std::fs::write(path, format!("{cursor}\n"))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "absorb_quiet_test.rs"]
+mod absorb_quiet_tests;

@@ -76,8 +76,8 @@ pub(crate) use item_events::EVENT_HEADER;
 pub use item_events::{EventTally, ItemEventKind, ItemEventState};
 pub(crate) use kind::effective_kind;
 pub use lifecycle::{
-    CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult, WantListOptions,
-    WantListRecord, WantMetadataUpdate,
+    AbsorbConfig, CycleIntake, MailAbsorbFilter, SourceTaskRequest, SourceTaskResult,
+    WantListOptions, WantListRecord, WantMetadataUpdate,
 };
 pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate_marks_filter};
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
@@ -130,6 +130,10 @@ pub struct MailspaceConfig {
     /// Project letter sync settings. Absent means `vivi sync` is not set up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncConfig>,
+    /// Absorb ruling settings (the `[absorb]` table). Absent means the
+    /// defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absorb: Option<AbsorbConfig>,
     /// Remote lane pools, by name: one `[pools.<name>]` table each. Absent
     /// means no pool.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -253,6 +257,7 @@ impl Mailspace {
             probes: Vec::new(),
             judgment: None,
             sync: None,
+            absorb: None,
             pools: BTreeMap::new(),
             retired_pool: None,
         };

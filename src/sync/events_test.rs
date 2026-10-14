@@ -14,7 +14,7 @@ mod property_emit;
 #[path = "property_marks_test.rs"]
 mod property_marks;
 
-use crate::mailspace::{Mailspace, RoleUpdate, SendRequest, is_foreign_account};
+use crate::mailspace::{AbsorbConfig, Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
@@ -150,7 +150,10 @@ struct Pair {
 
 fn pair() -> Pair {
     let server = FakeServer::new();
-    let (a, b) = (alice(), bob());
+    let (mut a, b) = (alice(), bob());
+    // The pairs close and absorb in one breath, so the operator ruling's
+    // quiet wait is off here; absorb_quiet_test covers the wait itself.
+    a.mailspace.config.absorb = Some(AbsorbConfig { quiet_hours: 0 });
     let task = send_task(&a, &b.address("hand"), "ship it");
     a.push(&a.client(&server));
     b.pull(&b.client(&server));
