@@ -9,7 +9,9 @@
 
 use std::rc::Rc;
 
-use crate::mailspace::{ItemEventState, Mailspace, MoveOutcome, RoleUpdate, SendRequest};
+use crate::mailspace::{
+    AbsorbConfig, ItemEventState, Mailspace, MoveOutcome, RoleUpdate, SendRequest,
+};
 use crate::sync::events::{role_of, state};
 use crate::sync::fake_server::{Checkout, FakeServer, LETTER_DATE, checkout, letter, wire_id};
 use crate::sync::push::PushReport;
@@ -52,7 +54,10 @@ struct Pair {
 
 fn pair() -> Pair {
     let server = FakeServer::new();
-    let (a, b) = (alice(), bob());
+    let (mut a, b) = (alice(), bob());
+    // The proof closes and absorbs in one breath, so the operator
+    // ruling's quiet wait is off here; absorb_quiet_test covers it.
+    a.mailspace.config.absorb = Some(AbsorbConfig { quiet_hours: 0 });
     let result = a
         .mailspace
         .send(SendRequest {

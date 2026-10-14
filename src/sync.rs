@@ -218,6 +218,10 @@ mod fake_server;
 mod send_filter_test;
 
 #[cfg(test)]
+#[path = "sync/send_filter_local_only_test.rs"]
+mod send_filter_local_only_test;
+
+#[cfg(test)]
 #[path = "sync/admission_test.rs"]
 mod admission_test;
 
@@ -237,6 +241,7 @@ mod event_wire_test;
 #[path = "sync/property_bind_converge_test.rs"]
 mod property_bind_converge;
 
+#[cfg(test)]
 #[path = "sync/event_gate_test.rs"]
 mod event_gate_test;
 
@@ -291,3 +296,7 @@ mod epoch_status_test;
 #[cfg(test)]
 #[path = "sync/property_marks_converge_test.rs"]
 mod property_marks_converge;
+
+#[cfg(test)]
+#[path = "sync/absorb_quiet_test.rs"]
+mod absorb_quiet_test;
