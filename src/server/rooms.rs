@@ -431,7 +431,7 @@ pub async fn send_handler(
                 .into_iter()
                 .next()
                 .ok_or_else(|| "in_reply_to did not match a visible letter".to_owned())?;
-            compose_reply(&identity, &parent, &body, None)
+            compose_reply(&identity, &parent, &body)
         } else {
             let to = format!("chat@{prefix}.local");
             compose_send(&identity, &[to], &subject, &body, "chat", &[])

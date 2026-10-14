@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — item events
+
+The server folds item-state events by the client's rule and stops showing
+them as work. Wire detail in [`docs/contract.md`](docs/contract.md#item-events-140).
+
+- **Event letters reach every member.** A letter whose header block carries
+  `X-Vivi-Event` is served to every member of the project, decided by the
+  header and not by its envelope kind: the client sends every event letter
+  as kind `mail`, which used to reach only the sender and the addressed
+  prefixes. The transport index gains an `event` column, upgraded and
+  backfilled on first open.
+- **Event letters are not work.** A record with `X-Vivi-Event` is never
+  listed, counted in `overview`, routed as ready, graphed, or settled,
+  under any envelope kind. They file in the server mailspace as mail.
+- **One fold, the client's rule.** Any member's event counts; the newest by
+  `(instant, causal depth through X-Vivi-Event-Prev, Message-ID)` wins, the
+  instant being `X-Vivi-Event-At` else `Date`; `absorbed` is final; marks
+  fold newest per slug and binds newest per unit. An event more than ten
+  minutes ahead of the server clock at fold time is not counted (it was
+  "five minutes after append time, moved to the append time").
+- **MCP `done` / `reopen`** write stamped event letters addressed like the
+  client's, as kind `mail`, From `operator@<prefix>.local`: the member that
+  owns the prefix counts an own-domain event only from the item's author or
+  a `mind`/`operator` role, and a registration name is neither. Reopening an
+  absorbed item is refused.
+- **The fold reads every letter.** `list`, `overview`, `graph`, `show`,
+  `thread` and `done`/`reopen` folded only the first page of visible
+  letters (500, or 8 MiB), so an event past it was invisible to MCP and a
+  new event's stamp and `X-Vivi-Event-Prev` were wrong. They now walk the
+  index by cursor to the end, folding events as they go and keeping none.
+- **`item_events: 1`** on `GET /v1/projects/{id}/items` stays, advisory: the
+  client does not read it.
+
 ## 1.3.0 — 2026-10-12
 
 Rooms are fleeting.chat-style channels again: a private, short-lived

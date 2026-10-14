@@ -11,12 +11,13 @@ use vivi::message::{render_message, to_json_message};
 use vivi::storage::{MessageIngestRequest, Storage};
 
 use crate::identities::IdentityRecord;
-use crate::projects::{ListQuery, ProjectError, ProjectRecord, ProjectStore, Viewer};
+use crate::projects::{ProjectError, ProjectRecord, ProjectStore, Scan, Viewer};
 use crate::safety::RateLimiter;
 
 use super::letters::{
-    append_composed, caller_address, compose_reply, compose_send, fold_item_states, handle_of,
-    item_status, parse_letter, valid_handle,
+    EventFold, ItemState, ParsedLetter, append_composed, caller_address, compose_event,
+    compose_reply, compose_send, handle_of, item_status, parse_headers, parse_letter, state_of,
+    valid_handle,
 };
 
 const LIST_DEFAULT: usize = 50;
@@ -64,8 +65,9 @@ fn overview(
     project_id: &str,
     identity: &IdentityRecord,
 ) -> Result<Value, ToolError> {
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    // Event letters are not work and not mail: they only move item state, so
+    // the view holds none of them.
+    let View { records, states } = read_view(store, project_id, identity, Scan::All, false)?;
     let mut needs_open = 0;
     let mut tasks_open = 0;
     let mut wants_open = 0;
@@ -125,8 +127,6 @@ fn list_items(
         memos.truncate(limit);
         return Ok(json!({ "kind": "memo", "items": memos }));
     }
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
     let wanted_kind = match kind.as_deref() {
         None => None,
         Some("need" | "task" | "want" | "mail" | "chat") => kind.as_deref(),
@@ -136,6 +136,13 @@ fn list_items(
             )));
         }
     };
+    // Plain mail is read only when mail is what is listed.
+    let scan = if wanted_kind == Some("mail") {
+        Scan::All
+    } else {
+        Scan::WorkAndEvents
+    };
+    let View { records, states } = read_view(store, project_id, identity, scan, false)?;
     let mut items = Vec::new();
     for record in &records {
         let matches_kind = match (wanted_kind, record.kind.as_deref()) {
@@ -147,7 +154,7 @@ fn list_items(
         if !matches_kind {
             continue;
         }
-        let item_status = item_status(record, &parse_letter(&record.raw_eml), &states);
+        let item_status = item_status(record, &parse_headers(&record.raw_eml), &states);
         if wanted_kind != Some("mail") {
             if status == "open" && item_status != "open" {
                 continue;
@@ -179,7 +186,7 @@ fn show(
         return Ok(memo);
     }
     let record = lookup_one(store, project_id, identity, handle)?;
-    let states = fold_item_states(std::slice::from_ref(&record));
+    let states = read_view(store, project_id, identity, Scan::WorkAndEvents, false)?.states;
     let rendered = render_message(&record.raw_eml).unwrap_or_default();
     let parsed = to_json_message(&record.message_id, &record.raw_eml).ok();
     Ok(json!({
@@ -198,8 +205,8 @@ fn thread(
     let handle = req_str(arguments, "handle")?;
     let limit = opt_usize(arguments, "limit", THREAD_DEFAULT, THREAD_MAX)?;
     let seed = lookup_one(store, project_id, identity, handle)?;
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    // A thread is made of event letters too, so the view keeps them.
+    let View { records, states } = read_view(store, project_id, identity, Scan::All, true)?;
     let seed_letter = parse_letter(&seed.raw_eml);
     let seed_rfc = seed_letter
         .rfc_id
@@ -208,7 +215,7 @@ fn thread(
     let mut by_rfc: HashMap<String, &ProjectRecord> = HashMap::new();
     let mut children: HashMap<String, Vec<&ProjectRecord>> = HashMap::new();
     for record in &records {
-        let letter = parse_letter(&record.raw_eml);
+        let letter = parse_headers(&record.raw_eml);
         if let Some(rfc) = letter.rfc_id.clone() {
             by_rfc.insert(rfc, record);
         }
@@ -227,7 +234,7 @@ fn thread(
     while let Some(Some(parent)) = current {
         if let Some(record) = by_rfc.get(&parent) {
             root_rfc = parent.clone();
-            current = Some(parse_letter(&record.raw_eml).in_reply_to);
+            current = Some(parse_headers(&record.raw_eml).in_reply_to);
         } else {
             break;
         }
@@ -260,7 +267,7 @@ fn thread(
                 if ordered.len() >= limit {
                     return;
                 }
-                let letter = parse_letter(&kid.raw_eml);
+                let letter = parse_headers(&kid.raw_eml);
                 if let Some(child_rfc) = letter.rfc_id.as_deref() {
                     walk(child_rfc, children, by_rfc, ordered, limit);
                 } else if !ordered.iter().any(|seen| seen.message_id == kid.message_id) {
@@ -342,7 +349,7 @@ fn reply(
         return Err(ToolError::new("body must be non-empty"));
     }
     let parent = lookup_one(store, project_id, identity, handle)?;
-    let composed = compose_reply(identity, &parent, body, None).map_err(ToolError::new)?;
+    let composed = compose_reply(identity, &parent, body).map_err(ToolError::new)?;
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     Ok(json!({
         "message_id": outcome.message_id,
@@ -364,15 +371,36 @@ fn settle(
     let handle = req_str(arguments, "handle")?;
     let note = opt_str(arguments, "note")?.unwrap_or(event);
     let parent = lookup_one(store, project_id, identity, handle)?;
+    let parsed = parse_letter(&parent.raw_eml);
+    if parsed.event.is_some() {
+        return Err(ToolError::new(format!(
+            "{handle} is an event letter, not a need, task, or want"
+        )));
+    }
     if !matches!(parent.kind.as_deref(), Some("need" | "task" | "want")) {
         return Err(ToolError::new(format!(
             "{handle} is not a need, task, or want"
         )));
     }
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
-    let parsed = parse_letter(&parent.raw_eml);
+    // One clock for the whole call: the fold's future bound and the new
+    // event's stamp are read at the same instant.
+    let now = chrono::Utc::now().timestamp_micros();
+    let states = read_view_at(store, project_id, identity, Scan::WorkAndEvents, false, now)?.states;
+    let state = state_of(&parent, &parsed, &states);
     let current = item_status(&parent, &parsed, &states);
+    if state.is_some_and(|state| state.absorbed) {
+        // A sealed item is final: an event would be ignored everywhere.
+        if event == "reopened" {
+            return Err(ToolError::new(format!(
+                "{handle} is absorbed; an absorbed item is final and cannot be reopened"
+            )));
+        }
+        if current != "done" {
+            return Err(ToolError::new(format!(
+                "{handle} is absorbed open; an absorbed item is final and cannot be closed"
+            )));
+        }
+    }
     if event == "done" && current == "done" {
         return Ok(json!({
             "handle": handle,
@@ -391,15 +419,16 @@ fn settle(
         (Some(prefix), Some(domain)) => domain.eq_ignore_ascii_case(&format!("{prefix}.local")),
         _ => false,
     };
-    let prev = parsed
-        .rfc_id
-        .as_deref()
-        .and_then(|rfc| states.get(rfc))
-        .and_then(|state| state.event.as_deref());
     let composed = if may_close {
-        compose_reply(identity, &parent, note, Some((event, prev))).map_err(ToolError::new)?
+        // Stamped like the client: the clock, but never at or below the
+        // newest event counted for the item, so a causal successor still wins.
+        let at = event_at(now, state.map(|state| state.newest_at));
+        let prevs = state
+            .map(|state| state.heads.as_slice())
+            .unwrap_or_default();
+        compose_event(identity, &parent, note, event, &at, prevs).map_err(ToolError::new)?
     } else {
-        compose_reply(identity, &parent, note, None).map_err(ToolError::new)?
+        compose_reply(identity, &parent, note).map_err(ToolError::new)?
     };
     let outcome = append_composed(store, project_id, identity, composed).map_err(map_project)?;
     let mode = if may_close { "closed" } else { "reported" };
@@ -458,8 +487,8 @@ fn graph(
     if !matches!(view, "ready" | "status") {
         return Err(ToolError::new("view must be ready or status"));
     }
-    let records = visible_all(store, project_id, identity)?;
-    let states = fold_item_states(&records);
+    let View { records, states } = read_view(store, project_id, identity, Scan::All, false)?;
+    let by_handle = handle_index(&records);
     let mut ready = Vec::new();
     let mut blocked = Vec::new();
     let mut done = Vec::new();
@@ -467,14 +496,14 @@ fn graph(
         if record.kind.is_none() {
             continue;
         }
-        let letter = parse_letter(&record.raw_eml);
+        let letter = parse_headers(&record.raw_eml);
         let status = item_status(record, &letter, &states);
         let item = summary(record, &states);
         if status == "done" {
             done.push(item);
             continue;
         }
-        let open_deps = open_dependencies(record, &letter, &records, &states);
+        let open_deps = open_dependencies(&letter, &by_handle, &states);
         if open_deps.is_empty() {
             ready.push(item);
         } else {
@@ -498,15 +527,55 @@ fn graph(
     }))
 }
 
-fn visible_all(
+/// What a tool reads of a project as the caller: the letters it may see, in
+/// append order, and the item states folded from every event letter it may
+/// see.
+struct View {
+    /// The letters the scan returned, event letters left out unless the
+    /// read asked to keep them.
+    records: Vec<ProjectRecord>,
+    states: HashMap<String, ItemState>,
+}
+
+/// [`read_view_at`] at the clock now.
+fn read_view(
     store: &ProjectStore,
     project_id: &str,
     identity: &IdentityRecord,
-) -> Result<Vec<ProjectRecord>, ToolError> {
-    let page = store
-        .read_page(project_id, &ListQuery::since(0), &Viewer::of(identity))
+    scan: Scan,
+    keep_events: bool,
+) -> Result<View, ToolError> {
+    let now = chrono::Utc::now().timestamp_micros();
+    read_view_at(store, project_id, identity, scan, keep_events, now)
+}
+
+/// Walk every letter the caller may see, past the first page and the last,
+/// folding the events as they go and keeping only what a caller needs: an
+/// event letter is dropped once folded unless `keep_events`, so memory holds
+/// the work and mail the tool lists and never the events that fold into it.
+/// `now` is the fold's clock for the future bound.
+fn read_view_at(
+    store: &ProjectStore,
+    project_id: &str,
+    identity: &IdentityRecord,
+    scan: Scan,
+    keep_events: bool,
+    now: i64,
+) -> Result<View, ToolError> {
+    let mut fold = EventFold::new(now);
+    let mut records = Vec::new();
+    store
+        .scan_visible(project_id, &Viewer::of(identity), scan, |record| {
+            let is_event = fold.observe(&record);
+            if keep_events || !is_event {
+                records.push(record);
+            }
+        })
         .map_err(map_project)?;
-    Ok(page.records)
+    Ok(View {
+        records,
+        states: fold.finish(),
+    })
 }
 
 fn lookup_one(
@@ -528,63 +597,100 @@ fn lookup_one(
         .ok_or_else(|| ToolError::new(format!("not found: {handle}")))
 }
 
-fn summary(record: &ProjectRecord, states: &HashMap<String, super::letters::ItemState>) -> Value {
-    let letter = parse_letter(&record.raw_eml);
-    json!({
+fn summary(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> Value {
+    let letter = parse_headers(&record.raw_eml);
+    let mut item = json!({
         "handle": handle_of(&record.message_id),
         "message_id": record.message_id,
-        "kind": record.kind.as_deref().unwrap_or("mail"),
+        "kind": if letter.event.is_some() { "event" } else { record.kind.as_deref().unwrap_or("mail") },
         "from": record.from,
         "to": record.to,
         "subject": letter.subject,
         "status": item_status(record, &letter, states),
         "appended_at": record.appended_at,
         "depends_on": letter.depends_on,
-    })
+    });
+    if let Some(event) = &letter.event {
+        item["event"] = json!(event);
+    } else if let Some(state) = state_of(record, &letter, states) {
+        if !state.marks.is_empty() {
+            item["marks"] = json!(state.marks);
+        }
+        if !state.units.is_empty() {
+            item["units"] = json!(state.units);
+        }
+        if state.absorbed {
+            item["absorbed"] = json!(true);
+        }
+    }
+    item
 }
 
-fn item_is_open(
-    record: &ProjectRecord,
-    states: &HashMap<String, super::letters::ItemState>,
-) -> bool {
-    item_status(record, &parse_letter(&record.raw_eml), states) == "open"
+fn item_is_open(record: &ProjectRecord, states: &HashMap<String, ItemState>) -> bool {
+    item_status(record, &parse_headers(&record.raw_eml), states) == "open"
 }
 
-fn ready_handles(
-    records: &[ProjectRecord],
-    states: &HashMap<String, super::letters::ItemState>,
-) -> Vec<String> {
+/// The first record of each handle, by lowercase handle: what a dependency
+/// names, found without a scan per dependency.
+fn handle_index(records: &[ProjectRecord]) -> HashMap<String, &ProjectRecord> {
+    let mut index = HashMap::with_capacity(records.len());
+    for record in records {
+        if let Some(handle) = handle_of(&record.message_id) {
+            index.entry(handle.to_ascii_lowercase()).or_insert(record);
+        }
+    }
+    index
+}
+
+fn ready_handles(records: &[ProjectRecord], states: &HashMap<String, ItemState>) -> Vec<String> {
+    let by_handle = handle_index(records);
     records
         .iter()
         .filter(|record| record.kind.is_some() && item_is_open(record, states))
         .filter(|record| {
-            let letter = parse_letter(&record.raw_eml);
-            open_dependencies(record, &letter, records, states).is_empty()
+            let letter = parse_headers(&record.raw_eml);
+            open_dependencies(&letter, &by_handle, states).is_empty()
         })
         .filter_map(|record| handle_of(&record.message_id).map(str::to_owned))
         .collect()
 }
 
 fn open_dependencies(
-    _record: &ProjectRecord,
-    letter: &super::letters::ParsedLetter,
-    records: &[ProjectRecord],
-    states: &HashMap<String, super::letters::ItemState>,
+    letter: &ParsedLetter,
+    by_handle: &HashMap<String, &ProjectRecord>,
+    states: &HashMap<String, ItemState>,
 ) -> Vec<String> {
     letter
         .depends_on
         .iter()
-        .filter(|dep| {
-            let handle = dep.to_ascii_lowercase();
-            let Some(dep_record) = records.iter().find(|r| {
-                handle_of(&r.message_id).is_some_and(|h| h.eq_ignore_ascii_case(&handle))
-            }) else {
-                return true;
-            };
-            item_is_open(dep_record, states)
+        .filter(|dep| match by_handle.get(&dep.to_ascii_lowercase()) {
+            Some(dep_record) => item_is_open(dep_record, states),
+            None => true,
         })
         .cloned()
         .collect()
+}
+
+/// The `X-Vivi-Event-At` of a new event: the clock, or one microsecond past
+/// the newest counted event of the item, whichever is later. A writer never
+/// stamps an event older than one it has seen. The stamp is RFC 3339 UTC in
+/// microseconds, as long as a reader parses it back: past the year 9999 the
+/// year takes five digits, so the clock is stamped instead.
+fn event_at(now_micros: i64, newest: Option<i64>) -> String {
+    let floor = newest.map_or(now_micros, |at| at.saturating_add(1));
+    let stamp = stamped(now_micros.max(floor));
+    if chrono::DateTime::parse_from_rfc3339(&stamp).is_ok() {
+        return stamp;
+    }
+    stamped(chrono::Utc::now().timestamp_micros())
+}
+
+/// An instant in Unix microseconds as RFC 3339 UTC with microseconds; the
+/// clock when the instant is outside what `chrono` can hold.
+fn stamped(micros: i64) -> String {
+    chrono::DateTime::from_timestamp_micros(micros)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
 fn open_mailspace(store: &ProjectStore, project_id: &str) -> Result<Storage, ToolError> {
@@ -804,5 +910,56 @@ fn map_project(err: ProjectError) -> ToolError {
         }
         ProjectError::Gone { closed: true } => ToolError::new("this chat is closed"),
         ProjectError::Gone { closed: false } => ToolError::new("this chat has expired"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn micros(stamp: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(stamp)
+            .unwrap()
+            .timestamp_micros()
+    }
+
+    #[test]
+    fn an_event_is_stamped_at_the_clock_when_nothing_is_newer() {
+        let now = micros("2026-10-12T12:00:00Z");
+        assert_eq!(event_at(now, None), "2026-10-12T12:00:00.000000Z");
+        // The newest counted event is older than the clock: the clock wins.
+        assert_eq!(
+            event_at(now, Some(micros("2026-10-12T11:59:00Z"))),
+            "2026-10-12T12:00:00.000000Z"
+        );
+    }
+
+    #[test]
+    fn an_event_is_stamped_one_microsecond_past_the_newest() {
+        let now = micros("2026-10-12T12:00:00Z");
+        let ahead = micros("2026-10-12T12:03:00Z");
+        assert_eq!(event_at(now, Some(ahead)), "2026-10-12T12:03:00.000001Z");
+        // Equal to the clock is not enough: strictly above.
+        assert_eq!(event_at(now, Some(now)), "2026-10-12T12:00:00.000001Z");
+    }
+
+    #[test]
+    fn a_stamp_that_cannot_be_read_back_falls_back_to_the_clock() {
+        // Year 10000 formats with a five-digit year; a reader would not
+        // parse it, so the writer stamps the clock instead.
+        let year_10000 = 253_402_300_800_000_000;
+        let stamp = event_at(year_10000, None);
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&stamp).is_ok(),
+            "{stamp}"
+        );
+        assert!(stamp.starts_with("20"), "{stamp}");
+        // So does an instant chrono cannot hold at all.
+        let stamp = event_at(i64::MAX, None);
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&stamp).is_ok(),
+            "{stamp}"
+        );
+        assert!(stamp.starts_with("20"), "{stamp}");
     }
 }

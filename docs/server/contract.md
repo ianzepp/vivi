@@ -328,8 +328,8 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `thread` | `handle`, `limit?` | Reply thread |
 | `send` | `kind`, `to`, `subject`, `body`, `depends_on?` | Server composes and mints the id; `From` is the caller |
 | `reply` | `handle`, `body` | Reply as the caller |
-| `done` | `handle`, `note?` | Event letter if the caller authored the item; else a report |
-| `reopen` | `handle`, `note?` | Same authority as `done` |
+| `done` | `handle`, `note?` | Stamped event letter, From the caller's `operator` role, if the caller's mailspace authored the item; else a report |
+| `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
 | `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
 | `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
 
@@ -355,3 +355,107 @@ possession), not another API key.
 Keys are stored as SHA-256 digests, 0600, next to the project. A revoked
 or unknown key is the same `401` as a bad identity token. A live key is
 accepted on every project bearer route, including the letter wire.
+
+## Item events (1.4.0)
+
+Closing, reopening, absorbing, marking and binding a need, task or want
+travel as **event letters**: small replies carrying `X-Vivi-Event`. The
+ruling the server folds by: *when two machines disagree about a need state,
+the last update or event created against that need is controlling.*
+
+### Version gate: `item_events`
+
+`GET /v1/projects/{id}/items` carries a top-level `item_events` integer
+beside `records`, `next_cursor` and `has_more`, on **every** response —
+an empty page past the end of the log included, so `?since=<cursor>&limit=1`
+reads it. `1` means the server understands event letters as below. It is
+advisory: the current client sends every event letter with envelope kind
+`mail`, which a server that predates this files as plain mail, and does not
+read the field.
+
+### On the wire
+
+An event letter is any letter whose header block carries `X-Vivi-Event`,
+whatever kind its envelope names. The client sends one as kind `mail`
+(`X-Vivi-Kind: mail`, no `X-Vivi-Kind` header on the envelope), so an old
+client or server files it as mail and never as work. An older client sent it
+under the item's own kind; that still works and is folded the same way.
+
+- **Visible to every member.** A letter carrying `X-Vivi-Event` is served
+  to every member of the project, not only its sender and the prefixes it is
+  addressed to: visibility is decided by the header, not by the kind, so a
+  member that holds the item learns of its events. Only the header name
+  counts (not `X-Vivi-Event-Of`, not the text in a body). The marker is
+  recorded on the transport row at append; an index written before it is
+  upgraded on first open. An event letter's body and addresses are therefore
+  member-visible: keep private text out of one.
+
+### What the server does with an event letter
+
+- **Never work.** A record carrying `X-Vivi-Event` is not listed, counted in
+  `overview`, routed as `ready`, a `graph` node, or settled by `done` /
+  `reopen`, whatever envelope kind it travels under. `show` and `thread`
+  report it as `kind: "event"`, `status: "event"`. Server-side it files in
+  the project mailspace as mail, never under `needs`/`tasks`/`wants`.
+- **Who counts.** Any member's event. The letter must name its item both as
+  `In-Reply-To` and `X-Vivi-Event-Of`, and its `From` domain must be the
+  `<prefix>.local` the server stamped for the sender at append (a bare
+  `local`, a legacy name domain, or a prefix the sender does not hold never
+  counts). Kinds: `done`, `reopened`, `absorbed` (`X-Vivi-Event-State:
+  done|open`), `marked`/`unmarked` (`X-Vivi-Event-Slug`), `bound`
+  (`X-Vivi-Event-Unit`, repeatable). An unknown kind, or a kind missing its
+  payload, is skipped.
+- **Order.** The key is `(instant, causal depth, Message-ID)`, compared
+  lexicographically; the largest is newest. The instant is the event's
+  `X-Vivi-Event-At` (RFC 3339, microseconds), else its `Date` in whole
+  seconds — never `appended_at`. The causal depth of a `done`/`reopened`
+  event is 0 when no counted state event is named in its
+  `X-Vivi-Event-Prev`, else one more than the deepest one that is. A later
+  instant beats a deeper chain.
+- **Future bound.** An event whose instant is more than ten minutes ahead
+  of the server clock *at fold time* is not counted at all, so a far-future
+  stamp cannot lock an item. The test is made each time the letters are
+  read, not at append: the same letters count once the clock catches up,
+  as they do on a client.
+- **Absorbed is final.** The earliest `absorbed` event (by instant, then
+  `Message-ID`) names the state; later events of any kind move nothing, and
+  a sealed item takes no later marks or binds.
+- **Marks and binds.** Per slug, the newest `marked`/`unmarked` decides, by
+  `(instant, Message-ID)`: the client reads no `X-Vivi-Event-Prev` on a
+  property event, so its depth is always 0 and this is the same key. Per
+  unit, the newest `bound` decides which item it belongs to, by the same
+  key. Both are shown on a work item's summary (`marks`, `units`) when
+  present, and `absorbed: true` on a sealed one.
+
+- **Every letter, not a page.** The MCP tools fold the event letters of
+  *every* letter the caller may see, however many: the index is walked by
+  cursor in chunks of 500 until it is exhausted, never the first page a
+  list serves (500 letters, 8 MiB). `list` (work kinds), `show` and the
+  settle path of `done`/`reopen` read only work items and event letters;
+  `overview`, `graph`, `thread` and `list kind=mail` also read the caller's
+  plain mail. A project's events are folded as they are read and dropped, so
+  memory holds the listed letters and not the events folded into them.
+
+### MCP `done` / `reopen`
+
+The authoring mailspace (the caller's prefix is the item's `From` domain)
+writes an event letter the way the client does: envelope kind `mail`,
+`X-Vivi-Kind: mail`, `X-Vivi-Event`, `X-Vivi-Event-Of`, `In-Reply-To`,
+`X-Vivi-Event-At` (the clock, never at or below the newest counted
+`done`/`reopened` event of the item plus one microsecond; the clock again if
+that stamp would not parse back), one `X-Vivi-Event-Prev` per head, addressed
+to the item's `From` first and then its `To`/`Cc` minus the sender.
+
+**MCP state changes act as the member's operator role.** The event is
+written `From: operator@<prefix>.local`, never `<name>@<prefix>.local`. The
+member that owns the prefix counts an own-domain event only when its local
+part is the item's author or a role of kind `mind` or `operator` in that
+mailspace; a registration name is none of those, so a letter From the name
+would be counted by the server and by every other member and ignored by the
+member that holds the item. `operator` is the conventional role every
+mailspace has. The caller's prefix must still own the item (above); `send`,
+`reply`, `memo` and a report reply stay From the caller's name.
+
+Every member is served the event by its header. Any other caller files a
+plain report reply and writes no event. `reopen` of an absorbed item is an error; so is
+`done` of an item absorbed open.

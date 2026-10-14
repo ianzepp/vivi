@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
 use vivi::storage::Storage;
-use vivi_server::projects::{AppendItem, ProjectError, ProjectStore, Viewer};
+use vivi_server::projects::{AppendItem, ListQuery, ProjectError, ProjectStore, Scan, Viewer};
 
 fn scratch_data_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -167,6 +167,146 @@ fn append_assigns_sequence_and_files_the_letter_verbatim_in_the_mailspace() {
     assert_eq!(rows[0].message_id, id);
     assert_eq!(rows[0].content_id, hash);
     assert_eq!(rows[0].from_addr, "hand@p.local");
+}
+
+/// Every letter a viewer may see, whatever the chunk the index is walked
+/// in, in append order: the same letters a single wide page serves, and with
+/// `WorkAndEvents` only the work items and event letters among them.
+#[test]
+fn a_scan_visits_every_visible_letter_across_chunk_boundaries() {
+    let data_dir = scratch_data_dir("scan-chunks");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let project = &meta.project_id;
+    let event = |n: u64, of: u64, kind: Option<&str>| {
+        let (id, item) = (traveling(n), traveling(of));
+        let raw = format!(
+            "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{id}@p.local>\n\
+             In-Reply-To: <{item}@p.local>\nX-Vivi-Event: done\n\
+             X-Vivi-Event-Of: <{item}@p.local>\n\nclosed\n"
+        )
+        .into_bytes();
+        letter(&id, "hand", Some("a@p.local"), kind, raw)
+    };
+    let mail = |n: u64, from: &str, to: &str| {
+        let id = traveling(n);
+        letter(&id, from, Some(to), None, eml(&id, &format!("mail {n}")))
+    };
+    let items = [
+        need(&traveling(1), "an item"),
+        mail(2, "hand", "a@p.local"),
+        event(3, 1, Some("mail")),
+        letter(
+            &traveling(4),
+            "hand",
+            None,
+            Some("task"),
+            eml(&traveling(4), "a task"),
+        ),
+        event(6, 4, Some("task")),
+        mail(7, "stranger", "hand@p.local"),
+        need(&traveling(8), "another item"),
+        mail(9, "hand", "b@p.local"),
+        event(10, 8, None),
+    ];
+    for item in &items {
+        store.append(project, item).unwrap();
+    }
+    let reader = viewer("stranger");
+    // The stranger holds no prefix: the work items, the event letters (by
+    // their header, under any envelope kind), and its own mail. Other
+    // members' private mail (2, 9) is never visited.
+    let everything: Vec<String> = [1, 3, 4, 6, 7, 8, 10].map(traveling).into();
+    let work_and_events: Vec<String> = [1, 3, 4, 6, 8, 10].map(traveling).into();
+
+    let page = store
+        .read_page(project, &ListQuery::since(0), &reader)
+        .unwrap();
+    let paged: Vec<String> = page.records.into_iter().map(|r| r.message_id).collect();
+    assert_eq!(paged, everything, "the page is the baseline");
+
+    for chunk in [1, 2, 3, 4, 7, 8, 500] {
+        for (scan, expected) in [
+            (Scan::All, &everything),
+            (Scan::WorkAndEvents, &work_and_events),
+        ] {
+            let mut seen = Vec::new();
+            store
+                .scan_visible_in_chunks(project, &reader, scan, chunk, |record| {
+                    seen.push((record.sequence, record.message_id));
+                })
+                .unwrap();
+            let ids: Vec<String> = seen.iter().map(|(_, id)| id.clone()).collect();
+            assert_eq!(&ids, expected, "chunk {chunk}, {scan:?}");
+            assert!(
+                seen.windows(2).all(|pair| pair[0].0 < pair[1].0),
+                "append order, chunk {chunk}, {scan:?}"
+            );
+        }
+    }
+    // An empty project is a scan of nothing.
+    let empty = store.create_project().unwrap();
+    store
+        .scan_visible(&empty.project_id, &reader, Scan::All, |_| {
+            panic!("an empty project holds no letter")
+        })
+        .unwrap();
+}
+
+#[test]
+fn an_event_letter_files_as_mail_in_the_mailspace_not_as_work() {
+    let data_dir = scratch_data_dir("event-role");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let item_id = traveling(1);
+    store
+        .append(&meta.project_id, &need(&item_id, "an item"))
+        .unwrap();
+    // The event rides the need's kind, as a client pushes it.
+    let event_id = traveling(2);
+    let raw = format!(
+        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{event_id}@p.local>\n\
+         In-Reply-To: <{item_id}@p.local>\nX-Vivi-Event: done\n\
+         X-Vivi-Event-Of: <{item_id}@p.local>\n\nclosed\n"
+    )
+    .into_bytes();
+    let event = AppendItem::new(&event_id, "hand", Some("a@p.local"), Some("need"), raw).unwrap();
+    store.append(&meta.project_id, &event).unwrap();
+    // The current client sends it as kind mail.
+    let mail_id = traveling(4);
+    let raw = format!(
+        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{mail_id}@p.local>\n\
+         In-Reply-To: <{item_id}@p.local>\nX-Vivi-Event: reopened\n\
+         X-Vivi-Event-Of: <{item_id}@p.local>\n\nreopened\n"
+    )
+    .into_bytes();
+    let mail = AppendItem::new(&mail_id, "hand", Some("a@p.local"), Some("mail"), raw).unwrap();
+    store.append(&meta.project_id, &mail).unwrap();
+    // A letter that merely names the header in its body is still work.
+    let decoy_id = traveling(3);
+    let decoy = format!(
+        "From: hand@p.local\nTo: a@p.local\nMessage-ID: <{decoy_id}@p.local>\n\n\
+         X-Vivi-Event: done\n"
+    )
+    .into_bytes();
+    let decoy = AppendItem::new(&decoy_id, "hand", Some("a@p.local"), Some("need"), decoy).unwrap();
+    store.append(&meta.project_id, &decoy).unwrap();
+
+    let storage = mailspace(&data_dir, &meta.project_id);
+    let needs: Vec<_> = storage
+        .list_messages_by_account_role(&meta.project_id, "needs")
+        .unwrap()
+        .into_iter()
+        .map(|row| row.message_id)
+        .collect();
+    assert_eq!(needs, [item_id, decoy_id]);
+    let inbox: Vec<_> = storage
+        .list_messages_by_account_role(&meta.project_id, "inbox")
+        .unwrap()
+        .into_iter()
+        .map(|row| row.message_id)
+        .collect();
+    assert_eq!(inbox, [event_id, mail_id]);
 }
 
 #[test]
@@ -625,6 +765,209 @@ fn read_after_scoped_filters_mail_but_keeps_work_and_governance() {
     assert_eq!(tail_cursor, 3);
 }
 
+/// An item event letter in mail dress.
+fn event_mail(id: &str, from: &str, to: &str, of: &str, header: &str) -> AppendItem {
+    let raw = format!(
+        "From: {from}@aaaaaaaa.local\nTo: {to}\nMessage-ID: <{id}@aaaaaaaa.local>\n\
+         In-Reply-To: <{of}@aaaaaaaa.local>\n{header}\
+         X-Vivi-Event-Of: <{of}@aaaaaaaa.local>\n\nnote\n"
+    )
+    .into_bytes();
+    letter(id, from, Some(to), None, raw)
+}
+
+/// A letter that carries `X-Vivi-Event` reaches every member whatever its
+/// envelope kind: decided by the header, so a client that sends every event
+/// as `mail` is still served to the members who hold the item. A letter that
+/// only names the header in its body, or a payload header
+/// (`X-Vivi-Event-Of`) without the marker, stays private mail.
+#[test]
+fn an_event_letter_sent_as_mail_is_visible_to_every_member() {
+    let data_dir = scratch_data_dir("event-visible");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let item = traveling(30);
+    store
+        .append(&meta.project_id, &need(&item, "an item"))
+        .unwrap();
+
+    // seq 2: a mail-kind event from alice addressed to bob only.
+    let done = traveling(31);
+    store
+        .append(
+            &meta.project_id,
+            &event_mail(
+                &done,
+                "alice",
+                "bob@bbbbbbbb.local",
+                &item,
+                "X-Vivi-Event: done\n",
+            ),
+        )
+        .unwrap();
+    // seq 3: a kind this server does not know is still carried by header.
+    let later = traveling(32);
+    store
+        .append(
+            &meta.project_id,
+            &event_mail(
+                &later,
+                "alice",
+                "bob@bbbbbbbb.local",
+                &item,
+                "X-Vivi-Event: from-a-later-client\n",
+            ),
+        )
+        .unwrap();
+    // seq 4: private mail naming the header only in its body.
+    let decoy = traveling(33);
+    store
+        .append(
+            &meta.project_id,
+            &letter(
+                &decoy,
+                "alice",
+                Some("bob@bbbbbbbb.local"),
+                None,
+                format!(
+                    "From: alice@aaaaaaaa.local\nTo: bob@bbbbbbbb.local\n\
+                     Message-ID: <{decoy}@aaaaaaaa.local>\n\nX-Vivi-Event: done\n"
+                )
+                .into_bytes(),
+            ),
+        )
+        .unwrap();
+    // seq 5: private mail carrying a payload header but not the marker.
+    let near = traveling(34);
+    store
+        .append(
+            &meta.project_id,
+            &letter(
+                &near,
+                "alice",
+                Some("bob@bbbbbbbb.local"),
+                None,
+                format!(
+                    "From: alice@aaaaaaaa.local\nTo: bob@bbbbbbbb.local\n\
+                     Message-ID: <{near}@aaaaaaaa.local>\nX-Vivi-Event-Of: <{item}@aaaaaaaa.local>\n\
+                     \nsecret\n"
+                )
+                .into_bytes(),
+            ),
+        )
+        .unwrap();
+
+    let ids = |viewer: Viewer<'_>| -> Vec<String> {
+        store
+            .read_after_scoped(&meta.project_id, 0, &viewer)
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|record| record.message_id)
+            .collect()
+    };
+    // carol is neither the sender nor an addressee: she sees the work item
+    // and both event letters, not the private mail.
+    assert_eq!(
+        ids(viewer_at("carol", "cccccccc")),
+        vec![item.clone(), done.clone(), later.clone()]
+    );
+    // A viewer with no registered prefix is served them as well.
+    assert_eq!(ids(viewer("dave")), vec![item.clone(), done.clone(), later]);
+    // The addressee still sees the private mail; the sender sees everything.
+    assert_eq!(ids(viewer_at("bob", "bbbbbbbb")).len(), 5);
+    assert_eq!(ids(viewer("alice")).len(), 5);
+
+    // The same rule decides a read by id and a lookup by handle.
+    let carol = viewer_at("carol", "cccccccc");
+    assert!(
+        store
+            .read_one_scoped(&meta.project_id, &done, &carol)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .read_one_scoped(&meta.project_id, &decoy, &carol)
+            .unwrap()
+            .is_none()
+    );
+    let found = store
+        .lookup_handles(
+            &meta.project_id,
+            &[done[4..12].to_owned(), decoy[4..12].to_owned()],
+            &carol,
+        )
+        .unwrap();
+    assert_eq!(found.records.len(), 1);
+    assert_eq!(found.missing, vec![decoy[4..12].to_owned()]);
+}
+
+/// An index written before the `event` column existed is upgraded on its
+/// first open: a mail letter held that carries `X-Vivi-Event` becomes
+/// member-visible, and one that does not stays private.
+#[test]
+fn an_index_without_the_event_column_is_upgraded_and_backfilled() {
+    let data_dir = scratch_data_dir("event-backfill");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let item = traveling(40);
+    store
+        .append(&meta.project_id, &need(&item, "an item"))
+        .unwrap();
+    let done = traveling(41);
+    store
+        .append(
+            &meta.project_id,
+            &event_mail(
+                &done,
+                "alice",
+                "bob@bbbbbbbb.local",
+                &item,
+                "X-Vivi-Event: done\n",
+            ),
+        )
+        .unwrap();
+    let private = traveling(42);
+    store
+        .append(
+            &meta.project_id,
+            &letter(
+                &private,
+                "alice",
+                Some("bob@bbbbbbbb.local"),
+                None,
+                eml(&private, "private"),
+            ),
+        )
+        .unwrap();
+    // Take the index back to the schema that predates the column.
+    transport(&data_dir, &meta.project_id)
+        .execute_batch("ALTER TABLE items DROP COLUMN event")
+        .unwrap();
+
+    let carol = viewer_at("carol", "cccccccc");
+    let seen: Vec<String> = ProjectStore::new(&data_dir)
+        .read_after_scoped(&meta.project_id, 0, &carol)
+        .unwrap()
+        .records
+        .into_iter()
+        .map(|record| record.message_id)
+        .collect();
+    assert_eq!(seen, vec![item, done]);
+    // The upgrade is permanent and a second open leaves it alone.
+    let again = ProjectStore::new(&data_dir)
+        .read_after_scoped(&meta.project_id, 0, &carol)
+        .unwrap();
+    assert_eq!(again.records.len(), 2);
+    let marked: i64 = transport(&data_dir, &meta.project_id)
+        .query_row("SELECT COUNT(*) FROM items WHERE event = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(marked, 1);
+}
+
 /// A viewer is never served a letter they cannot see: a corrupt blob behind
 /// an invisible row does not affect their read.
 #[test]
@@ -735,7 +1078,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{TimeZone, Utc};
-use vivi_server::projects::{ListQuery, PAGE_BYTE_CAP, monotone_stamp};
+use vivi_server::projects::{PAGE_BYTE_CAP, monotone_stamp};
 
 /// A store whose clock reads `seconds` (unix), which the test steps.
 fn stepped_store(name: &str) -> (ProjectStore, Arc<AtomicI64>, PathBuf) {
