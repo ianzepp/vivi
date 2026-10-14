@@ -573,27 +573,38 @@ vivi cycle intake --project /path/to/project --for mind \
 
 ### State as letters
 
-Closing and reopening work are letters, not local flags. The role that authored
-a need, task, or want (or holds its `sent` copy) and any role of kind `mind`
-may close or reopen it for everyone: their `done`, `drop` and `reopen` each
+"When two machines disagree about a need state, by definition, the last update
+or event created against that need is controlling." Closing and reopening work
+are letters, not local flags, and no member owns an item's state. The role that
+authored a need, task, or want (or holds its `sent` copy), any role of kind
+`mind`, and any role of kind `operator` may close or reopen it for everyone —
+in any mailspace that holds the item: their `done`, `drop` and `reopen` each
 write a small reply on the item with `X-Vivi-Event: done|reopened`,
-`X-Vivi-Event-Of: <item Message-ID>` and `X-Vivi-Event-Prev: <the event it
-follows>`. The letter goes to the item's To and Cc minus the sender, files
-read, and carries `--note` as its body. Every mailspace holding the item
-applies it: folders move and nodes complete or reopen, so the assignee's queue
-empties when the owner closes and a reopen brings the item back. A mind may
-name any copy of the item in the mailspace (the delivered one, its own, the
-author's `sent` copy) and prints `done <handle>; event <id>`.
+`X-Vivi-Event-Of: <item Message-ID>` and `X-Vivi-Event-Prev: <the events it
+follows>`, plus an `X-Vivi-Event-At` stamp. The letter goes to the item's From,
+To and Cc minus the sender, files read, and carries `--note` as its body. Every
+mailspace holding the item applies it: folders move and nodes complete or
+reopen, so the assignee's queue empties when the owner closes and a reopen
+brings the item back — including work held for another mailspace's role, whose
+state is the item's, not the holder's. A mind or an operator may name any copy
+of the item in the mailspace and prints `done <handle>; event <id>`.
 
 Any other role reports with an ordinary reply and prints `done <handle>;
-reported`. `task done --note` moves its own copy and sends the note, and never
-changes the item's state; a report cannot reopen what its owner closed. The
-current state is the chain head, the
-event no other held event names as `Prev`; a fork resolves by the later
-`(Date, Message-ID)` on every checkout, and the next event names all heads. An
-event counts only when its From domain is the item's From domain. Anything
-else is filed as plain mail and counted in the pull summary, as is an event
-for an absorbed item.
+reported`: its own copy moves, the note is sent, and no event is written. The
+state is the newest event, not a chain head: each event carries an instant —
+its `X-Vivi-Event-At` (RFC 3339, microseconds), else its `Date` — and the
+largest wins; on equal instants an event that names the other as its
+`X-Vivi-Event-Prev` wins, then the larger Message-ID, and a writer never
+stamps below the newest event it holds, so a causal successor wins under clock
+skew. `X-Vivi-Event-Prev` is still written but no longer decides. An event
+counts when its From domain is a prefix domain (`<8 hex>.local`) — any
+member's, whoever authored the item. A bare `local` or legacy name domain is
+filed as plain mail and counted in the pull summary, as is an event for a
+sealed (absorbed) item. An absorb by a role that may close writes an
+`absorbed` letter naming the state it sealed (`X-Vivi-Event-State: done|open`),
+which every member applies before sealing its own rows, and marks travel as
+`marked`/`unmarked` letters with `X-Vivi-Event-Slug`, the newest per slug
+controlling.
 
 State is a function of the letters held, so it works with no `[sync]`: the
 server only carries them. `pull`, `fetch`, `resync` and `pull --refs` apply
