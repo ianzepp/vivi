@@ -291,13 +291,13 @@ fn dispatch_gate(ctx: &Ctx, pool: &str, task: &str, tip: &str) -> bool {
         "gate dispatch failed: {}",
         tail.replace('\n', " | ")
     ));
-    ctx.vivi(
+    drop(ctx.vivi(
         &format!(
             "task done {task} --for {} --note 'dispatch failed'",
             ctx.cfg.from
         ),
         120,
-    );
+    ));
     false
 }
 
@@ -587,10 +587,10 @@ fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
     if !ctx.cfg.promote || ctx.cfg.main.is_empty() {
         return;
     }
-    ctx.git(
+    drop(ctx.git(
         &format!("fetch -q {} {}", ctx.cfg.remote, ctx.cfg.main),
         120,
-    );
+    ));
     let head = format!("{}/{}", ctx.cfg.remote, ctx.cfg.main);
     if ctx
         .git(&format!("merge-base --is-ancestor {head} {tip}"), 120)

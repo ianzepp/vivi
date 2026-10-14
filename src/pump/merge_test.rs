@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::{Merger, batch_work, failure_text, merge_work};
 use crate::pump::state::{MergeJob, MergeResult, NeedRecord, State, Status, Unit};
@@ -15,10 +15,15 @@ use crate::pump::state::{MergeJob, MergeResult, NeedRecord, State, Status, Unit}
 /// an optional formatter, and a fake host.
 fn setup(format: &str) -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
-    let mut cfg = PumpConfig::default();
-    cfg.branch = String::from("next");
-    cfg.merge.format = format.to_string();
-    cfg.merge.shared_checks = vec![String::from("cargo test --lib")];
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        merge: MergeConfig {
+            format: format.to_string(),
+            shared_checks: vec![String::from("cargo test --lib")],
+            ..MergeConfig::default()
+        },
+        ..PumpConfig::default()
+    };
     let (ctx, host) = test_ctx(dir.path(), cfg);
     (dir, ctx, host)
 }
@@ -718,7 +723,7 @@ fn an_out_of_scope_merge_logs_scope_warn() {
 fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
     let (_dir, ctx, host) = setup("");
     host.reply("rev-parse HEAD", 0, "tipreal123\n");
-    let merger = Merger::start(ctx.clone());
+    let merger = Merger::start(&ctx);
     let mut st = state_with(&[("u1", Status::Delivered)]);
     merger.feed(&ctx, &mut st);
     assert_eq!(st.units["u1"].status, Status::Merging);

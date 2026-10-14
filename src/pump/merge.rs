@@ -74,10 +74,10 @@ fn tail(out: &str, n: usize) -> String {
 pub fn reset_repo(ctx: &Ctx) {
     let branch = ctx.cfg.branch.as_str();
     let remote = ctx.cfg.remote.as_str();
-    ctx.git("merge --abort", GIT_TIMEOUT);
-    ctx.git(&format!("fetch {remote} {branch}"), 120);
-    ctx.git(&format!("checkout -q {branch}"), GIT_TIMEOUT);
-    ctx.git(&format!("reset -q --hard {remote}/{branch}"), GIT_TIMEOUT);
+    drop(ctx.git("merge --abort", GIT_TIMEOUT));
+    drop(ctx.git(&format!("fetch {remote} {branch}"), 120));
+    drop(ctx.git(&format!("checkout -q {branch}"), GIT_TIMEOUT));
+    drop(ctx.git(&format!("reset -q --hard {remote}/{branch}"), GIT_TIMEOUT));
 }
 
 /// Merge one unit branch into the integration branch, run the checks and
@@ -159,11 +159,11 @@ fn format_style_commit(ctx: &Ctx, uid: &str) {
     if ctx.cfg.merge.format.is_empty() {
         return;
     }
-    ctx.sh(&ctx.cfg.merge.format, Some(&ctx.repo), 180);
+    drop(ctx.sh(&ctx.cfg.merge.format, Some(&ctx.repo), 180));
     let dirty = ctx.git("status --porcelain", GIT_TIMEOUT).text;
     if !dirty.trim().is_empty() {
         let msg = shell_quote(&format!("style: cargo fmt after {uid}"));
-        ctx.git(&format!("commit -q -am {msg}"), GIT_TIMEOUT);
+        drop(ctx.git(&format!("commit -q -am {msg}"), GIT_TIMEOUT));
     }
 }
 
@@ -202,7 +202,7 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
 fn push(ctx: &Ctx, uid: &str, outside: Vec<String>, t0: u64) -> MergeResult {
     let dirty = ctx.git("status --porcelain", GIT_TIMEOUT).text;
     if !dirty.trim().is_empty() {
-        ctx.git("checkout -q -- .", GIT_TIMEOUT);
+        drop(ctx.git("checkout -q -- .", GIT_TIMEOUT));
     }
     let cmd = format!("push {} HEAD:refs/heads/{}", ctx.cfg.remote, ctx.cfg.branch);
     let out = ctx.git(&cmd, 180);
@@ -333,7 +333,7 @@ fn merge_main_in(ctx: &Ctx) {
         return;
     }
     let remote = ctx.cfg.remote.as_str();
-    ctx.git(&format!("fetch -q {remote} {main}"), 120);
+    drop(ctx.git(&format!("fetch -q {remote} {main}"), 120));
     let reference = format!("{remote}/{main}");
     let cmd = format!("merge-base --is-ancestor {reference} HEAD");
     if ctx.git(&cmd, GIT_TIMEOUT).code == 0 {
@@ -348,7 +348,7 @@ fn merge_main_in(ctx: &Ctx) {
         ctx.log(&format!("merged {main} into {}", ctx.cfg.branch));
         return;
     }
-    ctx.git("merge --abort", GIT_TIMEOUT);
+    drop(ctx.git("merge --abort", GIT_TIMEOUT));
     let flat = tail(&out.text, 200).replace('\n', " | ");
     ctx.log(&format!(
         "{main} does not merge into {} cleanly: {flat}",
@@ -399,7 +399,7 @@ fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     let files = ctx
         .git("diff --name-only --diff-filter=U", GIT_TIMEOUT)
         .text;
-    ctx.git("merge --abort", GIT_TIMEOUT);
+    drop(ctx.git("merge --abort", GIT_TIMEOUT));
     let detail = format!(
         "The branch no longer merges into the integration branch. Conflicting files: {files}"
     );
@@ -478,7 +478,7 @@ fn proof_detail(code: i32, cmd: &str, out: &str) -> String {
 fn push_batch(ctx: &Ctx, merged: Vec<Merged>, t0: u64) -> Vec<MergeResult> {
     let dirty = ctx.git("status --porcelain", GIT_TIMEOUT).text;
     if !dirty.trim().is_empty() {
-        ctx.git("checkout -q -- .", GIT_TIMEOUT);
+        drop(ctx.git("checkout -q -- .", GIT_TIMEOUT));
     }
     let cmd = format!("push {} HEAD:refs/heads/{}", ctx.cfg.remote, ctx.cfg.branch);
     let out = ctx.git(&cmd, 180);
@@ -542,7 +542,7 @@ impl Merger {
     /// Start the merge thread for `ctx`. It runs until this `Merger` is
     /// dropped: dropping closes the job channel, which ends the loop.
     #[must_use]
-    pub fn start(ctx: Ctx) -> Merger {
+    pub fn start(ctx: &Ctx) -> Merger {
         let (to_merge, jobs) = channel();
         let (out, results) = channel();
         let worker = ctx.clone();
@@ -591,10 +591,10 @@ impl Merger {
                 tools: unit.tools.clone(),
                 write_scope: unit.write_scope.clone(),
             };
-            if self.to_merge.send(job).is_err() {
-                if let Some(unit) = st.units.get_mut(&uid) {
-                    unit.status = Status::Delivered;
-                }
+            if self.to_merge.send(job).is_err()
+                && let Some(unit) = st.units.get_mut(&uid)
+            {
+                unit.status = Status::Delivered;
             }
         }
     }
@@ -632,7 +632,7 @@ fn merge_loop(ctx: &Ctx, jobs: &Receiver<MergeJob>, out: &Sender<MergeResult>) {
         let done = match catch_unwind(work) {
             Ok(results) => results,
             Err(err) => {
-                let detail = panic_text(err);
+                let detail = panic_text(&err);
                 ctx.log(&format!("MERGE ERROR {detail}"));
                 batch
                     .iter()
@@ -699,7 +699,7 @@ fn undecided_result(uid: &str, why: &str, detail: &str) -> MergeResult {
 
 /// The panic payload as one line of at most 600 chars, like python's
 /// flattened traceback tail.
-fn panic_text(err: Box<dyn Any + Send>) -> String {
+fn panic_text(err: &Box<dyn Any + Send>) -> String {
     let text = err
         .downcast_ref::<String>()
         .cloned()
@@ -739,9 +739,9 @@ fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     let now = ctx.now();
     if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Merged;
-        unit.commit = result.tip.clone();
+        unit.commit.clone_from(&result.tip);
         unit.since = now;
-        unit.outside = result.outside.clone();
+        unit.outside.clone_from(&result.outside);
     }
     st.merges += 1;
     if !result.outside.is_empty() {
