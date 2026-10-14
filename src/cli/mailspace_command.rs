@@ -586,12 +586,16 @@ pub enum TaskCommand {
         ArgGroup::new("list_scope")
             .required(true)
             .multiple(true)
-            .args(["for_identity", "from", "to"])
+            .args(["for_identity", "from", "to", "held"])
     ))]
     List {
         /// Identity whose tasks should be listed
         #[arg(long = "for")]
         for_identity: Option<String>,
+
+        /// List tasks held under any other mailspace's address
+        #[arg(long)]
+        held: bool,
 
         /// Task creator identity or address filter
         #[arg(long)]

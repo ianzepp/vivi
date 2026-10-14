@@ -683,6 +683,7 @@ fn parses_task_list_done_status() {
                     project,
                     blocked: _,
                     blocking: _,
+                    held: _,
                 },
         } => {
             assert_eq!(for_identity.as_deref(), Some("cto"));

@@ -10,16 +10,21 @@
 //! X-Vivi-Event-Prev: <Message-ID of the event this one follows>   (repeatable)
 //! ```
 //!
-//! The state of an item is a pure function of the letters held. Order is the
-//! causal chain, never a clock and never the server: the current event is the
-//! chain head, the one no other held event names as its `Prev`. A fork (two
-//! mailspaces acted on the same previous event) leaves several heads, and the
-//! larger `(Date, Message-ID)` wins on every checkout alike.
+//! The state of an item is a pure function of the letters held. Order is
+//! the clock, never the server: every event carries an instant — its
+//! `X-Vivi-Event-At` (RFC 3339), else its `Date` — and the newest event is
+//! the state. On equal instants a direct successor (it names the other as
+//! its `Prev`) wins, else the larger normalized `Message-ID`, so every
+//! checkout that holds the same letters agrees. A chain no longer beats a
+//! later clock: a later instant wins even over an event that names it as
+//! `Prev`, and a fork is settled the same way on every checkout alike.
 //!
-//! An event counts only when its From domain is the item's From domain: the
-//! same mailspace that authored the item. Anything else is plain mail. An
-//! assignee reports with an ordinary reply and never changes the owner's
-//! state.
+//! An event counts when its From domain is a prefix domain (`<8 hex>.local`),
+//! whoever authored the item: the server stamps every record with the
+//! sender's registered prefix and the pull refuses a prefix-form From it did
+//! not stamp, so such a From names a real member, and no member owns an
+//! item's state. A bare `local` or a legacy name domain is a claim anyone
+//! can make: it is filed as plain mail and never counts.
 //!
 //! One function projects a head onto the rows and the backlog node. The owner
 //! calls it when it writes an event; every other route (pull, fetch, resync,
@@ -28,6 +33,7 @@
 //! reply links, so an event that arrives before its item is applied when the
 //! item arrives and the link is made.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashSet};
 
 use mail_parser::{HeaderValue, MessageParser};
@@ -45,6 +51,7 @@ mod emit;
 pub(crate) const EVENT_HEADER: &str = "X-Vivi-Event";
 const EVENT_OF_HEADER: &str = "X-Vivi-Event-Of";
 const EVENT_PREV_HEADER: &str = "X-Vivi-Event-Prev";
+const EVENT_AT_HEADER: &str = "X-Vivi-Event-At";
 
 /// What an item-state event says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +100,10 @@ pub(crate) struct EventLetter {
     pub(crate) from_domain: String,
     /// The `Date` header as a Unix time; 0 when absent.
     pub(crate) date: i64,
+    /// When the event happened: `X-Vivi-Event-At` (RFC 3339) in Unix
+    /// microseconds when present and parseable, else the `Date` header in
+    /// whole seconds × 1 000 000.
+    pub(crate) at: i64,
 }
 
 /// Read an item-state event from a letter's bytes. A letter counts only when
@@ -101,6 +112,7 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
     let parsed = MessageParser::default().parse(bytes)?;
     let mut kind = None;
     let mut of = None;
+    let mut at = None;
     let mut prev: Vec<String> = Vec::new();
     for header in parsed.headers() {
         let HeaderValue::Text(text) = header.value() else {
@@ -111,6 +123,8 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
             kind = ItemEventKind::parse(text);
         } else if name.eq_ignore_ascii_case(EVENT_OF_HEADER) {
             of = normalize_message_id(text);
+        } else if name.eq_ignore_ascii_case(EVENT_AT_HEADER) {
+            at = rfc3339_micros(text);
         } else if name.eq_ignore_ascii_case(EVENT_PREV_HEADER)
             && let Some(id) = normalize_message_id(text)
             && !prev.contains(&id)
@@ -133,7 +147,21 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
         prev,
         from_domain: from_domain_of(&parsed)?,
         date: parsed.date().map_or(0, mail_parser::DateTime::to_timestamp),
+        at: at.unwrap_or_else(|| date_micros(&parsed)),
     })
+}
+
+/// An `X-Vivi-Event-At` value (RFC 3339) as Unix microseconds.
+fn rfc3339_micros(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value.trim())
+        .ok()
+        .map(|time| time.timestamp_micros())
+}
+
+/// The `Date` header of a parsed letter in whole seconds × 1 000 000: the
+/// `at` of an event with no parseable stamp.
+fn date_micros(parsed: &mail_parser::Message<'_>) -> i64 {
+    parsed.date().map_or(0, mail_parser::DateTime::to_timestamp) * 1_000_000
 }
 
 fn from_domain_of(parsed: &mail_parser::Message<'_>) -> Option<String> {
@@ -156,10 +184,10 @@ pub struct ItemEventState {
 /// What settling a set of arrived letters did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EventTally {
-    /// Items whose rows or node moved to match their chain head.
+    /// Items whose rows or node moved to match their newest event.
     pub applied: usize,
-    /// Events that were not applied: not from the item's owner, or for an
-    /// item sealed by absorb.
+    /// Events that were not applied: from a domain that is not a member's
+    /// prefix domain, or for an item sealed by absorb.
     pub ignored: usize,
 }
 
@@ -237,16 +265,17 @@ fn work_kind(
     Ok(None)
 }
 
-/// The authorized events of one item, and how many named it without the
-/// right to.
+/// The authorized events of one item, and how many named it from a domain
+/// that speaks for no member.
 struct Chain {
     events: Vec<EventLetter>,
     unauthorized: usize,
 }
 
-/// Every event head of the chain, oldest to newest by `(Date, Message-ID)`.
-/// The last one is the current state. A cycle (which no honest writer makes)
-/// has no head, so every event is a candidate then.
+/// Every event head of the chain, oldest to newest by `(Date, Message-ID)`:
+/// how wide a fork is, and the events the next letter names as `Prev`. The
+/// state is the newest event by [`newer`], not the last head. A cycle (which
+/// no honest writer makes) has no head, so every event is a candidate then.
 fn chain_heads(events: &[EventLetter]) -> Vec<&EventLetter> {
     let named: HashSet<&str> = events
         .iter()
@@ -263,6 +292,26 @@ fn chain_heads(events: &[EventLetter]) -> Vec<&EventLetter> {
     heads
 }
 
+/// How `a` stands against `b` in age: the larger `at` wins, and on equal
+/// `at` a direct successor (it names the other as `Prev`) wins, else the
+/// larger normalized `Message-ID`. A later clock beats the chain: `a` stays
+/// newer even when `b` names it as `Prev`.
+fn newer(a: &EventLetter, b: &EventLetter) -> Ordering {
+    let successor = |x: &EventLetter, y: &EventLetter| x.prev.iter().any(|prev| prev == &y.id);
+    a.at.cmp(&b.at)
+        .then_with(|| match (successor(a, b), successor(b, a)) {
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            _ => Ordering::Equal,
+        })
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+/// The newest event of an item by [`newer`]: the one whose word the state is.
+fn newest_event(events: &[EventLetter]) -> Option<&EventLetter> {
+    events.iter().max_by(|a, b| newer(a, b))
+}
+
 /// One folder change the head asks for.
 struct Planned {
     row: StoredMessageView,
@@ -270,17 +319,25 @@ struct Planned {
 }
 
 impl Mailspace {
-    /// Whether an event written from `event_domain` speaks for the mailspace
-    /// that authored an item from `item_domain`. Only a prefix domain
-    /// (`<8 hex>.local`) can: the server stamps and every puller checks it,
-    /// where a bare `local` or a legacy name domain is a claim anyone can
-    /// make. It must be the item's own domain, or this mailspace's current
-    /// one for an item it authored under its legacy name.
-    fn event_speaks_for(&self, event_domain: &str, item_domain: &str) -> bool {
+    /// Whether an event written from `event_domain` speaks for the state of
+    /// an item: any prefix domain (`<8 hex>.local`) can, whoever authored
+    /// the item. The server stamps every record with the sender's registered
+    /// prefix and the pull refuses a prefix-form From it did not stamp, so
+    /// such a From names a real member. A bare `local` or a legacy name
+    /// domain is a claim anyone can make, so it never counts.
+    fn event_speaks_for(event_domain: &str) -> bool {
         prefix_of_domain(event_domain).is_some()
-            && (event_domain.eq_ignore_ascii_case(item_domain)
-                || (event_domain.eq_ignore_ascii_case(&self.address_domain())
-                    && self.is_own_domain(item_domain)))
+    }
+
+    /// The write-side authority: whether an event this mailspace would write
+    /// speaks for an item from `item_domain` — its own prefix domain on an
+    /// item it authored, also under its legacy name or `local`. The read
+    /// side ([`Self::event_speaks_for`]) believes any member's prefix
+    /// domain; writing stays with the owner.
+    fn write_speaks_for(&self, item_domain: &str) -> bool {
+        let own = self.address_domain();
+        prefix_of_domain(&own).is_some()
+            && (own.eq_ignore_ascii_case(item_domain) || self.is_own_domain(item_domain))
     }
 
     fn item_chain(&self, storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
@@ -298,7 +355,7 @@ impl Mailspace {
             let Some(event) = parse_event(&bytes).filter(|event| event.of == item.rfc_id) else {
                 continue;
             };
-            if self.event_speaks_for(&event.from_domain, &item.from_domain) {
+            if Self::event_speaks_for(&event.from_domain) {
                 chain.events.push(event);
             } else {
                 chain.unauthorized += 1;
@@ -314,7 +371,7 @@ impl Mailspace {
         item: &HeldItem,
     ) -> Result<Option<ItemEventKind>, VivariumError> {
         let chain = self.item_chain(storage, item)?;
-        Ok(chain_heads(&chain.events).pop().map(|head| head.kind))
+        Ok(newest_event(&chain.events).map(|head| head.kind))
     }
 
     /// The role that owns an item held here: the one that authored it, or the
@@ -336,14 +393,13 @@ impl Mailspace {
     /// Whether `identity` may close or reopen `item` for everyone: the role
     /// that authored it (or holds its sent copy), or a role of kind `mind`
     /// or `operator`. Such an event is believed only when this mailspace
-    /// authored the item; the receive-side authority is the mailspace, so on
-    /// another mailspace's item the close stays a local report.
+    /// authored the item (the write-side rule); on another mailspace's item
+    /// the close stays a local report.
     pub(super) fn may_close(&self, item: &HeldItem, identity: &str) -> bool {
         if self.item_author(item).as_deref() == Some(identity) {
             return true;
         }
-        self.identity_may_close_for_all(identity)
-            && self.event_speaks_for(&self.address_domain(), &item.from_domain)
+        self.identity_may_close_for_all(identity) && self.write_speaks_for(&item.from_domain)
     }
 
     /// The rows the head `kind` moves: open work to `done` on a close, done
@@ -443,7 +499,7 @@ impl Mailspace {
         Ok(changed)
     }
 
-    /// Settle one item against its chain head. Returns the rows moved plus
+    /// Settle one item against its newest event. Returns the rows moved plus
     /// the nodes changed, and counts ignored events into `tally`.
     fn settle_item(
         &self,
@@ -461,7 +517,7 @@ impl Mailspace {
         };
         let chain = self.item_chain(storage, &item)?;
         tally.ignored += chain.unauthorized;
-        let Some(kind) = chain_heads(&chain.events).pop().map(|head| head.kind) else {
+        let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(());
         };
         let own: Vec<&StoredMessageView> = item
@@ -539,8 +595,9 @@ impl Mailspace {
         Ok(tally)
     }
 
-    /// The current state of the item `handle` names, from its event chain.
-    /// `None` when the item has no authorized event or is not work.
+    /// The current state of the item `handle` names, from its events: the
+    /// newest one, and how many chain heads (a fork) are held. `None` when
+    /// the item has no authorized event or is not work.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] when the handle does not resolve or on
@@ -555,17 +612,17 @@ impl Mailspace {
             return Ok(None);
         };
         let chain = self.item_chain(&storage, &item)?;
-        let heads = chain_heads(&chain.events);
-        Ok(heads.last().map(|head| ItemEventState {
-            state: head.kind.header().to_string(),
-            event: head.id.clone(),
-            heads: heads.len(),
+        let heads = chain_heads(&chain.events).len();
+        Ok(newest_event(&chain.events).map(|newest| ItemEventState {
+            state: newest.kind.header().to_string(),
+            event: newest.id.clone(),
+            heads,
         }))
     }
 
-    /// What the item behind `content_id` would change to match its chain
-    /// head: the head's state and the rows that disagree with it. `None` when
-    /// nothing disagrees.
+    /// What the item behind `content_id` would change to match its newest
+    /// event: the event's state and the rows that disagree with it. `None`
+    /// when nothing disagrees.
     pub(super) fn event_drift(
         &self,
         storage: &Storage,
@@ -578,7 +635,7 @@ impl Mailspace {
             return Ok(None);
         };
         let chain = self.item_chain(storage, &item)?;
-        let Some(kind) = chain_heads(&chain.events).pop().map(|head| head.kind) else {
+        let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(None);
         };
         let rows: Vec<StoredMessageView> = self
@@ -589,8 +646,8 @@ impl Mailspace {
         Ok((!rows.is_empty()).then_some((kind, rows)))
     }
 
-    /// Re-apply the chain head of the item behind `content_id` (the audit's
-    /// repair).
+    /// Re-apply the newest event of the item behind `content_id` (the
+    /// audit's repair).
     pub(super) fn repair_event_drift(&self, content_id: &str) -> Result<(), VivariumError> {
         let mut storage = self.storage()?;
         self.settle_item(&mut storage, content_id, &mut EventTally::default(), true)

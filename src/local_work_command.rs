@@ -21,6 +21,7 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
         }
         NeedCommand::List {
             for_identity,
+            held,
             from,
             to,
             status,
@@ -30,16 +31,30 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
         } => {
             vivi::mailspace::validate_marks_filter(marks)?;
             let mailspace = Mailspace::discover(project.as_deref())?;
-            crate::local_work_list::print_work_lists(
-                &mailspace,
-                for_identity.as_deref(),
-                &status_roles(status, "needs"),
-                "need",
-                from.as_deref(),
-                to.as_deref(),
-                marks,
-                *json,
-            )?;
+            let held = crate::local_work_list::held_scope(for_identity.as_deref(), *held)?;
+            if let Some(scope) = &held {
+                crate::local_work_list::print_held_work_lists(
+                    &mailspace,
+                    scope,
+                    &status_roles(status, "needs"),
+                    "need",
+                    from.as_deref(),
+                    to.as_deref(),
+                    marks,
+                    *json,
+                )?;
+            } else {
+                crate::local_work_list::print_work_lists(
+                    &mailspace,
+                    for_identity.as_deref(),
+                    &status_roles(status, "needs"),
+                    "need",
+                    from.as_deref(),
+                    to.as_deref(),
+                    marks,
+                    *json,
+                )?;
+            }
         }
         NeedCommand::Show {
             handle,
@@ -108,6 +123,7 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
         }
         WantCommand::List {
             for_identity,
+            held,
             from,
             to,
             status,
@@ -117,20 +133,38 @@ pub(crate) fn handle_want_command(command: &WantCommand) -> Result<(), VivariumE
             sort,
             json,
             project,
-        } => list_wants(
-            for_identity.as_deref(),
-            from.as_deref(),
-            to.as_deref(),
-            status,
-            WantListOptions {
-                repo: repo.clone(),
-                lane: lane.clone(),
-                sort: sort.clone(),
-            },
-            marks,
-            *json,
-            project.as_deref(),
-        )?,
+        } => {
+            let held = crate::local_work_list::held_scope(for_identity.as_deref(), *held)?;
+            if let Some(scope) = &held {
+                vivi::mailspace::validate_marks_filter(marks)?;
+                let mailspace = Mailspace::discover(project.as_deref())?;
+                crate::local_work_list::print_held_work_lists(
+                    &mailspace,
+                    scope,
+                    want_status_roles(status),
+                    "want",
+                    from.as_deref(),
+                    to.as_deref(),
+                    marks,
+                    *json,
+                )?;
+            } else {
+                list_wants(
+                    for_identity.as_deref(),
+                    from.as_deref(),
+                    to.as_deref(),
+                    status,
+                    WantListOptions {
+                        repo: repo.clone(),
+                        lane: lane.clone(),
+                        sort: sort.clone(),
+                    },
+                    marks,
+                    *json,
+                    project.as_deref(),
+                )?;
+            }
+        }
         WantCommand::Show {
             handle,
             json,
