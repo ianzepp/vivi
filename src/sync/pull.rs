@@ -44,11 +44,21 @@ pub struct PullReport {
     pub existing: usize,
     /// Reply links recorded.
     pub linked: usize,
+    /// Replies filed this run whose parent letter this mailspace still does
+    /// not hold after the link pass; `vivi sync pull --refs` finds them.
+    pub unlinked: usize,
     pub refused: Vec<RefusedRecord>,
     /// Problems that did not stop the pull (a binding that could not be
     /// written).
     pub warnings: Vec<String>,
     pub cursor: u64,
+    /// The cursor this pull started from, so the summary can say how far
+    /// the cursor moved.
+    pub cursor_before: u64,
+    /// Sequence numbers the server's `next_cursor` jumped over without
+    /// serving: the letters behind them are not shown to this member (mail
+    /// addressed to other mailspaces).
+    pub skipped_by_server: u64,
     /// Pages read.
     pub pages: usize,
     /// Evicted letters the pull brought back (also counted in `filed`).
@@ -72,7 +82,8 @@ pub struct PullReport {
     pub touched: Vec<String>,
     /// Items whose rows or node moved to match their latest event.
     pub events_applied: usize,
-    /// Events not applied: not from the item's owner, or for a sealed item.
+    /// Events not applied: not from a member mailspace, or for a sealed
+    /// item.
     pub events_ignored: usize,
 }
 
@@ -126,27 +137,52 @@ impl PullReport {
             .held_note()
             .map(|note| format!(", {note}"))
             .unwrap_or_default();
+        let unlinked = (self.unlinked > 0)
+            .then(|| {
+                format!(
+                    ", {} repl(ies) to letters not held here (vivi sync pull --refs finds them)",
+                    self.unlinked
+                )
+            })
+            .unwrap_or_default();
         format!(
             "sync pull: {} fetched, {new}, {} already present, {} reply link(s), \
-             {refused}{governance}{held}{}{}, cursor {}",
+             {refused}{governance}{held}{unlinked}{}{}, {}",
             self.fetched,
             self.existing,
             self.linked,
             self.event_note(),
             epoch,
-            self.cursor
+            self.cursor_tail()
         )
     }
 
-    /// `, N event(s) applied, M event(s) ignored: not from the item's owner`
-    /// when item-state events were seen, else nothing.
+    /// The summary's tail: `cursor N` plainly, or, when the server's cursor
+    /// jumped over letters this member is not shown, where every moved
+    /// sequence number went.
+    #[must_use]
+    fn cursor_tail(&self) -> String {
+        if self.skipped_by_server == 0 {
+            return format!("cursor {}", self.cursor);
+        }
+        let moved = self.cursor.saturating_sub(self.cursor_before);
+        format!(
+            "cursor {} (moved {}: {} shown, {} not shown to this member: \
+             mail addressed to other mailspaces)",
+            self.cursor, moved, self.fetched, self.skipped_by_server
+        )
+    }
+
+    /// `, N event(s) applied, M event(s) ignored: not from a member
+    /// mailspace, or for a sealed item` when item-state events were seen,
+    /// else nothing.
     #[must_use]
     pub fn event_note(&self) -> String {
         let applied = (self.events_applied > 0)
             .then(|| format!(", {} event(s) applied", self.events_applied));
         let ignored = (self.events_ignored > 0).then(|| {
             format!(
-                ", {} event(s) ignored: not from the item's owner",
+                ", {} event(s) ignored: not from a member mailspace, or for a sealed item",
                 self.events_ignored
             )
         });
@@ -242,6 +278,8 @@ pub fn pull_with(
     let mut state = load_state(&dir, settings, plan)?;
     let before_plan = state.clone();
     apply_plan(&mut state, plan, settings)?;
+    // The summary reports how far the cursor moved over this pull.
+    let cursor_before = state.since;
     // The plan's changes are saved with the first page that is read, so a
     // failed read leaves the state file exactly as it was.
     let mut unsaved = state != before_plan;
@@ -267,12 +305,10 @@ pub fn pull_with(
         for record in &page.records {
             filer.file_record(&mut storage, record, &mut report, &mut pending)?;
         }
-        report.linked += settle_links(&storage, pending, &mut state)?;
+        report.linked += settle_links(&storage, pending.clone(), &mut state)?;
+        report.unlinked += unresolved(&pending, &state.dangling);
         settle_events(mailspace, &mut report)?;
-        let advanced = !page.records.is_empty() && page.next_cursor > state.since;
-        if advanced {
-            state.since = page.next_cursor;
-        }
+        let advanced = advance(&mut state, &page, &mut report);
         if unsaved || state != before {
             state.save(&dir)?;
             unsaved = false;
@@ -289,7 +325,31 @@ pub fn pull_with(
         }
     }
     report.cursor = state.since;
+    report.cursor_before = cursor_before;
     Ok(report)
+}
+
+/// Move the cursor past the page when it advanced, and count the sequence
+/// numbers it jumped over without serving: the letters behind them are not
+/// shown to this member. A page discarded for an epoch reset never gets
+/// here.
+fn advance(state: &mut SyncState, page: &Page, report: &mut PullReport) -> bool {
+    let advanced = !page.records.is_empty() && page.next_cursor > state.since;
+    if advanced {
+        let moved = page.next_cursor.saturating_sub(state.since);
+        report.skipped_by_server += moved.saturating_sub(page.records.len() as u64);
+        state.since = page.next_cursor;
+    }
+    advanced
+}
+
+/// This pass's replies that are still waiting after the link pass: the
+/// parent letter is still not held.
+fn unresolved(pending: &[(String, String)], dangling: &BTreeMap<String, String>) -> usize {
+    pending
+        .iter()
+        .filter(|(child, parent)| dangling.get(child).is_some_and(|held| held == parent))
+        .count()
 }
 
 /// The state a pull starts from. A resync replaces the cursor and floor, so

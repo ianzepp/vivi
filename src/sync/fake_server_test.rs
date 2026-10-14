@@ -51,6 +51,10 @@ struct Inner {
     lists: Vec<(u64, u32, Option<String>)>,
     /// The number of handles in every lookup request seen.
     lookups: Vec<usize>,
+    /// Whether `next_cursor` moves past every letter scanned, including the
+    /// ones this member is not shown, as the real server's list response
+    /// does. Off by default: the fake stops at the last served record.
+    skip_hidden: bool,
     /// Projects minted by `create_project`, for unique ids.
     projects: usize,
     /// Admitted members: name -> the key PEM admitted under it. The first
@@ -144,6 +148,13 @@ impl FakeServer {
     /// Serve at most `n` records per read.
     pub fn page_limit(&self, n: usize) {
         self.inner.borrow_mut().page_limit = Some(n);
+    }
+
+    /// Make the list response's `next_cursor` jump over the letters this
+    /// member is not shown, as the real server's does, instead of stopping
+    /// at the last served record.
+    pub fn skip_hidden(&self, yes: bool) {
+        self.inner.borrow_mut().skip_hidden = yes;
     }
 
     /// Serve `bytes` for `message_id` while keeping the recorded hash.
@@ -273,11 +284,12 @@ impl Transport for FakeClient {
             .after
             .map(|time| DateTime::parse_from_rfc3339(time).unwrap());
         let limit = (query.limit as usize).min(inner.page_limit.unwrap_or(usize::MAX));
-        let matching: Vec<&Item> = inner
+        // Everything past the cursor in the requested window, before the
+        // visibility rule: the server scans all of it, shown or not.
+        let candidates: Vec<&Item> = inner
             .items
             .iter()
             .filter(|item| item.sequence > query.since)
-            .filter(|item| self.visible(item))
             .filter(|item| {
                 after.is_none_or(|after| {
                     item.appended_at
@@ -286,13 +298,28 @@ impl Transport for FakeClient {
                 })
             })
             .collect();
+        let scanned = candidates
+            .iter()
+            .take(limit)
+            .map(|item| item.sequence)
+            .max();
+        let matching: Vec<&Item> = candidates
+            .into_iter()
+            .filter(|item| self.visible(item))
+            .collect();
         let has_more = matching.len() > limit;
         let records: Vec<Record> = matching
             .into_iter()
             .take(limit)
             .map(|item| self.record_of(&inner, item))
             .collect();
-        let next_cursor = records.last().map_or(query.since, |record| record.sequence);
+        let next_cursor = if inner.skip_hidden {
+            // The real server's cursor moves past every letter it scanned,
+            // including the ones this member is not shown.
+            scanned.unwrap_or(query.since)
+        } else {
+            records.last().map_or(query.since, |record| record.sequence)
+        };
         Ok(Page {
             records,
             next_cursor,
