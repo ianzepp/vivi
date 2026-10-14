@@ -132,7 +132,7 @@ pub fn status(project: &Path) -> Result<String, VivariumError> {
 pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
     let state_path = ctx.home.join("state.json");
     let mut st = State::load(&state_path)?;
-    let merger = Merger::start(ctx.clone());
+    let merger = Merger::start(ctx);
     drive(ctx, &mut st, &merger, once);
     Ok(())
 }
