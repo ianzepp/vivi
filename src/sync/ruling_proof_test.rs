@@ -165,9 +165,9 @@ fn rfc_id(checkout: &Checkout, handle: &str) -> String {
 }
 
 /// A hand-built event letter on the wire, the way its author's vivi pushes
-/// one: from `author`'s mailspace (so the server stamps its prefix), riding
-/// the item's kind, replying to the item, stamped `at` — an offline writer
-/// whose clock reads `at`.
+/// one: from `author`'s mailspace (so the server stamps its prefix),
+/// traveling as plain mail like every event letter, replying to the item,
+/// stamped `at` — an offline writer whose clock reads `at`.
 fn put_event_letter(
     server: &Rc<FakeServer>,
     author: &Checkout,
@@ -200,7 +200,7 @@ fn put_event_letter(
             &Envelope {
                 raw_eml: &bytes,
                 to,
-                kind: "need",
+                kind: "mail",
             },
         )
         .expect("the fake server takes the letter");
