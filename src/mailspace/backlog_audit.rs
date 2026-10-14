@@ -11,6 +11,7 @@ use serde::Serialize;
 use super::Mailspace;
 use super::backlog::backlog_node_by_token;
 use super::holding::is_foreign_account;
+use super::item_events::event_release_due;
 use crate::error::VivariumError;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, Storage, StoredMessageView, WorkGraphEdgeRow, WorkGraphNodeRow,
@@ -189,7 +190,7 @@ fn audit_released_event(
     repair: bool,
     findings: &mut Vec<BacklogAuditFinding>,
 ) -> Result<(), VivariumError> {
-    if !mailspace.event_release_due(storage, content_id)? {
+    if !event_release_due(storage, content_id)? {
         return Ok(());
     }
     let Some(first) = storage

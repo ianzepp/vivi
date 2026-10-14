@@ -442,6 +442,19 @@ fn record_deferral(
     storage.set_event_deferral(&rows, until)
 }
 
+/// Whether the item behind `content_id` holds a letter whose bound the
+/// clock has passed since it was skipped: its settle is due.
+pub(super) fn event_release_due(
+    storage: &Storage,
+    content_id: &str,
+) -> Result<bool, VivariumError> {
+    let now = clock_micros();
+    Ok(storage
+        .deferred_event_contents()?
+        .iter()
+        .any(|(held, until)| held == content_id && *until <= now))
+}
+
 /// One folder change the head asks for.
 struct Planned {
     row: StoredMessageView,
@@ -799,20 +812,6 @@ impl Mailspace {
         Ok(tally)
     }
 
-    /// Whether the item behind `content_id` holds a letter whose bound the
-    /// clock has passed since it was skipped: its settle is due.
-    pub(super) fn event_release_due(
-        &self,
-        storage: &Storage,
-        content_id: &str,
-    ) -> Result<bool, VivariumError> {
-        let now = clock_micros();
-        Ok(storage
-            .deferred_event_contents()?
-            .iter()
-            .any(|(held, until)| held == content_id && *until <= now))
-    }
-
     /// The current state of the item `handle` names, from its events: the
     /// newest one, and how many chain heads (a fork) are held. `None` when
     /// the item has no authorized event or is not work.
@@ -859,7 +858,7 @@ impl Mailspace {
         // A letter the clock has just passed is an arrival: it moves a
         // hand's closed row too, which a settle that keeps reports would
         // take for a later report.
-        let due = self.event_release_due(storage, content_id)?;
+        let due = event_release_due(storage, content_id)?;
         let rows: Vec<StoredMessageView> = self
             .plan_item_moves(storage, &item, kind, !due)?
             .into_iter()
@@ -872,7 +871,7 @@ impl Mailspace {
     /// audit's repair).
     pub(super) fn repair_event_drift(&self, content_id: &str) -> Result<(), VivariumError> {
         let mut storage = self.storage()?;
-        let due = self.event_release_due(&storage, content_id)?;
+        let due = event_release_due(&storage, content_id)?;
         self.settle_item(&mut storage, content_id, &mut EventTally::default(), !due)
     }
 }

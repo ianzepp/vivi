@@ -304,3 +304,7 @@ mod absorb_quiet_test;
 #[cfg(test)]
 #[path = "sync/deferred_events_test.rs"]
 mod deferred_events_test;
+
+#[cfg(test)]
+#[path = "sync/absorb_before_seal_test.rs"]
+mod absorb_before_seal_test;

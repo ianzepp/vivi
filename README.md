@@ -597,7 +597,9 @@ newest instant wins; on equal instants the deeper `X-Vivi-Event-Prev` chain
 wins, then the larger Message-ID, and a writer never
 stamps below the newest event it holds, so a causal successor wins under clock
 skew. An event dated more than ten minutes ahead of the receiver's clock is
-not counted and is reported in the ignored tally. Who may write one is
+not counted when it arrives and is reported in the ignored tally; it counts
+once the receiver's clock has passed the bound — the next pull applies it,
+with no new letter, and `graph audit` names it. Who may write one is
 checked on receipt, for every event kind: a letter From this mailspace's own
 domain counts only when its From role is the item's author or of kind `mind`
 or `operator`; a letter from another member's prefix domain (`<8 hex>.local`)
@@ -610,7 +612,9 @@ An absorb by a role that may close is allowed only when the item is done and
 quiet — its newest event of any kind at least `[absorb]` `quiet_hours` old
 (24 hours by default, `0` off) — and writes an `absorbed` letter naming the
 item's folded state (`X-Vivi-Event-State: done|open`),
-which every member applies before sealing its own rows. Marks
+which every member applies before sealing its own rows; a mark or a bind
+dated before the seal still lands on every member, whether it arrives with
+the seal or after it, and one dated after the seal is ignored. Marks
 travel as `marked`/`unmarked` letters with `X-Vivi-Event-Slug` only for a
 role that may close (any other kind keeps a private mark that does not
 travel), the newest per slug controlling on every member, and the controlling

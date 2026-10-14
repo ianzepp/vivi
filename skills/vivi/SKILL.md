@@ -237,11 +237,14 @@ the item brings its rows to that state and seals them too, without
 exporting to its archive: the writer's mailspace
 exports the archive copy. An absorb by any other role seals only its own
 copy, writes no letter, and takes no quiet gate. Once sealed, the item is
-final: an event that arrives afterwards, older or newer, is ignored and
-counted in the pull summary (`event(s) ignored`), and because the letter
-names the state, every member ends in the same one. Two members that
-absorb at once converge: every member follows the earliest seal,
-whichever letter lands first.
+final: a state event that arrives afterwards, older or newer, is ignored
+and counted in the pull summary (`event(s) ignored`), and because the
+letter names the state, every member ends in the same one. A mark or a
+bind is ordered against the seal by its instant, not its arrival: one
+dated before the seal lands on every member — with the seal in one pull,
+or after the seal was applied — and one dated after the seal is ignored.
+Two members that absorb at once converge: every member follows the
+earliest seal, whichever letter lands first.
 
 A need or a want can carry marks: free slugs such as `bug`. A mark is an
 event on the item, not a rewrite of the message. `need mark` / `need unmark`
@@ -261,7 +264,8 @@ letter controls — newest by (instant, Message-ID) — so the folded marks of
 every row follow the letters alone, whatever the arrival order or the
 number of pulls (a person's own later local mark for a slug is not undone
 by an older letter that arrives late). A sealed item takes no further
-marks.
+marks from a person; a mark letter dated before the seal still lands
+(see `absorb` above).
 
 **Bind.** Lowering is a letter too. A `need bind` writes one `bound` event
 letter on the need — `X-Vivi-Event: bound` beside the usual event headers,
@@ -336,8 +340,13 @@ holds, so under clock skew a causal successor still wins.
 `X-Vivi-Event-Prev` is still written — it names the heads a fork left —
 but only its depth breaks a tie of instants: a chain of old events does
 not beat a later clock. An event dated more than ten minutes ahead of the
-receiver's clock is not counted at all and is reported in the ignored
-tally. Who may write one is checked on receipt, for every event kind: a
+receiver's clock is not counted when it arrives and is reported in the
+ignored tally. It counts once the receiver's clock has passed the bound,
+with no new letter: every pull (and fetch, resync, `pull --refs`) settles
+the items that hold such an event and reports it applied, and
+`graph audit` lists the item as `event_state` (`--repair` applies it), so
+the folders and what `need show` prints agree. Each member's own clock
+decides when, so members converge as their clocks pass the bound. Who may write one is checked on receipt, for every event kind: a
 letter From this mailspace's own domain counts only when its From role is
 the item's author or of kind `mind` or `operator`; a letter from another
 member's prefix domain (`<8 hex>.local`) counts, whoever authored the
