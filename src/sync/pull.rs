@@ -145,10 +145,6 @@ impl PullReport {
         )
     }
 
-    /// The summary's tail: `cursor N` plainly, or, when the server's cursor
-    /// jumped over letters this member is not shown, where every moved
-    /// sequence number went.
-    #[must_use]
     /// `N refused: id, ...` for the first five, then a tail count; plain
     /// `0 refused` when nothing was refused.
     #[must_use]
@@ -167,6 +163,10 @@ impl PullReport {
         format!("{} refused: {ids}{tail}", self.refused.len())
     }
 
+    /// The summary's tail: `cursor N` plainly, or, when the server's cursor
+    /// jumped over letters this member is not shown, where every moved
+    /// sequence number went.
+    #[must_use]
     fn cursor_tail(&self) -> String {
         if self.skipped_by_server == 0 {
             return format!("cursor {}", self.cursor);
@@ -302,30 +302,17 @@ pub fn pull_with(
             unsaved = false;
             continue;
         }
-        // Letters bind under the epoch their page was read under.
-        filer.set_validity(state.epoch.unwrap_or(UIDVALIDITY));
-        report.fetched += page.records.len();
-        let before = state.clone();
-        refine_floor(&mut state, page.records.first());
-        let mut pending = Vec::new();
-        for record in &page.records {
-            filer.file_record(&mut storage, record, &mut report, &mut pending)?;
-        }
-        report.linked += settle_links(&storage, pending.clone(), &mut state)?;
-        report.unlinked += unresolved(&pending, &state.dangling);
-        settle_events(mailspace, &mut report)?;
-        let advanced = advance(&mut state, &page, &mut report);
-        if unsaved || state != before {
-            state.save(&dir)?;
-            unsaved = false;
-        }
-        let more = advanced && page.has_more.unwrap_or(true);
-        progress(&PageProgress {
-            page: report.pages,
-            records: page.records.len(),
-            cursor: state.since,
-            more,
-        });
+        let more = handle_page(
+            mailspace,
+            &mut storage,
+            &mut filer,
+            &mut state,
+            &mut report,
+            &page,
+            &dir,
+            &mut unsaved,
+            progress,
+        )?;
         if !more {
             break;
         }
@@ -333,6 +320,50 @@ pub fn pull_with(
     report.cursor = state.since;
     report.cursor_before = cursor_before;
     Ok(report)
+}
+
+/// File one fetched page: the records, their reply links and the item-state
+/// events they brought, then the cursor and the state file, and the progress
+/// hook. Returns whether another page follows. `unsaved` turns false as soon
+/// as the state file is written (the first page's save covers the plan's
+/// changes).
+#[allow(clippy::too_many_arguments)]
+fn handle_page(
+    mailspace: &Mailspace,
+    storage: &mut Storage,
+    filer: &mut Filer<'_>,
+    state: &mut SyncState,
+    report: &mut PullReport,
+    page: &Page,
+    dir: &std::path::Path,
+    unsaved: &mut bool,
+    progress: &mut dyn FnMut(&PageProgress),
+) -> Result<bool, VivariumError> {
+    // Letters bind under the epoch their page was read under.
+    filer.set_validity(state.epoch.unwrap_or(UIDVALIDITY));
+    report.fetched += page.records.len();
+    let before = state.clone();
+    refine_floor(state, page.records.first());
+    let mut pending = Vec::new();
+    for record in &page.records {
+        filer.file_record(storage, record, report, &mut pending)?;
+    }
+    report.linked += settle_links(storage, pending.clone(), state)?;
+    report.unlinked += unresolved(&pending, &state.dangling);
+    settle_events(mailspace, report)?;
+    let advanced = advance(state, page, report);
+    if *unsaved || *state != before {
+        state.save(dir)?;
+        *unsaved = false;
+    }
+    let more = advanced && page.has_more.unwrap_or(true);
+    progress(&PageProgress {
+        page: report.pages,
+        records: page.records.len(),
+        cursor: state.since,
+        more,
+    });
+    Ok(more)
 }
 
 /// Move the cursor past the page when it advanced, and count the sequence

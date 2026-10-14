@@ -398,15 +398,19 @@ fn on_another_mailspaces_item_a_hand_reports_and_the_local_mind_accepts() {
         "{exception:?}"
     );
 
-    // The mind's own close is a local report that is this mailspace's
-    // acceptance: no event letter, and the node completes.
+    // Ruling 2026-10-14: the newest event controls and no member owns an
+    // item's state, so the mind's close travels as an event letter; the node
+    // still completes locally.
     let accepted = done(&mailspace, "mind", &mind);
     assert!(
-        accepted.reported && accepted.event.is_none(),
+        !accepted.reported && accepted.event.is_some(),
         "{accepted:?}"
     );
     assert_eq!(node(&mailspace, &hand).state, "done");
-    assert!(mailspace.item_event_state(&hand).unwrap().is_none());
+    assert_eq!(
+        mailspace.item_event_state(&hand).unwrap().unwrap().state,
+        "done"
+    );
 }
 
 #[test]
@@ -417,8 +421,10 @@ fn a_mind_accepts_another_mailspaces_report_by_naming_the_reported_row() {
 
     let accepted = done(&mailspace, "mind", &hand);
 
+    // Ruling 2026-10-14: the newest event controls and no member owns an
+    // item's state, so the mind's close is an event letter, not a report.
     assert!(
-        accepted.reported && accepted.event.is_none(),
+        !accepted.reported && accepted.event.is_some(),
         "{accepted:?}"
     );
     assert_eq!(node(&mailspace, &hand).state, "done");

@@ -156,9 +156,10 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
 
 /// An `X-Vivi-Event-At` value (RFC 3339) as Unix microseconds.
 fn rfc3339_micros(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value.trim())
-        .ok()
-        .map(|time| time.timestamp_micros())
+    let Ok(time) = chrono::DateTime::parse_from_rfc3339(value.trim()) else {
+        return None;
+    };
+    Some(time.timestamp_micros())
 }
 
 /// The `Date` header of a parsed letter in whole seconds × 1 000 000: the
@@ -332,7 +333,7 @@ impl Mailspace {
         prefix_of_domain(event_domain).is_some()
     }
 
-    fn item_chain(&self, storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
+    fn item_chain(storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
         let mut chain = Chain {
             events: Vec::new(),
             unauthorized: 0,
@@ -358,11 +359,10 @@ impl Mailspace {
 
     /// The state the latest authorized event of an item says, if any.
     pub(super) fn item_head(
-        &self,
         storage: &Storage,
         item: &HeldItem,
     ) -> Result<Option<ItemEventKind>, VivariumError> {
-        let chain = self.item_chain(storage, item)?;
+        let chain = Self::item_chain(storage, item)?;
         Ok(newest_event(&chain.events).map(|head| head.kind))
     }
 
@@ -507,7 +507,7 @@ impl Mailspace {
         let Some(item) = held_item(storage, content_id)? else {
             return Ok(());
         };
-        let chain = self.item_chain(storage, &item)?;
+        let chain = Self::item_chain(storage, &item)?;
         tally.ignored += chain.unauthorized;
         // A counted absorbed event seals the item with the state it names, so
         // the state events held beside it are only letters: none of them
@@ -621,7 +621,7 @@ impl Mailspace {
         let Some(item) = held_item(&storage, &view.content_id)? else {
             return Ok(None);
         };
-        let chain = self.item_chain(&storage, &item)?;
+        let chain = Self::item_chain(&storage, &item)?;
         let heads = chain_heads(&chain.events).len();
         Ok(newest_event(&chain.events).map(|newest| ItemEventState {
             state: newest.kind.header().to_string(),
@@ -644,7 +644,7 @@ impl Mailspace {
         let Some(item) = held_item(storage, content_id)? else {
             return Ok(None);
         };
-        let chain = self.item_chain(storage, &item)?;
+        let chain = Self::item_chain(storage, &item)?;
         let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(None);
         };
