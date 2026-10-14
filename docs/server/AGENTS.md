@@ -115,10 +115,13 @@ Measured baselines (burgus, 18-core Mac, 2026-10-10, warm target):
 unmeasured; the smoke script takes about two minutes (the prune leg waits
 for a 1 m cutoff).
 
-`scripts/two-checkout-smoke.sh` is the old seat-bound rooms acceptance and
-needs `vivi chat` (gone in vivi 11). For the 1.3.0 rooms wire use
-`scripts/chat-room-smoke.sh`. For durable projects and MCP,
-`scripts/project-sync-smoke.sh` and `scripts/mcp-smoke.sh`.
+`scripts/two-checkout-smoke.sh` is the release acceptance: the 1.3.0 rooms
+wire over HTTP, then two checkouts and a third member syncing through a durable
+project with `vivi sync`, item events, MCP, and prune/resync. It skips the
+outage leg against a deployed server and needs a vivi 11 binary (`VIVI=...`).
+Narrower scripts: `scripts/chat-room-smoke.sh` (rooms),
+`scripts/project-sync-smoke.sh` and `scripts/mcp-smoke.sh` (durable projects
+and MCP).
 
 ## Dependency on `vivi`
 

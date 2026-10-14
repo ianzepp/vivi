@@ -53,8 +53,10 @@ scripts/chat-room-smoke.sh
 SERVER_URL=https://vivi-server-main-production.up.railway.app scripts/chat-room-smoke.sh
 ```
 
-`scripts/two-checkout-smoke.sh` is the old seat-bound rooms gate. It needs
-`vivi chat`, which left in vivi 11, and does not apply to 1.3.0 rooms.
+`scripts/two-checkout-smoke.sh` is the release gate: the 1.3.0 rooms wire
+over HTTP, then two vivi checkouts and a third member syncing through a
+durable project (`vivi sync`), item events, MCP, and prune/resync. It needs
+a vivi 11 binary (`VIVI=...`).
 
 ## Railway deploy
 
