@@ -12,7 +12,7 @@ use tempfile::{TempDir, tempdir};
 use crate::pump::board::*;
 use crate::pump::config::{BoardConfig, PlannerConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{NeedRecord, State};
+use crate::pump::state::{NeedRecord, State, Status, Unit};
 
 /// A context with an operator sender and the `since` cutoff set; default
 /// mark `pump`, three planners, 1800 s plan timeout.
@@ -28,6 +28,7 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 fn setup_with(board: BoardConfig) -> (TempDir, Ctx, Arc<FakeHost>) {
     let cfg = PumpConfig {
         board,
+        branch: String::from("next"),
         planner: PlannerConfig {
             run: String::from("planner-run {charter}"),
             ..PlannerConfig::default()
@@ -69,6 +70,40 @@ fn need_row(handle: &str, date: &str, subject: &str) -> NeedRow {
 /// The recorded exception lines (`<home>/exceptions.txt`).
 fn exceptions(ctx: &Ctx) -> String {
     fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()
+}
+
+/// A parked need record with a verdict, a reason and no units.
+fn parked(verdict: &str, reason: &str) -> NeedRecord {
+    NeedRecord {
+        verdict: String::from(verdict),
+        reason: String::from(reason),
+        units: Vec::new(),
+    }
+}
+
+/// An operator thread header line and body, as `need show` prints them.
+fn thread(stamp: &str, hex: &str, from: &str, body: &str) -> String {
+    format!("## {stamp} - {hex} [open]\nFrom: {from}\n\n{body}\n")
+}
+
+/// A merged unit with a title and a commit.
+fn merged_unit(title: &str, commit: &str) -> Unit {
+    Unit {
+        title: String::from(title),
+        status: Status::Merged,
+        commit: Some(String::from(commit)),
+        ..Unit::default()
+    }
+}
+
+/// Epoch seconds for an RFC 3339 stamp.
+fn epoch(stamp: &str) -> u64 {
+    u64::try_from(
+        chrono::DateTime::parse_from_rfc3339(stamp)
+            .unwrap()
+            .timestamp(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -325,4 +360,288 @@ fn a_launched_planner_gets_the_need_file_and_the_prompt_and_is_recorded() {
         host.logs()
             .contains(&format!("board: planning new need n1 {short_subject}"))
     );
+}
+
+#[test]
+fn operator_replied_after_sees_a_newer_operator_message_only() {
+    let (_dir, ctx, host) = setup();
+    let older = thread(
+        "2026-10-14T09:00:00Z",
+        "aaa111",
+        "operator@bd371d96.local",
+        "the ruling",
+    );
+    let newer = thread(
+        "2026-10-16T09:00:00Z",
+        "bbb222",
+        "operator@bd371d96.local",
+        "re-plan please",
+    );
+    host.reply("need show op1", 0, &format!("{older}\n{newer}"));
+    assert!(operator_replied_after(
+        &ctx,
+        "op1",
+        epoch("2026-10-15T00:00:00Z")
+    ));
+    assert!(!operator_replied_after(
+        &ctx,
+        "op1",
+        epoch("2026-10-16T09:00:00Z")
+    ));
+    assert!(!operator_replied_after(
+        &ctx,
+        "op1",
+        epoch("2027-01-01T00:00:00Z")
+    ));
+    let other = thread(
+        "2030-01-01T00:00:00Z",
+        "ccc333",
+        "mind@bd371d96.local",
+        "not the operator",
+    );
+    host.reply("need show op2", 0, &other);
+    assert!(!operator_replied_after(&ctx, "op2", 0));
+    host.reply(
+        "need show op5",
+        0,
+        "From: operator@bd371d96.local\nno header first\n",
+    );
+    assert!(!operator_replied_after(&ctx, "op5", 0));
+    let unparseable = thread(
+        "2026-13-99T99:99:99Z",
+        "ddd444",
+        "operator@bd371d96.local",
+        "bad time",
+    );
+    host.reply("need show op3", 0, &unparseable);
+    assert!(!operator_replied_after(&ctx, "op3", 0));
+    host.reply("need show op4", 1, "the mailspace is locked");
+    assert!(!operator_replied_after(&ctx, "op4", 0));
+}
+
+#[test]
+fn replan_answered_supersedes_the_plan_and_reopens_the_need_for_planning() {
+    let (_dir, ctx, host) = setup();
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/park1.json"), "{}").unwrap();
+    host.reply(
+        "need show park1",
+        0,
+        &thread(
+            "2035-01-02T03:04:05Z",
+            "beef01",
+            "operator@bd371d96.local",
+            "re-plan it",
+        ),
+    );
+    let mut st = State::default();
+    st.needs
+        .insert(String::from("park1"), parked("hold", "waiting"));
+    st.plans_seen = vec![String::from("park1.json"), String::from("other.json")];
+    st.board.replied = vec![String::from("park1:planned")];
+    let rows = vec![need_row("park1", "2020-01-01", "Old but answered")];
+    let mut replan = replan_answered(&ctx, &mut st, &rows);
+    assert_eq!(replan, BTreeSet::from([String::from("park1")]));
+    assert_eq!(st.board.replan, vec![String::from("park1")]);
+    assert_eq!(st.plans_seen, vec![String::from("other.json")]);
+    assert!(st.needs.get("park1").is_none());
+    assert!(st.board.replied.is_empty());
+    assert!(!ctx.home.join("plans/park1.json").exists());
+    let superseded: Vec<String> = fs::read_dir(ctx.home.join("plans/superseded"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(superseded.len(), 1);
+    assert!(superseded[0].starts_with("park1.") && superseded[0].ends_with(".json"));
+    assert!(host.logs().contains(
+        &"board: operator replied on parked need park1 (was hold); re-planning".to_string()
+    ));
+    let approved = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("park1"));
+    assert!(replan.is_empty() && st.board.replan.is_empty());
+}
+
+#[test]
+fn a_parked_need_without_a_reply_is_left_alone() {
+    let (_dir, ctx, host) = setup();
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/park2.json"), "{}").unwrap();
+    let ancient = thread(
+        "2001-01-01T00:00:00Z",
+        "cafe01",
+        "operator@bd371d96.local",
+        "ancient ruling",
+    );
+    let other = thread(
+        "2035-01-01T00:00:00Z",
+        "dead01",
+        "mind@bd371d96.local",
+        "not the operator",
+    );
+    host.reply("need show park2", 0, &format!("{ancient}\n{other}"));
+    let mut st = State::default();
+    st.needs
+        .insert(String::from("park2"), parked("operator", "held"));
+    st.board.replan = vec![String::from("elsewhere")];
+    let rows = vec![need_row("park2", "2026-10-15", "Parked")];
+    let replan = replan_answered(&ctx, &mut st, &rows);
+    assert!(!replan.contains("park2"));
+    assert_eq!(st.board.replan, vec![String::from("elsewhere")]);
+    assert!(st.needs.contains_key("park2"));
+    assert!(st.plans_seen.is_empty());
+    assert!(ctx.home.join("plans/park2.json").exists());
+    assert!(
+        !host
+            .logs()
+            .iter()
+            .any(|line| line.contains("operator replied"))
+    );
+}
+
+#[test]
+fn post_replies_sends_planned_once_and_merged_once() {
+    let (_dir, ctx, host) = setup();
+    host.reply("mail reply n1", 0, "accepted\nqueued on the server");
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("n1"),
+        NeedRecord {
+            verdict: String::from("split"),
+            reason: String::from("two parts"),
+            units: vec![String::from("u1"), String::from("u2")],
+        },
+    );
+    st.units.insert(
+        String::from("u1"),
+        merged_unit("Unit one", "abcdef1234567890"),
+    );
+    st.units.insert(
+        String::from("u2"),
+        merged_unit("Unit two", "abcdef1234567890"),
+    );
+    let rows = vec![need_row("n1", "2026-10-15", "Split me")];
+    assert!(post_replies(&ctx, &mut st, &rows));
+    let planned = fs::read_to_string(ctx.home.join("board/reply-n1-planned.txt")).unwrap();
+    assert_eq!(
+        planned,
+        "pump: planned. verdict: split; 2 unit(s).\ntwo parts\n- u1 Unit one\n- u2 Unit two\n"
+    );
+    let merged = fs::read_to_string(ctx.home.join("board/reply-n1-merged.txt")).unwrap();
+    assert_eq!(
+        merged,
+        "pump: every unit of this need is merged into branch next.\n- u1 merged abcdef1234\n- u2 merged abcdef1234\nNot reviewed. Not on main.\n"
+    );
+    let mails = || {
+        host.commands()
+            .iter()
+            .filter(|cmd| cmd.contains("mail reply n1"))
+            .count()
+    };
+    assert_eq!(mails(), 2);
+    assert!(host.commands().iter().any(|cmd| {
+        cmd.contains("--from mind")
+            && cmd.contains("--to operator@bd371d96.local")
+            && cmd.contains("reply-n1-planned.txt")
+    }));
+    assert!(
+        host.logs()
+            .contains(&"board reply n1 planned rc=0 queued on the server".to_string())
+    );
+    assert_eq!(
+        st.board.replied,
+        vec![String::from("n1:planned"), String::from("n1:merged")]
+    );
+    assert!(!post_replies(&ctx, &mut st, &rows));
+    assert_eq!(mails(), 2);
+}
+
+#[test]
+fn the_merged_reply_waits_until_every_unit_is_satisfied() {
+    let (_dir, ctx, host) = setup();
+    host.reply("mail reply n2", 0, "queued");
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("n2"),
+        NeedRecord {
+            verdict: String::from("plan"),
+            reason: String::from("one first"),
+            units: vec![String::from("u1"), String::from("u2")],
+        },
+    );
+    st.units
+        .insert(String::from("u1"), merged_unit("One", "1111111111aaaa"));
+    st.units.insert(String::from("u2"), Unit::default());
+    let rows = vec![need_row("n2", "2026-10-15", "Two units")];
+    assert!(post_replies(&ctx, &mut st, &rows));
+    assert_eq!(st.board.replied, vec![String::from("n2:planned")]);
+    assert!(!ctx.home.join("board/reply-n2-merged.txt").exists());
+    let unit = st.units.get_mut("u2").unwrap();
+    unit.status = Status::Merged;
+    unit.commit = Some(String::from("2222222222bbbb"));
+    assert!(post_replies(&ctx, &mut st, &rows));
+    let merged = fs::read_to_string(ctx.home.join("board/reply-n2-merged.txt")).unwrap();
+    assert!(merged.contains("merged into branch next."));
+    assert!(merged.contains("- u2 merged 2222222222"));
+    assert_eq!(
+        st.board.replied,
+        vec![String::from("n2:planned"), String::from("n2:merged")]
+    );
+}
+
+#[test]
+fn a_failed_reply_is_retried_on_the_next_pass() {
+    let (_dir, ctx, host) = setup();
+    host.reply("mail reply f1", 1, "relay down\ncome back later");
+    let mut st = State::default();
+    st.needs
+        .insert(String::from("f1"), parked("single", "one unit"));
+    let rows = vec![need_row("f1", "2026-10-15", "One")];
+    assert!(!post_replies(&ctx, &mut st, &rows));
+    assert!(st.board.replied.is_empty());
+    assert!(
+        host.logs()
+            .contains(&"board reply f1 planned rc=1 come back later".to_string())
+    );
+    host.reply("mail reply f1", 0, "queued");
+    assert!(post_replies(&ctx, &mut st, &rows));
+    assert_eq!(st.board.replied, vec![String::from("f1:planned")]);
+}
+
+#[test]
+fn board_skips_a_pass_inside_the_every_window_and_pulls_then_plans_otherwise() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.board.at = ctx.now();
+    board(&ctx, &mut st);
+    assert!(host.commands().is_empty());
+    host.reply("sync pull", 0, "pulled 3 messages");
+    host.reply(
+        "need list --from operator@bd371d96.local",
+        0,
+        &list(&[row("n9", "2026-10-15T00:00", "Plan me", &[])]),
+    );
+    host.reply("--held", 0, "[]");
+    host.reply("--to mind", 0, "[]");
+    host.reply(
+        "need show n9",
+        0,
+        &thread(
+            "2026-10-15T00:00:00Z",
+            "f00d01",
+            "operator@bd371d96.local",
+            "the need",
+        ),
+    );
+    host.advance(301);
+    board(&ctx, &mut st);
+    assert_eq!(st.board.at, ctx.now());
+    assert!(
+        host.logs()
+            .contains(&"sync pull rc=0 pulled 3 messages".to_string())
+    );
+    assert!(st.board.planning.contains_key("n9"));
+    assert!(host.spawned().iter().any(|cmd| cmd.contains("planner-run")));
+    assert!(!host.spawned().iter().any(|cmd| cmd.contains("sync push")));
 }

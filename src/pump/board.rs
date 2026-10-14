@@ -9,7 +9,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::pump::collect::spawn_planner;
-use crate::pump::host::Ctx;
+use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::ready::satisfied;
 use crate::pump::state::State;
 
 /// One row of `vivi need list --json` (pump.py:304-360).
@@ -264,4 +265,275 @@ fn tail_note(text: &str, max: usize) -> String {
     let skip = text.chars().count().saturating_sub(max);
     let tail: String = text.chars().skip(skip).collect();
     tail.replace('\n', " | ")
+}
+
+/// Verdicts that wait for an operator ruling before anything moves
+/// (pump.py:253).
+const PARKED: [&str; 3] = ["operator", "design", "hold"];
+
+/// True when the need's thread holds an operator message newer than `since`
+/// (epoch seconds): `## <rfc3339> - <hex> [` header lines set the current
+/// message time, and a following `From: <cfg.from>@` line decides it
+/// (pump.py:256). A nonzero exit, or an unparseable stamp, means false.
+#[must_use]
+pub fn operator_replied_after(ctx: &Ctx, handle: &str, since: u64) -> bool {
+    let out = ctx.vivi(&format!("need show {handle}"), 60);
+    if out.code != 0 {
+        return false;
+    }
+    let sender = format!("From: {}@", ctx.cfg.from);
+    let mut when = String::new();
+    for line in out.text.lines() {
+        if let Some(stamp) = header_time(line) {
+            when = stamp.to_owned();
+        } else if !when.is_empty() && line.starts_with(&sender) && newer_than(&when, since) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The RFC 3339 stamp of a `## <rfc3339> - <hex> [` thread header line.
+fn header_time(line: &str) -> Option<&str> {
+    let (stamp, rest) = line.strip_prefix("## ")?.split_once(' ')?;
+    let (dash, rest) = rest.split_once(' ')?;
+    let (hex, rest) = rest.split_once(' ')?;
+    if dash != "-" || hex.is_empty() || !rest.starts_with('[') {
+        return None;
+    }
+    hex.chars()
+        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        .then_some(stamp)
+}
+
+/// True when RFC 3339 `stamp` parses and is strictly later than `since`.
+fn newer_than(stamp: &str, since: u64) -> bool {
+    chrono::DateTime::parse_from_rfc3339(stamp)
+        .map(|time| u64::try_from(time.timestamp()).unwrap_or(0) > since)
+        .unwrap_or(false)
+}
+
+/// Epoch seconds of a file's mtime; 0 when the clock sits before the epoch.
+fn mtime_secs(meta: &fs::Metadata) -> u64 {
+    let Ok(modified) = meta.modified() else {
+        return 0;
+    };
+    u64::try_from(chrono::DateTime::<chrono::Utc>::from(modified).timestamp()).unwrap_or(0)
+}
+
+/// A parked need (verdict `operator`, `design` or `hold`, no units) whose
+/// thread gained an operator reply after its plan was written is planned
+/// again: the plan moves to `plans/superseded/`, the basename leaves
+/// `plans_seen`, the need record and its `planned` reply key are dropped, and
+/// the handle joins the replan set, which bypasses the since cutoff
+/// (pump.py:275). Returns the replan set, mirrored sorted in
+/// `st.board.replan`.
+pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> BTreeSet<String> {
+    let mut replan: BTreeSet<String> = st.board.replan.iter().cloned().collect();
+    for row in rows {
+        let Some(verdict) = parked_with_reply(ctx, st, &row.handle) else {
+            continue;
+        };
+        let superseded = ctx.home.join("plans").join("superseded");
+        drop(fs::create_dir_all(&superseded));
+        drop(fs::rename(
+            plan_path(ctx, &row.handle),
+            superseded.join(format!("{}.{}.json", row.handle, ctx.now())),
+        ));
+        let json = format!("{}.json", row.handle);
+        st.plans_seen.retain(|seen| seen != &json);
+        st.needs.remove(&row.handle);
+        let key = format!("{}:planned", row.handle);
+        st.board.replied.retain(|sent| sent != &key);
+        replan.insert(row.handle.clone());
+        ctx.log(&format!(
+            "board: operator replied on parked need {} (was {verdict}); re-planning",
+            row.handle
+        ));
+    }
+    st.board.replan = replan.iter().cloned().collect();
+    replan
+}
+
+/// The need's verdict when `handle` is parked, unit-less, has a plan file,
+/// and its thread holds an operator reply newer than that plan's mtime.
+fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
+    let record = st.needs.get(handle)?;
+    if !PARKED.contains(&record.verdict.as_str()) || !record.units.is_empty() {
+        return None;
+    }
+    let Ok(meta) = fs::metadata(plan_path(ctx, handle)) else {
+        return None;
+    };
+    operator_replied_after(ctx, handle, mtime_secs(&meta)).then(|| record.verdict.clone())
+}
+
+/// Reply once on every candidate need's thread that has a verdict: stage
+/// `planned` always, stage `merged` when every unit is satisfied
+/// (pump.py:361-390). Returns whether any reply was sent.
+pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
+    let mut said = false;
+    for row in rows {
+        let Some((verdict, reason, units)) = st.needs.get(&row.handle).map(|record| {
+            (
+                record.verdict.clone(),
+                record.reason.clone(),
+                record.units.clone(),
+            )
+        }) else {
+            continue;
+        };
+        if reply_stages(ctx, st, &row.handle, &verdict, &reason, &units) {
+            said = true;
+        }
+    }
+    said
+}
+
+/// Send the pending stages of one need; true when any reply succeeded.
+fn reply_stages(
+    ctx: &Ctx,
+    st: &mut State,
+    handle: &str,
+    verdict: &str,
+    reason: &str,
+    units: &[String],
+) -> bool {
+    let mut said = false;
+    for stage in ["planned", "merged"] {
+        let key = format!("{handle}:{stage}");
+        if st.board.replied.iter().any(|sent| sent == &key) {
+            continue;
+        }
+        let Some(body) = reply_body(ctx, st, stage, verdict, reason, units) else {
+            continue;
+        };
+        if send_reply(ctx, handle, stage, &body) {
+            st.board.replied.push(key);
+            said = true;
+        }
+    }
+    said
+}
+
+/// The reply body for one stage, or `None` when the stage must wait:
+/// `merged` waits until the need has units and every one is satisfied.
+fn reply_body(
+    ctx: &Ctx,
+    st: &State,
+    stage: &str,
+    verdict: &str,
+    reason: &str,
+    units: &[String],
+) -> Option<String> {
+    if stage == "planned" {
+        let list = units
+            .iter()
+            .filter_map(|uid| st.units.get(uid).map(|u| format!("- {uid} {}", u.title)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Some(format!(
+            "pump: planned. verdict: {verdict}; {} unit(s).\n{reason}\n{list}",
+            units.len()
+        ));
+    }
+    if !units.is_empty() && units.iter().all(|uid| satisfied(st, uid, 0)) {
+        let list = units
+            .iter()
+            .filter_map(|uid| {
+                st.units.get(uid).map(|u| {
+                    let commit: String =
+                        u.commit.as_deref().unwrap_or("").chars().take(10).collect();
+                    format!("- {uid} {} {commit}", u.status.as_str())
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Some(format!(
+            "pump: every unit of this need is merged into branch {}.\n{list}\nNot reviewed. Not on main.",
+            ctx.cfg.branch
+        ));
+    }
+    None
+}
+
+/// Write the body to `<home>/board/reply-<h>-<stage>.txt` and run `mail
+/// reply` from the reply identity; true when the reply succeeded.
+fn send_reply(ctx: &Ctx, handle: &str, stage: &str, body: &str) -> bool {
+    let dir = ctx.home.join("board");
+    drop(fs::create_dir_all(&dir));
+    let path = dir.join(format!("reply-{handle}-{stage}.txt"));
+    if fs::write(&path, format!("{body}\n")).is_err() {
+        ctx.log(&format!(
+            "board reply {handle} {stage} rc=1 body file unwritable"
+        ));
+        return false;
+    }
+    let args = format!(
+        "mail reply {handle} --from {} --to {} --body-file {}",
+        ctx.cfg.reply_from,
+        ctx.cfg.reply_to(),
+        shell_quote(&path.to_string_lossy())
+    );
+    let out = ctx.vivi(&args, 60);
+    ctx.log(&format!(
+        "board reply {handle} {stage} rc={} {}",
+        out.code,
+        last_line(&out.text, 80)
+    ));
+    out.code == 0
+}
+
+/// pump.py's `out.strip().splitlines()[-1][:max]`: the last line cut to
+/// `max` chars, empty when the output is blank.
+fn last_line(text: &str, max: usize) -> String {
+    text.trim()
+        .lines()
+        .last()
+        .unwrap_or("")
+        .chars()
+        .take(max)
+        .collect()
+}
+
+/// One board pass (pump.py:319): pull, expire, re-plan answered parked
+/// needs, plan new needs, and push replies — at most one pass per
+/// `board.every` seconds.
+pub fn board(ctx: &Ctx, st: &mut State) {
+    if ctx.now() - st.board.at < ctx.cfg.board.every {
+        return;
+    }
+    st.board.at = ctx.now();
+    if ctx.cfg.board.pull {
+        let out = ctx.vivi("sync pull", 120);
+        ctx.log(&format!(
+            "sync pull rc={} {}",
+            out.code,
+            last_line(&out.text, 150)
+        ));
+    }
+    let (rows, approved) = candidate_rows(ctx);
+    expire_planning(ctx, st);
+    let mut replan = replan_answered(ctx, st, &rows);
+    launch_planners(ctx, st, &rows, &approved, &mut replan);
+    if post_replies(ctx, st, &rows) {
+        spawn_sync_push(ctx);
+    }
+}
+
+/// Start the detached drain push that ships the replies just posted.
+fn spawn_sync_push(ctx: &Ctx) {
+    let project = shell_quote(&ctx.project.to_string_lossy());
+    let core = format!(
+        "{} sync push --since {} --drain --project {project}",
+        ctx.vivi, ctx.cfg.board.push_since
+    );
+    let cmd = if ctx.shell_prefix.is_empty() {
+        core
+    } else {
+        format!("{}; {core}", ctx.shell_prefix)
+    };
+    ctx.host
+        .spawn(&cmd, None, None, &ctx.home.join("sync-push.log"));
+    ctx.log("sync push started (detached, drain)");
 }
