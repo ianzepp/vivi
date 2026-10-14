@@ -350,14 +350,18 @@ replaces.
 | key | type | default | replaces | controls |
 | --- | --- | --- | --- | --- |
 | `home` | path | `<project>/.vivi/pump` | `HOME = "/mnt/agents/pump"` (pump.py:25) | the home directory (§3) |
-| `repo` | path | `<home>/repo` | `REPO = HOME + "/repo"` (pump.py:26) | the integration clone; cloned from `remote` when absent |
-| `remote` | string | `origin` | `origin` literals (pump.py:626–629, 637, 664, 683, 743) | the git remote the integration branch and main live on |
+| `repo` | path | `<home>/repo` | `REPO = HOME + "/repo"` (pump.py:26) | the integration clone; at startup a missing one is cloned from `remote_url`, or the pump refuses to start when none is set |
+| `remote` | string | `origin` | `origin` literals (pump.py:626–629, 637, 664, 683, 743) | the git remote (name) the integration branch and main live on; the name given to the clone's remote |
+| `remote_url` | string | none | — (pump.py has no clone code) | URL or path the missing integration clone is created from (`git clone -o <remote> --branch <branch>`) |
+| `committer_name` | string | none — **required** | pump.py commits as the host's git identity | `user.name` of every commit and merge the pump makes, passed as `git -c user.name=…` |
+| `committer_email` | string | none — **required** | same | `user.email`, passed as `git -c user.email=…` |
 | `branch` | string | `next` — **required** | `BRANCH = "next"` (pump.py:29) | the integration branch |
 | `main` | string | `main` | `main` literals (pump.py:683, 950) | main branch merged into the integration branch each batch; `""` disables both merging main in and promotion |
 | `promote` | bool | `true` | `promote()` called on a clean gate (pump.py:1007–1008) | a gate with no new unowned failure fast-forwards main to the gated tip |
 | `tick` | int seconds | `20` | `TICK = 20` (pump.py:42) | sleep between ticks (pump.py:1078) |
 | `shell_prefix` | string | `""` | `ENV = "/mnt/agents/faber-runs/pharos-env.sh"` (pump.py:28, used at pump.py:90) | prepended to every command line (§2) |
-| `hand_rules` | path | embedded generic text | `RULES` (pump.py:45–58, used at pump.py:565) | file whose text opens every unit brief |
+| `hand_rules` | path | embedded generic text | `RULES` (pump.py:45–58, used at pump.py:565) | file whose text opens every unit brief; a relative path joins the project root like `home`; `validate` rejects a file that cannot be read |
+| `reserved_file` | path | `reserved.txt` | — | paths held by another session; units overlapping them are not dispatched; a relative value joins `home` |
 | `fix_prefix` | string | `pumpfix` | `pumpfix` literals (pump.py:534, 540, 579, 862, 920, 935, 1002) | unit ids with this prefix are fix units: dispatched first, merged even under `HOLD-MERGE`, scope-checked only against in-flight units |
 | `from` | role | `operator` | `--from operator` (pump.py:598) | role the pump sends unit tasks from |
 | `to` | role | `hand` | `--to hand` (pump.py:598) | recipient role of a unit dispatch |
@@ -429,6 +433,13 @@ after that long. The engine keeps the behaviour; it is not configurable.
 Validation rules (pump.py has none — the engine adds them):
 
 - `branch` is required.
+- `committer_name` and `committer_email` are required.
+- `gate.command` must not be empty (always).
+- `merge.shared_checks` must not be empty while promotion is enabled
+  (`promote = true` and `main` non-empty): with no checks a merge would land
+  unchecked.
+- `hand_rules`, when set, must be a readable file (relative to the project
+  root).
 - `tick` >= 1.
 - `lanes` is non-empty and every lane's `cap` >= 1.
 - `max_attempts` >= 1.

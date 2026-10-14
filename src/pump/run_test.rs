@@ -19,7 +19,9 @@ const T0: u64 = 1_000_000;
 /// `board.mark` is set, so `planner.run` must be non-empty.
 const PUMP_TOML: &str = concat!(
     "name = \"pump\"\n\n",
-    "[pump]\nbranch = \"next\"\ntick = 1\n\n",
+    "[pump]\nbranch = \"next\"\ntick = 1\n",
+    "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
+    "[pump.merge]\nshared_checks = [\"true\"]\n\n[pump.gate]\ncommand = \"true\"\n\n",
     "[pump.dispatch]\nlanes = [{ model = \"m\", cap = 2 }]\n\n",
     "[pump.planner]\nrun = \"planner-model\"\n",
 );
@@ -257,4 +259,63 @@ fn a_state_file_from_a_previous_run_is_loaded_and_saved_back() {
     assert_eq!(back.units.get("old-1").unwrap().status, Status::Merged);
     assert!(back.order.iter().any(|uid| uid == "old-1"));
     assert_eq!(back.merges, 2);
+}
+
+#[test]
+fn a_missing_clone_without_a_remote_url_refuses_to_start() {
+    let (dir, ctx, host) = setup();
+    fs::remove_dir_all(&ctx.repo).unwrap();
+    let err = run_with(&ctx, true).unwrap_err();
+    assert!(err.to_string().contains("remote_url"), "{err}");
+    assert!(!ctx.repo.exists());
+    assert!(
+        host.commands().is_empty(),
+        "nothing ran: {:?}",
+        host.commands()
+    );
+    drop(dir);
+}
+
+#[test]
+fn a_missing_clone_is_cloned_from_the_remote_url() {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        remote_url: Some(String::from("git@example.com:org/repo.git")),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    fs::remove_dir_all(&ctx.repo).unwrap();
+    crate::pump::run::ensure_repo(&ctx).unwrap();
+    let clone = host.commands().into_iter().next().unwrap();
+    assert!(
+        clone.starts_with("git clone -q -o origin --branch next git@example.com:org/repo.git "),
+        "{clone}"
+    );
+    assert!(
+        clone.ends_with(&ctx.repo.to_string_lossy().into_owned()),
+        "{clone}"
+    );
+}
+
+#[test]
+fn a_failed_clone_stops_the_start_with_the_git_output() {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        remote_url: Some(String::from("/nowhere")),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    fs::remove_dir_all(&ctx.repo).unwrap();
+    host.reply("git clone", 128, "fatal: repository not found");
+    let err = crate::pump::run::ensure_repo(&ctx).unwrap_err();
+    assert!(err.to_string().contains("repository not found"), "{err}");
+}
+
+#[test]
+fn an_existing_clone_is_left_alone() {
+    let (_dir, ctx, host) = setup();
+    crate::pump::run::ensure_repo(&ctx).unwrap();
+    assert!(host.commands().is_empty());
 }

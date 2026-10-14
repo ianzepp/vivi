@@ -14,7 +14,7 @@ use crate::pump::collect;
 use crate::pump::config::PumpConfig;
 use crate::pump::dispatch;
 use crate::pump::gate;
-use crate::pump::host::{Ctx, RealHost};
+use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::merge::Merger;
 use crate::pump::plan;
 use crate::pump::state::State;
@@ -90,7 +90,7 @@ pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    cfg.validate(&pools)?;
+    cfg.validate(project, &pools)?;
     let home = cfg.home_dir(project);
     fs::create_dir_all(&home)?;
     let lock = take_lock(&home)?;
@@ -129,11 +129,58 @@ pub fn status(project: &Path) -> Result<String, VivariumError> {
 /// # Errors
 /// Returns whatever loading the state fails with.
 pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
+    ensure_repo(ctx)?;
     let state_path = ctx.home.join("state.json");
     let mut st = State::load(&state_path)?;
     let merger = Merger::start(ctx);
     drive(ctx, &mut st, &merger, once);
     Ok(())
+}
+
+/// Startup check: the integration clone must exist. A missing `repo` is
+/// cloned from `remote_url` (the clone's remote is named `remote`, on the
+/// integration branch); with no `remote_url` the pump refuses to start.
+///
+/// # Errors
+/// Returns [`VivariumError::Config`] when the clone is missing and no
+/// `remote_url` is set, and [`VivariumError::Message`] when the clone fails.
+pub(crate) fn ensure_repo(ctx: &Ctx) -> Result<(), VivariumError> {
+    if ctx.repo.exists() {
+        return Ok(());
+    }
+    let Some(url) = ctx.cfg.remote_url.as_deref().filter(|u| !u.is_empty()) else {
+        return Err(VivariumError::Config(format!(
+            "integration clone {} does not exist and [pump] remote_url is not set; \
+             create the clone or set remote_url",
+            ctx.repo.display()
+        )));
+    };
+    if let Some(parent) = ctx.repo.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let cmd = clone_command(ctx, url);
+    ctx.log(&format!("cloning {url} into {}", ctx.repo.display()));
+    let out = ctx.sh(&cmd, None, 900);
+    if out.code != 0 {
+        return Err(VivariumError::Message(format!(
+            "cloning {url} into {} failed (exit {}): {}",
+            ctx.repo.display(),
+            out.code,
+            out.text.trim()
+        )));
+    }
+    Ok(())
+}
+
+/// `git clone -o <remote> --branch <branch> <url> <repo>`, quoted.
+fn clone_command(ctx: &Ctx, url: &str) -> String {
+    format!(
+        "git clone -q -o {} --branch {} {} {}",
+        shell_quote(&ctx.cfg.remote),
+        shell_quote(&ctx.cfg.branch),
+        shell_quote(url),
+        shell_quote(&ctx.repo.to_string_lossy())
+    )
 }
 
 /// The run/once loop (pump.py:1065-1078): tick, then return when `once`,

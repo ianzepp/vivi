@@ -12,7 +12,7 @@ use std::fs;
 use super::host::Ctx;
 use super::state::Unit;
 
-/// The hand rules used when `cfg.hand_rules` is unset or unreadable.
+/// The hand rules used when `cfg.hand_rules` is unset.
 ///
 /// Deliberately project-agnostic: no language, test script, stage, pool or
 /// repository is named, so the same text works as the floor for any project.
@@ -34,16 +34,25 @@ const DONE_WHEN: &str = "done_when: every PROOF command exits 0 on your checkout
 /// The closing line of the gate brief.
 const GATE_DONE_WHEN: &str = "done_when: the marker block is in the reply";
 
-/// The hand rules in force: the file named by `cfg.hand_rules` when set and
-/// readable, otherwise [`DEFAULT_HAND_RULES`].
+/// The hand rules in force: [`DEFAULT_HAND_RULES`] when `cfg.hand_rules` is
+/// unset, else the named file (a relative path joins the project root, as
+/// `home` and `repo` do). `validate` rejects an unreadable file at startup; a
+/// file that goes missing later is logged and the default is used.
 #[must_use]
 pub fn hand_rules(ctx: &Ctx) -> String {
-    if let Some(path) = ctx.cfg.hand_rules.as_deref()
-        && let Ok(text) = fs::read_to_string(path)
-    {
-        return text;
+    let Some(path) = ctx.cfg.hand_rules_path(&ctx.project) else {
+        return DEFAULT_HAND_RULES.to_owned();
+    };
+    match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            ctx.log(&format!(
+                "hand_rules {} unreadable ({err}); using the default rules",
+                path.display()
+            ));
+            DEFAULT_HAND_RULES.to_owned()
+        }
     }
-    DEFAULT_HAND_RULES.to_owned()
 }
 
 /// The brief one dispatched agent receives for `uid`, mirroring pump.py's

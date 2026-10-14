@@ -10,6 +10,9 @@ const FULL: &str = r#"
 home        = "/mnt/agents/pump"
 repo        = "/mnt/agents/pump/repo"
 remote      = "origin"
+remote_url  = "git@example.com:org/repo.git"
+committer_name  = "Ian Zepp"
+committer_email = "ian@example.com"
 branch      = "next"
 main        = "main"
 promote     = true
@@ -147,7 +150,7 @@ fn a_minimal_pump_table_takes_every_default() {
 
 #[test]
 fn the_full_design_file_block_parses() {
-    let cfg = pump(&format!("name = \"t\"\n{FULL}"));
+    let mut cfg = pump(&format!("name = \"t\"\n{FULL}"));
     assert_eq!(cfg.branch, "next");
     assert_eq!(cfg.main, "main");
     assert_eq!(cfg.tick, 20);
@@ -164,8 +167,15 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.gate.model, "zai/glm-5.3-flash");
     assert_eq!(cfg.reply_to(), "operator@bd371d96.local");
+    assert_eq!(cfg.committer_name, "Ian Zepp");
+    assert_eq!(cfg.committer_email, "ian@example.com");
+    assert_eq!(
+        cfg.remote_url.as_deref(),
+        Some("git@example.com:org/repo.git")
+    );
+    cfg.hand_rules = None; // the design path does not exist on the test host
     assert!(
-        cfg.validate(&pools(&["fly4", "flyfull", "flygate"]))
+        cfg.validate(Path::new("."), &pools(&["fly4", "flyfull", "flygate"]))
             .is_ok(),
         "the design values should validate"
     );
@@ -200,7 +210,7 @@ fn an_unknown_key_is_ignored() {
 #[test]
 fn validate_rejects_a_missing_branch_and_names_the_key() {
     let err = PumpConfig::default()
-        .validate(&[])
+        .validate(Path::new("."), &[])
         .expect_err("empty branch must fail");
     assert!(err.to_string().contains("[pump] branch"), "{err}");
 }
@@ -208,7 +218,7 @@ fn validate_rejects_a_missing_branch_and_names_the_key() {
 #[test]
 fn validate_rejects_empty_lanes_and_zero_caps() {
     let err = PumpConfig::default()
-        .validate(&[])
+        .validate(Path::new("."), &[])
         .expect_err("no lanes must fail");
     assert!(err.to_string().contains("[pump.dispatch] lanes"), "{err}");
     let zero_cap = PumpConfig {
@@ -222,7 +232,7 @@ fn validate_rejects_empty_lanes_and_zero_caps() {
         ..PumpConfig::default()
     };
     let err = zero_cap
-        .validate(&pools(&["p"]))
+        .validate(Path::new("."), &pools(&["p"]))
         .expect_err("cap 0 must fail");
     assert!(err.to_string().contains("cap >= 1"), "{err}");
     let empty_model = PumpConfig {
@@ -236,7 +246,7 @@ fn validate_rejects_empty_lanes_and_zero_caps() {
         ..PumpConfig::default()
     };
     let err = empty_model
-        .validate(&pools(&["p"]))
+        .validate(Path::new("."), &pools(&["p"]))
         .expect_err("empty model must fail");
     assert!(err.to_string().contains("model"), "{err}");
 }
@@ -256,7 +266,7 @@ fn validate_rejects_an_unknown_pool_name() {
         ..PumpConfig::default()
     };
     let err = cfg
-        .validate(&pools(&["other"]))
+        .validate(Path::new("."), &pools(&["other"]))
         .expect_err("unknown pool must fail");
     assert!(
         err.to_string().contains("[pump.dispatch] pool_plain"),
@@ -265,7 +275,7 @@ fn validate_rejects_an_unknown_pool_name() {
     cfg.dispatch.pool_plain = String::new();
     cfg.dispatch.pool_full = "flyfull".into();
     let err = cfg
-        .validate(&pools(&["other"]))
+        .validate(Path::new("."), &pools(&["other"]))
         .expect_err("unknown pool must fail");
     assert!(
         err.to_string().contains("[pump.dispatch] pool_full"),
@@ -274,12 +284,96 @@ fn validate_rejects_an_unknown_pool_name() {
     cfg.dispatch.pool_full = String::new();
     cfg.gate.pools = vec!["flygate".into()];
     let err = cfg
-        .validate(&pools(&["other"]))
+        .validate(Path::new("."), &pools(&["other"]))
         .expect_err("unknown pool must fail");
     assert!(err.to_string().contains("[pump.gate] pools"), "{err}");
     cfg.gate.pools = vec!["flygate".into(), "flyfull".into()];
     cfg.board.mark = String::new(); // not under test here
-    assert!(cfg.validate(&pools(&["flygate", "flyfull"])).is_ok());
+    cfg.committer_name = "Test".into();
+    cfg.committer_email = "test@example.com".into();
+    cfg.gate.command = "./gate".into();
+    cfg.merge.shared_checks = vec!["./check".into()];
+    assert!(
+        cfg.validate(Path::new("."), &pools(&["flygate", "flyfull"]))
+            .is_ok()
+    );
+}
+
+/// A config that passes `validate` once the pool names are supplied.
+fn valid() -> PumpConfig {
+    let mut cfg = pump(&format!("name = \"t\"\n{FULL}"));
+    cfg.hand_rules = None;
+    cfg
+}
+
+fn pool_names() -> Vec<String> {
+    pools(&["fly4", "flyfull", "flygate"])
+}
+
+#[test]
+fn validate_rejects_an_empty_gate_command_even_without_promotion() {
+    let mut cfg = valid();
+    cfg.gate.command = String::new();
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("empty gate");
+    assert!(err.to_string().contains("[pump.gate] command"), "{err}");
+    cfg.promote = false;
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("empty gate");
+    assert!(err.to_string().contains("[pump.gate] command"), "{err}");
+}
+
+#[test]
+fn validate_rejects_empty_shared_checks_only_while_promotion_is_enabled() {
+    let mut cfg = valid();
+    cfg.merge.shared_checks = Vec::new();
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("no checks");
+    assert!(
+        err.to_string().contains("[pump.merge] shared_checks"),
+        "{err}"
+    );
+    cfg.promote = false;
+    assert!(cfg.validate(Path::new("."), &pool_names()).is_ok());
+    cfg.promote = true;
+    cfg.main = String::new();
+    assert!(cfg.validate(Path::new("."), &pool_names()).is_ok());
+}
+
+#[test]
+fn validate_rejects_a_missing_committer_identity() {
+    let mut cfg = valid();
+    cfg.committer_name = String::new();
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("no name");
+    assert!(err.to_string().contains("committer_name"), "{err}");
+    cfg.committer_name = "Ian".into();
+    cfg.committer_email = " ".into();
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("no email");
+    assert!(err.to_string().contains("committer_email"), "{err}");
+}
+
+#[test]
+fn validate_rejects_an_unreadable_hand_rules_file_and_resolves_relative_to_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = valid();
+    cfg.hand_rules = Some("rules.md".into());
+    let err = cfg
+        .validate(dir.path(), &pool_names())
+        .expect_err("absent rules file");
+    assert!(err.to_string().contains("hand_rules"), "{err}");
+    std::fs::write(dir.path().join("rules.md"), "rules").unwrap();
+    assert!(cfg.validate(dir.path(), &pool_names()).is_ok());
+    assert_eq!(
+        cfg.hand_rules_path(dir.path()),
+        Some(dir.path().join("rules.md"))
+    );
 }
 
 #[test]
@@ -308,4 +402,20 @@ fn home_and_repo_default_under_the_project_and_follow_overrides() {
     assert_eq!(over.repo_dir(&project), project.join("pump-repo"));
     over.repo = Some("/tmp/repo-abs".into());
     assert_eq!(over.repo_dir(&project), Path::new("/tmp/repo-abs"));
+}
+
+#[test]
+fn reserved_file_defaults_to_reserved_txt_under_home() {
+    let project = Path::new("/p");
+    let cfg = PumpConfig::default();
+    assert_eq!(cfg.reserved_file, "reserved.txt");
+    assert_eq!(
+        cfg.reserved_path(project),
+        project.join(".vivi/pump/reserved.txt")
+    );
+    let abs = PumpConfig {
+        reserved_file: "/x/held.txt".into(),
+        ..PumpConfig::default()
+    };
+    assert_eq!(abs.reserved_path(project), Path::new("/x/held.txt"));
 }
