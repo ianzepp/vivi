@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — item events
+
+The server folds item-state events by the client's rule and stops showing
+them as work. Wire detail in [`docs/contract.md`](docs/contract.md#item-events-140).
+
+- **Event letters are not work.** A record with `X-Vivi-Event` is never
+  listed, counted in `overview`, routed as ready, graphed, or settled. They
+  file in the server mailspace as mail.
+- **One fold, the client's rule.** Any member's event counts; the newest by
+  `X-Vivi-Event-At` (else `Date`) wins, then successor, then larger
+  `Message-ID`; `absorbed` is final; marks fold newest per slug and binds
+  newest per unit. An instant over five minutes past the append time
+  counts as the append time.
+- **MCP `done` / `reopen`** write stamped event letters addressed like the
+  client's, under the item's envelope kind. Reopening an absorbed item is
+  refused.
+- **Version gate.** `GET /v1/projects/{id}/items` carries `item_events: 1`.
+
 ## 1.3.0 — 2026-10-12
 
 Rooms are fleeting.chat-style channels again: a private, short-lived

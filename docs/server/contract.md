@@ -328,8 +328,8 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. The tool list:
 | `thread` | `handle`, `limit?` | Reply thread |
 | `send` | `kind`, `to`, `subject`, `body`, `depends_on?` | Server composes and mints the id; `From` is the caller |
 | `reply` | `handle`, `body` | Reply as the caller |
-| `done` | `handle`, `note?` | Event letter if the caller authored the item; else a report |
-| `reopen` | `handle`, `note?` | Same authority as `done` |
+| `done` | `handle`, `note?` | Stamped event letter if the caller authored the item; else a report |
+| `reopen` | `handle`, `note?` | Same authority as `done`; an absorbed item is refused |
 | `memo` | `action` list\|show\|save, `handle?`, `subject?`, `body?` | Server-local memos (do not sync) |
 | `graph` | `view?` ready\|status | Ready / blocked / done from `X-Vivi-Depends-On` and events |
 
@@ -355,3 +355,61 @@ possession), not another API key.
 Keys are stored as SHA-256 digests, 0600, next to the project. A revoked
 or unknown key is the same `401` as a bad identity token. A live key is
 accepted on every project bearer route, including the letter wire.
+
+## Item events (1.4.0)
+
+Closing, reopening, absorbing, marking and binding a need, task or want
+travel as **event letters**: small replies carrying `X-Vivi-Event`. The
+ruling the server folds by: *when two machines disagree about a need state,
+the last update or event created against that need is controlling.*
+
+### Version gate: `item_events`
+
+`GET /v1/projects/{id}/items` carries a top-level `item_events` integer
+beside `records`, `next_cursor` and `has_more`, on **every** response —
+an empty page past the end of the log included, so `?since=<cursor>&limit=1`
+reads it. `1` means the server understands event letters as below. A client
+must not push event letters to a server that does not send `item_events`
+(absent, `null` or `0`): such a server files each as an open work item.
+
+### What the server does with an event letter
+
+- **Never work.** A record carrying `X-Vivi-Event` is not listed, counted in
+  `overview`, routed as `ready`, a `graph` node, or settled by `done` /
+  `reopen`, whatever envelope kind it travels under. `show` and `thread`
+  report it as `kind: "event"`, `status: "event"`. Server-side it files in
+  the project mailspace as mail, never under `needs`/`tasks`/`wants`.
+- **Who counts.** Any member's event. The letter must name its item both as
+  `In-Reply-To` and `X-Vivi-Event-Of`, and its `From` domain must be the
+  `<prefix>.local` the server stamped for the sender at append (a bare
+  `local`, a legacy name domain, or a prefix the sender does not hold never
+  counts). Kinds: `done`, `reopened`, `absorbed` (`X-Vivi-Event-State:
+  done|open`), `marked`/`unmarked` (`X-Vivi-Event-Slug`), `bound`
+  (`X-Vivi-Event-Unit`, repeatable). An unknown kind, or a kind missing its
+  payload, is skipped.
+- **Order.** Each event's instant is its `X-Vivi-Event-At` (RFC 3339,
+  microseconds), else its `Date`; the larger instant wins, never
+  `appended_at`. On equal instants the event that names the other in
+  `X-Vivi-Event-Prev` wins, then the larger `Message-ID`.
+- **Bound.** An instant more than five minutes after the letter's
+  server append time counts as the append time, so a far-future stamp
+  cannot lock an item. Earlier stamps are never moved.
+- **Absorbed is final.** The earliest `absorbed` event (by instant, then
+  `Message-ID`) names the state; later events of any kind move nothing, and
+  a sealed item takes no later marks or binds.
+- **Marks and binds.** Per slug, the newest `marked`/`unmarked` decides.
+  Per unit, the newest `bound` decides which item it belongs to. Both are
+  shown on a work item's summary (`marks`, `units`) when present, and
+  `absorbed: true` on a sealed one.
+
+### MCP `done` / `reopen`
+
+The authoring mailspace (the caller's prefix is the item's `From` domain)
+writes an event letter the way the client does: `X-Vivi-Event`,
+`X-Vivi-Event-Of`, `In-Reply-To`, `X-Vivi-Event-At` (the clock, never at or
+below the newest event the server holds for the item plus one microsecond),
+one `X-Vivi-Event-Prev` per head, addressed to the item's `From` first and
+then its `To`/`Cc` minus the caller, and carrying the item's own envelope
+kind (`need`/`task`/`want`) so every member is served it. Any other caller
+files a plain report reply and writes no event. `reopen` of an absorbed item
+is an error; so is `done` of an item absorbed open.
