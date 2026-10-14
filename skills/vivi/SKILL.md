@@ -221,18 +221,27 @@ A want carries no list of tasks created from it.
 `absorb` seals a record. After absorption it cannot be changed, reopened,
 promoted, dropped, reprioritized, marked, or deleted. A later reply or derived
 task is a new record. Absorb only when the identity is finished with the item
-and its state should remain frozen. An absorb by a role that may close the
-item for everyone — its author, or a role of kind `mind` or `operator`, in any
-mailspace — writes an `absorbed` event letter naming the state it sealed
-(`X-Vivi-Event-State: done|open`, the state of the item's rows when the seal
-was written). Every member that holds the item brings its rows to that state
-and seals them too, without exporting to its archive: the writer's mailspace
-exports the archive copy. An absorb by any other role seals only its own copy
-and writes no letter. Once sealed, the item is final: an event that arrives
-afterwards, older or newer, is ignored and counted in the pull summary
-(`event(s) ignored`), and because the letter names the state, every member
-ends in the same one. Two members that absorb at once each keep the seal they
-applied first.
+and its state should remain frozen. A role that may close the item for
+everyone — its author, or a role of kind `mind` or `operator`, in any
+mailspace — absorbs a need, task, or want only when the item is done and
+quiet: its folded state is `done`, and the newest event of any kind held
+for it (a state letter, a mark, a bind, another seal; a `done` move when
+no event letter exists) is at least the quiet period old — 24 hours by
+default, `[absorb] quiet_hours = N` in `mailspace.toml` (`0` turns the
+wait off). An absorb of a not-done item is refused (`close it before
+absorbing`), and one inside the quiet period is refused with the time
+left. Such an absorb writes an `absorbed` event letter naming the item's
+folded state (`X-Vivi-Event-State: done|open`: what its newest event
+says, else done when any row of it is done). Every member that holds
+the item brings its rows to that state and seals them too, without
+exporting to its archive: the writer's mailspace
+exports the archive copy. An absorb by any other role seals only its own
+copy, writes no letter, and takes no quiet gate. Once sealed, the item is
+final: an event that arrives afterwards, older or newer, is ignored and
+counted in the pull summary (`event(s) ignored`), and because the letter
+names the state, every member ends in the same one. Two members that
+absorb at once converge: every member follows the earliest seal,
+whichever letter lands first.
 
 A need or a want can carry marks: free slugs such as `bug`. A mark is an
 event on the item, not a rewrite of the message. `need mark` / `need unmark`
@@ -243,9 +252,16 @@ when any are present, sorted. `list --mark` is repeatable and keeps an item
 only when it carries every named slug. The slug is letters, numbers, dot,
 dash, and underscore, compared exactly. Marks survive promote, done, reopen,
 and drop. They do not change graph readiness, `vivi step`, or `need bind`.
-They travel: each mark or unmark of a slug that changes writes a `marked` or
-`unmarked` letter carrying `X-Vivi-Event-Slug`, and per slug the newest letter
-controls on every member. A sealed item takes no further marks.
+They travel when the acting role may close the item (its author, or a mind
+or an operator): each mark or unmark of a slug that changes writes a
+`marked` or `unmarked` letter carrying `X-Vivi-Event-Slug`. A role of any
+other kind (a hand, an auditor, a head) keeps a private mark on its own row
+that does not travel. Per slug the newest counted `marked` or `unmarked`
+letter controls — newest by (instant, Message-ID) — so the folded marks of
+every row follow the letters alone, whatever the arrival order or the
+number of pulls (a person's own later local mark for a slug is not undone
+by an older letter that arrives late). A sealed item takes no further
+marks.
 
 **Bind.** Lowering is a letter too. A `need bind` writes one `bound` event
 letter on the need — `X-Vivi-Event: bound` beside the usual event headers,
@@ -256,8 +272,11 @@ with a backlog node binds to its own node for the need (the unit's
 `subgraph` becomes the need), and the join then runs there, so a need whose
 units are all done completes on that member, wherever the bind was made.
 Binding already-done units can complete the need at once, the same way. The
-newest bind controls a unit: a `bound` letter older than a newer bind of
-that unit moves nothing. A unit this mailspace does not hold yet is skipped;
+controlling bind of a unit is the newest `bound` letter naming it, newest by
+(instant, Message-ID): an older letter arriving late moves nothing, a newer
+one re-targets the unit, and the floor is the letters alone, never a
+receiver clock — so re-targeting converges on every member whatever the
+pulls. A unit this mailspace does not hold yet is skipped;
 the letter stays counted on the need and re-applies on its next settle, so a
 unit that arrives later binds then. A need with no node here (held foreign)
 is skipped; and a bind made where no role here authored the need writes no
@@ -307,26 +326,43 @@ command to retry with `--for <holder>`, and who may close. A reporter may
 reopen its own report; it cannot reopen what an acceptor closed (`only the
 owner can reopen it`; ask a role that may close in a reply).
 
-The state is the newest event, and order is the clock, never the chain. Each
-event carries an instant — its `X-Vivi-Event-At` (RFC 3339, in microseconds)
-when present, else its `Date` in whole seconds — and the largest instant wins.
-On equal instants an event that names the other as its `X-Vivi-Event-Prev`
-wins, then the larger Message-ID. A writer never stamps an event below the
-newest one it holds, so under clock skew a causal successor still wins.
-`X-Vivi-Event-Prev` is still written — it names the heads a fork left — but it
-no longer decides: a chain of old events does not beat a later clock. An event
-counts when its From domain is a prefix domain (`<8 hex>.local`) — any
-member's, whoever authored the item. A bare `local` or a legacy name domain is
-a claim anyone can make: it is filed as plain mail and counted ignored (`N
-event(s) ignored: not from a member mailspace, or for a sealed item` in the
-pull summary), as is an event for an absorbed item.
+The state is the newest event, and the order is a total one: the newest
+instant wins, then the deeper `X-Vivi-Event-Prev` chain (an event that
+reaches further back through the letters held), then the larger
+Message-ID. Each event carries an instant — its `X-Vivi-Event-At`
+(RFC 3339, in microseconds) when present, else its `Date` in whole
+seconds — and a writer never stamps an event below the newest one it
+holds, so under clock skew a causal successor still wins.
+`X-Vivi-Event-Prev` is still written — it names the heads a fork left —
+but only its depth breaks a tie of instants: a chain of old events does
+not beat a later clock. An event dated more than ten minutes ahead of the
+receiver's clock is not counted at all and is reported in the ignored
+tally. Who may write one is checked on receipt, for every event kind: a
+letter From this mailspace's own domain counts only when its From role is
+the item's author or of kind `mind` or `operator`; a letter from another
+member's prefix domain (`<8 hex>.local`) counts, whoever authored the
+item — the receiver cannot see that mailspace's roles: the server's
+`from_prefix` stamp, which pull checks, authenticates the mailspace, and
+the writing CLI there enforced the same rule. Any other domain — a bare
+`local`, or a legacy name domain that is not this mailspace's own — is a
+claim anyone can make: it is filed as plain mail and counted ignored (`N
+event(s) ignored: not from a member mailspace, or for a sealed item, or
+dated in the future` in the pull summary), as is an event for an absorbed
+item. A legacy name-domain mailspace counts its own events.
 
-Every holder applies the letter. It travels with the item's envelope kind, so
-every member receives it, and it files as plain mail — never as a work item:
-it takes no folder row and no backlog node of its own; it moves the rows and
-the node of the item it names. Work held for another mailspace's role (`need
-list --held`) follows the events too: the state is the item's, not the
-holder's. `need|task|want show` prints `State: done|reopened` once an event
+Every holder applies the letter. The `X-Vivi-Event` header is the stable
+marker that tells an event letter from work: every letter that carries it
+travels with envelope kind `mail`, never a work kind — the version gate.
+An old client files a pulled letter by its envelope kind, so it files an
+event as mail and never as phantom work; this client files any letter
+with the header as mail whatever its envelope carries, so the event takes
+no folder row and no backlog node of its own; it moves the rows and the
+node of the item it names. The event must reach every member that holds
+the item, so the server must show a letter with the header to every
+member by the header; until it does, the event reaches only the sender
+and the addressed members, as plain mail always has. Work held for
+another mailspace's role (`need list --held`) follows the events too: the
+state is the item's, not the holder's. `need|task|want show` prints `State: done|reopened` once an event
 exists, and `graph audit` reports a folder that disagrees with its item's
 newest event as `event_state` (`--repair` re-applies it).
 
@@ -335,12 +371,13 @@ letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
 see (`N event(s) applied` in the pull summary), and an event that arrives
 before its item is applied when the item arrives.
 
-Mixed versions: a client that predates these letters ignores events from
-other mailspaces and files an event letter that arrives under a work kind as
-a work item. Every member of a project must run the new client before
-relying on any of this, and the project server's board follows the same rule
-only once the server folds events the same way — a need for that is filed
-with the operator's Mind.
+Mixed versions: a client that predates these letters does not apply other
+members' events, but never files them as work — every event letter travels
+with envelope kind `mail`, and an old client files a pulled letter by its
+envelope kind. Every member of a project must run the new client for events
+to move anything, and the project server's board follows the same rule only
+once the server folds events the same way — a need for that is filed with
+the operator's Mind.
 
 ## Rules
 
@@ -1824,7 +1861,7 @@ flags with `vivi sync --help`.
 
 A mailspace works with no `[sync]` and no server, and its state is a pure
 function of the letters it holds. Sync only moves letters; `pull` applies the
-close and reopen events among them (see State as letters).
+state, mark, bind, and absorb events among them (see State as letters).
 
 ```sh
 vivi sync                # push, then pull (the pull runs even when the push stopped)
@@ -1998,7 +2035,11 @@ work items — the tail names them:
 other mailspaces)`. Replies filed whose parent letter is still not held here
 are counted as `N repl(ies) to letters not held here (vivi sync pull --refs
 finds them)`, and item-state events as `N event(s) applied, M event(s)
-ignored: not from a member mailspace, or for a sealed item`.
+ignored: not from a member mailspace, or for a sealed item, or dated in the
+future`. Event letters travel as plain mail on the wire (State as letters),
+so until the server shows a letter with an `X-Vivi-Event` header to every
+member by the header, a pull sees only the events this mailspace sent or was
+addressed on.
 
 **Governance letters.** A letter addressed to the reserved `postmaster` (any
 domain, case aside, by `To`, `Cc`, or envelope) is project governance — the
@@ -2022,9 +2063,11 @@ send = "addressed"
 `all` sends every letter, as before the key existed. `addressed` sends only
 letters a `To` or `Cc` address in another mailspace's domain names — a domain
 other than this mailspace's own `<prefix>.local` or the bare `local`; an
-address with no domain counts as local — plus event letters (close/reopen,
-and a `need bind`'s `bound` letter) for work already on the server: an event
-whose item is held here bound to this project follows the work that left. Everything else stays machine-local
+address with no domain counts as local — plus event letters (state, mark,
+bind, and absorb letters) for work already on the server: an event whose
+item is held here bound to this project follows the work that left. Every
+event letter travels with envelope kind `mail`, never a work kind, whatever
+kind its item holds (State as letters). Everything else stays machine-local
 by policy: the push summary counts it under `not synced by design` as
 `N local only (send = addressed)`, and it is not unsent — `vivi sync status`
 does not count it and no later push waits on it. Any other value is a config
@@ -2092,9 +2135,9 @@ runs only when asked. Until restored, `show` on an evicted handle reports
 `orphan_node`.
 
 Not synced: memos, drafts, trash, rules, and read flags. Closing, reopening,
-absorbing, and marks are not in this list: they travel as event letters (State
-as letters). A letter is limited to 64 KiB, and a member may send 30 letters per
-minute: a push that hits the limit stops, prints
+absorbing, marks, and binds are not in this list: they travel as event
+letters (State as letters). A letter is limited to 64 KiB, and a member
+may send 30 letters per minute: a push that hits the limit stops, prints
 `stopped: rate limited; N letter(s) left unsent; run again later or use --drain`,
 and exits 0 — a limit, not a failure; the letters stay queued for a later run
 or `--drain`. Any other stop exits non-zero, and the next run resumes. Mail is

@@ -591,23 +591,39 @@ of the item in the mailspace and prints `done <handle>; event <id>`.
 
 Any other role reports with an ordinary reply and prints `done <handle>;
 reported`: its own copy moves, the note is sent, and no event is written. The
-state is the newest event, not a chain head: each event carries an instant —
+state is the newest event by a total order: each event carries an instant —
 its `X-Vivi-Event-At` (RFC 3339, microseconds), else its `Date` — and the
-largest wins; on equal instants an event that names the other as its
-`X-Vivi-Event-Prev` wins, then the larger Message-ID, and a writer never
+newest instant wins; on equal instants the deeper `X-Vivi-Event-Prev` chain
+wins, then the larger Message-ID, and a writer never
 stamps below the newest event it holds, so a causal successor wins under clock
-skew. `X-Vivi-Event-Prev` is still written but no longer decides. An event
-counts when its From domain is a prefix domain (`<8 hex>.local`) — any
-member's, whoever authored the item. A bare `local` or legacy name domain is
-filed as plain mail and counted in the pull summary, as is an event for a
-sealed (absorbed) item. An absorb by a role that may close writes an
-`absorbed` letter naming the state it sealed (`X-Vivi-Event-State: done|open`),
-which every member applies before sealing its own rows, and marks travel as
-`marked`/`unmarked` letters with `X-Vivi-Event-Slug`, the newest per slug
-controlling.
+skew. An event dated more than ten minutes ahead of the receiver's clock is
+not counted and is reported in the ignored tally. Who may write one is
+checked on receipt, for every event kind: a letter From this mailspace's own
+domain counts only when its From role is the item's author or of kind `mind`
+or `operator`; a letter from another member's prefix domain (`<8 hex>.local`)
+counts, whoever authored the item — the receiver cannot see that mailspace's
+roles: the server's stamp authenticates the mailspace. A bare `local` or
+another mailspace's legacy name domain is filed as plain mail and counted
+in the pull summary, as is an event for a
+sealed (absorbed) item; a legacy name-domain mailspace counts its own events.
+An absorb by a role that may close is allowed only when the item is done and
+quiet — its newest event of any kind at least `[absorb]` `quiet_hours` old
+(24 hours by default, `0` off) — and writes an `absorbed` letter naming the
+item's folded state (`X-Vivi-Event-State: done|open`),
+which every member applies before sealing its own rows. Marks
+travel as `marked`/`unmarked` letters with `X-Vivi-Event-Slug` only for a
+role that may close (any other kind keeps a private mark that does not
+travel), the newest per slug controlling on every member, and the controlling
+bind of a unit is the newest `bound` letter naming it, so re-targeting
+converges.
 
 State is a function of the letters held, so it works with no `[sync]`: the
-server only carries them. `pull`, `fetch`, `resync` and `pull --refs` apply
+server only carries them. Every event letter travels with envelope kind
+`mail` — the `X-Vivi-Event` header is the marker that tells an event letter
+from work — so an old client files one as mail, never as phantom work; the
+server must show a letter with that header to every member by the header,
+and until it does the event reaches only the sender and the addressed
+members. `pull`, `fetch`, `resync` and `pull --refs` apply
 every event they see, an event that arrives before its item is applied when the
 item does, and `vivi graph audit` reports a folder that disagrees with its
 item's latest event as `event_state` (`--repair` re-applies it).
