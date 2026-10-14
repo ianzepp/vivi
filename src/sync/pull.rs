@@ -180,15 +180,16 @@ impl PullReport {
     }
 
     /// `, N event(s) applied, M event(s) ignored: not from a member
-    /// mailspace, or for a sealed item` when item-state events were seen,
-    /// else nothing.
+    /// mailspace, or for a sealed item, or dated in the future` when
+    /// item-state events were seen, else nothing.
     #[must_use]
     pub fn event_note(&self) -> String {
         let applied = (self.events_applied > 0)
             .then(|| format!(", {} event(s) applied", self.events_applied));
         let ignored = (self.events_ignored > 0).then(|| {
             format!(
-                ", {} event(s) ignored: not from a member mailspace, or for a sealed item",
+                ", {} event(s) ignored: not from a member mailspace, or for a sealed item, \
+                 or dated in the future",
                 self.events_ignored
             )
         });
