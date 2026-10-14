@@ -420,6 +420,33 @@ async fn project_identity_auth_and_items_wire() {
 }
 
 #[tokio::test]
+async fn the_list_advertises_item_events_on_every_page() {
+    let fx = fixture("item-events", 1).await;
+    let token = fx.token.clone();
+    // The advertisement is on the object itself, so a probe of an empty
+    // page past the end of the log reads it too.
+    let first = read(&fx.app, &fx.project, &token, 0).await;
+    assert_eq!(first["item_events"], 1, "{first}");
+    let past = read(&fx.app, &fx.project, &token, 999).await;
+    assert!(past["records"].as_array().unwrap().is_empty(), "{past}");
+    assert_eq!(past["item_events"], 1, "{past}");
+    // A filtered, limited list carries it as well.
+    let (status, filtered) = send(
+        &fx.app,
+        "GET",
+        &format!(
+            "/v1/projects/{}/items?since=0&limit=1&kind=need",
+            fx.project
+        ),
+        None,
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{filtered}");
+    assert_eq!(filtered["item_events"], 1, "{filtered}");
+}
+
+#[tokio::test]
 async fn project_directory_lists_authenticated_members_sorted_by_name() {
     let fx = fixture("directory", 21).await;
     let zulu = fx.add_member(&traveling(98), "zulu", &key(20)).await;
