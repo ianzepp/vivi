@@ -13,11 +13,12 @@ use chrono::{DateTime, Utc};
 
 use crate::error::VivariumError;
 use crate::mailspace::effective_kind;
+use crate::message::normalize_message_id;
 use crate::storage::{Storage, StoredMessageView, is_traveling_id};
 use crate::sync::filer::forged_from;
 use crate::sync::kept::KeptLocal;
-use crate::sync::link;
-use crate::sync::{MAX_LETTER_BYTES, PROVIDER, SyncSettings};
+use crate::sync::link::{self, LetterHeaders};
+use crate::sync::{MAX_LETTER_BYTES, PROVIDER, SendFilter, SyncSettings};
 
 /// One letter to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,10 @@ pub enum SkipReason {
     /// The operator recorded the letter as kept local: push no longer
     /// tries it.
     KeptLocal,
+    /// `send = "addressed"` and nobody off this machine is on the letter:
+    /// machine-local traffic (tasks to its own hands, receipts, worker
+    /// mail). Policy, like a memo: only counted, never unsent.
+    LocalOnly,
 }
 
 impl SkipReason {
@@ -90,6 +95,7 @@ impl SkipReason {
             Self::NotTravelingId(id) => format!("id {id} is not a traveling id"),
             Self::BoundElsewhere(remote) => format!("already bound to {remote}"),
             Self::KeptLocal => "kept local".into(),
+            Self::LocalOnly => "local only (send = addressed)".into(),
         }
     }
 }
@@ -210,7 +216,7 @@ pub fn select(
             }
             continue;
         }
-        match classify(storage, &rows, settings.address_prefix())? {
+        match classify(storage, &rows, settings)? {
             Ok(_) if outside => selection.held_back += 1,
             Ok(letter) => selection.letters.push(letter),
             // Outside the window nothing is reported: a letter that would be
@@ -247,27 +253,22 @@ fn excluded_role(role: &str) -> Option<SkipReason> {
     }
 }
 
-/// Pick the row that names the letter on the wire and decide whether it
-/// goes. The id printed to the sender is the delivered row's, so a non-`sent`
-/// row wins; the sent copy names a letter only when nothing else holds it.
-fn classify(
-    storage: &Storage,
-    rows: &[StoredMessageView],
-    own_prefix: &str,
-) -> Result<Result<Letter, Skipped>, VivariumError> {
-    let skip = |row: &StoredMessageView, reason| {
-        Ok(Err(Skipped {
-            handle: row.handle.clone(),
-            reason,
-        }))
-    };
+/// Pick the row that names the letter on the wire, or why none does: the
+/// delivered row's id is the wire id, so a non-`sent` row wins; the sent
+/// copy names a letter only when nothing else holds it. Every row held in
+/// a role that never travels, or every sendable row already bound to
+/// another remote, is a skip.
+fn naming_row(rows: &[StoredMessageView]) -> Result<&StoredMessageView, Skipped> {
     let sendable: Vec<&StoredMessageView> = rows
         .iter()
         .filter(|row| excluded_role(&row.local_role).is_none())
         .collect();
     let Some(first) = sendable.first() else {
         let reason = excluded_role(&rows[0].local_role).unwrap_or(SkipReason::Trash);
-        return skip(&rows[0], reason);
+        return Err(Skipped {
+            handle: rows[0].handle.clone(),
+            reason,
+        });
     };
     let mut free: Vec<&StoredMessageView> = sendable
         .iter()
@@ -277,11 +278,34 @@ fn classify(
     free.sort_by(|a, b| {
         (a.local_role == "sent", &a.message_id).cmp(&(b.local_role == "sent", &b.message_id))
     });
-    let Some(row) = free.first().copied() else {
+    free.first().copied().ok_or_else(|| {
         let remote = first.remote.as_ref().map_or_else(String::new, |remote| {
             format!("{} {}", remote.provider, remote.remote_mailbox)
         });
-        return skip(first, SkipReason::BoundElsewhere(remote));
+        Skipped {
+            handle: first.handle.clone(),
+            reason: SkipReason::BoundElsewhere(remote),
+        }
+    })
+}
+
+/// Pick the row that names the letter on the wire and decide whether it
+/// goes. The id printed to the sender is the delivered row's, so a non-`sent`
+/// row wins; the sent copy names a letter only when nothing else holds it.
+fn classify(
+    storage: &Storage,
+    rows: &[StoredMessageView],
+    settings: &SyncSettings,
+) -> Result<Result<Letter, Skipped>, VivariumError> {
+    let skip = |row: &StoredMessageView, reason| {
+        Ok(Err(Skipped {
+            handle: row.handle.clone(),
+            reason,
+        }))
+    };
+    let row = match naming_row(rows) {
+        Ok(row) => row,
+        Err(skipped) => return Ok(Err(skipped)),
     };
     if row.byte_size > MAX_LETTER_BYTES {
         return skip(row, SkipReason::TooLarge(row.byte_size));
@@ -291,15 +315,26 @@ fn classify(
     }
     let data = storage.read_message(&row.message_id)?;
     let headers = link::parse_headers(&data);
-    if let Some(reason) = forged_from(Some(own_prefix), &headers) {
+    if let Some(reason) = forged_from(Some(settings.address_prefix()), &headers) {
         return skip(row, SkipReason::ForeignFrom(reason));
     }
-    let events = storage.list_mailspace_events(&row.message_id)?;
-    let kind = match effective_kind(&row.local_role, &data, &events).as_deref() {
-        None | Some("mail") => "mail".to_string(),
-        Some(kind @ ("need" | "task" | "want")) => kind.to_string(),
-        Some(other) => return skip(row, SkipReason::OtherKind(other.to_string())),
+    let kind = if headers.is_event {
+        // An event is a record, not work: it travels as plain mail whatever
+        // kind its item holds or its envelope carries. An old client files a
+        // pulled letter by envelope kind, so a work kind here would have it
+        // hold phantom work for the event (need 3b41bf3e, review item 4).
+        "mail".to_string()
+    } else {
+        let events = storage.list_mailspace_events(&row.message_id)?;
+        match effective_kind(&row.local_role, &data, &events).as_deref() {
+            None | Some("mail") => "mail".to_string(),
+            Some(kind @ ("need" | "task" | "want")) => kind.to_string(),
+            Some(other) => return skip(row, SkipReason::OtherKind(other.to_string())),
+        }
     };
+    if !leaves_this_machine(storage, settings, &data, &headers)? {
+        return skip(row, SkipReason::LocalOnly);
+    }
     Ok(Ok(Letter {
         wire_id: row.message_id.clone(),
         handle: row.handle.clone(),
@@ -308,4 +343,79 @@ fn classify(
         kind,
         to: headers.envelope_to(),
     }))
+}
+
+/// Whether the letter leaves this machine under `send = "addressed"`: a
+/// recipient address in another mailspace's domain names someone off this
+/// machine, and an event letter for an item already bound to this project
+/// follows work that has already left. Under `send = "all"` every letter
+/// goes.
+///
+/// # Errors
+/// Returns an error on a storage failure.
+fn leaves_this_machine(
+    storage: &Storage,
+    settings: &SyncSettings,
+    data: &[u8],
+    headers: &LetterHeaders,
+) -> Result<bool, VivariumError> {
+    if settings.send == SendFilter::All {
+        return Ok(true);
+    }
+    if addressed_off_machines(&headers.recipients, settings.address_prefix()) {
+        return Ok(true);
+    }
+    if !headers.is_event {
+        return Ok(false);
+    }
+    follows_bound_item(storage, settings, data)
+}
+
+/// Whether any To or Cc address names a domain other than this mailspace's
+/// own address domain (or the bare `local`): a recipient on another machine.
+/// An address with no domain counts as local.
+fn addressed_off_machines(recipients: &[String], own_prefix: &str) -> bool {
+    let own = format!("{own_prefix}.local");
+    recipients.iter().any(|address| {
+        address
+            .rsplit_once('@')
+            .is_some_and(|(_, domain)| domain != "local" && domain != own)
+    })
+}
+
+/// Whether `data` is an event letter whose item (`X-Vivi-Event-Of`) is held
+/// here with a row bound to this project, so the event follows work that
+/// has already left the machine.
+///
+/// # Errors
+/// Returns an error on a storage failure.
+fn follows_bound_item(
+    storage: &Storage,
+    settings: &SyncSettings,
+    data: &[u8],
+) -> Result<bool, VivariumError> {
+    let Some(item_id) = event_of_header(data) else {
+        return Ok(false);
+    };
+    let Some(item) = storage.live_message_by_rfc_id(&item_id)? else {
+        return Ok(false);
+    };
+    Ok(storage
+        .live_messages_for_content(&item.content_id)?
+        .iter()
+        .any(|row| bound_here(row, &settings.project)))
+}
+
+/// The normalized `X-Vivi-Event-Of` id of an event letter: the item its
+/// event reports on, when the letter names one.
+fn event_of_header(data: &[u8]) -> Option<String> {
+    let parsed = mail_parser::MessageParser::default().parse(data)?;
+    parsed
+        .headers()
+        .iter()
+        .find(|header| header.name().eq_ignore_ascii_case("X-Vivi-Event-Of"))
+        .and_then(|header| match header.value() {
+            mail_parser::HeaderValue::Text(text) => normalize_message_id(text),
+            _ => None,
+        })
 }

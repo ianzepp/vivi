@@ -6,8 +6,12 @@
 use std::collections::BTreeSet;
 
 use super::Mailspace;
+use super::item_events::{PropertyKind, held_item};
 use crate::error::VivariumError;
-use crate::storage::{MailspaceEvent, MailspaceEventInput, StoredMessageView};
+use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
+
+/// The header a `marked` or `unmarked` letter carries its slug in.
+const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
 
 /// One slug after a `mark` or `unmark` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,9 +139,10 @@ impl Mailspace {
         let inputs = planned
             .iter()
             .filter(|change| change.changed)
-            .map(|change| mark_event(&message, &identity, kind, add, &change.slug))
+            .map(|change| mark_event(&message, Some(&identity), kind, add, &change.slug))
             .collect::<Vec<_>>();
         storage.append_mailspace_events(&inputs)?;
+        self.emit_mark_letters(&mut storage, &message, &identity, add, &planned)?;
         let display = storage.display_handle(&message.message_id)?;
         Ok(planned
             .into_iter()
@@ -147,6 +152,42 @@ impl Mailspace {
                 changed: change.changed,
             })
             .collect())
+    }
+
+    /// One `marked` or `unmarked` property letter per changed slug, so the
+    /// mark travels through sync like any letter and the newest event per
+    /// slug controls on every member. Written only while the item is held
+    /// work and only for a role that may close it (its author, or a mind or
+    /// operator): any other role keeps a private row mark with no letter,
+    /// and that mark does not travel. Nothing is written when no slug
+    /// changed.
+    fn emit_mark_letters(
+        &self,
+        storage: &mut Storage,
+        message: &StoredMessageView,
+        identity: &str,
+        add: bool,
+        planned: &[MarkChange],
+    ) -> Result<(), VivariumError> {
+        if !planned.iter().any(|change| change.changed) {
+            return Ok(());
+        }
+        let Some(item) = held_item(storage, &message.content_id)? else {
+            return Ok(());
+        };
+        if !self.may_close(&item, identity) {
+            return Ok(());
+        }
+        let letter = if add {
+            PropertyKind::Marked
+        } else {
+            PropertyKind::Unmarked
+        };
+        for change in planned.iter().filter(|change| change.changed) {
+            let extras = [(EVENT_SLUG_HEADER, change.slug.clone())];
+            self.emit_property_event(storage, &item, identity, letter, &extras, None)?;
+        }
+        Ok(())
     }
 }
 
@@ -172,9 +213,12 @@ fn plan_mark_changes(events: &[MailspaceEvent], slugs: &[String], add: bool) -> 
     changes
 }
 
-fn mark_event(
+/// The local `marked`/`unmarked` event one mark or unmark appends — by the
+/// identity that acted (`set_marks`), or with no actor at all when a letter
+/// is applied (`property.rs`).
+pub(super) fn mark_event(
     message: &StoredMessageView,
-    identity: &str,
+    identity: Option<&str>,
     kind: &str,
     add: bool,
     slug: &str,
@@ -183,14 +227,16 @@ fn mark_event(
     MailspaceEventInput {
         command: format!("{kind} {verb}"),
         event_type: if add { "marked" } else { "unmarked" }.into(),
-        actor_identity: Some(identity.to_string()),
+        actor_identity: identity.map(str::to_string),
         account: message.account.clone(),
         message_id: message.message_id.clone(),
         content_id: message.content_id.clone(),
         from_role: Some(message.local_role.clone()),
         to_role: Some(message.local_role.clone()),
         from_identity: None,
-        to_identity: Some(message.account.clone()),
+        to_identity: identity
+            .map(str::to_string)
+            .or(Some(message.account.clone())),
         subject: message.subject.clone(),
         note: Some(slug.to_string()),
     }

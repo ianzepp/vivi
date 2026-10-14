@@ -10,16 +10,30 @@
 //! X-Vivi-Event-Prev: <Message-ID of the event this one follows>   (repeatable)
 //! ```
 //!
-//! The state of an item is a pure function of the letters held. Order is the
-//! causal chain, never a clock and never the server: the current event is the
-//! chain head, the one no other held event names as its `Prev`. A fork (two
-//! mailspaces acted on the same previous event) leaves several heads, and the
-//! larger `(Date, Message-ID)` wins on every checkout alike.
+//! The state of an item is a pure function of the letters held. Order is
+//! the clock, never the server: every event carries an instant — its
+//! `X-Vivi-Event-At` (RFC 3339), else its `Date` — and the newest event is
+//! the state. On equal instants the deeper chain wins (a direct successor
+//! names the other as its `Prev`, so it carries strictly more history),
+//! else the larger normalized `Message-ID`, so every checkout that holds
+//! the same letters agrees whatever order they arrived in. A chain no
+//! longer beats a later clock: a later instant wins even over an event that
+//! names it as `Prev`, and a fork is settled the same way on every checkout
+//! alike. An instant more than ten minutes past the receiver's clock counts
+//! for nothing at all: no letter can lock an item from the future.
 //!
-//! An event counts only when its From domain is the item's From domain: the
-//! same mailspace that authored the item. Anything else is plain mail. An
-//! assignee reports with an ordinary reply and never changes the owner's
-//! state.
+//! An event counts when the From address names a role that may write it.
+//! From this mailspace's own domain (`<prefix>.local`, or the legacy
+//! `<name>.local` when it has no id), the local part names a role here, and
+//! the event counts only when that role may close the item: its author, or
+//! a role of kind `mind` or `operator`. An unknown role, or one of another
+//! kind, is ignored. From another member's prefix domain (`<8 hex>.local`)
+//! the event counts, whoever authored the item: the receiver cannot see
+//! that mailspace's roles; the writing CLI there enforced the same rule,
+//! and the sync server's `from_prefix` stamp, which pull already checks,
+//! authenticates the mailspace, not the role. A bare `local` or a legacy
+//! name domain that is not this mailspace's own is a claim anyone can make:
+//! it is filed as plain mail and never counts.
 //!
 //! One function projects a head onto the rows and the backlog node. The owner
 //! calls it when it writes an event; every other route (pull, fetch, resync,
@@ -28,7 +42,8 @@
 //! reply links, so an event that arrives before its item is applied when the
 //! item arrives and the link is made.
 
-use std::collections::{BTreeSet, HashSet};
+use std::cmp::Ordering;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use mail_parser::{HeaderValue, MessageParser};
 use serde::Serialize;
@@ -41,10 +56,15 @@ use crate::message::normalize_message_id;
 use crate::storage::{ItemEventWrite, MailspaceEventInput, RoleMove, Storage, StoredMessageView};
 
 mod emit;
+mod property;
+mod property_emit;
+
+pub(crate) use property::{PropertyKind, parse_property_event};
 
 pub(crate) const EVENT_HEADER: &str = "X-Vivi-Event";
 const EVENT_OF_HEADER: &str = "X-Vivi-Event-Of";
 const EVENT_PREV_HEADER: &str = "X-Vivi-Event-Prev";
+const EVENT_AT_HEADER: &str = "X-Vivi-Event-At";
 
 /// What an item-state event says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +113,10 @@ pub(crate) struct EventLetter {
     pub(crate) from_domain: String,
     /// The `Date` header as a Unix time; 0 when absent.
     pub(crate) date: i64,
+    /// When the event happened: `X-Vivi-Event-At` (RFC 3339) in Unix
+    /// microseconds when present and parseable, else the `Date` header in
+    /// whole seconds × 1 000 000.
+    pub(crate) at: i64,
 }
 
 /// Read an item-state event from a letter's bytes. A letter counts only when
@@ -101,6 +125,7 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
     let parsed = MessageParser::default().parse(bytes)?;
     let mut kind = None;
     let mut of = None;
+    let mut at = None;
     let mut prev: Vec<String> = Vec::new();
     for header in parsed.headers() {
         let HeaderValue::Text(text) = header.value() else {
@@ -111,6 +136,8 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
             kind = ItemEventKind::parse(text);
         } else if name.eq_ignore_ascii_case(EVENT_OF_HEADER) {
             of = normalize_message_id(text);
+        } else if name.eq_ignore_ascii_case(EVENT_AT_HEADER) {
+            at = rfc3339_micros(text);
         } else if name.eq_ignore_ascii_case(EVENT_PREV_HEADER)
             && let Some(id) = normalize_message_id(text)
             && !prev.contains(&id)
@@ -133,7 +160,22 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
         prev,
         from_domain: from_domain_of(&parsed)?,
         date: parsed.date().map_or(0, mail_parser::DateTime::to_timestamp),
+        at: at.unwrap_or_else(|| date_micros(&parsed)),
     })
+}
+
+/// An `X-Vivi-Event-At` value (RFC 3339) as Unix microseconds.
+fn rfc3339_micros(value: &str) -> Option<i64> {
+    let Ok(time) = chrono::DateTime::parse_from_rfc3339(value.trim()) else {
+        return None;
+    };
+    Some(time.timestamp_micros())
+}
+
+/// The `Date` header of a parsed letter in whole seconds × 1 000 000: the
+/// `at` of an event with no parseable stamp.
+fn date_micros(parsed: &mail_parser::Message<'_>) -> i64 {
+    parsed.date().map_or(0, mail_parser::DateTime::to_timestamp) * 1_000_000
 }
 
 fn from_domain_of(parsed: &mail_parser::Message<'_>) -> Option<String> {
@@ -156,10 +198,11 @@ pub struct ItemEventState {
 /// What settling a set of arrived letters did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EventTally {
-    /// Items whose rows or node moved to match their chain head.
+    /// Items whose rows or node moved to match their newest event.
     pub applied: usize,
-    /// Events that were not applied: not from the item's owner, or for an
-    /// item sealed by absorb.
+    /// Events that were not applied: from a sender that speaks for no role
+    /// here (a foreign domain, or an own-domain role that may not close the
+    /// item), dated past the clock, or for an item sealed by absorb.
     pub ignored: usize,
 }
 
@@ -237,30 +280,179 @@ fn work_kind(
     Ok(None)
 }
 
-/// The authorized events of one item, and how many named it without the
-/// right to.
+/// The events of one item that count here, and how many named it from a
+/// sender that speaks for no role here or dated it past the clock.
 struct Chain {
     events: Vec<EventLetter>,
     unauthorized: usize,
+    /// The earliest clock reading at which an event skipped as dated past
+    /// the clock — a member's, so it will count — begins to count.
+    deferred_until: Option<i64>,
 }
 
-/// Every event head of the chain, oldest to newest by `(Date, Message-ID)`.
-/// The last one is the current state. A cycle (which no honest writer makes)
-/// has no head, so every event is a candidate then.
+/// Every event head of the chain, oldest to newest by the total order
+/// [`newer`] keeps: how wide a fork is, and the events the next letter
+/// names as `Prev`. The state is the newest event by that order, not the
+/// last head. A cycle (which no honest writer makes) has no head, so every
+/// event is a candidate then.
 fn chain_heads(events: &[EventLetter]) -> Vec<&EventLetter> {
     let named: HashSet<&str> = events
         .iter()
         .flat_map(|event| event.prev.iter().map(String::as_str))
         .collect();
-    let mut heads: Vec<&EventLetter> = events
-        .iter()
-        .filter(|event| !named.contains(event.id.as_str()))
+    let depths = event_depths(events);
+    let mut heads: Vec<usize> = (0..events.len())
+        .filter(|&index| !named.contains(events[index].id.as_str()))
         .collect();
     if heads.is_empty() {
-        heads = events.iter().collect();
+        heads = (0..events.len()).collect();
     }
-    heads.sort_by(|a, b| (a.date, &a.id).cmp(&(b.date, &b.id)));
-    heads
+    heads.sort_by_key(|&index| (events[index].at, depths[index], &events[index].id));
+    heads.into_iter().map(|index| &events[index]).collect()
+}
+
+/// How `a` stands against `b` in age: the larger `at` wins, then the deeper
+/// chain (a direct successor has strictly more history than the event it
+/// names), then the larger normalized `Message-ID`. A total order, so
+/// [`newest_event`] picks the same event for every ordering of the same
+/// letters. A later clock still beats the chain: `a` stays newer even when
+/// `b` names it as `Prev`.
+fn newer(a: &EventLetter, a_depth: usize, b: &EventLetter, b_depth: usize) -> Ordering {
+    (a.at, a_depth, &a.id).cmp(&(b.at, b_depth, &b.id))
+}
+
+/// The newest event of an item by [`newer`]: the one whose word the state is.
+fn newest_event(events: &[EventLetter]) -> Option<&EventLetter> {
+    let depths = event_depths(events);
+    events
+        .iter()
+        .zip(depths)
+        .enumerate()
+        .max_by(|(_, (a, a_depth)), (_, (b, b_depth))| newer(a, *a_depth, b, *b_depth))
+        .map(|(_, (event, _))| event)
+}
+
+/// The causal depth of every event among `events`: 0 for an event none of
+/// whose `prev` names a held event, else one past the deepest held event it
+/// names. A cycle (which no honest writer makes) is cut where it is met
+/// again, so depth stays finite.
+fn event_depths(events: &[EventLetter]) -> Vec<usize> {
+    let mut held: HashMap<&str, usize> = HashMap::new();
+    for (index, event) in events.iter().enumerate() {
+        held.entry(event.id.as_str()).or_insert(index);
+    }
+    let mut depths: Vec<Option<usize>> = vec![None; events.len()];
+    let mut walking: HashSet<usize> = HashSet::new();
+    (0..events.len())
+        .map(|index| depth_of(index, events, &held, &mut depths, &mut walking))
+        .collect()
+}
+
+/// The causal depth of the event at `index`, computing the held events it
+/// names first. An event met again while it is being computed counts 0.
+fn depth_of(
+    index: usize,
+    events: &[EventLetter],
+    held: &HashMap<&str, usize>,
+    depths: &mut [Option<usize>],
+    walking: &mut HashSet<usize>,
+) -> usize {
+    if let Some(depth) = depths[index] {
+        return depth;
+    }
+    if !walking.insert(index) {
+        return 0;
+    }
+    let mut deepest: Option<usize> = None;
+    for prev in &events[index].prev {
+        let Some(&named) = held.get(prev.as_str()) else {
+            continue;
+        };
+        let depth = depth_of(named, events, held, depths, walking);
+        deepest = Some(deepest.map_or(depth, |seen| seen.max(depth)));
+    }
+    walking.remove(&index);
+    let depth = deepest.map_or(0, |seen| seen + 1);
+    depths[index] = Some(depth);
+    depth
+}
+
+/// How far an event's instant may run past the clock and still count: ten
+/// minutes of clock skew, no more.
+const FUTURE_LIMIT_MICROS: i64 = 10 * 60 * 1_000_000;
+
+/// Whether an event dated `at` counts at fold time. An instant more than
+/// ten minutes past the receiver's clock is a claim about the future, not
+/// an order: it is skipped the way an unauthorized event is, so no letter
+/// can lock an item from the future.
+#[must_use]
+pub(super) fn dated_within_clock(at: i64, now_micros: i64) -> bool {
+    at <= now_micros.saturating_add(FUTURE_LIMIT_MICROS)
+}
+
+/// The earliest clock reading at which an event dated `at` counts: ten
+/// minutes before its instant.
+fn release_of(at: i64) -> i64 {
+    at.saturating_sub(FUTURE_LIMIT_MICROS)
+}
+
+/// The receiver's clock in Unix microseconds: what every fold judges an
+/// event's instant against and every writer stamps from. One seam, so a
+/// test can run one member ahead of the machine clock.
+#[must_use]
+pub(super) fn clock_micros() -> i64 {
+    let now = chrono::Utc::now().timestamp_micros();
+    #[cfg(test)]
+    let now = now.saturating_add(CLOCK_SKEW_MICROS.with(std::cell::Cell::get));
+    now
+}
+
+#[cfg(test)]
+thread_local! {
+    static CLOCK_SKEW_MICROS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `body` with this thread's clock `micros` ahead of the machine clock,
+/// the way a member whose clock is fast (or, negative, slow) reads it.
+#[cfg(test)]
+pub(crate) fn with_clock_skew<T>(micros: i64, body: impl FnOnce() -> T) -> T {
+    struct Restore(i64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CLOCK_SKEW_MICROS.with(|skew| skew.set(self.0));
+        }
+    }
+    let _restore = Restore(CLOCK_SKEW_MICROS.with(|skew| skew.replace(micros)));
+    body()
+}
+
+/// Mark the unabsorbed rows of `item` with the clock reading at which a
+/// skipped letter begins to count, or clear the mark when none is skipped.
+fn record_deferral(
+    storage: &Storage,
+    item: &HeldItem,
+    until: Option<i64>,
+) -> Result<(), VivariumError> {
+    let rows: Vec<String> = item
+        .rows
+        .iter()
+        .filter(|row| row.absorbed_at.is_none())
+        .map(|row| row.message_id.clone())
+        .collect();
+    storage.set_event_deferral(&rows, until)
+}
+
+/// Whether the item behind `content_id` holds a letter whose bound the
+/// clock has passed since it was skipped: its settle is due.
+pub(super) fn event_release_due(
+    storage: &Storage,
+    content_id: &str,
+) -> Result<bool, VivariumError> {
+    let now = clock_micros();
+    Ok(storage
+        .deferred_event_contents()?
+        .iter()
+        .any(|(held, until)| held == content_id && *until <= now))
 }
 
 /// One folder change the head asks for.
@@ -270,24 +462,45 @@ struct Planned {
 }
 
 impl Mailspace {
-    /// Whether an event written from `event_domain` speaks for the mailspace
-    /// that authored an item from `item_domain`. Only a prefix domain
-    /// (`<8 hex>.local`) can: the server stamps and every puller checks it,
-    /// where a bare `local` or a legacy name domain is a claim anyone can
-    /// make. It must be the item's own domain, or this mailspace's current
-    /// one for an item it authored under its legacy name.
-    fn event_speaks_for(&self, event_domain: &str, item_domain: &str) -> bool {
-        prefix_of_domain(event_domain).is_some()
-            && (event_domain.eq_ignore_ascii_case(item_domain)
-                || (event_domain.eq_ignore_ascii_case(&self.address_domain())
-                    && self.is_own_domain(item_domain)))
+    /// Whether an event letter From `from_addr` speaks for `item`: whose
+    /// word an arriving state or property event is. The From address names
+    /// a role:
+    ///
+    /// * The domain is this mailspace's own — `<prefix>.local`, or the
+    ///   legacy `<name>.local` when it has no id — so the local part names a
+    ///   role here, and the event counts only when that role may write it:
+    ///   the item's author ([`Self::item_author`]) or a role of kind `mind`
+    ///   or `operator` ([`Self::identity_may_close_for_all`]) — the same
+    ///   right [`Self::may_close`] grants, for every event kind. An unknown
+    ///   role, or one of another kind (`hand`, `auditor`, `head`, ...),
+    ///   speaks for no one: the letter is ignored and counted in the
+    ///   ignored tally.
+    /// * The domain is another member's prefix domain (`<8 hex>.local`):
+    ///   the event counts. The receiver cannot see that mailspace's roles;
+    ///   the writing CLI there enforced the same rule, and the sync
+    ///   server's `from_prefix` stamp, which pull already checks,
+    ///   authenticates the mailspace, not the role.
+    /// * Any other domain — a bare `local`, or a legacy name domain that is
+    ///   not this mailspace's own — is a claim anyone can make, so it never
+    ///   counts.
+    fn event_may_speak(&self, item: &HeldItem, from_addr: &str) -> bool {
+        let Some((role, domain)) = from_addr.rsplit_once('@') else {
+            return false;
+        };
+        let domain = domain.trim().to_ascii_lowercase();
+        if domain != "local" && domain == self.address_domain().to_ascii_lowercase() {
+            return self.may_close(item, role.trim());
+        }
+        prefix_of_domain(&domain).is_some()
     }
 
     fn item_chain(&self, storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
         let mut chain = Chain {
             events: Vec::new(),
             unauthorized: 0,
+            deferred_until: None,
         };
+        let now = clock_micros();
         for child in storage.reply_child_contents(&item.content_id)? {
             let Some(view) = storage.message_by_content_id(&child)? else {
                 continue;
@@ -298,10 +511,17 @@ impl Mailspace {
             let Some(event) = parse_event(&bytes).filter(|event| event.of == item.rfc_id) else {
                 continue;
             };
-            if self.event_speaks_for(&event.from_domain, &item.from_domain) {
+            let speaks = first_bare_address(&view.from_addr)
+                .is_some_and(|from| self.event_may_speak(item, &from));
+            if speaks && dated_within_clock(event.at, now) {
                 chain.events.push(event);
-            } else {
-                chain.unauthorized += 1;
+                continue;
+            }
+            chain.unauthorized += 1;
+            if speaks {
+                let release = release_of(event.at);
+                chain.deferred_until =
+                    Some(chain.deferred_until.map_or(release, |s| s.min(release)));
             }
         }
         Ok(chain)
@@ -314,7 +534,7 @@ impl Mailspace {
         item: &HeldItem,
     ) -> Result<Option<ItemEventKind>, VivariumError> {
         let chain = self.item_chain(storage, item)?;
-        Ok(chain_heads(&chain.events).pop().map(|head| head.kind))
+        Ok(newest_event(&chain.events).map(|head| head.kind))
     }
 
     /// The role that owns an item held here: the one that authored it, or the
@@ -335,22 +555,22 @@ impl Mailspace {
 
     /// Whether `identity` may close or reopen `item` for everyone: the role
     /// that authored it (or holds its sent copy), or a role of kind `mind`
-    /// or `operator`. Such an event is believed only when this mailspace
-    /// authored the item; the receive-side authority is the mailspace, so on
-    /// another mailspace's item the close stays a local report.
+    /// or `operator` — whichever mailspace authored the item. The read side
+    /// ([`Self::event_may_speak`]) believes any member's prefix domain
+    /// unseen, and this mailspace's own roles by this same right, so no
+    /// member owns an item's state.
     pub(super) fn may_close(&self, item: &HeldItem, identity: &str) -> bool {
-        if self.item_author(item).as_deref() == Some(identity) {
-            return true;
-        }
-        self.identity_may_close_for_all(identity)
-            && self.event_speaks_for(&self.address_domain(), &item.from_domain)
+        self.item_author(item).as_deref() == Some(identity)
+            || self.identity_may_close_for_all(identity)
     }
 
     /// The rows the head `kind` moves: open work to `done` on a close, done
-    /// rows back to the folder they closed from on a reopen. A `sent` row
-    /// follows only when it is the sender's only copy (every recipient is in
-    /// another mailspace); with a local delivered copy the sent row is a
-    /// record of the send, not the work.
+    /// rows back to the folder they closed from on a reopen. A row held for
+    /// another mailspace's role moves like an own row: the state is the
+    /// item's, not the holder's. A `sent` row follows only when it is the
+    /// sender's only copy (every recipient is in another mailspace); with a
+    /// local delivered copy the sent row is a record of the send, not the
+    /// work.
     ///
     /// With `keep_reports`, a reopen leaves alone a `done` row held by a role
     /// that cannot accept the item: once the reopen has been applied, such a
@@ -364,7 +584,7 @@ impl Mailspace {
     ) -> Result<Vec<Planned>, VivariumError> {
         let mut planned = Vec::new();
         for row in &item.rows {
-            if row.absorbed_at.is_some() || is_foreign_account(&row.account) {
+            if row.absorbed_at.is_some() {
                 continue;
             }
             let to_role = match (kind, row.local_role.as_str()) {
@@ -443,7 +663,7 @@ impl Mailspace {
         Ok(changed)
     }
 
-    /// Settle one item against its chain head. Returns the rows moved plus
+    /// Settle one item against its newest event. Returns the rows moved plus
     /// the nodes changed, and counts ignored events into `tally`.
     fn settle_item(
         &self,
@@ -461,15 +681,25 @@ impl Mailspace {
         };
         let chain = self.item_chain(storage, &item)?;
         tally.ignored += chain.unauthorized;
-        let Some(kind) = chain_heads(&chain.events).pop().map(|head| head.kind) else {
+        // A counted absorbed event seals the item with the state it names, so
+        // the state events held beside it are only letters: none of them
+        // moves a row, however new it is. A state event older than the seal
+        // is ignored the same way — the absorb letter already named the
+        // state.
+        let sealed = property::counted_absorb(self, storage, &item)?.is_some();
+        let mut deferred_until = chain.deferred_until;
+        self.apply_property_events(storage, &item, tally, &mut deferred_until)?;
+        record_deferral(storage, &item, deferred_until)?;
+        if sealed {
+            return Ok(());
+        }
+        let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(());
         };
-        let own: Vec<&StoredMessageView> = item
-            .rows
-            .iter()
-            .filter(|row| !is_foreign_account(&row.account))
-            .collect();
-        if !own.is_empty() && own.iter().all(|row| row.absorbed_at.is_some()) {
+        // Sealed work stays sealed only when every row of it is absorbed:
+        // an item held only as foreign rows settles too, and its unabsorbed
+        // rows move.
+        if !item.rows.is_empty() && item.rows.iter().all(|row| row.absorbed_at.is_some()) {
             tally.ignored += 1;
             return Ok(());
         }
@@ -524,9 +754,19 @@ impl Mailspace {
                         by_event.insert(item.content_id);
                     }
                 }
-                None => {
-                    by_item.insert(content_id.clone());
-                }
+                // A property event settles its item the same way, by the
+                // item it names; when the item is not held yet, the letter
+                // waits for it as a state event does.
+                None => match parse_property_event(&bytes).map(|event| event.of) {
+                    Some(of) => {
+                        if let Some(item) = storage.live_message_by_rfc_id(&of)? {
+                            by_event.insert(item.content_id);
+                        }
+                    }
+                    None => {
+                        by_item.insert(content_id.clone());
+                    }
+                },
             }
         }
         by_item.retain(|content_id| !by_event.contains(content_id));
@@ -539,8 +779,42 @@ impl Mailspace {
         Ok(tally)
     }
 
-    /// The current state of the item `handle` names, from its event chain.
-    /// `None` when the item has no authorized event or is not work.
+    /// Settle the items that hold an event letter this mailspace skipped
+    /// as dated more than ten minutes past its clock, once the clock has
+    /// passed the bound. The letter counts now, and nothing else would
+    /// bring it back: the bound is judged when a letter is folded, and an
+    /// arrival-driven settle only reaches the items a pull touched. Each
+    /// such item is settled as if the letter had just arrived, so its head
+    /// moves every row it names. Idempotent: a settled item drops its mark
+    /// and is not visited again. Events ignored here were counted when
+    /// they arrived and are not counted twice.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on storage failure.
+    pub fn apply_released_events(&self) -> Result<EventTally, VivariumError> {
+        let mut tally = EventTally::default();
+        let mut storage = self.storage()?;
+        let now = clock_micros();
+        let due: BTreeSet<String> = storage
+            .deferred_event_contents()?
+            .into_iter()
+            .filter(|(_, until)| *until <= now)
+            .map(|(content_id, _)| content_id)
+            .collect();
+        for content_id in &due {
+            // Settled again below with the clock's verdict: a letter still
+            // dated past the bound writes its mark anew.
+            storage.clear_event_deferral(content_id)?;
+            let mut settled = EventTally::default();
+            self.settle_item(&mut storage, content_id, &mut settled, false)?;
+            tally.applied += settled.applied;
+        }
+        Ok(tally)
+    }
+
+    /// The current state of the item `handle` names, from its events: the
+    /// newest one, and how many chain heads (a fork) are held. `None` when
+    /// the item has no authorized event or is not work.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] when the handle does not resolve or on
@@ -555,17 +829,17 @@ impl Mailspace {
             return Ok(None);
         };
         let chain = self.item_chain(&storage, &item)?;
-        let heads = chain_heads(&chain.events);
-        Ok(heads.last().map(|head| ItemEventState {
-            state: head.kind.header().to_string(),
-            event: head.id.clone(),
-            heads: heads.len(),
+        let heads = chain_heads(&chain.events).len();
+        Ok(newest_event(&chain.events).map(|newest| ItemEventState {
+            state: newest.kind.header().to_string(),
+            event: newest.id.clone(),
+            heads,
         }))
     }
 
-    /// What the item behind `content_id` would change to match its chain
-    /// head: the head's state and the rows that disagree with it. `None` when
-    /// nothing disagrees.
+    /// What the item behind `content_id` would change to match its newest
+    /// event: the event's state and the rows that disagree with it. `None`
+    /// when nothing disagrees.
     pub(super) fn event_drift(
         &self,
         storage: &Storage,
@@ -578,22 +852,27 @@ impl Mailspace {
             return Ok(None);
         };
         let chain = self.item_chain(storage, &item)?;
-        let Some(kind) = chain_heads(&chain.events).pop().map(|head| head.kind) else {
+        let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(None);
         };
+        // A letter the clock has just passed is an arrival: it moves a
+        // hand's closed row too, which a settle that keeps reports would
+        // take for a later report.
+        let due = event_release_due(storage, content_id)?;
         let rows: Vec<StoredMessageView> = self
-            .plan_item_moves(storage, &item, kind, true)?
+            .plan_item_moves(storage, &item, kind, !due)?
             .into_iter()
             .map(|planned| planned.row)
             .collect();
         Ok((!rows.is_empty()).then_some((kind, rows)))
     }
 
-    /// Re-apply the chain head of the item behind `content_id` (the audit's
-    /// repair).
+    /// Re-apply the newest event of the item behind `content_id` (the
+    /// audit's repair).
     pub(super) fn repair_event_drift(&self, content_id: &str) -> Result<(), VivariumError> {
         let mut storage = self.storage()?;
-        self.settle_item(&mut storage, content_id, &mut EventTally::default(), true)
+        let due = event_release_due(&storage, content_id)?;
+        self.settle_item(&mut storage, content_id, &mut EventTally::default(), !due)
     }
 }
 
@@ -639,3 +918,11 @@ fn role_move(
 #[cfg(test)]
 #[path = "item_events_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "item_events_order_test.rs"]
+mod order_tests;
+
+#[cfg(test)]
+#[path = "item_events_roles_test.rs"]
+mod roles_tests;

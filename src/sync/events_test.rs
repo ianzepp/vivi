@@ -2,12 +2,24 @@
 //! reply letters that travel through the fake project server and move the
 //! assignee's rows and nodes; an assignee's report does not move the owner's.
 
-use crate::mailspace::{Mailspace, RoleUpdate, SendRequest};
+#[path = "property_events_test.rs"]
+mod property;
+
+#[path = "property_bind_test.rs"]
+mod property_bind;
+
+#[path = "property_emit_test.rs"]
+mod property_emit;
+
+#[path = "property_marks_test.rs"]
+mod property_marks;
+
+use crate::mailspace::{AbsorbConfig, Mailspace, RoleUpdate, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, wire_id};
 use crate::sync::transport::{Envelope, Transport};
 
-const BODY: &str = "done_when: it works\n";
+pub(super) const BODY: &str = "done_when: it works\n";
 
 fn alice() -> Checkout {
     checkout("alice", &["mind"])
@@ -58,7 +70,7 @@ fn node_state(mailspace: &Mailspace, handle: &str) -> String {
         .state
 }
 
-fn role_of(checkout: &Checkout, handle: &str) -> String {
+pub(super) fn role_of(checkout: &Checkout, handle: &str) -> String {
     checkout.row(&checkout.id_of(handle)).unwrap().local_role
 }
 
@@ -76,7 +88,7 @@ fn reopen(checkout: &Checkout, who: &str, handle: &str) {
         .unwrap();
 }
 
-fn state(checkout: &Checkout, handle: &str) -> Option<String> {
+pub(super) fn state(checkout: &Checkout, handle: &str) -> Option<String> {
     checkout
         .mailspace
         .item_event_state(handle)
@@ -103,6 +115,30 @@ fn rfc_id(bytes: &[u8]) -> String {
         .to_string()
 }
 
+/// The bare addresses of a header's address list, in order.
+fn addresses(list: Option<&mail_parser::Address<'_>>) -> Vec<String> {
+    list.into_iter()
+        .flat_map(mail_parser::Address::iter)
+        .filter_map(|address| address.address.as_deref().map(str::to_string))
+        .collect()
+}
+
+/// The `X-Vivi-Event-At` stamp of a letter's bytes, in Unix microseconds.
+fn at_of(bytes: &[u8]) -> Option<i64> {
+    let parsed = mail_parser::MessageParser::default().parse(bytes)?;
+    for header in parsed.headers() {
+        if !header.name().eq_ignore_ascii_case("X-Vivi-Event-At") {
+            continue;
+        }
+        if let mail_parser::HeaderValue::Text(text) = header.value() {
+            return chrono::DateTime::parse_from_rfc3339(text.trim())
+                .ok()
+                .map(|time| time.timestamp_micros());
+        }
+    }
+    None
+}
+
 /// One pair of mailspaces with a task from alice's `mind` to bob's `hand`,
 /// filed on both sides.
 struct Pair {
@@ -114,7 +150,10 @@ struct Pair {
 
 fn pair() -> Pair {
     let server = FakeServer::new();
-    let (a, b) = (alice(), bob());
+    let (mut a, b) = (alice(), bob());
+    // The pairs close and absorb in one breath, so the operator ruling's
+    // quiet wait is off here; absorb_quiet_test covers the wait itself.
+    a.mailspace.config.absorb = Some(AbsorbConfig { quiet_hours: 0 });
     let task = send_task(&a, &b.address("hand"), "ship it");
     a.push(&a.client(&server));
     b.pull(&b.client(&server));
@@ -247,13 +286,15 @@ fn pulling_again_and_auditing_a_converged_store_change_nothing() {
     assert_eq!((rows_of(&p.a), rows_of(&p.b)), (rows_a, rows_b));
 }
 
+// Reversed by the authority rule: any member's prefix domain speaks for an
+// item, so the third member's event applies instead of being ignored.
 #[test]
-fn a_forged_event_is_filed_as_mail_and_counted_not_applied() {
+fn an_event_from_a_third_members_prefix_domain_applies() {
     let p = pair();
     let item_id = rfc_id(&p.b.bytes_of(&p.task));
     let mallory = p.server.client("mallory", "deadbeef");
     let to = p.b.address("hand");
-    let forged = format!(
+    let third_member = format!(
         "From: mind@deadbeef.local\r\nTo: {to}\r\nSubject: Re: ship it\r\n\
          Message-ID: <forged-1@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
          In-Reply-To: <{item_id}>\r\nX-Vivi-Event: done\r\nX-Vivi-Event-Of: <{item_id}>\r\n\
@@ -263,7 +304,7 @@ fn a_forged_event_is_filed_as_mail_and_counted_not_applied() {
         .append(
             &wire_id(77, 0),
             &Envelope {
-                raw_eml: forged.as_bytes(),
+                raw_eml: third_member.as_bytes(),
                 to: &to,
                 kind: "mail",
             },
@@ -272,19 +313,16 @@ fn a_forged_event_is_filed_as_mail_and_counted_not_applied() {
 
     let pulled = p.b.pull(&p.b.client(&p.server));
 
-    assert_eq!(pulled.filed.get("inbox"), Some(&1), "filed as plain mail");
-    assert_eq!(pulled.events_ignored, 1);
-    assert_eq!(pulled.events_applied, 0);
-    assert!(
-        pulled
-            .summary()
-            .contains("1 event(s) ignored: not from the item's owner"),
-        "{}",
-        pulled.summary()
+    assert_eq!(
+        pulled.filed.get("inbox"),
+        Some(&1),
+        "still a letter in the thread"
     );
-    assert_eq!(role_of(&p.b, &p.task), "tasks");
-    assert_eq!(node_state(&p.b.mailspace, &p.task), "open");
-    assert_eq!(state(&p.b, &p.task), None);
+    assert_eq!(pulled.events_applied, 1);
+    assert_eq!(pulled.events_ignored, 0);
+    assert_eq!(role_of(&p.b, &p.task), "done");
+    assert_eq!(node_state(&p.b.mailspace, &p.task), "done");
+    assert_eq!(state(&p.b, &p.task).as_deref(), Some("done"));
 }
 
 #[test]
@@ -485,7 +523,7 @@ fn event_headers(item: u64, kind: &str, prev: &[u64]) -> String {
     headers
 }
 
-fn put_event(w: &World, id: u64, item: u64, kind: &str, prev: &[u64], date: &str) {
+pub(super) fn put_event(w: &World, id: u64, item: u64, kind: &str, prev: &[u64], date: &str) {
     w.put_full(
         &wire_id(id, 0),
         "mail",
@@ -503,12 +541,14 @@ fn need_state(w: &World, item: u64) -> (String, String) {
     (row.local_role, node_state(&w.bob.mailspace, &handle))
 }
 
+// Reversed by the clock rule: the newest event is the later Date, even
+// though the earlier-Date reopen names it as its Prev and is the chain head.
 #[test]
-fn the_causal_chain_decides_not_the_clock() {
+fn a_later_date_wins_even_over_an_event_that_names_it_as_prev() {
     let w = World::new();
     w.put(1, "item", "done_when: x\n");
-    // done, then a reopen that names it: the reopen is the head although its
-    // Date is earlier (a skewed clock).
+    // A done at noon with no Prev, then a reopen from a skewed clock an hour
+    // earlier that names the done as its Prev.
     put_event(&w, 2, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
     put_event(
         &w,
@@ -521,10 +561,10 @@ fn the_causal_chain_decides_not_the_clock() {
 
     w.bob.pull(&w.bob_client);
 
-    assert_eq!(need_state(&w, 1), ("needs".into(), "open".into()));
+    assert_eq!(need_state(&w, 1), ("done".into(), "done".into()));
     let handle = crate::sync::fake_server::handle(1);
     let state = w.bob.mailspace.item_event_state(&handle).unwrap().unwrap();
-    assert_eq!(state.state, "reopened");
+    assert_eq!(state.state, "done");
     assert_eq!(state.heads, 1);
 }
 
@@ -551,6 +591,110 @@ fn a_fork_picks_the_later_date_then_the_larger_id_on_every_checkout() {
     assert_eq!(first.state, "done", "the larger id of the two latest");
     assert_eq!(first, second);
     assert_eq!(need_state(&w, 1), ("done".into(), "done".into()));
+}
+
+/// [`put_event`] with an `X-Vivi-Event-At` stamp (RFC 3339).
+fn put_stamped_event(
+    w: &World,
+    id: u64,
+    item: u64,
+    kind: &str,
+    prev: &[u64],
+    date: &str,
+    at: &str,
+) {
+    let headers = format!(
+        "{}X-Vivi-Event-At: {at}\r\n",
+        event_headers(item, kind, prev)
+    );
+    w.put_full(
+        &wire_id(id, 0),
+        "mail",
+        &w.bob.address("mind"),
+        "Re: item",
+        kind,
+        date,
+        &headers,
+    );
+}
+
+#[test]
+fn on_an_equal_date_the_successor_then_the_larger_id_wins_on_every_checkout() {
+    let w = World::new();
+    w.put(1, "item", "done_when: x\n");
+    w.put(5, "item", "done_when: y\n");
+    // Equal dates: the reopen names the done as its Prev, so the successor
+    // wins although the done carries the larger Message-ID.
+    put_event(&w, 3, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
+    put_event(
+        &w,
+        2,
+        1,
+        "reopened",
+        &[3],
+        "Sun, 11 Oct 2026 12:00:00 +0000",
+    );
+    // With no Prev between two, the larger Message-ID wins.
+    put_event(&w, 6, 5, "reopened", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
+    put_event(&w, 7, 5, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
+
+    w.bob.pull(&w.bob_client);
+
+    assert_eq!(need_state(&w, 1), ("needs".into(), "open".into()));
+    assert_eq!(need_state(&w, 5), ("done".into(), "done".into()));
+
+    // Every checkout that holds the same letters agrees.
+    let mut other = bob();
+    other.mailspace.config.id = w.bob.mailspace.config.id.clone();
+    let other_client = other.client(&w.server);
+    other.pull(&other_client);
+    for item in [1, 5] {
+        let handle = crate::sync::fake_server::handle(item);
+        assert_eq!(
+            other.mailspace.item_event_state(&handle).unwrap().unwrap(),
+            w.bob.mailspace.item_event_state(&handle).unwrap().unwrap(),
+            "item {item}"
+        );
+    }
+}
+
+#[test]
+fn an_event_at_stamp_beats_the_date_header() {
+    let w = World::new();
+    w.put(1, "item", "done_when: x\n");
+    // The done is stamped after the reopen's later Date: the stamp decides,
+    // and beats even the successor that names the done as its Prev.
+    put_stamped_event(
+        &w,
+        2,
+        1,
+        "done",
+        &[],
+        "Sun, 11 Oct 2026 11:00:00 +0000",
+        "2026-10-14T02:21:03.123456Z",
+    );
+    put_event(
+        &w,
+        3,
+        1,
+        "reopened",
+        &[2],
+        "Sun, 11 Oct 2026 12:00:00 +0000",
+    );
+
+    w.bob.pull(&w.bob_client);
+
+    assert_eq!(need_state(&w, 1), ("done".into(), "done".into()));
+    let handle = crate::sync::fake_server::handle(1);
+    assert_eq!(
+        w.bob
+            .mailspace
+            .item_event_state(&handle)
+            .unwrap()
+            .unwrap()
+            .state,
+        "done"
+    );
 }
 
 #[test]
@@ -645,7 +789,7 @@ fn another_mind_in_the_owning_mailspace_closes_and_the_assignees_queue_empties()
 }
 
 #[test]
-fn a_mind_in_the_assignees_mailspace_reports_because_it_did_not_author_the_item() {
+fn a_mind_in_the_assignees_mailspace_closes_for_everyone_with_an_event_letter() {
     let server = FakeServer::new();
     let a = alice();
     let mut b = bob();
@@ -655,26 +799,82 @@ fn a_mind_in_the_assignees_mailspace_reports_because_it_did_not_author_the_item(
     b.pull(&b.client(&server));
     let p = Pair { server, a, b, task };
 
-    // The event could not be believed by its owner's mailspace, so the
-    // refusal says so and names the report command.
-    let refused =
-        p.b.mailspace
-            .move_task("lead", &p.task, "done", None, None, &[], &[])
-            .unwrap_err()
-            .to_string();
-    assert!(refused.contains("held by identity 'hand'"), "{refused}");
-    assert!(refused.contains("--for hand"), "{refused}");
-    assert!(refused.contains("another mailspace"), "{refused}");
-
-    // The assignee reports on its own copy: no event, the owner untouched.
+    // The mind did not author the item and its mailspace is not the
+    // author's; the close is still an event letter, because no member owns
+    // an item's state.
     let moved =
         p.b.mailspace
-            .move_task_outcome("hand", &p.task, "done", None, None, &[], &[])
+            .move_task_outcome("lead", &p.task, "done", Some("accepted"), None, &[], &[])
             .unwrap();
-    assert!(moved.event.is_none());
-    assert!(moved.reported);
-    assert_eq!(moved.receipt("done"), format!("done {}; reported", p.task));
-    p.sync_b_to_a();
-    assert_eq!(state(&p.a, &p.task), None);
-    assert_eq!(node_state(&p.a.mailspace, &p.task), "open");
+    assert!(moved.event.is_some());
+    assert!(!moved.reported);
+    assert_eq!(state(&p.b, &p.task).as_deref(), Some("done"));
+    assert_eq!(node_state(&p.b.mailspace, &p.task), "done");
+
+    // The letter is addressed to the item's From first — the author, who is
+    // in another mailspace and is reached through sync — then its To.
+    let letter = p.b.bytes_of(moved.event.as_deref().unwrap());
+    let parsed = mail_parser::MessageParser::default()
+        .parse(&letter)
+        .unwrap();
+    assert_eq!(
+        addresses(parsed.to()),
+        vec![p.a.address("mind"), p.b.address("hand")]
+    );
+    assert!(addresses(parsed.cc()).is_empty());
+    assert!(at_of(&letter).is_some(), "every letter carries the stamp");
+
+    let pulled = p.sync_b_to_a();
+
+    assert_eq!(pulled.events_applied, 1);
+    assert_eq!(pulled.events_ignored, 0);
+    assert_eq!(role_of(&p.a, &p.task), "done", "the author's copy follows");
+    assert_eq!(node_state(&p.a.mailspace, &p.task), "done");
+    assert_eq!(state(&p.a, &p.task).as_deref(), Some("done"));
+}
+
+#[test]
+fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
+    let mut w = World::new();
+    minds(&mut w.bob, "lead");
+    w.put(1, "item", "done_when: x\n");
+    // A held event stamped five minutes ahead of the machine clock: far
+    // enough that the clock alone would stamp below it, and inside the ten
+    // minutes of skew a receiver still counts — a later stamp would be
+    // ignored, not ordered, so it could not be a floor either.
+    let held_at = chrono::DateTime::from_timestamp_micros(
+        chrono::Utc::now().timestamp_micros() + 5 * 60 * 1_000_000,
+    )
+    .unwrap()
+    .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    put_stamped_event(
+        &w,
+        2,
+        1,
+        "done",
+        &[],
+        "Sun, 11 Oct 2026 12:00:00 +0000",
+        &held_at,
+    );
+    w.bob.pull(&w.bob_client);
+    let handle = crate::sync::fake_server::handle(1);
+    assert_eq!(state(&w.bob, &handle).as_deref(), Some("done"));
+
+    // The mind reopens the item: the new letter carries a stamp, and the
+    // stamp is at least one microsecond past the newest held event even
+    // though the machine clock is five minutes earlier.
+    let moved = w
+        .bob
+        .mailspace
+        .move_item_outcome("lead", &handle, "needs", None, "need reopen", None)
+        .unwrap();
+    let event = moved.event.expect("the mind writes an event letter");
+    let at = at_of(&w.bob.bytes_of(&event)).expect("every event letter carries X-Vivi-Event-At");
+    let floor = chrono::DateTime::parse_from_rfc3339(&held_at)
+        .unwrap()
+        .timestamp_micros()
+        + 1;
+    assert!(at >= floor, "the stamp {at} is below the held event");
+    assert_eq!(need_state(&w, 1).0, "needs", "the newer stamp wins here");
+    assert_eq!(state(&w.bob, &handle).as_deref(), Some("reopened"));
 }

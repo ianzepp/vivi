@@ -1,6 +1,6 @@
 use serde::Serialize;
 use vivi::VivariumError;
-use vivi::mailspace::Mailspace;
+use vivi::mailspace::{Mailspace, is_foreign_account};
 use vivi::storage::{MailspaceEvent, StoredMessageView};
 
 #[derive(Debug, Serialize)]
@@ -9,6 +9,9 @@ struct WorkListItem {
     kind: String,
     status: String,
     role: String,
+    /// The address a held item is held under; own roles carry none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    held_for: Option<String>,
     date: String,
     from: String,
     to: String,
@@ -26,6 +29,45 @@ struct WorkListEvent {
     note: Option<String>,
 }
 
+/// Which held work a listing shows: rows this mailspace holds under another
+/// mailspace's address rather than under one of its own roles.
+#[derive(Debug)]
+pub(crate) enum HeldScope {
+    /// Exactly one foreign address.
+    For(String),
+    /// Every other mailspace's address.
+    All,
+}
+
+impl HeldScope {
+    fn holds(&self, account: &str) -> bool {
+        match self {
+            HeldScope::For(address) => account.eq_ignore_ascii_case(address),
+            HeldScope::All => is_foreign_account(account),
+        }
+    }
+}
+
+/// Resolve the list flags into a held scope, or `None` for this mailspace's
+/// own folders. `--for <address>` (any value with an `@`) and `--held` both
+/// ask for held work; asking both ways at once is refused.
+pub(crate) fn held_scope(
+    for_identity: Option<&str>,
+    held: bool,
+) -> Result<Option<HeldScope>, VivariumError> {
+    if held {
+        if for_identity.is_some() {
+            return Err(VivariumError::Message(
+                "--held and --for both scope the list; use one of them".into(),
+            ));
+        }
+        return Ok(Some(HeldScope::All));
+    }
+    Ok(for_identity
+        .filter(|value| value.contains('@'))
+        .map(|value| HeldScope::For(value.trim().to_ascii_lowercase())))
+}
+
 pub(crate) fn print_work_lists(
     mailspace: &Mailspace,
     identity: Option<&str>,
@@ -36,7 +78,6 @@ pub(crate) fn print_work_lists(
     marks: &[String],
     json: bool,
 ) -> Result<(), VivariumError> {
-    let storage = mailspace.storage()?;
     let from = crate::local_mail_list::resolve_list_header(mailspace, from);
     let to = crate::local_mail_list::resolve_list_header(mailspace, to);
     let mut messages = Vec::new();
@@ -59,6 +100,56 @@ pub(crate) fn print_work_lists(
                 )
         }));
     }
+    render_work_list(mailspace, messages, kind, roles, marks, json)
+}
+
+/// List work this mailspace holds for another mailspace, across every folder
+/// the status names. `sent` is this mailspace's own copy of handed-off work,
+/// never a held row, so it is dropped here.
+pub(crate) fn print_held_work_lists(
+    mailspace: &Mailspace,
+    scope: &HeldScope,
+    roles: &[&str],
+    kind: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    marks: &[String],
+    json: bool,
+) -> Result<(), VivariumError> {
+    let from = crate::local_mail_list::resolve_list_header(mailspace, from);
+    let to = crate::local_mail_list::resolve_list_header(mailspace, to);
+    let folders: Vec<&str> = roles
+        .iter()
+        .copied()
+        .filter(|role| *role != "sent")
+        .collect();
+    let mut messages = Vec::new();
+    for folder in &folders {
+        let listed = mailspace.list_kind(None, folder, kind)?;
+        messages.extend(listed.into_iter().filter(|message| {
+            scope.holds(&message.account)
+                && (folders.contains(&"done") || message.absorbed_at.is_none())
+                && crate::local_mail_list::headers_match(
+                    &message.from_addr,
+                    &message.to_addr,
+                    &message.cc_addr,
+                    from.as_ref(),
+                    to.as_ref(),
+                )
+        }));
+    }
+    render_work_list(mailspace, messages, kind, &folders, marks, json)
+}
+
+fn render_work_list(
+    mailspace: &Mailspace,
+    messages: Vec<StoredMessageView>,
+    kind: &str,
+    roles: &[&str],
+    marks: &[String],
+    json: bool,
+) -> Result<(), VivariumError> {
+    let storage = mailspace.storage()?;
     let message_ids = messages
         .iter()
         .map(|message| message.message_id.clone())
@@ -87,11 +178,13 @@ fn work_list_item(
     kind: &str,
     events: &[MailspaceEvent],
 ) -> WorkListItem {
+    let held_for = is_foreign_account(&message.account).then(|| message.account.clone());
     WorkListItem {
         handle: message.handle,
         kind: kind.into(),
         status: status_for_role(&message.local_role),
         role: message.local_role,
+        held_for,
         date: message.date,
         from: message.from_addr,
         to: message.to_addr,
@@ -219,6 +312,10 @@ fn print_human(kind: &str, roles: &[&str], items: &[WorkListItem]) {
         println!("  no {kind}s in {}", shown.join("/"));
         return;
     }
+    if items.iter().any(|item| item.held_for.is_some()) {
+        print_held_human(items);
+        return;
+    }
     println!("  handle  status  role  date  from  subject  last_event");
     for item in items {
         let last_event = item
@@ -228,6 +325,29 @@ fn print_human(kind: &str, roles: &[&str], items: &[WorkListItem]) {
         println!(
             "  {}  {}  {}  {}  {}  {}  {}",
             item.handle, item.status, item.role, item.date, item.from, item.subject, last_event
+        );
+    }
+}
+
+/// The same rows with the foreign address each is held under, after the
+/// role column; listings of own roles print exactly as before.
+fn print_held_human(items: &[WorkListItem]) {
+    println!("  handle  status  role  held_for  date  from  subject  last_event");
+    for item in items {
+        let last_event = item
+            .last_event
+            .as_ref()
+            .map_or("-", |event| event.command.as_str());
+        println!(
+            "  {}  {}  {}  {}  {}  {}  {}  {}",
+            item.handle,
+            item.status,
+            item.role,
+            item.held_for.as_deref().unwrap_or("-"),
+            item.date,
+            item.from,
+            item.subject,
+            last_event
         );
     }
 }

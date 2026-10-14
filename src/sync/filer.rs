@@ -198,7 +198,9 @@ impl<'a> Filer<'a> {
         Ok(true)
     }
 
-    /// Ingest one row and attach the backlog node for a work item.
+    /// Ingest one row and attach the backlog node for a work item. An event
+    /// letter never attaches one: it files as mail whatever kind it carries
+    /// (see [`letter_kind`]).
     fn ingest_row(
         &self,
         storage: &mut Storage,
@@ -225,7 +227,7 @@ impl<'a> Filer<'a> {
         let (outcome, stored) = storage.ingest_if_absent(request, bytes, Some(&event))?;
         if let (true, Some(kind), true) = (
             outcome.wrote(),
-            work_kind(record.kind.as_deref()),
+            work_kind(letter_kind(record, headers)),
             placement.attach,
         ) {
             self.mailspace.backlog_attach_letter(
@@ -246,13 +248,15 @@ impl<'a> Filer<'a> {
     /// this mailspace as well, a `sent` row under the From role. A letter
     /// with neither is held under its first To address, verbatim, so nothing
     /// is dropped; it is another mailspace's work and mints no backlog node.
+    /// An event letter files as mail whatever kind it carries: no work row,
+    /// no node, ever.
     fn placements(
         &self,
         record: &Record,
         headers: &LetterHeaders,
         report: &mut PullReport,
     ) -> Vec<Placement> {
-        let kind = record.kind.as_deref();
+        let kind = letter_kind(record, headers);
         let mut placements: Vec<Placement> = Vec::new();
         for address in &headers.recipients {
             let Some((local, domain)) = address.rsplit_once('@') else {
@@ -459,6 +463,19 @@ pub(crate) fn forged_from(stamped: Option<&str>, headers: &LetterHeaders) -> Opt
         "From address claims mailspace {claimed} but the sender is registered as {}",
         stamped.as_deref().unwrap_or("none")
     ))
+}
+
+/// The wire kind a record's letter files under: its envelope kind, unless
+/// the letter is an event. An event letter rides its item's kind on the
+/// wire so every member that holds the item is served it, but it is a
+/// record, not work: it files as plain mail — no `needs`/`tasks`/`wants`
+/// row and no backlog node, whatever kind the envelope carries.
+fn letter_kind<'a>(record: &'a Record, headers: &LetterHeaders) -> Option<&'a str> {
+    if headers.is_event {
+        None
+    } else {
+        record.kind.as_deref()
+    }
 }
 
 /// The mail kind a record's wire `kind` files under, if it is one the client

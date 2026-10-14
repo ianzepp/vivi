@@ -227,7 +227,7 @@ fn the_owners_flow_with_no_sync_is_letters_all_the_way() {
     assert_eq!(state_line(p, "need", &need).as_deref(), Some("done"));
     assert!(counts(p).contains("ready=0"), "{}", counts(p));
 
-    // The need's thread is its letters: the item, the audit's request, and
+    // The need's thread holds the item, the audit's request, the binds and
     // the events in order.
     let out = ok(p, &["need", "show", &need, "--json"]);
     let thread: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -237,10 +237,11 @@ fn the_owners_flow_with_no_sync_is_letters_all_the_way() {
         .iter()
         .map(|m| m["body"].as_str().unwrap().trim().to_string())
         .collect();
-    assert_eq!(bodies.len(), 5, "{bodies:?}");
+    assert_eq!(bodies.len(), 7, "{bodies:?}");
     for wanted in ["please reopen N", "reopening on the audit"] {
         assert!(bodies.iter().any(|b| b == wanted), "{wanted}: {bodies:?}");
     }
+    assert_eq!(bodies.iter().filter(|b| *b == "bound").count(), 2);
     assert_eq!(bodies.iter().filter(|b| *b == "done").count(), 2);
 
     // Converged: an audit and a repair change nothing.

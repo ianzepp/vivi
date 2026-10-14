@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use crate::error::VivariumError;
+use crate::sync::SendFilter;
 use crate::sync::SyncSettings;
 use crate::sync::identity::key_path;
 
@@ -138,6 +139,7 @@ pub fn resolve(
                 server: server.trim_end_matches('/').to_string(),
                 project: checked_project(&project)?,
                 name: name.unwrap_or_default(),
+                send: SendFilter::All,
                 mailspace_id: String::new(),
             },
             credential,

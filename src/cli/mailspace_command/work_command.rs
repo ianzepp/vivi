@@ -181,12 +181,16 @@ pub enum NeedCommand {
         clap::ArgGroup::new("list_scope")
             .required(true)
             .multiple(true)
-            .args(["for_identity", "from", "to"])
+            .args(["for_identity", "from", "to", "held"])
     ))]
     List {
         /// Identity whose needs should be listed
         #[arg(long = "for")]
         for_identity: Option<String>,
+
+        /// List needs held under any other mailspace's address
+        #[arg(long)]
+        held: bool,
 
         /// Need creator identity or address filter
         #[arg(long)]
@@ -306,12 +310,16 @@ pub enum WantCommand {
         clap::ArgGroup::new("list_scope")
             .required(true)
             .multiple(true)
-            .args(["for_identity", "from", "to"])
+            .args(["for_identity", "from", "to", "held"])
     ))]
     List {
         /// Identity whose wants should be listed
         #[arg(long = "for")]
         for_identity: Option<String>,
+
+        /// List wants held under any other mailspace's address
+        #[arg(long)]
+        held: bool,
 
         /// Want creator identity or address filter
         #[arg(long)]

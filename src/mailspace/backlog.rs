@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::Mailspace;
 use super::graph_mutate::{newly_ready_after_done, ready_handles, validate_source_id};
+use super::item_events::PropertyKind;
 use crate::error::VivariumError;
 use crate::storage::{
     BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, MailspaceEventInput, Storage,
@@ -148,8 +149,14 @@ impl Mailspace {
     }
 
     /// Bind unit tasks to a parent need: each unit node's `subgraph` becomes
-    /// the need's source id. Binding already-done units may complete the need
-    /// immediately via the join rule.
+    /// the need's source id, and one `bound` property letter travels on the
+    /// need naming every unit, so each member that holds the units binds
+    /// them to its own node for the need. The letter is written first, and
+    /// the `unit_bound` events it leaves carry the letter's instant and
+    /// `Message-ID` — the same floor every receiver of the letter holds —
+    /// or the local clock when no letter travels (a bind that stays local).
+    /// Binding already-done units may complete the need immediately via the
+    /// join rule.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] naming the first missing node, or on
@@ -161,7 +168,7 @@ impl Mailspace {
                 "bind needs at least one unit handle".into(),
             ));
         }
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let graph = storage
             .work_graph_by_code(BACKLOG_GRAPH_CODE)?
             .ok_or_else(|| VivariumError::Message(format!("need not found: {parent}")))?;
@@ -181,6 +188,7 @@ impl Mailspace {
             )));
         }
         let mut unit_handles = Vec::with_capacity(units.len());
+        let mut unit_sources = Vec::with_capacity(units.len());
         for unit in units {
             let unit_node = backlog_node_by_token(&storage, &nodes, unit)?.ok_or_else(|| {
                 VivariumError::Message(format!(
@@ -189,10 +197,70 @@ impl Mailspace {
                 ))
             })?;
             unit_handles.push(unit_node.handle.clone());
+            unit_sources.push(unit_node.source_id.clone());
         }
-        storage.bind_backlog_units(&graph.handle, parent, &unit_handles)?;
         drop(storage);
-        self.backlog_complete_if_join_complete(parent, &mut Vec::new())
+        let stamp = self.emit_bound_letter(&parent_node.source_id, &unit_sources)?;
+        let mut storage = self.storage()?;
+        storage.bind_backlog_units(
+            &graph.handle,
+            parent,
+            &unit_handles,
+            stamp.at,
+            &stamp.letter,
+        )?;
+        drop(storage);
+        self.backlog_complete_if_join_complete(parent, &mut Vec::new())?;
+        Ok(())
+    }
+
+    /// The `bound` property letter a successful bind writes on the need: one
+    /// letter with one `X-Vivi-Event-Unit` header per unit, so the lowering
+    /// travels like any letter and every member that holds the units binds
+    /// them to its own node for the need. Returns the stamp its
+    /// `unit_bound` events carry: the letter's instant and `Message-ID` or,
+    /// when nothing is written — the need is not held work here, or no role
+    /// here authored it (the bind by the holder of a foreign need stays
+    /// local) — the local clock with no letter id.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on storage failure.
+    fn emit_bound_letter(
+        &self,
+        need_source: &str,
+        unit_sources: &[String],
+    ) -> Result<BindStamp, VivariumError> {
+        let local = local_bind_stamp();
+        let mut storage = self.storage()?;
+        let Ok(message_id) = storage.resolve_message_token(need_source) else {
+            return Ok(local);
+        };
+        let Some(view) = storage.message_by_id(&message_id)? else {
+            return Ok(local);
+        };
+        let Some(item) = super::item_events::held_item(&storage, &view.content_id)? else {
+            return Ok(local);
+        };
+        let Some(identity) = self.item_author(&item) else {
+            return Ok(local);
+        };
+        let units = unit_rfc_ids(&storage, unit_sources);
+        if units.is_empty() {
+            return Ok(local);
+        }
+        let extras: Vec<(&str, String)> = units
+            .iter()
+            .map(|id| ("X-Vivi-Event-Unit", format!("<{id}>")))
+            .collect();
+        let handle = self.emit_property_event(
+            &mut storage,
+            &item,
+            &identity,
+            PropertyKind::Bound,
+            &extras,
+            None,
+        )?;
+        Ok(letter_stamp(&storage, &handle)?.unwrap_or(local))
     }
 
     /// Complete `parent` when every unit bound to it is done, then settle the
@@ -203,7 +271,7 @@ impl Mailspace {
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
-    fn backlog_complete_if_join_complete(
+    pub(super) fn backlog_complete_if_join_complete(
         &self,
         parent: &str,
         joined: &mut Vec<String>,
@@ -480,6 +548,23 @@ impl Mailspace {
         let nodes = storage.work_graph_nodes(&graph.handle)?;
         Ok(backlog_node_by_token(&storage, &nodes, handle)?.is_some())
     }
+
+    /// The backlog node for any token a message here resolves to, or `None`
+    /// when there is no graph or no node for it (held foreign, or sent by a
+    /// binary too old to mint one).
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on storage failure.
+    pub(super) fn backlog_node_of(
+        storage: &Storage,
+        token: &str,
+    ) -> Result<Option<WorkGraphNodeRow>, VivariumError> {
+        let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
+            return Ok(None);
+        };
+        let nodes = storage.work_graph_nodes(&graph.handle)?;
+        backlog_node_by_token(storage, &nodes, token)
+    }
 }
 
 /// One bound unit of a need, as shown by `need show`.
@@ -487,6 +572,56 @@ impl Mailspace {
 pub struct BacklogBoundUnit {
     pub handle: String,
     pub state: String,
+}
+
+/// The stamp a `unit_bound` event carries: the instant and `Message-ID` of
+/// the `bound` letter the bind wrote, so the floor it leaves is the same
+/// on every member that holds the letter. A bind that wrote no letter (the
+/// holder of a foreign need binds locally) stamps the local clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BindStamp {
+    pub(super) at: i64,
+    pub(super) letter: String,
+}
+
+/// The stamp of a bind that wrote no letter: the local clock, no id.
+fn local_bind_stamp() -> BindStamp {
+    BindStamp {
+        at: chrono::Utc::now().timestamp_micros(),
+        letter: String::new(),
+    }
+}
+
+/// The stamp of the `bound` letter `handle` names — its `X-Vivi-Event-At`
+/// instant and its `Message-ID` — the pair its `unit_bound` events carry.
+fn letter_stamp(storage: &Storage, handle: &str) -> Result<Option<BindStamp>, VivariumError> {
+    let Ok(id) = storage.resolve_message_token(handle) else {
+        return Ok(None);
+    };
+    let bytes = storage.read_message(&id)?;
+    Ok(
+        super::item_events::parse_property_event(&bytes).map(|event| BindStamp {
+            at: event.at,
+            letter: event.id,
+        }),
+    )
+}
+
+/// The normalized `Message-ID`s of the unit items `sources` name here.
+fn unit_rfc_ids(storage: &Storage, sources: &[String]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for source in sources {
+        let Ok(id) = storage.resolve_message_token(source) else {
+            continue;
+        };
+        let Ok(Some(view)) = storage.message_by_id(&id) else {
+            continue;
+        };
+        if let Some(id) = view.normalized_message_id {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 /// Find the backlog node for a mail token. Falls back to matching the

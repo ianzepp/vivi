@@ -35,7 +35,8 @@ pub struct Stopped {
     pub reason: String,
     pub remaining: usize,
     /// The server said slow down (429); a drain may wait and run another
-    /// pass. Every other stop sets this false.
+    /// pass, and `failure` does not count the stop a failure. Every other
+    /// stop sets this false.
     pub rate_limited: bool,
 }
 
@@ -62,10 +63,18 @@ impl PushReport {
     pub fn lines(&self) -> Vec<String> {
         let mut lines = vec![self.summary()];
         if let Some(stopped) = &self.stopped {
-            lines.push(format!(
-                "stopped: {}; {} letter(s) left unsent",
-                stopped.reason, stopped.remaining
-            ));
+            if stopped.rate_limited {
+                lines.push(format!(
+                    "stopped: rate limited; {} letter(s) left unsent; run again later or use \
+                     --drain",
+                    stopped.remaining
+                ));
+            } else {
+                lines.push(format!(
+                    "stopped: {}; {} letter(s) left unsent",
+                    stopped.reason, stopped.remaining
+                ));
+            }
         }
         if self.held_back > 0 {
             lines.push(format!(
@@ -142,14 +151,18 @@ impl PushReport {
         line
     }
 
-    /// Why the command should exit non-zero, if it should.
+    /// Why the command should exit non-zero, if it should. A stop the server
+    /// rate-limited is a limit, not a failure: the letters stay queued for a
+    /// later run or a `--drain`.
     #[must_use]
     pub fn failure(&self) -> Option<String> {
         if let Some(stopped) = &self.stopped {
-            return Some(format!(
-                "push stopped with {} letter(s) unsent: {}",
-                stopped.remaining, stopped.reason
-            ));
+            if !stopped.rate_limited {
+                return Some(format!(
+                    "push stopped with {} letter(s) unsent: {}",
+                    stopped.remaining, stopped.reason
+                ));
+            }
         }
         let stuck = self
             .skipped
@@ -225,7 +238,7 @@ pub const RATE_WAIT: Duration = Duration::from_secs(61);
 /// network failure, a server error) ends the drain at once with that stop in
 /// the returned report. A letter one pass refused is not selected again.
 /// Three consecutive rate-limited passes that sent nothing end the drain
-/// with the last stop in place, so a stuck server cannot spin it forever.
+/// with the last stop, marked not rate-limited so it reports as a failure.
 ///
 /// `progress` is called once per pass with that pass's report and the
 /// 1-based pass number; `wait` is called with [`RATE_WAIT`] before every
@@ -281,6 +294,11 @@ pub fn push_drain(
         } else {
             stalled += 1;
             if stalled >= 3 {
+                // Three passes got nothing through: give up, and report the
+                // stuck server as the failure it is.
+                if let Some(stop) = total.stopped.as_mut() {
+                    stop.rate_limited = false;
+                }
                 return Ok(total);
             }
         }

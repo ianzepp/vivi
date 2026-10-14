@@ -63,6 +63,41 @@ pub struct SyncConfig {
     /// This checkout's registered identity name on the server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// What a push sends: every letter (`all`, the default) or only the
+    /// letters addressed off this machine (`addressed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send: Option<String>,
+}
+
+/// What a push sends, from the `[sync]` `send` key: every letter, or only
+/// the letters addressed off this machine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SendFilter {
+    /// Every letter (the default, and the behavior before the key existed).
+    #[default]
+    All,
+    /// Only letters a recipient address off this machine names, plus event
+    /// letters for items already bound to this project, so an event for
+    /// work that has left the machine follows it.
+    Addressed,
+}
+
+impl SendFilter {
+    /// Read the `[sync]` `send` key: absent or blank is [`SendFilter::All`].
+    ///
+    /// # Errors
+    /// Returns a config error naming the key `send` and its two values for
+    /// any other value.
+    pub fn parse(value: Option<&str>) -> Result<Self, VivariumError> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None | Some("all") => Ok(Self::All),
+            Some("addressed") => Ok(Self::Addressed),
+            Some(other) => Err(VivariumError::Config(format!(
+                "[sync] send = \"{other}\" is not a send value; use send = \"all\" or \
+                 send = \"addressed\" in mailspace.toml"
+            ))),
+        }
+    }
 }
 
 /// `[sync]` validated for one command: every key the command needs is set.
@@ -71,6 +106,8 @@ pub struct SyncSettings {
     pub server: String,
     pub project: String,
     pub name: String,
+    /// What a push sends, from the `[sync]` `send` key.
+    pub send: SendFilter,
     /// This mailspace's id, sent when registering so the server can derive
     /// the address prefix.
     pub mailspace_id: String,
@@ -117,6 +154,7 @@ impl SyncSettings {
             "this checkout's identity name",
             "",
         )?;
+        let send = SendFilter::parse(config.send.as_deref())?;
         let mailspace_id = mailspace.mailspace_id();
         if mailspace_id.is_empty() {
             return Err(VivariumError::Config(
@@ -127,6 +165,7 @@ impl SyncSettings {
             server: server.trim_end_matches('/').to_string(),
             project,
             name,
+            send,
             mailspace_id: mailspace_id.to_string(),
         })
     }
@@ -175,6 +214,14 @@ pub fn sync_dir(vivi_dir: &Path) -> PathBuf {
 mod fake_server;
 
 #[cfg(test)]
+#[path = "sync/send_filter_test.rs"]
+mod send_filter_test;
+
+#[cfg(test)]
+#[path = "sync/send_filter_local_only_test.rs"]
+mod send_filter_local_only_test;
+
+#[cfg(test)]
 #[path = "sync/admission_test.rs"]
 mod admission_test;
 
@@ -185,6 +232,26 @@ mod deps;
 #[cfg(test)]
 #[path = "sync/events_test.rs"]
 mod events;
+
+#[cfg(test)]
+#[path = "sync/event_wire_test.rs"]
+mod event_wire_test;
+
+#[cfg(test)]
+#[path = "sync/property_bind_converge_test.rs"]
+mod property_bind_converge;
+
+#[cfg(test)]
+#[path = "sync/event_gate_test.rs"]
+mod event_gate_test;
+
+#[cfg(test)]
+#[path = "sync/ruling_proof_test.rs"]
+mod ruling_proof_test;
+
+#[cfg(test)]
+#[path = "sync/events_foreign_test.rs"]
+mod events_foreign;
 
 #[cfg(test)]
 #[path = "sync/flow_test.rs"]
@@ -225,3 +292,19 @@ mod epoch_binding_test;
 #[cfg(test)]
 #[path = "sync/epoch_status_test.rs"]
 mod epoch_status_test;
+
+#[cfg(test)]
+#[path = "sync/property_marks_converge_test.rs"]
+mod property_marks_converge;
+
+#[cfg(test)]
+#[path = "sync/absorb_quiet_test.rs"]
+mod absorb_quiet_test;
+
+#[cfg(test)]
+#[path = "sync/deferred_events_test.rs"]
+mod deferred_events_test;
+
+#[cfg(test)]
+#[path = "sync/absorb_before_seal_test.rs"]
+mod absorb_before_seal_test;

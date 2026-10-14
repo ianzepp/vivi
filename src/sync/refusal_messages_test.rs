@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::mailspace::Mailspace;
+use crate::sync::SendFilter;
 
 fn error_body(code: &str, message: &str) -> Value {
     json!({ "error": { "code": code, "message": message } })
@@ -17,6 +18,7 @@ fn refusal_settings() -> SyncSettings {
         server: "sync.example:8080".into(),
         project: "abcde-fghjk".into(),
         name: "alice".into(),
+        send: SendFilter::All,
         mailspace_id: "3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b".into(),
     }
 }

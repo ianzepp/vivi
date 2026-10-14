@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use mail_parser::{Address, Message, MessageParser};
 
 use super::{
-    EVENT_HEADER, EVENT_OF_HEADER, EVENT_PREV_HEADER, HeldItem, ItemEventKind, chain_heads,
-    held_item, role_move,
+    EVENT_AT_HEADER, EVENT_HEADER, EVENT_OF_HEADER, EVENT_PREV_HEADER, EventLetter, HeldItem,
+    ItemEventKind, chain_heads, dated_within_clock, held_item, role_move,
 };
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -163,9 +163,8 @@ impl Mailspace {
     /// The row an identity acts on when it names work it does not hold: any
     /// row of the item here, when the move closes or reopens it and the
     /// identity may close it (its author or holder of the sent copy, or a
-    /// mind or operator); also a mind or operator naming a row already
-    /// reported in `done`, which it accepts. `Ok(None)` otherwise; the
-    /// caller reports who holds the row.
+    /// mind or operator, whichever mailspace authored the item). `Ok(None)`
+    /// otherwise; the caller reports who holds the row.
     pub(in crate::mailspace) fn row_for_item_actor(
         &self,
         storage: &Storage,
@@ -186,17 +185,7 @@ impl Mailspace {
             return Ok(None);
         };
         if !self.may_close(&item, identity) {
-            // A mind or operator accepts a report on another mailspace's
-            // item: the row already in `done` is the one it names, and its
-            // close is a local report that is still this mailspace's
-            // acceptance.
-            let accepts = row.local_role == "done"
-                && role == "done"
-                && self.identity_may_close_for_all(identity)
-                && self.item_head(storage, &item)? != Some(ItemEventKind::Done);
-            if !accepts {
-                return Ok(None);
-            }
+            return Ok(None);
         }
         if row.local_role == "done"
             && role == "done"
@@ -258,19 +247,7 @@ impl Mailspace {
         } else {
             format!("--for {holder} (vivi {command} {token} --for {holder})")
         };
-        let why = if self.identity_is_mind(identity) {
-            format!(
-                "'{identity}' is a mind, but {author} is in another mailspace, so a close \
-                 here stays a local report"
-            )
-        } else if self.identity_may_close_for_all(identity) {
-            format!(
-                "'{identity}' is an operator-kind role, but {author} is in another mailspace, \
-                 so a close here stays a local report"
-            )
-        } else {
-            format!("'{identity}' is neither")
-        };
+        let why = format!("'{identity}' is neither");
         VivariumError::Message(format!(
             "message '{token}' is held by identity '{holder}'; to report on it retry with \
              {report}, which moves only that copy. Closing or reopening it for everyone is \
@@ -290,7 +267,8 @@ impl Mailspace {
             .iter()
             .map(|head| head.id.clone())
             .collect();
-        let letter = self.compose_event_letter(item, request, &prevs)?;
+        let at = event_at(super::clock_micros(), &chain.events);
+        let letter = self.compose_event_letter(item, request, &prevs, &at)?;
         self.check_letter_size(letter.data.len())?;
         let rows = event_rows(request.identity, &letter.local, &item.content_id);
         let moves = self.event_moves(storage, item, request)?;
@@ -355,6 +333,7 @@ impl Mailspace {
         item: &HeldItem,
         request: &EmitRequest<'_>,
         prevs: &[String],
+        at: &str,
     ) -> Result<EventLetterDraft, VivariumError> {
         let parsed = MessageParser::default()
             .parse(&item.bytes)
@@ -385,6 +364,7 @@ impl Mailspace {
         data = add_header(&data, "X-Vivi-Kind", "mail")?;
         data = add_header(&data, EVENT_HEADER, request.kind.header())?;
         data = add_header(&data, EVENT_OF_HEADER, &format!("<{item_id}>"))?;
+        data = add_header(&data, EVENT_AT_HEADER, at)?;
         for prev in prevs {
             data = add_header(&data, EVENT_PREV_HEADER, &format!("<{prev}>"))?;
         }
@@ -395,14 +375,18 @@ impl Mailspace {
         })
     }
 
-    /// The item's own To and Cc, minus the sender.
-    fn event_addresses(
+    /// The item's own From, To and Cc, minus the sender: the From first in
+    /// To, so an event written outside the author's mailspace reaches the
+    /// author, then the item's To, with the item's Cc as Cc and no
+    /// duplicates anywhere.
+    pub(super) fn event_addresses(
         &self,
         parsed: &Message<'_>,
         identity: &str,
         from: &str,
     ) -> (Vec<String>, Vec<String>) {
-        let keep = |list: Option<&Address<'_>>| -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        let mut keep = |list: Option<&Address<'_>>| -> Vec<String> {
             let mut kept: Vec<String> = Vec::new();
             for address in list.into_iter().flat_map(Address::iter) {
                 let Some(value) = address.address.as_deref() else {
@@ -413,17 +397,21 @@ impl Mailspace {
                         self.classify_recipient(value),
                         Ok(Recipient::Local(id)) if id == identity
                     );
-                if !is_sender && !kept.iter().any(|seen| seen.eq_ignore_ascii_case(value)) {
+                if !is_sender && !seen.iter().any(|other| other.eq_ignore_ascii_case(value)) {
+                    seen.push(value.to_string());
                     kept.push(value.to_string());
                 }
             }
             kept
         };
-        (keep(parsed.to()), keep(parsed.cc()))
+        let mut to = keep(parsed.from());
+        to.extend(keep(parsed.to()));
+        let cc = keep(parsed.cc());
+        (to, cc)
     }
 
     /// The roles of this mailspace the letter is delivered to.
-    fn local_event_recipients(
+    pub(super) fn local_event_recipients(
         &self,
         to: &[String],
         cc: &[String],
@@ -437,6 +425,39 @@ impl Mailspace {
             })
             .collect()
     }
+}
+
+/// The `X-Vivi-Event-At` value for a new event: the clock, or one
+/// microsecond past the newest counted event this mailspace holds for the
+/// item, whichever is later — a writer never stamps an event older than
+/// one it has seen, and never below an instant a reader will not count.
+fn event_at(now_micros: i64, events: &[EventLetter]) -> String {
+    let floor = events
+        .iter()
+        .filter(|event| dated_within_clock(event.at, now_micros))
+        .map(|event| event.at.saturating_add(1))
+        .max()
+        .unwrap_or(now_micros);
+    stamp_micros(now_micros.max(floor))
+}
+
+/// An instant in Unix microseconds as RFC 3339 UTC with microseconds, as
+/// long as a reader parses it back: past 9999 the year overflows four
+/// digits (`+10000-...`), so the clock is stamped instead.
+pub(super) fn stamp_micros(micros: i64) -> String {
+    let stamp = stamped(micros);
+    if chrono::DateTime::parse_from_rfc3339(&stamp).is_ok() {
+        return stamp;
+    }
+    stamped(chrono::Utc::now().timestamp_micros())
+}
+
+/// An instant as RFC 3339 UTC with microseconds; the clock when the instant
+/// is outside what `chrono` can hold.
+fn stamped(micros: i64) -> String {
+    chrono::DateTime::from_timestamp_micros(micros)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
 /// An assignee cannot reopen what its owner closed: the owner's close is
@@ -472,7 +493,7 @@ fn target_role(item: &HeldItem, kind: ItemEventKind) -> &'static str {
 
 /// The rows an event letter takes here: a read delivered copy for each local
 /// recipient (events do not pile up in inboxes) and the owner's sent copy.
-fn event_rows(
+pub(super) fn event_rows(
     identity: &str,
     local: &BTreeSet<String>,
     item_content_id: &str,

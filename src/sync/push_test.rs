@@ -253,8 +253,9 @@ fn a_rate_limit_stops_the_pass_and_leaves_the_rest_unbound() {
     assert_eq!(report.sent, 2);
     let stopped = report.stopped.as_ref().expect("the pass stopped");
     assert_eq!(stopped.remaining, 2);
-    assert!(report.failure().unwrap().contains("2 letter(s) unsent"));
-    assert!(report.lines().join("\n").contains("left unsent"));
+    assert!(report.failure().is_none(), "a rate limit is not a failure");
+    assert!(report.lines().iter().any(|line| line
+        == "stopped: rate limited; 2 letter(s) left unsent; run again later or use --drain"));
     let bound = a
         .rows()
         .iter()
@@ -853,3 +854,6 @@ fn a_window_sends_only_letters_dated_at_or_after_it_and_leaves_the_rest_unsent()
     assert_eq!(rest.held_back, 0);
     assert_eq!(server.items().len(), 4);
 }
+
+#[path = "push_drain_test.rs"]
+mod drain;

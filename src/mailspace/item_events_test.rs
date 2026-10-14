@@ -1,3 +1,4 @@
+use super::property::{PropertyKind, parse_property_event};
 use super::*;
 use crate::mailspace::SendRequest;
 
@@ -41,6 +42,7 @@ fn event(kind: ItemEventKind, id: &str, prev: &[&str], date: i64) -> EventLetter
         prev: prev.iter().map(ToString::to_string).collect(),
         from_domain: "a.local".into(),
         date,
+        at: date * 1_000_000,
     }
 }
 
@@ -50,6 +52,60 @@ fn letter(headers: &str) -> Vec<u8> {
          Message-ID: <ev-1@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n{headers}\r\nbody\r\n"
     )
     .into_bytes()
+}
+
+#[test]
+fn a_property_event_letter_carries_the_payload_its_kind_needs() {
+    let marked = letter(
+        "In-Reply-To: <item-1@x.test>\r\nX-Vivi-Event: marked\r\n\
+         X-Vivi-Event-Of: <Item-1@x.test>\r\nX-Vivi-Event-Slug: ready\r\n",
+    );
+    let marked = parse_property_event(&marked).unwrap();
+    assert_eq!(marked.kind, PropertyKind::Marked);
+    assert_eq!(marked.of, "item-1@x.test");
+    assert_eq!(marked.id, "ev-1@x.test");
+    assert_eq!(marked.slug.as_deref(), Some("ready"));
+    assert_eq!(marked.from_domain, "aaaaaaaa.local");
+
+    let bound = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: bound\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-Unit: <u1@x.test>\r\nX-Vivi-Event-Unit: <U1@x.test>\r\n",
+    );
+    let bound = parse_property_event(&bound).unwrap();
+    assert_eq!(bound.units, ["u1@x.test"], "deduplicated");
+
+    let sealed = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: Done\r\nX-Vivi-Event-At: 2026-10-14T02:21:03.123456Z\r\n",
+    );
+    let sealed = parse_property_event(&sealed).unwrap();
+    assert_eq!(sealed.kind, PropertyKind::Absorbed);
+    assert_eq!(sealed.state.as_deref(), Some("done"));
+    assert_eq!(sealed.at, 1_791_944_463_123_456);
+    assert!(parse_event(&letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: done\r\n",
+    ))
+    .is_none(), "a state event ignores the property kinds");
+}
+
+#[test]
+fn a_property_event_without_its_payload_or_a_matching_reply_is_plain_mail() {
+    let no_payload = [
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: cancelled\r\n",
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: marked\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: bound\r\nX-Vivi-Event-Of: <item@x.test>\r\n",
+        "In-Reply-To: <other@x.test>\r\nX-Vivi-Event: absorbed\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-State: done\r\n",
+    ];
+    for headers in no_payload {
+        assert!(
+            parse_property_event(&letter(headers)).is_none(),
+            "{headers}"
+        );
+    }
 }
 
 /// The event letters held for `item`, oldest first, as `(kind, prev count)`.
@@ -142,6 +198,51 @@ fn a_cycle_has_no_head_so_every_event_is_a_candidate() {
     let heads = chain_heads(&events);
 
     assert_eq!(heads.last().unwrap().id, "b");
+}
+
+#[test]
+fn the_newest_event_is_decided_by_the_clock_then_the_chain_then_the_id() {
+    // A later clock beats the chain: the successor loses to a later `at`.
+    let later = event(ItemEventKind::Done, "d", &[], 200);
+    let skewed = event(ItemEventKind::Reopened, "r", &["d"], 100);
+    assert_eq!(
+        newest_event(&[skewed.clone(), later.clone()]).unwrap().id,
+        "d"
+    );
+
+    // Equal clock: the successor wins even over a larger Message-ID.
+    let larger = event(ItemEventKind::Done, "z", &[], 100);
+    let successor = event(ItemEventKind::Reopened, "r", &["z"], 100);
+    assert_eq!(newest_event(&[larger, successor.clone()]).unwrap().id, "r");
+
+    // Equal clock and no Prev between two: the larger Message-ID wins.
+    let small = event(ItemEventKind::Reopened, "a", &[], 100);
+    let fork = event(ItemEventKind::Done, "y", &[], 100);
+    assert_eq!(newest_event(&[small, fork]).unwrap().id, "y");
+
+    // A stamp from `X-Vivi-Event-At` is an `at` like any other.
+    let stamped = EventLetter {
+        at: 201 * 1_000_000,
+        ..later
+    };
+    assert_eq!(newest_event(&[successor, stamped]).unwrap().id, "d");
+}
+
+#[test]
+fn an_event_at_stamp_beats_the_date_header() {
+    let stamped = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: done\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-At: 2026-10-14T02:21:03.123456Z\r\n",
+    );
+    let unparsable = letter(
+        "In-Reply-To: <item@x.test>\r\nX-Vivi-Event: done\r\nX-Vivi-Event-Of: <item@x.test>\r\n\
+         X-Vivi-Event-At: sometime\r\n",
+    );
+
+    let parsed = parse_event(&stamped).unwrap();
+    assert_eq!(parsed.at, 1_791_944_463_123_456);
+    let fallback = parse_event(&unparsable).unwrap();
+    assert_eq!(fallback.at, fallback.date * 1_000_000, "falls back to Date");
 }
 
 #[test]

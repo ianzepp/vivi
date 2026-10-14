@@ -546,6 +546,7 @@ fn reopen_task(
 fn run_task_list(command: &TaskCommand) -> Result<(), VivariumError> {
     let TaskCommand::List {
         for_identity,
+        held,
         from,
         to,
         status,
@@ -559,6 +560,7 @@ fn run_task_list(command: &TaskCommand) -> Result<(), VivariumError> {
             "internal: run_task_list requires task list".into(),
         ));
     };
+    let held = crate::local_work_list::held_scope(for_identity.as_deref(), *held)?;
     if *blocked || blocking.is_some() {
         let Some(for_identity) = for_identity.as_deref() else {
             return Err(VivariumError::Message(
@@ -580,6 +582,7 @@ fn run_task_list(command: &TaskCommand) -> Result<(), VivariumError> {
         status,
         *json,
         project.as_deref(),
+        held.as_ref(),
     )
 }
 
@@ -590,6 +593,7 @@ fn list_tasks(
     status: &vivi::cli::TaskStatus,
     json: bool,
     project: Option<&std::path::Path>,
+    held: Option<&crate::local_work_list::HeldScope>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let roles = match status {
@@ -597,6 +601,18 @@ fn list_tasks(
         vivi::cli::TaskStatus::Done => vec!["done"],
         vivi::cli::TaskStatus::All => vec!["tasks", "sent", "done"],
     };
+    if let Some(scope) = held {
+        return crate::local_work_list::print_held_work_lists(
+            &mailspace,
+            scope,
+            &roles,
+            "task",
+            from,
+            to,
+            &[],
+            json,
+        );
+    }
     crate::local_work_list::print_work_lists(
         &mailspace,
         for_identity,
