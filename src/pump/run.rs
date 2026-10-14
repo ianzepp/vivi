@@ -96,8 +96,7 @@ pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
     let lock = take_lock(&home)?;
     let host = Arc::new(RealHost::new(&home));
     let vivi = std::env::current_exe()
-        .map(|exe| exe.display().to_string())
-        .unwrap_or_else(|_| String::from("vivi"));
+        .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
     let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi);
     run_with(&ctx, once)?;
     drop(lock);
@@ -144,7 +143,7 @@ fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) {
     loop {
         let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger));
         if let Err(err) = catch_unwind(tick_once) {
-            ctx.log(&format!("TICK ERROR {}", panic_note(err)));
+            ctx.log(&format!("TICK ERROR {}", panic_note(&err)));
             save(ctx, st);
         }
         if once {
@@ -216,7 +215,7 @@ fn utc_stamp(secs: u64) -> String {
 
 /// The panic payload as one logged line: newlines folded to `" | "`, cut at
 /// 900 characters like pump.py's traceback tail.
-fn panic_note(err: Box<dyn std::any::Any + Send>) -> String {
+fn panic_note(err: &(dyn std::any::Any + Send)) -> String {
     let text = err
         .downcast_ref::<String>()
         .cloned()
