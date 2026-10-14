@@ -47,6 +47,7 @@ per_tick     = 6
 from         = "next"
 pool_plain   = "fly4"
 pool_full    = "flyfull"
+full_max     = 2
 
 [pump.merge]
 batch         = 8
@@ -80,6 +81,14 @@ fn pools(names: &[&str]) -> Vec<String> {
 #[test]
 fn an_absent_pump_table_is_none() {
     assert!(mailspace("name = \"t\"\n").pump.is_none());
+}
+
+#[test]
+fn full_max_defaults_to_zero_and_parses() {
+    let none = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(none.dispatch.full_max, 0, "absent full_max means no cap");
+    let set = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.dispatch]\nfull_max = 2\n");
+    assert_eq!(set.dispatch.full_max, 2);
 }
 
 #[test]
@@ -119,6 +128,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.from, None);
     assert_eq!(cfg.dispatch.pool_plain, "");
     assert_eq!(cfg.dispatch.pool_full, "");
+    assert_eq!(cfg.dispatch.full_max, 0);
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.merge.format, "");
     assert!(cfg.merge.shared_checks.is_empty());
@@ -150,6 +160,7 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.dispatch.lanes[0].cap, 30);
     assert_eq!(cfg.dispatch.lanes[1].model, "zai/glm-5.3-flash");
     assert_eq!(cfg.dispatch.lanes[1].cap, 10);
+    assert_eq!(cfg.dispatch.full_max, 2);
     assert_eq!(cfg.merge.batch, 8);
     assert_eq!(cfg.gate.model, "zai/glm-5.3-flash");
     assert_eq!(cfg.reply_to(), "operator@bd371d96.local");

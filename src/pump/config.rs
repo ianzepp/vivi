@@ -167,6 +167,10 @@ pub struct DispatchConfig {
     pub pool_plain: String,
     /// Pool for units with `tools = "full"`; must name a `[pools.*]` table.
     pub pool_full: String,
+    /// Units allowed in flight on `pool_full` at once; `0` = no cap. While
+    /// this many are inflight there, a further `full` unit waits (skipped,
+    /// not failed), keeping one full-toolchain machine free for gates.
+    pub full_max: u32,
 }
 
 impl Default for DispatchConfig {
@@ -181,6 +185,7 @@ impl Default for DispatchConfig {
             from: None,
             pool_plain: String::new(),
             pool_full: String::new(),
+            full_max: 0,
         }
     }
 }
