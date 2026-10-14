@@ -44,11 +44,7 @@ pub fn parse_failing(text: &str) -> Option<Vec<String>> {
         return None;
     }
     let pairs = crate_path_pairs(text);
-    if pairs.is_empty() {
-        None
-    } else {
-        Some(pairs)
-    }
+    if pairs.is_empty() { None } else { Some(pairs) }
 }
 
 /// Every `FAILING-BEGIN ... FAILING-END` block body, in order: the port of
@@ -127,7 +123,11 @@ fn crate_path_pairs(text: &str) -> Vec<String> {
         if path_end < bytes.len() && is_word_byte(bytes[path_end]) {
             continue;
         }
-        found.insert(format!("{} {}", &text[i..crate_end], &text[crate_end + 1..path_end]));
+        found.insert(format!(
+            "{} {}",
+            &text[i..crate_end],
+            &text[crate_end + 1..path_end]
+        ));
     }
     found.into_iter().collect()
 }
@@ -155,11 +155,7 @@ fn parse_path(bytes: &[u8], start: usize) -> Option<usize> {
             return if leading >= 1 { Some(at) } else { None };
         }
     }
-    if leading >= 2 {
-        after_last
-    } else {
-        None
-    }
+    if leading >= 2 { after_last } else { None }
 }
 
 /// Start a gate when one is due (pump.py:872): send the gate brief as a task
@@ -208,8 +204,8 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
 /// The due rules: a `FORCE-GATE` flag, no baseline yet, enough merges since
 /// the last gate, or new merges with the last gate old enough.
 fn gate_due(ctx: &Ctx, st: &State, force: bool) -> bool {
-    let count_due = st.merges.saturating_sub(st.last_gate.merges)
-        >= u64::from(ctx.cfg.gate.every_merges);
+    let count_due =
+        st.merges.saturating_sub(st.last_gate.merges) >= u64::from(ctx.cfg.gate.every_merges);
     let clock_due = st.merges > st.last_gate.merges
         && ctx.now().saturating_sub(st.last_gate.at) > ctx.cfg.gate.every_seconds;
     force || st.baseline.is_none() || count_due || clock_due
@@ -290,17 +286,16 @@ fn dispatch_gate(ctx: &Ctx, pool: &str, task: &str, tip: &str) -> bool {
         return true;
     }
     let count = out.text.chars().count();
-    let tail: String = out
-        .text
-        .chars()
-        .skip(count.saturating_sub(200))
-        .collect();
+    let tail: String = out.text.chars().skip(count.saturating_sub(200)).collect();
     ctx.log(&format!(
         "gate dispatch failed: {}",
         tail.replace('\n', " | ")
     ));
     ctx.vivi(
-        &format!("task done {task} --for {} --note 'dispatch failed'", ctx.cfg.from),
+        &format!(
+            "task done {task} --for {} --note 'dispatch failed'",
+            ctx.cfg.from
+        ),
         120,
     );
     false
@@ -431,7 +426,12 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     }
     let clean = last_clean_tip(st, &rec.tip);
     gatefix(ctx, st, &rec.tip, &clean, &new);
-    report_new_failures(ctx, rec, &new, &suspect_ids(st, st.gates.last().map_or(0, |g| g.merges), rec.merges));
+    report_new_failures(
+        ctx,
+        rec,
+        &new,
+        &suspect_ids(st, st.gates.last().map_or(0, |g| g.merges), rec.merges),
+    );
     ctx.log(&gate_summary(rec, names, new.len()));
 }
 
@@ -490,14 +490,23 @@ fn suspect_ids(st: &State, prev: u64, merges: u64) -> Vec<String> {
     let list: Vec<&String> = st
         .order
         .iter()
-        .filter(|uid| st.units.get(*uid).is_some_and(|u| u.status == Status::Merged))
+        .filter(|uid| {
+            st.units
+                .get(*uid)
+                .is_some_and(|u| u.status == Status::Merged)
+        })
         .collect();
     let start = usize::try_from(prev).unwrap_or(usize::MAX).min(list.len());
-    let end = usize::try_from(merges).unwrap_or(usize::MAX).min(list.len());
+    let end = usize::try_from(merges)
+        .unwrap_or(usize::MAX)
+        .min(list.len());
     if start >= end {
         Vec::new()
     } else {
-        list[start..end].iter().map(|s| String::from(s.as_str())).collect()
+        list[start..end]
+            .iter()
+            .map(|s| String::from(s.as_str()))
+            .collect()
     }
 }
 
@@ -541,7 +550,10 @@ fn gatefix(ctx: &Ctx, _st: &State, tip: &str, clean: &str, new: &[String]) {
     }
     let prompt = gatefix_prompt(ctx, tip, clean, &need, new);
     spawn_planner(ctx, "gatefix", &need, &prompt);
-    ctx.log(&format!("gatefix planner started for {need} ({} new)", new.len()));
+    ctx.log(&format!(
+        "gatefix planner started for {need} ({} new)",
+        new.len()
+    ));
 }
 
 /// The gate-fix planner prompt (pump.py:907), with the repo, home and plan
@@ -575,9 +587,16 @@ fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
     if !ctx.cfg.promote || ctx.cfg.main.is_empty() {
         return;
     }
-    ctx.git(&format!("fetch -q {} {}", ctx.cfg.remote, ctx.cfg.main), 120);
+    ctx.git(
+        &format!("fetch -q {} {}", ctx.cfg.remote, ctx.cfg.main),
+        120,
+    );
     let head = format!("{}/{}", ctx.cfg.remote, ctx.cfg.main);
-    if ctx.git(&format!("merge-base --is-ancestor {head} {tip}"), 120).code != 0 {
+    if ctx
+        .git(&format!("merge-base --is-ancestor {head} {tip}"), 120)
+        .code
+        != 0
+    {
         ctx.log(&format!(
             "promote skipped: main has commits {} does not have yet",
             ctx.cfg.branch
@@ -596,8 +615,10 @@ fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
         out.code
     ));
     if out.code == 0 {
-        st.promotions
-            .push(Promotion { tip: tip.to_owned(), at: ctx.now() });
+        st.promotions.push(Promotion {
+            tip: tip.to_owned(),
+            at: ctx.now(),
+        });
     }
 }
 
@@ -626,7 +647,10 @@ pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
     };
     if clean_gate(&last) && last.at > file_mtime(&ctx.home.join(HOLD_FLAG)) {
         remove_flag(ctx, HOLD_FLAG);
-        ctx.log(&format!("hold lifted: gate at {} is clean", tip_short(&last.tip)));
+        ctx.log(&format!(
+            "hold lifted: gate at {} is clean",
+            tip_short(&last.tip)
+        ));
         return;
     }
     if newest_merged_fix(st, prefix) > last.at || last.names.is_none() {

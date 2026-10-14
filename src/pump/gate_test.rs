@@ -67,7 +67,11 @@ fn wire(host: &Arc<FakeHost>) {
     );
     host.reply("git ls-remote", 0, &format!("{TIP}\trefs/heads/next\n"));
     host.reply("task send", 0, &format!("created hand {TASK}\nnode {TASK}"));
-    host.reply("pool dispatch", 0, &format!("dispatched {TASK} bridge slot-9"));
+    host.reply(
+        "pool dispatch",
+        0,
+        &format!("dispatched {TASK} bridge slot-9"),
+    );
 }
 
 #[test]
@@ -96,14 +100,20 @@ fn parse_failing_takes_the_last_usable_block() {
 #[test]
 fn parse_failing_an_empty_block_is_zero_failures() {
     assert_eq!(parse_failing("FAILING-BEGIN\nFAILING-END\n"), Some(vec![]));
-    assert_eq!(parse_failing("FAILING-BEGIN\n \n\t\nFAILING-END\n"), Some(vec![]));
+    assert_eq!(
+        parse_failing("FAILING-BEGIN\n \n\t\nFAILING-END\n"),
+        Some(vec![])
+    );
 }
 
 #[test]
 fn parse_failing_build_failed_marker() {
     let text = "rc=1\nFAILING-BEGIN\nBUILD-FAILED\nFAILING-END\n\
                 error: could not compile `vivi` (lib)\n";
-    assert_eq!(parse_failing(text), Some(vec![String::from("BUILD-FAILED")]));
+    assert_eq!(
+        parse_failing(text),
+        Some(vec![String::from("BUILD-FAILED")])
+    );
 }
 
 #[test]
@@ -123,7 +133,10 @@ fn parse_failing_falls_back_to_crate_and_path_pairs_sorted_and_deduplicated() {
 
 #[test]
 fn parse_failing_returns_none_for_prose() {
-    assert_eq!(parse_failing("all 120 tests passed, nothing to see\n"), None);
+    assert_eq!(
+        parse_failing("all 120 tests passed, nothing to see\n"),
+        None
+    );
     assert_eq!(
         parse_failing("FAILING-BEGIN\n<crate> <test name>\nFAILING-END\n"),
         None
@@ -201,11 +214,14 @@ fn a_failed_gate_dispatch_marks_the_task_done_and_records_nothing() {
     start_gate(&ctx, &mut st);
     let commands = host.commands();
     let done = commands.iter().find(|c| c.contains("task done")).unwrap();
-    assert!(done.contains(&format!("task done {TASK} --for operator --note 'dispatch failed'")));
-    assert!(host
-        .logs()
-        .iter()
-        .any(|line| line.contains("gate dispatch failed: boom: no worker online")));
+    assert!(done.contains(&format!(
+        "task done {TASK} --for operator --note 'dispatch failed'"
+    )));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("gate dispatch failed: boom: no worker online"))
+    );
     assert!(ctx.flag("FORCE-GATE"));
     assert!(st.last_gate.task.is_none());
     drop(dir);
@@ -247,7 +263,11 @@ fn add_merged_units(st: &mut State) {
     for uid in ["u1", "u2", "u3", "u4"] {
         st.units.insert(
             String::from(uid),
-            Unit { status: Status::Merged, since: T0, ..Unit::default() },
+            Unit {
+                status: Status::Merged,
+                since: T0,
+                ..Unit::default()
+            },
         );
         st.order.push(String::from(uid));
     }
@@ -283,7 +303,11 @@ fn the_first_gate_sets_the_baseline_and_does_not_promote() {
     let (dir, ctx, host) = setup();
     let mut st = gate_state(4);
     st.baseline = None;
-    finish_gate(&ctx, &mut st, "FAILING-BEGIN\nvivi pump::gate::a\nFAILING-END\n");
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nvivi pump::gate::a\nFAILING-END\n",
+    );
     assert_eq!(st.baseline, Some(vec![String::from("vivi pump::gate::a")]));
     assert_eq!(st.last_gate.task, None);
     let rec = st.gates.last().unwrap();
@@ -293,10 +317,11 @@ fn the_first_gate_sets_the_baseline_and_does_not_promote() {
     assert_eq!(rec.new, None);
     assert!(host.commands().is_empty());
     assert!(host.spawned().is_empty());
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("gate baseline at 0123456789: 1 failing names")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("gate baseline at 0123456789: 1 failing names"))
+    );
     drop(dir);
 }
 
@@ -305,7 +330,8 @@ fn names_in_the_baseline_known_red_or_owned_are_not_new() {
     let (dir, ctx, _host) = setup();
     fs::write(ctx.home.join("known-red.txt"), "known crate::b\n").unwrap();
     let mut st = gate_state(4);
-    st.red.insert(String::from("owned crate::c"), String::from("pumpfix-old"));
+    st.red
+        .insert(String::from("owned crate::c"), String::from("pumpfix-old"));
     let text = "FAILING-BEGIN\nold crate::base\nknown crate::b\nowned crate::c\n\
                 fresh crate::d\nFAILING-END\n";
     finish_gate(&ctx, &mut st, text);
@@ -329,7 +355,11 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
         new: None,
     });
     add_merged_units(&mut st);
-    finish_gate(&ctx, &mut st, "FAILING-BEGIN\nvivi pump::gate::gone\nFAILING-END\n");
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nvivi pump::gate::gone\nFAILING-END\n",
+    );
     assert_eq!(
         st.red.get("vivi pump::gate::gone"),
         Some(&String::from("pumpfix-g01234567"))
@@ -347,14 +377,17 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
         "Write {}/plans/pumpfix-g01234567.json",
         ctx.home.display()
     )));
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("gatefix planner started for pumpfix-g01234567 (1 new)")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("gatefix planner started for pumpfix-g01234567 (1 new)"))
+    );
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
-    assert!(exceptions.contains(
-        "gate-new-failures 0123456789 1 new: vivi pump::gate::gone ; suspects: u2 u3"
-    ));
+    assert!(
+        exceptions.contains(
+            "gate-new-failures 0123456789 1 new: vivi pump::gate::gone ; suspects: u2 u3"
+        )
+    );
     drop(dir);
 }
 
@@ -362,13 +395,15 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
 fn an_owned_name_that_passes_again_is_released() {
     let (dir, ctx, host) = setup();
     let mut st = gate_state(4);
-    st.red.insert(String::from("old crate::base"), String::from("pumpfix-old"));
+    st.red
+        .insert(String::from("old crate::base"), String::from("pumpfix-old"));
     finish_gate(&ctx, &mut st, "FAILING-BEGIN\nFAILING-END\n");
     assert!(st.red.is_empty());
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("red fixed: old crate::base (owner pumpfix-old)")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("red fixed: old crate::base (owner pumpfix-old)"))
+    );
     drop(dir);
 }
 
@@ -377,14 +412,19 @@ fn a_gate_with_no_new_failure_promotes_main_by_fast_forward_push() {
     let (dir, ctx, host) = setup();
     wire_promote(&host);
     let mut st = gate_state(4);
-    finish_gate(&ctx, &mut st, "FAILING-BEGIN\nold crate::base\nFAILING-END\n");
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nold crate::base\nFAILING-END\n",
+    );
     let commands = host.commands();
     let push = commands.iter().find(|c| c.contains("git push")).unwrap();
     assert_eq!(*push, format!("git push origin {TIP}:refs/heads/main"));
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("promote main -> 0123456789 rc=0")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("promote main -> 0123456789 rc=0"))
+    );
     assert_eq!(st.promotions.len(), 1);
     assert_eq!(st.promotions[0].tip, TIP);
     assert_eq!(st.promotions[0].at, ctx.now());
@@ -400,10 +440,11 @@ fn promote_is_skipped_when_main_has_commits_the_integration_branch_lacks() {
     finish_gate(&ctx, &mut st, "FAILING-BEGIN\nFAILING-END\n");
     assert!(host.commands().iter().all(|c| !c.contains("git push")));
     assert!(st.promotions.is_empty());
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("promote skipped: main has commits next does not have yet")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("promote skipped: main has commits next does not have yet"))
+    );
     drop(dir);
 }
 
@@ -447,16 +488,23 @@ fn red_after_fix_is_reported_once_when_the_fix_units_are_settled_and_the_name_st
     let name = "vivi pump::gate::still_red";
     let mut st = gate_state(4);
     st.baseline = Some(vec![String::from(name)]);
-    st.red.insert(String::from(name), String::from("pumpfix-settled"));
+    st.red
+        .insert(String::from(name), String::from("pumpfix-settled"));
     st.units.insert(
         String::from("pumpfix-settled-1"),
-        Unit { status: Status::Merged, ..Unit::default() },
+        Unit {
+            status: Status::Merged,
+            ..Unit::default()
+        },
     );
     let text = format!("FAILING-BEGIN\n{name}\nFAILING-END\n");
     finish_gate(&ctx, &mut st, &text);
     finish_gate(&ctx, &mut st, &text);
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
-    assert_eq!(exceptions.matches("red-after-fix pumpfix-settled").count(), 1);
+    assert_eq!(
+        exceptions.matches("red-after-fix pumpfix-settled").count(),
+        1
+    );
     assert!(exceptions.contains(&format!("red-after-fix pumpfix-settled {name}")));
     assert_eq!(st.red_reported, vec![format!("pumpfix-settled:{name}")]);
     drop(dir);
@@ -471,13 +519,20 @@ fn hold_cycle_forces_a_gate_after_the_fixes_merge_and_lifts_the_hold_on_a_clean_
     let mut st = State::default();
     st.units.insert(
         String::from("pumpfix-a-1"),
-        Unit { status: Status::Merging, ..Unit::default() },
+        Unit {
+            status: Status::Merging,
+            ..Unit::default()
+        },
     );
     hold_cycle(&ctx, &mut st);
     assert!(!ctx.flag("FORCE-GATE"));
     st.units.insert(
         String::from("pumpfix-a-1"),
-        Unit { status: Status::Merged, since: T0 + 50, ..Unit::default() },
+        Unit {
+            status: Status::Merged,
+            since: T0 + 50,
+            ..Unit::default()
+        },
     );
     st.gates.push(GateRecord {
         tip: String::from(TIP),
@@ -489,10 +544,11 @@ fn hold_cycle_forces_a_gate_after_the_fixes_merge_and_lifts_the_hold_on_a_clean_
     hold_cycle(&ctx, &mut st);
     let force = ctx.home.join("FORCE-GATE");
     assert_eq!(fs::read_to_string(&force).unwrap(), "after fixes\n");
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("hold: fixes merged, forcing a gate")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("hold: fixes merged, forcing a gate"))
+    );
     fs::remove_file(&force).unwrap();
     st.gates.push(GateRecord {
         tip: String::from(TIP),
@@ -503,10 +559,11 @@ fn hold_cycle_forces_a_gate_after_the_fixes_merge_and_lifts_the_hold_on_a_clean_
     });
     hold_cycle(&ctx, &mut st);
     assert!(!hold.exists());
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("hold lifted: gate at 0123456789 is clean")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("hold lifted: gate at 0123456789 is clean"))
+    );
     drop(dir);
 }
 
@@ -517,11 +574,18 @@ fn a_red_gate_never_stops_the_merge_queue() {
     add_merged_units(&mut st);
     st.units.insert(
         String::from("u5"),
-        Unit { status: Status::Inflight, ..Unit::default() },
+        Unit {
+            status: Status::Inflight,
+            ..Unit::default()
+        },
     );
     st.order.push(String::from("u5"));
     let before = statuses(&st);
-    finish_gate(&ctx, &mut st, "FAILING-BEGIN\nvivi pump::gate::boom\nFAILING-END\n");
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nvivi pump::gate::boom\nFAILING-END\n",
+    );
     assert_eq!(statuses(&st), before);
     assert!(!st.gates.is_empty());
     drop(dir);
