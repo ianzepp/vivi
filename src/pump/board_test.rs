@@ -651,3 +651,28 @@ fn board_skips_a_pass_inside_the_every_window_and_pulls_then_plans_otherwise() {
     assert!(host.spawned().iter().any(|cmd| cmd.contains("planner-run")));
     assert!(!host.spawned().iter().any(|cmd| cmd.contains("sync push")));
 }
+
+#[test]
+fn a_planner_started_in_the_future_is_kept_and_does_not_underflow() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = State::default();
+    let ahead = ctx.now() + 5_000;
+    st.board.planning.insert(String::from("ahead"), ahead);
+    expire_planning(&ctx, &mut st);
+    assert_eq!(st.board.planning.get("ahead"), Some(&ahead));
+    assert!(!exceptions(&ctx).contains("plan-no-answer"));
+}
+
+#[test]
+fn a_board_stamp_in_the_future_skips_the_pass_and_does_not_underflow() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        every: 60,
+        ..BoardConfig::default()
+    });
+    let mut st = State::default();
+    let ahead = ctx.now() + 5_000;
+    st.board.at = ahead;
+    board(&ctx, &mut st);
+    assert_eq!(st.board.at, ahead);
+    assert!(host.commands().is_empty());
+}

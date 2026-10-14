@@ -1,0 +1,989 @@
+{
+ "units": {
+  "a966d623-1": {
+   "need": "a966d623",
+   "title": "Q17 evidence: era map, path inventory and method",
+   "brief": "Write docs/factory/faber-2-repository-migration/q17-evidence/00-method.md (create the directory). Contents: (1) '## Eras' a table of every path root under which compiler or backend code has lived, with first and last commit (hash, date) of each root, derived with git (start from the era list below; ",
+   "write_scope": [
+    "docs/factory/faber-2-repository-migration/q17-evidence/00-method.md"
+   ],
+   "after": [],
+   "proof": [
+    "test -s docs/factory/faber-2-repository-migration/q17-evidence/00-method.md && grep -q '## Eras' docs/factory/faber-2-repository-migration/q17-evidence/00-method.md && grep -q '## Rename and move commits' docs/factory/faber-2-repository-migration/q17-evidence/00-method.md && grep -q '## Backend families' docs/factory/faber-2-repository-migration/q17-evidence/00-method.md && grep -q '## Definitions' docs/factory/faber-2-repository-migration/q17-evidence/00-method.md && grep -q '## Commands' docs/factory/faber-2-repository-migration/q17-evidence/00-method.md"
+   ],
+   "tools": "plain",
+   "status": "withdrawn",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791994915
+  },
+  "a966d623-2": {
+   "need": "a966d623",
+   "title": "Q17 evidence: Rust family history and shared files",
+   "brief": "Write docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md: the Q17 measurement for the Rust family. Family paths to trace: crates/radix-hir-rust (E4), crates/radix-codegen-rust (E3), crates/radix-module/src/codegen/rust and crates/radix/src/codegen/rust incl. rust/tests (E2), fons/",
+   "write_scope": [
+    "docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md"
+   ],
+   "after": [
+    "a966d623-1"
+   ],
+   "proof": [
+    "test -s docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md && grep -q '## Paths by era' docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md && grep -q '## Counts' docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md && grep -q '## Where the code came from' docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md && grep -q '## Shared files' docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md && grep -q '## What a path filter on the E4 paths alone leaves behind' docs/factory/faber-2-repository-migration/q17-evidence/family-rust.md"
+   ],
+   "tools": "plain",
+   "status": "withdrawn",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791994915
+  },
+  "a966d623-3": {
+   "need": "a966d623",
+   "title": "Q17 evidence: Go family history and shared files",
+   "brief": "Write docs/factory/faber-2-repository-migration/q17-evidence/family-go.md: the Q17 measurement for the Go family. Family paths to trace: crates/radix-hir-go, crates/radix-codegen-go, codegen/go in crates/radix-module and crates/radix and compilers/radix-rs (E1/E2), runtime/go, the removed glyph-go s",
+   "write_scope": [
+    "docs/factory/faber-2-repository-migration/q17-evidence/family-go.md"
+   ],
+   "after": [
+    "a966d623-1"
+   ],
+   "proof": [
+    "test -s docs/factory/faber-2-repository-migration/q17-evidence/family-go.md && grep -q '## Paths by era' docs/factory/faber-2-repository-migration/q17-evidence/family-go.md && grep -q '## Counts' docs/factory/faber-2-repository-migration/q17-evidence/family-go.md && grep -q '## Where the code came from' docs/factory/faber-2-repository-migration/q17-evidence/family-go.md && grep -q '## Shared files' docs/factory/faber-2-repository-migration/q17-evidence/family-go.md && grep -q '## What a path filter on the E4 paths alone leaves behind' docs/factory/faber-2-repository-migration/q17-evidence/family-go.md"
+   ],
+   "tools": "plain",
+   "status": "withdrawn",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791994915
+  },
+  "74c25b4a-1": {
+   "need": "74c25b4a",
+   "title": "Add PARSE001 item_list_missing_separator/trailing_comma rows to every pack",
+   "brief": "The parser raises `PARSE001` with issue `item_list_missing_separator` (crates/radix-parser/src/lib.rs:1375 `item_list_missing_separator_error`, also pattern.rs:67 and :230, decl.rs:2073, expr.rs:3645; args: `family`=\"item_list\", `position`=<slug>, `expected`=<English phrase such as \"comma between it",
+   "write_scope": [
+    "locale/en/pack.toml",
+    "locale/la/pack.toml",
+    "locale/ar/pack.toml",
+    "locale/hi/pack.toml",
+    "locale/th-TH/pack.toml",
+    "locale/vi/pack.toml",
+    "locale/zh-Hans/pack.toml",
+    "locale/zh-Hant/pack.toml",
+    "crates/radix-module/src/locale_test.rs"
+   ],
+   "after": [],
+   "proof": [
+    "cargo test -p radix-module --lib item_list_separator_issue_rows_exist_in_every_installed_pack",
+    "cargo test -p radix-module --lib locale_pack_completeness"
+   ],
+   "tools": "plain",
+   "status": "merged",
+   "attempts": 1,
+   "history": [],
+   "task": "c954e0f8",
+   "branch": "unit/74c25b4a-1-a1",
+   "model": "deepseek/deepseek-flash",
+   "since": 1791983618,
+   "since_dispatch": 1791983151,
+   "pool": "fly",
+   "commit": "e253acc9271464252a391f89771c1ff1f6660776",
+   "outside": []
+  },
+  "74c25b4a-2": {
+   "need": "74c25b4a",
+   "title": "Add parser emitted-issue-slug vs en pack completeness gate",
+   "brief": "`crates/radix-semantic/src/catalog_semantic_issue_rows_test.rs` is a gate: it scans the crate's production sources for issue slug literals and fails when `locale/en/pack.toml` has no row for one. The parser has no such gate, which is how `PARSE001.item_list_missing_separator` went rowless (need 74c2",
+   "write_scope": [
+    "crates/radix-parser/src/emitted_issue_rows_test.rs",
+    "crates/radix-parser/src/lib.rs"
+   ],
+   "after": [
+    "74c25b4a-1"
+   ],
+   "proof": [
+    "cargo test -p radix-parser --lib emitted_issue_rows"
+   ],
+   "tools": "plain",
+   "status": "merged",
+   "attempts": 1,
+   "history": [],
+   "task": "2ed36d55",
+   "branch": "unit/74c25b4a-2-a1",
+   "model": "deepseek/deepseek-flash",
+   "since": 1791984121,
+   "since_dispatch": 1791983749,
+   "pool": "fly",
+   "commit": "7d0910fdcd25bac04fe7ae3ebce3576c572b50dc",
+   "outside": []
+  },
+  "d381ae56-7": {
+   "need": "d381ae56",
+   "title": "Corpus exemplar: regex/literal.fab with landing checklist",
+   "brief": "Ruling (operator, 2026-10-11, need d381ae56 as amended): the inline regex literal is `regex /pattern/` (the locale's regex type word, then a slash-delimited raw body) or `_ /pattern/` (inferred form). The bare `/pattern/` is NOT legal: a `/` in operand position without the type word or `_` stays wha",
+   "write_scope": [
+    "corpus/regex/literal.fab",
+    "corpus/regex/literal.expected",
+    "crates/exempla/data/runner_goldens.txt",
+    "crates/exempla/src/exempla_e2e/expectations/runner.rs",
+    "corpus-suites/full/cases/language/regex/literal.fab/case.toml",
+    "corpus-suites/full/cases/language/regex/literal.fab/stdout.expected",
+    "corpus-suites/full/outcomes.json",
+    "docs/factory/corpus-e2e-coverage-gate/coverage-ledger.toml"
+   ],
+   "after": [
+    "d381ae56-2",
+    "d381ae56-3",
+    "d381ae56-6"
+   ],
+   "proof": [
+    "cargo run -q -p faber -- run corpus/regex/literal.fab | diff - corpus/regex/literal.expected",
+    "./scripta/check-grammar-tags"
+   ],
+   "tools": "full",
+   "status": "merged",
+   "attempts": 1,
+   "history": [],
+   "task": "3a537842",
+   "branch": "unit/d381ae56-7-a1",
+   "model": "deepseek/deepseek-flash",
+   "since": 1791982608,
+   "since_dispatch": 1791981494,
+   "pool": "flyfull",
+   "commit": "4255154dfcdcd0e73dbb1f6d1e8873eff7ecd8a8",
+   "outside": [
+    "crates/exempla/src/exempla_e2e/expectations/sexp.rs"
+   ]
+  },
+  "2aab941d-1": {
+   "need": "2aab941d",
+   "title": "sexp: tag dispatched genus constructs and emit TypeCheck on interface/union operands",
+   "brief": "Need 2aab941d (sexp half). Today `faber emit -t sexp corpus/implendum/implendum-dispatch.fab` fails with `MIR-to-sexp unsupported: runtime_call TypeCheck`. Cause: `interface_dispatch_members` / `lower_union_dispatch` in crates/radix-mir-lower/src/lower/union_dispatch.rs (lines ~48-130) lower a metho",
+   "write_scope": [
+    "crates/radix-mir-sexp/src/emit.rs",
+    "crates/radix-mir-sexp/src/capability.rs",
+    "crates/radix-mir-sexp/src/lib.rs",
+    "crates/radix-mir-sexp/src/interface_dispatch_test.rs"
+   ],
+   "after": [],
+   "proof": [
+    "cargo test -p radix-mir-sexp --lib interface_dispatch"
+   ],
+   "tools": "plain",
+   "status": "merged",
+   "attempts": 1,
+   "history": [],
+   "task": "9d98468e",
+   "branch": "unit/2aab941d-1-a1",
+   "model": "zai/glm-5.3-flash",
+   "since": 1791939851,
+   "commit": "4a6225ac652f4f3e5ed7502e2bbeed1228b8b7e4",
+   "outside": []
+  },
+  "2499da76-2": {
+   "need": "2499da76",
+   "title": "Add the 79 en issue rows missing from the la pack",
+   "brief": "`locale/la/pack.toml` misses 79 issue rows that `locale/en/pack.toml` has; they are listed in `locale/missing-rows/la.toml` (created by the unit before this one; codes SEM001, SEM002, SEM005, SEM006, SEM008, SEM010, SEM011, SEM016, SEM018, SEM042, SEM059, SEM060, WARN008, WARN009). For each listed i",
+   "write_scope": [
+    "locale/la/pack.toml",
+    "locale/missing-rows/la.toml"
+   ],
+   "after": [
+    "2499da76-1"
+   ],
+   "proof": [
+    "cargo test -p radix-module --lib locale_pack_completeness",
+    "cargo test -p radix-module --lib latin_pack"
+   ],
+   "tools": "plain",
+   "status": "pending",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791938127
+  },
+  "2499da76-3": {
+   "need": "2499da76",
+   "title": "Translate the 22 wholly missing diagnostic codes into the ar pack",
+   "brief": "`locale/ar/pack.toml` has no rows at all for 22 diagnostic codes that `locale/en/pack.toml` defines: LOCALE003, PARSE060, SEM019, SEM060, SEM061, SEM062, SEM063, SEM064, WARN018, WARN019, WARN021, WARN022, WARN023, WARN025, WARN026, WARN027, WARN028, WARN029, WARN030, WARN031, WARN032, WARN033 (abou",
+   "write_scope": [
+    "locale/ar/pack.toml",
+    "locale/missing-rows/ar.toml"
+   ],
+   "after": [
+    "2499da76-1"
+   ],
+   "proof": [
+    "cargo test -p radix-module --lib locale_pack_completeness",
+    "! grep -qE '\"(LOCALE003|PARSE060|SEM019|SEM06[0-4]|WARN0(18|19|2[1-3]|2[5-9]|3[0-3]))[\".]' locale/missing-rows/ar.toml"
+   ],
+   "tools": "plain",
+   "status": "pending",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791938127
+  },
+  "2499da76-4": {
+   "need": "2499da76",
+   "title": "Translate the 22 wholly missing diagnostic codes into the hi pack",
+   "brief": "`locale/hi/pack.toml` has no rows at all for 22 diagnostic codes that `locale/en/pack.toml` defines: LOCALE003, PARSE060, SEM019, SEM060, SEM061, SEM062, SEM063, SEM064, WARN018, WARN019, WARN021, WARN022, WARN023, WARN025, WARN026, WARN027, WARN028, WARN029, WARN030, WARN031, WARN032, WARN033 (abou",
+   "write_scope": [
+    "locale/hi/pack.toml",
+    "locale/missing-rows/hi.toml"
+   ],
+   "after": [
+    "2499da76-1"
+   ],
+   "proof": [
+    "cargo test -p radix-module --lib locale_pack_completeness",
+    "! grep -qE '\"(LOCALE003|PARSE060|SEM019|SEM06[0-4]|WARN0(18|19|2[1-3]|2[5-9]|3[0-3]))[\".]' locale/missing-rows/hi.toml"
+   ],
+   "tools": "plain",
+   "status": "pending",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791938127
+  },
+  "2499da76-5": {
+   "need": "2499da76",
+   "title": "Translate the 22 wholly missing diagnostic codes into the th-TH pack",
+   "brief": "`locale/th-TH/pack.toml` has no rows at all for 22 diagnostic codes that `locale/en/pack.toml` defines: LOCALE003, PARSE060, SEM019, SEM060, SEM061, SEM062, SEM063, SEM064, WARN018, WARN019, WARN021, WARN022, WARN023, WARN025, WARN026, WARN027, WARN028, WARN029, WARN030, WARN031, WARN032, WARN033 (a",
+   "write_scope": [
+    "locale/th-TH/pack.toml",
+    "locale/missing-rows/th-TH.toml"
+   ],
+   "after": [
+    "2499da76-1"
+   ],
+   "proof": [
+    "cargo test -p radix-module --lib locale_pack_completeness",
+    "! grep -qE '\"(LOCALE003|PARSE060|SEM019|SEM06[0-4]|WARN0(18|19|2[1-3]|2[5-9]|3[0-3]))[\".]' locale/missing-rows/th-TH.toml"
+   ],
+   "tools": "plain",
+   "status": "pending",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791938127
+  },
+  "2499da76-6": {
+   "need": "2499da76",
+   "title": "Translate the 22 wholly missing diagnostic codes into the vi pack",
+   "brief": "`locale/vi/pack.toml` has no rows at all for 22 diagnostic codes that `locale/en/pack.toml` defines: LOCALE003, PARSE060, SEM019, SEM060, SEM061, SEM062, SEM063, SEM064, WARN018, WARN019, WARN021, WARN022, WARN023, WARN025, WARN026, WARN027, WARN028, WARN029, WARN030, WARN031, WARN032, WARN033 (abou",
+   "write_scope": [
+    "locale/vi/pack.toml",
+    "locale/missing-rows/vi.toml"
+   ],
+   "after": [
+    "2499da76-1"
+   ],
+   "proof": [
+    "cargo test -p radix-module --lib locale_pack_completeness",
+    "! grep -qE '\"(LOCALE003|PARSE060|SEM019|SEM06[0-4]|WARN0(18|19|2[1-3]|2[5-9]|3[0-3]))[\".]' locale/missing-rows/vi.toml"
+   ],
+   "tools": "plain",
+   "status": "pending",
+   "attempts": 0,
+   "history": [],
+   "task": null,
+   "branch": null,
+   "model": null,
+   "since": 1791938127
+  },
+  "134180d8-2.4": {
+   "need": "134180d8",
+   "title": "Locale: LEX003 unknown_escape rows in th-TH, vi, zh-Hans, zh-Hant",
+   "brief": "Add an issue row beside `[diagnostics.LEX003]` in each of locale/th-TH/pack.toml, locale/vi/pack.toml, locale/zh-Hans/pack.toml, locale/zh-Hant/pack.toml. Insert immediately after the existing `[diagnostics.LEX003]` message/help lines and before `[diagnostics.LEX004]`:\n\n[diagnostics.LEX003.issues.un",
+   "write_scope": [
+    "locale/th-TH/pack.toml",
+    "locale/vi/pack.toml",
+    "locale/zh-Hans/pack.toml",
+    "locale/zh-Hant/pack.toml"
+   ],
+   "after": [],
+   "proof": [
+    "for p in th-TH vi zh-Hans zh-Hant; do grep -q '^\\[diagnostics.LEX003.issues.unknown_escape\\]' locale/$p/pack.toml || exit 1; done",
+    "cargo test -p radix-module --lib locale_pack_completeness_translated_packs"
+   ],
+   "tools": "plain",
+   "status": "inflight",
+   "attempts": 2,
+   "history": [
+    {
+     "attempt": 1,
+     "model": "deepseek/deepseek-flash",
+     "why": "proof-failed",
+     "detail": "After merging into the integration branch, this command failed (exit 1):\n./scripta/test --stage 1\n\nLast output:\nsing_registry_entry_fails (__main__.CheckFaultRegistry.test_missing_registry_entry_fails",
+     "at": 1792005003
+    }
+   ],
+   "task": "71c2acad",
+   "branch": "unit/134180d8-2.4-a2",
+   "model": "zai/glm-5.3-flash",
+   "since": 1792005023,
+   "since_dispatch": 1792005023,
+   "pool": "fly4"
+  },
+  "d381ae56-4": {
+   "need": "d381ae56",
+   "title": "Faber emitter: print HirLiteral::Regex as `regex /body/` in the file's locale",
+   "brief": "Ruling (operator, 2026-10-11, need d381ae56 as amended): the inline regex literal is `regex /pattern/` (the locale's regex type word, then a slash-delimited raw body) or `_ /pattern/` (inferred form). The bare `/pattern/` is NOT legal: a `/` in operand position without the type word or `_` stays wha",
+   "write_scope": [
+    "crates/radix-hir-faber/src/literal.rs",
+    "crates/radix-hir-faber/src/literal_test.rs",
+    "crates/radix-hir-faber/src/lib.rs"
+   ],
+   "after": [
+    "d381ae56-2"
+   ],
+   "proof": [
+    "cargo test -p radix-hir-faber --lib regex_literal"
+   ],
+   "tools": "plain",
+   "status": "replaced",
+   "attempts": 2,
+   "history": [
+    {
+     "attempt": 1,
+     "model": "deepseek/deepseek-flash",
+     "why": "proof-failed",
+     "detail": "After merging into the integration branch, this command failed (exit 1):\n./scripta/test --stage 2\n\nLast output:\nerror: could not compile `radix-hir-faber` (lib) due to 1 previous error\nwarning: build ",
+     "at": 1791955824
+    },
+    {
+     "attempt": 2,
+     "model": "zai/glm-5.3-flash",
+     "why": "timeout",
+     "detail": "",
+     "at": 1791956500
+    }
+   ],
+   "task": null,
+   "branch": "unit/d381ae56-4-a2",
+   "model": "zai/glm-5.3-flash",
+   "since": 1791956500,
+   "since_dispatch": 1791955838,
+   "replaced_by": [
+    "d381ae56-4.1",
+    "d381ae56-4.2"
+   ]
+  },
+  "5405982d-1": {
+   "need": "5405982d",
+   "title": "Regenerate the committed runtime/llvm/Cargo.lock",
+   "brief": "runtime/llvm/Cargo.lock is committed at 67 lines, and a host build (`cargo build --release --manifest-path runtime/llvm/Cargo.toml`, run by crates/faber/src/package/llvm_host.rs and the llvm corpus recipe) rewrites it to about 585 lines, so the committed file is stale against runtime/llvm/Cargo.toml",
+   "write_scope": [
+    "runtime/llvm/Cargo.lock"
+   ],
+   "after": [],
+   "proof": [
+    "cargo metadata --locked --offline --format-version 1 --manifest-path runtime/llvm/Cargo.toml"
+   ],
+   "tools": "plain",
+   "status": "no-defect",
+   "attempts": 1,
+   "history": [],
+   "task": "a73b249e",
+   "branch": "unit/5405982d-1-a1",
+   "model": "deepseek/deepseek-flash",
+   "since": 1791939826,
+   "since_dispatch": 1791939826,
+   "verdict_text": "a\n\n--- facts\n$ uname -srm  (exit 0)\n  Linux 6.12.105-fly x86_64\n$ cargo --version  (exit 0)\n  cargo 1.97.1 (c980f4866 2026-06-30)\n$ pi --version  (exit 0)\n  1.2.0\n\n--- receipt\nThe defect does not repr"
+  },
+  "2f09fede-4": {
+   "need": "2f09fede",
+   "title": "faber package and corpus tests fail on macOS when rustfmt, go, llvm-as are missing",
+   "brief": "crates/faber/src/package_test.rs has four toolchain gates that print and return on every host: rustfmt (about :1060, 'rustfmt not available; skipping rustfmt-clean emission test') and go (about :10977, :11067, :11272, 'go not found on PATH; skipping go build...'); crates/faber/tests/corpus_cli.rs:83",
+   "write_scope": [
+    "crates/faber/src/package_test.rs",
+    "crates/faber/tests/corpus_cli.rs"
+   ],
+   "after": [
+    "6e58bc21-4"
+   ],
+   "proof": [
+    "cargo test -p faber --lib missing_tool_policy",
+    "cargo test -p faber --test corpus_cli missing_tool_policy"
+   ],
+   "tools": "plain",
+   "status": "no-defect",
+   "attempts": 1,
+   "history": [],
+   "task": "46859801",
+   "branch": "unit/2f09fede-4-a1",
+   "model": "deepseek/deepseek-flash",
+   "since": 1791943623,
+   "since_dispatch": 1791943623,
+   "verdict_text": "43`, `:12671`, `:12767`, `:12832`).\n\n**Checks run (all exit 0, nothing modified):**\n- `cargo test -p faber --lib missing_tool_policy` \u2192 ok, 0 matched (the brief's helper names do not exist because the"
+  },
+  "2499da76-1": {
+   "need": "2499da76",
+   "title": "Gate: translated packs must own every en diagnostic row unless exempt",
+   "brief": "Today no test checks that `locale/<pack>/pack.toml` owns the `(code, issue)` diagnostic rows that `locale/en/pack.toml` owns. Measured on this checkout: each of ar, hi, th-TH, vi, zh-Hans, zh-Hant misses ~430 en rows (22 whole codes: LOCALE003, PARSE060, SEM019, SEM060-SEM064, WARN018, WARN019, WARN",
+   "write_scope": [
+    "crates/radix-module/src/locale_test.rs",
+    "locale/missing-rows/la.toml",
+    "locale/missing-rows/ar.toml",
+    "locale/missing-rows/hi.toml",
+    "locale/missing-rows/th-TH.toml",
+    "locale/missing-rows/vi.toml",
+    "locale/missing-rows/zh-Hans.toml",
+    "locale/missing-rows/zh-Hant.toml"
+   ],
+   "after": [],
+   "proof": [
+    "cargo test -p radix-module --lib locale_pack_completeness_packs_own_every_en_diagnostic_row",
+    "cargo test -p radix-module --lib locale_pack_completeness_missing_row_exemptions"
+   ],
+   "tools": "plain",
+   "status": "stuck",
+   "attempts": 3,
+   "history": [
+    {
+     "attempt": 1,
+     "model": "zai/glm-5.3-flash",
+     "why": "proof-failed",
+     "detail": "After merging into the integration branch, this command failed (exit 101):\ncargo test -p radix-module --lib locale_pack_completeness_packs_own_every_en_diagnostic_row\n\nLast output:\neRole`, and `Interf",
+     "at": 1791939984
+    },
+    {
+     "attempt": 2,
+     "model": "deepseek/deepseek-flash",
+     "why": "proof-failed",
+     "detail": "After merging into the integration branch, this command failed (exit 101):\ncargo test -p radix-module --lib locale_pack_completeness_packs_own_every_en_diagnostic_row\n\nLast output:\ntest locale::tests:",
+     "at": 1791941401
+    },
+    {
+     "attempt": 3,
+     "model": "zai/glm-5.3",
+     "why": "proof-failed",
+     "detail": "After merging into the integration branch, this command failed (exit 101):\ncargo test -p radix-module --lib locale_pack_completeness_packs_own_every_en_diagnostic_row\n\nWhat failed:\ntest locale::tests:",
+     "at": 1791943029
+    }
+   ],
+   "task": null,
+   "branch": "unit/2499da76-1-a3",
+   "model": "zai/glm-5.3",
+   "since": 1791941910,
+   "since_dispatch": 1791941450
+  },
+  "bad81a62-12.2": {
+   "need": "bad81a62",
+   "title": "Norma suite websocket-loopback: connect/accept/send/receive/close round trip",
+   "brief": "Ruling (operator, 2026-10-14): \"TCP, HTTP and WebSocket get suites. Each runs both ends over loopback inside one program; no hand-started second process, no stale temp port files (pick an ephemeral port in-process).\" Leaf: crates/faber-leaf/src/websocket.rs (serve() line 70; connect line ~120, accep",
+   "write_scope": [
+    "lib/norma/proof/websocket/websocket-loopback",
+    "corpus-suites/norma/cases/norma/websocket/websocket-loopback"
+   ],
+   "after": [
+    "bad81a62-12.1"
+   ],
+   "proof": [
+    "python3 scripta/generate-corpus-suite.py --suite norma --check",
+    "cargo run -q -p faber -- corpus corpus-suites/norma --target runner --filter norma/websocket/websocket-loopback",
+    "cargo run -q -p faber -- corpus corpus-suites/norma --target rust --filter norma/websocket/websocket-loopback"
+   ],
+   "tools": "full",
+   "status": "splitting",
+   "attempts": 1,
+   "history": [
+    {
+     "attempt": 1,
+     "model": "deepseek/deepseek-flash",
+     "why": "timeout",
+     "detail": "",
+     "at": 1792005001
+    }
+   ],
+   "task": null,
+   "branch": "unit/bad81a62-12.2-a1",
+   "model": "deepseek/deepseek-flash",
+   "since": 1792005001,
+   "since_dispatch": 1792004119,
+   "pool": "flyfull"
+  },
+  "af6dd1c5-10": {
+   "need": "af6dd1c5",
+   "title": "gpu-reset open-defects register (part 1): FIX/DISCUSS/RULED cells vs code",
+   "brief": "File: docs/factory/gpu-reset/open-defects-2026-10-08.md, lines 1-110 ONLY (the FIX table, the DISCUSS table, the RULED table, the R-rows, F-06 to F-10, the 'Acceptance critical path' paragraph and the HELD table; another unit owns lines 111-200). It is a 200-line register with very long cells; read ",
+   "write_scope": [
+    "docs/factory/gpu-reset/open-defects-2026-10-08.md"
+   ],
+   "after": [],
+   "proof": [
+    "! grep -n 'design and units pending from the Fable advisor' docs/factory/gpu-reset/open-defects-2026-10-08.md",
+    "! grep -n 'In flight: A2-FULL' docs/factory/gpu-reset/open-defects-2026-10-08.md",
+    "python3 scripta/audit-factory-goal-status.py --fail-on error"
+   ],
+   "tools": "plain",
+   "status": "merging",
+   "attempts": 3,
+   "history": [
+    {
+     "attempt": 1,
+     "model": "deepseek/deepseek-flash",
+     "why": "finished/checkout_failed",
+     "detail": "\n## 2026-10-14T18:47:41+00:00 - cdabc773 [mail captured]\nFrom: hand@ef993cfa.local\nTo: operator@ef993cfa.local\nContent: c008d6c1b9f1ce2e717e702e2f65ced562f810b2dbb29973f50ab04dc5eaa4ff\nSubject: Re: [a",
+     "at": 1792003730
+    },
+    {
+     "attempt": 2,
+     "model": "zai/glm-5.3-flash",
+     "why": "error/message error: Fly POST /machines/862e70fe6d3e98/exec failed (HTTP 412): failed_precondition: machine not running",
+     "detail": "\n## 2026-10-14T18:49:10+00:00 - 562e8c7b [mail captured]\nFrom: hand@ef993cfa.local\nTo: operator@ef993cfa.local\nContent: 7a2ef0b3636ff52656a496affdd07a5f7f683bc3eca122d746c2c79b11ea7cba\nSubject: Re: [a",
+     "at": 1792004062
+    }
+   ],
+   "task": "b5504e4b",
+   "branch": "unit/af6dd1c5-10-a3",
+   "model": "zai/glm-5.3",
+   "since": 1792004729,
+   "since_dispatch": 1792004132,
+   "pool": "fly4"
+  }
+ },
+ "order": [
+  "2aab941d-1",
+  "2499da76-1",
+  "2499da76-2",
+  "2499da76-3",
+  "2499da76-4",
+  "2499da76-5",
+  "2499da76-6",
+  "74c25b4a-1",
+  "74c25b4a-2",
+  "d381ae56-4",
+  "d381ae56-7",
+  "5405982d-1",
+  "2f09fede-4",
+  "134180d8-2.4",
+  "bad81a62-12.2",
+  "af6dd1c5-10",
+  "a966d623-1",
+  "a966d623-2",
+  "a966d623-3"
+ ],
+ "needs": {
+  "2aab941d": {
+   "verdict": "units",
+   "reason": "sexp half is plannable: a >=2-implementor interface (or nominal union) dispatch chain lowers to TypeCheck on a non-valor operand, which sexp refuses; genus values are untagged hashes, so a def tag at construction plus a TypeCheck arm closes it (implet-dispatch already passes on sexp because a single implementor has no TypeCheck). Wasm half is left out as design: wasm's TypeCheck arm in stmt.rs is ",
+   "units": [
+    "2aab941d-1",
+    "2aab941d-2",
+    "2aab941d-3"
+   ]
+  },
+  "2499da76": {
+   "verdict": "units",
+   "reason": "Settled part: the completeness gate with shrink-only per-pack exemption files, la filled in, and the 22 codes wholly absent from the six translated packs (the 'about 22 codes' of the need). LEFT OUT: ~355 issue rows under existing codes (SEM008, SEM010, SEM011, SEM016, SEM018, SEM059, PARSE010, PARSE030 ...) are missing per translated pack and are seeded into locale/missing-rows/<pack>.toml as rec",
+   "units": [
+    "2499da76-1",
+    "2499da76-2",
+    "2499da76-3",
+    "2499da76-4",
+    "2499da76-5",
+    "2499da76-6",
+    "2499da76-7",
+    "2499da76-8"
+   ]
+  },
+  "74c25b4a": {
+   "verdict": "units",
+   "reason": "The emitter is live (lib.rs:1375, pattern.rs, decl.rs, expr.rs) and no pack has a row; the sibling `item_list_trailing_comma` is also rowless, so both are added. A second unit adds the parser-side emitted-slug gate.",
+   "units": [
+    "74c25b4a-1",
+    "74c25b4a-2"
+   ]
+  },
+  "d381ae56": {
+   "verdict": "units",
+   "reason": "Ruling is complete (regex /p/ and _ /p/ only; bare /p/ illegal, closed by 5b0b5f20), nothing is built: the lexer has no regex-literal scanner, though every backend already handles HirLiteral::Regex. Units cover lexer spike+census, parser/AST/lowering, check-time validation, formatter, Rust emit proof, grammar, one exemplar. Left out: tree-sitter-faber external scanner and the $faber skill (other r",
+   "units": [
+    "d381ae56-1",
+    "d381ae56-2",
+    "d381ae56-3",
+    "d381ae56-4",
+    "d381ae56-5",
+    "d381ae56-6",
+    "d381ae56-7",
+    "d381ae56-4.1",
+    "d381ae56-4.2"
+   ]
+  },
+  "5405982d": {
+   "verdict": "units",
+   "reason": "crates/faber/src/package/llvm_host.rs:451 runs `cargo build --release --manifest-path runtime/llvm/Cargo.toml` with no --locked, and runtime/llvm/Cargo.lock (67 lines at HEAD) is the file the need says grows by 518 lines per run, so the committed lock is out of date. Two units: make the lock current, then pass --locked and pin it.",
+   "units": [
+    "5405982d-1",
+    "5405982d-2"
+   ]
+  },
+  "134180d8": {
+   "verdict": "units",
+   "reason": "Delivered so far: `\\u{H..}` (d21cb722b4, b82730b219). The 2026-10-13 ruling (own delimiter, n t r u{}, everything else an error; `\\0` out; ascii takes `\\u` to 7F) is not: text literals still keep unknown escapes, the ascii display oddity and the two decoders remain. Units sequence census-rewrite first, then the error (LEX003 unknown_escape), decoder unification, ascii \\u, display fix, reject exemp",
+   "units": [
+    "134180d8-1",
+    "134180d8-2",
+    "134180d8-3",
+    "134180d8-4",
+    "134180d8-5",
+    "134180d8-6",
+    "134180d8-7",
+    "134180d8-8",
+    "134180d8-2.1",
+    "134180d8-2.2",
+    "134180d8-2.3",
+    "134180d8-2.4"
+   ]
+  },
+  "2f09fede": {
+   "verdict": "units",
+   "reason": "The reopened clause is the live work (the original Linux gate need was closed by mind-review): five toolchain proofs were changed from panic to silent return on every host. One unit per crate adds a fail-closed-except-Linux helper and routes every skip site through it; a last unit documents the opt-in variable. The Linux baseline itself is delivered (docs/audits/linux-stage-4b-baseline-2026-10-13/",
+   "units": [
+    "2f09fede-1",
+    "2f09fede-2",
+    "2f09fede-3",
+    "2f09fede-4",
+    "2f09fede-5"
+   ]
+  },
+  "bad81a62": {
+   "verdict": "units",
+   "reason": "Settled and cut: move acceptance packages to lib/norma/proof (1), `faber corpus --filter` + embedded_only suites (2), norma generator/suite manifest (3), first generated cases + stage-1 gate + pins (4), then route coverage for fs read/write (5), fs probe/tree (6), stdio (7), process (8), clock+entropy (9), tcp (10), http client/server (11), websocket (12). Left for a later planning pass (12-unit c",
+   "units": [
+    "bad81a62-1",
+    "bad81a62-2",
+    "bad81a62-3",
+    "bad81a62-4",
+    "bad81a62-5",
+    "bad81a62-6",
+    "bad81a62-7",
+    "bad81a62-8",
+    "bad81a62-9",
+    "bad81a62-10",
+    "bad81a62-11",
+    "bad81a62-12",
+    "bad81a62-7.1",
+    "bad81a62-7.2",
+    "bad81a62-7.3",
+    "bad81a62-7.4",
+    "bad81a62-8.1",
+    "bad81a62-8.2",
+    "bad81a62-8.3",
+    "bad81a62-8.4",
+    "bad81a62-10.1",
+    "bad81a62-10.2",
+    "bad81a62-10.3",
+    "bad81a62-11.1",
+    "bad81a62-11.2",
+    "bad81a62-11.3",
+    "bad81a62-12.1",
+    "bad81a62-12.2",
+    "bad81a62-12.3",
+    "bad81a62-7.2.1",
+    "bad81a62-7.2.2",
+    "bad81a62-11.2.1",
+    "bad81a62-11.2.2",
+    "bad81a62-11.2.3"
+   ]
+  },
+  "af6dd1c5": {
+   "verdict": "units",
+   "reason": "Doc bookkeeping only; each unit verifies and corrects the stale register cells of one gpu-reset doc against the code. CAMPAIGN.md is touched only in the perf-pass P-table (unit 11) because origin/main commit 746882f313 rewrote its status line, rules and decision log and is not on this branch; the A1/A2 stage cells and decision log there were left alone as the authority.",
+   "units": [
+    "af6dd1c5-1",
+    "af6dd1c5-2",
+    "af6dd1c5-3",
+    "af6dd1c5-4",
+    "af6dd1c5-5",
+    "af6dd1c5-6",
+    "af6dd1c5-7",
+    "af6dd1c5-8",
+    "af6dd1c5-9",
+    "af6dd1c5-10",
+    "af6dd1c5-11",
+    "af6dd1c5-12"
+   ]
+  },
+  "a966d623": {
+   "verdict": "withdrawn",
+   "reason": "taken by the Faber 2 cut session 2026-10-14",
+   "units": [
+    "a966d623-1",
+    "a966d623-2",
+    "a966d623-3",
+    "a966d623-4",
+    "a966d623-5",
+    "a966d623-6",
+    "a966d623-7",
+    "a966d623-8",
+    "a966d623-9",
+    "a966d623-10",
+    "a966d623-11",
+    "a966d623-12",
+    "a966d623-13",
+    "a966d623-14"
+   ]
+  }
+ },
+ "merges": 731,
+ "last_gate": {
+  "at": 1792005037,
+  "merges": 731,
+  "task": null,
+  "tip": "af532c0e7d87ea57d9d163c01c03df83ed8774b5",
+  "pool": "laptop"
+ },
+ "baseline": [
+  "faber commands::run::tests::single_file_run_process_code_propagates_runner_exit",
+  "faber script_test::process_read_env_uses_the_shared_leaf",
+  "faber script_test::run_source_returns_explicit_exit_code",
+  "faber package::fhir::tests::loaded_package_library_import_unit_parity",
+  "faber package::tests::consolum_eot4_input_interpreted_stdin_roundtrip",
+  "faber package::tests::g6_consolum_shim_dedupes_across_units",
+  "faber package::llvm_host::tests::llvm_host_binary_runs_and_forwards_exit_code",
+  "faber package::llvm_host::tests::llvm_host_release_build_pins_opt_pipeline"
+ ],
+ "closed_needs": [
+  "73e6aff1",
+  "pumpfix-gfe81c3b5",
+  "pumpfix-g54795d54",
+  "25d5c642",
+  "70491599"
+ ],
+ "gates": [
+  {
+   "tip": "c7c895710b7704660775bd88c463bd2878cbe36b",
+   "at": 1792004760,
+   "merges": 728,
+   "names": [
+    "faber commands::convert::tests::convert_keeps_hints_in_the_via_clause",
+    "faber commands::convert::tests::convert_spells_the_via_clause_in_each_pack_and_reads_it_back",
+    "faber commands::convert::tests::format_of_the_via_clause_is_a_fixpoint",
+    "faber norma_modules_pass_faber_check_individually",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_reduced_grid_oracle_on_metal_is_within_the_acceptance_bound",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_rung1_per_lane_kernels_match_the_sequential_oracle",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_rung2_stencil_kernels_match_the_sequential_oracle",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_rung3_advance_runs_as_one_lane_and_matches_the_sequential_oracle"
+   ],
+   "new": []
+  },
+  {
+   "tip": "a12c8e3f3d6b305a5d8a48dd0ca13b9d79b95806",
+   "at": 1792005037,
+   "merges": 731,
+   "names": [
+    "faber commands::convert::tests::convert_keeps_hints_in_the_via_clause",
+    "faber commands::convert::tests::convert_spells_the_via_clause_in_each_pack_and_reads_it_back",
+    "faber commands::convert::tests::format_of_the_via_clause_is_a_fixpoint",
+    "faber matrix_cli_row_table_equals_discoverable_targets",
+    "faber norma_modules_pass_faber_check_individually",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_reduced_grid_oracle_on_metal_is_within_the_acceptance_bound",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_rung1_per_lane_kernels_match_the_sequential_oracle",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_rung2_stencil_kernels_match_the_sequential_oracle"
+   ],
+   "new": [
+    "faber matrix_cli_row_table_equals_discoverable_targets"
+   ]
+  },
+  {
+   "tip": "af532c0e7d87ea57d9d163c01c03df83ed8774b5",
+   "at": 1792005037,
+   "merges": 731,
+   "names": [
+    "faber commands::convert::tests::convert_keeps_hints_in_the_via_clause",
+    "faber commands::convert::tests::convert_spells_the_via_clause_in_each_pack_and_reads_it_back",
+    "faber commands::convert::tests::format_of_the_via_clause_is_a_fixpoint",
+    "faber matrix_cli_row_table_equals_discoverable_targets",
+    "faber norma_modules_pass_faber_check_individually",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_reduced_grid_oracle_on_metal_is_within_the_acceptance_bound",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_rung1_per_lane_kernels_match_the_sequential_oracle",
+    "faber package::device::session_dispatch::a2_ladder_hw_test::a2_rung2_stencil_kernels_match_the_sequential_oracle"
+   ],
+   "new": [
+    "radix-module locale::tests::locale_pack_completeness_translated_packs_have_no_unbudgeted_absent_rows"
+   ]
+  }
+ ],
+ "plans_seen": [
+  "pumpfix-g208ffd51.json",
+  "e4cd1c71-4.4.2.2.split.json",
+  "pumpfix-via-1.split.json",
+  "bad81a62-11.2.split.json",
+  "pumpfix-gac414502.json"
+ ],
+ "board": {
+  "at": 1792004500,
+  "planning": {},
+  "replied": [
+   "f9d8a611:planned",
+   "271b6ee7:planned",
+   "5d445eb0:planned",
+   "5d445eb0:merged",
+   "c7818fe4:planned",
+   "1a93d785:planned",
+   "1a93d785:merged",
+   "74d26a84:planned",
+   "fb8aba52:planned",
+   "b2a0b4b8:planned",
+   "c8019845:planned",
+   "b5e89519:planned",
+   "6e7fdfbd:planned",
+   "66e8df93:planned",
+   "134180d8:planned",
+   "45df1507:planned",
+   "45df1507:merged",
+   "6e58bc21:planned",
+   "9fe914fa:planned",
+   "503565cf:planned",
+   "000f290d:planned",
+   "7b471d14:planned",
+   "ec1b0c58:planned",
+   "92298847:planned",
+   "b64b1c09:planned",
+   "e26ed843:planned",
+   "32e001fb:planned",
+   "539b6b8e:planned",
+   "539b6b8e:merged",
+   "46f9c6b1:planned",
+   "ee7b87ee:planned",
+   "6e7fdfbd:merged",
+   "6e58bc21:merged",
+   "92298847:merged",
+   "bcdd26d3:planned",
+   "503565cf:merged",
+   "7b471d14:merged",
+   "b5e89519:merged",
+   "b2a0b4b8:merged",
+   "bcdd26d3:merged",
+   "8e0cb923:planned",
+   "0c29db1f:planned",
+   "bad81a62:planned",
+   "c629f2f8:planned",
+   "19b32e5c:planned",
+   "e6f70407:planned",
+   "d2e34737:planned",
+   "b194c7b9:planned",
+   "9fe914fa:merged",
+   "fb8aba52:merged",
+   "b7b249df:planned",
+   "32e001fb:merged",
+   "8e0cb923:merged",
+   "d477c76d:planned",
+   "c8c37615:planned",
+   "d477c76d:merged",
+   "128bb774:planned",
+   "2378b734:planned",
+   "5405982d:planned",
+   "5405982d:merged",
+   "862a6720:planned",
+   "862a6720:merged",
+   "2f09fede:planned",
+   "2f09fede:merged",
+   "c6ff92ae:planned",
+   "c6ff92ae:merged",
+   "b79b495f:planned",
+   "b79b495f:merged",
+   "4fb785c0:planned",
+   "4fb785c0:merged",
+   "7f3538da:planned",
+   "e01fc6a0:planned",
+   "2812971b:planned",
+   "af800663:planned",
+   "7c58d3d8:planned",
+   "03a7acf0:planned",
+   "73e6aff1:planned",
+   "dc8314af:planned",
+   "6dfbc18b:planned",
+   "8dcb8a8f:planned",
+   "7f84c9ff:planned",
+   "54a7c297:planned",
+   "70491599:planned",
+   "dddfc541:planned",
+   "25d5c642:planned",
+   "9057b0e1:planned",
+   "0b8da16d:planned",
+   "d8eb380f:planned",
+   "81fb9ca1:planned",
+   "ee7b87ee:merged",
+   "128bb774:merged",
+   "126e7de9:planned",
+   "e71f077f:planned",
+   "f31cc483:planned",
+   "2378b734:merged",
+   "af6dd1c5:planned",
+   "c8c1b369:planned",
+   "c8104760:planned",
+   "4f151ca7:planned",
+   "a966d623:planned",
+   "806ce16b:planned",
+   "7f3538da:merged",
+   "d2e1a227:planned",
+   "4f7cae57:planned",
+   "948a21d6:planned",
+   "66cca5dd:planned",
+   "e01fc6a0:merged",
+   "3bc9f300:planned",
+   "f1cfd953:planned",
+   "d4260bb0:planned",
+   "29985933:planned",
+   "7c30c1b9:planned",
+   "fd1babe0:planned",
+   "d24fd57d:planned",
+   "b1f6166d:planned",
+   "05bec789:planned",
+   "f8b53a85:planned",
+   "4c8e5b88:planned",
+   "a1a643a1:planned",
+   "24ba833b:planned",
+   "03a7acf0:merged",
+   "022d03c9:planned",
+   "f438be64:planned",
+   "ba45557d:planned",
+   "58b2eabd:planned",
+   "a50040eb:planned",
+   "922f4be8:planned",
+   "73e6aff1:merged",
+   "7c58d3d8:merged",
+   "c7818fe4:merged",
+   "25d5c642:merged",
+   "70491599:merged"
+  ],
+  "replan": []
+ },
+ "red": {
+  "faber commands::convert::tests::convert_keeps_hints_in_the_via_clause": "pumpfix-ga5562f55",
+  "faber commands::convert::tests::convert_spells_the_via_clause_in_each_pack_and_reads_it_back": "pumpfix-ga5562f55",
+  "faber commands::convert::tests::format_of_the_via_clause_is_a_fixpoint": "pumpfix-ga5562f55"
+ },
+ "rr": 89,
+ "red_reported": [
+  "pumpfix-g448d8115:radix-module device_export::tests::export_accepts_a_second_geometry_and_capacity_extent_configuration",
+  "pumpfix-g448d8115:radix-module mir::lane_form_test::lane_form_copy_is_admitted_and_emits_on_metal",
+  "pumpfix-g67bbb12c:radix-module codegen::rust::tests::tail_arm_value::tail_handled_catch_return_becomes_the_arm_value"
+ ],
+ "laptop_gate_at": 1792005037,
+ "promotions": [
+  {
+   "tip": "bd3c1323f3a38cefa676ccf9ff7f88bcc716f9ac",
+   "at": 1791997187
+  }
+ ]
+}

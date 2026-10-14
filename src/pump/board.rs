@@ -157,7 +157,9 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
         .board
         .planning
         .iter()
-        .filter(|(handle, at)| plan_path(ctx, handle).exists() || now - *at > timeout)
+        .filter(|(handle, at)| {
+            plan_path(ctx, handle).exists() || now.saturating_sub(**at) > timeout
+        })
         .map(|(handle, _)| handle.clone())
         .collect();
     for handle in expired {
@@ -500,7 +502,7 @@ fn last_line(text: &str, max: usize) -> String {
 /// needs, plan new needs, and push replies — at most one pass per
 /// `board.every` seconds.
 pub fn board(ctx: &Ctx, st: &mut State) {
-    if ctx.now() - st.board.at < ctx.cfg.board.every {
+    if ctx.now().saturating_sub(st.board.at) < ctx.cfg.board.every {
         return;
     }
     st.board.at = ctx.now();
