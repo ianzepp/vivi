@@ -5,12 +5,12 @@ line and file protocol `vivi pump` speaks, as the code behaves. The engine was
 ported from a Python predecessor; this file describes the Rust engine itself.
 Part one — surface, home layout, flag files, state fields, the unit state
 machine, the tick, scheduling, and the config table — is
-[`contract.md`](contract.md); this file does not repeat it.
+[`pump-contract.md`](pump-contract.md); this file does not repeat it.
 
 Angle-bracket names in command lines (`<remote>`, `<branch>`, `<main>`,
 `<from>`, `<to>`) are config values from the `[pump]` tables
 (`remote`, `branch`, `main`, `from`, `to`, and so on); the defaults and
-validation rules are in `contract.md` §9. Example values in this file
+validation rules are in `pump-contract.md` §9. Example values in this file
 (`/srv/pump`, `you@example.com`, `my-project`) are illustrative.
 
 Every command line runs through one funnel:
@@ -33,7 +33,7 @@ Every command line runs through one funnel:
 | --- | --- | --- |
 | `vivi sync pull --project <proj>` (when `board.pull`) | board (120 s) | Nothing machine-read; last output line logged as `sync pull rc=<n> …`. |
 | `vivi need list --from <sender> --status open --json` | board (60 s) | JSON from the first `[` in the output (`out[out.index("["):]`); rows read for keys `handle`, `date`, `subject`. Unparseable → `board list unreadable:` log, no rows. |
-| `vivi need list --status open --json --held` and `vivi need list --status open --json --to mind` | `marked_rows` (60 s) | Same JSON-from-`[` slice; rows kept only when the `marks` list contains the approval mark (`board.mark`, default `pump`). Deduped by `handle`. Each failure logs `marked list unreadable (…)`. |
+| `vivi need list --status open --json --held` and `vivi need list --status open --json --to <reply_from>` | `marked_rows` (60 s) | Same JSON-from-`[` slice; rows kept only when the `marks` list contains the approval mark (`board.mark`, default `pump`). Deduped by `handle`. Each failure logs `marked list unreadable (…)`. |
 | `vivi need show <handle>` | `operator_replied_after`,  board (60 s) | Raw thread text. Board stores `thread[:40000]` into `needs/<h>.json`. `operator_replied_after` scans line by line: a header `re.match(r"## (\S+) - [0-9a-f]+ \[")` sets the current timestamp; a later `From: <sender>@` line whose header timestamp parses as ISO and is newer than `since` (epoch) returns true. |
 | `vivi mail reply <h> --from <reply_from> --to <reply_to> --body-file <home>/board/reply-<h>-<stage>.txt` | board (60 s) | `rc == 0` marks the stage replied. |
 | `vivi sync push --since <push_since> --drain --project <proj>` | board (detached) | Never waited on; output appended to `<home>/sync-push.log`. |
@@ -425,7 +425,7 @@ build itself failed. Dispatch is
 line is `gate started at <tip10> on <pool> task=<task>`.
 
 When `gate.results_dir` is set, an external result may stand in for the pool
-gate (see `contract.md` §9).
+gate (see `pump-contract.md` §9).
 
 ### 7.2 Reading the reply
 

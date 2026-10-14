@@ -48,8 +48,8 @@ file and an undefined default kind.
 Operators steer the pump with files in its home: `STOP`, `PAUSE`,
 `HOLD-MERGE`, `FORCE-GATE`, `REMOTE-MERGE` and `skip.txt`. A second pump on the
 same home refuses to start. The design record is in
-[`docs/pump/contract.md`](pump/contract.md) and
-[`docs/pump/protocols.md`](pump/protocols.md), and the config reference is in
+[`skills/vivi/references/pump-contract.md`](../skills/vivi/references/pump-contract.md) and
+[`skills/vivi/references/pump-protocols.md`](../skills/vivi/references/pump-protocols.md), and the config reference is in
 the `vivi` skill under "Pump".
 
 ## Need state travels through sync

@@ -1,4 +1,4 @@
-//! `vivi pump`: the pump as a state machine; see docs/pump/contract.md.
+//! `vivi pump`: the pump as a state machine; see skills/vivi/references/pump-contract.md.
 
 pub mod board;
 pub mod brief;

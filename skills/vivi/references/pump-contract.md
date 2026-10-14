@@ -2,7 +2,7 @@
 
 This is the contract of `vivi pump` as it behaves. It was ported from a Python
 predecessor; this document describes the Rust engine itself. It is part one of
-the contract; part two is [`protocols.md`](protocols.md) (merge, remote merger,
+the contract; part two is [`pump-protocols.md`](pump-protocols.md) (merge, remote merger,
 gate, board, plan files, collect rules). Where this document needs those
 details it links there instead of duplicating them.
 
@@ -91,13 +91,13 @@ directory:
 | `status.txt` | pump `write_status` | `pump status` | 4 lines: timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …` |
 | `lock` | pump opens for flock | none (lock only) | empty |
 | `skip.txt` | operator | board pass | need handles to never plan, whitespace separated |
-| `plans/` | planner writes `<need>.json` (and `<uid>.split.json`) | pump ingest | plan JSON; see [`protocols.md`](protocols.md) |
+| `plans/` | planner writes `<need>.json` (and `<uid>.split.json`) | pump ingest | plan JSON; see [`pump-protocols.md`](pump-protocols.md) |
 | `plans/superseded/` | re-plan moves old plans here | operator | `<need>.<epoch>.json` |
 | `needs/` | board dumps the need thread | planner (the plan prompt) | JSON `{need, subject, triage, thread}` |
 | `board/` | pump writes `<need>.prompt`; planner shell writes `<need>.out` | operator | prompt text; planner stdout+stderr |
 | `resplit/` | pump writes `<unit>.json` and `<unit>.prompt`; planner writes `<unit>.out` | split planner | JSON + prompt text |
 | `gatefix/` | pump writes `<need>.prompt`; planner writes `<need>.out` | gatefix planner | prompt text |
-| `merge-jobs/` | pump writes `<bid>.job.json`; remote merger writes `.claimed.json`/`.result.json` | pump reads the result | batch protocol; see [`protocols.md`](protocols.md) |
+| `merge-jobs/` | pump writes `<bid>.job.json`; remote merger writes `.claimed.json`/`.result.json` | pump reads the result | batch protocol; see [`pump-protocols.md`](pump-protocols.md) |
 | `repo/` | git operations (reset_repo and all merge work) | pump | the integration clone; `[pump] repo` overrides |
 | `planner-charter.md` | operator | planner command lines (`{charter}`) | the planner's system prompt |
 | `sync-push.log` | detached `vivi sync push` | operator | shell redirect |
@@ -109,7 +109,7 @@ All flags live in `home`. The operator creates them; removal is per flag:
 
 | flag | exact effect | removed by |
 | --- | --- | --- |
-| `PAUSE` | `tick` returns early after the first save point: no dispatch, no hold cycle, no gate start, no post-dispatch merge apply/feed. The steps before the check (merge apply, board, ingest, collect, first feed) still run, so already-fed units keep merging | operator |
+| `PAUSE` | `tick` returns early after the first save point: no dispatch, no hold cycle, no external gate intake, no gate start, no post-dispatch merge apply/feed. The steps before the check (merge apply, board, ingest, collect, first feed) still run, so already-fed units keep merging | operator |
 | `STOP` | after the current tick completes, save and exit the loop | operator |
 | `HOLD-MERGE` | `merge_feed` feeds only units whose id starts with the fix prefix; once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`) | pump (`hold_cycle`) or operator |
 | `FORCE-GATE` | `start_gate` treats the gate as due now, whatever the counters say | pump, when the gate dispatches; also written by `hold_cycle` |
@@ -183,6 +183,7 @@ States:
 | `stuck` | attempts exhausted (or the split planner never answered); a person is needed | yes | no |
 | `splitting` | a split planner is writing a replacement plan | no | no |
 | `replaced` | superseded by split successor units | yes | only if every successor is satisfied (satisfied, recursion depth capped at 6) |
+| `withdrawn` | taken out of the queue by hand; the pump leaves it alone | no | no |
 
 `satisfied` is the readiness predicate used everywhere:
 `merged` and `no-defect` are directly satisfied; `replaced` delegates to its
@@ -208,7 +209,7 @@ Transitions (from, to, trigger, guard, action):
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
 
 The merge batch itself (which units go together, the remote merger, promotion)
-is [`protocols.md`](protocols.md); the state machine above only records what
+is [`pump-protocols.md`](pump-protocols.md); the state machine above only records what
 each merge outcome does to the unit.
 
 ## 7. The tick
@@ -224,16 +225,17 @@ each merge outcome does to the unit.
 6. `merge_feed`: queue delivered units for merging.
 7. `save` — save point one.
 8. PAUSE check: if `PAUSE` exists, `write_status` and return — skipping
-   dispatch, the hold cycle, the gate start, and the second merge apply/feed. Note merging is not paused: step 6 already ran, and
+   dispatch, the hold cycle, external gate intake, the gate start, and the second merge apply/feed. Note merging is not paused: step 6 already ran, and
    the merge thread is independent of the tick.
 9. `dispatch`.
 10. `save` — save point two.
 11. `hold_cycle`.
-12. `start_gate`.
-13. `merge_apply` — lets gate/merge results land in state.
-14. `merge_feed`.
-15. `save` — save point three.
-16. `write_status`.
+12. `external_gates`: take finished results from `gate.results_dir`, if set.
+13. `start_gate`.
+14. `merge_apply` — lets gate/merge results land in state.
+15. `merge_feed`.
+16. `save` — save point three.
+17. `write_status`.
 
 Error handling:
 
@@ -258,11 +260,18 @@ Readiness (`ready`):
   `inflight`+`delivered`+`merging` for normal units. A fix unit
   (id starting with `fix_prefix`) ignores overlap against non-fix units.
 
-Overlap uses `scope_root`: strip a leading `./`, truncate at
-the first glob character (`*?[`) and keep the directory part; a path with no
-directory becomes `""`. `overlaps` returns true when any pair
-of paths shares a scope root, or when either root is `""` — a root-level or
-glob-only scope overlaps everything.
+- The unit's write scope must not overlap any path in the reserved file
+  (`reserved_file`, read afresh on every check; blank lines and lines starting
+  with `#` are skipped).
+
+Overlap (`overlaps`, in `src/pump/plan.rs`) is read segment by segment. A
+scope is its path split on `/`, with leading `.` and `/` characters and a
+trailing slash stripped. A scope covers what it names and everything under it,
+so `src/a` overlaps `src/a/b.rs`. `*`, `?` and `[...]` match within one
+segment, `**` matches any number of segments, and a glob with no `/` matches at
+any depth (as in `.gitignore`). Two globs at the same position are assumed to
+meet. An empty scope covers the whole tree and overlaps everything. Two scopes
+overlap when some file could match both.
 
 Model choice (`pick_model`):
 
@@ -569,7 +578,7 @@ Behaviours the decisions above do not list:
 | --- | --- |
 | `config.rs` | The `[pump]` table, its defaults and `validate`; unit kinds. |
 | `state.rs` | load/save; the `MergeJob`/`MergeResult` records. |
-| `plan.rs` | `scope_root`, `overlaps`, `ingest`. |
+| `plan.rs` | `overlaps`, `ingest`. |
 | `ready.rs` | `satisfied`, `ready`, `pick_model`, the reserved-paths file. |
 | `brief.rs` | The default hand rules, `brief_for`, the gate brief. |
 | `host.rs` | `sh`, `vivi`, `git`, `log`, `exception`: the command-line seam and its test fake. |

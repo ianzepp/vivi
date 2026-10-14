@@ -1,6 +1,6 @@
 ---
 name: vivi
-description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, and the remote lane pool (`vivi pool`: machines or containers that run a task and push a branch).
+description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, the remote lane pool (`vivi pool`: machines or containers that run a task and push a branch), and the pump (`vivi pump`: an unattended loop that plans, dispatches, merges and gates a backlog).
 ---
 
 # Vivi
@@ -1853,8 +1853,10 @@ task on a model lane. Delivered units merge in batches into an integration
 branch, where the shared checks and each unit's own proof run before the push.
 A periodic gate measures the branch and fast-forwards main when it is clean,
 and everything that needs a person is appended to `exceptions.txt`. The full
-contract is docs/pump/contract.md, its wire protocols docs/pump/protocols.md;
-this section is a summary, not a replacement.
+contract is [`references/pump-contract.md`](references/pump-contract.md), its
+wire protocols [`references/pump-protocols.md`](references/pump-protocols.md)
+(`vivi skills show vivi --file references/pump-contract.md`); this section is a
+guide and a summary, not a replacement.
 
 ```sh
 vivi pump run      # loop: one tick, then sleep `tick` seconds, until the STOP file appears
@@ -1866,6 +1868,121 @@ vivi pump status   # print <home>/status.txt ("no status yet" when absent); no l
   first, so there is one instance; a second exits non-zero. Exit 0 is a clean
   exit (STOP seen, or `once` finished); a crashing tick is logged, not an exit.
 - Every `vivi` call the pump makes carries the global `--project` too.
+
+#### Running the pump
+
+For whoever operates it. Reference tables follow in the sections below.
+
+**Bring-up.**
+
+1. Write the `[pump]` tables in `.vivi/mailspace.toml` (see "Config" below for
+   every key). The pump will not start without `branch`, `committer_name`,
+   `committer_email`, at least one `[pump.dispatch] lanes` entry, a
+   `[pump.gate] command`, `[pump.merge] shared_checks` while promotion is on,
+   and, to dispatch anything, at least one unit kind with a `default_kind`
+   (with no kinds defined every unit is an `unknown-kind` exception). Each
+   kind's `pool` and each gate pool must be a `[pools.<name>]` table;
+   `vivi pool doctor` checks the pools. A planner (`[pump.planner] run`) is
+   required while `[pump.board] from` or `mark` is set (`mark` defaults to
+   `pump`).
+2. Have the integration clone ready: `<home>/repo`, or `[pump] repo`. Either
+   set `remote_url` and the pump clones it at start (`git clone --branch
+   <branch>`, so the integration branch must already exist on the remote), or
+   clone it yourself with the remote named `remote`.
+3. Check with one paused tick: `mkdir -p <home> && touch <home>/PAUSE`, then
+   `vivi pump once`. Config errors are printed and the exit is non-zero.
+   `PAUSE` stops dispatch, the hold cycle and the gate only; the board pass
+   (sync pull, planners for plannable needs) and merging of delivered units
+   still run. Read `vivi pump status`, `<home>/log.txt` and
+   `<home>/exceptions.txt`.
+4. Remove `PAUSE`, then run `vivi pump run` (add `--project <root>` outside
+   the project) under a supervisor such as tmux or systemd. It runs in the
+   foreground, holds the `lock` flock (a second pump on the same home exits
+   non-zero) and exits 0 only on `STOP`, so the supervisor must not restart a
+   clean exit by itself.
+5. To restart (new binary, new config): `touch <home>/STOP`, wait for the
+   process to exit (it finishes the current tick first), **remove `STOP`**,
+   then start again. A `STOP` left behind makes the next start run one tick
+   and exit.
+
+**Getting work in.** The board plans an open need that either comes from a
+`[pump.board] from` sender (dated at or after `since`), or carries the
+approval mark whatever its sender or date: `vivi need mark <handle> pump
+--for <holder>` (the mark is `[pump.board] mark`, default `pump`; the need
+must be held, or addressed to `reply_from`, to be seen). When the operator
+replies on the thread of a parked need (verdict `operator`, `design` or
+`hold`), it is planned again. To keep a need from ever being planned, put its
+handle in `<home>/skip.txt` (whitespace separated).
+
+**What a planner writes.** A plan file, described under "Plan files" below.
+Its `proof` commands are run exactly as written, by `sh` in the integration
+clone, on the merged result, each under `proof_timeout`; the pump does not
+fix them up. The project's planner charter (`[pump.planner] charter`) must
+therefore make them valid there: runnable from the repo root, one narrow
+filter per command, exit 0 only when the unit is proven, and using only tools
+the merge host has.
+
+**Reading state.** `vivi pump status` prints `status.txt`, written at the end
+of every tick: a timestamp, unit counts per state, plan verdict counts, and
+merges, finished needs, gates and baseline size. `log.txt` is the event
+stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`
+lines; shapes in the protocols reference, section 9.2).
+`exceptions.txt` is what needs a person: `stuck` units, `unknown-kind`,
+`bad-plan`, `split-no-answer`, `plan-no-answer`, `no-defect` receipts and gate
+news (`gate-new-failures`, `gate-unreadable`, `gate-build-failed`,
+`red-after-fix`). Read it after every unattended stretch. A `stuck` unit
+blocks its dependents until a person unblocks it.
+
+**Nothing is dispatching.** Check in this order:
+
+1. `status.txt` shows pending units at all. If not, the cause is upstream:
+   a plan not written (`board/<need>.out`, `plan-no-answer`), a need not
+   plannable (sender, `since`, mark, `skip.txt`) or a rejected plan
+   (`bad-plan`).
+2. `PAUSE` exists in the home.
+3. The unit waits on `after`: a prerequisite that is not `merged` or
+   `no-defect`, including a `stuck` one.
+4. The reserved file (`reserved.txt` in the home by default, one path or glob
+   per line, `#` comments) holds a path the unit's `write_scope` overlaps.
+   Another unit that is `inflight`, `delivered` or `merging` on an
+   overlapping scope blocks it too. Overlap is read segment by segment:
+   `*`, `?` and `[...]` match inside one segment, `**` any number of
+   segments, a glob with no `/` matches at any depth, a scope covers what is
+   under it (`src/a` overlaps `src/a/b.rs`), two globs in the same position
+   are assumed to meet, and an empty scope overlaps everything.
+5. The unit's kind has a `max` and that many units of the kind are in flight,
+   or the kind is not defined (`unknown-kind`).
+6. The kind's pool has no free slot: `vivi pool status --pool <pool>
+   --porcelain`.
+7. Every lane in `[pump.dispatch] lanes` is at its `cap` (the dispatch loop
+   stops for the tick), or `per_tick` units already started.
+8. `task send failed` or `dispatch failed` lines in `log.txt`.
+
+**External gate runners.** By default a gate is a read-only worker on a pool
+that runs `[pump.gate] command`. When the pool cannot run it (no toolchain,
+too small), set `results_dir` and `results_wait_seconds`, and let any machine
+measure the integration tip itself and drop `<tip>.json` into `results_dir`
+(failing test names, or a build failure with its output tail). Each tick the
+pump takes the files oldest first, finishes the gate exactly as for a worker
+reply, and moves the file to `done/`. A due gate waits `results_wait_seconds`
+for one before it falls back to a pool gate. The file format is in the
+contract reference, section 9.
+
+**Remote mergers.** With `REMOTE-MERGE` in the home, each merge batch is first
+offered to another machine through files in `merge-jobs/`: the pump writes
+`<bid>.job.json`, the remote merger claims it by renaming it, runs the same
+merge, shared checks, proofs and push, and answers with `<bid>.result.json`.
+If nobody claims the batch within `remote_wait` seconds, or a claimed batch
+has no result after `remote_limit`, the pump merges it here. Remove the flag
+to merge locally only. The file formats are in the protocols reference,
+section 6.
+
+**Rolling back.** The pump keeps the field names of the predecessor's
+`state.json`, preserves keys it does not know on every save, and reads absent
+fields as defaults, so a predecessor can read the same file and keep working.
+Keep a copy of `state.json` before cutover. To go back, stop the pump with
+`STOP` and start the predecessor on the same file, or on the copy if the file
+is in doubt.
 
 #### The home directory
 
@@ -1880,8 +1997,10 @@ vivi pump status   # print <home>/status.txt ("no status yet" when absent); no l
 | `status.txt` | pump, `pump status` | four lines: timestamp, units, plans, merges and gates |
 | `lock` | pump (flock only) | empty; the single-instance lock |
 | `skip.txt` | operator, board pass | need handles to never plan |
+| `reserved.txt` (`reserved_file`) | operator, dispatch | paths held by another session, one path or glob per line, `#` comments; read afresh on every check |
 | `plans/` | planner writes `<need>.json` and `<unit>.split.json`; re-plans move old plans to `plans/superseded/` | plan files, below |
 | `needs/` | board dumps the need thread, planner reads | `{need, subject, triage, thread}` |
+| `briefs/` | pump writes `<unit>.txt`, sent as the unit's task body | the composed unit brief |
 | `board/`, `resplit/`, `gatefix/` | pump writes `*.prompt`, planner writes `*.out` | prompts and planner output; `resplit/` also `<unit>.json` |
 | `merge-jobs/` | pump writes `<bid>.job.json`, remote merger claims and answers | the remote-merge batch protocol |
 | `repo/` | git operations, pump | the integration clone; `[pump] repo` overrides |
@@ -1933,9 +2052,11 @@ ingests every new file exactly once:
 - `splitting` — a split planner is writing a replacement plan.
 - `replaced` — superseded by split successors; satisfied only when every
   successor is.
+- `withdrawn` — taken out of the queue by hand; the pump leaves it alone and it
+  never satisfies an `after`.
 
 `merged` and `no-defect` are satisfied; `replaced` delegates to its
-successors; everything else, `stuck` included, is not, so a stuck unit blocks
+successors; everything else, `stuck` and `withdrawn` included, is not, so a stuck unit blocks
 its dependents until a person unblocks it.
 
 #### Config
@@ -2038,8 +2159,9 @@ Validation rejects an empty `branch`, an empty `committer_name` or
 promotion is enabled (`promote = true` and `main` set), a `hand_rules` file
 that cannot be read, a `tick` below 1, empty `lanes` or a
 lane cap below 1, a `max_attempts` below 1, a kind with no `pool` or a `max` of 0, a
-`default_kind` that is unset (with kinds defined) or not a defined kind, and any
-pool name that is not a `[pools.<name>]` table. Rules that are not obvious from the keys:
+`default_kind` that is unset (with kinds defined) or not a defined kind,
+`results_dir` set with `results_wait_seconds` 0, and any pool name that is not a
+`[pools.<name>]` table. Rules that are not obvious from the keys:
 
 - An open need carrying the approval mark is plannable whatever its sender or
   date.

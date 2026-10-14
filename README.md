@@ -350,8 +350,10 @@ gate now), `REMOTE-MERGE` (offer merge batches to a remote merger first),
 `skip.txt` (need handles never to plan) and the reserved file (paths whose
 units wait).
 
-The design record is [`docs/pump/contract.md`](docs/pump/contract.md) and
-[`docs/pump/protocols.md`](docs/pump/protocols.md). As with any design record,
+The design record is
+[`skills/vivi/references/pump-contract.md`](skills/vivi/references/pump-contract.md) and
+[`skills/vivi/references/pump-protocols.md`](skills/vivi/references/pump-protocols.md).
+It ships inside the binary: `vivi skills show vivi --file references/pump-contract.md`. As with any design record,
 check a detail against the code before relying on it.
 
 ## Sync, the server and MCP
@@ -416,7 +418,7 @@ vivi skills install ~/.agents/skills     # writes vivi/, tugboat/, speedboat/
 ## Documentation
 
 - [`skills/vivi/SKILL.md`](skills/vivi/SKILL.md): the usage reference (also `vivi skills show vivi`)
-- [`docs/pump/`](docs/pump/): the pump contract and wire protocols
+- [`skills/vivi/references/pump-contract.md`](skills/vivi/references/pump-contract.md) and [`pump-protocols.md`](skills/vivi/references/pump-protocols.md): the pump contract and wire protocols
 - [`AGENTS.md`](AGENTS.md): guide for contributors and coding agents
 - [`docs/README.md`](docs/README.md): index of the historical planning and release record. Those files are kept as written and are not maintained
 

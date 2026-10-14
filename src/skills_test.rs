@@ -50,6 +50,11 @@ fn show_defaults_to_skill_md_and_rejects_escapes() {
     let flow = skills::show("vivi", Some("references/work-graph-flow.md")).unwrap();
     assert!(flow.contents.contains("Work-graph"));
 
+    let contract = skills::show("vivi", Some("references/pump-contract.md")).unwrap();
+    assert!(contract.contents.contains("The pump's contract"));
+    let protocols = skills::show("vivi", Some("references/pump-protocols.md")).unwrap();
+    assert!(protocols.contents.contains("Pump protocols"));
+
     let err = skills::show("nope", None).unwrap_err().to_string();
     assert!(err.contains("unknown skill 'nope'"), "{err}");
     assert!(err.contains("vivi"), "{err}");
@@ -80,6 +85,8 @@ fn install_writes_the_layout_and_force_overwrites() {
         skills::show("vivi", None).unwrap().contents
     );
     assert!(dest.join("vivi/references/work-graph-flow.md").is_file());
+    assert!(dest.join("vivi/references/pump-contract.md").is_file());
+    assert!(dest.join("vivi/references/pump-protocols.md").is_file());
     assert!(dest.join("tugboat/scripts/check-task-body.py").is_file());
     assert!(dest.join("tugboat/references/charters/hand.md").is_file());
     assert!(dest.join("speedboat/agents/openai.yaml").is_file());
@@ -136,4 +143,57 @@ fn tugboat_charter_relative_links_survive_install() {
         "tugboat skill should point at charters"
     );
     assert!(dir.path().join("tugboat").join(linked).is_file());
+}
+
+/// Every relative link in an embedded vivi skill file must name an embedded
+/// file, so an installed skill carries no dead links.
+#[test]
+fn relative_links_in_the_vivi_skill_resolve_to_embedded_files() {
+    let skill = skills::get("vivi").unwrap();
+    let files = skill.file_names();
+    for file in &files {
+        if !file.ends_with(".md") {
+            continue;
+        }
+        let dir = Path::new(file).parent().unwrap_or(Path::new(""));
+        let text = skills::show("vivi", Some(file)).unwrap().contents;
+        for target in link_targets(text) {
+            if target.contains("://") || target.starts_with('#') || target.starts_with("mailto:") {
+                continue;
+            }
+            let path = target.split('#').next().unwrap_or_default();
+            let resolved = normalize(&dir.join(path));
+            assert!(
+                files.contains(&resolved.as_str()),
+                "{file} links to {target}, which is not an embedded file"
+            );
+        }
+    }
+}
+
+/// The `(...)` targets of inline Markdown links `[text](target)`.
+fn link_targets(text: &str) -> Vec<&str> {
+    let mut targets = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("](") {
+        rest = &rest[at + 2..];
+        if let Some(end) = rest.find(')') {
+            targets.push(&rest[..end]);
+        }
+    }
+    targets
+}
+
+fn normalize(path: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for part in path.components() {
+        match part.as_os_str().to_string_lossy().as_ref() {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other.to_string()),
+        }
+    }
+    parts.join("/")
 }
