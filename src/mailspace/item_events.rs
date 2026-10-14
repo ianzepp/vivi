@@ -285,6 +285,9 @@ fn work_kind(
 struct Chain {
     events: Vec<EventLetter>,
     unauthorized: usize,
+    /// The earliest clock reading at which an event skipped as dated past
+    /// the clock — a member's, so it will count — begins to count.
+    deferred_until: Option<i64>,
 }
 
 /// Every event head of the chain, oldest to newest by the total order
@@ -387,6 +390,58 @@ pub(super) fn dated_within_clock(at: i64, now_micros: i64) -> bool {
     at <= now_micros.saturating_add(FUTURE_LIMIT_MICROS)
 }
 
+/// The earliest clock reading at which an event dated `at` counts: ten
+/// minutes before its instant.
+fn release_of(at: i64) -> i64 {
+    at.saturating_sub(FUTURE_LIMIT_MICROS)
+}
+
+/// The receiver's clock in Unix microseconds: what every fold judges an
+/// event's instant against and every writer stamps from. One seam, so a
+/// test can run one member ahead of the machine clock.
+#[must_use]
+pub(super) fn clock_micros() -> i64 {
+    let now = chrono::Utc::now().timestamp_micros();
+    #[cfg(test)]
+    let now = now.saturating_add(CLOCK_SKEW_MICROS.with(std::cell::Cell::get));
+    now
+}
+
+#[cfg(test)]
+thread_local! {
+    static CLOCK_SKEW_MICROS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `body` with this thread's clock `micros` ahead of the machine clock,
+/// the way a member whose clock is fast (or, negative, slow) reads it.
+#[cfg(test)]
+pub(crate) fn with_clock_skew<T>(micros: i64, body: impl FnOnce() -> T) -> T {
+    struct Restore(i64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CLOCK_SKEW_MICROS.with(|skew| skew.set(self.0));
+        }
+    }
+    let _restore = Restore(CLOCK_SKEW_MICROS.with(|skew| skew.replace(micros)));
+    body()
+}
+
+/// Mark the unabsorbed rows of `item` with the clock reading at which a
+/// skipped letter begins to count, or clear the mark when none is skipped.
+fn record_deferral(
+    storage: &Storage,
+    item: &HeldItem,
+    until: Option<i64>,
+) -> Result<(), VivariumError> {
+    let rows: Vec<String> = item
+        .rows
+        .iter()
+        .filter(|row| row.absorbed_at.is_none())
+        .map(|row| row.message_id.clone())
+        .collect();
+    storage.set_event_deferral(&rows, until)
+}
+
 /// One folder change the head asks for.
 struct Planned {
     row: StoredMessageView,
@@ -430,8 +485,9 @@ impl Mailspace {
         let mut chain = Chain {
             events: Vec::new(),
             unauthorized: 0,
+            deferred_until: None,
         };
-        let now = chrono::Utc::now().timestamp_micros();
+        let now = clock_micros();
         for child in storage.reply_child_contents(&item.content_id)? {
             let Some(view) = storage.message_by_content_id(&child)? else {
                 continue;
@@ -442,13 +498,17 @@ impl Mailspace {
             let Some(event) = parse_event(&bytes).filter(|event| event.of == item.rfc_id) else {
                 continue;
             };
-            if let Some(from) = first_bare_address(&view.from_addr)
-                && self.event_may_speak(item, &from)
-                && dated_within_clock(event.at, now)
-            {
+            let speaks = first_bare_address(&view.from_addr)
+                .is_some_and(|from| self.event_may_speak(item, &from));
+            if speaks && dated_within_clock(event.at, now) {
                 chain.events.push(event);
-            } else {
-                chain.unauthorized += 1;
+                continue;
+            }
+            chain.unauthorized += 1;
+            if speaks {
+                let release = release_of(event.at);
+                chain.deferred_until =
+                    Some(chain.deferred_until.map_or(release, |s| s.min(release)));
             }
         }
         Ok(chain)
@@ -614,7 +674,9 @@ impl Mailspace {
         // is ignored the same way — the absorb letter already named the
         // state.
         let sealed = property::counted_absorb(self, storage, &item)?.is_some();
-        self.apply_property_events(storage, &item, tally)?;
+        let mut deferred_until = chain.deferred_until;
+        self.apply_property_events(storage, &item, tally, &mut deferred_until)?;
+        record_deferral(storage, &item, deferred_until)?;
         if sealed {
             return Ok(());
         }
@@ -704,6 +766,53 @@ impl Mailspace {
         Ok(tally)
     }
 
+    /// Settle the items that hold an event letter this mailspace skipped
+    /// as dated more than ten minutes past its clock, once the clock has
+    /// passed the bound. The letter counts now, and nothing else would
+    /// bring it back: the bound is judged when a letter is folded, and an
+    /// arrival-driven settle only reaches the items a pull touched. Each
+    /// such item is settled as if the letter had just arrived, so its head
+    /// moves every row it names. Idempotent: a settled item drops its mark
+    /// and is not visited again. Events ignored here were counted when
+    /// they arrived and are not counted twice.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on storage failure.
+    pub fn apply_released_events(&self) -> Result<EventTally, VivariumError> {
+        let mut tally = EventTally::default();
+        let mut storage = self.storage()?;
+        let now = clock_micros();
+        let due: BTreeSet<String> = storage
+            .deferred_event_contents()?
+            .into_iter()
+            .filter(|(_, until)| *until <= now)
+            .map(|(content_id, _)| content_id)
+            .collect();
+        for content_id in &due {
+            // Settled again below with the clock's verdict: a letter still
+            // dated past the bound writes its mark anew.
+            storage.clear_event_deferral(content_id)?;
+            let mut settled = EventTally::default();
+            self.settle_item(&mut storage, content_id, &mut settled, false)?;
+            tally.applied += settled.applied;
+        }
+        Ok(tally)
+    }
+
+    /// Whether the item behind `content_id` holds a letter whose bound the
+    /// clock has passed since it was skipped: its settle is due.
+    pub(super) fn event_release_due(
+        &self,
+        storage: &Storage,
+        content_id: &str,
+    ) -> Result<bool, VivariumError> {
+        let now = clock_micros();
+        Ok(storage
+            .deferred_event_contents()?
+            .iter()
+            .any(|(held, until)| held == content_id && *until <= now))
+    }
+
     /// The current state of the item `handle` names, from its events: the
     /// newest one, and how many chain heads (a fork) are held. `None` when
     /// the item has no authorized event or is not work.
@@ -747,8 +856,12 @@ impl Mailspace {
         let Some(kind) = newest_event(&chain.events).map(|head| head.kind) else {
             return Ok(None);
         };
+        // A letter the clock has just passed is an arrival: it moves a
+        // hand's closed row too, which a settle that keeps reports would
+        // take for a later report.
+        let due = self.event_release_due(storage, content_id)?;
         let rows: Vec<StoredMessageView> = self
-            .plan_item_moves(storage, &item, kind, true)?
+            .plan_item_moves(storage, &item, kind, !due)?
             .into_iter()
             .map(|planned| planned.row)
             .collect();
@@ -759,7 +872,8 @@ impl Mailspace {
     /// audit's repair).
     pub(super) fn repair_event_drift(&self, content_id: &str) -> Result<(), VivariumError> {
         let mut storage = self.storage()?;
-        self.settle_item(&mut storage, content_id, &mut EventTally::default(), true)
+        let due = self.event_release_due(&storage, content_id)?;
+        self.settle_item(&mut storage, content_id, &mut EventTally::default(), !due)
     }
 }
 

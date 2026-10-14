@@ -300,3 +300,7 @@ mod property_marks_converge;
 #[cfg(test)]
 #[path = "sync/absorb_quiet_test.rs"]
 mod absorb_quiet_test;
+
+#[cfg(test)]
+#[path = "sync/deferred_events_test.rs"]
+mod deferred_events_test;

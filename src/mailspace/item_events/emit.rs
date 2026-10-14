@@ -267,7 +267,7 @@ impl Mailspace {
             .iter()
             .map(|head| head.id.clone())
             .collect();
-        let at = event_at(chrono::Utc::now().timestamp_micros(), &chain.events);
+        let at = event_at(super::clock_micros(), &chain.events);
         let letter = self.compose_event_letter(item, request, &prevs, &at)?;
         self.check_letter_size(letter.data.len())?;
         let rows = event_rows(request.identity, &letter.local, &item.content_id);

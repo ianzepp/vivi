@@ -4,7 +4,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::item_events::{
-    HeldItem, ItemEventKind, PropertyKind, dated_within_clock, parse_event, parse_property_event,
+    HeldItem, ItemEventKind, PropertyKind, clock_micros, dated_within_clock, parse_event,
+    parse_property_event,
 };
 use super::kind::effective_kind;
 use super::{DeliveryResult, Mailspace, SendRequest, prefix_of_domain};
@@ -220,7 +221,7 @@ impl Mailspace {
         let Some(newest) = newest_item_event_at(storage, &item)? else {
             return Ok(());
         };
-        let age = chrono::Utc::now().timestamp_micros().saturating_sub(newest);
+        let age = clock_micros().saturating_sub(newest);
         let left = quiet.saturating_sub(age);
         if left <= 0 {
             return Ok(());
@@ -559,7 +560,7 @@ fn insert_optional(map: &mut BTreeMap<String, String>, key: &str, value: Option<
 /// wrote and the clock counts — or, for an item closed with no event
 /// letter, the instant of its `done` move in the mailspace event log.
 fn newest_item_event_at(storage: &Storage, item: &HeldItem) -> Result<Option<i64>, VivariumError> {
-    let now = chrono::Utc::now().timestamp_micros();
+    let now = clock_micros();
     let mut newest: Option<i64> = None;
     for child in storage.reply_child_contents(&item.content_id)? {
         let Some(view) = storage.message_by_content_id(&child)? else {

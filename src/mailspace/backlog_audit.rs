@@ -149,7 +149,7 @@ fn audit_event_state(
     findings: &mut Vec<BacklogAuditFinding>,
 ) -> Result<(), VivariumError> {
     let Some((kind, rows)) = mailspace.event_drift(storage, content_id)? else {
-        return Ok(());
+        return audit_released_event(mailspace, storage, content_id, repair, findings);
     };
     let Some(first) = rows.first() else {
         return Ok(());
@@ -168,6 +168,45 @@ fn audit_event_state(
             kind.header(),
             folders.join(", ")
         ),
+        repaired: false,
+    };
+    if repair {
+        mailspace.repair_event_drift(content_id)?;
+        finding.repaired = true;
+    }
+    findings.push(finding);
+    Ok(())
+}
+
+/// Report (and with `repair`, settle) an item whose folders match its
+/// latest event but that holds a letter skipped as dated past the clock when
+/// it arrived, which the clock has since passed: its marks, binds, seal or
+/// state have not been applied. A pull settles it too; the audit names it.
+fn audit_released_event(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    content_id: &str,
+    repair: bool,
+    findings: &mut Vec<BacklogAuditFinding>,
+) -> Result<(), VivariumError> {
+    if !mailspace.event_release_due(storage, content_id)? {
+        return Ok(());
+    }
+    let Some(first) = storage
+        .live_messages_for_content(content_id)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(());
+    };
+    let mut finding = BacklogAuditFinding {
+        class: "event_state".into(),
+        kind: mailspace.source_kind(storage, &first).unwrap_or_default(),
+        handle: first.handle.clone(),
+        subject: first.subject.clone(),
+        detail: "an event letter dated past the clock when it arrived counts now, but its \
+                 marks, binds, seal or state are not applied yet"
+            .into(),
         repaired: false,
     };
     if repair {

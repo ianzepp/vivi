@@ -177,6 +177,9 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
 struct PropertyChain {
     events: Vec<PropertyEvent>,
     unauthorized: usize,
+    /// The earliest clock reading at which a member's event skipped as
+    /// dated past the clock begins to count.
+    deferred_until: Option<i64>,
 }
 
 /// Every property event held for `item` that a member wrote and the clock
@@ -191,8 +194,9 @@ fn property_chain(
     let mut chain = PropertyChain {
         events: Vec::new(),
         unauthorized: 0,
+        deferred_until: None,
     };
-    let now = chrono::Utc::now().timestamp_micros();
+    let now = super::clock_micros();
     for child in storage.reply_child_contents(&item.content_id)? {
         let Some(view) = storage.message_by_content_id(&child)? else {
             continue;
@@ -204,13 +208,16 @@ fn property_chain(
         else {
             continue;
         };
-        if let Some(from) = first_bare_address(&view.from_addr)
-            && mailspace.event_may_speak(item, &from)
-            && super::dated_within_clock(event.at, now)
-        {
+        let speaks = first_bare_address(&view.from_addr)
+            .is_some_and(|from| mailspace.event_may_speak(item, &from));
+        if speaks && super::dated_within_clock(event.at, now) {
             chain.events.push(event);
-        } else {
-            chain.unauthorized += 1;
+            continue;
+        }
+        chain.unauthorized += 1;
+        if speaks {
+            let release = super::release_of(event.at);
+            chain.deferred_until = Some(chain.deferred_until.map_or(release, |s| s.min(release)));
         }
     }
     Ok(chain)
@@ -237,10 +244,14 @@ pub(super) fn counted_absorb(
 
 impl Mailspace {
     /// Settle the property events held for `item`. A counted `absorbed`
-    /// event seals the item: its rows are brought to the state the seal
-    /// names — every state event held is only a letter next to the seal,
-    /// however new — and each unabsorbed row is then sealed, without
-    /// exporting to the archive (the writer's mailspace exports). When the
+    /// event seals the item: the counted `marked`/`unmarked` and `bound`
+    /// letters dated before the seal are applied first, as with no seal,
+    /// the others are ignored; the rows are then brought to the state the
+    /// seal names — every state event held is only a letter next to the
+    /// seal, however new — and each unabsorbed row is sealed, without
+    /// exporting to the archive (the writer's mailspace exports). A letter
+    /// dated before the seal that arrives after it still lands: the seal
+    /// is in step with the letters, not with the arrival order. When the
     /// item is already sealed, every later event of any kind is counted
     /// ignored, as for state events. With no seal, the counted
     /// `marked`/`unmarked` letters are folded per slug and the newest one
@@ -252,16 +263,34 @@ impl Mailspace {
         storage: &mut Storage,
         item: &HeldItem,
         tally: &mut EventTally,
+        deferred_until: &mut Option<i64>,
     ) -> Result<(), VivariumError> {
         let chain = property_chain(self, storage, item)?;
         tally.ignored += chain.unauthorized;
+        *deferred_until = match (*deferred_until, chain.deferred_until) {
+            (Some(held), Some(more)) => Some(held.min(more)),
+            (held, more) => held.or(more),
+        };
         let Some(seal) = earliest_absorb(&chain.events).cloned() else {
-            Self::apply_mark_letters(storage, item, &chain.events, tally)?;
+            Self::apply_mark_letters(storage, item, &chain.events, false, tally)?;
             return self.apply_bound_events(storage, item, &chain.events, tally);
         };
+        // A mark or a bind dated before the seal is part of the item's
+        // history whenever it arrives — with the seal, or after it — and one
+        // dated after the seal is ignored: the seal is ordered against
+        // them by `(instant, Message-ID)`, as the marks are among
+        // themselves, so every member lands the same marks and units.
+        let before: Vec<PropertyEvent> = chain
+            .events
+            .iter()
+            .filter(|event| event.kind != PropertyKind::Absorbed)
+            .filter(|event| (event.at, &event.id) < (seal.at, &seal.id))
+            .cloned()
+            .collect();
+        Self::apply_mark_letters(storage, item, &before, true, tally)?;
+        self.apply_bound_events(storage, item, &before, tally)?;
         if item.rows.iter().all(|row| row.absorbed_at.is_some()) {
             tally.ignored += 1;
-            return Ok(());
         }
         self.seal_item(storage, item, &seal, tally)
     }
@@ -347,13 +376,15 @@ impl Mailspace {
                 moves: &moves,
             })?;
         }
-        self.sync_item_nodes(storage, item, kind, "via=absorb", &mut Vec::new())?;
+        let nodes = self.sync_item_nodes(storage, item, kind, "via=absorb", &mut Vec::new())?;
+        let mut sealed = false;
         for row in &item.rows {
             if row.absorbed_at.is_none() {
                 storage.absorb_message(&row.account, &row.message_id, &row.account)?;
+                sealed = true;
             }
         }
-        tally.applied += 1;
+        tally.applied += usize::from(sealed || !moves.is_empty() || nodes > 0);
         Ok(())
     }
 
@@ -366,11 +397,15 @@ impl Mailspace {
     /// later letter, for its instant is the receiver's clock. Only a
     /// person's newest local mark event for the slug floors: a later local
     /// change by a person is not undone by an older letter that arrives
-    /// late. Idempotent: a state that already matches appends nothing.
+    /// late. Idempotent: a state that already matches appends nothing. With
+    /// `sealed_too`, the rows of a sealed item are brought there too: the
+    /// letters passed are the ones dated before the seal, which count
+    /// whenever they arrive.
     fn apply_mark_letters(
         storage: &mut Storage,
         item: &HeldItem,
         events: &[PropertyEvent],
+        sealed_too: bool,
         tally: &mut EventTally,
     ) -> Result<(), VivariumError> {
         let mut inputs: Vec<MailspaceEventInput> = Vec::new();
@@ -378,7 +413,7 @@ impl Mailspace {
             let slug = letter.slug.as_deref().unwrap_or_default();
             let marked = letter.kind == PropertyKind::Marked;
             for row in &item.rows {
-                if row.absorbed_at.is_some() {
+                if row.absorbed_at.is_some() && !sealed_too {
                     continue;
                 }
                 inputs.extend(row_mark_input(storage, row, item, slug, marked, letter.at)?);

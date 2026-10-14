@@ -73,6 +73,8 @@ pub use identity::{
     ROLE_STATUS_RETIRED, RoleUpdate, RoleView,
 };
 pub(crate) use item_events::EVENT_HEADER;
+#[cfg(test)]
+pub(crate) use item_events::with_clock_skew;
 pub use item_events::{EventTally, ItemEventKind, ItemEventState};
 pub(crate) use kind::effective_kind;
 pub use lifecycle::{

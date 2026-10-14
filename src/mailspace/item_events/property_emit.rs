@@ -69,7 +69,7 @@ impl Mailspace {
         storage: &Storage,
         item: &HeldItem,
     ) -> Result<String, VivariumError> {
-        let mut floor = chrono::Utc::now().timestamp_micros();
+        let mut floor = super::clock_micros();
         // The chain holds counted events only; the property instants are
         // filtered here.
         for event in &self.item_chain(storage, item)?.events {
@@ -139,7 +139,7 @@ impl Mailspace {
         storage: &Storage,
         item: &HeldItem,
     ) -> Result<Vec<i64>, VivariumError> {
-        let now = chrono::Utc::now().timestamp_micros();
+        let now = super::clock_micros();
         let mut ats = Vec::new();
         for child in storage.reply_child_contents(&item.content_id)? {
             let Some(view) = storage.message_by_content_id(&child)? else {

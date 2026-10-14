@@ -540,8 +540,9 @@ fn refine_floor(state: &mut SyncState, first: Option<&Record>) {
 
 /// Apply the item-state events this page brought, and the events held for
 /// the work items it brought, now that the page's rows and reply links are
-/// all there. Idempotent: an item already at its latest event changes
-/// nothing.
+/// all there; then every item holding an event skipped as dated past the
+/// clock whose bound the clock has since passed. Idempotent: an item already
+/// at its latest event changes nothing.
 pub(crate) fn settle_events(
     mailspace: &Mailspace,
     report: &mut PullReport,
@@ -550,6 +551,9 @@ pub(crate) fn settle_events(
     let tally = mailspace.apply_arrived_events(&touched)?;
     report.events_applied += tally.applied;
     report.events_ignored += tally.ignored;
+    // An event skipped at arrival as dated past the clock counts once the
+    // clock has passed its bound, whether or not this pull brought a letter.
+    report.events_applied += mailspace.apply_released_events()?.applied;
     Ok(())
 }
 
