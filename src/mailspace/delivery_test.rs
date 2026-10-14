@@ -14,6 +14,7 @@ fn space(synced: bool) -> (tempfile::TempDir, Mailspace) {
             server: Some("http://sync.test".into()),
             project: Some("abcde-fghjk-mnpqr-stvwz-23456".into()),
             name: Some("alice".into()),
+            send: None,
         });
     }
     (tmp, mailspace)

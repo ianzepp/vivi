@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::sync::SendFilter;
 
 fn error_body(code: &str, message: &str) -> Value {
     json!({ "error": { "code": code, "message": message } })
@@ -65,6 +66,7 @@ fn settings_for(server: &str) -> SyncSettings {
         server: server.into(),
         project: "abcde-fghjk".into(),
         name: "alice".into(),
+        send: SendFilter::All,
         mailspace_id: "3f9a1c7e-5b2d-4e8f-9a01-6c4d7e8f9a0b".into(),
     }
 }
