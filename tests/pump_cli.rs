@@ -52,12 +52,7 @@ fn a_pause_flag_still_writes_status_and_exits_zero() {
 #[test]
 fn a_missing_pump_table_is_a_clear_error() {
     let project = tempfile::tempdir().unwrap();
-    assert_success(&vivi([
-        "mailspace",
-        "init",
-        "--project",
-        root(&project),
-    ]));
+    assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
     let out = vivi(["pump", "once", "--project", root(&project)]);
     assert!(!out.status.success(), "{}", stdout(&out));
     assert!(stderr(&out).contains("[pump]"), "{}", stderr(&out));
@@ -84,12 +79,7 @@ fn a_second_instance_is_refused() {
 /// A temp project mailspace with the minimal `[pump]` table appended.
 fn temp_mailspace() -> tempfile::TempDir {
     let project = tempfile::tempdir().unwrap();
-    assert_success(&vivi([
-        "mailspace",
-        "init",
-        "--project",
-        root(&project),
-    ]));
+    assert_success(&vivi(["mailspace", "init", "--project", root(&project)]));
     let config = project.path().join(".vivi").join("mailspace.toml");
     let root = project.path().to_str().unwrap();
     let table = format!(
