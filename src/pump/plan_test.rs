@@ -8,7 +8,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::plan::{ingest, overlaps, scope_root};
+use crate::pump::plan::{ingest, overlaps};
 use crate::pump::state::{State, Status, Unit};
 
 /// A `Ctx` over a fresh temp home with an empty `plans/` directory.
@@ -25,26 +25,6 @@ fn write_plan(ctx: &Ctx, name: &str, plan: &Value) {
 }
 
 #[test]
-fn scope_root_cuts_a_glob_at_the_last_directory() {
-    assert_eq!(scope_root("src/*/lib.rs"), "src");
-    assert_eq!(scope_root("src/lib/**/*.rs"), "src/lib");
-    assert_eq!(scope_root("a/b/[abc].txt"), "a/b");
-    assert_eq!(scope_root("a/b?/c.rs"), "a");
-    assert_eq!(scope_root("*.rs"), "");
-    assert_eq!(scope_root("plain/path.txt"), "plain/path.txt");
-}
-
-#[test]
-fn scope_root_trims_leading_dots_and_slashes_and_the_trailing_slash() {
-    assert_eq!(scope_root("./src/lib.rs"), "src/lib.rs");
-    assert_eq!(scope_root(".//src/x/"), "src/x");
-    assert_eq!(scope_root("../up/x"), "up/x");
-    assert_eq!(scope_root(" src/x "), "src/x");
-    assert_eq!(scope_root("...///src/"), "src");
-    assert_eq!(scope_root("./[*]/x"), "");
-}
-
-#[test]
 fn overlaps_is_true_for_equal_nested_and_empty_roots() {
     assert!(overlaps(&["src/a".to_string()], &["src/a".to_string()]));
     assert!(overlaps(
@@ -57,6 +37,61 @@ fn overlaps_is_true_for_equal_nested_and_empty_roots() {
         &["*.rs".to_string()],
         &["tgt/anything".to_string()]
     ));
+}
+
+fn v(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| (*s).to_string()).collect()
+}
+
+#[test]
+fn a_glob_blocks_only_paths_it_can_match() {
+    let held = v(&[
+        "Cargo.toml",
+        "crates/*/Cargo.toml",
+        "crates/radix-mir-llvm/**",
+    ]);
+    // The reservation this fix is for: a unit elsewhere under crates/ is free.
+    assert!(!overlaps(
+        &v(&["crates/radix-semantic/src/check.rs"]),
+        &held
+    ));
+    assert!(!overlaps(
+        &v(&["crates/faber/src/cli.rs", "crates/faber/src/cli_test.rs"]),
+        &held
+    ));
+    // A root Cargo.toml entry does not hold a crate's Cargo.toml by itself...
+    assert!(!overlaps(&v(&["lib/Cargo.toml"]), &v(&["Cargo.toml"])));
+    // ...but the crate glob does, and so does the whole crate directory.
+    assert!(overlaps(&v(&["crates/faber/Cargo.toml"]), &held));
+    assert!(overlaps(&v(&["crates/radix-semantic"]), &held));
+    assert!(overlaps(&v(&["crates/radix-mir-llvm/src/emit.rs"]), &held));
+    assert!(overlaps(&v(&["Cargo.toml"]), &held));
+}
+
+#[test]
+fn double_star_and_single_segment_globs() {
+    assert!(overlaps(&v(&["src/**/x.rs"]), &v(&["src/a/b/x.rs"])));
+    assert!(overlaps(&v(&["src/**"]), &v(&["src"])));
+    assert!(!overlaps(&v(&["src/**/x.rs"]), &v(&["lib/a/x.rs"])));
+    assert!(overlaps(&v(&["src/*_test.rs"]), &v(&["src/plan_test.rs"])));
+    assert!(!overlaps(&v(&["src/*_test.rs"]), &v(&["src/plan.rs"])));
+    assert!(overlaps(&v(&["src/?.rs"]), &v(&["src/a.rs"])));
+    assert!(overlaps(&v(&["src/[ab].rs"]), &v(&["src/a.rs"])));
+    // Two globs at the same position are assumed to meet.
+    assert!(overlaps(
+        &v(&["crates/*/src"]),
+        &v(&["crates/radix-*/src/lib.rs"])
+    ));
+}
+
+#[test]
+fn a_bare_glob_matches_at_any_depth_and_an_empty_scope_covers_everything() {
+    assert!(overlaps(&v(&["*.rs"]), &v(&["deep/down/file.rs"])));
+    // A scope also covers what is under it, so `deep/down/file.md` could hold a `.rs` file.
+    assert!(overlaps(&v(&["*.rs"]), &v(&["deep/down/file.md"])));
+    assert!(!overlaps(&v(&["src/*.rs"]), &v(&["src/file.md"])));
+    assert!(overlaps(&v(&[""]), &v(&["anything/at/all"])));
+    assert!(overlaps(&v(&["./src/"]), &v(&["src/x.rs"])));
 }
 
 #[test]

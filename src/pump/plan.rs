@@ -1,6 +1,6 @@
 //! Plan files, ingest and scope overlap.
 //!
-//! `scope_root`, `overlaps` and
+//! `overlaps` and
 //! `ingest`: every `plans/*.json` file under the pump home is read
 //! leniently, validated, and minted into pending units.
 
@@ -15,42 +15,71 @@ use crate::pump::state::{NeedRecord, State, Status, Unit};
 /// Message filed when a plan unit fails validation.
 const BAD_UNIT: &str = "unit missing id, brief or write_scope";
 
-/// The directory root of a scope path: leading `.` and `/` characters are
-/// stripped, the path is cut at the first glob character down to its last
-/// directory, and trailing slashes are removed. A glob with no directory
-/// part gives the empty root, which overlaps everything.
-#[must_use]
-pub fn scope_root(path: &str) -> String {
-    let mut trimmed = path.trim().trim_start_matches(['.', '/']).to_string();
-    if let Some(pos) = trimmed.find(['*', '?', '[']) {
-        trimmed.truncate(pos);
-        trimmed = match trimmed.rfind('/') {
-            Some(i) => trimmed[..i].to_string(),
-            None => String::new(),
-        };
+/// The path segments of a scope: leading `.` and `/` characters and a
+/// trailing slash are stripped. A glob with no `/` matches at any depth, the
+/// way `.gitignore` reads it, so it gets a leading `**`. An empty scope has no
+/// segments and covers the whole tree.
+fn segments(scope: &str) -> Vec<&str> {
+    let path = scope
+        .trim()
+        .trim_start_matches(['.', '/'])
+        .trim_end_matches('/');
+    let mut parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.len() == 1 && has_glob(parts[0]) && parts[0] != "**" {
+        parts.insert(0, "**");
     }
-    trimmed.trim_end_matches('/').to_string()
+    parts
 }
 
-/// True when any scope of `a` and any scope of `b` share a directory root,
-/// or either root is empty — a root-level or glob-only scope overlaps
-/// everything.
+fn has_glob(segment: &str) -> bool {
+    segment.contains(['*', '?', '['])
+}
+
+/// True when some file could match both scopes. A scope covers what it names
+/// and everything under it; `*`, `?` and `[...]` match within one path
+/// segment and `**` matches any number of segments. When both segments at a
+/// position are globs, the check assumes they can meet.
 #[must_use]
 pub fn overlaps(a: &[String], b: &[String]) -> bool {
-    a.iter().any(|x| {
-        b.iter().any(|y| {
-            let rx = scope_root(x);
-            let ry = scope_root(y);
-            rx.is_empty() || ry.is_empty() || rx == ry || under(&rx, &ry) || under(&ry, &rx)
-        })
-    })
+    a.iter()
+        .any(|x| b.iter().any(|y| meet(&segments(x), &segments(y))))
 }
 
-/// True when `child` is exactly `parent` followed by `/` and more path.
-fn under(parent: &str, child: &str) -> bool {
-    child
-        .strip_prefix(parent)
-        .is_some_and(|rest| rest.starts_with('/'))
+fn meet(a: &[&str], b: &[&str]) -> bool {
+    match (a.first(), b.first()) {
+        (None, _) | (_, None) => true,
+        (Some(&"**"), _) => meet(&a[1..], b) || meet(a, &b[1..]),
+        (_, Some(&"**")) => meet(a, &b[1..]) || meet(&a[1..], b),
+        (Some(x), Some(y)) => segment_meets(x, y) && meet(&a[1..], &b[1..]),
+    }
+}
+
+fn segment_meets(x: &str, y: &str) -> bool {
+    match (has_glob(x), has_glob(y)) {
+        (false, false) => x == y,
+        (true, false) => glob_match(x.as_bytes(), y.as_bytes()),
+        (false, true) => glob_match(y.as_bytes(), x.as_bytes()),
+        (true, true) => true,
+    }
+}
+
+/// One-segment glob match: `*` any run, `?` any one character, and a `[...]`
+/// class read as any one character (a looser match only makes more scopes
+/// overlap, which is the safe side).
+fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern.first() {
+        None => text.is_empty(),
+        Some(b'*') => (0..=text.len()).any(|i| glob_match(&pattern[1..], &text[i..])),
+        Some(b'?') => !text.is_empty() && glob_match(&pattern[1..], &text[1..]),
+        Some(b'[') => {
+            let close = pattern
+                .iter()
+                .position(|&c| c == b']')
+                .unwrap_or(pattern.len() - 1);
+            !text.is_empty() && glob_match(&pattern[close + 1..], &text[1..])
+        }
+        Some(c) => text.first() == Some(c) && glob_match(&pattern[1..], &text[1..]),
+    }
 }
 
 /// Read every `plans/*.json` under the pump home, sorted by file name, and
