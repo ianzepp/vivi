@@ -341,10 +341,13 @@ impl Mailspace {
     /// Bring the unabsorbed rows of `item` — own or foreign-held — to what
     /// the newest `marked`/`unmarked` letter per slug says, appending one
     /// local mark event per row so `folded_marks` yields the letter's state.
-    /// A letter older than a row's newest local mark event for its slug
-    /// changes nothing: a later local change by a person is not undone by
-    /// an older letter that arrives late. Idempotent: a state that already
-    /// matches appends nothing.
+    /// The folded marks stay a function of the letters alone, so every
+    /// member converges whatever the arrival order or the number of pulls:
+    /// a local mark event that applying a letter appended never floors a
+    /// later letter, for its instant is the receiver's clock. Only a
+    /// person's newest local mark event for the slug floors: a later local
+    /// change by a person is not undone by an older letter that arrives
+    /// late. Idempotent: a state that already matches appends nothing.
     fn apply_mark_letters(
         storage: &mut Storage,
         item: &HeldItem,
@@ -391,7 +394,11 @@ fn newest_mark_letters(events: &[PropertyEvent]) -> Vec<&PropertyEvent> {
 
 /// The local mark event `row` needs to match `marked` for `slug`, or `None`
 /// when the row already folds to that state or the letter is older than the
-/// row's newest local mark event for the slug.
+/// row's newest mark event for the slug that a person wrote — one carrying
+/// an actor identity. An event that applying a letter appended never
+/// counts: its instant is the receiver's clock, not the writer's, so it
+/// would floor away a later letter and the row would diverge from members
+/// that pulled the letters in another order.
 fn row_mark_input(
     storage: &Storage,
     row: &StoredMessageView,
@@ -407,7 +414,7 @@ fn row_mark_input(
     }
     let local = events
         .iter()
-        .filter(|event| mark_event_of(event, slug))
+        .filter(|event| mark_event_of(event, slug) && event.actor_identity.is_some())
         .filter_map(|event| rfc3339_micros(&event.occurred_at))
         .max();
     if local.is_some_and(|at| letter_at <= at) {

@@ -280,3 +280,7 @@ mod epoch_binding_test;
 #[cfg(test)]
 #[path = "sync/epoch_status_test.rs"]
 mod epoch_status_test;
+
+#[cfg(test)]
+#[path = "sync/property_marks_converge_test.rs"]
+mod property_marks_converge;
