@@ -221,7 +221,18 @@ A want carries no list of tasks created from it.
 `absorb` seals a record. After absorption it cannot be changed, reopened,
 promoted, dropped, reprioritized, marked, or deleted. A later reply or derived
 task is a new record. Absorb only when the identity is finished with the item
-and its state should remain frozen.
+and its state should remain frozen. An absorb by a role that may close the
+item for everyone — its author, or a role of kind `mind` or `operator`, in any
+mailspace — writes an `absorbed` event letter naming the state it sealed
+(`X-Vivi-Event-State: done|open`, the state of the item's rows when the seal
+was written). Every member that holds the item brings its rows to that state
+and seals them too, without exporting to its archive: the writer's mailspace
+exports the archive copy. An absorb by any other role seals only its own copy
+and writes no letter. Once sealed, the item is final: an event that arrives
+afterwards, older or newer, is ignored and counted in the pull summary
+(`event(s) ignored`), and because the letter names the state, every member
+ends in the same one. Two members that absorb at once each keep the seal they
+applied first.
 
 A need or a want can carry marks: free slugs such as `bug`. A mark is an
 event on the item, not a rewrite of the message. `need mark` / `need unmark`
@@ -232,7 +243,9 @@ when any are present, sorted. `list --mark` is repeatable and keeps an item
 only when it carries every named slug. The slug is letters, numbers, dot,
 dash, and underscore, compared exactly. Marks survive promote, done, reopen,
 and drop. They do not change graph readiness, `vivi step`, or `need bind`.
-They stay in this mailspace; nothing syncs them.
+They travel: each mark or unmark of a slug that changes writes a `marked` or
+`unmarked` letter carrying `X-Vivi-Event-Slug`, and per slug the newest letter
+controls on every member. A sealed item takes no further marks.
 
 Memos preserve durable role context. They are not routing, assignment, or
 completion evidence. Standing project rules belong in `vivi rule`. Delete
@@ -246,56 +259,72 @@ hand.
 
 ### State as letters
 
-Closing and reopening are letters, not local flags. Three kinds of role may
-close or reopen an item for everyone: the role that authored it (or holds its
-`sent` copy), any role of kind `mind`, and any role of kind `operator`
-(`role add <name> --kind operator`). Its
-`done`, `reopen` and, on a want, `drop` (a close) write one small reply on the
-item, with `X-Vivi-Event: done|reopened`, `X-Vivi-Event-Of: <item
-Message-ID>` and `X-Vivi-Event-Prev: <the event it follows>` (absent for the
-first) beside the usual `In-Reply-To`. It is addressed to the item's To and Cc
-minus the sender and filed read (it still shows in `mail list` and boot's
-unabsorbed mail as `Re: <subject>`); `--note` is its body. Every holder of the
-item applies it: the folder moves, the node completes or reopens, and the
-assignee's queue empties when the owner closes. A need that closes or reopens
-through `need bind` writes the same letter when this mailspace authored it.
+The ruling: "When two machines disagree about a need state, by definition, the
+last update or event created against that need is controlling." Closing and
+reopening are letters, not local flags, and no member owns an item's state.
+Three kinds of role may close or reopen an item for everyone: the role that
+authored it (or holds its `sent` copy), any role of kind `mind`, and any role
+of kind `operator` (`role add <name> --kind operator`) — in any mailspace that
+holds the item, this one or another. Its `done`, `reopen` and, on a want,
+`drop` (a close) write one small reply on the item, with `X-Vivi-Event:
+done|reopened`, `X-Vivi-Event-Of: <item Message-ID>` and `X-Vivi-Event-Prev:
+<the events it follows>` (absent for the first) beside the usual
+`In-Reply-To`, plus an `X-Vivi-Event-At` stamp. It is addressed to the item's
+From, To and Cc minus the sender (the author's address first in To) and filed
+read (it still shows in `mail list` and boot's unabsorbed mail as
+`Re: <subject>`); `--note` is its body.
 
-Any handle of the item works for a role that may close it. A mind can name the
-delivered copy a hand holds, its own copy, or the author's `sent` copy; give
-`--for <your identity>` and the event lands on the item, not on the row named.
-The command prints `done|reopened|dropped <handle>; event <id>`. A role of any
-other kind (hand, auditor, head, ...) reports instead and prints `done
-<handle>; reported` (or `reopened`): its own copy moves and the `--note` is a
-reply to the author. A report is not an acceptance. It completes no node,
-unlocks no dependents, fires no join and writes no event: it never changes the
-item's `State:` or any other holder's copy, and the author's tracking node
-stays `awaiting` until the author closes. The author, the `sent`-copy holder,
-or a role of kind `mind` or kind `operator` accepts it by running `done` (any
-handle of the item
-works); that completes the node, unlocks dependents and fires a bound need's
-join (see Work Graphs). Naming a copy another role holds is refused, and the
-error names the holder, the report command to retry with `--for <holder>`, and
-who may close. A reporter may reopen its own report; it cannot reopen what the
-owner closed (`only the owner can reopen it`; ask in a reply). An event counts
-only in the item's own mailspace, so a mind in an assignee's mailspace reports
-on an item another mailspace authored: a local report to the author that does
-not close it there, though it accepts the item in this mailspace (the node
-completes here).
+Any handle of the item works for a role that may close it. A mind or an
+operator can name the delivered copy a hand holds, its own copy, or the
+author's `sent` copy; give `--for <your identity>` and the event lands on the
+item, not on the row named. The command prints `done|reopened|dropped
+<handle>; event <id>`. A role of any other kind (hand, auditor, head, ...)
+reports instead and prints `done <handle>; reported` (or `reopened`): its own
+copy moves and the `--note` is a reply to the author, and it writes no event.
+A report is not an acceptance. It completes no node, unlocks no dependents,
+fires no join and never changes the item's `State:` or any other holder's
+copy, and the author's tracking node stays `awaiting` until a role that may
+close runs `done` (any handle of the item works); that completes the node,
+unlocks dependents and fires a bound need's join (see Work Graphs). Naming a
+copy another role holds is refused, and the error names the holder, the report
+command to retry with `--for <holder>`, and who may close. A reporter may
+reopen its own report; it cannot reopen what an acceptor closed (`only the
+owner can reopen it`; ask a role that may close in a reply).
 
-The state of an item is its chain head: the event no other held event names as
-`Prev`. A fork (two checkouts acted on the same event) leaves several heads and
-the later `(Date, Message-ID)` wins on every checkout; the next event names all
-heads. An event counts only when its From domain is the item's From domain.
-Anything else is filed as plain mail and counted (`N event(s) ignored: not from
-the item's owner` in the pull summary), as is an event for an absorbed item.
+The state is the newest event, and order is the clock, never the chain. Each
+event carries an instant — its `X-Vivi-Event-At` (RFC 3339, in microseconds)
+when present, else its `Date` in whole seconds — and the largest instant wins.
+On equal instants an event that names the other as its `X-Vivi-Event-Prev`
+wins, then the larger Message-ID. A writer never stamps an event below the
+newest one it holds, so under clock skew a causal successor still wins.
+`X-Vivi-Event-Prev` is still written — it names the heads a fork left — but it
+no longer decides: a chain of old events does not beat a later clock. An event
+counts when its From domain is a prefix domain (`<8 hex>.local`) — any
+member's, whoever authored the item. A bare `local` or a legacy name domain is
+a claim anyone can make: it is filed as plain mail and counted ignored (`N
+event(s) ignored: not from a member mailspace, or for a sealed item` in the
+pull summary), as is an event for an absorbed item.
+
+Every holder applies the letter. It travels with the item's envelope kind, so
+every member receives it, and it files as plain mail — never as a work item:
+it takes no folder row and no backlog node of its own; it moves the rows and
+the node of the item it names. Work held for another mailspace's role (`need
+list --held`) follows the events too: the state is the item's, not the
+holder's. `need|task|want show` prints `State: done|reopened` once an event
+exists, and `graph audit` reports a folder that disagrees with its item's
+newest event as `event_state` (`--repair` re-applies it).
 
 This is local-first. It works with no `[sync]`; the server only carries
 letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
 see (`N event(s) applied` in the pull summary), and an event that arrives
-before its item is applied when the item arrives. `graph audit` reports a
-folder that disagrees with its item's latest event as `event_state`, and
-`--repair` re-applies it. `need|task|want show` prints `State: done|reopened`
-once an event exists.
+before its item is applied when the item arrives.
+
+Mixed versions: a client that predates these letters ignores events from
+other mailspaces and files an event letter that arrives under a work kind as
+a work item. Every member of a project must run the new client before
+relying on any of this, and the project server's board follows the same rule
+only once the server folds events the same way — a need for that is filed
+with the operator's Mind.
 
 ## Rules
 
@@ -2046,9 +2075,9 @@ runs only when asked. Until restored, `show` on an evicted handle reports
 `message not found` and `graph audit` lists a done item's node as
 `orphan_node`.
 
-Not synced: memos, drafts, trash, rules, marks, and read flags. Closing and
-reopening are not in this list: they travel as event letters (State as
-letters). A letter is limited to 64 KiB, and a member may send 30 letters per
+Not synced: memos, drafts, trash, rules, and read flags. Closing, reopening,
+absorbing, and marks are not in this list: they travel as event letters (State
+as letters). A letter is limited to 64 KiB, and a member may send 30 letters per
 minute: a push that hits the limit stops, prints
 `stopped: rate limited; N letter(s) left unsent; run again later or use --drain`,
 and exits 0 — a limit, not a failure; the letters stay queued for a later run
