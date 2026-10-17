@@ -6,6 +6,9 @@
 use std::fs::{self, File};
 use std::process::{Command, Output};
 
+use vivi::pump::state::{NeedRecord, State, Status, Unit};
+use vivi::pump::store::{DB_FILENAME, PumpStore};
+
 #[test]
 fn status_before_any_tick_says_no_status_yet() {
     let project = temp_mailspace();
@@ -56,6 +59,118 @@ fn export_writes_the_state_json_shape() {
     let text = fs::read_to_string(&out).unwrap();
     assert!(text.contains("\"units\""), "{text}");
     assert!(home.join("pump.db").is_file());
+}
+
+#[test]
+fn need_show_prints_the_pump_section() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump(&project, &handle);
+    let out = vivi(["need", "show", &handle, "--project", root(&project)]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("pump      verdict units"), "{text}");
+    assert!(text.contains("complete yes"), "{text}");
+}
+
+#[test]
+fn need_list_pump_appends_progress() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump(&project, &handle);
+    let out = vivi([
+        "need",
+        "list",
+        "--for",
+        "mind",
+        "--pump",
+        "--project",
+        root(&project),
+    ]);
+    assert_success(&out);
+    assert!(
+        stdout(&out).contains("[pump 1/1 merged, complete]"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn boot_and_board_show_the_pump_section() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump(&project, &handle);
+    let boot = vivi(["boot", "--project", root(&project)]);
+    assert_success(&boot);
+    assert!(
+        stdout(&boot).contains("pump: local execution state"),
+        "{}",
+        stdout(&boot)
+    );
+    let board = vivi(["board", "--pump", "--project", root(&project)]);
+    assert_success(&board);
+    assert!(
+        stdout(&board).contains("pump (local):"),
+        "{}",
+        stdout(&board)
+    );
+}
+
+/// Send one need and return its handle.
+fn send_need(project: &tempfile::TempDir) -> String {
+    // `mailspace init` creates no roster; the sender and holder must exist.
+    for (role, kind) in [("operator", "operator"), ("mind", "mind")] {
+        let _ = vivi([
+            "role",
+            "add",
+            role,
+            "--kind",
+            kind,
+            "--project",
+            root(project),
+        ]);
+    }
+    let out = vivi([
+        "need",
+        "send",
+        "--from",
+        "operator",
+        "--to",
+        "mind",
+        "--subject",
+        "pump visibility",
+        "--body",
+        "done_when: the pump block renders.",
+        "--project",
+        root(project),
+    ]);
+    assert_success(&out);
+    stdout(&out)
+        .lines()
+        .find_map(|line| line.strip_prefix("created mind ").map(str::to_owned))
+        .unwrap_or_else(|| panic!("no handle in {}", stdout(&out)))
+}
+
+/// Write a `pump.db` whose one need is complete.
+fn write_pump(project: &tempfile::TempDir, handle: &str) {
+    let mut state = State::default();
+    state.needs.insert(
+        handle.to_owned(),
+        NeedRecord {
+            verdict: String::from("units"),
+            units: vec![format!("{handle}-1")],
+            ..NeedRecord::default()
+        },
+    );
+    state.units.insert(
+        format!("{handle}-1"),
+        Unit {
+            need: handle.to_owned(),
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    let mut store = PumpStore::open(&pump_home(project).join(DB_FILENAME)).unwrap();
+    store.save(&state).unwrap();
 }
 
 #[test]

@@ -147,6 +147,21 @@ pub struct BootTotals {
     pub loops_action_required: usize,
 }
 
+/// Local pump state, when this host has a `pump.db`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PumpBoot {
+    /// Unit counts by status.
+    pub units: std::collections::BTreeMap<String, usize>,
+    /// Needs whose every unit is satisfied.
+    pub complete: usize,
+    /// Complete needs still open in this mailspace.
+    pub complete_but_open: usize,
+    /// Units parked for a person.
+    pub stuck: usize,
+    /// Exception rows in the pump database.
+    pub exceptions: usize,
+}
+
 /// The full boot digest.
 #[derive(Debug, Clone, Serialize)]
 pub struct BootReport {
@@ -163,6 +178,9 @@ pub struct BootReport {
     pub unabsorbed: Vec<MailRow>,
     /// Role names letters wait under that no seat here carries.
     pub held_unknown: Vec<UnknownRoleRow>,
+    /// Local pump execution state, when `pump.db` exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pump: Option<PumpBoot>,
     /// Open tasks, needs, and wants with verdicts.
     pub handles: Vec<HandleRow>,
     /// Registered goal documents with register tallies.
@@ -202,6 +220,12 @@ impl BootReport {
         let (mut rows, blocked) = collect_handles(mailspace, now)?;
         let runs = probe::run_all(&mailspace.root, &mailspace.config.probes);
         handles::apply_verdicts(&mut rows, &probe_verdicts(&runs), &blocked);
+        let open_needs: std::collections::BTreeSet<String> = rows
+            .iter()
+            .filter(|row| row.kind == "need")
+            .map(|row| row.handle.clone())
+            .collect();
+        let pump = collect_pump(mailspace, &open_needs);
         let handles = cap_handles(rows, &mut truncations);
         let seats = collect_seats(&views, &handles, &mut truncations);
         let loops = collect_loops(mailspace, &storage, &views, &mut truncations);
@@ -225,6 +249,7 @@ impl BootReport {
             loops,
             unabsorbed,
             held_unknown,
+            pump,
             handles,
             goals,
             rules,
@@ -243,6 +268,33 @@ impl BootReport {
     pub fn render(&self) -> String {
         render::to_text(self)
     }
+}
+
+/// The local pump section: counts from `pump.db`, plus how many complete
+/// needs are still open here. Missing or unreadable state is simply absent;
+/// boot never fails because a pump file is missing.
+fn collect_pump(
+    mailspace: &Mailspace,
+    open_needs: &std::collections::BTreeSet<String>,
+) -> Option<PumpBoot> {
+    let home = mailspace
+        .config
+        .pump
+        .as_ref()
+        .map(|config| config.home_dir(&mailspace.root))?;
+    let snapshot = match crate::pump::report::read(&home) {
+        Ok(crate::pump::report::PumpRead::Ready(snapshot)) => snapshot,
+        _ => return None,
+    };
+    let complete = snapshot.complete_needs();
+    let summary = snapshot.summary();
+    Some(PumpBoot {
+        complete_but_open: complete.intersection(open_needs).count(),
+        complete: summary.complete,
+        stuck: summary.stuck,
+        exceptions: summary.exceptions,
+        units: summary.units,
+    })
 }
 
 fn probe_verdicts(runs: &[ProbeRun]) -> Vec<probe::ProbeVerdict> {

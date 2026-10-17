@@ -1926,6 +1926,16 @@ the merge host has.
 of every tick: a timestamp, unit counts per state, plan verdict counts, and
 merges, finished needs, gates and baseline size. `vivi pump export --json
 <path>` writes the live `pump.db` in the predecessor's `state.json` shape.
+
+On the host that runs the pump, four read-only paths show its state. They
+open `pump.db` read-only and degrade to no block when the file is missing;
+an unreadable or older-schema file is named, never fatal. `need show` appends
+a `pump` block (verdict, unit counts, completion, registry state, last unit
+event). `need list --pump` appends `[pump N/M merged, open|complete]` to each
+row. `boot` adds a `pump: local execution state` section with unit counts,
+complete-but-open, stuck and exception counts. `board --pump` adds the same
+summary as a `pump (local)` block. `vivi trace` does not show pump state.
+
 `log.txt` is the event
 stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`
 lines; shapes in the protocols reference, section 9.2).
@@ -2205,9 +2215,9 @@ lane cap below 1, a `max_attempts` below 1, a kind with no `pool` or a `max` of 
 #### Not built
 
 From the contract: the decision hook (the one gap is extracting failing names
-from a gate reply with no marked block); pump state visible through
-`vivi boot`, `vivi board` or `vivi trace` — the state stays a private
-`pump.db` in home.
+from a gate reply with no marked block). Pump state is readable through
+`need show`, `boot`, `need list --pump` and `board --pump`; `vivi trace` does
+not show it, and the state file stays a private `pump.db` in home.
 
 ## Watches and Cycle Intake
 

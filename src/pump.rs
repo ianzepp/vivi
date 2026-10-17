@@ -12,6 +12,7 @@ pub mod merge;
 pub mod plan;
 pub mod ready;
 pub mod remote;
+pub mod report;
 pub mod run;
 pub mod state;
 pub mod store;
@@ -27,6 +28,10 @@ mod state_test;
 #[cfg(test)]
 #[path = "pump/store_test.rs"]
 mod store_test;
+
+#[cfg(test)]
+#[path = "pump/report_test.rs"]
+mod report_test;
 
 #[cfg(test)]
 #[path = "pump/plan_test.rs"]

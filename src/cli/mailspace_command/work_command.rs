@@ -212,6 +212,10 @@ pub enum NeedCommand {
         #[arg(long)]
         json: bool,
 
+        /// Append the local pump's progress for each need when pump.db exists
+        #[arg(long)]
+        pump: bool,
+
         /// Project root to use
         #[arg(long)]
         project: Option<PathBuf>,

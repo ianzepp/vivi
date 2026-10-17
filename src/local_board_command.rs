@@ -23,6 +23,18 @@ struct Board {
     /// Present when `board --graph` is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     graphs: Option<Vec<BoardGraph>>,
+    /// Present when `board --pump` is set and this host has pump.db.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pump: Option<BoardPump>,
+}
+
+#[derive(Debug, Serialize)]
+struct BoardPump {
+    units: std::collections::BTreeMap<String, usize>,
+    complete: usize,
+    complete_but_open: usize,
+    stuck: usize,
+    exceptions: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +120,7 @@ pub(crate) fn handle_board_command(command: &BoardCommand) -> Result<(), Vivariu
         since,
         command.process,
         command.graph,
+        command.pump,
     )?;
     if command.json {
         print_json(&board)?;
@@ -125,6 +138,7 @@ fn build_board(
     since: Option<DateTime<Utc>>,
     with_process: bool,
     with_graph: bool,
+    with_pump: bool,
 ) -> Result<Board, VivariumError> {
     let identities = board_identities(mailspace, for_identity)?;
     let storage = mailspace.storage()?;
@@ -158,6 +172,11 @@ fn build_board(
     } else {
         None
     };
+    let pump = if with_pump {
+        board_pump(mailspace, &boards)
+    } else {
+        None
+    };
     Ok(Board {
         name: mailspace.config.name.clone(),
         root: mailspace.root.clone(),
@@ -165,6 +184,33 @@ fn build_board(
         identities: boards,
         goals: mailspace.goal_list()?,
         graphs,
+        pump,
+    })
+}
+
+/// The pump block: counts from `pump.db`, plus complete needs still open in
+/// the board. Missing or unreadable state leaves the block absent.
+fn board_pump(mailspace: &Mailspace, boards: &[IdentityBoard]) -> Option<BoardPump> {
+    let home = mailspace
+        .config
+        .pump
+        .as_ref()
+        .map(|config| config.home_dir(&mailspace.root))?;
+    let snapshot = match vivi::pump::report::read(&home) {
+        Ok(vivi::pump::report::PumpRead::Ready(snapshot)) => snapshot,
+        _ => return None,
+    };
+    let open: std::collections::BTreeSet<String> = boards
+        .iter()
+        .flat_map(|board| board.needs.iter().map(|need| need.handle.clone()))
+        .collect();
+    let summary = snapshot.summary();
+    Some(BoardPump {
+        complete_but_open: snapshot.complete_needs().intersection(&open).count(),
+        units: summary.units,
+        complete: summary.complete,
+        stuck: summary.stuck,
+        exceptions: summary.exceptions,
     })
 }
 
@@ -565,6 +611,9 @@ fn print_board(board: &Board) {
         board.totals.needs_open,
         board.totals.wants_open
     );
+    if let Some(pump) = &board.pump {
+        print_board_pump(pump);
+    }
     print_board_goals(&board.goals);
     for identity in &board.identities {
         print_identity(identity);
@@ -572,6 +621,25 @@ fn print_board(board: &Board) {
     if let Some(graphs) = &board.graphs {
         print_board_graphs(graphs);
     }
+}
+
+fn print_board_pump(pump: &BoardPump) {
+    println!();
+    println!("pump (local):");
+    let units = if pump.units.is_empty() {
+        String::from("none")
+    } else {
+        pump.units
+            .iter()
+            .map(|(status, count)| format!("{status}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    println!("  units    {units}");
+    println!(
+        "  complete {}  complete-but-open {}  stuck {}  exceptions {}",
+        pump.complete, pump.complete_but_open, pump.stuck, pump.exceptions
+    );
 }
 
 fn print_board_goals(goals: &[GoalView]) {

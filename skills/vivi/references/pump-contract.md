@@ -538,8 +538,10 @@ Validation rules (`vivi pump` refuses to start when one fails):
 Not built, as decided in this contract:
 
 - The decision hook.
-- The pump's state is not shown by `vivi boot`, `board` or `trace`; state
-  stays a private `pump.db` in `home`.
+- `vivi trace` does not show pump state. `need show`, `boot`, `need list
+  --pump` and `board --pump` read `pump.db` read-only on the pump host; the
+  file stays private to the pump's directory and is never written by those
+  commands.
 - Units and plans are plan files, not Vivi graph nodes.
 - Project-specific proof rewriting: the planner charter should demand one
   filter per proof command.

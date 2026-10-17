@@ -28,6 +28,7 @@ pub fn to_text(report: &BootReport) -> String {
     loops(&mut out, report);
     unabsorbed(&mut out, report);
     held_unknown(&mut out, report);
+    pump(&mut out, report);
     handles(&mut out, report);
     goals(&mut out, report);
     rules(&mut out, report);
@@ -150,6 +151,30 @@ fn held_unknown(out: &mut String, report: &BootReport) {
             ),
         );
     }
+}
+
+fn pump(out: &mut String, report: &BootReport) {
+    let Some(pump) = &report.pump else {
+        return;
+    };
+    heading(out, "pump: local execution state");
+    let units = if pump.units.is_empty() {
+        String::from("none")
+    } else {
+        pump.units
+            .iter()
+            .map(|(status, count)| format!("{status}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    line(out, format!("  units    {units}"));
+    line(
+        out,
+        format!(
+            "  complete {} | complete-but-open {} | stuck {} | exceptions {}",
+            pump.complete, pump.complete_but_open, pump.stuck, pump.exceptions
+        ),
+    );
 }
 
 fn handles(out: &mut String, report: &BootReport) {
