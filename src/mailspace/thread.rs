@@ -126,11 +126,14 @@ impl Mailspace {
         }
         let storage = self.storage()?;
         let seed = resolve_seed(&storage, handle)?;
-        let mut links = link_map(&storage)?;
-        if infer {
+        let links = if infer {
             // Inference needs every message body/handle. Explicit links do not.
+            let mut links = link_map(&storage)?;
             add_inferred_links(&thread_candidates(&storage)?, &mut links);
-        }
+            links
+        } else {
+            storage.links_for_thread(&seed.content_id)?
+        };
         let included = connected_content_ids(&seed.content_id, &links, limit, max_depth);
         assemble_thread(&storage, &seed, &links, included)
     }
@@ -146,7 +149,7 @@ impl Mailspace {
     pub fn thread_outline(&self, handle: &str) -> Result<Vec<ThreadOutlineRow>, VivariumError> {
         let storage = self.storage()?;
         let seed = resolve_seed(&storage, handle)?;
-        let links = link_map(&storage)?;
+        let links = storage.links_for_thread(&seed.content_id)?;
         let included = connected_content_ids(&seed.content_id, &links, usize::MAX, usize::MAX);
         let mut replies = Vec::with_capacity(included.len());
         for content_id in included {
