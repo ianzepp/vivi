@@ -14,6 +14,7 @@ pub mod ready;
 pub mod remote;
 pub mod run;
 pub mod state;
+pub mod store;
 
 #[cfg(test)]
 #[path = "pump/config_test.rs"]
@@ -22,6 +23,10 @@ mod config_test;
 #[cfg(test)]
 #[path = "pump/state_test.rs"]
 mod state_test;
+
+#[cfg(test)]
+#[path = "pump/store_test.rs"]
+mod store_test;
 
 #[cfg(test)]
 #[path = "pump/plan_test.rs"]

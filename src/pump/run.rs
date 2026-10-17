@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -18,6 +18,7 @@ use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::merge::Merger;
 use crate::pump::plan;
 use crate::pump::state::State;
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// One pump tick: board, ingest, collect, the merge
 /// feed, and — unless the `PAUSE` flag exists — dispatch, the hold cycle,
@@ -131,8 +132,21 @@ pub fn status(project: &Path) -> Result<String, VivariumError> {
 /// Returns whatever loading the state fails with.
 pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
     ensure_repo(ctx)?;
-    let state_path = ctx.home.join("state.json");
-    let mut st = State::load(&state_path)?;
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
+    let json_path = ctx.home.join("state.json");
+    let mut st = if store.is_empty()? && json_path.is_file() {
+        let imported = State::load(&json_path)?;
+        store.save(&imported)?;
+        let archived = ctx.home.join("state.json.imported");
+        fs::rename(&json_path, &archived)?;
+        ctx.log(&format!(
+            "imported state.json into pump.db; archived at {}",
+            archived.display()
+        ));
+        imported
+    } else {
+        store.load()?
+    };
     let merger = Merger::start(ctx);
     drive(ctx, &mut st, &merger, once);
     Ok(())
@@ -228,17 +242,26 @@ fn take_lock(home: &Path) -> Result<File, VivariumError> {
     Ok(lock)
 }
 
-/// Save the state to `<home>/state.json`; a failure is logged, never fatal.
+/// Save the state to `<home>/pump.db`; a failure is logged, never fatal.
 fn save(ctx: &Ctx, st: &State) {
-    let path = state_path(ctx);
-    if let Err(err) = st.save(&path) {
+    let path = ctx.home.join(DB_FILENAME);
+    if let Err(err) = PumpStore::open(&path).and_then(|mut store| store.save(st)) {
         ctx.log(&format!("state save failed at {}: {err}", path.display()));
     }
 }
 
-/// `<home>/state.json`.
-fn state_path(ctx: &Ctx) -> PathBuf {
-    ctx.home.join("state.json")
+/// Write the live `pump.db` as the `state.json` shape at `out`.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the mailspace or pump config is missing,
+/// `pump.db` does not exist, or the export cannot be written.
+pub fn export(project: &Path, out: &Path) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(Some(project))?;
+    let cfg = pump_config(&mailspace)?;
+    let path = cfg.home_dir(project).join(DB_FILENAME);
+    let store = PumpStore::open_read_only(&path)?
+        .ok_or_else(|| VivariumError::Message(format!("no pump.db at {}", path.display())))?;
+    store.export_json(out)
 }
 
 /// `"label k=v k=v"` from sorted counts, joined with single spaces

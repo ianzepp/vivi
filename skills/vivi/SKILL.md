@@ -1924,7 +1924,9 @@ the merge host has.
 
 **Reading state.** `vivi pump status` prints `status.txt`, written at the end
 of every tick: a timestamp, unit counts per state, plan verdict counts, and
-merges, finished needs, gates and baseline size. `log.txt` is the event
+merges, finished needs, gates and baseline size. `vivi pump export --json
+<path>` writes the live `pump.db` in the predecessor's `state.json` shape.
+`log.txt` is the event
 stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`
 lines; shapes in the protocols reference, section 9.2).
 `exceptions.txt` is what needs a person: `stuck` units, `unknown-kind`,
@@ -1979,12 +1981,12 @@ has no result after `remote_limit`, the pump merges it here. Remove the flag
 to merge locally only. The file formats are in the protocols reference,
 section 6.
 
-**Rolling back.** The pump keeps the field names of the predecessor's
-`state.json`, preserves keys it does not know on every save, and reads absent
-fields as defaults, so a predecessor can read the same file and keep working.
-Keep a copy of `state.json` before cutover. To go back, stop the pump with
-`STOP` and start the predecessor on the same file, or on the copy if the file
-is in doubt.
+**Rolling back.** The live memory is `pump.db`. On first start with a
+predecessor's `state.json`, the pump imports it in one transaction and renames
+it to `state.json.imported`; the import is one-way. To go back to a 12.x pump,
+stop this pump with `STOP`, run `vivi pump export --json <path>`, and start the
+predecessor on that file, or restore the `state.json.imported` copy taken
+before the first 13.x start. Keep either copy before cutover.
 
 #### The home directory
 
@@ -1992,7 +1994,8 @@ is in doubt.
 
 | path | written by, read by | format |
 | --- | --- | --- |
-| `state.json` | pump (atomic rename via `state.json.tmp`), pump at startup | JSON; the whole memory: units, needs, gates, board bookkeeping |
+| `pump.db` | pump (one transaction per save point), pump at startup, read-only readers | SQLite; the whole memory: units, needs, gates, board bookkeeping |
+| `state.json.imported` | one-time import | the predecessor's JSON shape, kept for rollback |
 | `log.txt` | pump, operator | one `HH:MM:SS msg` line per event, UTC |
 | `exceptions.txt` | pump, operator | `HH:MM:SS kind unit text`; newlines become ` \| `; text capped at 600 chars |
 | `needs-ready.txt` | pump on need completion, operator | `need tip10 unit,unit` per line |
@@ -2204,7 +2207,7 @@ lane cap below 1, a `max_attempts` below 1, a kind with no `pool` or a `max` of 
 From the contract: the decision hook (the one gap is extracting failing names
 from a gate reply with no marked block); pump state visible through
 `vivi boot`, `vivi board` or `vivi trace` — the state stays a private
-`state.json` in home.
+`pump.db` in home.
 
 ## Watches and Cycle Intake
 

@@ -32,7 +32,9 @@ pub use pool_command::{
     PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand,
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
 };
-pub use pump_command::{PumpOnceCommand, PumpRunCommand, PumpStatusCommand, PumpSubcommand};
+pub use pump_command::{
+    PumpExportCommand, PumpOnceCommand, PumpRunCommand, PumpStatusCommand, PumpSubcommand,
+};
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
 pub use sync_command::{ApiKeyCommand, SyncCommand, SyncSubcommand};

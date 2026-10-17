@@ -191,6 +191,9 @@ pub struct Unit {
     /// Commit produced by the last merge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// Epoch seconds the unit merged; `pump.db` records this on the merge row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<u64>,
     /// Files the agent touched outside its write scope.
     #[serde(default)]
     pub outside: Vec<String>,

@@ -173,8 +173,10 @@ impl Ctx {
     pub fn exception(&self, kind: &str, unit: &str, text: &str) {
         let folded = text.replace('\n', " | ");
         let cut: String = folded.chars().take(600).collect();
-        let stamped = format!("{} {kind} {unit} {cut}", hhmmss(self.host.now()));
+        let now = self.host.now();
+        let stamped = format!("{} {kind} {unit} {cut}", hhmmss(now));
         append_line(&self.home.join("exceptions.txt"), &stamped);
+        crate::pump::store::append_exception(&self.home, now, kind, unit, &cut);
         self.log(&format!("EXCEPTION {kind} {unit}"));
     }
 

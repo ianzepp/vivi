@@ -12,6 +12,8 @@ pub enum PumpSubcommand {
     Status(PumpStatusCommand),
     /// Run one pump tick and exit
     Once(PumpOnceCommand),
+    /// Write the live pump.db as the state.json shape
+    Export(PumpExportCommand),
 }
 
 #[derive(Debug, Args)]
@@ -30,6 +32,16 @@ pub struct PumpStatusCommand {
 
 #[derive(Debug, Args)]
 pub struct PumpOnceCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpExportCommand {
+    /// Output path for the state.json-shaped export
+    #[arg(long, value_name = "PATH")]
+    pub json: PathBuf,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

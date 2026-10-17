@@ -28,8 +28,9 @@ retries failures on another model, and writes what needs a person to
   `.vivi/mailspace.toml`, not code. The hand rules text and the gate command are config
   (`hand_rules`, gate `command`); the engine ships only a project-agnostic
   default for the rules.
-- The `state.json` shape (§5) is stable: a state file written by an earlier
-  pump loads, and unknown keys are preserved.
+- The `pump.db` schema (§5) is versioned. The `state.json` export shape is
+  stable: a state file written by an earlier pump still loads through the
+  import path, and unknown keys are preserved.
 
 ## 2. Surface
 
@@ -83,8 +84,9 @@ directory:
 
 | path | written by | read by | format |
 | --- | --- | --- | --- |
-| `state.json` | pump, atomic (`state.json.tmp` then rename, save) | pump (load) | JSON, indent 1; shape in §5 |
-| `state.json.tmp` | pump (transient) | none | scratch |
+| `pump.db` | pump (one transaction per save point) | pump (load), readers (`need show`, `board`, `boot`) | SQLite, schema in §5; WAL, one writer |
+| `state.json.imported` | one-time import, then left alone | operator (rollback) | the predecessor's JSON shape (§5) |
+| `pump.db-wal`, `pump.db-shm` | SQLite | SQLite | WAL sidecars |
 | `log.txt` | pump `log` | operator | one line per event: `HH:MM:SS msg`, UTC |
 | `exceptions.txt` | pump `exception` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars |
 | `needs-ready.txt` | pump on need completion (merge_apply) | operator | `need tip10 unit,unit` per line |
@@ -115,26 +117,32 @@ All flags live in `home`. The operator creates them; removal is per flag:
 | `FORCE-GATE` | `start_gate` treats the gate as due now, whatever the counters say | pump, when the gate dispatches; also written by `hold_cycle` |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
 
-## 5. The state file
+## 5. The state store
 
-`state.json` is the pump's whole memory. It is saved atomically and reloaded
-at startup. Top-level keys:
+`pump.db` (SQLite) is the pump's whole memory. It is read once at startup,
+written in one transaction at each save point, and kept at `PRAGMA
+user_version = 1`. The in-memory state machine is unchanged; the database is
+its durable form.
 
-| key | type | meaning |
-| --- | --- | --- |
-| `units` | object: unit id → unit record | every unit ever ingested |
-| `order` | array of unit ids | dispatch and merge order (fix units sorted first at dispatch) |
-| `needs` | object: need handle → `{verdict, reason, units[]}` | one record per planned need; verdict is the planner's (`units`, `hold`, `operator`, `design`, `delivered`, `invalid`, …) |
-| `merges` | int | count of units that reached `merged` |
-| `last_gate` | object `{at, merges, task, tip, pool}` | the running or last gate; `task` is null when no gate is in flight |
-| `baseline` | array of failing names, or null | failing names of the first readable gate; new failures are measured against it |
-| `closed_needs` | array of need handles | needs whose every unit is satisfied |
-| `gates` | array of gate records `{tip, at, merges, names, [new]}` | every finished gate, unreadable ones included |
-| `plans_seen` | array of plan file names | plan files already ingested (dedup) |
-| `board` | object `{at, planning{h→start}, replied[keys], replan[h]}` | board pass bookkeeping: last pass time, planners in flight, replies already sent, needs awaiting re-plan |
-| `red` | object: failing name → owning fix-need prefix | failures owned by a gate-fix plan; later gates ignore owned names |
-| `red_reported` | array `owner:name` | owned names already reported `red-after-fix` once |
-| `promotions` | array `{tip, at}` | fast-forwards of main |
+| table | meaning |
+| --- | --- |
+| `units` | every unit ever ingested, one row per unit; `status` is the state-machine state |
+| `unit_edges` | `after` prerequisites, one row per edge |
+| `unit_events` | attempt history (`attempt`, `model`, `why`, `detail`, `at`) |
+| `unit_order` | dispatch and merge order (fix units sorted first at dispatch) |
+| `needs` | one row per planned need: `verdict`, `reason`, `units_json` |
+| `plan_revisions` | reserved for plan revisions; empty until the amendment protocol lands |
+| `merges` | one row per merged unit: `commit_sha`, `at`, `outside_json` |
+| `gates`, `gate_failures` | every finished gate, unreadable ones included, plus one row per failing name |
+| `exceptions` | the same rows as `exceptions.txt`, queryable |
+| `closed_needs` | need handles whose every unit is satisfied |
+| `plans_seen` | plan file names already ingested (dedup) |
+| `promotions` | fast-forwards of main (`tip`, `at`) |
+| `red`, `red_reported` | failures owned by a gate-fix plan, and the ones already reported once |
+| `meta` | `merges` counter, `baseline`, `last_gate`, `board`, and unknown top-level keys (`extra`) |
+
+Per-unit fields are the columns of `units` (all units carry the ingest-time
+fields; runtime fields appear as marked):
 
 Per-unit fields (all units carry the ingest-time fields; runtime fields appear
 as marked):
@@ -158,15 +166,26 @@ as marked):
 | `pool` | string | runtime: pool dispatched to |
 | `since_dispatch` | epoch seconds | runtime: dispatch time, used for the overdue check |
 | `commit` | string | runtime (merged): integration-branch tip the merge landed on |
+| `merged_at` | epoch seconds | runtime (merged): when the merge landed; also the `merges.at` value |
 | `outside` | array of files | runtime (merged): files the branch touched outside `write_scope` |
 | `replaced_by` | array of unit ids | runtime (replaced): the split's successor ids |
 | `verdict_text` | string | runtime (no-defect): tail of the no-defect receipt |
 
-Compatibility rule: the pump reads and writes exactly this shape. Unknown
-top-level and per-unit keys are preserved on save. At load, a state older than
+Compatibility rule: unknown top-level keys are preserved in `meta.extra`, and
+unknown per-unit keys in `units.extra_json`. At load, a state older than
 `plans_seen` gets it backfilled from `needs`. `run`/`once` additionally reset
 every `merging` unit to `delivered` before the first tick, so a crash
 mid-merge re-feeds the unit.
+
+### 5.1 Migration and export
+
+On startup, when `pump.db` has never been written and `state.json` exists, the
+pump imports the file in one transaction and renames it to
+`state.json.imported`. The import is one-way.
+
+`vivi pump export --json <path>` writes the live database in the
+`state.json` shape so a 12.x pump can read it. The export is a snapshot, not a
+second live store; the pump never writes it.
 
 ## 6. The unit state machine
 
@@ -204,7 +223,7 @@ Transitions (from, to, trigger, guard, action):
 | `splitting` | `stuck` | split planner wrote no plan in `split_timeout` | — | `split-no-answer` exception |
 | `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
 | `delivered` | `merging` | merge feed after collect | not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
-| `merging` | `merged` | merge result `ok=true` | — | `commit`, `outside`, `merges+=1`; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
+| `merging` | `merged` | merge result `ok=true` | — | `commit`, `merged_at`, `outside`, `merges+=1`; a `merges` row; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
 
@@ -294,7 +313,7 @@ failed, not counted as started — while at least `max` units of the kind are
 already inflight; same-tick starts count toward the cap, and the skipped unit
 is simply retried next tick. A unit naming a kind that is not defined is never
 dispatched; the pump files one `unknown-kind` exception for it (once per unit,
-remembered in `state.json`) so an operator sees it. Free slot counts come from
+remembered in `pump.db`) so an operator sees it. Free slot counts come from
 `pool status --porcelain`. At most `per_tick` units start per tick, and fix
 units are offered first.
 
@@ -458,7 +477,7 @@ build failure carrying `tail`, `seconds` and `host` are only logged (`host` is
 free text and optional), and the other keys are not read. The gate then goes
 through the same classification as a worker's reply, and the consumed file moves to
 `<results_dir>/done/`. A file that does not parse stays where it is. A due gate
-that finds no result starts a wait (`external_wait_since` in `state.json`);
+that finds no result starts a wait (`external_wait_since` in `pump.db`);
 only after `results_wait_seconds` does it dispatch a pool gate, and a consumed
 result clears the wait.
 
@@ -520,7 +539,7 @@ Not built, as decided in this contract:
 
 - The decision hook.
 - The pump's state is not shown by `vivi boot`, `board` or `trace`; state
-  stays a private `state.json` in `home`.
+  stays a private `pump.db` in `home`.
 - Units and plans are plan files, not Vivi graph nodes.
 - Project-specific proof rewriting: the planner charter should demand one
   filter per proof command.
@@ -612,6 +631,7 @@ Rust-specific decisions:
   lines instead of touching a real pool.
 - No regex crate: the created-handle line and the gate name fallback use
   hand-written matchers.
-- `state.json` keeps its field names and preserves unknown keys.
+- `pump.db` keeps its column names and preserves unknown keys; the export
+  keeps the predecessor's field names.
 - The merge thread owns the repo and never the state.
 - No environment variable is read.

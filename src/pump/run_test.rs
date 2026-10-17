@@ -11,6 +11,7 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::Merger;
 use crate::pump::run::{run, run_with, status, tick, write_status};
 use crate::pump::state::{GateRun, NeedRecord, State, Status, Unit};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// The fake clock's start (1970-01-12T13:46:40Z).
 const T0: u64 = 1_000_000;
@@ -199,7 +200,7 @@ fn once_runs_exactly_one_tick() {
         .filter(|c| c.contains("pool status --porcelain"))
         .count();
     assert_eq!(statuses, 2);
-    assert!(dir.path().join("home/state.json").is_file());
+    assert!(dir.path().join("home").join(DB_FILENAME).is_file());
 }
 
 #[test]
@@ -220,7 +221,7 @@ fn the_stop_flag_ends_the_run_loop_after_a_tick() {
             .iter()
             .any(|line| line.contains("STOP file seen; exiting"))
     );
-    assert!(dir.path().join("home/state.json").is_file());
+    assert!(dir.path().join("home").join(DB_FILENAME).is_file());
 }
 
 #[test]
@@ -255,10 +256,30 @@ fn a_state_file_from_a_previous_run_is_loaded_and_saved_back() {
     st.merges = 2;
     st.save(&path).unwrap();
     run_with(&ctx, true).unwrap();
-    let back = State::load(&path).unwrap();
+    assert!(dir.path().join("home/state.json.imported").is_file());
+    let back = PumpStore::open(&dir.path().join("home").join(DB_FILENAME))
+        .unwrap()
+        .load()
+        .unwrap();
     assert_eq!(back.units.get("old-1").unwrap().status, Status::Merged);
     assert!(back.order.iter().any(|uid| uid == "old-1"));
     assert_eq!(back.merges, 2);
+}
+
+#[test]
+fn the_live_state_snapshot_imports_into_pump_db() {
+    let (dir, ctx, _host) = setup();
+    let snapshot = include_str!("state_snapshot.json");
+    fs::write(ctx.home.join("state.json"), snapshot).unwrap();
+    run_with(&ctx, true).unwrap();
+    let want: State = serde_json::from_str(snapshot).unwrap();
+    let back = PumpStore::open(&dir.path().join("home").join(DB_FILENAME))
+        .unwrap()
+        .load()
+        .unwrap();
+    assert_eq!(back.units.len(), want.units.len());
+    assert_eq!(back.needs.len(), want.needs.len());
+    assert!(ctx.home.join("state.json.imported").is_file());
 }
 
 #[test]

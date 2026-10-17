@@ -776,6 +776,7 @@ fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Merged;
         unit.commit.clone_from(&result.tip);
+        unit.merged_at = Some(now);
         unit.since = now;
         unit.outside.clone_from(&result.outside);
     }

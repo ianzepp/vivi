@@ -15,7 +15,7 @@ fn status_before_any_tick_says_no_status_yet() {
 }
 
 #[test]
-fn once_runs_one_tick_and_writes_state_status_and_log() {
+fn once_runs_one_tick_and_writes_db_status_and_log() {
     let project = temp_mailspace();
     let home = pump_home(&project);
     // One verdict-only plan: ingest logs it (the tick's log event) without
@@ -28,7 +28,7 @@ fn once_runs_one_tick_and_writes_state_status_and_log() {
     .unwrap();
     assert_success(&vivi(["pump", "once", "--project", root(&project)]));
     let status = fs::read_to_string(home.join("status.txt")).unwrap();
-    assert!(home.join("state.json").is_file(), "no state.json");
+    assert!(home.join("pump.db").is_file(), "no pump.db");
     assert!(home.join("log.txt").is_file(), "no log.txt");
     let lines: Vec<&str> = status.lines().collect();
     assert_eq!(lines.len(), 4, "status.txt must be 4 lines: {status}");
@@ -36,6 +36,26 @@ fn once_runs_one_tick_and_writes_state_status_and_log() {
     let shown = vivi(["pump", "status", "--project", root(&project)]);
     assert_success(&shown);
     assert_eq!(stdout(&shown), status, "status must print status.txt");
+}
+
+#[test]
+fn export_writes_the_state_json_shape() {
+    let project = temp_mailspace();
+    let home = pump_home(&project);
+    assert_success(&vivi(["pump", "once", "--project", root(&project)]));
+    let out = project.path().join("export.json");
+    let args = [
+        "pump",
+        "export",
+        "--json",
+        out.to_str().unwrap(),
+        "--project",
+        root(&project),
+    ];
+    assert_success(&vivi(args));
+    let text = fs::read_to_string(&out).unwrap();
+    assert!(text.contains("\"units\""), "{text}");
+    assert!(home.join("pump.db").is_file());
 }
 
 #[test]
