@@ -149,7 +149,7 @@ pub struct MailspaceEvent {
 
 pub struct Storage {
     mail_root: PathBuf,
-    conn: Connection,
+    conn: RefCell<Connection>,
     /// Cached handle index, cleared on any write.
     handle_index: RefCell<Option<handles::HandleIndex>>,
 }
@@ -191,7 +191,7 @@ impl Storage {
 
         Ok(Self {
             mail_root: mail_root.to_path_buf(),
-            conn,
+            conn: RefCell::new(conn),
             handle_index: RefCell::new(None),
         })
     }

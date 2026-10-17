@@ -176,7 +176,7 @@ impl Mailspace {
         message_id: &str,
         refs: &[String],
     ) -> Result<usize, VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let handle = storage.display_handle(message_id)?;
         let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
             return Ok(0);

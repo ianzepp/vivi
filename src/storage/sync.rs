@@ -66,7 +66,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if a presented id is malformed, the id
     /// already names different content, or the database or blob write fails.
     pub fn ingest_if_absent(
-        &mut self,
+        &self,
         request: &MessageIngestRequest,
         data: &[u8],
         event: Option<&IngestEvent<'_>>,
@@ -74,8 +74,8 @@ impl Storage {
         let content_id = sha256_hex(data);
         let message_id = ingest_message_id(request, &content_id)?;
         let blob_relpath = blob_relpath(&content_id);
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| VivariumError::Other(format!("failed to open sync transaction: {e}")))?;
         let outcome = match held_row(&tx, &message_id)? {
@@ -128,13 +128,13 @@ impl Storage {
     /// Returns a [`VivariumError`] if the database write fails, including a
     /// position another row already holds.
     pub fn bind_remote(
-        &mut self,
+        &self,
         message_id: &str,
         remote: &RemoteBindingInput,
     ) -> Result<bool, VivariumError> {
         let now = Utc::now().to_rfc3339();
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to open bind transaction: {e}")))?;
         let live: bool = tx
@@ -163,6 +163,7 @@ impl Storage {
         remote: &RemoteBindingInput,
     ) -> Result<Option<String>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT message_id FROM remote_bindings
                  WHERE account = ?1 AND remote_mailbox = ?2
@@ -206,6 +207,7 @@ impl Storage {
     ) -> Result<Option<StoredMessageView>, VivariumError> {
         let mut message = self
             .conn
+            .borrow()
             .query_row(
                 &message_query(
                     "WHERE md.normalized_message_id = ?1 AND m.deleted_at IS NULL
@@ -256,10 +258,10 @@ impl Storage {
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if the database update fails.
-    pub fn evict_messages(&mut self, message_ids: &[String]) -> Result<usize, VivariumError> {
+    pub fn evict_messages(&self, message_ids: &[String]) -> Result<usize, VivariumError> {
         let now = Utc::now().to_rfc3339();
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to open evict transaction: {e}")))?;
         let mut evicted = 0;

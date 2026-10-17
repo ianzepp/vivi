@@ -161,7 +161,7 @@ fn audit_repair_settles_need_mailbox_when_join_fired_without_settle() {
     mailspace
         .move_item("ceo", &unit, "done", None, "task done", None)
         .unwrap();
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let need_id = storage.resolve_message_token(&need).unwrap();
     let view = storage.message_by_id(&need_id).unwrap().unwrap();
     assert_eq!(view.local_role, "done", "join settle must close the need");
@@ -197,7 +197,7 @@ fn audit_repair_settles_need_mailbox_when_join_fired_without_settle() {
 fn audit_flags_orphan_node_for_deleted_item() {
     let (mailspace, _tmp) = roster();
     let want = send_item(&mailspace, "wants", "want", "doomed");
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let message_id = storage.resolve_message_token(&want).unwrap();
     let view = storage.message_by_id(&message_id).unwrap().unwrap();
     storage

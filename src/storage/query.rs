@@ -14,6 +14,7 @@ impl Storage {
     pub fn read_blob(&self, content_id: &str) -> Result<Vec<u8>, VivariumError> {
         let relpath: String = self
             .conn
+            .borrow()
             .query_row(
                 "SELECT blob_relpath FROM blobs WHERE content_id = ?1",
                 params![content_id],
@@ -40,6 +41,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if the database query fails.
     pub fn blob_exists(&self, content_id: &str) -> Result<bool, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM blobs WHERE content_id = ?1)",
                 params![content_id],
@@ -75,6 +77,7 @@ impl Storage {
     ) -> Result<Option<StoredMessageView>, VivariumError> {
         let mut message = self
             .conn
+            .borrow()
             .query_row(
                 &message_query("WHERE m.message_id = ?1"),
                 params![message_id],
@@ -101,6 +104,7 @@ impl Storage {
     ) -> Result<Option<StoredMessageView>, VivariumError> {
         let mut message = self
             .conn
+            .borrow()
             .query_row(
                 &message_query(
                     "WHERE m.content_id = ?1
@@ -227,7 +231,8 @@ impl Storage {
             account_placeholders.join(","),
             role_placeholders.join(","),
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare account+role listing: {e}"))
         })?;
         let params: Vec<&dyn rusqlite::types::ToSql> = accounts
@@ -255,8 +260,8 @@ impl Storage {
             "{} ORDER BY md.date DESC, m.message_id",
             message_query(where_clause)
         );
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| VivariumError::Other(format!("failed to prepare storage listing: {e}")))?;
         let rows = stmt
@@ -309,7 +314,8 @@ impl Storage {
                  ORDER BY md.date DESC, m.message_id LIMIT 1",
                 message_query(""),
             );
-            let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+            let conn = self.conn.borrow();
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
                 VivariumError::Other(format!("failed to prepare latest-from query: {e}"))
             })?;
             let found = stmt
@@ -332,6 +338,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if the database query fails.
     pub fn count_messages_for_account(&self, account: &str) -> Result<usize, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE account = ?1 AND deleted_at IS NULL",
                 params![account],
@@ -346,8 +353,8 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the database query fails.
     pub fn waiting_letters_by_account(&self) -> Result<Vec<(String, usize)>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT account, COUNT(DISTINCT content_id) FROM messages
                  WHERE deleted_at IS NULL AND absorbed_at IS NULL
@@ -389,7 +396,8 @@ impl Storage {
             "SELECT COUNT(*) FROM messages
              WHERE account = ?1 AND local_role = ?2 AND deleted_at IS NULL{read_clause}{absorb_clause}"
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare message count query: {e}"))
         })?;
         let count = if let Some(read_state) = read_state {

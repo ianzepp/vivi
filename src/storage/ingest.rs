@@ -15,7 +15,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if the database transaction, blob write,
     /// or metadata parsing fails.
     pub fn ingest_message(
-        &mut self,
+        &self,
         request: &MessageIngestRequest,
         data: &[u8],
     ) -> Result<StoredMessage, VivariumError> {
@@ -28,7 +28,8 @@ impl Storage {
         let now = Utc::now().to_rfc3339();
         // A savepoint, so a batch that holds an outer transaction (see
         // `begin_batch`) can ingest inside it; alone it is a transaction.
-        let tx = self.conn.savepoint().map_err(|e| {
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.savepoint().map_err(|e| {
             VivariumError::Other(format!("failed to open storage transaction: {e}"))
         })?;
         upsert_blob_row(&tx, &content_id, &blob_relpath, data.len(), &metadata, &now)?;
@@ -56,8 +57,9 @@ impl Storage {
     ///
     /// # Errors
     /// Returns a [`VivariumError`] when the transaction cannot start.
-    pub fn begin_batch(&mut self) -> Result<(), VivariumError> {
+    pub fn begin_batch(&self) -> Result<(), VivariumError> {
         self.conn
+            .borrow_mut()
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| VivariumError::Other(format!("failed to open batch transaction: {e}")))
     }
@@ -66,8 +68,9 @@ impl Storage {
     ///
     /// # Errors
     /// Returns a [`VivariumError`] when the commit fails.
-    pub fn commit_batch(&mut self) -> Result<(), VivariumError> {
+    pub fn commit_batch(&self) -> Result<(), VivariumError> {
         self.conn
+            .borrow_mut()
             .execute_batch("COMMIT")
             .map_err(|e| VivariumError::Other(format!("failed to commit batch: {e}")))?;
         self.invalidate_handle_index();
@@ -78,8 +81,9 @@ impl Storage {
     ///
     /// # Errors
     /// Returns a [`VivariumError`] when the rollback fails.
-    pub fn rollback_batch(&mut self) -> Result<(), VivariumError> {
+    pub fn rollback_batch(&self) -> Result<(), VivariumError> {
         self.conn
+            .borrow_mut()
             .execute_batch("ROLLBACK")
             .map_err(|e| VivariumError::Other(format!("failed to roll back batch: {e}")))?;
         self.invalidate_handle_index();
@@ -100,7 +104,7 @@ impl Storage {
     /// metadata parsing, or event logging fails.
     #[allow(clippy::too_many_arguments)]
     pub fn deliver_raw_batch(
-        &mut self,
+        &self,
         requests: &[MessageIngestRequest],
         data: &[u8],
         event_command: &str,
@@ -129,7 +133,7 @@ impl Storage {
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn deliver_raw_batch_fail_after(
-        &mut self,
+        &self,
         requests: &[MessageIngestRequest],
         data: &[u8],
         event_command: &str,
@@ -151,7 +155,7 @@ impl Storage {
 
     #[allow(clippy::too_many_arguments)]
     fn deliver_raw_batch_inner(
-        &mut self,
+        &self,
         requests: &[MessageIngestRequest],
         data: &[u8],
         event_command: &str,
@@ -167,7 +171,8 @@ impl Storage {
         let created_blob = write_blob_if_absent(&blob_abspath, data)?;
         let metadata = parse_metadata(data);
         let now = Utc::now().to_rfc3339();
-        let tx = self.conn.transaction().map_err(|e| {
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.transaction().map_err(|e| {
             VivariumError::Other(format!("failed to open delivery transaction: {e}"))
         })?;
         upsert_blob_row(&tx, &content_id, &blob_relpath, data.len(), &metadata, &now)?;

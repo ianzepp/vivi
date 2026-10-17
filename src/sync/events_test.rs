@@ -436,7 +436,7 @@ fn a_stale_store_converges_on_resync_and_by_audit_repair() {
     p.sync_a_to_b();
     // Roll B back by hand, as a checkout copied from before the event is.
     let b_row = p.b.row(&p.b.id_of(&p.task)).unwrap();
-    let mut storage = p.b.mailspace.storage().unwrap();
+    let storage = p.b.mailspace.storage().unwrap();
     storage
         .move_message_to_role(&b_row.account, &b_row.message_id, "tasks")
         .unwrap();
@@ -458,7 +458,7 @@ fn a_stale_store_converges_on_resync_and_by_audit_repair() {
     assert!(clean.findings.is_empty(), "{:?}", clean.findings);
 
     // And again by resync, which presents every held letter again.
-    let mut storage = p.b.mailspace.storage().unwrap();
+    let storage = p.b.mailspace.storage().unwrap();
     storage
         .move_message_to_role(&b_row.account, &b_row.message_id, "tasks")
         .unwrap();

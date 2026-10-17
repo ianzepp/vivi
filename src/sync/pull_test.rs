@@ -816,7 +816,7 @@ fn a_failed_read_leaves_the_cursor_where_it_was() {
 fn a_row_bound_to_another_remote_is_left_alone_by_a_held_content_pull() {
     let fx = bob();
     let bytes = eml(&fx.address("mind"), "room-item");
-    let mut storage = fx.mailspace.storage().unwrap();
+    let storage = fx.mailspace.storage().unwrap();
     storage
         .ingest_message(
             &MessageIngestRequest {

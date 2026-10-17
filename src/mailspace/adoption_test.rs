@@ -16,7 +16,7 @@ fn hold(mailspace: &Mailspace, account: &str, role: &str, kind: &str, subject: &
          X-Vivi-Kind: {kind}\r\n\r\ndone_when: {subject}\r\n",
         domain = mailspace.address_domain()
     );
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {

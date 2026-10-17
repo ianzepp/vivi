@@ -218,8 +218,8 @@ impl Storage {
     }
 
     fn active_message_ids(&self) -> Result<Vec<String>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare("SELECT message_id FROM messages WHERE deleted_at IS NULL ORDER BY message_id")
             .map_err(|e| {
                 VivariumError::Other(format!("failed to prepare message id query: {e}"))
@@ -247,7 +247,8 @@ impl Storage {
              ORDER BY message_id",
             placeholders.join(",")
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare scoped message id query: {e}"))
         })?;
         let params = to_sql_params(accounts);
@@ -279,7 +280,8 @@ impl Storage {
              ORDER BY account, message_id",
             placeholders.join(",")
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare scoped message id query: {e}"))
         })?;
         let params = to_sql_params(accounts);
@@ -307,6 +309,7 @@ impl Storage {
 
     fn message_by_id_exact(&self, message_id: &str) -> Result<Option<String>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT message_id FROM messages WHERE message_id = ?1 AND deleted_at IS NULL",
                 params![message_id],
@@ -317,8 +320,8 @@ impl Storage {
     }
 
     fn content_prefix_matches(&self, token: &str) -> Result<Vec<String>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT message_id
                  FROM messages
@@ -361,6 +364,7 @@ impl Storage {
         let mut params = to_sql_params(accounts);
         params.push(&message_id);
         self.conn
+            .borrow()
             .query_row(&sql, params.as_slice(), |row| row.get(0))
             .optional()
             .map_err(|e| {
@@ -389,7 +393,8 @@ impl Storage {
         );
         let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![&pattern];
         params.extend(to_sql_params(accounts));
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!(
                 "failed to prepare scoped content prefix query: {e}"
             ))

@@ -14,10 +14,11 @@ impl Storage {
         metadata: &BTreeMap<String, String>,
     ) -> Result<(), VivariumError> {
         let resolved = self.resolve_message_token(message_id)?;
-        super::mutate::reject_if_absorbed(&self.conn, &resolved, message_id)?;
+        super::mutate::reject_if_absorbed(&self.conn.borrow(), &resolved, message_id)?;
         let now = Utc::now().to_rfc3339();
         for (key, value) in metadata {
             self.conn
+                .borrow_mut()
                 .execute(
                     "INSERT INTO mailspace_item_metadata
                        (message_id, key, value, updated_at)
@@ -42,8 +43,8 @@ impl Storage {
         message_id: &str,
     ) -> Result<BTreeMap<String, String>, VivariumError> {
         let resolved = self.resolve_message_token(message_id)?;
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT key, value FROM mailspace_item_metadata
                  WHERE message_id = ?1 ORDER BY key",
@@ -75,7 +76,7 @@ impl Storage {
     ) -> Result<(), VivariumError> {
         for message_id in message_ids {
             let result = match until {
-                Some(until) => self.conn.execute(
+                Some(until) => self.conn.borrow_mut().execute(
                     "INSERT INTO mailspace_item_metadata
                        (message_id, key, value, updated_at)
                      VALUES (?1, ?2, ?3, ?4)
@@ -89,7 +90,7 @@ impl Storage {
                         Utc::now().to_rfc3339()
                     ],
                 ),
-                None => self.conn.execute(
+                None => self.conn.borrow_mut().execute(
                     "DELETE FROM mailspace_item_metadata WHERE message_id = ?1 AND key = ?2",
                     params![message_id, EVENT_DEFERRED_KEY],
                 ),
@@ -107,6 +108,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if the database write fails.
     pub fn clear_event_deferral(&self, content_id: &str) -> Result<(), VivariumError> {
         self.conn
+            .borrow_mut()
             .execute(
                 "DELETE FROM mailspace_item_metadata
                  WHERE key = ?1 AND message_id IN
@@ -124,8 +126,8 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the database query fails.
     pub fn deferred_event_contents(&self) -> Result<Vec<(String, i64)>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT m.content_id, md.value FROM mailspace_item_metadata md
                  JOIN messages m ON m.message_id = md.message_id

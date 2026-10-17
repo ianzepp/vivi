@@ -290,7 +290,7 @@ pub fn pull_with(
     // The plan's changes are saved with the first page that is read, so a
     // failed read leaves the state file exactly as it was.
     let mut unsaved = state != before_plan;
-    let mut storage = mailspace.storage()?;
+    let storage = mailspace.storage()?;
     let mut filer = Filer::new(mailspace, settings);
     let mut report = PullReport::default();
     let mut epoch_resets = 0usize;
@@ -305,7 +305,7 @@ pub fn pull_with(
         }
         let more = handle_page(
             mailspace,
-            &mut storage,
+            &storage,
             &mut filer,
             &mut state,
             &mut report,
@@ -331,7 +331,7 @@ pub fn pull_with(
 #[allow(clippy::too_many_arguments)]
 fn handle_page(
     mailspace: &Mailspace,
-    storage: &mut Storage,
+    storage: &Storage,
     filer: &mut Filer<'_>,
     state: &mut SyncState,
     report: &mut PullReport,

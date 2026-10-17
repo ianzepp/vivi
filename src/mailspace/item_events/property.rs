@@ -260,7 +260,7 @@ impl Mailspace {
     /// node.
     pub(super) fn apply_property_events(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         item: &HeldItem,
         tally: &mut EventTally,
         deferred_until: &mut Option<i64>,
@@ -308,7 +308,7 @@ impl Mailspace {
     /// with no node here (held foreign), are skipped.
     fn apply_bound_events(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         item: &HeldItem,
         events: &[PropertyEvent],
         tally: &mut EventTally,
@@ -354,7 +354,7 @@ impl Mailspace {
     /// of it, as the writer's absorb letter says it sealed the item.
     fn seal_item(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         item: &HeldItem,
         seal: &PropertyEvent,
         tally: &mut EventTally,
@@ -402,7 +402,7 @@ impl Mailspace {
     /// letters passed are the ones dated before the seal, which count
     /// whenever they arrive.
     fn apply_mark_letters(
-        storage: &mut Storage,
+        storage: &Storage,
         item: &HeldItem,
         events: &[PropertyEvent],
         sealed_too: bool,

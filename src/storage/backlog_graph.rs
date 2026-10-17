@@ -50,11 +50,11 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the transaction fails.
     pub fn mint_backlog(
-        &mut self,
+        &self,
         input: &BacklogMintInput,
     ) -> Result<BacklogMintCommit, VivariumError> {
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to begin backlog mint: {e}")))?;
         let commit = mint_backlog_tx(&tx, input)?;
@@ -74,7 +74,7 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if any update fails.
     pub fn bind_backlog_units(
-        &mut self,
+        &self,
         graph_handle: &str,
         parent_source_id: &str,
         unit_handles: &[String],
@@ -83,8 +83,8 @@ impl Storage {
     ) -> Result<(), VivariumError> {
         let now = Utc::now().to_rfc3339();
         let occurred = occurred_at(at);
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to begin backlog bind: {e}")))?;
         for unit_handle in unit_handles {
@@ -128,8 +128,8 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the query fails.
     pub fn message_ids_by_content(&self, content_id: &str) -> Result<Vec<String>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT message_id FROM messages
                  WHERE content_id = ?1 AND deleted_at IS NULL
@@ -160,8 +160,8 @@ impl Storage {
         graph_handle: &str,
         parent_source_id: &str,
     ) -> Result<Vec<WorkGraphNodeRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT handle, graph_handle, source_id, label, state, subgraph, kind,
                         created_at, updated_at

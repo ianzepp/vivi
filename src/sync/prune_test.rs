@@ -35,7 +35,7 @@ fn fixture() -> Fixture {
         .send_need("mind", &w.bob.address("hand"), "local only");
     let local_id = w.bob.id_of(&local);
     {
-        let mut storage = w.bob.mailspace.storage().unwrap();
+        let storage = w.bob.mailspace.storage().unwrap();
         for n in [1, 2, 3, 5, 6] {
             storage
                 .move_message_to_role("mind", &wire_id(n, 0), "done")
@@ -232,7 +232,7 @@ fn the_cutoff_is_the_letter_date_not_when_it_was_pulled() {
     w.put_dated(3, "after", "body", "09 Sep 2099 00:00:01 +0000");
     w.bob.pull(&w.bob_client);
     {
-        let mut storage = w.bob.mailspace.storage().unwrap();
+        let storage = w.bob.mailspace.storage().unwrap();
         for n in 1..=3 {
             storage
                 .move_message_to_role("mind", &wire_id(n, 0), "done")

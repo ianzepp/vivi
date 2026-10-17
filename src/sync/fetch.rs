@@ -99,7 +99,7 @@ pub fn normalize_handles(values: &[String]) -> Result<Vec<String>, VivariumError
 /// Returns an error when a lookup fails or storage fails.
 pub(crate) fn lookup_and_file(
     transport: &dyn Transport,
-    storage: &mut Storage,
+    storage: &Storage,
     filer: &Filer<'_>,
     handles: &[String],
     report: &mut PullReport,
@@ -135,7 +135,7 @@ pub fn fetch_handles(
     // files anything, not after.
     let dir = sync_dir(&mailspace.dir);
     let mut state = SyncState::load(&dir, &settings.project)?;
-    let mut storage = mailspace.storage()?;
+    let storage = mailspace.storage()?;
     let filer = Filer::new(mailspace, settings);
     let mut report = FetchReport {
         handles: handles.len(),
@@ -144,7 +144,7 @@ pub fn fetch_handles(
     let mut pending = Vec::new();
     report.missing = lookup_and_file(
         transport,
-        &mut storage,
+        &storage,
         &filer,
         &handles,
         &mut report.pull,

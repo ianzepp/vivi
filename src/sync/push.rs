@@ -218,14 +218,14 @@ pub fn push_since(
     transport: &dyn Transport,
     window: Option<DateTime<Utc>>,
 ) -> Result<PushReport, VivariumError> {
-    let mut storage = mailspace.storage()?;
+    let storage = mailspace.storage()?;
     let selection = select::select(
         &storage,
         settings,
         &KeptLocal::load(&sync_dir(&mailspace.dir))?,
         window,
     )?;
-    send_all(&mut storage, mailspace, settings, transport, selection)
+    send_all(&storage, mailspace, settings, transport, selection)
 }
 
 /// How long a drain waits out the server's rate limit: a little over the
@@ -257,7 +257,7 @@ pub fn push_drain(
     wait: &mut dyn FnMut(Duration),
     progress: &mut dyn FnMut(&PushReport, usize),
 ) -> Result<PushReport, VivariumError> {
-    let mut storage = mailspace.storage()?;
+    let storage = mailspace.storage()?;
     let kept = KeptLocal::load(&sync_dir(&mailspace.dir))?;
     let mut refused_handles: HashSet<String> = HashSet::new();
     let mut total = PushReport::default();
@@ -269,7 +269,7 @@ pub fn push_drain(
         selection
             .letters
             .retain(|letter| !refused_handles.contains(&letter.handle));
-        let report = send_all(&mut storage, mailspace, settings, transport, selection)?;
+        let report = send_all(&storage, mailspace, settings, transport, selection)?;
         let rate_limited = report
             .stopped
             .as_ref()
@@ -307,7 +307,7 @@ pub fn push_drain(
 }
 
 fn send_all(
-    storage: &mut Storage,
+    storage: &Storage,
     mailspace: &Mailspace,
     settings: &SyncSettings,
     transport: &dyn Transport,
@@ -373,7 +373,7 @@ fn binding_validity(mailspace: &Mailspace, settings: &SyncSettings) -> Result<u3
 /// Record the server position of an accepted letter on the row the wire id
 /// names, so the next pass sees it as pushed.
 fn bind_sent(
-    storage: &mut Storage,
+    storage: &Storage,
     settings: &SyncSettings,
     validity: u32,
     letter: &Letter,
@@ -431,7 +431,7 @@ fn bind_sent(
 /// Returns an error on a storage failure.
 pub fn pending(mailspace: &Mailspace, settings: &SyncSettings) -> Result<Selection, VivariumError> {
     let kept = KeptLocal::load(&sync_dir(&mailspace.dir))?;
-    select::select(&mailspace.storage()?, settings, &kept, None)
+    select::select(&*mailspace.storage()?, settings, &kept, None)
 }
 
 /// Count the letters waiting to go, counting those a push cannot upload.

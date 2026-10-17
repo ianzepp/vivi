@@ -37,6 +37,7 @@ impl Storage {
         let handle = goal_handle_for_path(path);
         let created_at = Utc::now().to_rfc3339();
         self.conn
+            .borrow_mut()
             .execute(
                 "INSERT INTO mailspace_goals (handle, path, label, registered_by, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -65,8 +66,8 @@ impl Storage {
     /// # Errors
     /// Returns an error when the query fails.
     pub fn goals(&self) -> Result<Vec<GoalRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT handle, path, label, registered_by, created_at
                  FROM mailspace_goals
@@ -86,6 +87,7 @@ impl Storage {
     /// Returns an error when the query fails.
     pub fn goal_by_handle(&self, handle: &str) -> Result<Option<GoalRow>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT handle, path, label, registered_by, created_at
                  FROM mailspace_goals WHERE handle = ?1",
@@ -102,6 +104,7 @@ impl Storage {
     /// Returns an error when the query fails.
     pub fn goal_by_path(&self, path: &str) -> Result<Option<GoalRow>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT handle, path, label, registered_by, created_at
                  FROM mailspace_goals WHERE path = ?1",
@@ -117,8 +120,8 @@ impl Storage {
     /// # Errors
     /// Returns an error when the query fails or the prefix matches multiple goals.
     pub fn goal_by_handle_prefix(&self, prefix: &str) -> Result<Option<GoalRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT handle, path, label, registered_by, created_at
                  FROM mailspace_goals WHERE handle LIKE ?1 || '%'
@@ -147,6 +150,7 @@ impl Storage {
     pub fn goal_delete(&self, handle: &str) -> Result<bool, VivariumError> {
         let n = self
             .conn
+            .borrow_mut()
             .execute(
                 "DELETE FROM mailspace_goals WHERE handle = ?1",
                 params![handle],

@@ -24,7 +24,7 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the read fails.
     pub fn pending_dependencies(&self) -> Result<PendingDependencies, VivariumError> {
-        read_pending(&self.conn)
+        read_pending(&self.conn.borrow())
     }
 
     /// Replace the references `message_id` waits for; an empty list clears
@@ -33,12 +33,12 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the read or write fails.
     pub fn set_pending_dependencies(
-        &mut self,
+        &self,
         message_id: &str,
         references: &[String],
     ) -> Result<(), VivariumError> {
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| VivariumError::Other(format!("failed to begin pending write: {e}")))?;
         let mut pending = read_pending(&tx)?;

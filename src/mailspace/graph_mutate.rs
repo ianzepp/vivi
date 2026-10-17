@@ -50,7 +50,7 @@ impl Mailspace {
     ) -> Result<GraphApplyReport, VivariumError> {
         let flowchart = parse_flowchart(mermaid_source)?;
         let content_hash = sha256_hex(mermaid_source.as_bytes());
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let graph = resolve_graph(&storage, code_or_handle)?;
         let current_hash =
             storage.work_graph_revision_hash(&graph.handle, graph.current_revision)?;
@@ -150,7 +150,7 @@ impl Mailspace {
         source_id: &str,
         note: Option<&str>,
     ) -> Result<GraphShow, VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let graph = resolve_graph(&storage, code_or_handle)?;
         let rows = storage.work_graph_nodes(&graph.handle)?;
         let edges = storage.work_graph_edges(&graph.handle)?;
@@ -190,7 +190,7 @@ impl Mailspace {
         task_token: &str,
         note: Option<&str>,
     ) -> Result<GraphShow, VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let graph = resolve_graph(&storage, code_or_handle)?;
         let rows = storage.work_graph_nodes(&graph.handle)?;
         let edges = storage.work_graph_edges(&graph.handle)?;

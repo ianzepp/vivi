@@ -88,6 +88,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if the query fails.
     pub fn work_graph_by_code(&self, code: &str) -> Result<Option<WorkGraphRow>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT handle, code, status, current_revision, created_at, updated_at
                  FROM work_graphs WHERE code = ?1",
@@ -107,6 +108,7 @@ impl Storage {
         handle: &str,
     ) -> Result<Option<WorkGraphRow>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT handle, code, status, current_revision, created_at, updated_at
                  FROM work_graphs WHERE handle = ?1",
@@ -127,6 +129,7 @@ impl Storage {
         revision: i64,
     ) -> Result<Option<String>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT content_hash FROM work_graph_revisions
                  WHERE graph_handle = ?1 AND revision = ?2",
@@ -145,8 +148,8 @@ impl Storage {
         &self,
         graph_handle: &str,
     ) -> Result<Vec<WorkGraphNodeRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT handle, graph_handle, source_id, label, state, subgraph, kind,
                         created_at, updated_at
@@ -168,8 +171,8 @@ impl Storage {
         &self,
         graph_handle: &str,
     ) -> Result<Vec<WorkGraphEdgeRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT handle, graph_handle, from_node, to_node, label, style, created_at
                  FROM work_graph_edges WHERE graph_handle = ?1
@@ -187,11 +190,11 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the transaction fails.
     pub fn import_work_graph(
-        &mut self,
+        &self,
         input: &WorkGraphImportInput,
     ) -> Result<WorkGraphImportCommit, VivariumError> {
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to begin graph import: {e}")))?;
         let commit = insert_work_graph(&tx, input)?;
@@ -205,11 +208,11 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the transaction fails.
     pub fn apply_work_graph_plan(
-        &mut self,
+        &self,
         plan: &WorkGraphApplyPlan,
     ) -> Result<WorkGraphRow, VivariumError> {
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to begin graph apply: {e}")))?;
         let graph = execute_apply_plan(&tx, plan)?;
@@ -223,15 +226,15 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the update fails.
     pub fn set_work_graph_node_state(
-        &mut self,
+        &self,
         graph_handle: &str,
         node_handle: &str,
         state: &str,
         note: Option<&str>,
     ) -> Result<(), VivariumError> {
         let now = Utc::now().to_rfc3339();
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to begin node state tx: {e}")))?;
         set_node_state_tx(&tx, graph_handle, node_handle, state, note, &now)?;
@@ -247,7 +250,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if the update fails or the node is
     /// missing.
     pub fn set_work_graph_node_kind(
-        &mut self,
+        &self,
         graph_handle: &str,
         node_handle: &str,
         kind: &str,
@@ -255,6 +258,7 @@ impl Storage {
         let now = Utc::now().to_rfc3339();
         let changed = self
             .conn
+            .borrow_mut()
             .execute(
                 "UPDATE work_graph_nodes SET kind = ?3, updated_at = ?4
                  WHERE graph_handle = ?1 AND handle = ?2",
@@ -274,8 +278,8 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the query fails.
     pub fn work_graphs(&self) -> Result<Vec<WorkGraphRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT handle, code, status, current_revision, created_at, updated_at
                  FROM work_graphs ORDER BY code",
@@ -295,8 +299,8 @@ impl Storage {
         &self,
         node_handle: &str,
     ) -> Result<Vec<WorkGraphAttemptRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT attempt_id, graph_handle, node_handle, task_message_id, task_handle,
                         role, state, note, created_at, updated_at
@@ -318,8 +322,8 @@ impl Storage {
         &self,
         after_event_id: i64,
     ) -> Result<Vec<WorkGraphEventRow>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT event_id, graph_handle, occurred_at, event_type, node_handle, note
                  FROM work_graph_events
@@ -338,12 +342,12 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the transaction fails.
     pub fn activate_work_graph_node(
-        &mut self,
+        &self,
         input: &WorkGraphActivateInput,
     ) -> Result<(), VivariumError> {
         let now = Utc::now().to_rfc3339();
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to begin activate tx: {e}")))?;
         set_node_state_tx(
@@ -398,7 +402,7 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the transaction fails.
     pub fn complete_work_graph_node(
-        &mut self,
+        &self,
         graph_handle: &str,
         node_handle: &str,
         note: Option<&str>,
@@ -406,8 +410,8 @@ impl Storage {
         decision: Option<&str>,
     ) -> Result<(), VivariumError> {
         let now = Utc::now().to_rfc3339();
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to begin complete tx: {e}")))?;
         set_node_state_tx(&tx, graph_handle, node_handle, "done", note, &now)?;

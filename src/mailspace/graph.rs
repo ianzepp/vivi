@@ -83,7 +83,7 @@ impl Mailspace {
         validate_code(code)?;
         let flowchart = parse_flowchart(mermaid_source)?;
         let content_hash = sha256_hex(mermaid_source.as_bytes());
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         if let Some(existing) = storage.work_graph_by_code(code)? {
             return idempotent_or_conflict(
                 &storage,

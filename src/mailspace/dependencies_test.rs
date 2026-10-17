@@ -35,7 +35,7 @@ fn file(
 ) -> (String, String) {
     let bytes = letter(mailspace, subject, kind, deps);
     let role = format!("{kind}s");
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {
@@ -137,7 +137,7 @@ fn a_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
 
     // The dependency arrives under the id the header names.
     let bytes = letter(&mailspace, "first", "need", &[]);
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {
@@ -248,7 +248,7 @@ fn audit_reports_header_drift_and_repair_makes_the_edge() {
     // A node minted without its header edges: the state a pull left before
     // edges were rebuilt.
     let bytes = letter(&mailspace, "second", "task", &[&need]);
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {

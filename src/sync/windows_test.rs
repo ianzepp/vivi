@@ -438,7 +438,7 @@ fn five_thousand_letters_in_one_pull() {
 #[ignore = "perf: 1,000 letters ingested one transaction each; run with --ignored --nocapture"]
 fn one_thousand_letters_ingested_alone() {
     let fx = crate::sync::fake_server::checkout("bob", &["mind"]);
-    let mut storage = fx.mailspace.storage().unwrap();
+    let storage = fx.mailspace.storage().unwrap();
     let letters: Vec<Vec<u8>> = (1..=1_000u64)
         .map(|n| {
             letter(

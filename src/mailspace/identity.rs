@@ -349,7 +349,7 @@ impl Mailspace {
     /// # Errors
     /// Unknown role or storage query failure.
     pub fn schedule_report(&self, name: &str) -> Result<ScheduleReport, VivariumError> {
-        self.schedule_report_with(&self.storage()?, name)
+        self.schedule_report_with(&*self.storage()?, name)
     }
 
     /// # Errors

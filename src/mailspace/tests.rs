@@ -747,7 +747,7 @@ Subject: rollback\r\n\r\nbody";
         })
         .collect();
 
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
 
     // Inject failure after 2 message rows — proving the entire batch rolls back.
     let err = storage
@@ -807,7 +807,7 @@ Subject: batch\r\n\r\nbody";
         })
         .collect();
 
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let stored = storage
         .deliver_raw_batch(
             &requests,

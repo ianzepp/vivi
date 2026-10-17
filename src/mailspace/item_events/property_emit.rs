@@ -35,7 +35,7 @@ impl Mailspace {
     /// The body is `note`, else the kind word.
     pub(in crate::mailspace) fn emit_property_event(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         item: &HeldItem,
         identity: &str,
         kind: PropertyKind,

@@ -358,8 +358,8 @@ fn audit_foreign(
 fn repair_mint(mailspace: &Mailspace, item: &AuditItem) -> Result<(), VivariumError> {
     let letter = mailspace.storage()?.read_message(&item.message_id)?;
     mailspace.backlog_attach_letter(&item.kind, &item.message_id, &item.subject, &letter)?;
-    let reported =
-        item.folder_done && mailspace.audit_sees_report(&mailspace.storage()?, &item.content_id)?;
+    let reported = item.folder_done
+        && mailspace.audit_sees_report(&*mailspace.storage()?, &item.content_id)?;
     if item.folder_done && !reported {
         mailspace.backlog_complete_item_via(&item.handle, "via=repair")?;
     }
@@ -488,7 +488,7 @@ fn repair_state(
             return mailspace.settle_need_mailbox(&item.handle, true, "repair");
         }
     }
-    let mut storage = mailspace.storage()?;
+    let storage = mailspace.storage()?;
     storage.set_work_graph_node_state(graph_handle, &node.handle, "open", Some("via=repair"))
 }
 

@@ -81,7 +81,7 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the message is missing or the update fails.
     pub fn absorb_message(
-        &mut self,
+        &self,
         account: &str,
         message_id: &str,
         absorbed_by: &str,
@@ -89,6 +89,7 @@ impl Storage {
         let now = Utc::now().to_rfc3339();
         let changed = self
             .conn
+            .borrow_mut()
             .execute(
                 "UPDATE messages
                  SET absorbed_at = ?3, absorbed_by = ?4, read_state = 1, updated_at = ?3
@@ -103,6 +104,7 @@ impl Storage {
         }
         let absorbed_at: Option<String> = self
             .conn
+            .borrow()
             .query_row(
                 "SELECT absorbed_at FROM messages
                  WHERE account = ?1 AND message_id = ?2 AND deleted_at IS NULL",
@@ -127,13 +129,14 @@ impl Storage {
     /// Returns a [`VivariumError`] if the token resolution, database
     /// update, blob write, or event logging fails.
     pub fn move_message_with_reply(
-        &mut self,
+        &self,
         request: &MailspaceMoveWithReply<'_>,
     ) -> Result<Vec<StoredMessage>, VivariumError> {
         let reply = prepare_reply_blob(&self.mail_root, request.reply_data)?;
         let resolved = self.resolve_message_token(request.message_id)?;
-        reject_if_absorbed(&self.conn, &resolved, request.message_id)?;
-        let tx = self.conn.transaction().map_err(|e| {
+        reject_if_absorbed(&self.conn.borrow(), &resolved, request.message_id)?;
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn.transaction().map_err(|e| {
             VivariumError::Other(format!("failed to open lifecycle transaction: {e}"))
         })?;
         update_moved_message(
@@ -166,14 +169,14 @@ impl Storage {
     /// Returns a [`VivariumError`] if the token resolution, blob write,
     /// database update, or event logging fails, or the message is absorbed.
     pub fn note_message_with_reply(
-        &mut self,
+        &self,
         request: &MailspaceNoteWithReply<'_>,
     ) -> Result<Vec<StoredMessage>, VivariumError> {
         let reply = prepare_reply_blob(&self.mail_root, request.reply_data)?;
         let resolved = self.resolve_message_token(request.message_id)?;
-        reject_if_absorbed(&self.conn, &resolved, request.message_id)?;
-        let tx = self
-            .conn
+        reject_if_absorbed(&self.conn.borrow(), &resolved, request.message_id)?;
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to open note transaction: {e}")))?;
         let replies = ingest_reply_rows(&tx, &reply, request.reply_requests)?;
@@ -198,7 +201,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if a moved row is absorbed or missing, or
     /// the blob write, database update, or event logging fails.
     pub fn apply_item_event(
-        &mut self,
+        &self,
         write: &ItemEventWrite<'_>,
     ) -> Result<Vec<StoredMessage>, VivariumError> {
         let reply = write
@@ -206,13 +209,13 @@ impl Storage {
             .map(|data| prepare_reply_blob(&self.mail_root, data))
             .transpose()?;
         for step in write.moves.iter().filter(|step| step.to_role.is_some()) {
-            reject_if_absorbed(&self.conn, &step.message_id, &step.message_id)?;
+            reject_if_absorbed(&self.conn.borrow(), &step.message_id, &step.message_id)?;
         }
         let now = reply
             .as_ref()
             .map_or_else(|| Utc::now().to_rfc3339(), |reply| reply.now.clone());
-        let tx = self
-            .conn
+        let mut conn = self.conn.borrow_mut();
+        let tx = conn
             .transaction()
             .map_err(|e| VivariumError::Other(format!("failed to open item-event write: {e}")))?;
         let mut replies = Vec::new();
@@ -250,16 +253,17 @@ impl Storage {
     /// Returns a [`VivariumError`] if the token resolution fails, the
     /// message is not found, or the database update fails.
     pub fn move_message_to_role(
-        &mut self,
+        &self,
         account: &str,
         message_id: &str,
         local_role: &str,
     ) -> Result<(), VivariumError> {
         let resolved = self.resolve_message_token(message_id)?;
-        reject_if_absorbed(&self.conn, &resolved, message_id)?;
+        reject_if_absorbed(&self.conn.borrow(), &resolved, message_id)?;
         let now = Utc::now().to_rfc3339();
         let changed = self
             .conn
+            .borrow_mut()
             .execute(
                 "UPDATE messages
                  SET local_role = ?3, updated_at = ?4
@@ -282,7 +286,7 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the database update fails.
     pub fn update_remote_flags(
-        &mut self,
+        &self,
         account: &str,
         remote_mailbox: &str,
         remote_uidvalidity: u32,
@@ -293,6 +297,7 @@ impl Storage {
         let now = Utc::now().to_rfc3339();
         let changed = self
             .conn
+            .borrow_mut()
             .execute(
                 "UPDATE messages
                  SET read_state = ?5, starred = ?6, updated_at = ?7
@@ -329,15 +334,16 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the database update fails.
     pub fn set_local_read_state(
-        &mut self,
+        &self,
         account: &str,
         message_id: &str,
         read_state: bool,
     ) -> Result<bool, VivariumError> {
-        reject_if_absorbed(&self.conn, message_id, message_id)?;
+        reject_if_absorbed(&self.conn.borrow(), message_id, message_id)?;
         let now = Utc::now().to_rfc3339();
         let changed = self
             .conn
+            .borrow_mut()
             .execute(
                 "UPDATE messages
                  SET read_state = ?3, updated_at = ?4
@@ -356,14 +362,15 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the database update fails.
     pub fn mark_message_deleted(
-        &mut self,
+        &self,
         account: &str,
         message_id: &str,
     ) -> Result<bool, VivariumError> {
-        reject_if_absorbed(&self.conn, message_id, message_id)?;
+        reject_if_absorbed(&self.conn.borrow(), message_id, message_id)?;
         let now = Utc::now().to_rfc3339();
         let changed = self
             .conn
+            .borrow_mut()
             .execute(
                 "UPDATE messages
                  SET deleted_at = ?3, updated_at = ?3

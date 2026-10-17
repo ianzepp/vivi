@@ -124,7 +124,7 @@ impl Mailspace {
     ) -> Result<Vec<MarkWrite>, VivariumError> {
         validate_marks(slugs)?;
         let (identity, message) = self.resolve_owned_message(identity, handle)?;
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let actual = self.source_kind(&storage, &message)?;
         if actual != kind {
             return Err(VivariumError::Message(format!("{handle} is not a {kind}")));
@@ -142,7 +142,7 @@ impl Mailspace {
             .map(|change| mark_event(&message, Some(&identity), kind, add, &change.slug))
             .collect::<Vec<_>>();
         storage.append_mailspace_events(&inputs)?;
-        self.emit_mark_letters(&mut storage, &message, &identity, add, &planned)?;
+        self.emit_mark_letters(&storage, &message, &identity, add, &planned)?;
         let display = storage.display_handle(&message.message_id)?;
         Ok(planned
             .into_iter()
@@ -163,7 +163,7 @@ impl Mailspace {
     /// changed.
     fn emit_mark_letters(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         message: &StoredMessageView,
         identity: &str,
         add: bool,

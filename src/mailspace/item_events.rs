@@ -667,7 +667,7 @@ impl Mailspace {
     /// the nodes changed, and counts ignored events into `tally`.
     fn settle_item(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         content_id: &str,
         tally: &mut EventTally,
         keep_reports: bool,
@@ -735,7 +735,7 @@ impl Mailspace {
         if content_ids.is_empty() {
             return Ok(tally);
         }
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         // An arriving event letter moves every row its head names; a work
         // item that arrives is only checked against the events it holds, and
         // a report made after a reopen stays.
@@ -771,10 +771,10 @@ impl Mailspace {
         }
         by_item.retain(|content_id| !by_event.contains(content_id));
         for content_id in &by_event {
-            self.settle_item(&mut storage, content_id, &mut tally, false)?;
+            self.settle_item(&storage, content_id, &mut tally, false)?;
         }
         for content_id in &by_item {
-            self.settle_item(&mut storage, content_id, &mut tally, true)?;
+            self.settle_item(&storage, content_id, &mut tally, true)?;
         }
         Ok(tally)
     }
@@ -793,7 +793,7 @@ impl Mailspace {
     /// Returns a [`VivariumError`] on storage failure.
     pub fn apply_released_events(&self) -> Result<EventTally, VivariumError> {
         let mut tally = EventTally::default();
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let now = clock_micros();
         let due: BTreeSet<String> = storage
             .deferred_event_contents()?
@@ -806,7 +806,7 @@ impl Mailspace {
             // dated past the bound writes its mark anew.
             storage.clear_event_deferral(content_id)?;
             let mut settled = EventTally::default();
-            self.settle_item(&mut storage, content_id, &mut settled, false)?;
+            self.settle_item(&storage, content_id, &mut settled, false)?;
             tally.applied += settled.applied;
         }
         Ok(tally)
@@ -870,9 +870,9 @@ impl Mailspace {
     /// Re-apply the newest event of the item behind `content_id` (the
     /// audit's repair).
     pub(super) fn repair_event_drift(&self, content_id: &str) -> Result<(), VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let due = event_release_due(&storage, content_id)?;
-        self.settle_item(&mut storage, content_id, &mut EventTally::default(), !due)
+        self.settle_item(&storage, content_id, &mut EventTally::default(), !due)
     }
 }
 

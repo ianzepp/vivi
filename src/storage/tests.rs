@@ -107,7 +107,7 @@ fn schema_v7_adds_node_kind_and_edge_style_on_upgrade() {
 fn ingest_dedupes_blobs_but_keeps_distinct_message_rows() {
     let tmp = tempfile::tempdir().unwrap();
     let raw = message_bytes("dup@example.com", "same body");
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
 
     let first = storage
         .ingest_message(&bound_request("one", "INBOX", 7), &raw)
@@ -128,7 +128,7 @@ fn ingest_dedupes_blobs_but_keeps_distinct_message_rows() {
 fn ingest_persists_blob_and_metadata() {
     let tmp = tempfile::tempdir().unwrap();
     let raw = b"Message-ID: <meta@example.com>\r\nFrom: Agent <agent@example.com>\r\nTo: User <user@example.com>\r\nSubject: hello\r\n\r\nbody";
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
 
     storage
         .ingest_message(&bound_request("one", "INBOX", 7), raw)
@@ -155,7 +155,7 @@ fn fallback_message_ids_are_stable_for_unbound_entries() {
         remote: None,
     };
 
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let first = storage.ingest_message(&request, &raw).unwrap();
     let second = storage.ingest_message(&request, &raw).unwrap();
 
@@ -184,7 +184,7 @@ fn direct_ingest_api_supports_clean_break_sync_target() {
         }),
     };
 
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let stored = storage.ingest_message(&request, &raw).unwrap();
 
     assert!(stored.message_id.starts_with("msg_"));
@@ -196,7 +196,7 @@ fn direct_ingest_api_supports_clean_break_sync_target() {
 #[test]
 fn short_handles_resolve_uniquely_for_storage_native_ids() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
 
     let first = storage
         .ingest_message(
@@ -281,9 +281,9 @@ fn short_handle_map_is_a_fixed_width_prefix_of_the_basis() {
 #[test]
 fn a_shared_short_handle_resolves_as_ambiguous_rather_than_by_guess() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
-    let first = ingest_hinted(&mut storage, "msg_abcd1234aaaabbbbcccc0001", 1);
-    let second = ingest_hinted(&mut storage, "msg_abcd1234aaaabbbbcccc0002", 2);
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let first = ingest_hinted(&storage, "msg_abcd1234aaaabbbbcccc0001", 1);
+    let second = ingest_hinted(&storage, "msg_abcd1234aaaabbbbcccc0002", 2);
     assert_ne!(first, second);
 
     assert_eq!(storage.display_handle(&first).unwrap(), "abcd1234");
@@ -295,7 +295,7 @@ fn a_shared_short_handle_resolves_as_ambiguous_rather_than_by_guess() {
     assert_eq!(storage.resolve_message_token(&second).unwrap(), second);
 }
 
-fn ingest_hinted(storage: &mut Storage, message_id: &str, remote_uid: u32) -> String {
+fn ingest_hinted(storage: &Storage, message_id: &str, remote_uid: u32) -> String {
     storage
         .ingest_message(
             &MessageIngestRequest {
@@ -324,7 +324,7 @@ fn ingest_hinted(storage: &mut Storage, message_id: &str, remote_uid: u32) -> St
 fn content_id_prefix_can_resolve_message() {
     let tmp = tempfile::tempdir().unwrap();
     let raw = message_bytes("content@example.com", "body");
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {
@@ -358,7 +358,7 @@ fn content_id_prefix_can_resolve_message() {
 fn local_size_fallback_uses_remote_uid_shape_for_storage_rows() {
     let tmp = tempfile::tempdir().unwrap();
     let raw = message_bytes("size@example.com", "body");
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     storage
         .ingest_message(
             &MessageIngestRequest {
@@ -388,9 +388,9 @@ fn local_size_fallback_uses_remote_uid_shape_for_storage_rows() {
 #[test]
 fn latest_from_prefers_exact_address_and_ignores_memos() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     ingest_dated(
-        &mut storage,
+        &storage,
         "mind",
         "sent",
         "mind@faberlang.local",
@@ -398,7 +398,7 @@ fn latest_from_prefers_exact_address_and_ignores_memos() {
         "old-mail",
     );
     ingest_dated(
-        &mut storage,
+        &storage,
         "mind",
         "memos",
         "mind@faberlang.local",
@@ -406,7 +406,7 @@ fn latest_from_prefers_exact_address_and_ignores_memos() {
         "newer-memo",
     );
     let newer = ingest_dated(
-        &mut storage,
+        &storage,
         "mind",
         "sent",
         "mind@faberlang.local",
@@ -425,9 +425,9 @@ fn latest_from_prefers_exact_address_and_ignores_memos() {
 #[test]
 fn latest_from_matches_display_name_form() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let id = ingest_dated(
-        &mut storage,
+        &storage,
         "acct",
         "sent",
         "Agent <agent@example.com>",
@@ -447,10 +447,12 @@ fn schema_v6_adds_from_addr_date_index_on_upgrade() {
     let storage = Storage::open_mailspace(tmp.path()).unwrap();
     storage
         .conn
+        .borrow_mut()
         .execute("DROP INDEX message_metadata_from_addr_date_idx", [])
         .unwrap();
     storage
         .conn
+        .borrow_mut()
         .execute(
             "INSERT OR REPLACE INTO storage_metadata (key, value) VALUES ('schema_version', '5')",
             [],
@@ -460,6 +462,7 @@ fn schema_v6_adds_from_addr_date_index_on_upgrade() {
     let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let present: i64 = storage
         .conn
+        .borrow()
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master
              WHERE type = 'index' AND name = 'message_metadata_from_addr_date_idx'",
@@ -470,6 +473,7 @@ fn schema_v6_adds_from_addr_date_index_on_upgrade() {
     assert_eq!(present, 1);
     let version: String = storage
         .conn
+        .borrow()
         .query_row(
             "SELECT value FROM storage_metadata WHERE key = 'schema_version'",
             [],
@@ -480,7 +484,7 @@ fn schema_v6_adds_from_addr_date_index_on_upgrade() {
 }
 
 fn ingest_dated(
-    storage: &mut Storage,
+    storage: &Storage,
     account: &str,
     role: &str,
     from: &str,
@@ -544,7 +548,7 @@ fn bound_request(handle: &str, mailbox: &str, uid: u32) -> MessageIngestRequest 
 fn move_message_to_role_rejects_wrong_account() {
     let tmp = tempfile::tempdir().unwrap();
     let raw = message_bytes("move@example.com", "body");
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {
@@ -581,7 +585,7 @@ fn move_message_to_role_rejects_wrong_account() {
 fn mark_message_deleted_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
     let raw = message_bytes("del@example.com", "body");
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let stored = storage
         .ingest_message(
             &MessageIngestRequest {
@@ -637,18 +641,21 @@ fn local_role(folder: &str) -> String {
 impl Storage {
     fn blob_count(&self) -> Result<usize, VivariumError> {
         self.conn
+            .borrow()
             .query_row("SELECT COUNT(*) FROM blobs", [], |row| row.get(0))
             .map_err(|e| VivariumError::Other(format!("failed to count blobs: {e}")))
     }
 
     fn message_count(&self) -> Result<usize, VivariumError> {
         self.conn
+            .borrow()
             .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
             .map_err(|e| VivariumError::Other(format!("failed to count messages: {e}")))
     }
 
     fn remote_binding_count(&self) -> Result<usize, VivariumError> {
         self.conn
+            .borrow()
             .query_row("SELECT COUNT(*) FROM remote_bindings", [], |row| row.get(0))
             .map_err(|e| VivariumError::Other(format!("failed to count remote bindings: {e}")))
     }
@@ -770,7 +777,7 @@ fn local_only_ingest_keeps_namespace_seeded_ids() {
 #[test]
 fn malformed_presented_id_is_rejected_before_any_side_effect() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("bad@example.com", "body");
     for bad in [
         "",
@@ -794,7 +801,7 @@ fn malformed_presented_id_is_rejected_before_any_side_effect() {
 #[test]
 fn presented_id_is_idempotent_but_never_swaps_existing_content() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let original = message_bytes("one@example.com", "original");
     let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
 
@@ -816,9 +823,9 @@ fn presented_id_is_idempotent_but_never_swaps_existing_content() {
 #[test]
 fn delivery_batch_refuses_one_presented_id_for_two_recipients() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("batch@example.com", "body");
-    let deliver = |storage: &mut Storage, requests: &[MessageIngestRequest]| {
+    let deliver = |storage: &Storage, requests: &[MessageIngestRequest]| {
         storage.deliver_raw_batch(requests, &raw, "send", "delivered", "inbox", "subject")
     };
 
@@ -826,7 +833,7 @@ fn delivery_batch_refuses_one_presented_id_for_two_recipients() {
         request_in("acct-a", "inbox", "s", Some(TRAVELING_ID), None),
         request_in("acct-b", "inbox", "s", Some(TRAVELING_ID), None),
     ];
-    let error = deliver(&mut storage, &clash).unwrap_err().to_string();
+    let error = deliver(&storage, &clash).unwrap_err().to_string();
     assert!(error.contains("more than once"), "{error}");
     assert_eq!(storage.message_count().unwrap(), 0);
 
@@ -834,7 +841,7 @@ fn delivery_batch_refuses_one_presented_id_for_two_recipients() {
         request_in("acct-a", "inbox", "s", Some(TRAVELING_ID), None),
         request_in("acct-b", "inbox", "s", None, None),
     ];
-    let stored = deliver(&mut storage, &mixed).unwrap();
+    let stored = deliver(&storage, &mixed).unwrap();
     assert_eq!(stored[0].message_id, TRAVELING_ID);
     assert_ne!(stored[1].message_id, TRAVELING_ID);
     assert_eq!(storage.message_count().unwrap(), 2);
@@ -843,7 +850,7 @@ fn delivery_batch_refuses_one_presented_id_for_two_recipients() {
 #[test]
 fn ingest_if_absent_inserts_once_and_leaves_existing_rows_alone() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("sync@example.com", "body");
     let request = request_in(
         "acct",
@@ -884,7 +891,7 @@ fn ingest_if_absent_inserts_once_and_leaves_existing_rows_alone() {
 #[test]
 fn ingest_if_absent_reports_a_conflict_for_different_content_under_a_held_id() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
     let original = message_bytes("one@example.com", "original");
     let foreign = message_bytes("two@example.com", "foreign");
@@ -913,7 +920,7 @@ fn ingest_if_absent_reports_a_conflict_for_different_content_under_a_held_id() {
 #[test]
 fn evicted_items_restore_in_place_with_their_blob_and_local_state() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("evict@example.com", "body");
     let request = request_in(
         "acct",
@@ -949,7 +956,7 @@ fn evicted_items_restore_in_place_with_their_blob_and_local_state() {
 #[test]
 fn a_restore_logs_no_second_delivery_event() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("evict@example.com", "body");
     let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
     let event = IngestEvent {
@@ -979,7 +986,7 @@ fn a_restore_logs_no_second_delivery_event() {
 #[test]
 fn a_shared_blob_survives_until_its_last_live_row_is_evicted() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("shared@example.com", "body");
     let other_id = "msg_aaaaaaaaaaaaaaaaaaaaaaaa";
     let (_, stored) = storage
@@ -1018,7 +1025,7 @@ fn project_binding(account: &str, uid: u32) -> RemoteBindingInput {
 #[test]
 fn bind_remote_binds_an_existing_row_and_leaves_its_state_alone() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("bind@example.com", "body");
     let request = request_in("acct", "needs", "s", Some(TRAVELING_ID), None);
     storage.ingest_if_absent(&request, &raw, None).unwrap();
@@ -1060,7 +1067,7 @@ fn bind_remote_binds_an_existing_row_and_leaves_its_state_alone() {
 #[test]
 fn bind_remote_refuses_a_missing_or_evicted_row() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("gone@example.com", "body");
     assert!(
         !storage
@@ -1084,7 +1091,7 @@ fn bind_remote_refuses_a_missing_or_evicted_row() {
 #[test]
 fn bind_remote_reports_a_position_another_row_holds() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let other = "msg_aaaaaaaaaaaaaaaaaaaaaaaa";
     for (id, body) in [(TRAVELING_ID, "one"), (other, "two")] {
         let raw = message_bytes(&format!("{body}@example.com"), body);
@@ -1113,7 +1120,7 @@ fn bind_remote_reports_a_position_another_row_holds() {
 #[test]
 fn live_lookups_find_rows_by_content_and_by_rfc_message_id() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
     let raw = message_bytes("Lookup@Example.com", "body");
     let other = "msg_aaaaaaaaaaaaaaaaaaaaaaaa";
     for (account, id) in [("a", TRAVELING_ID), ("b", other)] {
@@ -1171,11 +1178,11 @@ fn bind_input(uid: u32) -> RemoteBindingInput {
 #[test]
 fn a_batch_that_rolls_back_leaves_no_rows_and_one_that_commits_keeps_them() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
 
     storage.begin_batch().unwrap();
-    let first = ingest_hinted(&mut storage, "batch-one", 1);
-    let second = ingest_hinted(&mut storage, "batch-two", 2);
+    let first = ingest_hinted(&storage, "batch-one", 1);
+    let second = ingest_hinted(&storage, "batch-two", 2);
     assert!(storage.message_by_id(&first).unwrap().is_some());
     storage.rollback_batch().unwrap();
 
@@ -1190,7 +1197,7 @@ fn a_batch_that_rolls_back_leaves_no_rows_and_one_that_commits_keeps_them() {
     );
 
     storage.begin_batch().unwrap();
-    let kept = ingest_hinted(&mut storage, "batch-kept", 3);
+    let kept = ingest_hinted(&storage, "batch-kept", 3);
     storage.commit_batch().unwrap();
     let reopened = Storage::open_mailspace(tmp.path()).unwrap();
     assert!(reopened.message_by_id(&kept).unwrap().is_some());
@@ -1199,8 +1206,8 @@ fn a_batch_that_rolls_back_leaves_no_rows_and_one_that_commits_keeps_them() {
 #[test]
 fn the_holder_of_a_remote_position_is_found_by_its_binding_key() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
-    let held = ingest_hinted(&mut storage, "held-row", 7);
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let held = ingest_hinted(&storage, "held-row", 7);
 
     let mut remote = bind_input(7);
     remote.account = "acct".into();
@@ -1217,16 +1224,16 @@ fn two_connections_binding_at_once_wait_for_each_other_instead_of_failing() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
     {
-        let mut storage = Storage::open_mailspace(&dir).unwrap();
+        let storage = Storage::open_mailspace(&dir).unwrap();
         for n in 0..120 {
-            ingest_unbound(&mut storage, &format!("row-{n}"));
+            ingest_unbound(&storage, &format!("row-{n}"));
         }
     }
     let workers: Vec<_> = (0..2)
         .map(|worker| {
             let dir = dir.clone();
             std::thread::spawn(move || {
-                let mut storage = Storage::open_mailspace(&dir).unwrap();
+                let storage = Storage::open_mailspace(&dir).unwrap();
                 let mut failures = Vec::new();
                 for n in (worker..120).step_by(2) {
                     let uid = u32::try_from(n).unwrap() + 1;
@@ -1253,7 +1260,7 @@ fn two_connections_binding_at_once_wait_for_each_other_instead_of_failing() {
     );
 }
 
-fn ingest_unbound(storage: &mut Storage, message_id: &str) {
+fn ingest_unbound(storage: &Storage, message_id: &str) {
     storage
         .ingest_message(
             &MessageIngestRequest {
@@ -1274,9 +1281,9 @@ fn ingest_unbound(storage: &mut Storage, message_id: &str) {
 #[test]
 fn batch_event_load_splits_id_lists_beyond_sqlite_parameter_limit() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
-    ingest_unbound(&mut storage, "batch_events_a");
-    ingest_unbound(&mut storage, "batch_events_b");
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    ingest_unbound(&storage, "batch_events_a");
+    ingest_unbound(&storage, "batch_events_b");
     for (id, marker) in [
         ("batch_events_a", "probe_one"),
         ("batch_events_b", "probe_two"),
@@ -1317,9 +1324,9 @@ fn batch_event_load_splits_id_lists_beyond_sqlite_parameter_limit() {
 #[test]
 fn batch_link_load_splits_id_lists_beyond_sqlite_parameter_limit() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
-    ingest_unbound(&mut storage, "batch_link_child");
-    ingest_unbound(&mut storage, "batch_link_parent");
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    ingest_unbound(&storage, "batch_link_child");
+    ingest_unbound(&storage, "batch_link_parent");
     let child = resulting_content_id(&message_bytes(
         "batch_link_child@example.com",
         "batch_link_child",

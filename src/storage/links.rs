@@ -35,6 +35,7 @@ impl Storage {
             )));
         }
         self.conn
+            .borrow_mut()
             .execute(
                 "INSERT INTO mailspace_links (child_content_id, parent_content_id, source)
                  VALUES (?1, ?2, ?3)
@@ -64,6 +65,7 @@ impl Storage {
         child_content_id: &str,
     ) -> Result<Option<MailspaceLink>, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT child_content_id, parent_content_id, source
                  FROM mailspace_links WHERE child_content_id = ?1",
@@ -83,8 +85,8 @@ impl Storage {
         &self,
         parent_content_id: &str,
     ) -> Result<Vec<String>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT child_content_id FROM mailspace_links
                  WHERE parent_content_id = ?1 ORDER BY child_content_id",
@@ -97,6 +99,55 @@ impl Storage {
             row.map_err(|e| VivariumError::Other(format!("failed to read reply row: {e}")))
         })
         .collect()
+    }
+
+    /// The links of one thread: every edge whose endpoint is reachable from
+    /// `content_id`, without loading the whole link table. Each child has at
+    /// most one parent (the child column is the primary key), so a thread is
+    /// the ancestor chain plus every descendant of it.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn links_for_thread(
+        &self,
+        content_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, MailspaceLink>, VivariumError> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn
+            .prepare(
+                "WITH RECURSIVE
+                 up(cid) AS (
+                   SELECT ?1
+                   UNION
+                   SELECT parent_content_id FROM mailspace_links, up
+                    WHERE child_content_id = up.cid
+                 ),
+                 comp(cid) AS (
+                   SELECT cid FROM up
+                   UNION
+                   SELECT child_content_id FROM mailspace_links, comp
+                    WHERE parent_content_id = comp.cid
+                 )
+                 SELECT l.child_content_id, l.parent_content_id, l.source
+                 FROM mailspace_links l
+                 WHERE l.child_content_id IN (SELECT cid FROM comp)
+                    OR l.parent_content_id IN (SELECT cid FROM comp)
+                 ORDER BY l.child_content_id",
+            )
+            .map_err(|e| {
+                VivariumError::Other(format!("failed to prepare thread link query: {e}"))
+            })?;
+        let rows = stmt
+            .query_map(params![content_id], mailspace_link_from_row)
+            .map_err(|e| VivariumError::Other(format!("failed to query thread links: {e}")))?;
+        let mut map = std::collections::BTreeMap::new();
+        for row in rows {
+            let link = row.map_err(|e| {
+                VivariumError::Other(format!("failed to read thread link row: {e}"))
+            })?;
+            map.insert(link.child_content_id.clone(), link);
+        }
+        Ok(map)
     }
 
     /// Batch-load links for multiple child `content_ids`.
@@ -134,7 +185,8 @@ impl Storage {
              ORDER BY child_content_id",
             placeholders.join(",")
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare batch link query: {e}"))
         })?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
@@ -155,8 +207,8 @@ impl Storage {
     /// # Errors
     /// Returns a [`VivariumError`] if the database query fails.
     pub fn list_mailspace_links(&self) -> Result<Vec<MailspaceLink>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT child_content_id, parent_content_id, source
                  FROM mailspace_links ORDER BY child_content_id",
@@ -180,9 +232,7 @@ impl Storage {
         &self,
         content_id: &str,
     ) -> Result<Option<StoredMessageView>, VivariumError> {
-        let mut message = self
-            .conn
-            .query_row(
+        let mut message = self.conn.borrow().query_row(
                 &message_query("WHERE m.content_id = ?1 AND m.deleted_at IS NULL ORDER BY m.message_id LIMIT 1"),
                 params![content_id],
                 raw_stored_message_from_row,

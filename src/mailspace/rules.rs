@@ -189,7 +189,7 @@ impl Mailspace {
     ) -> Result<String, VivariumError> {
         let actor = self.resolve_identity(identity)?;
         let message = self.load_rule(handle)?;
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let newly = storage.absorb_message(&message.account, &message.message_id, &actor)?;
         if newly {
             storage.append_mailspace_event(&rule_event(

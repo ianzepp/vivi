@@ -96,7 +96,7 @@ impl<'a> Filer<'a> {
     /// pass.
     pub(crate) fn file_record(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         record: &Record,
         report: &mut PullReport,
         pending: &mut Vec<(String, String)>,
@@ -147,7 +147,7 @@ impl<'a> Filer<'a> {
     /// it was filed or found held; `false` means it was refused.
     fn file_new(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         record: &Record,
         bytes: &[u8],
         headers: &LetterHeaders,
@@ -203,7 +203,7 @@ impl<'a> Filer<'a> {
     /// (see [`letter_kind`]).
     fn ingest_row(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         record: &Record,
         bytes: &[u8],
         headers: &LetterHeaders,
@@ -371,7 +371,7 @@ impl<'a> Filer<'a> {
     /// a warning: the letter is already filed.
     fn bind_held(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         record: &Record,
         held: &[StoredMessageView],
         report: &mut PullReport,

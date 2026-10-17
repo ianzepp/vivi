@@ -73,7 +73,7 @@ pub fn prune(
         .map(str::trim)
         .filter(|project| !project.is_empty());
     let cutoff = cutoff_string(now, age)?;
-    let mut storage = mailspace.storage()?;
+    let storage = mailspace.storage()?;
     // Open work in flight is kept whichever folder holds it: the sender's
     // `sent` copy of work handed to another mailspace is the item here. A
     // `done` row is closed work by its folder, whatever its node says.

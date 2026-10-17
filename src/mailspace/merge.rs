@@ -91,7 +91,7 @@ pub fn import_mailspace(
     }
 
     let source_storage = Storage::open_mailspace(&source_dir)?;
-    let mut target_storage = target.storage()?;
+    let target_storage = target.storage()?;
     let mut report = MailspaceImportReport {
         dry_run: options.dry_run,
         source: source_dir,
@@ -99,12 +99,12 @@ pub fn import_mailspace(
         ..Default::default()
     };
     if options.dry_run {
-        run_import(&source_storage, &mut target_storage, true, &mut report)?;
+        run_import(&source_storage, &target_storage, true, &mut report)?;
         return Ok(report);
     }
     // One transaction: a conflict, or any failure, leaves the target as it was.
     target_storage.begin_batch()?;
-    let outcome = run_import(&source_storage, &mut target_storage, false, &mut report)
+    let outcome = run_import(&source_storage, &target_storage, false, &mut report)
         .and_then(|()| report.binding_conflict_error().map_or(Ok(()), Err));
     match outcome {
         Ok(()) => {
@@ -124,7 +124,7 @@ pub fn import_mailspace(
 
 fn run_import(
     source_storage: &Storage,
-    target_storage: &mut Storage,
+    target_storage: &Storage,
     dry_run: bool,
     report: &mut MailspaceImportReport,
 ) -> Result<(), VivariumError> {
@@ -141,7 +141,7 @@ fn run_import(
 
 fn import_messages(
     source_storage: &Storage,
-    target_storage: &mut Storage,
+    target_storage: &Storage,
     dry_run: bool,
     report: &mut MailspaceImportReport,
 ) -> Result<HashMap<String, String>, VivariumError> {
@@ -162,7 +162,7 @@ fn import_messages(
 
 fn import_one_message(
     source_storage: &Storage,
-    target_storage: &mut Storage,
+    target_storage: &Storage,
     source_message: StoredMessageView,
     dry_run: bool,
     report: &mut MailspaceImportReport,

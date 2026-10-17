@@ -143,7 +143,7 @@ pub fn follow_refs(
     depth: u8,
 ) -> Result<RefsReport, VivariumError> {
     check_depth(depth)?;
-    let mut storage = mailspace.storage()?;
+    let storage = mailspace.storage()?;
     let filer = Filer::new(mailspace, settings);
     let mut report = RefsReport::default();
     let mut pending = Vec::new();
@@ -162,7 +162,7 @@ pub fn follow_refs(
         report.hops += 1;
         report.looked_up += now.len();
         let mark = pull.filed_ids.len();
-        let missing = lookup_and_file(transport, &mut storage, &filer, now, pull, &mut pending)?;
+        let missing = lookup_and_file(transport, &storage, &filer, now, pull, &mut pending)?;
         report.unmatched += missing.len();
         scan = pull.filed_ids[mark..].to_vec();
         report.filed += scan.len();

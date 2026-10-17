@@ -27,6 +27,7 @@ impl Storage {
         occurred_at: &str,
     ) -> Result<i64, VivariumError> {
         self.conn
+            .borrow_mut()
             .execute(
                 "INSERT INTO mailspace_events (
                    occurred_at, command, event_type, actor_identity, account,
@@ -50,7 +51,7 @@ impl Storage {
                 ],
             )
             .map_err(|e| VivariumError::Other(format!("failed to append mailspace event: {e}")))?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(self.conn.borrow().last_insert_rowid())
     }
 
     /// Append every event in one transaction, sharing one timestamp.
@@ -62,13 +63,14 @@ impl Storage {
     /// Returns an error if the transaction cannot be opened or any insert
     /// fails. A failure leaves the log unchanged.
     pub fn append_mailspace_events(
-        &mut self,
+        &self,
         events: &[MailspaceEventInput],
     ) -> Result<(), VivariumError> {
         if events.is_empty() {
             return Ok(());
         }
-        let tx = self.conn.unchecked_transaction().map_err(|error| {
+        let conn = self.conn.borrow();
+        let tx = conn.unchecked_transaction().map_err(|error| {
             VivariumError::Other(format!("failed to open event transaction: {error}"))
         })?;
         let occurred_at = Utc::now().to_rfc3339();
@@ -90,6 +92,7 @@ impl Storage {
         occurred_at: &str,
     ) -> Result<bool, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT EXISTS(
                    SELECT 1 FROM mailspace_events
@@ -136,8 +139,8 @@ impl Storage {
         message_id: &str,
     ) -> Result<Vec<MailspaceEvent>, VivariumError> {
         let resolved = self.resolve_message_token(message_id)?;
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT event_id, occurred_at, command, event_type, actor_identity,
                         account, message_id, content_id, from_role, to_role,
@@ -196,7 +199,8 @@ impl Storage {
              ORDER BY message_id, occurred_at, event_id",
             placeholders.join(",")
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare batch event query: {e}"))
         })?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
@@ -233,7 +237,8 @@ impl Storage {
              ORDER BY event_id",
             placeholders.join(",")
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare typed event query: {e}"))
         })?;
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = types
@@ -257,8 +262,8 @@ impl Storage {
         &self,
         event_id: i64,
     ) -> Result<Vec<MailspaceEvent>, VivariumError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.borrow();
+        let mut stmt = conn
             .prepare(
                 "SELECT event_id, occurred_at, command, event_type, actor_identity,
                         account, message_id, content_id, from_role, to_role,
@@ -283,6 +288,7 @@ impl Storage {
     /// Returns a [`VivariumError`] if the database query fails.
     pub fn event_cursor_before(&self, occurred_at: &str) -> Result<i64, VivariumError> {
         self.conn
+            .borrow()
             .query_row(
                 "SELECT COALESCE(MAX(event_id), 0)
                  FROM mailspace_events WHERE occurred_at < ?1",

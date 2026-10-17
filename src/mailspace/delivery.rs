@@ -55,7 +55,7 @@ impl Mailspace {
                 "delivery needs at least one To or Cc recipient".into(),
             ));
         }
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let reply_parent = request
             .reply_to
             .as_deref()
@@ -78,9 +78,8 @@ impl Mailspace {
             );
         }
         let seed = Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let delivered_ids =
-            ingest_for_recipients(&mut storage, recipients, &request.role, &eml, seed)?;
-        let sent = ingest_sent_copy(&mut storage, &from, &eml, seed)?;
+        let delivered_ids = ingest_for_recipients(&storage, recipients, &request.role, &eml, seed)?;
+        let sent = ingest_sent_copy(&storage, &from, &eml, seed)?;
         if let Some((parent, _)) = reply_parent {
             storage.link_mailspace_content(&sent.content_id, &parent.content_id, "captured")?;
         }
@@ -143,7 +142,7 @@ impl Mailspace {
         })?;
         eml = add_header(&eml, "X-Vivi-Kind", "memo")?;
         let seed = Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let stored = storage.ingest_message(
             &MessageIngestRequest {
                 account: identity.clone(),
@@ -293,7 +292,7 @@ impl Mailspace {
         }
         let requests = raw_delivery_requests(&recipients, &role, data.len());
         let subject = parsed.subject().unwrap_or_default().to_string();
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let stored = storage.deliver_raw_batch(
             &requests,
             data,
@@ -678,7 +677,7 @@ impl Mailspace {
     ) -> Result<MoveOutcome, VivariumError> {
         let identity = self.resolve_identity(identity)?;
         let role = canonical_local_role(role)?;
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let before = self.move_target(&storage, &identity, handle, &role, command)?;
         if before.absorbed_at.is_some() {
             return Err(VivariumError::Message(format!(
@@ -691,7 +690,7 @@ impl Mailspace {
         // event letter, which carries the move to every mailspace holding
         // the item; any other move is local, and a close is a report.
         let event = self.try_emit_for_move(
-            &mut storage,
+            &storage,
             &identity,
             &before,
             &role,
@@ -701,7 +700,7 @@ impl Mailspace {
         )?;
         if event.is_none() {
             self.refuse_sent_copy_reopen(handle, &before, &role)?;
-            self.move_row_locally(&mut storage, &identity, &before, &role, note, command)?;
+            self.move_row_locally(&storage, &identity, &before, &role, note, command)?;
         }
         if let Some(metadata) = metadata {
             storage.set_item_metadata(&before.message_id, metadata)?;
@@ -757,7 +756,7 @@ impl Mailspace {
     /// Move the one row `before` names, with the note as a reply when given.
     fn move_row_locally(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         identity: &str,
         before: &StoredMessageView,
         role: &str,
@@ -873,7 +872,7 @@ fn raw_delivery_requests(
 }
 
 fn ingest_for_recipients(
-    storage: &mut Storage,
+    storage: &Storage,
     recipients: BTreeSet<String>,
     role: &str,
     eml: &str,
@@ -919,7 +918,7 @@ fn delivered_with_handles(
 }
 
 fn ingest_sent_copy(
-    storage: &mut Storage,
+    storage: &Storage,
     from: &str,
     eml: &str,
     seed: i64,

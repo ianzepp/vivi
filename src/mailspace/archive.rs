@@ -104,7 +104,7 @@ fn archive_kind(
     if view.absorbed_at.is_none() && view.local_role != "done" {
         return Ok(None);
     }
-    let kind = mailspace.source_kind(&mailspace.storage()?, view)?;
+    let kind = mailspace.source_kind(&*mailspace.storage()?, view)?;
     if view.absorbed_at.is_some()
         || (view.local_role == "done" && matches!(kind.as_str(), "task" | "need" | "want"))
     {

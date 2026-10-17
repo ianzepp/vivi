@@ -243,7 +243,7 @@ fn mint_records_backlog_events() {
     mailspace
         .backlog_attach("need", "n9handle0", "audit", &[])
         .unwrap();
-    let storage: Storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let events = storage.list_work_graph_events_after(0).unwrap();
     assert!(
         events

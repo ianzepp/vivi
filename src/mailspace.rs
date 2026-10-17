@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
@@ -95,11 +96,35 @@ pub use watch::{MailspaceWatchRequest, run_watch};
 const MAILSPACE_DIR: &str = ".vivi";
 const MAILSPACE_CONFIG: &str = "mailspace.toml";
 
-#[derive(Debug, Clone)]
 pub struct Mailspace {
     pub root: PathBuf,
     pub dir: PathBuf,
     pub config: MailspaceConfig,
+    /// One lazily-opened storage connection, reused by every `storage()`
+    /// call on this mailspace. Opening per call re-ran pragmas, permission
+    /// checks, and schema verification for each caller in one command.
+    storage: RefCell<Option<Storage>>,
+}
+
+impl Clone for Mailspace {
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            dir: self.dir.clone(),
+            config: self.config.clone(),
+            storage: RefCell::new(None),
+        }
+    }
+}
+
+impl std::fmt::Debug for Mailspace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mailspace")
+            .field("root", &self.root)
+            .field("dir", &self.dir)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,7 +341,12 @@ impl Mailspace {
                 dir.join(".gitignore").display()
             );
         }
-        Ok(Self { root, dir, config })
+        Ok(Self {
+            root,
+            dir,
+            config,
+            storage: RefCell::new(None),
+        })
     }
 
     /// A warning line when git tracks `.vivi/mailspace.toml`, which would
@@ -336,10 +366,19 @@ impl Mailspace {
 
     /// Open the `SQLite` storage for this mailspace.
     ///
+    /// The connection is opened once and cached on this mailspace; repeated
+    /// calls share it. The guard derefs to [`Storage`], whose methods all
+    /// take `&self`.
+    ///
     /// # Errors
     /// Returns an error if the database cannot be opened or migrations fail.
-    pub fn storage(&self) -> Result<Storage, VivariumError> {
-        Storage::open_mailspace(&self.dir)
+    pub fn storage(&self) -> Result<std::cell::Ref<'_, Storage>, VivariumError> {
+        if self.storage.borrow().is_none() {
+            let opened = Storage::open_mailspace(&self.dir)?;
+            *self.storage.borrow_mut() = Some(opened);
+        }
+        std::cell::Ref::filter_map(self.storage.borrow(), Option::as_ref)
+            .map_err(|_| VivariumError::Other("storage is not available".into()))
     }
 
     /// Set the mailspace description.

@@ -135,7 +135,7 @@ impl Mailspace {
         if message.absorbed_at.is_none() && matches!(expected_kind, "need" | "task" | "want") {
             self.require_quiet_absorb(&storage, &identity, &message, handle)?;
         }
-        let mut storage = storage;
+        let storage = storage;
         let newly = storage.absorb_message(&message.account, &message.message_id, &identity)?;
         if newly {
             storage.append_mailspace_event(&absorb_event(
@@ -147,7 +147,7 @@ impl Mailspace {
             if matches!(expected_kind, "need" | "task" | "want") {
                 // A reply is a new record, so the letter can be stored under
                 // the seal it reports.
-                self.emit_absorbed_letter(&mut storage, &identity, &message, note)?;
+                self.emit_absorbed_letter(&storage, &identity, &message, note)?;
             }
         }
         drop(storage);
@@ -163,7 +163,7 @@ impl Mailspace {
     /// row that is not held work either.
     fn emit_absorbed_letter(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         identity: &str,
         message: &StoredMessageView,
         note: Option<&str>,
@@ -260,7 +260,7 @@ impl Mailspace {
     /// record is not a memo, or if a storage operation fails.
     pub fn delete_memo(&self, identity: &str, handle: &str) -> Result<String, VivariumError> {
         let (identity, message) = self.resolve_owned_message(identity, handle)?;
-        let kind = self.source_kind(&self.storage()?, &message)?;
+        let kind = self.source_kind(&*self.storage()?, &message)?;
         if kind != "memo" {
             return Err(VivariumError::Message(format!(
                 "{handle} is {kind}, not memo; memo delete only removes memos"
@@ -293,7 +293,7 @@ impl Mailspace {
         request: SourceTaskRequest,
     ) -> Result<SourceTaskResult, VivariumError> {
         let (actor, source) = self.resolve_owned_message(&request.actor, &request.source_handle)?;
-        let source_kind = self.source_kind(&self.storage()?, &source)?;
+        let source_kind = self.source_kind(&*self.storage()?, &source)?;
         if source_kind != "want" {
             return Err(VivariumError::Message(format!(
                 "task from currently supports wants only; {} is {source_kind}",
@@ -335,7 +335,7 @@ impl Mailspace {
         update: WantMetadataUpdate,
     ) -> Result<String, VivariumError> {
         let (identity, want) = self.resolve_owned_message(identity, handle)?;
-        if self.source_kind(&self.storage()?, &want)? != "want" {
+        if self.source_kind(&*self.storage()?, &want)? != "want" {
             return Err(VivariumError::Message(format!("{handle} is not a want")));
         }
         if want.absorbed_at.is_some() {

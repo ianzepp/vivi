@@ -63,7 +63,7 @@ fn event(kind: ItemEventKind, id: &str, prev: &[&str], date: i64) -> EventLetter
 /// Store one raw reply letter beside `item`, from a member's prefix domain
 /// the way a pull files a letter, and return its content id.
 fn put_letter(mailspace: &Mailspace, item: &str, id: &str, date: &str, extra: &str) -> String {
-    let mut storage = mailspace.storage().unwrap();
+    let storage = mailspace.storage().unwrap();
     let message_id = storage.resolve_message_token(item).unwrap();
     let view = storage.message_by_id(&message_id).unwrap().unwrap();
     let item_held = held_item(&storage, &view.content_id).unwrap().unwrap();

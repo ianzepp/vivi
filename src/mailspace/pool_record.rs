@@ -110,7 +110,7 @@ impl Mailspace {
         record: &str,
         text: &str,
     ) -> Result<(), VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let id = storage.resolve_message_token(task)?;
         let view = storage
             .message_by_id(&id)?

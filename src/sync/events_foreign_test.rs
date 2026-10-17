@@ -104,7 +104,7 @@ fn an_absorbed_foreign_row_does_not_move_and_the_event_is_ignored() {
     let fx = foreign_need(&w);
     // The lifecycle refuses to seal another mailspace's work, so the test
     // seals the row at the storage level, as a restored archive row reads.
-    let mut storage = w.bob.mailspace.storage().unwrap();
+    let storage = w.bob.mailspace.storage().unwrap();
     storage
         .absorb_message(&fx.account, &w.bob.id_of(&fx.handle), "mind")
         .unwrap();
@@ -129,7 +129,7 @@ fn an_audit_repair_moves_a_stale_foreign_row() {
     // Roll the foreign row back by hand, as a checkout copied from before
     // the event is.
     let row = w.bob.row(&w.bob.id_of(&fx.handle)).unwrap();
-    let mut storage = w.bob.mailspace.storage().unwrap();
+    let storage = w.bob.mailspace.storage().unwrap();
     storage
         .move_message_to_role(&row.account, &row.message_id, "needs")
         .unwrap();

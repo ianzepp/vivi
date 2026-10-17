@@ -70,7 +70,7 @@ impl Mailspace {
     /// them.
     pub(in crate::mailspace) fn try_emit_for_move(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         identity: &str,
         before: &StoredMessageView,
         role: &str,
@@ -124,7 +124,7 @@ impl Mailspace {
     /// event application joins are pushed onto `joined`.
     pub(in crate::mailspace) fn settle_need_by_event(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         view: &StoredMessageView,
         to_done: bool,
         command: &str,
@@ -257,7 +257,7 @@ impl Mailspace {
 
     fn emit_item_event(
         &self,
-        storage: &mut Storage,
+        storage: &Storage,
         item: &HeldItem,
         request: &EmitRequest<'_>,
         joined: &mut Vec<String>,

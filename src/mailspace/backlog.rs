@@ -50,7 +50,7 @@ impl Mailspace {
         depends_on: &[String],
     ) -> Result<(), VivariumError> {
         validate_source_id(handle)?;
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let mut nodes = vec![BacklogNodeInput {
             source_id: handle.to_string(),
             label: subject.to_string(),
@@ -101,7 +101,7 @@ impl Mailspace {
         via: &str,
         joined: &mut Vec<String>,
     ) -> Result<bool, VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
             return Ok(false);
         };
@@ -201,7 +201,7 @@ impl Mailspace {
         }
         drop(storage);
         let stamp = self.emit_bound_letter(&parent_node.source_id, &unit_sources)?;
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         storage.bind_backlog_units(
             &graph.handle,
             parent,
@@ -231,7 +231,7 @@ impl Mailspace {
         unit_sources: &[String],
     ) -> Result<BindStamp, VivariumError> {
         let local = local_bind_stamp();
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let Ok(message_id) = storage.resolve_message_token(need_source) else {
             return Ok(local);
         };
@@ -253,7 +253,7 @@ impl Mailspace {
             .map(|id| ("X-Vivi-Event-Unit", format!("<{id}>")))
             .collect();
         let handle = self.emit_property_event(
-            &mut storage,
+            &storage,
             &item,
             &identity,
             PropertyKind::Bound,
@@ -336,7 +336,7 @@ impl Mailspace {
         via: &str,
         joined: &mut Vec<String>,
     ) -> Result<(), VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let message_id = match storage.resolve_message_token(handle) {
             Ok(message_id) => message_id,
             Err(_) => return Ok(()),
@@ -349,7 +349,7 @@ impl Mailspace {
         } else {
             ("done", "needs", "need reopen")
         };
-        if self.settle_need_by_event(&mut storage, &view, to_done, command, via, joined)? {
+        if self.settle_need_by_event(&storage, &view, to_done, command, via, joined)? {
             return Ok(());
         }
         for sibling_id in storage.message_ids_by_content(&view.content_id)? {
@@ -409,7 +409,7 @@ impl Mailspace {
             return Ok(None);
         }
         visited.push(handle.to_string());
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
             return Ok(None);
         };
@@ -468,7 +468,7 @@ impl Mailspace {
         prereq: &str,
         label: Option<&str>,
     ) -> Result<(), VivariumError> {
-        let mut storage = self.storage()?;
+        let storage = self.storage()?;
         let graph = storage
             .work_graph_by_code(BACKLOG_GRAPH_CODE)?
             .ok_or_else(|| VivariumError::Message("no backlog graph; send work first".into()))?;
