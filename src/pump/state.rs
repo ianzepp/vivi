@@ -484,6 +484,22 @@ impl State {
         counts
     }
 
+    /// Normalize a state imported from `state.json`: a need or unit written
+    /// before revisions existed is revision 1, not 0. Called only on the
+    /// import path, so ordinary load/save round-trips keep the old shape.
+    pub fn normalize_legacy(&mut self) {
+        for record in self.needs.values_mut() {
+            if record.revision == 0 {
+                record.revision = 1;
+            }
+        }
+        for unit in self.units.values_mut() {
+            if unit.revision == 0 {
+                unit.revision = 1;
+            }
+        }
+    }
+
     /// Startup repairs: fold `merging` back to `delivered`, rebuild an empty
     /// `plans_seen` from `needs`.
     fn normalize(&mut self) {

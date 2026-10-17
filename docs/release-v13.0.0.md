@@ -15,9 +15,11 @@ with WAL, one writer, and a schema version (`PRAGMA user_version = 2`).
 Unknown top-level and per-unit keys are preserved.
 
 The first start with a predecessor's `state.json` imports it in one
-transaction and renames the file to `state.json.imported`. The import is
-one-way. `vivi pump export --json <path>` writes the live database in the old
-`state.json` shape, which is the rollback path.
+transaction and renames the file to `state.json.imported`. Imported needs and
+units without a revision become revision 1. The import is one-way. `vivi pump
+export --json <path>` writes the live database in the old `state.json` shape,
+which is the rollback path. A database written by a newer binary is refused,
+never downgraded.
 
 ## Amendments
 

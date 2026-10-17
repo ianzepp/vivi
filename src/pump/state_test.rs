@@ -5,7 +5,7 @@ use std::fs;
 use serde_json::json;
 use tempfile::tempdir;
 
-use crate::pump::state::{MergeResult, Promotion, State, Status, Unit};
+use crate::pump::state::{MergeResult, NeedRecord, Promotion, State, Status, Unit};
 
 /// A `state.json` as the pump writes it: one-space indent, `null`s
 /// for absent models, `baseline` null before the first gate, `rr` an int.
@@ -464,6 +464,26 @@ fn an_unknown_status_loads_and_is_written_back_verbatim() {
     // The same string interns to an equal status.
     assert_eq!(st.units["a-1"].status, Status::from_name("parked-by-hand"));
     assert_eq!(Status::from_name("withdrawn"), Status::Withdrawn);
+}
+
+#[test]
+fn imported_legacy_revisions_become_one() {
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("n"),
+        NeedRecord {
+            verdict: String::from("units"),
+            ..NeedRecord::default()
+        },
+    );
+    st.units.insert(String::from("u"), Unit::default());
+    st.normalize_legacy();
+    assert_eq!(st.needs["n"].revision, 1);
+    assert_eq!(st.units["u"].revision, 1);
+    // A real revision is left alone.
+    st.needs.get_mut("n").unwrap().revision = 3;
+    st.normalize_legacy();
+    assert_eq!(st.needs["n"].revision, 3);
 }
 
 #[test]

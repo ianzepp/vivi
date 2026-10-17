@@ -180,8 +180,10 @@ mid-merge re-feeds the unit.
 ### 5.1 Migration and export
 
 On startup, when `pump.db` has never been written and `state.json` exists, the
-pump imports the file in one transaction and renames it to
-`state.json.imported`. The import is one-way.
+pump imports the file in one transaction, sets imported needs and units
+without a revision to revision 1, and renames the file to
+`state.json.imported`. The import is one-way. A `pump.db` whose schema is
+newer than the binary is refused, not rewritten.
 
 `vivi pump export --json <path>` writes the live database in the
 `state.json` shape so a 12.x pump can read it. The export is a snapshot, not a

@@ -350,6 +350,11 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(db_err("read user_version"))?;
+    if version > SCHEMA_VERSION {
+        return Err(VivariumError::Message(format!(
+            "pump.db schema {version} is newer than this binary ({SCHEMA_VERSION}); refusing to open"
+        )));
+    }
     if version > 0 && version < SCHEMA_VERSION {
         migrate_v1(conn)?;
     }

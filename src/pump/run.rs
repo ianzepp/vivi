@@ -135,7 +135,8 @@ pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
     let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
     let json_path = ctx.home.join("state.json");
     let mut st = if store.is_empty()? && json_path.is_file() {
-        let imported = State::load(&json_path)?;
+        let mut imported = State::load(&json_path)?;
+        imported.normalize_legacy();
         store.save(&imported)?;
         let archived = ctx.home.join("state.json.imported");
         fs::rename(&json_path, &archived)?;

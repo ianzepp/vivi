@@ -18,8 +18,9 @@ Start the 13.x pump. On the first tick it:
 
 1. creates `pump.db` with schema version 2;
 2. imports `state.json` in one transaction;
-3. renames `state.json` to `state.json.imported`;
-4. continues from the imported units and needs.
+3. sets every imported need and unit without a revision to revision 1;
+4. renames `state.json` to `state.json.imported`;
+5. continues from the imported units and needs.
 
 Check `vivi pump status` and `<home>/log.txt`. The import logs one line naming
 the archived file.
@@ -41,4 +42,5 @@ pump home.
 `pump.db` carries `PRAGMA user_version = 2`. Readers (`need show`, `board
 --pump`, `boot`, `need list --pump`) open it read-only and refuse an unknown
 version with `pump state unreadable (schema N, expected 2)`. The pump is the
-only writer.
+only writer, and it refuses a database whose version is newer than the binary
+rather than rewriting the marker.

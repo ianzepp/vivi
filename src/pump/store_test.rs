@@ -167,6 +167,26 @@ fn a_version_one_database_gains_the_revision_columns() {
 }
 
 #[test]
+fn a_newer_schema_is_refused_and_left_alone() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "user_version", 99).unwrap();
+    drop(conn);
+    let err = match PumpStore::open(&path) {
+        Ok(_) => panic!("a newer schema must be refused"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("newer than this binary"), "{err}");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 99);
+}
+
+#[test]
 fn an_unknown_status_survives_the_round_trip() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);

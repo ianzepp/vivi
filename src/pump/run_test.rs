@@ -279,6 +279,8 @@ fn the_live_state_snapshot_imports_into_pump_db() {
         .unwrap();
     assert_eq!(back.units.len(), want.units.len());
     assert_eq!(back.needs.len(), want.needs.len());
+    assert!(back.units.values().all(|unit| unit.revision >= 1));
+    assert!(back.needs.values().all(|need| need.revision >= 1));
     assert!(ctx.home.join("state.json.imported").is_file());
 }
 
