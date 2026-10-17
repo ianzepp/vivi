@@ -1270,3 +1270,74 @@ fn ingest_unbound(storage: &mut Storage, message_id: &str) {
         )
         .unwrap();
 }
+
+#[test]
+fn batch_event_load_splits_id_lists_beyond_sqlite_parameter_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    ingest_unbound(&mut storage, "batch_events_a");
+    ingest_unbound(&mut storage, "batch_events_b");
+    for (id, marker) in [
+        ("batch_events_a", "probe_one"),
+        ("batch_events_b", "probe_two"),
+    ] {
+        storage
+            .append_mailspace_event(&MailspaceEventInput {
+                command: "want".into(),
+                event_type: marker.into(),
+                actor_identity: None,
+                account: "acct".into(),
+                message_id: id.to_string(),
+                content_id: "cnt_probe".into(),
+                from_role: None,
+                to_role: None,
+                from_identity: None,
+                to_identity: None,
+                subject: "probe".into(),
+                note: None,
+            })
+            .unwrap();
+    }
+
+    let mut ids: Vec<String> = (0..40_000).map(|i| format!("filler_{i}")).collect();
+    ids.push("batch_events_a".into());
+    ids.push("batch_events_b".into());
+    let map = storage.list_mailspace_events_for_messages(&ids).unwrap();
+
+    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["batch_events_a", "batch_events_b"]);
+    let types_a: Vec<&str> = map["batch_events_a"]
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert!(types_a.contains(&"probe_one"));
+}
+
+#[test]
+fn batch_link_load_splits_id_lists_beyond_sqlite_parameter_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut storage = Storage::open_mailspace(tmp.path()).unwrap();
+    ingest_unbound(&mut storage, "batch_link_child");
+    ingest_unbound(&mut storage, "batch_link_parent");
+    let child = resulting_content_id(&message_bytes(
+        "batch_link_child@example.com",
+        "batch_link_child",
+    ));
+    let parent = resulting_content_id(&message_bytes(
+        "batch_link_parent@example.com",
+        "batch_link_parent",
+    ));
+    storage
+        .link_mailspace_content(&child, &parent, "source")
+        .unwrap();
+
+    let mut ids: Vec<String> = (0..40_000).map(|i| format!("filler_{i}")).collect();
+    ids.push(child.clone());
+    let map = storage.list_mailspace_links_for_children(&ids).unwrap();
+
+    assert_eq!(map.len(), 1);
+    let link = &map[&child];
+    assert_eq!(link.parent_content_id, parent);
+    assert_eq!(link.source, "source");
+}

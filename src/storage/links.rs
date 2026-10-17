@@ -99,7 +99,10 @@ impl Storage {
         .collect()
     }
 
-    /// Batch-load links for multiple child `content_ids` in a single query.
+    /// Batch-load links for multiple child `content_ids`.
+    ///
+    /// IDs are queried in chunks of [`SQL_PARAMETER_CHUNK`] so one statement
+    /// never exceeds SQLite's bound-parameter limit.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if the database query fails.
@@ -107,14 +110,23 @@ impl Storage {
         &self,
         content_ids: &[String],
     ) -> Result<HashMap<String, MailspaceLink>, VivariumError> {
-        if content_ids.is_empty() {
-            return Ok(HashMap::new());
+        let mut map = HashMap::new();
+        for chunk in content_ids.chunks(super::SQL_PARAMETER_CHUNK) {
+            for link in self.links_for_child_chunk(chunk)? {
+                map.insert(link.child_content_id.clone(), link);
+            }
         }
-        let placeholders: Vec<_> = content_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect();
+        Ok(map)
+    }
+
+    /// Load links for one chunk of child `content_ids` in a single query.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    fn links_for_child_chunk(&self, chunk: &[String]) -> Result<Vec<MailspaceLink>, VivariumError> {
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>();
         let sql = format!(
             "SELECT child_content_id, parent_content_id, source
              FROM mailspace_links
@@ -125,20 +137,17 @@ impl Storage {
         let mut stmt = self.conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare batch link query: {e}"))
         })?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = content_ids
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
             .iter()
             .map(|id| id as &dyn rusqlite::types::ToSql)
             .collect();
         let rows = stmt
             .query_map(params_refs.as_slice(), mailspace_link_from_row)
             .map_err(|e| VivariumError::Other(format!("failed to query batch links: {e}")))?;
-        let mut map = HashMap::new();
-        for row in rows {
-            let link = row
-                .map_err(|e| VivariumError::Other(format!("failed to read batch link row: {e}")))?;
-            map.insert(link.child_content_id.clone(), link);
-        }
-        Ok(map)
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read batch link row: {e}")))
+        })
+        .collect()
     }
 
     /// List all mailspace links.

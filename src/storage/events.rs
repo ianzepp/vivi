@@ -156,7 +156,10 @@ impl Storage {
         .collect()
     }
 
-    /// Batch-load events for multiple message IDs in a single query.
+    /// Batch-load events for multiple message IDs.
+    ///
+    /// IDs are queried in chunks of [`SQL_PARAMETER_CHUNK`] so one statement
+    /// never exceeds SQLite's bound-parameter limit.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if the database query fails.
@@ -164,14 +167,26 @@ impl Storage {
         &self,
         message_ids: &[String],
     ) -> Result<HashMap<String, Vec<MailspaceEvent>>, VivariumError> {
-        if message_ids.is_empty() {
-            return Ok(HashMap::new());
+        let mut map: HashMap<String, Vec<MailspaceEvent>> = HashMap::new();
+        for chunk in message_ids.chunks(super::SQL_PARAMETER_CHUNK) {
+            for event in self.events_for_message_chunk(chunk)? {
+                map.entry(event.message_id.clone()).or_default().push(event);
+            }
         }
-        let placeholders: Vec<_> = message_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect();
+        Ok(map)
+    }
+
+    /// Load events for one chunk of message IDs in a single query.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    fn events_for_message_chunk(
+        &self,
+        chunk: &[String],
+    ) -> Result<Vec<MailspaceEvent>, VivariumError> {
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>();
         let sql = format!(
             "SELECT event_id, occurred_at, command, event_type, actor_identity,
                     account, message_id, content_id, from_role, to_role,
@@ -184,21 +199,17 @@ impl Storage {
         let mut stmt = self.conn.prepare(&sql).map_err(|e| {
             VivariumError::Other(format!("failed to prepare batch event query: {e}"))
         })?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = message_ids
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = chunk
             .iter()
             .map(|id| id as &dyn rusqlite::types::ToSql)
             .collect();
         let rows = stmt
             .query_map(params_refs.as_slice(), mailspace_event_from_row)
             .map_err(|e| VivariumError::Other(format!("failed to query batch events: {e}")))?;
-        let mut map: HashMap<String, Vec<MailspaceEvent>> = HashMap::new();
-        for row in rows {
-            let event = row.map_err(|e| {
-                VivariumError::Other(format!("failed to read batch event row: {e}"))
-            })?;
-            map.entry(event.message_id.clone()).or_default().push(event);
-        }
-        Ok(map)
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read batch event row: {e}")))
+        })
+        .collect()
     }
 
     /// List every event whose type is one of `types`, oldest first.

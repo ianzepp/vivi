@@ -50,6 +50,11 @@ pub use sync::{IngestEvent, IngestOutcome};
 const MAILSPACE_DB_FILENAME: &str = "mail.sqlite";
 const BLOBS_DIR: &str = "blobs";
 
+/// Maximum bound parameters per batch-load statement. SQLite refuses to
+/// prepare a statement with more parameters than its host limit (32,766 in
+/// the bundled build), so id lists are queried in chunks of this size.
+const SQL_PARAMETER_CHUNK: usize = 10_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMessage {
     pub message_id: String,
