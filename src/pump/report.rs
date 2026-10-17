@@ -77,6 +77,12 @@ pub fn read(home: &Path) -> Result<PumpRead, VivariumError> {
 }
 
 impl Snapshot {
+    /// The loaded state, for the closeout and amendment passes.
+    #[must_use]
+    pub(crate) fn state(&self) -> &State {
+        &self.state
+    }
+
     /// The pump state for one need, when the pump has planned it.
     #[must_use]
     pub fn need(&self, handle: &str) -> Option<NeedSummary> {

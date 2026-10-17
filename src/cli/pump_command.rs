@@ -14,6 +14,8 @@ pub enum PumpSubcommand {
     Once(PumpOnceCommand),
     /// Write the live pump.db as the state.json shape
     Export(PumpExportCommand),
+    /// List complete but open needs, or close one
+    Closeout(PumpCloseoutCommand),
 }
 
 #[derive(Debug, Args)]
@@ -32,6 +34,22 @@ pub struct PumpStatusCommand {
 
 #[derive(Debug, Args)]
 pub struct PumpOnceCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpCloseoutCommand {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+    /// Close this complete need (handle or unambiguous prefix)
+    #[arg(long, value_name = "HANDLE")]
+    pub close: Option<String>,
+    /// Identity performing the close (required with --close)
+    #[arg(long = "for")]
+    pub for_identity: Option<String>,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

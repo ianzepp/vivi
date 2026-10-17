@@ -2,6 +2,7 @@
 
 pub mod board;
 pub mod brief;
+pub mod closeout;
 pub mod collect;
 pub mod config;
 pub mod dispatch;

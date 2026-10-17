@@ -250,6 +250,66 @@ fn save(ctx: &Ctx, st: &State) {
     }
 }
 
+/// `vivi pump closeout`: list complete-but-open needs, or close one.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the pump state is missing or unreadable,
+/// `--close` names a need that is not complete and open, `--for` is missing
+/// with `--close`, or the lifecycle move fails.
+pub fn closeout(
+    project: &Path,
+    json: bool,
+    close: Option<&str>,
+    for_identity: Option<&str>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(Some(project))?;
+    let cfg = pump_config(&mailspace)?;
+    let home = cfg.home_dir(project);
+    let snapshot = match crate::pump::report::read(&home)? {
+        crate::pump::report::PumpRead::Ready(snapshot) => snapshot,
+        crate::pump::report::PumpRead::Missing => {
+            return Err(VivariumError::Message(format!(
+                "no pump.db at {}",
+                home.join(DB_FILENAME).display()
+            )));
+        }
+        crate::pump::report::PumpRead::Unreadable(why) => {
+            return Err(VivariumError::Message(format!("pump.db unreadable: {why}")));
+        }
+    };
+    let rows = crate::pump::closeout::complete_open(&mailspace, &snapshot)?;
+    if let Some(handle) = close {
+        let row = rows
+            .iter()
+            .find(|row| row.handle == handle || row.handle.starts_with(handle))
+            .ok_or_else(|| {
+                VivariumError::Message(format!("{handle}: not a complete-but-open need"))
+            })?;
+        let receipt = crate::pump::closeout::close(&mailspace, row, for_identity)?;
+        println!("{receipt}");
+        return Ok(());
+    }
+    if json {
+        let text = serde_json::to_string_pretty(&rows)
+            .map_err(|err| VivariumError::Message(err.to_string()))?;
+        println!("{text}");
+        return Ok(());
+    }
+    println!("complete but open: {}", rows.len());
+    println!("  handle  units  tip  from  completed  subject");
+    for row in &rows {
+        let tip: String = row.tip.as_deref().unwrap_or("-").chars().take(10).collect();
+        let completed = row
+            .completed_at
+            .map_or_else(|| String::from("-"), utc_stamp);
+        println!(
+            "  {}  {}/{}  {}  {}  {}  {}",
+            row.handle, row.merged, row.units, tip, row.from, completed, row.subject
+        );
+    }
+    Ok(())
+}
+
 /// Write the live `pump.db` as the `state.json` shape at `out`.
 ///
 /// # Errors

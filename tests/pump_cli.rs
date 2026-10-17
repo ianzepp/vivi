@@ -152,6 +152,11 @@ fn send_need(project: &tempfile::TempDir) -> String {
 
 /// Write a `pump.db` whose one need is complete.
 fn write_pump(project: &tempfile::TempDir, handle: &str) {
+    write_pump_status(project, handle, Status::Merged);
+}
+
+/// Write a `pump.db` whose one unit has `status`.
+fn write_pump_status(project: &tempfile::TempDir, handle: &str, status: Status) {
     let mut state = State::default();
     state.needs.insert(
         handle.to_owned(),
@@ -165,12 +170,60 @@ fn write_pump(project: &tempfile::TempDir, handle: &str) {
         format!("{handle}-1"),
         Unit {
             need: handle.to_owned(),
-            status: Status::Merged,
+            status,
             ..Unit::default()
         },
     );
     let mut store = PumpStore::open(&pump_home(project).join(DB_FILENAME)).unwrap();
     store.save(&state).unwrap();
+}
+
+#[test]
+fn pump_closeout_lists_and_closes_a_complete_need() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump(&project, &handle);
+    let listed = vivi(["pump", "closeout", "--json", "--project", root(&project)]);
+    assert_success(&listed);
+    println!("listed={}", stdout(&listed));
+    assert!(stdout(&listed).contains(&handle), "{}", stdout(&listed));
+    let closed = vivi([
+        "pump",
+        "closeout",
+        "--close",
+        &handle,
+        "--project",
+        root(&project),
+    ]);
+    assert_success(&closed);
+    let done = vivi([
+        "need",
+        "list",
+        "--for",
+        "mind",
+        "--status",
+        "done",
+        "--json",
+        "--project",
+        root(&project),
+    ]);
+    assert_success(&done);
+    assert!(
+        stdout(&done).contains(&handle),
+        "closed={:?}\ndone={}",
+        stdout(&closed),
+        stdout(&done)
+    );
+}
+
+#[test]
+fn pump_closeout_skips_a_stuck_need() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump_status(&project, &handle, Status::Stuck);
+    let listed = vivi(["pump", "closeout", "--json", "--project", root(&project)]);
+    assert_success(&listed);
+    assert!(!stdout(&listed).contains(&handle), "{}", stdout(&listed));
 }
 
 #[test]

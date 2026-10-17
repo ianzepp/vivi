@@ -16,6 +16,12 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             Ok(())
         }
         PumpSubcommand::Export(cmd) => pump_run::export(&project_root(&cmd.project), &cmd.json),
+        PumpSubcommand::Closeout(cmd) => pump_run::closeout(
+            &project_root(&cmd.project),
+            cmd.json,
+            cmd.close.as_deref(),
+            cmd.for_identity.as_deref(),
+        ),
     }
 }
 

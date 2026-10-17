@@ -187,6 +187,18 @@ pump imports the file in one transaction and renames it to
 `state.json` shape so a 12.x pump can read it. The export is a snapshot, not a
 second live store; the pump never writes it.
 
+### 5.2 Complete-but-open needs
+
+The pump never closes a Vivi need on its tick. When every unit of a need is
+satisfied it appends a `needs-ready.txt` line and posts the `merged` reply;
+the registry record stays open until a person closes it.
+
+`vivi pump closeout` joins the two records and lists every need whose units
+are all satisfied while its Vivi copy is still open, with the unit count, the
+newest integration tip and the completion time. `vivi pump closeout --close
+<handle>` performs the lifecycle move as the item's holder (or `--for`), then
+accepts it as the author. The `--json` form is the same rows for a script.
+
 ## 6. The unit state machine
 
 States:

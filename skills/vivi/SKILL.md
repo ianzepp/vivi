@@ -1936,6 +1936,12 @@ row. `boot` adds a `pump: local execution state` section with unit counts,
 complete-but-open, stuck and exception counts. `board --pump` adds the same
 summary as a `pump (local)` block. `vivi trace` does not show pump state.
 
+The pump never closes a need on its tick. `vivi pump closeout` lists every
+need whose units are all satisfied while its Vivi copy is still open, with the
+unit count, integration tip and completion time. `vivi pump closeout --close
+<handle>` moves it as the holder (or `--for <identity>`) and accepts it as the
+author; `--json` gives the same rows for a script.
+
 `log.txt` is the event
 stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`
 lines; shapes in the protocols reference, section 9.2).

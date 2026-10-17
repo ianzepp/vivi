@@ -33,7 +33,8 @@ pub use pool_command::{
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
 };
 pub use pump_command::{
-    PumpExportCommand, PumpOnceCommand, PumpRunCommand, PumpStatusCommand, PumpSubcommand,
+    PumpCloseoutCommand, PumpExportCommand, PumpOnceCommand, PumpRunCommand, PumpStatusCommand,
+    PumpSubcommand,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
