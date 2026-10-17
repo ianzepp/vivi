@@ -16,16 +16,16 @@ mod sync_command;
 pub use board_command::BoardCommand;
 pub use mailspace_command::{
     AbsorbCommand, CycleCommand, GoalCommand, GraphActivateCommand, GraphApplyCommand,
-    GraphAuditCommand, GraphCommand, GraphCompleteCommand, GraphConnectCommand,
-    GraphEdgeAddCommand, GraphEdgeCommand, GraphExportCommand, GraphImportCommand,
-    GraphNodeAddCommand, GraphNodeCommand, GraphReadyCommand, GraphShowCommand, KindWatchCommand,
-    LocalSendCommand, MailAbsorbStatus, MailCommand, MailDumpCommand, MailListCommand,
-    MailReplyCommand, MailThreadCommand, MailspaceArchiveCommand, MailspaceCommand,
-    MailspaceIdentityCommand, MailspaceImportCommand, MailspaceWatchCommand, MarkCommand,
-    MemoCommand, NeedCommand, NeedSendCommand, RuleCommand, RuleRetireCommand, RuleSaveCommand,
-    RuleSupersedeCommand, TaskCommand, TaskDumpCommand, TaskDumpStatusArg, TaskFromCommand,
-    TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand, WantStatus,
-    WatchCommon,
+    GraphAuditCommand, GraphBlockedCommand, GraphCommand, GraphCompleteCommand,
+    GraphConnectCommand, GraphEdgeAddCommand, GraphEdgeCommand, GraphExportCommand,
+    GraphImportCommand, GraphNodeAddCommand, GraphNodeCommand, GraphReadyCommand, GraphShowCommand,
+    KindWatchCommand, LocalSendCommand, MailAbsorbStatus, MailCommand, MailDumpCommand,
+    MailListCommand, MailReplyCommand, MailThreadCommand, MailspaceArchiveCommand,
+    MailspaceCommand, MailspaceIdentityCommand, MailspaceImportCommand, MailspaceWatchCommand,
+    MarkCommand, MemoCommand, NeedCommand, NeedSendCommand, RuleCommand, RuleRetireCommand,
+    RuleSaveCommand, RuleSupersedeCommand, TaskCommand, TaskDumpCommand, TaskDumpStatusArg,
+    TaskFromCommand, TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand,
+    WantStatus, WatchCommon,
 };
 pub use mcp_command::McpCommand;
 pub use pool_command::{

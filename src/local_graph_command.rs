@@ -6,9 +6,9 @@ use std::collections::HashSet;
 
 use vivi::VivariumError;
 use vivi::cli::{
-    GraphActivateCommand, GraphApplyCommand, GraphAuditCommand, GraphCommand, GraphCompleteCommand,
-    GraphConnectCommand, GraphExportCommand, GraphImportCommand, GraphNodeCommand,
-    GraphReadyCommand, GraphShowCommand,
+    GraphActivateCommand, GraphApplyCommand, GraphAuditCommand, GraphBlockedCommand, GraphCommand,
+    GraphCompleteCommand, GraphConnectCommand, GraphExportCommand, GraphImportCommand,
+    GraphNodeCommand, GraphReadyCommand, GraphShowCommand,
 };
 use vivi::mailspace::{GraphFrontier, GraphShow, Mailspace, frontier_from_show};
 
@@ -19,6 +19,7 @@ pub(crate) fn handle_graph_command(command: &GraphCommand) -> Result<(), Vivariu
         GraphCommand::Show(command) => handle_graph_show(command),
         GraphCommand::Export(command) => handle_graph_export(command),
         GraphCommand::Ready(command) => handle_graph_ready(command),
+        GraphCommand::Blocked(command) => handle_graph_blocked(command),
         GraphCommand::Audit(command) => handle_graph_audit(command),
         GraphCommand::Connect(command) => handle_graph_connect(command),
         GraphCommand::Complete(command) => handle_graph_complete(command),
@@ -70,6 +71,15 @@ fn handle_graph_ready(command: &GraphReadyCommand) -> Result<(), VivariumError> 
         .map(|show| frontier_with_kind_filter(show, command.kind.as_deref()))
         .collect();
     vivi::mailspace::print_frontiers(&frontiers, command.json, command.confirm_large)
+}
+
+fn handle_graph_blocked(command: &GraphBlockedCommand) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(command.project.as_deref())?;
+    if let Some(kind) = command.kind.as_deref() {
+        validate_kind_filter(kind)?;
+    }
+    let nodes = mailspace.graph_blocked(&command.graph, command.kind.as_deref())?;
+    vivi::mailspace::print_blocked(&nodes, command.json, command.confirm_large)
 }
 
 fn validate_kind_filter(kind: &str) -> Result<(), VivariumError> {

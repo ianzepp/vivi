@@ -18,6 +18,8 @@ pub enum GraphCommand {
     Export(GraphExportCommand),
     /// Show ready/blocked/active frontier (status loops; not topology)
     Ready(GraphReadyCommand),
+    /// List blocked nodes with the prerequisites still unfinished
+    Blocked(GraphBlockedCommand),
     /// Audit backlog citizenship; optionally repair drift
     Audit(GraphAuditCommand),
     /// Add a post-hoc prerequisite between two backlog items
@@ -134,6 +136,30 @@ pub struct GraphReadyCommand {
     pub kind: Option<String>,
 
     /// Output compact JSON frontier
+    #[arg(long)]
+    pub json: bool,
+
+    /// Allow large JSON stdout (over 64 KiB)
+    #[arg(long = "confirm-large")]
+    pub confirm_large: bool,
+
+    /// Project root to use
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+/// List blocked nodes: the prerequisites each one is still waiting on.
+#[derive(Debug, Clone, Parser)]
+pub struct GraphBlockedCommand {
+    /// Graph code or handle; defaults to the backlog graph
+    #[arg(default_value = "backlog")]
+    pub graph: String,
+
+    /// Keep only nodes of this kind (task, need, want, decision, stub, parked)
+    #[arg(long)]
+    pub kind: Option<String>,
+
+    /// Output compact JSON rows
     #[arg(long)]
     pub json: bool,
 

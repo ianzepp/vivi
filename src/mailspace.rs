@@ -63,9 +63,10 @@ pub use dump::{
 };
 pub use goals::GoalView;
 pub use graph::{
-    GraphActionReceipt, GraphEdgeView, GraphFrontier, GraphFrontierGate, GraphImportReceipt,
-    GraphNodeView, GraphShow, action_receipt_from_show, format_gates, frontier_from_show,
-    print_action_receipt, print_frontier, print_frontiers, print_import_report, split_ready_gates,
+    GraphActionReceipt, GraphBlockedNode, GraphEdgeView, GraphFrontier, GraphFrontierGate,
+    GraphImportReceipt, GraphNodeView, GraphShow, action_receipt_from_show, format_gates,
+    frontier_from_show, print_action_receipt, print_blocked, print_frontier, print_frontiers,
+    print_import_report, split_ready_gates,
 };
 pub use graph_mutate::{GraphApplyReceipt, print_apply_report};
 pub use holding::is_foreign_account;

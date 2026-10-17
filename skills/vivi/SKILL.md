@@ -521,7 +521,10 @@ host then runs `vivi step --apply <handle>` — idempotent, never settles
 itself — which runs the receipt screen when a judgment provider is
 configured and records `via=step-apply` only when the node was still open.
 
-Use `graph show`, `graph ready`, and `board --graph` for inspection. `graph
+Use `graph show`, `graph ready`, `graph blocked`, and `board --graph` for
+inspection. `graph blocked [GRAPH] [--kind …]` lists each blocked node with
+the prerequisites it is still waiting on, and `--json` gives the same rows as
+`{source_id, kind, label, blocked_by}`. `graph
 ready` prints a `counts` line first (`ready`, `blocked`, `active`, `awaiting`,
 `reported`, `gates`; `--json` has the same lists as fields) — use it (or
 `--kind task|need|want|decision|stub|parked`) instead of reading long id
@@ -1976,9 +1979,14 @@ blocks its dependents until a person unblocks it.
 2. `PAUSE` exists in the home. A unit's need listed in `priority.txt` (the
    priority file, below) goes first in dispatch and merge order; if a priority
    need is not moving, check that file for a typo in the handle.
-3. The unit waits on `after`: a prerequisite that is not `merged` or
+3. The unit's need is blocked by an unlanded `--depends-on` prerequisite:
+   `vivi graph blocked backlog --kind need` names the need and the handle it
+   waits on, and `hold <uid>: need <need> waits on dependency <dep> not
+   landed` in `log.txt` is the dispatch record. The same hold keeps its
+   delivered units out of the merge feed.
+4. The unit waits on `after`: a prerequisite that is not `merged` or
    `no-defect`, including a `stuck` one.
-4. The reserved file (`reserved.txt` in the home by default, one path or glob
+5. The reserved file (`reserved.txt` in the home by default, one path or glob
    per line, `#` comments) holds a path the unit's `write_scope` overlaps.
    Another unit that is `inflight`, `delivered` or `merging` on an
    overlapping scope blocks it too. Overlap is read segment by segment:
@@ -1986,13 +1994,13 @@ blocks its dependents until a person unblocks it.
    segments, a glob with no `/` matches at any depth, a scope covers what is
    under it (`src/a` overlaps `src/a/b.rs`), two globs in the same position
    are assumed to meet, and an empty scope overlaps everything.
-5. The unit's kind has a `max` and that many units of the kind are in flight,
+6. The unit's kind has a `max` and that many units of the kind are in flight,
    or the kind is not defined (`unknown-kind`).
-6. The kind's pool has no free slot: `vivi pool status --pool <pool>
+7. The kind's pool has no free slot: `vivi pool status --pool <pool>
    --porcelain`.
-7. Every lane in `[pump.dispatch] lanes` is at its `cap` (the dispatch loop
+8. Every lane in `[pump.dispatch] lanes` is at its `cap` (the dispatch loop
    stops for the tick), or `per_tick` units already started.
-8. `task send failed` or `dispatch failed` lines in `log.txt`.
+9. `task send failed` or `dispatch failed` lines in `log.txt`.
 
 **External gate runners.** By default a gate is a read-only worker on a pool
 that runs `[pump.gate] command`. When the pool cannot run it (no toolchain,

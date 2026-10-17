@@ -6,9 +6,10 @@ mod graph_command;
 mod rule_command;
 mod work_command;
 pub use graph_command::{
-    GraphActivateCommand, GraphApplyCommand, GraphAuditCommand, GraphCommand, GraphCompleteCommand,
-    GraphConnectCommand, GraphEdgeAddCommand, GraphEdgeCommand, GraphExportCommand,
-    GraphImportCommand, GraphNodeAddCommand, GraphNodeCommand, GraphReadyCommand, GraphShowCommand,
+    GraphActivateCommand, GraphApplyCommand, GraphAuditCommand, GraphBlockedCommand, GraphCommand,
+    GraphCompleteCommand, GraphConnectCommand, GraphEdgeAddCommand, GraphEdgeCommand,
+    GraphExportCommand, GraphImportCommand, GraphNodeAddCommand, GraphNodeCommand,
+    GraphReadyCommand, GraphShowCommand,
 };
 pub use rule_command::{RuleCommand, RuleRetireCommand, RuleSaveCommand, RuleSupersedeCommand};
 pub use work_command::{

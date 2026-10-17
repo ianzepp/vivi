@@ -5,6 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
+use serde::Deserialize;
+
 use crate::pump::config::Lane;
 use crate::pump::host::Ctx;
 use crate::pump::plan::overlaps;
@@ -82,17 +84,21 @@ pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
     uids
 }
 
-/// A unit is ready to dispatch when it is pending, its write scope overlaps
-/// no reserved path, every `after` dependency is satisfied, and no other unit with an overlapping write scope is busy.
+/// A unit is ready to dispatch when it is pending, its need has no
+/// unlanded dependency, its write scope overlaps no reserved path, every
+/// `after` dependency is satisfied, and no other unit with an overlapping write scope is busy.
 /// Fix units (ids starting with `fix_prefix`) and priority units (their need
 /// is in `priority_file`) only clash with other fix units, and only while
 /// those are inflight.
 #[must_use]
-pub fn is_ready(ctx: &Ctx, st: &State, uid: &str) -> bool {
+pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<String>>) -> bool {
     let Some(u) = st.units.get(uid) else {
         return false;
     };
     if u.status != Status::Pending {
+        return false;
+    }
+    if holds.contains_key(&u.need) {
         return false;
     }
     let held = reserved_paths(ctx);
@@ -103,6 +109,114 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str) -> bool {
         return false;
     }
     !overlap_busy(ctx, st, uid, u)
+}
+
+/// A row of `vivi graph blocked --json`.
+#[derive(Debug, Deserialize)]
+struct BlockedRow {
+    #[serde(default)]
+    source_id: String,
+    #[serde(default)]
+    blocked_by: Vec<String>,
+}
+
+/// Needs held by an unlanded dependency, read once from the backlog graph:
+/// `need -> prerequisite handles still unfinished`. A prerequisite the pump
+/// already delivered — every unit of its need is satisfied — counts as
+/// landed even while its Vivi node is still open, so a merged dependency
+/// that nobody has closed does not hold its dependents.
+///
+/// An unreadable answer logs and holds nothing: the pump keeps dispatching
+/// rather than stalling on a broken read.
+#[must_use]
+pub fn dependency_holds(ctx: &Ctx, st: &State) -> BTreeMap<String, Vec<String>> {
+    let waiting = st
+        .units
+        .values()
+        .any(|unit| matches!(unit.status, Status::Pending | Status::Delivered));
+    if !waiting {
+        return BTreeMap::new();
+    }
+    let out = ctx.vivi(
+        "graph blocked backlog --kind need --json --confirm-large",
+        60,
+    );
+    let Some(rows) = parse_blocked(&out.text) else {
+        let detail: String = out.text.trim().chars().take(150).collect();
+        ctx.log(&format!("dependency gate unreadable: {detail}"));
+        return BTreeMap::new();
+    };
+    let mut holds = BTreeMap::new();
+    for row in rows {
+        let unmet: Vec<String> = row
+            .blocked_by
+            .into_iter()
+            .filter(|dependency| !need_landed(st, dependency))
+            .collect();
+        if !row.source_id.is_empty() && !unmet.is_empty() {
+            holds.insert(row.source_id, unmet);
+        }
+    }
+    holds
+}
+
+/// Parse the JSON array of a `graph blocked --json` output. Empty output
+/// (a host that answers nothing) means no blocked needs; text before the
+/// first `[` is skipped, and invalid JSON gives `None`.
+fn parse_blocked(text: &str) -> Option<Vec<BlockedRow>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
+    let start = text.find('[')?;
+    match serde_json::from_str(&text[start..]) {
+        Ok(rows) => Some(rows),
+        Err(_) => None,
+    }
+}
+
+/// True when the pump itself has delivered every unit of `need`. A need
+/// with no plan record here defers to Vivi's node state.
+fn need_landed(st: &State, need: &str) -> bool {
+    if st.closed_needs.iter().any(|closed| closed == need) {
+        return true;
+    }
+    st.needs.get(need).is_some_and(|record| {
+        !record.units.is_empty() && record.units.iter().all(|uid| satisfied(st, uid, 0))
+    })
+}
+
+/// Record the dependency hold on a unit in `status`, logging the first tick
+/// of each hold. Returns whether the unit is held. Units in any other status
+/// are left alone.
+pub fn note_hold(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    status: Status,
+    dependency: Option<String>,
+) -> bool {
+    let Some(unit) = st.units.get(uid) else {
+        return false;
+    };
+    if unit.status != status {
+        return false;
+    }
+    let need = unit.need.clone();
+    if unit.held_on == dependency {
+        return dependency.is_some();
+    }
+    let Some(unit) = st.units.get_mut(uid) else {
+        return false;
+    };
+    unit.held_on.clone_from(&dependency);
+    let Some(dependency) = dependency else {
+        return false;
+    };
+    ctx.log(&format!(
+        "hold {uid}: need {need} waits on dependency {dependency} not landed"
+    ));
+    true
 }
 
 /// True when another unit is busy on an overlapping write scope. Busy is

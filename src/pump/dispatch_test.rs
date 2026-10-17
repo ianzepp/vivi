@@ -477,3 +477,37 @@ fn a_final_attempt_unit_without_a_last_resort_does_not_block_later_units() {
     assert_eq!(st.units["u1"].attempts, 3);
     assert_eq!(st.units["u2"].status, Status::Inflight);
 }
+
+#[test]
+fn a_need_dependency_hold_keeps_a_unit_pending_and_logs_once() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"n","kind":"need","label":"N","blocked_by":["dep"]}]"#,
+    );
+    let mut st = State::default();
+    ordered(&mut st, &["n-1"]);
+    st.units.get_mut("n-1").unwrap().need = String::from("n");
+
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["n-1"].status, Status::Pending);
+    assert_eq!(st.units["n-1"].held_on.as_deref(), Some("dep"));
+    assert!(commands_with(&host, "task send").is_empty());
+
+    dispatch(&ctx, &mut st);
+    let holds = host
+        .logs()
+        .into_iter()
+        .filter(|line| line.starts_with("hold n-1:"))
+        .count();
+    assert_eq!(holds, 1, "the hold is logged on the first held tick only");
+
+    // The dependency lands: the next tick dispatches the unit.
+    host.reply("graph blocked", 0, "[]");
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["n-1"].status, Status::Inflight);
+    assert!(st.units["n-1"].held_on.is_none());
+    assert_eq!(commands_with(&host, "task send").len(), 1);
+}

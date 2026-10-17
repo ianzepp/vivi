@@ -1,13 +1,14 @@
 //! Tests for [`super::ready`].
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::{DispatchConfig, Lane, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::ready::{is_ready, pick_model, satisfied};
-use crate::pump::state::{Attempt, State, Status, Unit};
+use crate::pump::ready::{dependency_holds, is_ready, pick_model, satisfied};
+use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 
 /// A `Ctx` over a fresh temp home with the given pump config.
 fn setup_cfg(cfg: PumpConfig) -> (TempDir, Ctx, Arc<FakeHost>, State) {
@@ -58,7 +59,7 @@ fn a_pending_unit_without_dependencies_or_overlap_is_ready() {
     let (_dir, ctx, _host, mut st) = setup();
     let (id, u) = mk("a-1", Status::Pending, &["src/a"]);
     st.units.insert(id, u);
-    assert!(is_ready(&ctx, &st, "a-1"));
+    assert!(is_ready(&ctx, &st, "a-1", &BTreeMap::new()));
 }
 
 #[test]
@@ -69,9 +70,9 @@ fn an_unmerged_dependency_blocks_and_a_merged_one_does_not() {
     let (uid, mut u) = mk("u", Status::Pending, &["src/u"]);
     u.after = vec!["dep".to_string()];
     st.units.insert(uid, u);
-    assert!(!is_ready(&ctx, &st, "u"));
+    assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
     st.units.get_mut("dep").unwrap().status = Status::Merged;
-    assert!(is_ready(&ctx, &st, "u"));
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
 }
 
 #[test]
@@ -83,7 +84,7 @@ fn a_no_defect_dependency_counts_as_satisfied() {
     u.after = vec!["dep".to_string()];
     st.units.insert(uid, u);
     assert!(satisfied(&st, "dep", 0));
-    assert!(is_ready(&ctx, &st, "u"));
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
 }
 
 #[test]
@@ -100,10 +101,10 @@ fn a_replaced_dependency_is_satisfied_only_when_every_replacement_is() {
     u.after = vec!["dep".to_string()];
     st.units.insert(uid, u);
     assert!(!satisfied(&st, "dep", 0));
-    assert!(!is_ready(&ctx, &st, "u"));
+    assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
     st.units.get_mut("r2").unwrap().status = Status::Merged;
     assert!(satisfied(&st, "dep", 0));
-    assert!(is_ready(&ctx, &st, "u"));
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
 }
 
 #[test]
@@ -115,8 +116,8 @@ fn an_inflight_unit_with_an_overlapping_scope_blocks() {
     st.units.insert(bid, busy_u);
     st.units.insert(uid, uu);
     st.units.insert(vid, vu);
-    assert!(!is_ready(&ctx, &st, "u"));
-    assert!(is_ready(&ctx, &st, "v"));
+    assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
+    assert!(is_ready(&ctx, &st, "v", &BTreeMap::new()));
 }
 
 #[test]
@@ -130,9 +131,9 @@ fn a_delivered_or_merging_overlap_blocks_a_normal_unit_but_not_a_fix_unit() {
     st.units.insert(mid, mu);
     st.units.insert(uid, uu);
     st.units.insert(fid, fu);
-    assert!(!is_ready(&ctx, &st, "u"));
+    assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
     // Fix units ignore delivered and merging overlaps; only inflight counts.
-    assert!(is_ready(&ctx, &st, "pumpfix-u"));
+    assert!(is_ready(&ctx, &st, "pumpfix-u", &BTreeMap::new()));
 }
 
 #[test]
@@ -144,8 +145,8 @@ fn a_fix_unit_is_still_blocked_by_an_inflight_fix_unit_that_overlaps() {
     st.units.insert(aid, au);
     st.units.insert(bid, bu);
     st.units.insert(cid, cu);
-    assert!(!is_ready(&ctx, &st, "pumpfix-b"));
-    assert!(is_ready(&ctx, &st, "pumpfix-c"));
+    assert!(!is_ready(&ctx, &st, "pumpfix-b", &BTreeMap::new()));
+    assert!(is_ready(&ctx, &st, "pumpfix-c", &BTreeMap::new()));
 }
 
 #[test]
@@ -163,7 +164,7 @@ fn a_unit_that_is_not_pending_is_not_ready() {
     ] {
         let (uid, uu) = mk("u", status, &["src/a"]);
         st.units.insert(uid, uu);
-        assert!(!is_ready(&ctx, &st, "u"));
+        assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
         st.units.remove("u");
     }
 }
@@ -281,10 +282,10 @@ fn a_reserved_glob_blocks_an_overlapping_unit_but_not_a_disjoint_one() {
     st.units.insert(a.clone(), ua);
     st.units.insert(b.clone(), ub);
     st.units.insert(c.clone(), uc);
-    assert!(!is_ready(&ctx, &st, &a));
-    assert!(is_ready(&ctx, &st, &b));
+    assert!(!is_ready(&ctx, &st, &a, &BTreeMap::new()));
+    assert!(is_ready(&ctx, &st, &b, &BTreeMap::new()));
     // A commented-out line holds nothing.
-    assert!(is_ready(&ctx, &st, &c));
+    assert!(is_ready(&ctx, &st, &c, &BTreeMap::new()));
 }
 
 #[test]
@@ -297,14 +298,14 @@ fn the_configured_reserved_file_is_read_not_a_fixed_name() {
     st.units.insert(id.clone(), u);
     // A file under the old fixed name holds nothing any more.
     std::fs::write(ctx.home.join("reserved.txt"), "src/a\n").unwrap();
-    assert!(is_ready(&ctx, &st, &id));
+    assert!(is_ready(&ctx, &st, &id, &BTreeMap::new()));
     write_reserved(&ctx, "src/a\n");
     assert!(
         ctx.cfg
             .reserved_path(&ctx.project)
             .ends_with("held/paths.list")
     );
-    assert!(!is_ready(&ctx, &st, &id));
+    assert!(!is_ready(&ctx, &st, &id, &BTreeMap::new()));
 }
 
 #[test]
@@ -312,11 +313,63 @@ fn reserved_txt_is_re_read_each_call_and_may_be_absent() {
     let (_dir, ctx, _host, mut st) = setup();
     let (id, u) = mk("a-1", Status::Pending, &["src/a/x.rs"]);
     st.units.insert(id.clone(), u);
-    assert!(is_ready(&ctx, &st, &id)); // no file
+    assert!(is_ready(&ctx, &st, &id, &BTreeMap::new())); // no file
     write_reserved(&ctx, "src/a\n");
-    assert!(!is_ready(&ctx, &st, &id));
+    assert!(!is_ready(&ctx, &st, &id, &BTreeMap::new()));
     write_reserved(&ctx, "src/b\n");
-    assert!(is_ready(&ctx, &st, &id));
+    assert!(is_ready(&ctx, &st, &id, &BTreeMap::new()));
+}
+
+#[test]
+fn a_need_dependency_hold_blocks_its_units_until_the_dependency_lands() {
+    let (_dir, ctx, host, mut st) = setup();
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"n","kind":"need","label":"N","blocked_by":["dep"]}]"#,
+    );
+    let (id, u) = mk("n-1", Status::Pending, &["src/u"]);
+    st.units.insert(id, u);
+
+    let holds = dependency_holds(&ctx, &st);
+    assert_eq!(holds["n"], vec![String::from("dep")]);
+    assert!(!is_ready(&ctx, &st, "n-1", &holds));
+
+    // The pump already merged every unit of the dependency, so it counts as
+    // landed even though its Vivi node is still open.
+    st.needs.insert(
+        String::from("dep"),
+        NeedRecord {
+            units: vec![String::from("dep-1")],
+            ..NeedRecord::default()
+        },
+    );
+    st.units.insert(
+        String::from("dep-1"),
+        Unit {
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    let holds = dependency_holds(&ctx, &st);
+    assert!(holds.is_empty());
+    assert!(is_ready(&ctx, &st, "n-1", &holds));
+}
+
+#[test]
+fn an_unreadable_dependency_gate_holds_nothing_and_logs_it() {
+    let (_dir, ctx, host, mut st) = setup();
+    host.reply("graph blocked", 1, "error: no such graph");
+    let (id, u) = mk("n-1", Status::Pending, &["src/u"]);
+    st.units.insert(id, u);
+
+    assert!(dependency_holds(&ctx, &st).is_empty());
+    assert!(is_ready(&ctx, &st, "n-1", &BTreeMap::new()));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("dependency gate unreadable"))
+    );
 }
 
 #[test]
@@ -332,6 +385,6 @@ fn a_priority_unit_ignores_delivered_overlaps_like_a_fix_unit() {
     st.units.insert(did, du);
     st.units.insert(uid, uu);
     st.units.insert(vid, vu);
-    assert!(is_ready(&ctx, &st, "u"));
-    assert!(!is_ready(&ctx, &st, "v"));
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
+    assert!(!is_ready(&ctx, &st, "v", &BTreeMap::new()));
 }

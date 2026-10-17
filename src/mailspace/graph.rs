@@ -144,6 +144,33 @@ impl Mailspace {
             blocked,
         })
     }
+
+    /// Blocked nodes of a graph, each with the prerequisites still
+    /// unfinished, optionally keeping one kind. Sorted by source id so the
+    /// listing is stable across reads.
+    ///
+    /// # Errors
+    /// Returns not-found or storage errors.
+    pub fn graph_blocked(
+        &self,
+        code_or_handle: &str,
+        kind: Option<&str>,
+    ) -> Result<Vec<GraphBlockedNode>, VivariumError> {
+        let show = self.graph_show(code_or_handle)?;
+        let mut blocked: Vec<GraphBlockedNode> = show
+            .blocked
+            .into_iter()
+            .filter(|node| kind.is_none_or(|kind| node.kind == kind))
+            .map(|node| GraphBlockedNode {
+                source_id: node.source_id,
+                kind: node.kind,
+                label: node.label,
+                blocked_by: node.blocked_by,
+            })
+            .collect();
+        blocked.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+        Ok(blocked)
+    }
 }
 
 /// Compact frontier projection for status loops (never full topology).
@@ -170,6 +197,16 @@ pub struct GraphFrontier {
 pub struct GraphFrontierGate {
     pub source_id: String,
     pub kind: String,
+}
+
+/// One blocked node and the prerequisites it is still waiting on.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GraphBlockedNode {
+    pub source_id: String,
+    pub kind: String,
+    pub label: String,
+    /// Source ids of prerequisites whose state is not `done`.
+    pub blocked_by: Vec<String>,
 }
 
 /// Compact receipt after complete / activate / node|edge append.
@@ -400,6 +437,40 @@ pub fn print_frontier(
         "  gates    {}",
         format_gates(&frontier.gates).if_empty("(none)")
     );
+    Ok(())
+}
+
+/// Print blocked nodes as compact text or JSON.
+///
+/// # Errors
+/// Returns JSON encode errors or large-stdout refusal.
+pub fn print_blocked(
+    nodes: &[GraphBlockedNode],
+    json: bool,
+    confirm_large: bool,
+) -> Result<(), VivariumError> {
+    if json {
+        return crate::stdout_budget::print_pretty_json(
+            "graph blocked",
+            nodes,
+            confirm_large,
+            None,
+        );
+    }
+    println!("blocked {}", nodes.len());
+    if nodes.is_empty() {
+        return Ok(());
+    }
+    println!("  source_id  kind  blocked_by  label");
+    for node in nodes {
+        println!(
+            "  {}  {}  [{}]  {}",
+            node.source_id,
+            node.kind,
+            node.blocked_by.join(", "),
+            node.label
+        );
+    }
     Ok(())
 }
 

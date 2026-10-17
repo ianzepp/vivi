@@ -16,7 +16,7 @@ use std::thread;
 use crate::pump::collect;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
-use crate::pump::ready::{priority_needs, ranked, satisfied};
+use crate::pump::ready::{dependency_holds, note_hold, priority_needs, ranked, satisfied};
 use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
@@ -608,7 +608,17 @@ impl Merger {
     pub fn feed(&self, ctx: &Ctx, st: &mut State) {
         let hold = ctx.flag("HOLD-MERGE");
         let needs = priority_needs(ctx);
+        let holds = dependency_holds(ctx, st);
         for uid in ranked(ctx, st, st.order.clone()) {
+            let dependency = st
+                .units
+                .get(&uid)
+                .and_then(|unit| holds.get(&unit.need))
+                .and_then(|deps| deps.first())
+                .cloned();
+            if note_hold(ctx, st, &uid, Status::Delivered, dependency) {
+                continue;
+            }
             let Some(unit) = st.units.get_mut(&uid) else {
                 continue;
             };

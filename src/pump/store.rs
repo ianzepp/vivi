@@ -660,6 +660,7 @@ fn load_units(conn: &Connection) -> Result<BTreeMap<String, Unit>, VivariumError
                     replaced_by: from_json(row.get(19)?),
                     verdict_text: row.get(20)?,
                     kind_reported: row.get::<_, i64>(21)? != 0,
+                    held_on: None,
                     extra: from_json(row.get(22)?),
                     revision: from_u64(row.get(23)?),
                     history: Vec::new(),

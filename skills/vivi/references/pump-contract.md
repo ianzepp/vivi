@@ -170,6 +170,7 @@ as marked):
 | `outside` | array of files | runtime (merged): files the branch touched outside `write_scope` |
 | `replaced_by` | array of unit ids | runtime (replaced): the split's successor ids |
 | `verdict_text` | string | runtime (no-defect): tail of the no-defect receipt |
+| `held_on` | handle or null | runtime: the dependency currently holding the unit back; the first tick of each hold is logged |
 
 Compatibility rule: unknown top-level keys are preserved in `meta.extra`, and
 unknown per-unit keys in `units.extra_json`. At load, a state older than
@@ -266,7 +267,7 @@ Transitions (from, to, trigger, guard, action):
 | `inflight` | `splitting` | timeout: reconcile state `timeout`, or still running past `budget + overdue_grace`, or the receipt shows agent exit 124 | — | `split`: `resplit/` files written, split planner spawned detached, `task=null`, history entry `why="timeout"`, `since=now` |
 | `splitting` | `stuck` | split planner wrote no plan in `split_timeout` | — | `split-no-answer` exception |
 | `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
-| `delivered` | `merging` | merge feed after collect | not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
+| `delivered` | `merging` | merge feed after collect | not held by an unlanded need dependency; not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `merged_at`, `outside`, `merges+=1`; a `merges` row; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
@@ -317,6 +318,15 @@ Error handling:
 Readiness (`ready`):
 
 - The unit must be `pending`.
+- Its need must have no unlanded dependency. One `graph blocked backlog
+  --kind need --json` read per pass lists every blocked need with the
+  prerequisites still unfinished; the unit waits while any of them is
+  unfinished. A prerequisite whose need the pump has already delivered —
+  every unit satisfied — counts as landed even while its Vivi node is still
+  open. The first tick of each hold logs
+  `hold <uid>: need <need> waits on dependency <dep> not landed`, and the
+  release is silent. The same rule keeps a `delivered` unit out of the merge
+  feed, so a dependent cannot merge before its dependency.
 - Every id in `after` must be `satisfied`.
 - Write-scope exclusivity: no other unit whose write scope overlaps may be
   busy. Busy is `inflight` for fix units and

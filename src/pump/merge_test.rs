@@ -661,6 +661,30 @@ fn feed_under_hold_merge_also_sends_priority_units() {
 }
 
 #[test]
+fn feed_holds_a_delivered_unit_until_its_need_dependency_lands() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"n1","kind":"need","label":"N","blocked_by":["dep"]}]"#,
+    );
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Delivered)]);
+
+    merger.feed(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Delivered);
+    assert_eq!(st.units["u1"].held_on.as_deref(), Some("dep"));
+    assert!(jobs.try_recv().is_err());
+
+    // The dependency lands: the next pass feeds the unit.
+    host.reply("graph blocked", 0, "[]");
+    merger.feed(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Merging);
+    assert!(st.units["u1"].held_on.is_none());
+    assert_eq!(jobs.recv_timeout(Duration::from_secs(5)).unwrap().uid, "u1");
+}
+
+#[test]
 fn apply_ok_true_marks_the_unit_merged_and_counts_the_merge() {
     let (_dir, ctx, host) = setup("");
     let (merger, out, _jobs) = Merger::detached();

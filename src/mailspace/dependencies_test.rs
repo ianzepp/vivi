@@ -94,6 +94,24 @@ fn blocked_listing(mailspace: &Mailspace) -> Vec<String> {
 }
 
 #[test]
+fn blocked_lists_the_unfinished_prerequisite_and_filters_by_kind() {
+    let (_tmp, mailspace) = space();
+    let (_, need) = file(&mailspace, "hand", "need", "first", &[]);
+    let (_, task) = file(&mailspace, "hand", "task", "second", &[&need]);
+
+    let blocked = mailspace.graph_blocked("backlog", Some("task")).unwrap();
+    let row = blocked
+        .iter()
+        .find(|node| node.source_id == task)
+        .expect("the dependent task is blocked");
+    assert_eq!(row.blocked_by, vec![need.clone()]);
+
+    let needs = mailspace.graph_blocked("backlog", Some("need")).unwrap();
+    assert!(needs.iter().all(|node| node.kind == "need"));
+    assert!(needs.iter().all(|node| node.source_id != task));
+}
+
+#[test]
 fn a_held_dependency_becomes_an_edge_and_the_dependent_waits() {
     let (_tmp, mailspace) = space();
     let (_, need) = file(&mailspace, "hand", "need", "first", &[]);

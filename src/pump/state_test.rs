@@ -1,5 +1,6 @@
 //! Tests for [`crate::pump::state`].
 
+use std::collections::BTreeMap;
 use std::fs;
 
 use serde_json::json;
@@ -534,10 +535,13 @@ fn a_withdrawn_or_unknown_unit_is_not_dispatched_and_does_not_satisfy_after() {
                 ..Unit::default()
             },
         );
-        assert!(!is_ready(&ctx, &st, uid), "{uid} must not be dispatched");
+        assert!(
+            !is_ready(&ctx, &st, uid, &BTreeMap::new()),
+            "{uid} must not be dispatched"
+        );
         assert!(!satisfied(&st, uid, 0), "{uid} must not satisfy after");
         assert!(
-            !is_ready(&ctx, &st, &dependent),
+            !is_ready(&ctx, &st, &dependent, &BTreeMap::new()),
             "{dependent} waits on {uid}"
         );
     }

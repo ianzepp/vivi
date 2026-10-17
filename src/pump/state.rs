@@ -214,6 +214,9 @@ pub struct Unit {
     /// The unit's unknown-kind exception was raised already.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kind_reported: bool,
+    /// Dependency handle holding this unit back, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_on: Option<String>,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,

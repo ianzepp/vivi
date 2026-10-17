@@ -127,6 +127,17 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
     );
     let ready = ok(p, &["graph", "ready"]);
     assert!(ready.contains("blocked=1"), "{ready}");
+    let second = handle_of(p, "task", "second");
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&ok(
+        p,
+        &["graph", "blocked", "backlog", "--kind", "task", "--json"],
+    ))
+    .unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["source_id"] == second.as_str())
+        .expect("the dependent task is listed as blocked");
+    assert_eq!(row["blocked_by"], serde_json::json!([first]));
     let step = ok(p, &["step"]);
     assert!(step.contains("first"), "{step}");
     assert!(step.contains("orphan"), "{step}");

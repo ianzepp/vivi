@@ -135,7 +135,9 @@ Vivi stores the pointer, not the file; `board` and `boot` list registered goals.
 **Work graphs.** Every task, need and want send mints an open node in the
 mailspace's `backlog` graph, and `--depends-on` becomes a prerequisite edge.
 Lifecycle moves keep node state in step. `vivi graph ready` prints the
-frontier (ready, blocked, active, awaiting, reported, gates). `vivi step` turns
+frontier (ready, blocked, active, awaiting, reported, gates), and `vivi graph
+blocked` lists each blocked node with the prerequisites still unfinished.
+`vivi step` turns
 the backlog into a manifest of dispatches and exceptions and, with
 `--apply <handle>`, completes a settled item. `graph import` and `graph apply`
 create or revise further graphs from a Mermaid `flowchart`. Vivi decides which

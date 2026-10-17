@@ -10,7 +10,7 @@ use std::fs;
 
 use crate::pump::brief::brief_for;
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::ready::{is_ready, pick_model, ranked};
+use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, ranked};
 use crate::pump::state::{State, Status};
 
 /// One unit's dispatch plan decided before anything is sent.
@@ -90,16 +90,26 @@ fn tail(s: &str, n: usize) -> String {
 /// the task as superseded and leaves the unit pending.
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
+    let holds = dependency_holds(ctx, st);
     let mut started: u32 = 0;
     let order = ranked(ctx, st, st.order.clone());
     for uid in order {
         if started >= ctx.cfg.dispatch.per_tick {
             break;
         }
+        let dependency = st
+            .units
+            .get(&uid)
+            .and_then(|unit| holds.get(&unit.need))
+            .and_then(|deps| deps.first())
+            .cloned();
+        if note_hold(ctx, st, &uid, Status::Pending, dependency) {
+            continue;
+        }
         if report_unknown_kind(ctx, st, &uid) {
             continue;
         }
-        let Some(plan) = plan_unit(ctx, st, &uid, &free) else {
+        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds) else {
             continue;
         };
         let Some(model) = plan.model.clone() else {
@@ -144,9 +154,15 @@ fn report_unknown_kind(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
 /// under its kind's `max`, and the kind's pool has a free slot; a
 /// closed lane set is reported separately, since it breaks the loop rather
 /// than skipping the unit.
-fn plan_unit(ctx: &Ctx, st: &State, uid: &str, free: &BTreeMap<String, u32>) -> Option<Plan> {
+fn plan_unit(
+    ctx: &Ctx,
+    st: &State,
+    uid: &str,
+    free: &BTreeMap<String, u32>,
+    holds: &BTreeMap<String, Vec<String>>,
+) -> Option<Plan> {
     let unit = st.units.get(uid)?;
-    if !is_ready(ctx, st, uid) {
+    if !is_ready(ctx, st, uid, holds) {
         return None;
     }
     let kind = ctx.cfg.kind_of(&unit.tools)?;
