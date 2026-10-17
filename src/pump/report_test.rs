@@ -139,3 +139,25 @@ fn an_unreadable_database_is_reported_not_fatal() {
     std::fs::write(dir.path().join(DB_FILENAME), b"not sqlite").unwrap();
     assert!(matches!(read(dir.path()).unwrap(), PumpRead::Unreadable(_)));
 }
+
+#[test]
+fn an_older_or_newer_schema_is_reported_not_read() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "user_version", 99).unwrap();
+    assert!(matches!(read(dir.path()).unwrap(), PumpRead::Unreadable(_)));
+}
+
+#[test]
+fn a_writer_does_not_block_a_reader() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    store.save(&State::default()).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(matches!(read(dir.path()).unwrap(), PumpRead::Ready(_)));
+    conn.execute_batch("ROLLBACK").unwrap();
+}
