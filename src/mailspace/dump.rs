@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use serde::Serialize;
 
-use super::kind::{effective_kind, matches_kind};
+use super::kind::{effective_kind, events_kind, matches_kind, matches_kind_events};
 use super::{MailAbsorbFilter, Mailspace, canonical_local_role};
 use crate::error::VivariumError;
 use crate::storage::{MailspaceEvent, StoredMessageView};
@@ -245,6 +245,23 @@ impl Mailspace {
         needs_blob: bool,
         body_needed: bool,
     ) -> Result<Option<(Option<String>, String)>, VivariumError> {
+        // Decide the kind filter from the role and event log before any blob
+        // read: filed work items carry their send/done events, so `done` and
+        // `sent` rows no longer open and parse every body just to learn a
+        // kind the log already names. Only an undecided filter or a body
+        // filter falls through to the blob.
+        if let Some(kind) = kind {
+            if !body_needed {
+                if matches_kind_events(&view.local_role, events, kind) {
+                    return Ok(Some((events_kind(&view.local_role, events), String::new())));
+                }
+                if events_kind(&view.local_role, events).is_some() || events.is_empty() {
+                    // The log names a different kind, or there is no log at
+                    // all (only vivi-filed items carry headers, and they log).
+                    return Ok(None);
+                }
+            }
+        }
         if !needs_blob {
             return Ok(Some((
                 effective_kind(&view.local_role, &[], events),
