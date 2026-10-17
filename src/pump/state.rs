@@ -88,6 +88,11 @@ impl Status {
     }
 }
 
+/// Serde skip predicate: an absent revision is the old shape.
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// Intern an unknown status string so [`Status`] can stay `Copy`. One leaked
 /// allocation per distinct string for the life of the process; the set of
 /// hand-set statuses in a state file is tiny.
@@ -142,6 +147,9 @@ pub struct Unit {
     /// The need this unit serves (handle without the `-N` suffix).
     #[serde(default)]
     pub need: String,
+    /// The plan revision that introduced or last amended this unit.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub revision: u64,
     /// One-line title.
     #[serde(default)]
     pub title: String,
@@ -223,6 +231,18 @@ pub struct NeedRecord {
     /// Unit handles minted for the need.
     #[serde(default)]
     pub units: Vec<String>,
+    /// The current plan revision; 1 is the first plan.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub revision: u64,
+    /// SHA-256 of the thread the current plan was built from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_sha256: Option<String>,
+    /// Epoch seconds of the newest thread event already considered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_seen_at: Option<u64>,
+    /// A post-plan thread change is waiting for a revision.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub amendment_pending: bool,
 }
 
 /// The gate currently or last running (`last_gate`).
@@ -280,6 +300,9 @@ pub struct Board {
     /// Needs asked to replan.
     #[serde(default)]
     pub replan: Vec<String>,
+    /// Need handle -> epoch seconds a revision planner started.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub revision_planning: BTreeMap<String, u64>,
 }
 
 /// One promoted integration tip (`promotions` entry).

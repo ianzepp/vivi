@@ -118,13 +118,23 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
         return;
     }
     let replaces = str_field(&plan, "replaces");
-    if replaces.is_none() && st.needs.contains_key(need) {
+    let revision = plan.get("revision").and_then(Value::as_u64);
+    if replaces.is_none()
+        && let Some(current) = st.needs.get(need)
+    {
+        // A plan without a revision is the old one-shot path: ignore it for a
+        // known need. A revision at or below the current one is stale.
+        if revision.is_none_or(|revision| revision <= current.revision) {
+            st.plans_seen.push(key.to_string());
+            return;
+        }
         st.plans_seen.push(key.to_string());
+        apply_revision(ctx, st, need, revision.unwrap_or(0), &plan, &text);
         return;
     }
     st.plans_seen.push(key.to_string());
     let units = plan.get("units").and_then(Value::as_array);
-    let (minted, bad) = validate_units(st, units.map_or(&[], Vec::as_slice));
+    let (minted, bad) = validate_units(st, units.map_or(&[], Vec::as_slice), false, need);
     if let Some(bad) = bad {
         if replaces.is_none() {
             st.needs.insert(
@@ -133,14 +143,180 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
                     verdict: "invalid".to_string(),
                     reason: bad.clone(),
                     units: Vec::new(),
+                    ..NeedRecord::default()
                 },
             );
         }
         ctx.exception("bad-plan", key, &bad);
         return;
     }
-    mint(ctx, st, need, &minted);
-    record(ctx, st, &plan, need, replaces, &minted);
+    let revision = revision.unwrap_or(1);
+    mint(ctx, st, need, &minted, revision);
+    record(ctx, st, &plan, need, replaces, &minted, revision);
+}
+
+/// Apply a revision to a known need.
+fn apply_revision(ctx: &Ctx, st: &mut State, need: &str, revision: u64, plan: &Value, text: &str) {
+    let units = plan.get("units").and_then(Value::as_array);
+    let (planned, bad) = validate_units(st, units.map_or(&[], Vec::as_slice), true, need);
+    if let Some(bad) = bad {
+        ctx.exception("bad-plan", need, &bad);
+        return;
+    }
+    let counts = apply_planned(ctx, st, need, revision, &planned);
+    let withdrawn = apply_withdrawals(ctx, st, plan);
+    record_revision(ctx, st, need, revision, plan, text, &counts, &withdrawn);
+}
+
+/// What a revision did, for the log line.
+#[derive(Default)]
+struct Counts {
+    added: usize,
+    amended: usize,
+    conflicts: usize,
+    new_ids: Vec<String>,
+}
+
+/// Apply the planned units and return the counts.
+fn apply_planned(
+    ctx: &Ctx,
+    st: &mut State,
+    need: &str,
+    revision: u64,
+    planned: &[(&str, &Value)],
+) -> Counts {
+    let mut counts = Counts::default();
+    for (uid, u) in planned {
+        match st.units.get_mut(*uid) {
+            None => {
+                mint_one(ctx, st, need, uid, u, revision);
+                counts.new_ids.push((*uid).to_string());
+                counts.added += 1;
+            }
+            Some(unit) if unit.revision == revision => {}
+            Some(unit) => match apply_one(ctx, unit, u, revision, uid) {
+                Apply::Amended => counts.amended += 1,
+                Apply::Kept => {}
+                Apply::Conflict => counts.conflicts += 1,
+            },
+        }
+    }
+    counts
+}
+
+/// Withdraw the named pending units and return the removed ids.
+fn apply_withdrawals(ctx: &Ctx, st: &mut State, plan: &Value) -> Vec<String> {
+    let mut removed = Vec::new();
+    for uid in str_list(plan.get("withdraw")) {
+        match st.units.get_mut(&uid) {
+            Some(unit) if unit.status == Status::Pending => {
+                unit.status = Status::Withdrawn;
+                removed.push(uid);
+            }
+            Some(_) => ctx.exception(
+                "revision-conflict",
+                &uid,
+                "withdraw refused: the unit is no longer pending",
+            ),
+            None => {}
+        }
+    }
+    removed
+}
+
+/// Update the need record, persist the revision and log the outcome.
+fn record_revision(
+    ctx: &Ctx,
+    st: &mut State,
+    need: &str,
+    revision: u64,
+    plan: &Value,
+    text: &str,
+    counts: &Counts,
+    removed: &[String],
+) {
+    let verdict = str_field(plan, "verdict").unwrap_or("units").to_string();
+    let reason: String = str_field(plan, "reason")
+        .unwrap_or("")
+        .chars()
+        .take(400)
+        .collect();
+    let record = st
+        .needs
+        .entry(need.to_string())
+        .or_insert_with(|| NeedRecord {
+            verdict: verdict.clone(),
+            reason: reason.clone(),
+            ..NeedRecord::default()
+        });
+    record.verdict.clone_from(&verdict);
+    record.reason.clone_from(&reason);
+    record.revision = revision;
+    record.amendment_pending = false;
+    record.units.retain(|uid| !removed.contains(uid));
+    record.units.extend(counts.new_ids.iter().cloned());
+    st.board.revision_planning.remove(need);
+    if let Err(err) = crate::pump::store::record_plan_revision(
+        &ctx.home,
+        need,
+        revision,
+        &verdict,
+        &reason,
+        text,
+        ctx.now(),
+    ) {
+        ctx.log(&format!("plan revision record failed: {err}"));
+    }
+    ctx.log(&format!(
+        "revise {need} r{revision} added={} amended={} withdrew={} conflicts={}",
+        counts.added,
+        counts.amended,
+        removed.len(),
+        counts.conflicts
+    ));
+}
+
+/// What a revision did to one existing unit.
+enum Apply {
+    Amended,
+    Kept,
+    Conflict,
+}
+
+/// Apply one planned unit to an existing unit, respecting the state rules.
+fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str) -> Apply {
+    let changed = !same_fields(unit, plan);
+    match unit.status {
+        Status::Pending => {
+            set_fields(unit, plan, revision);
+            Apply::Amended
+        }
+        Status::Merged | Status::NoDefect => {
+            if changed {
+                ctx.exception("revision-conflict", uid, "refused to change a merged unit");
+                Apply::Conflict
+            } else {
+                Apply::Kept
+            }
+        }
+        Status::Inflight
+        | Status::Delivered
+        | Status::Merging
+        | Status::Splitting
+        | Status::Stuck => {
+            if changed {
+                ctx.exception(
+                    "revision-conflict",
+                    uid,
+                    "refused to change a unit in flight",
+                );
+                Apply::Conflict
+            } else {
+                Apply::Kept
+            }
+        }
+        Status::Replaced | Status::Withdrawn | Status::Other(_) => Apply::Kept,
+    }
 }
 
 /// Check every unit of a plan before anything is minted: `id`, `brief` and a
@@ -150,6 +326,8 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
 fn validate_units<'a>(
     st: &State,
     units: &'a [Value],
+    allow_existing: bool,
+    need: &str,
 ) -> (Vec<(&'a str, &'a Value)>, Option<String>) {
     let mut minted: Vec<(&str, &Value)> = Vec::new();
     for u in units {
@@ -165,8 +343,13 @@ fn validate_units<'a>(
         if !ok_brief || !ok_scope || !ok_proof {
             return (minted, Some(BAD_UNIT.to_string()));
         }
-        if st.units.contains_key(uid) {
-            return (minted, Some(format!("duplicate unit id {uid}")));
+        if let Some(existing) = st.units.get(uid) {
+            if !allow_existing {
+                return (minted, Some(format!("duplicate unit id {uid}")));
+            }
+            if existing.need != need {
+                return (minted, Some(format!("unit {uid} belongs to another need")));
+            }
         }
         minted.push((uid, u));
     }
@@ -174,27 +357,63 @@ fn validate_units<'a>(
 }
 
 /// Mint one pending unit per validated plan unit and append it to `order`.
-fn mint(ctx: &Ctx, st: &mut State, need: &str, minted: &[(&str, &Value)]) {
+fn mint(ctx: &Ctx, st: &mut State, need: &str, minted: &[(&str, &Value)], revision: u64) {
     for (uid, u) in minted {
-        let unit = Unit {
-            need: need.to_string(),
-            title: str_field(u, "title")
-                .unwrap_or("")
-                .chars()
-                .take(150)
-                .collect(),
-            brief: str_field(u, "brief").unwrap_or("").to_string(),
-            write_scope: str_list(u.get("write_scope")),
-            after: str_list(u.get("after")),
-            proof: str_list(u.get("proof")),
-            tools: str_field(u, "tools").unwrap_or("").to_string(),
-            status: Status::Pending,
-            since: ctx.now(),
-            ..Unit::default()
-        };
-        st.units.insert((*uid).to_string(), unit);
-        st.order.push((*uid).to_string());
+        mint_one(ctx, st, need, uid, u, revision);
     }
+}
+
+/// Mint one pending unit and append it to `order`.
+fn mint_one(ctx: &Ctx, st: &mut State, need: &str, uid: &str, plan: &Value, revision: u64) {
+    let unit = Unit {
+        need: need.to_string(),
+        revision,
+        title: str_field(plan, "title")
+            .unwrap_or("")
+            .chars()
+            .take(150)
+            .collect(),
+        brief: str_field(plan, "brief").unwrap_or("").to_string(),
+        write_scope: str_list(plan.get("write_scope")),
+        after: str_list(plan.get("after")),
+        proof: str_list(plan.get("proof")),
+        tools: str_field(plan, "tools").unwrap_or("").to_string(),
+        status: Status::Pending,
+        since: ctx.now(),
+        ..Unit::default()
+    };
+    st.units.insert(uid.to_string(), unit);
+    st.order.push(uid.to_string());
+}
+
+/// True when the planned fields match the existing unit exactly.
+fn same_fields(unit: &Unit, plan: &Value) -> bool {
+    unit.title
+        == str_field(plan, "title")
+            .unwrap_or("")
+            .chars()
+            .take(150)
+            .collect::<String>()
+        && unit.brief == str_field(plan, "brief").unwrap_or("")
+        && unit.write_scope == str_list(plan.get("write_scope"))
+        && unit.after == str_list(plan.get("after"))
+        && unit.proof == str_list(plan.get("proof"))
+        && unit.tools == str_field(plan, "tools").unwrap_or("")
+}
+
+/// Replace a pending unit's planned fields.
+fn set_fields(unit: &mut Unit, plan: &Value, revision: u64) {
+    unit.revision = revision;
+    unit.title = str_field(plan, "title")
+        .unwrap_or("")
+        .chars()
+        .take(150)
+        .collect();
+    unit.brief = str_field(plan, "brief").unwrap_or("").to_string();
+    unit.write_scope = str_list(plan.get("write_scope"));
+    unit.after = str_list(plan.get("after"));
+    unit.proof = str_list(plan.get("proof"));
+    unit.tools = str_field(plan, "tools").unwrap_or("").to_string();
 }
 
 /// Record the need: a split plan replaces the named unit and extends the
@@ -206,6 +425,7 @@ fn record(
     need: &str,
     replaces: Option<&str>,
     minted: &[(&str, &Value)],
+    revision: u64,
 ) {
     let ids: Vec<String> = minted.iter().map(|(uid, _)| (*uid).to_string()).collect();
     let count = ids.len();
@@ -221,6 +441,7 @@ fn record(
                 verdict: "units".to_string(),
                 reason: String::new(),
                 units: Vec::new(),
+                ..NeedRecord::default()
             });
         rec.units.extend(ids.iter().cloned());
         if ids.is_empty() {
@@ -245,6 +466,8 @@ fn record(
             verdict: verdict.clone(),
             reason,
             units: ids,
+            revision,
+            ..NeedRecord::default()
         },
     );
     ctx.log(&format!("plan {need} verdict={verdict} units={count}"));

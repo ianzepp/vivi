@@ -171,8 +171,8 @@ fn pump(out: &mut String, report: &BootReport) {
     line(
         out,
         format!(
-            "  complete {} | complete-but-open {} | stuck {} | exceptions {}",
-            pump.complete, pump.complete_but_open, pump.stuck, pump.exceptions
+            "  complete {} | complete-but-open {} | amendments {} | stuck {} | exceptions {}",
+            pump.complete, pump.complete_but_open, pump.amendments, pump.stuck, pump.exceptions
         ),
     );
 }

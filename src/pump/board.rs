@@ -374,16 +374,17 @@ fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
 pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
     let mut said = false;
     for row in rows {
-        let Some((verdict, reason, units)) = st.needs.get(&row.handle).map(|record| {
+        let Some((verdict, reason, units, revision)) = st.needs.get(&row.handle).map(|record| {
             (
                 record.verdict.clone(),
                 record.reason.clone(),
                 record.units.clone(),
+                record.revision,
             )
         }) else {
             continue;
         };
-        if reply_stages(ctx, st, &row.handle, &verdict, &reason, &units) {
+        if reply_stages(ctx, st, &row.handle, &verdict, &reason, &units, revision) {
             said = true;
         }
     }
@@ -398,17 +399,23 @@ fn reply_stages(
     verdict: &str,
     reason: &str,
     units: &[String],
+    revision: u64,
 ) -> bool {
     let mut said = false;
-    for stage in ["planned", "merged"] {
+    let mut stages = vec![String::from("planned")];
+    if revision > 1 {
+        stages.push(format!("revised-{revision}"));
+    }
+    stages.push(String::from("merged"));
+    for stage in stages {
         let key = format!("{handle}:{stage}");
         if st.board.replied.iter().any(|sent| sent == &key) {
             continue;
         }
-        let Some(body) = reply_body(ctx, st, stage, verdict, reason, units) else {
+        let Some(body) = reply_body(ctx, st, &stage, verdict, reason, units, revision) else {
             continue;
         };
-        if send_reply(ctx, handle, stage, &body) {
+        if send_reply(ctx, handle, &stage, &body) {
             st.board.replied.push(key);
             said = true;
         }
@@ -425,36 +432,54 @@ fn reply_body(
     verdict: &str,
     reason: &str,
     units: &[String],
+    revision: u64,
 ) -> Option<String> {
     if stage == "planned" {
-        let list = units
-            .iter()
-            .filter_map(|uid| st.units.get(uid).map(|u| format!("- {uid} {}", u.title)))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let list = unit_list(st, units, false);
         return Some(format!(
-            "pump: planned. verdict: {verdict}; {} unit(s).\n{reason}\n{list}",
+            "pump: planned. verdict: {verdict}; revision {revision}; {} unit(s).\n{reason}\n{list}",
+            units.len()
+        ));
+    }
+    if stage.starts_with("revised-") {
+        let list = unit_list(st, units, false);
+        return Some(format!(
+            "pump: revised to r{revision}. {} unit(s).\n{list}",
             units.len()
         ));
     }
     if !units.is_empty() && units.iter().all(|uid| satisfied(st, uid, 0)) {
-        let list = units
-            .iter()
-            .filter_map(|uid| {
-                st.units.get(uid).map(|u| {
-                    let commit: String =
-                        u.commit.as_deref().unwrap_or("").chars().take(10).collect();
-                    format!("- {uid} {} {commit}", u.status.as_str())
-                })
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let list = unit_list(st, units, true);
         return Some(format!(
-            "pump: every unit of this need is merged into branch {}.\n{list}\nNot reviewed. Not on main.",
+            "pump: every unit of this need is merged into branch {} (r{revision}).\n{list}\nNot reviewed. Not on main.",
             ctx.cfg.branch
         ));
     }
     None
+}
+
+/// `- <uid> <title>` or, with `commits`, `- <uid> <status> <commit>`.
+fn unit_list(st: &State, units: &[String], commits: bool) -> String {
+    units
+        .iter()
+        .filter_map(|uid| {
+            st.units.get(uid).map(|unit| {
+                if commits {
+                    let commit: String = unit
+                        .commit
+                        .as_deref()
+                        .unwrap_or("")
+                        .chars()
+                        .take(10)
+                        .collect();
+                    format!("- {uid} {} {commit}", unit.status.as_str())
+                } else {
+                    format!("- {uid} {}", unit.title)
+                }
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Write the body to `<home>/board/reply-<h>-<stage>.txt` and run `mail
@@ -519,6 +544,7 @@ pub fn board(ctx: &Ctx, st: &mut State) {
     if post_replies(ctx, st, &rows) {
         spawn_sync_push(ctx);
     }
+    crate::pump::amend::detect(ctx, st);
 }
 
 /// Start the detached drain push that ships the replies just posted.

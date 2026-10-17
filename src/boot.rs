@@ -158,6 +158,8 @@ pub struct PumpBoot {
     pub complete_but_open: usize,
     /// Units parked for a person.
     pub stuck: usize,
+    /// Needs with a post-plan amendment waiting.
+    pub amendments: usize,
     /// Exception rows in the pump database.
     pub exceptions: usize,
 }
@@ -292,6 +294,7 @@ fn collect_pump(
         complete_but_open: complete.intersection(open_needs).count(),
         complete: summary.complete,
         stuck: summary.stuck,
+        amendments: summary.amendments,
         exceptions: summary.exceptions,
         units: summary.units,
     })

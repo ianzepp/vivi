@@ -97,7 +97,10 @@ prompt file as stdin and stdout+stderr to the `.out` file:
 Written by a planner (board or gate-fix) in the charter format. Ingested by
 `ingest`, which globs `plans/*.json` sorted, one file at a time.
 Top-level keys read: `need`, `verdict` (default `"units"`), `reason`, `units`,
-`replaces` (split plans only). Per-unit keys: `id`, `title` (capped at 150
+`revision` (a later plan for a known need), `withdraw` (pending unit ids a
+revision removes), and `replaces` (split plans only). A plan for a known need
+without `revision` is ignored; a revision at or below the current one is stale.
+Per-unit keys: `id`, `title` (capped at 150
 chars), `brief`, `write_scope` (list), `after` (list, default `[]`), `proof`
 (list), `tools` (the unit's kind; absent means `default_kind`).
 
@@ -549,7 +552,15 @@ dispatch — the receipt is read and classified whatever it says.
    Each stage is replied once (`b["replied"]` keys `<h>:planned`,
    `<h>:merged`); the log line is
    `board reply <h> <stage> rc=<n> …`.
-8. **push** — when any reply succeeded, a detached
+8. **amendments** — for each planned need, compare the newest open-need event
+   from one `board --json` with `thread_seen_at`; only when it moved, fetch
+   `need show <h> --json` and hash the thread. A different hash sets
+   `amendment_pending` and spawns the revision planner with
+   `plans/<need>.r<N>.json` as its output. `revision_planning` records the
+   start; a plan file or `plan_timeout` expires the entry, and a timeout
+   files `revision-no-answer`. The planner is not spawned when
+   `[pump.planner] run` is empty.
+9. **push** — when any reply succeeded, a detached
    `vivi sync push --since <board.push_since> --drain --project <proj>`
    appending to `<home>/sync-push.log`, logged as
    `sync push started (detached, drain)`.

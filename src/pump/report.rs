@@ -32,9 +32,11 @@ pub struct Snapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedSummary {
     pub verdict: String,
+    pub revision: u64,
     pub units_total: usize,
     pub counts: BTreeMap<String, usize>,
     pub complete: bool,
+    pub amendment_pending: bool,
     pub last_event: Option<String>,
 }
 
@@ -43,6 +45,7 @@ pub struct NeedSummary {
 pub struct StateSummary {
     pub units: BTreeMap<String, usize>,
     pub complete: usize,
+    pub amendments: usize,
     pub stuck: usize,
     pub exceptions: usize,
     pub inflight: usize,
@@ -101,9 +104,11 @@ impl Snapshot {
             .map(|(id, unit)| format!("{id} {}", unit.status.as_str()));
         Some(NeedSummary {
             verdict: record.verdict.clone(),
+            revision: record.revision,
             units_total: record.units.len(),
             counts,
             complete,
+            amendment_pending: record.amendment_pending,
             last_event,
         })
     }
@@ -125,6 +130,12 @@ impl Snapshot {
                 .copied()
                 .unwrap_or(0)
                 .saturating_add(units.get("merging").copied().unwrap_or(0)),
+            amendments: self
+                .state
+                .needs
+                .values()
+                .filter(|record| record.amendment_pending)
+                .count(),
             units,
             complete,
             exceptions: self.exceptions,
@@ -156,9 +167,14 @@ pub fn render_need(summary: &NeedSummary, registry_open: Option<bool>) -> String
         None => "unknown",
     };
     let last = summary.last_event.as_deref().unwrap_or("none");
+    let amendment = if summary.amendment_pending {
+        "; amendment pending"
+    } else {
+        ""
+    };
     format!(
-        "  pump      verdict {}; {total} units: {rendered}\n  pump      complete {complete}; registry {registry}; last {last}\n",
-        summary.verdict
+        "  pump      verdict {}; r{}; {total} units: {rendered}\n  pump      complete {complete}{amendment}; registry {registry}; last {last}\n",
+        summary.verdict, summary.revision
     )
 }
 
@@ -172,8 +188,8 @@ pub fn render_state(summary: &StateSummary, complete_but_open: usize) -> String 
         "idle"
     };
     format!(
-        "  pump      {activity}; units {rendered}\n  pump      complete {}; complete-but-open {complete_but_open}; stuck {}; exceptions {}\n",
-        summary.complete, summary.stuck, summary.exceptions
+        "  pump      {activity}; units {rendered}\n  pump      complete {}; complete-but-open {complete_but_open}; amendments {}; stuck {}; exceptions {}\n",
+        summary.complete, summary.amendments, summary.stuck, summary.exceptions
     )
 }
 

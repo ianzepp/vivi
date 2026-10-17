@@ -33,6 +33,7 @@ struct BoardPump {
     units: std::collections::BTreeMap<String, usize>,
     complete: usize,
     complete_but_open: usize,
+    amendments: usize,
     stuck: usize,
     exceptions: usize,
 }
@@ -209,6 +210,7 @@ fn board_pump(mailspace: &Mailspace, boards: &[IdentityBoard]) -> Option<BoardPu
         complete_but_open: snapshot.complete_needs().intersection(&open).count(),
         units: summary.units,
         complete: summary.complete,
+        amendments: summary.amendments,
         stuck: summary.stuck,
         exceptions: summary.exceptions,
     })
@@ -637,8 +639,8 @@ fn print_board_pump(pump: &BoardPump) {
     };
     println!("  units    {units}");
     println!(
-        "  complete {}  complete-but-open {}  stuck {}  exceptions {}",
-        pump.complete, pump.complete_but_open, pump.stuck, pump.exceptions
+        "  complete {}  complete-but-open {}  amendments {}  stuck {}  exceptions {}",
+        pump.complete, pump.complete_but_open, pump.amendments, pump.stuck, pump.exceptions
     );
 }
 

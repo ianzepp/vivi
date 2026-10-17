@@ -20,7 +20,7 @@ use crate::error::VivariumError;
 use super::state::{Attempt, GateRecord, NeedRecord, Promotion, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The database filename inside the pump home.
 pub const DB_FILENAME: &str = "pump.db";
@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS needs (
   verdict TEXT NOT NULL,
   reason TEXT NOT NULL,
   units_json TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  thread_sha256 TEXT,
+  thread_seen_at INTEGER,
+  amendment_pending INTEGER NOT NULL DEFAULT 0,
   extra_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS plan_revisions (
@@ -49,6 +53,7 @@ CREATE TABLE IF NOT EXISTS plan_revisions (
 CREATE TABLE IF NOT EXISTS units (
   id TEXT PRIMARY KEY,
   need TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
   title TEXT NOT NULL,
   brief TEXT NOT NULL,
   write_scope_json TEXT NOT NULL,
@@ -256,6 +261,37 @@ impl PumpStore {
         self.load()?.save(path)
     }
 
+    /// Record one accepted plan revision.
+    ///
+    /// # Errors
+    /// Returns [`VivariumError`] when the insert fails.
+    pub fn record_plan_revision(
+        &mut self,
+        need: &str,
+        revision: u64,
+        verdict: &str,
+        reason: &str,
+        body: &str,
+        at: u64,
+    ) -> Result<(), VivariumError> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO plan_revisions
+                   (need, revision, verdict, reason, body_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    need,
+                    i64::try_from(revision).unwrap_or(0),
+                    verdict,
+                    reason,
+                    body,
+                    i64::try_from(at).unwrap_or(0),
+                ],
+            )
+            .map_err(db_err("write plan revision"))?;
+        Ok(())
+    }
+
     /// Read the exception rows, oldest first: `(at, kind, unit, text)`.
     ///
     /// # Errors
@@ -273,6 +309,23 @@ impl PumpStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(db_err("read exceptions"))
     }
+}
+
+/// Record one accepted plan revision in `<home>/pump.db`.
+///
+/// # Errors
+/// Returns [`VivariumError`] when the database cannot be opened or written.
+pub fn record_plan_revision(
+    home: &Path,
+    need: &str,
+    revision: u64,
+    verdict: &str,
+    reason: &str,
+    body: &str,
+    at: u64,
+) -> Result<(), VivariumError> {
+    let mut store = PumpStore::open(&home.join(DB_FILENAME))?;
+    store.record_plan_revision(need, revision, verdict, reason, body, at)
 }
 
 /// Append one exception row to `<home>/pump.db`. An exception is a report to
@@ -297,9 +350,30 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(db_err("read user_version"))?;
-    if version == 0 {
+    if version > 0 && version < SCHEMA_VERSION {
+        migrate_v1(conn)?;
+    }
+    if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(db_err("write user_version"))?;
+    }
+    Ok(())
+}
+
+/// Add the revision columns to a version-1 database. A fresh database already
+/// has them, so a duplicate-column error is expected and ignored.
+fn migrate_v1(conn: &Connection) -> Result<(), VivariumError> {
+    for (table, column, ddl) in [
+        ("needs", "revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("needs", "thread_sha256", "TEXT"),
+        ("needs", "thread_seen_at", "INTEGER"),
+        ("needs", "amendment_pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("units", "revision", "INTEGER NOT NULL DEFAULT 1"),
+    ] {
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}");
+        if conn.execute(&sql, []).is_err() {
+            // The column already exists (fresh schema).
+        }
     }
     Ok(())
 }
@@ -365,9 +439,9 @@ fn insert_unit_row(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), Vi
         "INSERT INTO units (id, need, title, brief, write_scope_json, after_json, proof_json,
             tools, status, attempts, task, branch, model, since, since_dispatch, pool,
             commit_sha, merged_at, outside_json, replaced_by_json, verdict_text,
-            kind_reported, extra_json)
+            kind_reported, extra_json, revision)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         params![
             id,
             &unit.need,
@@ -392,6 +466,7 @@ fn insert_unit_row(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), Vi
             &unit.verdict_text,
             i64::from(unit.kind_reported),
             json(&unit.extra)?,
+            i64::try_from(unit.revision).unwrap_or(0),
         ],
     )
     .map_err(db_err("write unit"))?;
@@ -447,13 +522,18 @@ fn write_merge_row(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), Vi
 fn write_needs(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
     for (handle, need) in &st.needs {
         tx.execute(
-            "INSERT INTO needs (handle, verdict, reason, units_json, extra_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO needs (handle, verdict, reason, units_json, revision,
+                thread_sha256, thread_seen_at, amendment_pending, extra_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 handle,
                 &need.verdict,
                 &need.reason,
                 json(&need.units)?,
+                i64::try_from(need.revision).unwrap_or(0),
+                &need.thread_sha256,
+                need.thread_seen_at.map(|at| i64::try_from(at).unwrap_or(0)),
+                i64::from(need.amendment_pending),
                 "{}",
             ],
         )
@@ -545,7 +625,7 @@ fn load_units(conn: &Connection) -> Result<BTreeMap<String, Unit>, VivariumError
             "SELECT id, need, title, brief, write_scope_json, after_json, proof_json,
                 tools, status, attempts, task, branch, model, since, since_dispatch, pool,
                 commit_sha, merged_at, outside_json, replaced_by_json, verdict_text,
-                kind_reported, extra_json
+                kind_reported, extra_json, revision
              FROM units",
         )
         .map_err(db_err("read units"))?;
@@ -576,6 +656,7 @@ fn load_units(conn: &Connection) -> Result<BTreeMap<String, Unit>, VivariumError
                     verdict_text: row.get(20)?,
                     kind_reported: row.get::<_, i64>(21)? != 0,
                     extra: from_json(row.get(22)?),
+                    revision: from_u64(row.get(23)?),
                     history: Vec::new(),
                 },
             ))
@@ -619,7 +700,11 @@ fn load_events(conn: &Connection, units: &mut BTreeMap<String, Unit>) -> Result<
 
 fn load_needs(conn: &Connection) -> Result<BTreeMap<String, NeedRecord>, VivariumError> {
     let mut stmt = conn
-        .prepare("SELECT handle, verdict, reason, units_json FROM needs")
+        .prepare(
+            "SELECT handle, verdict, reason, units_json, revision,
+                thread_sha256, thread_seen_at, amendment_pending
+             FROM needs",
+        )
         .map_err(db_err("read needs"))?;
     let rows = stmt
         .query_map([], |row| {
@@ -629,6 +714,10 @@ fn load_needs(conn: &Connection) -> Result<BTreeMap<String, NeedRecord>, Vivariu
                     verdict: row.get(1)?,
                     reason: row.get(2)?,
                     units: from_json(row.get(3)?),
+                    revision: from_u64(row.get(4)?),
+                    thread_sha256: row.get(5)?,
+                    thread_seen_at: row.get::<_, Option<i64>>(6)?.map(from_u64),
+                    amendment_pending: row.get::<_, i64>(7)? != 0,
                 },
             ))
         })

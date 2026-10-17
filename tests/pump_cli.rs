@@ -89,7 +89,7 @@ fn need_list_pump_appends_progress() {
     ]);
     assert_success(&out);
     assert!(
-        stdout(&out).contains("[pump 1/1 merged, complete]"),
+        stdout(&out).contains("[pump r1 1/1 merged, complete]"),
         "{out:?}"
     );
 }
@@ -163,6 +163,7 @@ fn write_pump_status(project: &tempfile::TempDir, handle: &str, status: Status) 
         NeedRecord {
             verdict: String::from("units"),
             units: vec![format!("{handle}-1")],
+            revision: 1,
             ..NeedRecord::default()
         },
     );
@@ -328,4 +329,26 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn pump_closeout_skips_an_amended_need() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump(&project, &handle);
+    mark_amended(&project, &handle);
+    let listed = vivi(["pump", "closeout", "--json", "--project", root(&project)]);
+    assert_success(&listed);
+    assert!(!stdout(&listed).contains(&handle), "{}", stdout(&listed));
+}
+
+/// Set the amendment flag on a need in the temp pump database.
+fn mark_amended(project: &tempfile::TempDir, handle: &str) {
+    let path = pump_home(project).join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    let mut state = store.load().unwrap();
+    if let Some(record) = state.needs.get_mut(handle) {
+        record.amendment_pending = true;
+    }
+    store.save(&state).unwrap();
 }

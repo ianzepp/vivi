@@ -23,6 +23,8 @@ fn state() -> State {
         NeedRecord {
             verdict: String::from("units"),
             units: vec![String::from("u1"), String::from("u2")],
+            revision: 3,
+            amendment_pending: true,
             ..NeedRecord::default()
         },
     );
@@ -80,8 +82,10 @@ fn render_names_the_registry_state_and_counts() {
     let snapshot = ready(state());
     let text = render_need(&snapshot.need("n1").unwrap(), Some(true));
     assert!(text.contains("verdict units"), "{text}");
+    assert!(text.contains("r3"), "{text}");
     assert!(text.contains("2 units: merged=1 pending=1"), "{text}");
     assert!(text.contains("complete no"), "{text}");
+    assert!(text.contains("amendment pending"), "{text}");
     assert!(text.contains("registry open"), "{text}");
 }
 

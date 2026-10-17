@@ -104,6 +104,7 @@ fn record_need(st: &mut State, handle: &str, uids: &[&str]) {
             verdict: String::from("units"),
             reason: String::new(),
             units: uids.iter().map(|uid| (*uid).to_owned()).collect(),
+            ..NeedRecord::default()
         },
     );
 }

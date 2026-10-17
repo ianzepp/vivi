@@ -39,7 +39,14 @@ pub fn complete_open(
     let mut rows: Vec<CloseoutRow> = mailspace
         .list_kind(None, "needs", "need")?
         .into_iter()
-        .filter(|message| complete.contains(&message.handle))
+        .filter(|message| {
+            complete.contains(&message.handle)
+                && !snapshot
+                    .state()
+                    .needs
+                    .get(&message.handle)
+                    .is_some_and(|record| record.amendment_pending)
+        })
         .map(|message| row(snapshot, &message))
         .collect();
     rows.sort_by(|left, right| left.handle.cmp(&right.handle));

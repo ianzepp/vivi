@@ -93,7 +93,7 @@ directory:
 | `status.txt` | pump `write_status` | `pump status` | 4 lines: timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …` |
 | `lock` | pump opens for flock | none (lock only) | empty |
 | `skip.txt` | operator | board pass | need handles to never plan, whitespace separated |
-| `plans/` | planner writes `<need>.json` (and `<uid>.split.json`) | pump ingest | plan JSON; see [`pump-protocols.md`](pump-protocols.md) |
+| `plans/` | planner writes `<need>.json`, `<need>.r<N>.json` (a revision) and `<uid>.split.json` | pump ingest | plan JSON; see [`pump-protocols.md`](pump-protocols.md) |
 | `plans/superseded/` | re-plan moves old plans here | operator | `<need>.<epoch>.json` |
 | `needs/` | board dumps the need thread | planner (the plan prompt) | JSON `{need, subject, triage, thread}` |
 | `board/` | pump writes `<need>.prompt`; planner shell writes `<need>.out` | operator | prompt text; planner stdout+stderr |
@@ -130,8 +130,8 @@ its durable form.
 | `unit_edges` | `after` prerequisites, one row per edge |
 | `unit_events` | attempt history (`attempt`, `model`, `why`, `detail`, `at`) |
 | `unit_order` | dispatch and merge order (fix units sorted first at dispatch) |
-| `needs` | one row per planned need: `verdict`, `reason`, `units_json` |
-| `plan_revisions` | reserved for plan revisions; empty until the amendment protocol lands |
+| `needs` | one row per planned need: `verdict`, `reason`, `units_json`, `revision`, `thread_sha256`, `thread_seen_at`, `amendment_pending` |
+| `plan_revisions` | every accepted plan revision: `need`, `revision`, `verdict`, `reason`, `body_json`, `created_at` |
 | `merges` | one row per merged unit: `commit_sha`, `at`, `outside_json` |
 | `gates`, `gate_failures` | every finished gate, unreadable ones included, plus one row per failing name |
 | `exceptions` | the same rows as `exceptions.txt`, queryable |
@@ -198,6 +198,34 @@ are all satisfied while its Vivi copy is still open, with the unit count, the
 newest integration tip and the completion time. `vivi pump closeout --close
 <handle>` performs the lifecycle move as the item's holder (or `--for`), then
 accepts it as the author. The `--json` form is the same rows for a script.
+A need with `amendment_pending` is not listed: the addendum has to be planned
+before the need can close.
+
+### 5.3 Amendments and plan revisions
+
+A need is a living Vivi record. The pump records `thread_sha256` and
+`thread_seen_at` when a plan is accepted. Each board pass compares the newest
+open-need event from `board --json` with `thread_seen_at`; only when it moved
+does the pump fetch `need show --json` and hash the thread. A different hash
+sets `amendment_pending` and starts a revision planner.
+
+The planner writes `plans/<need>.r<N>.json` with `"revision": N`, the complete
+unit set and an optional `withdraw` list. Applying a revision follows these
+rules:
+
+- a merged or no-defect unit is immutable; a changed field raises
+  `revision-conflict` and the current unit stays;
+- an inflight, delivered, merging or splitting unit is immutable; the addendum
+  becomes a new unit;
+- a pending unit is amended from the plan;
+- a unit absent from the plan is kept; `withdraw` names the pending units to
+  withdraw;
+- a new id is minted `pending` at the new revision;
+- the old revision stays in `plan_revisions` and the old file on disk.
+
+Each accepted revision posts a `revised-N` reply once. The `planned`, `revised-N`
+and `merged` replies sync, so a reader on another host sees the plan revision
+and completion state in the thread even without `pump.db`.
 
 ## 6. The unit state machine
 
@@ -226,7 +254,9 @@ Transitions (from, to, trigger, guard, action):
 
 | from | to | trigger | guard | action |
 | --- | --- | --- | --- | --- |
-| — | `pending` | a new plan file in `plans/` | each unit has `id`, `brief`, `write_scope`, a list `proof`; no duplicate id | unit record minted with `since=now`, appended to `order`; need recorded |
+| — | `pending` | a new plan file in `plans/` | each unit has `id`, `brief`, `write_scope`, a list `proof`; no duplicate id, except a revision may name an existing id | unit record minted with `since=now` and `revision`, appended to `order`; need recorded |
+| `pending` | `pending` (amended) | a revision plan with a higher `revision` | the unit is still pending | brief, scope, proof, tools and `after` replaced; `revision` updated |
+| any | `withdrawn` | a revision's `withdraw` list | the unit is still pending | removed from the need's unit list; kept for history |
 | `pending` | `inflight` | dispatch loop reaches it | `ready` (§8); a free pool slot; `pick_model` returns a model | task sent, pool dispatched, unit updated (`attempts+1`, `task`, `branch`, `model`, `since`, `since_dispatch`, `pool`) |
 | `inflight` | `delivered` | collect: the task is not running and not reported, or reported `finished`, and the worker branch exists on the remote | receipt does not contain `agent exit 124` / `agent_rc 124` | `since=now`, log `delivered` |
 | `inflight` | `no-defect` | collect: no remote branch, and the receipt contains `VERDICT: no-defect` | — | `verdict_text` kept, `no-defect` exception filed |

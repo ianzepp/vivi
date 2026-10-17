@@ -205,10 +205,19 @@ fn pump_suffixes(
         .filter_map(|item| {
             let summary = snapshot.need(&item.handle)?;
             let merged = summary.counts.get("merged").copied().unwrap_or(0);
-            let state = if summary.complete { "complete" } else { "open" };
+            let state = if summary.amendment_pending {
+                "amending"
+            } else if summary.complete {
+                "complete"
+            } else {
+                "open"
+            };
             Some((
                 item.handle.clone(),
-                format!("pump {merged}/{} merged, {state}", summary.units_total),
+                format!(
+                    "pump r{} {merged}/{} merged, {state}",
+                    summary.revision, summary.units_total
+                ),
             ))
         })
         .collect()

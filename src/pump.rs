@@ -1,5 +1,6 @@
 //! `vivi pump`: the pump as a state machine; see skills/vivi/references/pump-contract.md.
 
+pub mod amend;
 pub mod board;
 pub mod brief;
 pub mod closeout;
@@ -33,6 +34,10 @@ mod store_test;
 #[cfg(test)]
 #[path = "pump/report_test.rs"]
 mod report_test;
+
+#[cfg(test)]
+#[path = "pump/amend_test.rs"]
+mod amend_test;
 
 #[cfg(test)]
 #[path = "pump/plan_test.rs"]

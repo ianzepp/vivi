@@ -293,3 +293,125 @@ fn ingest_a_split_plan_replaces_the_unit_and_an_empty_split_raises_split_empty()
     assert!(exc.contains("split-empty u2 nothing to do"));
     assert!(host2.logs().iter().any(|l| l == "split u2 into 0 units"));
 }
+
+/// One unit in a plan body.
+fn plan_unit(id: &str, brief: &str) -> Value {
+    json!({
+        "id": id,
+        "title": id,
+        "brief": brief,
+        "write_scope": ["src/a.rs"],
+        "proof": [],
+        "tools": "plain"
+    })
+}
+
+/// A first plan for `n1` with one unit.
+fn first_plan() -> Value {
+    json!({
+        "need": "n1",
+        "revision": 1,
+        "verdict": "units",
+        "reason": "first",
+        "units": [plan_unit("n1-1", "first pass")]
+    })
+}
+
+#[test]
+fn a_revision_amends_pending_and_keeps_merged_units() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 1);
+    st.units.get_mut("n1-1").unwrap().status = Status::Merged;
+
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({
+            "need": "n1",
+            "revision": 2,
+            "verdict": "units",
+            "reason": "add the second half",
+            "units": [plan_unit("n1-1", "first pass"), plan_unit("n1-2", "second half")]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 2);
+    assert_eq!(st.units["n1-1"].status, Status::Merged);
+    assert_eq!(st.units["n1-2"].status, Status::Pending);
+    assert_eq!(st.units["n1-2"].revision, 2);
+    assert_eq!(st.needs["n1"].units, vec!["n1-1", "n1-2"]);
+}
+
+#[test]
+fn a_revision_cannot_change_a_merged_unit() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    st.units.get_mut("n1-1").unwrap().status = Status::Merged;
+
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({
+            "need": "n1",
+            "revision": 2,
+            "units": [plan_unit("n1-1", "different work")]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["n1-1"].brief, "first pass");
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exc.contains("revision-conflict n1-1"), "{exc}");
+}
+
+#[test]
+fn a_revision_withdraws_only_named_pending_units() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_plan(
+        &ctx,
+        "n1.json",
+        &json!({
+            "need": "n1",
+            "revision": 1,
+            "units": [plan_unit("n1-1", "one"), plan_unit("n1-2", "two")]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({
+            "need": "n1",
+            "revision": 2,
+            "units": [plan_unit("n1-1", "one"), plan_unit("n1-2", "two")],
+            "withdraw": ["n1-1"]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["n1-1"].status, Status::Withdrawn);
+    assert_eq!(st.needs["n1"].units, vec!["n1-2"]);
+}
+
+#[test]
+fn a_stale_or_duplicate_revision_is_ignored() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({"need": "n1", "revision": 2, "units": [plan_unit("n1-2", "two")]}),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 2);
+    write_plan(
+        &ctx,
+        "n1.r2b.json",
+        &json!({"need": "n1", "revision": 2, "units": [plan_unit("n1-3", "three")]}),
+    );
+    ingest(&ctx, &mut st);
+    assert!(!st.units.contains_key("n1-3"));
+    assert_eq!(st.needs["n1"].revision, 2);
+}

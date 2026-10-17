@@ -79,6 +79,7 @@ fn parked(verdict: &str, reason: &str) -> NeedRecord {
         verdict: String::from(verdict),
         reason: String::from(reason),
         units: Vec::new(),
+        ..NeedRecord::default()
     }
 }
 
@@ -517,6 +518,8 @@ fn post_replies_sends_planned_once_and_merged_once() {
             verdict: String::from("split"),
             reason: String::from("two parts"),
             units: vec![String::from("u1"), String::from("u2")],
+            revision: 1,
+            ..NeedRecord::default()
         },
     );
     st.units.insert(
@@ -532,12 +535,12 @@ fn post_replies_sends_planned_once_and_merged_once() {
     let planned = fs::read_to_string(ctx.home.join("board/reply-n1-planned.txt")).unwrap();
     assert_eq!(
         planned,
-        "pump: planned. verdict: split; 2 unit(s).\ntwo parts\n- u1 Unit one\n- u2 Unit two\n"
+        "pump: planned. verdict: split; revision 1; 2 unit(s).\ntwo parts\n- u1 Unit one\n- u2 Unit two\n"
     );
     let merged = fs::read_to_string(ctx.home.join("board/reply-n1-merged.txt")).unwrap();
     assert_eq!(
         merged,
-        "pump: every unit of this need is merged into branch next.\n- u1 merged abcdef1234\n- u2 merged abcdef1234\nNot reviewed. Not on main.\n"
+        "pump: every unit of this need is merged into branch next (r1).\n- u1 merged abcdef1234\n- u2 merged abcdef1234\nNot reviewed. Not on main.\n"
     );
     let mails = || {
         host.commands()
@@ -574,6 +577,8 @@ fn the_merged_reply_waits_until_every_unit_is_satisfied() {
             verdict: String::from("plan"),
             reason: String::from("one first"),
             units: vec![String::from("u1"), String::from("u2")],
+            revision: 1,
+            ..NeedRecord::default()
         },
     );
     st.units
@@ -588,7 +593,7 @@ fn the_merged_reply_waits_until_every_unit_is_satisfied() {
     unit.commit = Some(String::from("2222222222bbbb"));
     assert!(post_replies(&ctx, &mut st, &rows));
     let merged = fs::read_to_string(ctx.home.join("board/reply-n2-merged.txt")).unwrap();
-    assert!(merged.contains("merged into branch next."));
+    assert!(merged.contains("merged into branch next (r1)."));
     assert!(merged.contains("- u2 merged 2222222222"));
     assert_eq!(
         st.board.replied,
@@ -675,4 +680,30 @@ fn a_board_stamp_in_the_future_skips_the_pass_and_does_not_underflow() {
     board(&ctx, &mut st);
     assert_eq!(st.board.at, ahead);
     assert!(host.commands().is_empty());
+}
+
+#[test]
+fn post_replies_sends_one_revised_stage_per_revision() {
+    let (_dir, ctx, host) = setup();
+    host.reply("mail reply n3", 0, "queued");
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("n3"),
+        NeedRecord {
+            verdict: String::from("units"),
+            reason: String::from("revised"),
+            units: vec![String::from("u1")],
+            revision: 2,
+            ..NeedRecord::default()
+        },
+    );
+    st.units.insert(
+        String::from("u1"),
+        merged_unit("Unit one", "abcdef1234567890"),
+    );
+    let rows = vec![need_row("n3", "2026-10-15", "Revised")];
+    assert!(post_replies(&ctx, &mut st, &rows));
+    let revised = fs::read_to_string(ctx.home.join("board/reply-n3-revised-2.txt")).unwrap();
+    assert!(revised.contains("pump: revised to r2."), "{revised}");
+    assert!(st.board.replied.contains(&String::from("n3:revised-2")));
 }

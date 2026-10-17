@@ -1940,7 +1940,17 @@ The pump never closes a need on its tick. `vivi pump closeout` lists every
 need whose units are all satisfied while its Vivi copy is still open, with the
 unit count, integration tip and completion time. `vivi pump closeout --close
 <handle>` moves it as the holder (or `--for <identity>`) and accepts it as the
-author; `--json` gives the same rows for a script.
+author; `--json` gives the same rows for a script. A need with an amendment
+waiting is not listed.
+
+**Amendments.** A plan is a snapshot. When the need thread gains a message
+after the plan, the board pass notices the newer event, hashes the thread and
+asks the planner for `plans/<need>.r<N>.json`. The revision keeps every unit
+id, never changes a merged or in-flight unit, amends pending units, and
+withdraws only the pending ids named in `withdraw`. The accepted revision is
+recorded in `plan_revisions` and posted once as a `revised-N` reply. The
+`planned`, `revised-N` and `merged` replies sync, so a reader on another host
+sees the plan revision and completion state in the thread without `pump.db`.
 
 `log.txt` is the event
 stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`

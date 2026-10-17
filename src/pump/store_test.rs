@@ -52,6 +52,11 @@ fn sample() -> State {
             verdict: String::from("units"),
             reason: String::from("r"),
             units: vec![String::from("u1")],
+            revision: 3,
+            thread_sha256: Some(String::from("abc")),
+            thread_seen_at: Some(77),
+            amendment_pending: true,
+            ..NeedRecord::default()
         },
     );
     st.gates.push(GateRecord {
@@ -103,6 +108,10 @@ fn a_saved_state_round_trips() {
     assert_eq!(unit.extra.get("future").unwrap(), &serde_json::json!(7));
     assert_eq!(back.order, vec![String::from("u1")]);
     assert_eq!(back.needs["n1"].units, vec![String::from("u1")]);
+    assert_eq!(back.needs["n1"].revision, 3);
+    assert_eq!(back.needs["n1"].thread_sha256.as_deref(), Some("abc"));
+    assert_eq!(back.needs["n1"].thread_seen_at, Some(77));
+    assert!(back.needs["n1"].amendment_pending);
     assert_eq!(back.gates[0].names.as_ref().unwrap()[0], "crate test");
     assert_eq!(back.gates[0].new, None);
     assert_eq!(back.baseline.as_ref().unwrap()[0], "old");
@@ -137,6 +146,24 @@ fn the_live_state_snapshot_round_trips_through_the_database() {
     assert_eq!(got.status, want.status);
     assert_eq!(got.need, want.need);
     assert_eq!(got.history.len(), want.history.len());
+}
+
+#[test]
+fn a_version_one_database_gains_the_revision_columns() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE needs (
+           handle TEXT PRIMARY KEY, verdict TEXT NOT NULL, reason TEXT NOT NULL,
+           units_json TEXT NOT NULL, extra_json TEXT NOT NULL);
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    drop(conn);
+    let store = PumpStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert!(store.load().unwrap().needs.is_empty());
 }
 
 #[test]
