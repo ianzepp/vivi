@@ -431,7 +431,7 @@ unless marked.
 
 | key | type | default | controls |
 | --- | --- | --- | --- |
-| `from` | list of senders | none | senders whose open needs are plannable |
+| `from` | list of senders | none | senders whose open needs addressed to `reply_from` are plannable |
 | `since` | ISO datetime | none | needs dated before this are skipped, unless marked or re-planned |
 | `mark` | string | `pump` | approval mark: a marked open need is plannable whatever sender or date |
 | `every` | int seconds | `300` | seconds between board passes |
@@ -575,13 +575,20 @@ Validation rules (`vivi pump` refuses to start when one fails):
    merger runs the shared checks plus the unit's proof on the merged result
    (the proof is skipped for a `skip_proof` kind). A timeout means split the
    unit, never retry it.
-4. **An open need carrying the approval mark is plannable** whatever its sender
+4. **A need is the pump's work only when it is addressed to `reply_from` or
+   held for it.** The sender path (`board.from`) lists with `--to
+   <reply_from>`, and the marked path already narrows to held or to-mind. A
+   need addressed to another recipient is not a candidate.
+5. **An open need carrying the approval mark is plannable** whatever its sender
    or date: `marked_rows` lists held and to-mind open needs carrying `mark`,
    and the board adds them past the `since` cutoff.
-5. **A parked need is re-planned when the operator replies** on its thread
+6. **A thread reply is never a candidate.** A work send with `--reply-to` is a
+   captured reply on an existing thread; work lists show a thread by its root,
+   so the board never sees the reply as new work however it was sent.
+7. **A parked need is re-planned when the operator replies** on its thread
    after the plan file was written: verdict in `operator|design|hold`, no
    units, plan superseded, need deleted, handle queued for re-planning.
-6. **No environment variables for configuration:** config lives in `[pump]` and
+8. **No environment variables for configuration:** config lives in `[pump]` and
    CLI flags only; the pump reads no environment variable for configuration.
 7. **No speculative hooks.** The pump has no decision script. The one place
    config cannot express a decision today is gate-reply name extraction when

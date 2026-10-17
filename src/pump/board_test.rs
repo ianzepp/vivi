@@ -150,7 +150,7 @@ fn marked_rows_keeps_only_rows_with_the_mark_and_deduplicates() {
         ]),
     );
     host.reply(
-        "--to mind",
+        "--json --to mind",
         0,
         &list(&[row("n3", "2026-10-15", "Three", &["pump"])]),
     );
@@ -170,7 +170,7 @@ fn marked_rows_logs_an_unreadable_list_and_returns_what_it_could_read() {
         "error: the mailspace is locked\nsecond line of noise",
     );
     host.reply(
-        "--to mind",
+        "--json --to mind",
         0,
         &list(&[row("n3", "2026-10-15", "Three", &["pump"])]),
     );
@@ -207,7 +207,7 @@ fn candidate_rows_unions_senders_and_marked_rows_and_reports_the_approved_set() 
         ]),
     );
     host.reply(
-        "--to mind",
+        "--json --to mind",
         0,
         &list(&[row("d", "2026-10-15", "D", &["pump"])]),
     );
@@ -216,6 +216,41 @@ fn candidate_rows_unions_senders_and_marked_rows_and_reports_the_approved_set() 
     assert_eq!(handles, vec!["a", "b", "c", "d"]);
     let want: BTreeSet<String> = ["b", "c", "d"].iter().map(|h| (*h).to_owned()).collect();
     assert_eq!(approved, want);
+    assert!(
+        host.commands().iter().any(|cmd| cmd
+            .contains("need list --from operator@bd371d96.local --to mind --status open --json")),
+        "commands: {:?}",
+        host.commands()
+    );
+}
+
+#[test]
+fn candidate_rows_plans_only_needs_addressed_to_the_reply_identity() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "need list --from operator@bd371d96.local",
+        0,
+        &list(&[row("other", "2026-10-15", "To hand", &[])]),
+    );
+    host.reply(
+        "need list --from operator@bd371d96.local --to mind",
+        0,
+        &list(&[row("mine", "2026-10-15", "To mind", &[])]),
+    );
+    host.reply("--held", 0, "[]");
+    host.reply("--json --to mind", 0, "[]");
+
+    let (rows, _) = candidate_rows(&ctx);
+    let handles: Vec<&str> = rows.iter().map(|row| row.handle.as_str()).collect();
+    assert_eq!(handles, vec!["mine"]);
+    assert!(
+        host.commands()
+            .iter()
+            .filter(|cmd| cmd.contains("need list --from operator@bd371d96.local"))
+            .all(|cmd| cmd.contains("--to mind")),
+        "an unfiltered sender query is never issued: {:?}",
+        host.commands()
+    );
 }
 
 #[test]
@@ -634,7 +669,7 @@ fn board_skips_a_pass_inside_the_every_window_and_pulls_then_plans_otherwise() {
         &list(&[row("n9", "2026-10-15T00:00", "Plan me", &[])]),
     );
     host.reply("--held", 0, "[]");
-    host.reply("--to mind", 0, "[]");
+    host.reply("--json --to mind", 0, "[]");
     host.reply(
         "need show n9",
         0,

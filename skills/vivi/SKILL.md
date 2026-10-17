@@ -195,7 +195,10 @@ document.
 ## Lifecycle
 
 Use `send` to create a project-local record and `mail reply` to continue its
-thread. `--depends-on` on any work-kind send (task, need, or want handles)
+thread. A work send with `--reply-to` is a captured reply on that thread, not
+a new item: `need list`, `want list`, and the other work lists show a thread
+once, by its root, and `show` reads the whole thread. `--depends-on` on any
+work-kind send (task, need, or want handles)
 creates a graph edge; handles are validated before anything is created, so
 an unknown dependency fails the send. `X-Vivi-Depends-On` headers remain on
 the message and travel with it: whatever files a work letter (local send, pull,
@@ -1914,14 +1917,15 @@ For whoever operates it. Reference tables follow in the sections below.
    then start again. A `STOP` left behind makes the next start run one tick
    and exit.
 
-**Getting work in.** The board plans an open need that either comes from a
-`[pump.board] from` sender (dated at or after `since`), or carries the
-approval mark whatever its sender or date: `vivi need mark <handle> pump
---for <holder>` (the mark is `[pump.board] mark`, default `pump`; the need
-must be held, or addressed to `reply_from`, to be seen). When the operator
-replies on the thread of a parked need (verdict `operator`, `design` or
-`hold`), it is planned again. To keep a need from ever being planned, put its
-handle in `<home>/skip.txt` (whitespace separated).
+**Getting work in.** The board plans an open need addressed to `reply_from`
+(or held for it) that either comes from a `[pump.board] from` sender (dated at
+or after `since`), or carries the approval mark whatever its sender or date:
+`vivi need mark <handle> pump --for <holder>` (the mark is `[pump.board]
+mark`, default `pump`). A need addressed to another recipient is not the
+pump's work, and a reply on an existing thread is never plannable, however it
+was sent. When the operator replies on the thread of a parked need (verdict
+`operator`, `design` or `hold`), it is planned again. To keep a need from ever
+being planned, put its handle in `<home>/skip.txt` (whitespace separated).
 
 **What a planner writes.** A plan file, described under "Plan files" below.
 Its `proof` commands are run exactly as written, by `sh` in the integration

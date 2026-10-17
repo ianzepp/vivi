@@ -1294,6 +1294,61 @@ fn replies_and_lifecycle_notes_assemble_cross_kind_threads() {
 }
 
 #[test]
+fn need_and_want_lists_show_a_thread_only_by_its_root() {
+    let project = tempfile::tempdir().unwrap();
+    init_roster(project.path());
+    let p = project.path().to_str().unwrap();
+
+    for kind in ["need", "want"] {
+        let root = send_work(project.path(), kind, "cto", &format!("{kind} root"), "body");
+        let reply = vivi([
+            kind,
+            "send",
+            "--project",
+            p,
+            "--from",
+            "ceo",
+            "--to",
+            "cto",
+            "--subject",
+            &format!("Re: {kind} root"),
+            "--body",
+            "a reply",
+            "--reply-to",
+            &root,
+        ]);
+        assert_success(&reply);
+
+        let listed = vivi([kind, "list", "--project", p, "--for", "cto", "--json"]);
+        assert_success(&listed);
+        let rows: Value = serde_json::from_str(&stdout(&listed)).unwrap();
+        let subjects: Vec<&str> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["subject"].as_str())
+            .collect();
+        assert!(
+            subjects.contains(&format!("{kind} root").as_str()),
+            "{subjects:?}"
+        );
+        assert!(
+            !subjects.iter().any(|subject| subject.starts_with("Re:")),
+            "a reply is not its own open item: {subjects:?}"
+        );
+
+        let show = vivi([kind, "show", "--project", p, "--json", &root]);
+        assert_success(&show);
+        let messages: Value = serde_json::from_str(&stdout(&show)).unwrap();
+        assert_eq!(
+            messages.as_array().unwrap().len(),
+            2,
+            "{kind} thread: {messages}"
+        );
+    }
+}
+
+#[test]
 fn mailspace_watch_filters_events_and_advances_cursor() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());

@@ -4,7 +4,7 @@ use chrono::Utc;
 
 use super::event_log::{log_move_event, log_send_events};
 use super::kind::matches_kind;
-use super::reply::{add_reply_headers, resolve_reply_parent};
+use super::reply::{add_reply_headers, resolve_reply_parent, roots_only};
 use super::{
     DeliveredMessage, DeliveryResult, Mailspace, MoveOutcome, RawDelivery, Recipient, SendRequest,
     canonical_local_role,
@@ -381,18 +381,19 @@ impl Mailspace {
         } else {
             storage.list_messages_by_role(&role)?
         };
-        if role_implies_kind(&role, kind) {
-            return Ok(role_messages);
-        }
         let mut messages = Vec::new();
-        for message in role_messages {
-            let data = storage.read_message(&message.message_id)?;
-            let events = storage.list_mailspace_events(&message.message_id)?;
-            if matches_kind(&message.local_role, &data, &events, kind) {
-                messages.push(message);
+        if role_implies_kind(&role, kind) {
+            messages = role_messages;
+        } else {
+            for message in role_messages {
+                let data = storage.read_message(&message.message_id)?;
+                let events = storage.list_mailspace_events(&message.message_id)?;
+                if matches_kind(&message.local_role, &data, &events, kind) {
+                    messages.push(message);
+                }
             }
         }
-        Ok(messages)
+        roots_only(&storage, messages)
     }
 
     /// The sender's own open copies of `kind` work addressed to another
@@ -427,7 +428,7 @@ impl Mailspace {
                 messages.push(row);
             }
         }
-        Ok(messages)
+        roots_only(&storage, messages)
     }
 
     /// Search memos for an identity by query.

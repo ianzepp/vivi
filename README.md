@@ -285,9 +285,11 @@ tables of `mailspace.toml`, and the engine holds no project rules.
 
 Each tick the pump:
 
-1. **Plans.** Finds open needs to plan (needs from the senders in
-   `[pump.board] from`, or any open need carrying the approval mark, `pump` by
-   default), writes the need thread and a prompt under its home, and starts a
+1. **Plans.** Finds open needs addressed to its `reply_from` role (or held for
+   it): those from the senders in `[pump.board] from`, or any such need
+   carrying the approval mark, `pump` by default. A need addressed to another
+   recipient is not its work, and a reply on an existing thread is never
+   planned. It writes the need thread and a prompt under its home, and starts a
    planner (`[pump.planner] run`, prompt on stdin, at most `planners_max` at a
    time). The planner writes `plans/<need>.json`: a verdict and a list of units,
    each with `id`, `brief` and `write_scope`, and optionally `title`, `after`

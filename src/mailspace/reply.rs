@@ -138,6 +138,25 @@ pub(super) fn add_reply_headers(eml: &str, parent: &[u8]) -> Result<String, Viva
     add_header(&eml, "References", message_id)
 }
 
+/// Keep thread roots: a work list shows a thread once, by the message that
+/// started it, and its replies are read through `show`. A reply carries a
+/// parent link whatever route stored it — a local `--reply-to` send, a pull,
+/// or a captured reply.
+pub(super) fn roots_only(
+    storage: &Storage,
+    messages: Vec<StoredMessageView>,
+) -> Result<Vec<StoredMessageView>, VivariumError> {
+    let content_ids: Vec<String> = messages
+        .iter()
+        .map(|message| message.content_id.clone())
+        .collect();
+    let links = storage.list_mailspace_links_for_children(&content_ids)?;
+    Ok(messages
+        .into_iter()
+        .filter(|message| !links.contains_key(&message.content_id))
+        .collect())
+}
+
 fn reply_recipients(
     mailspace: &Mailspace,
     parsed: &mail_parser::Message<'_>,

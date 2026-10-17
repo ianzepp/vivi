@@ -507,13 +507,16 @@ dispatch — the receipt is read and classified whatever it says.
 
 1. **sync pull** — `vivi sync pull` (120 s) when `board.pull`; rc and the last
    output line are logged.
-2. **candidate rows** — `vivi need list --from <sender> --status open --json`
-   for each sender in `board.from` (keys `handle`, `date`, `subject`), then
+2. **candidate rows** — `vivi need list --from <sender> --to <reply_from>
+   --status open --json` for each sender in `board.from` (keys `handle`,
+   `date`, `subject`), then
    `marked_rows`: the two forms
    `need list --status open --json --held` and
    `need list --status open --json --to mind`, keeping rows whose `marks`
    list contains `board.mark`; marked rows not already present are appended. A
-   marked open need is plannable whatever its sender or date (ruling 4).
+   marked open need is plannable whatever its sender or date (ruling 5). A need
+   addressed to another recipient is not a candidate, and a reply on an
+   existing thread never appears: work lists show a thread by its root.
 3. **skip list** — whitespace-split handles in `<home>/skip.txt`.
 4. **since-cutoff** — a row with `date < board.since` (string compare) is
    skipped **unless** it is in this pass's `replan` set or it is a marked
@@ -574,7 +577,7 @@ message newer than the plan file's mtime (`operator_replied_after`) is re-planne
 need record is deleted, any `planned`-stage reply key is dropped, the handle
 joins `b["replan"]` (which bypasses the since-cutoff for this pass), and the
 log says `board: operator replied on parked need <h> (was <verdict>);
-re-planning` (ruling 5).
+re-planning` (ruling 7).
 
 ## 9. Exceptions and log lines
 

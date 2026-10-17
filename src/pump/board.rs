@@ -107,15 +107,19 @@ pub fn marked_rows(ctx: &Ctx) -> Vec<NeedRow> {
     unique
 }
 
-/// The board's candidate rows: every configured sender's
-/// open needs, then marked rows not already present; plus the set of
-/// marked (approved) handles.
+/// The board's candidate rows: every configured sender's open needs
+/// addressed to `reply_from`, then marked rows not already present; plus the
+/// set of marked (approved) handles. A need addressed to another recipient is
+/// not the pump's work, and a thread reply never becomes one.
 #[must_use]
 pub fn candidate_rows(ctx: &Ctx) -> (Vec<NeedRow>, BTreeSet<String>) {
     let mut rows: Vec<NeedRow> = Vec::new();
     for sender in &ctx.cfg.board.from {
         let out = ctx.vivi(
-            &format!("need list --from {sender} --status open --json"),
+            &format!(
+                "need list --from {sender} --to {} --status open --json",
+                ctx.cfg.reply_from
+            ),
             60,
         );
         match parse_rows(&out.text) {
