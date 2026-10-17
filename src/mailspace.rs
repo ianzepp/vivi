@@ -88,7 +88,7 @@ pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
 pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};
-pub use thread::{MailspaceThreadMessage, print_thread};
+pub use thread::{MailspaceThreadMessage, ThreadOutlineRow, print_thread, print_thread_outline};
 pub use trace::{print_trace, print_trace_json};
 pub use watch::{MailspaceWatchRequest, run_watch};
 

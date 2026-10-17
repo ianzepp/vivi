@@ -934,3 +934,99 @@ fn schedule_report_uses_latest_non_memo_when_cadence_set() {
     assert_ne!(report.last_signal_kind.as_deref(), Some("memos"));
     assert!(report.last_signal_handle.is_some());
 }
+
+#[test]
+fn thread_outline_lists_the_anchor_then_every_reply() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("ceo").unwrap();
+    mailspace.add_identity("cto").unwrap();
+    let sent = mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec!["cto".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "settle the frob design".into(),
+            body: "root body".into(),
+            role: "wants".into(),
+            kind: Some("want".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let root = sent.delivered[0].handle.clone();
+
+    for n in 0..3 {
+        mailspace
+            .send(SendRequest {
+                from: "cto".into(),
+                to: vec!["ceo".into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: format!("Re: settle the frob design ({n})"),
+                body: format!("reply {n}"),
+                role: "inbox".into(),
+                kind: None,
+                reply_to: Some(root.clone()),
+                depends_on: Vec::new(),
+            })
+            .unwrap();
+    }
+
+    let outline = mailspace.thread_outline(&root).unwrap();
+    assert_eq!(outline.len(), 4);
+    assert_eq!(outline[0].handle, root);
+    assert_eq!(outline[0].subject, "settle the frob design");
+    // A reply's content files under two message rows (recipient inbox and
+    // sender sent); the outline resolves by content, so compare subjects.
+    let listed: BTreeSet<String> = outline[1..].iter().map(|row| row.subject.clone()).collect();
+    let expected: BTreeSet<String> = (0..3)
+        .map(|n| format!("Re: settle the frob design ({n})"))
+        .collect();
+    assert_eq!(listed, expected);
+}
+
+#[test]
+fn thread_outline_stays_complete_where_the_capped_thread_stops() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("ceo").unwrap();
+    mailspace.add_identity("cto").unwrap();
+    let sent = mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec!["cto".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "long design".into(),
+            body: "root body".into(),
+            role: "wants".into(),
+            kind: Some("want".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let root = sent.delivered[0].handle.clone();
+    for n in 0..51 {
+        mailspace
+            .send(SendRequest {
+                from: "cto".into(),
+                to: vec!["ceo".into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: format!("Re: long design ({n})"),
+                body: format!("reply {n}"),
+                role: "inbox".into(),
+                kind: None,
+                reply_to: Some(root.clone()),
+                depends_on: Vec::new(),
+            })
+            .unwrap();
+    }
+
+    let outline = mailspace.thread_outline(&root).unwrap();
+    assert_eq!(outline.len(), 52);
+    assert_eq!(outline[0].handle, root);
+    assert_eq!(mailspace.thread(&root, false, 50, 50).unwrap().len(), 50);
+}

@@ -98,6 +98,16 @@ fn print_latest_thread(
     Ok(())
 }
 
+/// One line of a thread's table of contents: the anchor item plus each
+/// reply, oldest first. Built from message rows only, so it lists every
+/// reply even when the body print below is capped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadOutlineRow {
+    pub date: String,
+    pub handle: String,
+    pub subject: String,
+}
+
 impl Mailspace {
     /// Assemble a thread of messages connected by content links.
     ///
@@ -123,6 +133,47 @@ impl Mailspace {
         }
         let included = connected_content_ids(&seed.content_id, &links, limit, max_depth);
         assemble_thread(&storage, &seed, &links, included)
+    }
+
+    /// The thread's inventory as outline rows: the anchor message first,
+    /// then every linked reply oldest-first. Reads message rows only (no
+    /// bodies), so the outline stays complete where the capped body print
+    /// is not.
+    ///
+    /// # Errors
+    /// Returns an error if the handle cannot be resolved, the link map
+    /// cannot be loaded, or a storage operation fails.
+    pub fn thread_outline(&self, handle: &str) -> Result<Vec<ThreadOutlineRow>, VivariumError> {
+        let storage = self.storage()?;
+        let seed = resolve_seed(&storage, handle)?;
+        let links = link_map(&storage)?;
+        let included = connected_content_ids(&seed.content_id, &links, usize::MAX, usize::MAX);
+        let mut replies = Vec::with_capacity(included.len());
+        for content_id in included {
+            if content_id == seed.content_id {
+                continue;
+            }
+            if let Some(view) = storage.message_by_content_id(&content_id)? {
+                replies.push(view);
+            }
+        }
+        replies.sort_by(|left, right| {
+            left.date
+                .cmp(&right.date)
+                .then_with(|| left.content_id.cmp(&right.content_id))
+        });
+        let mut rows = Vec::with_capacity(replies.len() + 1);
+        rows.push(outline_row(&seed));
+        rows.extend(replies.iter().map(outline_row));
+        Ok(rows)
+    }
+}
+
+fn outline_row(view: &StoredMessageView) -> ThreadOutlineRow {
+    ThreadOutlineRow {
+        date: view.date.clone(),
+        handle: view.handle.clone(),
+        subject: view.subject.clone(),
     }
 }
 
@@ -327,6 +378,19 @@ fn print_text_thread(messages: &[MailspaceThreadMessage]) {
     for message in messages {
         print_text_message(message);
     }
+}
+
+/// Print the table of contents heading a `need show` / `want show` thread:
+/// one line for the anchor item, then one indented line per reply. A reader
+/// sees the full inventory even when the capped thread below stops early.
+pub fn print_thread_outline(rows: &[ThreadOutlineRow]) {
+    println!("Contents ({} message(s))\n", rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let subject: String = row.subject.chars().take(100).collect();
+        let indent = if index == 0 { "" } else { "  " };
+        println!("{indent}{} {} {}", row.date, row.handle, subject);
+    }
+    println!();
 }
 
 fn print_text_message(message: &MailspaceThreadMessage) {

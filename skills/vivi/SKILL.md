@@ -375,6 +375,12 @@ state is the item's, not the holder's. `need|task|want show` prints `State: done
 exists, and `graph audit` reports a folder that disagrees with its item's
 newest event as `event_state` (`--repair` re-applies it).
 
+Text `need show` and `want show` print a `Contents (N message(s))` table
+of contents before the thread: one line for the item, then one indented
+line per reply (date, handle, subject). The outline reads message rows
+only, so it lists every reply in the thread even when the message blocks
+below stop at the 50-message thread cap; `--json` and `--latest` skip it.
+
 This is local-first. It works with no `[sync]`; the server only carries
 letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
 see (`N event(s) applied` in the pull summary), and an event that arrives

@@ -465,6 +465,9 @@ fn show_local_message(
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    if !json && !latest {
+        vivi::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
+    }
     vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)
 }
 
@@ -481,6 +484,9 @@ fn show_need(
         Ok(messages) => messages.first().map(|message| message.role == "needs"),
         Err(_) => None,
     };
+    if !json && !latest {
+        vivi::mailspace::print_thread_outline(&mailspace.thread_outline(handle)?);
+    }
     vivi::mailspace::print_thread(&mailspace, handle, false, 50, 50, json, latest)?;
     if json || latest {
         return Ok(());
