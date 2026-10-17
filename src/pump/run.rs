@@ -148,6 +148,10 @@ pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
     } else {
         store.load()?
     };
+    // The previous controller's in-memory merge queue no longer exists.
+    // Repair both persisted formats before the new worker can receive jobs.
+    st.recover_after_restart();
+    store.save(&st)?;
     let merger = Merger::start(ctx);
     drive(ctx, &mut st, &merger, once);
     Ok(())

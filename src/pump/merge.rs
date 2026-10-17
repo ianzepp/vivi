@@ -108,6 +108,9 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     if out.code != 0 {
         return fetch_failure(&job.uid, &out.text);
     }
+    if let Some(result) = already_integrated(ctx, job, t0) {
+        return result;
+    }
     if let Some(result) = merge_branch(ctx, job) {
         return result;
     }
@@ -117,6 +120,45 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
         return result;
     }
     push(ctx, &job.uid, outside, t0)
+}
+
+/// A replayed branch already reachable from the fetched integration tip
+/// needs only its receipt restored. Never rerun checks or scope attribution.
+fn already_integrated(ctx: &Ctx, job: &MergeJob, t0: u64) -> Option<MergeResult> {
+    let integration = format!("{}/{}", ctx.cfg.remote, ctx.cfg.branch);
+    let branch = format!("{}/{}", ctx.cfg.remote, job.branch);
+    let out = ctx.git(
+        &format!("merge-base --is-ancestor {branch} {integration}"),
+        GIT_TIMEOUT,
+    );
+    match out.code {
+        0 => {}
+        1 => return None,
+        _ => {
+            return Some(undecided_result(
+                &job.uid,
+                "integration-check-failed",
+                &out.text,
+            ));
+        }
+    }
+    let tip = ctx.git(&format!("rev-parse {integration}"), GIT_TIMEOUT);
+    if tip.code != 0 || tip.text.trim().is_empty() {
+        return Some(undecided_result(
+            &job.uid,
+            "integration-tip-failed",
+            &tip.text,
+        ));
+    }
+    Some(MergeResult {
+        uid: job.uid.clone(),
+        ok: Some(true),
+        tip: Some(tip.text.trim().to_string()),
+        outside: Vec::new(),
+        secs: Some(ctx.now().saturating_sub(t0)),
+        why: None,
+        detail: None,
+    })
 }
 
 /// The result of a failed fetch of a unit branch. A branch that does not
@@ -414,6 +456,9 @@ fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     let out = ctx.git(&fetch, 180);
     if out.code != 0 {
         return Some(fetch_failure(&job.uid, &out.text));
+    }
+    if let Some(result) = already_integrated(ctx, job, ctx.now()) {
+        return Some(result);
     }
     let title: String = job.title.chars().take(80).collect();
     let msg = shell_quote(&format!("merge {}: {} (need {})", job.uid, title, job.need));

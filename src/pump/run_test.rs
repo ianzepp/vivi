@@ -267,6 +267,47 @@ fn a_state_file_from_a_previous_run_is_loaded_and_saved_back() {
 }
 
 #[test]
+fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
+    let (_dir, ctx, _host) = setup();
+    let path = ctx.home.join(DB_FILENAME);
+    let mut st = State::default();
+    let mut abandoned = unit(Status::Merging, Some("task-1"));
+    abandoned.branch = Some(String::from("unit/recover-1"));
+    put(&mut st, "recover-1", abandoned);
+    put(&mut st, "done-1", unit(Status::Merged, None));
+    let mut store = PumpStore::open(&path).unwrap();
+    store.save(&st).unwrap();
+    assert_eq!(
+        store.load().unwrap().units["recover-1"].status,
+        Status::Merging
+    );
+    drop(store);
+
+    // Hold merging so the durable startup repair can be inspected before
+    // any recovered job is fed to the new merge thread.
+    fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
+    run_with(&ctx, true).unwrap();
+    let mut recovered = PumpStore::open(&path).unwrap().load().unwrap();
+    assert_eq!(recovered.units["recover-1"].status, Status::Delivered);
+    assert_eq!(recovered.units["done-1"].status, Status::Merged);
+    assert_eq!(recovered.units["recover-1"].task.as_deref(), Some("task-1"));
+    assert_eq!(
+        recovered.units["recover-1"].branch,
+        st.units["recover-1"].branch
+    );
+
+    fs::remove_file(ctx.home.join("HOLD-MERGE")).unwrap();
+    let (merger, _results, jobs) = Merger::detached();
+    merger.feed(&ctx, &mut recovered);
+    assert_eq!(jobs.try_recv().unwrap().uid, "recover-1");
+    merger.feed(&ctx, &mut recovered);
+    assert!(
+        jobs.try_recv().is_err(),
+        "each recovered unit is queued once"
+    );
+}
+
+#[test]
 fn the_live_state_snapshot_imports_into_pump_db() {
     let (dir, ctx, _host) = setup();
     let snapshot = include_str!("state_snapshot.json");

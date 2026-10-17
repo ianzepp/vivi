@@ -442,7 +442,7 @@ impl State {
         let mut state: State = serde_json::from_str(&text).map_err(|err| {
             VivariumError::Message(format!("pump state {}: {err}", path.display()))
         })?;
-        state.normalize();
+        state.recover_after_restart();
         Ok(state)
     }
 
@@ -505,7 +505,7 @@ impl State {
 
     /// Startup repairs: fold `merging` back to `delivered`, rebuild an empty
     /// `plans_seen` from `needs`.
-    fn normalize(&mut self) {
+    pub(crate) fn recover_after_restart(&mut self) {
         for unit in self.units.values_mut() {
             if unit.status == Status::Merging {
                 unit.status = Status::Delivered;

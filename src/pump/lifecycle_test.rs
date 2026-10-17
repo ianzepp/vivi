@@ -112,6 +112,7 @@ fn record_need(st: &mut State, handle: &str, uids: &[&str]) {
 /// The scripted pool world: one free `p1` slot, a minted task handle, a
 /// successful dispatch, and a finished reconcile line for that handle.
 fn world(host: &FakeHost) {
+    host.reply("merge-base --is-ancestor origin/unit/", 1, "");
     host.reply("pool status", 0, "slot p1 slot-1 id free x y z\n");
     host.reply("task send", 0, "created hand 1a2b3c4d\n");
     host.reply(

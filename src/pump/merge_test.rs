@@ -27,6 +27,7 @@ fn setup(format: &str) -> (TempDir, Ctx, Arc<FakeHost>) {
         ..PumpConfig::default()
     };
     let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
     (dir, ctx, host)
 }
 
@@ -100,6 +101,7 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
             "git checkout -q next",
             "git reset -q --hard origin/next",
             "git fetch origin refs/heads/work/u1:refs/remotes/origin/work/u1",
+            "git merge-base --is-ancestor origin/work/u1 origin/next",
             &format!(
                 "git {IDENTITY} merge --no-ff --no-edit -m 'merge u1: A unit (need n1)' origin/work/u1"
             )[..],
@@ -118,6 +120,64 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
             "proof u1 rc=0 0s: ./proof-u1.sh",
         ]
     );
+}
+
+#[test]
+fn an_already_integrated_replay_restores_only_the_receipt() {
+    let (_dir, ctx, host) = setup("cargo fmt --all");
+    host.reply("merge-base --is-ancestor origin/work/u1 origin/next", 0, "");
+    host.reply("rev-parse origin/next", 0, "landed-tip\n");
+    host.reply("./proof-u1.sh", 1, "must not rerun");
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "unrelated.rs\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true));
+    assert_eq!(result.tip.as_deref(), Some("landed-tip"));
+    assert!(result.outside.is_empty());
+    assert_eq!(
+        host.commands().len(),
+        7,
+        "only reset, fetch and ancestry lookup"
+    );
+    assert_eq!(host.commands().last().unwrap(), "git rev-parse origin/next");
+    assert!(host.logs().is_empty());
+}
+
+#[test]
+fn an_ancestry_error_retries_without_merging_checking_or_pushing() {
+    let (_dir, ctx, host) = setup("cargo fmt --all");
+    host.reply(
+        "merge-base --is-ancestor origin/work/u1 origin/next",
+        128,
+        "bad ref",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, None);
+    assert_eq!(result.why.as_deref(), Some("integration-check-failed"));
+    assert_eq!(result.detail.as_deref(), Some("bad ref"));
+    assert!(result.tip.is_none());
+    assert!(result.outside.is_empty());
+    assert_eq!(host.commands().len(), 6, "stop at the ancestry lookup");
+    assert_eq!(
+        host.commands().last().unwrap(),
+        "git merge-base --is-ancestor origin/work/u1 origin/next"
+    );
+    assert!(host.logs().is_empty());
+}
+
+#[test]
+fn an_already_integrated_batch_skips_all_checks_and_pushes() {
+    let (_dir, ctx, host) = setup("cargo fmt --all");
+    host.reply("merge-base --is-ancestor origin/work/", 0, "");
+    host.reply("rev-parse origin/next", 0, "landed-tip\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok == Some(true)
+        && r.tip.as_deref() == Some("landed-tip")
+        && r.outside.is_empty()));
+    assert!(!host.commands().iter().any(|c| c.contains(" merge --no-ff")
+        || c.contains("push ")
+        || c.contains("HEAD~1")
+        || !c.starts_with("git ")));
 }
 
 #[test]
@@ -178,7 +238,7 @@ fn a_merge_conflict_lists_the_conflicting_files_and_resets_the_repo() {
         host.commands().last().map(String::as_str),
         Some("git reset -q --hard origin/next")
     );
-    assert_eq!(index_of(&host.commands(), "merge --no-ff"), 5);
+    assert_eq!(index_of(&host.commands(), "merge --no-ff"), 6);
 }
 
 #[test]
