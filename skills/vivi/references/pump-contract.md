@@ -532,6 +532,26 @@ skip_proof = true
 A plan unit with `"tools": "full"` goes to the `flyfull` pool; one with no
 `tools` goes to `fly4`.
 
+`[pump.alarm]` (stall alarms):
+
+| key | type | default | controls |
+| --- | --- | --- | --- |
+| `fix_wait_minutes` | int minutes | `30` | minutes a fix unit may sit `delivered` or `merging` before a `stall-fix-unit` exception |
+| `promote_hours` | int hours | `3` | hours without a promotion, while at least one unit has merged since the last one, before a `stall-promote` exception |
+| `merge_idle_minutes` | int minutes | `45` | minutes units may sit `delivered` with nothing merged before a `stall-merge` exception |
+
+Each tick the pump checks the stall signals and files `stall-fix-unit <uid>`
+(a `<fix_prefix>` unit waiting past `fix_wait_minutes`), `stall-promote
+<target>` (text: time since the last promotion, merges awaiting promotion, the
+last gate's failing count; measured from the first unpromoted merge when the
+target never promoted; only for targets with promotion enabled) and
+`stall-merge pump` (delivered units, oldest wait, last merge). A subject
+(`<kind> <unit>`) is filed at most once per hour; the raised times are kept in
+`state.json` under `alarm_raised`. `status.txt` carries three more lines:
+`last promote <age> ago (<tip10>)` or `last promote never`, `oldest waiting fix
+<uid> <age>` or `oldest waiting fix none`, and `delivered waiting <n>, oldest
+<age>`; ages read `2h05m` or `14m`.
+
 `[pump.merge]`:
 
 | key | type | default | controls |
