@@ -1916,6 +1916,15 @@ On first pump startup, legacy `PAUSE` and `STOP` files are imported into
 `pump.db` (`STOP` takes precedence when both exist). The database commit occurs
 before the old files are removed. Later pump control uses the database.
 
+Startup also checks pending units for their next-attempt branch on the
+configured remote. If a worker pushed that branch before its state save, the
+pump recovers the unit as delivered rather than dispatching it again. The pump
+waits to start if it cannot check the remote.
+
+Schema upgrades use the pump lock, and `vivi pump status` is read-only. If a
+state save fails, the controller exits with an error so its supervisor can
+restart from durable state; it does not continue dispatching from memory.
+
 - `run` and `once` take an exclusive non-blocking flock on `<home>/lock`
   first, so there is one instance; a second exits non-zero. Exit 0 is a clean
   exit (stopped control mode, service shutdown, or `once` finished); a crashing

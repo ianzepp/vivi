@@ -5,13 +5,14 @@
 //! planners, and returns the gate task's receipt when the gate finished; the
 //! caller hands that receipt to the gate module.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
 use serde::Serialize;
 
+use crate::VivariumError;
 use crate::pump::host::{Ctx, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status};
 
@@ -203,6 +204,94 @@ pub fn collect(ctx: &Ctx, st: &mut State) -> Option<String> {
     }
     expire_splits(ctx, st);
     gate_receipt(ctx, st, &seen, gate_task.as_deref())
+}
+
+/// Recover a worker result pushed before its pump state was saved.
+///
+/// # Errors
+/// Returns an error when the configured remote cannot be queried.
+pub fn recover_pushed_pending(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
+    let mut pending: BTreeMap<String, Vec<(String, u32)>> = BTreeMap::new();
+    for (uid, unit) in &st.units {
+        if unit.status == Status::Pending {
+            pending
+                .entry(unit.target_id().to_string())
+                .or_default()
+                .push((uid.clone(), unit.attempts.saturating_add(1)));
+        }
+    }
+    for (target, units) in pending {
+        recover_target_branches(ctx, st, &target, &units)?;
+    }
+    Ok(())
+}
+
+fn recover_target_branches(
+    ctx: &Ctx,
+    st: &mut State,
+    target: &str,
+    units: &[(String, u32)],
+) -> Result<(), VivariumError> {
+    let target_ctx = ctx.for_target(target).ok_or_else(|| {
+        VivariumError::Config(format!(
+            "cannot recover branches for unknown target {target:?}"
+        ))
+    })?;
+    let command = format!(
+        "ls-remote --heads {} {}",
+        shell_quote(&target_ctx.cfg.remote),
+        shell_quote("refs/heads/unit/*")
+    );
+    let output = target_ctx.git(&command, 60);
+    if output.code != 0 {
+        return Err(VivariumError::Message(format!(
+            "could not recover pushed unit branches for target {target}: {}",
+            output.text.trim()
+        )));
+    }
+    let branches = remote_unit_branches(&output.text);
+    for (uid, attempt) in units {
+        recover_one_pushed_branch(ctx, st, uid, *attempt, &branches);
+    }
+    Ok(())
+}
+
+fn remote_unit_branches(output: &str) -> BTreeSet<String> {
+    output
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .filter_map(|reference| reference.strip_prefix("refs/heads/"))
+        .filter(|branch| branch.starts_with("unit/"))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn recover_one_pushed_branch(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    attempt: u32,
+    branches: &BTreeSet<String>,
+) {
+    let branch = format!("unit/{uid}-a{attempt}");
+    if !branches.contains(&branch) {
+        return;
+    }
+    let Some(unit) = st.units.get_mut(uid) else {
+        return;
+    };
+    if unit.status != Status::Pending || unit.attempts.saturating_add(1) != attempt {
+        return;
+    }
+    unit.status = Status::Delivered;
+    unit.attempts = attempt;
+    unit.task = None;
+    unit.branch = Some(branch.clone());
+    unit.since = ctx.now();
+    unit.since_dispatch = Some(ctx.now());
+    ctx.log(&format!(
+        "recovered pushed unit {uid} attempt={attempt} branch={branch}"
+    ));
 }
 
 /// Classify one in-flight unit in a strict order.

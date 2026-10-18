@@ -231,6 +231,8 @@ fn run_with_lock_policy(
     // The previous controller's in-memory merge queue no longer exists.
     // Repair both persisted formats before the new worker can receive jobs.
     st.recover_after_restart();
+    plan::ingest(ctx, &mut st);
+    collect::recover_pushed_pending(ctx, &mut st)?;
     store.save(&st)?;
     let merger = Merger::start(ctx);
     drive(ctx, &mut st, &merger, once)

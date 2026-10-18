@@ -338,6 +338,52 @@ fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
 }
 
 #[test]
+fn startup_adopts_a_pushed_branch_for_a_plan_missing_from_the_saved_state() {
+    let (dir, ctx, host) = setup();
+    let plans = ctx.home.join("plans");
+    fs::create_dir_all(&plans).unwrap();
+    fs::write(
+        plans.join("orphan-need.json"),
+        concat!(
+            "{\"need\":\"orphan-need\",\"verdict\":\"units\",",
+            "\"reason\":\"recover pushed work\",\"units\":[{",
+            "\"id\":\"orphan-unit\",\"title\":\"Recovered unit\",",
+            "\"brief\":\"Use the completed pushed branch\",",
+            "\"write_scope\":[\"src/orphan.rs\"],\"proof\":[],",
+            "\"tools\":\"plain\"}]}"
+        ),
+    )
+    .unwrap();
+    fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
+    host.reply(
+        "ls-remote --heads",
+        0,
+        "abc123\trefs/heads/unit/orphan-unit-a1\n",
+    );
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.initialize_control("paused").unwrap();
+    drop(store);
+
+    run_with(&ctx, true).unwrap();
+
+    let recovered = PumpStore::open(&ctx.home.join(DB_FILENAME))
+        .unwrap()
+        .load()
+        .unwrap();
+    let unit = &recovered.units["orphan-unit"];
+    assert_eq!(unit.status, Status::Delivered);
+    assert_eq!(unit.attempts, 1);
+    assert_eq!(unit.branch.as_deref(), Some("unit/orphan-unit-a1"));
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|command| command.contains("task send")),
+        "startup recovery must adopt the pushed branch instead of dispatching it again"
+    );
+}
+
+#[test]
 fn the_live_state_snapshot_imports_into_pump_db() {
     let (dir, ctx, _host) = setup();
     let snapshot = include_str!("state_snapshot.json");

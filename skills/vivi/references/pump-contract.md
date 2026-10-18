@@ -187,9 +187,15 @@ as marked):
 
 Compatibility rule: unknown top-level keys are preserved in `meta.extra`, and
 unknown per-unit keys in `units.extra_json`. At load, a state older than
-`plans_seen` gets it backfilled from `needs`. `run`/`once` additionally reset
-every `merging` unit to `delivered` before the first tick, so a crash
-mid-merge re-feeds the unit.
+`plans_seen` gets it backfilled from `needs`. Before the first tick,
+`run`/`once` ingest existing plan files, reset every `merging` unit to
+`delivered`, and check pending units' next-attempt branches on the configured
+remote. A pushed branch is recovered as `delivered` instead of being
+dispatched a second time. If the remote cannot be checked, startup fails
+closed; retry after connectivity returns. Schema upgrades hold the same pump
+lock as the controller, so a second binary cannot migrate a live pump's state.
+`status` reads control state without migrating the schema. A state-save failure
+stops the controller with an error instead of continuing from volatile memory.
 
 ### 5.1 Migration and export
 
