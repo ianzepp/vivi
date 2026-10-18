@@ -19,8 +19,12 @@ const BEGIN: &str = "FAILING-BEGIN";
 const END: &str = "FAILING-END";
 /// The single line a gate worker replies with when the build itself broke.
 const BUILD_FAILED: &str = "BUILD-FAILED";
-/// Flag file that makes the next tick start a gate whatever the due rules.
+/// Flag file that makes the next tick start a gate whatever the due rules;
+/// the default target uses this name, other targets suffix `-<target>`.
 const FORCE_FLAG: &str = "FORCE-GATE";
+/// The `state.json` key remembering the tip whose failing set was last
+/// reported unknown, so the line is logged once per tip.
+const UNKNOWN_KEY: &str = "promote_unknown_logged";
 /// Flag file that holds the merge queue until a clean gate.
 const HOLD_FLAG: &str = "HOLD-MERGE";
 /// The pool name an external gate run is recorded under.
@@ -333,7 +337,7 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
         return;
     }
     force_after_fix(ctx, st);
-    let force = ctx.flag(FORCE_FLAG);
+    let force = ctx.flag(&force_flag(ctx));
     if !gate_due(ctx, st, force) || waiting_for_external(ctx, st) {
         return;
     }
@@ -353,7 +357,7 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
         return;
     }
     if force {
-        remove_force_flag(ctx);
+        remove_flag(ctx, &force_flag(ctx));
     }
     st.last_gate = GateRun {
         at: ctx.now(),
@@ -372,7 +376,7 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
 /// fix (starting the gate moves `last_gate.at` past the merge); does nothing
 /// while a gate runs or the flag is already set.
 fn force_after_fix(ctx: &Ctx, st: &State) {
-    if st.has_active_gate() || ctx.flag(FORCE_FLAG) {
+    if st.has_active_gate() || ctx.flag(&force_flag(ctx)) {
         return;
     }
     let prefix = ctx.cfg.fix_prefix.as_str();
@@ -493,10 +497,13 @@ fn dispatch_gate(ctx: &Ctx, pool: &str, task: &str, tip: &str) -> bool {
     false
 }
 
-/// Remove the `FORCE-GATE` flag, logging when that fails.
-fn remove_force_flag(ctx: &Ctx) {
-    if let Err(err) = fs::remove_file(ctx.home.join(FORCE_FLAG)) {
-        ctx.log(&format!("gate flag remove failed: {err}"));
+/// The forced-gate flag file name for this context's target: `FORCE-GATE`
+/// for `default`, `FORCE-GATE-<target>` otherwise.
+fn force_flag(ctx: &Ctx) -> String {
+    if ctx.target_id == "default" {
+        FORCE_FLAG.to_owned()
+    } else {
+        format!("{FORCE_FLAG}-{}", ctx.target_id)
     }
 }
 
@@ -627,6 +634,7 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     }
     if new.is_empty() {
         ctx.log(&gate_summary(rec, names, 0));
+        note_unknown_main_set(ctx, st);
         let off_main = not_on_main(st, names);
         if off_main.is_empty() {
             promote(ctx, st, &rec.tip, names);
@@ -644,20 +652,45 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     ctx.log(&gate_summary(rec, names, new.len()));
 }
 
-/// The failing names main carries: those recorded with the newest promotion,
+/// The failing names recorded for the newest promotion: those stored with it,
 /// else the failing set of the gate that tested that tip (a promotion made
-/// before the names were recorded), else the baseline.
+/// before the names were recorded). `None` with no promotion or no record.
+fn promoted_set(st: &State) -> Option<&[String]> {
+    let promotion = st.promotions.last()?;
+    promotion.failing.as_deref().or_else(|| {
+        st.gates
+            .iter()
+            .rev()
+            .find(|gate| gate.tip == promotion.tip)
+            .and_then(|gate| gate.names.as_deref())
+    })
+}
+
+/// The failing names main carries: the newest promotion's recorded set, else
+/// the baseline.
 fn main_failing(st: &State) -> &[String] {
-    let recorded = st.promotions.last().and_then(|promotion| {
-        promotion.failing.as_deref().or_else(|| {
-            st.gates
-                .iter()
-                .rev()
-                .find(|gate| gate.tip == promotion.tip)
-                .and_then(|gate| gate.names.as_deref())
-        })
-    });
-    recorded.or(st.baseline.as_deref()).unwrap_or_default()
+    promoted_set(st)
+        .or(st.baseline.as_deref())
+        .unwrap_or_default()
+}
+
+/// Log once per tip when the newest promotion has no recorded failing set
+/// (a legacy promotion), so main's set falls back to the baseline visibly.
+fn note_unknown_main_set(ctx: &Ctx, st: &mut State) {
+    let Some(promotion) = st.promotions.last() else {
+        return;
+    };
+    let tip = promotion.tip.clone();
+    let logged = st.extra.get(UNKNOWN_KEY).and_then(|v| v.as_str());
+    if promoted_set(st).is_some() || logged == Some(tip.as_str()) {
+        return;
+    }
+    ctx.log(&format!(
+        "promote: main's failing set unknown at {}; using baseline",
+        tip_short(&tip)
+    ));
+    st.extra
+        .insert(UNKNOWN_KEY.to_owned(), serde_json::Value::String(tip));
 }
 
 /// The gate's failing names that main does not carry, sorted. Main is
@@ -799,23 +832,7 @@ fn last_clean_tip(st: &State, current: &str) -> String {
 /// Fast-forward main to a gated tip of the integration branch.
 /// Never forces: a main that moved elsewhere waits for the next batch.
 fn promote(ctx: &Ctx, st: &mut State, tip: &str, failing: &[String]) {
-    if !ctx.cfg.promote || ctx.cfg.main.is_empty() {
-        return;
-    }
-    drop(ctx.git(
-        &format!("fetch -q {} {}", ctx.cfg.remote, ctx.cfg.main),
-        120,
-    ));
-    let head = format!("{}/{}", ctx.cfg.remote, ctx.cfg.main);
-    if ctx
-        .git(&format!("merge-base --is-ancestor {head} {tip}"), 120)
-        .code
-        != 0
-    {
-        ctx.log(&format!(
-            "promote skipped: main has commits {} does not have yet",
-            ctx.cfg.branch
-        ));
+    if !ctx.cfg.promote || ctx.cfg.main.is_empty() || !main_is_behind(ctx, tip) {
         return;
     }
     let out = ctx.git(
@@ -838,6 +855,39 @@ fn promote(ctx: &Ctx, st: &mut State, tip: &str, failing: &[String]) {
     }
 }
 
+/// `true` when remote main is an ancestor of the gated `tip`, so the push is a
+/// fast-forward. Fetches main and the integration branch first: another merge
+/// lane's clone may have pushed the tip, which this checkout lacks until it
+/// fetches. `merge-base --is-ancestor` exits 0 for an ancestor and 1 when main
+/// moved; a failed fetch or any other exit is a logged `promote error`.
+fn main_is_behind(ctx: &Ctx, tip: &str) -> bool {
+    let (remote, main) = (&ctx.cfg.remote, &ctx.cfg.main);
+    let fetch = ctx.git(&format!("fetch -q {remote} {main} {}", ctx.cfg.branch), 120);
+    if fetch.code != 0 {
+        ctx.log(&format!(
+            "promote error: {}",
+            tail_chars(fetch.text.trim(), 120)
+        ));
+        return false;
+    }
+    let check = ctx.git(
+        &format!("merge-base --is-ancestor {remote}/{main} {tip}"),
+        120,
+    );
+    match check.code {
+        0 => return true,
+        1 => ctx.log(&format!(
+            "promote skipped: main has commits {} does not have yet",
+            ctx.cfg.branch
+        )),
+        _ => ctx.log(&format!(
+            "promote error: {}",
+            tail_chars(check.text.trim(), 120)
+        )),
+    }
+    false
+}
+
 /// The last line of a command's output, python's
 /// `out.strip().splitlines()[-1]`.
 fn last_line(text: &str) -> String {
@@ -851,7 +901,7 @@ fn last_line(text: &str) -> String {
 /// clean gate newer than the `HOLD-MERGE` flag lifts the hold; fixes merged
 /// after the last gate (or an unreadable one) force a new gate.
 pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
-    if !ctx.flag(HOLD_FLAG) || st.last_gate.task.is_some() || ctx.flag(FORCE_FLAG) {
+    if !ctx.flag(HOLD_FLAG) || st.last_gate.task.is_some() || ctx.flag(&force_flag(ctx)) {
         return;
     }
     let prefix = ctx.cfg.fix_prefix.as_str();
@@ -922,7 +972,7 @@ fn file_mtime(path: &Path) -> u64 {
 
 /// Write the `FORCE-GATE` flag with its payload, logging a failure.
 fn write_force_flag(ctx: &Ctx) {
-    if let Err(err) = fs::write(ctx.home.join(FORCE_FLAG), FORCE_TEXT) {
+    if let Err(err) = fs::write(ctx.home.join(force_flag(ctx)), FORCE_TEXT) {
         ctx.log(&format!("gate flag write failed: {err}"));
     }
 }

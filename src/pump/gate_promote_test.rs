@@ -287,3 +287,162 @@ fn a_fix_merged_before_the_last_gate_or_a_non_fix_unit_forces_nothing() {
     assert!(host.logs().iter().all(|l| !l.contains("gate forced")));
     drop(dir);
 }
+
+fn commands_matching(host: &Arc<FakeHost>, needle: &str) -> Vec<usize> {
+    host.commands()
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.contains(needle))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn promote_error(host: &Arc<FakeHost>) -> Option<String> {
+    host.logs()
+        .into_iter()
+        .find(|l| l.contains("promote error"))
+}
+
+#[test]
+fn promote_fetches_main_and_the_integration_branch_before_the_ancestor_check() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    let fetch = commands_matching(&host, "git fetch -q origin main next");
+    let check = commands_matching(&host, "merge-base --is-ancestor origin/main");
+    let push = commands_matching(&host, "git push");
+    assert_eq!((fetch.len(), check.len(), push.len()), (1, 1, 1));
+    assert!(fetch[0] < check[0] && check[0] < push[0]);
+    assert_eq!(st.promotions.len(), 1);
+    drop(dir);
+}
+
+#[test]
+fn an_ancestor_check_that_errors_is_a_promote_error_and_does_not_push() {
+    let (dir, ctx, host) = setup();
+    host.reply("git merge-base", 128, "fatal: Not a valid commit name 0123");
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    assert!(!pushed(&host));
+    assert!(st.promotions.is_empty());
+    let line = promote_error(&host).unwrap();
+    assert!(line.contains("fatal: Not a valid commit name"), "{line}");
+    assert!(host.logs().iter().all(|l| !l.contains("promote skipped")));
+    drop(dir);
+}
+
+#[test]
+fn a_main_that_moved_skips_the_promotion_without_an_error() {
+    let (dir, ctx, host) = setup();
+    host.reply("git merge-base", 1, "");
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    assert!(!pushed(&host));
+    assert!(promote_error(&host).is_none());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("promote skipped: main has commits next does not have yet"))
+    );
+    drop(dir);
+}
+
+#[test]
+fn a_failed_fetch_is_a_promote_error_and_does_not_push() {
+    let (dir, ctx, host) = setup();
+    host.reply("git fetch", 128, "fatal: unable to access remote");
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    assert!(!pushed(&host));
+    assert!(commands_matching(&host, "merge-base").is_empty());
+    assert!(promote_error(&host).unwrap().contains("unable to access"));
+    drop(dir);
+}
+
+fn beta(ctx: &Ctx) -> Ctx {
+    let mut target = ctx.clone();
+    target.target_id = String::from("beta");
+    target
+}
+
+#[test]
+fn a_merged_fix_forces_only_its_own_targets_flag() {
+    let (dir, ctx, host) = setup();
+    let beta = beta(&ctx);
+    let mut st = quiet_state();
+    merged_fix(&mut st, "pumpfix-ga-1", T0 + 10);
+    st.units.get_mut("pumpfix-ga-1").unwrap().target = String::from("beta");
+    host.advance(20);
+    start_gate(&beta, &mut st);
+    assert!(beta.flag("FORCE-GATE-beta"));
+    assert!(!ctx.flag("FORCE-GATE"));
+    // The default target sees no merged fix of its own.
+    start_gate(&ctx, &mut st);
+    assert!(!ctx.flag("FORCE-GATE"));
+    drop(dir);
+}
+
+#[test]
+fn a_forced_gate_is_consumed_only_by_its_own_target() {
+    let (dir, ctx, host) = setup();
+    wire_gate(&host);
+    let beta = beta(&ctx);
+    // The operator's manual FORCE-GATE belongs to the default target.
+    std::fs::write(ctx.home.join("FORCE-GATE"), "").unwrap();
+    let mut other = quiet_state();
+    start_gate(&beta, &mut other);
+    assert_eq!(other.last_gate.task, None);
+    assert!(ctx.flag("FORCE-GATE"));
+    let mut st = quiet_state();
+    start_gate(&ctx, &mut st);
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(!ctx.flag("FORCE-GATE"));
+    // The beta target is forced by its own suffixed flag.
+    std::fs::write(ctx.home.join("FORCE-GATE-beta"), "").unwrap();
+    start_gate(&ctx, &mut quiet_state());
+    assert!(ctx.flag("FORCE-GATE-beta"));
+    start_gate(&beta, &mut other);
+    assert_eq!(other.last_gate.task.as_deref(), Some(TASK));
+    assert!(!ctx.flag("FORCE-GATE-beta"));
+    drop(dir);
+}
+
+fn unknown_set_logs(host: &Arc<FakeHost>) -> Vec<String> {
+    host.logs()
+        .into_iter()
+        .filter(|l| l.contains("main's failing set unknown"))
+        .collect()
+}
+
+#[test]
+fn an_unknown_main_set_is_logged_once_per_tip_and_falls_back_to_the_baseline() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    st.promotions.push(Promotion {
+        tip: String::from(OLD),
+        at: T0 - 100,
+        failing: None,
+    });
+    own(&mut st, "x");
+    finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
+    // Held against the baseline: x is not on main by the baseline set.
+    assert!(!pushed(&host));
+    let logs = unknown_set_logs(&host);
+    assert_eq!(logs.len(), 1);
+    assert!(logs[0].contains("fedcba9876") && logs[0].contains("using baseline"));
+    st.last_gate.task = Some(String::from(TASK));
+    finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
+    assert_eq!(unknown_set_logs(&host).len(), 1);
+    drop(dir);
+}
+
+#[test]
+fn a_known_or_absent_promotion_never_logs_an_unknown_set() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    st.last_gate.task = Some(String::from(TASK));
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    assert!(unknown_set_logs(&host).is_empty());
+    drop(dir);
+}
