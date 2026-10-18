@@ -19,6 +19,7 @@ use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::Merger;
 use crate::pump::run::tick;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// The fake clock's start.
 const T0: u64 = 1_000_000;
@@ -341,7 +342,7 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
 }
 
 #[test]
-fn a_pause_flag_stops_dispatch_but_a_delivered_unit_still_merges() {
+fn paused_control_stops_dispatch_but_a_delivered_unit_still_merges() {
     let dir = tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), config());
     world(&host);
@@ -353,11 +354,12 @@ fn a_pause_flag_stops_dispatch_but_a_delivered_unit_still_merges() {
     put(&mut st, "y-b1", y);
     record_need(&mut st, "n1", &["x-a1"]);
     record_need(&mut st, "n2", &["y-b1"]);
-    fs::write(ctx.home.join("PAUSE"), b"").unwrap();
+    let mut control = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    control.initialize_control("paused").unwrap();
     let merger = Merger::start(&ctx);
 
     tick(&ctx, &mut st, &merger);
-    // The PAUSE return sits after the first feed: y-b1 is already queued
+    // The pause return sits after the first feed: y-b1 is already queued
     // for the merge thread, while nothing dispatches and no pool is even
     // asked for slots.
     assert_eq!(st.units.get("y-b1").unwrap().status, Status::Merging);

@@ -6,7 +6,7 @@ use clap::{Args, Subcommand};
 
 #[derive(Debug, Subcommand)]
 pub enum PumpSubcommand {
-    /// Run the pump until the STOP file appears
+    /// Run the pump until its stored control state stops it
     Run(PumpRunCommand),
     /// Print the pump's status file
     Status(PumpStatusCommand),
@@ -16,11 +16,26 @@ pub enum PumpSubcommand {
     Export(PumpExportCommand),
     /// List complete but open needs, or close one
     Closeout(PumpCloseoutCommand),
+    /// Pause processing while keeping the pump available
+    Pause(PumpControlCommand),
+    /// Resume a paused pump
+    Resume(PumpControlCommand),
+    /// Stop after the current tick
+    Stop(PumpControlCommand),
+    /// Enable a stopped pump; the service starts it when registered
+    Start(PumpControlCommand),
     /// Supervise the pumps registered in the user's Vivi service config
     Service {
         #[command(subcommand)]
         command: PumpServiceCommand,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct PumpControlCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]

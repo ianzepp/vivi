@@ -20,7 +20,7 @@ use crate::error::VivariumError;
 use super::state::{Attempt, GateRecord, NeedRecord, Promotion, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The database filename inside the pump home.
 pub const DB_FILENAME: &str = "pump.db";
@@ -129,6 +129,11 @@ CREATE TABLE IF NOT EXISTS plans_seen (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS promotions (tip TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS red (name TEXT PRIMARY KEY, unit TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS red_reported (value TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS pump_control (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  mode TEXT NOT NULL CHECK (mode IN ('running', 'paused', 'stopped')),
+  shutdown_requested INTEGER NOT NULL DEFAULT 0 CHECK (shutdown_requested IN (0, 1))
+);
 ";
 
 /// A connection to `pump.db`.
@@ -208,6 +213,81 @@ impl PumpStore {
             .optional()
             .map_err(db_err("read initialized marker"))?;
         Ok(marker.as_deref() != Some("1"))
+    }
+
+    /// Read the persisted operator mode, or `None` before first initialization.
+    pub fn control_mode(&self) -> Result<Option<String>, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT mode FROM pump_control WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err("read pump control mode"))
+    }
+
+    /// Initialize control state once, preserving the migrated legacy mode.
+    pub fn initialize_control(&mut self, legacy_mode: &str) -> Result<String, VivariumError> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(db_err("begin control init"))?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT mode FROM pump_control WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err("read pump control mode"))?;
+        let mode = if let Some(mode) = existing {
+            mode
+        } else {
+            tx.execute(
+                "INSERT INTO pump_control (singleton, mode) VALUES (1, ?1)",
+                [legacy_mode],
+            )
+            .map_err(db_err("initialize pump control mode"))?;
+            legacy_mode.to_string()
+        };
+        tx.commit().map_err(db_err("commit control init"))?;
+        Ok(mode)
+    }
+
+    /// Change the durable operator mode without altering transient shutdown state.
+    pub fn set_control_mode(&mut self, mode: &str) -> Result<(), VivariumError> {
+        self.conn
+            .execute(
+                "UPDATE pump_control SET mode = ?1 WHERE singleton = 1",
+                [mode],
+            )
+            .map_err(db_err("write pump control mode"))?;
+        Ok(())
+    }
+
+    /// Whether the service requested this pump process to exit after its tick.
+    pub fn shutdown_requested(&self) -> Result<bool, VivariumError> {
+        self.conn
+            .query_row(
+                "SELECT shutdown_requested FROM pump_control WHERE singleton = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(0) != 0)
+            .map_err(db_err("read pump shutdown request"))
+    }
+
+    /// Set transient service shutdown state while keeping the operator mode.
+    pub fn set_shutdown_requested(&mut self, requested: bool) -> Result<(), VivariumError> {
+        self.conn
+            .execute(
+                "UPDATE pump_control SET shutdown_requested = ?1 WHERE singleton = 1",
+                [i64::from(requested)],
+            )
+            .map_err(db_err("write pump shutdown request"))?;
+        Ok(())
     }
 
     /// Read the whole state.

@@ -22,7 +22,7 @@ use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// One pump tick: board, ingest, collect, the merge
-/// feed, and — unless the `PAUSE` flag exists — dispatch, the hold cycle,
+/// feed, and — unless control state is paused — dispatch, the hold cycle,
 /// the gate start, and a second merge pass, saving at three save
 /// points and ending in [`write_status`].
 pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
@@ -36,7 +36,17 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     merger.apply(ctx, st);
     merger.feed(ctx, st);
     save(ctx, st);
-    if ctx.flag("PAUSE") {
+    let control = match crate::pump::control::read(&ctx.home) {
+        Ok(control) => control,
+        Err(error) => {
+            ctx.log(&format!(
+                "control state read failed; skipping dispatch: {error}"
+            ));
+            write_status(ctx, st);
+            return;
+        }
+    };
+    if control.mode == crate::pump::control::PumpMode::Paused {
         write_status(ctx, st);
         return;
     }
@@ -82,8 +92,8 @@ pub fn write_status(ctx: &Ctx, st: &State) {
 }
 
 /// Run the pump over `project`: load the mailspace's `[pump]` table, take
-/// the exclusive home lock, and loop [`tick`] until `once` or the `STOP`
-/// flag ends it.
+/// the exclusive home lock, and loop [`tick`] until `once` or durable control
+/// state stops it.
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when the mailspace has no `[pump]`
@@ -106,21 +116,29 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let home = cfg.home_dir(project);
     fs::create_dir_all(&home)?;
     let lock = take_lock(&home)?;
-    if announce_ready {
-        println!("VIVI_PUMP_SERVICE_READY");
-        std::io::stdout().flush()?;
+    let mut control = crate::pump::control::initialize(&home)?;
+    if control.shutdown_requested {
+        crate::pump::control::request_shutdown(&home, false)?;
+        control.shutdown_requested = false;
     }
     let host = Arc::new(RealHost::new(&home));
     let vivi = std::env::current_exe()
         .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
     let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi);
+    if announce_ready {
+        println!("VIVI_PUMP_SERVICE_READY");
+        std::io::stdout().flush()?;
+    }
+    if control.mode == crate::pump::control::PumpMode::Stopped {
+        ctx.log("pump is stopped; run vivi pump start to enable it");
+        return Ok(());
+    }
     run_with(&ctx, once)?;
     drop(lock);
     Ok(())
 }
 
-/// The pump's status text: `<home>/status.txt`, or `no status yet` when
-/// absent. A peek only: no lock, no state load.
+/// The pump's status text plus its durable control mode. No pump lock is taken.
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when a mailspace is found but carries
@@ -132,11 +150,11 @@ pub fn status(project: &Path) -> Result<String, VivariumError> {
         // it cannot hold a status file yet.
         Err(_) => PumpConfig::default(),
     };
-    let path = cfg.home_dir(project).join("status.txt");
-    match fs::read_to_string(&path) {
-        Ok(text) => Ok(text),
-        Err(_) => Ok(String::from("no status yet")),
-    }
+    let home = cfg.home_dir(project);
+    let path = home.join("status.txt");
+    let text = fs::read_to_string(&path).unwrap_or_else(|_| String::from("no status yet\n"));
+    let control = crate::pump::control::inspect(&home)?;
+    Ok(format!("{text}control  {}\n", control.mode))
 }
 
 /// Load the state, start the merge thread, and drive the tick loop over an
@@ -217,11 +235,15 @@ fn clone_command(ctx: &Ctx, url: &str) -> String {
     )
 }
 
-/// The run/once loop: tick, then return when `once`,
-/// save and return on the `STOP` flag, else sleep `tick` seconds. A panic
+/// The run/once loop: tick, then return when control state is stopped,
+/// save and return, else sleep `tick` seconds. A panic
 /// inside a tick is caught, logged as `TICK ERROR`, and the state saved.
 fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) {
     loop {
+        if exit_requested(ctx) {
+            save(ctx, st);
+            return;
+        }
         let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger));
         if let Err(err) = catch_unwind(tick_once) {
             ctx.log(&format!("TICK ERROR {}", panic_note(&err)));
@@ -230,12 +252,26 @@ fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) {
         if once {
             return;
         }
-        if ctx.flag("STOP") {
-            ctx.log("STOP file seen; exiting");
+        if exit_requested(ctx) {
+            ctx.log("pump control state requests exit");
             save(ctx, st);
             return;
         }
         thread::sleep(Duration::from_secs(ctx.cfg.tick));
+    }
+}
+
+fn exit_requested(ctx: &Ctx) -> bool {
+    match crate::pump::control::read(&ctx.home) {
+        Ok(control) => {
+            control.mode == crate::pump::control::PumpMode::Stopped || control.shutdown_requested
+        }
+        Err(error) => {
+            ctx.log(&format!(
+                "control state read failed; stopping pump: {error}"
+            ));
+            true
+        }
     }
 }
 
@@ -259,6 +295,12 @@ fn take_lock(home: &Path) -> Result<File, VivariumError> {
         )));
     }
     Ok(lock)
+}
+
+/// Whether another pump process currently owns this project's lock.
+pub fn lock_is_held(home: &Path) -> Result<bool, VivariumError> {
+    let lock = File::create(home.join("lock"))?;
+    Ok(lock.try_lock().is_err())
 }
 
 /// Save the state to `<home>/pump.db`; a failure is logged, never fatal.

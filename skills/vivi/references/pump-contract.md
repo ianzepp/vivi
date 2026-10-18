@@ -34,23 +34,29 @@ retries failures on another model, and writes what needs a person to
 
 ## 2. Surface
 
-`vivi pump run | status | once`, with the global `--project` flag naming the
+`vivi pump run | status | once | pause | resume | stop | start`, with the global `--project` flag naming the
 project root; every `vivi` call the pump makes appends
 `--project <project>`:
 
 | mode | behaviour |
 | --- | --- |
-| `run` | loop: one `tick`, then sleep `tick` seconds, until the STOP file appears |
+| `run` | loop: one `tick`, then sleep `tick` seconds, until stored mode is `stopped` |
 | `once` | exactly one `tick`, then exit |
-| `status` | print `status.txt`, or `no status yet` when absent; no lock, no state load |
+| `status` | print `status.txt` and control mode; no pump lock; migrates old markers when present |
+| `pause` / `resume` | set stored control mode to `paused` / `running` |
+| `stop` / `start` | set stored control mode to `stopped` / `running` |
 
-`once` also honours STOP: the check happens after the tick.
+Control commands take effect at tick boundaries. Paused mode keeps the process
+alive and preserves the existing early-return behavior: board, ingest, collect
+and already-fed merges continue, while dispatch and gate work are skipped.
+Stopped mode completes the current tick and exits. A registered pump service
+does not start stopped projects and starts them again after `start`.
 
 Single instance: `run`/`once` open `<home>/lock` and take an exclusive
 non-blocking flock before doing anything. A second instance exits non-zero
 with the message `another vivi pump is running`.
 
-Exit codes: 0 on a clean exit (STOP seen, or `once` finished); non-zero on
+Exit codes: 0 on a clean exit (stopped mode, service shutdown, or `once` finished); non-zero on
 lock contention as above. A crashing tick is not an exit: tick exceptions are caught
 and logged (§7).
 
@@ -72,9 +78,8 @@ tests script a fake host that answers command lines. Detached processes
 (planner, split, gatefix, sync push) run detached with redirected output
 files instead.
 
-To restart the pump, touch STOP, wait for the process to exit (a tick may
-take minutes), remove STOP and start `vivi pump run` again. Stop by pid or
-session, never by matching a command line.
+`start` enables a pump. The service launches a registered project; for a
+standalone project, run `vivi pump run` after enabling it.
 
 ## 3. The home directory
 
@@ -87,6 +92,7 @@ directory:
 | `pump.db` | pump (one transaction per save point) | pump (load), readers (`need show`, `board`, `boot`) | SQLite, schema in §5; WAL, one writer |
 | `state.json.imported` | one-time import, then left alone | operator (rollback) | the predecessor's JSON shape (§5) |
 | `pump.db-wal`, `pump.db-shm` | SQLite | SQLite | WAL sidecars |
+| `pump_control` in `pump.db` | pump control commands and service | pump and service | durable mode and transient service shutdown request |
 | `log.txt` | pump `log` | operator | one line per event: `HH:MM:SS msg`, UTC |
 | `exceptions.txt` | pump `exception` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars |
 | `needs-ready.txt` | pump on need completion (merge_apply) | operator | `need tip10 unit,unit` per line |
@@ -107,22 +113,23 @@ directory:
 
 ## 4. Flag files
 
-All flags live in `home`. The operator creates them; removal is per flag:
+Operator and pump flags live in `home`:
 
 | flag | exact effect | removed by |
 | --- | --- | --- |
-| `PAUSE` | `tick` returns early after the first save point: no dispatch, no hold cycle, no external gate intake, no gate start, no post-dispatch merge apply/feed. The steps before the check (merge apply, board, ingest, collect, first feed) still run, so already-fed units keep merging | operator |
-| `STOP` | after the current tick completes, save and exit the loop | operator |
 | `HOLD-MERGE` | `merge_feed` feeds only units whose id starts with the fix prefix, or whose need is in the priority file; once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`) | pump (`hold_cycle`) or operator |
 | `FORCE-GATE` | `start_gate` treats the gate as due now, whatever the counters say | pump, when the gate dispatches; also written by `hold_cycle` |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
 
+On first database initialization, old `PAUSE` and `STOP` markers migrate to
+`pump_control`; `STOP` wins if both exist. The database transaction commits
+before the old marker files are removed. Later starts use the stored mode.
+
 ## 5. The state store
 
-`pump.db` (SQLite) is the pump's whole memory. It is read once at startup,
-written in one transaction at each save point, and kept at `PRAGMA
-user_version = 1`. The in-memory state machine is unchanged; the database is
-its durable form.
+`pump.db` (SQLite) stores the pump's durable work state and operator control
+mode. Work state is read at startup and written in one transaction at each
+save point. The schema is `PRAGMA user_version = 3`.
 
 | table | meaning |
 | --- | --- |
@@ -288,7 +295,7 @@ each merge outcome does to the unit.
 5. `merge_apply` again.
 6. `merge_feed`: queue delivered units for merging.
 7. `save` — save point one.
-8. PAUSE check: if `PAUSE` exists, `write_status` and return — skipping
+8. Control check: if the mode is not `running`, `write_status` and return — skipping
    dispatch, the hold cycle, external gate intake, the gate start, and the second merge apply/feed. Note merging is not paused: step 6 already ran, and
    the merge thread is independent of the tick.
 9. `dispatch`.
@@ -310,7 +317,7 @@ Error handling:
   gets an `ok=null` `merge-error` result, and any job the results did not name
   gets `merge-undecided`. `merge_apply` turns both into
   `delivered`, so nothing is lost or double-merged.
-- State is saved at the three tick save points, after a tick error, and before exiting on STOP. The merge thread
+- State is saved at the three tick save points, after a tick error, and before exiting on stopped control state. The merge thread
   never saves; it hands results to `merge_apply` through the queue.
 
 ## 8. Scheduling

@@ -129,7 +129,8 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
 #[test]
 fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     let (dir, ctx, host) = setup();
-    fs::write(ctx.home.join("PAUSE"), b"").unwrap();
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.initialize_control("paused").unwrap();
     let mut st = State::default();
     let (merger, _results, _jobs) = Merger::detached();
     tick(&ctx, &mut st, &merger);
@@ -204,23 +205,18 @@ fn once_runs_exactly_one_tick() {
 }
 
 #[test]
-fn the_stop_flag_ends_the_run_loop_after_a_tick() {
+fn stopped_control_state_prevents_the_run_loop_from_ticking() {
     let (dir, ctx, host) = setup();
-    fs::write(ctx.home.join("STOP"), b"").unwrap();
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.initialize_control("stopped").unwrap();
     run_with(&ctx, false).unwrap();
-    // One tick makes exactly two `pool status --porcelain` calls (see
-    // `once_runs_exactly_one_tick`); a second tick would make four.
+    // A stopped pump does not run a new tick.
     let statuses = host
         .commands()
         .iter()
         .filter(|c| c.contains("pool status --porcelain"))
         .count();
-    assert_eq!(statuses, 2);
-    assert!(
-        host.logs()
-            .iter()
-            .any(|line| line.contains("STOP file seen; exiting"))
-    );
+    assert_eq!(statuses, 0);
     assert!(dir.path().join("home").join(DB_FILENAME).is_file());
 }
 
@@ -232,12 +228,18 @@ fn status_reads_the_status_file_or_says_no_status_yet() {
     fs::write(home.join("status.txt"), "1970-01-12T13:46:40Z\nunits \n").unwrap();
     assert_eq!(
         status(with_file.path()).unwrap(),
-        "1970-01-12T13:46:40Z\nunits \n"
+        "1970-01-12T13:46:40Z\nunits \ncontrol  running\n"
     );
     let without_file = mailspace_project("name = \"s\"\n\n[pump]\nhome = \"pump-home\"\n");
-    assert_eq!(status(without_file.path()).unwrap(), "no status yet");
+    assert_eq!(
+        status(without_file.path()).unwrap(),
+        "no status yet\ncontrol  running\n"
+    );
     let no_mailspace = tempdir().unwrap();
-    assert_eq!(status(no_mailspace.path()).unwrap(), "no status yet");
+    assert_eq!(
+        status(no_mailspace.path()).unwrap(),
+        "no status yet\ncontrol  running\n"
+    );
 }
 
 #[test]

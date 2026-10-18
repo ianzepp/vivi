@@ -237,6 +237,7 @@ pub async fn run() -> Result<(), VivariumError> {
     let _lock = take_service_lock()?;
     let mut children = BTreeMap::new();
     let mut retry_after = BTreeMap::new();
+    let mut observed_modes = BTreeMap::new();
     let mut stopping = BTreeMap::new();
     let mut interval = tokio::time::interval(POLL_INTERVAL);
     #[cfg(unix)]
@@ -251,7 +252,14 @@ pub async fn run() -> Result<(), VivariumError> {
         if shutdown {
             break;
         }
-        if let Err(error) = reconcile(&mut children, &mut retry_after, &mut stopping).await {
+        if let Err(error) = reconcile(
+            &mut children,
+            &mut retry_after,
+            &mut observed_modes,
+            &mut stopping,
+        )
+        .await
+        {
             tracing::error!(%error, "pump service reconciliation failed");
         }
     }
@@ -283,13 +291,14 @@ async fn wait_for_shutdown(interval: &mut tokio::time::Interval) -> bool {
 async fn reconcile(
     children: &mut BTreeMap<PathBuf, Child>,
     retry_after: &mut BTreeMap<PathBuf, Instant>,
+    observed_modes: &mut BTreeMap<PathBuf, super::control::PumpMode>,
     stopping: &mut BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
 ) -> Result<(), VivariumError> {
     let desired = load_config()?.projects;
     reap_stopping(stopping).await;
     stop_removed(&desired, children, retry_after, stopping);
     reap_exited(children, retry_after);
-    start_missing(&desired, children, retry_after, stopping).await;
+    start_missing(&desired, children, retry_after, observed_modes, stopping).await;
     Ok(())
 }
 
@@ -360,6 +369,7 @@ async fn start_missing(
     desired: &BTreeSet<PathBuf>,
     children: &mut BTreeMap<PathBuf, Child>,
     retry_after: &mut BTreeMap<PathBuf, Instant>,
+    observed_modes: &mut BTreeMap<PathBuf, super::control::PumpMode>,
     stopping: &BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
 ) {
     let executable = match std::env::current_exe() {
@@ -378,8 +388,34 @@ async fn start_missing(
         {
             continue;
         }
-        if pump_stop_path(project).is_ok_and(|path| path.exists()) {
+        let (home, control) = match super::control::initialize_project(project) {
+            Ok(project) => project,
+            Err(error) => {
+                tracing::warn!(project = %project.display(), %error, "could not read project pump control state");
+                retry_after.insert(project.clone(), Instant::now() + RESTART_DELAY);
+                continue;
+            }
+        };
+        if observed_modes.insert(project.clone(), control.mode) != Some(control.mode) {
+            retry_after.remove(project);
+        }
+        if control.mode == super::control::PumpMode::Stopped {
             continue;
+        }
+        if control.shutdown_requested {
+            match super::run::lock_is_held(&home) {
+                Ok(true) => continue,
+                Ok(false) => {
+                    if let Err(error) = super::control::request_shutdown(&home, false) {
+                        tracing::warn!(project = %project.display(), %error, "could not clear stale shutdown request");
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(project = %project.display(), %error, "could not inspect pump lock");
+                    continue;
+                }
+            }
         }
         match spawn_pump(&executable, project).await {
             Ok(child) => {
@@ -444,34 +480,26 @@ async fn stop_pump(project: &Path, mut child: Child) {
     if child.try_wait().ok().flatten().is_some() {
         return;
     }
-    let stop_path = match pump_stop_path(project) {
-        Ok(path) => path,
+    let home = match super::control::project_home(project) {
+        Ok(home) => home,
         Err(error) => {
-            tracing::warn!(project = %project.display(), %error, "cannot locate pump STOP flag");
+            tracing::warn!(project = %project.display(), %error, "cannot locate pump database");
             force_stop(&mut child, project).await;
             return;
         }
     };
-    let created_stop = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&stop_path)
+    if let Err(error) = super::control::initialize(&home)
+        .and_then(|_| super::control::request_shutdown(&home, true))
     {
-        Ok(_) => true,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(error) => {
-            tracing::warn!(project = %project.display(), %error, "cannot request graceful pump stop");
-            force_stop(&mut child, project).await;
-            return;
-        }
-    };
+        tracing::warn!(project = %project.display(), %error, "cannot request graceful pump stop");
+        force_stop(&mut child, project).await;
+        return;
+    }
     if let Err(error) = child.wait().await {
         tracing::warn!(project = %project.display(), %error, "could not wait for project pump");
     }
-    if created_stop {
-        if let Err(error) = fs::remove_file(stop_path) {
-            tracing::warn!(project = %project.display(), %error, "could not remove service STOP flag");
-        }
+    if let Err(error) = super::control::request_shutdown(&home, false) {
+        tracing::warn!(project = %project.display(), %error, "could not clear service shutdown request");
     }
 }
 
@@ -480,14 +508,6 @@ async fn force_stop(child: &mut Child, project: &Path) {
         tracing::warn!(project = %project.display(), %error, "could not stop project pump");
     }
     let _ = child.wait().await;
-}
-
-fn pump_stop_path(project: &Path) -> Result<PathBuf, VivariumError> {
-    let mailspace = crate::mailspace::Mailspace::discover(Some(project))?;
-    let config = mailspace.config.pump.ok_or_else(|| {
-        VivariumError::Config(format!("{} has no [pump] configuration", project.display()))
-    })?;
-    Ok(config.home_dir(&mailspace.root).join("STOP"))
 }
 
 fn load_config() -> Result<ServiceConfig, VivariumError> {

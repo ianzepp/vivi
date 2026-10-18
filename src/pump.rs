@@ -6,6 +6,7 @@ pub mod brief;
 pub mod closeout;
 pub mod collect;
 pub mod config;
+pub mod control;
 pub mod dispatch;
 pub mod gate;
 pub mod gatefix;

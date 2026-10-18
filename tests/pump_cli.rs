@@ -234,6 +234,10 @@ fn a_pause_flag_still_writes_status_and_exits_zero() {
     fs::create_dir_all(&home).unwrap();
     fs::write(home.join("PAUSE"), "").unwrap();
     assert_success(&vivi(["pump", "once", "--project", root(&project)]));
+    assert!(
+        !home.join("PAUSE").exists(),
+        "legacy pause file was not migrated"
+    );
     let status = fs::read_to_string(home.join("status.txt")).unwrap();
     assert_eq!(status.lines().count(), 4, "{status}");
 }

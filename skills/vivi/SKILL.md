@@ -1871,10 +1871,19 @@ wire protocols [`references/pump-protocols.md`](references/pump-protocols.md)
 guide and a summary, not a replacement.
 
 ```sh
-vivi pump run      # loop: one tick, then sleep `tick` seconds, until the STOP file appears
-vivi pump once     # exactly one tick, then exit; STOP is honoured after the tick
-vivi pump status   # print <home>/status.txt ("no status yet" when absent); no lock, no state load
+vivi pump run      # loop: one tick, then sleep `tick` seconds, until stopped
+vivi pump once     # exactly one tick, then exit
+vivi pump status   # print <home>/status.txt plus control mode; no pump lock
+vivi pump pause    # keep the process alive; skip dispatch and gate work
+vivi pump resume   # resume a paused pump
+vivi pump stop     # finish the current tick, then exit
+vivi pump start    # enable the pump; the service starts it when registered
 ```
+
+`pause`, `resume`, `stop` and `start` take `--project <root>` outside the
+project. They update the durable control mode in `pump.db`. `start` enables a
+standalone pump; run `vivi pump run` to launch it when no pump service manages
+the project.
 
 #### User-level pump service
 
@@ -1894,16 +1903,22 @@ vivi pump service run         # foreground supervisor for an OS service manager
 ```
 
 The supervisor polls the registry and starts one `vivi pump run --project`
-child per registered project. It restarts exited pumps after a delay and
-stops a project's child when that project is removed. A project's existing
-pump lock arbitrates against a manually started pump. `install` captures the
+child per registered project whose control mode is running or paused. It
+restarts exited pumps after a delay and stops a project's child when that
+project is removed. A project's existing pump lock arbitrates against a
+manually started pump. `install` captures the
 currently running Vivi executable in `~/Library/LaunchAgents/com.vivi.pump-service.plist`;
 launchd restarts it and starts it at login. On other systems, run the
 foreground command from that system's service manager.
 
+On first pump startup, legacy `PAUSE` and `STOP` files are imported into
+`pump.db` (`STOP` takes precedence when both exist). The database commit occurs
+before the old files are removed. Later pump control uses the database.
+
 - `run` and `once` take an exclusive non-blocking flock on `<home>/lock`
   first, so there is one instance; a second exits non-zero. Exit 0 is a clean
-  exit (STOP seen, or `once` finished); a crashing tick is logged, not an exit.
+  exit (stopped control mode, service shutdown, or `once` finished); a crashing
+  tick is logged, not an exit.
 - Every `vivi` call the pump makes carries the global `--project` too.
 
 #### Running the pump
@@ -1926,21 +1941,20 @@ For whoever operates it. Reference tables follow in the sections below.
    set `remote_url` and the pump clones it at start (`git clone --branch
    <branch>`, so the integration branch must already exist on the remote), or
    clone it yourself with the remote named `remote`.
-3. Check with one paused tick: `mkdir -p <home> && touch <home>/PAUSE`, then
-   `vivi pump once`. Config errors are printed and the exit is non-zero.
-   `PAUSE` stops dispatch, the hold cycle and the gate only; the board pass
+3. Check with one paused tick: `vivi pump pause`, then `vivi pump once`.
+   Config errors are printed and the exit is non-zero. Paused mode stops
+   dispatch, the hold cycle and the gate only; the board pass
    (sync pull, planners for plannable needs) and merging of delivered units
    still run. Read `vivi pump status`, `<home>/log.txt` and
    `<home>/exceptions.txt`.
-4. Remove `PAUSE`. Run `vivi pump run` (add `--project <root>` outside the
-   project) under a supervisor, or register it with `vivi pump service add`
+4. Run `vivi pump resume` when paused. Run `vivi pump run` (add
+   `--project <root>` outside the project) under a supervisor, or register it with `vivi pump service add`
    and install the user service. The standalone pump runs in the foreground
    and holds the per-project lock; the service uses that same lock when a
    standalone process is already running.
-5. To restart (new binary, new config): `touch <home>/STOP`, wait for the
-   process to exit (it finishes the current tick first), **remove `STOP`**,
-   then start again. A `STOP` left behind makes the next start run one tick
-   and exit.
+5. To restart (new binary, new config), run `vivi pump stop`, wait for the
+   process to exit after its current tick, then run `vivi pump start` and
+   launch it again. A registered pump service launches it after `start`.
 
 **Getting work in.** The board plans an open need addressed to `reply_from`
 (or held for it) that either comes from a `[pump.board] from` sender (dated at
@@ -2005,7 +2019,7 @@ blocks its dependents until a person unblocks it.
    a plan not written (`board/<need>.out`, `plan-no-answer`), a need not
    plannable (sender, `since`, mark, `skip.txt`) or a rejected plan
    (`bad-plan`).
-2. `PAUSE` exists in the home. A unit's need listed in `priority.txt` (the
+2. The control mode is `paused`. A unit's need listed in `priority.txt` (the
    priority file, below) goes first in dispatch and merge order; if a priority
    need is not moving, check that file for a typo in the handle.
 3. The unit's need is blocked by an unlanded `--depends-on` prerequisite:
@@ -2053,7 +2067,7 @@ section 6.
 **Rolling back.** The live memory is `pump.db`. On first start with a
 predecessor's `state.json`, the pump imports it in one transaction and renames
 it to `state.json.imported`; the import is one-way. To go back to a 12.x pump,
-stop this pump with `STOP`, run `vivi pump export --json <path>`, and start the
+stop this pump with `vivi pump stop`, run `vivi pump export --json <path>`, and start the
 predecessor on that file, or restore the `state.json.imported` copy taken
 before the first 13.x start. Keep either copy before cutover.
 
@@ -2089,8 +2103,6 @@ All flags live in `home`; the operator creates them:
 
 | flag | exact effect | removed by |
 | --- | --- | --- |
-| `PAUSE` | the tick returns early after its first save point: no dispatch, hold cycle, gate start or second merge feed; already-fed units keep merging | operator |
-| `STOP` | after the current tick: save and exit the loop | operator |
 | `HOLD-MERGE` | only fix units and priority units are fed to the merge thread; once every fix unit has settled, the pump writes `FORCE-GATE`, and a clean gate newer than the hold lifts it | pump or operator |
 | `FORCE-GATE` | the gate is due now, whatever the counters say | pump, when the gate dispatches |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (the file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
