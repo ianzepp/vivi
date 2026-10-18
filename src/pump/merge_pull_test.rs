@@ -3,7 +3,7 @@
 //! remote tip.
 
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use tempfile::{TempDir, tempdir};
@@ -326,4 +326,182 @@ fn a_push_rejected_three_times_is_undecided() {
         host.commands().last().map(String::as_str),
         Some("git reset -q --hard origin/next")
     );
+}
+
+// ------------------------------------------------------- foreign results
+
+#[test]
+fn a_result_for_a_unit_outside_the_batch_is_dropped_and_logged() {
+    let (_dir, ctx, host) = lane_setup(1, 1);
+    let (out, results) = std::sync::mpsc::channel();
+    let answers = vec![merged("ghost"), merged("u1")];
+    crate::pump::merge::dispatch_results(&ctx, &out, &[job()], answers);
+    let sent: Vec<String> = results.try_iter().map(|r| r.uid).collect();
+    assert_eq!(sent, ["u1"]);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "dropped a result for ghost: it is not in this batch")
+    );
+}
+
+#[test]
+fn a_batch_answered_only_with_foreign_results_leaves_its_own_job_undecided() {
+    let (_dir, ctx, _host) = lane_setup(1, 1);
+    let (out, results) = std::sync::mpsc::channel();
+    crate::pump::merge::dispatch_results(&ctx, &out, &[job()], vec![merged("ghost")]);
+    let sent: Vec<MergeResult> = results.try_iter().collect();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].uid, "u1");
+    assert_eq!(sent[0].ok, None);
+    assert_eq!(sent[0].why.as_deref(), Some("merge-undecided"));
+}
+
+// ------------------------------------------------------- lane backoff
+
+/// An undecided result for `uid` with reason `why`.
+fn undecided(uid: &str, why: &str) -> MergeResult {
+    MergeResult {
+        uid: uid.to_string(),
+        why: Some(why.to_string()),
+        detail: Some(format!("{why} detail")),
+        ..MergeResult::default()
+    }
+}
+
+/// Feed the single detached lane one unit, answer it with `answer` and
+/// apply. Returns whether the lane was fed at all.
+fn round(
+    ctx: &Ctx,
+    lane: &(Merger, Sender<MergeResult>, Receiver<Vec<MergeJob>>),
+    answer: impl FnOnce(&str) -> MergeResult,
+) -> bool {
+    let (merger, out, jobs) = lane;
+    let mut st = delivered(1);
+    merger.feed(ctx, &mut st);
+    let Ok(batch) = jobs.try_recv() else {
+        return false;
+    };
+    out.send(answer(&batch[0].uid)).unwrap();
+    merger.apply(ctx, &mut st);
+    true
+}
+
+/// The recorded exception lines (`<home>/exceptions.txt`).
+fn exceptions(ctx: &Ctx) -> String {
+    std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()
+}
+
+fn lane_fail(uid: &str) -> MergeResult {
+    undecided(uid, "push-failed")
+}
+
+#[test]
+fn a_lane_that_loses_three_batches_in_a_row_goes_into_backoff_and_recovers() {
+    let (_dir, ctx, host) = lane_setup(1, 1);
+    host.set_now(1_000);
+    let lane = Merger::detached();
+    for why in [
+        "lane-checkout-failed",
+        "push-failed",
+        "publish-fetch-failed",
+    ] {
+        assert!(round(&ctx, &lane, |uid| undecided(uid, why)));
+    }
+    let text = exceptions(&ctx);
+    assert!(text.contains("merge-lane-down default/0"), "{text}");
+    assert!(text.contains("publish-fetch-failed"), "last detail: {text}");
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "EXCEPTION merge-lane-down default/0")
+    );
+
+    // Down: nothing is sent for the whole backoff.
+    assert!(!round(&ctx, &lane, merged_of));
+    host.advance(599);
+    assert!(!round(&ctx, &lane, merged_of));
+
+    // Back after ten minutes; a success keeps it up.
+    host.advance(1);
+    assert!(round(&ctx, &lane, merged_of));
+    assert!(round(&ctx, &lane, merged_of));
+}
+
+fn merged_of(uid: &str) -> MergeResult {
+    merged(uid)
+}
+
+#[test]
+fn a_down_lane_is_skipped_by_feed_and_the_other_lane_takes_the_work() {
+    let (_dir, ctx, host) = lane_setup(1, 2);
+    host.set_now(1_000);
+    let (merger, out, lanes) = Merger::detached_lanes(2);
+    let mut st = delivered(8);
+    merger.feed(&ctx, &mut st);
+    let first = take(&lanes[0]);
+    let other = take(&lanes[1]);
+    // Lane 1 finishes at once; lane 0 loses three batches in a row.
+    out.send(merged(&other[0].uid)).unwrap();
+    out.send(undecided(&first[0].uid, "lane-checkout-failed"))
+        .unwrap();
+    merger.apply(&ctx, &mut st);
+    for _ in 0..2 {
+        merger.feed(&ctx, &mut st);
+        let batch = take(&lanes[0]);
+        let _ = lanes[1].try_recv();
+        out.send(undecided(&batch[0].uid, "lane-checkout-failed"))
+            .unwrap();
+        merger.apply(&ctx, &mut st);
+    }
+    assert!(exceptions(&ctx).contains("merge-lane-down default/0"));
+
+    // Lane 0 is down: of the two idle lanes only lane 1 is sent work.
+    while lanes[1].try_recv().is_ok() {}
+    for uid in st.order.clone() {
+        if st.units[&uid].status == Status::Merging {
+            out.send(merged(&uid)).unwrap();
+        }
+    }
+    merger.apply(&ctx, &mut st);
+    merger.feed(&ctx, &mut st);
+    assert!(lanes[0].try_recv().is_err(), "lane 0 is in backoff");
+    assert!(!take(&lanes[1]).is_empty());
+}
+
+#[test]
+fn a_success_or_a_batch_level_failure_resets_the_lane_failure_count() {
+    let (_dir, ctx, host) = lane_setup(1, 1);
+    host.set_now(1_000);
+    let lane = Merger::detached();
+    assert!(round(&ctx, &lane, lane_fail));
+    assert!(round(&ctx, &lane, lane_fail));
+    // A success resets the count.
+    assert!(round(&ctx, &lane, merged_of));
+    assert!(round(&ctx, &lane, lane_fail));
+    assert!(round(&ctx, &lane, lane_fail));
+    // publish-conflict is about the batch content: it is not a lane failure
+    // and resets the run like any batch that was not lost to the lane.
+    assert!(round(&ctx, &lane, |uid| undecided(uid, "publish-conflict")));
+    assert!(round(&ctx, &lane, lane_fail));
+    assert!(round(&ctx, &lane, lane_fail));
+    assert!(!exceptions(&ctx).contains("merge-lane-down"));
+    assert!(round(&ctx, &lane, lane_fail));
+    assert!(exceptions(&ctx).contains("merge-lane-down default/0"));
+}
+
+#[test]
+fn a_batch_with_one_decided_job_is_not_a_lost_batch() {
+    let (_dir, ctx, host) = lane_setup(2, 1);
+    host.set_now(1_000);
+    let (merger, out, jobs) = Merger::detached();
+    for _ in 0..4 {
+        let mut st = delivered(2);
+        merger.feed(&ctx, &mut st);
+        assert_eq!(take(&jobs).len(), 2);
+        out.send(undecided("u1", "push-failed")).unwrap();
+        out.send(merged("u2")).unwrap();
+        merger.apply(&ctx, &mut st);
+    }
+    assert!(!exceptions(&ctx).contains("merge-lane-down"));
 }

@@ -8,11 +8,15 @@
 
 mod apply;
 mod batch;
+mod fetch;
 mod lane;
 mod publish;
 
 pub use batch::{batch_round, batch_work};
+pub(crate) use fetch::fetch_unit_branch;
 pub use lane::Merger;
+#[cfg(test)]
+pub(crate) use lane::dispatch_results;
 
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
@@ -99,35 +103,7 @@ pub fn reset_repo(ctx: &Ctx) {
 pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     let t0 = ctx.now();
     reset_repo(ctx);
-    let local = if ctx.cfg.targets.is_empty() {
-        crate::pump::host::CmdOutput {
-            code: 1,
-            text: String::new(),
-        }
-    } else {
-        ctx.git(
-            &format!(
-                "show-ref --verify --quiet refs/heads/{}",
-                shell_quote(&job.branch)
-            ),
-            30,
-        )
-    };
-    let fetch = if local.code == 0 {
-        format!(
-            "update-ref refs/remotes/{}/{} refs/heads/{}",
-            ctx.cfg.remote,
-            shell_quote(&job.branch),
-            shell_quote(&job.branch)
-        )
-    } else {
-        format!(
-            "fetch {r} refs/heads/{b}:refs/remotes/{r}/{b}",
-            r = ctx.cfg.remote,
-            b = shell_quote(&job.branch)
-        )
-    };
-    let out = ctx.git(&fetch, 180);
+    let out = fetch_unit_branch(ctx, &job.branch);
     if out.code != 0 {
         return fetch_failure(&job.uid, &out.text);
     }
