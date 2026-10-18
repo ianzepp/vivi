@@ -152,6 +152,13 @@ pub struct Attempt {
     /// Epoch seconds.
     #[serde(default)]
     pub at: u64,
+    /// The attempt branch (`unit/<uid>-a<n>`) the hand worked on, kept on the
+    /// remote after the attempt ends. `pump.db` keeps it in `unit_events`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The Vivi task handle of the attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// One schedulable unit of work.
@@ -362,6 +369,10 @@ pub struct Board {
     /// Need handle -> epoch seconds a revision planner started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub revision_planning: BTreeMap<String, u64>,
+    /// An attempt record was posted since the last sync push: the next board
+    /// pass ships it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync_pending: bool,
 }
 
 /// One promoted integration tip (`promotions` entry).

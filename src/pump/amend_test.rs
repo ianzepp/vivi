@@ -24,7 +24,7 @@ fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>, State) {
             verdict: String::from("units"),
             units: vec![String::from("n1-1")],
             revision: 1,
-            thread_sha256: Some(String::from("old")),
+            thread_sha256: Some(String::from("v2:old")),
             thread_seen_at: Some(1_000),
             ..NeedRecord::default()
         },
@@ -51,7 +51,7 @@ fn script_thread(host: &FakeHost, body: &str) {
     host.reply(
         "need show n1 --json",
         0,
-        &format!(r#"[{{"message_id":"m1","body":"{body}"}}]"#),
+        &format!(r#"[{{"message_id":"m1","from":"operator@12345678.local","body":"{body}"}}]"#),
     );
 }
 
@@ -86,11 +86,60 @@ fn an_unchanged_thread_does_not_amend() {
     let mut hasher = Sha256::new();
     hasher.update(b"m1\n");
     hasher.update(b"same body\n");
-    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(hex::encode(hasher.finalize()));
+    st.needs.get_mut("n1").unwrap().thread_sha256 =
+        Some(format!("v2:{}", hex::encode(hasher.finalize())));
     script_thread(&host, "same body");
     detect(&ctx, &mut st);
     assert!(!st.needs["n1"].amendment_pending);
     assert!(!st.board.revision_planning.contains_key("n1"));
+}
+
+#[test]
+fn a_pump_attempt_record_reply_does_not_amend() {
+    for reply_from in ["mind", "mind@12345678.local"] {
+        let (_dir, mut ctx, host, mut st) = setup();
+        Arc::make_mut(&mut ctx.cfg).reply_from = reply_from.to_owned();
+        st.needs.get_mut("n1").unwrap().thread_sha256 = None;
+        script_thread(&host, "original need");
+        detect(&ctx, &mut st);
+        let hash = st.needs["n1"].thread_sha256.clone();
+        st.needs.get_mut("n1").unwrap().thread_seen_at = Some(1_000);
+        host.reply(
+            "need show n1 --json",
+            0,
+            r#"[
+                {"message_id":"m1","from":"operator@12345678.local","body":"original need"},
+                {"message_id":"m2","from":"mind@12345678.local","body":"Attempt record: delivered"}
+            ]"#,
+        );
+        detect(&ctx, &mut st);
+        assert_eq!(st.needs["n1"].thread_sha256, hash);
+        assert!(!st.needs["n1"].amendment_pending);
+        assert!(st.needs["n1"].thread_seen_at.unwrap() > 1_000);
+        assert!(host.spawned().is_empty());
+    }
+}
+
+#[test]
+fn an_operator_reply_still_amends_after_a_pump_reply() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = None;
+    script_thread(&host, "original need");
+    detect(&ctx, &mut st);
+    st.needs.get_mut("n1").unwrap().thread_seen_at = Some(1_000);
+    host.reply(
+        "need show n1 --json",
+        0,
+        r#"[
+            {"message_id":"m1","from":"operator@12345678.local","body":"original need"},
+            {"message_id":"m2","from":"mind@12345678.local","body":"Attempt record: delivered"},
+            {"message_id":"m3","from":"operator@12345678.local","body":"also handle the edge case"}
+        ]"#,
+    );
+    detect(&ctx, &mut st);
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
+    assert_eq!(host.spawned().len(), 1);
 }
 
 #[test]
@@ -117,4 +166,17 @@ fn an_amendment_is_not_detected_twice() {
     let spawned = host.spawned().len();
     detect(&ctx, &mut st);
     assert_eq!(host.spawned().len(), spawned);
+}
+
+#[test]
+fn a_hash_from_the_older_scheme_is_adopted_not_read_as_an_amendment() {
+    let (_dir, ctx, host, mut st) = setup();
+    // Stored before the pump's own replies were left out of the hash.
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(String::from("0123abcd"));
+    script_thread(&host, "a body the old hash never saw");
+    detect(&ctx, &mut st);
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(!st.board.revision_planning.contains_key("n1"));
+    let adopted = st.needs["n1"].thread_sha256.clone().unwrap();
+    assert!(adopted.starts_with("v2:"), "{adopted}");
 }

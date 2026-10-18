@@ -9,6 +9,8 @@ use crate::pump::config::PumpConfig;
 use crate::pump::host::test_ctx;
 use crate::pump::state::{Attempt, Unit};
 
+const UID: &str = "56f1d749-2";
+
 /// A [`PumpConfig`] with a distinguishable gate command.
 fn cfg_with_gate(command: &str) -> PumpConfig {
     let mut cfg = PumpConfig::default();
@@ -102,11 +104,16 @@ fn brief_for_lists_scope_and_proof_in_order() {
     assert!(title < brief && brief < scope && scope < proof);
     assert!(text.contains("\n- src/a.rs\n- src/b.rs\n"));
     assert!(text.contains("\n- `cargo test --lib a`\n- `cargo test --lib b`\n"));
-    assert!(text.ends_with(
+    assert!(text.contains(
         "done_when: every PROOF command exits 0 on your checkout and the checks named in \
          the rules above pass, or the reply ends with `VERDICT: no-defect` and evidence"
     ));
-    assert!(!text.contains("A PREVIOUS ATTEMPT"));
+    assert!(text.contains("VERDICT: no-defect"));
+    assert!(text.contains("FINAL REPORT:"));
+    assert!(text.contains("the files you changed; what you verified"));
+    assert!(text.contains("what still fails and why; anything the next attempt should know"));
+    assert!(!text.contains("EARLIER ATTEMPTS"));
+    assert!(!text.contains("NEED THREAD"));
 }
 
 #[test]
@@ -123,46 +130,241 @@ fn brief_for_an_empty_proof_says_shared_checks_only() {
     );
 }
 
+/// An attempt record.
+fn attempt(n: u32, model: Option<&str>, why: &str, detail: String) -> Attempt {
+    Attempt {
+        attempt: n,
+        model: model.map(str::to_owned),
+        why: why.to_owned(),
+        detail,
+        at: 0,
+        ..Attempt::default()
+    }
+}
+
+/// One `need show` message block with a header, `Content:` hash and body.
+fn message(index: usize, kind: &str, body: &str) -> String {
+    format!(
+        "## 2026-10-15T10:{:02}:00+00:00 - {:08x} [{kind}]\nFrom: operator@h\nTo: pump@h\n\
+         Content: {}\nSubject: s\n\n{body}\n\n",
+        index % 60,
+        index,
+        "ab".repeat(32),
+    )
+}
+
+/// A `need show` output: the original need, then `replies` as reply messages.
+fn thread_text(replies: &[String]) -> String {
+    let mut text =
+        String::from("Contents (1 message(s))\n\nsubject line\n\nThread (1 message(s))\n\n");
+    text.push_str(&message(0, "need", "ORIGINAL-NEED-BODY"));
+    for (i, body) in replies.iter().enumerate() {
+        text.push_str(&message(i + 1, "reply", body));
+    }
+    text
+}
+
+/// A unit that serves need `abcd1234`.
+fn threaded_unit() -> Unit {
+    Unit {
+        need: "abcd1234".to_owned(),
+        ..sample_unit()
+    }
+}
+
 #[test]
-fn brief_for_a_retry_carries_the_last_failure_cut_to_1800_chars() {
+fn history_lists_every_attempt_in_order_with_branch_and_excerpt() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let unit = Unit {
+        history: vec![
+            attempt(1, Some("model-a"), "proof-failed", "#".repeat(2000)),
+            attempt(2, None, "agent-replied", "~".repeat(2000)),
+            attempt(3, Some("model-c"), "timeout", "^".repeat(3000)),
+        ],
+        ..sample_unit()
+    };
+    let text = brief_for(&ctx, UID, &unit);
+    let section = text
+        .find("EARLIER ATTEMPTS AT THIS UNIT (3 so far")
+        .unwrap();
+    let one = text.find("- attempt 1 (model-a) ended: proof-failed; branch unit/56f1d749-2-a1");
+    let two =
+        text.find("- attempt 2 (unknown model) ended: agent-replied; branch unit/56f1d749-2-a2");
+    let three = text.find("- attempt 3 (model-c) ended: timeout; branch unit/56f1d749-2-a3");
+    let (one, two, three) = (one.unwrap(), two.unwrap(), three.unwrap());
+    assert!(section < one && one < two && two < three);
+    assert!(text.contains("git fetch origin <branch>"));
+    assert!(text.contains("avoid repeating what already failed"));
+    assert!(!text.contains("you start clean"));
+    assert!(!text.contains("Its work was discarded"));
+    // Older attempts keep 500 bytes of detail, the most recent 1800.
+    assert_eq!(text.matches('#').count(), 500);
+    assert_eq!(text.matches('~').count(), 500);
+    assert_eq!(text.matches('^').count(), 1800);
+    // The section sits before the closing lines, after the proof.
+    assert!(text.find("PROOF (each must exit 0):").unwrap() < section);
+    assert!(section < text.find("done_when:").unwrap());
+    assert!(text.contains("VERDICT: no-defect"));
+}
+
+#[test]
+fn history_excerpt_never_splits_a_multibyte_character() {
     let dir = tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     // 900 two-byte characters, then ASCII: a naive byte cut at 1800 lands
-    // mid-character, so the brief must move the cut forward.
+    // mid-character, so the excerpt must move the cut forward.
     let detail = format!("{}!{}", "\u{e9}".repeat(900), "y".repeat(500));
     let unit = Unit {
-        history: vec![Attempt {
-            attempt: 1,
-            model: None,
-            why: "proof-failed".to_owned(),
-            detail: detail.clone(),
-            at: 0,
-        }],
+        history: vec![attempt(1, None, "proof-failed", detail)],
         ..sample_unit()
     };
-    let text = brief_for(&ctx, "56f1d749-2", &unit);
-    assert!(
-        text.contains(
-            "A PREVIOUS ATTEMPT AT THIS UNIT FAILED (proof-failed). Its work was \
-             discarded; you start clean. What went wrong:"
-        ),
-        "failure header missing"
-    );
-    let marker = "What went wrong:\n\n";
-    let tail = &text[text.find(marker).unwrap() + marker.len()..];
-    let body = tail
-        .strip_suffix(
-            "\n\ndone_when: every PROOF command exits 0 on your checkout and the \
-                       checks named in the rules above pass, or the reply ends with \
-                       `VERDICT: no-defect` and evidence",
-        )
-        .unwrap();
+    let text = brief_for(&ctx, UID, &unit);
     // Byte 1800 from the end is byte 501, inside a two-byte character; the
     // cut moves to 502, keeping 649 of the accented characters.
-    let expected = format!("{}!{}", "\u{e9}".repeat(649), "y".repeat(500));
-    assert_eq!(body, expected);
-    assert!(body.len() <= 1800);
-    assert!(!text.contains(&detail));
+    let expected = format!("    {}!{}", "\u{e9}".repeat(649), "y".repeat(500));
+    assert!(text.contains(&expected));
+    assert!(!text.contains(&"\u{e9}".repeat(650)));
+}
+
+#[test]
+fn history_names_the_targets_configured_remote() {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        remote: "upstream".to_owned(),
+        ..PumpConfig::default()
+    };
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let unit = Unit {
+        history: vec![attempt(1, None, "proof-failed", String::new())],
+        ..sample_unit()
+    };
+    let text = brief_for(&ctx, UID, &unit);
+    assert!(text.contains("git fetch upstream <branch>"));
+    assert!(text.contains("- attempt 1 (unknown model) ended: proof-failed; branch unit/"));
+}
+
+#[test]
+fn no_history_means_no_history_section() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let text = brief_for(&ctx, UID, &sample_unit());
+    assert!(!text.contains("EARLIER ATTEMPTS"));
+    assert!(!text.contains("branch unit/"));
+}
+
+#[test]
+fn the_thread_section_carries_replies_only_newest_last() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let replies = ["FIRST-REPLY ruling", "SECOND-REPLY clarification"].map(String::from);
+    host.reply("need show abcd1234", 0, &thread_text(&replies));
+    let text = brief_for(&ctx, UID, &threaded_unit());
+    let head = text.find("NEED THREAD REPLIES").unwrap();
+    let first = text.find("FIRST-REPLY ruling").unwrap();
+    let second = text.find("SECOND-REPLY clarification").unwrap();
+    assert!(head < first && first < second);
+    assert!(!text.contains("ORIGINAL-NEED-BODY"));
+    assert!(!text.contains(&"ab".repeat(32)));
+    assert!(text.find("PROOF (each must exit 0):").unwrap() < head);
+    assert!(second < text.find("done_when:").unwrap());
+    assert!(
+        host.commands()
+            .iter()
+            .any(|c| c.contains("need show abcd1234 --newest 40") && c.contains("--project"))
+    );
+}
+
+#[test]
+fn a_thread_with_only_the_original_need_adds_no_section() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    host.reply("need show abcd1234", 0, &thread_text(&[]));
+    let text = brief_for(&ctx, UID, &threaded_unit());
+    assert!(!text.contains("NEED THREAD"));
+    assert!(!text.contains("could not be read"));
+}
+
+#[test]
+fn a_long_thread_is_capped_keeping_the_newest_replies() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let replies: Vec<String> = (0..40)
+        .map(|i| format!("reply-{i:02} {}", "w".repeat(400)))
+        .collect();
+    host.reply("need show abcd1234", 0, &thread_text(&replies));
+    let text = brief_for(&ctx, UID, &threaded_unit());
+    assert!(text.contains("reply-39"));
+    assert!(!text.contains("reply-00"));
+    assert!(text.contains("[older replies cut: showing the newest"));
+    let start = text.find("NEED THREAD REPLIES").unwrap();
+    let end = text.find("done_when:").unwrap();
+    // Heading, cut notice, and at most 6000 bytes of replies.
+    assert!(
+        end - start <= 6000 + 400,
+        "section is {} bytes",
+        end - start
+    );
+    // The cut lands on a message boundary.
+    let marker = text.find("[older replies cut").unwrap();
+    let after = &text[marker..];
+    assert!(
+        after
+            .split_once('\n')
+            .unwrap()
+            .1
+            .starts_with("## 2026-10-15T")
+    );
+}
+
+#[test]
+fn a_failed_thread_read_leaves_one_notice_and_the_brief_intact() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    host.reply("need show abcd1234", 124, "partial\n[timeout after 30s]");
+    let text = brief_for(&ctx, UID, &threaded_unit());
+    assert_eq!(text.matches("could not be read").count(), 1);
+    assert!(!text.contains("partial"));
+    assert!(!text.contains("NEED THREAD REPLIES"));
+    assert!(text.contains("fix the thing described here"));
+    assert!(text.contains("WRITE SCOPE:"));
+    assert!(text.contains("PROOF (each must exit 0):"));
+    assert!(text.contains("VERDICT: no-defect"));
+}
+
+#[test]
+fn a_unit_without_a_need_never_reads_a_thread() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let _ = brief_for(&ctx, UID, &sample_unit());
+    assert!(!host.commands().iter().any(|c| c.contains("need show")));
+}
+
+#[test]
+fn a_large_brief_shrinks_history_and_thread_but_never_the_unit() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let replies: Vec<String> = (0..20)
+        .map(|i| format!("reply-{i:02} {}", "w".repeat(400)))
+        .collect();
+    host.reply("need show abcd1234", 0, &thread_text(&replies));
+    let long_brief = format!("{}END-OF-UNIT-BRIEF", "u".repeat(28_000));
+    let unit = Unit {
+        brief: long_brief.clone(),
+        history: (1..=6)
+            .map(|n| attempt(n, None, "proof-failed", "#".repeat(3000)))
+            .collect(),
+        ..threaded_unit()
+    };
+    let text = brief_for(&ctx, UID, &unit);
+    assert!(text.contains(&long_brief));
+    assert!(text.contains("\n- src/a.rs\n- src/b.rs\n"));
+    assert!(text.contains("\n- `cargo test --lib a`\n- `cargo test --lib b`\n"));
+    assert!(text.contains("FINAL REPORT:"));
+    // Every attempt is still listed, but the excerpts are gone or cut down.
+    assert_eq!(text.matches("; branch unit/56f1d749-2-a").count(), 6);
+    assert!(text.matches('#').count() < 6 * 500);
+    assert!(!text.contains("reply-00"));
 }
 
 #[test]
