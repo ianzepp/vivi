@@ -316,7 +316,7 @@ pub struct DispatchConfig {
     /// `--from` of a unit dispatch; absent means `branch`.
     pub from: Option<String>,
     /// Unit kinds (`[pump.dispatch.kinds.<name>]`): a unit's `tools` value
-    /// names its kind, and the kind names the pool the unit goes to.
+    /// names its kind, and the kind names the pools the unit goes to.
     pub kinds: BTreeMap<String, Kind>,
     /// Kind of a unit with no `tools` value. Required (and must be a defined
     /// kind) when `kinds` is non-empty.
@@ -327,9 +327,10 @@ pub struct DispatchConfig {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Kind {
-    /// Pool units of this kind are dispatched to; must name a `[pools.*]`
-    /// table. Required.
-    pub pool: String,
+    /// Pools units of this kind are dispatched to; each must name a
+    /// `[pools.*]` table. Required, non-empty. A unit goes to the listed pool
+    /// with the most free slots (ties: first listed).
+    pub pools: Vec<String>,
     /// Units of this kind allowed in flight at once; absent = no cap. While
     /// this many are inflight, a further unit of the kind waits (skipped,
     /// not failed).
@@ -602,15 +603,17 @@ impl PumpConfig {
 
     fn validate_kinds(&self, pools: &[String], bad: &mut Vec<String>) {
         for (name, kind) in &self.dispatch.kinds {
-            if kind.pool.is_empty() {
+            if kind.pools.is_empty() {
                 bad.push(format!(
-                    "[pump.dispatch.kinds.{name}] pool must not be empty"
+                    "[pump.dispatch.kinds.{name}] pools must not be empty"
                 ));
-            } else if !known(pools, &kind.pool) {
-                bad.push(format!(
-                    "[pump.dispatch.kinds.{name}] pool names unknown pool `{}`",
-                    kind.pool
-                ));
+            }
+            for pool in &kind.pools {
+                if !known(pools, pool) {
+                    bad.push(format!(
+                        "[pump.dispatch.kinds.{name}] pools names unknown pool `{pool}`"
+                    ));
+                }
             }
             if kind.max == Some(0) {
                 bad.push(format!("[pump.dispatch.kinds.{name}] max must be >= 1"));

@@ -8,7 +8,11 @@ use std::path::Path;
 /// A kind dispatching to `pool`.
 fn kind(pool: &str) -> Kind {
     Kind {
-        pool: pool.to_string(),
+        pools: if pool.is_empty() {
+            Vec::new()
+        } else {
+            vec![pool.to_string()]
+        },
         ..Kind::default()
     }
 }
@@ -60,10 +64,10 @@ from         = "next"
 default_kind = "plain"
 
 [pump.dispatch.kinds.plain]
-pool = "fly4"
+pools = ["fly4"]
 
 [pump.dispatch.kinds.full]
-pool = "flyfull"
+pools = ["flyfull", "flygate"]
 max  = 2
 skip_proof = true
 
@@ -107,9 +111,9 @@ fn a_kind_parses_with_optional_max_and_skip_proof() {
     assert!(none.dispatch.kinds.is_empty());
     let set = pump(
         "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.dispatch]\ndefault_kind = \"a\"\n\
-         [pump.dispatch.kinds.a]\npool = \"p\"\n[pump.dispatch.kinds.b]\npool = \"q\"\nmax = 2\n",
+         [pump.dispatch.kinds.a]\npools = [\"p\"]\n[pump.dispatch.kinds.b]\npools = [\"q\"]\nmax = 2\n",
     );
-    assert_eq!(set.dispatch.kinds["a"].pool, "p");
+    assert_eq!(set.dispatch.kinds["a"].pools, ["p"]);
     assert_eq!(set.dispatch.kinds["a"].max, None, "absent max means no cap");
     assert!(!set.dispatch.kinds["a"].skip_proof);
     assert_eq!(set.dispatch.kinds["b"].max, Some(2));
@@ -185,7 +189,7 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.dispatch.lanes[1].model, "zai/glm-5.3-flash");
     assert_eq!(cfg.dispatch.lanes[1].cap, 10);
     assert_eq!(cfg.dispatch.default_kind, "plain");
-    assert_eq!(cfg.dispatch.kinds["plain"].pool, "fly4");
+    assert_eq!(cfg.dispatch.kinds["plain"].pools, ["fly4"]);
     assert_eq!(cfg.dispatch.kinds["full"].max, Some(2));
     assert!(cfg.dispatch.kinds["full"].skip_proof);
     assert_eq!(cfg.merge.batch, 8);
@@ -362,9 +366,45 @@ fn validate_checks_default_kind_and_kind_pools() {
     cfg.dispatch.kinds.insert("b".into(), kind(""));
     let err = cfg.validate(Path::new("."), &all).expect_err("empty pool");
     assert!(
-        err.to_string().contains("kinds.b] pool must not be empty"),
+        err.to_string().contains("kinds.b] pools must not be empty"),
         "{err}"
     );
+}
+
+#[test]
+fn validate_rejects_an_unknown_pool_in_a_multi_pool_kind() {
+    let cfg = PumpConfig {
+        branch: "next".into(),
+        dispatch: DispatchConfig {
+            lanes: vec![Lane {
+                model: "m".into(),
+                cap: 1,
+            }],
+            kinds: BTreeMap::from([(
+                "a".to_string(),
+                Kind {
+                    pools: vec!["p".into(), "nope".into()],
+                    ..Kind::default()
+                },
+            )]),
+            default_kind: "a".into(),
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = cfg
+        .validate(Path::new("."), &pools(&["p"]))
+        .expect_err("unknown pool must fail");
+    assert!(err.to_string().contains("unknown pool `nope`"), "{err}");
+}
+
+#[test]
+fn a_kind_parses_a_multi_pool_list() {
+    let set = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.dispatch]\ndefault_kind = \"a\"\n\
+         [pump.dispatch.kinds.a]\npools = [\"p\", \"q\"]\n",
+    );
+    assert_eq!(set.dispatch.kinds["a"].pools, ["p", "q"]);
 }
 
 #[test]
@@ -377,8 +417,8 @@ fn kind_of_resolves_tools_or_the_default_kind() {
         },
         ..PumpConfig::default()
     };
-    assert_eq!(cfg.kind_of("").unwrap().pool, "p");
-    assert_eq!(cfg.kind_of("b").unwrap().pool, "q");
+    assert_eq!(cfg.kind_of("").unwrap().pools, ["p"]);
+    assert_eq!(cfg.kind_of("b").unwrap().pools, ["q"]);
     assert!(cfg.kind_of("nope").is_none());
 }
 
@@ -401,7 +441,8 @@ fn validate_rejects_an_unknown_pool_name() {
         .validate(Path::new("."), &pools(&["other"]))
         .expect_err("unknown pool must fail");
     assert!(
-        err.to_string().contains("[pump.dispatch.kinds.a] pool"),
+        err.to_string()
+            .contains("[pump.dispatch.kinds.a] pools names unknown pool `fly`"),
         "{err}"
     );
     cfg.dispatch.kinds.clear();

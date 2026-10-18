@@ -346,7 +346,7 @@ fn a_skip_proof_kind_skips_its_own_proof() {
     cfg.dispatch.kinds.insert(
         String::from("full"),
         crate::pump::config::Kind {
-            pool: String::from("p"),
+            pools: vec![String::from("p")],
             skip_proof: true,
             ..Default::default()
         },

@@ -18,8 +18,13 @@ const T0: u64 = 1_000_000;
 
 /// A kind dispatching to `pool`, capped at `max` units in flight.
 fn kind(pool: &str, max: Option<u32>) -> Kind {
+    kind_of_pools(&[pool], max)
+}
+
+/// A kind dispatching to several `pools`, capped at `max` units in flight.
+fn kind_of_pools(pools: &[&str], max: Option<u32>) -> Kind {
     Kind {
-        pool: pool.to_owned(),
+        pools: pools.iter().map(|p| (*p).to_owned()).collect(),
         max,
         ..Kind::default()
     }
@@ -576,4 +581,75 @@ fn a_need_dependency_hold_keeps_a_unit_pending_and_logs_once() {
     assert_eq!(st.units["n-1"].status, Status::Inflight);
     assert!(st.units["n-1"].held_on.is_none());
     assert_eq!(commands_with(&host, "task send").len(), 1);
+}
+
+/// A config whose `full` kind spans pools `a` and `b` (optionally capped).
+fn two_pool_cfg(max: Option<u32>) -> PumpConfig {
+    let mut cfg = dispatch_cfg();
+    cfg.dispatch.per_tick = 3;
+    cfg.dispatch
+        .kinds
+        .insert(String::from("full"), kind_of_pools(&["a", "b"], max));
+    cfg
+}
+
+/// Reply to `task send` and `pool dispatch` so units can start.
+fn wire_sends(host: &FakeHost) {
+    host.reply("task send", 0, "created hand 1a2b3c4d\nnode 1a2b3c4d");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched 1a2b3c4d bridge slot-1 m/a unit/x-a1",
+    );
+}
+
+/// Run one dispatch tick over `uids` (all of kind `full`) against `status`.
+fn run_full_units(cfg: PumpConfig, status: &str, uids: &[&str]) -> State {
+    let (_dir, ctx, host) = setup_with(cfg);
+    host.reply("pool status", 0, status);
+    wire_sends(&host);
+    let mut st = State::default();
+    ordered(&mut st, uids);
+    for uid in uids {
+        st.units.get_mut(*uid).unwrap().tools = String::from("full");
+    }
+    dispatch(&ctx, &mut st);
+    st
+}
+
+#[test]
+fn a_multi_pool_kind_picks_the_pool_with_most_free_slots() {
+    let status =
+        "slot a bridge slot-1 free\nslot b bridge slot-1 free\nslot b bridge slot-2 free\n";
+    let st = run_full_units(two_pool_cfg(None), status, &["u1"]);
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("b"));
+}
+
+#[test]
+fn a_multi_pool_kind_breaks_ties_by_listed_order() {
+    let status = "slot b bridge slot-1 free\nslot a bridge slot-1 free\n";
+    let st = run_full_units(two_pool_cfg(None), status, &["u1"]);
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("a"));
+}
+
+#[test]
+fn a_multi_pool_kind_falls_through_to_the_next_pool_when_the_first_is_full() {
+    let status = "slot a bridge slot-1 busy\nslot b bridge slot-1 free\n";
+    let st = run_full_units(two_pool_cfg(None), status, &["u1", "u2"]);
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("b"));
+    // Pool b's only slot is consumed and a has none: u2 waits.
+    assert_eq!(st.units["u2"].status, Status::Pending);
+    assert_eq!(st.units["u2"].task, None);
+}
+
+#[test]
+fn a_kinds_max_counts_inflight_units_across_all_its_pools() {
+    let status =
+        "slot a bridge slot-1 free\nslot b bridge slot-1 free\nslot b bridge slot-2 free\n";
+    let st = run_full_units(two_pool_cfg(Some(2)), status, &["u1", "u2", "u3"]);
+    // u1 goes to b (most free); u2 ties at one slot each and takes a (first
+    // listed); the cap of 2 holds u3 back although a slot remains.
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("b"));
+    assert_eq!(st.units["u2"].pool.as_deref(), Some("a"));
+    assert_eq!(st.units["u3"].status, Status::Pending);
 }
