@@ -619,6 +619,10 @@ mod runner_tests;
 mod runner_restore_tests;
 
 #[cfg(test)]
+#[path = "job_runner_failed_test.rs"]
+mod runner_failed_tests;
+
+#[cfg(test)]
 #[path = "job_runner_with_test.rs"]
 mod with_runner_tests;
 

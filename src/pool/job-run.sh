@@ -423,11 +423,23 @@ if [ -z "$CHANGED" ] && [ -z "$MOVED" ]; then
   finish no_changes
 fi
 [ "${LOCAL_ACTION:-}" != create ] || as_hand git checkout -q -b "$BRANCH" || finish branch_exists
-if [ -n "$CHANGED" ]; then
+# Whatever the agent left is kept, whatever its exit code: a crash, a refusal
+# or the budget timeout (exit 124) still commits the leftover work, and a
+# failed attempt says so in its commit subject. When the failed agent left
+# nothing uncommitted but made commits of its own, an empty marker commit puts
+# the same subject on the branch tip. The branch is published as it is; the
+# pool's caller decides what a failed attempt means.
+COMMIT_SUBJECT=$SUBJECT
+COMMIT_ALLOW=()
+if [ "${AGENT_RC:-0}" != 0 ]; then
+  COMMIT_SUBJECT="WIP (attempt failed): $SUBJECT"
+  COMMIT_ALLOW=(--allow-empty)
+fi
+if [ -n "$CHANGED" ] || [ "${AGENT_RC:-0}" != 0 ]; then
   TRAILER="Pool-Run: slot=$SLOT model=$MODEL from=${START:0:10} exit=$AGENT_RC duration=${AGENT_S}s"
   as_hand git add -A && { [ -z "${BUILD_DIR:-}" ] || as_hand git reset -q -- "$BUILD_DIR"; } \
     && as_hand git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
-         commit -q -m "$SUBJECT" -m "$TRAILER" || finish commit_failed
+         commit -q -m "$COMMIT_SUBJECT" -m "$TRAILER" "${COMMIT_ALLOW[@]}" || finish commit_failed
 fi
 if [ -n "${LOCAL_ACTION:-}" ]; then
   finish committed "$(as_hand git rev-parse HEAD)"

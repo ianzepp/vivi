@@ -137,6 +137,7 @@ fn brief_for_a_retry_carries_the_last_failure_cut_to_1800_chars() {
             why: "proof-failed".to_owned(),
             detail: detail.clone(),
             at: 0,
+            ..Attempt::default()
         }],
         ..sample_unit()
     };

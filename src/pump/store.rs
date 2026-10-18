@@ -26,7 +26,7 @@ use schema::{newer_schema, schema_version, take_migration_lock};
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The database filename inside the pump home.
 pub const DB_FILENAME: &str = "pump.db";
@@ -97,7 +97,9 @@ CREATE TABLE IF NOT EXISTS unit_events (
   model TEXT,
   why TEXT NOT NULL,
   detail TEXT NOT NULL,
-  at INTEGER NOT NULL
+  at INTEGER NOT NULL,
+  branch TEXT,
+  task TEXT
 );
 CREATE INDEX IF NOT EXISTS unit_events_unit_idx ON unit_events(unit, event_id);
 CREATE TABLE IF NOT EXISTS unit_order (
@@ -499,6 +501,8 @@ fn migrate_older_schema(conn: &Connection) -> Result<(), VivariumError> {
         ("needs", "amendment_pending", "INTEGER NOT NULL DEFAULT 0"),
         ("units", "revision", "INTEGER NOT NULL DEFAULT 1"),
         ("units", "target", "TEXT NOT NULL DEFAULT 'default'"),
+        ("unit_events", "branch", "TEXT"),
+        ("unit_events", "task", "TEXT"),
     ] {
         let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}");
         if conn.execute(&sql, []).is_err() {
@@ -619,8 +623,8 @@ fn write_unit_edges(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), V
 fn write_unit_events(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), VivariumError> {
     for attempt in &unit.history {
         tx.execute(
-            "INSERT INTO unit_events (unit, attempt, model, why, detail, at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO unit_events (unit, attempt, model, why, detail, at, branch, task)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 i64::from(attempt.attempt),
@@ -628,6 +632,8 @@ fn write_unit_events(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), 
                 &attempt.why,
                 &attempt.detail,
                 i64::try_from(attempt.at).unwrap_or(0),
+                &attempt.branch,
+                &attempt.task,
             ],
         )
         .map_err(db_err("write unit event"))?;
@@ -804,7 +810,10 @@ fn load_units(conn: &Connection) -> Result<BTreeMap<String, Unit>, VivariumError
 
 fn load_events(conn: &Connection, units: &mut BTreeMap<String, Unit>) -> Result<(), VivariumError> {
     let mut stmt = conn
-        .prepare("SELECT unit, attempt, model, why, detail, at FROM unit_events ORDER BY event_id")
+        .prepare(
+            "SELECT unit, attempt, model, why, detail, at, branch, task
+             FROM unit_events ORDER BY event_id",
+        )
         .map_err(db_err("read unit events"))?;
     let rows = stmt
         .query_map([], |row| {
@@ -816,6 +825,8 @@ fn load_events(conn: &Connection, units: &mut BTreeMap<String, Unit>) -> Result<
                     why: row.get(3)?,
                     detail: row.get(4)?,
                     at: from_u64(row.get(5)?),
+                    branch: row.get(6)?,
+                    task: row.get(7)?,
                 },
             ))
         })
