@@ -174,6 +174,7 @@ impl Rig {
             start: &start,
             progress: &progress,
             ready_timeout: None,
+            reset_base: None,
         };
         let made = work::submit(&self.space, &self.provider, &self.id, &launch, &pacing())?;
         Ok((task, made))
@@ -426,6 +427,7 @@ fn a_branch_that_appeared_after_the_decision_is_refused_by_the_runner_and_never_
             start: "main",
             progress: &progress,
             ready_timeout: None,
+            reset_base: None,
         };
         let made = work::submit(&rig.space, &rig.provider, &rig.id, &launch, &pacing()).unwrap();
         (task, made)

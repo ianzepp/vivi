@@ -71,6 +71,7 @@ pub fn open_slot(
             provider_state: "started".to_string(),
             index: Some(opened.index),
             base: None,
+            base_ref: None,
             task: Some(request.task.to_string()),
             claimed_at: Some(request.now),
             running_secs: None,

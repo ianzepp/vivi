@@ -32,8 +32,8 @@ pub use mailspace_command::{
 pub use mcp_command::McpCommand;
 pub use pool_command::{
     PoolCleanCommand, PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand,
-    PoolDoctorCommand, PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand,
-    PoolWaitCommand,
+    PoolDoctorCommand, PoolReconcileCommand, PoolResetCommand, PoolScaleCommand, PoolStatusCommand,
+    PoolSubcommand, PoolWaitCommand,
 };
 pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,

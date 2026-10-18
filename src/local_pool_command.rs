@@ -4,7 +4,8 @@ use crate::local_pool_scale_command as scale;
 use crate::local_pool_work_command as work;
 use vivi::VivariumError;
 use vivi::cli::{
-    PoolCleanCommand, PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand,
+    PoolCleanCommand, PoolCreateCommand, PoolDestroyCommand, PoolResetCommand, PoolStatusCommand,
+    PoolSubcommand,
 };
 use vivi::mailspace::Mailspace;
 use vivi::pool::bridge;
@@ -32,6 +33,7 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
         PoolSubcommand::Reconcile(c) => work::reconcile(c),
         PoolSubcommand::Doctor(c) => crate::local_pool_doctor_command::doctor(c),
         PoolSubcommand::Clean(c) => clean(c),
+        PoolSubcommand::Reset(c) => reset(c),
     }
 }
 
@@ -240,6 +242,15 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
     }
 }
 
+fn status_base_text(slot: &SlotStatus) -> String {
+    match (slot.base_ref.as_deref(), slot.base.as_deref()) {
+        (Some(name), Some(sha)) => format!("{name}@{}", &sha[..12.min(sha.len())]),
+        (_, Some(sha)) => sha[..12.min(sha.len())].to_string(),
+        (Some(name), None) => name.to_string(),
+        _ => "unknown".into(),
+    }
+}
+
 /// `running 95s of 1800s` for a slot with an open dispatch.
 fn running_text(slot: &SlotStatus) -> String {
     let mode = if slot.read_only == Some(true) {
@@ -287,9 +298,7 @@ fn print_slots(handle: &PoolHandle, slots: &[&SlotStatus]) {
             slot.id,
             slot.state,
             running_text(slot),
-            slot.base
-                .as_deref()
-                .map_or("unknown", |b| &b[..12.min(b.len())]),
+            status_base_text(slot),
             slot.created_at
         );
     }
@@ -336,6 +345,7 @@ fn clean(command: &PoolCleanCommand) -> Result<(), VivariumError> {
         &vivi::pool::clean::CleanOptions {
             dry_run: command.dry_run,
             pool: command.pool.clone(),
+            base: command.base.clone(),
         },
     )?;
     print_clean(command.porcelain, command.dry_run, &report);
@@ -343,6 +353,115 @@ fn clean(command: &PoolCleanCommand) -> Result<(), VivariumError> {
         Some(msg) => Err(VivariumError::Message(msg.clone())),
         None => Ok(()),
     }
+}
+
+fn reset(command: &PoolResetCommand) -> Result<(), VivariumError> {
+    if command.slot.is_none() && command.pool.is_none() {
+        return Err(VivariumError::Message(
+            "pool reset needs a slot or --pool".into(),
+        ));
+    }
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let handle = pools::open_one(&space, command.pool.as_deref())?;
+    let chosen = vivi::pool::reset::choose_base(
+        &space,
+        command.base.as_deref(),
+        None,
+        None,
+        vivi::pool::reset::ResetKind::Recycle,
+    );
+    let machines = handle.provider.list()?;
+    let slots = vivi::pool::slot::pool_slots(&handle.id, &machines);
+    let targets: Vec<vivi::pool::slot::SlotStatus> = match &command.slot {
+        Some(sel) => {
+            let found = vivi::pool::slot::find_slot(&slots, sel).ok_or_else(|| {
+                VivariumError::Message(format!("no slot {sel} in pool {}", handle.id.pool))
+            })?;
+            vec![found.clone()]
+        }
+        None => slots.into_iter().filter(|s| s.state == "free").collect(),
+    };
+    let mut failed = 0;
+    for slot in &targets {
+        if !print_reset(&handle, slot, &chosen, command.porcelain) {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        return Err(VivariumError::Message(format!(
+            "{failed} slot reset(s) failed"
+        )));
+    }
+    Ok(())
+}
+
+fn print_reset(
+    handle: &PoolHandle,
+    slot: &SlotStatus,
+    chosen: &vivi::pool::reset::ChosenBase,
+    porcelain: bool,
+) -> bool {
+    if slot.state != "free" {
+        let reason = format!("slot is {}", slot.state);
+        say_reset_skip(handle, slot, &chosen.name, &reason, porcelain);
+        return false;
+    }
+    match vivi::pool::reset::reset_slot(
+        &handle.config,
+        handle.provider.as_ref(),
+        &slot.id,
+        &chosen.name,
+        chosen.why,
+    ) {
+        Ok(out) => {
+            say_reset_ok(handle, slot, &out, porcelain);
+            true
+        }
+        Err(e) => {
+            say_reset_skip(handle, slot, &chosen.name, &e.to_string(), porcelain);
+            false
+        }
+    }
+}
+
+fn say_reset_ok(
+    handle: &PoolHandle,
+    slot: &SlotStatus,
+    out: &vivi::pool::reset::ResetOutcome,
+    porcelain: bool,
+) {
+    if porcelain {
+        println!(
+            "{}",
+            porcelain::reset_line(&handle.id.pool, &slot.name, out)
+        );
+        return;
+    }
+    println!(
+        "pool {}  {}  reset  origin/{}  {}  ({})",
+        handle.id.pool,
+        slot.name,
+        out.base_ref,
+        &out.sha[..12.min(out.sha.len())],
+        out.why
+    );
+}
+
+fn say_reset_skip(
+    handle: &PoolHandle,
+    slot: &SlotStatus,
+    base: &str,
+    reason: &str,
+    porcelain: bool,
+) {
+    if porcelain {
+        println!(
+            "{}",
+            porcelain::reset_skip(&handle.id.pool, &slot.name, base, reason)
+        );
+        return;
+    }
+    eprintln!("WARN pool {}  {}  {}", handle.id.pool, slot.name, reason);
 }
 
 fn print_clean(porcelain: bool, dry_run: bool, report: &vivi::pool::clean::CleanReport) {

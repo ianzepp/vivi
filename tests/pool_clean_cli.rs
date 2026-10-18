@@ -47,6 +47,16 @@ fn scaffold() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     std::fs::write(repo.join("a.txt"), "one\n").unwrap();
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "first"]);
+    let origin = repo.parent().unwrap().join("origin.git");
+    git(
+        &repo,
+        &["clone", "-q", "--bare", ".", origin.to_str().unwrap()],
+    );
+    git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(&repo, &["fetch", "-q", "origin"]);
     let proj = project.to_str().unwrap();
     vivi(&["mailspace", "init", "--project", proj]);
     for identity in ["mind", "hand"] {
@@ -97,6 +107,7 @@ fn clean_help_names_dry_run() {
     let said = text(&out);
     assert!(said.contains("--dry-run"), "{said}");
     assert!(said.contains("reclaim"), "{said}");
+    assert!(said.contains("--base"), "{said}");
 }
 
 #[test]
@@ -214,4 +225,142 @@ fn merged_into_the_merge_lane_recycles_a_clean_worktree() {
     assert!(said.contains("cleaned"), "{said}");
     assert!(slot.join("repo/.git").exists());
     assert!(!slot.join("repo/target/blob").exists());
+    assert_eq!(
+        std::fs::read_to_string(slot.join("marks/base_ref"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+}
+
+fn advance_origin_main(repo: &Path, msg: &str) -> String {
+    let origin = repo.parent().unwrap().join("origin.git");
+    let tmp = repo.parent().unwrap().join(format!("push-{msg}"));
+    git(
+        &origin,
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            tmp.to_str().unwrap(),
+        ],
+    );
+    git(&tmp, &["config", "user.name", "T"]);
+    git(&tmp, &["config", "user.email", "t@localhost"]);
+    std::fs::write(tmp.join("z.txt"), format!("{msg}\n")).unwrap();
+    git(&tmp, &["add", "-A"]);
+    git(&tmp, &["commit", "-q", "-m", msg]);
+    git(&tmp, &["push", "-q", "origin", "HEAD:main"]);
+    git_head(&tmp)
+}
+
+fn slot_id_of(root: &Path, slot: &Path) -> String {
+    slot.strip_prefix(root)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn reset_help_names_base() {
+    let out = vivi(&["pool", "reset", "--help"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let said = text(&out);
+    assert!(said.contains("--base"), "{said}");
+    assert!(said.contains("origin"), "{said}");
+}
+
+#[test]
+fn reset_defaults_to_latest_origin_main_and_records_marks() {
+    let (_tmp, project, repo, root) = scaffold();
+    let slot = plant_worktree(&root, &project, &repo, false);
+    let proj = project.to_str().unwrap();
+    let id = slot_id_of(&root, &slot);
+    let first = git_head(&repo);
+    let out = vivi(&["pool", "reset", &id, "--project", proj, "--porcelain"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let said = text(&out);
+    assert!(said.contains("reset"), "{said}");
+    assert!(said.contains("main"), "{said}");
+    assert_eq!(
+        std::fs::read_to_string(slot.join("marks/base_ref"))
+            .unwrap()
+            .trim(),
+        "main"
+    );
+    assert_eq!(
+        std::fs::read_to_string(slot.join("marks/base_sha"))
+            .unwrap()
+            .trim(),
+        first
+    );
+    let status = vivi(&["pool", "status", "--project", proj, "--porcelain"]);
+    assert!(status.status.success(), "{}", text(&status));
+    assert!(text(&status).contains("main@"), "{}", text(&status));
+    let later = advance_origin_main(&repo, "third");
+    assert_ne!(later, first);
+    let out = vivi(&["pool", "reset", &id, "--project", proj, "--porcelain"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains(&later), "{}", text(&out));
+    assert_eq!(
+        std::fs::read_to_string(slot.join("marks/base_sha"))
+            .unwrap()
+            .trim(),
+        later
+    );
+    assert_eq!(git_head(&slot.join("repo")), later);
+}
+
+#[test]
+fn reset_can_override_to_next() {
+    let (_tmp, project, repo, root) = scaffold();
+    git(&repo, &["branch", "next"]);
+    git(&repo, &["push", "-q", "origin", "next"]);
+    let slot = plant_worktree(&root, &project, &repo, false);
+    let proj = project.to_str().unwrap();
+    let id = slot_id_of(&root, &slot);
+    let out = vivi(&[
+        "pool",
+        "reset",
+        &id,
+        "--base",
+        "next",
+        "--project",
+        proj,
+        "--porcelain",
+    ]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("next"), "{}", text(&out));
+    assert_eq!(
+        std::fs::read_to_string(slot.join("marks/base_ref"))
+            .unwrap()
+            .trim(),
+        "next"
+    );
+}
+
+#[test]
+fn reset_missing_origin_branch_fails_and_keeps_the_slot() {
+    let (_tmp, project, repo, root) = scaffold();
+    let slot = plant_worktree(&root, &project, &repo, false);
+    let proj = project.to_str().unwrap();
+    let id = slot_id_of(&root, &slot);
+    let out = vivi(&[
+        "pool",
+        "reset",
+        &id,
+        "--base",
+        "no-such-branch",
+        "--project",
+        proj,
+        "--porcelain",
+    ]);
+    assert!(!out.status.success(), "{}", text(&out));
+    let said = text(&out);
+    assert!(
+        said.contains("no-such-branch") || said.contains("WARN"),
+        "{said}"
+    );
+    assert!(slot.join("repo/a.txt").is_file());
+    assert!(!slot.join("marks/base_ref").is_file());
 }

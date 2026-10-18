@@ -674,7 +674,8 @@ vivi pool dispatch --pool <name> <task> [--target <id>] [--model <slug>] [--from
 vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>] [--budget SECS] [--porcelain]
 vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
 vivi pool reconcile [--pool <name>] [--porcelain]
-vivi pool clean [--pool <name>] [--dry-run] [--porcelain]
+vivi pool clean [--pool <name>] [--dry-run] [--base <branch>] [--porcelain]
+vivi pool reset [<slot>] [--pool <name>] [--base <branch>] [--porcelain]
 vivi pool doctor [--pool <name>] [--json | --porcelain]
 vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]
 ```
@@ -1288,11 +1289,23 @@ slots = 4
   its git worktree removed (`git worktree remove`, then prune), its
   `targets/<hash>` caches dropped, a purely local `unit/…` scratch branch
   deleted when it is contained in the merge lane, and a fresh detached worktree
-  restored at the seed base. A dirty tree or commits not contained in the merge
-  lane are reported, never deleted. `vivi pool clean` also sweeps source-repo
-  worktrees that point at the pool root whose units are done, and prunes gone
-  entries. The merge lane's own checkout is kept while it has unlanded work;
-  the 2x rule still applies to its build output.
+  restored at **origin/`[pump] main`** (fetched first; not a stale local ref or
+  the old seed commit). `--base` on `vivi pool clean` or `vivi pool reset`
+  overrides that branch. Dispatch-time slot prep also reset-fetches: it uses
+  `unit.base` (a repair/quarantine branch), else origin/`next` when `after`
+  deps are not yet merged, else the last `history.branch` (a retry on a prior
+  hand's work), else origin/`[pump] main`. Recycle after merge always defaults
+  to main — pump does not know the next occupant. Remote (fly/docker/ssh)
+  slots get the same fetch+checkout via `pool reset` / dispatch; after-merge
+  recycle is local-worktree only. A missing origin branch fails that reset
+  and leaves the slot free and clean — no silent fallback. Marks `base_ref`
+  and `base_sha` record the choice; `vivi pool status` shows `main@<sha>`. A
+  dirty tree or commits not contained in the merge lane are reported, never
+  deleted.
+  `vivi pool clean` also sweeps source-repo worktrees that point at the pool
+  root whose units are done, and prunes gone entries. The merge lane's own
+  checkout is kept while it has unlanded work; the 2x rule still applies to
+  its build output.
 - **Free-disk guard.** A local dispatch first reclaims free slots when the
   volume has under 20 GiB free, then refuses if it is still under 10 GiB.
 - **State** is the marks (small files in the slot directory) and the claim (a

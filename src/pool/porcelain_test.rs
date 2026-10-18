@@ -1,5 +1,6 @@
 use super::*;
 use crate::pool::doctor::Status;
+use crate::pool::slot::SlotStatus;
 
 fn round_line(task: &str, state: &'static str, detail: &str) -> RoundLine {
     RoundLine {
@@ -154,6 +155,7 @@ fn status_lines() {
         provider_state: "started".into(),
         index: Some(1),
         base: Some("abc".into()),
+        base_ref: None,
         task: Some("3f2a".into()),
         claimed_at: None,
         read_only: None,
@@ -281,6 +283,7 @@ fn scale_lines() {
         provider_state: "started".into(),
         index: Some(4),
         base: None,
+        base_ref: None,
         task: Some("3f2a".into()),
         claimed_at: None,
         read_only: None,
@@ -359,4 +362,43 @@ fn clean_lines_name_kind_bytes_and_dry_run() {
         r#"skipped lanes slot-1 worktree "uncommitted changes""#
     );
     assert_eq!(clean_summary(2, 1, 100), "summary 2 1 100");
+}
+
+#[test]
+fn reset_lines_name_the_origin_base() {
+    let out = crate::pool::reset::ResetOutcome {
+        base_ref: "main".into(),
+        sha: "abc123def456".into(),
+        why: "default-main",
+    };
+    assert_eq!(
+        reset_line("lanes", "slot-1", &out),
+        "reset lanes slot-1 main abc123def456 default-main"
+    );
+    assert_eq!(
+        reset_skip("lanes", "slot-1", "next", "origin/next is missing"),
+        r#"skipped lanes slot-1 reset "next: origin/next is missing""#
+    );
+    let named = SlotStatus {
+        pool: "p".into(),
+        name: "p-slot-1".into(),
+        id: "m1".into(),
+        state: "free".into(),
+        provider_state: "stopped".into(),
+        index: Some(1),
+        base: Some("abc123def456".into()),
+        base_ref: Some("main".into()),
+        task: None,
+        claimed_at: None,
+        read_only: None,
+        running_secs: None,
+        budget_secs: None,
+        created_at: "2026-10-11T10:00:00Z".into(),
+        region: "iad".into(),
+        arch: None,
+    };
+    assert_eq!(
+        slot(&named),
+        "slot p p-slot-1 m1 free - - - main@abc123def456 - 2026-10-11T10:00:00Z -"
+    );
 }

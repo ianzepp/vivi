@@ -7,7 +7,6 @@ use super::clean_rule::{MARK_LAST_BRANCH, MARK_LAST_TASK, empty_dir, read_mark, 
 use super::clean_slot::slot_is_free;
 use super::local_git::Repo;
 use super::local_slots::{CHECKOUT, WORKTREE_OF_FILE};
-use super::slot::META_BASE;
 use crate::error::VivariumError;
 
 /// Why a worktree must not be deleted.
@@ -64,46 +63,64 @@ pub fn recycle_lane(
     dir: &Path,
     merge_lane: &str,
     build_dir: Option<&str>,
+    reset_base: &str,
     dry_run: bool,
 ) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
-    if !slot_is_free(dir) {
-        return Ok((
-            Vec::new(),
-            vec![skip(
-                pool,
-                slot,
-                ActionKind::Worktree,
-                "slot is mid-dispatch",
-            )],
-        ));
+    if slot_is_free(dir) {
+        return recycle_free_lane(pool, slot, dir, merge_lane, build_dir, reset_base, dry_run);
     }
+    Ok((
+        Vec::new(),
+        vec![skip(
+            pool,
+            slot,
+            ActionKind::Worktree,
+            "slot is mid-dispatch",
+        )],
+    ))
+}
+
+fn recycle_free_lane(
+    pool: &str,
+    slot: &str,
+    dir: &Path,
+    merge_lane: &str,
+    build_dir: Option<&str>,
+    reset_base: &str,
+    dry_run: bool,
+) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     let mut actions = Vec::new();
     let mut skips = Vec::new();
+    let origin_sha = match fetch_reset(dir, reset_base) {
+        Ok(sha) => sha,
+        Err(e) => {
+            skips.push(skip(pool, slot, ActionKind::Reset, &format!("WARN {e}")));
+            return Ok((actions, skips));
+        }
+    };
     drop_targets(
         pool,
         slot,
         dir,
         merge_lane,
         build_dir,
+        reset_base,
         dry_run,
         &mut actions,
         &mut skips,
     );
-    let repo = dir.join(CHECKOUT);
-    if repo.is_dir() {
-        recycle_one(
-            pool,
-            slot,
-            dir,
-            &repo,
-            merge_lane,
-            build_dir,
-            ActionKind::Worktree,
-            dry_run,
-            &mut actions,
-            &mut skips,
-        )?;
-    }
+    recycle_checkout(
+        pool,
+        slot,
+        dir,
+        merge_lane,
+        build_dir,
+        reset_base,
+        &origin_sha,
+        dry_run,
+        &mut actions,
+        &mut skips,
+    )?;
     drop_scratch_branch(
         pool,
         slot,
@@ -117,6 +134,38 @@ pub fn recycle_lane(
         forget_lane(dir);
     }
     Ok((actions, skips))
+}
+
+fn recycle_checkout(
+    pool: &str,
+    slot: &str,
+    dir: &Path,
+    merge_lane: &str,
+    build_dir: Option<&str>,
+    reset_base: &str,
+    origin_sha: &str,
+    dry_run: bool,
+    actions: &mut Vec<CleanAction>,
+    skips: &mut Vec<CleanSkip>,
+) -> Result<(), VivariumError> {
+    let repo = dir.join(CHECKOUT);
+    if repo.is_dir() {
+        recycle_one(
+            pool,
+            slot,
+            dir,
+            &repo,
+            merge_lane,
+            build_dir,
+            ActionKind::Worktree,
+            reset_base,
+            origin_sha,
+            dry_run,
+            actions,
+            skips,
+        )?;
+    }
+    Ok(())
 }
 
 fn recycled(actions: &[CleanAction]) -> bool {
@@ -139,6 +188,7 @@ fn drop_targets(
     dir: &Path,
     merge_lane: &str,
     build_dir: Option<&str>,
+    reset_base: &str,
     dry_run: bool,
     actions: &mut Vec<CleanAction>,
     skips: &mut Vec<CleanSkip>,
@@ -161,6 +211,8 @@ fn drop_targets(
             merge_lane,
             build_dir,
             ActionKind::Target,
+            reset_base,
+            "",
             dry_run,
             actions,
             skips,
@@ -180,6 +232,8 @@ fn recycle_one(
     merge_lane: &str,
     build_dir: Option<&str>,
     kind: ActionKind,
+    reset_base: &str,
+    origin_sha: &str,
     dry_run: bool,
     actions: &mut Vec<CleanAction>,
     skips: &mut Vec<CleanSkip>,
@@ -195,7 +249,7 @@ fn recycle_one(
         return Ok(());
     }
     remove_then_restore(
-        pool, slot, dir, checkout, kind, bytes, build_dir, actions, skips,
+        pool, slot, dir, checkout, kind, bytes, build_dir, reset_base, origin_sha, actions, skips,
     )
 }
 
@@ -208,6 +262,8 @@ fn remove_then_restore(
     kind: ActionKind,
     bytes: u64,
     build_dir: Option<&str>,
+    reset_base: &str,
+    origin_sha: &str,
     actions: &mut Vec<CleanAction>,
     skips: &mut Vec<CleanSkip>,
 ) -> Result<(), VivariumError> {
@@ -223,7 +279,9 @@ fn remove_then_restore(
         Ok(()) => {
             actions.push(act(pool, slot, kind, bytes, checkout, "removed"));
             if kind == ActionKind::Worktree {
-                restore_slot_worktree(dir, &repo, skips, pool, slot);
+                restore_at_origin(
+                    dir, &repo, reset_base, origin_sha, pool, slot, actions, skips,
+                );
             }
         }
         Err(e) => skips.push(skip(pool, slot, kind, &e.to_string())),
@@ -231,30 +289,32 @@ fn remove_then_restore(
     Ok(())
 }
 
-fn restore_slot_worktree(
+fn restore_at_origin(
     dir: &Path,
     repo: &Repo,
-    skips: &mut Vec<CleanSkip>,
+    reset_base: &str,
+    origin_sha: &str,
     pool: &str,
     slot: &str,
+    actions: &mut Vec<CleanAction>,
+    skips: &mut Vec<CleanSkip>,
 ) {
-    let Some(base) = read_mark(dir, META_BASE) else {
-        skips.push(skip(
+    match super::reset::add_at_origin(dir, repo, reset_base, origin_sha) {
+        Ok(out) => actions.push(super::reset::reset_action(pool, slot, &out)),
+        Err(e) => skips.push(skip(
             pool,
             slot,
-            ActionKind::Worktree,
-            "no base commit to restore",
-        ));
-        return;
-    };
-    if let Err(e) = repo.add_worktree(&dir.join(CHECKOUT), &base) {
-        skips.push(skip(
-            pool,
-            slot,
-            ActionKind::Worktree,
-            &format!("removed but restore failed: {e}"),
-        ));
+            ActionKind::Reset,
+            &format!("WARN removed but reset failed: {e}"),
+        )),
     }
+}
+
+fn fetch_reset(dir: &Path, reset_base: &str) -> Result<String, VivariumError> {
+    let checkout = dir.join(CHECKOUT);
+    let repo = source_of(dir, &checkout)
+        .ok_or_else(|| VivariumError::Message("no worktree source".into()))?;
+    super::reset::fetch_origin_base(&repo, reset_base)
 }
 
 fn source_of(slot: &Path, checkout: &Path) -> Option<Repo> {

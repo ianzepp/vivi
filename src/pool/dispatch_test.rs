@@ -44,6 +44,7 @@ fn go(
         start,
         progress: &progress,
         ready_timeout: None,
+        reset_base: None,
     };
     dispatch(provider, id, &launch, now, &pacing())
 }

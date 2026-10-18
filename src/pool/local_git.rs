@@ -300,6 +300,14 @@ impl Repo {
             .map(drop)
     }
 
+    /// Point this checkout at `rev` on a detached HEAD.
+    ///
+    /// # Errors
+    /// Returns an error if Git refuses the checkout.
+    pub fn checkout_detach(&self, rev: &str) -> Result<(), VivariumError> {
+        self.run(&["checkout", "-q", "--detach", rev]).map(drop)
+    }
+
     /// Remove the worktree at `dest` through Git, whatever it holds, and then
     /// prune the entries of worktrees whose directory is gone. Never touches
     /// a branch.

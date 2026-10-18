@@ -8,8 +8,9 @@
 //! **Work-lane recycle.** When pump marks a unit `merged` — that is merge-lane
 //! success, not landing on main — a free slot that last served that unit has
 //! its worktree removed (`git worktree remove`, then prune), its
-//! `targets/<hash>` caches dropped, and a fresh detached worktree restored at
-//! the seed base. A dirty tree or commits not contained in the merge lane are
+//! `targets/<hash>` caches dropped, and a fresh detached worktree restored
+//! at origin/`[pump] main` (or `--base`). A dirty tree or commits not contained
+//! in the merge lane are
 //! reported, never deleted.
 //!
 //! Never touches a slot that is claimed or whose boot process is alive.
@@ -42,6 +43,7 @@ pub enum ActionKind {
     Branch,
     Orphan,
     LaneBuild,
+    Reset,
 }
 
 impl ActionKind {
@@ -55,6 +57,7 @@ impl ActionKind {
             Self::Branch => "branch",
             Self::Orphan => "orphan",
             Self::LaneBuild => "lane-build",
+            Self::Reset => "reset",
         }
     }
 }
@@ -106,6 +109,7 @@ impl CleanReport {
 pub struct CleanOptions {
     pub dry_run: bool,
     pub pool: Option<String>,
+    pub base: Option<String>,
 }
 
 /// Reclaim free slots of every selected local pool, then pump merge lanes.
@@ -125,6 +129,7 @@ pub fn clean_mailspace(
             space,
             st.as_ref(),
             None,
+            options.base.as_deref(),
             options.dry_run,
         )?);
     }
@@ -143,7 +148,10 @@ pub fn clean_mailspace(
 }
 
 /// After pump marks `unit` merged into its merge lane: recycle matching
-/// free work lanes. No mailspace or no local pool is a silent no-op.
+/// free **local** work lanes onto origin/`[pump] main`. Remote (fly/docker/ssh)
+/// slots are left for the next dispatch-time reset — pump does not persist
+/// which remote slot last served the unit after unclaim. No mailspace or no
+/// local pool is a silent no-op.
 ///
 /// # Errors
 /// Returns an error if a matching free slot cannot be recycled safely.
@@ -160,7 +168,14 @@ pub fn after_merged(project: &Path, unit: &Unit) -> Result<CleanReport, Vivarium
         if handle.config.provider != "local" {
             continue;
         }
-        report.take(clean_pool(handle, &space, st.as_ref(), Some(unit), false)?);
+        report.take(clean_pool(
+            handle,
+            &space,
+            st.as_ref(),
+            Some(unit),
+            None,
+            false,
+        )?);
     }
     report.take(clean_pump::reclaim_lanes(&space, st.as_ref(), false)?);
     Ok(report)
@@ -201,7 +216,7 @@ pub fn guard_before_dispatch(space: &Mailspace, pool: &str) -> Result<(), Vivari
         return Ok(());
     }
     let st = load_state(space);
-    let _ignored = clean_pool(&handle, space, st.as_ref(), None, false);
+    let _ignored = clean_pool(&handle, space, st.as_ref(), None, None, false);
     let _ignored = clean_pump::reclaim_lanes(space, st.as_ref(), false);
     let left = volume_free_bytes(&root).unwrap_or(free);
     if left < DISK_REFUSE_GIB * GIB {
@@ -238,10 +253,11 @@ fn clean_pool(
     space: &Mailspace,
     st: Option<&State>,
     hint: Option<&Unit>,
+    base: Option<&str>,
     dry_run: bool,
 ) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     if handle.config.provider != "local" {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(reset_remote_requested(handle, space, base, dry_run));
     }
     let root = expand_root(handle.config.local.root_or_default());
     let pool = handle.id.pool.as_str();
@@ -261,6 +277,7 @@ fn clean_pool(
                 hint,
                 &dir,
                 &machine.name,
+                base,
                 dry_run,
                 &mut actions,
                 &mut skips,
@@ -293,6 +310,7 @@ fn recycle(
     hint: Option<&Unit>,
     dir: &Path,
     name: &str,
+    base: Option<&str>,
     dry_run: bool,
     actions: &mut Vec<CleanAction>,
     skips: &mut Vec<CleanSkip>,
@@ -315,12 +333,14 @@ fn recycle(
         });
         return Ok(());
     };
+    let chosen = super::reset::choose_base(space, base, hint, st, super::reset::ResetKind::Recycle);
     let (a, s) = clean_work::recycle_lane(
         &handle.id.pool,
         name,
         dir,
         &lane,
         handle.config.build_dir.as_deref(),
+        &chosen.name,
         dry_run,
     )?;
     actions.extend(a);
@@ -367,6 +387,76 @@ fn orphan_is_done(st: Option<&State>, root: &Path, path: &Path) -> bool {
     st.is_some_and(|s| {
         unit_for(s, task.as_deref(), branch.as_deref()).is_some_and(|u| is_done(u.status))
     })
+}
+
+/// `--base` on a remote pool: fetch+checkout that origin branch on every free slot.
+fn reset_remote_requested(
+    handle: &PoolHandle,
+    space: &Mailspace,
+    base: Option<&str>,
+    dry_run: bool,
+) -> (Vec<CleanAction>, Vec<CleanSkip>) {
+    let Some(requested) = base else {
+        return (Vec::new(), Vec::new());
+    };
+    let chosen = super::reset::choose_base(
+        space,
+        Some(requested),
+        None,
+        None,
+        super::reset::ResetKind::Recycle,
+    );
+    let Ok(machines) = handle.provider.list() else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut actions = Vec::new();
+    let mut skips = Vec::new();
+    for slot in super::slot::pool_slots(&handle.id, &machines)
+        .into_iter()
+        .filter(|s| s.state == "free")
+    {
+        reset_one_remote(handle, &slot, &chosen, dry_run, &mut actions, &mut skips);
+    }
+    (actions, skips)
+}
+
+fn reset_one_remote(
+    handle: &PoolHandle,
+    slot: &super::slot::SlotStatus,
+    chosen: &super::reset::ChosenBase,
+    dry_run: bool,
+    actions: &mut Vec<CleanAction>,
+    skips: &mut Vec<CleanSkip>,
+) {
+    if dry_run {
+        actions.push(CleanAction {
+            pool: handle.id.pool.clone(),
+            slot: slot.name.clone(),
+            kind: ActionKind::Reset,
+            bytes: 0,
+            path: format!("origin/{}", chosen.name),
+            note: chosen.why.into(),
+        });
+        return;
+    }
+    match super::reset::reset_slot(
+        &handle.config,
+        handle.provider.as_ref(),
+        &slot.id,
+        &chosen.name,
+        chosen.why,
+    ) {
+        Ok(out) => actions.push(super::reset::reset_action(
+            &handle.id.pool,
+            &slot.name,
+            &out,
+        )),
+        Err(e) => skips.push(super::reset::reset_skip(
+            &handle.id.pool,
+            &slot.name,
+            &e.to_string(),
+        )),
+    }
 }
 
 fn slot_dir_under(root: &Path, path: &Path) -> Option<std::path::PathBuf> {

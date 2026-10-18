@@ -282,6 +282,8 @@ pub struct Launch<'a> {
     /// `--ready-timeout`: seconds a new pod may take to answer on SSH for
     /// this dispatch (none: the pool's setting).
     pub ready_timeout: Option<u64>,
+    /// Origin branch to reset the claimed slot onto before the job starts.
+    pub reset_base: Option<String>,
 }
 
 /// Get a slot for `launch` and start its job on it: claim a free resting slot,
@@ -299,7 +301,7 @@ pub fn dispatch(
 ) -> Result<DispatchRecord, VivariumError> {
     let plan = launch.plan;
     let claim = take_slot(provider, id, launch, now)?;
-    if let Err(e) = deliver(provider, &claim, plan, launch.token, pacing) {
+    if let Err(e) = deliver(provider, &claim, launch, pacing) {
         if let Err(undo) = unclaim(provider, &claim) {
             eprintln!("warning: could not fully undo the claim: {undo}");
         }
@@ -370,11 +372,14 @@ fn take_slot(
 fn deliver(
     provider: &dyn PoolProvider,
     claim: &Claim,
-    plan: &JobPlan,
-    token: &Secret,
+    launch: &Launch,
     pacing: &Pacing,
 ) -> Result<(), VivariumError> {
     let id = &claim.slot.id;
+    let plan = launch.plan;
+    if let Some(base) = launch.reset_base.as_deref() {
+        super::reset::reset_slot(launch.config, provider, id, base, "dispatch")?;
+    }
     if let Some(target) = &plan.target {
         let start = plan
             .checkout
@@ -382,7 +387,7 @@ fn deliver(
             .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
         provider.prepare_target_checkout(id, target, start)?;
     }
-    let archive = job::pack(&build_bundle(plan, &claim.slot.name, token))?;
+    let archive = job::pack(&build_bundle(plan, &claim.slot.name, launch.token))?;
     provider.put_file(id, &claim.hold, JOB_ARCHIVE, &archive)?;
     provider.release(id, &claim.hold)?;
     wait_stopped(provider, id, pacing)?;

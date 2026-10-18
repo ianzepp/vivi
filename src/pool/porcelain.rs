@@ -37,11 +37,13 @@
 //!                nothing-open
 //! pool doctor    check POOL STATUS GROUP NAME DETAIL FIX MILLIS
 //!                summary POOL OK WARN FAIL SKIPPED                 (one per pool)
-//! pool clean     cleaned POOL SLOT KIND BYTES PATH NOTE            KIND: build|worktree|target|branch|orphan|lane-build
+//! pool clean     cleaned POOL SLOT KIND BYTES PATH NOTE            KIND: build|worktree|target|branch|orphan|lane-build|reset
 //!                would POOL SLOT KIND BYTES PATH NOTE              (dry-run)
 //!                skipped POOL SLOT KIND REASON
 //!                disk FREE_BYTES
 //!                summary ACTIONS SKIPS BYTES
+//! pool reset     reset POOL SLOT BASE SHA WHY
+//!                skipped POOL SLOT reset REASON
 //! ```
 //!
 //! `DETAIL` of a finished job is its outcome: `pushed BRANCH SHA`,
@@ -204,6 +206,7 @@ pub fn scaled(pool: &str, target: u32, count: usize) -> String {
 /// `slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE`
 #[must_use]
 pub fn slot(slot: &SlotStatus) -> String {
+    let base = status_base(slot);
     let fields = [
         quote(&slot.pool),
         quote(&slot.name),
@@ -212,7 +215,7 @@ pub fn slot(slot: &SlotStatus) -> String {
         opt(slot.task.as_deref()),
         num(slot.running_secs),
         num(slot.budget_secs),
-        opt(slot.base.as_deref()),
+        opt(Some(base.as_str()).filter(|s| !s.is_empty())),
         opt(slot.arch.as_deref()),
         quote(&slot.created_at),
         slot.read_only
@@ -321,6 +324,46 @@ pub fn clean_skip(skip: &super::clean::CleanSkip) -> String {
 #[must_use]
 pub fn clean_disk(free_bytes: u64) -> String {
     line("disk", &[free_bytes.to_string()])
+}
+
+/// `reset POOL SLOT BASE SHA WHY`
+#[must_use]
+pub fn reset_line(pool: &str, slot: &str, out: &super::reset::ResetOutcome) -> String {
+    line(
+        "reset",
+        &[
+            quote(pool),
+            quote(slot),
+            quote(&out.base_ref),
+            quote(&out.sha),
+            quote(out.why),
+        ],
+    )
+}
+
+/// `skipped POOL SLOT reset REASON`
+#[must_use]
+pub fn reset_skip(pool: &str, slot: &str, base: &str, reason: &str) -> String {
+    line(
+        "skipped",
+        &[
+            quote(pool),
+            quote(slot),
+            "reset".to_string(),
+            quote(&format!("{base}: {reason}")),
+        ],
+    )
+}
+
+fn status_base(slot: &super::slot::SlotStatus) -> String {
+    match (slot.base_ref.as_deref(), slot.base.as_deref()) {
+        (Some(name), Some(sha)) if !name.is_empty() && !sha.is_empty() => {
+            format!("{name}@{sha}")
+        }
+        (_, Some(sha)) => sha.to_string(),
+        (Some(name), None) if !name.is_empty() => name.to_string(),
+        _ => String::new(),
+    }
 }
 
 /// `summary ACTIONS SKIPS BYTES`

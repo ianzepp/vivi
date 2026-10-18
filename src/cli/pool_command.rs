@@ -24,6 +24,8 @@ pub enum PoolSubcommand {
     Doctor(PoolDoctorCommand),
     /// Reclaim disposable build output and recycle finished work lanes
     Clean(PoolCleanCommand),
+    /// Reset a free slot onto a freshly fetched origin branch
+    Reset(PoolResetCommand),
 }
 
 #[derive(Debug, Args)]
@@ -259,6 +261,32 @@ pub struct PoolCleanCommand {
     pub porcelain: bool,
 
     /// Pool name (`[pools.<name>]`); without it, every pool
+    #[arg(long)]
+    pub pool: Option<String>,
+
+    /// Origin branch to restore recycled work lanes onto (default: [pump] main)
+    #[arg(long)]
+    pub base: Option<String>,
+
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolResetCommand {
+    /// Slot name or machine id
+    pub slot: Option<String>,
+
+    /// Origin branch to fetch (default: [pump] main)
+    #[arg(long)]
+    pub base: Option<String>,
+
+    /// Print only result lines in a fixed format, for scripts and agents
+    #[arg(long)]
+    pub porcelain: bool,
+
+    /// Reset every free slot in this pool
     #[arg(long)]
     pub pool: Option<String>,
 
