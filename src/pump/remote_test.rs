@@ -353,7 +353,11 @@ fn two_lanes_offering_in_the_same_second_get_distinct_batches_and_their_own_resu
         let sent: Vec<MergeJob> = serde_json::from_str(&body).unwrap();
         fs::remove_file(jobs.join(format!("{bid}.job.json"))).unwrap();
         let answer = json!([{"uid": sent[0].uid, "ok": true, "tip": bid}]).to_string();
-        fs::write(jobs.join(format!("{bid}.result.json")), answer).unwrap();
+        // Write then rename, as the real merger does: an offer that sees the
+        // result path must never read a half-written file.
+        let tmp = jobs.join(format!("{bid}.result.json.tmp"));
+        fs::write(&tmp, answer).unwrap();
+        fs::rename(&tmp, jobs.join(format!("{bid}.result.json"))).unwrap();
     }
     let got_one = first.join().unwrap().unwrap();
     let got_two = second.join().unwrap().unwrap();
