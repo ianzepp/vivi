@@ -26,5 +26,6 @@ pub mod stdout_budget;
 pub mod storage;
 pub mod store;
 pub mod sync;
+pub mod update;
 
 pub use error::VivariumError;

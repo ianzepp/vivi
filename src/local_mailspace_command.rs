@@ -44,6 +44,15 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
             project.as_deref(),
             *json,
         ),
+        Command::Update(command) => {
+            if command.check {
+                vivi::update::check_for_update().map(|_| ())
+            } else {
+                vivi::update::run_update(command)
+            }
+        }
+        Command::Versions(command) => vivi::update::print_versions(command),
+        Command::Uninstall(command) => vivi::update::uninstall(command),
     }
 }
 

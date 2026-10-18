@@ -90,10 +90,12 @@ process; an open handle alone is not running work.
 ## Mind loop
 
 1. **Orient once.** If the project is synced, run `vivi sync pull` first so
-   the letters other checkouts pushed are applied. Read `vivi boot`, live
-   harness state, and repository status. Read the selected goal or phase and
-   the code relevant to the next edit. Treat prose as scope and intent; code
-   establishes what exists.
+   the letters other checkouts pushed are applied. Read `vivi boot`,
+   `vivi step --json`, live harness state, and repository status. When
+   `step` is empty but open work remains, `vivi graph blocked` names the
+   wait. For a long need thread, `vivi need show <handle> --newest N`.
+   Read the selected goal or phase and the code relevant to the next edit.
+   Treat prose as scope and intent; code establishes what exists.
 2. **Pick one small outcome.** Name a concrete behavior or edit, its files,
    immediate dependencies, and the cheapest useful check. Do not commission
    a Planner or research the entire goal before dispatching the first unit.

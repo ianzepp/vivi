@@ -13,6 +13,7 @@ mod pump_command;
 mod role_command;
 mod skills_command;
 mod sync_command;
+mod update_command;
 
 pub use board_command::BoardCommand;
 pub use mailspace_command::{
@@ -44,6 +45,7 @@ pub use pump_command::{
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
 pub use sync_command::{ApiKeyCommand, SyncCommand, SyncSubcommand};
+pub use update_command::{UninstallCommand, UpdateCommand, VersionsCommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -175,6 +177,15 @@ pub enum Command {
         #[command(subcommand)]
         command: SkillsCommand,
     },
+
+    /// Install or switch a public release binary
+    Update(UpdateCommand),
+
+    /// List versioned installs next to the running binary
+    Versions(VersionsCommand),
+
+    /// Remove versioned installs (not `proxy uninstall`, the OS service)
+    Uninstall(UninstallCommand),
 
     /// Adjudicate the backlog graph into a dispatch/exception manifest
     Step {

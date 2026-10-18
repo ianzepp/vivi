@@ -58,7 +58,10 @@ fn is_system_or_developer(item: &Value) -> bool {
 /// Tools are dropped (the Python shim has no tools).
 #[must_use]
 pub fn chat_to_responses(chat: &Value) -> Value {
-    let model = chat.get("model").cloned().unwrap_or_else(|| json!("gpt-5"));
+    let model = chat
+        .get("model")
+        .cloned()
+        .unwrap_or_else(|| json!("gpt-6.1-sol"));
     let input = match chat.get("messages") {
         Some(Value::Array(messages)) => Value::Array(
             messages

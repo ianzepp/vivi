@@ -16,3 +16,19 @@ fn harvests_chat_usage_chunk() {
     assert_eq!(usage.input, Some(4));
     assert_eq!(usage.output, Some(2));
 }
+
+#[test]
+fn harvests_float_and_string_token_counts() {
+    let data = r#"{"id":"chatcmpl-2","usage":{"prompt_tokens":6.0,"completion_tokens":"3"}}"#;
+    let usage = usage::from_sse_data(data).expect("coerced usage");
+    assert_eq!(usage.input, Some(6));
+    assert_eq!(usage.output, Some(3));
+}
+
+#[test]
+fn harvests_llama_timings() {
+    let data = r#"{"id":"cmpl-1","timings":{"prompt_n":9,"predicted_n":4}}"#;
+    let usage = usage::from_sse_data(data).expect("timings usage");
+    assert_eq!(usage.input, Some(9));
+    assert_eq!(usage.output, Some(4));
+}

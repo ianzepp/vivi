@@ -59,8 +59,7 @@ async fn relay(
                 }
             }
             Err(error) => {
-                let sent = tx.send(Err(error)).await;
-                if sent.is_err() {
+                if tx.send(Err(error)).await.is_err() {
                     break;
                 }
             }
@@ -87,25 +86,35 @@ fn write_finished(
 
 #[derive(Default)]
 struct Harvest {
-    buffer: Vec<u8>,
+    full: Vec<u8>,
+    sse_buf: Vec<u8>,
     usage: Usage,
 }
 
 impl Harvest {
     fn push(&mut self, bytes: &[u8]) {
-        self.buffer.extend_from_slice(bytes);
-        for event in sse::take_events(&mut self.buffer) {
-            if let Some(data) = event.data()
-                && let Some(found) = usage::from_sse_data(&data)
-            {
-                self.usage.merge(found);
-            }
+        self.full.extend_from_slice(bytes);
+        self.sse_buf.extend_from_slice(bytes);
+        for event in sse::take_events(&mut self.sse_buf) {
+            self.ingest(&event);
+        }
+    }
+
+    fn ingest(&mut self, event: &sse::Event) {
+        if let Some(data) = event.data()
+            && let Some(found) = usage::from_sse_data(&data)
+        {
+            self.usage.merge(found);
+            return;
+        }
+        if let Some(found) = usage::from_sse_data(event.raw.trim()) {
+            self.usage.merge(found);
         }
     }
 
     fn usage(self) -> Usage {
         let mut usage = self.usage;
-        if let Ok(value) = serde_json::from_slice(&self.buffer) {
+        if let Ok(value) = serde_json::from_slice(&self.full) {
             usage.merge(usage::from_value(&value));
         }
         usage
