@@ -10,6 +10,7 @@ pub mod codex_chat;
 pub mod codex_sse;
 pub mod config;
 pub mod credentials;
+pub mod dead;
 pub mod forward;
 pub mod guard;
 pub mod health;

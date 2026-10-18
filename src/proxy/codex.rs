@@ -11,6 +11,7 @@ use super::codex_auth::{self, Tokens};
 use super::codex_chat;
 use super::codex_sse::{self, Rebuild};
 use super::config::ProviderConfig;
+use super::dead;
 use super::forward;
 use super::http_error;
 use super::route::Action;
@@ -67,16 +68,12 @@ async fn responses(
     body: Bytes,
     request_id: &str,
 ) -> Result<(Response, Usage), VivariumError> {
-    let tokens = match codex_auth::ensure_fresh(client, provider).await {
+    let tokens = match fresh_tokens(client, provider, request_id).await {
         Ok(tokens) => tokens,
-        Err(error) => {
-            tracing::warn!(%error, request_id = %request_id, "codex credentials unusable");
-            return Ok((http_error::credential_failed(request_id), Usage::default()));
-        }
+        Err(response) => return Ok((response, Usage::default())),
     };
-    let sanitized = match sanitize_body(&body) {
-        Ok(bytes) => bytes,
-        Err(()) => return Ok((http_error::invalid_json(request_id), Usage::default())),
+    let Ok(sanitized) = sanitize_body(&body) else {
+        return Ok((http_error::invalid_json(request_id), Usage::default()));
     };
     stream_responses(
         client,
@@ -182,12 +179,9 @@ async fn chat_shim(
         .to_string();
     let responses_body =
         Bytes::from(serde_json::to_vec(&codex_chat::chat_to_responses(&chat)).unwrap_or_default());
-    let tokens = match codex_auth::ensure_fresh(client, provider).await {
+    let tokens = match fresh_tokens(client, provider, request_id).await {
         Ok(tokens) => tokens,
-        Err(error) => {
-            tracing::warn!(%error, request_id = %request_id, "codex credentials unusable");
-            return Ok((http_error::credential_failed(request_id), Usage::default()));
-        }
+        Err(response) => return Ok((response, Usage::default())),
     };
     let events = collect_stream(
         client,
@@ -285,9 +279,62 @@ fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) {
     }
 }
 
+async fn fresh_tokens(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    request_id: &str,
+) -> Result<Tokens, Response> {
+    if let Some(response) = refuse_if_dead(provider, request_id) {
+        return Err(response);
+    }
+    match codex_auth::ensure_fresh(client, provider).await {
+        Ok(tokens) => Ok(tokens),
+        Err(error) => {
+            tracing::warn!(%error, request_id = %request_id, "codex credentials unusable");
+            Err(refresh_error(provider, request_id))
+        }
+    }
+}
+
+fn refuse_if_dead(provider: &ProviderConfig, request_id: &str) -> Option<Response> {
+    let Ok(path) = codex_auth::credential_path(provider) else {
+        return None;
+    };
+    if !dead::is_dead(&path) {
+        return None;
+    }
+    tracing::debug!(
+        request_id = %request_id,
+        "rejecting request for a dead codex credential"
+    );
+    Some(http_error::credential_dead(request_id))
+}
+
+fn refresh_error(provider: &ProviderConfig, request_id: &str) -> Response {
+    match codex_auth::credential_path(provider) {
+        Ok(path) if dead::is_dead(&path) => http_error::credential_dead(request_id),
+        _ => http_error::credential_failed(request_id),
+    }
+}
+
 fn health_response(provider: &ProviderConfig) -> Response {
-    let ok = codex_auth::path_if_present(provider).is_some();
-    forward::json_ok(json!({ "ok": ok, "provider": "codex" }))
+    let status = health_status(provider);
+    let body = json!({ "ok": status == "ok", "provider": "codex", "status": status });
+    if status == "ok" || status == "missing" {
+        forward::json_ok(body)
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response()
+    }
+}
+
+/// Health label for `/health` and `vivi proxy providers`.
+#[must_use]
+pub fn health_status(provider: &ProviderConfig) -> &'static str {
+    match codex_auth::credential_path(provider) {
+        Ok(path) if dead::is_dead(&path) => "credential_dead",
+        Ok(_) => "ok",
+        Err(_) => "missing",
+    }
 }
 
 const DEFAULT_MODELS: &[&str] = &["gpt-6-luna", "gpt-6.1-sol"];

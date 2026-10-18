@@ -48,6 +48,18 @@ pub fn credential_failed(request_id: &str) -> Response {
     )
 }
 
+/// Map a sticky dead credential to a redacted 502. Same error code as a
+/// one-shot refresh failure; the message tells the client to log in again.
+#[must_use]
+pub fn credential_dead(request_id: &str) -> Response {
+    json_error(
+        StatusCode::BAD_GATEWAY,
+        "credential_error",
+        super::dead::DEAD_MESSAGE,
+        request_id,
+    )
+}
+
 /// Map an upstream transport failure to a redacted 502.
 #[must_use]
 pub fn upstream_failed(request_id: &str) -> Response {

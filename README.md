@@ -412,12 +412,15 @@ vivi proxy uninstall
 vivi proxy status
 vivi proxy log [-f] [--provider <name>]
 vivi proxy providers           # Pi base URLs, health, credential expiry
-vivi proxy check [provider]    # tiny live GET to /<p>/v1/models
+vivi proxy check [provider]    # tiny live GET to /<p>/health
 ```
 
 `install` writes `com.vivi.proxy` (launchd) or `vivi-proxy.service` (systemd
-`--user`) so the pump job and the proxy job are independent. A second
-`vivi proxy run` refuses the instance lock.
+`--user`) so the pump job and the proxy job are independent. The unit
+`ExecStart` prefers the stable `vivi` symlink next to a versioned
+`vivi-<semver>` binary. A second `vivi proxy run` refuses the instance lock.
+The systemd unit uses `Restart=on-failure` with `StartLimitBurst=5` in 60s;
+the launchd plist keeps `KeepAlive` and sets `ThrottleInterval` 10.
 
 Backends:
 
@@ -440,8 +443,16 @@ The listener refuses a non-loopback bind unless `allow_remote = true` and
 `auth_token_cmd` are both set. Inbound requests need `Host` of localhost /
 the bind address, no `Origin`, and `Content-Type: application/json` on POST.
 Credential and token-endpoint failures become a fixed message plus a request
-id; token-endpoint bodies are never echoed. Access log is rotated JSONL under
-`log_dir` (bodies are never written).
+id; token-endpoint bodies are never echoed. A token-endpoint 400/401 (or a
+missing refresh token when a JWT must be refreshed) marks that credential
+file dead in memory. Later requests to that provider return 502
+`credential_error` immediately — no upstream and no token-endpoint call —
+until the file's identity (path + mtime + size) changes or the proxy
+restarts. Transient token-endpoint failures (network, 429, 5xx) fail only
+that request. `/health` and `/<provider>/health` report `status` of
+`credential_dead` with HTTP 503; `vivi proxy check` and `vivi proxy
+providers` show the same label. Access log is rotated JSONL under
+`log_dir` (bodies are never written). There is no background token refresh.
 
 ### Migration from separate `com.ianzepp.proxy.*` jobs
 

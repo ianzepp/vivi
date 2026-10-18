@@ -2377,9 +2377,13 @@ paths without `/v1`, supervises `kind = child` processes, and prints
 `VIVI_PROXY_READY <addr>` when the socket is open. A second instance takes
 the lock next to the config file and exits. `install` writes a macOS
 LaunchAgent (`com.vivi.proxy`) or a Linux systemd `--user` unit
-(`vivi-proxy.service`). `providers` prints the base URL to paste into a
-client, the backend kind, and credential expiry (never token values).
-`check` sends `GET /<provider>/v1/models`.
+(`vivi-proxy.service`). The unit starts the stable `vivi` symlink when the
+running binary is a versioned `vivi-<semver>` next to that link. systemd
+uses `Restart=on-failure` and a start limit (5 in 60s); launchd keeps
+`KeepAlive` and sets `ThrottleInterval` 10. `providers` prints the base URL
+to paste into a client, the backend kind, and credential expiry (never
+token values). `check` sends `GET /<provider>/health` and prints the HTTP
+status plus the JSON `status` field (`ok`, `down`, `credential_dead`).
 
 Provider `kind` is `native`, `child`, or `upstream`. Native adapters shipped
 in this binary: `chatgpt-codex` (Responses plus the existing chat shim) and
@@ -2387,8 +2391,15 @@ in this binary: `chatgpt-codex` (Responses plus the existing chat shim) and
 Non-loopback `listen` requires `allow_remote = true` and `auth_token_cmd`.
 POST needs `Content-Type: application/json`. Requests with an `Origin`
 header, or a `Host` that is not loopback / the bind address, are refused.
-Credential errors return a fixed message and a request id. When `models` is
-omitted, native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
+Credential errors return a fixed message and a request id. A refused
+refresh (token-endpoint HTTP 400/401, or no refresh token when a JWT must
+be refreshed) marks that credential file dead in memory. Later requests
+to that provider return 502 `credential_error` with zero upstream or
+token-endpoint calls until the file changes or the proxy restarts.
+Transient token-endpoint failures do not mark the credential dead.
+`/health` and `/<provider>/health` report `status: credential_dead` with
+HTTP 503. There is no background token refresh. When `models` is omitted,
+native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
 
 ## Self-update
 
@@ -2412,7 +2423,13 @@ default user-local bin and moves a plain-file `vivi` aside; it never
 deletes that file. `uninstall` refuses a path inside a mailspace. A
 cargo-installed plain file is refused unless `--prefix` or `--adopt` is
 given. POSIX `install.sh` uses the same layout and the same `--adopt` /
-`--force` refuse-or-move rule.
+`--force` refuse-or-move rule. The update header `from` version is the
+active symlink target. Both `vivi update` and `install.sh` warn when a
+different `vivi` is earlier on PATH than the managed symlink. After a
+verified download, `vivi update` prints `checksum: OK`. If a proxy unit
+is already installed, `vivi update` reminds the operator to restart it
+(`vivi proxy install`) so a unit that still pins a versioned binary
+picks up the new one.
 
 ## Watches and Cycle Intake
 

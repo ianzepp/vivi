@@ -14,6 +14,7 @@ use super::layout::{
 use super::package::{install_release, sha256_hex};
 use super::parse_version;
 use super::release::{ReleaseJson, consider_release};
+use super::{first_shadowing_vivi, header_from_version};
 use crate::cli::UninstallCommand;
 
 fn release_json(tag: &str, prerelease: bool, draft: bool) -> ReleaseJson {
@@ -441,4 +442,38 @@ fn point_symlink_adopt_numbers_an_existing_aside() {
         fs::read_link(bin_dir.join("vivi")).expect("link"),
         PathBuf::from("vivi-14.1.0")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn header_from_version_reads_the_active_symlink() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let prefix = temp.path();
+    let bin_dir = prefix.join("bin");
+    fs::create_dir_all(&bin_dir).expect("bin");
+    fs::write(bin_dir.join("vivi-14.1.0"), b"old").expect("versioned");
+    point_symlink(&bin_dir, &Version::parse("14.1.0").expect("semver"), false).expect("link");
+    assert_eq!(
+        header_from_version(Some(prefix)),
+        Version::parse("14.1.0").expect("semver")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn first_shadowing_vivi_reports_an_earlier_binary() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let managed = temp.path().join("managed");
+    let shadow = temp.path().join("shadow");
+    fs::create_dir_all(&managed).expect("managed");
+    fs::create_dir_all(&shadow).expect("shadow");
+    fs::write(managed.join("vivi"), b"managed").expect("managed vivi");
+    fs::write(shadow.join("vivi"), b"old").expect("shadow vivi");
+    let shadowed = format!("{}:{}", shadow.display(), managed.display());
+    assert_eq!(
+        first_shadowing_vivi(&managed, &shadowed).expect("shadow"),
+        shadow.join("vivi")
+    );
+    let managed_first = format!("{}:{}", managed.display(), shadow.display());
+    assert!(first_shadowing_vivi(&managed, &managed_first).is_none());
 }

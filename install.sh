@@ -7,7 +7,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
-#   curl -fsSL .../install.sh | sh -s -- --version 14.1.0 --prefix "$HOME/.local"
+#   curl -fsSL .../install.sh | sh -s -- --version 14.1.1 --prefix "$HOME/.local"
 #
 # The default version is the release this script was exported from. Pass
 # --version to install another published release. A plain-file
@@ -17,7 +17,7 @@
 set -eu
 
 PREFIX="${VIVI_PREFIX:-${HOME:?HOME is not set}/.local}"
-VERSION="${VIVI_VERSION:-14.1.0}"
+VERSION="${VIVI_VERSION:-14.1.1}"
 BASE_URL="${VIVI_BASE_URL:-https://github.com/ianzepp/vivi/releases/download}"
 ADOPT=0
 
@@ -190,4 +190,9 @@ case ":${PATH}:" in
     *":${PREFIX}/bin:"*) ;;
     *) echo "add to PATH: export PATH=\"${PREFIX}/bin:\$PATH\"" ;;
 esac
+on_path="$(command -v vivi 2>/dev/null || true)"
+managed="${PREFIX}/bin/vivi"
+if [ -n "$on_path" ] && [ "$on_path" != "$managed" ]; then
+    echo "warning: a different vivi is earlier on PATH ($on_path) than the managed install ($managed)" >&2
+fi
 "${PREFIX}/bin/vivi" --version
