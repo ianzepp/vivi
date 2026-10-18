@@ -287,6 +287,75 @@ fn a_finished_unit_with_exit_124_in_the_receipt_is_split_even_with_a_branch() {
 }
 
 #[test]
+fn timeout_exit_codes_split_with_or_without_a_branch() {
+    for code in [124, 137] {
+        for branch_exists in [false, true] {
+            for receipt in [
+                format!("agent exit {code} after 600s"),
+                format!("runner log\nagent_rc {code} agent_s 600"),
+            ] {
+                let (_dir, ctx, host) = setup();
+                host.reply(
+                    "pool reconcile",
+                    0,
+                    "collected 1a2b3c4d bridge slot-1 finished \"done\"",
+                );
+                host.reply(
+                    "ls-remote",
+                    0,
+                    if branch_exists {
+                        "abc refs/heads/unit/x-a1"
+                    } else {
+                        ""
+                    },
+                );
+                host.reply("task show", 0, &receipt);
+                let mut st = State::default();
+                put(
+                    &mut st,
+                    "u-1",
+                    unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+                );
+                collect(&ctx, &mut st);
+                let u = &st.units["u-1"];
+                assert_eq!(
+                    u.status,
+                    Status::Splitting,
+                    "{receipt}; branch={branch_exists}"
+                );
+                assert_eq!(u.task, None);
+                assert_eq!(u.history.last().unwrap().why, "timeout");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_successful_receipt_quoting_timeouts_is_delivered() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/x-a1 abc\"",
+    );
+    host.reply("ls-remote", 0, "abc123 refs/heads/unit/x-a1");
+    host.reply(
+        "task show",
+        0,
+        "agent exit 0 after 10s\n\n--- receipt\nFixed the previous agent exit 124 and agent exit 137.\nQuoted runner: agent_rc 124\n  agent_rc 137\nagent_rc 1240\nagent_rc 1370",
+    );
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1")),
+    );
+    collect(&ctx, &mut st);
+    assert_eq!(st.units["u-1"].status, Status::Delivered);
+    assert!(!ctx.home.join("resplit/u-1.json").exists());
+}
+
+#[test]
 fn a_finished_unit_without_a_branch_and_with_the_no_defect_marker_becomes_no_defect_and_raises_an_exception()
  {
     let (_dir, ctx, host) = setup();
