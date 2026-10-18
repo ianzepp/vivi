@@ -324,6 +324,38 @@ fn validate_rejects_empty_lanes_and_zero_caps() {
 }
 
 #[test]
+fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
+    let cfg = PumpConfig {
+        committer_name: "Vivi".into(),
+        committer_email: "vivi@example.invalid".into(),
+        branch: "next".into(),
+        promote: false,
+        board: crate::pump::config::BoardConfig {
+            mark: String::new(),
+            ..crate::pump::config::BoardConfig::default()
+        },
+        gate: crate::pump::config::GateConfig {
+            command: "./gate".into(),
+            ..crate::pump::config::GateConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    assert!(
+        cfg.dispatch.lanes.is_empty(),
+        "this fixture must omit [pump.dispatch] lanes"
+    );
+    let err = cfg
+        .validate(Path::new("."), &pools(&["glm"]))
+        .expect_err("legacy configs still need lanes");
+    assert!(err.to_string().contains("[pump.dispatch] lanes"), "{err}");
+    let ok = cfg.validate_for(Path::new("."), &pools(&["glm"]), true);
+    assert!(
+        ok.is_ok(),
+        "role→pool capacity comes from the assigned pool: {ok:?}"
+    );
+}
+
+#[test]
 fn validate_rejects_zero_merge_lanes() {
     let cfg = PumpConfig {
         merge: crate::pump::config::MergeConfig {

@@ -151,7 +151,12 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    cfg.validate(project, &pools)?;
+    let role_pool = mailspace
+        .config
+        .identities
+        .iter()
+        .any(|role| role.pool.is_some());
+    cfg.validate_for(project, &pools, role_pool)?;
     let issues = crate::routing::validate(&mailspace.config);
     for issue in &issues {
         eprintln!(

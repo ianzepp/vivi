@@ -36,7 +36,12 @@ pub fn add(project: &Path) -> Result<(), VivariumError> {
         ))
     })?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    pump.validate(&mailspace.root, &pools)?;
+    let role_pool = mailspace
+        .config
+        .identities
+        .iter()
+        .any(|role| role.pool.is_some());
+    pump.validate_for(&mailspace.root, &pools, role_pool)?;
     crate::routing::require_ok(&crate::routing::validate(&mailspace.config))?;
     let _lock = take_registry_lock()?;
     let mut config = load_config()?;

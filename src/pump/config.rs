@@ -305,7 +305,9 @@ pub struct Lane {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct DispatchConfig {
-    /// Dispatch lanes; empty is rejected by `validate`.
+    /// Dispatch lanes. Empty is allowed when a role assigns a pool
+    /// (capacity then comes from that pool's `slots` / `caps`); otherwise
+    /// `validate` still requires at least one lane.
     pub lanes: Vec<Lane>,
     /// Model used when attempts reach `max_attempts - 1`.
     pub last_resort: String,
@@ -476,10 +478,27 @@ impl PumpConfig {
     /// `pools` holds the names of the mailspace's `[pools.<name>]` tables.
     ///
     /// `project` is the base a relative `hand_rules` path resolves against.
+    /// Empty `[pump.dispatch] lanes` is an error: pass [`Self::validate_for`]
+    /// when a role assigns a pool so capacity can come from that pool.
     ///
     /// # Errors
     /// [`VivariumError::Config`] naming every violated key when a rule fails.
     pub fn validate(&self, project: &Path, pools: &[String]) -> Result<(), VivariumError> {
+        self.validate_for(project, pools, false)
+    }
+
+    /// Like [`Self::validate`], but empty `[pump.dispatch] lanes` is allowed
+    /// when `role_pool` is true (dispatch capacity comes from assigned
+    /// `[pools.<name>]` `slots` and optional `caps`).
+    ///
+    /// # Errors
+    /// [`VivariumError::Config`] naming every violated key when a rule fails.
+    pub fn validate_for(
+        &self,
+        project: &Path,
+        pools: &[String],
+        role_pool: bool,
+    ) -> Result<(), VivariumError> {
         let mut bad: Vec<String> = Vec::new();
         if self.committer_name.trim().is_empty() {
             bad.push("[pump] committer_name must not be empty".into());
@@ -498,7 +517,7 @@ impl PumpConfig {
         if self.tick == 0 {
             bad.push("[pump] tick must be >= 1".into());
         }
-        self.validate_dispatch(pools, &mut bad);
+        self.validate_dispatch(pools, role_pool, &mut bad);
         if self.targets.is_empty() {
             if self.branch.is_empty() {
                 bad.push("[pump] branch must not be empty".into());
@@ -602,8 +621,8 @@ impl PumpConfig {
             .unwrap_or_default()
     }
 
-    fn validate_dispatch(&self, pools: &[String], bad: &mut Vec<String>) {
-        if self.dispatch.lanes.is_empty() {
+    fn validate_dispatch(&self, pools: &[String], role_pool: bool, bad: &mut Vec<String>) {
+        if self.dispatch.lanes.is_empty() && !role_pool {
             bad.push("[pump.dispatch] lanes must not be empty".into());
         }
         for lane in &self.dispatch.lanes {
