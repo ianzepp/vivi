@@ -6,6 +6,7 @@ use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::quarantine;
 use crate::pump::state::{MergeJob, MergeResult, Quarantine};
 
+use super::fetch::fetch_unit_branch;
 use super::publish::publish;
 use super::{
     GIT_TIMEOUT, already_integrated, failed, failure_text, fetch_failure, format_style_commit,
@@ -141,12 +142,7 @@ fn merge_units(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>) 
 
 /// Fetch and merge one job's branch. `None` means it merged cleanly.
 fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
-    let fetch = format!(
-        "fetch {r} refs/heads/{b}:refs/remotes/{r}/{b}",
-        r = ctx.cfg.remote,
-        b = job.branch
-    );
-    let out = ctx.git(&fetch, 180);
+    let out = fetch_unit_branch(ctx, &job.branch);
     if out.code != 0 {
         return Some(fetch_failure(&job.uid, &out.text));
     }

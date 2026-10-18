@@ -409,7 +409,7 @@ fn batch() -> Vec<MergeJob> {
 }
 
 /// A plain unit job for branch `work/<uid>`.
-fn unit(uid: &str, branch: &str) -> MergeJob {
+pub(super) fn unit(uid: &str, branch: &str) -> MergeJob {
     MergeJob {
         uid: uid.to_string(),
         target: String::from("default"),

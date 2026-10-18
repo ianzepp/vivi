@@ -8,6 +8,13 @@
 //! queued behind work already sent. A lane never touches the pump state;
 //! every effect flows back through one results channel and
 //! [`Merger::apply`] stays the only state writer.
+//!
+//! Lane 0 of a target works in the target's own integration checkout. Every
+//! other lane `n` works in its own clone at
+//! `<home>/merge-lanes/<target>/<n>`, created on first use by that lane's
+//! first batch ([`ensure_checkout`]) and kept afterwards; nothing retires or
+//! prunes those clones. A lane that cannot work (see [`LANE_FAILS`]) is left
+//! alone for [`LANE_BACKOFF_SECS`] instead of being retired.
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -24,7 +31,26 @@ use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
 use super::apply::{apply_failure, apply_merged, apply_undecided};
+use super::fetch::{BASE_REMOTE, ensure_base_remote};
 use super::{batch_work, merge_work, tail, undecided_result};
+
+/// Consecutive batches a lane may lose to lane-level failures before it is
+/// put in backoff.
+const LANE_FAILS: u32 = 3;
+
+/// Seconds a failing lane is left unfed.
+const LANE_BACKOFF_SECS: u64 = 600;
+
+/// `why` codes of an undecided result that say the lane itself cannot work
+/// (no checkout, no way to publish), as opposed to a batch whose content is
+/// at fault (`publish-conflict`, a fetch of one unit branch, ...).
+const LANE_LEVEL: [&str; 5] = [
+    "lane-checkout-failed",
+    "publish-fetch-failed",
+    "publish-check-failed",
+    "push-failed",
+    "merge-error",
+];
 
 /// The lane main thread's view of one merge lane.
 struct Lane {
@@ -39,6 +65,57 @@ struct Lane {
     busy: Vec<String>,
     /// False once the lane thread could not start or has gone away.
     alive: bool,
+    /// Consecutive batches lost entirely to lane-level failures.
+    fails: u32,
+    /// The lane is not fed before this epoch second.
+    down_until: u64,
+    /// For each result of the current batch applied so far: whether it was a
+    /// lane-level failure.
+    outcomes: Vec<bool>,
+    /// What the latest lane-level failure said.
+    last_failure: String,
+}
+
+impl Lane {
+    /// A lane that has not failed yet.
+    fn new(target: &str, n: u32, send: Sender<Vec<MergeJob>>, alive: bool) -> Lane {
+        Lane {
+            target: target.to_string(),
+            n,
+            send,
+            busy: Vec::new(),
+            alive,
+            fails: 0,
+            down_until: 0,
+            outcomes: Vec::new(),
+            last_failure: String::new(),
+        }
+    }
+
+    /// The last result of a batch is in: count the batch as lost when every
+    /// one of its jobs failed for a lane-level reason, else reset the count.
+    /// [`LANE_FAILS`] lost batches in a row put the lane in backoff and raise
+    /// the `merge-lane-down` exception.
+    fn settle(&mut self, ctx: &Ctx) {
+        let lost = !self.outcomes.is_empty() && self.outcomes.iter().all(|f| *f);
+        self.outcomes.clear();
+        if !lost {
+            self.fails = 0;
+            return;
+        }
+        self.fails += 1;
+        if self.fails < LANE_FAILS {
+            return;
+        }
+        self.down_until = ctx.now() + LANE_BACKOFF_SECS;
+        let name = format!("{}/{}", self.target, self.n);
+        let detail = format!(
+            "{} batches lost in a row; not fed for {LANE_BACKOFF_SECS}s. Last: {}",
+            self.fails, self.last_failure
+        );
+        ctx.log(&format!("lane {name} is down for {LANE_BACKOFF_SECS}s"));
+        ctx.exception("merge-lane-down", &name, &detail);
+    }
 }
 
 /// The merge workers: one thread per lane, fed by [`Merger::feed`] and
@@ -56,6 +133,8 @@ pub struct Merger {
 struct LaneWorker {
     /// `<target>/<n>`, for log lines.
     name: String,
+    /// The lane number within its target.
+    n: u32,
     /// The target's own integration checkout, the source for lane clones.
     base: Ctx,
     /// This lane's context: its repository is the lane checkout.
@@ -105,13 +184,7 @@ impl Merger {
         let mut receivers = Vec::new();
         for n in 0..count {
             let (send, jobs) = channel();
-            lanes.push(Lane {
-                target: String::from("default"),
-                n,
-                send,
-                busy: Vec::new(),
-                alive: true,
-            });
+            lanes.push(Lane::new("default", n, send, true));
             receivers.push(jobs);
         }
         let merger = Merger {
@@ -131,6 +204,7 @@ impl Merger {
     /// a batch sent here is applied later by [`Merger::apply`].
     pub fn feed(&self, ctx: &Ctx, st: &mut State) {
         let mut lanes = self.lock();
+        let now = ctx.now();
         let batches: BTreeMap<String, usize> = ctx
             .cfg
             .target_configs()
@@ -140,7 +214,8 @@ impl Merger {
         recheck_held(st, &batches);
         let known: BTreeSet<String> = lanes.iter().map(|lane| lane.target.clone()).collect();
         let mut waiting = eligible(ctx, st, &known);
-        for lane in lanes.iter_mut().filter(|l| l.alive && l.busy.is_empty()) {
+        let idle = |l: &&mut Lane| l.alive && l.busy.is_empty() && l.down_until <= now;
+        for lane in lanes.iter_mut().filter(idle) {
             let size = batches.get(&lane.target).copied().unwrap_or(1);
             let Some(queue) = waiting.get_mut(&lane.target) else {
                 continue;
@@ -160,7 +235,7 @@ impl Merger {
     /// result is applied is idle again.
     pub fn apply(&self, ctx: &Ctx, st: &mut State) {
         while let Ok(result) = self.results.try_recv() {
-            self.release(&result.uid);
+            self.release(ctx, &result);
             match result.ok {
                 None if result.quarantine.is_some() => quarantine::set_aside(ctx, st, &result),
                 None => apply_undecided(ctx, st, &result),
@@ -175,12 +250,39 @@ impl Merger {
         self.lanes.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// A unit's result came back: it is no longer inside any lane.
-    fn release(&self, uid: &str) {
+    /// A unit's result came back: it is no longer inside any lane, and the
+    /// lane that held it learns how the job went.
+    fn release(&self, ctx: &Ctx, result: &MergeResult) {
         for lane in self.lock().iter_mut() {
-            lane.busy.retain(|busy| busy != uid);
+            if !lane.busy.contains(&result.uid) {
+                continue;
+            }
+            lane.busy.retain(|busy| busy != &result.uid);
+            let lane_level = lane_level_failure(result);
+            if lane_level {
+                lane.last_failure = format!(
+                    "{}: {}",
+                    result.why.as_deref().unwrap_or(""),
+                    result.detail.as_deref().unwrap_or("")
+                );
+            }
+            lane.outcomes.push(lane_level);
+            if lane.busy.is_empty() {
+                lane.settle(ctx);
+            }
         }
     }
+}
+
+/// True when `result` is an undecided one whose reason says the lane, not
+/// the unit, could not work.
+fn lane_level_failure(result: &MergeResult) -> bool {
+    result.ok.is_none()
+        && result.quarantine.is_none()
+        && result
+            .why
+            .as_deref()
+            .is_some_and(|why| LANE_LEVEL.contains(&why))
 }
 
 /// The next batch from the front of `queue`: up to `size` units, in rank
@@ -318,6 +420,7 @@ fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
     };
     let worker = LaneWorker {
         name: format!("{}/{n}", target.target_id),
+        n,
         base: target.clone(),
         ctx,
     };
@@ -325,13 +428,7 @@ fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
     let spawned = thread::Builder::new()
         .name(format!("pump-merge-{}-{n}", target.target_id))
         .spawn(move || lane_loop(&worker, &jobs, &out));
-    Lane {
-        target: target.target_id.clone(),
-        n,
-        send,
-        busy: Vec::new(),
-        alive: spawned.is_ok(),
-    }
+    Lane::new(&target.target_id, n, send, spawned.is_ok())
 }
 
 /// The checkout directory of lane `n` of `target`.
@@ -360,7 +457,7 @@ fn lane_loop(lane: &LaneWorker, batches: &Receiver<Vec<MergeJob>>, out: &Sender<
                     .collect()
             }
         };
-        dispatch_results(out, &batch, done);
+        dispatch_results(&lane.ctx, out, &batch, done);
     }
 }
 
@@ -375,7 +472,7 @@ fn lane_work(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
             .map(|j| undecided_result(&j.uid, "lane-checkout-failed", &detail))
             .collect();
     }
-    run_batch(&lane.ctx, &lane.name, jobs)
+    run_batch(lane, jobs)
 }
 
 /// Create the lane's own clone when it does not exist yet: a separate
@@ -412,14 +509,23 @@ fn ensure_checkout(base: &Ctx, lane: &Ctx) -> Result<(), String> {
     if out.code != 0 {
         return Err(tail(&out.text, 300));
     }
+    // A local-worktree target keeps its unit branches in the base repository
+    // only; the clone fetches them from there as `pump-base`.
+    if !base.cfg.targets.is_empty() && !ensure_base_remote(lane, &base.repo) {
+        base.log(&format!(
+            "cannot add remote {BASE_REMOTE} to {}",
+            lane.repo.display()
+        ));
+    }
     Ok(())
 }
 
 /// Offer the batch to the remote merger, else merge here: [`batch_work`]
 /// for more than one job, [`merge_work`] for exactly one, then the
 /// `lane <target>/<n> batch of <n>: <m> merged` log line.
-fn run_batch(ctx: &Ctx, name: &str, jobs: &[MergeJob]) -> Vec<MergeResult> {
-    let done = match remote::offer(ctx, jobs) {
+fn run_batch(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
+    let (ctx, name) = (&lane.ctx, &lane.name);
+    let done = match remote::offer(ctx, lane.n, jobs) {
         Some(results) => results,
         None if jobs.len() > 1 => batch_work(ctx, jobs),
         None => vec![merge_work(ctx, &jobs[0])],
@@ -434,10 +540,24 @@ fn run_batch(ctx: &Ctx, name: &str, jobs: &[MergeJob]) -> Vec<MergeResult> {
 
 /// Send one result per job, results deduplicated by uid, and every job the
 /// batch's results never named gets an `ok=None, why="merge-undecided"`
-/// result.
-fn dispatch_results(out: &Sender<MergeResult>, jobs: &[MergeJob], done: Vec<MergeResult>) {
+/// result. A result for a uid that is not in `jobs` (a remote merger mixing
+/// up batches) is dropped and logged: that unit belongs to another lane, and
+/// forwarding it would apply it twice.
+pub(crate) fn dispatch_results(
+    ctx: &Ctx,
+    out: &Sender<MergeResult>,
+    jobs: &[MergeJob],
+    done: Vec<MergeResult>,
+) {
     let mut seen: Vec<String> = Vec::new();
     for result in done {
+        if !jobs.iter().any(|job| job.uid == result.uid) {
+            ctx.log(&format!(
+                "dropped a result for {}: it is not in this batch",
+                result.uid
+            ));
+            continue;
+        }
         if seen.contains(&result.uid) {
             continue;
         }

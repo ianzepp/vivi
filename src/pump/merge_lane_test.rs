@@ -314,3 +314,247 @@ fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
     // nothing else is waiting on the channel
     assert!(merger.results.try_recv().is_err());
 }
+
+// ------------------------------------------------ unit branches in the base repo
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+
+use crate::pump::config::{GateConfig, MergeConfig, PumpConfig, PumpTarget};
+use crate::pump::host::{FakeHost, RealHost, test_ctx};
+use crate::pump::merge::{batch_work, fetch_unit_branch, merge_work};
+
+/// A config with one local-worktree target `tela` (integration branch `main`).
+fn tela_config() -> PumpConfig {
+    PumpConfig {
+        targets: BTreeMap::from([(
+            String::from("tela"),
+            PumpTarget {
+                path: String::from("tela"),
+                branch: String::from("main"),
+                merge: Some(MergeConfig {
+                    shared_checks: vec![String::from("true")],
+                    ..MergeConfig::default()
+                }),
+                gate: Some(GateConfig {
+                    command: String::from("true"),
+                    ..GateConfig::default()
+                }),
+                ..PumpTarget::default()
+            },
+        )]),
+        committer_name: String::from("Pump Tester"),
+        committer_email: String::from("pump@example.com"),
+        ..PumpConfig::default()
+    }
+}
+
+/// The `tela` target's lane 0 context, its lane 1 clone context, the base
+/// repository path, and the fake host.
+fn tela_lanes() -> (
+    tempfile::TempDir,
+    Ctx,
+    Ctx,
+    std::path::PathBuf,
+    Arc<FakeHost>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), tela_config());
+    let lane0 = ctx.for_target("tela").unwrap();
+    let base = lane0.repo.clone();
+    let lane1 = lane0.with_repo(ctx.home.join("merge-lanes").join("tela").join("1"));
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    host.reply("rev-parse HEAD", 0, "tipbase123\n");
+    (dir, lane0, lane1, base, host)
+}
+
+/// A job for `uid` on branch `work/<uid>` of the `tela` target.
+fn tela_job(uid: &str) -> MergeJob {
+    MergeJob {
+        proof: Vec::new(),
+        target: String::from("tela"),
+        ..crate::pump::merge_test::unit(uid, &format!("work/{uid}"))
+    }
+}
+
+#[test]
+fn a_lane_clone_fetches_a_base_only_unit_branch_through_pump_base() {
+    let (_dir, _lane0, lane1, base, host) = tela_lanes();
+    host.reply("remote get-url pump-base", 2, "error: No such remote\n");
+    host.reply("ls-remote --exit-code pump-base refs/heads/work/u1", 0, "");
+    let result = merge_work(&lane1, &tela_job("u1"));
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let commands = host.commands();
+    let add = format!("git remote add pump-base {}", base.display());
+    assert!(commands.contains(&add), "{commands:?}");
+    let fetch = "git fetch pump-base +refs/heads/work/u1:refs/remotes/origin/work/u1";
+    assert!(commands.iter().any(|c| c == fetch), "{commands:?}");
+    assert!(
+        !commands
+            .iter()
+            .any(|c| c.contains("fetch origin refs/heads/work/u1"))
+    );
+}
+
+#[test]
+fn a_lane_clone_falls_back_to_the_remote_when_the_base_has_no_such_branch() {
+    let (_dir, _lane0, lane1, _base, host) = tela_lanes();
+    host.reply("ls-remote --exit-code pump-base refs/heads/work/u1", 2, "");
+    let result = merge_work(&lane1, &tela_job("u1"));
+    assert_eq!(result.ok, Some(true), "{result:?}");
+    let commands = host.commands();
+    let fetch = "git fetch origin refs/heads/work/u1:refs/remotes/origin/work/u1";
+    assert!(commands.iter().any(|c| c == fetch), "{commands:?}");
+    assert!(!commands.iter().any(|c| c.contains("fetch pump-base")));
+}
+
+#[test]
+fn the_batch_path_fetches_base_only_branches_in_a_lane_clone_through_pump_base() {
+    let (_dir, _lane0, lane1, _base, host) = tela_lanes();
+    host.reply("ls-remote --exit-code pump-base refs/heads/", 0, "");
+    let results = batch_work(&lane1, &[tela_job("u1"), tela_job("u2")]);
+    assert!(results.iter().all(|r| r.ok == Some(true)), "{results:?}");
+    let commands = host.commands();
+    for uid in ["u1", "u2"] {
+        let fetch =
+            format!("git fetch pump-base +refs/heads/work/{uid}:refs/remotes/origin/work/{uid}");
+        assert!(commands.contains(&fetch), "{commands:?}");
+    }
+    assert!(
+        !commands
+            .iter()
+            .any(|c| c.starts_with("git fetch origin refs/heads/work/"))
+    );
+}
+
+#[test]
+fn the_batch_path_uses_the_local_branch_in_the_target_checkout_on_lane_zero() {
+    let (_dir, lane0, _lane1, _base, host) = tela_lanes();
+    host.reply("show-ref --verify --quiet refs/heads/work/", 0, "");
+    let results = batch_work(&lane0, &[tela_job("u1"), tela_job("u2")]);
+    assert!(results.iter().all(|r| r.ok == Some(true)), "{results:?}");
+    let commands = host.commands();
+    for uid in ["u1", "u2"] {
+        let update = format!("git update-ref refs/remotes/origin/work/{uid} refs/heads/work/{uid}");
+        assert!(commands.contains(&update), "{commands:?}");
+    }
+    assert!(!commands.iter().any(|c| c.contains("pump-base")));
+    assert!(
+        !commands
+            .iter()
+            .any(|c| c.starts_with("git fetch origin refs/heads/work/"))
+    );
+}
+
+/// Run `git <args>` in `dir`, panicking on failure; the trimmed stdout.
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn with_real_git_a_lane_clone_gets_a_branch_that_only_the_base_repository_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let origin = root.join("origin.git");
+    let base = root.join("base");
+    let lane = root.join("lane");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_in(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_in(
+        root,
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            base.to_str().unwrap(),
+        ],
+    );
+    git_in(&base, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git_in(&base, &["push", "-q", "origin", "main"]);
+    git_in(&base, &["checkout", "-q", "-b", "unit/x"]);
+    git_in(&base, &["commit", "-q", "--allow-empty", "-m", "unit work"]);
+    git_in(&base, &["checkout", "-q", "main"]);
+    let want = git_in(&base, &["rev-parse", "refs/heads/unit/x"]);
+    git_in(
+        root,
+        &[
+            "clone",
+            "-q",
+            "--reference",
+            base.to_str().unwrap(),
+            origin.to_str().unwrap(),
+            lane.to_str().unwrap(),
+        ],
+    );
+
+    let mut cfg = tela_config();
+    cfg.targets.get_mut("tela").unwrap().integration_repo = Some(base.to_string_lossy().into());
+    let host = Arc::new(RealHost::new(root));
+    let project = root.join("project");
+    let ctx = Ctx::new(cfg, host, project, String::from("vivi"));
+    let lane0 = ctx.for_target("tela").unwrap();
+    assert_eq!(lane0.repo, base);
+    let lane1 = lane0.with_repo(lane.clone());
+
+    // The lane clone has no such branch; the base does, locally only.
+    assert!(!git_in(&lane, &["branch", "-a"]).contains("unit/x"));
+    let out = fetch_unit_branch(&lane1, "unit/x");
+    assert_eq!(out.code, 0, "{}", out.text);
+    assert_eq!(
+        git_in(&lane, &["rev-parse", "refs/remotes/origin/unit/x"]),
+        want
+    );
+    assert!(git_in(&lane, &["remote"]).contains("pump-base"));
+
+    // Lane 0 is the base: the branch is local there.
+    let out = fetch_unit_branch(&lane0, "unit/x");
+    assert_eq!(out.code, 0, "{}", out.text);
+    assert_eq!(
+        git_in(&base, &["rev-parse", "refs/remotes/origin/unit/x"]),
+        want
+    );
+}
+
+#[test]
+fn a_new_lane_clone_of_a_local_worktree_target_gets_the_pump_base_remote() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = tela_config();
+    cfg.targets.get_mut("tela").unwrap().merge = Some(MergeConfig {
+        lanes: 2,
+        batch: 1,
+        shared_checks: vec![String::from("true")],
+        ..MergeConfig::default()
+    });
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("remote get-url origin", 0, "https://example.com/tela.git\n");
+    host.reply("remote get-url pump-base", 2, "error: No such remote\n");
+    host.reply("rev-parse HEAD", 0, "tipreal123\n");
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    let merger = Merger::start(&ctx);
+    let mut st = state_with(&[("u1", Status::Delivered), ("u2", Status::Delivered)]);
+    for unit in st.units.values_mut() {
+        unit.target = String::from("tela");
+    }
+    merger.feed(&ctx, &mut st);
+    for _ in 0..2 {
+        let result = merger.results.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result.ok, Some(true), "{result:?}");
+    }
+    let base = ctx.for_target("tela").unwrap().repo;
+    let add = format!("git remote add pump-base {}", base.display());
+    let commands = host.commands();
+    let clone = commands
+        .iter()
+        .position(|c| c.starts_with("git clone"))
+        .expect("lane 1 is cloned");
+    assert!(commands[clone + 1..].contains(&add), "{commands:?}");
+}

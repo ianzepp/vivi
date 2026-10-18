@@ -5,9 +5,14 @@
 //! `<bid>.job.json`, the merger claims it by renaming or removing the file,
 //! and answers with `<bid>.result.json`. No taker, a timeout, or a bad result
 //! file all fall back to merging locally (`None`).
+//!
+//! A batch id is `b<epoch secs>-<target>-<lane>-<seq>`: the lane and a
+//! process-wide counter keep two lanes offering in the same second apart, so
+//! one batch never overwrites another's job file or reads its result.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -17,9 +22,14 @@ use crate::pump::state::{MergeJob, MergeResult};
 /// Seconds between polls while a batch is offered or awaited.
 const POLL_SECS: u64 = 3;
 
+/// Batches offered by this process so far; part of every batch id.
+static BATCH_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Offer a batch of merge jobs to the remote merger.
 ///
-/// Writes `<home>/merge-jobs/b<now>.job.json` (a JSON array of `jobs`), then
+/// `lane` is the offering lane's number within its target; it only names the
+/// batch. Writes `<home>/merge-jobs/<bid>.job.json` (a JSON array of `jobs`;
+/// `bid` is `b<now>-<target>-<lane>-<seq>`), then
 /// waits up to `merge.remote_wait` seconds for the merger to claim the file
 /// by renaming or removing it; an unclaimed batch is withdrawn and the log
 /// notes the fallback. A claimed batch must produce `<bid>.result.json`
@@ -29,14 +39,19 @@ const POLL_SECS: u64 = 3;
 /// `None` means: merge here — no `REMOTE-MERGE` flag, a failed job-file
 /// write, no claim in time, no result in time, or an unparseable result file.
 #[must_use]
-pub fn offer(ctx: &Ctx, jobs: &[MergeJob]) -> Option<Vec<MergeResult>> {
-    offer_with(ctx, jobs, POLL_SECS)
+pub fn offer(ctx: &Ctx, lane: u32, jobs: &[MergeJob]) -> Option<Vec<MergeResult>> {
+    offer_with(ctx, lane, jobs, POLL_SECS)
 }
 
 /// [`offer`] with the poll interval in seconds as a parameter; a zero poll
 /// yields instead of sleeping, so tests can drive the fake clock from a
 /// helper thread without real waiting.
-pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<MergeResult>> {
+pub(crate) fn offer_with(
+    ctx: &Ctx,
+    lane: u32,
+    jobs: &[MergeJob],
+    poll: u64,
+) -> Option<Vec<MergeResult>> {
     if !ctx.flag("REMOTE-MERGE") {
         return None;
     }
@@ -46,7 +61,7 @@ pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<
         return None;
     }
     wait_for_open_claims(ctx, &dir, poll);
-    let bid = format!("b{}", ctx.now());
+    let bid = batch_id(ctx, lane);
     let job = dir.join(format!("{bid}.job.json"));
     if !write_job_file(ctx, &job, jobs) {
         return None;
@@ -82,8 +97,21 @@ pub(crate) fn offer_with(ctx: &Ctx, jobs: &[MergeJob], poll: u64) -> Option<Vec<
     Some(results)
 }
 
+/// A batch id no other offer of this process shares:
+/// `b<now>-<target>-<lane>-<seq>`, the target cut down to word characters so
+/// the id stays one dot-free file stem.
+fn batch_id(ctx: &Ctx, lane: u32) -> String {
+    let target: String = ctx
+        .target_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let seq = BATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("b{}-{target}-{lane}-{seq}", ctx.now())
+}
+
 /// Batches a remote merger has claimed and not answered: a file named
-/// `b<secs>.<anything>` other than the job, result or temp file, with no
+/// `b<secs>[-<more>].<anything>` other than the job, result or temp file, with no
 /// `b<secs>.result.json` beside it, offered less than `merge.remote_limit`
 /// seconds ago. Such a batch can outlive the pump that offered it (a restart),
 /// and its merger will still push the integration branch.
@@ -106,7 +134,11 @@ fn open_claims(ctx: &Ctx, dir: &Path) -> Vec<String> {
         let Some(bid) = name.split('.').next() else {
             continue;
         };
-        let Some(Ok(secs)) = bid.strip_prefix('b').map(str::parse::<u64>) else {
+        let Some(Ok(secs)) = bid
+            .strip_prefix('b')
+            .and_then(|rest| rest.split('-').next())
+            .map(str::parse::<u64>)
+        else {
             continue;
         };
         let answered = dir.join(format!("{bid}.result.json")).exists();
