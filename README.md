@@ -331,7 +331,7 @@ A second pump on the same home refuses to start. Defaults:
 | `[pump.board]` | `from` (list), `since`, `mark` (`pump`), `every` (300 s), `planners_max` (3), `plan_timeout` (1800 s), `reply_to`, `pull` (`true`: run `vivi sync pull` first), `push_since` (`30m`) |
 | `[pump.planner]` | `run` (command; `{charter}` becomes `charter`), `charter` (file), `split_timeout` (1500 s) |
 | `[pump.dispatch]` | `lanes` (list of `{ model, cap }`, required), `last_resort` (model), `max_attempts` (3), `budget` (600 s), `overdue_grace` (900 s), `per_tick` (6), `from`, `default_kind` |
-| `[pump.dispatch.kinds.<name>]` | `pool` (required), `max` (cap on that kind in flight), `skip_proof` (`false`) |
+| `[pump.dispatch.kinds.<name>]` | `pools` (required, non-empty list; a unit goes to the listed pool with the most free slots), `max` (cap on that kind in flight), `skip_proof` (`false`) |
 | `[pump.merge]` | `batch` (8), `lanes` (1), `format`, `shared_checks` (list), `proof_timeout` (300 s), `remote_wait` (90 s), `remote_limit` (1800 s) |
 | `[pump.gate]` | `command` (required), `every_merges` (8), `every_seconds` (1800), `pools` (list), `model`, `budget` (1800 s), `results_dir`, `results_wait_seconds`, `ignore_file`, `max_replans` (2) |
 

@@ -15,7 +15,7 @@ use crate::pump::state::{State, Status};
 
 /// One unit's dispatch plan decided before anything is sent.
 struct Plan {
-    /// Pool of the unit's kind (`[pump.dispatch.kinds.<name>] pool`).
+    /// Pool chosen from the unit's kind (`[pump.dispatch.kinds.<name>] pools`).
     pool: String,
     /// Lane chosen by [`pick_model`]; `None` means every lane is full.
     model: Option<String>,
@@ -183,7 +183,7 @@ fn report_unknown_kind(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
 }
 
 /// Decide whether `uid` may start this tick and where: pending and ready,
-/// under its kind's `max`, and the kind's pool has a free slot; a
+/// under its kind's `max`, and one of the kind's pools has a free slot; a
 /// closed lane set is reported separately, since it breaks the loop rather
 /// than skipping the unit.
 fn plan_unit(
@@ -204,10 +204,7 @@ fn plan_unit(
     {
         return None;
     }
-    let pool = kind.pool.clone();
-    if free.get(&pool).copied().unwrap_or(0) < 1 {
-        return None;
-    }
+    let pool = pick_pool(&kind.pools, free)?;
     let attempt = unit.attempts + 1;
     Some(Plan {
         pool,
@@ -215,6 +212,19 @@ fn plan_unit(
         attempt,
         branch: format!("unit/{uid}-a{attempt}"),
     })
+}
+
+/// The pool with the most free slots among `pools` (ties: first listed);
+/// `None` when none has a free slot.
+fn pick_pool(pools: &[String], free: &BTreeMap<String, u32>) -> Option<String> {
+    let mut best: Option<(&String, u32)> = None;
+    for pool in pools {
+        let n = free.get(pool).copied().unwrap_or(0);
+        if n >= 1 && best.is_none_or(|(_, top)| n > top) {
+            best = Some((pool, n));
+        }
+    }
+    best.map(|(pool, _)| pool.clone())
 }
 
 /// Units with status `Inflight` whose `tools` select the kind `name`.

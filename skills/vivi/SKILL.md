@@ -2239,7 +2239,7 @@ from          = "<branch>"             # absent: the `branch` value
 default_kind  = "<kind>"               # required when `kinds` is non-empty: the kind of a unit with no `tools`
 
 [pump.dispatch.kinds.<kind>]           # one table per unit kind; a unit's `tools` value names its kind
-pool          = "<pool>"               # required: must name a [pools.<name>] table
+pools         = ["<pool>"]             # required, non-empty: each must name a [pools.<name>] table; a unit goes to the pool with the most free slots
 max           = 2                      # optional: units of this kind in flight at once; absent = no cap
 skip_proof    = false                  # optional: units of this kind skip their own proof at merge
 
@@ -2271,10 +2271,10 @@ Example with two kinds (names and pools are the project's own):
 default_kind = "plain"
 
 [pump.dispatch.kinds.plain]
-pool = "fly4"              # small workers, no cap
+pools = ["fly4"]            # small workers, no cap
 
 [pump.dispatch.kinds.full]
-pool = "flyfull"           # full-toolchain machines
+pools = ["flyfull"]         # full-toolchain machines
 max = 2                    # keep one free for gates
 skip_proof = true          # the worker already proved the unit
 ```

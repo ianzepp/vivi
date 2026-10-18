@@ -62,7 +62,7 @@ fn config() -> PumpConfig {
             kinds: std::collections::BTreeMap::from([(
                 String::from("plain"),
                 crate::pump::config::Kind {
-                    pool: String::from("p1"),
+                    pools: vec![String::from("p1")],
                     ..Default::default()
                 },
             )]),

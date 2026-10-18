@@ -503,7 +503,7 @@ configuration remains the implicit `default` target.
 
 | key | type | default | controls |
 | --- | --- | --- | --- |
-| `pool` | pool name | none — **required** | the `[pools.<name>]` table units of this kind are dispatched to |
+| `pools` | list of pool names | none — **required**, non-empty | the `[pools.<name>]` tables units of this kind are dispatched to; each unit goes to the listed pool with the most free slots (ties: first listed), and waits when none has a free slot. `max` counts the kind's inflight units across all its pools |
 | `max` | int | none (no cap) | units of this kind allowed in flight at once; at the cap a further unit waits (skipped, not failed) |
 | `skip_proof` | bool | `false` | units of this kind skip their own `proof` commands at merge (for example because the worker already proved them on a toolchain the merge host lacks); the shared checks still run |
 
@@ -521,10 +521,10 @@ gates, and their own proof is skipped at merge:
 default_kind = "plain"
 
 [pump.dispatch.kinds.plain]
-pool = "fly4"
+pools = ["fly4"]
 
 [pump.dispatch.kinds.full]
-pool = "flyfull"
+pools = ["flyfull"]
 max = 2
 skip_proof = true
 ```
