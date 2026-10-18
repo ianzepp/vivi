@@ -257,11 +257,24 @@ fn schema_migration_refuses_to_run_under_an_active_pump_lock() {
     assert_eq!(version, SCHEMA_VERSION - 1);
     drop(lock);
 
-    let store = PumpStore::open(&path).unwrap();
+    // A sibling test that spawns a process can hold a dup of this lock for
+    // the instant between fork and exec, so allow the release a moment.
+    let store = eventually(|| PumpStore::open(&path).ok());
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert!(crate::pump::run::lock_is_held(dir.path()).unwrap());
     drop(store);
-    assert!(!crate::pump::run::lock_is_held(dir.path()).unwrap());
+    eventually(|| (!crate::pump::run::lock_is_held(dir.path()).unwrap()).then_some(()));
+}
+
+/// Retry `f` for up to two seconds until it returns `Some`.
+fn eventually<T>(mut f: impl FnMut() -> Option<T>) -> T {
+    for _ in 0..200 {
+        if let Some(value) = f() {
+            return value;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    f().expect("condition did not hold within two seconds")
 }
 
 #[test]
