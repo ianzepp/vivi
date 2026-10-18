@@ -544,14 +544,12 @@ fn last_line(text: &str, max: usize) -> String {
         .collect()
 }
 
-/// One board pass: pull, expire, re-plan answered parked
-/// needs, plan new needs, and push replies — at most one pass per
-/// `board.every` seconds.
+/// One board pass: pull, expire, re-plan answered needs, plan new needs, and
+/// push replies. The interval starts when the pass completes.
 pub fn board(ctx: &Ctx, st: &mut State) {
     if ctx.now().saturating_sub(st.board.at) < ctx.cfg.board.every {
         return;
     }
-    st.board.at = ctx.now();
     if ctx.cfg.board.pull {
         let out = ctx.vivi("sync pull", 120);
         ctx.log(&format!(
@@ -568,6 +566,7 @@ pub fn board(ctx: &Ctx, st: &mut State) {
         spawn_sync_push(ctx);
     }
     crate::pump::amend::detect(ctx, st);
+    st.board.at = ctx.now();
 }
 
 /// Start the detached drain push that ships the replies just posted.

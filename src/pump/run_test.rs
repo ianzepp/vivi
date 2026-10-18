@@ -127,7 +127,7 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
     assert!(sync < usize::MAX, "no sync pull in {commands:?}");
     assert!(reconcile < usize::MAX, "no pool reconcile in {commands:?}");
     assert!(pool_status < usize::MAX, "no pool status in {commands:?}");
-    assert!(sync < reconcile && reconcile < pool_status);
+    assert!(reconcile < pool_status && pool_status < sync);
 }
 
 #[test]

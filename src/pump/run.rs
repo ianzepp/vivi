@@ -22,13 +22,10 @@ use crate::pump::plan;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
-/// One pump tick: board, ingest, collect, the merge
-/// feed, and — unless control state is paused — dispatch, the hold cycle,
-/// the gate start, and a second merge pass, saving at three save
-/// points and ending in [`write_status`].
+/// One pump tick: ingest and collect, feed merges, dispatch ready work, run
+/// gates, then perform the periodic board pass and write status.
 pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumError> {
     merger.apply(ctx, st);
-    board::board(ctx, st);
     plan::ingest(ctx, st);
     let gate_target = st
         .active_gate_target()
@@ -53,6 +50,9 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
         }
     };
     if control.mode == crate::pump::control::PumpMode::Paused {
+        board::board(ctx, st);
+        plan::ingest(ctx, st);
+        save(ctx, st)?;
         write_status(ctx, st);
         return Ok(());
     }
@@ -75,6 +75,8 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
     }
     merger.apply(ctx, st);
     merger.feed(ctx, st);
+    board::board(ctx, st);
+    plan::ingest(ctx, st);
     save(ctx, st)?;
     write_status(ctx, st);
     Ok(())

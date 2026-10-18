@@ -322,6 +322,7 @@ struct FakeState {
 /// Fake host: the test seam every pump unit tests through.
 pub struct FakeHost {
     clock: AtomicU64,
+    advance_on_run: AtomicU64,
     state: Mutex<FakeState>,
 }
 
@@ -331,6 +332,7 @@ impl FakeHost {
     pub fn new() -> Arc<FakeHost> {
         Arc::new(FakeHost {
             clock: AtomicU64::new(1_000_000),
+            advance_on_run: AtomicU64::new(0),
             state: Mutex::new(FakeState::default()),
         })
     }
@@ -343,6 +345,11 @@ impl FakeHost {
     /// Advance the clock by `secs`.
     pub fn advance(&self, secs: u64) {
         self.clock.fetch_add(secs, Ordering::SeqCst);
+    }
+
+    /// Advance the clock by `secs` for every command the fake host runs.
+    pub fn advance_on_run(&self, secs: u64) {
+        self.advance_on_run.store(secs, Ordering::SeqCst);
     }
 
     /// Persistent rule: every later `run` whose command line contains
@@ -399,6 +406,8 @@ impl Host for FakeHost {
     }
 
     fn run(&self, cmd: &str, _cwd: Option<&Path>, _timeout_secs: u64) -> CmdOutput {
+        self.clock
+            .fetch_add(self.advance_on_run.load(Ordering::SeqCst), Ordering::SeqCst);
         if let Ok(mut state) = self.state.lock() {
             state.commands.push(cmd.to_string());
             let once = state

@@ -42,7 +42,7 @@ project root; every `vivi` call the pump makes appends
 | --- | --- |
 | `run` | loop: one `tick`, then sleep `tick` seconds, until stored mode is `stopped` |
 | `once` | exactly one `tick`, then exit |
-| `status` | print `status.txt` and control mode; no pump lock; migrates old markers when present |
+| `status` | read and print `status.txt` and control mode without taking the pump lock or migrating the database |
 | `pause` / `resume` | set stored control mode to `paused` / `running` |
 | `stop` / `start` | set stored control mode to `stopped` / `running` |
 
@@ -298,28 +298,30 @@ each merge outcome does to the unit.
 
 ## 7. The tick
 
-`tick` runs these steps in order:
+`tick` runs these steps in order. Dispatch runs before the periodic board pass so
+a slow mailspace read does not keep ready worker slots idle:
 
 1. `merge_apply`: drain finished merge results into state.
-2. `board`: sync pull, plan new needs, reply on threads — wrapped so that
-   a failure logs `BOARD ERROR` and the tick continues.
-3. `ingest`: read new plan files.
-4. `collect`: reconcile pool state against inflight units and the gate task.
-5. `merge_apply` again.
-6. `merge_feed`: queue delivered units for merging.
-7. `save` — save point one.
-8. Control check: if the mode is not `running`, `write_status` and return — skipping
-   dispatch, the hold cycle, external gate intake, the gate start, and the second merge apply/feed. Note merging is not paused: step 6 already ran, and
-   the merge thread is independent of the tick.
-9. `dispatch`.
-10. `save` — save point two.
-11. `hold_cycle`.
-12. `external_gates`: take finished results from `gate.results_dir`, if set.
-13. `start_gate`.
-14. `merge_apply` — lets gate/merge results land in state.
-15. `merge_feed`.
-16. `save` — save point three.
-17. `write_status`.
+2. `ingest`: read plan files already present in the pump home.
+3. `collect`: reconcile pool state against inflight units and the gate task.
+4. `merge_apply` again.
+5. `merge_feed`: queue delivered units for merging.
+6. `save` — save point one.
+7. Control check: if the mode is paused, run the board pass, ingest any new
+   plan files, save, write status and return. Dispatch and gate work are skipped;
+   already-fed merges continue on the independent merge thread.
+8. `dispatch`.
+9. `save` — save point two.
+10. `hold_cycle`.
+11. `external_gates`: take finished results from `gate.results_dir`, if set.
+12. `start_gate`.
+13. `merge_apply` — lets gate/merge results land in state.
+14. `merge_feed`.
+15. `board`: sync pull, re-plan answered parked needs, plan new needs and reply
+   on threads. A failure logs `BOARD ERROR` and the tick continues.
+16. `ingest`: read plan files written by the board pass.
+17. `save` — save point three.
+18. `write_status`.
 
 Error handling:
 
@@ -467,7 +469,7 @@ configuration remains the implicit `default` target.
 | `from` | list of senders | none | senders whose open needs addressed to `reply_from` are plannable |
 | `since` | ISO datetime | none | needs dated before this are skipped, unless marked or re-planned |
 | `mark` | string | `pump` | approval mark: a marked open need is plannable whatever sender or date |
-| `every` | int seconds | `300` | seconds between board passes |
+| `every` | int seconds | `300` | minimum delay after one board pass completes before the next |
 | `planners_max` | int | `3` | concurrent planners |
 | `plan_timeout` | int seconds | `1800` | seconds a planner has to write `plans/<need>.json` before a `plan-no-answer` exception |
 | `reply_to` | address | first of `from` | `--to` of thread replies |

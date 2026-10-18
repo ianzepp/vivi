@@ -698,6 +698,25 @@ fn board_skips_a_pass_inside_the_every_window_and_pulls_then_plans_otherwise() {
 }
 
 #[test]
+fn a_slow_board_pass_waits_the_interval_from_completion() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        from: vec![String::from("operator@bd371d96.local")],
+        every: 60,
+        ..BoardConfig::default()
+    });
+    host.advance_on_run(30);
+    host.reply("need list", 0, "[]");
+    let mut st = State::default();
+
+    board(&ctx, &mut st);
+
+    let command_count = host.commands().len();
+    assert!(ctx.now().saturating_sub(st.board.at) < ctx.cfg.board.every);
+    board(&ctx, &mut st);
+    assert_eq!(host.commands().len(), command_count);
+}
+
+#[test]
 fn a_planner_started_in_the_future_is_kept_and_does_not_underflow() {
     let (_dir, ctx, _host) = setup();
     let mut st = State::default();
