@@ -61,6 +61,9 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
     let Some(hash) = thread_hash(ctx, handle) else {
         return;
     };
+    // A hash from an older scheme (it counted the pump's own replies) is
+    // adopted like a first check, never read as an amendment.
+    let old_hash = old_hash.filter(|old| old.starts_with(HASH_SCHEME));
     let pending = match old_hash {
         None => {
             // First check after the upgrade: adopt the current thread.
@@ -117,7 +120,10 @@ fn last_events(ctx: &Ctx) -> BTreeMap<String, u64> {
     events
 }
 
-/// SHA-256 of the thread's message ids and bodies, in order.
+/// Prefix of the current thread-hash scheme: operator messages only.
+const HASH_SCHEME: &str = "v2:";
+
+/// SHA-256 of non-pump messages' ids and bodies, in order, as `v2:<hex>`.
 fn thread_hash(ctx: &Ctx, handle: &str) -> Option<String> {
     let text = ctx.vivi(&format!("need show {handle} --json"), 60).text;
     let start = text.find('[')?;
@@ -127,12 +133,21 @@ fn thread_hash(ctx: &Ctx, handle: &str) -> Option<String> {
     };
     let mut hasher = Sha256::new();
     for message in messages {
+        let from = message["from"].as_str().unwrap_or("");
+        let sender = if ctx.cfg.reply_from.contains('@') {
+            from
+        } else {
+            from.split('@').next().unwrap_or(from)
+        };
+        if sender.eq_ignore_ascii_case(&ctx.cfg.reply_from) {
+            continue;
+        }
         hasher.update(message["message_id"].as_str().unwrap_or("").as_bytes());
         hasher.update(b"\n");
         hasher.update(message["body"].as_str().unwrap_or("").as_bytes());
         hasher.update(b"\n");
     }
-    Some(hex::encode(hasher.finalize()))
+    Some(format!("{HASH_SCHEME}{}", hex::encode(hasher.finalize())))
 }
 
 /// Write the revision prompt and spawn the planner for one need.

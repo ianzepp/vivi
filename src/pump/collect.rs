@@ -22,8 +22,6 @@ use crate::pump::state::{Attempt, State, Status};
 const RECONCILE_GRACE: u64 = 90;
 /// Receipt marker of a worker that found nothing to fix.
 const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
-/// Receipt fragments of an agent killed by its budget timeout.
-const EXIT_124_MARKERS: [&str; 2] = ["agent exit 124", "agent_rc 124"];
 /// Seconds a gate task may stay unreported before it is finished from its
 /// receipt.
 const GATE_GRACE: u64 = 2400;
@@ -383,7 +381,7 @@ fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state
     } else {
         String::new()
     };
-    if is_exit_124(&full) {
+    if is_timeout(&full) {
         split(ctx, st, uid, &full);
         return;
     }
@@ -413,7 +411,7 @@ fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state
     ));
 }
 
-/// No remote branch: split on exit 124, accept a no-defect verdict, else
+/// No remote branch: split on exit 124 or 137, accept a no-defect verdict, else
 /// fail the attempt.
 fn fail_from_receipt(
     ctx: &Ctx,
@@ -425,7 +423,7 @@ fn fail_from_receipt(
 ) {
     let full = receipt_full(ctx, task);
     let text = tail(&full, 6000);
-    if is_exit_124(&full) {
+    if is_timeout(&full) {
         split(ctx, st, uid, &full);
         return;
     }
@@ -521,8 +519,13 @@ pub(crate) fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
 
 /// True when the text marks the agent as killed by its budget timeout.
 #[must_use]
-fn is_exit_124(text: &str) -> bool {
-    EXIT_124_MARKERS.iter().any(|marker| text.contains(marker))
+fn is_timeout(text: &str) -> bool {
+    matches!(attempt_record::agent_exit(text), Some(124 | 137))
+        || text.lines().any(|line| {
+            line.strip_prefix("agent_rc ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .is_some_and(|code| matches!(code, "124" | "137"))
+        })
 }
 
 /// `SPLIT_PROMPT` with the pump home and the unit handle substituted.
