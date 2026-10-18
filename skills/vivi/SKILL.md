@@ -1,6 +1,6 @@
 ---
 name: vivi
-description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, the remote lane pool (`vivi pool`: machines or containers that run a task and push a branch), and the pump (`vivi pump`: an unattended loop that plans, dispatches, merges and gates a backlog).
+description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, the remote lane pool (`vivi pool`: machines or containers that run a task and push a branch), the pump (`vivi pump`: an unattended loop that plans, dispatches, merges and gates a backlog), and the local model proxy (`vivi proxy`: one loopback front door for provider adapters).
 ---
 
 # Vivi
@@ -1911,7 +1911,8 @@ child per registered project whose control mode is running or paused. It
 restarts exited pumps after a delay and stops a project's child when that
 project is removed. A project's existing pump lock arbitrates against a
 manually started pump. `install` captures the
-currently running Vivi executable in `~/Library/LaunchAgents/com.vivi.pump-service.plist`;
+currently running Vivi executable in the user LaunchAgents directory as
+`com.vivi.pump-service.plist`;
 launchd restarts it and starts it at login. On other systems, run the
 foreground command from that system's service manager.
 
@@ -2346,6 +2347,41 @@ From the contract: the decision hook (the one gap is extracting failing names
 from a gate reply with no marked block). Pump state is readable through
 `need show`, `boot`, `need list --pump` and `board --pump`; `vivi trace` does
 not show it, and the state file stays a private `pump.db` in home.
+
+## Proxy
+
+`vivi proxy` is a user-level loopback front door. It is not a mailspace
+command. Config is the platform config directory under `vivi/proxy.toml`
+(`--config` or `VIVI_PROXY_CONFIG` overrides). The file holds paths and
+`key_cmd` / `auth_token_cmd` only.
+
+```sh
+vivi proxy run
+vivi proxy install
+vivi proxy uninstall
+vivi proxy status
+vivi proxy log [-n N] [-f] [--provider <name>]
+vivi proxy providers
+vivi proxy check [provider]
+```
+
+`run` binds one listener (default `127.0.0.1:18180`), path-routes
+`/<provider>/v1/{responses,chat/completions,messages,models}` and the same
+paths without `/v1`, supervises `kind = child` processes, and prints
+`VIVI_PROXY_READY <addr>` when the socket is open. A second instance takes
+the lock next to the config file and exits. `install` writes a macOS
+LaunchAgent (`com.vivi.proxy`) or a Linux systemd `--user` unit
+(`vivi-proxy.service`). `providers` prints the base URL to paste into a
+client, the backend kind, and credential expiry (never token values).
+`check` sends `GET /<provider>/v1/models`.
+
+Provider `kind` is `native`, `child`, or `upstream`. Native adapters shipped
+in this binary: `chatgpt-codex` (Responses plus the existing chat shim) and
+`kimi-coding` / `openai-passthrough` (header injection and byte passthrough).
+Non-loopback `listen` requires `allow_remote = true` and `auth_token_cmd`.
+POST needs `Content-Type: application/json`. Requests with an `Origin`
+header, or a `Host` that is not loopback / the bind address, are refused.
+Credential errors return a fixed message and a request id.
 
 ## Watches and Cycle Intake
 

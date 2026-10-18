@@ -1,6 +1,6 @@
 [package]
 name = "vivi"
-version = "13.4.0"
+version = "14.0.0"
 edition = "2024"
 description = "Local-first project mailspace for LLM agents"
 license = "MIT"
@@ -24,7 +24,11 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 mail-builder = "0.3"
 mail-parser = "0.9"
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { version = "0.12", default-features = false, features = ["brotli", "deflate", "gzip", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "brotli", "deflate", "gzip", "json", "rustls-tls", "stream", "zstd"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio-stream = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
