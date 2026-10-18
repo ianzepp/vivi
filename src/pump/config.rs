@@ -71,6 +71,8 @@ pub struct PumpConfig {
     pub merge: MergeConfig,
     /// Gate settings (the `[pump.gate]` table).
     pub gate: GateConfig,
+    /// Stall alarm thresholds (the `[pump.alarm]` table).
+    pub alarm: AlarmConfig,
 }
 
 impl Default for PumpConfig {
@@ -100,6 +102,7 @@ impl Default for PumpConfig {
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
             gate: GateConfig::default(),
+            alarm: AlarmConfig::default(),
         }
     }
 }
@@ -383,6 +386,31 @@ impl Default for MergeConfig {
             proof_timeout: 300,
             remote_wait: 90,
             remote_limit: 1800,
+        }
+    }
+}
+
+/// Stall alarm thresholds (the `[pump.alarm]` table).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AlarmConfig {
+    /// Minutes a fix unit may sit `delivered` or `merging` before a
+    /// `stall-fix-unit` exception.
+    pub fix_wait_minutes: u64,
+    /// Hours without a promotion, while merges are waiting on one, before a
+    /// `stall-promote` exception.
+    pub promote_hours: u64,
+    /// Minutes units may sit `delivered` with nothing merging before a
+    /// `stall-merge` exception.
+    pub merge_idle_minutes: u64,
+}
+
+impl Default for AlarmConfig {
+    fn default() -> Self {
+        Self {
+            fix_wait_minutes: 30,
+            promote_hours: 3,
+            merge_idle_minutes: 45,
         }
     }
 }

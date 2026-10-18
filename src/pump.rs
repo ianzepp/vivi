@@ -1,5 +1,6 @@
 //! `vivi pump`: the pump as a state machine; see skills/vivi/references/pump-contract.md.
 
+pub mod alarm;
 pub mod amend;
 pub mod board;
 pub mod brief;
@@ -92,3 +93,7 @@ mod run_test;
 #[cfg(test)]
 #[path = "pump/lifecycle_test.rs"]
 mod lifecycle_test;
+
+#[cfg(test)]
+#[path = "pump/alarm_test.rs"]
+mod alarm_test;
