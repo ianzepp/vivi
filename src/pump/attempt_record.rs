@@ -14,10 +14,9 @@
 //! end, a failed send is logged and dropped.
 
 use crate::pump::board::send_reply;
-use crate::pump::collect::{local_branch_exists, receipt_full, remote_has, tail};
+use crate::pump::collect::{local_branch_exists, receipt_full, tail};
 use crate::pump::dispatch::dispatch_base;
-use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::merge::fetch_unit_branch;
+use crate::pump::host::{CmdOutput, Ctx, shell_quote};
 use crate::pump::state::State;
 
 /// Commits listed in a record.
@@ -33,6 +32,11 @@ const EXIT_MARKER: &str = "agent exit ";
 /// The receipt section titles the pool writes after its summary lines.
 const SECTION_RECEIPT: &str = "receipt";
 const SECTION_STDERR: &str = "stderr tail";
+/// Seconds allowed for every git call the record path makes: a bad network
+/// must not stall a tick for minutes.
+const RECORD_TIMEOUT: u64 = 30;
+/// Characters of a push or listing failure kept (the tail).
+const NOTE_TAIL_CHARS: usize = 200;
 
 /// The failing command of an attempt and a short excerpt of its output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,14 +194,19 @@ fn parse_receipt(text: &str) -> Parsed {
 /// What the attempt branch looks like from the integration checkout.
 #[derive(Debug, PartialEq, Eq)]
 enum Branch {
-    /// The hand left no branch (it changed nothing, or never got that far).
+    /// The hand left no branch: the remote answers and lists none, and the
+    /// checkout has no local branch.
     Absent,
-    /// The branch exists but the checkout could not read it.
-    Unreadable,
-    /// Commits (`git log --oneline`) and files (`git diff --stat`) on it.
+    /// The branch exists but the checkout could not read it; the tail of
+    /// what the listing or fetch said.
+    Unreadable(String),
+    /// Commits (`git log --oneline`) and files (`git diff --stat`) on it,
+    /// plus how the branch reached the remote (`pushed to the target
+    /// remote, kept` or `push rejected: <tail>`).
     Found {
         commits: Vec<String>,
         files: Vec<String>,
+        note: String,
     },
 }
 
@@ -275,55 +284,105 @@ fn gather(ctx: &Ctx, tctx: &Ctx, st: &State, uid: &str, base: &str, ending: &End
     }
 }
 
-/// Put the branch on the remote (local worktree pools commit it into the
-/// integration repository only) and read its commits and files against
-/// `base`.
+/// Read the branch's commits and files against `base`. A local branch is
+/// read straight from `refs/heads` and pushed (the only write); otherwise
+/// the remote listing decides, and a listed branch is fetched into the
+/// pump-owned `refs/pump-records/<branch>` without writing `FETCH_HEAD` or
+/// any `refs/remotes/*` — the merge lanes share this checkout and those
+/// refs.
 fn read_branch(tctx: &Ctx, branch: &str, base: &str) -> Branch {
-    let local = local_branch_exists(tctx, branch);
-    if !local && !remote_has(tctx, branch) {
-        return Branch::Absent;
-    }
-    if local {
-        publish_local(tctx, branch);
-    }
-    if fetch_unit_branch(tctx, branch).code != 0 {
-        return Branch::Unreadable;
-    }
-    let reference = shell_quote(&format!("refs/remotes/{}/{branch}", tctx.cfg.remote));
+    let (reference, note) = if local_branch_exists(tctx, branch) {
+        match publish_local(tctx, branch) {
+            Ok(()) => (
+                format!("refs/heads/{branch}"),
+                String::from("pushed to the target remote, kept"),
+            ),
+            Err(failed) => (
+                format!("refs/heads/{branch}"),
+                format!("push rejected: {failed}"),
+            ),
+        }
+    } else {
+        match remote_branch(tctx, branch) {
+            Err(why) => return Branch::Unreadable(why),
+            Ok(false) => return Branch::Absent,
+            Ok(true) => {
+                let out = record_fetch(tctx, branch);
+                if out.code != 0 {
+                    return Branch::Unreadable(tail(out.text.trim(), NOTE_TAIL_CHARS));
+                }
+                (
+                    format!("refs/pump-records/{branch}"),
+                    String::from("pushed to the target remote, kept"),
+                )
+            }
+        }
+    };
+    let reference = shell_quote(&reference);
     let base = shell_quote(base);
-    let commits = tctx.git(&format!("log --oneline {base}..{reference}"), 60);
-    let files = tctx.git(&format!("diff --stat {base}...{reference}"), 60);
+    let commits = tctx.git(
+        &format!("log --oneline {base}..{reference}"),
+        RECORD_TIMEOUT,
+    );
+    let files = tctx.git(&format!("diff --stat {base}...{reference}"), RECORD_TIMEOUT);
     Branch::Found {
         commits: cap_commits(&lines(&commits.text)),
         files: cap_stat(&lines(&files.text)),
+        note,
     }
+}
+
+/// Fetch a remote-only branch into the pump-owned record namespace: no
+/// `FETCH_HEAD` write, no `refs/remotes/*` update.
+fn record_fetch(tctx: &Ctx, branch: &str) -> CmdOutput {
+    let b = shell_quote(branch);
+    tctx.git(
+        &format!(
+            "fetch --no-write-fetch-head {} refs/heads/{b}:refs/pump-records/{b}",
+            tctx.cfg.remote
+        ),
+        RECORD_TIMEOUT,
+    )
+}
+
+/// The remote's answer for the branch: `Ok(true)` when listed, `Ok(false)`
+/// when the remote answers but lists none, `Err(tail)` when the listing
+/// itself failed (a transient network error is not "no changes").
+fn remote_branch(tctx: &Ctx, branch: &str) -> Result<bool, String> {
+    let out = tctx.git(
+        &format!(
+            "ls-remote {} refs/heads/{}",
+            tctx.cfg.remote,
+            shell_quote(branch)
+        ),
+        RECORD_TIMEOUT,
+    );
+    if out.code != 0 {
+        return Err(tail(out.text.trim(), NOTE_TAIL_CHARS));
+    }
+    Ok(!out.text.trim().is_empty())
 }
 
 /// Push a branch that lives only in the target's integration repository (a
 /// local worktree pool) to the target remote: a plain push of a new ref,
-/// never forced. A refused or failed push is logged.
-fn publish_local(tctx: &Ctx, branch: &str) {
+/// never forced. `Err` carries the tail of a refused or failed push, which
+/// is also logged.
+fn publish_local(tctx: &Ctx, branch: &str) -> Result<(), String> {
     if tctx.cfg.targets.is_empty() {
-        return;
+        return Ok(());
     }
     let b = shell_quote(branch);
     let out = tctx.git(
         &format!("push {} refs/heads/{b}:refs/heads/{b}", tctx.cfg.remote),
-        120,
+        RECORD_TIMEOUT,
     );
-    let note = if out.code == 0 {
-        "pushed"
-    } else {
-        "push failed"
-    };
-    tctx.log(&format!(
-        "attempt branch {branch} {note}{}",
-        if out.code == 0 {
-            String::new()
-        } else {
-            format!(": {}", tail(out.text.trim(), 200))
-        }
-    ));
+    if out.code == 0 {
+        tctx.log(&format!("attempt branch {branch} pushed"));
+        return Ok(());
+    }
+    let why = tail(out.text.trim(), NOTE_TAIL_CHARS);
+    tctx.log(&format!("attempt branch {branch} push failed: {why}"));
+    Err(why)
 }
 
 /// The non-empty lines of `text`.
@@ -383,7 +442,7 @@ fn compose(facts: &Facts) -> String {
         facts.task.as_deref().unwrap_or("none"),
         facts.base
     ));
-    if let Branch::Found { commits, files } = &facts.shape {
+    if let Branch::Found { commits, files, .. } = &facts.shape {
         out.push_str(&block("commits", commits));
         out.push_str(&block("files changed", files));
     }
@@ -399,9 +458,9 @@ fn compose(facts: &Facts) -> String {
 fn branch_line(branch: Option<&str>, shape: &Branch) -> String {
     let name = branch.unwrap_or("none");
     match shape {
-        Branch::Found { .. } => format!("{name} (pushed to the target remote, kept)"),
+        Branch::Found { note, .. } => format!("{name} ({note})"),
         Branch::Absent => format!("{name} (none: the hand left no changes)"),
-        Branch::Unreadable => format!("{name} (exists, but could not be read here)"),
+        Branch::Unreadable(why) => format!("{name} (branch not readable: {why})"),
     }
 }
 

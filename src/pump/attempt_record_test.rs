@@ -481,6 +481,160 @@ fn the_board_pass_ships_posted_records_with_a_sync_push() {
     assert_eq!(host.spawned().len(), 1, "shipped once");
 }
 
+/// The `(command, timeout)` pairs of every command the host ran.
+fn command_timeouts(host: &FakeHost) -> Vec<(String, u64)> {
+    host.commands().into_iter().zip(host.timeouts()).collect()
+}
+
+/// The timeout of the first command containing `fragment`; panics without
+/// one.
+fn timeout_of(host: &FakeHost, fragment: &str) -> u64 {
+    command_timeouts(host)
+        .into_iter()
+        .find(|(cmd, _)| cmd.contains(fragment))
+        .map(|(_, secs)| secs)
+        .unwrap_or_else(|| panic!("no command matching {fragment:?}"))
+}
+
+#[test]
+fn the_record_fetch_writes_no_shared_refs() {
+    let (_dir, ctx, host) = setup();
+    host.reply("pool reconcile", 0, RECONCILE);
+    branch_on_remote(&host);
+    host.reply("task show", 0, &receipt(0, "done", ""));
+    host.reply("log --oneline", 0, "c1 fix\n");
+    host.reply("diff --stat", 0, " src/a.rs | 1 +\n");
+    let mut st = state_with(inflight());
+    collect(&ctx, &mut st);
+    let cmds = host.commands();
+    assert!(
+        !cmds.iter().any(|cmd| cmd.contains("refs/remotes")),
+        "{cmds:?}"
+    );
+    assert!(
+        !cmds.iter().any(|cmd| cmd.contains("update-ref")),
+        "{cmds:?}"
+    );
+    let fetch = cmds
+        .iter()
+        .find(|cmd| cmd.contains("git fetch"))
+        .unwrap_or_else(|| panic!("{cmds:?}"));
+    assert!(fetch.contains("--no-write-fetch-head"), "{fetch}");
+    assert!(
+        fetch.contains("refs/heads/unit/u-1-a1:refs/pump-records/unit/u-1-a1"),
+        "{fetch}"
+    );
+    assert!(the_record(&ctx).contains("(pushed to the target remote, kept)"));
+}
+
+#[test]
+fn a_local_record_reads_refs_heads_directly_and_pushes() {
+    let (_dir, ctx, host) = setup_with(local_target_config());
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"committed unit/u-1-a1 abc\"",
+    );
+    host.reply("show-ref --verify --quiet refs/heads/unit/u-1-a1", 0, "");
+    host.reply("task show", 0, &receipt(0, "done", ""));
+    host.reply("log --oneline", 0, "c1 fix\n");
+    host.reply("diff --stat", 0, " src/a.rs | 1 +\n");
+    let mut st = state_with(local_unit());
+    collect(&ctx, &mut st);
+    let cmds = host.commands();
+    assert!(
+        !cmds.iter().any(|cmd| cmd.contains("git fetch")),
+        "{cmds:?}"
+    );
+    let log = cmds
+        .iter()
+        .find(|cmd| cmd.contains("log --oneline"))
+        .unwrap_or_else(|| panic!("{cmds:?}"));
+    assert!(log.contains("refs/heads/unit/u-1-a1"), "{log}");
+    let pushes: Vec<&String> = cmds.iter().filter(|cmd| cmd.contains("push")).collect();
+    assert_eq!(pushes.len(), 1, "the push is the only write: {cmds:?}");
+    assert!(the_record(&ctx).contains("(pushed to the target remote, kept)"));
+}
+
+#[test]
+fn a_rejected_push_is_recorded_as_rejected_not_pushed() {
+    let (_dir, ctx, host) = setup_with(local_target_config());
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"committed unit/u-1-a1 abc\"",
+    );
+    host.reply("show-ref --verify --quiet refs/heads/unit/u-1-a1", 0, "");
+    host.reply("task show", 0, &receipt(0, "done", ""));
+    host.reply("push origin", 1, "! [rejected] non-fast-forward");
+    let mut st = state_with(local_unit());
+    collect(&ctx, &mut st);
+    let text = the_record(&ctx);
+    assert!(
+        text.contains("branch: unit/u-1-a1 (push rejected: ! [rejected] non-fast-forward)\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("(pushed to the target remote, kept)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_failed_remote_listing_is_branch_not_readable_not_no_changes() {
+    let (_dir, ctx, host) = setup();
+    host.reply("pool reconcile", 0, RECONCILE);
+    host.reply("ls-remote", 1, "could not resolve host");
+    host.reply("task show", 0, &receipt(0, "done", ""));
+    let mut st = state_with(inflight());
+    collect(&ctx, &mut st);
+    let text = the_record(&ctx);
+    assert!(
+        text.contains("branch: unit/u-1-a1 (branch not readable: could not resolve host)\n"),
+        "{text}"
+    );
+    assert!(!text.contains("none: the hand left no changes"), "{text}");
+}
+
+#[test]
+fn the_record_path_gives_every_git_call_30_seconds() {
+    let (_dir, ctx, host) = setup();
+    host.reply("pool reconcile", 0, RECONCILE);
+    branch_on_remote(&host);
+    host.reply("task show", 0, &receipt(0, "done", ""));
+    host.reply("log --oneline", 0, "c1 fix\n");
+    host.reply("diff --stat", 0, " src/a.rs | 1 +\n");
+    let mut st = state_with(inflight());
+    collect(&ctx, &mut st);
+    assert_eq!(timeout_of(&host, "git fetch"), 30);
+    assert_eq!(timeout_of(&host, "log --oneline"), 30);
+    assert_eq!(timeout_of(&host, "diff --stat"), 30);
+    let ls_remotes: Vec<u64> = command_timeouts(&host)
+        .into_iter()
+        .filter(|(cmd, _)| cmd.contains("git ls-remote"))
+        .map(|(_, secs)| secs)
+        .collect();
+    assert!(
+        ls_remotes.contains(&30),
+        "record ls-remote at 30: {ls_remotes:?}"
+    );
+}
+
+#[test]
+fn the_record_push_also_runs_within_30_seconds() {
+    let (_dir, ctx, host) = setup_with(local_target_config());
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"committed unit/u-1-a1 abc\"",
+    );
+    host.reply("show-ref --verify --quiet refs/heads/unit/u-1-a1", 0, "");
+    host.reply("task show", 0, &receipt(0, "done", ""));
+    let mut st = state_with(local_unit());
+    collect(&ctx, &mut st);
+    assert_eq!(timeout_of(&host, "push origin"), 30);
+}
+
 #[test]
 fn the_agent_exit_comes_from_the_pool_summary_line() {
     assert_eq!(agent_exit(&receipt(3, "m", "")), Some(3));
