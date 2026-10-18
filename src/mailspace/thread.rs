@@ -72,6 +72,42 @@ pub fn print_thread(
     Ok(())
 }
 
+/// `--newest N`: the thread limited to its newest N messages, printed
+/// oldest first. Reads the whole thread (no 50-message cap), keeps the last
+/// N in date order, and renders them exactly like the default output.
+/// JSON keeps the default per-message shape.
+///
+/// # Errors
+/// Returns an error if the handle cannot be resolved, thread assembly fails,
+/// or JSON serialization fails when `--json` is used.
+pub fn print_thread_newest(
+    mailspace: &Mailspace,
+    handle: &str,
+    count: usize,
+    json: bool,
+) -> Result<(), VivariumError> {
+    if count == 0 {
+        return Ok(());
+    }
+    let messages = mailspace.thread(handle, false, usize::MAX, usize::MAX)?;
+    let start = messages.len().saturating_sub(count);
+    let selected = &messages[start..];
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(selected).map_err(|e| {
+                VivariumError::Other(format!("failed to encode thread JSON: {e}"))
+            })?
+        );
+        return Ok(());
+    }
+    print_text_thread(selected);
+    if let Some(state) = mailspace.item_event_state(handle)? {
+        println!("\nState: {} (event {})", state.state, state.event);
+    }
+    Ok(())
+}
+
 /// `--latest`: the thread limited to its newest message. JSON keeps the
 /// default shape; text prints the one per-message block, or a `No replies
 /// yet` line when only the root exists.

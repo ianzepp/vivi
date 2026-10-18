@@ -352,6 +352,8 @@ struct FakeState {
     once: VecDeque<(String, i32, String)>,
     rules: Vec<(String, i32, String)>,
     commands: Vec<String>,
+    /// The timeout each recorded command ran with, in the same order.
+    timeouts: Vec<u64>,
     spawned: Vec<String>,
     logs: Vec<String>,
 }
@@ -416,6 +418,12 @@ impl FakeHost {
         self.snapshot(|state| state.commands.clone())
     }
 
+    /// The timeout of every `run` command line, in the same order.
+    #[must_use]
+    pub fn timeouts(&self) -> Vec<u64> {
+        self.snapshot(|state| state.timeouts.clone())
+    }
+
     /// Every `spawn` command line, in order.
     #[must_use]
     pub fn spawned(&self) -> Vec<String> {
@@ -447,6 +455,7 @@ impl Host for FakeHost {
             .fetch_add(self.advance_on_run.load(Ordering::SeqCst), Ordering::SeqCst);
         if let Ok(mut state) = self.state.lock() {
             state.commands.push(cmd.to_string());
+            state.timeouts.push(_timeout_secs);
             let once = state
                 .once
                 .iter()

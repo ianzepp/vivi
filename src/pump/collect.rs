@@ -13,6 +13,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::VivariumError;
+use crate::pump::attempt_record::{self, Ending};
 use crate::pump::host::{Ctx, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status};
 
@@ -21,8 +22,6 @@ use crate::pump::state::{Attempt, State, Status};
 const RECONCILE_GRACE: u64 = 90;
 /// Receipt marker of a worker that found nothing to fix.
 const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
-/// Receipt fragments of an agent killed by its budget timeout.
-const EXIT_124_MARKERS: [&str; 2] = ["agent exit 124", "agent_rc 124"];
 /// Seconds a gate task may stay unreported before it is finished from its
 /// receipt.
 const GATE_GRACE: u64 = 2400;
@@ -83,8 +82,15 @@ pub fn parse_reconcile(out: &str) -> BTreeMap<String, (String, String)> {
 /// The last 6000 chars of `vivi task show <task> --latest`.
 #[must_use]
 pub fn receipt(ctx: &Ctx, task: &str) -> String {
-    let out = ctx.vivi(&format!("task show {task} --latest"), 60);
-    tail(&out.text, 6000)
+    tail(&receipt_full(ctx, task), 6000)
+}
+
+/// All of `vivi task show <task> --latest`: the pool's summary lines (the
+/// agent's exit code among them) come first, the agent's own final message
+/// after them.
+#[must_use]
+pub fn receipt_full(ctx: &Ctx, task: &str) -> String {
+    ctx.vivi(&format!("task show {task} --latest"), 60).text
 }
 
 /// Write the planner prompt to `<home>/<dir>/<id>.prompt` and start the
@@ -113,8 +119,14 @@ pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) {
 
 /// Record a failed attempt: append the history entry, clear the task, and
 /// either return the unit to `pending` or park it as `stuck` with an
-/// exception once `max_attempts` is reached.
+/// exception once `max_attempts` is reached. The attempt record is posted on
+/// the need thread (see [`attempt_record`]), fetching the task receipt.
 pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
+    fail_with(ctx, st, uid, why, detail, None);
+}
+
+/// [`fail`] with the task's full receipt when the caller already has it.
+fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, receipt: Option<&str>) {
     let now = ctx.now();
     let max = ctx.cfg.dispatch.max_attempts;
     let Some(unit) = st.units.get_mut(uid) else {
@@ -126,10 +138,16 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
         why: why.to_owned(),
         detail: tail(detail, 2500),
         at: now,
+        branch: unit.branch.clone(),
+        task: unit.task.clone(),
     });
-    unit.task = None;
     let attempts = unit.attempts;
     let stuck = attempts >= max;
+    attempt_record::post(ctx, st, uid, &Ending::failed(why, detail, receipt));
+    let Some(unit) = st.units.get_mut(uid) else {
+        return;
+    };
+    unit.task = None;
     unit.status = if stuck {
         Status::Stuck
     } else {
@@ -176,7 +194,6 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
         return;
     };
     unit.status = Status::Splitting;
-    unit.task = None;
     unit.since = now;
     unit.history.push(Attempt {
         attempt: unit.attempts,
@@ -184,7 +201,13 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
         why: "timeout".to_owned(),
         detail: String::new(),
         at: now,
+        branch: unit.branch.clone(),
+        task: unit.task.clone(),
     });
+    attempt_record::post(ctx, st, uid, &Ending::split(text));
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.task = None;
+    }
     ctx.log(&format!("split-requested {uid}"));
 }
 
@@ -331,7 +354,7 @@ fn collect_one(
         return;
     }
     if state == Some("timeout") || detail.is_some_and(|d| d.starts_with("timeout")) {
-        split(ctx, st, uid, &receipt(ctx, task));
+        split(ctx, st, uid, &receipt_full(ctx, task));
         return;
     }
     if state.is_none() && ctx.now().saturating_sub(since) < RECONCILE_GRACE {
@@ -350,15 +373,21 @@ fn collect_one(
 
 /// The delivered path: the worker's branch reached the remote, so the unit
 /// is delivered — unless the receipt shows the agent was killed by its
-/// budget, which means split.
+/// budget, which means split, or exited nonzero, which makes the attempt a
+/// failed one (its branch is kept and recorded, never merged).
 fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state: Option<&str>) {
-    let text = if state == Some("finished") {
-        receipt(ctx, task)
+    let full = if state == Some("finished") {
+        receipt_full(ctx, task)
     } else {
         String::new()
     };
-    if is_exit_124(&text) {
-        split(ctx, st, uid, &text);
+    if is_timeout(&full) {
+        split(ctx, st, uid, &full);
+        return;
+    }
+    if let Some(code) = attempt_record::agent_exit(&full).filter(|code| *code != 0) {
+        let why = format!("finished/agent exit {code}");
+        fail_with(ctx, st, uid, &why, &tail(&full, 3000), Some(&full));
         return;
     }
     let now = ctx.now();
@@ -375,12 +404,14 @@ fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state
         unit.since = now;
         (secs, model, pool)
     };
+    let receipt = (!full.is_empty()).then_some(full.as_str());
+    attempt_record::post(ctx, st, uid, &Ending::delivered(receipt));
     ctx.log(&format!(
         "delivered {uid} {branch} secs={secs} model={model} pool={pool}"
     ));
 }
 
-/// No remote branch: split on exit 124, accept a no-defect verdict, else
+/// No remote branch: split on exit 124 or 137, accept a no-defect verdict, else
 /// fail the attempt.
 fn fail_from_receipt(
     ctx: &Ctx,
@@ -390,9 +421,10 @@ fn fail_from_receipt(
     state: Option<&str>,
     detail: Option<&str>,
 ) {
-    let text = receipt(ctx, task);
-    if is_exit_124(&text) {
-        split(ctx, st, uid, &text);
+    let full = receipt_full(ctx, task);
+    let text = tail(&full, 6000);
+    if is_timeout(&full) {
+        split(ctx, st, uid, &full);
         return;
     }
     if text.contains(NO_DEFECT_MARKER) {
@@ -402,12 +434,13 @@ fn fail_from_receipt(
             unit.status = Status::NoDefect;
             unit.verdict_text = Some(verdict);
         }
+        attempt_record::post(ctx, st, uid, &Ending::no_defect(&full));
         ctx.exception("no-defect", uid, &exc);
         crate::pump::quarantine::repair_no_defect(ctx, st, uid);
         return;
     }
     let why = format!("{}/{}", state.unwrap_or("None"), detail.unwrap_or("None"));
-    fail(ctx, st, uid, &why, &text);
+    fail_with(ctx, st, uid, &why, &text, Some(&full));
 }
 
 /// Park units whose split planner never answered.
@@ -456,7 +489,7 @@ fn still_on_pool(ctx: &Ctx, task: &str) -> bool {
 
 /// True when `git ls-remote` lists the branch on the configured remote.
 #[must_use]
-fn remote_has(ctx: &Ctx, branch: &str) -> bool {
+pub(crate) fn remote_has(ctx: &Ctx, branch: &str) -> bool {
     let out = ctx.git(
         &format!(
             "ls-remote {} refs/heads/{}",
@@ -470,7 +503,7 @@ fn remote_has(ctx: &Ctx, branch: &str) -> bool {
 
 /// A local worktree target commits its result branch directly into the
 /// target integration clone instead of pushing it to the configured remote.
-fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
+pub(crate) fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
     if ctx.cfg.targets.is_empty() {
         return false;
     }
@@ -486,8 +519,13 @@ fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
 
 /// True when the text marks the agent as killed by its budget timeout.
 #[must_use]
-fn is_exit_124(text: &str) -> bool {
-    EXIT_124_MARKERS.iter().any(|marker| text.contains(marker))
+fn is_timeout(text: &str) -> bool {
+    matches!(attempt_record::agent_exit(text), Some(124 | 137))
+        || text.lines().any(|line| {
+            line.strip_prefix("agent_rc ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .is_some_and(|code| matches!(code, "124" | "137"))
+        })
 }
 
 /// `SPLIT_PROMPT` with the pump home and the unit handle substituted.
@@ -500,7 +538,7 @@ fn split_prompt(ctx: &Ctx, uid: &str) -> String {
 
 /// The last `max` characters of `text` (Python's `text[-max:]`).
 #[must_use]
-fn tail(text: &str, max: usize) -> String {
+pub(crate) fn tail(text: &str, max: usize) -> String {
     let count = text.chars().count();
     if count <= max {
         text.to_owned()

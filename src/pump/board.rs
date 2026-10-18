@@ -507,7 +507,7 @@ fn unit_list(st: &State, units: &[String], commits: bool) -> String {
 
 /// Write the body to `<home>/board/reply-<h>-<stage>.txt` and run `mail
 /// reply` from the reply identity; true when the reply succeeded.
-fn send_reply(ctx: &Ctx, handle: &str, stage: &str, body: &str) -> bool {
+pub(crate) fn send_reply(ctx: &Ctx, handle: &str, stage: &str, body: &str) -> bool {
     let dir = ctx.home.join("board");
     drop(fs::create_dir_all(&dir));
     let path = dir.join(format!("reply-{handle}-{stage}.txt"));
@@ -562,7 +562,8 @@ pub fn board(ctx: &Ctx, st: &mut State) {
     expire_planning(ctx, st);
     let mut replan = replan_answered(ctx, st, &rows);
     launch_planners(ctx, st, &rows, &approved, &mut replan);
-    if post_replies(ctx, st, &rows) {
+    let said = post_replies(ctx, st, &rows);
+    if std::mem::take(&mut st.board.sync_pending) || said {
         spawn_sync_push(ctx);
     }
     crate::pump::amend::detect(ctx, st);
@@ -570,7 +571,7 @@ pub fn board(ctx: &Ctx, st: &mut State) {
 }
 
 /// Start the detached drain push that ships the replies just posted.
-fn spawn_sync_push(ctx: &Ctx) {
+pub(crate) fn spawn_sync_push(ctx: &Ctx) {
     let project = shell_quote(&ctx.project.to_string_lossy());
     let core = format!(
         "{} sync push --since {} --drain --project {project}",
