@@ -1,6 +1,6 @@
 ---
 name: vivi
-description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, the remote lane pool (`vivi pool`: machines or containers that run a task and push a branch), the pump (`vivi pump`: an unattended loop that plans, dispatches, merges and gates a backlog), and the local model proxy (`vivi proxy`: one loopback front door for provider adapters).
+description: Use the Vivi CLI for project mailspaces, roles, goals, work graphs, the remote lane pool (`vivi pool`: machines or containers that run a task and push a branch), the pump (`vivi pump`: an unattended loop that plans, dispatches, merges and gates a backlog), the local model proxy (`vivi proxy`: one loopback front door for provider adapters), and self-update (`vivi update`).
 ---
 
 # Vivi
@@ -383,6 +383,9 @@ of contents before the thread: one line for the item, then one indented
 line per reply (date, handle, subject). The outline reads message rows
 only, so it lists every reply in the thread even when the message blocks
 below stop at the 50-message thread cap; `--json` and `--latest` skip it.
+`need show --newest N` prints the newest N messages of the whole thread,
+oldest first (text or `--json`). `--latest` is the single-message form
+and exists on `need`, `want`, and `task` show.
 
 This is local-first. It works with no `[sync]`; the server only carries
 letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
@@ -1874,10 +1877,13 @@ guide and a summary, not a replacement.
 vivi pump run      # loop: one tick, then sleep `tick` seconds, until stopped
 vivi pump once     # exactly one tick, then exit
 vivi pump status   # print <home>/status.txt plus control mode; no pump lock
-vivi pump log      # last 50 lines of <home>/log.txtvivi pump pause    # keep the process alive; skip dispatch and gate work
+vivi pump log [-n N] [-f] [--lane L] [--unit U] [--grep TEXT] [--exceptions]
+vivi pump pause    # keep the process alive; skip dispatch and gate work
 vivi pump resume   # resume a paused pump
 vivi pump stop     # finish the current tick, then exit
 vivi pump start    # enable the pump; the service starts it when registered
+vivi pump closeout [--close <handle> --for <identity>]
+vivi pump export --json <path>
 vivi pump priority set <need> <level>  # higher = dispatched and merged sooner; 0 removes
 vivi pump priority clear <need>
 vivi pump priority list                # `need level` lines, highest first
@@ -2387,17 +2393,26 @@ omitted, native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
 ## Self-update
 
 `vivi update` installs a public GitHub release as `vivi-<version>` and
-points a relative `vivi` symlink at it. `--check` compares this binary to
-the newest public `v*` release (exit 1 when an update exists). `--version`
-pins or rolls back. `--prefix` writes under `<PREFIX>/bin` (install.sh
+points a relative `vivi` symlink at it under `<prefix>/bin` (install.sh
 defaults to a user-local bin directory, never a project mailspace).
-`--adopt` / `--force` moves a plain-file `vivi` aside (`vivi.unmanaged`)
-instead of refusing; it never deletes that file. `--base-url` points at a
-local mirror. `vivi versions` lists installs; `vivi uninstall` removes
-only `vivi-<semver>` files and the `vivi` symlink in that directory
-(shared bins hold other tools), and refuses a path inside a mailspace. A
+
+```sh
+vivi update --check              # exit 1 when a newer public v* exists; 2 on fetch failure
+vivi update                      # install that release and flip the symlink
+vivi update --version 14.0.0     # pin or roll back
+vivi update --adopt              # also --force: move a plain-file vivi to vivi.unmanaged
+vivi versions                    # list versioned installs; * is active
+vivi uninstall --version 14.0.0  # only vivi-<semver> and the vivi symlink
+vivi uninstall --all
+```
+
+`--prefix DIR` writes under `<DIR>/bin`. `--base-url` points at a local
+mirror. `--adopt` / `--force` without `--prefix` installs under the
+default user-local bin and moves a plain-file `vivi` aside; it never
+deletes that file. `uninstall` refuses a path inside a mailspace. A
 cargo-installed plain file is refused unless `--prefix` or `--adopt` is
-given.
+given. POSIX `install.sh` uses the same layout and the same `--adopt` /
+`--force` refuse-or-move rule.
 
 ## Watches and Cycle Intake
 

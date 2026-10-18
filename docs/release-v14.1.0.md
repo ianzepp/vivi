@@ -37,6 +37,11 @@ installs under `~/.local/bin` and moves a plain-file `vivi` aside to
 `vivi-<semver>` files and the `vivi` symlink in that shared bin
 directory, and refuses a bin dir that is or sits inside a mailspace.
 
+The embedded `vivi`, `tugboat`, and `speedboat` skills match this CLI:
+self-update and `install.sh --adopt` live in the vivi skill; tugboat and
+speedboat pick up `graph blocked`, `need show --newest`, and `step` as
+loop intake.
+
 ## Compatibility
 
 - Pump database schema: unchanged (6).

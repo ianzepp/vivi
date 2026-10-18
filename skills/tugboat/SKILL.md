@@ -1856,6 +1856,11 @@ identity tokens such as `mind`, `operator`, `hand`, `planner`, `auditor`,
 ```bash
 # The project frame in one read (Mind boot, reorientation, and Cadence's tick)
 vivi boot --project "$ROOT"
+vivi step --project "$ROOT" --json
+vivi board --for mind --project "$ROOT" --process --graph
+vivi graph ready --project "$ROOT"
+vivi graph blocked --project "$ROOT" --kind need
+vivi rule list --project "$ROOT"
 
 # List open items for a class role (Mind view — workers do not do this)
 vivi task list --for hand --project "$ROOT" --status open
@@ -1869,6 +1874,7 @@ vivi mail list --for operator --project "$ROOT"      # human escalations
 # Show an item by handle
 vivi task show <handle> --project "$ROOT"
 vivi mail show <handle> --project "$ROOT"
+vivi need show <handle> --newest 20 --project "$ROOT"   # newest N of a long thread
 
 # View the class board (Mind). A worker uses task show on its handle only.
 vivi board --for hand --project "$ROOT"
