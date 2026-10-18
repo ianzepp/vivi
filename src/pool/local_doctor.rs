@@ -9,8 +9,9 @@ use super::local_git::Repo;
 use super::local_proc;
 
 pub const GROUP: &str = "Provider (local)";
-/// Free space below which a warning is given, in GiB.
-const LOW_DISK_GIB: u64 = 5;
+/// Free space below which a warning is given, in GiB (same floor as
+/// [`super::clean_rule::DISK_RECLAIM_GIB`]).
+const LOW_DISK_GIB: u64 = super::clean_rule::DISK_RECLAIM_GIB;
 const KIB_PER_GIB: u64 = 1024 * 1024;
 /// Programs the scripts need on this machine.
 const TOOLS: [&str; 6] = ["bash", "git", "tar", "ps", "df", "date"];

@@ -285,6 +285,7 @@ impl<'a> World<'a> {
             start,
             progress: self.progress,
             ready_timeout: None,
+            reset_base: None,
         };
         let record = work::submit(
             &self.space,

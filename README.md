@@ -186,7 +186,12 @@ the same state on every checkout.
 task and push a branch. Providers: `fly` (the default), `docker`, `ssh`, `local`
 and `runpod`. `pool dispatch <task>` uses the task body as the brief, claims a
 free slot, starts the configured agent harness and returns at once; `pool wait`
-and `pool reconcile` collect results. A role's band (`P0` to `P5`, from its
+and `pool reconcile` collect results. `pool clean [--dry-run]` reclaims a free
+slot's build output when it exceeds twice its post-fresh-build baseline, and
+recycles worktrees once pump marks the unit merged into its merge lane (not
+main), resetting each slot onto a freshly fetched origin/`[pump] main` (or
+`--base`). `pool reset` does that reset alone. A local dispatch refuses when
+the volume stays under 10 GiB free. A role's band (`P0` to `P5`, from its
 `model` field or a `band:` line in the task body) selects the model from the
 pool's `bands` table.
 
@@ -217,7 +222,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `cycle` | `cycle intake --for <role>`: cycle intake for a role, with an optional cursor file |
 | `sync` | Needs a server: `push`, `pull`, `resync`, `fetch`, `join`, `create`, `directory`, `vouch`, `api-key mint\|list\|revoke`. Local: `status`, `key`, `prune`, `keep-local` |
 | `mcp` | Needs a server: a stdio bridge to the project server's MCP endpoint |
-| `pool` | `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `doctor` |
+| `pool` | `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor` |
 | `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`) |
 | `proxy` | Local loopback front door for model providers: `run`, `install`, `uninstall`, `status`, `log`, `providers`, `check` |
 | `skills` | `list`, `show <name> [--file <path>]`, `install <dir> [--force]` for the skills embedded in the binary; needs no mailspace |

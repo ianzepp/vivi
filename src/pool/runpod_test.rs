@@ -319,6 +319,7 @@ fn dispatch_collect_terminate_confirm_absent_against_the_engine() {
         start: &"c".repeat(40),
         progress: &progress,
         ready_timeout: None,
+        reset_base: None,
     };
     let record = dispatch(&r.provider, &r.id, &launch, NOW, &pacing()).unwrap();
     assert_eq!(record.pool, "gpu");
@@ -369,6 +370,7 @@ fn a_dispatch_records_the_pods_it_gave_up_on_before_the_one_that_works() {
         start: &"c".repeat(40),
         progress: &progress,
         ready_timeout: Some(30),
+        reset_base: None,
     };
     let record = dispatch(&r.provider, &r.id, &launch, NOW, &pacing()).unwrap();
     assert!(
@@ -405,6 +407,7 @@ fn a_dispatch_that_loses_the_last_claim_check_leaves_no_pod_of_its_own() {
         start: &"c".repeat(40),
         progress: &progress,
         ready_timeout: None,
+        reset_base: None,
     };
     // A rival with our index, made before ours, is not in the listing when the
     // dispatch first checks, and is by the time the job is about to start.

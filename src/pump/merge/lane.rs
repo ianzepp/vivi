@@ -12,9 +12,10 @@
 //! Lane 0 of a target works in the target's own integration checkout. Every
 //! other lane `n` works in its own clone at
 //! `<home>/merge-lanes/<target>/<n>`, created on first use by that lane's
-//! first batch ([`ensure_checkout`]) and kept afterwards; nothing retires or
-//! prunes those clones. A lane that cannot work (see [`LANE_FAILS`]) is left
-//! alone for [`LANE_BACKOFF_SECS`] instead of being retired.
+//! first batch ([`ensure_checkout`]) and kept afterwards while the lane has
+//! unlanded work; pool clean applies the 2x rule to their build output and
+//! does not delete the clones. A lane that cannot work (see [`LANE_FAILS`])
+//! is left alone for [`LANE_BACKOFF_SECS`] instead of being retired.
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

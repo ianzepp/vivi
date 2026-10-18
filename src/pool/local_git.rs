@@ -1,9 +1,9 @@
 //! Git as the `local` provider uses it against the repository a worktree pool
 //! is made from.
 //!
-//! Only four commands change that repository: `git worktree add`, `git
-//! worktree remove`, `git worktree prune` and the single-branch `git fetch`
-//! of [`Repo::fetch_remote_branch`], which writes one remote-tracking ref.
+//! Commands that change that repository: `git worktree add`, `git
+//! worktree remove`, `git worktree prune`, `git branch -d` of a merged scratch
+//! branch, and the single-branch `git fetch` of [`Repo::fetch_remote_branch`].
 //! Everything else here is a read-only query. The three run under a lock (see [`Repo::lock`]) so that
 //! two of them, in this process or in another `vivi`, never run at once.
 //! Every command that changes the state of a checkout runs inside a slot's
@@ -300,6 +300,14 @@ impl Repo {
             .map(drop)
     }
 
+    /// Point this checkout at `rev` on a detached HEAD.
+    ///
+    /// # Errors
+    /// Returns an error if Git refuses the checkout.
+    pub fn checkout_detach(&self, rev: &str) -> Result<(), VivariumError> {
+        self.run(&["checkout", "-q", "--detach", rev]).map(drop)
+    }
+
     /// Remove the worktree at `dest` through Git, whatever it holds, and then
     /// prune the entries of worktrees whose directory is gone. Never touches
     /// a branch.
@@ -313,6 +321,67 @@ impl Repo {
             self.run(&["worktree", "remove", "--force", &dest])?;
         }
         self.run(&["worktree", "prune"]).map(drop)
+    }
+
+    /// Remove a worktree only if Git considers it clean enough to drop
+    /// without `--force`, then prune gone entries.
+    ///
+    /// # Errors
+    /// Returns an error if Git refuses (dirty tree, locked, ...).
+    pub fn remove_worktree_clean(&self, dest: &Path) -> Result<(), VivariumError> {
+        let _held = self.lock()?;
+        if dest.exists() {
+            let dest = dest.to_string_lossy();
+            self.run(&["worktree", "remove", &dest])?;
+        }
+        self.run(&["worktree", "prune"]).map(drop)
+    }
+
+    /// Paths `git status --porcelain` names in this checkout.
+    ///
+    /// # Errors
+    /// Returns an error if Git cannot run.
+    pub fn dirty_paths(&self) -> Result<Vec<String>, VivariumError> {
+        let text = self.run(&["status", "--porcelain"])?;
+        Ok(text
+            .lines()
+            .filter_map(|line| {
+                let rest = line.get(2..)?;
+                let path = rest.strip_prefix(' ').unwrap_or(rest).trim();
+                (!path.is_empty()).then(|| path.replace(" -> ", " "))
+            })
+            .collect())
+    }
+
+    /// True when `commit` is an ancestor of `of` (or they are the same).
+    #[must_use]
+    pub fn is_ancestor(&self, commit: &str, of: &str) -> bool {
+        self.run(&["merge-base", "--is-ancestor", commit, of])
+            .is_ok()
+    }
+
+    /// Commits reachable from `head` and not from `base`, newest first, at
+    /// most 20.
+    ///
+    /// # Errors
+    /// Returns an error if Git cannot run.
+    pub fn commits_ahead(&self, head: &str, base: &str) -> Result<Vec<String>, VivariumError> {
+        let spec = format!("{base}..{head}");
+        let text = self.run(&["rev-list", "--max-count=20", &spec])?;
+        Ok(text
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Delete a local branch that Git considers merged (`git branch -d`).
+    ///
+    /// # Errors
+    /// Returns an error if the branch is not merged or Git refuses.
+    pub fn delete_merged_branch(&self, name: &str) -> Result<(), VivariumError> {
+        let _held = self.lock()?;
+        self.run(&["branch", "-d", name]).map(drop)
     }
 
     /// Prune the entries of worktrees whose directory is gone.

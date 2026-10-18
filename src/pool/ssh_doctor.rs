@@ -6,8 +6,9 @@ use super::doctor::Check;
 use super::ssh::SshProvider;
 
 pub const GROUP: &str = "Provider (SSH)";
-/// Free space below which a warning is given, in GiB.
-const LOW_DISK_GIB: u64 = 5;
+/// Free space below which a warning is given, in GiB (same floor as the
+/// local dispatch reclaim guard).
+const LOW_DISK_GIB: u64 = super::clean_rule::DISK_RECLAIM_GIB;
 const KIB_PER_GIB: u64 = 1024 * 1024;
 
 /// What the host said about itself in one call.

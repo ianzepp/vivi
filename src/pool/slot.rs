@@ -124,6 +124,9 @@ pub struct SlotStatus {
     pub provider_state: String,
     pub index: Option<u32>,
     pub base: Option<String>,
+    /// Origin branch last reset onto (`marks/base_ref`), when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
     /// Handle of the task holding the slot, when claimed.
     pub task: Option<String>,
     /// When the task claimed the slot (epoch seconds).
@@ -194,6 +197,7 @@ pub fn pool_slots(id: &PoolId, machines: &[MachineRecord]) -> Vec<SlotStatus> {
             provider_state: m.state.clone(),
             index: slot_index(m),
             base: m.metadata.get(META_BASE).cloned(),
+            base_ref: m.metadata.get("base_ref").cloned(),
             task: m.metadata.get(META_TASK).cloned(),
             claimed_at: m
                 .metadata

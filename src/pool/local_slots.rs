@@ -313,7 +313,11 @@ pub fn claim(dir: &Path, task: &str, now: u64) -> Result<Option<Hold>, VivariumE
     let linked = std::fs::hard_link(&tmp, dir.join("claim"));
     std::fs::remove_file(&tmp).map(drop).unwrap_or_default();
     match linked {
-        Ok(()) if free_now(dir) => Ok(Some(Hold { nonce })),
+        Ok(()) if free_now(dir) => {
+            let _ignored =
+                super::clean_rule::write_mark(dir, super::clean_rule::MARK_LAST_TASK, task);
+            Ok(Some(Hold { nonce }))
+        }
         Ok(()) => {
             std::fs::remove_file(dir.join("claim"))
                 .map(drop)

@@ -22,6 +22,10 @@ pub enum PoolSubcommand {
     Reconcile(PoolReconcileCommand),
     /// Check the pools, their providers and repositories, naming the fix for each finding; read-only unless --test (which needs --pool when there are several)
     Doctor(PoolDoctorCommand),
+    /// Reclaim disposable build output and recycle finished work lanes
+    Clean(PoolCleanCommand),
+    /// Reset a free slot onto a freshly fetched origin branch
+    Reset(PoolResetCommand),
 }
 
 #[derive(Debug, Args)]
@@ -238,6 +242,51 @@ pub struct PoolScaleCommand {
     pub porcelain: bool,
 
     /// Pool name (`[pools.<name>]`); optional when the mailspace has one pool
+    #[arg(long)]
+    pub pool: Option<String>,
+
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolCleanCommand {
+    /// Report reclaimable space and stay put
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Print only result lines in a fixed format, for scripts and agents
+    #[arg(long)]
+    pub porcelain: bool,
+
+    /// Pool name (`[pools.<name>]`); without it, every pool
+    #[arg(long)]
+    pub pool: Option<String>,
+
+    /// Origin branch to restore recycled work lanes onto (default: [pump] main)
+    #[arg(long)]
+    pub base: Option<String>,
+
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolResetCommand {
+    /// Slot name or machine id
+    pub slot: Option<String>,
+
+    /// Origin branch to fetch (default: [pump] main)
+    #[arg(long)]
+    pub base: Option<String>,
+
+    /// Print only result lines in a fixed format, for scripts and agents
+    #[arg(long)]
+    pub porcelain: bool,
+
+    /// Reset every free slot in this pool
     #[arg(long)]
     pub pool: Option<String>,
 

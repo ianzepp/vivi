@@ -78,6 +78,9 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         (None, _) => remote_start(config, &id.pool, &mut plan, &flags, &progress)?,
     };
     warn_missing_env(provider, config);
+    if handle.config.provider == "local" {
+        vivi::pool::clean::guard_before_dispatch(&space, &id.pool)?;
+    }
     mint_bridge_grant(config, &space, &id.pool, &job_id, &mut plan, &progress)?;
     claim_note(provider, &id.pool, &progress);
     let made = submit_job(
@@ -91,6 +94,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         &progress,
         ready_timeout,
     )?;
+    note_last_branch(config, &made.machine, &plan.refs.branch);
     note_uncollected(provider, config, ready_timeout, &made, &progress);
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
@@ -149,9 +153,25 @@ fn submit_job(
         start,
         progress,
         ready_timeout,
+        reset_base: dispatch_reset_base(space, &plan.task),
     };
     work::submit(space, provider, id, &launch, &pacing)
         .inspect_err(|_| undo_bridge_grant(space, plan.bridge.as_ref()))
+}
+
+fn dispatch_reset_base(space: &Mailspace, task: &str) -> Option<String> {
+    let st = vivi::pool::clean_pump::load_state(space);
+    let unit = st
+        .as_ref()
+        .and_then(|s| vivi::pool::clean_pump::unit_for(s, Some(task), None));
+    let chosen = vivi::pool::reset::choose_base(
+        space,
+        None,
+        unit,
+        st.as_ref(),
+        vivi::pool::reset::ResetKind::Dispatch,
+    );
+    Some(chosen.name)
 }
 
 /// Note, on a per-dispatch host, when an uncollected pod gives up its job.
@@ -171,6 +191,16 @@ fn note_uncollected(
         (made.at, made.budget),
     );
     progress.say(&vivi::pool::runpod_open::uncollected_note(made, deadline));
+}
+
+/// Record the job branch on a local slot so later clean can recycle it.
+fn note_last_branch(config: &vivi::pool::PoolConfig, machine: &str, branch: &str) {
+    if config.provider != "local" || branch.is_empty() {
+        return;
+    }
+    let dir = vivi::pool::local_slots::expand_root(config.local.root_or_default()).join(machine);
+    let _ignored =
+        vivi::pool::clean_rule::write_mark(&dir, vivi::pool::clean_rule::MARK_LAST_BRANCH, branch);
 }
 
 /// What the dispatch says it is about to do to the pool: rent a pod (slots

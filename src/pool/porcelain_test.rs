@@ -1,5 +1,6 @@
 use super::*;
 use crate::pool::doctor::Status;
+use crate::pool::slot::SlotStatus;
 
 fn round_line(task: &str, state: &'static str, detail: &str) -> RoundLine {
     RoundLine {
@@ -154,6 +155,7 @@ fn status_lines() {
         provider_state: "started".into(),
         index: Some(1),
         base: Some("abc".into()),
+        base_ref: None,
         task: Some("3f2a".into()),
         claimed_at: None,
         read_only: None,
@@ -281,6 +283,7 @@ fn scale_lines() {
         provider_state: "started".into(),
         index: Some(4),
         base: None,
+        base_ref: None,
         task: Some("3f2a".into()),
         claimed_at: None,
         read_only: None,
@@ -331,4 +334,71 @@ fn a_dispatch_that_gave_up_on_pods_ends_with_their_count_and_approximate_cost() 
         ..made
     };
     assert!(dispatched("3f2a", &unpriced).ends_with(" write 2 -"));
+}
+
+#[test]
+fn clean_lines_name_kind_bytes_and_dry_run() {
+    let action = crate::pool::clean::CleanAction {
+        pool: "lanes".into(),
+        slot: "slot-1".into(),
+        kind: crate::pool::clean::ActionKind::Build,
+        bytes: 100,
+        path: "/p/repo/target".into(),
+        note: "over 2x baseline".into(),
+    };
+    assert_eq!(
+        cleaned(false, &action),
+        r#"cleaned lanes slot-1 build 100 /p/repo/target "over 2x baseline""#
+    );
+    assert!(cleaned(true, &action).starts_with("would "));
+    let skip = crate::pool::clean::CleanSkip {
+        pool: "lanes".into(),
+        slot: "slot-1".into(),
+        kind: crate::pool::clean::ActionKind::Worktree,
+        reason: "uncommitted changes".into(),
+    };
+    assert_eq!(
+        clean_skip(&skip),
+        r#"skipped lanes slot-1 worktree "uncommitted changes""#
+    );
+    assert_eq!(clean_summary(2, 1, 100), "summary 2 1 100");
+}
+
+#[test]
+fn reset_lines_name_the_origin_base() {
+    let out = crate::pool::reset::ResetOutcome {
+        base_ref: "main".into(),
+        sha: "abc123def456".into(),
+        why: "default-main",
+    };
+    assert_eq!(
+        reset_line("lanes", "slot-1", &out),
+        "reset lanes slot-1 main abc123def456 default-main"
+    );
+    assert_eq!(
+        reset_skip("lanes", "slot-1", "next", "origin/next is missing"),
+        r#"skipped lanes slot-1 reset "next: origin/next is missing""#
+    );
+    let named = SlotStatus {
+        pool: "p".into(),
+        name: "p-slot-1".into(),
+        id: "m1".into(),
+        state: "free".into(),
+        provider_state: "stopped".into(),
+        index: Some(1),
+        base: Some("abc123def456".into()),
+        base_ref: Some("main".into()),
+        task: None,
+        claimed_at: None,
+        read_only: None,
+        running_secs: None,
+        budget_secs: None,
+        created_at: "2026-10-11T10:00:00Z".into(),
+        region: "iad".into(),
+        arch: None,
+    };
+    assert_eq!(
+        slot(&named),
+        "slot p p-slot-1 m1 free - - - main@abc123def456 - 2026-10-11T10:00:00Z -"
+    );
 }

@@ -674,6 +674,8 @@ vivi pool dispatch --pool <name> <task> [--target <id>] [--model <slug>] [--from
 vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>] [--budget SECS] [--porcelain]
 vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
 vivi pool reconcile [--pool <name>] [--porcelain]
+vivi pool clean [--pool <name>] [--dry-run] [--base <branch>] [--porcelain]
+vivi pool reset [<slot>] [--pool <name>] [--base <branch>] [--porcelain]
 vivi pool doctor [--pool <name>] [--json | --porcelain]
 vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]
 ```
@@ -877,6 +879,11 @@ reconcile  reconciled TASK POOL SLOT STATE DETAIL                  STATE: runnin
            nothing-open                                            no dispatch was open
 doctor     check POOL STATUS GROUP NAME DETAIL FIX MILLIS          STATUS: ok|warn|fail|skipped
            summary POOL OK WARN FAIL SKIPPED                       one per pool
+clean      cleaned POOL SLOT KIND BYTES PATH NOTE                  KIND: build|worktree|target|branch|orphan|lane-build
+           would POOL SLOT KIND BYTES PATH NOTE                    dry-run
+           skipped POOL SLOT KIND REASON
+           disk FREE_BYTES
+           summary ACTIONS SKIPS BYTES
 ```
 
 **Changed from the single-pool formats:** every line gained `POOL`. `home`,
@@ -929,14 +936,14 @@ when any check fails; warnings alone exit zero. `--json` gives the same data
   shell); it is Linux and has `git`, `tar`, `setsid`, `timeout`, `sha256sum`,
   `ps` (a missing tool is a `fail` naming it; nothing is installed for you); the
   root exists and is writable or can be created under a writable directory;
-  free disk space is reported (`warn` under 5 GiB); the architecture is
+  free disk space is reported (`warn` under 20 GiB); the architecture is
   reported; every `harness.env` name is set in the login environment of
   the host (`warn` names the unset ones). Nothing is created on the host.
 - **Provider (local)**: this is macOS or Linux (`ok`, with a reminder that there
   is no isolation); `bash`, `git`, `tar`, `ps`, `df` and `date` are on PATH;
   `ps` lists processes (the slots' processes are found and ended with it); the
   root exists and is writable or can be created under a writable directory
-  (`doctor` creates nothing); free disk space is reported (`warn` under 5 GiB);
+  (`doctor` creates nothing); free disk space is reported (`warn` under 20 GiB);
   the source is reported: fetch mode, or worktree mode with the repository's
   path, worktree count, primary branch and default branch (`fail` when
   `worktree_of` is not a Git repository); every `harness.env` name is set in
@@ -1267,7 +1274,40 @@ slots = 4
   both the group and the tree is not found on macOS (the hard time limit still
   applies).
 - **Build output.** The `build_dir` (when named) is a plain persistent directory
-  per slot, so a fixed pool of N slots holds at most N build directories.
+  per slot, so a fixed pool of N slots holds at most N build directories. Those
+  directories are disposable and self-limiting: after a fresh seed (or the first
+  observed post-job size) the byte size is stored as `marks/build_baseline`, and
+  when a free slot's `build_dir` or Cargo `target/` exceeds **twice that
+  baseline** (the 2x rule; a missing mark uses a 4 GiB hint so a leftover 90 GiB
+  `target/` cannot become its own baseline) the contents are deleted. Cleanup
+  runs between jobs, before dispatch when free space is under 20 GiB, and from
+  `vivi pool clean`. A slot that is claimed or whose boot process is alive is
+  never touched. Source changes and unmerged commits stay.
+- **Work-lane recycle.** Pump `merged` means the unit landed on its
+  **integration / merge-lane branch**, not on main (`Not reviewed. Not on main.`
+  in the need reply). At that moment a free slot that last served the unit has
+  its git worktree removed (`git worktree remove`, then prune), its
+  `targets/<hash>` caches dropped, a purely local `unit/…` scratch branch
+  deleted when it is contained in the merge lane, and a fresh detached worktree
+  restored at **origin/`[pump] main`** (fetched first; not a stale local ref or
+  the old seed commit). `--base` on `vivi pool clean` or `vivi pool reset`
+  overrides that branch. Dispatch-time slot prep also reset-fetches: it uses
+  `unit.base` (a repair/quarantine branch), else origin/`next` when `after`
+  deps are not yet merged, else the last `history.branch` (a retry on a prior
+  hand's work), else origin/`[pump] main`. Recycle after merge always defaults
+  to main — pump does not know the next occupant. Remote (fly/docker/ssh)
+  slots get the same fetch+checkout via `pool reset` / dispatch; after-merge
+  recycle is local-worktree only. A missing origin branch fails that reset
+  and leaves the slot free and clean — no silent fallback. Marks `base_ref`
+  and `base_sha` record the choice; `vivi pool status` shows `main@<sha>`. A
+  dirty tree or commits not contained in the merge lane are reported, never
+  deleted.
+  `vivi pool clean` also sweeps source-repo worktrees that point at the pool
+  root whose units are done, and prunes gone entries. The merge lane's own
+  checkout is kept while it has unlanded work; the 2x rule still applies to
+  its build output.
+- **Free-disk guard.** A local dispatch first reclaims free slots when the
+  volume has under 20 GiB free, then refuses if it is still under 10 GiB.
 - **State** is the marks (small files in the slot directory) and the claim (a
   hard link of a complete file, atomic across processes); nothing else is kept.
   Harness `env` values are read from the environment of the `vivi` process when
