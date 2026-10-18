@@ -41,9 +41,9 @@ pub struct PoolConfig {
     /// Machine host: `fly`, `docker`, `ssh`, `local` or `runpod`.
     #[serde(default = "default_provider")]
     pub provider: String,
-    /// Source repository, `owner/name`. Optional: a pool can be defined with
-    /// only its provider settings (for testing). `create`, `scale` (when it
-    /// creates) and `dispatch` need it, together with `github`.
+    /// Legacy default source repository, `owner/name`. Target jobs supply
+    /// their source separately. Shared slots can be created without a repo;
+    /// a legacy GitHub source requires `github`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
     /// Maximum pool size. On `runpod` there are no resting slots: this is the
@@ -504,7 +504,6 @@ impl PoolConfig {
         }
         match (&self.repo, &self.github) {
             (Some(_), None) => return Err(bad("github is required when repo is set")),
-            (None, Some(_)) => return Err(bad("repo is required when github is set")),
             _ => {}
         }
         if self.repo.is_some() && self.local.worktree_of.is_some() {

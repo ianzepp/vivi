@@ -106,6 +106,9 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         if note_hold(ctx, st, &uid, Status::Pending, dependency) {
             continue;
         }
+        if hold_unknown_target(ctx, st, &uid) {
+            continue;
+        }
         if report_unknown_kind(ctx, st, &uid) {
             continue;
         }
@@ -122,6 +125,35 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
             started += 1;
         }
     }
+}
+
+/// Park a unit whose target disappeared or no longer exists. Never let a
+/// stale target silently fall back to the workspace's default checkout.
+fn hold_unknown_target(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
+    let Some(unit) = st.units.get_mut(uid) else {
+        return false;
+    };
+    if ctx.cfg.target_configs().contains_key(unit.target_id()) {
+        if unit.status == Status::Held {
+            unit.status = Status::Pending;
+            ctx.log(&format!(
+                "target restored for {uid}; returning unit to pending"
+            ));
+        }
+        return false;
+    }
+    if unit.status == Status::Pending {
+        unit.status = Status::Held;
+        ctx.exception(
+            "unknown-target",
+            uid,
+            &format!(
+                "repository target `{}` is not configured; held before dispatch",
+                unit.target_id()
+            ),
+        );
+    }
+    true
 }
 
 /// `true` when the unit names a kind that is not defined, so it cannot be
@@ -240,12 +272,18 @@ fn dispatch_one(
     task: &str,
     free: &mut BTreeMap<String, u32>,
 ) -> bool {
+    let target = st.units.get(uid).map_or("default", |unit| unit.target_id());
+    let from = ctx.cfg.for_target(target).map_or_else(
+        || ctx.cfg.dispatch_from().to_string(),
+        |cfg| cfg.dispatch_from().to_string(),
+    );
     let cmd = format!(
-        "pool dispatch --pool {} {} --model {} --from {} --branch {} --budget {} --porcelain",
+        "pool dispatch --pool {} {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
         shell_quote(&plan.pool),
         shell_quote(task),
+        shell_quote(&st.units.get(uid).map_or("default", |unit| unit.target_id())),
         shell_quote(model),
-        shell_quote(ctx.cfg.dispatch_from()),
+        shell_quote(&from),
         shell_quote(&plan.branch),
         ctx.cfg.dispatch.budget,
     );

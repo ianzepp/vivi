@@ -1332,6 +1332,22 @@ fn parses_pool_dispatch_with_refs() {
 }
 
 #[test]
+fn parses_pool_dispatch_repository_target() {
+    use vivi::cli::PoolSubcommand;
+    let cli = Cli::try_parse_from([
+        "vivi", "pool", "dispatch", "abcd1234", "--target", "radix", "--model", "m/x",
+    ])
+    .unwrap();
+    let Command::Pool {
+        command: PoolSubcommand::Dispatch(dispatch),
+    } = cli.command
+    else {
+        panic!("expected pool dispatch");
+    };
+    assert_eq!(dispatch.target.as_deref(), Some("radix"));
+}
+
+#[test]
 fn parses_pool_doctor_test_and_long() {
     use vivi::cli::PoolSubcommand;
     let parse = |extra: &[&str]| {

@@ -54,12 +54,32 @@ impl Rig {
 
     /// Like [`Rig::run`], with `facts` as the pool's fact commands.
     fn run_with_facts(&self, harness: &str, build_dir: &str, facts: &[&str]) -> JobResult {
+        self.run_in_context(harness, build_dir, facts, &self.f.repo, None)
+    }
+
+    fn run_in_context(
+        &self,
+        harness: &str,
+        build_dir: &str,
+        facts: &[&str],
+        source: &Path,
+        target: Option<(&str, &str)>,
+    ) -> JobResult {
         let job = self.work.path().join("job");
+        if job.exists() {
+            std::fs::remove_dir_all(&job).unwrap();
+        }
         std::fs::create_dir_all(&job).unwrap();
-        let params = format!(
+        let mut params = format!(
             "REMOTE='file://{}'\nJOB='j1'\nTASK='t1'\nFROM='main'\nBRANCH=''\nDEPTH='1'\nBUDGET='60'\nMODEL='standin'\nSLOT='s1'\nSUBJECT='review'\nCOMMIT_NAME='Bot'\nCOMMIT_EMAIL='bot@localhost'\nENV_NAMES=''\nREAD_ONLY='1'\n",
-            self.f.repo.display()
+            source.display()
         );
+        if let Some((id, key)) = target {
+            params.push_str(&format!(
+                "TARGET='{id}'\nREPOSITORY='file://{}'\nCHECKOUT_KEY='{key}'\n",
+                source.display()
+            ));
+        }
         for (name, content) in [
             ("params.env", params.as_str()),
             ("token", ""),
@@ -344,4 +364,41 @@ fn a_job_without_facts_records_none() {
     let result = rig.run("cat a.txt", "build");
     assert!(result.facts().is_empty());
     assert!(result.fields.keys().all(|k| !k.starts_with("fact_")));
+}
+
+#[test]
+fn one_slot_reuses_isolated_target_caches_across_a_b_a_jobs() {
+    let rig = Rig::new();
+    let second = fixture();
+    std::fs::write(second.repo.join("a.txt"), "repository-b\n").unwrap();
+    git(&second.repo, &["commit", "-q", "-am", "B source"]);
+    let key_a = "a".repeat(64);
+    let key_b = "b".repeat(64);
+    let a = rig.run_in_context(
+        "mkdir -p build; echo A > build/cache; echo receipt",
+        "build",
+        &[],
+        &rig.f.repo,
+        Some(("a", &key_a)),
+    );
+    assert_eq!(a.push(), "read_only_unchanged");
+    let b = rig.run_in_context(
+        "test ! -f build/cache; grep repository-b a.txt; mkdir -p build; echo B > build/cache; echo receipt",
+        "build", &[], &second.repo, Some(("b", &key_b)),
+    );
+    assert_eq!(b.get("agent_rc"), "0");
+    assert_eq!(b.get("target"), "b");
+    let a_again = rig.run_in_context(
+        "grep '^A$' build/cache; grep one a.txt; echo receipt",
+        "build",
+        &[],
+        &rig.f.repo,
+        Some(("a", &key_a)),
+    );
+    assert_eq!(a_again.get("agent_rc"), "0");
+    assert_eq!(
+        a_again.get("repository"),
+        format!("file://{}", rig.f.repo.display())
+    );
+    assert_eq!(git(&rig.repo(), &["rev-parse", "HEAD"]), rig.start);
 }

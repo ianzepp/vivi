@@ -384,7 +384,12 @@ fn a_launched_planner_gets_the_need_file_and_the_prompt_and_is_recorded() {
     let home = ctx.home.display().to_string();
     let want_prompt = format!(
         "Plan one need, as your system prompt describes. Its thread is in {home}/needs/n1.json. \
-         Write {home}/plans/n1.json. Your final message is one line: handle, verdict, number of units."
+         Available repository targets (id and workspace-relative path): [{{\"id\":\"default\",\"path\":\".\"}}]. \
+         Every unit must name exactly one target from this list in its `target` field, and its `write_scope` \
+         must be relative to that repository. Do not make an `after` dependency cross targets: the pump \
+         cannot pass an unpublished branch from one repository into another; park the need if that handoff \
+         is required. Write {home}/plans/n1.json. Your final message is one line: \
+         handle, verdict, number of units."
     );
     assert_eq!(
         fs::read_to_string(ctx.home.join("board/n1.prompt")).unwrap(),
@@ -570,12 +575,12 @@ fn post_replies_sends_planned_once_and_merged_once() {
     let planned = fs::read_to_string(ctx.home.join("board/reply-n1-planned.txt")).unwrap();
     assert_eq!(
         planned,
-        "pump: planned. verdict: split; revision 1; 2 unit(s).\ntwo parts\n- u1 Unit one\n- u2 Unit two\n"
+        "pump: planned. verdict: split; revision 1; 2 unit(s).\ntwo parts\n- u1 [default] Unit one\n- u2 [default] Unit two\n"
     );
     let merged = fs::read_to_string(ctx.home.join("board/reply-n1-merged.txt")).unwrap();
     assert_eq!(
         merged,
-        "pump: every unit of this need is merged into branch next (r1).\n- u1 merged abcdef1234\n- u2 merged abcdef1234\nNot reviewed. Not on main.\n"
+        "pump: every unit of this need is merged into its target integration branch (r1).\n- u1 [default] merged abcdef1234\n- u2 [default] merged abcdef1234\nNot reviewed. Not on main.\n"
     );
     let mails = || {
         host.commands()
@@ -628,8 +633,8 @@ fn the_merged_reply_waits_until_every_unit_is_satisfied() {
     unit.commit = Some(String::from("2222222222bbbb"));
     assert!(post_replies(&ctx, &mut st, &rows));
     let merged = fs::read_to_string(ctx.home.join("board/reply-n2-merged.txt")).unwrap();
-    assert!(merged.contains("merged into branch next (r1)."));
-    assert!(merged.contains("- u2 merged 2222222222"));
+    assert!(merged.contains("merged into its target integration branch (r1)."));
+    assert!(merged.contains("- u2 [default] merged 2222222222"));
     assert_eq!(
         st.board.replied,
         vec![String::from("n2:planned"), String::from("n2:merged")]

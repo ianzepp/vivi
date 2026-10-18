@@ -403,6 +403,8 @@ fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
     let open = OpenDispatch {
         task: "aaaa1111".into(),
         record: DispatchRecord {
+            target: None,
+            repository: None,
             pool: "p".into(),
             slot: "p-slot-1".into(),
             machine: "m1".into(),

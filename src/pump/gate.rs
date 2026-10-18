@@ -329,7 +329,7 @@ fn waiting_for_external(ctx: &Ctx, st: &mut State) -> bool {
 /// records nothing; a successful one clears `FORCE-GATE` (when it forced the
 /// gate) and stores the run in `last_gate`.
 pub fn start_gate(ctx: &Ctx, st: &mut State) {
-    if st.last_gate.task.is_some() {
+    if st.has_active_gate() {
         return;
     }
     let force = ctx.flag(FORCE_FLAG);

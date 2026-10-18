@@ -85,6 +85,8 @@ pub struct Ctx {
     pub home: PathBuf,
     /// The repository checkout directory.
     pub repo: PathBuf,
+    /// Target ID for repository-specific operations.
+    pub target_id: String,
     /// The `vivi` executable to call.
     pub vivi: String,
     /// Prepended to every shell command (`""` means none).
@@ -111,6 +113,7 @@ impl Ctx {
             project,
             home,
             repo,
+            target_id: String::from("default"),
             vivi,
             shell_prefix,
         }
@@ -124,6 +127,26 @@ impl Ctx {
         let home = cfg.home_dir(&project);
         let repo = cfg.repo_dir(&project);
         Ctx::with_parts(cfg, host, project, vivi, shell_prefix, home, repo)
+    }
+
+    /// Build a context whose repository settings and integration checkout
+    /// belong to one configured target while sharing this workspace's pump
+    /// home, host, and mailspace.
+    #[must_use]
+    pub fn for_target(&self, id: &str) -> Option<Ctx> {
+        let cfg = self.cfg.for_target(id)?;
+        let repo = self.cfg.target_repo_dir(&self.project, id)?;
+        let mut target = Ctx::with_parts(
+            cfg,
+            self.host.clone(),
+            self.project.clone(),
+            self.vivi.clone(),
+            self.shell_prefix.clone(),
+            self.home.clone(),
+            repo,
+        );
+        target.target_id = id.to_string();
+        Some(target)
     }
 
     /// Run `cmd` through the host with `shell_prefix` applied:
@@ -395,6 +418,12 @@ impl Host for FakeHost {
                     };
                 }
             }
+        }
+        if cmd.contains("show-ref --verify --quiet refs/heads/") {
+            return CmdOutput {
+                code: 1,
+                text: String::new(),
+            };
         }
         CmdOutput {
             code: 0,

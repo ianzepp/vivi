@@ -26,6 +26,7 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
         Status::Merged | Status::NoDefect => true,
         Status::Replaced => u.replaced_by.iter().all(|x| satisfied(st, x, depth + 1)),
         Status::Pending
+        | Status::Held
         | Status::Inflight
         | Status::Delivered
         | Status::Merging
@@ -226,6 +227,9 @@ fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
     let fix = uid.starts_with(ctx.cfg.fix_prefix.as_str()) || priority_needs(ctx).contains(&u.need);
     for (oid, o) in &st.units {
         if oid == uid {
+            continue;
+        }
+        if o.target_id() != u.target_id() {
             continue;
         }
         let busy = if fix {

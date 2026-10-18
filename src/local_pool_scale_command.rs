@@ -35,7 +35,7 @@ pub(crate) fn scale(command: &PoolScaleCommand) -> Result<(), VivariumError> {
     if plan.create > 0 && per_dispatch {
         return Err(scale::no_resting_slots(&id.pool, &config.provider));
     }
-    if plan.create > 0 && config.worktree_source().is_none() {
+    if plan.create > 0 && config.worktree_source().is_none() && config.repo.is_some() {
         config.require_repo(&id.pool, "create slots")?;
     }
     if !plan.destroy.is_empty() && !command.yes {

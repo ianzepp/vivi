@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::Merger;
-use crate::pump::run::{run, run_with, status, tick, write_status};
+use crate::pump::run::{ensure_repo, run, run_with, status, tick, write_status};
 use crate::pump::state::{GateRun, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -362,6 +362,33 @@ fn a_missing_clone_is_cloned_from_the_remote_url() {
         clone.ends_with(&ctx.repo.to_string_lossy().into_owned()),
         "{clone}"
     );
+}
+
+#[test]
+fn named_targets_initialize_separate_integration_clones_under_the_pump_home() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("project/radix");
+    fs::create_dir_all(&source).unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("radix"),
+        PumpTarget {
+            path: String::from("radix"),
+            branch: String::from("next"),
+            ..PumpTarget::default()
+        },
+    );
+    let (ctx, host) = test_ctx(dir.path(), cfg.clone());
+    ensure_repo(&ctx).unwrap();
+    let target_repo = cfg.target_repo_dir(&ctx.project, "radix").unwrap();
+    let command = host
+        .commands()
+        .into_iter()
+        .find(|command| command.contains("git clone"))
+        .unwrap();
+    assert!(command.contains(&target_repo.display().to_string()));
+    assert!(command.contains(&source.display().to_string()));
+    assert!(command.contains("--branch next"));
 }
 
 #[test]

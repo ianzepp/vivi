@@ -706,3 +706,55 @@ fn a_ready_timeout_override_is_for_per_dispatch_pools_only_and_in_range() {
         assert!(said.contains("between 30 and 1800"), "{said}");
     }
 }
+
+#[test]
+fn workspace_target_overrides_the_shared_pools_legacy_repository() {
+    let pump: crate::pump::config::PumpConfig = toml::from_str(
+        r#"
+[targets.gradus]
+path = "gradus"
+remote_url = "git@github.com:faberlang/gradus.git"
+github_repo = "faberlang/gradus"
+branch = "next"
+"#,
+    )
+    .unwrap();
+    let shared = config();
+    let resolved =
+        target::resolve(&shared, &pump, std::path::Path::new("/workspace"), "gradus").unwrap();
+    assert_eq!(resolved.config.repo.as_deref(), Some("faberlang/gradus"));
+    assert_eq!(shared.repo.as_deref(), Some("o/r"));
+    assert_eq!(
+        resolved.target.source,
+        "https://github.com/faberlang/gradus.git"
+    );
+    assert!(
+        target::resolve(
+            &shared,
+            &pump,
+            std::path::Path::new("/workspace"),
+            "missing"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_target_with_mismatched_github_identity_is_refused() {
+    let pump: crate::pump::config::PumpConfig = toml::from_str(
+        r#"
+[targets.radix]
+path = "radix"
+remote_url = "https://github.com/faberlang/gradus.git"
+github_repo = "faberlang/radix"
+"#,
+    )
+    .unwrap();
+    let result = target::resolve(
+        &config(),
+        &pump,
+        std::path::Path::new("/workspace"),
+        "radix",
+    );
+    assert!(result.err().unwrap().to_string().contains("does not match"));
+}

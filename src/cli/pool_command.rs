@@ -66,6 +66,10 @@ pub struct PoolDoctorCommand {
 
 #[derive(Debug, Args)]
 pub struct PoolDispatchCommand {
+    /// Repository target from the workspace pump configuration
+    #[arg(long)]
+    pub target: Option<String>,
+
     /// Task handle; its body is the brief
     pub task: String,
 

@@ -650,3 +650,48 @@ fn a_read_only_job_can_start_from_a_commit_or_another_branch_and_the_branch_chec
             .contains("not a commit or branch")
     );
 }
+
+#[test]
+fn a_shared_slot_keeps_dynamic_target_worktrees_and_removes_them_on_destroy() {
+    let rig = Rig::new();
+    let second = fixture();
+    let slot = rig.provider.list().unwrap().remove(0);
+    let target = |id: &str, source: &std::path::Path, key: char| dispatch::target::JobTarget {
+        id: id.into(),
+        source: source.to_string_lossy().into_owned(),
+        cache_key: key.to_string().repeat(64),
+        local_source: Some(source.to_string_lossy().into_owned()),
+        seed: Vec::new(),
+        requires: Vec::new(),
+        build_dir: None,
+    };
+    let a = target("a", &rig.f.repo, 'a');
+    let b = target("b", &second.repo, 'b');
+    let start_a = git(&rig.f.repo, &["rev-parse", "HEAD"]);
+    let start_b = git(&second.repo, &["rev-parse", "HEAD"]);
+    rig.provider
+        .prepare_target_checkout(&slot.id, &a, &start_a)
+        .unwrap();
+    rig.provider
+        .prepare_target_checkout(&slot.id, &b, &start_b)
+        .unwrap();
+    rig.provider
+        .prepare_target_checkout(&slot.id, &a, &start_a)
+        .unwrap();
+    let caches = rig.root.join(&slot.id).join("targets");
+    assert_eq!(
+        Repo::new(&caches.join(&a.cache_key).join("repo"))
+            .common_dir()
+            .unwrap(),
+        Repo::new(&rig.f.repo).common_dir().unwrap()
+    );
+    assert_eq!(
+        Repo::new(&caches.join(&b.cache_key).join("repo"))
+            .common_dir()
+            .unwrap(),
+        Repo::new(&second.repo).common_dir().unwrap()
+    );
+    rig.provider.destroy(&slot.id).unwrap();
+    assert_eq!(Repo::new(&second.repo).worktrees().unwrap().len(), 1);
+    assert!(!caches.exists());
+}

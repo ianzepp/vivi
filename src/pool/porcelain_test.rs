@@ -43,6 +43,8 @@ fn a_plain_word_is_bare_and_anything_else_is_quoted() {
 #[test]
 fn dispatched_line() {
     let made = DispatchRecord {
+        target: None,
+        repository: None,
         pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: "m1".into(),
@@ -71,6 +73,8 @@ fn dispatched_line() {
 #[test]
 fn a_read_only_dispatch_has_no_branch_and_says_so() {
     let made = DispatchRecord {
+        target: None,
+        repository: None,
         pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: "m1".into(),
@@ -297,6 +301,8 @@ fn scale_lines() {
 #[test]
 fn a_dispatch_that_gave_up_on_pods_ends_with_their_count_and_approximate_cost() {
     let made = DispatchRecord {
+        target: None,
+        repository: None,
         pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: "m1".into(),

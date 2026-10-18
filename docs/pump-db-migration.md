@@ -16,7 +16,7 @@ import is one-way; the old file is kept for rollback.
 
 Start the current pump. On first startup it:
 
-1. creates or upgrades `pump.db` to schema version 3;
+1. creates or upgrades `pump.db` to schema version 4;
 2. initializes pump control mode. Existing `STOP` and `PAUSE` files migrate
    once (`STOP` wins if both exist), and the files are removed after the
    database commit;
@@ -43,8 +43,10 @@ pump home.
 
 ## Schema and readers
 
-`pump.db` carries `PRAGMA user_version = 3`. Readers (`need show`, `board
---pump`, `boot`, `need list --pump`) open it read-only and refuse an unknown
-version with `pump state unreadable (schema N, expected 3)`. The pump is the
+`pump.db` carries `PRAGMA user_version = 4`. Existing unit rows gain a `target`
+column set to `default`; target-specific gate state is stored in the `meta`
+table. Readers (`need show`, `board --pump`, `boot`, `need list --pump`) open it
+read-only and refuse an unknown version with `pump state unreadable (schema N,
+expected 4)`. The pump is the
 only writer, and it refuses a database whose version is newer than the binary
 rather than rewriting the marker.

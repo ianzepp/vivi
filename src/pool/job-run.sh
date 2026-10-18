@@ -114,6 +114,8 @@ finish() { # finish <push-outcome> [sha]
   detach_local
   {
     echo "job=$JOB"
+    [ -z "${TARGET:-}" ] || echo "target=$TARGET"
+    [ -z "${REPOSITORY:-}" ] || echo "repository=$REPOSITORY"
     echo "state=done"
     echo "push=$1"
     echo "branch=$BRANCH"
@@ -131,6 +133,32 @@ finish() { # finish <push-outcome> [sha]
   mv "$J/result.partial" "$J/result"
   exit 0
 }
+
+# A shared slot keeps repository caches isolated; never recycle another
+# target's Git metadata or ignored build output.
+if [ -n "${CHECKOUT_KEY:-}" ]; then
+  [[ "$CHECKOUT_KEY" =~ ^[0-9a-f]{64}$ ]] || finish target_key_invalid
+  CACHE=$W/targets/$CHECKOUT_KEY
+  RD=$CACHE/repo
+  if [ -L "$W/targets" ] || [ -L "$CACHE" ] || [ -L "$RD" ]; then
+    finish target_cache_invalid
+  fi
+  if [ -n "${TARGET_LOCAL_SOURCE:-}" ]; then
+    [ -f "$CACHE/worktree_of" ] && [ "$(cat "$CACHE/worktree_of")" = "$TARGET_LOCAL_SOURCE" ] || finish target_source_mismatch
+    [ -e "$RD/.git" ] || finish target_worktree_missing
+  else
+    mkdir -p "$RD" || finish target_prepare_failed
+    [ -n "${UNPRIVILEGED:-}" ] || chown -R hand:hand "$CACHE"
+    if [ ! -d "$RD/.git" ]; then
+      as_hand git -C "$RD" init -q . || finish target_prepare_failed
+      printf '%s' "$REPOSITORY" > "$CACHE/source"
+    fi
+    [ "$(cat "$CACHE/source" 2>/dev/null)" = "$REPOSITORY" ] || finish target_source_mismatch
+  fi
+  # Target caches are persistent directories, independent of the legacy
+  # pool build pack or mount under /work/repo.
+  BUILD_PERSISTS=1
+fi
 
 cd "$RD" || finish workdir_missing
 TOKEN=$(cat "$J/token")
@@ -162,6 +190,19 @@ else
   as_hand git checkout -q -f "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
   [ -n "${READ_ONLY:-}" ] || as_hand git checkout -q -B "$BRANCH" || finish checkout_failed
   rm -f "$RD/.git/FETCH_HEAD"
+fi
+
+# Run shared repository preparation once per target cache, only after the
+# selected source and commit have been established.
+if [ -n "${CHECKOUT_KEY:-}" ] && [ ! -f "$CACHE/prepared" ]; then
+  if [ -f "$J/target-requires.txt" ]; then
+    while IFS= read -r requirement || [ -n "$requirement" ]; do
+      [ -z "$requirement" ] || as_hand bash -c "$requirement" || finish target_requirement_failed
+    done < "$J/target-requires.txt"
+  fi
+  [ ! -f "$J/target-seed.sh" ] || as_hand bash "$J/target-seed.sh" || finish target_seed_failed
+  as_hand git reset -q --hard "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
+  touch "$CACHE/prepared"
 fi
 
 # Extra refs the pool names in with.list: a second branch the agent must be

@@ -62,6 +62,16 @@ pub fn brief_for(ctx: &Ctx, uid: &str, unit: &Unit) -> String {
     let mut parts: Vec<String> = vec![
         hand_rules(ctx),
         format!("UNIT {uid}: {}", unit.title),
+        format!(
+            "REPOSITORY TARGET: {} ({})",
+            unit.target_id(),
+            ctx.cfg
+                .target_path(&ctx.project, unit.target_id())
+                .map_or_else(
+                    || String::from("unresolved path"),
+                    |path| path.display().to_string()
+                )
+        ),
         String::new(),
         unit.brief.clone(),
         String::new(),

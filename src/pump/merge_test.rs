@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::{MergeConfig, PumpConfig};
+use crate::pump::config::{MergeConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::{Merger, batch_work, failure_text, merge_work};
 use crate::pump::state::{MergeJob, MergeResult, NeedRecord, State, Status, Unit};
@@ -35,6 +35,7 @@ fn setup(format: &str) -> (TempDir, Ctx, Arc<FakeHost>) {
 fn job() -> MergeJob {
     MergeJob {
         uid: String::from("u1"),
+        target: String::from("default"),
         branch: String::from("work/u1"),
         title: String::from("A unit"),
         need: String::from("n1"),
@@ -88,7 +89,7 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
     let (_dir, ctx, host) = setup("");
     host.reply("rev-parse HEAD", 0, "tip123\n");
     let result = merge_work(&ctx, &job());
-    assert_eq!(result.ok, Some(true));
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
     assert_eq!(result.tip.as_deref(), Some("tip123"));
     assert!(result.outside.is_empty());
     assert_eq!(result.secs, Some(0));
@@ -119,6 +120,50 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
             "proof u1 rc=0 0s: cargo test --lib",
             "proof u1 rc=0 0s: ./proof-u1.sh",
         ]
+    );
+}
+
+#[test]
+fn a_named_local_target_merges_its_local_unit_branch() {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        targets: std::collections::BTreeMap::from([(
+            String::from("tela"),
+            PumpTarget {
+                path: String::from("tela"),
+                branch: String::from("main"),
+                merge: Some(MergeConfig {
+                    shared_checks: vec![String::from("true")],
+                    ..MergeConfig::default()
+                }),
+                gate: Some(crate::pump::config::GateConfig {
+                    command: String::from("true"),
+                    ..crate::pump::config::GateConfig::default()
+                }),
+                ..PumpTarget::default()
+            },
+        )]),
+        committer_name: String::from("Pump Tester"),
+        committer_email: String::from("pump@example.com"),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("show-ref --verify --quiet refs/heads/work/u1", 0, "");
+    host.reply("merge-base --is-ancestor origin/work/u1 origin/main", 1, "");
+    host.reply("rev-parse HEAD", 0, "tiplocal123\n");
+    let mut local_job = job();
+    local_job.target = String::from("tela");
+    let target_ctx = ctx.for_target("tela").unwrap();
+    let result = merge_work(&target_ctx, &local_job);
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let commands = host.commands();
+    assert!(commands.iter().any(|command| {
+        command == "git update-ref refs/remotes/origin/work/u1 refs/heads/work/u1"
+    }));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| { command.contains("fetch origin refs/heads/work/u1") })
     );
 }
 
@@ -366,6 +411,7 @@ fn batch() -> Vec<MergeJob> {
 fn unit(uid: &str, branch: &str) -> MergeJob {
     MergeJob {
         uid: uid.to_string(),
+        target: String::from("default"),
         branch: branch.to_string(),
         title: format!("Unit {uid}"),
         need: String::from("n1"),

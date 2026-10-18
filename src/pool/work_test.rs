@@ -30,6 +30,8 @@ fn space_with_task() -> (tempfile::TempDir, Mailspace, String) {
 
 fn dispatched(space: &Mailspace, task: &str, machine: &str) {
     let record = record::DispatchRecord {
+        target: None,
+        repository: None,
         pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: machine.into(),
@@ -324,6 +326,8 @@ fn send_task(space: &mut Mailspace, subject: &str) -> String {
 
 fn dispatched_to(space: &Mailspace, task: &str, pool: &str, machine: &str) {
     let record = record::DispatchRecord {
+        target: None,
+        repository: None,
         pool: pool.into(),
         slot: format!("ms-{pool}-slot-1"),
         machine: machine.into(),

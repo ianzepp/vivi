@@ -101,8 +101,9 @@ Top-level keys read: `need`, `verdict` (default `"units"`), `reason`, `units`,
 revision removes), and `replaces` (split plans only). A plan for a known need
 without `revision` is ignored; a revision at or below the current one is stale.
 Per-unit keys: `id`, `title` (capped at 150
-chars), `brief`, `write_scope` (list), `after` (list, default `[]`), `proof`
-(list), `tools` (the unit's kind; absent means `default_kind`).
+chars), `brief`, `target` (required when `[pump.targets]` is configured),
+`write_scope` (list; relative to the selected target), `after` (list, default
+`[]`), `proof` (list), `tools` (the unit's kind; absent means `default_kind`).
 
 ```json
 {
@@ -118,7 +119,8 @@ A plan with units:
 ```json
 {"need": "000f290d", "verdict": "units", "reason": "…",
  "units": [{"id": "000f290d-1", "title": "…", "brief": "…",
-            "write_scope": ["src/…"], "after": [], "proof": ["./run-tests …"], "tools": "plain"}]}
+            "target": "radix", "write_scope": ["src/…"], "after": [],
+            "proof": ["./run-tests …"], "tools": "plain"}]}
 ```
 
 ### 2.2 Split plans (`replaces`)
@@ -137,6 +139,11 @@ Validation runs per unit before anything is created:
 
 - `id`, `brief`, `write_scope` must be present and non-empty, and `proof`
   must be a list — else `bad = "unit missing id, brief or write_scope"`.
+- With named targets, each unit must name a configured target; an omitted or
+  unknown target rejects the plan before any unit is created and parks the need
+  as `hold`.
+- An `after` edge across targets also parks the need: the pump cannot pass an
+  unpublished branch from one repository into another.
 - `id` must not already exist in `st["units"]` — else
   `bad = "duplicate unit id <uid>"`.
 

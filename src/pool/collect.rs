@@ -314,13 +314,32 @@ pub fn poll(
     let machine = provider.machine(&record.machine)?;
     let age = now.saturating_sub(record.at);
     let overdue = age > record.budget + TIMEOUT_GRACE_SECS;
-    match machine.state.as_str() {
+    let outcome = match machine.state.as_str() {
         "stopped" => collect_stopped(provider, dispatch, age, overdue, pacing),
         "destroyed" | "failed" => Ok(Some(Outcome::Lost)),
         "started" => collect_running(provider, dispatch, overdue),
         // starting, stopping, replacing: look again next round.
         _ => Ok(overdue.then_some(Outcome::Timeout)),
+    }?;
+    if let Some(Outcome::Finished(done)) = &outcome {
+        validate_target(record, &done.result)?;
     }
+    Ok(outcome)
+}
+
+fn validate_target(
+    record: &super::record::DispatchRecord,
+    result: &JobResult,
+) -> Result<(), VivariumError> {
+    if let Some(target) = &record.target
+        && (result.get("target") != target
+            || Some(result.get("repository")) != record.repository.as_deref())
+    {
+        return Err(VivariumError::Message(
+            "job result repository does not match its dispatch target".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn collect_running(

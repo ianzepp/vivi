@@ -14,6 +14,11 @@ use crate::mailspace::PoolEventRow;
 /// The machine-readable record of a dispatch, as written to the task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchRecord {
+    /// Explicit workspace target and repository selected at dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     /// The pool the slot belongs to. A record made before pools were named
     /// has none (empty) and reads as a pool that no longer exists.
     #[serde(default)]
@@ -106,7 +111,7 @@ pub fn dispatch_note(record: &DispatchRecord) -> String {
 #[must_use]
 pub fn dispatch_text(record: &DispatchRecord) -> String {
     format!(
-        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s{hardware}\nfrom {from} ({start})  {target}{abandoned}",
+        "pool dispatch {job}\npool {pool}  slot {slot}  model {model}  budget {budget}s{hardware}{repository}\nfrom {from} ({start})  {target}{abandoned}",
         job = record.job,
         pool = record.pool,
         slot = record.slot,
@@ -116,8 +121,18 @@ pub fn dispatch_text(record: &DispatchRecord) -> String {
         start = record.start.get(..12).unwrap_or(&record.start),
         target = target_text(record),
         hardware = hardware_text(record),
+        repository = repository_text(record),
         abandoned = abandoned_line(record),
     )
+}
+
+fn repository_text(record: &DispatchRecord) -> String {
+    record.target.as_ref().map_or_else(String::new, |target| {
+        format!(
+            "\ntarget {target}  repository {}",
+            record.repository.as_deref().unwrap_or("unknown")
+        )
+    })
 }
 
 /// `\n<abandoned text>` when pods were abandoned, else nothing.

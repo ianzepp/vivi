@@ -1,7 +1,7 @@
 //! Pump configuration (the `[pump]` table of `mailspace.toml`).
 
 use crate::VivariumError;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Pump settings (the `[pump]` table in `mailspace.toml`).
@@ -20,6 +20,10 @@ pub struct PumpConfig {
     /// missing at startup; the clone's remote is named `remote`. With none
     /// set, a missing `repo` stops the pump with an error.
     pub remote_url: Option<String>,
+    /// Named repository execution targets within this mailspace. When empty,
+    /// the legacy single-repository settings form the `default` target.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub targets: BTreeMap<String, PumpTarget>,
     /// Git author and committer name of every commit and merge the pump
     /// makes. Required: `validate` rejects an empty one.
     pub committer_name: String,
@@ -76,6 +80,7 @@ impl Default for PumpConfig {
             repo: None,
             remote: "origin".into(),
             remote_url: None,
+            targets: BTreeMap::new(),
             committer_name: String::new(),
             committer_email: String::new(),
             branch: String::new(),
@@ -95,6 +100,128 @@ impl Default for PumpConfig {
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
             gate: GateConfig::default(),
+        }
+    }
+}
+
+impl PumpConfig {
+    /// Effective repository targets. Legacy single-repository fields become
+    /// one `default` target; explicit targets inherit only shared merge/gate
+    /// defaults.
+    #[must_use]
+    pub fn target_configs(&self) -> BTreeMap<String, PumpTarget> {
+        if self.targets.is_empty() {
+            return BTreeMap::from([(
+                String::from("default"),
+                PumpTarget {
+                    path: String::from("."),
+                    remote_url: self.remote_url.clone(),
+                    remote: self.remote.clone(),
+                    branch: self.branch.clone(),
+                    main: self.main.clone(),
+                    promote: self.promote,
+                    integration_repo: self.repo.clone(),
+                    merge: Some(self.merge.clone()),
+                    gate: Some(self.gate.clone()),
+                    ..PumpTarget::default()
+                },
+            )]);
+        }
+        self.targets
+            .iter()
+            .map(|(id, target)| {
+                let mut target = target.clone();
+                target.merge.get_or_insert_with(|| self.merge.clone());
+                target.gate.get_or_insert_with(|| self.gate.clone());
+                (id.clone(), target)
+            })
+            .collect()
+    }
+
+    /// The workspace-relative source repository path for a named target.
+    #[must_use]
+    pub fn target_path(&self, project: &Path, id: &str) -> Option<PathBuf> {
+        self.target_configs()
+            .get(id)
+            .map(|target| resolve(project, &target.path))
+    }
+
+    /// Target-specific integration checkout. Legacy config keeps its old
+    /// checkout path; named targets get an isolated checkout under pump home.
+    #[must_use]
+    pub fn target_repo_dir(&self, project: &Path, id: &str) -> Option<PathBuf> {
+        let target = self.target_configs().remove(id)?;
+        if self.targets.is_empty() {
+            return Some(self.repo_dir(project));
+        }
+        let home = self.home_dir(project).join("targets").join(id);
+        Some(
+            target
+                .integration_repo
+                .as_deref()
+                .map_or_else(|| home.join("repo"), |path| resolve(&home, path)),
+        )
+    }
+
+    /// A target-specific copy of the legacy pump settings consumed by the
+    /// single-target execution seams.
+    pub fn for_target(&self, id: &str) -> Option<Self> {
+        let target = self.target_configs().remove(id)?;
+        let mut config = self.clone();
+        config.repo = target.integration_repo;
+        config.remote_url = target.remote_url;
+        config.remote = target.remote;
+        config.branch = target.branch;
+        config.main = target.main;
+        config.promote = target.promote;
+        config.merge = target.merge.unwrap_or_default();
+        config.gate = target.gate.unwrap_or_default();
+        Some(config)
+    }
+}
+
+/// Repository-specific integration settings. Pool capacity and provider
+/// configuration remain shared by every target in the mailspace.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PumpTarget {
+    /// Repository root relative to the workspace/mailspace root.
+    pub path: String,
+    /// GitHub owner/name used for target-scoped job credentials.
+    pub github_repo: Option<String>,
+    /// Clone source. If absent, the target path's configured Git remote is used.
+    pub remote_url: Option<String>,
+    /// Git remote name in the target checkout.
+    pub remote: String,
+    /// Integration branch for this target.
+    pub branch: String,
+    /// Main branch merged into the target integration branch.
+    pub main: String,
+    /// Whether a clean target gate promotes its branch to main.
+    pub promote: bool,
+    /// Optional target-specific integration checkout under the pump home.
+    pub integration_repo: Option<String>,
+    /// Target-specific merge behavior. Omitted fields inherit the legacy
+    /// workspace-level merge settings when loaded through `target_configs`.
+    pub merge: Option<MergeConfig>,
+    /// Target-specific gate behavior. Omitted fields inherit the legacy
+    /// workspace-level gate settings when loaded through `target_configs`.
+    pub gate: Option<GateConfig>,
+}
+
+impl Default for PumpTarget {
+    fn default() -> Self {
+        Self {
+            path: String::from("."),
+            github_repo: None,
+            remote_url: None,
+            remote: String::from("origin"),
+            branch: String::new(),
+            main: String::from("main"),
+            promote: true,
+            integration_repo: None,
+            merge: None,
+            gate: None,
         }
     }
 }
@@ -319,9 +446,6 @@ impl PumpConfig {
     /// [`VivariumError::Config`] naming every violated key when a rule fails.
     pub fn validate(&self, project: &Path, pools: &[String]) -> Result<(), VivariumError> {
         let mut bad: Vec<String> = Vec::new();
-        if self.branch.is_empty() {
-            bad.push("[pump] branch must not be empty".into());
-        }
         if self.committer_name.trim().is_empty() {
             bad.push("[pump] committer_name must not be empty".into());
         }
@@ -340,7 +464,23 @@ impl PumpConfig {
             bad.push("[pump] tick must be >= 1".into());
         }
         self.validate_dispatch(pools, &mut bad);
-        self.validate_merge_and_gate(pools, &mut bad);
+        if self.targets.is_empty() {
+            if self.branch.is_empty() {
+                bad.push("[pump] branch must not be empty".into());
+            }
+            self.validate_merge_and_gate(pools, &mut bad);
+        } else {
+            let mut target_paths = BTreeSet::new();
+            for (id, target) in self.target_configs() {
+                let normalized: PathBuf = Path::new(&target.path).components().collect();
+                if !target_paths.insert(normalized) {
+                    bad.push(format!(
+                        "[pump.targets.{id}] path duplicates another configured repository target"
+                    ));
+                }
+                validate_target(&id, &target, pools, &mut bad);
+            }
+        }
         if (self.board.from.iter().any(|from| !from.is_empty()) || !self.board.mark.is_empty())
             && self.planner.run.is_empty()
         {
@@ -531,6 +671,76 @@ impl PumpConfig {
             }
         }
     }
+}
+
+fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Vec<String>) {
+    let prefix = format!("[pump.targets.{id}]");
+    if !valid_target_id(id) {
+        bad.push(format!(
+            "{prefix} id must use lowercase letters, digits and hyphens"
+        ));
+    }
+    let path = Path::new(&target.path);
+    if target.path.is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        bad.push(format!(
+            "{prefix} path must be a workspace-relative path without `..`"
+        ));
+    }
+    if target.branch.trim().is_empty() {
+        bad.push(format!("{prefix} branch must not be empty"));
+    }
+    if target.github_repo.as_deref().is_some_and(str::is_empty) {
+        bad.push(format!("{prefix} github_repo must not be empty when set"));
+    }
+    let merge = target.merge.as_ref();
+    if merge.is_some_and(|merge| merge.batch == 0) {
+        bad.push(format!("{prefix}.merge batch must be >= 1"));
+    }
+    if target.promote
+        && !target.main.is_empty()
+        && merge.is_some_and(|merge| merge.shared_checks.is_empty())
+    {
+        bad.push(format!(
+            "{prefix}.merge shared_checks must not be empty while promotion is enabled"
+        ));
+    }
+    if let Some(gate) = &target.gate {
+        validate_target_gate(id, gate, pools, bad);
+    } else {
+        bad.push(format!("{prefix}.gate command must not be empty"));
+    }
+}
+
+fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], bad: &mut Vec<String>) {
+    let prefix = format!("[pump.targets.{id}.gate]");
+    if gate.command.trim().is_empty() {
+        bad.push(format!("{prefix} command must not be empty"));
+    }
+    if gate.every_merges == 0 {
+        bad.push(format!("{prefix} every_merges must be >= 1"));
+    }
+    if gate.results_dir.is_some() && gate.results_wait_seconds == 0 {
+        bad.push(format!(
+            "{prefix} results_dir needs results_wait_seconds >= 1"
+        ));
+    }
+    for name in &gate.pools {
+        if !known(pools, name) {
+            bad.push(format!("{prefix} pools names unknown pool `{name}`"));
+        }
+    }
+}
+
+fn valid_target_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// An absolute path stands alone; a relative one joins `project`. `~` is not

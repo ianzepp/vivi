@@ -228,9 +228,15 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<St
         },
     ));
     let home = ctx.home.to_string_lossy();
+    let targets = target_catalog(ctx);
     let prompt = format!(
         "Plan one need, as your system prompt describes. Its thread is in {home}/needs/{handle}.json. \
-         Write {home}/plans/{handle}.json. Your final message is one line: handle, verdict, number of units."
+         Available repository targets (id and workspace-relative path): {targets}. Every unit must name \
+         exactly one target from this list in its `target` field, and its `write_scope` must be relative \
+         to that repository. Do not make an `after` dependency cross targets: the pump cannot pass an \
+         unpublished branch from one repository into another; park the need if that handoff is required. \
+         Write {home}/plans/{handle}.json. Your final message is one line: handle, \
+         verdict, number of units."
     );
     spawn_planner(ctx, "board", handle, &prompt);
     st.board.planning.insert(handle.to_owned(), ctx.now());
@@ -239,6 +245,17 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<St
     }
     let subject: String = row.subject.chars().take(70).collect();
     ctx.log(&format!("board: planning new need {handle} {subject}"));
+}
+
+/// JSON catalog of named execution targets for planner assignment.
+fn target_catalog(ctx: &Ctx) -> String {
+    let targets: Vec<_> = ctx
+        .cfg
+        .target_configs()
+        .into_iter()
+        .map(|(id, target)| serde_json::json!({"id": id, "path": target.path}))
+        .collect();
+    serde_json::to_string(&targets).unwrap_or_else(|_| String::from("[]"))
 }
 
 /// `<home>/plans/<handle>.json`.
@@ -416,7 +433,7 @@ fn reply_stages(
         if st.board.replied.iter().any(|sent| sent == &key) {
             continue;
         }
-        let Some(body) = reply_body(ctx, st, &stage, verdict, reason, units, revision) else {
+        let Some(body) = reply_body(st, &stage, verdict, reason, units, revision) else {
             continue;
         };
         if send_reply(ctx, handle, &stage, &body) {
@@ -430,7 +447,6 @@ fn reply_stages(
 /// The reply body for one stage, or `None` when the stage must wait:
 /// `merged` waits until the need has units and every one is satisfied.
 fn reply_body(
-    ctx: &Ctx,
     st: &State,
     stage: &str,
     verdict: &str,
@@ -455,8 +471,7 @@ fn reply_body(
     if !units.is_empty() && units.iter().all(|uid| satisfied(st, uid, 0)) {
         let list = unit_list(st, units, true);
         return Some(format!(
-            "pump: every unit of this need is merged into branch {} (r{revision}).\n{list}\nNot reviewed. Not on main.",
-            ctx.cfg.branch
+            "pump: every unit of this need is merged into its target integration branch (r{revision}).\n{list}\nNot reviewed. Not on main."
         ));
     }
     None
@@ -476,9 +491,13 @@ fn unit_list(st: &State, units: &[String], commits: bool) -> String {
                         .chars()
                         .take(10)
                         .collect();
-                    format!("- {uid} {} {commit}", unit.status.as_str())
+                    format!(
+                        "- {uid} [{}] {} {commit}",
+                        unit.target_id(),
+                        unit.status.as_str()
+                    )
                 } else {
-                    format!("- {uid} {}", unit.title)
+                    format!("- {uid} [{}] {}", unit.target_id(), unit.title)
                 }
             })
         })

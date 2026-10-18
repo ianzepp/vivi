@@ -42,7 +42,11 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     let progress = Progress::stderr(command.porcelain, "");
     let space = Mailspace::discover(command.project.as_deref())?;
     let handle = pools::open_one(&space, command.pool.as_deref())?;
-    let (config, id, provider) = (&handle.config, &handle.id, handle.provider.as_ref());
+    let selected = resolve_target_config(&space, &handle.config, command.target.as_deref())?;
+    let config = selected
+        .as_ref()
+        .map_or(&handle.config, |selected| &selected.config);
+    let (id, provider) = (&handle.id, handle.provider.as_ref());
     let ready_timeout =
         dispatch::check_ready_timeout(provider.slot_lifetime(), command.ready_timeout)?;
     let task = space.pool_task(&command.task)?;
@@ -64,6 +68,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         rules,
         job_id.clone(),
     )?;
+    plan.target = selected.as_ref().map(|selected| selected.target.clone());
     read_only_notes(flags.read_only, config, &task.body, &progress);
     let (token, start) = match (config.worktree_source(), flags.read_only) {
         (Some(path), true) => worktree_read_only_start(&path, &mut plan, &progress)?,
@@ -96,6 +101,21 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         );
     }
     Ok(())
+}
+
+/// Select a job source while the handle/provider retains the shared pool identity.
+fn resolve_target_config(
+    space: &Mailspace,
+    config: &PoolConfig,
+    target: Option<&str>,
+) -> Result<Option<dispatch::target::Resolved>, VivariumError> {
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let pump = space.config.pump.as_ref().ok_or_else(|| {
+        VivariumError::Config("--target requires [pump] repository targets".into())
+    })?;
+    dispatch::target::resolve(config, pump, &space.root, target).map(Some)
 }
 
 /// A fresh job id for this dispatch: the task handle, the wall clock and the
@@ -420,7 +440,11 @@ fn remote_start(
     }
     progress.say(&format!("resolving {}", plan.refs.from));
     let start = github::resolve_base(&token, access.repo, Some(&plan.refs.from))?;
-    plan.refs.from = dispatch::full_from(&plan.refs.from, &start);
+    plan.refs.from = if plan.target.is_some() {
+        start.clone()
+    } else {
+        dispatch::full_from(&plan.refs.from, &start)
+    };
     resolve_with_github(&token, access.repo, plan, progress)?;
     Ok((token, start))
 }

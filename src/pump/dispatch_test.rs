@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 use std::collections::BTreeMap;
 
-use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig};
+use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::dispatch::*;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{Attempt, State, Status, Unit};
@@ -189,6 +189,72 @@ fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     );
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
     assert!(brief.contains("UNIT u1: Do u1"));
+}
+
+#[test]
+fn a_unit_whose_target_was_removed_is_parked_instead_of_falling_back() {
+    let mut cfg = dispatch_cfg();
+    cfg.targets = BTreeMap::from([(
+        String::from("radix"),
+        PumpTarget {
+            path: String::from("radix"),
+            branch: String::from("next"),
+            ..PumpTarget::default()
+        },
+    )]);
+    let (_dir, ctx, host) = setup_with(cfg);
+    let mut st = State::default();
+    ordered(&mut st, &["n-1"]);
+    st.units.get_mut("n-1").unwrap().target = String::from("removed");
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["n-1"].status, Status::Held);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("EXCEPTION unknown-target n-1"))
+    );
+    assert!(
+        host.commands()
+            .iter()
+            .all(|line| !line.contains("pool dispatch"))
+    );
+    let mut restored = dispatch_cfg();
+    restored.targets = BTreeMap::from([(
+        String::from("removed"),
+        PumpTarget {
+            path: String::from("restored"),
+            branch: String::from("main"),
+            ..PumpTarget::default()
+        },
+    )]);
+    let (_dir, restored_ctx, _) = setup_with(restored);
+    dispatch(&restored_ctx, &mut st);
+    assert_eq!(st.units["n-1"].status, Status::Pending);
+}
+
+#[test]
+fn named_target_dispatch_starts_from_its_own_integration_branch() {
+    let mut cfg = dispatch_cfg();
+    cfg.targets.insert(
+        String::from("radix"),
+        PumpTarget {
+            path: String::from("radix"),
+            branch: String::from("radix-next"),
+            ..PumpTarget::default()
+        },
+    );
+    let (_dir, ctx, host) = setup_with(cfg);
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    st.units.get_mut("u1").unwrap().target = String::from("radix");
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    let command = commands_with(&host, "pool dispatch").remove(0);
+    assert!(
+        command.contains("--target radix --model m/a --from radix-next"),
+        "{command}"
+    );
 }
 
 #[test]

@@ -20,7 +20,7 @@ use crate::error::VivariumError;
 use super::state::{Attempt, GateRecord, NeedRecord, Promotion, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The database filename inside the pump home.
 pub const DB_FILENAME: &str = "pump.db";
@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS plan_revisions (
 CREATE TABLE IF NOT EXISTS units (
   id TEXT PRIMARY KEY,
   need TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT 'default',
   revision INTEGER NOT NULL DEFAULT 1,
   title TEXT NOT NULL,
   brief TEXT NOT NULL,
@@ -436,7 +437,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
         )));
     }
     if version > 0 && version < SCHEMA_VERSION {
-        migrate_v1(conn)?;
+        migrate_older_schema(conn)?;
     }
     if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -445,15 +446,16 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     Ok(())
 }
 
-/// Add the revision columns to a version-1 database. A fresh database already
-/// has them, so a duplicate-column error is expected and ignored.
-fn migrate_v1(conn: &Connection) -> Result<(), VivariumError> {
+/// Add columns introduced after schema version 1. A fresh schema already has
+/// them, so duplicate-column errors are expected and ignored.
+fn migrate_older_schema(conn: &Connection) -> Result<(), VivariumError> {
     for (table, column, ddl) in [
         ("needs", "revision", "INTEGER NOT NULL DEFAULT 0"),
         ("needs", "thread_sha256", "TEXT"),
         ("needs", "thread_seen_at", "INTEGER"),
         ("needs", "amendment_pending", "INTEGER NOT NULL DEFAULT 0"),
         ("units", "revision", "INTEGER NOT NULL DEFAULT 1"),
+        ("units", "target", "TEXT NOT NULL DEFAULT 'default'"),
     ] {
         let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}");
         if conn.execute(&sql, []).is_err() {
@@ -494,6 +496,7 @@ fn write_meta(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
     put(tx, "last_gate", &json_or_null(&st.last_gate)?)?;
     put(tx, "board", &json_or_null(&st.board)?)?;
     put(tx, "extra", &json_or_null(&st.extra)?)?;
+    put(tx, "target_states", &json_or_null(&st.target_states)?)?;
     Ok(())
 }
 
@@ -521,15 +524,16 @@ fn write_unit(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), Vivariu
 
 fn insert_unit_row(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), VivariumError> {
     tx.execute(
-        "INSERT INTO units (id, need, title, brief, write_scope_json, after_json, proof_json,
+        "INSERT INTO units (id, need, target, title, brief, write_scope_json, after_json, proof_json,
             tools, status, attempts, task, branch, model, since, since_dispatch, pool,
             commit_sha, merged_at, outside_json, replaced_by_json, verdict_text,
             kind_reported, extra_json, revision)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
         params![
             id,
             &unit.need,
+            &unit.target,
             &unit.title,
             &unit.brief,
             json(&unit.write_scope)?,
@@ -701,13 +705,14 @@ fn load_meta(conn: &Connection, st: &mut State) -> Result<(), VivariumError> {
     st.last_gate = get_json(conn, "last_gate")?;
     st.board = get_json(conn, "board")?;
     st.extra = get_json(conn, "extra")?;
+    st.target_states = get_json(conn, "target_states")?;
     Ok(())
 }
 
 fn load_units(conn: &Connection) -> Result<BTreeMap<String, Unit>, VivariumError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, need, title, brief, write_scope_json, after_json, proof_json,
+            "SELECT id, need, target, title, brief, write_scope_json, after_json, proof_json,
                 tools, status, attempts, task, branch, model, since, since_dispatch, pool,
                 commit_sha, merged_at, outside_json, replaced_by_json, verdict_text,
                 kind_reported, extra_json, revision
@@ -720,29 +725,30 @@ fn load_units(conn: &Connection) -> Result<BTreeMap<String, Unit>, VivariumError
                 row.get::<_, String>(0)?,
                 Unit {
                     need: row.get(1)?,
-                    title: row.get(2)?,
-                    brief: row.get(3)?,
-                    write_scope: from_json(row.get(4)?),
-                    after: from_json(row.get(5)?),
-                    proof: from_json(row.get(6)?),
-                    tools: row.get(7)?,
-                    status: Status::from_name(&row.get::<_, String>(8)?),
-                    attempts: from_u32(row.get(9)?),
-                    task: row.get(10)?,
-                    branch: row.get(11)?,
-                    model: row.get(12)?,
-                    since: from_u64(row.get(13)?),
-                    since_dispatch: row.get::<_, Option<i64>>(14)?.map(from_u64),
-                    pool: row.get(15)?,
-                    commit: row.get(16)?,
-                    merged_at: row.get::<_, Option<i64>>(17)?.map(from_u64),
-                    outside: from_json(row.get(18)?),
-                    replaced_by: from_json(row.get(19)?),
-                    verdict_text: row.get(20)?,
-                    kind_reported: row.get::<_, i64>(21)? != 0,
+                    target: row.get(2)?,
+                    title: row.get(3)?,
+                    brief: row.get(4)?,
+                    write_scope: from_json(row.get(5)?),
+                    after: from_json(row.get(6)?),
+                    proof: from_json(row.get(7)?),
+                    tools: row.get(8)?,
+                    status: Status::from_name(&row.get::<_, String>(9)?),
+                    attempts: from_u32(row.get(10)?),
+                    task: row.get(11)?,
+                    branch: row.get(12)?,
+                    model: row.get(13)?,
+                    since: from_u64(row.get(14)?),
+                    since_dispatch: row.get::<_, Option<i64>>(15)?.map(from_u64),
+                    pool: row.get(16)?,
+                    commit: row.get(17)?,
+                    merged_at: row.get::<_, Option<i64>>(18)?.map(from_u64),
+                    outside: from_json(row.get(19)?),
+                    replaced_by: from_json(row.get(20)?),
+                    verdict_text: row.get(21)?,
+                    kind_reported: row.get::<_, i64>(22)? != 0,
                     held_on: None,
-                    extra: from_json(row.get(22)?),
-                    revision: from_u64(row.get(23)?),
+                    extra: from_json(row.get(23)?),
+                    revision: from_u64(row.get(24)?),
                     history: Vec::new(),
                 },
             ))

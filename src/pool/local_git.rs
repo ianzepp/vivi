@@ -122,6 +122,12 @@ impl Repo {
             .filter(|text| !text.is_empty())
     }
 
+    /// Configured fetch source for a named remote.
+    #[must_use]
+    pub fn remote_url(&self, remote: &str) -> Option<String> {
+        self.query(&["remote", "get-url", remote])
+    }
+
     /// The repository's common Git directory (the main `.git`, also when
     /// this path is a linked worktree).
     ///

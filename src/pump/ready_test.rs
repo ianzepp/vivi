@@ -150,9 +150,22 @@ fn a_fix_unit_is_still_blocked_by_an_inflight_fix_unit_that_overlaps() {
 }
 
 #[test]
+fn equal_relative_scopes_in_different_targets_do_not_serialize() {
+    let (_dir, ctx, _host, mut st) = setup();
+    let (aid, mut au) = mk("a", Status::Inflight, &["src/lib.rs"]);
+    au.target = String::from("radix");
+    let (bid, mut bu) = mk("b", Status::Pending, &["src/lib.rs"]);
+    bu.target = String::from("tela");
+    st.units.insert(aid, au);
+    st.units.insert(bid, bu);
+    assert!(is_ready(&ctx, &st, "b", &BTreeMap::new()));
+}
+
+#[test]
 fn a_unit_that_is_not_pending_is_not_ready() {
     let (_dir, ctx, _host, mut st) = setup();
     for status in [
+        Status::Held,
         Status::Inflight,
         Status::Delivered,
         Status::Merging,

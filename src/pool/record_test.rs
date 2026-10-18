@@ -5,6 +5,8 @@ use crate::pool::collect::{Collected, JobResult};
 
 fn record(job: &str) -> DispatchRecord {
     DispatchRecord {
+        target: None,
+        repository: None,
         pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: "m1".into(),
@@ -440,6 +442,8 @@ fn abandoned_pods_are_stated_with_an_approximate_cost_and_only_when_there_are_an
         "a record with none is unchanged on disk"
     );
     let two = DispatchRecord {
+        target: None,
+        repository: None,
         abandoned: 2,
         abandoned_cost_micros: 123_456,
         ..record("j")

@@ -29,9 +29,10 @@ const GATE_GRACE: u64 = 2400;
 /// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
 
-The unit is in {home}/resplit/{uid}.json (id, need, title, brief, write_scope, proof, and what the worker last said). Read the code it names. Write {home}/plans/{uid}.split.json (write .tmp, then mv) in the plan format of your system prompt, with these extra rules:
+The unit is in {home}/resplit/{uid}.json (id, need, target, title, brief, write_scope, proof, and what the worker last said). Read the code it names. Write {home}/plans/{uid}.split.json (write .tmp, then mv) in the plan format of your system prompt, with these extra rules:
 - top level: {"need": "<the unit's need>", "replaces": "{uid}", "verdict": "units", "reason": "...", "units": [...]}
 - unit ids are "{uid}.1", "{uid}.2", ... ; two to four units; each one must be finishable in 5 minutes by a mid-level model
+- retain the original unit's target for every replacement unit
 - chain them with `after` when they touch the same file
 - if the worker's last message shows the work is in fact already done or not a defect, write "units": [] and say why in "reason"
 Your final message is one line.
@@ -44,6 +45,8 @@ struct ResplitRecord {
     id: String,
     /// Owning need handle.
     need: String,
+    /// Repository target the replacement units must keep.
+    target: String,
     /// One-line title.
     title: String,
     /// Full brief the unit was dispatched with.
@@ -148,6 +151,7 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
         ResplitRecord {
             id: uid.to_owned(),
             need: unit.need.clone(),
+            target: unit.target_id().to_string(),
             title: unit.title.clone(),
             brief: unit.brief.clone(),
             write_scope: unit.write_scope.clone(),
@@ -212,11 +216,15 @@ fn collect_one(
     let (state, detail) = seen
         .get(task)
         .map_or((None, None), |(s, d)| (Some(s.as_str()), Some(d.as_str())));
-    let (since, branch) = {
+    let (since, branch, target) = {
         let Some(unit) = st.units.get(uid) else {
             return;
         };
-        (unit.since, unit.branch.clone().unwrap_or_default())
+        (
+            unit.since,
+            unit.branch.clone().unwrap_or_default(),
+            unit.target_id().to_string(),
+        )
     };
     if state == Some("running") {
         if ctx.now().saturating_sub(since)
@@ -236,7 +244,8 @@ fn collect_one(
     if state.is_none() && still_on_pool(ctx, task) {
         return;
     }
-    if remote_has(ctx, &branch) {
+    let target_ctx = ctx.for_target(&target).unwrap_or_else(|| ctx.clone());
+    if local_branch_exists(&target_ctx, &branch) || remote_has(&target_ctx, &branch) {
         deliver(ctx, st, task, uid, &branch, state);
         return;
     }
@@ -355,6 +364,22 @@ fn remote_has(ctx: &Ctx, branch: &str) -> bool {
         60,
     );
     out.code == 0 && !out.text.trim().is_empty()
+}
+
+/// A local worktree target commits its result branch directly into the
+/// target integration clone instead of pushing it to the configured remote.
+fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
+    if ctx.cfg.targets.is_empty() {
+        return false;
+    }
+    let out = ctx.git(
+        &format!(
+            "show-ref --verify --quiet refs/heads/{}",
+            shell_quote(branch)
+        ),
+        30,
+    );
+    out.code == 0
 }
 
 /// True when the text marks the agent as killed by its budget timeout.

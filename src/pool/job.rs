@@ -334,6 +334,8 @@ pub struct Checkout {
 /// Everything about a job that is known before a slot is chosen.
 #[derive(Debug, Clone)]
 pub struct JobPlan {
+    /// Explicit workspace repository selection; absent retains legacy slots.
+    pub target: Option<super::dispatch::target::JobTarget>,
     pub job: String,
     /// Full Git address the runner fetches from and pushes to. Empty for a
     /// worktree slot, which has no remote.
@@ -430,6 +432,9 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         file("rules.md", &spec.rules, 0o644),
         file("harness.cmd", &spec.harness_cmd, 0o644),
     ];
+    if let Some(target) = &spec.target {
+        files.extend(target_files(target));
+    }
     if let Some(bridge) = &spec.bridge {
         files.extend(bridge_files(bridge));
     }
@@ -445,6 +450,25 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         files.push(file("restore.list", &list, 0o600));
     }
     Bundle { files }
+}
+
+/// Repository metadata and preparation scripts delivered only for target jobs.
+fn target_files(target: &super::dispatch::target::JobTarget) -> Vec<BundleFile> {
+    let file = |name, content: &str| BundleFile {
+        name,
+        content: content.as_bytes().to_vec(),
+        mode: 0o600,
+    };
+    vec![
+        file("checkout-key", &target.cache_key),
+        file("target-id", &target.id),
+        file("repository", &target.source),
+        file(
+            "target-seed.sh",
+            &super::bootscript::render_commands(&target.seed),
+        ),
+        file("target-requires.txt", &target.requires.join("\n")),
+    ]
 }
 
 /// The `params.env` key/value fields of a job: identity, refs, model, slot,
@@ -468,6 +492,18 @@ fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
     ];
     if spec.read_only {
         fields.push(("READ_ONLY", "1".to_string()));
+    }
+    if let Some(target) = &spec.target {
+        fields.extend([
+            ("TARGET", target.id.clone()),
+            ("REPOSITORY", target.source.clone()),
+            ("CHECKOUT_KEY", target.cache_key.clone()),
+            ("BUILD_DIR", target.build_dir.clone().unwrap_or_default()),
+            (
+                "TARGET_LOCAL_SOURCE",
+                target.local_source.clone().unwrap_or_default(),
+            ),
+        ]);
     }
     if let Some(checkout) = &spec.checkout {
         fields.push(("LOCAL_ACTION", checkout.action.word().to_string()));

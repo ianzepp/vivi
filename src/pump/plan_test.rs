@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::plan::{ingest, overlaps};
 use crate::pump::state::{State, Status, Unit};
@@ -154,6 +154,170 @@ fn ingest_creates_pending_units_and_a_need_record() {
         host.logs()
             .iter()
             .any(|l| l == "plan 56f1d749 verdict=units units=2")
+    );
+}
+
+#[test]
+fn one_need_can_assign_units_to_two_workspace_targets() {
+    let dir = tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets = [
+        (
+            String::from("radix"),
+            PumpTarget {
+                path: String::from("radix"),
+                branch: String::from("next"),
+                ..PumpTarget::default()
+            },
+        ),
+        (
+            String::from("tela"),
+            PumpTarget {
+                path: String::from("tela"),
+                branch: String::from("main"),
+                ..PumpTarget::default()
+            },
+        ),
+    ]
+    .into();
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    let mut st = State::default();
+    write_plan(
+        &ctx,
+        "need.json",
+        &json!({
+            "need": "need",
+            "units": [
+                {"id": "need-1", "brief": "radix work", "target": "radix", "write_scope": ["src/lib.rs"]},
+                {"id": "need-2", "brief": "tela work", "target": "tela", "write_scope": ["src/lib.rs"]}
+            ]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["need-1"].target, "radix");
+    assert_eq!(st.units["need-2"].target, "tela");
+    assert_eq!(st.needs["need"].units, vec!["need-1", "need-2"]);
+    drop(host);
+}
+
+#[test]
+fn explicit_target_map_holds_a_plan_unit_with_no_target() {
+    let dir = tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets = [(
+        String::from("radix"),
+        PumpTarget {
+            path: String::from("radix"),
+            branch: String::from("next"),
+            ..PumpTarget::default()
+        },
+    )]
+    .into();
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    let mut st = State::default();
+    write_plan(
+        &ctx,
+        "need.json",
+        &json!({
+            "need": "need",
+            "units": [{"id": "need-1", "brief": "work", "write_scope": ["src/lib.rs"]}]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert!(st.units.is_empty());
+    assert_eq!(st.needs["need"].verdict, "hold");
+    assert!(
+        st.needs["need"]
+            .reason
+            .contains("must name a configured repository target")
+    );
+}
+
+#[test]
+fn a_revision_cannot_move_an_attempted_unit_to_another_target() {
+    let dir = tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets = ["radix", "tela"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                PumpTarget {
+                    path: id.to_string(),
+                    branch: String::from("main"),
+                    ..PumpTarget::default()
+                },
+            )
+        })
+        .collect();
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    let mut st = State::default();
+    write_plan(
+        &ctx,
+        "need.json",
+        &json!({
+            "need": "need",
+            "units": [{"id": "need-1", "brief": "work", "target": "radix", "write_scope": ["src/lib.rs"]}]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    st.units.get_mut("need-1").unwrap().attempts = 1;
+    write_plan(
+        &ctx,
+        "need.r2.json",
+        &json!({
+            "need": "need",
+            "revision": 2,
+            "units": [{"id": "need-1", "brief": "work", "target": "tela", "write_scope": ["src/lib.rs"]}]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["need-1"].target, "radix");
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("refused to change repository target after an attempt"));
+}
+
+#[test]
+fn a_cross_target_prerequisite_parks_the_need_before_dispatch() {
+    let dir = tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets = ["radix", "tela"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                PumpTarget {
+                    path: id.to_string(),
+                    branch: String::from("main"),
+                    ..PumpTarget::default()
+                },
+            )
+        })
+        .collect();
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    let mut st = State::default();
+    write_plan(
+        &ctx,
+        "need.json",
+        &json!({
+            "need": "need",
+            "units": [
+                {"id": "need-1", "brief": "radix change", "target": "radix", "write_scope": ["src/lib.rs"]},
+                {"id": "need-2", "brief": "use the radix change", "target": "tela", "write_scope": ["src/lib.rs"], "after": ["need-1"]}
+            ]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert!(st.units.is_empty());
+    assert_eq!(st.needs["need"].verdict, "hold");
+    assert!(
+        st.needs["need"]
+            .reason
+            .contains("unpublished branch handoff")
     );
 }
 

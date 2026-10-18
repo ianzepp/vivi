@@ -38,6 +38,7 @@ fn repo_with_branch() -> (tempfile::TempDir, std::path::PathBuf) {
 
 fn plan_with(names: &[&str]) -> job::JobPlan {
     job::JobPlan {
+        target: None,
         job: "0123456789ab".into(),
         remote: String::new(),
         checkout: None,
@@ -128,6 +129,8 @@ fn an_unknown_ref_is_an_error_naming_the_ref_and_the_repository() {
 /// entries already carry their resolved commit, cut to 12 hex digits.
 fn record(with: &[String]) -> vivi::pool::record::DispatchRecord {
     vivi::pool::record::DispatchRecord {
+        target: None,
+        repository: None,
         pool: "p".into(),
         slot: "p-slot-1".into(),
         machine: "m1".into(),

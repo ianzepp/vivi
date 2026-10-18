@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use crate::pump::collect::*;
-use crate::pump::config::{PlannerConfig, PumpConfig};
+use crate::pump::config::{PlannerConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{GateRun, State, Status, Unit};
 
@@ -188,6 +188,37 @@ fn a_finished_unit_whose_branch_is_on_the_remote_is_delivered() {
     assert_eq!(
         host.logs().last().unwrap(),
         "delivered u-1 unit/x-a1 secs=500 model=zai/glm-5.3-flash pool=fly4"
+    );
+}
+
+#[test]
+fn a_local_target_branch_is_collected_from_its_integration_clone() {
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("tela"),
+        PumpTarget {
+            path: String::from("tela"),
+            branch: String::from("main"),
+            ..PumpTarget::default()
+        },
+    );
+    let (_dir, ctx, host) = setup_with(cfg);
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected task-1 bridge slot-1 finished \"committed unit/n-1-a1 abc\"\n",
+    );
+    host.reply("show-ref --verify --quiet refs/heads/unit/n-1-a1", 0, "");
+    let mut unit = unit(Status::Inflight, Some("task-1"), Some("unit/n-1-a1"));
+    unit.target = String::from("tela");
+    let mut st = State::default();
+    put(&mut st, "n-1", unit);
+    collect(&ctx, &mut st);
+    assert_eq!(st.units["n-1"].status, Status::Delivered);
+    assert!(
+        host.commands().iter().any(|command| {
+            command.contains("show-ref --verify --quiet refs/heads/unit/n-1-a1")
+        })
     );
 }
 

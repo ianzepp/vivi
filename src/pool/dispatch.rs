@@ -18,6 +18,9 @@ use super::run::dispatch_spec;
 use super::slot::PoolId;
 use crate::error::VivariumError;
 
+#[path = "target.rs"]
+pub mod target;
+
 /// Budget when `--budget` is not given.
 pub const DEFAULT_BUDGET_SECS: u64 = 1800;
 /// Bounds for `--budget`.
@@ -69,9 +72,7 @@ pub fn plan_job(
     job: String,
 ) -> Result<JobPlan, VivariumError> {
     let (handle, subject, body) = task;
-    if config.embedded.is_none() && config.worktree_source().is_none() {
-        config.require_repo(pool, "dispatch")?;
-    }
+    validate_source(config, pool)?;
     let harness = config.harness.as_ref().ok_or_else(|| {
         VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
     })?;
@@ -99,6 +100,7 @@ pub fn plan_job(
         )));
     }
     Ok(JobPlan {
+        target: None,
         job,
         remote: config.remote_address(),
         checkout: None,
@@ -119,6 +121,13 @@ pub fn plan_job(
         restore: config.restore.clone(),
         bridge: None,
     })
+}
+
+fn validate_source(config: &PoolConfig, pool: &str) -> Result<(), VivariumError> {
+    if config.embedded.is_none() && config.worktree_source().is_none() {
+        config.require_repo(pool, "dispatch")?;
+    }
+    Ok(())
 }
 
 /// The reasoning level a job runs at, when the harness template asks for
@@ -297,6 +306,8 @@ pub fn dispatch(
         return Err(e);
     }
     Ok(DispatchRecord {
+        target: plan.target.as_ref().map(|t| t.id.clone()),
+        repository: plan.target.as_ref().map(|t| t.source.clone()),
         pool: id.pool.clone(),
         slot: claim.slot.name,
         machine: claim.slot.id,
@@ -329,7 +340,17 @@ fn take_slot(
     match provider.slot_lifetime() {
         SlotLifetime::Resting => claim_slot(provider, id, &plan.task, now),
         SlotLifetime::PerDispatch => {
-            let seed = (launch.token, launch.start);
+            let mut machine_config = launch.config.clone();
+            let empty_token = Secret::new(String::new());
+            let seed = if plan.target.is_some() {
+                machine_config.repo = None;
+                machine_config.embedded = None;
+                machine_config.local.worktree_of = None;
+                machine_config.build_dir = None;
+                (&empty_token, "")
+            } else {
+                (launch.token, launch.start)
+            };
             open_slot(
                 provider,
                 &OpenRequest {
@@ -337,7 +358,7 @@ fn take_slot(
                     task: &plan.task,
                     now,
                     budget_secs: plan.budget,
-                    spec: dispatch_spec(launch.config, id, seed, provider),
+                    spec: dispatch_spec(&machine_config, id, seed, provider),
                     progress: launch.progress,
                     ready_timeout_secs: launch.ready_timeout,
                 },
@@ -354,6 +375,13 @@ fn deliver(
     pacing: &Pacing,
 ) -> Result<(), VivariumError> {
     let id = &claim.slot.id;
+    if let Some(target) = &plan.target {
+        let start = plan
+            .checkout
+            .as_ref()
+            .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
+        provider.prepare_target_checkout(id, target, start)?;
+    }
     let archive = job::pack(&build_bundle(plan, &claim.slot.name, token))?;
     provider.put_file(id, &claim.hold, JOB_ARCHIVE, &archive)?;
     provider.release(id, &claim.hold)?;

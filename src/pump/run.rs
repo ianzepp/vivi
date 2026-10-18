@@ -29,10 +29,15 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     merger.apply(ctx, st);
     board::board(ctx, st);
     plan::ingest(ctx, st);
-    let gate_receipt = collect::collect(ctx, st);
-    if let Some(text) = gate_receipt {
-        gate::finish_gate(ctx, st, &text);
-    }
+    let gate_target = st
+        .active_gate_target()
+        .unwrap_or_else(|| String::from("default"));
+    let gate_ctx = ctx.for_target(&gate_target).unwrap_or_else(|| ctx.clone());
+    crate::pump::state::with_target_state(st, &gate_target, |st| {
+        if let Some(text) = collect::collect(&gate_ctx, st) {
+            gate::finish_gate(&gate_ctx, st, &text);
+        }
+    });
     merger.apply(ctx, st);
     merger.feed(ctx, st);
     save(ctx, st);
@@ -52,9 +57,21 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     }
     dispatch::dispatch(ctx, st);
     save(ctx, st);
-    gate::hold_cycle(ctx, st);
-    gate::external_gates(ctx, st);
-    gate::start_gate(ctx, st);
+    for target in ctx.cfg.target_configs().keys() {
+        let Some(target_ctx) = ctx.for_target(target) else {
+            ctx.exception(
+                "unknown-target",
+                target,
+                "configured repository target could not be resolved",
+            );
+            continue;
+        };
+        crate::pump::state::with_target_state(st, target, |st| {
+            gate::hold_cycle(&target_ctx, st);
+            gate::external_gates(&target_ctx, st);
+            gate::start_gate(&target_ctx, st);
+        });
+    }
     merger.apply(ctx, st);
     merger.feed(ctx, st);
     save(ctx, st);
@@ -69,10 +86,22 @@ pub fn write_status(ctx: &Ctx, st: &State) {
     for need in st.needs.values() {
         *verdicts.entry(need.verdict.clone()).or_default() += 1;
     }
-    let baseline = st
-        .baseline
-        .as_ref()
-        .map_or_else(|| String::from("none"), |names| names.len().to_string());
+    let baseline_count = st.baseline.as_ref().map_or(0, Vec::len)
+        + st.target_states
+            .values()
+            .filter_map(|target| target.baseline.as_ref())
+            .map(Vec::len)
+            .sum::<usize>();
+    let baseline = if baseline_count == 0 {
+        String::from("none")
+    } else {
+        baseline_count.to_string()
+    };
+    let gates = st.gates.len()
+        + st.target_states
+            .values()
+            .map(|target| target.gates.len())
+            .sum::<usize>();
     let lines = [
         utc_stamp(ctx.now()),
         counts_line("units", &st.counts()),
@@ -81,7 +110,7 @@ pub fn write_status(ctx: &Ctx, st: &State) {
             "merges {}  needs-ready {}  gates {}  baseline {}",
             st.merges,
             st.closed_needs.len(),
-            st.gates.len(),
+            gates,
             baseline
         ),
     ];
@@ -197,6 +226,71 @@ pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
 /// Returns [`VivariumError::Config`] when the clone is missing and no
 /// `remote_url` is set, and [`VivariumError::Message`] when the clone fails.
 pub(crate) fn ensure_repo(ctx: &Ctx) -> Result<(), VivariumError> {
+    if !ctx.cfg.targets.is_empty() {
+        for (id, target) in ctx.cfg.target_configs() {
+            let source = ctx.cfg.target_path(&ctx.project, &id).ok_or_else(|| {
+                VivariumError::Config(format!("repository target {id:?} has no path"))
+            })?;
+            if !source.is_dir() {
+                return Err(VivariumError::Config(format!(
+                    "repository target {id:?} path {} does not exist",
+                    source.display()
+                )));
+            }
+            let probe = ctx.sh(
+                &format!(
+                    "git -C {} rev-parse --show-toplevel",
+                    shell_quote(&source.to_string_lossy())
+                ),
+                None,
+                30,
+            );
+            if probe.code != 0 {
+                return Err(VivariumError::Config(format!(
+                    "repository target {id:?} path {} is not a Git repository",
+                    source.display()
+                )));
+            }
+            let remote_url = target
+                .remote_url
+                .or_else(|| {
+                    let out = ctx.sh(
+                        &format!(
+                            "git -C {} remote get-url {}",
+                            shell_quote(&source.to_string_lossy()),
+                            shell_quote(&target.remote)
+                        ),
+                        None,
+                        30,
+                    );
+                    (out.code == 0 && !out.text.trim().is_empty())
+                        .then(|| out.text.trim().to_owned())
+                })
+                .unwrap_or_else(|| source.to_string_lossy().into_owned());
+            let mut target_cfg = ctx.cfg.for_target(&id).ok_or_else(|| {
+                VivariumError::Config(format!("repository target {id:?} disappeared"))
+            })?;
+            target_cfg.remote_url = Some(remote_url);
+            let repo = ctx.cfg.target_repo_dir(&ctx.project, &id).ok_or_else(|| {
+                VivariumError::Config(format!("repository target {id:?} has no integration path"))
+            })?;
+            let target_ctx = Ctx::with_parts(
+                target_cfg,
+                ctx.host.clone(),
+                ctx.project.clone(),
+                ctx.vivi.clone(),
+                ctx.shell_prefix.clone(),
+                ctx.home.clone(),
+                repo,
+            );
+            ensure_single_repo(&target_ctx)?;
+        }
+        return Ok(());
+    }
+    ensure_single_repo(ctx)
+}
+
+fn ensure_single_repo(ctx: &Ctx) -> Result<(), VivariumError> {
     if ctx.repo.exists() {
         return Ok(());
     }

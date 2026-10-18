@@ -667,7 +667,7 @@ vivi pool create --pool <name> [--slots N] [--base <commit|branch>] [--timeout S
 vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool status [--pool <name>] [--json | --porcelain]
 vivi pool destroy --pool <name> (--slot <name-or-id> | --all) --yes
-vivi pool dispatch --pool <name> <task> [--model <slug>] [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--ready-timeout SECS] [--porcelain]   # --ready-timeout: RunPod pools only
+vivi pool dispatch --pool <name> <task> [--target <id>] [--model <slug>] [--from <ref>] [--branch <name>] [--budget SECS] [--allow-default-branch] [--ready-timeout SECS] [--porcelain]   # --ready-timeout: RunPod pools only
 vivi pool dispatch --pool <name> <task> [--model <slug>] --read-only [--from <ref>] [--budget SECS] [--porcelain]
 vivi pool wait [--pool <name>] [<task>...] [--timeout SECS] [--porcelain]
 vivi pool reconcile [--pool <name>] [--porcelain]
@@ -1887,8 +1887,9 @@ the project.
 
 #### User-level pump service
 
-The pump service supervises independent project pumps. Each registered
-project keeps its `[pump]` settings, `pump.db`, and pool configuration. The
+The pump service supervises independent mailspace pumps. Each registered
+mailspace keeps its `[pump]` settings, one `pump.db`, one shared pool
+configuration, and may define several repository targets for unit work. The
 registry is stored at the platform's user config directory under
 `vivi/pump-service.toml` (`projects = ["/absolute/project/path"]`).
 
@@ -2116,9 +2117,16 @@ ingests every new file exactly once:
 ```json
 {"need": "<handle>", "verdict": "units", "reason": "…",
  "units": [{"id": "<need>-1", "title": "…", "brief": "…",
-            "write_scope": ["<path>"], "after": [],
+            "target": "<target-id>", "write_scope": ["<path>"], "after": [],
             "proof": ["<command>"], "tools": "<kind>"}]}
 ```
+
+When `[pump.targets]` is configured, every unit must name one configured
+target. Its `write_scope` is relative to that repository. A need may split into
+units for several targets; an unknown or omitted target parks the need as
+`hold` before dispatch. Without named targets, units use the legacy `default`
+target. An `after` edge across targets also parks the need because unpublished
+branches cannot be handed from one repository to another.
 
 - `verdict` `units` mints pending units; `delivered` records the reason with no
   units; `operator`, `design` and `hold` park the need; `invalid` is the pump's
@@ -2130,6 +2138,7 @@ ingests every new file exactly once:
 #### Unit states
 
 - `pending` — waiting to dispatch.
+- `held` — its repository target is missing; it returns to `pending` when the target is restored.
 - `inflight` — dispatched to a pool slot; a task handle exists.
 - `delivered` — the worker's branch exists on the remote; waiting to merge.
 - `merging` — queued to or being handled by the merge thread.
@@ -2172,6 +2181,25 @@ fix_prefix   = "pumpfix"               # ids with this prefix are fix units
 from         = "operator"              # role unit tasks are sent from
 to           = "hand"                  # recipient role of a unit dispatch
 reply_from   = "mind"                  # role that replies on need threads
+
+# For a workspace mailspace spanning sibling Git repositories, these target
+# tables replace the legacy single-repository repo/remote/branch/main/promote
+# settings above. Pool capacity and pool definitions remain shared.
+[pump.targets.radix]
+path        = "radix"                   # relative to the mailspace root
+github_repo = "faberlang/radix"         # optional when inferred from remote_url
+remote_url  = "git@github.com:faberlang/radix.git"
+branch      = "next"
+main        = "main"
+promote     = true
+
+[pump.targets.tela]
+path        = "tela"
+github_repo = "faberlang/tela"
+remote_url  = "git@github.com:faberlang/tela.git"
+branch      = "main"
+main        = "main"
+promote     = false
 
 [pump.board]
 from         = ["<address>"]           # senders whose open needs are plannable

@@ -134,13 +134,17 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     }
     st.plans_seen.push(key.to_string());
     let units = plan.get("units").and_then(Value::as_array);
-    let (minted, bad) = validate_units(st, units.map_or(&[], Vec::as_slice), false, need);
+    let (minted, bad) = validate_units(ctx, st, units.map_or(&[], Vec::as_slice), false, need);
     if let Some(bad) = bad {
         if replaces.is_none() {
             st.needs.insert(
                 need.to_string(),
                 NeedRecord {
-                    verdict: "invalid".to_string(),
+                    verdict: if is_hold_reason(&bad) {
+                        "hold".to_string()
+                    } else {
+                        "invalid".to_string()
+                    },
                     reason: bad.clone(),
                     units: Vec::new(),
                     ..NeedRecord::default()
@@ -155,10 +159,14 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     record(ctx, st, &plan, need, replaces, &minted, revision);
 }
 
+fn is_hold_reason(reason: &str) -> bool {
+    reason.contains("repository target") || reason.contains("cross-target dependency")
+}
+
 /// Apply a revision to a known need.
 fn apply_revision(ctx: &Ctx, st: &mut State, need: &str, revision: u64, plan: &Value, text: &str) {
     let units = plan.get("units").and_then(Value::as_array);
-    let (planned, bad) = validate_units(st, units.map_or(&[], Vec::as_slice), true, need);
+    let (planned, bad) = validate_units(ctx, st, units.map_or(&[], Vec::as_slice), true, need);
     if let Some(bad) = bad {
         ctx.exception("bad-plan", need, &bad);
         return;
@@ -286,8 +294,17 @@ enum Apply {
 /// Apply one planned unit to an existing unit, respecting the state rules.
 fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str) -> Apply {
     let changed = !same_fields(unit, plan);
+    if unit.attempts > 0 && unit.target != str_field(plan, "target").unwrap_or("default") {
+        ctx.exception(
+            "revision-conflict",
+            uid,
+            "refused to change repository target after an attempt",
+        );
+        return Apply::Conflict;
+    }
     match unit.status {
-        Status::Pending => {
+        Status::Pending | Status::Held => {
+            unit.status = Status::Pending;
             set_fields(unit, plan, revision);
             Apply::Amended
         }
@@ -324,6 +341,7 @@ fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str)
 /// must not collide with existing units. Returns the valid `(id, unit)`
 /// pairs, or the reason the plan was rejected.
 fn validate_units<'a>(
+    ctx: &Ctx,
     st: &State,
     units: &'a [Value],
     allow_existing: bool,
@@ -343,6 +361,9 @@ fn validate_units<'a>(
         if !ok_brief || !ok_scope || !ok_proof {
             return (minted, Some(BAD_UNIT.to_string()));
         }
+        if let Err(reason) = target_for_plan(ctx, u) {
+            return (minted, Some(reason));
+        }
         if let Some(existing) = st.units.get(uid) {
             if !allow_existing {
                 return (minted, Some(format!("duplicate unit id {uid}")));
@@ -353,7 +374,58 @@ fn validate_units<'a>(
         }
         minted.push((uid, u));
     }
+    if let Some(reason) = cross_target_dependency(st, ctx, &minted) {
+        return (minted, Some(reason));
+    }
     (minted, None)
+}
+
+/// Cross-target prerequisites would need an unpublished branch handoff, which
+/// the shared-pool runner does not implement. Hold the whole plan safely.
+fn cross_target_dependency(st: &State, ctx: &Ctx, units: &[(&str, &Value)]) -> Option<String> {
+    let mut planned = std::collections::BTreeMap::new();
+    for (uid, plan) in units {
+        if let Ok(target) = target_for_plan(ctx, plan) {
+            planned.insert(*uid, target);
+        }
+    }
+    for (uid, plan) in units {
+        let target = match target_for_plan(ctx, plan) {
+            Ok(target) => target,
+            Err(_) => continue,
+        };
+        for dependency in str_list(plan.get("after")) {
+            let dependency_target = planned.get(dependency.as_str()).cloned().or_else(|| {
+                st.units
+                    .get(&dependency)
+                    .map(|unit| unit.target_id().to_string())
+            });
+            if dependency_target.is_some_and(|dependency_target| dependency_target != target) {
+                return Some(format!(
+                    "cross-target dependency {dependency} for unit {uid} needs an unpublished branch handoff"
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Resolve one plan unit's target. Legacy pump config has exactly one
+/// implicit target; named target maps require the planner to choose one.
+fn target_for_plan(ctx: &Ctx, plan: &Value) -> Result<String, String> {
+    let targets = ctx.cfg.target_configs();
+    let Some(target) = str_field(plan, "target") else {
+        return if ctx.cfg.targets.is_empty() {
+            Ok(String::from("default"))
+        } else {
+            Err("unit must name a configured repository target".to_string())
+        };
+    };
+    if targets.contains_key(target) {
+        Ok(target.to_string())
+    } else {
+        Err(format!("unit names unknown repository target `{target}`"))
+    }
 }
 
 /// Mint one pending unit per validated plan unit and append it to `order`.
@@ -367,6 +439,7 @@ fn mint(ctx: &Ctx, st: &mut State, need: &str, minted: &[(&str, &Value)], revisi
 fn mint_one(ctx: &Ctx, st: &mut State, need: &str, uid: &str, plan: &Value, revision: u64) {
     let unit = Unit {
         need: need.to_string(),
+        target: target_for_plan(ctx, plan).unwrap_or_else(|_| String::from("default")),
         revision,
         title: str_field(plan, "title")
             .unwrap_or("")
@@ -388,12 +461,13 @@ fn mint_one(ctx: &Ctx, st: &mut State, need: &str, uid: &str, plan: &Value, revi
 
 /// True when the planned fields match the existing unit exactly.
 fn same_fields(unit: &Unit, plan: &Value) -> bool {
-    unit.title
-        == str_field(plan, "title")
-            .unwrap_or("")
-            .chars()
-            .take(150)
-            .collect::<String>()
+    unit.target == str_field(plan, "target").unwrap_or("default")
+        && unit.title
+            == str_field(plan, "title")
+                .unwrap_or("")
+                .chars()
+                .take(150)
+                .collect::<String>()
         && unit.brief == str_field(plan, "brief").unwrap_or("")
         && unit.write_scope == str_list(plan.get("write_scope"))
         && unit.after == str_list(plan.get("after"))
@@ -404,6 +478,7 @@ fn same_fields(unit: &Unit, plan: &Value) -> bool {
 /// Replace a pending unit's planned fields.
 fn set_fields(unit: &mut Unit, plan: &Value, revision: u64) {
     unit.revision = revision;
+    unit.target = str_field(plan, "target").unwrap_or("default").to_string();
     unit.title = str_field(plan, "title")
         .unwrap_or("")
         .chars()

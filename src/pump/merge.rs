@@ -99,11 +99,34 @@ pub fn reset_repo(ctx: &Ctx) {
 pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     let t0 = ctx.now();
     reset_repo(ctx);
-    let fetch = format!(
-        "fetch {r} refs/heads/{b}:refs/remotes/{r}/{b}",
-        r = ctx.cfg.remote,
-        b = job.branch
-    );
+    let local = if ctx.cfg.targets.is_empty() {
+        crate::pump::host::CmdOutput {
+            code: 1,
+            text: String::new(),
+        }
+    } else {
+        ctx.git(
+            &format!(
+                "show-ref --verify --quiet refs/heads/{}",
+                shell_quote(&job.branch)
+            ),
+            30,
+        )
+    };
+    let fetch = if local.code == 0 {
+        format!(
+            "update-ref refs/remotes/{}/{} refs/heads/{}",
+            ctx.cfg.remote,
+            shell_quote(&job.branch),
+            shell_quote(&job.branch)
+        )
+    } else {
+        format!(
+            "fetch {r} refs/heads/{b}:refs/remotes/{r}/{b}",
+            r = ctx.cfg.remote,
+            b = shell_quote(&job.branch)
+        )
+    };
     let out = ctx.git(&fetch, 180);
     if out.code != 0 {
         return fetch_failure(&job.uid, &out.text);
@@ -654,6 +677,15 @@ impl Merger {
         let hold = ctx.flag("HOLD-MERGE");
         let needs = priority_needs(ctx);
         let holds = dependency_holds(ctx, st);
+        let targets = ctx.cfg.target_configs();
+        for unit in st.units.values_mut() {
+            if unit.status == Status::Held
+                && unit.branch.is_some()
+                && targets.contains_key(unit.target_id())
+            {
+                unit.status = Status::Delivered;
+            }
+        }
         for uid in ranked(ctx, st, st.order.clone()) {
             let dependency = st
                 .units
@@ -676,6 +708,7 @@ impl Merger {
             unit.status = Status::Merging;
             let job = MergeJob {
                 uid: uid.clone(),
+                target: unit.target_id().to_string(),
                 branch: unit.branch.clone().unwrap_or_default(),
                 title: unit.title.clone(),
                 need: unit.need.clone(),
@@ -711,20 +744,39 @@ impl Merger {
 /// merge the batch, and hand out exactly one result per job. A panic in the
 /// work becomes one `merge-error` result per job, never a dead loop.
 fn merge_loop(ctx: &Ctx, jobs: &Receiver<MergeJob>, out: &Sender<MergeResult>) {
-    while let Ok(first) = jobs.recv() {
+    let mut queued = std::collections::VecDeque::new();
+    loop {
+        let first = if let Some(job) = queued.pop_front() {
+            job
+        } else {
+            match jobs.recv() {
+                Ok(job) => job,
+                Err(_) => break,
+            }
+        };
+        let Some(target_ctx) = ctx.for_target(&first.target) else {
+            let result = undecided_result(
+                &first.uid,
+                "unknown-target",
+                &format!("repository target `{}` is not configured", first.target),
+            );
+            dispatch_results(out, &[first], vec![result]);
+            continue;
+        };
         let mut batch = vec![first];
-        while batch.len() < ctx.cfg.merge.batch as usize {
+        while batch.len() < target_ctx.cfg.merge.batch as usize {
             match jobs.try_recv() {
-                Ok(job) => batch.push(job),
+                Ok(job) if job.target == target_ctx.target_id => batch.push(job),
+                Ok(job) => queued.push_back(job),
                 Err(_) => break,
             }
         }
-        let work = AssertUnwindSafe(|| run_batch(ctx, &batch));
+        let work = AssertUnwindSafe(|| run_batch(&target_ctx, &batch));
         let done = match catch_unwind(work) {
             Ok(results) => results,
             Err(err) => {
                 let detail = panic_text(&err);
-                ctx.log(&format!("MERGE ERROR {detail}"));
+                target_ctx.log(&format!("MERGE ERROR {detail}"));
                 batch
                     .iter()
                     .map(|j| undecided_result(&j.uid, "merge-error", &detail))
@@ -802,6 +854,17 @@ fn panic_text(err: &Box<dyn Any + Send>) -> String {
 /// `ok=null`: the unit returns to `delivered` for a later retry, and the
 /// log line is `<why> <uid>: <first 200 chars of detail>`.
 fn apply_undecided(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    if result.why.as_deref() == Some("unknown-target") {
+        let detail = result
+            .detail
+            .as_deref()
+            .unwrap_or("repository target is not configured");
+        if let Some(unit) = st.units.get_mut(&result.uid) {
+            unit.status = Status::Held;
+        }
+        ctx.exception("unknown-target", &result.uid, detail);
+        return;
+    }
     if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Delivered;
     }

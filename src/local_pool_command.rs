@@ -71,7 +71,8 @@ pub(crate) fn create_into(
     let worktree = config.worktree_source();
     let access = match &worktree {
         Some(_) => None,
-        None => Some(config.require_repo(&id.pool, "create slots")?),
+        None if config.repo.is_some() => Some(config.require_repo(&id.pool, "create slots")?),
+        None => None,
     };
     progress.say(&format!("{}: preparing the pool's home", id.pool));
     let ready = run::prepare_home(provider, config)?;
@@ -110,10 +111,12 @@ pub(crate) fn create_into(
                 (token, base)
             }
             (None, None) => {
-                return Err(VivariumError::Config(format!(
-                    "[pools.{}] has no source to seed from",
-                    id.pool
-                )));
+                if seed.base.is_some() {
+                    return Err(VivariumError::Config(
+                        "--base requires a repository source".into(),
+                    ));
+                }
+                (Secret::new(String::new()), String::new())
             }
         };
         progress.say(&format!("seeding at {}", &base[..12.min(base.len())]));

@@ -1,7 +1,7 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig};
+use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -215,6 +215,49 @@ fn a_config_round_trips_through_the_mailspace_file_without_losing_a_key() {
     let text = toml::to_string(&file).expect("table should serialize");
     let again = toml::Value::try_from(pump(&text)).expect("pump config should serialize");
     assert_eq!(before, again, "a rewrite must not lose or change a key");
+}
+
+#[test]
+fn named_targets_keep_repository_paths_and_inherit_shared_merge_and_gate_defaults() {
+    let mut cfg = PumpConfig {
+        merge: crate::pump::config::MergeConfig {
+            shared_checks: vec![String::from("cargo check")],
+            ..crate::pump::config::MergeConfig::default()
+        },
+        gate: crate::pump::config::GateConfig {
+            command: String::from("./gate"),
+            ..crate::pump::config::GateConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    cfg.targets = BTreeMap::from([
+        (
+            String::from("radix"),
+            PumpTarget {
+                path: String::from("radix"),
+                branch: String::from("next"),
+                promote: false,
+                ..PumpTarget::default()
+            },
+        ),
+        (
+            String::from("tela"),
+            PumpTarget {
+                path: String::from("tela"),
+                branch: String::from("main"),
+                promote: false,
+                ..PumpTarget::default()
+            },
+        ),
+    ]);
+    let targets = cfg.target_configs();
+    assert_eq!(targets["radix"].path, "radix");
+    assert_eq!(targets["tela"].path, "tela");
+    assert_eq!(
+        targets["radix"].merge.as_ref().unwrap().shared_checks,
+        ["cargo check"]
+    );
+    assert_eq!(targets["tela"].gate.as_ref().unwrap().command, "./gate");
 }
 
 #[test]

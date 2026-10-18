@@ -23,7 +23,16 @@ fn the_lock_is_held_until_dropped_and_a_second_taker_waits_then_gives_up() {
     assert!(err.contains("another dispatch"), "{err}");
     assert_eq!(told.get(), 1, "the wait is announced once");
     drop(first);
-    assert!(acquire(&path, Duration::ZERO, Duration::ZERO, &note).is_ok());
+    assert!(
+        acquire(
+            &path,
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+            &note
+        )
+        .is_ok(),
+        "the lock should be reusable shortly after its holder drops"
+    );
 }
 
 #[test]

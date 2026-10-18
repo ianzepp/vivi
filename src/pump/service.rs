@@ -85,7 +85,7 @@ pub fn list() -> Result<(), VivariumError> {
 /// Install and start the current binary as a macOS user LaunchAgent.
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<(), VivariumError> {
-    let _ = load_config()?;
+    drop(load_config()?);
     let path = launch_agent_path()?;
     let parent = path
         .parent()
@@ -103,7 +103,7 @@ pub fn install() -> Result<(), VivariumError> {
     let temporary = path.with_extension("plist.tmp");
     fs::write(&temporary, plist)?;
     if let Err(error) = bootout_if_loaded(&domain, &path) {
-        let _ = fs::remove_file(&temporary);
+        drop(fs::remove_file(&temporary));
         return Err(error);
     }
     fs::rename(temporary, &path)?;
@@ -235,37 +235,71 @@ fn xml_escape(value: &str) -> String {
 /// Run as a foreground process under launchd, systemd, or another service manager.
 pub async fn run() -> Result<(), VivariumError> {
     let _lock = take_service_lock()?;
-    let mut children = BTreeMap::new();
-    let mut retry_after = BTreeMap::new();
-    let mut observed_modes = BTreeMap::new();
-    let mut stopping = BTreeMap::new();
-    let mut interval = tokio::time::interval(POLL_INTERVAL);
-    #[cfg(unix)]
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    ServiceRuntime::default().run().await
+}
 
-    tracing::info!("pump service started; config {}", config_path()?.display());
-    loop {
+#[derive(Default)]
+struct ServiceRuntime {
+    children: BTreeMap<PathBuf, Child>,
+    retry_after: BTreeMap<PathBuf, Instant>,
+    observed_modes: BTreeMap<PathBuf, super::control::PumpMode>,
+    stopping: BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
+}
+
+impl ServiceRuntime {
+    async fn run(mut self) -> Result<(), VivariumError> {
+        let mut interval = tokio::time::interval(POLL_INTERVAL);
         #[cfg(unix)]
-        let shutdown = wait_for_shutdown(&mut interval, &mut terminate).await;
-        #[cfg(not(unix))]
-        let shutdown = wait_for_shutdown(&mut interval).await;
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+        tracing::info!("pump service started; config {}", config_path()?.display());
+        loop {
+            #[cfg(unix)]
+            let shutdown = self.poll(&mut interval, &mut terminate).await;
+            #[cfg(not(unix))]
+            let shutdown = self.poll(&mut interval).await;
+            if shutdown {
+                break;
+            }
+        }
+        stop_children(&mut self.children, &mut self.stopping).await;
+        tracing::info!("pump service stopped");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn poll(
+        &mut self,
+        interval: &mut tokio::time::Interval,
+        terminate: &mut tokio::signal::unix::Signal,
+    ) -> bool {
+        let shutdown = wait_for_shutdown(interval, terminate).await;
+        self.reconcile_tick(shutdown).await
+    }
+
+    #[cfg(not(unix))]
+    async fn poll(&mut self, interval: &mut tokio::time::Interval) -> bool {
+        let shutdown = wait_for_shutdown(interval).await;
+        self.reconcile_tick(shutdown).await
+    }
+
+    async fn reconcile_tick(&mut self, shutdown: bool) -> bool {
         if shutdown {
-            break;
+            return true;
         }
         if let Err(error) = reconcile(
-            &mut children,
-            &mut retry_after,
-            &mut observed_modes,
-            &mut stopping,
+            &mut self.children,
+            &mut self.retry_after,
+            &mut self.observed_modes,
+            &mut self.stopping,
         )
         .await
         {
             tracing::error!(%error, "pump service reconciliation failed");
         }
+        false
     }
-    stop_children(&mut children, &mut stopping).await;
-    tracing::info!("pump service stopped");
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -402,20 +436,8 @@ async fn start_missing(
         if control.mode == super::control::PumpMode::Stopped {
             continue;
         }
-        if control.shutdown_requested {
-            match super::run::lock_is_held(&home) {
-                Ok(true) => continue,
-                Ok(false) => {
-                    if let Err(error) = super::control::request_shutdown(&home, false) {
-                        tracing::warn!(project = %project.display(), %error, "could not clear stale shutdown request");
-                        continue;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(project = %project.display(), %error, "could not inspect pump lock");
-                    continue;
-                }
-            }
+        if control.shutdown_requested && shutdown_is_pending(project, &home) {
+            continue;
         }
         match spawn_pump(&executable, project).await {
             Ok(child) => {
@@ -427,6 +449,23 @@ async fn start_missing(
                 tracing::warn!(project = %project.display(), %error, "could not start project pump");
                 retry_after.insert(project.clone(), Instant::now() + RESTART_DELAY);
             }
+        }
+    }
+}
+
+fn shutdown_is_pending(project: &Path, home: &Path) -> bool {
+    match super::run::lock_is_held(home) {
+        Ok(true) => true,
+        Ok(false) => match super::control::request_shutdown(home, false) {
+            Ok(()) => false,
+            Err(error) => {
+                tracing::warn!(project = %project.display(), %error, "could not clear stale shutdown request");
+                true
+            }
+        },
+        Err(error) => {
+            tracing::warn!(project = %project.display(), %error, "could not inspect pump lock");
+            true
         }
     }
 }
@@ -453,8 +492,8 @@ async fn spawn_pump(executable: &Path, project: &Path) -> Result<Child, std::io:
         Ok(Err(error)) => error,
         Err(_) => std::io::Error::other("pump child readiness timed out"),
     };
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    drop(child.kill().await);
+    drop(child.wait().await);
     Err(failure)
 }
 
@@ -477,8 +516,12 @@ async fn stop_children(
 }
 
 async fn stop_pump(project: &Path, mut child: Child) {
-    if child.try_wait().ok().flatten().is_some() {
-        return;
+    match child.try_wait() {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(project = %project.display(), %error, "could not check project pump status");
+        }
     }
     let home = match super::control::project_home(project) {
         Ok(home) => home,
@@ -507,7 +550,7 @@ async fn force_stop(child: &mut Child, project: &Path) {
     if let Err(error) = child.kill().await {
         tracing::warn!(project = %project.display(), %error, "could not stop project pump");
     }
-    let _ = child.wait().await;
+    drop(child.wait().await);
 }
 
 fn load_config() -> Result<ServiceConfig, VivariumError> {

@@ -151,6 +151,7 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str) {
                 serde_json::json!({
                     "id": uid,
                     "status": unit.status.as_str(),
+                    "target": unit.target_id(),
                     "title": unit.title,
                     "brief": unit.brief,
                     "write_scope": unit.write_scope,

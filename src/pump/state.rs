@@ -26,6 +26,8 @@ pub enum Status {
     /// Planned, waiting to be dispatched.
     #[default]
     Pending,
+    /// Temporarily blocked because its configured repository target is absent.
+    Held,
     /// Dispatched to an agent, still running.
     Inflight,
     /// The agent finished; awaiting merge.
@@ -56,6 +58,7 @@ impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::Held => "held",
             Self::Inflight => "inflight",
             Self::Delivered => "delivered",
             Self::Merging => "merging",
@@ -74,6 +77,7 @@ impl Status {
     pub fn from_name(name: &str) -> Self {
         match name {
             "pending" => Self::Pending,
+            "held" => Self::Held,
             "inflight" => Self::Inflight,
             "delivered" => Self::Delivered,
             "merging" => Self::Merging,
@@ -147,6 +151,10 @@ pub struct Unit {
     /// The need this unit serves (handle without the `-N` suffix).
     #[serde(default)]
     pub need: String,
+    /// Repository target selected by the plan. Legacy state maps to
+    /// `default`; a target is fixed once the unit has been attempted.
+    #[serde(default = "default_target")]
+    pub target: String,
     /// The plan revision that introduced or last amended this unit.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub revision: u64,
@@ -220,6 +228,23 @@ pub struct Unit {
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl Unit {
+    /// Target ID, treating programmatically constructed legacy units like
+    /// deserialized legacy state (`default`).
+    #[must_use]
+    pub fn target_id(&self) -> &str {
+        if self.target.is_empty() {
+            "default"
+        } else {
+            &self.target
+        }
+    }
+}
+
+fn default_target() -> String {
+    String::from("default")
 }
 
 /// What the planner decided about one need (`needs[handle]`).
@@ -359,6 +384,9 @@ pub struct State {
     /// Red names already reported to the board.
     #[serde(default)]
     pub red_reported: Vec<String>,
+    /// Gate, baseline and promotion state for named repository targets.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub target_states: BTreeMap<String, TargetState>,
     /// Promoted tips, oldest first.
     #[serde(default)]
     pub promotions: Vec<Promotion>,
@@ -367,12 +395,106 @@ pub struct State {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// Gate state isolated to one named repository target.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TargetState {
+    #[serde(default)]
+    pub merges: u64,
+    #[serde(default)]
+    pub baseline: Option<Vec<String>>,
+    #[serde(default)]
+    pub last_gate: GateRun,
+    #[serde(default)]
+    pub gates: Vec<GateRecord>,
+    #[serde(default)]
+    pub promotions: Vec<Promotion>,
+    #[serde(default)]
+    pub red: BTreeMap<String, String>,
+    #[serde(default)]
+    pub red_reported: Vec<String>,
+    /// Gate-fix counters and external-gate wait state for this target.
+    #[serde(default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Run one target's gate logic against its own state while preserving the
+/// workspace-level unit and need graph in the surrounding `State`.
+pub fn with_target_state<T>(st: &mut State, target: &str, run: impl FnOnce(&mut State) -> T) -> T {
+    if target == "default" {
+        return run(st);
+    }
+    let previous = st.target_states.remove(target).unwrap_or_default();
+    let saved = TargetState {
+        merges: st.merges,
+        baseline: std::mem::replace(&mut st.baseline, previous.baseline),
+        last_gate: std::mem::replace(&mut st.last_gate, previous.last_gate),
+        gates: std::mem::replace(&mut st.gates, previous.gates),
+        promotions: std::mem::replace(&mut st.promotions, previous.promotions),
+        red: std::mem::replace(&mut st.red, previous.red),
+        red_reported: std::mem::replace(&mut st.red_reported, previous.red_reported),
+        extra: std::mem::replace(&mut st.extra, previous.extra),
+    };
+    st.merges = st
+        .units
+        .values()
+        .filter(|unit| unit.target_id() == target && unit.status == Status::Merged)
+        .count() as u64;
+    let result = run(st);
+    let updated = TargetState {
+        merges: st.merges,
+        baseline: st.baseline.take(),
+        last_gate: std::mem::take(&mut st.last_gate),
+        gates: std::mem::take(&mut st.gates),
+        promotions: std::mem::take(&mut st.promotions),
+        red: std::mem::take(&mut st.red),
+        red_reported: std::mem::take(&mut st.red_reported),
+        extra: std::mem::take(&mut st.extra),
+    };
+    st.merges = saved.merges;
+    st.baseline = saved.baseline;
+    st.last_gate = saved.last_gate;
+    st.gates = saved.gates;
+    st.promotions = saved.promotions;
+    st.red = saved.red;
+    st.red_reported = saved.red_reported;
+    st.extra = saved.extra;
+    st.target_states.insert(target.to_string(), updated);
+    result
+}
+
+impl State {
+    /// Whether any target currently owns an open gate task.
+    #[must_use]
+    pub fn has_active_gate(&self) -> bool {
+        self.last_gate.task.is_some()
+            || self
+                .target_states
+                .values()
+                .any(|target| target.last_gate.task.is_some())
+    }
+
+    /// Target ID whose gate task is open, if any.
+    #[must_use]
+    pub fn active_gate_target(&self) -> Option<String> {
+        if self.last_gate.task.is_some() {
+            return Some(String::from("default"));
+        }
+        self.target_states
+            .iter()
+            .find(|(_, target)| target.last_gate.task.is_some())
+            .map(|(id, _)| id.clone())
+    }
+}
+
 /// One unit handed to the merge thread.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct MergeJob {
     /// Unit handle.
     #[serde(default)]
     pub uid: String,
+    /// Repository target whose integration clone owns the branch.
+    #[serde(default = "default_target")]
+    pub target: String,
     /// Work branch to merge.
     #[serde(default)]
     pub branch: String,

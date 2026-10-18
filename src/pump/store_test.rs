@@ -3,7 +3,9 @@
 
 use tempfile::tempdir;
 
-use crate::pump::state::{Attempt, GateRecord, NeedRecord, Promotion, State, Status, Unit};
+use crate::pump::state::{
+    Attempt, GateRecord, NeedRecord, Promotion, State, Status, TargetState, Unit,
+};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// A `state.json` written by the live pump, used as the import fixture.
@@ -13,6 +15,7 @@ fn sample() -> State {
     let mut st = State::default();
     let mut unit = Unit {
         need: String::from("n1"),
+        target: String::from("tela"),
         title: String::from("one"),
         brief: String::from("do it"),
         write_scope: vec![String::from("src/a")],
@@ -46,6 +49,14 @@ fn sample() -> State {
         .insert(String::from("future"), serde_json::json!(7));
     st.units.insert(String::from("u1"), unit);
     st.order = vec![String::from("u1")];
+    st.target_states.insert(
+        String::from("radix"),
+        TargetState {
+            merges: 3,
+            baseline: Some(vec![String::from("radix failure")]),
+            ..TargetState::default()
+        },
+    );
     st.needs.insert(
         String::from("n1"),
         NeedRecord {
@@ -100,6 +111,12 @@ fn a_saved_state_round_trips() {
     assert!(!store.is_empty().unwrap());
     let back = store.load().unwrap();
     let unit = &back.units["u1"];
+    assert_eq!(unit.target, "tela");
+    assert_eq!(back.target_states["radix"].merges, 3);
+    assert_eq!(
+        back.target_states["radix"].baseline,
+        Some(vec![String::from("radix failure")])
+    );
     assert_eq!(unit.status, Status::Merged);
     assert_eq!(unit.commit.as_deref(), Some("abc123"));
     assert_eq!(unit.merged_at, Some(12));
@@ -143,6 +160,7 @@ fn the_live_state_snapshot_round_trips_through_the_database() {
     assert_eq!(back.closed_needs, state.closed_needs);
     let (id, want) = state.units.iter().next().unwrap();
     let got = &back.units[id];
+    assert_eq!(got.target, "default");
     assert_eq!(got.status, want.status);
     assert_eq!(got.need, want.need);
     assert_eq!(got.history.len(), want.history.len());
@@ -164,6 +182,23 @@ fn a_version_one_database_gains_the_revision_columns() {
     let store = PumpStore::open(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert!(store.load().unwrap().needs.is_empty());
+}
+
+#[test]
+fn a_version_three_database_migrates_units_to_named_targets() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE units DROP COLUMN target;
+         PRAGMA user_version = 3;",
+    )
+    .unwrap();
+    drop(conn);
+    let store = PumpStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert!(store.load().unwrap().units.is_empty());
 }
 
 #[test]

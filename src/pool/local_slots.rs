@@ -485,11 +485,34 @@ pub fn destroy(root: &Path, id: &str) -> Result<(), VivariumError> {
     if let Some(repo) = &repo {
         repo.remove_worktree(&real.join(CHECKOUT))?;
     }
+    remove_target_worktrees(&real)?;
     std::fs::remove_dir_all(&real).map_err(|e| failed("cannot delete", &real, &e))?;
     if let Some(repo) = &repo {
         repo.prune()?;
     }
     tidy(&real_root, id);
+    Ok(())
+}
+
+/// Remove only worktrees registered beneath this already validated slot.
+fn remove_target_worktrees(slot: &Path) -> Result<(), VivariumError> {
+    let targets = slot.join("targets");
+    let entries = match std::fs::read_dir(&targets) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let cache = entry?.path();
+        if cache.symlink_metadata()?.file_type().is_symlink() {
+            continue;
+        }
+        if let Ok(source) = std::fs::read_to_string(cache.join(WORKTREE_OF_FILE)) {
+            let repo = Repo::new(Path::new(source.trim()));
+            repo.remove_worktree(&cache.join(CHECKOUT))?;
+            repo.prune()?;
+        }
+    }
     Ok(())
 }
 

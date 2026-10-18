@@ -12,6 +12,8 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
     OpenDispatch {
         task: task.into(),
         record: DispatchRecord {
+            target: None,
+            repository: None,
             pool: "p".into(),
             slot: "p-slot-1".into(),
             machine: "m1".into(),
@@ -837,4 +839,19 @@ fn facts_survive_the_collect_output_as_result_lines() {
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0].command, "gpu-query --csv");
     assert_eq!(facts[0].output, "Some GPU, 550.1\n8 GiB");
+}
+
+#[test]
+fn target_result_must_match_the_dispatched_repository() {
+    let mut record = open("t1", "j1", 0).record;
+    record.target = Some("radix".into());
+    record.repository = Some("https://github.com/faberlang/radix.git".into());
+    let wrong =
+        JobResult::parse("target=gradus\nrepository=https://github.com/faberlang/gradus.git\n");
+    assert!(validate_target(&record, &wrong).is_err());
+    let missing = JobResult::default();
+    assert!(validate_target(&record, &missing).is_err());
+    let matched =
+        JobResult::parse("target=radix\nrepository=https://github.com/faberlang/radix.git\n");
+    validate_target(&record, &matched).unwrap();
 }

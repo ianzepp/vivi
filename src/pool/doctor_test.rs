@@ -45,6 +45,8 @@ fn open_dispatch(task: &str, machine: &str, at: u64, budget: u64) -> OpenDispatc
     OpenDispatch {
         task: task.into(),
         record: DispatchRecord {
+            target: None,
+            repository: None,
             pool: "p".into(),
             slot: "p-slot-1".into(),
             machine: machine.into(),

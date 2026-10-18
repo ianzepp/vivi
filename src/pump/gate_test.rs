@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use tempfile::tempdir;
 
-use crate::pump::config::{GateConfig, PumpConfig};
+use crate::pump::config::{GateConfig, PumpConfig, PumpTarget};
 use crate::pump::gate::{external_gates, finish_gate, hold_cycle, parse_failing, start_gate};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{GateRecord, GateRun, State, Status, Unit};
@@ -187,6 +187,57 @@ fn start_gate_is_due_with_no_baseline_and_dispatches_read_only_to_the_first_pool
     let brief = fs::read_to_string(ctx.home.join("briefs/gate.txt")).unwrap();
     assert!(brief.contains("FAILING-BEGIN"));
     drop(dir);
+}
+
+#[test]
+fn a_named_target_gate_uses_its_branch_and_persists_its_own_run() {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        targets: [(
+            String::from("radix"),
+            PumpTarget {
+                path: String::from("radix"),
+                branch: String::from("radix-next"),
+                gate: Some(GateConfig {
+                    command: String::from("./gate"),
+                    pools: vec![String::from("flygate")],
+                    model: String::from("m/gate"),
+                    ..GateConfig::default()
+                }),
+                ..PumpTarget::default()
+            },
+        )]
+        .into(),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let target_ctx = ctx.for_target("radix").unwrap();
+    host.reply("pool status", 0, "slot flygate bridge slot-1 free\n");
+    host.reply(
+        "git ls-remote",
+        0,
+        &format!("{TIP}\trefs/heads/radix-next\n"),
+    );
+    host.reply("task send", 0, &format!("created hand {TASK}\nnode {TASK}"));
+    host.reply(
+        "pool dispatch",
+        0,
+        &format!("dispatched {TASK} bridge slot-1"),
+    );
+    let mut state = State::default();
+    crate::pump::state::with_target_state(&mut state, "radix", |target| {
+        start_gate(&target_ctx, target);
+    });
+    assert_eq!(state.last_gate.task, None);
+    assert_eq!(
+        state.target_states["radix"].last_gate.task.as_deref(),
+        Some(TASK)
+    );
+    assert!(
+        host.commands()
+            .iter()
+            .any(|command| command.contains("refs/heads/radix-next"))
+    );
 }
 
 #[test]

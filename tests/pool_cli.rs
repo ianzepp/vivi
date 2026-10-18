@@ -444,15 +444,33 @@ fn one_pool_needs_no_flag_and_an_unknown_name_lists_the_pools() {
 }
 
 #[test]
-fn a_pool_with_only_provider_settings_cannot_be_created_scaled_up_or_dispatched_to() {
+fn a_provider_only_pool_can_reach_machine_setup_without_a_repo_but_dispatch_needs_one() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path().to_str().unwrap();
     let handle = two_pools(project.path(), false);
     let create = without_tools(&["pool", "create", "--project", root]);
+    assert!(!create.status.success());
     assert!(
-        text(&create).contains("[pools.local] repo is required to create slots"),
+        text(&create).contains("failed to run `docker`"),
         "{}",
         text(&create)
+    );
+    assert!(
+        !text(&create).contains("repo is required"),
+        "{}",
+        text(&create)
+    );
+    let scale = without_tools(&["pool", "scale", "2", "--project", root]);
+    assert!(!scale.status.success());
+    assert!(
+        text(&scale).contains("failed to run `docker`"),
+        "{}",
+        text(&scale)
+    );
+    assert!(
+        !text(&scale).contains("repo is required"),
+        "{}",
+        text(&scale)
     );
     let dispatch = without_tools(&[
         "pool",

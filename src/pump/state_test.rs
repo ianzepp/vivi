@@ -6,7 +6,9 @@ use std::fs;
 use serde_json::json;
 use tempfile::tempdir;
 
-use crate::pump::state::{MergeResult, NeedRecord, Promotion, State, Status, Unit};
+use crate::pump::state::{
+    MergeResult, NeedRecord, Promotion, State, Status, Unit, with_target_state,
+};
 
 /// A `state.json` as the pump writes it: one-space indent, `null`s
 /// for absent models, `baseline` null before the first gate, `rr` an int.
@@ -287,6 +289,42 @@ fn save_then_load_round_trips_and_leaves_no_tmp_file() {
 }
 
 #[test]
+fn target_gate_state_isolated_from_workspace_default_and_persists() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    let mut state = State::default();
+    state.baseline = Some(vec![String::from("default failure")]);
+    with_target_state(&mut state, "tela", |target| {
+        target.baseline = Some(vec![String::from("tela failure")]);
+        target.merges = 7;
+        target
+            .extra
+            .insert(String::from("replans"), json!({"failure": 1}));
+    });
+    assert_eq!(state.baseline, Some(vec![String::from("default failure")]));
+    assert_eq!(
+        state.target_states["tela"].baseline,
+        Some(vec![String::from("tela failure")])
+    );
+    assert_eq!(state.target_states["tela"].merges, 7);
+    assert!(state.extra.is_empty());
+    assert_eq!(
+        state.target_states["tela"].extra["replans"],
+        json!({"failure": 1})
+    );
+    state.save(&path).unwrap();
+    let loaded = State::load(&path).unwrap();
+    assert_eq!(
+        loaded.target_states["tela"].baseline,
+        Some(vec![String::from("tela failure")])
+    );
+    assert_eq!(
+        loaded.target_states["tela"].extra["replans"],
+        json!({"failure": 1})
+    );
+}
+
+#[test]
 fn unknown_top_level_and_unit_keys_survive_a_round_trip() {
     let dir = tempdir().unwrap();
     let raw = json!({
@@ -443,6 +481,10 @@ fn the_live_snapshot_round_trips_through_load_and_save() {
                 .entry(key)
                 .or_insert(json!([]));
         }
+        unit.as_object_mut()
+            .unwrap()
+            .entry("target")
+            .or_insert(json!("default"));
     }
     let got: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();

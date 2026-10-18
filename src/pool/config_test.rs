@@ -692,13 +692,13 @@ fn the_commands_that_need_a_repository_name_the_missing_setting() {
 }
 
 #[test]
-fn repo_and_github_are_set_together_or_not_at_all() {
+fn a_legacy_repo_requires_github_but_shared_credentials_allow_job_targets() {
     let mut config = full();
     config.github = None;
     assert!(err(&config).contains("github is required when repo is set"));
     let mut config = full();
     config.repo = None;
-    assert!(err(&config).contains("repo is required when github is set"));
+    config.validate(&id()).unwrap();
 }
 
 #[test]

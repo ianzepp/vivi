@@ -99,6 +99,48 @@ fn new_slot_id(spec: &CreateSpec) -> Result<String, VivariumError> {
 }
 
 impl PoolProvider for LocalProvider {
+    fn prepare_target_checkout(
+        &self,
+        id: &str,
+        target: &super::dispatch::target::JobTarget,
+        start: &str,
+    ) -> Result<(), VivariumError> {
+        let Some(source) = &target.local_source else {
+            return Ok(());
+        };
+        if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(VivariumError::Config("invalid target checkout key".into()));
+        }
+        let targets = self.known(id)?.join("targets");
+        let cache = targets.join(&target.cache_key);
+        for path in [&targets, &cache, &cache.join(slots::CHECKOUT)] {
+            if path
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+            {
+                return Err(VivariumError::Config(
+                    "target checkout cannot be a symlink".into(),
+                ));
+            }
+        }
+        std::fs::create_dir_all(&cache)?;
+        let checkout = cache.join(slots::CHECKOUT);
+        let repo = super::local_git::Repo::new(std::path::Path::new(source));
+        if checkout.exists() {
+            let actual = super::local_git::Repo::new(&checkout).common_dir()?;
+            if actual != repo.common_dir()? {
+                return Err(VivariumError::Config(
+                    "target cache belongs to another repository".into(),
+                ));
+            }
+        } else {
+            repo.add_worktree(&checkout, start)?;
+        }
+        std::fs::write(cache.join(slots::WORKTREE_OF_FILE), source)?;
+        Ok(())
+    }
+
     /// The root is made by the first `create`; nothing to make beforehand.
     fn ensure_home(&self) -> Result<Option<String>, VivariumError> {
         Ok(None)

@@ -170,6 +170,21 @@ pub struct OpenedSlot {
 /// A machine host. Implementations must keep secrets out of errors.
 /// Methods after `destroy` act on one machine by id.
 pub trait PoolProvider {
+    /// Prepare a target-specific local worktree after the shared slot is claimed.
+    fn prepare_target_checkout(
+        &self,
+        _id: &str,
+        target: &super::dispatch::target::JobTarget,
+        _start: &str,
+    ) -> Result<(), VivariumError> {
+        if target.local_source.is_some() {
+            return Err(VivariumError::Config(
+                "local repository targets require a local provider".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// How this host's slots live. Resting unless the host says otherwise.
     fn slot_lifetime(&self) -> SlotLifetime {
         SlotLifetime::Resting

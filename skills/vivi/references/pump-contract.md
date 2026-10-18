@@ -106,7 +106,7 @@ directory:
 | `resplit/` | pump writes `<unit>.json` and `<unit>.prompt`; planner writes `<unit>.out` | split planner | JSON + prompt text |
 | `gatefix/` | pump writes `<need>.prompt`; planner writes `<need>.out` | gatefix planner | prompt text |
 | `merge-jobs/` | pump writes `<bid>.job.json`; remote merger writes `.claimed.json`/`.result.json` | pump reads the result | batch protocol; see [`pump-protocols.md`](pump-protocols.md) |
-| `repo/` | git operations (reset_repo and all merge work) | pump | the integration clone; `[pump] repo` overrides |
+| `repo/` | git operations (reset_repo and all merge work) | pump | legacy single-target integration clone; named targets use `targets/<id>/repo` |
 | `planner-charter.md` | operator | planner command lines (`{charter}`) | the planner's system prompt |
 | `sync-push.log` | detached `vivi sync push` | operator | shell redirect |
 | operator scripts, notes and their logs | operator | operator | not engine state |
@@ -129,7 +129,7 @@ before the old marker files are removed. Later starts use the stored mode.
 
 `pump.db` (SQLite) stores the pump's durable work state and operator control
 mode. Work state is read at startup and written in one transaction at each
-save point. The schema is `PRAGMA user_version = 3`.
+save point. The schema is `PRAGMA user_version = 4`.
 
 | table | meaning |
 | --- | --- |
@@ -148,6 +148,11 @@ save point. The schema is `PRAGMA user_version = 3`.
 | `red`, `red_reported` | failures owned by a gate-fix plan, and the ones already reported once |
 | `meta` | `merges` counter, `baseline`, `last_gate`, `board`, and unknown top-level keys (`extra`) |
 
+Each unit stores a `target` ID. Existing rows migrate to `default`. Named
+target gate state (baseline, last gate, gate history, promotions, and owned
+failures) is stored per target in `meta.target_states`; need and unit lifecycle
+remain workspace-wide.
+
 Per-unit fields are the columns of `units` (all units carry the ingest-time
 fields; runtime fields appear as marked):
 
@@ -157,6 +162,7 @@ as marked):
 | field | type | meaning |
 | --- | --- | --- |
 | `need` | string | the owning need handle |
+| `target` | string | configured `[pump.targets.<id>]`; legacy state maps to `default` |
 | `title` | string (≤150 chars) | unit title, from the plan |
 | `brief` | string | the unit's work description |
 | `write_scope` | array of path strings | files the unit may touch |
@@ -244,6 +250,7 @@ States:
 | state | meaning | terminal | satisfied |
 | --- | --- | --- | --- |
 | `pending` | waiting to dispatch | no | no |
+| `held` | configured repository target is missing; returns to `pending` when it is restored | no | no |
 | `inflight` | dispatched to a pool slot; a task handle exists | no | no |
 | `delivered` | the worker's branch exists on the remote; waiting to merge | no | no |
 | `merging` | queued to or being handled by the merge thread | no | no |
@@ -397,7 +404,7 @@ Task send and dispatch command lines:
 vivi task send --from operator --to hand --subject "[<uid> a<N>] <title>" \
     --body-file /tmp/pump-brief-<uid>.txt        # subject truncated to 170 chars
 vivi pool dispatch --pool <pool> <task> --model <model> --from <branch> \
-    --branch unit/<uid>-a<N> --budget 600 --porcelain
+    --branch unit/<uid>-a<N> --budget 600 --porcelain [--target <id>]
 ```
 
 with `--from`/`--to`/budget from config (§9). The created handle is read with
@@ -416,7 +423,7 @@ unless marked.
 | key | type | default | controls |
 | --- | --- | --- | --- |
 | `home` | path | `<project>/.vivi/pump` | the home directory (§3) |
-| `repo` | path | `<home>/repo` | the integration clone; at startup a missing one is cloned from `remote_url`, or the pump refuses to start when none is set |
+| `repo` | path | `<home>/repo` | the legacy single-target integration clone; named targets use `<home>/targets/<id>/repo` |
 | `remote` | string | `origin` | the git remote (name) the integration branch and main live on; the name given to the clone's remote |
 | `remote_url` | string | none | URL or path the missing integration clone is created from (`git clone -o <remote> --branch <branch>`) |
 | `committer_name` | string | none — **required** | `user.name` of every commit and merge the pump makes, passed as `git -c user.name=…` |
@@ -433,6 +440,19 @@ unless marked.
 | `from` | role | `operator` | role the pump sends unit tasks from |
 | `to` | role | `hand` | recipient role of a unit dispatch |
 | `reply_from` | role | `mind` | role that replies on need threads |
+
+`[pump.targets.<id>]` defines workspace repositories while pool capacity and
+pool definitions stay shared at the mailspace level. `path` is relative to the
+mailspace root. Each target owns `remote`, `remote_url`, `branch`, `main`,
+`promote`, optional `github_repo`, and optional `integration_repo`; per-target
+`[pump.targets.<id>.merge]` and `.gate` override shared `[pump.merge]` and
+`[pump.gate]` defaults. A missing `remote_url` is read from the target path's
+configured Git remote. The planner receives target IDs and paths. Every unit
+in a named-target plan must select one target, and its `write_scope` is relative
+to that repository. One need may contain units for several targets; an unknown
+or omitted target is rejected before dispatch. Pool jobs receive `--target
+<id>` and isolate their checkout under the shared slot. Legacy single-repo
+configuration remains the implicit `default` target.
 
 `[pump.board]`:
 

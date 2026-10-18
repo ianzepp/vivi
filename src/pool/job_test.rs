@@ -15,6 +15,7 @@ fn committer() -> PoolCommitter {
 
 fn plan() -> JobPlan {
     JobPlan {
+        target: None,
         job: "0123456789ab".into(),
         remote: "https://github.com/acme/widgets.git".into(),
         checkout: None,
@@ -503,6 +504,7 @@ fn only_a_read_only_bundle_says_so_and_a_detached_checkout_has_its_own_word() {
     };
     assert!(!params(&plan()).contains("READ_ONLY"));
     let ro = JobPlan {
+        target: None,
         read_only: true,
         refs: Refs {
             from: "main".into(),
@@ -550,6 +552,7 @@ fn the_facts_travel_as_one_command_per_line_and_only_when_there_are_some() {
     };
     assert!(!names(&plan()).contains(&"facts.cmd"));
     let p = JobPlan {
+        target: None,
         facts: vec!["tool --query".into(), "uname -srm".into()],
         ..plan()
     };
@@ -611,6 +614,7 @@ fn the_restore_list_travels_as_one_path_per_line_and_only_when_there_are_some() 
     };
     assert!(!names(&plan()).contains(&"restore.list"));
     let p = JobPlan {
+        target: None,
         restore: vec!["runtime/llvm/Cargo.lock".into(), "a b.txt".into()],
         ..plan()
     };
@@ -634,4 +638,24 @@ fn the_restore_list_travels_as_one_path_per_line_and_only_when_there_are_some() 
             .iter()
             .any(|f| f.name == "restore.list")
     );
+}
+
+#[test]
+fn target_jobs_deliver_cache_identity_and_repository_preparation() {
+    let mut p = plan();
+    p.target = Some(crate::pool::dispatch::target::JobTarget {
+        id: "radix".into(),
+        source: p.remote.clone(),
+        cache_key: "a".repeat(64),
+        local_source: None,
+        seed: vec!["cargo build".into()],
+        requires: vec!["command -v cargo".into()],
+        build_dir: Some("target".into()),
+    });
+    let bundle = build_bundle(&p, "s", &Secret::new(SECRET.into()));
+    assert_eq!(text(&bundle, "checkout-key"), "a".repeat(64));
+    assert_eq!(text(&bundle, "repository"), p.remote);
+    assert!(text(&bundle, "params.env").contains("TARGET='radix'"));
+    assert!(text(&bundle, "target-seed.sh").contains("cargo build"));
+    assert_eq!(text(&bundle, "target-requires.txt"), "command -v cargo");
 }

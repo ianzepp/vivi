@@ -32,6 +32,7 @@ fn cfg() -> PumpConfig {
 fn job(uid: &str) -> MergeJob {
     MergeJob {
         uid: uid.to_string(),
+        target: String::from("default"),
         branch: format!("unit/{uid}-a1"),
         title: format!("unit {uid}"),
         need: "56f1d749".to_string(),
@@ -173,6 +174,7 @@ fn the_job_file_is_a_json_array_of_merge_jobs_with_the_documented_keys() {
             "branch",
             "need",
             "proof",
+            "target",
             "title",
             "tools",
             "uid",

@@ -135,6 +135,13 @@ if [ ! -f "$W/seeded" ]; then
   [ -n "${UNPRIVILEGED:-}" ] || id hand >/dev/null 2>&1 || useradd -m hand
   bash "$W/setup.sh" > "$W/setup.log" 2>&1 || { echo "seed_failed setup rc=$?" >> $L; exit 3; }
   T1=$(now); echo "setup_s $(d $T0 $T1)" >> $L
+  if [ -z "${REMOTE:-}${WORKTREE_OF:-}${SOURCE_DIR:-}" ]; then
+    # Shared capacity is usable before any repository target is selected.
+    mkdir -p "$RD"
+    [ -n "${UNPRIVILEGED:-}" ] || chown -R hand:hand /home/hand "$RD"
+    sync; touch "$W/seeded"; echo "seed_done $(now)" >> "$L"
+    exit 0
+  fi
   if [ -n "${SOURCE_DIR:-}" ] && [ -n "$LOCAL_REMOTE" ]; then
     SRC_DIR=$(real "$SOURCE_DIR")
     ( git init -q --bare "$LOCAL_REMOTE" \
@@ -211,10 +218,12 @@ LIMIT=$(cat "$W/job/limit" 2>/dev/null)
 case "$LIMIT" in ''|*[!0-9]*|0) LIMIT=3600 ;; esac
 [ -f "$W/job/run.sh" ] || { echo "job_bad_archive $JOB" >> $L; exit 5; }
 
+if [ ! -f "$W/job/checkout-key" ]; then
 cd "$RD" && mount_build
 if [ -z "${BUILD_PERSISTS:-}" ] && [ -n "${BUILD_DIR:-}" ]; then
   [ -f "$W/build.tar.zst" ] && zstd -d -T0 -c "$W/build.tar.zst" | tar -xf - -C "$RD"
   chown -R hand:hand "$BUILD_DIR"
+fi
 fi
 T1=$(now); echo "restore_s $(d $T0 $T1)" >> $L; echo "ready $T1 job $JOB" >> $L
 
@@ -222,6 +231,9 @@ T1=$(now); echo "restore_s $(d $T0 $T1)" >> $L; echo "ready $T1 job $JOB" >> $L
 timeout -k 30 "$LIMIT" bash "$W/job/run.sh" > "$W/job/run.log" 2>&1; RC=$?
 if [ ! -f "$W/job/result" ]; then
   printf 'job=%s\nstate=killed\npush=none\nrunner_rc=%s\n' "$JOB" "$RC" > "$W/job/result"
+  if [ -f "$W/job/target-id" ]; then
+    printf 'target=%s\nrepository=%s\n' "$(cat "$W/job/target-id")" "$(cat "$W/job/repository")" >> "$W/job/result"
+  fi
 fi
 echo "job_rc $RC job $JOB limit ${LIMIT}s $(now)" >> $L
 sleep "$LINGER"
