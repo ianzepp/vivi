@@ -21,10 +21,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::progress::{LaneProgress, duration_text};
 use crate::pump::quarantine;
 use crate::pump::ready::{dependency_holds, note_hold, priority_needs, ranked};
 use crate::pump::remote;
@@ -74,11 +75,19 @@ struct Lane {
     outcomes: Vec<bool>,
     /// What the latest lane-level failure said.
     last_failure: String,
+    /// What the lane thread is doing, shared with its context.
+    progress: Arc<LaneProgress>,
 }
 
 impl Lane {
     /// A lane that has not failed yet.
-    fn new(target: &str, n: u32, send: Sender<Vec<MergeJob>>, alive: bool) -> Lane {
+    fn new(
+        target: &str,
+        n: u32,
+        send: Sender<Vec<MergeJob>>,
+        alive: bool,
+        progress: Arc<LaneProgress>,
+    ) -> Lane {
         Lane {
             target: target.to_string(),
             n,
@@ -89,7 +98,24 @@ impl Lane {
             down_until: 0,
             outcomes: Vec::new(),
             last_failure: String::new(),
+            progress,
         }
+    }
+
+    /// The status line of this lane at `now`.
+    fn status_line(&self, now: u64) -> String {
+        let name = format!("lane {}/{}", self.target, self.n);
+        if !self.alive {
+            return format!("{name} gone");
+        }
+        if !self.busy.is_empty() {
+            return format!("{name} busy {}", self.progress.busy_text(now));
+        }
+        if self.down_until > now {
+            let left = duration_text(self.down_until - now);
+            return format!("{name} backoff {left} left");
+        }
+        format!("{name} idle")
     }
 
     /// The last result of a batch is in: count the batch as lost when every
@@ -131,8 +157,6 @@ pub struct Merger {
 
 /// What a lane thread needs to do its work.
 struct LaneWorker {
-    /// `<target>/<n>`, for log lines.
-    name: String,
     /// The lane number within its target.
     n: u32,
     /// The target's own integration checkout, the source for lane clones.
@@ -184,7 +208,8 @@ impl Merger {
         let mut receivers = Vec::new();
         for n in 0..count {
             let (send, jobs) = channel();
-            lanes.push(Lane::new("default", n, send, true));
+            let progress = Arc::new(LaneProgress::new(&format!("default/{n}")));
+            lanes.push(Lane::new("default", n, send, true, progress));
             receivers.push(jobs);
         }
         let merger = Merger {
@@ -192,6 +217,17 @@ impl Merger {
             results,
         };
         (merger, out, receivers)
+    }
+
+    /// One status line per lane, in lane order: `lane default/0 busy 8
+    /// units 12m03s: check 1/4 stage 1 (2m10s)`, `lane default/1 idle`,
+    /// `lane default/2 backoff 7m00s left` or `lane default/3 gone`.
+    #[must_use]
+    pub fn lane_lines(&self, now: u64) -> Vec<String> {
+        self.lock()
+            .iter()
+            .map(|lane| lane.status_line(now))
+            .collect()
     }
 
     /// Hand every idle lane up to `merge.batch` of the top-ranked `delivered`
@@ -404,6 +440,7 @@ fn send_batch(ctx: &Ctx, st: &mut State, lane: &mut Lane, uids: Vec<String>) {
         ctx.log(&format!("lane {}/{} is gone", lane.target, lane.n));
         return;
     }
+    lane.progress.begin(uids.len(), ctx.now());
     lane.busy = uids;
 }
 
@@ -413,13 +450,16 @@ fn send_batch(ctx: &Ctx, st: &mut State, lane: &mut Lane, uids: Vec<String>) {
 /// use.
 fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
     let (send, jobs) = channel();
+    let name = format!("{}/{n}", target.target_id);
+    let progress = Arc::new(LaneProgress::new(&name));
     let ctx = if n == 0 {
-        target.clone()
+        target.with_lane(progress.clone())
     } else {
-        target.with_repo(lane_dir(target, n))
+        target
+            .with_repo(lane_dir(target, n))
+            .with_lane(progress.clone())
     };
     let worker = LaneWorker {
-        name: format!("{}/{n}", target.target_id),
         n,
         base: target.clone(),
         ctx,
@@ -428,7 +468,7 @@ fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
     let spawned = thread::Builder::new()
         .name(format!("pump-merge-{}-{n}", target.target_id))
         .spawn(move || lane_loop(&worker, &jobs, &out));
-    Lane::new(&target.target_id, n, send, spawned.is_ok())
+    Lane::new(&target.target_id, n, send, spawned.is_ok(), progress)
 }
 
 /// The checkout directory of lane `n` of `target`.
@@ -465,8 +505,7 @@ fn lane_loop(lane: &LaneWorker, batches: &Receiver<Vec<MergeJob>>, out: &Sender<
 /// that cannot be made leaves every job undecided, to be re-fed later.
 fn lane_work(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
     if let Err(detail) = ensure_checkout(&lane.base, &lane.ctx) {
-        lane.ctx
-            .log(&format!("lane {} checkout failed: {detail}", lane.name));
+        lane.ctx.log(&format!("checkout failed: {detail}"));
         return jobs
             .iter()
             .map(|j| undecided_result(&j.uid, "lane-checkout-failed", &detail))
@@ -504,15 +543,20 @@ fn ensure_checkout(base: &Ctx, lane: &Ctx) -> Result<(), String> {
         shell_quote(url),
         shell_quote(&lane.repo.to_string_lossy())
     );
-    base.log(&format!("cloning lane checkout {}", lane.repo.display()));
+    lane.step(&format!("clone start: {}", lane.repo.display()));
+    let started = lane.now();
     let out = base.sh(&cmd, None, 900);
     if out.code != 0 {
         return Err(tail(&out.text, 300));
     }
+    lane.log(&format!(
+        "clone done {}s",
+        lane.now().saturating_sub(started)
+    ));
     // A local-worktree target keeps its unit branches in the base repository
     // only; the clone fetches them from there as `pump-base`.
     if !base.cfg.targets.is_empty() && !ensure_base_remote(lane, &base.repo) {
-        base.log(&format!(
+        lane.log(&format!(
             "cannot add remote {BASE_REMOTE} to {}",
             lane.repo.display()
         ));
@@ -522,19 +566,16 @@ fn ensure_checkout(base: &Ctx, lane: &Ctx) -> Result<(), String> {
 
 /// Offer the batch to the remote merger, else merge here: [`batch_work`]
 /// for more than one job, [`merge_work`] for exactly one, then the
-/// `lane <target>/<n> batch of <n>: <m> merged` log line.
+/// `batch of <n>: <m> merged` log line (lane-tagged by the lane context).
 fn run_batch(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
-    let (ctx, name) = (&lane.ctx, &lane.name);
+    let ctx = &lane.ctx;
     let done = match remote::offer(ctx, lane.n, jobs) {
         Some(results) => results,
         None if jobs.len() > 1 => batch_work(ctx, jobs),
         None => vec![merge_work(ctx, &jobs[0])],
     };
     let merged = done.iter().filter(|r| r.ok == Some(true)).count();
-    ctx.log(&format!(
-        "lane {name} batch of {}: {merged} merged",
-        jobs.len()
-    ));
+    ctx.log(&format!("batch of {}: {merged} merged", jobs.len()));
     done
 }
 

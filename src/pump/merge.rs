@@ -105,20 +105,48 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     reset_repo(ctx);
     let out = fetch_unit_branch(ctx, &job.branch);
     if out.code != 0 {
+        merge_line(
+            ctx,
+            &job.uid,
+            (1, 1),
+            &format!("fetch failed: {}", flat(&out.text)),
+        );
         return fetch_failure(&job.uid, &out.text);
     }
     if let Some(result) = already_integrated(ctx, job, t0) {
+        merge_line(ctx, &job.uid, (1, 1), &integrated_text(&result));
         return result;
     }
     if let Some(result) = merge_branch(ctx, job) {
+        merge_line(ctx, &job.uid, (1, 1), "conflict");
         return result;
     }
+    merge_line(ctx, &job.uid, (1, 1), "ok");
     let outside = outside_files(ctx, job);
     format_style_commit(ctx, &job.uid);
     if let Some(result) = run_checks(ctx, job) {
         return result;
     }
     push(ctx, &job.uid, outside, t0)
+}
+
+/// One merge step line: `merge <uid> <k>/<n> <what>`. Also the lane's
+/// current step.
+fn merge_line(ctx: &Ctx, uid: &str, (k, n): (usize, usize), what: &str) {
+    ctx.step(&format!("merge {uid} {k}/{n} {what}"));
+}
+
+/// What the integration check of a replayed branch decided, for the log.
+fn integrated_text(result: &MergeResult) -> String {
+    match &result.why {
+        None => String::from("already integrated"),
+        Some(_) => String::from("integration check failed"),
+    }
+}
+
+/// The last 120 characters of `text` on one line.
+fn flat(text: &str) -> String {
+    tail(text, 120).replace('\n', " | ")
 }
 
 /// A replayed branch already reachable from the fetched integration tip
@@ -227,9 +255,16 @@ fn format_style_commit(ctx: &Ctx, uid: &str) {
     if ctx.cfg.merge.format.is_empty() {
         return;
     }
+    ctx.step(&format!("format: {}", ctx.cfg.merge.format));
+    let started = ctx.now();
     drop(ctx.sh(&ctx.cfg.merge.format, Some(&ctx.repo), 180));
+    ctx.log(&format!(
+        "format done {}s",
+        ctx.now().saturating_sub(started)
+    ));
     let dirty = ctx.git("status --porcelain", GIT_TIMEOUT).text;
     if !dirty.trim().is_empty() {
+        ctx.step("style commit");
         let msg = shell_quote(&format!("style: format after {uid}"));
         let commit = format!("{} commit -q -am {msg}", identity_args(ctx));
         drop(ctx.git(&commit, GIT_TIMEOUT));
@@ -248,10 +283,16 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     if !skips_proof(ctx, &job.tools) {
         checks.extend(job.proof.iter().cloned());
     }
-    for cmd in &checks {
+    let shared = ctx.cfg.merge.shared_checks.len();
+    for (i, cmd) in checks.iter().enumerate() {
+        let head: String = cmd.chars().take(90).collect();
+        if i < shared {
+            ctx.step(&format!("check {}/{shared} start: {head}", i + 1));
+        } else {
+            ctx.step(&format!("proof {} start: {head}", job.uid));
+        }
         let t1 = ctx.now();
         let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
-        let head: String = cmd.chars().take(90).collect();
         ctx.log(&format!(
             "proof {} rc={} {}s: {head}",
             job.uid,

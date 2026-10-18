@@ -304,12 +304,12 @@ fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
     assert!(
         host.logs()
             .iter()
-            .any(|l| l == "lane default/0 batch of 1: 1 merged")
+            .any(|l| l == "lane default/0: batch of 1: 1 merged")
     );
     assert!(
         host.logs()
             .iter()
-            .any(|l| l == "proof u1 rc=0 0s: ./proof-u1.sh")
+            .any(|l| l == "lane default/0: proof u1 rc=0 0s: ./proof-u1.sh")
     );
     // nothing else is waiting on the channel
     assert!(merger.results.try_recv().is_err());

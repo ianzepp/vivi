@@ -9,8 +9,9 @@ use crate::pump::state::{MergeJob, MergeResult, Quarantine};
 use super::fetch::fetch_unit_branch;
 use super::publish::publish;
 use super::{
-    GIT_TIMEOUT, already_integrated, failed, failure_text, fetch_failure, format_style_commit,
-    identity_args, merge_work, outside_files, reset_repo, skips_proof, tail, undecided_result,
+    GIT_TIMEOUT, already_integrated, failed, failure_text, fetch_failure, flat,
+    format_style_commit, identity_args, integrated_text, merge_line, merge_work, outside_files,
+    reset_repo, skips_proof, tail, undecided_result,
 };
 
 /// A cleanly merged job plus the files its merge touched outside its scope.
@@ -126,8 +127,8 @@ fn merge_main_in(ctx: &Ctx) {
 fn merge_units(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>) {
     let mut results = Vec::new();
     let mut merged = Vec::new();
-    for job in jobs {
-        if let Some(result) = merge_one(ctx, job) {
+    for (i, job) in jobs.iter().enumerate() {
+        if let Some(result) = merge_one(ctx, job, (i + 1, jobs.len())) {
             results.push(result);
         } else {
             let outside = outside_files(ctx, job);
@@ -140,13 +141,21 @@ fn merge_units(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>) 
     (results, merged)
 }
 
-/// Fetch and merge one job's branch. `None` means it merged cleanly.
-fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
+/// Fetch and merge job number `at.0` of `at.1`. `None` means it merged
+/// cleanly.
+fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResult> {
     let out = fetch_unit_branch(ctx, &job.branch);
     if out.code != 0 {
+        merge_line(
+            ctx,
+            &job.uid,
+            at,
+            &format!("fetch failed: {}", flat(&out.text)),
+        );
         return Some(fetch_failure(&job.uid, &out.text));
     }
     if let Some(result) = already_integrated(ctx, job, ctx.now()) {
+        merge_line(ctx, &job.uid, at, &integrated_text(&result));
         return Some(result);
     }
     let title: String = job.title.chars().take(80).collect();
@@ -159,8 +168,10 @@ fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     );
     let out = ctx.git(&cmd, GIT_TIMEOUT);
     if out.code == 0 {
+        merge_line(ctx, &job.uid, at, "ok");
         return None;
     }
+    merge_line(ctx, &job.uid, at, "conflict");
     let files = ctx
         .git("diff --name-only --diff-filter=U", GIT_TIMEOUT)
         .text;
@@ -174,7 +185,9 @@ fn merge_one(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
 /// Run the shared checks once over the whole batch, each with a
 /// `batch <n> shared rc=<n> <n>s: <cmd>` log line.
 fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
-    for cmd in &ctx.cfg.merge.shared_checks {
+    let total = ctx.cfg.merge.shared_checks.len();
+    for (i, cmd) in ctx.cfg.merge.shared_checks.iter().enumerate() {
+        ctx.step(&format!("check {}/{total} start: {cmd}", i + 1));
         let t1 = ctx.now();
         let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
         ctx.log(&format!(
@@ -273,9 +286,10 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             continue;
         }
         for cmd in &m.job.proof {
+            let head: String = cmd.chars().take(90).collect();
+            ctx.step(&format!("proof {} start: {head}", m.job.uid));
             let t1 = ctx.now();
             let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
-            let head: String = cmd.chars().take(90).collect();
             ctx.log(&format!(
                 "proof {} rc={} {}s: {head}",
                 m.job.uid,

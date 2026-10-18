@@ -15,6 +15,7 @@ pub mod host;
 pub mod merge;
 pub mod plan;
 pub mod priority;
+pub mod progress;
 pub mod quarantine;
 pub mod ready;
 pub mod remote;
@@ -87,6 +88,10 @@ mod merge_lane_test;
 #[cfg(test)]
 #[path = "pump/merge_pull_test.rs"]
 mod merge_pull_test;
+
+#[cfg(test)]
+#[path = "pump/merge_progress_test.rs"]
+mod merge_progress_test;
 
 #[cfg(test)]
 #[path = "pump/remote_test.rs"]

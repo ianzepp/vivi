@@ -12,6 +12,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::pump::config::PumpConfig;
+use crate::pump::progress::LaneProgress;
 
 /// The outcome of running one command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +92,9 @@ pub struct Ctx {
     pub vivi: String,
     /// Prepended to every shell command (`""` means none).
     pub shell_prefix: String,
+    /// Set on a merge lane's context: its log lines carry the lane name and
+    /// its steps feed the lane status.
+    pub lane: Option<Arc<LaneProgress>>,
 }
 
 impl Ctx {
@@ -116,6 +120,7 @@ impl Ctx {
             target_id: String::from("default"),
             vivi,
             shell_prefix,
+            lane: None,
         }
     }
 
@@ -159,6 +164,16 @@ impl Ctx {
         }
     }
 
+    /// The same context as a merge lane thread: every log line it writes
+    /// starts with `lane <name>: ` and [`Ctx::step`] updates `progress`.
+    #[must_use]
+    pub fn with_lane(&self, progress: Arc<LaneProgress>) -> Ctx {
+        Ctx {
+            lane: Some(progress),
+            ..self.clone()
+        }
+    }
+
     /// Run `cmd` through the host with `shell_prefix` applied:
     /// `"<prefix>; <cmd>"`, or just `<cmd>` when the prefix is empty.
     #[must_use]
@@ -191,7 +206,19 @@ impl Ctx {
 
     /// Append a log line via the host.
     pub fn log(&self, line: &str) {
-        self.host.log(line);
+        match &self.lane {
+            Some(lane) => self.host.log(&format!("{}{line}", lane.prefix())),
+            None => self.host.log(line),
+        }
+    }
+
+    /// Log `line` and, on a lane context, record it as the lane's current
+    /// step for the status file.
+    pub fn step(&self, line: &str) {
+        if let Some(lane) = &self.lane {
+            lane.set_step(line, self.now());
+        }
+        self.log(line);
     }
 
     /// Current epoch seconds via the host.
