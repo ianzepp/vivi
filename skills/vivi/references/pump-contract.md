@@ -43,6 +43,7 @@ project root; every `vivi` call the pump makes appends
 | `run` | loop: one `tick`, then sleep `tick` seconds, until stored mode is `stopped` |
 | `once` | exactly one `tick`, then exit |
 | `status` | read and print `status.txt` and control mode without taking the pump lock or migrating the database |
+| `log` | print the tail of `log.txt` (or `exceptions.txt` with `--exceptions`): `-n N` (default 50, counted after filtering), `-f` follow, filters `--lane L` (lines whose text after the stamp starts `lane L:` or `lane L `; `2` is `default/2`), `--unit U` (whole-token match), `--grep TEXT`, ANDed; missing file: `no pump log at <path>`, exit 1; no lock, no database access |
 | `pause` / `resume` | set stored control mode to `paused` / `running` |
 | `stop` / `start` | set stored control mode to `stopped` / `running` |
 

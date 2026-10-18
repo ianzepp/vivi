@@ -351,6 +351,44 @@ fn pump_closeout_skips_an_amended_need() {
     assert!(!stdout(&listed).contains(&handle), "{}", stdout(&listed));
 }
 
+#[test]
+fn log_prints_the_last_lines_and_applies_filters() {
+    let project = temp_mailspace();
+    let home = pump_home(&project);
+    fs::write(
+        home.join("log.txt"),
+        "10:00:00 one\n10:00:01 lane default/2: two u1\n10:00:02 three u12\n10:00:03 four\n",
+    )
+    .unwrap();
+    fs::write(
+        home.join("exceptions.txt"),
+        "10:00:09 stuck u1 needs a person\n",
+    )
+    .unwrap();
+    let tail = vivi(["pump", "log", "--project", root(&project), "-n", "2"]);
+    assert_success(&tail);
+    assert_eq!(stdout(&tail), "10:00:02 three u12\n10:00:03 four\n");
+    let lane = vivi(["pump", "log", "--project", root(&project), "--lane", "2"]);
+    assert_success(&lane);
+    assert_eq!(stdout(&lane), "10:00:01 lane default/2: two u1\n");
+    let unit = vivi(["pump", "log", "--project", root(&project), "--unit", "u1"]);
+    assert_eq!(stdout(&unit), "10:00:01 lane default/2: two u1\n");
+    let grep = vivi(["pump", "log", "--project", root(&project), "--grep", "four"]);
+    assert_eq!(stdout(&grep), "10:00:03 four\n");
+    let exceptions = vivi(["pump", "log", "--project", root(&project), "--exceptions"]);
+    assert_success(&exceptions);
+    assert_eq!(stdout(&exceptions), "10:00:09 stuck u1 needs a person\n");
+}
+
+#[test]
+fn log_without_a_file_exits_one_naming_the_path() {
+    let project = temp_mailspace();
+    let out = vivi(["pump", "log", "--project", root(&project)]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("no pump log at"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("log.txt"), "{}", stderr(&out));
+}
+
 /// Set the amendment flag on a need in the temp pump database.
 fn mark_amended(project: &tempfile::TempDir, handle: &str) {
     let path = pump_home(project).join(DB_FILENAME);

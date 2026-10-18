@@ -1874,7 +1874,7 @@ guide and a summary, not a replacement.
 vivi pump run      # loop: one tick, then sleep `tick` seconds, until stopped
 vivi pump once     # exactly one tick, then exit
 vivi pump status   # print <home>/status.txt plus control mode; no pump lock
-vivi pump pause    # keep the process alive; skip dispatch and gate work
+vivi pump log      # last 50 lines of <home>/log.txtvivi pump pause    # keep the process alive; skip dispatch and gate work
 vivi pump resume   # resume a paused pump
 vivi pump stop     # finish the current tick, then exit
 vivi pump start    # enable the pump; the service starts it when registered
@@ -2016,6 +2016,15 @@ withdraws only the pending ids named in `withdraw`. The accepted revision is
 recorded in `plan_revisions` and posted once as a `revised-N` reply. The
 `planned`, `revised-N` and `merged` replies sync, so a reader on another host
 sees the plan revision and completion state in the thread without `pump.db`.
+
+`vivi pump log` reads it without knowing the home path: `-n N` (default 50,
+counted after filtering), `-f`/`--follow` (poll every 500 ms; `-n 0 -f` prints
+only new lines; survives truncation; a closed pipe ends it quietly), `--lane L`
+(merge-lane lines starting `lane L:`; `2` means `default/2`), `--unit U` (the
+unit or need handle as a whole token, so `u1` never matches `u12`), `--grep
+TEXT` (case-sensitive substring), `--exceptions` (read `exceptions.txt`).
+Filters combine with AND. A missing file prints `error: no pump log at <path>`
+and exits 1.
 
 `log.txt` is the event
 stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`
