@@ -272,7 +272,7 @@ fn send_brief(ctx: &Ctx, st: &State, uid: &str, attempt: u32) -> Option<String> 
 /// The ref a unit is dispatched from: its own `base` when it has one (a
 /// quarantine repair unit starts on its quarantine branch), else the target's
 /// `dispatch.from`.
-fn dispatch_base(ctx: &Ctx, st: &State, uid: &str) -> String {
+pub(crate) fn dispatch_base(ctx: &Ctx, st: &State, uid: &str) -> String {
     let Some(unit) = st.units.get(uid) else {
         return ctx.cfg.dispatch_from().to_string();
     };

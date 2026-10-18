@@ -2,6 +2,7 @@
 
 pub mod alarm;
 pub mod amend;
+pub mod attempt_record;
 pub mod board;
 pub mod brief;
 pub mod closeout;
@@ -129,3 +130,7 @@ mod alarm_test;
 #[cfg(test)]
 #[path = "pump/quarantine_test.rs"]
 mod quarantine_test;
+
+#[cfg(test)]
+#[path = "pump/attempt_record_test.rs"]
+mod attempt_record_test;
