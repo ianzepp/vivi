@@ -52,6 +52,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
     if control.mode == crate::pump::control::PumpMode::Paused {
         board::board(ctx, st);
         plan::ingest(ctx, st);
+        crate::pump::alarm::check(ctx, st);
         save(ctx, st)?;
         write_status(ctx, st);
         return Ok(());
@@ -77,14 +78,16 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
     merger.feed(ctx, st);
     board::board(ctx, st);
     plan::ingest(ctx, st);
+    crate::pump::alarm::check(ctx, st);
     save(ctx, st)?;
     write_status(ctx, st);
     Ok(())
 }
 
-/// Write the four status lines to `<home>/status.txt`:
-/// a UTC timestamp, unit counts, plan verdict counts, and the merge/gate
-/// counters. A write failure is logged, never fatal.
+/// Write the status lines to `<home>/status.txt`: a UTC timestamp, unit
+/// counts, plan verdict counts, the merge/gate counters, then the stall
+/// lines from [`crate::pump::alarm::status_lines`]. A write failure is
+/// logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State) {
     let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for need in st.needs.values() {
@@ -106,7 +109,7 @@ pub fn write_status(ctx: &Ctx, st: &State) {
             .values()
             .map(|target| target.gates.len())
             .sum::<usize>();
-    let lines = [
+    let mut lines = vec![
         utc_stamp(ctx.now()),
         counts_line("units", &st.counts()),
         counts_line("plans", &verdicts),
@@ -118,6 +121,7 @@ pub fn write_status(ctx: &Ctx, st: &State) {
             baseline
         ),
     ];
+    lines.extend(crate::pump::alarm::status_lines(ctx, st));
     let path = ctx.home.join("status.txt");
     if let Err(err) = fs::write(&path, lines.join("\n") + "\n") {
         ctx.log(&format!("status write failed at {}: {err}", path.display()));

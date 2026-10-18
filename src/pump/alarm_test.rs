@@ -118,6 +118,7 @@ fn promotion_stall_names_hours_and_the_last_gate() {
     st.promotions.push(Promotion {
         tip: String::from(TIP),
         at: T0 - 4 * 3600,
+        failing: None,
     });
     st.gates.push(GateRecord {
         tip: String::from(TIP),
@@ -143,6 +144,7 @@ fn promotion_stall_is_quiet_without_merges_since_or_under_the_limit() {
     st.promotions.push(Promotion {
         tip: String::from(TIP),
         at: T0 - 4 * 3600,
+        failing: None,
     });
     // Merged before the promotion: nothing waits.
     st.units.insert(String::from("old"), merged(T0 - 5 * 3600));
@@ -227,6 +229,7 @@ fn status_lines_report_promotion_fix_and_delivered_backlog() {
     st.promotions.push(Promotion {
         tip: String::from(TIP),
         at: T0 - (2 * 3600 + 5 * 60),
+        failing: None,
     });
     st.units.insert(
         String::from("pumpfix-1"),

@@ -73,7 +73,7 @@ fn first_at(commands: &[String], fragment: &str) -> usize {
 }
 
 #[test]
-fn write_status_writes_four_lines_with_counts() {
+fn write_status_writes_counts_then_stall_lines() {
     let (dir, ctx, _host) = setup();
     let mut st = State::default();
     put(&mut st, "a-1", unit(Status::Pending, None));
@@ -101,11 +101,14 @@ fn write_status_writes_four_lines_with_counts() {
     write_status(&ctx, &st);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 4);
+    assert_eq!(lines.len(), 7);
     assert_eq!(lines[0], "1970-01-12T13:46:40Z");
     assert_eq!(lines[1], "units merged=1 pending=2");
     assert_eq!(lines[2], "plans closed=2 units=1");
     assert_eq!(lines[3], "merges 3  needs-ready 2  gates 1  baseline none");
+    assert_eq!(lines[4], "last promote never");
+    assert_eq!(lines[5], "oldest waiting fix none");
+    assert_eq!(lines[6], "delivered waiting 0, oldest none");
 }
 
 #[test]
@@ -142,7 +145,7 @@ fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     assert!(!commands.iter().any(|c| c.contains("pool status")));
     assert!(!commands.iter().any(|c| c.contains("task send")));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert_eq!(text.lines().count(), 4);
+    assert_eq!(text.lines().count(), 7);
 }
 
 #[test]
