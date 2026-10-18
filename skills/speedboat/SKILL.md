@@ -217,6 +217,11 @@ matter here:
   persistent build directory is the place for integration and acceptance.
   Which work goes to which pool is the role's assigned pool; the Mind
   chooses the role. A full pool waits (no spillover).
+- After a unit is `merged` (on the integration / merge lane, not main),
+  the pump recycles free work lanes on the unit's pool and the merge
+  role's pool. `vivi pool clean [--dry-run]` reports or applies the same
+  reclaim; `vivi pool reset` puts a free slot back on a freshly fetched
+  origin base.
 - A review seat that needs a full shell but must change nothing runs with
   `--read-only`; its token cannot push.
 - Push the base commit to the remote before dispatch (a local worktree pool

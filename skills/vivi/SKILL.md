@@ -1389,9 +1389,11 @@ slots = 4
   dirty tree or commits not contained in the merge lane are reported, never
   deleted.
   `vivi pool clean` also sweeps source-repo worktrees that point at the pool
-  root whose units are done, and prunes gone entries. The merge lane's own
-  checkout is kept while it has unlanded work; the 2x rule still applies to
-  its build output.
+  root whose units are done, and prunes gone entries. Recycle covers the
+  unit's work pool and the merge role's pool (merge-lane count is that
+  pool's `slots`; `[pump.merge] lanes` is the legacy fallback). The merge
+  lane's own checkout is kept while it has unlanded work; the 2x rule still
+  applies to its build output.
 - **Free-disk guard.** A local dispatch first reclaims free slots when the
   volume has under 20 GiB free, then refuses if it is still under 10 GiB.
 - **State** is the marks (small files in the slot directory) and the claim (a
@@ -2313,6 +2315,9 @@ branches cannot be handed from one repository to another.
 - `delivered` — the worker's branch exists on the remote; waiting to merge.
 - `merging` — queued to or being handled by the merge thread.
 - `merged` — merged into the integration branch, proof passed, pushed.
+  Triggers a slot recycle on the unit's work pool and the merge role's
+  pool (`vivi pool clean` / work-lane recycle onto origin/`[pump] main`).
+  Merge-lane count is the merge role's pool `slots`.
 - `quarantined` — merged into a batch whose shared check failed; the batch is
   set aside on `pump/quarantine/<id>` and a repair unit
   `<fix_prefix>-<id>` works on it. When the repair merges, the unit merges with

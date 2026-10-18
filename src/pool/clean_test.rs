@@ -1,4 +1,5 @@
 use super::*;
+use crate::mailspace::Mailspace;
 use crate::pool::clean_rule::{write_baseline, write_mark};
 use crate::pump::state::{Status, Unit};
 use std::fs;
@@ -15,6 +16,57 @@ fn after_merged_is_a_noop_without_a_mailspace() {
     let report = after_merged(tmp.path(), &unit).unwrap();
     assert!(report.actions.is_empty());
     assert!(report.skips.is_empty());
+}
+
+fn routing_space(toml: &str) -> (tempfile::TempDir, Mailspace) {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".vivi")).unwrap();
+    fs::write(dir.path().join(".vivi/mailspace.toml"), toml).unwrap();
+    let space = Mailspace::discover(Some(dir.path())).unwrap();
+    (dir, space)
+}
+
+#[test]
+fn recycle_selectors_include_the_merge_role_pool() {
+    let (_dir, space) = routing_space(
+        r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+[[identities]]
+name = "merge"
+kind = "merge"
+pool = "host"
+[pools.glm]
+provider = "local"
+slots = 2
+[pools.host]
+provider = "local"
+slots = 4
+"#,
+    );
+    let unit = Unit {
+        status: Status::Merged,
+        pool: Some("glm".into()),
+        ..Unit::default()
+    };
+    let names: Vec<String> = recycle_selectors(&space, &unit)
+        .into_iter()
+        .map(|name| name.expect("named pool"))
+        .collect();
+    assert_eq!(names, ["glm", "host"]);
+}
+
+#[test]
+fn recycle_selectors_open_every_pool_when_the_unit_has_none() {
+    let (_dir, space) = routing_space("name = \"t\"\n");
+    let unit = Unit {
+        status: Status::Merged,
+        ..Unit::default()
+    };
+    assert_eq!(recycle_selectors(&space, &unit), [None]);
 }
 
 #[test]

@@ -382,6 +382,8 @@ vivi pool unset <name> <key>
 vivi pool remove <name> --yes [--force]
 vivi pool bands set <pool> <band> <model> [reasoning]
 vivi pool bands unset <pool> <band>
+vivi pool clean [--pool <name>] [--dry-run]
+vivi pool reset [<slot>] [--pool <name>] [--base <branch>]
 ```
 
 Writers preserve comments and only write keys that were set. `vivi config
