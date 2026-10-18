@@ -1,8 +1,10 @@
 //! The batch merge path: several unit branches merged together, checked
-//! once, published once, with culprit isolation.
+//! once, published once. A failing unit proof isolates its unit; a failing
+//! shared check sets the whole batch aside (quarantine).
 
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::state::{MergeJob, MergeResult};
+use crate::pump::quarantine;
+use crate::pump::state::{MergeJob, MergeResult, Quarantine};
 
 use super::publish::publish;
 use super::{
@@ -20,34 +22,33 @@ struct Merged {
 enum SharedOutcome {
     /// Every shared check passed; keep going.
     Pass,
-    /// The batch had one job: it is the culprit and is decided.
-    Single(MergeResult),
-    /// Several jobs: no culprit is known.
-    Many,
+    /// A shared check failed and decided the batch: one proof-failed result
+    /// for a single job, or quarantine results (and no pushed integration
+    /// branch) for several.
+    Failed(Vec<MergeResult>),
 }
 
 /// Merge a batch of unit branches together, check the result once and push
-/// once. Returns the results for the decided jobs
-/// and the undecided ones: `Some` lists the jobs a second round should retry
-/// (empty when none remain), `None` when no culprit is known.
+/// once. Returns the results for the decided jobs and the jobs a second round
+/// should retry (empty when none remain). A failing shared check decides the
+/// whole batch, so it leaves nothing to retry.
 #[must_use]
-pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Option<Vec<MergeJob>>) {
+pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<MergeJob>) {
     let t0 = ctx.now();
     reset_repo(ctx);
     merge_main_in(ctx);
     let (mut results, merged) = merge_units(ctx, jobs);
     if merged.is_empty() {
-        return (results, Some(Vec::new()));
+        return (results, Vec::new());
     }
     let tag = style_tag(&merged);
     format_style_commit(ctx, &tag);
     match run_shared(ctx, &merged) {
         SharedOutcome::Pass => {}
-        SharedOutcome::Single(result) => {
-            results.push(result);
-            return (results, Some(Vec::new()));
+        SharedOutcome::Failed(decided) => {
+            results.extend(decided);
+            return (results, Vec::new());
         }
-        SharedOutcome::Many => return (results, None),
     }
     let culprits = run_proofs(ctx, &merged, &mut results);
     if !culprits.is_empty() {
@@ -56,39 +57,23 @@ pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Option<Ve
             .map(|m| m.job)
             .filter(|j| !culprits.contains(&j.uid))
             .collect();
-        return (results, Some(rest));
+        return (results, rest);
     }
     results.extend(push_batch(ctx, merged, t0));
-    (results, Some(Vec::new()))
+    (results, Vec::new())
 }
 
-/// Drive the batch rounds: one round over all jobs, a
-/// second over the survivors, and anything still undecided merged one at a
-/// time with [`merge_work`].
+/// Drive the batch rounds: one round over all jobs, a second over the
+/// survivors of a failing unit proof, and any job still undecided after that
+/// merged one at a time with [`merge_work`].
 #[must_use]
 pub fn batch_work(ctx: &Ctx, jobs: &[MergeJob]) -> Vec<MergeResult> {
-    let (mut out, first) = batch_round(ctx, jobs);
-    let mut rest = first;
-    if rest.as_ref().is_some_and(|p| !p.is_empty()) {
-        let pending = rest.clone().unwrap_or_default();
-        let (more, second) = batch_round(ctx, &pending);
-        out.extend(more);
-        rest = match second {
-            None => Some(pending),
-            decided => decided,
-        };
-        if rest.as_ref().is_some_and(Vec::is_empty) {
-            return out;
-        }
+    let (mut out, rest) = batch_round(ctx, jobs);
+    if rest.is_empty() {
+        return out;
     }
-    let leftover = match rest {
-        None => jobs
-            .iter()
-            .filter(|j| !out.iter().any(|r| r.uid == j.uid))
-            .cloned()
-            .collect(),
-        Some(list) => list,
-    };
+    let (more, leftover) = batch_round(ctx, &rest);
+    out.extend(more);
     for job in &leftover {
         out.push(merge_work(ctx, job));
     }
@@ -209,15 +194,78 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
     SharedOutcome::Pass
 }
 
-/// Decide a failed shared check: one merged job is the culprit; several
-/// leave the batch undecided.
+/// Decide a failed shared check. The failure text is logged first: one
+/// merged job is the culprit and fails with `proof-failed`; several are set
+/// aside together (see [`quarantine_batch`]).
 fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str) -> SharedOutcome {
+    log_failure(ctx, text);
     if merged.len() == 1 {
         reset_repo(ctx);
         let detail = proof_detail(code, cmd, text);
-        return SharedOutcome::Single(failed(&merged[0].job.uid, "proof-failed", detail));
+        let result = failed(&merged[0].job.uid, "proof-failed", detail);
+        return SharedOutcome::Failed(vec![result]);
     }
-    SharedOutcome::Many
+    SharedOutcome::Failed(quarantine_batch(ctx, merged, cmd, code, text))
+}
+
+/// Log the last 40 lines of a failed shared check's distilled output, one
+/// log line each.
+fn log_failure(ctx: &Ctx, text: &str) {
+    let distilled = failure_text(text);
+    let lines: Vec<&str> = distilled.lines().collect();
+    for line in &lines[lines.len().saturating_sub(40)..] {
+        ctx.log(&format!("  {line}"));
+    }
+}
+
+/// Set a batch aside after a shared check failed: push the lane's `HEAD`
+/// (the merged batch and its style commit) to a new `pump/quarantine/<id>`
+/// branch, reset the lane, and report every merged job as quarantined. A push
+/// that did not land leaves every job undecided, to be fed again later.
+fn quarantine_batch(
+    ctx: &Ctx,
+    merged: &[Merged],
+    cmd: &str,
+    code: i32,
+    text: &str,
+) -> Vec<MergeResult> {
+    let uids: Vec<&str> = merged.iter().map(|m| m.job.uid.as_str()).collect();
+    let id = quarantine::new_id(ctx, &uids);
+    let push = format!(
+        "push {} HEAD:refs/heads/{}",
+        ctx.cfg.remote,
+        quarantine::branch(&id)
+    );
+    let out = ctx.git(&push, 180);
+    reset_repo(ctx);
+    if out.code != 0 {
+        let detail = tail(&out.text, 200);
+        ctx.log(&format!("quarantine {id}: push failed: {detail}"));
+        return merged
+            .iter()
+            .map(|m| undecided_result(&m.job.uid, "quarantine-push-failed", &detail))
+            .collect();
+    }
+    ctx.log(&format!(
+        "quarantine {id}: {} units, {cmd} rc={code}",
+        uids.len()
+    ));
+    let info = Quarantine {
+        id: id.clone(),
+        cmd: cmd.to_string(),
+        code,
+        text: failure_text(text),
+        units: uids.iter().map(|uid| (*uid).to_string()).collect(),
+    };
+    uids.iter()
+        .map(|uid| MergeResult {
+            uid: (*uid).to_string(),
+            why: Some(String::from("quarantined")),
+            detail: Some(id.clone()),
+            quarantine: Some(info.clone()),
+            ..MergeResult::default()
+        })
+        .collect()
 }
 
 /// Run each merged job's own proof (skipping `skip_proof` kinds); a failing job
@@ -280,6 +328,7 @@ fn push_batch(ctx: &Ctx, merged: Vec<Merged>, t0: u64) -> Vec<MergeResult> {
             secs: Some(per),
             why: None,
             detail: None,
+            quarantine: None,
         })
         .collect()
 }

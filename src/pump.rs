@@ -15,6 +15,7 @@ pub mod host;
 pub mod merge;
 pub mod plan;
 pub mod priority;
+pub mod quarantine;
 pub mod ready;
 pub mod remote;
 pub mod report;
@@ -114,3 +115,7 @@ mod lifecycle_test;
 #[cfg(test)]
 #[path = "pump/alarm_test.rs"]
 mod alarm_test;
+
+#[cfg(test)]
+#[path = "pump/quarantine_test.rs"]
+mod quarantine_test;

@@ -137,13 +137,20 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
     };
     if stuck {
         ctx.exception("stuck", uid, &format!("{why}: {}", tail(detail, 300)));
+        crate::pump::quarantine::repair_stuck(ctx, st, uid);
     }
     ctx.log(&format!("fail {uid} attempt={attempts} {why}"));
 }
 
 /// Send a unit to the split planner: write the resplit record,
 /// spawn the planner, and move the unit to `splitting` with a fresh clock.
+/// A quarantine repair unit (one with a `base`) is never split: its work is
+/// one branch, so a timeout counts as a failed attempt instead.
 pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
+    if st.units.get(uid).is_some_and(|unit| unit.base.is_some()) {
+        fail(ctx, st, uid, "timeout", &tail(text, 3000));
+        return;
+    }
     let now = ctx.now();
     let record = {
         let Some(unit) = st.units.get(uid) else {
@@ -396,6 +403,7 @@ fn fail_from_receipt(
             unit.verdict_text = Some(verdict);
         }
         ctx.exception("no-defect", uid, &exc);
+        crate::pump::quarantine::repair_no_defect(ctx, st, uid);
         return;
     }
     let why = format!("{}/{}", state.unwrap_or("None"), detail.unwrap_or("None"));
@@ -406,6 +414,7 @@ fn fail_from_receipt(
 fn expire_splits(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.planner.split_timeout;
     let now = ctx.now();
+    let mut expired = Vec::new();
     for (uid, unit) in &mut st.units {
         if unit.status == Status::Splitting && now.saturating_sub(unit.since) > timeout {
             unit.status = Status::Stuck;
@@ -414,7 +423,11 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
                 uid,
                 "the split planner wrote no plan in 25 minutes",
             );
+            expired.push(uid.clone());
         }
+    }
+    for uid in expired {
+        crate::pump::quarantine::repair_stuck(ctx, st, &uid);
     }
 }
 

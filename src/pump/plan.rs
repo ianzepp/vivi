@@ -319,6 +319,7 @@ fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str)
         Status::Inflight
         | Status::Delivered
         | Status::Merging
+        | Status::Quarantined
         | Status::Splitting
         | Status::Stuck => {
             if changed {

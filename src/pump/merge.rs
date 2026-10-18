@@ -1,5 +1,5 @@
 //! The merge paths: one unit branch at a time, the batch path with culprit
-//! isolation, and the parallel merge lanes that run them.
+//! isolation and quarantine, and the parallel merge lanes that run them.
 //!
 //! This file holds the single-unit path (`merge_work`) and the helpers every
 //! path shares. The batch rounds live in `batch`, the publish routine that
@@ -181,6 +181,7 @@ fn already_integrated(ctx: &Ctx, job: &MergeJob, t0: u64) -> Option<MergeResult>
         secs: Some(ctx.now().saturating_sub(t0)),
         why: None,
         detail: None,
+        quarantine: None,
     })
 }
 
@@ -205,6 +206,7 @@ fn failed(uid: &str, why: &str, detail: String) -> MergeResult {
         secs: None,
         why: Some(why.to_string()),
         detail: Some(detail),
+        quarantine: None,
     }
 }
 
@@ -305,6 +307,7 @@ fn push(ctx: &Ctx, uid: &str, outside: Vec<String>, t0: u64) -> MergeResult {
             secs: Some(ctx.now().saturating_sub(t0)),
             why: None,
             detail: None,
+            quarantine: None,
         },
         Err(failure) => undecided_result(uid, failure.why, &failure.detail),
     }
@@ -321,5 +324,6 @@ fn undecided_result(uid: &str, why: &str, detail: &str) -> MergeResult {
         secs: None,
         why: Some(why.to_string()),
         detail: Some(detail.to_string()),
+        quarantine: None,
     }
 }

@@ -269,6 +269,22 @@ fn send_brief(ctx: &Ctx, st: &State, uid: &str, attempt: u32) -> Option<String> 
     Some(task)
 }
 
+/// The ref a unit is dispatched from: its own `base` when it has one (a
+/// quarantine repair unit starts on its quarantine branch), else the target's
+/// `dispatch.from`.
+fn dispatch_base(ctx: &Ctx, st: &State, uid: &str) -> String {
+    let Some(unit) = st.units.get(uid) else {
+        return ctx.cfg.dispatch_from().to_string();
+    };
+    if let Some(base) = &unit.base {
+        return base.clone();
+    }
+    ctx.cfg.for_target(unit.target_id()).map_or_else(
+        || ctx.cfg.dispatch_from().to_string(),
+        |cfg| cfg.dispatch_from().to_string(),
+    )
+}
+
 /// Run `pool dispatch` for one planned unit. On success the unit goes
 /// inflight and a slot is consumed; on failure the task is closed as
 /// superseded and, when the output says `no free slot`, the pool's free count
@@ -282,11 +298,7 @@ fn dispatch_one(
     task: &str,
     free: &mut BTreeMap<String, u32>,
 ) -> bool {
-    let target = st.units.get(uid).map_or("default", |unit| unit.target_id());
-    let from = ctx.cfg.for_target(target).map_or_else(
-        || ctx.cfg.dispatch_from().to_string(),
-        |cfg| cfg.dispatch_from().to_string(),
-    );
+    let from = dispatch_base(ctx, st, uid);
     let cmd = format!(
         "pool dispatch --pool {} {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
         shell_quote(&plan.pool),

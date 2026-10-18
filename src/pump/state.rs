@@ -39,6 +39,12 @@ pub enum Status {
     Merging,
     /// Merged into the integration branch.
     Merged,
+    /// Merged into a batch whose shared check failed. The batch is set aside
+    /// on a `pump/quarantine/<id>` branch and one repair unit works on it
+    /// (`Unit::quarantine` names the id). Not fed to a lane, not dispatched,
+    /// not satisfied; it becomes `Merged` when the repair unit merges, or
+    /// returns to `Delivered` (solo) when the repair unit goes `Stuck`.
+    Quarantined,
     /// The agent looked and found no defect to fix.
     NoDefect,
     /// Failed too many times; parked.
@@ -65,6 +71,7 @@ impl Status {
             Self::Delivered => "delivered",
             Self::Merging => "merging",
             Self::Merged => "merged",
+            Self::Quarantined => "quarantined",
             Self::NoDefect => "no-defect",
             Self::Stuck => "stuck",
             Self::Splitting => "splitting",
@@ -84,6 +91,7 @@ impl Status {
             "delivered" => Self::Delivered,
             "merging" => Self::Merging,
             "merged" => Self::Merged,
+            "quarantined" => Self::Quarantined,
             "no-defect" => Self::NoDefect,
             "stuck" => Self::Stuck,
             "splitting" => Self::Splitting,
@@ -227,6 +235,19 @@ pub struct Unit {
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_on: Option<String>,
+    /// The quarantine id this unit belongs to: set on every unit set aside
+    /// in a quarantined batch, and on the repair unit that works on it.
+    /// `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<String>,
+    /// Branch to dispatch this unit from instead of `dispatch.from`; a repair
+    /// unit starts on its `pump/quarantine/<id>` branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Merge this unit in a batch of its own: set when its quarantine repair
+    /// went stuck, so one bad unit cannot sink a batch again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub solo: bool,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -546,6 +567,31 @@ pub struct MergeResult {
     /// Failure detail (proof output, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Set (with `ok=null`, `why="quarantined"`) when the unit merged into a
+    /// batch whose shared check failed: the batch was pushed aside.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<Quarantine>,
+}
+
+/// A batch set aside after a failed shared check; every merged unit of the
+/// batch gets the same value in its result.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Quarantine {
+    /// The quarantine id; the batch sits on `pump/quarantine/<id>`.
+    #[serde(default)]
+    pub id: String,
+    /// The shared check that failed.
+    #[serde(default)]
+    pub cmd: String,
+    /// Its exit code.
+    #[serde(default)]
+    pub code: i32,
+    /// Its distilled failure text.
+    #[serde(default)]
+    pub text: String,
+    /// Every unit of the batch that merged cleanly and is set aside.
+    #[serde(default)]
+    pub units: Vec<String>,
 }
 
 impl State {

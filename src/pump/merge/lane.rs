@@ -18,6 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::quarantine;
 use crate::pump::ready::{dependency_holds, note_hold, priority_needs, ranked};
 use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
@@ -144,7 +145,7 @@ impl Merger {
             let Some(queue) = waiting.get_mut(&lane.target) else {
                 continue;
             };
-            let uids: Vec<String> = queue.drain(..size.min(queue.len())).collect();
+            let uids = take_batch(st, queue, size);
             if !uids.is_empty() {
                 send_batch(ctx, st, lane, uids);
             }
@@ -161,6 +162,7 @@ impl Merger {
         while let Ok(result) = self.results.try_recv() {
             self.release(&result.uid);
             match result.ok {
+                None if result.quarantine.is_some() => quarantine::set_aside(ctx, st, &result),
                 None => apply_undecided(ctx, st, &result),
                 Some(false) => apply_failure(ctx, st, &result),
                 Some(true) => apply_merged(ctx, st, &result),
@@ -179,6 +181,32 @@ impl Merger {
             lane.busy.retain(|busy| busy != uid);
         }
     }
+}
+
+/// The next batch from the front of `queue`: up to `size` units, in rank
+/// order. A solo unit (its quarantine repair went stuck) goes alone, and in
+/// a batch of others it waits at the front of the queue for the next lane.
+fn take_batch(st: &State, queue: &mut VecDeque<String>, size: usize) -> Vec<String> {
+    let solo = |uid: &String| st.units.get(uid).is_some_and(|unit| unit.solo);
+    let Some(first) = queue.pop_front() else {
+        return Vec::new();
+    };
+    if solo(&first) {
+        return vec![first];
+    }
+    let mut batch = vec![first];
+    let mut skipped = Vec::new();
+    while batch.len() < size {
+        match queue.pop_front() {
+            Some(uid) if solo(&uid) => skipped.push(uid),
+            Some(uid) => batch.push(uid),
+            None => break,
+        }
+    }
+    for uid in skipped.into_iter().rev() {
+        queue.push_front(uid);
+    }
+    batch
 }
 
 /// Held units whose repository target is configured again become

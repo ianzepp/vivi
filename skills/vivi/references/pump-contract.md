@@ -184,6 +184,9 @@ as marked):
 | `replaced_by` | array of unit ids | runtime (replaced): the split's successor ids |
 | `verdict_text` | string | runtime (no-defect): tail of the no-defect receipt |
 | `held_on` | handle or null | runtime: the dependency currently holding the unit back; the first tick of each hold is logged |
+| `quarantine` | quarantine id or null | runtime: set on every unit of a quarantined batch and on the repair unit that works on it. `pump.db` keeps it (like `base` and `solo`) as a key of `units.extra_json` |
+| `base` | ref or null | runtime: dispatch this unit `--from` this ref instead of `dispatch.from`; a repair unit carries `pump/quarantine/<id>` |
+| `solo` | bool, absent when false | runtime: merge this unit in a batch of its own; set when its quarantine repair went stuck |
 
 Compatibility rule: unknown top-level keys are preserved in `meta.extra`, and
 unknown per-unit keys in `units.extra_json`. At load, a state older than
@@ -261,6 +264,7 @@ States:
 | `delivered` | the worker's branch exists on the remote; waiting to merge | no | no |
 | `merging` | queued to or being handled by the merge thread | no | no |
 | `merged` | merged into the integration branch, proof passed, pushed | yes | yes |
+| `quarantined` | merged into a batch whose shared check failed; the batch sits on `pump/quarantine/<id>` and a repair unit works on it. Not fed, not dispatched; restart leaves it alone | no | no |
 | `no-defect` | the receipt carried `VERDICT: no-defect`; nothing merged | yes | yes |
 | `stuck` | attempts exhausted (or the split planner never answered); a person is needed | yes | no |
 | `splitting` | a split planner is writing a replacement plan | no | no |
@@ -291,6 +295,39 @@ Transitions (from, to, trigger, guard, action):
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `merged_at`, `outside`, `merges+=1`; a `merges` row; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
+| `merging` | `quarantined` | merge result `ok=null, why="quarantined"` carrying a `quarantine` record | a shared check failed on a batch of several units | `quarantine=<id>`, `since=now`; the first result of the batch also opens the repair unit (below) |
+| `quarantined` | `merged` | the repair unit `<fix_prefix>-<id>` merges | — | every unit still `quarantined` under that id merges with the repair's tip: `commit`, `merged_at`, `merges+=1`, need closing, exactly as a merge result `ok=true` |
+| `quarantined` | `delivered` (solo) | the repair unit goes `stuck` (including `split-no-answer`) | — | `solo=true`, `quarantine=null`; `quarantine-stuck` exception; the next feed puts each solo unit in a batch of its own, and a solo unit that fails a shared check fails normally (`proof-failed`, back to a hand) |
+| `quarantined` | `delivered` | the repair unit ends `no-defect` (the failed check passes on its checkout) | — | `quarantine=null`; an ordinary batch retries them |
+
+**Quarantine.** When a shared check fails on a batch of several merged units
+there is no culprit and bisecting for one would cost a full check run per unit,
+so the pump does not look for blame: the lane pushes its merged `HEAD` (the
+batch and its style commit) to a new branch `pump/quarantine/<id>` on the
+target's remote (a plain push, never forced; `<id>` is `q<epoch>-<6 hex>`),
+resets the lane, and reports every cleanly merged unit as quarantined.
+Units that conflicted in that batch keep their normal `merge-conflict`
+failure. If the push does not land, the units come back undecided
+(`quarantine-push-failed`) and return to `delivered`. A batch of one unit
+keeps the old behaviour: that unit fails with `proof-failed` and a hand retries
+it with the failure lines. Unit proof failures still isolate their unit; only
+shared checks quarantine. The pump logs `quarantine <id>: <n> units, <cmd>
+rc=<code>` and the last 40 lines of the distilled failure output (for
+single-unit shared failures too).
+
+Applying the first quarantined result opens exactly one **repair unit**:
+uid `<fix_prefix>-<id>` (so it ranks with the fix units), its own need of the
+same handle (verdict `units`, one unit), the quarantined units' write scopes
+joined as `write_scope`, the failed shared command as its only `proof`, and a
+brief naming the command, exit code, failure text and the quarantined units
+with the instruction to make the check pass with the smallest change while
+keeping every unit's feature (never reverting one; a unit that cannot pass
+without losing its feature is named in the reply, and the repair fails to the
+stuck path). A repair unit is never split: a timeout counts as a failed
+attempt. Its `base` is `pump/quarantine/<id>`, so dispatch uses
+`--from pump/quarantine/<id>` and the hand starts on the merged batch. A
+`quarantine <id>` exception announces it.
+
 
 The merge batch itself (which units go together, the remote merger, promotion)
 is [`pump-protocols.md`](pump-protocols.md); the state machine above only records what
@@ -694,6 +731,9 @@ Behaviours the decisions above do not list:
   failed paths, which routes to `split` rather than `fail`.
 - Single-job batches bypass `batch_round` and its merge-main-first step; see the
   NOTE on ruling 2.
+- Quarantine covers a repair unit that merges, goes stuck, or ends no-defect.
+  A repair unit is never split. One withdrawn by hand leaves its units
+  `quarantined`; a person settles them.
 - A failed pool dispatch closes the just-sent task with
   `task done … --note 'dispatch failed; superseded'` and, on `no free slot`,
   zeroes the pool's free count for the rest of the tick.

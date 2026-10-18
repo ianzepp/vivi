@@ -305,8 +305,11 @@ Each tick the pump:
    `exceptions.txt`.
 3. **Merges.** Merges returned unit branches into an integration branch
    (`branch`, on `remote`) in batches of at most `merge.batch`, runs the format
-   command and shared checks and then each unit's own proof, and isolates the
-   culprit when a batch fails.
+   command and shared checks and then each unit's own proof. A failing unit
+   proof isolates that unit; a failing shared check on a batch of several units
+   sets the whole batch aside on `pump/quarantine/<id>` (the units become
+   `quarantined`) and opens one repair unit, ranked first, that starts from
+   that branch.
 4. **Gates.** After `every_merges` merges, or after `every_seconds` with new
    merges, a read-only gate worker (`[pump.gate] command`, on one of
    `gate.pools`) measures the tree and reports failing test names between

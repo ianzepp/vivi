@@ -2158,6 +2158,11 @@ branches cannot be handed from one repository to another.
 - `delivered` — the worker's branch exists on the remote; waiting to merge.
 - `merging` — queued to or being handled by the merge thread.
 - `merged` — merged into the integration branch, proof passed, pushed.
+- `quarantined` — merged into a batch whose shared check failed; the batch is
+  set aside on `pump/quarantine/<id>` and a repair unit
+  `<fix_prefix>-<id>` works on it. When the repair merges, the unit merges with
+  it; when the repair goes stuck, the unit returns to `delivered` and merges in
+  a batch of its own.
 - `no-defect` — the receipt carried `VERDICT: no-defect`; nothing merged.
 - `stuck` — attempts exhausted, or the split planner never answered.
 - `splitting` — a split planner is writing a replacement plan.

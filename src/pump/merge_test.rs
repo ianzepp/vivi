@@ -579,24 +579,22 @@ fn a_job_whose_own_proof_fails_is_the_culprit_and_the_rest_are_retried_in_round_
 }
 
 #[test]
-fn a_shared_check_failure_with_several_jobs_falls_back_to_one_at_a_time() {
+fn a_shared_check_failure_with_several_jobs_quarantines_the_batch_not_one_at_a_time() {
     let (_dir, ctx, host) = setup("");
     host.reply("cargo test --lib", 1, "error[E0308]: mismatched types\n");
     let results = batch_work(&ctx, &batch());
     assert_eq!(results.len(), 2);
-    assert!(results.iter().all(|r| r.ok == Some(false)));
+    assert!(results.iter().all(|r| r.ok.is_none()));
     assert!(
         results
             .iter()
-            .all(|r| r.why.as_deref() == Some("proof-failed"))
+            .all(|r| r.why.as_deref() == Some("quarantined"))
     );
-    let detail = for_uid(&results, "u1")
-        .detail
-        .as_deref()
-        .unwrap_or_default();
-    assert!(detail.contains("Last output:\nerror[E0308]: mismatched types"));
+    let q = for_uid(&results, "u1").quarantine.as_ref().unwrap();
+    assert!(q.text.contains("error[E0308]: mismatched types"));
+    // Each unit is merged once; the old fallback merged each a second time.
     let cmds = host.commands();
-    assert_eq!(count(&cmds, "merge --no-ff"), 4);
+    assert_eq!(count(&cmds, "merge --no-ff"), 2);
     assert!(
         host.logs()
             .iter()
@@ -614,10 +612,10 @@ fn a_shared_check_failure_with_one_job_is_proof_failed() {
     assert_eq!(results[0].why.as_deref(), Some("proof-failed"));
     let detail = results[0].detail.as_deref().unwrap_or_default();
     assert!(detail.contains("What failed:\nerror: boom"));
-    assert_eq!(
-        host.logs(),
-        vec![String::from("batch 1 shared rc=1 0s: cargo test --lib")]
-    );
+    let logs = host.logs();
+    assert_eq!(logs[0], "batch 1 shared rc=1 0s: cargo test --lib");
+    assert_eq!(logs[1], "  error: boom");
+    assert!(logs[2..].iter().all(|l| l.starts_with("  ")));
     let cmds = host.commands();
     assert!(cmds.iter().all(|c| !c.contains("./proof-u1.sh")));
     assert!(cmds.iter().all(|c| !c.contains("push")));

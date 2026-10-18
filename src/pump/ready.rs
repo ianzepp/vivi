@@ -32,6 +32,7 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
         | Status::Inflight
         | Status::Delivered
         | Status::Merging
+        | Status::Quarantined
         | Status::Stuck
         | Status::Splitting
         | Status::Withdrawn

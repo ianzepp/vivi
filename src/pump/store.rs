@@ -20,6 +20,7 @@ use crate::error::VivariumError;
 mod priority;
 mod promotions;
 mod schema;
+mod unit_extra;
 use schema::{newer_schema, schema_version, take_migration_lock};
 
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
@@ -596,7 +597,7 @@ fn insert_unit_row(tx: &Transaction<'_>, id: &str, unit: &Unit) -> Result<(), Vi
             json(&unit.replaced_by)?,
             &unit.verdict_text,
             i64::from(unit.kind_reported),
-            json(&unit.extra)?,
+            unit_extra::pack(unit)?,
             i64::try_from(unit.revision).unwrap_or(0),
         ],
     )
@@ -786,13 +787,15 @@ fn load_units(conn: &Connection) -> Result<BTreeMap<String, Unit>, VivariumError
                     extra: from_json(row.get(23)?),
                     revision: from_u64(row.get(24)?),
                     history: Vec::new(),
+                    ..Unit::default()
                 },
             ))
         })
         .map_err(db_err("read units"))?;
     let mut units = BTreeMap::new();
     for row in rows {
-        let (id, unit) = row.map_err(db_err("read unit"))?;
+        let (id, mut unit) = row.map_err(db_err("read unit"))?;
+        unit_extra::lift(&mut unit);
         units.insert(id, unit);
     }
     load_events(conn, &mut units)?;

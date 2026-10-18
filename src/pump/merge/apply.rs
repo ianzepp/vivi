@@ -6,6 +6,7 @@ use std::io::Write;
 
 use crate::pump::collect;
 use crate::pump::host::Ctx;
+use crate::pump::quarantine;
 use crate::pump::ready::satisfied;
 use crate::pump::state::{MergeResult, State, Status};
 
@@ -67,6 +68,26 @@ pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
         result.secs.unwrap_or(0)
     ));
     close_need(ctx, st, &result.uid, &tip);
+    land_quarantined(ctx, st, result);
+}
+
+/// A repair unit landed: the batch it repaired is on the integration branch
+/// with it, so every unit still set aside under its quarantine id merges with
+/// the repair's tip, closing needs like any other merge.
+fn land_quarantined(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    let Some(id) = quarantine::repair_of(ctx, st, &result.uid) else {
+        return;
+    };
+    for uid in quarantine::members(st, &id) {
+        let landed = MergeResult {
+            uid,
+            ok: Some(true),
+            tip: result.tip.clone(),
+            secs: result.secs,
+            ..MergeResult::default()
+        };
+        apply_merged(ctx, st, &landed);
+    }
 }
 
 /// Close the unit's need and append its `needs-ready.txt` line when the

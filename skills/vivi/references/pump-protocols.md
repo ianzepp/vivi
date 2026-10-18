@@ -326,7 +326,8 @@ the log line `MERGE ERROR …`; every job that produced no result at all gets
 4. shared checks (`merge.shared_checks`), each `merge.proof_timeout` seconds with a
    `batch <n> shared rc=<n> <n>s: <cmd>` log line. Failure with one job in
    the batch → that job gets `proof-failed` and the round ends; failure with
-   several jobs → the round returns `None` for "undecided, no culprit known".
+   several jobs → the batch is quarantined (see below) and the round ends. Either
+   way the last 40 lines of the distilled failure text are logged.
 5. the units' own proofs, one job at a time (skipping kinds with `skip_proof`);
    each failing job gets `proof-failed` (detail wording `What failed:` here)
    and joins `culprits`.
@@ -337,9 +338,18 @@ the log line `MERGE ERROR …`; every job that produced no result at all gets
    (`max(1, elapsed // len(merged))`).
 
 `batch_work(jobs)` drives the rounds: first round over all jobs;
-if jobs survive it, a second round over the survivors; if the first round was
-undecided (`None`), the not-yet-decided jobs are merged one at a time with
-`merge_work` — the culprit-isolation fallback.
+if jobs survive a failing unit proof, a second round over the survivors; any
+job still undecided after that is merged one at a time with `merge_work`.
+A failing shared check never falls back to one-at-a-time merging.
+
+**Quarantine.** For a shared-check failure with several merged jobs the lane
+pushes `HEAD:refs/heads/pump/quarantine/<id>` to the remote (plain, never
+forced; `<id>` = `q<epoch>-<6 hex of the batch's uids>`), resets the repo, logs
+`quarantine <id>: <n> units, <cmd> rc=<code>`, and returns for every cleanly
+merged job `ok=null, why="quarantined", detail=<id>` plus a `quarantine`
+record `{id, cmd, code, text, units}`. A push that fails returns
+`ok=null, why="quarantine-push-failed"` for those jobs instead. The state
+side is in pump-contract §6.
 
 ### 5.3 Result records
 
@@ -347,7 +357,8 @@ undecided (`None`), the not-yet-decided jobs are merged one at a time with
 | --- | --- | --- |
 | `true` | merged and pushed; carries `tip`, `outside`, `secs` | — |
 | `false` | decided failure; the unit is failed (retry or stuck) | `branch-missing`, `merge-conflict`, `proof-failed` |
-| `null` | undecided; the unit returns to `delivered` and is retried later | `fetch-failed`, `push-failed`, `merge-error`, `merge-undecided` |
+| `null` | undecided; the unit returns to `delivered` and is retried later | `fetch-failed`, `push-failed`, `merge-error`, `merge-undecided`, `quarantine-push-failed` |
+| `null` + `quarantine` record | the unit is set aside with its batch; status `quarantined` | `quarantined` |
 
 ### 5.4 `merge_apply` effects
 
@@ -601,6 +612,8 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `split-empty` | a split plan with `units: []` replaces a unit | the plan's `reason` (e.g. "Already delivered: commit …") |
 | `stuck` | `attempts >= max_attempts` on a fail | `<why>: <detail[-300:]>` |
 | `no-defect` | receipt contains `VERDICT: no-defect` | the last 400 chars of the receipt |
+| `quarantine` | a batch failed a shared check and was set aside; unit field is the quarantine id | `<n> units set aside on pump/quarantine/<id>: <cmd> rc=<code>; repair unit <fix_prefix>-<id>` |
+| `quarantine-stuck` | a quarantine repair unit went stuck; unit field is the quarantine id | `repair <uid> is stuck; <n> units return to delivered, one batch each: <uids>` |
 | `split-no-answer` | unit `splitting` longer than `planner.split_timeout` | `the split planner wrote no plan in 25 minutes` |
 | `gate-unreadable` | gate reply yields no names | the last 500 chars of the gate receipt; unit field is the gated tip[:10] |
 | `gate-build-failed` | gate reply is exactly `BUILD-FAILED` | the last 500 chars of the gate receipt |
@@ -622,6 +635,7 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `plan <need> verdict=<v> units=<n>` |
 | `proof <uid> rc=<n> <n>s: <cmd[:90]>` |
 | `batch <n> shared rc=<n> <n>s: <cmd>` / `batch of <n>: <n> merged` |
+| `quarantine <id>: <n> units, <cmd> rc=<code>` (then the failure text, one `  <line>` log line each) / `quarantined <uid> on pump/quarantine/<id>` |
 | `merged <uid> tip=<tip[:10]> in <n>s` |
 | `scope-warn <uid> touched outside scope: <files>` |
 | `<why> <uid>: <detail[:200]>` (undecided merge results) |
