@@ -13,34 +13,65 @@ use crate::cli::UninstallCommand;
 ///
 /// Without an explicit prefix the running binary must be part of a managed
 /// install (a `vivi` symlink beside it). A cargo-installed or ad-hoc binary
-/// is refused instead of silently replaced.
+/// is refused instead of silently replaced, unless `adopt` is set — then
+/// the default prefix (`~/.local`, so `~/.local/bin`) is used. `--adopt`
+/// never writes into `~/.cargo/bin`.
 pub(crate) fn resolve_bin_dir(
     prefix: Option<&Path>,
     exe: Option<&Path>,
+    adopt: bool,
 ) -> Result<PathBuf, VivariumError> {
     if let Some(prefix) = prefix {
-        return Ok(prefix.join("bin"));
+        return checked_bin_dir(prefix);
     }
-    let exe =
-        exe.ok_or_else(|| VivariumError::Other("cannot locate the running vivi binary".into()))?;
-    let parent = exe.parent().ok_or_else(|| {
-        VivariumError::Other(format!(
-            "cannot derive an install directory from {}",
-            exe.display()
-        ))
-    })?;
-    if is_symlink(&parent.join("vivi")) {
-        return Ok(parent.to_path_buf());
+    if let Some(parent) = symlink_install_dir(exe)? {
+        return Ok(parent);
     }
-    Err(unmanaged_install(parent, exe))
+    if adopt {
+        return checked_bin_dir(&default_prefix());
+    }
+    Err(unmanaged_from(exe))
 }
 
-pub(crate) fn managed_bin_dir(prefix: Option<&Path>) -> Result<PathBuf, VivariumError> {
+pub(crate) fn managed_bin_dir(
+    prefix: Option<&Path>,
+    adopt: bool,
+) -> Result<PathBuf, VivariumError> {
     let exe = match std::env::current_exe() {
         Ok(path) => Some(path),
         Err(_) => None,
     };
-    resolve_bin_dir(prefix, exe.as_deref())
+    resolve_bin_dir(prefix, exe.as_deref(), adopt)
+}
+
+fn checked_bin_dir(prefix: &Path) -> Result<PathBuf, VivariumError> {
+    let bin_dir = prefix.join("bin");
+    refuse_mailspace(&bin_dir)?;
+    Ok(bin_dir)
+}
+
+fn symlink_install_dir(exe: Option<&Path>) -> Result<Option<PathBuf>, VivariumError> {
+    let Some(exe) = exe else {
+        return Ok(None);
+    };
+    let Some(parent) = exe.parent() else {
+        return Ok(None);
+    };
+    if !is_symlink(&parent.join("vivi")) {
+        return Ok(None);
+    }
+    refuse_mailspace(parent)?;
+    Ok(Some(parent.to_path_buf()))
+}
+
+fn unmanaged_from(exe: Option<&Path>) -> VivariumError {
+    match exe {
+        Some(path) => match path.parent() {
+            Some(parent) => unmanaged_install(parent, path),
+            None => VivariumError::Other("cannot locate the running vivi binary".into()),
+        },
+        None => VivariumError::Other("cannot locate the running vivi binary".into()),
+    }
 }
 
 fn is_symlink(path: &Path) -> bool {
@@ -51,22 +82,149 @@ fn is_symlink(path: &Path) -> bool {
 
 fn unmanaged_install(parent: &Path, exe: &Path) -> VivariumError {
     VivariumError::Other(format!(
-        "no managed vivi install found at {}\n  cause: the running binary ({}) is not a versioned install\n  next: reinstall with install.sh, or pass --prefix <DIR> to adopt a managed layout under <DIR>/bin",
+        "no managed vivi install found at {}\n  cause: the running binary ({}) is not a versioned install\n  next: reinstall with install.sh, pass --prefix DIR, or pass --adopt to install under {}/bin",
         parent.display(),
-        exe.display()
+        exe.display(),
+        default_prefix().display()
     ))
 }
 
+/// Default install prefix used by `install.sh` (`~/.local`, so `~/.local/bin`).
+#[must_use]
+pub(crate) fn default_prefix() -> PathBuf {
+    match dirs::home_dir() {
+        Some(home) => home.join(".local"),
+        None => PathBuf::from("/usr/local"),
+    }
+}
+
+fn refuse_mailspace(bin_dir: &Path) -> Result<(), VivariumError> {
+    match mailspace_root(bin_dir) {
+        Some(root) => Err(VivariumError::Other(format!(
+            "refusing to use {} because it sits inside a Vivi mailspace ({}/mailspace.toml)\n  next: install to {} (never a project .vivi directory)",
+            bin_dir.display(),
+            root.display(),
+            default_prefix().display()
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn mailspace_root(bin_dir: &Path) -> Option<PathBuf> {
+    for dir in bin_dir.ancestors() {
+        if dir.join("mailspace.toml").is_file() {
+            return Some(dir.to_path_buf());
+        }
+    }
+    None
+}
+
 /// Point `<bin_dir>/vivi` at `vivi-<version>` with an atomic rename.
+///
+/// A plain-file `vivi` is refused unless `adopt` is set. Adopting
+/// `rename`s it to `vivi.unmanaged` (or `vivi.unmanaged.N`); it is never
+/// deleted. Other names in a shared bin dir are left untouched.
 #[cfg(unix)]
-pub(crate) fn point_symlink(bin_dir: &Path, version: &Version) -> Result<(), VivariumError> {
+pub(crate) fn point_symlink(
+    bin_dir: &Path,
+    version: &Version,
+    adopt: bool,
+) -> Result<(), VivariumError> {
     let link = bin_dir.join("vivi");
+    prepare_link_slot(&link, adopt)?;
+    write_relative_symlink(bin_dir, version, &link)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn point_symlink(
+    _bin_dir: &Path,
+    _version: &Version,
+    _adopt: bool,
+) -> Result<(), VivariumError> {
+    Err(VivariumError::Other(
+        "vivi updates require a Unix filesystem (symlinks)".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn prepare_link_slot(link: &Path, adopt: bool) -> Result<(), VivariumError> {
+    match fs::symlink_metadata(link) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(VivariumError::Other(format!(
+            "cannot inspect {}: {error}",
+            link.display()
+        ))),
+        Ok(meta) if meta.file_type().is_symlink() => Ok(()),
+        Ok(meta) if meta.file_type().is_file() => adopt_plain_vivi(link, adopt),
+        Ok(_) => Err(VivariumError::Other(format!(
+            "refusing to replace {}: it is not a vivi file or symlink",
+            link.display()
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn adopt_plain_vivi(link: &Path, adopt: bool) -> Result<(), VivariumError> {
+    if !adopt {
+        return Err(plain_vivi_error(link));
+    }
+    let parent = link.parent().ok_or_else(|| {
+        VivariumError::Other(format!("cannot derive a directory from {}", link.display()))
+    })?;
+    let dest = unused_aside_path(parent)?;
+    fs::rename(link, &dest).map_err(|error| {
+        VivariumError::Other(format!(
+            "cannot move {} aside to {}: {error}",
+            link.display(),
+            dest.display()
+        ))
+    })?;
+    println!("moved {} aside to {}", link.display(), dest.display());
+    Ok(())
+}
+
+#[cfg(unix)]
+fn plain_vivi_error(link: &Path) -> VivariumError {
+    VivariumError::Other(format!(
+        "refusing to replace {}: it is a plain file, not a vivi symlink\n  next: pass --adopt (or --force) to move it aside to vivi.unmanaged",
+        link.display()
+    ))
+}
+
+#[cfg(unix)]
+fn unused_aside_path(bin_dir: &Path) -> Result<PathBuf, VivariumError> {
+    let first = bin_dir.join("vivi.unmanaged");
+    if !entry_exists(&first) {
+        return Ok(first);
+    }
+    for n in 1..=1000 {
+        let next = bin_dir.join(format!("vivi.unmanaged.{n}"));
+        if !entry_exists(&next) {
+            return Ok(next);
+        }
+    }
+    Err(VivariumError::Other(
+        "cannot find a free vivi.unmanaged name".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+#[cfg(unix)]
+fn write_relative_symlink(
+    bin_dir: &Path,
+    version: &Version,
+    link: &Path,
+) -> Result<(), VivariumError> {
     let staged = bin_dir.join(".vivi.link.tmp");
     remove_if_present(&staged)?;
     std::os::unix::fs::symlink(format!("vivi-{version}"), &staged).map_err(|error| {
         VivariumError::Other(format!("cannot create the vivi symlink: {error}"))
     })?;
-    if let Err(error) = fs::rename(&staged, &link) {
+    if let Err(error) = fs::rename(&staged, link) {
         remove_if_present(&staged)?;
         return Err(VivariumError::Other(format!(
             "cannot point {} at vivi-{version}: {error}",
@@ -74,13 +232,6 @@ pub(crate) fn point_symlink(bin_dir: &Path, version: &Version) -> Result<(), Viv
         )));
     }
     Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn point_symlink(_bin_dir: &Path, _version: &Version) -> Result<(), VivariumError> {
-    Err(VivariumError::Other(
-        "vivi updates require a Unix filesystem (symlinks)".into(),
-    ))
 }
 
 /// The active version's file name, read from the `vivi` symlink.
@@ -120,7 +271,7 @@ fn versioned_binary(entry: &fs::DirEntry) -> Option<Version> {
 }
 
 pub(crate) fn run_uninstall(args: &UninstallCommand) -> Result<(), VivariumError> {
-    let bin_dir = managed_bin_dir(args.prefix.as_deref())?;
+    let bin_dir = managed_bin_dir(args.prefix.as_deref(), false)?;
     let active = active_version(&bin_dir);
     let targets = uninstall_targets(args, &bin_dir, active.as_deref())?;
     if targets.is_empty() {
@@ -191,6 +342,15 @@ fn remove_versioned(bin_dir: &Path, name: &str) -> Result<(), VivariumError> {
 }
 
 fn remove_link(link: &Path) -> Result<bool, VivariumError> {
+    if !is_symlink(link) {
+        if link.exists() {
+            return Err(VivariumError::Other(format!(
+                "refusing to remove {}: it is not the vivi symlink",
+                link.display()
+            )));
+        }
+        return Ok(false);
+    }
     match fs::remove_file(link) {
         Ok(()) => {
             println!("removed {}", link.display());

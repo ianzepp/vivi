@@ -2389,9 +2389,14 @@ omitted, native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
 `vivi update` installs a public GitHub release as `vivi-<version>` and
 points a relative `vivi` symlink at it. `--check` compares this binary to
 the newest public `v*` release (exit 1 when an update exists). `--version`
-pins or rolls back. `--prefix` writes under `<PREFIX>/bin`; `--base-url`
-points at a local mirror. `vivi versions` lists installs; `vivi uninstall`
-removes them. A cargo-installed plain file is refused unless `--prefix` is
+pins or rolls back. `--prefix` writes under `<PREFIX>/bin` (install.sh
+defaults to a user-local bin directory, never a project mailspace).
+`--adopt` / `--force` moves a plain-file `vivi` aside (`vivi.unmanaged`)
+instead of refusing; it never deletes that file. `--base-url` points at a
+local mirror. `vivi versions` lists installs; `vivi uninstall` removes
+only `vivi-<semver>` files and the `vivi` symlink in that directory
+(shared bins hold other tools), and refuses a path inside a mailspace. A
+cargo-installed plain file is refused unless `--prefix` or `--adopt` is
 given.
 
 ## Watches and Cycle Intake

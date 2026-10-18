@@ -36,20 +36,24 @@ verifies the archive SHA-256, writes a versioned binary, and points a
 relative `vivi` symlink at it:
 
 ```text
-~/.vivi/bin/vivi-14.1.0
-~/.vivi/bin/vivi -> vivi-14.1.0
+~/.local/bin/vivi-14.1.0
+~/.local/bin/vivi -> vivi-14.1.0
 ```
+
+The prefix is `~/.local`, so binaries live in `~/.local/bin` (usually
+already on `PATH`). That is not `~/.vivi`, which is a mailspace
+(`mailspace.toml`, `mail.sqlite`) and must never hold binaries.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
 # or pin a release / prefix:
-curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 14.1.0 --prefix "$HOME/.vivi"
+curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 14.1.0 --prefix "$HOME/.local"
 ```
 
 The script defaults to the release it shipped with (`VIVI_VERSION`, currently
-14.1.0) and `~/.vivi` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url` can
-point at a local mirror. Optional `GITHUB_TOKEN` / `GH_TOKEN` raises the
-GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
+14.1.0) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
+can point at a local mirror. Optional `GITHUB_TOKEN` / `GH_TOKEN` raises
+the GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`.
 
 ```sh
@@ -60,9 +64,15 @@ vivi versions                  # list versioned installs; * is active
 vivi uninstall --version 14.0.0
 ```
 
-A `cargo install` binary at `~/.cargo/bin/vivi` is a plain file, not a
-symlink. `vivi update` refuses to overwrite it; reinstall with `install.sh`
-or pass `--prefix <DIR>` to adopt a managed layout under `<DIR>/bin`.
+`~/.local/bin` is shared with other tools. `vivi uninstall` only deletes
+`vivi-<semver>` files and the `vivi` symlink; it never removes or renames
+anything else. A plain-file `vivi` already in that directory (not a
+symlink) is refused: pass `--adopt` / `--force` to move it aside to
+`vivi.unmanaged` (or `vivi.unmanaged.N`). A `cargo install` binary at
+`~/.cargo/bin/vivi` is the same kind of unmanaged file; `vivi update`
+refuses it unless you pass `--prefix` or `--adopt` (adopt installs under
+`~/.local/bin`, never into `~/.cargo/bin`). Both refuse a path inside a
+mailspace (`mailspace.toml`).
 
 From source (`rust-toolchain.toml` pins Rust 1.93):
 

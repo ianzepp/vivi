@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use semver::Version;
 
 use super::layout::{
-    active_version, installed_versions, point_symlink, resolve_bin_dir, run_uninstall,
+    active_version, default_prefix, installed_versions, point_symlink, resolve_bin_dir,
+    run_uninstall,
 };
 use super::package::{install_release, sha256_hex};
 use super::parse_version;
@@ -129,7 +130,8 @@ fn install_layout_places_a_versioned_binary_and_symlink() {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o755);
-        point_symlink(&bin_dir, &Version::parse("14.1.0").expect("semver")).expect("symlink");
+        point_symlink(&bin_dir, &Version::parse("14.1.0").expect("semver"), false)
+            .expect("symlink");
         assert_eq!(
             fs::read_link(bin_dir.join("vivi")).expect("link"),
             PathBuf::from("vivi-14.1.0")
@@ -187,7 +189,8 @@ fn resolve_bin_dir_requires_a_managed_install() {
     let temp = tempfile::tempdir().expect("tmp");
     let exe = temp.path().join("vivi");
     fs::write(&exe, b"cargo-installed").expect("exe");
-    let error = resolve_bin_dir(None, Some(&exe)).expect_err("unmanaged binary must be refused");
+    let error =
+        resolve_bin_dir(None, Some(&exe), false).expect_err("unmanaged binary must be refused");
     let text = error.to_string();
     assert!(text.contains("no managed vivi install"), "{text}");
     assert!(text.contains("--prefix"), "{text}");
@@ -201,16 +204,17 @@ fn resolve_bin_dir_accepts_a_versioned_install() {
     fs::write(bin_dir.join("vivi-14.1.0"), b"binary").expect("versioned");
     std::os::unix::fs::symlink("vivi-14.1.0", bin_dir.join("vivi")).expect("link");
 
-    let resolved = resolve_bin_dir(None, Some(&bin_dir.join("vivi-14.1.0"))).expect("managed");
+    let resolved =
+        resolve_bin_dir(None, Some(&bin_dir.join("vivi-14.1.0")), false).expect("managed");
     assert_eq!(resolved, bin_dir);
-    let resolved = resolve_bin_dir(None, Some(&bin_dir.join("vivi"))).expect("managed link");
+    let resolved = resolve_bin_dir(None, Some(&bin_dir.join("vivi")), false).expect("managed link");
     assert_eq!(resolved, bin_dir);
 }
 
 #[test]
 fn resolve_bin_dir_accepts_an_explicit_prefix() {
     let temp = tempfile::tempdir().expect("tmp");
-    let resolved = resolve_bin_dir(Some(temp.path()), None).expect("explicit prefix");
+    let resolved = resolve_bin_dir(Some(temp.path()), None, false).expect("explicit prefix");
     assert_eq!(resolved, temp.path().join("bin"));
 }
 
@@ -264,5 +268,177 @@ fn install_sh_defaults_to_crate_version() {
     assert!(
         text.contains(&format!("VIVI_VERSION:-{version}")),
         "install.sh must default to {version}"
+    );
+    assert!(
+        text.contains("HOME:?HOME is not set}/.local}"),
+        "install.sh must default to ~/.local"
+    );
+    assert!(
+        !text.contains(".local/share/vivi"),
+        "install.sh must not default to ~/.local/share/vivi"
+    );
+    assert!(
+        !text.contains("HOME:?HOME is not set}/.vivi\""),
+        "install.sh must not default to ~/.vivi"
+    );
+    assert!(
+        text.contains("--adopt"),
+        "install.sh must accept --adopt for a plain-file vivi"
+    );
+}
+
+#[test]
+fn resolve_bin_dir_refuses_a_mailspace_prefix() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let space = temp.path().join(".vivi");
+    fs::create_dir_all(space.join("bin")).expect("mailspace bin");
+    fs::write(space.join("mailspace.toml"), "name = \"home\"\n").expect("config");
+    let error = resolve_bin_dir(Some(&space), None, false).expect_err("mailspace prefix");
+    let text = error.to_string();
+    assert!(text.contains("mailspace.toml"), "{text}");
+    assert!(text.contains(".local"), "{text}");
+    assert!(!text.contains(".local/share/vivi"), "{text}");
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_refuses_bin_dir_inside_a_mailspace() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let space = temp.path().join(".vivi");
+    let bin_dir = space.join("bin");
+    fs::create_dir_all(&bin_dir).expect("bin");
+    fs::write(space.join("mailspace.toml"), "name = \"home\"\n").expect("config");
+    fs::write(space.join("mail.sqlite"), b"keep-me").expect("sqlite");
+    fs::write(bin_dir.join("vivi-14.1.0"), b"binary").expect("versioned");
+    std::os::unix::fs::symlink("vivi-14.1.0", bin_dir.join("vivi")).expect("link");
+
+    let error = run_uninstall(&UninstallCommand {
+        version: None,
+        all: true,
+        prefix: Some(space.clone()),
+    })
+    .expect_err("mailspace uninstall must fail");
+    let text = error.to_string();
+    assert!(text.contains("mailspace.toml"), "{text}");
+    assert!(space.join("mail.sqlite").is_file());
+    assert!(space.join("mailspace.toml").is_file());
+    assert!(bin_dir.join("vivi-14.1.0").is_file());
+    assert!(fs::symlink_metadata(bin_dir.join("vivi")).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_leaves_unrelated_files() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("bin dir");
+    fs::write(bin_dir.join("vivi-14.1.0"), b"binary").expect("versioned");
+    fs::write(bin_dir.join("notes.txt"), b"keep").expect("notes");
+    fs::write(bin_dir.join("vivi-not-semver"), b"keep").expect("other");
+    fs::write(bin_dir.join("vivi.unmanaged"), b"12.0.4").expect("aside");
+    std::os::unix::fs::symlink("vivi-14.1.0", bin_dir.join("vivi")).expect("link");
+
+    run_uninstall(&UninstallCommand {
+        version: None,
+        all: true,
+        prefix: Some(temp.path().to_path_buf()),
+    })
+    .expect("uninstall all");
+
+    assert!(!bin_dir.join("vivi-14.1.0").exists());
+    assert!(fs::symlink_metadata(bin_dir.join("vivi")).is_err());
+    assert_eq!(fs::read(bin_dir.join("notes.txt")).expect("notes"), b"keep");
+    assert_eq!(
+        fs::read(bin_dir.join("vivi-not-semver")).expect("other"),
+        b"keep"
+    );
+    assert_eq!(
+        fs::read(bin_dir.join("vivi.unmanaged")).expect("aside"),
+        b"12.0.4"
+    );
+}
+
+#[test]
+fn resolve_bin_dir_adopt_uses_the_default_prefix() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let exe = temp.path().join("vivi");
+    fs::write(&exe, b"cargo-installed").expect("exe");
+    let resolved = resolve_bin_dir(None, Some(&exe), true).expect("adopt default");
+    assert_eq!(resolved, default_prefix().join("bin"));
+}
+
+#[cfg(unix)]
+#[test]
+fn point_symlink_refuses_a_plain_vivi_without_adopt() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let bin_dir = temp.path();
+    fs::write(bin_dir.join("vivi-14.1.0"), b"new").expect("versioned");
+    fs::write(bin_dir.join("vivi"), b"vivi-12.0.4-plain").expect("plain");
+
+    let error = point_symlink(bin_dir, &Version::parse("14.1.0").expect("semver"), false)
+        .expect_err("plain file must be refused");
+    let text = error.to_string();
+    assert!(text.contains("plain file"), "{text}");
+    assert!(text.contains("--adopt"), "{text}");
+    assert_eq!(
+        fs::read(bin_dir.join("vivi")).expect("plain kept"),
+        b"vivi-12.0.4-plain"
+    );
+    assert!(
+        fs::symlink_metadata(bin_dir.join("vivi"))
+            .expect("meta")
+            .file_type()
+            .is_file()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn point_symlink_adopt_moves_a_plain_vivi_aside() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let bin_dir = temp.path();
+    fs::write(bin_dir.join("vivi-14.1.0"), b"new").expect("versioned");
+    fs::write(bin_dir.join("vivi"), b"vivi-12.0.4-plain").expect("plain");
+    fs::write(bin_dir.join("other-tool"), b"keep").expect("neighbor");
+
+    point_symlink(bin_dir, &Version::parse("14.1.0").expect("semver"), true).expect("adopt");
+
+    assert_eq!(
+        fs::read_link(bin_dir.join("vivi")).expect("link"),
+        PathBuf::from("vivi-14.1.0")
+    );
+    assert_eq!(
+        fs::read(bin_dir.join("vivi.unmanaged")).expect("aside"),
+        b"vivi-12.0.4-plain"
+    );
+    assert_eq!(
+        fs::read(bin_dir.join("other-tool")).expect("neighbor"),
+        b"keep"
+    );
+    assert!(!bin_dir.join("vivi.unmanaged.1").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn point_symlink_adopt_numbers_an_existing_aside() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let bin_dir = temp.path();
+    fs::write(bin_dir.join("vivi-14.1.0"), b"new").expect("versioned");
+    fs::write(bin_dir.join("vivi"), b"second-plain").expect("plain");
+    fs::write(bin_dir.join("vivi.unmanaged"), b"first-plain").expect("aside");
+
+    point_symlink(bin_dir, &Version::parse("14.1.0").expect("semver"), true).expect("adopt");
+
+    assert_eq!(
+        fs::read(bin_dir.join("vivi.unmanaged")).expect("first"),
+        b"first-plain"
+    );
+    assert_eq!(
+        fs::read(bin_dir.join("vivi.unmanaged.1")).expect("second"),
+        b"second-plain"
+    );
+    assert_eq!(
+        fs::read_link(bin_dir.join("vivi")).expect("link"),
+        PathBuf::from("vivi-14.1.0")
     );
 }

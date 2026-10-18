@@ -10,7 +10,8 @@
 //!
 //! The versioned file is the receipt. There is no install metadata. A
 //! cargo-installed or other unmanaged binary is refused unless `--prefix`
-//! is given.
+//! or `--adopt` is given. `--adopt` installs under `~/.local/bin` and
+//! moves a plain-file `vivi` aside (`vivi.unmanaged`); it never deletes.
 
 mod layout;
 mod package;
@@ -54,12 +55,12 @@ pub fn check_for_update() -> Result<CheckOutcome, VivariumError> {
 pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
     let current = current_version()?;
     let target = target_version(args)?;
-    let bin_dir = layout::managed_bin_dir(args.prefix.as_deref())?;
+    let bin_dir = layout::managed_bin_dir(args.prefix.as_deref(), args.adopt)?;
     let triple = current_triple()?;
     println!("vivi update — {current} -> {target} ({triple})");
     println!("  bin:      {}", bin_dir.display());
     stage_binary(args, &target, triple, &bin_dir)?;
-    activate(&bin_dir, &target)?;
+    activate(&bin_dir, &target, args.adopt)?;
     Ok(())
 }
 
@@ -69,7 +70,7 @@ pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
 ///
 /// Returns an error when the running binary is not a managed install.
 pub fn print_versions(args: &VersionsCommand) -> Result<(), VivariumError> {
-    let bin_dir = layout::managed_bin_dir(args.prefix.as_deref())?;
+    let bin_dir = layout::managed_bin_dir(args.prefix.as_deref(), false)?;
     let active = layout::active_version(&bin_dir);
     let versions = layout::installed_versions(&bin_dir);
     if versions.is_empty() {
@@ -114,13 +115,13 @@ fn stage_binary(
     package::install_release(&base, target, triple, bin_dir)
 }
 
-fn activate(bin_dir: &std::path::Path, target: &Version) -> Result<(), VivariumError> {
+fn activate(bin_dir: &std::path::Path, target: &Version, adopt: bool) -> Result<(), VivariumError> {
     let name = format!("vivi-{target}");
     if layout::active_version(bin_dir).as_deref() == Some(name.as_str()) {
         println!("active:     {name} (already active)");
         return Ok(());
     }
-    layout::point_symlink(bin_dir, target)?;
+    layout::point_symlink(bin_dir, target, adopt)?;
     println!("active:     {name}");
     Ok(())
 }

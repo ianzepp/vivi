@@ -20,15 +20,19 @@ pub struct UpdateCommand {
     pub base_url: Option<String>,
 
     /// Install prefix; `vivi-<version>` and the `vivi` symlink live under
-    /// `<PREFIX>/bin` (default: the running binary's directory)
+    /// `<PREFIX>/bin` (install.sh default: `~/.local`)
     #[arg(long, value_name = "DIR")]
     pub prefix: Option<PathBuf>,
+
+    /// Move a plain-file `vivi` aside (`vivi.unmanaged`) instead of refusing
+    #[arg(long, alias = "force")]
+    pub adopt: bool,
 }
 
 /// List versioned installs next to the running binary.
 #[derive(Debug, Args)]
 pub struct VersionsCommand {
-    /// Install prefix (default: the running binary's directory)
+    /// Install prefix (install.sh default: `~/.local`)
     #[arg(long, value_name = "DIR")]
     pub prefix: Option<PathBuf>,
 }
@@ -44,7 +48,7 @@ pub struct UninstallCommand {
     #[arg(long, conflicts_with = "version")]
     pub all: bool,
 
-    /// Install prefix (default: the running binary's directory)
+    /// Install prefix (install.sh default: `~/.local`)
     #[arg(long, value_name = "DIR")]
     pub prefix: Option<PathBuf>,
 }

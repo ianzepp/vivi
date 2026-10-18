@@ -24,11 +24,18 @@ symlink. `--check` compares `CARGO_PKG_VERSION` to that release (exit 1
 when an update exists, exit 2 on fetch failure). `--version` pins or rolls
 back. `vivi versions` lists installs; `vivi uninstall` removes them.
 
-`install.sh` uses the same layout. The release workflow publishes a
-`.sha256` next to each tarball, attaches `install.sh`, and asserts that the
-installer's default version matches the tag.
+`install.sh` uses the same layout under `~/.local` so binaries live in
+`~/.local/bin` (usually on `PATH`; never `~/.vivi`, which is a
+mailspace). The release workflow publishes a `.sha256` next to each
+tarball, attaches `install.sh`, and asserts that the installer's default
+version matches the tag.
 
-A cargo-managed `~/.cargo/bin/vivi` is refused unless `--prefix` is given.
+A cargo-managed `~/.cargo/bin/vivi` or any other plain-file `vivi` is
+refused unless `--prefix` or `--adopt` / `--force` is given. `--adopt`
+installs under `~/.local/bin` and moves a plain-file `vivi` aside to
+`vivi.unmanaged` (never deletes it). `vivi uninstall` only removes
+`vivi-<semver>` files and the `vivi` symlink in that shared bin
+directory, and refuses a bin dir that is or sits inside a mailspace.
 
 ## Compatibility
 
