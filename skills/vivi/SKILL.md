@@ -2381,7 +2381,18 @@ in this binary: `chatgpt-codex` (Responses plus the existing chat shim) and
 Non-loopback `listen` requires `allow_remote = true` and `auth_token_cmd`.
 POST needs `Content-Type: application/json`. Requests with an `Origin`
 header, or a `Host` that is not loopback / the bind address, are refused.
-Credential errors return a fixed message and a request id.
+Credential errors return a fixed message and a request id. When `models` is
+omitted, native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
+
+## Self-update
+
+`vivi update` installs a public GitHub release as `vivi-<version>` and
+points a relative `vivi` symlink at it. `--check` compares this binary to
+the newest public `v*` release (exit 1 when an update exists). `--version`
+pins or rolls back. `--prefix` writes under `<PREFIX>/bin`; `--base-url`
+points at a local mirror. `vivi versions` lists installs; `vivi uninstall`
+removes them. A cargo-installed plain file is refused unless `--prefix` is
+given.
 
 ## Watches and Cycle Intake
 

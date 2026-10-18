@@ -293,6 +293,43 @@ fn native_codex_chat_shim_usage_zero() {
 }
 
 #[test]
+fn native_codex_chat_shim_sets_request_id_header() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: sse_body(&[
+            r#"{"type":"response.output_text.delta","delta":"hello"}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","output":[]}}"#,
+        ]),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_codex(&dir, &creds, addr));
+    let response = get(&base)
+        .post(format!("{base}/codex/v1/chat/completions"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(r#"{"model":"gpt-6.1-sol","messages":[{"role":"user","content":"hi"}]}"#)
+        .send()
+        .unwrap();
+    let header_id = response
+        .headers()
+        .get("x-vivi-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap()
+        .to_string();
+    assert!(!header_id.is_empty());
+    let _body = response.text().unwrap();
+    let event = last_access_log(&dir);
+    assert_eq!(event["id"], header_id);
+    server.stop();
+}
+
+#[test]
 fn kimi_refreshes_on_401_and_writes_back() {
     let mock = Mock::new();
     mock.push(Script {
@@ -764,7 +801,14 @@ fn native_codex_models_uses_builtin_list() {
         .unwrap()
         .json()
         .unwrap();
-    assert!(!value["data"].as_array().unwrap().is_empty());
+    let ids: Vec<&str> = value["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"gpt-6-luna"), "{ids:?}");
+    assert!(ids.contains(&"gpt-6.1-sol"), "{ids:?}");
     server.stop();
 }
 
@@ -838,5 +882,80 @@ fn providers_row_includes_health() {
     let row = providers::format_row(&config, "llama", &config.providers["llama"]);
     assert!(row.contains("health=ok"), "{row}");
     assert!(row.contains("credentials="), "{row}");
+    server.stop();
+}
+
+fn load_upstream(dir: &TempDir, name: &str, addr: std::net::SocketAddr) -> ProxyConfig {
+    load(
+        dir,
+        &format!(
+            r#"
+            log_dir = "{}"
+            [providers.{name}]
+            kind = "upstream"
+            backend = "http://{addr}"
+            "#,
+            dir.path().join("logs").display()
+        ),
+    )
+    .1
+}
+
+#[test]
+fn upstream_nonstream_logs_usage() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: br#"{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":11,"completion_tokens":7}}"#.to_vec(),
+        sse: false,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_upstream(&dir, "kimi", addr));
+    let _body = get(&base)
+        .post(format!("{base}/kimi/v1/chat/completions"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(r#"{"model":"kimi-for-coding","messages":[{"role":"user","content":"hi"}]}"#)
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    let event = last_access_log(&dir);
+    assert_eq!(event["input_tokens"], 11);
+    assert_eq!(event["output_tokens"], 7);
+    server.stop();
+}
+
+#[test]
+fn llama_stream_logs_usage() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: sse_body(&[
+            r#"{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"}}]}"#,
+            r#"{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2}}"#,
+        ]),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_upstream(&dir, "llama", addr));
+    let _body = get(&base)
+        .post(format!("{base}/llama/v1/chat/completions"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(r#"{"model":"local","messages":[{"role":"user","content":"hi"}],"stream":true}"#)
+        .send()
+        .unwrap()
+        .text()
+        .unwrap();
+    let event = last_access_log(&dir);
+    assert_eq!(event["input_tokens"], 8);
+    assert_eq!(event["output_tokens"], 2);
     server.stop();
 }

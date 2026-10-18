@@ -31,18 +31,38 @@ They share no code and no data.
 ## Install
 
 Release binaries are attached to this repository's
-[GitHub releases](https://github.com/ianzepp/vivi/releases), the only
-distribution channel. The installer picks the archive for your platform and
-falls back to `cargo install` from the release tag when none exists:
+[GitHub releases](https://github.com/ianzepp/vivi/releases). `install.sh`
+verifies the archive SHA-256, writes a versioned binary, and points a
+relative `vivi` symlink at it:
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | bash
+```text
+~/.vivi/bin/vivi-14.1.0
+~/.vivi/bin/vivi -> vivi-14.1.0
 ```
 
-It reads `VIVI_VERSION` (release tag, default the latest), `VIVI_INSTALL_DIR`
-(default `~/.local/bin`), `VIVI_REPO` (default `ianzepp/vivi`) and
-`VIVI_BIN_NAME` (default `vivi`). Release archives are built for
-`aarch64-apple-darwin`, `x86_64-apple-darwin` and `x86_64-unknown-linux-gnu`.
+```sh
+curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
+# or pin a release / prefix:
+curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 14.1.0 --prefix "$HOME/.vivi"
+```
+
+The script defaults to the release it shipped with (`VIVI_VERSION`, currently
+14.1.0) and `~/.vivi` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url` can
+point at a local mirror. Optional `GITHUB_TOKEN` / `GH_TOKEN` raises the
+GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`.
+
+```sh
+vivi update --check            # compare this binary to the newest public release
+vivi update                    # install that release and flip the symlink
+vivi update --version 14.0.0   # pin / roll back (when that release has a .sha256)
+vivi versions                  # list versioned installs; * is active
+vivi uninstall --version 14.0.0
+```
+
+A `cargo install` binary at `~/.cargo/bin/vivi` is a plain file, not a
+symlink. `vivi update` refuses to overwrite it; reinstall with `install.sh`
+or pass `--prefix <DIR>` to adopt a managed layout under `<DIR>/bin`.
 
 From source (`rust-toolchain.toml` pins Rust 1.93):
 
@@ -50,7 +70,7 @@ From source (`rust-toolchain.toml` pins Rust 1.93):
 git clone https://github.com/ianzepp/vivi.git
 cd vivi
 cargo build --release      # target/release/vivi
-cargo install --path .     # or install it onto your PATH
+cargo install --path .     # unmanaged; `vivi update` will refuse this file
 vivi --version
 ```
 
@@ -440,9 +460,8 @@ kind = "native"
 adapter = "chatgpt-codex"
 credentials = "~/.codex/auth.json"
 fallback_credentials = "~/.pi/agent/auth.json"
-# Optional. When omitted, /codex/v1/models serves a built-in list
-# (gpt-5.4, gpt-5.3-codex, gpt-5.3, gpt-5.2, gpt-5.1, gpt-5).
-# models = ["gpt-5.4", "gpt-5.3-codex", "gpt-5"]
+# Optional. When omitted, /codex/v1/models serves gpt-6-luna and gpt-6.1-sol.
+# models = ["gpt-6-luna", "gpt-6.1-sol"]
 
 [providers.kimi]
 kind = "native"

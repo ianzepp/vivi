@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use vivi::VivariumError;
 use vivi::cli::{Cli, Command, ProxySubcommand, PumpServiceCommand, PumpSubcommand};
+use vivi::update::CheckOutcome;
 
 mod local_board_command;
 mod local_boot_command;
@@ -74,5 +75,29 @@ async fn run(cli: Cli) -> Result<(), VivariumError> {
     {
         return vivi::proxy::run(cmd).await;
     }
+    if let Some(result) = dispatch_self_update(&cli.command) {
+        return result;
+    }
     run_mailspace_command(&cli.command)
+}
+
+fn dispatch_self_update(command: &Command) -> Option<Result<(), VivariumError>> {
+    match command {
+        Command::Update(cmd) if cmd.check => Some(run_update_check()),
+        Command::Update(cmd) => Some(vivi::update::run_update(cmd)),
+        Command::Versions(cmd) => Some(vivi::update::print_versions(cmd)),
+        Command::Uninstall(cmd) => Some(vivi::update::uninstall(cmd)),
+        _ => None,
+    }
+}
+
+fn run_update_check() -> Result<(), VivariumError> {
+    match vivi::update::check_for_update() {
+        Ok(CheckOutcome::Available) => process::exit(1),
+        Ok(_) => Ok(()),
+        Err(error) => {
+            eprintln!("error: {error}");
+            process::exit(2);
+        }
+    }
 }

@@ -26,10 +26,15 @@ pub fn json_error(status: StatusCode, code: &str, message: &str, request_id: &st
         }
     });
     let mut response = (status, axum::Json(body)).into_response();
+    attach_request_id(&mut response, request_id);
+    response
+}
+
+/// Stamp `x-vivi-request-id` on a response that already has a body.
+pub fn attach_request_id(response: &mut Response, request_id: &str) {
     if let Ok(value) = HeaderValue::from_str(request_id) {
         response.headers_mut().insert("x-vivi-request-id", value);
     }
-    response
 }
 
 /// Map a credential or refresh failure to a redacted 502.

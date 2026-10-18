@@ -178,7 +178,7 @@ async fn chat_shim(
     let model = chat
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or("gpt-5")
+        .unwrap_or("gpt-6.1-sol")
         .to_string();
     let responses_body =
         Bytes::from(serde_json::to_vec(&codex_chat::chat_to_responses(&chat)).unwrap_or_default());
@@ -200,10 +200,9 @@ async fn chat_shim(
     .await?;
     let text = codex_chat::text_from_events(&events);
     let payload = codex_chat::responses_to_chat(&model, &text, request_id);
-    Ok((
-        (StatusCode::OK, axum::Json(payload)).into_response(),
-        Usage::default(),
-    ))
+    let mut response = (StatusCode::OK, axum::Json(payload)).into_response();
+    http_error::attach_request_id(&mut response, request_id);
+    Ok((response, Usage::default()))
 }
 
 async fn collect_stream(
@@ -291,14 +290,7 @@ fn health_response(provider: &ProviderConfig) -> Response {
     forward::json_ok(json!({ "ok": ok, "provider": "codex" }))
 }
 
-const DEFAULT_MODELS: &[&str] = &[
-    "gpt-5.4",
-    "gpt-5.3-codex",
-    "gpt-5.3",
-    "gpt-5.2",
-    "gpt-5.1",
-    "gpt-5",
-];
+const DEFAULT_MODELS: &[&str] = &["gpt-6-luna", "gpt-6.1-sol"];
 
 fn models_body(models: &[String]) -> Value {
     let listed: Vec<String> = if models.is_empty() {
