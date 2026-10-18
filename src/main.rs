@@ -8,7 +8,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use vivi::VivariumError;
-use vivi::cli::Cli;
+use vivi::cli::{Cli, Command, PumpServiceCommand, PumpSubcommand};
 
 mod local_board_command;
 mod local_boot_command;
@@ -58,5 +58,15 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), VivariumError> {
+    if matches!(
+        &cli.command,
+        Command::Pump {
+            command: PumpSubcommand::Service {
+                command: PumpServiceCommand::Run
+            }
+        }
+    ) {
+        return vivi::pump::service::run().await;
+    }
     run_mailspace_command(&cli.command)
 }

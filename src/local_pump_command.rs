@@ -3,11 +3,14 @@
 use std::path::PathBuf;
 
 use vivi::VivariumError;
-use vivi::cli::PumpSubcommand;
+use vivi::cli::{PumpServiceCommand, PumpSubcommand};
 use vivi::pump::run as pump_run;
 
 pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), VivariumError> {
     match command {
+        PumpSubcommand::Run(cmd) if cmd.service_child => {
+            pump_run::run_service_child(&project_root(&cmd.project))
+        }
         PumpSubcommand::Run(cmd) => pump_run::run(&project_root(&cmd.project), false),
         PumpSubcommand::Once(cmd) => pump_run::run(&project_root(&cmd.project), true),
         PumpSubcommand::Status(cmd) => {
@@ -22,6 +25,17 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             cmd.close.as_deref(),
             cmd.for_identity.as_deref(),
         ),
+        PumpSubcommand::Service { command } => match command {
+            PumpServiceCommand::Add(cmd) => vivi::pump::service::add(&cmd.project),
+            PumpServiceCommand::Remove(cmd) => vivi::pump::service::remove(&cmd.project),
+            PumpServiceCommand::List => vivi::pump::service::list(),
+            PumpServiceCommand::Install => vivi::pump::service::install(),
+            PumpServiceCommand::Uninstall => vivi::pump::service::uninstall(),
+            PumpServiceCommand::Status => vivi::pump::service::status(),
+            PumpServiceCommand::Run => Err(VivariumError::Other(
+                "pump service run requires the async command entry point".into(),
+            )),
+        },
     }
 }
 

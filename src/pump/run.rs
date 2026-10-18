@@ -1,6 +1,7 @@
 //! Pump tick, status, and the run/once entry points.
 
 use std::fs::{self, File};
+use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
@@ -89,6 +90,15 @@ pub fn write_status(ctx: &Ctx, st: &State) {
 /// table or the table fails `validate`, an error when the lock is already
 /// held, and whatever loading the state fails with.
 pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
+    run_inner(project, once, false)
+}
+
+/// Run as a service-owned child and announce readiness after taking the pump lock.
+pub fn run_service_child(project: &Path) -> Result<(), VivariumError> {
+    run_inner(project, false, true)
+}
+
+fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
@@ -96,6 +106,10 @@ pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
     let home = cfg.home_dir(project);
     fs::create_dir_all(&home)?;
     let lock = take_lock(&home)?;
+    if announce_ready {
+        println!("VIVI_PUMP_SERVICE_READY");
+        std::io::stdout().flush()?;
+    }
     let host = Arc::new(RealHost::new(&home));
     let vivi = std::env::current_exe()
         .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());

@@ -1876,6 +1876,31 @@ vivi pump once     # exactly one tick, then exit; STOP is honoured after the tic
 vivi pump status   # print <home>/status.txt ("no status yet" when absent); no lock, no state load
 ```
 
+#### User-level pump service
+
+The pump service supervises independent project pumps. Each registered
+project keeps its `[pump]` settings, `pump.db`, and pool configuration. The
+registry is stored at the platform's user config directory under
+`vivi/pump-service.toml` (`projects = ["/absolute/project/path"]`).
+
+```sh
+vivi pump service add <project-root>
+vivi pump service remove <project-root>
+vivi pump service list
+vivi pump service install     # macOS: install and start a user LaunchAgent
+vivi pump service status      # macOS: show launchd status
+vivi pump service uninstall   # macOS: stop and remove LaunchAgent; registrations remain
+vivi pump service run         # foreground supervisor for an OS service manager
+```
+
+The supervisor polls the registry and starts one `vivi pump run --project`
+child per registered project. It restarts exited pumps after a delay and
+stops a project's child when that project is removed. A project's existing
+pump lock arbitrates against a manually started pump. `install` captures the
+currently running Vivi executable in `~/Library/LaunchAgents/com.vivi.pump-service.plist`;
+launchd restarts it and starts it at login. On other systems, run the
+foreground command from that system's service manager.
+
 - `run` and `once` take an exclusive non-blocking flock on `<home>/lock`
   first, so there is one instance; a second exits non-zero. Exit 0 is a clean
   exit (STOP seen, or `once` finished); a crashing tick is logged, not an exit.
@@ -1907,11 +1932,11 @@ For whoever operates it. Reference tables follow in the sections below.
    (sync pull, planners for plannable needs) and merging of delivered units
    still run. Read `vivi pump status`, `<home>/log.txt` and
    `<home>/exceptions.txt`.
-4. Remove `PAUSE`, then run `vivi pump run` (add `--project <root>` outside
-   the project) under a supervisor such as tmux or systemd. It runs in the
-   foreground, holds the `lock` flock (a second pump on the same home exits
-   non-zero) and exits 0 only on `STOP`, so the supervisor must not restart a
-   clean exit by itself.
+4. Remove `PAUSE`. Run `vivi pump run` (add `--project <root>` outside the
+   project) under a supervisor, or register it with `vivi pump service add`
+   and install the user service. The standalone pump runs in the foreground
+   and holds the per-project lock; the service uses that same lock when a
+   standalone process is already running.
 5. To restart (new binary, new config): `touch <home>/STOP`, wait for the
    process to exit (it finishes the current tick first), **remove `STOP`**,
    then start again. A `STOP` left behind makes the next start run one tick

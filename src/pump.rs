@@ -16,6 +16,7 @@ pub mod ready;
 pub mod remote;
 pub mod report;
 pub mod run;
+pub mod service;
 pub mod state;
 pub mod store;
 

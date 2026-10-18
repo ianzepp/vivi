@@ -33,6 +33,7 @@ sysinfo = "0.32"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 toml = "0.8"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
