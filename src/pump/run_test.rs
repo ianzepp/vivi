@@ -329,7 +329,7 @@ fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
     fs::remove_file(ctx.home.join("HOLD-MERGE")).unwrap();
     let (merger, _results, jobs) = Merger::detached();
     merger.feed(&ctx, &mut recovered);
-    assert_eq!(jobs.try_recv().unwrap().uid, "recover-1");
+    assert_eq!(jobs.try_recv().unwrap()[0].uid, "recover-1");
     merger.feed(&ctx, &mut recovered);
     assert!(
         jobs.try_recv().is_err(),

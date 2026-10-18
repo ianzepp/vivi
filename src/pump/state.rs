@@ -32,8 +32,10 @@ pub enum Status {
     Inflight,
     /// The agent finished; awaiting merge.
     Delivered,
-    /// The merge thread is working on it (in memory only; load folds this
-    /// back to `Delivered`, since a crash mid-merge proves nothing).
+    /// A merge lane has taken it and is working on it: the unit is inside
+    /// exactly one lane's batch (in memory only; load folds this back to
+    /// `Delivered`, since a crash mid-merge proves nothing). Units waiting
+    /// for a free lane stay `Delivered`.
     Merging,
     /// Merged into the integration branch.
     Merged,

@@ -154,6 +154,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert!(cfg.dispatch.kinds.is_empty());
     assert_eq!(cfg.dispatch.default_kind, "");
     assert_eq!(cfg.merge.batch, 8);
+    assert_eq!(cfg.merge.lanes, 1);
     assert_eq!(cfg.merge.format, "");
     assert!(cfg.merge.shared_checks.is_empty());
     assert_eq!(cfg.merge.proof_timeout, 300);
@@ -316,6 +317,24 @@ fn validate_rejects_empty_lanes_and_zero_caps() {
         .validate(Path::new("."), &pools(&["p"]))
         .expect_err("empty model must fail");
     assert!(err.to_string().contains("model"), "{err}");
+}
+
+#[test]
+fn validate_rejects_zero_merge_lanes() {
+    let cfg = PumpConfig {
+        merge: crate::pump::config::MergeConfig {
+            lanes: 0,
+            ..crate::pump::config::MergeConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = cfg
+        .validate(Path::new("."), &pools(&["p"]))
+        .expect_err("zero merge lanes must fail");
+    assert!(
+        err.to_string().contains("[pump.merge] lanes must be >= 1"),
+        "{err}"
+    );
 }
 
 #[test]

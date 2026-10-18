@@ -74,6 +74,14 @@ mod dispatch_test;
 mod merge_test;
 
 #[cfg(test)]
+#[path = "pump/merge_lane_test.rs"]
+mod merge_lane_test;
+
+#[cfg(test)]
+#[path = "pump/merge_pull_test.rs"]
+mod merge_pull_test;
+
+#[cfg(test)]
 #[path = "pump/remote_test.rs"]
 mod remote_test;
 
