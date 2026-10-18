@@ -69,6 +69,34 @@ pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     ));
     close_need(ctx, st, &result.uid, &tip);
     land_quarantined(ctx, st, result);
+    reclaim_work_lane(ctx, st, &result.uid);
+}
+
+/// Recycle the unit's pool work lane now that it is on the merge lane.
+///
+/// Pump did not do this before: [`apply_merged`] only set [`Status::Merged`]
+/// (integration-branch success) and left the worktree, `targets/<hash>`
+/// caches, and local `unit/` scratch branch in place. Promote to main is a
+/// later gate step and is not a unit status — cleanup must not wait for it.
+/// Missing mailspace or pool is a no-op; a failure is logged, not raised.
+fn reclaim_work_lane(ctx: &Ctx, st: &State, uid: &str) {
+    let Some(unit) = st.units.get(uid) else {
+        return;
+    };
+    match crate::pool::clean::after_merged(&ctx.project, unit) {
+        Ok(report) => {
+            for action in &report.actions {
+                ctx.log(&format!(
+                    "work-lane clean {} {} {} {}",
+                    action.kind.word(),
+                    action.slot,
+                    action.bytes,
+                    action.note
+                ));
+            }
+        }
+        Err(e) => ctx.log(&format!("work-lane clean {uid}: {e}")),
+    }
 }
 
 /// A repair unit landed: the batch it repaired is on the integration branch

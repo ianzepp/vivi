@@ -3,7 +3,9 @@ use std::time::Duration;
 use crate::local_pool_scale_command as scale;
 use crate::local_pool_work_command as work;
 use vivi::VivariumError;
-use vivi::cli::{PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand};
+use vivi::cli::{
+    PoolCleanCommand, PoolCreateCommand, PoolDestroyCommand, PoolStatusCommand, PoolSubcommand,
+};
 use vivi::mailspace::Mailspace;
 use vivi::pool::bridge;
 use vivi::pool::github::{self, Secret};
@@ -29,6 +31,7 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
         PoolSubcommand::Wait(c) => work::wait(c),
         PoolSubcommand::Reconcile(c) => work::reconcile(c),
         PoolSubcommand::Doctor(c) => crate::local_pool_doctor_command::doctor(c),
+        PoolSubcommand::Clean(c) => clean(c),
     }
 }
 
@@ -122,6 +125,7 @@ pub(crate) fn create_into(
         progress.say(&format!("seeding at {}", &base[..12.min(base.len())]));
         Ok((token, base))
     })?;
+    let _ignored = vivi::pool::clean::record_pool_baselines(handle);
     print_created(seed.porcelain, &id.pool, &report);
     let failed = report.created.iter().filter(|o| !o.seeded()).count();
     if failed > 0 {
@@ -321,6 +325,89 @@ fn destroy(command: &PoolDestroyCommand) -> Result<(), VivariumError> {
         revoke_bridge_keys(&space, &handle.id.pool);
     }
     Ok(())
+}
+
+/// Reclaim free-slot build output and recycle work lanes whose units are
+/// merged into the merge lane (not main).
+fn clean(command: &PoolCleanCommand) -> Result<(), VivariumError> {
+    let space = Mailspace::discover(command.project.as_deref())?;
+    let report = vivi::pool::clean::clean_mailspace(
+        &space,
+        &vivi::pool::clean::CleanOptions {
+            dry_run: command.dry_run,
+            pool: command.pool.clone(),
+        },
+    )?;
+    print_clean(command.porcelain, command.dry_run, &report);
+    match &report.refused {
+        Some(msg) => Err(VivariumError::Message(msg.clone())),
+        None => Ok(()),
+    }
+}
+
+fn print_clean(porcelain: bool, dry_run: bool, report: &vivi::pool::clean::CleanReport) {
+    if porcelain {
+        for action in &report.actions {
+            println!("{}", porcelain::cleaned(dry_run, action));
+        }
+        for skip in &report.skips {
+            println!("{}", porcelain::clean_skip(skip));
+        }
+        if let Some(free) = report.free_bytes {
+            println!("{}", porcelain::clean_disk(free));
+        }
+        println!(
+            "{}",
+            porcelain::clean_summary(report.actions.len(), report.skips.len(), report.bytes())
+        );
+        return;
+    }
+    print_clean_human(dry_run, report);
+}
+
+fn print_clean_human(dry_run: bool, report: &vivi::pool::clean::CleanReport) {
+    let verb = if dry_run {
+        "would reclaim"
+    } else {
+        "reclaimed"
+    };
+    if report.actions.is_empty() && report.skips.is_empty() {
+        println!("nothing to reclaim");
+    }
+    for action in &report.actions {
+        println!(
+            "pool {}  {}  {verb}  {}  {}  {}  ({})",
+            action.pool,
+            action.slot,
+            action.kind.word(),
+            vivi::pool::clean::rule::format_bytes(action.bytes),
+            action.path,
+            action.note
+        );
+    }
+    for skip in &report.skips {
+        println!(
+            "pool {}  {}  kept  {}  {}",
+            skip.pool,
+            skip.slot,
+            skip.kind.word(),
+            skip.reason
+        );
+    }
+    if let Some(free) = report.free_bytes {
+        println!(
+            "volume {} free (reclaim under {} GiB, refuse under {} GiB)",
+            vivi::pool::clean::rule::format_bytes(free),
+            vivi::pool::clean::rule::DISK_RECLAIM_GIB,
+            vivi::pool::clean::rule::DISK_REFUSE_GIB
+        );
+    }
+    println!(
+        "{verb} {} in {} action(s); skipped {}",
+        vivi::pool::clean::rule::format_bytes(report.bytes()),
+        report.actions.len(),
+        report.skips.len()
+    );
 }
 
 /// Sweep a destroyed bridge pool's leftover keys: every live key labelled for

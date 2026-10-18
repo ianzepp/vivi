@@ -37,6 +37,11 @@
 //!                nothing-open
 //! pool doctor    check POOL STATUS GROUP NAME DETAIL FIX MILLIS
 //!                summary POOL OK WARN FAIL SKIPPED                 (one per pool)
+//! pool clean     cleaned POOL SLOT KIND BYTES PATH NOTE            KIND: build|worktree|target|branch|orphan|lane-build
+//!                would POOL SLOT KIND BYTES PATH NOTE              (dry-run)
+//!                skipped POOL SLOT KIND REASON
+//!                disk FREE_BYTES
+//!                summary ACTIONS SKIPS BYTES
 //! ```
 //!
 //! `DETAIL` of a finished job is its outcome: `pushed BRANCH SHA`,
@@ -279,6 +284,52 @@ pub fn check(check: &Check) -> String {
         num(check.millis),
     ];
     line("check", &fields)
+}
+
+/// `cleaned POOL SLOT KIND BYTES PATH NOTE` (or `would` when dry-run)
+#[must_use]
+pub fn cleaned(dry_run: bool, action: &super::clean::CleanAction) -> String {
+    let kind = if dry_run { "would" } else { "cleaned" };
+    line(
+        kind,
+        &[
+            quote(&action.pool),
+            quote(&action.slot),
+            action.kind.word().to_string(),
+            action.bytes.to_string(),
+            quote(&action.path),
+            quote(&action.note),
+        ],
+    )
+}
+
+/// `skipped POOL SLOT KIND REASON` for a clean that stayed put
+#[must_use]
+pub fn clean_skip(skip: &super::clean::CleanSkip) -> String {
+    line(
+        "skipped",
+        &[
+            quote(&skip.pool),
+            quote(&skip.slot),
+            skip.kind.word().to_string(),
+            quote(&skip.reason),
+        ],
+    )
+}
+
+/// `disk FREE_BYTES`
+#[must_use]
+pub fn clean_disk(free_bytes: u64) -> String {
+    line("disk", &[free_bytes.to_string()])
+}
+
+/// `summary ACTIONS SKIPS BYTES`
+#[must_use]
+pub fn clean_summary(actions: usize, skips: usize, bytes: u64) -> String {
+    line(
+        "summary",
+        &[actions.to_string(), skips.to_string(), bytes.to_string()],
+    )
 }
 
 /// `summary POOL OK WARN FAIL SKIPPED`

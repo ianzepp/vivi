@@ -74,6 +74,8 @@ fn low_or_unreadable_disk_is_a_warning_not_a_failure() {
     f.free_kb = None;
     assert_eq!(by_name(&checks(&f), "disk").status, Status::Warn);
     f.free_kb = Some(5 * KIB_PER_GIB);
+    assert_eq!(by_name(&checks(&f), "disk").status, Status::Warn);
+    f.free_kb = Some(20 * KIB_PER_GIB);
     assert_eq!(by_name(&checks(&f), "disk").status, Status::Ok);
 }
 

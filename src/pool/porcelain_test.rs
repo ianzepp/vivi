@@ -332,3 +332,31 @@ fn a_dispatch_that_gave_up_on_pods_ends_with_their_count_and_approximate_cost() 
     };
     assert!(dispatched("3f2a", &unpriced).ends_with(" write 2 -"));
 }
+
+#[test]
+fn clean_lines_name_kind_bytes_and_dry_run() {
+    let action = crate::pool::clean::CleanAction {
+        pool: "lanes".into(),
+        slot: "slot-1".into(),
+        kind: crate::pool::clean::ActionKind::Build,
+        bytes: 100,
+        path: "/p/repo/target".into(),
+        note: "over 2x baseline".into(),
+    };
+    assert_eq!(
+        cleaned(false, &action),
+        r#"cleaned lanes slot-1 build 100 /p/repo/target "over 2x baseline""#
+    );
+    assert!(cleaned(true, &action).starts_with("would "));
+    let skip = crate::pool::clean::CleanSkip {
+        pool: "lanes".into(),
+        slot: "slot-1".into(),
+        kind: crate::pool::clean::ActionKind::Worktree,
+        reason: "uncommitted changes".into(),
+    };
+    assert_eq!(
+        clean_skip(&skip),
+        r#"skipped lanes slot-1 worktree "uncommitted changes""#
+    );
+    assert_eq!(clean_summary(2, 1, 100), "summary 2 1 100");
+}

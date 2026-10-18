@@ -186,7 +186,10 @@ the same state on every checkout.
 task and push a branch. Providers: `fly` (the default), `docker`, `ssh`, `local`
 and `runpod`. `pool dispatch <task>` uses the task body as the brief, claims a
 free slot, starts the configured agent harness and returns at once; `pool wait`
-and `pool reconcile` collect results. A role's band (`P0` to `P5`, from its
+and `pool reconcile` collect results. `pool clean [--dry-run]` reclaims a free
+slot's build output when it exceeds twice its post-fresh-build baseline, and
+recycles worktrees once pump marks the unit merged into its merge lane (not
+main). A local dispatch refuses when the volume stays under 10 GiB free. A role's band (`P0` to `P5`, from its
 `model` field or a `band:` line in the task body) selects the model from the
 pool's `bands` table.
 

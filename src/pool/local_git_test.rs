@@ -254,3 +254,37 @@ fn only_a_name_under_a_configured_remote_is_a_remote_branch() {
         assert_eq!(named(not), None, "{not}");
     }
 }
+
+#[test]
+fn dirty_paths_and_ancestor_queries() {
+    let f = fixture();
+    let repo = Repo::new(&f.repo);
+    assert!(repo.dirty_paths().unwrap().is_empty());
+    std::fs::write(f.repo.join("a.txt"), "dirty\n").unwrap();
+    assert!(
+        repo.dirty_paths()
+            .unwrap()
+            .iter()
+            .any(|p| p.contains("a.txt"))
+    );
+    let head = repo.commit_of("HEAD").unwrap();
+    let first = repo.commit_of("HEAD~1").unwrap();
+    assert!(repo.is_ancestor(&first, "HEAD"));
+    assert!(!repo.is_ancestor(&head, &first));
+    assert!(repo.commits_ahead(&head, &first).unwrap().contains(&head));
+}
+
+#[test]
+fn a_merged_scratch_branch_deletes_and_an_unmerged_one_does_not() {
+    let f = fixture();
+    git(&f.repo, &["branch", "unit/done-a1"]);
+    git(&f.repo, &["checkout", "-q", "-b", "unit/open-a1"]);
+    std::fs::write(f.repo.join("a.txt"), "ahead\n").unwrap();
+    git(&f.repo, &["commit", "-q", "-am", "ahead"]);
+    git(&f.repo, &["checkout", "-q", "main"]);
+    let repo = Repo::new(&f.repo);
+    repo.delete_merged_branch("unit/done-a1").unwrap();
+    assert!(repo.branch_tip("unit/done-a1").is_none());
+    assert!(repo.delete_merged_branch("unit/open-a1").is_err());
+    assert!(repo.branch_tip("unit/open-a1").is_some());
+}
