@@ -11,7 +11,7 @@ use crate::pump::brief::gate_brief;
 use crate::pump::dispatch::{parse_created_handle, slots};
 use crate::pump::gatefix::{gatefix, plan_need, replans_left, residual_failures, take_residuals};
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status};
+use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
 
 /// The `FAILING-BEGIN` reply marker.
 const BEGIN: &str = "FAILING-BEGIN";
@@ -332,6 +332,7 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     if st.has_active_gate() {
         return;
     }
+    force_after_fix(ctx, st);
     let force = ctx.flag(FORCE_FLAG);
     if !gate_due(ctx, st, force) || waiting_for_external(ctx, st) {
         return;
@@ -363,6 +364,33 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     };
     let short = tip_short(&tip);
     ctx.log(&format!("gate started at {short} on {pool} task={task}"));
+}
+
+/// Force the next gate when a fix unit of this target merged after the last
+/// gate started: a merged fix is the path back to green and should not wait
+/// for the merge-count or clock rules. Writes `FORCE-GATE` once per merged
+/// fix (starting the gate moves `last_gate.at` past the merge); does nothing
+/// while a gate runs or the flag is already set.
+fn force_after_fix(ctx: &Ctx, st: &State) {
+    if st.has_active_gate() || ctx.flag(FORCE_FLAG) {
+        return;
+    }
+    let prefix = ctx.cfg.fix_prefix.as_str();
+    let merged_at = |unit: &Unit| unit.merged_at.unwrap_or(unit.since);
+    let newest = st
+        .units
+        .iter()
+        .filter(|(uid, unit)| {
+            uid.starts_with(prefix)
+                && unit.status == Status::Merged
+                && unit.target_id() == ctx.target_id
+                && merged_at(unit) > st.last_gate.at
+        })
+        .max_by_key(|(_, unit)| merged_at(unit));
+    if let Some((uid, _)) = newest {
+        write_force_flag(ctx);
+        ctx.log(&format!("gate forced: fix {uid} merged"));
+    }
 }
 
 /// The due rules: a `FORCE-GATE` flag, no baseline yet, enough merges since
@@ -599,15 +627,11 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     }
     if new.is_empty() {
         ctx.log(&gate_summary(rec, names, 0));
-        let outstanding = outstanding_owned(st, names);
-        if outstanding == 0 {
-            promote(ctx, st, &rec.tip);
+        let off_main = not_on_main(st, names);
+        if off_main.is_empty() {
+            promote(ctx, st, &rec.tip, names);
         } else {
-            ctx.log(&format!(
-                "promote held: {outstanding} owned failures still red at {} \
-                 (main never gets redder)",
-                tip_short(&rec.tip)
-            ));
+            ctx.log(&held_message(&off_main, &rec.tip));
         }
         return;
     }
@@ -620,15 +644,50 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     ctx.log(&gate_summary(rec, names, new.len()));
 }
 
-/// How many owned failures (names in `st.red`) the gate still reports
-/// (`names` intersected with `owned`). Main is promoted only when this
-/// is zero: main never gets redder.
-fn outstanding_owned(st: &State, names: &[String]) -> usize {
+/// The failing names main carries: those recorded with the newest promotion,
+/// else the failing set of the gate that tested that tip (a promotion made
+/// before the names were recorded), else the baseline.
+fn main_failing(st: &State) -> &[String] {
+    let recorded = st.promotions.last().and_then(|promotion| {
+        promotion.failing.as_deref().or_else(|| {
+            st.gates
+                .iter()
+                .rev()
+                .find(|gate| gate.tip == promotion.tip)
+                .and_then(|gate| gate.names.as_deref())
+        })
+    });
+    recorded.or(st.baseline.as_deref()).unwrap_or_default()
+}
+
+/// The gate's failing names that main does not carry, sorted. Main is
+/// promoted only when there are none: main never gets redder.
+fn not_on_main(st: &State, names: &[String]) -> Vec<String> {
+    let main = main_failing(st);
     names
         .iter()
-        .filter(|name| st.red.contains_key(*name))
+        .filter(|name| !main.contains(*name))
+        .cloned()
         .collect::<BTreeSet<_>>()
-        .len()
+        .into_iter()
+        .collect()
+}
+
+/// The `promote held` log line, naming up to five of the offending names.
+fn held_message(off_main: &[String], tip: &str) -> String {
+    let shown = off_main.iter().take(5).cloned().collect::<Vec<_>>();
+    let more = off_main.len().saturating_sub(shown.len());
+    let tail = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    format!(
+        "promote held: {} failures not on main at {} (main never gets redder): {}{tail}",
+        off_main.len(),
+        tip_short(tip),
+        shown.join("; ")
+    )
 }
 
 /// The `gate at <tip10>: <n> failing, <m> new` log line.
@@ -739,7 +798,7 @@ fn last_clean_tip(st: &State, current: &str) -> String {
 
 /// Fast-forward main to a gated tip of the integration branch.
 /// Never forces: a main that moved elsewhere waits for the next batch.
-fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
+fn promote(ctx: &Ctx, st: &mut State, tip: &str, failing: &[String]) {
     if !ctx.cfg.promote || ctx.cfg.main.is_empty() {
         return;
     }
@@ -774,6 +833,7 @@ fn promote(ctx: &Ctx, st: &mut State, tip: &str) {
         st.promotions.push(Promotion {
             tip: tip.to_owned(),
             at: ctx.now(),
+            failing: Some(failing.to_vec()),
         });
     }
 }

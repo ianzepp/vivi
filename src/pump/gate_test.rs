@@ -677,7 +677,7 @@ fn promote_is_held_while_an_owned_failure_is_still_red() {
     assert!(st.red.contains_key("crate::c"));
     assert!(host.logs().iter().any(|l| {
         l.contains(
-            "promote held: 1 owned failures still red at 0123456789 (main never gets redder)",
+            "promote held: 1 failures not on main at 0123456789 (main never gets redder): crate::c",
         )
     }));
     assert_eq!(st.gates.last().unwrap().new, Some(Vec::new()));
@@ -765,7 +765,7 @@ fn an_external_result_holds_promotion_while_an_owned_failure_is_red() {
     assert!(
         host.logs()
             .iter()
-            .any(|l| l.contains("promote held: 1 owned failures"))
+            .any(|l| l.contains("promote held: 1 failures not on main"))
     );
     drop(dir);
 }
