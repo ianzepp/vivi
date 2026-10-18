@@ -13,6 +13,8 @@ use crate::pump::state::Unit;
 
 /// The `extra_json` key of [`Unit::quarantine`].
 const QUARANTINE_KEY: &str = "quarantine";
+/// The `extra_json` key of [`Unit::repairs`].
+const REPAIRS_KEY: &str = "repairs";
 /// The `extra_json` key of [`Unit::base`].
 const BASE_KEY: &str = "base";
 /// The `extra_json` key of [`Unit::solo`].
@@ -23,6 +25,9 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
     let mut extra = unit.extra.clone();
     if let Some(id) = &unit.quarantine {
         extra.insert(QUARANTINE_KEY.to_string(), Value::String(id.clone()));
+    }
+    if let Some(id) = &unit.repairs {
+        extra.insert(REPAIRS_KEY.to_string(), Value::String(id.clone()));
     }
     if let Some(base) = &unit.base {
         extra.insert(BASE_KEY.to_string(), Value::String(base.clone()));
@@ -38,6 +43,9 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
 pub(super) fn lift(unit: &mut Unit) {
     if let Some(Value::String(id)) = unit.extra.remove(QUARANTINE_KEY) {
         unit.quarantine = Some(id);
+    }
+    if let Some(Value::String(id)) = unit.extra.remove(REPAIRS_KEY) {
+        unit.repairs = Some(id);
     }
     if let Some(Value::String(base)) = unit.extra.remove(BASE_KEY) {
         unit.base = Some(base);

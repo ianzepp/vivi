@@ -235,17 +235,25 @@ pub struct Unit {
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_on: Option<String>,
-    /// The quarantine id this unit belongs to: set on every unit set aside
-    /// in a quarantined batch, and on the repair unit that works on it.
-    /// `pump.db` keeps it in the unit's `extra_json` column.
+    /// The quarantine id this unit is a member of: set on every unit set
+    /// aside in a quarantined batch. A repair unit is never a member (see
+    /// `repairs`). `pump.db` keeps it in the unit's `extra_json` column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarantine: Option<String>,
+    /// The quarantine id this unit repairs: set only on a repair unit, and
+    /// kept apart from `quarantine` so a repair that later meets another
+    /// batch still lands or releases its own members. `pump.db` keeps it in
+    /// the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repairs: Option<String>,
     /// Branch to dispatch this unit from instead of `dispatch.from`; a repair
     /// unit starts on its `pump/quarantine/<id>` branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
-    /// Merge this unit in a batch of its own: set when its quarantine repair
-    /// went stuck, so one bad unit cannot sink a batch again.
+    /// Merge this unit in a batch of its own: set on a repair unit, and on
+    /// the quarantined units released when their repair went stuck, found no
+    /// defect or could not be opened, so one bad unit cannot sink a batch
+    /// again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub solo: bool,
     /// Unknown keys from other pump versions, written back untouched.
