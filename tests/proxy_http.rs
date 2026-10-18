@@ -431,7 +431,11 @@ fn redacts_token_refresh_errors() {
         .text()
         .unwrap();
     assert!(!body.contains("leak-me"));
-    assert!(body.contains("credential refresh failed") || body.contains("proxy_error"));
+    assert!(
+        body.contains("credential refresh was refused")
+            || body.contains("credential refresh failed")
+            || body.contains("proxy_error")
+    );
     server.stop();
 }
 
@@ -523,7 +527,8 @@ fn child_restarts_after_exit() {
 fn systemd_unit_mentions_proxy_run() {
     let unit = vivi::proxy::install::systemd_unit(std::path::Path::new("/opt/vivi"), None);
     assert!(unit.contains("proxy run"));
-    assert!(unit.contains("Restart=always"));
+    assert!(unit.contains("Restart=on-failure"));
+    assert!(unit.contains("StartLimitBurst=5"));
 }
 
 #[test]
@@ -536,6 +541,8 @@ fn launchd_plist_mentions_label() {
     );
     assert!(plist.contains("com.vivi.proxy"));
     assert!(plist.contains("proxy"));
+    assert!(plist.contains("ThrottleInterval"));
+    assert!(plist.contains("KeepAlive"));
 }
 
 fn last_access_log(dir: &TempDir) -> Value {

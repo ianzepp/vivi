@@ -35,6 +35,7 @@ pub(crate) fn install_release(
     if actual != expected {
         return Err(checksum_mismatch(&archive_url, &expected, &actual));
     }
+    println!("  checksum: OK");
     write_versioned_bin(bin_dir, version, &archive)
 }
 

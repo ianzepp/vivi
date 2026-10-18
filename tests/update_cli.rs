@@ -154,6 +154,11 @@ fn update_from_local_mirror_swaps_symlink() {
         "{}",
         String::from_utf8_lossy(&install.stderr)
     );
+    let install_out = String::from_utf8_lossy(&install.stdout);
+    assert!(
+        install_out.contains("checksum: OK") || install_out.contains("checksum OK"),
+        "{install_out}"
+    );
     let bin = prefix.join("bin");
     assert_eq!(
         fs::read(bin.join("vivi-14.1.0")).unwrap(),
@@ -181,6 +186,8 @@ fn update_from_local_mirror_swaps_symlink() {
         "{}",
         String::from_utf8_lossy(&down.stderr)
     );
+    let down_out = String::from_utf8_lossy(&down.stdout);
+    assert!(down_out.contains("14.1.0 -> 14.0.0"), "{down_out}");
     assert_eq!(
         fs::read_link(bin.join("vivi")).unwrap(),
         PathBuf::from("vivi-14.0.0")
@@ -333,4 +340,54 @@ fn install_sh_refuses_and_adopts_a_plain_vivi() {
         fs::read(bin.join("vivi.unmanaged")).unwrap(),
         b"vivi-12.0.4-plain"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn install_sh_warns_when_another_vivi_is_earlier_on_path() {
+    let triple = current_triple();
+    let temp = TempDir::new().unwrap();
+    let mirror = temp.path().join("mirror");
+    let prefix = temp.path().join("prefix");
+    let shadow = temp.path().join("shadow");
+    fs::create_dir_all(&shadow).unwrap();
+    fs::write(shadow.join("vivi"), "#!/bin/sh\necho shadow-vivi\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(shadow.join("vivi"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write_release(
+        &mirror,
+        "14.1.1",
+        triple,
+        b"#!/bin/sh\necho 'vivi 14.1.1'\n",
+    );
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let path = format!("{}:{}", shadow.display(), std::env::var("PATH").unwrap());
+    let output = Command::new("sh")
+        .arg(&script)
+        .args([
+            "--version",
+            "14.1.1",
+            "--prefix",
+            prefix.to_str().unwrap(),
+            "--base-url",
+            mirror.to_str().unwrap(),
+        ])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("earlier on PATH"), "{text}");
 }

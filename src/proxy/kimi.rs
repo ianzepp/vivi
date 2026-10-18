@@ -3,13 +3,14 @@
 use std::path::PathBuf;
 
 use axum::http::{HeaderMap, HeaderValue, Method};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde_json::{Value, json};
 
 use super::cmd;
 use super::config::ProviderConfig;
 use super::credentials;
+use super::dead::{self, RefreshClass};
 use super::forward;
 use super::http_error;
 use super::paths::expand_user_str;
@@ -48,7 +49,10 @@ pub async fn handle(
             Usage::default(),
         ));
     }
-    let result = dispatch(
+    if let Some(response) = refuse_if_dead(provider, request_id) {
+        return Ok((response, Usage::default()));
+    }
+    let first = dispatch(
         client,
         provider,
         action,
@@ -60,19 +64,42 @@ pub async fn handle(
         false,
     )
     .await;
-    match result {
-        Ok((response, usage)) if response.status() == axum::http::StatusCode::UNAUTHORIZED => {
-            if refresh(client, provider).await.is_ok() {
-                dispatch(
-                    client, provider, action, &method, query, &headers, body, request_id, true,
-                )
-                .await
-            } else {
-                tracing::warn!(request_id = %request_id, "kimi refresh after 401 failed");
-                Ok((http_error::credential_failed(request_id), usage))
-            }
+    retry_after_401(
+        first, client, provider, action, method, query, headers, body, request_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn retry_after_401(
+    first: Result<(Response, Usage), VivariumError>,
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    action: &Action,
+    method: Method,
+    query: Option<&str>,
+    headers: HeaderMap,
+    body: Bytes,
+    request_id: &str,
+) -> Result<(Response, Usage), VivariumError> {
+    let Ok((response, usage)) = first else {
+        return first;
+    };
+    if response.status() != axum::http::StatusCode::UNAUTHORIZED {
+        return Ok((response, usage));
+    }
+    match refresh(client, provider).await {
+        Ok(RefreshClass::Ok) => {
+            dispatch(
+                client, provider, action, &method, query, &headers, body, request_id, true,
+            )
+            .await
         }
-        other => other,
+        Ok(RefreshClass::Refused) => Ok((http_error::credential_dead(request_id), usage)),
+        Ok(RefreshClass::Transient) | Err(_) => {
+            tracing::warn!(request_id = %request_id, "kimi refresh after 401 failed");
+            Ok((http_error::credential_failed(request_id), usage))
+        }
     }
 }
 
@@ -246,9 +273,45 @@ fn insert(headers: &mut HeaderMap, name: &'static str, value: &str) {
     }
 }
 
+fn refuse_if_dead(provider: &ProviderConfig, request_id: &str) -> Option<Response> {
+    let Ok(path) = credential_path(provider) else {
+        return None;
+    };
+    if !dead::is_dead(&path) {
+        return None;
+    }
+    tracing::debug!(
+        request_id = %request_id,
+        "rejecting request for a dead kimi credential"
+    );
+    Some(http_error::credential_dead(request_id))
+}
+
 fn health_response(provider: &ProviderConfig) -> Response {
-    let ok = provider.key_cmd.is_some() || credential_path(provider).is_ok();
-    forward::json_ok(json!({ "ok": ok, "provider": "kimi" }))
+    let status = health_status(provider);
+    let body = json!({ "ok": status == "ok", "provider": "kimi", "status": status });
+    if status == "ok" || status == "missing" {
+        forward::json_ok(body)
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(body),
+        )
+            .into_response()
+    }
+}
+
+/// Health label for `/health` and `vivi proxy providers`.
+#[must_use]
+pub fn health_status(provider: &ProviderConfig) -> &'static str {
+    if provider.key_cmd.is_some() {
+        return "ok";
+    }
+    match credential_path(provider) {
+        Ok(path) if dead::is_dead(&path) => "credential_dead",
+        Ok(_) => "ok",
+        Err(_) => "missing",
+    }
 }
 
 fn models_body(models: &[String]) -> Value {
@@ -259,44 +322,63 @@ fn models_body(models: &[String]) -> Value {
     json!({ "object": "list", "data": data })
 }
 
-async fn refresh(client: &reqwest::Client, provider: &ProviderConfig) -> Result<(), VivariumError> {
+async fn refresh(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+) -> Result<RefreshClass, VivariumError> {
     if provider.key_cmd.is_some() {
-        return Ok(());
+        return Ok(RefreshClass::Ok);
     }
     let path = credential_path(provider)?;
     let _lock = credentials::lock_path(&path)?;
     let mut value = credentials::read_json(&path)?;
-    let refresh_token = value
-        .get("refresh_token")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VivariumError::Config("kimi credentials missing refresh_token".into()))?
-        .to_string();
+    let Some(refresh_token) = value.get("refresh_token").and_then(Value::as_str) else {
+        dead::mark_dead(&path);
+        return Ok(RefreshClass::Refused);
+    };
+    let refresh_token = refresh_token.to_string();
+    let class = refresh_on_wire(client, provider, &refresh_token, &mut value).await?;
+    if class == RefreshClass::Ok {
+        credentials::write_json_atomic(&path, &value)?;
+    } else if class == RefreshClass::Refused {
+        dead::mark_dead(&path);
+    }
+    Ok(class)
+}
+
+async fn refresh_on_wire(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    refresh_token: &str,
+    store: &mut Value,
+) -> Result<RefreshClass, VivariumError> {
     let token_url = provider.token_url.as_deref().unwrap_or(DEFAULT_TOKEN_URL);
     let client_id = provider.client_id.as_deref().unwrap_or(DEFAULT_CLIENT_ID);
     let form = [
         ("client_id", client_id),
         ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token.as_str()),
+        ("refresh_token", refresh_token),
     ];
-    let response = client
-        .post(token_url)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|error| {
+    let response = match client.post(token_url).form(&form).send().await {
+        Ok(response) => response,
+        Err(error) => {
             tracing::warn!(%error, "kimi token endpoint unreachable");
-            VivariumError::Message("kimi token refresh failed".into())
-        })?;
-    if !response.status().is_success() {
-        tracing::warn!(status = %response.status(), "kimi token refresh refused");
-        return Err(VivariumError::Message("kimi token refresh failed".into()));
+            return Ok(RefreshClass::Transient);
+        }
+    };
+    let class = dead::classify_status(response.status());
+    if class != RefreshClass::Ok {
+        if class == RefreshClass::Transient {
+            tracing::warn!(status = %response.status(), "kimi token refresh transient");
+        }
+        return Ok(class);
     }
-    let payload: Value = response
-        .json()
-        .await
-        .map_err(|_| VivariumError::Message("kimi token refresh failed".into()))?;
-    apply_refresh(&mut value, &payload)?;
-    credentials::write_json_atomic(&path, &value)
+    let payload: Value = match response.json().await {
+        Ok(payload) => payload,
+        Err(_) => return Ok(RefreshClass::Transient),
+    };
+    apply_refresh(store, &payload)?;
+    Ok(RefreshClass::Ok)
 }
 
 fn apply_refresh(store: &mut Value, payload: &Value) -> Result<(), VivariumError> {
@@ -345,8 +427,12 @@ pub fn credential_state(provider: &ProviderConfig) -> String {
     if provider.key_cmd.is_some() {
         return "key_cmd".into();
     }
-    match credential_path(provider).and_then(|path| credentials::read_json(&path)) {
-        Ok(value) => credentials::expiry_label(&value).unwrap_or_else(|| "present".into()),
+    match credential_path(provider) {
+        Ok(path) if dead::is_dead(&path) => "dead".into(),
+        Ok(path) => match credentials::read_json(&path) {
+            Ok(value) => credentials::expiry_label(&value).unwrap_or_else(|| "present".into()),
+            Err(_) => "missing".into(),
+        },
         Err(_) => "missing".into(),
     }
 }

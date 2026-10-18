@@ -93,6 +93,7 @@ pub fn launch_agent_plist(
          <key>ProgramArguments</key><array><string>{bin}</string><string>proxy</string><string>run</string>{extra}</array>\n\
          <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>\n\
          <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n\
+         <key>ThrottleInterval</key><integer>10</integer>\n\
          <key>ExitTimeOut</key><integer>0</integer>\n\
          <key>StandardOutPath</key><string>{out}</string>\n\
          <key>StandardErrorPath</key><string>{err}</string>\n\
@@ -112,11 +113,13 @@ pub fn systemd_unit(executable: &Path, config: Option<&Path>) -> String {
         "[Unit]\n\
          Description=Vivi local model proxy\n\
          After=default.target\n\
+         StartLimitIntervalSec=60\n\
+         StartLimitBurst=5\n\
          \n\
          [Service]\n\
          Type=simple\n\
          ExecStart={bin} proxy run{extra}\n\
-         Restart=always\n\
+         Restart=on-failure\n\
          RestartSec=5\n\
          \n\
          [Install]\n\
@@ -131,7 +134,7 @@ fn install_launchd(explicit: Option<&Path>) -> Result<(), VivariumError> {
         fs::create_dir_all(parent)?;
     }
     let domain = launch_domain()?;
-    let executable = std::env::current_exe()?;
+    let executable = service_executable()?;
     let path_env =
         std::env::var("PATH").unwrap_or_else(|_| String::from("/usr/bin:/bin:/usr/sbin:/sbin"));
     let logs = paths::default_log_dir()?;
@@ -167,7 +170,7 @@ fn install_systemd(explicit: Option<&Path>) -> Result<(), VivariumError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let executable = std::env::current_exe()?;
+    let executable = service_executable()?;
     fs::write(&path, systemd_unit(&executable, explicit))?;
     systemctl(&["--user", "daemon-reload"])?;
     systemctl(&["--user", "enable", "--now", SYSTEMD_UNIT])?;
@@ -247,6 +250,54 @@ fn run_tool(tool: &str, args: &[&str]) -> Result<String, VivariumError> {
     }
 }
 
+/// Binary path written into the user service unit.
+///
+/// `current_exe` follows the managed `vivi` symlink to `vivi-<version>`.
+/// Prefer the stable sibling symlink so `vivi update` is picked up on the
+/// next process start without rewriting the unit.
+///
+/// # Errors
+///
+/// Returns an I/O error when the running executable cannot be resolved.
+pub fn service_executable() -> Result<PathBuf, VivariumError> {
+    Ok(prefer_stable_link(&std::env::current_exe()?))
+}
+
+/// If `exe` is a versioned `vivi-<semver>` next to a `vivi` symlink, use
+/// the symlink. Cargo-installed and ad-hoc binaries are left as-is.
+#[must_use]
+pub fn prefer_stable_link(exe: &Path) -> PathBuf {
+    let Some(name) = exe.file_name().and_then(|name| name.to_str()) else {
+        return exe.to_path_buf();
+    };
+    if !is_versioned_vivi(name) {
+        return exe.to_path_buf();
+    }
+    let Some(parent) = exe.parent() else {
+        return exe.to_path_buf();
+    };
+    let link = parent.join("vivi");
+    if is_symlink(&link) {
+        link
+    } else {
+        exe.to_path_buf()
+    }
+}
+
+fn is_versioned_vivi(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("vivi-") else {
+        return false;
+    };
+    !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+}
+
+fn is_symlink(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => meta.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
+
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -277,3 +328,7 @@ pub fn unit_path() -> Result<PathBuf, VivariumError> {
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "install_test.rs"]
+mod install_test;

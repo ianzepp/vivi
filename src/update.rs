@@ -53,7 +53,7 @@ pub fn check_for_update() -> Result<CheckOutcome, VivariumError> {
 ///
 /// Returns a configuration, network, checksum, or filesystem error.
 pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
-    let current = current_version()?;
+    let current = header_from_version(args.prefix.as_deref());
     let target = target_version(args)?;
     let bin_dir = layout::managed_bin_dir(args.prefix.as_deref(), args.adopt)?;
     let triple = current_triple()?;
@@ -61,6 +61,8 @@ pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
     println!("  bin:      {}", bin_dir.display());
     stage_binary(args, &target, triple, &bin_dir)?;
     activate(&bin_dir, &target, args.adopt)?;
+    warn_if_path_shadowed(&bin_dir);
+    remind_proxy_restart();
     Ok(())
 }
 
@@ -154,6 +156,83 @@ fn compare_versions(latest: &Version, current: &Version) -> CheckOutcome {
             println!("ahead of the latest public release");
             CheckOutcome::Ahead
         }
+    }
+}
+
+/// Version shown as the update `from` field: the active symlink target
+/// when this is a managed install, otherwise the running crate version.
+pub(crate) fn header_from_version(prefix: Option<&std::path::Path>) -> Version {
+    if let Ok(bin_dir) = layout::managed_bin_dir(prefix, false)
+        && let Some(name) = layout::active_version(&bin_dir)
+        && let Some(raw) = name.strip_prefix("vivi-")
+        && let Ok(version) = parse_version(raw)
+    {
+        return version;
+    }
+    current_version().unwrap_or_else(|_| Version::new(0, 0, 0))
+}
+
+/// First `vivi` on PATH that is not the managed symlink, if any.
+#[must_use]
+pub(crate) fn first_shadowing_vivi(
+    bin_dir: &std::path::Path,
+    path_var: &str,
+) -> Option<std::path::PathBuf> {
+    let managed = bin_dir.join("vivi");
+    for dir in path_var.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = std::path::Path::new(dir).join("vivi");
+        if !path_exists(&candidate) {
+            continue;
+        }
+        if same_entry(&candidate, &managed) {
+            return None;
+        }
+        return Some(candidate);
+    }
+    None
+}
+
+fn warn_if_path_shadowed(bin_dir: &std::path::Path) {
+    let Ok(path_var) = std::env::var("PATH") else {
+        return;
+    };
+    let Some(other) = first_shadowing_vivi(bin_dir, &path_var) else {
+        return;
+    };
+    eprintln!(
+        "warning: a different vivi is earlier on PATH ({}) than the managed install ({})",
+        other.display(),
+        bin_dir.join("vivi").display()
+    );
+}
+
+fn remind_proxy_restart() {
+    let Ok(path) = crate::proxy::install::unit_path() else {
+        return;
+    };
+    if !path.is_file() {
+        return;
+    }
+    println!(
+        "note: an installed proxy unit exists at {}; restart it to pick up the new binary (vivi proxy install)",
+        path.display()
+    );
+}
+
+fn path_exists(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn same_entry(left: &std::path::Path, right: &std::path::Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }
 

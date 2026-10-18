@@ -52,3 +52,13 @@ pub fn credential_state(provider: &ProviderConfig) -> String {
         _ => "unknown".into(),
     }
 }
+
+/// Health status for native adapters (`ok`, `missing`, `credential_dead`).
+#[must_use]
+pub fn health_status(provider: &ProviderConfig) -> &'static str {
+    match provider.adapter.as_deref() {
+        Some("kimi-coding" | "openai-passthrough") => kimi::health_status(provider),
+        Some("chatgpt-codex") => codex::health_status(provider),
+        _ => "missing",
+    }
+}

@@ -1,4 +1,4 @@
-//! `vivi proxy check`: tiny live GET to `/<p>/v1/models`.
+//! `vivi proxy check`: tiny live GET to `/<p>/health`.
 
 use std::time::Duration;
 
@@ -70,7 +70,7 @@ async fn probe(
     config: &ProxyConfig,
     name: &str,
 ) -> Result<(u16, String), VivariumError> {
-    let url = format!("http://{}/{name}/v1/models", config.listen);
+    let url = format!("http://{}/{name}/health", config.listen);
     let mut request = client.get(&url);
     if let Some(cmd) = config.auth_token_cmd.as_deref() {
         let token = super::cmd::run_secret_cmd("auth_token_cmd", cmd)?;
@@ -81,5 +81,11 @@ async fn probe(
         .await
         .map_err(|error| VivariumError::Other(format!("could not reach {url}: {error}")))?;
     let status = response.status().as_u16();
-    Ok((status, format!("{name} {status} {url}")))
+    let ok_http = response.status().is_success();
+    let label = match response.text().await {
+        Ok(text) => super::health::intern_status(&text, ok_http),
+        Err(_) if ok_http => "ok",
+        Err(_) => "down",
+    };
+    Ok((status, format!("{name} {status} {label} {url}")))
 }

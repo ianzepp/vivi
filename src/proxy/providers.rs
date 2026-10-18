@@ -46,12 +46,12 @@ pub fn format_row(config: &ProxyConfig, name: &str, provider: &ProviderConfig) -
 
 fn health_label(listen: SocketAddr, name: &str) -> &'static str {
     match probe_listen_health(listen, name) {
-        Ok(true) => "ok",
-        Ok(false) | Err(_) => "down",
+        Ok(status) => status,
+        Err(_) => "down",
     }
 }
 
-fn probe_listen_health(listen: SocketAddr, name: &str) -> Result<bool, VivariumError> {
+fn probe_listen_health(listen: SocketAddr, name: &str) -> Result<&'static str, VivariumError> {
     let url = format!("http://{listen}/{name}/health");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -62,5 +62,9 @@ fn probe_listen_health(listen: SocketAddr, name: &str) -> Result<bool, VivariumE
         .get(&url)
         .send()
         .map_err(|error| VivariumError::Message(format!("could not reach {url}: {error}")))?;
-    Ok(response.status().is_success())
+    let ok_http = response.status().is_success();
+    let Ok(text) = response.text() else {
+        return Ok(if ok_http { "ok" } else { "down" });
+    };
+    Ok(super::health::intern_status(&text, ok_http))
 }

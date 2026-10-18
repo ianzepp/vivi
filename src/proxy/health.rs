@@ -25,7 +25,7 @@ pub struct HealthTable {
 #[derive(Debug, Clone)]
 struct Snapshot {
     kind: String,
-    ok: bool,
+    status: &'static str,
     last_error: Option<String>,
     checked: Instant,
 }
@@ -33,6 +33,17 @@ struct Snapshot {
 impl HealthTable {
     /// Record a probe result. `error` is already redacted by the caller.
     pub fn record(&self, name: &str, kind: &str, ok: bool, error: Option<String>) {
+        self.record_status(name, kind, if ok { "ok" } else { "down" }, error);
+    }
+
+    /// Record an explicit status label (`ok`, `down`, `credential_dead`).
+    pub fn record_status(
+        &self,
+        name: &str,
+        kind: &str,
+        status: &'static str,
+        error: Option<String>,
+    ) {
         let Ok(mut map) = self.inner.lock() else {
             return;
         };
@@ -40,7 +51,7 @@ impl HealthTable {
             name.to_string(),
             Snapshot {
                 kind: kind.to_string(),
-                ok,
+                status,
                 last_error: error,
                 checked: Instant::now(),
             },
@@ -62,7 +73,7 @@ impl HealthTable {
                 Some(snap) => ProviderHealth {
                     name: name.clone(),
                     kind: snap.kind.clone(),
-                    status: if snap.ok { "ok" } else { "down" },
+                    status: snap.status,
                     last_error: snap.last_error.clone(),
                     checked_ms_ago: Some(ago_ms(snap.checked)),
                 },
@@ -81,7 +92,7 @@ impl HealthTable {
         Some(ProviderHealth {
             name: name.to_string(),
             kind: snap.kind.clone(),
-            status: if snap.ok { "ok" } else { "down" },
+            status: snap.status,
             last_error: snap.last_error.clone(),
             checked_ms_ago: Some(ago_ms(snap.checked)),
         })
@@ -100,6 +111,27 @@ fn unknown(name: &str, kind: &str) -> ProviderHealth {
 
 fn ago_ms(checked: Instant) -> u64 {
     u64::try_from(checked.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Map a `/health` JSON body to a stable label.
+#[must_use]
+pub fn intern_status(body: &str, ok_http: bool) -> &'static str {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(status) = value.get("status").and_then(serde_json::Value::as_str)
+    {
+        return intern_known_status(status);
+    }
+    if ok_http { "ok" } else { "down" }
+}
+
+fn intern_known_status(status: &str) -> &'static str {
+    match status {
+        "ok" => "ok",
+        "missing" => "missing",
+        "credential_dead" => "credential_dead",
+        "unknown" => "unknown",
+        _ => "down",
+    }
 }
 
 /// Aggregate JSON: `ok` only when every named provider is `ok`.

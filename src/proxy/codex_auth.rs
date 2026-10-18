@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use super::config::ProviderConfig;
 use super::credentials;
+use super::dead::{self, RefreshClass};
 use super::jwt;
 use super::paths::expand_user_str;
 use crate::VivariumError;
@@ -121,25 +122,46 @@ pub async fn ensure_fresh(
     provider: &ProviderConfig,
 ) -> Result<Tokens, VivariumError> {
     let path = credential_path(provider)?;
+    if dead::is_dead(&path) {
+        return Err(VivariumError::Message(dead::DEAD_MESSAGE.into()));
+    }
     let _lock = credentials::lock_path(&path)?;
     let mut value = credentials::read_json(&path)?;
     if !needs_refresh(&value, chrono::Utc::now().timestamp()) {
         return tokens(&value);
     }
     let Some(current_refresh) = refresh_token(&value) else {
-        return tokens(&value);
+        return missing_refresh_token(&path, &value);
     };
-    let payload = refresh_on_wire(client, provider, &current_refresh).await?;
-    apply_refresh(&mut value, &payload)?;
-    credentials::write_json_atomic(&path, &value)?;
-    tokens(&value)
+    match refresh_on_wire(client, provider, &current_refresh).await {
+        Ok(payload) => {
+            apply_refresh(&mut value, &payload)?;
+            credentials::write_json_atomic(&path, &value)?;
+            tokens(&value)
+        }
+        Err(RefreshClass::Refused) => {
+            dead::mark_dead(&path);
+            Err(VivariumError::Message(dead::DEAD_MESSAGE.into()))
+        }
+        Err(RefreshClass::Transient | RefreshClass::Ok) => {
+            Err(VivariumError::Message("codex token refresh failed".into()))
+        }
+    }
+}
+
+fn missing_refresh_token(path: &std::path::Path, value: &Value) -> Result<Tokens, VivariumError> {
+    if access_token(value).is_some_and(|token| jwt::exp_unix(&token).is_some()) {
+        dead::mark_dead(path);
+        return Err(VivariumError::Message(dead::DEAD_MESSAGE.into()));
+    }
+    tokens(value)
 }
 
 async fn refresh_on_wire(
     client: &reqwest::Client,
     provider: &ProviderConfig,
     refresh_token: &str,
-) -> Result<Value, VivariumError> {
+) -> Result<Value, RefreshClass> {
     let token_url = provider.token_url.as_deref().unwrap_or(DEFAULT_TOKEN_URL);
     let client_id = provider.client_id.as_deref().unwrap_or(DEFAULT_CLIENT_ID);
     let form = [
@@ -148,23 +170,24 @@ async fn refresh_on_wire(
         ("client_id", client_id),
         ("scope", "openid profile email offline_access"),
     ];
-    let response = client
-        .post(token_url)
-        .form(&form)
-        .send()
-        .await
-        .map_err(|error| {
+    let response = match client.post(token_url).form(&form).send().await {
+        Ok(response) => response,
+        Err(error) => {
             tracing::warn!(%error, "codex token endpoint unreachable");
-            VivariumError::Message("codex token refresh failed".into())
-        })?;
-    if !response.status().is_success() {
-        tracing::warn!(status = %response.status(), "codex token refresh refused");
-        return Err(VivariumError::Message("codex token refresh failed".into()));
+            return Err(RefreshClass::Transient);
+        }
+    };
+    match dead::classify_status(response.status()) {
+        RefreshClass::Ok => response.json().await.map_err(|error| {
+            tracing::warn!(%error, "codex token refresh returned non-JSON");
+            RefreshClass::Transient
+        }),
+        RefreshClass::Refused => Err(RefreshClass::Refused),
+        RefreshClass::Transient => {
+            tracing::warn!(status = %response.status(), "codex token refresh transient");
+            Err(RefreshClass::Transient)
+        }
     }
-    response.json().await.map_err(|error| {
-        tracing::warn!(%error, "codex token refresh returned non-JSON");
-        VivariumError::Message("codex token refresh failed".into())
-    })
 }
 
 fn apply_refresh(store: &mut Value, payload: &Value) -> Result<(), VivariumError> {
@@ -194,8 +217,12 @@ fn write_token_field(store: &mut Value, field: &str, value: &str) {
 /// Expiry label for `vivi proxy providers`.
 #[must_use]
 pub fn credential_state(provider: &ProviderConfig) -> String {
-    match load(provider) {
-        Ok(auth) => credentials::expiry_label(&auth.value).unwrap_or_else(|| "present".into()),
+    match credential_path(provider) {
+        Ok(path) if dead::is_dead(&path) => "dead".into(),
+        Ok(_) => match load(provider) {
+            Ok(auth) => credentials::expiry_label(&auth.value).unwrap_or_else(|| "present".into()),
+            Err(_) => "missing".into(),
+        },
         Err(_) => "missing".into(),
     }
 }

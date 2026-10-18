@@ -287,14 +287,13 @@ async fn probe_upstream(state: &AppState, name: &str, provider: &ProviderConfig)
 }
 
 fn record_native(state: &AppState, name: &str, provider: &ProviderConfig) {
-    let label = native::credential_state(provider);
-    let ok = label != "missing";
-    let error = if ok {
-        None
-    } else {
-        Some("credentials missing".into())
+    let status = native::health_status(provider);
+    let error = match status {
+        "ok" => None,
+        "credential_dead" => Some(super::dead::DEAD_MESSAGE.into()),
+        _ => Some("credentials missing".into()),
     };
-    state.health.record(name, "native", ok, error);
+    state.health.record_status(name, "native", status, error);
 }
 
 async fn backend_health(state: &AppState, name: &str, provider: &ProviderConfig) -> Response {
