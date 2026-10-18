@@ -152,6 +152,18 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let cfg = pump_config(&mailspace)?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
     cfg.validate(project, &pools)?;
+    let issues = crate::routing::validate(&mailspace.config);
+    for issue in &issues {
+        eprintln!(
+            "vivi: {}: {}",
+            match issue.severity {
+                crate::routing::Severity::Warning => "warning",
+                crate::routing::Severity::Error => "error",
+            },
+            issue.message
+        );
+    }
+    crate::routing::require_ok(&issues)?;
     let home = cfg.home_dir(project);
     fs::create_dir_all(&home)?;
     let lock = take_lock(&home)?;
@@ -163,7 +175,8 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let host = Arc::new(RealHost::new(&home));
     let vivi = std::env::current_exe()
         .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
-    let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi);
+    let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi)
+        .with_routing(crate::routing::from_mailspace(&mailspace.config));
     crate::pump::priority::import_legacy(&ctx);
     if announce_ready {
         println!("VIVI_PUMP_SERVICE_READY");

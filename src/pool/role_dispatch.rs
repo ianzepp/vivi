@@ -22,13 +22,10 @@
 //! rules, with a note on how the slot reaches the mailspace.
 
 use crate::error::VivariumError;
+use crate::routing::resolve_read_only;
 
 use super::bands::{self, choose, parse_band};
 use super::config::PoolConfig;
-
-/// Role kinds that may not write: a dispatch to one is read-only whatever
-/// the flags say. Compared case-insensitively.
-const READ_ONLY_KINDS: [&str; 3] = ["auditor", "triage", "cadence"];
 
 /// What the dispatch command knows about the role a task is addressed to,
 /// taken from its role view.
@@ -43,6 +40,8 @@ pub struct RoleFacts {
     pub band: Option<String>,
     /// The role's charter text, possibly blank.
     pub charter: String,
+    /// Explicit `read_only` on the role, when set.
+    pub read_only: Option<bool>,
 }
 
 /// The dispatch command's inputs for one job: the operator's flags, the
@@ -105,17 +104,13 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
     })
 }
 
-/// The `--read-only` flag, or a role kind that may not write.
+/// The `--read-only` flag, the role's `read_only`, or the kind default.
 fn is_read_only(input: &Input) -> bool {
-    input.read_only_flag
-        || input
-            .role
-            .and_then(|role| role.kind.as_deref())
-            .is_some_and(|kind| {
-                READ_ONLY_KINDS
-                    .iter()
-                    .any(|ro| ro.eq_ignore_ascii_case(kind))
-            })
+    resolve_read_only(
+        input.read_only_flag,
+        input.role.and_then(|role| role.read_only),
+        input.role.and_then(|role| role.kind.as_deref()),
+    )
 }
 
 /// The body's `band:` line, else the role's band string. The role's band is

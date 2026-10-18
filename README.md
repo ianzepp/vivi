@@ -313,6 +313,83 @@ email = "vivi@example.invalid"
 The full key reference, the other providers, requirements and facts, read-only
 dispatch and the MCP bridge are in the `vivi` skill (`vivi skills show vivi`).
 
+## Role → pool routing
+
+Roles (`[[identities]]`) and pools (`[pools.<name>]`) are configured
+separately. Each role may name the pool it dispatches to. The pump routes
+every kind of work through that map: a Hand unit uses the hand role's pool,
+merge lanes equal the merge role's pool `slots`, and the gate, lint,
+auditor, head/CTO, triage, and cadence seats use their own role's pool.
+
+```toml
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+model = "P2-S0"
+
+[[identities]]
+name = "merge"
+kind = "merge"
+pool = "host"
+
+[[identities]]
+name = "gate"
+kind = "gate"
+pool = "glm"
+read_only = true
+
+[pools.glm]
+provider = "local"
+slots = 10
+[pools.glm.harness]
+models = ["deepseek/deepseek-v4-flash", "zai/glm-5.3-flash"]
+[pools.glm.caps]
+"deepseek/deepseek-v4-flash" = 10
+
+[pools.host]
+provider = "local"
+slots = 4
+```
+
+Concurrency is the pool's `slots`. Optional `[pools.<name>.caps]` holds
+per-model caps inside that pool (the successor of `[[pump.dispatch.lanes]]`).
+A role may name a model slug, a band (`P0`–`P5`, optionally `-S0`–`-S3`), or
+`models = [...]`. The pool's `harness.models` is the allow-list.
+
+`read_only` is optional. Kinds default read-only for auditor, triage,
+cadence/steward, head, and gate; hand, merge, and lint write. Existing
+`--read-only` flags still force read-only.
+
+When a role has no `pool`, the older `[pump.dispatch.kinds]`,
+`[[pump.dispatch.lanes]]`, `[pump.merge] lanes`, and `[pump.gate] pools`
+tables still work, with deprecation warnings. `vivi config migrate` (dry-run
+by default; `--write` applies and keeps a timestamped `.bak`) converts that
+legacy routing into `role.pool` assignments.
+
+```sh
+vivi config show [--resolved] [--json | --porcelain]
+vivi config validate [--json]
+vivi config migrate [--write]
+vivi role pool <role> <pool>
+vivi role set <role> --pool <pool> --read-only true
+vivi pool list [--json | --porcelain]
+vivi pool show <name> [--resolved]
+vivi pool add <name> --provider local --slots N [--worktree-of PATH]
+vivi pool set <name> <key> <value>
+vivi pool unset <name> <key>
+vivi pool remove <name> --yes [--force]
+vivi pool bands set <pool> <band> <model> [reasoning]
+vivi pool bands unset <pool> <band>
+```
+
+Writers preserve comments and only write keys that were set. `vivi config
+validate` checks roles, pools, and pump together (unknown pools, missing
+hand/merge/gate pools, bands without a bands table, models outside
+`harness.models`, read-only mismatches) and also runs at `vivi pump run|once`
+start. A full role pool waits: the assignment stays pending, with no
+spillover to another pool.
+
 ## The pump
 
 `vivi pump` works through a backlog without an operator in the loop. It is
@@ -331,24 +408,30 @@ Each tick the pump:
    each with `id`, `brief` and `write_scope`, and optionally `title`, `after`
    (units it waits for), `proof` (commands) and `tools` (the unit's kind).
 2. **Dispatches.** Sends each ready unit as a task and hands it to a pool with
-   `vivi pool dispatch` to the pool of the unit's kind (`[pump.dispatch.kinds]`;
-   `default_kind` when `tools` is empty), on a model from the configured
-   `lanes`, to a branch `unit/<id>-a<attempt>`. Units whose write scopes overlap
-   do not run at the same time, nor do units touching a path listed in the
-   reserved file (paths another session holds). A unit naming an unknown kind
-   is held and reported. A failed attempt is retried
+   `vivi pool dispatch`. The hand role's `pool` wins when set; otherwise the
+   unit's kind (`[pump.dispatch.kinds]`; `default_kind` when `tools` is empty)
+   picks the listed pool with the most free slots. A full role pool waits
+   (no spillover). The model comes from the role, then `[pools.<name>.caps]`,
+   then legacy `lanes`. The branch is `unit/<id>-a<attempt>`. Units whose
+   write scopes overlap do not run at the same time, nor do units touching a
+   path listed in the reserved file (paths another session holds). A unit
+   naming an unknown kind is held and reported. A failed attempt is retried
    up to `max_attempts`, then the unit is marked stuck and written to
    `exceptions.txt`.
 3. **Merges.** Merges returned unit branches into an integration branch
-   (`branch`, on `remote`) in batches of at most `merge.batch`, runs the format
+   (`branch`, on `remote`) in batches of at most `merge.batch`. Merge lane
+   count is the merge role's pool `slots` when that role sets `pool`, else
+   `[pump.merge] lanes`. A `provider = "local"` host pool is a valid choice
+   for today's pump-host merge. Then it runs the format
    command and shared checks and then each unit's own proof. A failing unit
    proof isolates that unit; a failing shared check on a batch of several units
    sets the whole batch aside on `pump/quarantine/<id>` (the units become
    `quarantined`) and opens one repair unit, ranked first, that starts from
    that branch.
 4. **Gates.** After `every_merges` merges, or after `every_seconds` with new
-   merges, a read-only gate worker (`[pump.gate] command`, on one of
-   `gate.pools`) measures the tree and reports failing test names between
+   merges, a read-only gate worker (`[pump.gate] command`, on the gate
+   role's pool when set, else one of `gate.pools`) measures the tree and
+   reports failing test names between
    `FAILING-BEGIN` and `FAILING-END` markers. With `results_dir` set, an
    external runner on any machine can supply the result instead by writing
    `<tip>.json` there; the pool gate is the fallback after

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::pump::config::PumpConfig;
 use crate::pump::progress::LaneProgress;
+use crate::routing::RoleRouting;
 
 /// The outcome of running one command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +96,8 @@ pub struct Ctx {
     /// Set on a merge lane's context: its log lines carry the lane name and
     /// its steps feed the lane status.
     pub lane: Option<Arc<LaneProgress>>,
+    /// Role → pool map. Empty means the pump uses only the legacy tables.
+    pub routing: Arc<RoleRouting>,
 }
 
 impl Ctx {
@@ -121,7 +124,15 @@ impl Ctx {
             vivi,
             shell_prefix,
             lane: None,
+            routing: Arc::new(RoleRouting::default()),
         }
+    }
+
+    /// Attach a role → pool map loaded from the mailspace.
+    #[must_use]
+    pub fn with_routing(mut self, routing: RoleRouting) -> Self {
+        self.routing = Arc::new(routing);
+        self
     }
 
     /// Build a context from the config alone: the shell prefix, home, and
@@ -151,6 +162,7 @@ impl Ctx {
             repo,
         );
         target.target_id = id.to_string();
+        target.routing = self.routing.clone();
         Some(target)
     }
 

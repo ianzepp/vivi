@@ -178,7 +178,8 @@ impl Merger {
             let Some(target) = ctx.for_target(id) else {
                 continue;
             };
-            for n in 0..target.cfg.merge.lanes.max(1) {
+            let lane_count = crate::routing::merge_lane_count(&ctx.routing, &target.cfg);
+            for n in 0..lane_count {
                 lanes.push(start_lane(&target, n, &out));
             }
         }

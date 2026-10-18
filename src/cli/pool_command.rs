@@ -26,6 +26,23 @@ pub enum PoolSubcommand {
     Clean(PoolCleanCommand),
     /// Reset a free slot onto a freshly fetched origin branch
     Reset(PoolResetCommand),
+    /// List configured pools
+    List(PoolListCommand),
+    /// Show one pool's configured (or resolved) settings
+    Show(PoolShowCommand),
+    /// Add a pool table
+    Add(PoolAddCommand),
+    /// Set one key on a pool table
+    Set(PoolConfigSetCommand),
+    /// Remove one key from a pool table
+    Unset(PoolUnsetCommand),
+    /// Remove a pool table
+    Remove(PoolRemoveCommand),
+    /// Set or clear a pool band choice
+    Bands {
+        #[command(subcommand)]
+        command: PoolBandsCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -317,4 +334,150 @@ pub struct PoolDestroyCommand {
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolListCommand {
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Print only result lines in a fixed format
+    #[arg(long, conflicts_with = "json")]
+    pub porcelain: bool,
+
+    /// Project root that owns .vivi/
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolShowCommand {
+    /// Pool name
+    pub name: String,
+
+    /// Include live free/total slot counts
+    #[arg(long)]
+    pub resolved: bool,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Print only result lines in a fixed format
+    #[arg(long, conflicts_with = "json")]
+    pub porcelain: bool,
+
+    /// Project root that owns .vivi/
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolAddCommand {
+    /// Pool name (`[pools.<name>]`)
+    pub name: String,
+
+    /// Machine host: local, docker, fly, ssh or runpod
+    #[arg(long)]
+    pub provider: String,
+
+    /// Maximum pool size
+    #[arg(long)]
+    pub slots: u32,
+
+    /// Local Git repository this pool worktrees
+    #[arg(long)]
+    pub worktree_of: Option<String>,
+
+    /// GitHub owner/name
+    #[arg(long)]
+    pub repo: Option<String>,
+
+    /// Container image
+    #[arg(long)]
+    pub image: Option<String>,
+
+    /// Local or SSH slot root
+    #[arg(long)]
+    pub root: Option<String>,
+
+    /// Project root that owns .vivi/
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolConfigSetCommand {
+    /// Pool name
+    pub name: String,
+
+    /// Key, possibly dotted (`local.worktree_of`)
+    pub key: String,
+
+    /// Value (string, bool, integer, or TOML array)
+    pub value: String,
+
+    /// Project root that owns .vivi/
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolUnsetCommand {
+    /// Pool name
+    pub name: String,
+
+    /// Key, possibly dotted
+    pub key: String,
+
+    /// Project root that owns .vivi/
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PoolRemoveCommand {
+    /// Pool name
+    pub name: String,
+
+    /// Confirm the removal
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Remove even when roles or open dispatches still name the pool
+    #[arg(long)]
+    pub force: bool,
+
+    /// Project root that owns .vivi/
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PoolBandsCommand {
+    /// Set the serving model for a band
+    Set {
+        /// Pool name
+        pool: String,
+        /// Band key (`P0`–`P5`)
+        band: String,
+        /// Model slug
+        model: String,
+        /// Reasoning effort (default `xhigh`)
+        reasoning: Option<String>,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Remove a band from a pool
+    Unset {
+        /// Pool name
+        pool: String,
+        /// Band key (`P0`–`P5`)
+        band: String,
+        /// Project root that owns .vivi/
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }

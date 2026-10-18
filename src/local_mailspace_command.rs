@@ -30,6 +30,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Pool { command } => crate::local_pool_command::handle_pool_command(command),
         Command::Pump { command } => crate::local_pump_command::handle_pump_command(command),
         Command::Proxy { command } => vivi::proxy::handle(command),
+        Command::Config { command } => crate::local_config_command::handle_config_command(command),
         Command::Role { command } => crate::local_role_command::handle_role_command(command),
         Command::Cycle { command } => handle_cycle_command(command),
         Command::Trace(command) => handle_trace_command(command),

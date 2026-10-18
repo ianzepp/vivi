@@ -37,6 +37,7 @@ pub fn add(project: &Path) -> Result<(), VivariumError> {
     })?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
     pump.validate(&mailspace.root, &pools)?;
+    crate::routing::require_ok(&crate::routing::validate(&mailspace.config))?;
     let _lock = take_registry_lock()?;
     let mut config = load_config()?;
     let root = mailspace.root.canonicalize()?;

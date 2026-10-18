@@ -205,6 +205,9 @@ matter here:
 - `vivi pool dispatch --pool <name> <task> --model <slug> --from <ref>
   [--branch <name>]` claims a slot and starts the worker in one step. The
   task body is the brief; the worker's standard output is the receipt.
+  Omit `--pool` when the addressee role already has `pool` set
+  (`vivi role pool <role> <pool>`). `vivi config show` is the role -> pool
+  table.
 - The runner commits and pushes (or commits a local branch) as the lane's bot
   identity. The Mind integrates the branch and closes the task; `wait` and
   `reconcile` never close it.
@@ -212,7 +215,8 @@ matter here:
   --branch <new>`, once the base worker has been collected.
 - Remote lanes scale Hand implementation; a local worktree pool with a
   persistent build directory is the place for integration and acceptance.
-  Which work goes to which pool is the Mind's call.
+  Which work goes to which pool is the role's assigned pool; the Mind
+  chooses the role. A full pool waits (no spillover).
 - A review seat that needs a full shell but must change nothing runs with
   `--read-only`; its token cannot push.
 - Push the base commit to the remote before dispatch (a local worktree pool

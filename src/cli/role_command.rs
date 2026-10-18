@@ -67,6 +67,18 @@ pub enum RoleCommand {
         #[arg(long)]
         cadence: Option<String>,
 
+        /// Pool this role dispatches to
+        #[arg(long)]
+        pool: Option<String>,
+
+        /// Override the kind's read-only default
+        #[arg(long)]
+        read_only: Option<bool>,
+
+        /// Preferred model slugs or bands (repeatable)
+        #[arg(long = "models")]
+        models: Vec<String>,
+
         /// Project root to update
         #[arg(long)]
         project: Option<PathBuf>,
@@ -152,6 +164,43 @@ pub enum RoleCommand {
         /// Remove a label slug (repeatable)
         #[arg(long = "clear-label")]
         clear_labels: Vec<String>,
+
+        /// Pool this role dispatches to
+        #[arg(long)]
+        pool: Option<String>,
+
+        /// Clear the assigned pool
+        #[arg(long)]
+        clear_pool: bool,
+
+        /// Override the kind's read-only default
+        #[arg(long)]
+        read_only: Option<bool>,
+
+        /// Clear the explicit read-only flag
+        #[arg(long)]
+        clear_read_only: bool,
+
+        /// Preferred model slugs or bands (repeatable)
+        #[arg(long = "models")]
+        models: Vec<String>,
+
+        /// Clear the models list
+        #[arg(long)]
+        clear_models: bool,
+
+        /// Project root to update
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Assign a role to a pool (`role set --pool` alias)
+    Pool {
+        /// Role name (local-part)
+        name: String,
+
+        /// Pool name (`[pools.<name>]`)
+        pool: String,
 
         /// Project root to update
         #[arg(long)]

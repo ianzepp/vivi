@@ -36,6 +36,7 @@ fn role(name: &str, kind: Option<&str>, band: Option<&str>) -> RoleFacts {
         kind: kind.map(str::to_string),
         band: band.map(str::to_string),
         charter: String::new(),
+        read_only: None,
     }
 }
 
@@ -80,7 +81,9 @@ fn an_auditor_role_is_read_only_and_takes_its_band_model_and_reasoning() {
 
 #[test]
 fn triage_and_cadence_kinds_are_read_only_too() {
-    for kind in ["triage", "cadence", "AUDITOR", "Triage"] {
+    for kind in [
+        "triage", "cadence", "AUDITOR", "Triage", "steward", "head", "gate",
+    ] {
         let worker = role("gatekeeper", Some(kind), Some("P1"));
         let resolved = resolve(
             &pool(),
@@ -90,6 +93,19 @@ fn triage_and_cadence_kinds_are_read_only_too() {
         .unwrap();
         assert!(resolved.read_only, "kind {kind} must be read-only");
     }
+}
+
+#[test]
+fn an_explicit_read_only_flag_on_a_hand_role_wins() {
+    let mut hand = role("lane-3", Some("hand"), Some("P1"));
+    hand.read_only = Some(true);
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&hand), "build it", None, false),
+    )
+    .unwrap();
+    assert!(resolved.read_only);
 }
 
 #[test]
@@ -115,6 +131,14 @@ fn a_hand_role_and_a_merge_named_hand_write() {
         &pool(),
         "bridge",
         &input(Some(&capitalised), "build it", None, false),
+    )
+    .unwrap();
+    assert!(!resolved.read_only);
+    let lint = role("lint", Some("lint"), Some("P1"));
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(Some(&lint), "lint it", None, false),
     )
     .unwrap();
     assert!(!resolved.read_only);

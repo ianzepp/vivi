@@ -20,7 +20,9 @@ Install the CLI from [vivi](https://github.com/ianzepp/vivi); this skill ships
 in that repo. Agent CLI law lives in its sibling skill,
 [`../vivi/SKILL.md`](../vivi/SKILL.md). Load that skill for flags, kinds, and
 absorb. This document does not replace it. Verify live `vivi --help` before
-exact flags.
+exact flags. Do not hand-edit `.vivi/mailspace.toml` to move a role onto a
+pool: `vivi role pool <role> <pool>`, `vivi config show`, and
+`vivi config validate` are the helpers.
 
 Optional companions, if the workspace has them: a transcript search tool, a
 model inventory, a polish helper. None of those are required to run the loop.

@@ -168,13 +168,25 @@ with the executable work graph.
 ## Roles and Goals
 
 Roles are durable seats with a mailbox, kind, status, charter, harness, model
-preferences, cadence, and labels. Read the charter before operating as a role:
+preferences, cadence, labels, and an assigned pool. Read the charter before
+operating as a role. Assign work to a pool with the role, not by editing TOML:
 
 ```sh
 vivi role show <role> --project <root>
 vivi role charter show <role> --project <root>
 vivi role status <role> --project <root>
+vivi role add <name> --kind hand --pool glm --model P2-S0
+vivi role set <role> --pool <pool> --read-only true
+vivi role pool <role> <pool>
+vivi config show [--resolved] [--json | --porcelain]
+vivi config validate [--json]
+vivi config migrate [--write]
 ```
+
+`vivi config show` is the role -> kind -> pool -> slots -> models ->
+read_only table plus the merge/gate flow. `validate` checks those together
+and also runs at `vivi pump run|once` start. `migrate` is a dry-run diff
+unless `--write` (a timestamped `.bak` is kept).
 
 Capacity and model fields are preferences. Use `role status` or
 `board --process` when process state matters. A host starting a role should
@@ -661,11 +673,19 @@ a Git worktree of a local repository; see "Local provider" below) and `runpod`
 `[pools.<name>.local]` and `[pools.<name>.runpod]` hold the host-specific
 settings. Everything else in this section works the same on all five, except
 that a `runpod` pool has no resting slots (`create` and scale-up do not apply). In-place reseed, other hosts,
-routing work to a pool by role, a default pool, and shared defaults between
-pools do not exist; do not invent them. Which work goes to which pool is the
-orchestrator's call; Vivi has no opinion.
+shared defaults between pools do not exist; do not invent them. Which work
+goes to which pool is the role's `pool` assignment (`vivi role pool` /
+`vivi config show`). The pump waits when that pool is full: no spillover.
 
 ```sh
+vivi pool list [--json | --porcelain]
+vivi pool show <name> [--resolved] [--json | --porcelain]
+vivi pool add <name> --provider local --slots N [--worktree-of PATH]
+vivi pool set <name> <key> <value>
+vivi pool unset <name> <key>
+vivi pool remove <name> --yes [--force]
+vivi pool bands set <pool> <band> <model> [reasoning]
+vivi pool bands unset <pool> <band>
 vivi pool create --pool <name> [--slots N] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool status [--pool <name>] [--json | --porcelain]
@@ -679,6 +699,45 @@ vivi pool reset [<slot>] [--pool <name>] [--base <branch>] [--porcelain]
 vivi pool doctor [--pool <name>] [--json | --porcelain]
 vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]
 ```
+
+#### Role → pool
+
+Each `[[identities]]` row may set `pool`, optional `read_only`, and
+`model` / `models` (a slug, a band, or a list). Pool capacity is `slots`;
+optional `[pools.<name>.caps]` is the per-model cap inside that pool.
+Dispatching a role uses that role's pool and waits when it is full.
+Merge lanes equal the merge role's pool slots. A `provider = "local"`
+host pool is a valid place to run merge on the pump machine.
+
+```toml
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+model = "P2-S0"
+
+[[identities]]
+name = "merge"
+kind = "merge"
+pool = "host"
+
+[pools.glm]
+provider = "local"
+slots = 10
+[pools.glm.caps]
+"deepseek/deepseek-v4-flash" = 10
+
+[pools.host]
+provider = "local"
+slots = 4
+```
+
+Legacy `[pump.dispatch.kinds]`, `[[pump.dispatch.lanes]]`,
+`[pump.merge] lanes`, and `[pump.gate] pools` still work when a role has
+no `pool` (deprecation warnings). Convert them with
+`vivi config migrate` (dry-run) or `vivi config migrate --write`.
+A role that names a band when its pool has no `[pools.X.bands]` table
+fails `vivi config validate` unless caps or legacy lanes still cover it.
 
 #### Named pools and `--pool`
 
@@ -1493,9 +1552,9 @@ a `band:` line. From the role it takes:
   `[pools.<name>.bridge] enabled` the pool note instead tells the worker to
   read and settle its handle through the vivi tools. A role with no
   charter leaves the pool rules unchanged.
-- **Read-only mode from the kind.** A role whose kind is `auditor`, `triage`
-  or `cadence` (case-insensitive) is dispatched read-only whatever the flags
-  say; a `hand` role writes.
+- **Read-only mode from the role.** `--read-only` wins; else the role's
+  `read_only` flag; else the kind default. Auditor, triage, cadence/steward,
+  head, and gate default read-only; hand, merge, and lint write.
 - **The model and reasoning from the band.** The role's `model` field holds a
   band string such as `P2-S0` (set it with `vivi role set <role> --model P2`),
   not a model slug. The pool's `bands` table says which model-and-reasoning
@@ -2111,7 +2170,7 @@ blocks its dependents until a person unblocks it.
    are assumed to meet, and an empty scope overlaps everything.
 6. The unit's kind has a `max` and that many units of the kind are in flight,
    or the kind is not defined (`unknown-kind`).
-7. The kind's pool has no free slot: `vivi pool status --pool <pool>
+7. The role's pool (or the kind's pool) has no free slot: `vivi pool status --pool <pool>
    --porcelain`.
 8. Every lane in `[pump.dispatch] lanes` is at its `cap` (the dispatch loop
    stops for the tick), or `per_tick` units already started.
@@ -2204,7 +2263,7 @@ branches cannot be handed from one repository to another.
   own mark for a rejected plan.
 - Each unit needs `id`, `brief`, `write_scope` and a `proof` list, and a fresh
   id; `after` lists prerequisite unit ids, `tools` names the unit's kind (a key of
-  `[pump.dispatch.kinds]`; absent means `default_kind`).
+  role `pool` when set, else `[pump.dispatch.kinds]`; absent means `default_kind`).
 
 #### Unit states
 

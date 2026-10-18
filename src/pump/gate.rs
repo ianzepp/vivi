@@ -341,7 +341,11 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     if !gate_due(ctx, st, force) || waiting_for_external(ctx, st) {
         return;
     }
-    let Some(pool) = pick_pool(ctx) else {
+    let Some(pool) = crate::routing::RoleRouting::first_free(
+        ctx.routing.gate().and_then(|role| role.pool.as_deref()),
+        &ctx.cfg.gate.pools,
+        &slots(ctx),
+    ) else {
         return;
     };
     let Some(tip) = remote_tip(ctx) else {
@@ -407,17 +411,6 @@ fn gate_due(ctx: &Ctx, st: &State, force: bool) -> bool {
     force || st.baseline.is_none() || count_due || clock_due
 }
 
-/// The first configured gate pool with a free slot.
-fn pick_pool(ctx: &Ctx) -> Option<String> {
-    let free = slots(ctx);
-    ctx.cfg
-        .gate
-        .pools
-        .iter()
-        .find(|pool| free.get(*pool).is_some_and(|&n| n > 0))
-        .cloned()
-}
-
 /// The remote integration tip: first token of
 /// `git ls-remote <remote> refs/heads/<branch>`, when it is 40 hex characters.
 fn remote_tip(ctx: &Ctx) -> Option<String> {
@@ -452,13 +445,16 @@ fn write_gate_brief(ctx: &Ctx) -> Option<PathBuf> {
 /// Send the gate task; the subject names the command and the tip. Returns the
 /// created task handle.
 fn send_gate_task(ctx: &Ctx, path: &Path, tip: &str) -> Option<String> {
-    let short = tip_short(tip);
-    let subject = format!("[pump gate] {} at {short}", ctx.cfg.gate.command);
+    let to = ctx
+        .routing
+        .gate()
+        .map_or_else(|| ctx.cfg.to.clone(), |role| role.name.clone());
+    let subject = format!("[pump gate] {} at {}", ctx.cfg.gate.command, tip_short(tip));
     let out = ctx.vivi(
         &format!(
             "task send --from {} --to {} --subject {} --body-file {}",
-            ctx.cfg.from,
-            ctx.cfg.to,
+            shell_quote(&ctx.cfg.from),
+            shell_quote(&to),
             shell_quote(&subject),
             shell_quote(&path.to_string_lossy()),
         ),

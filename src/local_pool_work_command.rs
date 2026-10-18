@@ -41,7 +41,12 @@ fn load_rules(config: &PoolConfig, space: &Mailspace) -> Result<String, Vivarium
 pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumError> {
     let progress = Progress::stderr(command.porcelain, "");
     let space = Mailspace::discover(command.project.as_deref())?;
-    let handle = pools::open_one(&space, command.pool.as_deref())?;
+    let task = space.pool_task(&command.task)?;
+    let pool_flag = command
+        .pool
+        .clone()
+        .or_else(|| role_pool(&space, task.addressee.as_deref()));
+    let handle = pools::open_one(&space, pool_flag.as_deref())?;
     let selected = resolve_target_config(&space, &handle.config, command.target.as_deref())?;
     let config = selected
         .as_ref()
@@ -49,7 +54,6 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
     let (id, provider) = (&handle.id, handle.provider.as_ref());
     let ready_timeout =
         dispatch::check_ready_timeout(provider.slot_lifetime(), command.ready_timeout)?;
-    let task = space.pool_task(&command.task)?;
     refuse_second_dispatch(&space, &task.handle)?;
     let job_id = fresh_job_id(&task.handle);
     let (flags, rules, role_line) = resolve_dispatch(
@@ -258,6 +262,7 @@ fn resolve_dispatch(
                 kind: view.kind,
                 band: view.model,
                 charter: view.charter,
+                read_only: view.read_only,
             }),
             Err(_) => None,
         });
@@ -314,10 +319,11 @@ fn role_line(
         line.push_str(reasoning);
     }
     if resolved.read_only && !command.read_only {
-        line.push_str(&format!(
-            " read-only (role kind {})",
-            role.kind.as_deref().unwrap_or("none")
-        ));
+        let why = role
+            .read_only
+            .map(|_| "role read_only")
+            .unwrap_or_else(|| role.kind.as_deref().unwrap_or("none"));
+        line.push_str(&format!(" read-only ({why})"));
     }
     line
 }
@@ -408,8 +414,15 @@ fn with_suffix(made: &vivi::pool::record::DispatchRecord) -> String {
     }
 }
 
-/// `  bridge key <key_id> (<label>)` when the job carries a grant; the key
-/// itself is never printed.
+/// The addressee role's assigned pool, when the role exists and sets one.
+fn role_pool(space: &Mailspace, addressee: Option<&str>) -> Option<String> {
+    let name = addressee?;
+    match space.role_view(name) {
+        Ok(view) => view.pool,
+        Err(_) => None,
+    }
+}
+
 fn bridge_suffix(grant: Option<&bridge::Grant>) -> String {
     grant.map_or(String::new(), |g| {
         format!("  bridge key {} ({})", g.key_id, g.label)

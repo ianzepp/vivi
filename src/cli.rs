@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 mod board_command;
+mod config_command;
 mod mailspace_command;
 mod mcp_command;
 mod pool_command;
@@ -16,6 +17,7 @@ mod sync_command;
 mod update_command;
 
 pub use board_command::BoardCommand;
+pub use config_command::ConfigCommand;
 pub use mailspace_command::{
     AbsorbCommand, CycleCommand, GoalCommand, GraphActivateCommand, GraphApplyCommand,
     GraphAuditCommand, GraphBlockedCommand, GraphCommand, GraphCompleteCommand,
@@ -31,9 +33,10 @@ pub use mailspace_command::{
 };
 pub use mcp_command::McpCommand;
 pub use pool_command::{
-    PoolCleanCommand, PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand,
-    PoolDoctorCommand, PoolReconcileCommand, PoolResetCommand, PoolScaleCommand, PoolStatusCommand,
-    PoolSubcommand, PoolWaitCommand,
+    PoolAddCommand, PoolBandsCommand, PoolCleanCommand, PoolConfigSetCommand, PoolCreateCommand,
+    PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand, PoolListCommand,
+    PoolReconcileCommand, PoolRemoveCommand, PoolResetCommand, PoolScaleCommand, PoolShowCommand,
+    PoolStatusCommand, PoolSubcommand, PoolUnsetCommand, PoolWaitCommand,
 };
 pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,
@@ -150,6 +153,12 @@ pub enum Command {
     Proxy {
         #[command(subcommand)]
         command: ProxySubcommand,
+    },
+
+    /// Show, validate or migrate role → pool routing
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
 
     /// Manage first-class mailspace agent seats (roles)

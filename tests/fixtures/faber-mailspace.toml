@@ -1,0 +1,2141 @@
+name = "faberlang"
+id = "bd371d96-dbf8-44e6-ba4d-bcf272dc8f5d"
+archive = "/Users/ianzepp/work/ianzepp/vivi-archive"
+
+[[identities]]
+name = "auditor"
+kind = "auditor"
+labels = ["auditor"]
+status = "active"
+harness = "subagent"
+model = "P1-S1"
+
+[[identities]]
+name = "auditor-1"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5.2"
+thinking = "high"
+
+[[identities]]
+name = "auditor-2"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5.2"
+thinking = "high"
+
+[[identities]]
+name = "auditor-3"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5-2-zai"
+thinking = "xhigh"
+
+[[identities]]
+name = "auditor-4"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5-2-zai"
+thinking = "xhigh"
+
+[[identities]]
+name = "auditor-5"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5.2"
+thinking = "high"
+
+[[identities]]
+name = "auditor-6"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5.2"
+thinking = "high"
+
+[[identities]]
+name = "auditor-7"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5.2"
+thinking = "high"
+
+[[identities]]
+name = "auditor-8"
+kind = "hand"
+labels = ["auditor"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "glm-5.2"
+thinking = "high"
+
+[[identities]]
+name = "benchmark"
+kind = "hand"
+status = "active"
+harness = "subagent"
+
+[[identities]]
+name = "cadence"
+kind = "steward"
+labels = ["cadence"]
+status = "active"
+harness = "subagent"
+model = "P4-S0"
+
+[[identities]]
+name = "canary"
+kind = "hand"
+labels = ["canary"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+cadence = "6h"
+
+[[identities]]
+name = "codex"
+status = "retired"
+
+[[identities]]
+name = "cto"
+status = "retired"
+
+[[identities]]
+name = "docs"
+kind = "docs"
+labels = ["docs"]
+status = "active"
+harness = "subagent"
+model = "P3-S0"
+
+[[identities]]
+name = "docs-1"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-2"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-3"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-4"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-5"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-6"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-7"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-8"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "docs-9"
+kind = "hand"
+labels = ["docs"]
+status = "retired"
+harness = "subagent"
+model = "gpt-5.6-terra-medium"
+thinking = "medium"
+
+[[identities]]
+name = "e2e-go"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "e2e-gpu"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "e2e-llvm"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "e2e-runner"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "e2e-rust"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "e2e-swift"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "e2e-ts"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "e2e-wasm"
+kind = "hand"
+labels = ["e2e"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "exec"
+kind = "hand"
+labels = [
+    "exec",
+    "external",
+]
+status = "parked"
+harness = "external"
+
+[[identities]]
+name = "faber-web"
+kind = "web"
+labels = [
+    "web",
+    "grok",
+]
+status = "active"
+
+[[identities]]
+name = "grok-pr"
+kind = "pr"
+labels = [
+    "pr",
+    "grok",
+]
+status = "active"
+
+[[identities]]
+name = "hand"
+kind = "hand"
+labels = ["hand"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "hand-1"
+aliases = ["hunter-1"]
+kind = "hand"
+labels = ["mechanical"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-10"
+kind = "hand"
+labels = ["pruned"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-11"
+kind = "hand"
+labels = ["pruned"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-12"
+kind = "hand"
+labels = ["mechanical"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-13"
+kind = "hand"
+labels = ["floater"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-14"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-15"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-16"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-17"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-18"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-19"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-2"
+aliases = ["hunter-2"]
+kind = "hand"
+labels = ["floater"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-20"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-21"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-22"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-23"
+kind = "hand"
+labels = [
+    "hand",
+    "faber-entry-lane",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-24"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-25"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-26"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-27"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-28"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-29"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-3"
+aliases = ["hunter-3"]
+kind = "hand"
+labels = ["floater"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-30"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-31"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-32"
+kind = "hand"
+labels = ["hand"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-33"
+kind = "hand"
+labels = [
+    "hand",
+    "norma-dedicated",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-34"
+kind = "hand"
+labels = [
+    "hand",
+    "mechanical",
+]
+status = "retired"
+harness = "subagent"
+model = "gpt-5.6-terra-medium"
+thinking = "medium"
+
+[[identities]]
+name = "hand-35"
+kind = "hand"
+labels = [
+    "hand",
+    "mechanical",
+]
+status = "retired"
+harness = "subagent"
+model = "gpt-5.6-terra-medium"
+thinking = "medium"
+
+[[identities]]
+name = "hand-36"
+kind = "hand"
+labels = [
+    "hand",
+    "mechanical",
+]
+status = "retired"
+harness = "subagent"
+model = "gpt-5.6-terra-medium"
+thinking = "medium"
+
+[[identities]]
+name = "hand-37"
+kind = "hand"
+labels = [
+    "hand",
+    "mechanical",
+]
+status = "retired"
+harness = "subagent"
+model = "gpt-5.6-terra-medium"
+thinking = "medium"
+
+[[identities]]
+name = "hand-38"
+kind = "hand"
+labels = [
+    "hand",
+    "mechanical",
+]
+status = "retired"
+harness = "subagent"
+model = "gpt-5.6-terra-medium"
+thinking = "medium"
+
+[[identities]]
+name = "hand-4"
+aliases = ["hunter-4"]
+kind = "hand"
+labels = ["mechanical"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-5"
+aliases = ["hunter-5"]
+kind = "hand"
+labels = ["judgement"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-6"
+kind = "hand"
+labels = ["judgement"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-7"
+kind = "hand"
+labels = ["pruned"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-8"
+kind = "hand"
+labels = ["pruned"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "hand-9"
+kind = "hand"
+labels = ["pruned"]
+status = "retired"
+harness = "subagent"
+provider = "zai"
+model = "deepseek-v4-flash-go"
+thinking = "high"
+
+[[identities]]
+name = "hater-1"
+kind = "hand"
+labels = ["hater"]
+status = "retired"
+harness = "subagent"
+provider = "xai"
+model = "grok-4.5"
+thinking = "high"
+
+[[identities]]
+name = "head-ceo"
+aliases = ["strategist"]
+kind = "head"
+labels = ["strategist"]
+status = "active"
+harness = "subagent"
+model = "P1-S2"
+cadence = "2h"
+
+[[identities]]
+name = "head-cmo"
+kind = "head"
+status = "active"
+harness = "subagent"
+model = "P1-S2"
+cadence = "4h"
+
+[[identities]]
+name = "head-cpo"
+kind = "head"
+status = "active"
+harness = "subagent"
+model = "P1-S2"
+
+[[identities]]
+name = "head-cso"
+kind = "head"
+status = "active"
+harness = "subagent"
+model = "P1-S2"
+cadence = "4h"
+
+[[identities]]
+name = "head-cto"
+aliases = ["correctness"]
+kind = "head"
+status = "active"
+harness = "subagent"
+model = "P0-S2"
+cadence = "30m"
+
+[[identities]]
+name = "head-cxo"
+aliases = ["purity"]
+kind = "head"
+status = "active"
+harness = "subagent"
+model = "P1-S2"
+cadence = "4h"
+
+[[identities]]
+name = "lab-codex"
+kind = "hand"
+labels = ["lab"]
+status = "retired"
+harness = "subagent"
+
+[[identities]]
+name = "lab-grok"
+kind = "hand"
+labels = ["lab"]
+status = "retired"
+harness = "subagent"
+provider = "openai-codex"
+model = "gpt-5.6-luna"
+thinking = "high"
+
+[[identities]]
+name = "lint"
+kind = "lint"
+labels = ["lint"]
+status = "active"
+harness = "subagent"
+model = "P3-S0"
+cadence = "30m"
+
+[[identities]]
+name = "lint-1"
+kind = "hand"
+labels = ["lint"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "lint-2"
+kind = "hand"
+labels = ["lint"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "merge"
+kind = "hand"
+labels = ["merge"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "mind"
+aliases = ["reviewer"]
+kind = "mind"
+status = "active"
+model = "P1-S2"
+
+[[identities]]
+name = "mind-review"
+kind = "mind"
+status = "active"
+model = "P1-S2"
+
+[[identities]]
+name = "operator"
+kind = "operator"
+status = "active"
+
+[[identities]]
+name = "perf-artifact"
+kind = "hand"
+labels = ["perf-public-release"]
+status = "active"
+harness = "subagent"
+provider = "zai"
+model = "zai-glm-5.3-flash"
+
+[[identities]]
+name = "perf-c-emit"
+kind = "hand"
+labels = ["perf-public-release"]
+status = "active"
+harness = "subagent"
+provider = "zai"
+model = "zai-glm-5.3-flash"
+
+[[identities]]
+name = "perf-clif-rt"
+kind = "hand"
+labels = ["perf-public-release"]
+status = "active"
+harness = "subagent"
+provider = "codex"
+model = "codex-gpt-6-luna"
+
+[[identities]]
+name = "perf-faber-format"
+kind = "hand"
+labels = ["perf-public-release"]
+status = "active"
+harness = "subagent"
+provider = "codex"
+model = "codex-gpt-6-luna"
+
+[[identities]]
+name = "perf-format-marker"
+kind = "hand"
+labels = ["perf-public-release"]
+status = "active"
+harness = "subagent"
+provider = "codex"
+model = "codex-gpt-6-luna"
+
+[[identities]]
+name = "perf-hir-c"
+kind = "hand"
+labels = ["perf-c"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-cobol"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-faber"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-fhir"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-fortran"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-go-a"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-go-b"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-haskell"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-odin"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-pascal"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-python"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-rust-a"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-rust-b"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-rust-c"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-swift"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-hir-ts"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-lower"
+kind = "hand"
+labels = ["perf-public-release"]
+status = "active"
+harness = "subagent"
+provider = "zai"
+model = "zai-glm-5.3-flash"
+
+[[identities]]
+name = "perf-mir-basic"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-clif"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-covpar"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-fmir"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-llvm-a"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-llvm-b"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-llvm-c"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-lower-a"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-lower-b"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-metal-a"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-metal-b"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-python"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-runner-a"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-runner-b"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-sexp"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-wasm"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-mir-wgsl"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-rt-c"
+kind = "hand"
+labels = ["perf-c"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-rt-clif"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-rt-go"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-rt-llvm"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-rt-rust-a"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-rt-rust-b"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-rt-ts"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-runner"
+kind = "hand"
+labels = ["perf-public-release"]
+status = "active"
+harness = "subagent"
+provider = "codex"
+model = "codex-gpt-6-luna"
+
+[[identities]]
+name = "perf-selftest"
+kind = "hand"
+labels = ["perf-review"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "perf-shared"
+kind = "hand"
+labels = ["perf-w1"]
+status = "active"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-flash-max"
+
+[[identities]]
+name = "planner"
+kind = "planner"
+labels = ["planner"]
+status = "active"
+harness = "subagent"
+model = "P1-S2"
+
+[[identities]]
+name = "planner-1"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-10"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-11"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-12"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-13"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-14"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-15"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-16"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-17"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-18"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-19"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-2"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-20"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-21"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-22"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-23"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-24"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-25"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-26"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-27"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-28"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-29"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-3"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-30"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-31"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-32"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-33"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-34"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-35"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-36"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-37"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-38"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-39"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-4"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-40"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-5"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-6"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-7"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-8"
+kind = "hand"
+labels = [
+    "planner",
+    "lowering",
+]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "planner-9"
+kind = "hand"
+labels = ["planner"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash-xhigh"
+thinking = "xhigh"
+
+[[identities]]
+name = "polish-analyzer"
+kind = "freeform"
+labels = ["polish-analyzer"]
+status = "retired"
+
+[[identities]]
+name = "release"
+kind = "hand"
+labels = ["release"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+
+[[identities]]
+name = "test"
+kind = "test"
+labels = ["test"]
+status = "active"
+harness = "subagent"
+model = "P2-S0"
+cadence = "1h"
+
+[[identities]]
+name = "test-1"
+kind = "hand"
+labels = ["test"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "test-2"
+kind = "hand"
+labels = ["test"]
+status = "retired"
+harness = "subagent"
+provider = "deepseek"
+model = "deepseek-go-flash"
+thinking = "high"
+
+[[identities]]
+name = "triage"
+kind = "triage"
+labels = ["triage"]
+status = "active"
+harness = "subagent"
+model = "P2-S1"
+
+[[identities]]
+name = "verification"
+kind = "hand"
+labels = ["verification"]
+status = "active"
+harness = "subagent"
+
+[[identities]]
+name = "website"
+kind = "hand"
+labels = ["website"]
+status = "active"
+harness = "subagent"
+model = "P3-S0"
+
+[sync]
+server = "https://vivi.fleeting.chat"
+project = "qafq0-wfysf-tsqa6-435tp-kckm5"
+name = "burgus"
+
+[pump]
+home = "/Users/ianzepp/work/faberlang/.vivi/pump"
+repo = "/Users/ianzepp/work/faberlang/.vivi/pump/repo"
+remote = "origin"
+remote_url = "git@github.com:faberlang/radix.git"
+committer_name = "Ian Zepp"
+committer_email = "ian.zepp@protonmail.com"
+branch = "next"
+main = "main"
+promote = true
+tick = 20
+shell_prefix = ". /Users/ianzepp/work/faberlang/.vivi/pump/pump-env.sh"
+hand_rules = "/Users/ianzepp/work/faberlang/.vivi/pump/hand-rules.md"
+reserved_file = "reserved.txt"
+priority_file = "priority.txt"
+fix_prefix = "pumpfix"
+from = "operator"
+to = "hand"
+reply_from = "mind"
+
+[pump.board]
+from = ["operator@bd371d96.local"]
+since = "2026-10-15T12:25"
+mark = "pump"
+every = 120
+planners_max = 3
+plan_timeout = 1800
+reply_to = "operator@bd371d96.local"
+pull = false
+push_since = "30m"
+
+[pump.planner]
+run = 'pi -p --model zai/glm-5.3 --thinking high --append-system-prompt {charter} "$(cat)"'
+charter = "/Users/ianzepp/work/faberlang/.vivi/pump/planner-charter.md"
+split_timeout = 1500
+
+[pump.dispatch]
+last_resort = "codex/gpt-6-luna"
+max_attempts = 3
+budget = 600
+overdue_grace = 900
+per_tick = 4
+from = "origin/next"
+default_kind = "plain"
+
+[[pump.dispatch.lanes]]
+model = "deepseek/deepseek-v4-flash"
+cap = 10
+
+[[pump.dispatch.lanes]]
+model = "codex/gpt-6-luna"
+cap = 5
+
+[[pump.dispatch.lanes]]
+model = "zai/glm-5.3-flash"
+cap = 5
+
+[pump.dispatch.kinds.full]
+pools = ["glm"]
+skip_proof = false
+
+[pump.dispatch.kinds.plain]
+pools = ["glm"]
+skip_proof = false
+
+[pump.merge]
+batch = 8
+lanes = 4
+format = "cargo fmt --all"
+shared_checks = [
+    "./scripta/test --stage 1",
+    "./scripta/test --stage 2",
+    "cargo test --workspace --no-run --quiet",
+    "cargo build --quiet -p faber && target/debug/faber corpus corpus-suites/full --target runner > /private/tmp/claude-501/pump-merge-runner.jsonl 2>&1",
+]
+proof_timeout = 480
+remote_wait = 90
+remote_limit = 1800
+
+[pump.gate]
+command = "./scripta/test --stage 4b"
+every_merges = 8
+every_seconds = 1800
+pools = ["glm"]
+model = "zai/glm-5.3-flash"
+budget = 1800
+results_dir = "/Users/ianzepp/work/faberlang/.vivi/pump/gate-results"
+results_wait_seconds = 2700
+ignore_file = "/Users/ianzepp/work/faberlang/.vivi/pump/known-red.txt"
+max_replans = 2
+
+[pools.claude]
+provider = "local"
+slots = 10
+image = ""
+setup = []
+seed = []
+requires = []
+facts = [
+    "uname -srm",
+    "cargo --version",
+    "claude --version",
+]
+build_dir = "target"
+restore = []
+
+[pools.claude.fly]
+region = "iad"
+size = "performance-8x"
+memory = 32768
+tmpfs = "16g"
+
+[pools.claude.docker]
+memory = "4g"
+tmpfs = "2g"
+
+[pools.claude.ssh]
+
+[pools.claude.local]
+worktree_of = "~/work/faberlang/radix"
+
+[pools.claude.runpod]
+compute = "gpu"
+gpu_types = []
+gpu_count = 1
+cloud = "secure"
+container_disk_gb = 40
+data_centers = []
+ready_timeout = 120
+
+[pools.claude.harness]
+name = "claude"
+run = "claude -p --model {model} --effort $(case {model} in (*opus*) echo high ;; (*) echo xhigh ;; esac) --permission-mode bypassPermissions --append-system-prompt-file {rules} < {brief}"
+models = [
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+]
+env = ["USER"]
+
+[pools.claude.committer]
+name = "Ian Zepp"
+email = "ian.zepp@protonmail.com"
+
+[pools.claude.bridge]
+enabled = false
+
+[pools.fly]
+provider = "fly"
+repo = "faberlang/radix"
+slots = 64
+image = "rust:1.97-bookworm"
+setup = [
+    "curl -fsSL https://deb.nodesource.com/setup_24.x | bash -",
+    "apt-get install -y nodejs",
+    "npm install -g @earendil-works/pi-coding-agent",
+    """sh -c 'for b in /usr/local/rustup/toolchains/*/bin/*; do ln -sf "$b" /usr/local/cargo/bin/$(basename "$b"); done'""",
+]
+seed = ["cargo build -p faber"]
+requires = []
+facts = [
+    "uname -srm",
+    "cargo --version",
+    "pi --version",
+]
+build_dir = "target"
+restore = []
+
+[pools.fly.fly]
+app = "faberlang"
+region = "iad"
+size = "performance-8x"
+memory = 32768
+tmpfs = "16g"
+
+[pools.fly.docker]
+memory = "4g"
+tmpfs = "2g"
+
+[pools.fly.ssh]
+
+[pools.fly.local]
+
+[pools.fly.runpod]
+compute = "gpu"
+gpu_types = []
+gpu_count = 1
+cloud = "secure"
+container_disk_gb = 40
+data_centers = []
+ready_timeout = 120
+
+[pools.fly.github]
+app_id = 5274986
+private_key = "/redacted/id_ed25519"
+
+[pools.fly.harness]
+name = "pi"
+run = "pi -p --model {model} --thinking xhigh --append-system-prompt {rules} @{brief}"
+models = [
+    "deepseek/deepseek-flash",
+    "zai/glm-5.3-flash",
+    "zai/glm-5.3",
+]
+env = [
+    "DEEPSEEK_API_KEY",
+    "ZAI_API_KEY",
+]
+
+[pools.fly.committer]
+name = "Ian Zepp"
+email = "ian.zepp@protonmail.com"
+
+[pools.fly.bridge]
+enabled = false
+
+[pools.glm]
+provider = "local"
+slots = 10
+image = ""
+setup = []
+seed = []
+requires = []
+facts = [
+    "uname -srm",
+    "cargo --version",
+    "pi --version",
+]
+build_dir = "target"
+restore = []
+
+[pools.glm.fly]
+region = "iad"
+size = "performance-8x"
+memory = 32768
+tmpfs = "16g"
+
+[pools.glm.docker]
+memory = "4g"
+tmpfs = "2g"
+
+[pools.glm.ssh]
+
+[pools.glm.local]
+worktree_of = "~/work/faberlang/radix"
+
+[pools.glm.runpod]
+compute = "gpu"
+gpu_types = []
+gpu_count = 1
+cloud = "secure"
+container_disk_gb = 40
+data_centers = []
+ready_timeout = 120
+
+[pools.glm.harness]
+name = "pi"
+run = "pi -p --model {model} --thinking xhigh --append-system-prompt {rules} @{brief}"
+models = [
+    "deepseek/deepseek-v4-flash",
+    "codex/gpt-6-luna",
+    "zai/glm-5.3-flash",
+    "zai/glm-5.3",
+]
+env = [
+    "USER",
+    "ZAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+]
+
+[pools.glm.committer]
+name = "Ian Zepp"
+email = "ian.zepp@protonmail.com"
+
+[pools.glm.bridge]
+enabled = false
+
+[pools.pharos]
+provider = "docker"
+repo = "faberlang/radix"
+slots = 2
+image = "rust:1.97-bookworm"
+setup = [
+    "curl -fsSL https://deb.nodesource.com/setup_24.x | bash -",
+    "apt-get install -y nodejs",
+    "npm install -g @earendil-works/pi-coding-agent",
+    """sh -c 'for b in /usr/local/rustup/toolchains/*/bin/*; do ln -sf "$b" /usr/local/cargo/bin/$(basename "$b"); done'""",
+]
+seed = ["cargo build -p faber"]
+requires = []
+facts = [
+    "uname -srm",
+    "nproc",
+    "cargo --version",
+    "pi --version",
+]
+restore = []
+
+[pools.pharos.fly]
+region = "iad"
+size = "performance-8x"
+memory = 32768
+tmpfs = "16g"
+
+[pools.pharos.docker]
+host = "ssh://pharos"
+memory = "12g"
+tmpfs = "2g"
+
+[pools.pharos.ssh]
+
+[pools.pharos.local]
+
+[pools.pharos.runpod]
+compute = "gpu"
+gpu_types = []
+gpu_count = 1
+cloud = "secure"
+container_disk_gb = 40
+data_centers = []
+ready_timeout = 120
+
+[pools.pharos.github]
+app_id = 5274986
+private_key = "/redacted/id_ed25519"
+
+[pools.pharos.harness]
+name = "pi"
+run = "pi -p --model {model} --thinking xhigh --append-system-prompt {rules} @{brief}"
+models = [
+    "zai/glm-5.3-flash",
+    "deepseek/deepseek-flash",
+]
+env = [
+    "ZAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+]
+
+[pools.pharos.committer]
+name = "Ian Zepp"
+email = "ian.zepp@protonmail.com"
+
+[pools.pharos.bridge]
+enabled = false

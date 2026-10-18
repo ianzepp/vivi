@@ -11,73 +11,17 @@ pub(crate) fn handle_role_command(command: &RoleCommand) -> Result<(), VivariumE
             project,
             json,
         } => show_role(name, project.as_deref(), *json),
-        RoleCommand::Add {
+        RoleCommand::Add { .. } => add_from(command),
+        RoleCommand::Set { .. } => set_from(command),
+        RoleCommand::Pool {
             name,
-            kind,
-            harness,
-            provider,
-            model,
-            thinking,
-            status,
-            labels,
-            cadence,
-            project,
-        } => add_role(&AddRoleArgs {
-            name,
-            kind: kind.as_deref(),
-            harness: harness.as_deref(),
-            provider: provider.as_deref(),
-            model: model.as_deref(),
-            thinking: thinking.as_deref(),
-            status: status.as_deref(),
-            labels,
-            cadence: cadence.as_deref(),
-            project: project.as_deref(),
-        }),
-        RoleCommand::Set {
-            name,
-            kind,
-            clear_kind,
-            harness,
-            clear_harness,
-            provider,
-            clear_provider,
-            model,
-            clear_model,
-            thinking,
-            clear_thinking,
-            pid,
-            clear_pid,
-            host,
-            clear_host,
-            cadence,
-            clear_cadence,
-            status,
-            labels,
-            clear_labels,
+            pool,
             project,
         } => set_role(
             name,
             &RoleSetArgs {
-                kind: kind.clone(),
-                clear_kind: *clear_kind,
-                harness: harness.clone(),
-                clear_harness: *clear_harness,
-                provider: provider.clone(),
-                clear_provider: *clear_provider,
-                model: model.clone(),
-                clear_model: *clear_model,
-                thinking: thinking.clone(),
-                clear_thinking: *clear_thinking,
-                pid: *pid,
-                clear_pid: *clear_pid,
-                host: host.clone(),
-                clear_host: *clear_host,
-                cadence: cadence.clone(),
-                clear_cadence: *clear_cadence,
-                status: status.clone(),
-                labels: labels.clone(),
-                clear_labels: clear_labels.clone(),
+                pool: Some(pool.clone()),
+                ..RoleSetArgs::default()
             },
             project.as_deref(),
         ),
@@ -91,6 +35,110 @@ pub(crate) fn handle_role_command(command: &RoleCommand) -> Result<(), VivariumE
     }
 }
 
+fn set_from(command: &RoleCommand) -> Result<(), VivariumError> {
+    let RoleCommand::Set { name, project, .. } = command else {
+        return Err(VivariumError::Message("internal: expected role set".into()));
+    };
+    set_role(name, &role_set_args(command), project.as_deref())
+}
+
+fn role_set_args(command: &RoleCommand) -> RoleSetArgs {
+    let RoleCommand::Set {
+        kind,
+        clear_kind,
+        harness,
+        clear_harness,
+        provider,
+        clear_provider,
+        model,
+        clear_model,
+        thinking,
+        clear_thinking,
+        pid,
+        clear_pid,
+        host,
+        clear_host,
+        cadence,
+        clear_cadence,
+        status,
+        labels,
+        clear_labels,
+        pool,
+        clear_pool,
+        read_only,
+        clear_read_only,
+        models,
+        clear_models,
+        ..
+    } = command
+    else {
+        return RoleSetArgs::default();
+    };
+    RoleSetArgs {
+        kind: kind.clone(),
+        clear_kind: *clear_kind,
+        harness: harness.clone(),
+        clear_harness: *clear_harness,
+        provider: provider.clone(),
+        clear_provider: *clear_provider,
+        model: model.clone(),
+        clear_model: *clear_model,
+        thinking: thinking.clone(),
+        clear_thinking: *clear_thinking,
+        pid: *pid,
+        clear_pid: *clear_pid,
+        host: host.clone(),
+        clear_host: *clear_host,
+        cadence: cadence.clone(),
+        clear_cadence: *clear_cadence,
+        status: status.clone(),
+        labels: labels.clone(),
+        clear_labels: clear_labels.clone(),
+        pool: pool.clone(),
+        clear_pool: *clear_pool,
+        read_only: *read_only,
+        clear_read_only: *clear_read_only,
+        models: models.clone(),
+        clear_models: *clear_models,
+    }
+}
+
+fn add_from(command: &RoleCommand) -> Result<(), VivariumError> {
+    let RoleCommand::Add {
+        name,
+        kind,
+        harness,
+        provider,
+        model,
+        thinking,
+        status,
+        labels,
+        cadence,
+        pool,
+        read_only,
+        models,
+        project,
+    } = command
+    else {
+        return Err(VivariumError::Message("internal: expected role add".into()));
+    };
+    add_role(&AddRoleArgs {
+        name,
+        kind: kind.as_deref(),
+        harness: harness.as_deref(),
+        provider: provider.as_deref(),
+        model: model.as_deref(),
+        thinking: thinking.as_deref(),
+        status: status.as_deref(),
+        labels,
+        cadence: cadence.as_deref(),
+        pool: pool.as_deref(),
+        read_only: *read_only,
+        models,
+        project: project.as_deref(),
+    })
+}
+
 struct AddRoleArgs<'a> {
     name: &'a str,
     kind: Option<&'a str>,
@@ -101,10 +149,14 @@ struct AddRoleArgs<'a> {
     status: Option<&'a str>,
     labels: &'a [String],
     cadence: Option<&'a str>,
+    pool: Option<&'a str>,
+    read_only: Option<bool>,
+    models: &'a [String],
     project: Option<&'a std::path::Path>,
 }
 
 #[allow(clippy::struct_excessive_bools)]
+#[derive(Default)]
 struct RoleSetArgs {
     kind: Option<String>,
     clear_kind: bool,
@@ -125,6 +177,12 @@ struct RoleSetArgs {
     status: Option<String>,
     labels: Vec<String>,
     clear_labels: Vec<String>,
+    pool: Option<String>,
+    clear_pool: bool,
+    read_only: Option<bool>,
+    clear_read_only: bool,
+    models: Vec<String>,
+    clear_models: bool,
 }
 
 fn list_roles(project: Option<&std::path::Path>, json: bool) -> Result<(), VivariumError> {
@@ -188,6 +246,9 @@ fn build_add_update(args: &AddRoleArgs<'_>) -> RoleUpdate {
         thinking: args.thinking.map(|value| Some(value.to_string())),
         cadence: args.cadence.map(|value| Some(value.to_string())),
         add_labels: args.labels.iter().map(String::clone).collect(),
+        pool: args.pool.map(|value| Some(value.to_string())),
+        read_only: args.read_only.map(Some),
+        models: (!args.models.is_empty()).then(|| args.models.to_vec()),
         ..RoleUpdate::default()
     }
 }
@@ -342,6 +403,17 @@ fn build_role_update(args: &RoleSetArgs) -> RoleUpdate {
         args.host.as_ref(),
         args.clear_host,
     );
+    set_optional_field(&mut update.pool, args.clear_pool, args.pool.as_ref());
+    if args.clear_read_only {
+        update.read_only = Some(None);
+    } else if let Some(flag) = args.read_only {
+        update.read_only = Some(Some(flag));
+    }
+    if args.clear_models {
+        update.models = Some(Vec::new());
+    } else if !args.models.is_empty() {
+        update.models = Some(args.models.clone());
+    }
     update
 }
 
@@ -401,6 +473,9 @@ fn update_has_fields(update: &RoleUpdate) -> bool {
         || update.pid.is_some()
         || update.host.is_some()
         || update.cadence.is_some()
+        || update.pool.is_some()
+        || update.read_only.is_some()
+        || update.models.is_some()
         || !update.add_labels.is_empty()
         || !update.clear_labels.is_empty()
 }
@@ -428,6 +503,20 @@ fn print_role_text(view: &RoleView, full: bool) {
     println!("  pid:       {}", display_pid(view.pid));
     println!("  host:      {}", display_opt(view.host.as_deref()));
     println!("  cadence:   {}", display_opt(view.cadence.as_deref()));
+    println!("  pool:      {}", display_opt(view.pool.as_deref()));
+    println!(
+        "  read_only: {}",
+        view.read_only
+            .map_or_else(|| "(unset)".into(), |flag| flag.to_string())
+    );
+    println!(
+        "  models:    {}",
+        if view.models.is_empty() {
+            "(unset)".into()
+        } else {
+            view.models.join(", ")
+        }
+    );
     if view.labels.is_empty() {
         println!("  labels:    (none)");
     } else {

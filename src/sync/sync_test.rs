@@ -78,8 +78,10 @@ fn keys_older_versions_wrote_are_ignored_and_dropped_on_rewrite() {
     mailspace.set_description(Some("rewritten".into())).unwrap();
 
     let raw = std::fs::read_to_string(tmp.path().join(".vivi/mailspace.toml")).unwrap();
-    assert!(!raw.contains("recipient"), "{raw}");
-    assert!(!raw.contains("sync.names"), "{raw}");
+    assert!(raw.contains("description = \"rewritten\""), "{raw}");
+    // Targeted toml_edit writes keep other keys, including retired ones.
+    // Resolve still ignores them.
+    assert!(raw.contains("recipient"), "{raw}");
 }
 
 #[test]
