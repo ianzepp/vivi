@@ -7,7 +7,7 @@
 //! pump can still read a converted file.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,6 +16,9 @@ use rusqlite::{
 };
 
 use crate::error::VivariumError;
+
+mod schema;
+use schema::{newer_schema, schema_version, take_migration_lock};
 
 use super::state::{Attempt, GateRecord, NeedRecord, Promotion, State, Status, Unit};
 
@@ -140,6 +143,8 @@ CREATE TABLE IF NOT EXISTS pump_control (
 /// A connection to `pump.db`.
 pub struct PumpStore {
     conn: Connection,
+    // Keep the project pump lock for the full lifetime of a schema migration.
+    _migration_lock: Option<File>,
 }
 
 impl PumpStore {
@@ -150,6 +155,20 @@ impl PumpStore {
     /// Returns [`VivariumError`] when the directory or file cannot be
     /// created, the connection cannot be configured, or the schema fails.
     pub fn open(path: &Path) -> Result<Self, VivariumError> {
+        Self::open_with_lock_policy(path, false)
+    }
+
+    /// Open the store while the caller already owns the project's pump lock.
+    /// Pump startup uses this path to migrate an older schema after excluding
+    /// every other pump and migration process.
+    pub(crate) fn open_for_run(path: &Path) -> Result<Self, VivariumError> {
+        Self::open_with_lock_policy(path, true)
+    }
+
+    fn open_with_lock_policy(
+        path: &Path,
+        caller_holds_pump_lock: bool,
+    ) -> Result<Self, VivariumError> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
         }
@@ -157,17 +176,29 @@ impl PumpStore {
         conn.set_transaction_behavior(TransactionBehavior::Immediate);
         conn.busy_timeout(Duration::from_secs(5))
             .map_err(db_err("set busy_timeout"))?;
+        let version = schema_version(&conn)?;
+        if version > SCHEMA_VERSION {
+            return Err(newer_schema(version));
+        }
+        let migration_lock = if version < SCHEMA_VERSION && !caller_holds_pump_lock {
+            Some(take_migration_lock(path)?)
+        } else {
+            None
+        };
+        ensure_schema(&conn)?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(db_err("set journal_mode"))?;
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(db_err("set synchronous"))?;
-        ensure_schema(&conn)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         }
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            _migration_lock: migration_lock,
+        })
     }
 
     /// Open `path` read-only. A missing file yields `None`, so a reader can
@@ -185,7 +216,10 @@ impl PumpStore {
             .map_err(db_err("set busy_timeout"))?;
         conn.pragma_update(None, "query_only", true)
             .map_err(db_err("set query_only"))?;
-        Ok(Some(Self { conn }))
+        Ok(Some(Self {
+            conn,
+            _migration_lock: None,
+        }))
     }
 
     /// The `PRAGMA user_version` of an open store.
@@ -426,16 +460,12 @@ pub fn append_exception(home: &Path, at: u64, kind: &str, unit: &str, text: &str
 
 /// Ensure the schema and write the schema version.
 fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
+    let version = schema_version(conn)?;
+    if version > SCHEMA_VERSION {
+        return Err(newer_schema(version));
+    }
     conn.execute_batch(SCHEMA_DDL)
         .map_err(db_err("create schema"))?;
-    let version: i64 = conn
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(db_err("read user_version"))?;
-    if version > SCHEMA_VERSION {
-        return Err(VivariumError::Message(format!(
-            "pump.db schema {version} is newer than this binary ({SCHEMA_VERSION}); refusing to open"
-        )));
-    }
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
     }

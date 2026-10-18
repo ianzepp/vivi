@@ -1,6 +1,8 @@
 //! Tests for [`crate::pump::store`]: schema, round trip, export, and the
 //! exception row.
 
+use std::fs::File;
+
 use tempfile::tempdir;
 
 use crate::pump::state::{
@@ -199,6 +201,53 @@ fn a_version_three_database_migrates_units_to_named_targets() {
     let store = PumpStore::open(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert!(store.load().unwrap().units.is_empty());
+}
+
+#[test]
+fn schema_migration_refuses_to_run_under_an_active_pump_lock() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+        .unwrap();
+    drop(conn);
+
+    let lock = File::create(dir.path().join("lock")).unwrap();
+    lock.try_lock().unwrap();
+    let err = match PumpStore::open(&path) {
+        Ok(_) => panic!("schema migration must wait for the active pump"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("another pump owns"), "{err}");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION - 1);
+    drop(lock);
+
+    let store = PumpStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert!(crate::pump::run::lock_is_held(dir.path()).unwrap());
+    drop(store);
+    assert!(!crate::pump::run::lock_is_held(dir.path()).unwrap());
+}
+
+#[test]
+fn the_locked_pump_can_migrate_its_own_store_at_startup() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+        .unwrap();
+    drop(conn);
+
+    let lock = File::create(dir.path().join("lock")).unwrap();
+    lock.try_lock().unwrap();
+    let store = PumpStore::open_for_run(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
 }
 
 #[test]

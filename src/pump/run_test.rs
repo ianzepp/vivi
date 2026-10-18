@@ -9,12 +9,16 @@ use tempfile::tempdir;
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::Merger;
-use crate::pump::run::{ensure_repo, run, run_with, status, tick, write_status};
+use crate::pump::run::{ensure_repo, run, run_with, status, tick as run_tick, write_status};
 use crate::pump::state::{GateRun, NeedRecord, State, Status, Unit};
-use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// The fake clock's start (1970-01-12T13:46:40Z).
 const T0: u64 = 1_000_000;
+
+fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
+    run_tick(ctx, st, merger).unwrap();
+}
 
 /// A mailspace whose `[pump]` table passes `validate`: the default
 /// `board.mark` is set, so `planner.run` must be non-empty.
@@ -139,6 +143,30 @@ fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     assert!(!commands.iter().any(|c| c.contains("task send")));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert_eq!(text.lines().count(), 4);
+}
+
+#[test]
+fn a_tick_stops_when_its_state_cannot_be_saved() {
+    let (_dir, ctx, host) = setup();
+    let path = ctx.home.join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        .unwrap();
+    drop(conn);
+    let (merger, _results, _jobs) = Merger::detached();
+
+    let err = run_tick(&ctx, &mut State::default(), &merger).unwrap_err();
+
+    assert!(err.to_string().contains("state save failed"), "{err}");
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|command| command.contains("pool status")),
+        "dispatch must stop after persistence fails: {:?}",
+        host.commands()
+    );
 }
 
 #[test]

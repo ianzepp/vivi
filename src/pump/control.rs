@@ -52,17 +52,32 @@ pub struct PumpControl {
 
 /// Initialize control state and migrate the old marker files once.
 pub fn initialize(home: &Path) -> Result<PumpControl, VivariumError> {
+    initialize_with_lock_policy(home, false)
+}
+
+/// Initialize control state from the pump process that already owns its lock.
+pub(crate) fn initialize_for_run(home: &Path) -> Result<PumpControl, VivariumError> {
+    initialize_with_lock_policy(home, true)
+}
+
+fn initialize_with_lock_policy(
+    home: &Path,
+    caller_holds_pump_lock: bool,
+) -> Result<PumpControl, VivariumError> {
     let stop = home.join("STOP");
     let pause = home.join("PAUSE");
-    let legacy_mode = if stop.exists() {
-        PumpMode::Stopped
-    } else if pause.exists() {
-        PumpMode::Paused
+    let marker_mode = legacy_marker_mode(home);
+    let legacy_mode = marker_mode.unwrap_or(PumpMode::Running);
+    let mut store = if caller_holds_pump_lock {
+        PumpStore::open_for_run(&home.join(DB_FILENAME))?
     } else {
-        PumpMode::Running
+        PumpStore::open(&home.join(DB_FILENAME))?
     };
-    let mut store = PumpStore::open(&home.join(DB_FILENAME))?;
-    let mode = PumpMode::parse(&store.initialize_control(legacy_mode.as_str())?)?;
+    let mut mode = PumpMode::parse(&store.initialize_control(legacy_mode.as_str())?)?;
+    if let Some(marker_mode) = marker_mode {
+        store.set_control_mode(marker_mode.as_str())?;
+        mode = marker_mode;
+    }
     remove_legacy_flag(&stop);
     remove_legacy_flag(&pause);
     Ok(PumpControl {
@@ -104,23 +119,30 @@ fn read_initialized(home: &Path) -> Result<Option<PumpControl>, VivariumError> {
 
 /// Report control mode and migrate legacy flags only when relevant state exists.
 pub fn inspect(home: &Path) -> Result<PumpControl, VivariumError> {
-    if home.join(DB_FILENAME).is_file() || home.join("PAUSE").exists() || home.join("STOP").exists()
-    {
-        initialize(home)
-    } else {
-        Ok(PumpControl {
-            mode: PumpMode::Running,
-            shutdown_requested: false,
-        })
-    }
+    Ok(read_initialized(home)?.unwrap_or_else(|| legacy_control(home)))
 }
 
 /// Set one project's operator mode, migrating any legacy flags first.
 pub fn set_project_mode(project: &Path, mode: PumpMode) -> Result<(), VivariumError> {
     let home = project_home(project)?;
-    initialize(&home)?;
+    let lock_held = super::run::lock_is_held(&home)?;
+    let version = read_schema_version(&home)?;
+    if lock_held && version.is_none_or(|version| version < SCHEMA_VERSION) {
+        write_legacy_mode(&home, mode)?;
+        println!("pump {mode} for {}", project.display());
+        return Ok(());
+    }
+    if !lock_held {
+        initialize(&home)?;
+    }
     let mut store = PumpStore::open(&home.join(DB_FILENAME))?;
+    if lock_held {
+        store.initialize_control(legacy_mode(&home).as_str())?;
+    }
     store.set_control_mode(mode.as_str())?;
+    if lock_held {
+        write_legacy_mode(&home, mode)?;
+    }
     println!("pump {mode} for {}", project.display());
     Ok(())
 }
@@ -156,4 +178,52 @@ fn remove_legacy_flag(path: &Path) {
     {
         tracing::warn!(path = %path.display(), %error, "could not remove migrated pump flag");
     }
+}
+
+fn read_schema_version(home: &Path) -> Result<Option<i64>, VivariumError> {
+    PumpStore::open_read_only(&home.join(DB_FILENAME))?
+        .map(|store| store.schema_version())
+        .transpose()
+}
+
+fn legacy_mode(home: &Path) -> PumpMode {
+    legacy_marker_mode(home).unwrap_or(PumpMode::Running)
+}
+
+fn legacy_marker_mode(home: &Path) -> Option<PumpMode> {
+    if home.join("STOP").exists() {
+        Some(PumpMode::Stopped)
+    } else if home.join("PAUSE").exists() {
+        Some(PumpMode::Paused)
+    } else {
+        None
+    }
+}
+
+fn legacy_control(home: &Path) -> PumpControl {
+    PumpControl {
+        mode: legacy_mode(home),
+        shutdown_requested: false,
+    }
+}
+
+fn write_legacy_mode(home: &Path, mode: PumpMode) -> Result<(), VivariumError> {
+    fs::create_dir_all(home)?;
+    let stop = home.join("STOP");
+    let pause = home.join("PAUSE");
+    match mode {
+        PumpMode::Running => {
+            remove_legacy_flag(&stop);
+            remove_legacy_flag(&pause);
+        }
+        PumpMode::Paused => {
+            fs::write(&pause, "")?;
+            remove_legacy_flag(&stop);
+        }
+        PumpMode::Stopped => {
+            fs::write(&stop, "")?;
+            remove_legacy_flag(&pause);
+        }
+    }
+    Ok(())
 }

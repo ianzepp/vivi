@@ -2032,8 +2032,10 @@ blocks its dependents until a person unblocks it.
    `no-defect`, including a `stuck` one.
 5. The reserved file (`reserved.txt` in the home by default, one path or glob
    per line, `#` comments) holds a path the unit's `write_scope` overlaps.
-   Another unit that is `inflight`, `delivered` or `merging` on an
-   overlapping scope blocks it too. Overlap is read segment by segment:
+   An `inflight` unit on an overlapping scope blocks it too. A delivered unit
+   is no longer being edited, and the merge thread serializes integration, so
+   `delivered` and `merging` units do not hold new dispatches. Overlap is read
+   segment by segment:
    `*`, `?` and `[...]` match inside one segment, `**` any number of
    segments, a glob with no `/` matches at any depth, a scope covers what is
    under it (`src/a` overlaps `src/a/b.rs`), two globs in the same position

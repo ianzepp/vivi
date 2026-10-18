@@ -121,7 +121,7 @@ fn an_inflight_unit_with_an_overlapping_scope_blocks() {
 }
 
 #[test]
-fn a_delivered_or_merging_overlap_blocks_a_normal_unit_but_not_a_fix_unit() {
+fn delivered_and_merging_overlaps_do_not_block_new_units() {
     let (_dir, ctx, _host, mut st) = setup();
     let (did, du) = mk("d", Status::Delivered, &["src/ovl"]);
     let (mid, mu) = mk("m", Status::Merging, &["src/ovl/deep.rs"]);
@@ -131,8 +131,7 @@ fn a_delivered_or_merging_overlap_blocks_a_normal_unit_but_not_a_fix_unit() {
     st.units.insert(mid, mu);
     st.units.insert(uid, uu);
     st.units.insert(fid, fu);
-    assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
-    // Fix units ignore delivered and merging overlaps; only inflight counts.
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
     assert!(is_ready(&ctx, &st, "pumpfix-u", &BTreeMap::new()));
 }
 
@@ -386,7 +385,7 @@ fn an_unreadable_dependency_gate_holds_nothing_and_logs_it() {
 }
 
 #[test]
-fn a_priority_unit_ignores_delivered_overlaps_like_a_fix_unit() {
+fn delivered_overlaps_do_not_block_priority_or_normal_units() {
     let (_dir, ctx, _host, mut st) = setup();
     let path = ctx.cfg.priority_path(&ctx.project);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -399,5 +398,5 @@ fn a_priority_unit_ignores_delivered_overlaps_like_a_fix_unit() {
     st.units.insert(uid, uu);
     st.units.insert(vid, vu);
     assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
-    assert!(!is_ready(&ctx, &st, "v", &BTreeMap::new()));
+    assert!(is_ready(&ctx, &st, "v", &BTreeMap::new()));
 }

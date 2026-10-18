@@ -88,9 +88,8 @@ pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
 /// A unit is ready to dispatch when it is pending, its need has no
 /// unlanded dependency, its write scope overlaps no reserved path, every
 /// `after` dependency is satisfied, and no other unit with an overlapping write scope is busy.
-/// Fix units (ids starting with `fix_prefix`) and priority units (their need
-/// is in `priority_file`) only clash with other fix units, and only while
-/// those are inflight.
+/// Busy means another agent is inflight; delivered and merging work does not
+/// hold worker capacity. Fix and priority units only clash with fix units.
 #[must_use]
 pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<String>>) -> bool {
     let Some(u) = st.units.get(uid) else {
@@ -220,9 +219,9 @@ pub fn note_hold(
     true
 }
 
-/// True when another unit is busy on an overlapping write scope. Busy is
-/// `inflight` for fix units and `inflight` + `delivered` + `merging` for
-/// normal units; a fix unit ignores overlap against non-fix units.
+/// True when an agent is editing an overlapping write scope. Delivered and
+/// merging units no longer occupy worker space, and the merge thread serializes
+/// their integration; a fix unit ignores overlap against non-fix units.
 fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
     let fix = uid.starts_with(ctx.cfg.fix_prefix.as_str()) || priority_needs(ctx).contains(&u.need);
     for (oid, o) in &st.units {
@@ -232,14 +231,7 @@ fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
         if o.target_id() != u.target_id() {
             continue;
         }
-        let busy = if fix {
-            o.status == Status::Inflight
-        } else {
-            matches!(
-                o.status,
-                Status::Inflight | Status::Delivered | Status::Merging
-            )
-        };
+        let busy = o.status == Status::Inflight;
         if busy && overlaps(&u.write_scope, &o.write_scope) {
             if fix && !oid.starts_with(ctx.cfg.fix_prefix.as_str()) {
                 continue;

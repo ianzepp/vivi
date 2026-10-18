@@ -1,6 +1,7 @@
 //! Pump tick, status, and the run/once entry points.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
+use std::io::ErrorKind;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -25,7 +26,7 @@ use crate::pump::store::{DB_FILENAME, PumpStore};
 /// feed, and — unless control state is paused — dispatch, the hold cycle,
 /// the gate start, and a second merge pass, saving at three save
 /// points and ending in [`write_status`].
-pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
+pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumError> {
     merger.apply(ctx, st);
     board::board(ctx, st);
     plan::ingest(ctx, st);
@@ -40,7 +41,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     });
     merger.apply(ctx, st);
     merger.feed(ctx, st);
-    save(ctx, st);
+    save(ctx, st)?;
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
         Err(error) => {
@@ -48,15 +49,15 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
                 "control state read failed; skipping dispatch: {error}"
             ));
             write_status(ctx, st);
-            return;
+            return Err(error);
         }
     };
     if control.mode == crate::pump::control::PumpMode::Paused {
         write_status(ctx, st);
-        return;
+        return Ok(());
     }
     dispatch::dispatch(ctx, st);
-    save(ctx, st);
+    save(ctx, st)?;
     for target in ctx.cfg.target_configs().keys() {
         let Some(target_ctx) = ctx.for_target(target) else {
             ctx.exception(
@@ -74,8 +75,9 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     }
     merger.apply(ctx, st);
     merger.feed(ctx, st);
-    save(ctx, st);
+    save(ctx, st)?;
     write_status(ctx, st);
+    Ok(())
 }
 
 /// Write the four status lines to `<home>/status.txt`:
@@ -145,7 +147,7 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let home = cfg.home_dir(project);
     fs::create_dir_all(&home)?;
     let lock = take_lock(&home)?;
-    let mut control = crate::pump::control::initialize(&home)?;
+    let mut control = crate::pump::control::initialize_for_run(&home)?;
     if control.shutdown_requested {
         crate::pump::control::request_shutdown(&home, false)?;
         control.shutdown_requested = false;
@@ -162,7 +164,7 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
         ctx.log("pump is stopped; run vivi pump start to enable it");
         return Ok(());
     }
-    run_with(&ctx, once)?;
+    run_with_locked(&ctx, once)?;
     drop(lock);
     Ok(())
 }
@@ -191,9 +193,26 @@ pub fn status(project: &Path) -> Result<String, VivariumError> {
 ///
 /// # Errors
 /// Returns whatever loading the state fails with.
+#[cfg(test)]
 pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
+    run_with_lock_policy(ctx, once, false)
+}
+
+fn run_with_locked(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
+    run_with_lock_policy(ctx, once, true)
+}
+
+fn run_with_lock_policy(
+    ctx: &Ctx,
+    once: bool,
+    caller_holds_pump_lock: bool,
+) -> Result<(), VivariumError> {
     ensure_repo(ctx)?;
-    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME))?;
+    let mut store = if caller_holds_pump_lock {
+        PumpStore::open_for_run(&ctx.home.join(DB_FILENAME))?
+    } else {
+        PumpStore::open(&ctx.home.join(DB_FILENAME))?
+    };
     let json_path = ctx.home.join("state.json");
     let mut st = if store.is_empty()? && json_path.is_file() {
         let mut imported = State::load(&json_path)?;
@@ -214,8 +233,7 @@ pub(crate) fn run_with(ctx: &Ctx, once: bool) -> Result<(), VivariumError> {
     st.recover_after_restart();
     store.save(&st)?;
     let merger = Merger::start(ctx);
-    drive(ctx, &mut st, &merger, once);
-    Ok(())
+    drive(ctx, &mut st, &merger, once)
 }
 
 /// Startup check: the integration clone must exist. A missing `repo` is
@@ -332,24 +350,27 @@ fn clone_command(ctx: &Ctx, url: &str) -> String {
 /// The run/once loop: tick, then return when control state is stopped,
 /// save and return, else sleep `tick` seconds. A panic
 /// inside a tick is caught, logged as `TICK ERROR`, and the state saved.
-fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) {
+fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) -> Result<(), VivariumError> {
     loop {
         if exit_requested(ctx) {
-            save(ctx, st);
-            return;
+            save(ctx, st)?;
+            return Ok(());
         }
         let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger));
-        if let Err(err) = catch_unwind(tick_once) {
-            ctx.log(&format!("TICK ERROR {}", panic_note(&err)));
-            save(ctx, st);
+        match catch_unwind(tick_once) {
+            Ok(result) => result?,
+            Err(err) => {
+                ctx.log(&format!("TICK ERROR {}", panic_note(&err)));
+                save(ctx, st)?;
+            }
         }
         if once {
-            return;
+            return Ok(());
         }
         if exit_requested(ctx) {
             ctx.log("pump control state requests exit");
-            save(ctx, st);
-            return;
+            save(ctx, st)?;
+            return Ok(());
         }
         thread::sleep(Duration::from_secs(ctx.cfg.tick));
     }
@@ -393,16 +414,25 @@ fn take_lock(home: &Path) -> Result<File, VivariumError> {
 
 /// Whether another pump process currently owns this project's lock.
 pub fn lock_is_held(home: &Path) -> Result<bool, VivariumError> {
-    let lock = File::create(home.join("lock"))?;
+    let path = home.join("lock");
+    let lock = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
     Ok(lock.try_lock().is_err())
 }
 
-/// Save the state to `<home>/pump.db`; a failure is logged, never fatal.
-fn save(ctx: &Ctx, st: &State) {
+/// Save the state to `<home>/pump.db`; stop the controller if it cannot be saved.
+fn save(ctx: &Ctx, st: &State) -> Result<(), VivariumError> {
     let path = ctx.home.join(DB_FILENAME);
-    if let Err(err) = PumpStore::open(&path).and_then(|mut store| store.save(st)) {
-        ctx.log(&format!("state save failed at {}: {err}", path.display()));
-    }
+    PumpStore::open(&path)
+        .and_then(|mut store| store.save(st))
+        .map_err(|err| {
+            let message = format!("state save failed at {}: {err}", path.display());
+            ctx.log(&message);
+            VivariumError::Message(message)
+        })
 }
 
 /// `vivi pump closeout`: list complete-but-open needs, or close one.

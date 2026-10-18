@@ -26,6 +26,10 @@ pub mod store;
 mod config_test;
 
 #[cfg(test)]
+#[path = "pump/control_test.rs"]
+mod control_test;
+
+#[cfg(test)]
 #[path = "pump/state_test.rs"]
 mod state_test;
 

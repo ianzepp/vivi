@@ -342,12 +342,12 @@ Readiness (`ready`):
   release is silent. The same rule keeps a `delivered` unit out of the merge
   feed, so a dependent cannot merge before its dependency.
 - Every id in `after` must be `satisfied`.
-- Write-scope exclusivity: no other unit whose write scope overlaps may be
-  busy. Busy is `inflight` for fix units and
-  `inflight`+`delivered`+`merging` for normal units. A fix unit
-  (id starting with `fix_prefix`) ignores overlap against non-fix units. A
-  priority unit (its `need` is listed in the priority file) gets the same
-  bypass.
+- Write-scope serialization: an overlapping `inflight` unit blocks dispatch
+  while an agent is editing that scope. `delivered` and `merging` units no
+  longer occupy workers, and the merge thread serializes their integration, so
+  they do not block new dispatches. Fix units (ids starting with `fix_prefix`)
+  and priority units (their `need` is listed in the priority file) ignore
+  overlap against non-fix units.
 
 - The unit's write scope must not overlap any path in the reserved file
   (`reserved_file`, read afresh on every check; blank lines and lines starting

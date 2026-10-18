@@ -17,7 +17,7 @@ use tempfile::tempdir;
 use crate::pump::config::{BoardConfig, DispatchConfig, GateConfig, Lane, MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::Merger;
-use crate::pump::run::tick;
+use crate::pump::run::tick as run_tick;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
@@ -29,6 +29,10 @@ const DEADLINE_SECS: u64 = 5;
 const TIP: &str = "0123456789abcdef0123456789abcdef01234567";
 /// The task handle the scripted gate mints.
 const GATE_TASK: &str = "99887766";
+
+fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
+    run_tick(ctx, st, merger).unwrap();
+}
 /// A second plan file, ingested mid-test to mint a fresh unit.
 const SECOND_PLAN: &str = concat!(
     "{\"need\": \"ny\", \"verdict\": \"units\", \"reason\": \"a second need\", ",
@@ -381,12 +385,12 @@ fn paused_control_stops_dispatch_but_a_delivered_unit_still_merges() {
 }
 
 #[test]
-fn a_dependent_unit_waits_for_its_prerequisite_to_merge_and_a_scope_overlap_serialises_two_units() {
+fn a_dependent_waits_for_merge_but_overlap_does_not_hold_a_delivered_unit() {
     let dir = tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), config());
     world(&host);
-    // Distinct task handles per send: the prerequisite first, then the two
-    // units its merge releases.
+    // Distinct task handles per send: the prerequisite, the overlapping unit,
+    // then the dependent whose prerequisite must merge first.
     host.reply_once("task send", 0, "created hand aaaaaaaa\n");
     host.reply_once("task send", 0, "created hand bbbbbbbb\n");
     host.reply("task send", 0, "created hand cccccccc\n");
@@ -415,7 +419,7 @@ fn a_dependent_unit_waits_for_its_prerequisite_to_merge_and_a_scope_overlap_seri
     record_need(&mut st, "n3", &["z-c1"]);
     let merger = Merger::start(&ctx);
 
-    tick(&ctx, &mut st, &merger); // only the prerequisite may start
+    tick(&ctx, &mut st, &merger); // x starts; z waits while x is inflight
     assert_eq!(st.units.get("x-a1").unwrap().status, Status::Inflight);
     assert_eq!(st.units.get("y-b1").unwrap().status, Status::Pending);
     assert_eq!(st.units.get("z-c1").unwrap().status, Status::Pending);
@@ -423,12 +427,11 @@ fn a_dependent_unit_waits_for_its_prerequisite_to_merge_and_a_scope_overlap_seri
 
     tick(&ctx, &mut st, &merger); // x-a1 delivered and queued for merge
     assert!(host.logs().iter().any(|l| l.contains("delivered x-a1")));
-    // Delivered is not satisfied: the dependent (whose own scope is free)
-    // still waits for the merge, and the overlapping unit still sees a busy
-    // scope. Neither may borrow the lane yet.
+    // Delivered is not satisfied, so y still waits for the merge. z can start
+    // now because no agent is editing x's scope and integration is serialized.
     assert_eq!(st.units.get("y-b1").unwrap().status, Status::Pending);
-    assert_eq!(st.units.get("z-c1").unwrap().status, Status::Pending);
-    assert_eq!(count(&host, "task send"), 1);
+    assert_eq!(st.units.get("z-c1").unwrap().status, Status::Inflight);
+    assert_eq!(count(&host, "task send"), 2);
 
     let all_merged = |st: &State| {
         ["x-a1", "y-b1", "z-c1"]
@@ -438,8 +441,8 @@ fn a_dependent_unit_waits_for_its_prerequisite_to_merge_and_a_scope_overlap_seri
     assert!(drive_until(&ctx, &mut st, &merger, all_merged));
     assert_eq!(st.merges, 3);
     assert_eq!(st.closed_needs.len(), 3);
-    // The dispatches happened in lifecycle order: prerequisite first, then
-    // the dependent and the overlap-released unit, each on its own branch.
+    // The dependent starts after the prerequisite merges; the overlapping
+    // unit starts as soon as the prerequisite worker delivers its branch.
     let branches: Vec<String> = host
         .commands()
         .iter()
@@ -448,6 +451,6 @@ fn a_dependent_unit_waits_for_its_prerequisite_to_merge_and_a_scope_overlap_seri
         .collect();
     assert_eq!(branches.len(), 3, "{branches:?}");
     assert!(branches[0].contains("unit/x-a1-a1"), "{branches:?}");
-    assert!(branches[1].contains("unit/y-b1-a1"), "{branches:?}");
-    assert!(branches[2].contains("unit/z-c1-a1"), "{branches:?}");
+    assert!(branches[1].contains("unit/z-c1-a1"), "{branches:?}");
+    assert!(branches[2].contains("unit/y-b1-a1"), "{branches:?}");
 }
