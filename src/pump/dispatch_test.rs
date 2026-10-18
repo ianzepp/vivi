@@ -531,7 +531,7 @@ fn the_second_attempt_uses_a_new_branch_name_and_carries_the_failure_in_the_brie
     assert_eq!(unit.attempts, 2);
     assert_eq!(unit.branch.as_deref(), Some("unit/u1-a2"));
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
-    assert!(brief.contains("A PREVIOUS ATTEMPT AT THIS UNIT FAILED (proof-failed)"));
+    assert!(brief.contains("- attempt 1 (m/b) ended: proof-failed; branch unit/u1-a1"));
     assert!(brief.contains("cargo test exploded"));
 }
 
