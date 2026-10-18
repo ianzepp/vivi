@@ -44,6 +44,8 @@ fn sample() -> State {
             why: String::from("timeout"),
             detail: String::from("slow"),
             at: 9,
+            branch: Some(String::from("unit/u1-a1")),
+            task: Some(String::from("t1")),
         }],
         ..Unit::default()
     };
@@ -125,6 +127,8 @@ fn a_saved_state_round_trips() {
     assert_eq!(unit.merged_at, Some(12));
     assert_eq!(unit.history.len(), 1);
     assert_eq!(unit.history[0].why, "timeout");
+    assert_eq!(unit.history[0].branch.as_deref(), Some("unit/u1-a1"));
+    assert_eq!(unit.history[0].task.as_deref(), Some("t1"));
     assert_eq!(unit.extra.get("future").unwrap(), &serde_json::json!(7));
     assert_eq!(back.order, vec![String::from("u1")]);
     assert_eq!(back.needs["n1"].units, vec![String::from("u1")]);
@@ -202,6 +206,44 @@ fn a_version_three_database_migrates_units_to_named_targets() {
     let store = PumpStore::open(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert!(store.load().unwrap().units.is_empty());
+}
+
+#[test]
+fn a_version_five_database_gains_the_attempt_branch_and_task_columns() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE unit_events DROP COLUMN branch;
+         ALTER TABLE unit_events DROP COLUMN task;
+         PRAGMA user_version = 5;",
+    )
+    .unwrap();
+    drop(conn);
+    let mut store = PumpStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    store.save(&sample()).unwrap();
+    let attempt = &store.load().unwrap().units["u1"].history[0];
+    assert_eq!(attempt.branch.as_deref(), Some("unit/u1-a1"));
+    assert_eq!(attempt.task.as_deref(), Some("t1"));
+    // Opening again is a no-op: the column ensure is idempotent.
+    drop(store);
+    let again = PumpStore::open(&path).unwrap();
+    assert_eq!(again.load().unwrap().units["u1"].history.len(), 1);
+}
+
+#[test]
+fn an_attempt_without_a_branch_or_task_keeps_the_old_json_shape() {
+    let attempt = Attempt {
+        attempt: 1,
+        why: String::from("x"),
+        ..Attempt::default()
+    };
+    let text = serde_json::to_string(&attempt).unwrap();
+    assert!(!text.contains("branch") && !text.contains("task"), "{text}");
+    let back: Attempt = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.branch, None);
 }
 
 #[test]

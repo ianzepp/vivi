@@ -14,6 +14,7 @@
 
 use sha2::{Digest, Sha256};
 
+use crate::pump::attempt_record::{self, Ending};
 use crate::pump::host::Ctx;
 use crate::pump::state::{MergeResult, NeedRecord, Quarantine, State, Status, Unit};
 
@@ -109,6 +110,7 @@ pub fn set_aside(ctx: &Ctx, st: &mut State, result: &MergeResult) {
         unit.since = ctx.now();
     }
     ctx.log(&format!("quarantined {} on {}", result.uid, branch(&q.id)));
+    attempt_record::post(ctx, st, &result.uid, &Ending::quarantined(&q.id, &repair));
     if !st.units.contains_key(&repair) {
         open_repair(ctx, st, q, &repair, &kind);
     }
