@@ -179,7 +179,10 @@ fn thread_section(ctx: &Ctx, unit: &Unit, cap: usize) -> Option<String> {
     if unit.need.is_empty() || cap < 200 {
         return None;
     }
-    let out = ctx.vivi(&format!("need show {}", unit.need), THREAD_TIMEOUT);
+    let out = ctx.vivi(
+        &format!("need show {} --newest 40", unit.need),
+        THREAD_TIMEOUT,
+    );
     if out.code != 0 {
         return Some(String::from(
             "(The need thread could not be read for this brief; work from the unit brief above.)",

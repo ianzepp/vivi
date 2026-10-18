@@ -271,7 +271,7 @@ fn the_thread_section_carries_replies_only_newest_last() {
     assert!(
         host.commands()
             .iter()
-            .any(|c| c.contains("need show abcd1234") && c.contains("--project"))
+            .any(|c| c.contains("need show abcd1234 --newest 40") && c.contains("--project"))
     );
 }
 

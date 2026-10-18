@@ -234,6 +234,10 @@ pub enum NeedCommand {
         #[arg(long)]
         latest: bool,
 
+        /// Print only the newest N messages of the thread, oldest first
+        #[arg(long)]
+        newest: Option<usize>,
+
         /// Project root to use
         #[arg(long)]
         project: Option<PathBuf>,

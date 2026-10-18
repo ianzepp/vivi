@@ -63,8 +63,9 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             handle,
             json,
             latest,
+            newest,
             project,
-        } => show_need(handle, *json, *latest, project.as_deref())?,
+        } => show_need(handle, *json, *latest, *newest, project.as_deref())?,
         NeedCommand::Dump(command) => dump_work_items(command, "needs", "need", "Vivi Need Dump")?,
         NeedCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("need", command)?;
@@ -477,9 +478,14 @@ fn show_need(
     handle: &str,
     json: bool,
     latest: bool,
+    newest: Option<usize>,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    if let Some(count) = newest {
+        vivi::mailspace::print_thread_newest(&mailspace, handle, count, json)?;
+        return Ok(());
+    }
     let registry_open = match mailspace.thread(handle, false, 50, 50) {
         Ok(messages) => messages.first().map(|message| message.role == "needs"),
         Err(_) => None,
