@@ -158,6 +158,7 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let vivi = std::env::current_exe()
         .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
     let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi);
+    crate::pump::priority::import_legacy(&ctx);
     if announce_ready {
         println!("VIVI_PUMP_SERVICE_READY");
         std::io::stdout().flush()?;

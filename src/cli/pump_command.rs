@@ -24,6 +24,11 @@ pub enum PumpSubcommand {
     Stop(PumpControlCommand),
     /// Enable a stopped pump; the service starts it when registered
     Start(PumpControlCommand),
+    /// Set, clear, or list per-need dispatch priority
+    Priority {
+        #[command(subcommand)]
+        command: PumpPriorityCommand,
+    },
     /// Supervise the pumps registered in the user's Vivi service config
     Service {
         #[command(subcommand)]
@@ -33,6 +38,36 @@ pub enum PumpSubcommand {
 
 #[derive(Debug, Args)]
 pub struct PumpControlCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PumpPriorityCommand {
+    /// Set a need's priority level; higher is more urgent, 0 removes it
+    Set(PumpPrioritySetCommand),
+    /// Remove a need's priority
+    Clear(PumpPriorityClearCommand),
+    /// List prioritized needs, highest level first
+    List(PumpControlCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct PumpPrioritySetCommand {
+    /// Need handle
+    pub need: String,
+    /// Priority level (integer, 0 or higher; higher is more urgent)
+    pub level: i64,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpPriorityClearCommand {
+    /// Need handle
+    pub need: String,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

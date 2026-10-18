@@ -426,27 +426,27 @@ fn fix_units_are_dispatched_before_ordinary_units() {
     assert!(sent[0].contains("[pumpfix-1 a1]"));
 }
 
-/// Write the configured priority file.
-fn write_priority(ctx: &Ctx, text: &str) {
-    let path = ctx.cfg.priority_path(&ctx.project);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, text).unwrap();
+/// Give each need in `needs` priority level 1.
+fn write_priority(ctx: &Ctx, needs: &[&str]) {
+    for need in needs {
+        crate::pump::priority::set(&ctx.home, need, 1).unwrap();
+    }
 }
 
 #[test]
-fn priority_units_dispatch_before_fix_units_and_the_rest() {
+fn fix_units_dispatch_before_priority_units_and_the_rest() {
     let (_dir, ctx, host) = setup_with(cfg_with(1));
     wire(&host);
-    write_priority(&ctx, "# hot\n\nhot-need\n");
+    write_priority(&ctx, &["hot-need"]);
     let mut st = State::default();
     ordered(&mut st, &["u1", "pumpfix-1", "u2"]);
     st.units.get_mut("u2").unwrap().need = String::from("hot-need");
     dispatch(&ctx, &mut st);
-    assert_eq!(st.units["u2"].status, Status::Inflight);
-    assert_eq!(st.units["pumpfix-1"].status, Status::Pending);
+    assert_eq!(st.units["pumpfix-1"].status, Status::Inflight);
+    assert_eq!(st.units["u2"].status, Status::Pending);
     assert_eq!(st.units["u1"].status, Status::Pending);
     let sent = commands_with(&host, "task send --from operator --to hand");
-    assert!(sent[0].contains("[u2 a1]"));
+    assert!(sent[0].contains("[pumpfix-1 a1]"));
 }
 
 #[test]

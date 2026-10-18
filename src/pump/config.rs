@@ -49,10 +49,11 @@ pub struct PumpConfig {
     /// dispatched. A relative value resolves against `home`. Default
     /// `reserved.txt`.
     pub reserved_file: String,
-    /// Need handles dispatched and merged ahead of everything else, one per
-    /// line, `#` comments. A relative value resolves against `home`. Default
-    /// `priority.txt`; the file may be absent.
-    pub priority_file: String,
+    /// Retired: need priority lives in `pump.db` (`vivi pump priority`). The
+    /// key is accepted and ignored so an old `priority_file = "priority.txt"`
+    /// line in `mailspace.toml` still parses; it is never written back.
+    #[serde(rename = "priority_file", skip_serializing)]
+    pub retired_priority_file: Option<String>,
     /// Unit ids with this prefix are fix units.
     pub fix_prefix: String,
     /// Role the pump sends unit tasks from.
@@ -90,7 +91,7 @@ impl Default for PumpConfig {
             shell_prefix: String::new(),
             hand_rules: None,
             reserved_file: "reserved.txt".into(),
-            priority_file: "priority.txt".into(),
+            retired_priority_file: None,
             fix_prefix: "pumpfix".into(),
             from: "operator".into(),
             to: "hand".into(),
@@ -548,12 +549,6 @@ impl PumpConfig {
     #[must_use]
     pub fn reserved_path(&self, project: &Path) -> PathBuf {
         resolve(&self.home_dir(project), &self.reserved_file)
-    }
-
-    /// The priority file: `priority_file`, a relative value joining `home`.
-    #[must_use]
-    pub fn priority_path(&self, project: &Path) -> PathBuf {
-        resolve(&self.home_dir(project), &self.priority_file)
     }
 
     /// `--from` of a unit dispatch: `dispatch.from`, else `branch`.
