@@ -7,7 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::{DispatchConfig, Lane, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::ready::{dependency_holds, is_ready, pick_model, satisfied};
+use crate::pump::ready::{dependency_holds, is_ready, pick_model, ranked, satisfied};
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 
 /// A `Ctx` over a fresh temp home with the given pump config.
@@ -387,9 +387,7 @@ fn an_unreadable_dependency_gate_holds_nothing_and_logs_it() {
 #[test]
 fn delivered_overlaps_do_not_block_priority_or_normal_units() {
     let (_dir, ctx, _host, mut st) = setup();
-    let path = ctx.cfg.priority_path(&ctx.project);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, "# hot\nhot\n").unwrap();
+    crate::pump::priority::set(&ctx.home, "hot", 1).unwrap();
     let (did, du) = mk("d", Status::Delivered, &["src/ovl"]);
     let (uid, mut uu) = mk("u", Status::Pending, &["src/ovl/x.rs"]);
     let (vid, vu) = mk("v", Status::Pending, &["src/ovl/y.rs"]);
@@ -399,4 +397,41 @@ fn delivered_overlaps_do_not_block_priority_or_normal_units() {
     st.units.insert(vid, vu);
     assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
     assert!(is_ready(&ctx, &st, "v", &BTreeMap::new()));
+}
+
+#[test]
+fn ranked_puts_fix_units_first_then_higher_levels_then_the_rest_stably() {
+    let (_dir, ctx, _host, mut st) = setup();
+    for (uid, need) in [
+        ("a", "plain"),
+        ("b", "low"),
+        ("c", "high"),
+        ("pumpfix-1", "plain"),
+        ("d", "plain"),
+        ("e", "high"),
+        ("f", "low"),
+    ] {
+        let (id, mut unit) = mk(uid, Status::Pending, &[]);
+        unit.need = need.to_string();
+        st.units.insert(id, unit);
+    }
+    crate::pump::priority::set(&ctx.home, "low", 1).unwrap();
+    crate::pump::priority::set(&ctx.home, "high", 5).unwrap();
+    let uids: Vec<String> = ["a", "b", "c", "pumpfix-1", "d", "e", "f"]
+        .iter()
+        .map(|uid| (*uid).to_string())
+        .collect();
+    assert_eq!(
+        ranked(&ctx, &st, uids),
+        ["pumpfix-1", "c", "e", "b", "f", "a", "d"]
+    );
+}
+
+#[test]
+fn ranked_keeps_plan_order_without_priorities() {
+    let (_dir, ctx, _host, mut st) = setup();
+    let (id, unit) = mk("x", Status::Pending, &[]);
+    st.units.insert(id, unit);
+    let uids = vec!["z".to_string(), "x".to_string(), "y".to_string()];
+    assert_eq!(ranked(&ctx, &st, uids), ["z", "x", "y"]);
 }

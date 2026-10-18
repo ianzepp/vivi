@@ -1878,9 +1878,12 @@ vivi pump pause    # keep the process alive; skip dispatch and gate work
 vivi pump resume   # resume a paused pump
 vivi pump stop     # finish the current tick, then exit
 vivi pump start    # enable the pump; the service starts it when registered
+vivi pump priority set <need> <level>  # higher = dispatched and merged sooner; 0 removes
+vivi pump priority clear <need>
+vivi pump priority list                # `need level` lines, highest first
 ```
 
-`pause`, `resume`, `stop` and `start` take `--project <root>` outside the
+`pause`, `resume`, `stop`, `start` and `priority` take `--project <root>` outside the
 project. They update the durable control mode in `pump.db`. `start` enables a
 standalone pump; run `vivi pump run` to launch it when no pump service manages
 the project.
@@ -2029,9 +2032,10 @@ blocks its dependents until a person unblocks it.
    a plan not written (`board/<need>.out`, `plan-no-answer`), a need not
    plannable (sender, `since`, mark, `skip.txt`) or a rejected plan
    (`bad-plan`).
-2. The control mode is `paused`. A unit's need listed in `priority.txt` (the
-   priority file, below) goes first in dispatch and merge order; if a priority
-   need is not moving, check that file for a typo in the handle.
+2. The control mode is `paused`. Fix units go first in dispatch and merge
+   order, then units whose need has a priority level (`vivi pump priority
+   list`); if a prioritized need is not moving, check the listed handle for a
+   typo.
 3. The unit's need is blocked by an unlanded `--depends-on` prerequisite:
    `vivi graph blocked backlog --kind need` names the need and the handle it
    waits on, and `hold <uid>: need <need> waits on dependency <dep> not
@@ -2098,7 +2102,7 @@ before the first 13.x start. Keep either copy before cutover.
 | `lock` | pump (flock only) | empty; the single-instance lock |
 | `skip.txt` | operator, board pass | need handles to never plan |
 | `reserved.txt` (`reserved_file`) | operator, dispatch | paths held by another session, one path or glob per line, `#` comments; read afresh on every check |
-| `priority.txt` (`priority_file`) | operator | need handles, one per line, blank lines and `#` comments skipped; read afresh every tick, may be absent. A unit whose `need` is listed is a priority unit: dispatched and fed to the merge queue before fix units and everything else, fed even under `HOLD-MERGE`, and scope-checked like a fix unit (only against in-flight fix units) |
+| `priority.txt` | retired | imported once at pump startup as level 1 per need (unless the need already has a level) and renamed to `priority.txt.imported`; priority now lives in `pump.db` and is set with `vivi pump priority` |
 | `plans/` | planner writes `<need>.json` and `<unit>.split.json`; re-plans move old plans to `plans/superseded/` | plan files, below |
 | `needs/` | board dumps the need thread, planner reads | `{need, subject, triage, thread}` |
 | `briefs/` | pump writes `<unit>.txt`, sent as the unit's task body | the composed unit brief |
@@ -2187,7 +2191,7 @@ tick         = 20                      # seconds between ticks
 shell_prefix = ""                      # prepended to every command line
 hand_rules   = "<path>"                # absent: the embedded generic hand-rules text; relative paths join the project root; must be readable
 reserved_file = "reserved.txt"         # paths held by another session; units overlapping them are not dispatched; relative paths join `home`
-priority_file = "priority.txt"         # need handles to dispatch and merge first, one per line; relative paths join `home`; the file may be absent
+# priority_file is retired: still parsed, ignored; use `vivi pump priority set <need> <level>`
 fix_prefix   = "pumpfix"               # ids with this prefix are fix units
 from         = "operator"              # role unit tasks are sent from
 to           = "hand"                  # recipient role of a unit dispatch

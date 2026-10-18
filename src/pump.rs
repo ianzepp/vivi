@@ -14,6 +14,7 @@ pub mod gatefix;
 pub mod host;
 pub mod merge;
 pub mod plan;
+pub mod priority;
 pub mod ready;
 pub mod remote;
 pub mod report;
@@ -49,6 +50,10 @@ mod amend_test;
 #[cfg(test)]
 #[path = "pump/plan_test.rs"]
 mod plan_test;
+
+#[cfg(test)]
+#[path = "pump/priority_test.rs"]
+mod priority_test;
 
 #[cfg(test)]
 #[path = "pump/ready_test.rs"]

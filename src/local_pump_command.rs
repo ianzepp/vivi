@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 
 use vivi::VivariumError;
-use vivi::cli::{PumpServiceCommand, PumpSubcommand};
+use vivi::cli::{PumpPriorityCommand, PumpServiceCommand, PumpSubcommand};
 use vivi::pump::control::PumpMode;
+use vivi::pump::priority;
 use vivi::pump::run as pump_run;
 
 pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), VivariumError> {
@@ -35,6 +36,15 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
         PumpSubcommand::Stop(cmd) => {
             vivi::pump::control::set_project_mode(&project_root(&cmd.project), PumpMode::Stopped)
         }
+        PumpSubcommand::Priority { command } => match command {
+            PumpPriorityCommand::Set(cmd) => {
+                priority::run_set(&project_root(&cmd.project), &cmd.need, cmd.level)
+            }
+            PumpPriorityCommand::Clear(cmd) => {
+                priority::run_clear(&project_root(&cmd.project), &cmd.need)
+            }
+            PumpPriorityCommand::List(cmd) => priority::run_list(&project_root(&cmd.project)),
+        },
         PumpSubcommand::Service { command } => match command {
             PumpServiceCommand::Add(cmd) => vivi::pump::service::add(&cmd.project),
             PumpServiceCommand::Remove(cmd) => vivi::pump::service::remove(&cmd.project),

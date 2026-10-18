@@ -17,6 +17,7 @@ use rusqlite::{
 
 use crate::error::VivariumError;
 
+mod priority;
 mod promotions;
 mod schema;
 use schema::{newer_schema, schema_version, take_migration_lock};
@@ -24,7 +25,7 @@ use schema::{newer_schema, schema_version, take_migration_lock};
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The database filename inside the pump home.
 pub const DB_FILENAME: &str = "pump.db";
@@ -142,6 +143,11 @@ CREATE TABLE IF NOT EXISTS pump_control (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   mode TEXT NOT NULL CHECK (mode IN ('running', 'paused', 'stopped')),
   shutdown_requested INTEGER NOT NULL DEFAULT 0 CHECK (shutdown_requested IN (0, 1))
+);
+CREATE TABLE IF NOT EXISTS need_priority (
+  need TEXT PRIMARY KEY,
+  level INTEGER NOT NULL,
+  set_at INTEGER NOT NULL
 );
 ";
 

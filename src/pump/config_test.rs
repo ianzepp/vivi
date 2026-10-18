@@ -605,17 +605,16 @@ fn reserved_file_defaults_to_reserved_txt_under_home() {
 }
 
 #[test]
-fn priority_file_defaults_to_priority_txt_under_home_and_max_replans_to_two() {
-    let project = Path::new("/p");
-    let cfg = PumpConfig::default();
-    assert_eq!(
-        cfg.priority_path(project),
-        project.join(".vivi/pump/priority.txt")
-    );
-    assert_eq!(cfg.gate.max_replans, 2);
-    let abs = PumpConfig {
-        priority_file: "/x/hot.txt".into(),
-        ..PumpConfig::default()
-    };
-    assert_eq!(abs.priority_path(project), Path::new("/x/hot.txt"));
+fn max_replans_defaults_to_two() {
+    assert_eq!(PumpConfig::default().gate.max_replans, 2);
+}
+
+#[test]
+fn the_retired_priority_file_key_still_parses_and_is_not_written_back() {
+    let cfg: PumpConfig = toml::from_str(
+        "branch = \"b\"\ncommitter_name = \"n\"\ncommitter_email = \"e\"\npriority_file = \"priority.txt\"\n",
+    )
+    .unwrap();
+    assert_eq!(cfg.retired_priority_file.as_deref(), Some("priority.txt"));
+    assert!(!toml::to_string(&cfg).unwrap().contains("priority_file"));
 }

@@ -2,6 +2,7 @@
 //!
 //! `satisfied`, `reserved_paths`, `ready` and `pick_model`.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
@@ -10,6 +11,7 @@ use serde::Deserialize;
 use crate::pump::config::Lane;
 use crate::pump::host::Ctx;
 use crate::pump::plan::overlaps;
+use crate::pump::priority;
 use crate::pump::state::{State, Status, Unit};
 
 /// A unit is satisfied when it merged, found no defect, or was replaced and
@@ -51,34 +53,26 @@ fn reserved_paths(ctx: &Ctx) -> Vec<String> {
         .collect()
 }
 
-/// The need handles in the configured `priority_file`: one per line, trimmed,
-/// blank lines and `#` comments skipped. Re-read on every call; an unreadable
-/// or absent file lists nothing.
+/// The needs with a priority level above zero, read from `pump.db` on every
+/// call. A missing database lists nothing.
 #[must_use]
 pub fn priority_needs(ctx: &Ctx) -> BTreeSet<String> {
-    let Ok(text) = fs::read_to_string(ctx.cfg.priority_path(&ctx.project)) else {
-        return BTreeSet::new();
-    };
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(String::from)
-        .collect()
+    priority::levels(ctx).into_keys().collect()
 }
 
-/// `uids` in dispatch and merge order: priority units (their need is in
-/// `priority_file`) first, then fix units, then the rest; stable within each
-/// group.
+/// `uids` in dispatch and merge order: fix units first (they are the path
+/// back to a green gate), then units whose need has a priority level, highest
+/// level first, then the rest; stable within each group.
 #[must_use]
 pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
-    let needs = priority_needs(ctx);
-    let rank = |uid: &String| -> u8 {
-        if st.units.get(uid).is_some_and(|u| needs.contains(&u.need)) {
-            0
-        } else if uid.starts_with(&ctx.cfg.fix_prefix) {
-            1
-        } else {
-            2
+    let levels = priority::levels(ctx);
+    let rank = |uid: &String| -> (u8, Reverse<i64>) {
+        if uid.starts_with(&ctx.cfg.fix_prefix) {
+            return (0, Reverse(0));
+        }
+        match st.units.get(uid).and_then(|u| levels.get(&u.need)) {
+            Some(level) => (1, Reverse(*level)),
+            None => (2, Reverse(0)),
         }
     };
     uids.sort_by_key(rank);

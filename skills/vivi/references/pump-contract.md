@@ -354,7 +354,7 @@ Readiness (`ready`):
   while an agent is editing that scope. `delivered` and `merging` units no
   longer occupy workers, and the merge thread serializes their integration, so
   they do not block new dispatches. Fix units (ids starting with `fix_prefix`)
-  and priority units (their `need` is listed in the priority file) ignore
+  and priority units (their `need` has a priority level in `pump.db`) ignore
   overlap against non-fix units.
 
 - The unit's write scope must not overlap any path in the reserved file
@@ -443,7 +443,7 @@ unless marked.
 | `shell_prefix` | string | `""` | prepended to every command line (§2) |
 | `hand_rules` | path | embedded generic text | file whose text opens every unit brief; a relative path joins the project root like `home`; `validate` rejects a file that cannot be read |
 | `reserved_file` | path | `reserved.txt` | paths held by another session; units overlapping them are not dispatched; a relative value joins `home` |
-| `priority_file` | path | `priority.txt` | need handles dispatched and merged first: one per line, blank lines and `#` comment lines skipped, read afresh every tick, may be absent; a relative value joins `home`. Dispatch and merge-feed order is priority units, then fix units, then the rest (stable); priority units are also fed under `HOLD-MERGE` and get the fix-unit scope bypass |
+| `priority_file` | retired | | accepted and ignored so an old `mailspace.toml` still parses. Need priority is set per need in `pump.db`: `vivi pump priority set <need> <level>` (integer, higher is more urgent, 0 removes), `clear <need>`, `list`. The running pump reads the levels every tick. Dispatch and merge-feed order is fix units first, then units by their need's level (highest first), then the rest (stable); a need with a level above zero is also fed under `HOLD-MERGE` and gets the fix-unit scope bypass. A leftover `priority.txt` is imported once at startup as level 1 and renamed to `priority.txt.imported` |
 | `fix_prefix` | string | `pumpfix` | unit ids with this prefix are fix units: dispatched first, merged even under `HOLD-MERGE`, scope-checked only against in-flight units |
 | `from` | role | `operator` | role the pump sends unit tasks from |
 | `to` | role | `hand` | recipient role of a unit dispatch |

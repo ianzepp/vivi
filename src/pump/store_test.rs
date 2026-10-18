@@ -205,6 +205,35 @@ fn a_version_three_database_migrates_units_to_named_targets() {
 }
 
 #[test]
+fn a_version_four_database_gains_the_need_priority_table() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "DROP TABLE need_priority;
+         PRAGMA user_version = 4;",
+    )
+    .unwrap();
+    drop(conn);
+    let mut store = PumpStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert!(store.need_priorities().unwrap().is_empty());
+    store.set_need_priority("n", 3, 10).unwrap();
+    assert_eq!(store.need_priorities().unwrap(), [("n".to_string(), 3)]);
+}
+
+#[test]
+fn saving_state_leaves_need_priority_alone() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    store.set_need_priority("n", 2, 10).unwrap();
+    store.save(&State::default()).unwrap();
+    assert_eq!(store.need_priorities().unwrap(), [("n".to_string(), 2)]);
+}
+
+#[test]
 fn schema_migration_refuses_to_run_under_an_active_pump_lock() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);
