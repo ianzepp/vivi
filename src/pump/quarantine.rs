@@ -7,6 +7,10 @@
 //! [`set_aside`] parks each unit and opens ONE repair unit that starts from the
 //! quarantine branch; [`repair_of`], [`members`] and [`repair_stuck`] close the
 //! loop when the repair unit merges or goes stuck.
+//!
+//! A repair unit carries the id it repairs in `Unit::repairs`, never in
+//! `quarantine` (membership), and is `solo`: it merges alone, so it cannot be
+//! swept into another failing batch and lose its members.
 
 use sha2::{Digest, Sha256};
 
@@ -39,7 +43,7 @@ pub fn repair_uid(ctx: &Ctx, id: &str) -> String {
 pub fn repair_of(ctx: &Ctx, st: &State, uid: &str) -> Option<String> {
     st.units
         .get(uid)?
-        .quarantine
+        .repairs
         .clone()
         .filter(|id| repair_uid(ctx, id) == uid)
 }
@@ -59,32 +63,92 @@ pub fn members(st: &State, id: &str) -> Vec<String> {
 }
 
 /// Apply one `quarantined` merge result: park the unit and, for the first
-/// result of its batch, open the repair unit.
+/// result of its batch, open the repair unit. A repair unit is never parked
+/// as a member (it goes back to `delivered` to merge alone again), and when
+/// no dispatch kind resolves for a repair the unit is released as solo.
 pub fn set_aside(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     let Some(q) = &result.quarantine else {
         return;
     };
-    let now = ctx.now();
+    if st
+        .units
+        .get(&result.uid)
+        .is_some_and(|unit| unit.repairs.is_some())
+    {
+        release(st, &result.uid);
+        ctx.log(&format!(
+            "repair unit {} met quarantine {}; it merges alone again",
+            result.uid, q.id
+        ));
+        return;
+    }
+    let repair = repair_uid(ctx, &q.id);
+    let Some(kind) = repair_kind(ctx, st, q) else {
+        release(st, &result.uid);
+        if lead(st, q) == Some(result.uid.as_str()) {
+            let summary = format!(
+                "no dispatch kind resolves for the repair of {}; its units return to delivered, one batch each: {}",
+                branch(&q.id),
+                q.units.join(",")
+            );
+            ctx.exception("quarantine-no-kind", &q.id, &summary);
+        }
+        return;
+    };
     if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Quarantined;
         unit.quarantine = Some(q.id.clone());
-        unit.since = now;
+        unit.since = ctx.now();
     }
     ctx.log(&format!("quarantined {} on {}", result.uid, branch(&q.id)));
-    let repair = repair_uid(ctx, &q.id);
     if !st.units.contains_key(&repair) {
-        open_repair(ctx, st, q, &repair);
+        open_repair(ctx, st, q, &repair, &kind);
     }
+}
+
+/// Return `uid` to `delivered` as a solo unit, out of any quarantine.
+fn release(st: &mut State, uid: &str) {
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.status = Status::Delivered;
+        unit.solo = true;
+        unit.quarantine = None;
+    }
+}
+
+/// The first unit of `q` that is a plain batch member (not a repair unit).
+fn lead<'a>(st: &State, q: &'a Quarantine) -> Option<&'a str> {
+    q.units
+        .iter()
+        .find(|uid| st.units.get(*uid).is_some_and(|u| u.repairs.is_none()))
+        .map(String::as_str)
+}
+
+/// The kind (`tools` value) of the repair unit for `q`: the first member's
+/// non-empty `tools`, else `default_kind`. `None` when it names no defined
+/// kind, so the repair could never be dispatched.
+fn repair_kind(ctx: &Ctx, st: &State, q: &Quarantine) -> Option<String> {
+    let tools = q
+        .units
+        .iter()
+        .filter_map(|uid| st.units.get(uid))
+        .filter(|unit| unit.repairs.is_none())
+        .map(|unit| unit.tools.as_str())
+        .find(|tools| !tools.is_empty())
+        .unwrap_or("");
+    ctx.cfg.kind_of(tools)?;
+    Some(ctx.cfg.kind_name(tools).to_string())
 }
 
 /// Mint the repair unit for `q` and its need record, and raise the
 /// `quarantine` exception.
-fn open_repair(ctx: &Ctx, st: &mut State, q: &Quarantine, repair: &str) {
+fn open_repair(ctx: &Ctx, st: &mut State, q: &Quarantine, repair: &str, kind: &str) {
     let parked: Vec<(&String, &Unit)> = q
         .units
         .iter()
         .filter_map(|uid| st.units.get_key_value(uid))
+        .filter(|(_, unit)| unit.repairs.is_none())
         .collect();
+    let count = parked.len();
     let mut scope: Vec<String> = Vec::new();
     for (_, unit) in &parked {
         for path in &unit.write_scope {
@@ -100,18 +164,16 @@ fn open_repair(ctx: &Ctx, st: &mut State, q: &Quarantine, repair: &str) {
             |(_, u)| u.target_id().to_string(),
         ),
         revision: 1,
-        title: format!(
-            "Repair quarantined batch {} ({} units)",
-            q.id,
-            q.units.len()
-        ),
+        title: format!("Repair quarantined batch {} ({} units)", q.id, parked.len()),
         brief: repair_brief(q, &parked),
         write_scope: scope,
         proof: vec![q.cmd.clone()],
+        tools: kind.to_string(),
         status: Status::Pending,
         since: ctx.now(),
         base: Some(branch(&q.id)),
-        quarantine: Some(q.id.clone()),
+        repairs: Some(q.id.clone()),
+        solo: true,
         ..Unit::default()
     };
     st.units.insert(repair.to_string(), unit);
@@ -128,7 +190,7 @@ fn open_repair(ctx: &Ctx, st: &mut State, q: &Quarantine, repair: &str) {
     );
     let summary = format!(
         "{} units set aside on {}: {} rc={}; repair unit {repair}",
-        q.units.len(),
+        count,
         branch(&q.id),
         q.cmd,
         q.code
@@ -163,11 +225,7 @@ pub fn repair_stuck(ctx: &Ctx, st: &mut State, uid: &str) {
     };
     let parked = members(st, &id);
     for member in &parked {
-        if let Some(unit) = st.units.get_mut(member) {
-            unit.status = Status::Delivered;
-            unit.solo = true;
-            unit.quarantine = None;
-        }
+        release(st, member);
     }
     let summary = format!(
         "repair {uid} is stuck; {} units return to delivered, one batch each: {}",
@@ -179,20 +237,18 @@ pub fn repair_stuck(ctx: &Ctx, st: &mut State, uid: &str) {
 
 /// The repair unit `uid` found nothing to fix (the failed check passes on
 /// its checkout, so it was flaky): return its quarantined units to
-/// `delivered` for an ordinary batch. Does nothing for any other unit.
+/// `delivered`, each marked solo like [`repair_stuck`] so they cannot sink one
+/// batch together again. Does nothing for any other unit.
 pub fn repair_no_defect(ctx: &Ctx, st: &mut State, uid: &str) {
     let Some(id) = repair_of(ctx, st, uid) else {
         return;
     };
     let parked = members(st, &id);
     for member in &parked {
-        if let Some(unit) = st.units.get_mut(member) {
-            unit.status = Status::Delivered;
-            unit.quarantine = None;
-        }
+        release(st, member);
     }
     ctx.log(&format!(
-        "quarantine {id}: repair {uid} found no defect; {} units return to delivered",
+        "quarantine {id}: repair {uid} found no defect; {} units return to delivered, one batch each",
         parked.len()
     ));
 }

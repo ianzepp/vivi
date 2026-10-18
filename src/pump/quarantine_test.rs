@@ -7,7 +7,7 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 
 use crate::pump::collect::fail;
 use crate::pump::config::{DispatchConfig, Kind, Lane, MergeConfig, PumpConfig};
@@ -15,11 +15,47 @@ use crate::pump::dispatch::dispatch;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::{Merger, batch_work};
 use crate::pump::merge_lane_test::state_with;
-use crate::pump::merge_test::setup;
-use crate::pump::quarantine::{branch, repair_no_defect, repair_uid};
+use crate::pump::quarantine::{branch, repair_no_defect, repair_of, repair_uid, set_aside};
 use crate::pump::ready::ranked;
 use crate::pump::state::{MergeJob, MergeResult, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+
+/// The merge test context (`merge_test::setup`) with a dispatch config:
+/// `kinds` names the kinds, and the default kind is `plain` when it has one.
+fn setup_kinds(kinds: &[&str]) -> (TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        committer_name: String::from("Pump Tester"),
+        committer_email: String::from("pump@example.com"),
+        merge: MergeConfig {
+            shared_checks: vec![String::from("cargo test --lib")],
+            ..MergeConfig::default()
+        },
+        dispatch: DispatchConfig {
+            kinds: kinds
+                .iter()
+                .map(|name| (String::from(*name), Kind::default()))
+                .collect(),
+            default_kind: if kinds.is_empty() {
+                String::new()
+            } else {
+                String::from("plain")
+            },
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    (dir, ctx, host)
+}
+
+/// The merge test context with the one dispatch kind `plain`, which the test
+/// units (and so the repair unit) name.
+fn setup(_format: &str) -> (TempDir, Ctx, Arc<FakeHost>) {
+    setup_kinds(&["plain"])
+}
 
 /// A plain unit job for branch `work/<uid>`.
 fn job(uid: &str) -> MergeJob {
@@ -163,7 +199,14 @@ fn applying_a_quarantined_batch_parks_the_units_and_opens_one_repair_unit() {
     assert_eq!(unit.proof, ["cargo test --lib"]);
     assert_eq!(unit.write_scope, ["src/pump/merge.rs"]);
     assert_eq!(unit.base, Some(branch(&id)));
-    assert_eq!(unit.quarantine.as_deref(), Some(id.as_str()));
+    // A repair unit repairs the quarantine; it is not a member of it, it
+    // merges alone, and it names a kind that dispatch can resolve.
+    assert_eq!(unit.repairs.as_deref(), Some(id.as_str()));
+    assert_eq!(unit.quarantine, None);
+    assert!(unit.solo);
+    assert_eq!(unit.tools, "plain");
+    assert_eq!(repair_of(&ctx, &st, &repair).as_deref(), Some(id.as_str()));
+    assert_eq!(repair_of(&ctx, &st, "u1"), None);
     assert!(unit.brief.contains("(exit 1):\ncargo test --lib"));
     assert!(unit.brief.contains("error[E0308]: mismatched types"));
     assert!(unit.brief.contains("- u1 (need n1): Unit u1"));
@@ -361,7 +404,7 @@ fn a_repair_unit_that_finds_no_defect_returns_the_units_to_delivered() {
     repair_no_defect(&ctx, &mut st, &repair);
     for uid in ["u1", "u2"] {
         assert_eq!(st.units[uid].status, Status::Delivered);
-        assert!(!st.units[uid].solo);
+        assert!(st.units[uid].solo);
         assert_eq!(st.units[uid].quarantine, None);
     }
     // Any other unit is left alone.
@@ -387,6 +430,7 @@ fn the_quarantine_fields_round_trip_through_the_store() {
     {
         let u1 = st.units.get_mut("u1").unwrap();
         u1.quarantine = Some(String::from("q1-abc"));
+        u1.repairs = Some(String::from("q0-xyz"));
         u1.base = Some(String::from("pump/quarantine/q1-abc"));
         u1.extra
             .insert(String::from("future"), serde_json::json!(7));
@@ -397,6 +441,7 @@ fn the_quarantine_fields_round_trip_through_the_store() {
     let u1 = &back.units["u1"];
     assert_eq!(u1.status, Status::Quarantined);
     assert_eq!(u1.quarantine.as_deref(), Some("q1-abc"));
+    assert_eq!(u1.repairs.as_deref(), Some("q0-xyz"));
     assert_eq!(u1.base.as_deref(), Some("pump/quarantine/q1-abc"));
     assert!(!u1.solo);
     assert_eq!(u1.extra.len(), 1);
@@ -404,6 +449,7 @@ fn the_quarantine_fields_round_trip_through_the_store() {
     let u2 = &back.units["u2"];
     assert!(u2.solo);
     assert_eq!(u2.quarantine, None);
+    assert_eq!(u2.repairs, None);
     assert_eq!(u2.base, None);
     assert!(u2.extra.is_empty());
 }
@@ -426,4 +472,121 @@ fn a_repair_unit_that_times_out_fails_an_attempt_and_is_never_split() {
     let unit = &st.units["pumpfix-q1"];
     assert_ne!(unit.status, Status::Splitting);
     assert!(!ctx.home.join("resplit/pumpfix-q1.json").exists());
+}
+
+#[test]
+fn a_repair_that_met_another_batch_still_lands_its_members() {
+    let (_dir, ctx, host) = setup("");
+    let results = quarantined_pair(&ctx, &host);
+    let id = results[0].detail.clone().unwrap();
+    let mut st = applied_state(&ctx, results);
+    let repair = repair_uid(&ctx, &id);
+    // Somehow the repair unit rides in a second failing batch with `u3`.
+    let extra = state_with(&[("u3", Status::Merging)]);
+    st.order.push(String::from("u3"));
+    st.units
+        .insert(String::from("u3"), extra.units["u3"].clone());
+    st.units.get_mut(&repair).unwrap().status = Status::Merging;
+    let q2 = crate::pump::state::Quarantine {
+        id: String::from("q2-aaaaaa"),
+        cmd: String::from("cargo test --lib"),
+        code: 1,
+        text: String::from("boom"),
+        units: vec![repair.clone(), String::from("u3")],
+    };
+    for uid in [repair.as_str(), "u3"] {
+        let result = MergeResult {
+            uid: uid.to_string(),
+            why: Some(String::from("quarantined")),
+            quarantine: Some(q2.clone()),
+            ..MergeResult::default()
+        };
+        set_aside(&ctx, &mut st, &result);
+    }
+    // The repair unit was not parked as a member: it keeps what it repairs
+    // and merges alone again; `u3` is the only member of q2.
+    let unit = &st.units[&repair];
+    assert_eq!(unit.status, Status::Delivered);
+    assert!(unit.solo);
+    assert_eq!(unit.quarantine, None);
+    assert_eq!(repair_of(&ctx, &st, &repair).as_deref(), Some(id.as_str()));
+    assert_eq!(st.units["u3"].status, Status::Quarantined);
+    assert_eq!(st.units["u3"].quarantine.as_deref(), Some("q2-aaaaaa"));
+    // The second repair does not repair the first one.
+    let repair2 = repair_uid(&ctx, "q2-aaaaaa");
+    assert_eq!(st.units[&repair2].repairs.as_deref(), Some("q2-aaaaaa"));
+    assert!(st.units[&repair2].brief.contains("- u3 (need n1)"));
+    assert!(!st.units[&repair2].brief.contains(&format!("- {repair} ")));
+
+    // The repair lands: q1's members land with it.
+    let (merger, out, _jobs) = Merger::detached();
+    out.send(MergeResult {
+        uid: repair.clone(),
+        ok: Some(true),
+        tip: Some(String::from("tip1234567890abc")),
+        ..MergeResult::default()
+    })
+    .unwrap();
+    merger.apply(&ctx, &mut st);
+    for uid in ["u1", "u2", repair.as_str()] {
+        assert_eq!(st.units[uid].status, Status::Merged, "{uid}");
+    }
+    assert_eq!(st.units["u3"].status, Status::Quarantined);
+}
+
+#[test]
+fn the_repair_unit_takes_the_default_kind_when_no_member_names_one() {
+    let (_dir, ctx, host) = setup("");
+    let results = quarantined_pair(&ctx, &host);
+    let id = results[0].detail.clone().unwrap();
+    let (merger, out, _jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Merging), ("u2", Status::Merging)]);
+    for unit in st.units.values_mut() {
+        unit.tools = String::new();
+    }
+    for result in results {
+        out.send(result).unwrap();
+    }
+    merger.apply(&ctx, &mut st);
+    assert_eq!(st.units[&repair_uid(&ctx, &id)].tools, "plain");
+}
+
+#[test]
+fn no_resolvable_kind_releases_the_units_as_solo_and_opens_no_repair() {
+    let (_dir, ctx, host) = setup_kinds(&[]);
+    let results = quarantined_pair(&ctx, &host);
+    let id = results[0].detail.clone().unwrap();
+    let mut st = applied_state(&ctx, results);
+    assert_eq!(
+        st.units.keys().filter(|u| u.starts_with("pumpfix")).count(),
+        0
+    );
+    for uid in ["u1", "u2"] {
+        let unit = &st.units[uid];
+        assert_eq!(unit.status, Status::Delivered, "{uid}");
+        assert!(unit.solo);
+        assert_eq!(unit.quarantine, None);
+    }
+    // One exception for the batch, not one per unit.
+    let text = exceptions(&ctx);
+    assert_eq!(
+        text.matches(&format!("quarantine-no-kind {id} ")).count(),
+        1
+    );
+    assert!(!text.contains(&format!("quarantine {id} ")));
+    // The released units are fed alone.
+    let (merger, _out, lanes) = Merger::detached_lanes(2);
+    merger.feed(&ctx, &mut st);
+    let mut sent: Vec<Vec<String>> = lanes
+        .iter()
+        .map(|lane| {
+            lane.recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .into_iter()
+                .map(|job| job.uid)
+                .collect()
+        })
+        .collect();
+    sent.sort();
+    assert_eq!(sent, [vec!["u1"], vec!["u2"]]);
 }
