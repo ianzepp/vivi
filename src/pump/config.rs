@@ -361,6 +361,10 @@ impl Default for DispatchConfig {
 pub struct MergeConfig {
     /// Jobs merged together at most.
     pub batch: u32,
+    /// Independent merge lanes per repository target, each with its own
+    /// checkout and build directory. A lane takes the top-ranked delivered
+    /// units when it is idle, so a red lane never blocks the others.
+    pub lanes: u32,
     /// Format command run after merging.
     pub format: String,
     /// Shared checks run after every merge, before the units' own proof.
@@ -378,6 +382,7 @@ impl Default for MergeConfig {
     fn default() -> Self {
         Self {
             batch: 8,
+            lanes: 1,
             format: String::new(),
             shared_checks: Vec::new(),
             proof_timeout: 300,
@@ -649,6 +654,9 @@ impl PumpConfig {
         if self.merge.batch == 0 {
             bad.push("[pump.merge] batch must be >= 1".into());
         }
+        if self.merge.lanes == 0 {
+            bad.push("[pump.merge] lanes must be >= 1".into());
+        }
         if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
             bad.push(
                 "[pump.merge] shared_checks must not be empty while promotion is enabled \
@@ -700,6 +708,9 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Ve
     let merge = target.merge.as_ref();
     if merge.is_some_and(|merge| merge.batch == 0) {
         bad.push(format!("{prefix}.merge batch must be >= 1"));
+    }
+    if merge.is_some_and(|merge| merge.lanes == 0) {
+        bad.push(format!("{prefix}.merge lanes must be >= 1"));
     }
     if target.promote
         && !target.main.is_empty()

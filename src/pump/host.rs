@@ -149,6 +149,16 @@ impl Ctx {
         Some(target)
     }
 
+    /// The same context working in another checkout of the same repository:
+    /// a merge lane's own clone.
+    #[must_use]
+    pub fn with_repo(&self, repo: PathBuf) -> Ctx {
+        Ctx {
+            repo,
+            ..self.clone()
+        }
+    }
+
     /// Run `cmd` through the host with `shell_prefix` applied:
     /// `"<prefix>; <cmd>"`, or just `<cmd>` when the prefix is empty.
     #[must_use]
