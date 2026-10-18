@@ -85,6 +85,7 @@ fn sample() -> State {
     st.promotions.push(Promotion {
         tip: String::from("tip"),
         at: 14,
+        failing: None,
     });
     st.red
         .insert(String::from("crate test"), String::from("u1"));

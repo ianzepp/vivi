@@ -344,6 +344,10 @@ pub struct Promotion {
     /// Epoch seconds of the promotion.
     #[serde(default)]
     pub at: u64,
+    /// The failing test names (after `ignore_file` filtering) main carried at
+    /// this tip; `None` for a promotion made before they were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failing: Option<Vec<String>>,
 }
 
 /// The whole pump state: `state.json`.

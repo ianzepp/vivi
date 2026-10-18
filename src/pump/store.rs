@@ -17,10 +17,11 @@ use rusqlite::{
 
 use crate::error::VivariumError;
 
+mod promotions;
 mod schema;
 use schema::{newer_schema, schema_version, take_migration_lock};
 
-use super::state::{Attempt, GateRecord, NeedRecord, Promotion, State, Status, Unit};
+use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
 pub const SCHEMA_VERSION: i64 = 4;
@@ -130,7 +131,11 @@ CREATE TABLE IF NOT EXISTS exceptions (
 );
 CREATE TABLE IF NOT EXISTS closed_needs (need TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS plans_seen (name TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS promotions (tip TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS promotions (
+  tip TEXT PRIMARY KEY,
+  at INTEGER NOT NULL,
+  failing_json TEXT
+);
 CREATE TABLE IF NOT EXISTS red (name TEXT PRIMARY KEY, unit TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS red_reported (value TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS pump_control (
@@ -338,7 +343,7 @@ impl PumpStore {
             gates: load_gates(&self.conn)?,
             closed_needs: load_strings(&self.conn, "closed_needs", "need")?,
             plans_seen: load_strings(&self.conn, "plans_seen", "name")?,
-            promotions: load_promotions(&self.conn)?,
+            promotions: promotions::load(&self.conn)?,
             red: load_red(&self.conn)?,
             red_reported: load_strings(&self.conn, "red_reported", "value")?,
             ..State::default()
@@ -466,6 +471,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     }
     conn.execute_batch(SCHEMA_DDL)
         .map_err(db_err("create schema"))?;
+    promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;
     }
@@ -705,13 +711,7 @@ fn write_lists(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
         )
         .map_err(db_err("write plan seen"))?;
     }
-    for promotion in &st.promotions {
-        tx.execute(
-            "INSERT OR REPLACE INTO promotions (tip, at) VALUES (?1, ?2)",
-            params![promotion.tip, i64::try_from(promotion.at).unwrap_or(0)],
-        )
-        .map_err(db_err("write promotion"))?;
-    }
+    promotions::write(tx, &st.promotions)?;
     for (name, unit) in &st.red {
         tx.execute(
             "INSERT OR REPLACE INTO red (name, unit) VALUES (?1, ?2)",
@@ -880,22 +880,6 @@ fn load_gates(conn: &Connection) -> Result<Vec<GateRecord>, VivariumError> {
         .map_err(db_err("read gates"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(db_err("read gates"))
-}
-
-fn load_promotions(conn: &Connection) -> Result<Vec<Promotion>, VivariumError> {
-    let mut stmt = conn
-        .prepare("SELECT tip, at FROM promotions ORDER BY at")
-        .map_err(db_err("read promotions"))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(Promotion {
-                tip: row.get(0)?,
-                at: from_u64(row.get(1)?),
-            })
-        })
-        .map_err(db_err("read promotions"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(db_err("read promotions"))
 }
 
 fn load_red(conn: &Connection) -> Result<BTreeMap<String, String>, VivariumError> {

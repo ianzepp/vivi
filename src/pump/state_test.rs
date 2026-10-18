@@ -264,6 +264,7 @@ fn save_then_load_round_trips_and_leaves_no_tmp_file() {
     st.promotions.push(Promotion {
         tip: "448d8115989e37402ab1606fa0331806e646fcb1".to_owned(),
         at: 1_791_982_970,
+        failing: None,
     });
     st.extra.insert("rr".to_owned(), json!(18));
 
