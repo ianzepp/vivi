@@ -33,7 +33,7 @@ pub use pool_command::{
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
 };
 pub use pump_command::{
-    PumpCloseoutCommand, PumpControlCommand, PumpExportCommand, PumpOnceCommand,
+    PumpCloseoutCommand, PumpControlCommand, PumpExportCommand, PumpLogCommand, PumpOnceCommand,
     PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand, PumpRunCommand,
     PumpServiceCommand, PumpServiceProjectCommand, PumpStatusCommand, PumpSubcommand,
 };

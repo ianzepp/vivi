@@ -12,6 +12,7 @@ pub mod dispatch;
 pub mod gate;
 pub mod gatefix;
 pub mod host;
+pub mod logview;
 pub mod merge;
 pub mod plan;
 pub mod priority;
@@ -23,6 +24,10 @@ pub mod run;
 pub mod service;
 pub mod state;
 pub mod store;
+
+#[cfg(test)]
+#[path = "pump/logview_test.rs"]
+mod logview_test;
 
 #[cfg(test)]
 #[path = "pump/config_test.rs"]

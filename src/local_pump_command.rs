@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 
 use vivi::VivariumError;
-use vivi::cli::{PumpPriorityCommand, PumpServiceCommand, PumpSubcommand};
+use vivi::cli::{PumpLogCommand, PumpPriorityCommand, PumpServiceCommand, PumpSubcommand};
 use vivi::pump::control::PumpMode;
+use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
 use vivi::pump::priority;
 use vivi::pump::run as pump_run;
 
@@ -20,6 +21,7 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             print!("{text}");
             Ok(())
         }
+        PumpSubcommand::Log(cmd) => pump_log(cmd),
         PumpSubcommand::Export(cmd) => pump_run::export(&project_root(&cmd.project), &cmd.json),
         PumpSubcommand::Closeout(cmd) => pump_run::closeout(
             &project_root(&cmd.project),
@@ -57,6 +59,24 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             )),
         },
     }
+}
+
+fn pump_log(cmd: &PumpLogCommand) -> Result<(), VivariumError> {
+    let file = if cmd.exceptions {
+        LogFile::Exceptions
+    } else {
+        LogFile::Log
+    };
+    let options = ShowOptions {
+        count: cmd.lines,
+        follow: cmd.follow,
+        filter: LogFilter::new(
+            cmd.lane.as_deref(),
+            cmd.unit.as_deref(),
+            cmd.grep.as_deref(),
+        ),
+    };
+    logview::run(&project_root(&cmd.project), file, &options)
 }
 
 /// The project root: the subcommand's `--project`, else the current

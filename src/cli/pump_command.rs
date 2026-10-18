@@ -10,6 +10,8 @@ pub enum PumpSubcommand {
     Run(PumpRunCommand),
     /// Print the pump's status file
     Status(PumpStatusCommand),
+    /// Print the pump's log (last lines; filter by lane, unit or text; follow)
+    Log(PumpLogCommand),
     /// Run one pump tick and exit
     Once(PumpOnceCommand),
     /// Write the live pump.db as the state.json shape
@@ -109,6 +111,31 @@ pub struct PumpRunCommand {
 
 #[derive(Debug, Args)]
 pub struct PumpStatusCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpLogCommand {
+    /// Number of lines to print, counted after filtering (0 with -f: only new lines)
+    #[arg(short = 'n', long = "lines", default_value_t = 50)]
+    pub lines: usize,
+    /// Keep printing lines as they are appended
+    #[arg(short = 'f', long)]
+    pub follow: bool,
+    /// Only merge-lane lines (`lane <L>:`); `2` means `default/2`
+    #[arg(long, value_name = "LANE")]
+    pub lane: Option<String>,
+    /// Only lines naming this unit or need handle as a whole token
+    #[arg(long, value_name = "HANDLE")]
+    pub unit: Option<String>,
+    /// Only lines containing this text (case-sensitive)
+    #[arg(long, value_name = "TEXT")]
+    pub grep: Option<String>,
+    /// Read exceptions.txt instead of log.txt
+    #[arg(long)]
+    pub exceptions: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

@@ -188,7 +188,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `sync` | Needs a server: `push`, `pull`, `resync`, `fetch`, `join`, `create`, `directory`, `vouch`, `api-key mint\|list\|revoke`. Local: `status`, `key`, `prune`, `keep-local` |
 | `mcp` | Needs a server: a stdio bridge to the project server's MCP endpoint |
 | `pool` | `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `doctor` |
-| `pump` | `run`, `once`, `status` |
+| `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`) |
 | `skills` | `list`, `show <name> [--file <path>]`, `install <dir> [--force]` for the skills embedded in the binary; needs no mailspace |
 
 Commands that list, show or dump take `--json`. A large dump to stdout needs
@@ -325,7 +325,8 @@ Each tick the pump:
    off.
 
 `vivi pump run` loops until a `STOP` file appears in the home, `vivi pump once`
-runs one tick, and `vivi pump status` prints `status.txt` (or `no status yet`).
+runs one tick, `vivi pump status` prints `status.txt` (or `no status yet`), and
+`vivi pump log` tails and filters `log.txt` (`-f` follows it).
 A second pump on the same home refuses to start. Defaults:
 
 | Table | Keys (default) |
