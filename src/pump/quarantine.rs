@@ -23,6 +23,14 @@ pub fn branch(id: &str) -> String {
     format!("pump/quarantine/{id}")
 }
 
+/// The ref a repair unit starts from: the quarantine branch as a remote-tracking
+/// ref (`<remote>/pump/quarantine/<id>`), the same shape as `dispatch.from`, so a
+/// pool resolves it the way it resolves `origin/next`.
+#[must_use]
+pub fn base(remote: &str, id: &str) -> String {
+    format!("{remote}/{}", branch(id))
+}
+
 /// A fresh quarantine id for a batch of `uids`: `q<epoch>-<6 hex>`, the hex
 /// taken from the batch's uids so concurrent lanes never collide.
 #[must_use]
@@ -171,7 +179,7 @@ fn open_repair(ctx: &Ctx, st: &mut State, q: &Quarantine, repair: &str, kind: &s
         tools: kind.to_string(),
         status: Status::Pending,
         since: ctx.now(),
-        base: Some(branch(&q.id)),
+        base: Some(base(&ctx.cfg.remote, &q.id)),
         repairs: Some(q.id.clone()),
         solo: true,
         ..Unit::default()

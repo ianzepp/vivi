@@ -18,6 +18,7 @@ fn facts() -> Facts {
         repo: PathBuf::from("/repo"),
         branch_tip: None,
         from_commit: Some(TIP.into()),
+        from_fetch_error: None,
         default_branch: Some("main".into()),
         primary: Some((PathBuf::from("/repo"), "main".into())),
         holder: None,
@@ -187,5 +188,108 @@ fn the_base_commit_is_the_requested_one_else_the_default_branch_tip() {
             .unwrap_err()
             .to_string()
             .contains("not a commit")
+    );
+}
+
+/// The fixture repository with a bare `origin` (a push target), and a branch
+/// `topic/remote` pushed to it by a second clone after the fixture fetched.
+/// Returns the fixture and the commit pushed.
+fn with_origin_ahead() -> (crate::pool::local_fixture::Fixture, String) {
+    let f = fixture();
+    let origin = f.dir.path().join("origin.git");
+    let repo_arg = f.repo.to_str().unwrap();
+    git(
+        f.dir.path(),
+        &["clone", "-q", "--bare", repo_arg, "origin.git"],
+    );
+    git(
+        &f.repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(&f.repo, &["fetch", "-q", "origin"]);
+    let other = f.dir.path().join("other");
+    git(
+        f.dir.path(),
+        &["clone", "-q", origin.to_str().unwrap(), "other"],
+    );
+    git(&other, &["config", "user.name", "Other"]);
+    git(&other, &["config", "user.email", "other@localhost"]);
+    git(&other, &["checkout", "-q", "-b", "topic/remote"]);
+    std::fs::write(other.join("b.txt"), "pushed\n").unwrap();
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "-q", "-m", "pushed"]);
+    git(&other, &["push", "-q", "origin", "topic/remote"]);
+    let pushed = git(&other, &["rev-parse", "HEAD"]);
+    (f, pushed)
+}
+
+#[test]
+fn a_remote_tracking_from_the_repository_has_not_seen_yet_is_fetched_once() {
+    let (f, pushed) = with_origin_ahead();
+    let repo = Repo::new(&f.repo);
+    assert_eq!(repo.commit_of("origin/topic/remote"), None);
+    let got = prepare(&repo, &refs("origin/topic/remote", "repair"), false).unwrap();
+    assert_eq!(
+        (got.action, got.start.as_str()),
+        (BranchAction::Create, pushed.as_str())
+    );
+    assert_eq!(
+        repo.commit_of("origin/topic/remote").as_deref(),
+        Some(pushed.as_str()),
+        "the remote-tracking ref is now there"
+    );
+    assert_eq!(git(&f.repo, &["branch", "--list", "repair"]), "");
+}
+
+#[test]
+fn a_read_only_job_fetches_the_remote_tracking_from_too() {
+    let (f, pushed) = with_origin_ahead();
+    let got = prepare_read_only(&Repo::new(&f.repo), "origin/topic/remote").unwrap();
+    assert_eq!(
+        (got.action, got.start.as_str()),
+        (BranchAction::Detached, pushed.as_str())
+    );
+}
+
+#[test]
+fn a_remote_branch_that_does_not_exist_still_refuses_and_says_why_the_fetch_failed() {
+    let (f, _) = with_origin_ahead();
+    let repo = Repo::new(&f.repo);
+    let said = prepare(&repo, &refs("origin/nope", "repair"), false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        said.contains("\"origin/nope\" is not a commit or branch in"),
+        "{said}"
+    );
+    assert!(said.contains("fetching it failed"), "{said}");
+    assert!(said.contains("git fetch origin nope"), "{said}");
+    let said = prepare_read_only(&repo, "origin/nope")
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("fetching it failed"), "{said}");
+}
+
+#[test]
+fn a_plain_unknown_name_or_unknown_remote_never_triggers_a_fetch() {
+    let (f, _) = with_origin_ahead();
+    let repo = Repo::new(&f.repo);
+    // `topic/remote` is on origin but is not a remote-tracking name here.
+    for from in [
+        "topic/remote",
+        "stranger/topic/remote",
+        "deadbeef",
+        "originx",
+    ] {
+        let said = prepare(&repo, &refs(from, "repair"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("is not a commit or branch in"), "{said}");
+        assert!(!said.contains("fetching"), "{from}: {said}");
+    }
+    assert_eq!(
+        repo.commit_of("origin/topic/remote"),
+        None,
+        "nothing was fetched"
     );
 }

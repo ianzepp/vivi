@@ -16,6 +16,10 @@
 //! checked out in its primary checkout (both unless the caller passed the
 //! override flag), and any branch another worktree has checked out (Git
 //! allows one worktree per branch; the message names the path that holds it).
+//!
+//! A `from` that is a remote-tracking name (`<remote>/<branch>`, `<remote>`
+//! configured in the repository) and not yet a commit there is fetched once,
+//! that one branch only; a plain branch name or a sha is never fetched.
 
 use std::path::PathBuf;
 
@@ -31,6 +35,8 @@ pub struct Facts {
     pub branch_tip: Option<String>,
     /// The commit `from` names, when it names one.
     pub from_commit: Option<String>,
+    /// Why a fetch of `from` failed, when one was tried.
+    pub from_fetch_error: Option<String>,
     pub default_branch: Option<String>,
     /// The branch checked out in the primary checkout.
     pub primary: Option<(PathBuf, String)>,
@@ -69,12 +75,21 @@ pub fn decide(refs: &Refs, facts: &Facts) -> Result<Checkout, VivariumError> {
                 action: BranchAction::Create,
                 start: commit.clone(),
             }),
-            None => Err(VivariumError::Message(format!(
-                "\"{from}\" is not a commit or branch in {}",
-                facts.repo.display()
-            ))),
+            None => Err(not_found(
+                from,
+                &facts.repo,
+                facts.from_fetch_error.as_deref(),
+            )),
         },
     }
+}
+
+fn not_found(from: &str, repo: &std::path::Path, fetch_error: Option<&str>) -> VivariumError {
+    let mut said = format!("\"{from}\" is not a commit or branch in {}", repo.display());
+    if let Some(error) = fetch_error {
+        said.push_str(&format!(" (fetching it failed: {error})"));
+    }
+    VivariumError::Message(said)
 }
 
 fn check_policy(branch: &str, facts: &Facts) -> Result<(), VivariumError> {
@@ -119,10 +134,12 @@ fn holder_of(trees: &[Worktree], branch: &str) -> Option<PathBuf> {
 /// [`decide`].
 pub fn prepare(repo: &Repo, refs: &Refs, allow_default: bool) -> Result<Checkout, VivariumError> {
     let trees = repo.worktrees()?;
+    let (from_commit, from_fetch_error) = repo.commit_of_fetching(&refs.from);
     let facts = Facts {
         repo: repo.path().to_path_buf(),
         branch_tip: repo.branch_tip(&refs.branch),
-        from_commit: repo.commit_of(&refs.from),
+        from_commit,
+        from_fetch_error,
         default_branch: repo.default_branch(),
         primary: primary_of(&trees),
         holder: holder_of(&trees, &refs.branch),
@@ -138,12 +155,8 @@ pub fn prepare(repo: &Repo, refs: &Refs, allow_default: bool) -> Result<Checkout
 /// # Errors
 /// Returns an error if `from` is not a commit in the repository.
 pub fn prepare_read_only(repo: &Repo, from: &str) -> Result<Checkout, VivariumError> {
-    let start = repo.commit_of(from).ok_or_else(|| {
-        VivariumError::Message(format!(
-            "\"{from}\" is not a commit or branch in {}",
-            repo.path().display()
-        ))
-    })?;
+    let (start, fetch_error) = repo.commit_of_fetching(from);
+    let start = start.ok_or_else(|| not_found(from, repo.path(), fetch_error.as_deref()))?;
     Ok(Checkout {
         action: BranchAction::Detached,
         start,

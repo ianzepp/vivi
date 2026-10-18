@@ -1,16 +1,18 @@
 //! Git as the `local` provider uses it against the repository a worktree pool
 //! is made from.
 //!
-//! Only three commands change that repository: `git worktree add`, `git
-//! worktree remove` and `git worktree prune`. Everything else here is a
-//! read-only query. The three run under a lock (see [`Repo::lock`]) so that
+//! Only four commands change that repository: `git worktree add`, `git
+//! worktree remove`, `git worktree prune` and the single-branch `git fetch`
+//! of [`Repo::fetch_remote_branch`], which writes one remote-tracking ref.
+//! Everything else here is a read-only query. The three run under a lock (see [`Repo::lock`]) so that
 //! two of them, in this process or in another `vivi`, never run at once.
 //! Every command that changes the state of a checkout runs inside a slot's
 //! own worktree, from the slot scripts, never here.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::error::VivariumError;
 
@@ -26,6 +28,9 @@ const GIT_ENV: [&str; 8] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
 ];
+
+/// The longest a single `git fetch` of one remote branch may run.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One worktree as `git worktree list --porcelain` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +131,93 @@ impl Repo {
     #[must_use]
     pub fn remote_url(&self, remote: &str) -> Option<String> {
         self.query(&["remote", "get-url", remote])
+    }
+
+    /// The names of the remotes configured in the repository.
+    #[must_use]
+    pub fn remotes(&self) -> Vec<String> {
+        self.query(&["remote"])
+            .map(|text| text.lines().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// The `(remote, branch)` that `rev` names when it has the shape
+    /// `<remote>/<branch>` and `<remote>` is configured here. A plain branch
+    /// name, a sha and any revision expression (`~`, `^`, `:` ...) name none.
+    #[must_use]
+    pub fn remote_branch_of(&self, rev: &str) -> Option<(String, String)> {
+        if rev.starts_with('-') || rev.contains(|c: char| " :*?[\\^~@".contains(c)) {
+            return None;
+        }
+        let mut remotes = self.remotes();
+        remotes.sort_by_key(|name| std::cmp::Reverse(name.len()));
+        remotes.into_iter().find_map(|remote| {
+            let branch = rev.strip_prefix(&format!("{remote}/"))?;
+            (!branch.is_empty() && !branch.ends_with('/') && !branch.contains(".."))
+                .then(|| (remote, branch.to_string()))
+        })
+    }
+
+    /// Fetch the one branch `branch` of `remote` into its remote-tracking ref
+    /// `refs/remotes/<remote>/<branch>`, bounded by [`FETCH_TIMEOUT`].
+    ///
+    /// # Errors
+    /// Returns what Git said (its last lines), or that the fetch timed out.
+    pub fn fetch_remote_branch(&self, remote: &str, branch: &str) -> Result<(), VivariumError> {
+        let spec = format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}");
+        let mut child = self
+            .git()
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["fetch", "-q", remote, &spec])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| git_error("failed to run `git fetch`", &e.to_string()))?;
+        let what = format!("`git fetch {remote} {branch}`");
+        let deadline = Instant::now() + FETCH_TIMEOUT;
+        loop {
+            let waited = child.try_wait();
+            if let Ok(Some(status)) = waited {
+                let out = child
+                    .wait_with_output()
+                    .map_err(|e| git_error("failed to read `git fetch` output", &e.to_string()))?;
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(git_error(
+                        &format!("{what} failed"),
+                        &tail(&String::from_utf8_lossy(&out.stderr)),
+                    ))
+                };
+            }
+            if waited.is_err() || Instant::now() >= deadline {
+                drop(child.kill());
+                drop(child.wait());
+                return Err(git_error(&what, "timed out"));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// The commit `rev` names. When it names none locally and has the shape
+    /// `<remote>/<branch>` of a configured remote, fetch that one branch once
+    /// and look again. The second field is the fetch error, when a fetch was
+    /// tried and the revision still names no commit.
+    #[must_use]
+    pub fn commit_of_fetching(&self, rev: &str) -> (Option<String>, Option<String>) {
+        if let Some(commit) = self.commit_of(rev) {
+            return (Some(commit), None);
+        }
+        let Some((remote, branch)) = self.remote_branch_of(rev) else {
+            return (None, None);
+        };
+        let fetched = self.fetch_remote_branch(&remote, &branch);
+        match (self.commit_of(rev), fetched) {
+            (Some(commit), _) => (Some(commit), None),
+            (None, Err(e)) => (None, Some(e.to_string())),
+            (None, Ok(())) => (None, None),
+        }
     }
 
     /// The repository's common Git directory (the main `.git`, also when
@@ -231,6 +323,12 @@ impl Repo {
         let _held = self.lock()?;
         self.run(&["worktree", "prune"]).map(drop)
     }
+}
+
+/// The last few lines of what Git said, on one line.
+fn tail(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(3)..].join("; ")
 }
 
 /// Read the blocks of `git worktree list --porcelain`.

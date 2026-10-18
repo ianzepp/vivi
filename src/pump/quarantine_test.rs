@@ -198,7 +198,7 @@ fn applying_a_quarantined_batch_parks_the_units_and_opens_one_repair_unit() {
     assert_eq!(unit.need, repair);
     assert_eq!(unit.proof, ["cargo test --lib"]);
     assert_eq!(unit.write_scope, ["src/pump/merge.rs"]);
-    assert_eq!(unit.base, Some(branch(&id)));
+    assert_eq!(unit.base, Some(format!("origin/{}", branch(&id))));
     // A repair unit repairs the quarantine; it is not a member of it, it
     // merges alone, and it names a kind that dispatch can resolve.
     assert_eq!(unit.repairs.as_deref(), Some(id.as_str()));
@@ -292,7 +292,7 @@ fn the_repair_unit_is_dispatched_from_its_quarantine_branch() {
         .filter(|c| c.contains("pool dispatch --pool"))
         .collect();
     assert_eq!(sent.len(), 1);
-    assert!(sent[0].contains(&format!("--from {}", branch(&id))));
+    assert!(sent[0].contains(&format!("--from origin/{}", branch(&id))));
     assert_eq!(st.units["u1"].status, Status::Quarantined);
 }
 

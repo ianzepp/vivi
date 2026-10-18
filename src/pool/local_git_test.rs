@@ -224,3 +224,33 @@ fn the_lock_holds_across_processes() {
     drop(held);
     assert_eq!(probe(&dir), 0, "it can once the holder lets go");
 }
+
+#[test]
+fn only_a_name_under_a_configured_remote_is_a_remote_branch() {
+    let f = fixture();
+    git(&f.repo, &["remote", "add", "origin", "/nowhere"]);
+    git(&f.repo, &["remote", "add", "up/stream", "/nowhere2"]);
+    let repo = Repo::new(&f.repo);
+    let named = |rev: &str| repo.remote_branch_of(rev);
+    let pair = |r: &str, b: &str| Some((r.to_string(), b.to_string()));
+    assert_eq!(named("origin/next"), pair("origin", "next"));
+    assert_eq!(
+        named("origin/pump/quarantine/q1"),
+        pair("origin", "pump/quarantine/q1")
+    );
+    assert_eq!(named("up/stream/x"), pair("up/stream", "x"));
+    for not in [
+        "next",
+        "origin",
+        "origin/",
+        "stranger/next",
+        "origin/a:b",
+        "origin/a~1",
+        "origin/a^",
+        "origin/a..b",
+        "-origin/a",
+        "0123456789abcdef0123456789abcdef01234567",
+    ] {
+        assert_eq!(named(not), None, "{not}");
+    }
+}
