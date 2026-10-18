@@ -34,15 +34,20 @@ async fn run_checks(config: &ProxyConfig, names: &[String]) -> Result<(), Vivari
     let mut failed = false;
     for name in names {
         match probe(&client, config, name).await {
-            Ok(line) => println!("{line}"),
+            Ok((status, line)) => {
+                println!("{line}");
+                if !(200..300).contains(&status) {
+                    failed = true;
+                }
+            }
             Err(error) => {
                 failed = true;
-                println!("{name} error {error}");
+                println!("{error}");
             }
         }
     }
     if failed {
-        Err(VivariumError::Message("proxy check failed".into()))
+        Err(VivariumError::Other("proxy check failed".into()))
     } else {
         Ok(())
     }
@@ -64,7 +69,7 @@ async fn probe(
     client: &reqwest::Client,
     config: &ProxyConfig,
     name: &str,
-) -> Result<String, VivariumError> {
+) -> Result<(u16, String), VivariumError> {
     let url = format!("http://{}/{name}/v1/models", config.listen);
     let mut request = client.get(&url);
     if let Some(cmd) = config.auth_token_cmd.as_deref() {
@@ -74,6 +79,7 @@ async fn probe(
     let response = request
         .send()
         .await
-        .map_err(|error| VivariumError::Message(format!("could not reach {url}: {error}")))?;
-    Ok(format!("{name} {} {url}", response.status().as_u16()))
+        .map_err(|error| VivariumError::Other(format!("could not reach {url}: {error}")))?;
+    let status = response.status().as_u16();
+    Ok((status, format!("{name} {status} {url}")))
 }

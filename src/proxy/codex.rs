@@ -12,7 +12,7 @@ use super::codex_chat;
 use super::codex_sse::{self, Rebuild};
 use super::config::ProviderConfig;
 use super::forward;
-use super::http_error::{self, request_id};
+use super::http_error;
 use super::route::Action;
 use super::sse::{self, Event};
 use super::usage::Usage;
@@ -25,6 +25,7 @@ const DEFAULT_UPSTREAM: &str = "https://chatgpt.com/backend-api/codex/responses"
 /// # Errors
 ///
 /// Returns a configuration error when the adapter is misconfigured.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     client: &reqwest::Client,
     provider: &ProviderConfig,
@@ -32,6 +33,7 @@ pub async fn handle(
     method: Method,
     headers: HeaderMap,
     body: Bytes,
+    request_id: &str,
 ) -> Result<(Response, Usage), VivariumError> {
     match action {
         Action::Health => Ok((health_response(provider), Usage::default())),
@@ -39,18 +41,17 @@ pub async fn handle(
             forward::json_ok(models_body(&provider.models)),
             Usage::default(),
         )),
-        Action::ChatCompletions => chat_shim(client, provider, headers, body).await,
-        Action::Responses => responses(client, provider, method, headers, body).await,
+        Action::ChatCompletions => chat_shim(client, provider, headers, body, request_id).await,
+        Action::Responses => responses(client, provider, method, headers, body, request_id).await,
         Action::Usage => Ok(usage_stub()),
         other => {
-            let id = request_id();
-            tracing::info!(action = other.as_str(), request_id = %id, "codex path not supported");
+            tracing::info!(action = other.as_str(), request_id = %request_id, "codex path not supported");
             Ok((
                 http_error::json_error(
                     StatusCode::NOT_FOUND,
                     "unsupported",
                     "codex native adapter serves /responses and /chat/completions",
-                    &id,
+                    request_id,
                 ),
                 Usage::default(),
             ))
@@ -64,18 +65,28 @@ async fn responses(
     method: Method,
     headers: HeaderMap,
     body: Bytes,
+    request_id: &str,
 ) -> Result<(Response, Usage), VivariumError> {
-    let id = request_id();
     let tokens = match codex_auth::ensure_fresh(client, provider).await {
         Ok(tokens) => tokens,
         Err(error) => {
-            tracing::warn!(%error, request_id = %id, "codex credentials unusable");
-            return Ok((http_error::credential_failed(&id), Usage::default()));
+            tracing::warn!(%error, request_id = %request_id, "codex credentials unusable");
+            return Ok((http_error::credential_failed(request_id), Usage::default()));
         }
     };
-    let sanitized = sanitize_body(&body);
+    let sanitized = match sanitize_body(&body) {
+        Ok(bytes) => bytes,
+        Err(()) => return Ok((http_error::invalid_json(request_id), Usage::default())),
+    };
     stream_responses(
-        client, provider, method, headers, sanitized, tokens, id, false,
+        client,
+        provider,
+        method,
+        headers,
+        sanitized,
+        tokens,
+        request_id.to_string(),
+        false,
     )
     .await
 }
@@ -98,7 +109,7 @@ async fn stream_responses(
         .to_string();
     let extra = outbound_headers(&headers, &tokens);
     let mut builder = client.request(method, url);
-    builder = forward::copy_headers(builder, &headers);
+    builder = forward::copy_headers_rebuilt(builder, &headers);
     for (name, value) in &extra {
         builder = builder.header(name.as_str(), value);
     }
@@ -119,19 +130,14 @@ async fn stream_responses(
 fn stream_filtered(upstream: reqwest::Response, request_id: &str) -> (Response, Usage) {
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        return forward::to_axum_response(upstream, request_id);
+    }
     let headers = upstream.headers().clone();
     let mut rebuild = Rebuild::default();
-    let mut usage = Usage::default();
     let stream = sse::map_events(
         upstream.bytes_stream().map_err(|error| error.to_string()),
-        move |event| {
-            if let Some(data) = event.data()
-                && let Some(found) = super::usage::from_sse_data(&data)
-            {
-                usage.merge(found);
-            }
-            codex_sse::filter(event, &mut rebuild)
-        },
+        move |event| codex_sse::filter(event, &mut rebuild),
     );
     let mut response = Response::builder()
         .status(status)
@@ -163,9 +169,12 @@ async fn chat_shim(
     provider: &ProviderConfig,
     headers: HeaderMap,
     body: Bytes,
+    request_id: &str,
 ) -> Result<(Response, Usage), VivariumError> {
-    let id = request_id();
-    let chat: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+    let chat: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(_) => return Ok((http_error::invalid_json(request_id), Usage::default())),
+    };
     let model = chat
         .get("model")
         .and_then(Value::as_str)
@@ -176,13 +185,21 @@ async fn chat_shim(
     let tokens = match codex_auth::ensure_fresh(client, provider).await {
         Ok(tokens) => tokens,
         Err(error) => {
-            tracing::warn!(%error, request_id = %id, "codex credentials unusable");
-            return Ok((http_error::credential_failed(&id), Usage::default()));
+            tracing::warn!(%error, request_id = %request_id, "codex credentials unusable");
+            return Ok((http_error::credential_failed(request_id), Usage::default()));
         }
     };
-    let events = collect_stream(client, provider, headers, responses_body, tokens, &id).await?;
+    let events = collect_stream(
+        client,
+        provider,
+        headers,
+        responses_body,
+        tokens,
+        request_id,
+    )
+    .await?;
     let text = codex_chat::text_from_events(&events);
-    let payload = codex_chat::responses_to_chat(&model, &text, &id);
+    let payload = codex_chat::responses_to_chat(&model, &text, request_id);
     Ok((
         (StatusCode::OK, axum::Json(payload)).into_response(),
         Usage::default(),
@@ -200,7 +217,7 @@ async fn collect_stream(
     let url = provider.upstream.as_deref().unwrap_or(DEFAULT_UPSTREAM);
     let extra = outbound_headers(&headers, &tokens);
     let mut builder = client.post(url);
-    builder = forward::copy_headers(builder, &headers);
+    builder = forward::copy_headers_rebuilt(builder, &headers);
     for (name, value) in &extra {
         builder = builder.header(name.as_str(), value);
     }
@@ -208,6 +225,9 @@ async fn collect_stream(
         tracing::warn!(%error, request_id = %id, "codex chat upstream failed");
         VivariumError::Message("upstream request failed".into())
     })?;
+    if !upstream.status().is_success() {
+        return Err(VivariumError::Message("codex chat upstream failed".into()));
+    }
     let mut rebuild = Rebuild::default();
     let mut events = Vec::new();
     let mut stream = sse::map_events(
@@ -224,13 +244,11 @@ async fn collect_stream(
     Ok(events)
 }
 
-fn sanitize_body(body: &[u8]) -> Bytes {
-    match serde_json::from_slice::<Value>(body) {
-        Ok(value) => Bytes::from(
-            serde_json::to_vec(&codex_chat::sanitize_responses(value)).unwrap_or_default(),
-        ),
-        Err(_) => Bytes::from(body.to_vec()),
-    }
+fn sanitize_body(body: &[u8]) -> Result<Bytes, ()> {
+    let value = serde_json::from_slice::<Value>(body).map_err(|_| ())?;
+    Ok(Bytes::from(
+        serde_json::to_vec(&codex_chat::sanitize_responses(value)).unwrap_or_default(),
+    ))
 }
 
 fn outbound_headers(incoming: &HeaderMap, tokens: &Tokens) -> HeaderMap {
@@ -273,8 +291,25 @@ fn health_response(provider: &ProviderConfig) -> Response {
     forward::json_ok(json!({ "ok": ok, "provider": "codex" }))
 }
 
+const DEFAULT_MODELS: &[&str] = &[
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3",
+    "gpt-5.2",
+    "gpt-5.1",
+    "gpt-5",
+];
+
 fn models_body(models: &[String]) -> Value {
-    let data: Vec<Value> = models
+    let listed: Vec<String> = if models.is_empty() {
+        DEFAULT_MODELS
+            .iter()
+            .map(|model| (*model).to_string())
+            .collect()
+    } else {
+        models.to_vec()
+    };
+    let data: Vec<Value> = listed
         .iter()
         .map(|model| json!({ "id": model, "object": "model" }))
         .collect();

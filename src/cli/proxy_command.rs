@@ -26,7 +26,7 @@ pub enum ProxySubcommand {
 /// Shared `--config` override for proxy commands.
 #[derive(Debug, Args)]
 pub struct ProxyConfigArg {
-    /// Path to `proxy.toml` (default: platform config dir `/vivi/proxy.toml`)
+    /// Path to `proxy.toml` (default: platform config dir + `vivi/proxy.toml`)
     #[arg(long)]
     pub config: Option<PathBuf>,
 }
@@ -34,7 +34,7 @@ pub struct ProxyConfigArg {
 /// Foreground `vivi proxy run`.
 #[derive(Debug, Args)]
 pub struct ProxyRunCommand {
-    /// Path to `proxy.toml` (default: platform config dir `/vivi/proxy.toml`)
+    /// Path to `proxy.toml` (default: platform config dir + `vivi/proxy.toml`)
     #[arg(long)]
     pub config: Option<PathBuf>,
 }

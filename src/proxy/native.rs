@@ -16,6 +16,7 @@ use crate::VivariumError;
 /// # Errors
 ///
 /// Returns a configuration error when the adapter name is missing or unknown.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     client: &reqwest::Client,
     provider: &ProviderConfig,
@@ -24,13 +25,17 @@ pub async fn handle(
     query: Option<&str>,
     headers: HeaderMap,
     body: Bytes,
+    request_id: &str,
 ) -> Result<(Response, Usage), VivariumError> {
     match provider.adapter.as_deref() {
         Some("kimi-coding" | "openai-passthrough") => {
-            kimi::handle(client, provider, action, method, query, headers, body).await
+            kimi::handle(
+                client, provider, action, method, query, headers, body, request_id,
+            )
+            .await
         }
         Some("chatgpt-codex") => {
-            codex::handle(client, provider, action, method, headers, body).await
+            codex::handle(client, provider, action, method, headers, body, request_id).await
         }
         _ => Err(VivariumError::Config(
             "native provider is missing a supported adapter".into(),

@@ -3,7 +3,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
@@ -36,7 +36,12 @@ pub struct AccessEvent {
 }
 
 /// Append-only JSONL writer with size rotation.
+#[derive(Clone)]
 pub struct AccessLog {
+    inner: Arc<AccessInner>,
+}
+
+struct AccessInner {
     dir: PathBuf,
     file: Mutex<File>,
 }
@@ -52,8 +57,10 @@ impl AccessLog {
         let path = access_path(dir);
         let file = open_append(&path)?;
         Ok(Self {
-            dir: dir.to_path_buf(),
-            file: Mutex::new(file),
+            inner: Arc::new(AccessInner {
+                dir: dir.to_path_buf(),
+                file: Mutex::new(file),
+            }),
         })
     }
 
@@ -63,7 +70,7 @@ impl AccessLog {
             tracing::warn!("could not encode proxy access event");
             return;
         };
-        let Ok(mut file) = self.file.lock() else {
+        let Ok(mut file) = self.inner.file.lock() else {
             return;
         };
         if writeln!(file, "{line}").is_err() {
@@ -71,7 +78,7 @@ impl AccessLog {
             return;
         }
         drop(file.flush());
-        rotate_if_needed(&self.dir, &mut file);
+        rotate_if_needed(&self.inner.dir, &mut file);
     }
 }
 

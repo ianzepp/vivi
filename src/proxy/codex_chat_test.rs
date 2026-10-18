@@ -16,6 +16,7 @@ fn drops_system_roles_and_forces_stream() {
     });
     let sanitized = codex_chat::sanitize_responses(body);
     assert_eq!(sanitized["stream"], true);
+    assert_eq!(sanitized["store"], false);
     assert!(sanitized.get("user").is_none());
     assert_eq!(sanitized["input"].as_array().unwrap().len(), 1);
 }
@@ -32,6 +33,7 @@ fn chat_shim_drops_tools_and_reports_zero_usage() {
     });
     let responses = codex_chat::chat_to_responses(&chat);
     assert!(responses.get("tools").is_none());
+    assert_eq!(responses["store"], false);
     assert_eq!(responses["input"].as_array().unwrap().len(), 1);
     let out = codex_chat::responses_to_chat("gpt-6.1-sol", "hello", "abc");
     assert_eq!(out["usage"]["total_tokens"], 0);

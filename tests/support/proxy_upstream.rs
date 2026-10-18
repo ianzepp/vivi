@@ -80,14 +80,8 @@ pub fn serve(mock: Mock) -> std::net::SocketAddr {
 }
 
 fn handle(mut stream: TcpStream, mock: &Mock) {
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    let mut buf = vec![0_u8; 65536];
-    let n = match stream.read(&mut buf) {
-        Ok(n) => n,
-        Err(_) => return,
-    };
-    let raw = &buf[..n];
-    let Some((head, body)) = split_request(raw) else {
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    let Some((head, body)) = read_request(&mut stream) else {
         return;
     };
     let mut lines = head.split("\r\n");
@@ -100,7 +94,7 @@ fn handle(mut stream: TcpStream, mock: &Mock) {
         method: method.clone(),
         path: path.clone(),
         headers,
-        body: body.to_vec(),
+        body,
     };
     mock.inner.lock().unwrap().seen.push(seen);
     if path.contains("/oauth/token") || path.ends_with("/token") {
@@ -109,6 +103,46 @@ fn handle(mut stream: TcpStream, mock: &Mock) {
     }
     let script = next_script(mock);
     write_script(&mut stream, &script);
+}
+
+fn read_request(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
+    let mut raw = Vec::new();
+    let mut buf = [0_u8; 4096];
+    loop {
+        let n = stream.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(idx) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&raw[..idx]).into_owned();
+            let mut body = raw[idx + 4..].to_vec();
+            let want = content_length(&head).unwrap_or(body.len());
+            while body.len() < want {
+                let n = stream.read(&mut buf).ok()?;
+                if n == 0 {
+                    break;
+                }
+                body.extend_from_slice(&buf[..n]);
+            }
+            return Some((head, body));
+        }
+        if raw.len() > 1024 * 1024 {
+            return None;
+        }
+    }
+    None
+}
+
+fn content_length(head: &str) -> Option<usize> {
+    head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.eq_ignore_ascii_case("content-length") {
+            value.trim().parse().ok()
+        } else {
+            None
+        }
+    })
 }
 
 fn header_list<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<(String, String)> {
@@ -168,13 +202,6 @@ fn write_script(stream: &mut TcpStream, script: &Script) {
     }
     let _ = write!(stream, "\r\n");
     let _ = stream.write_all(&script.body);
-}
-
-fn split_request(raw: &[u8]) -> Option<(String, &[u8])> {
-    let text = std::str::from_utf8(raw).ok()?;
-    let idx = text.find("\r\n\r\n")?;
-    let head = text[..idx].to_string();
-    Some((head, &raw[idx + 4..]))
 }
 
 /// Helper SSE body of one or more events.

@@ -54,6 +54,17 @@ pub fn upstream_failed(request_id: &str) -> Response {
     )
 }
 
+/// Local refusal of a body that is not JSON.
+#[must_use]
+pub fn invalid_json(request_id: &str) -> Response {
+    json_error(
+        StatusCode::BAD_REQUEST,
+        "invalid_json",
+        "request body must be JSON",
+        request_id,
+    )
+}
+
 /// Provider is not in `proxy.toml`.
 #[must_use]
 pub fn unknown_provider(request_id: &str) -> Response {

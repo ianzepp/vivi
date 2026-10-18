@@ -19,6 +19,7 @@ use super::health::{self, HealthTable};
 use super::http_error::{self, request_id};
 use super::native;
 use super::route::{self, Action, Route};
+use super::tap;
 use super::usage::{self, Usage};
 use crate::VivariumError;
 
@@ -107,6 +108,7 @@ async fn routed(
         uri.query(),
         headers,
         body,
+        &id,
     )
     .await;
     finish(state, name, &action, model, &id, started, result)
@@ -122,6 +124,7 @@ async fn dispatch_backend(
     query: Option<&str>,
     headers: HeaderMap,
     body: Bytes,
+    id: &str,
 ) -> Result<(Response, Usage), VivariumError> {
     match provider.kind {
         BackendKind::Native => {
@@ -133,6 +136,7 @@ async fn dispatch_backend(
                 query,
                 headers,
                 body,
+                id,
             )
             .await
         }
@@ -140,8 +144,16 @@ async fn dispatch_backend(
             let forwarded = route::forward_path(&path);
             let backend = provider.backend.as_deref().unwrap_or("http://127.0.0.1");
             let url = forward::join_url(backend, &forwarded, query);
-            forward::proxy_request(&state.client, method, url, headers, body, HeaderMap::new())
-                .await
+            forward::proxy_request(
+                &state.client,
+                method,
+                url,
+                headers,
+                body,
+                HeaderMap::new(),
+                id,
+            )
+            .await
         }
     }
 }
@@ -157,38 +169,42 @@ fn finish(
 ) -> Response {
     match result {
         Ok((response, usage)) => {
-            log_event(
-                state,
-                name,
-                action,
-                model,
-                id,
-                started,
-                response.status().as_u16(),
-                &usage,
-            );
-            response
+            finish_ok(state, name, action, model, id, started, response, usage)
         }
         Err(error) => {
             tracing::warn!(provider = %name, %error, request_id = %id, "provider dispatch failed");
-            log_event(
-                state,
-                name,
-                action,
-                model,
-                id,
-                started,
-                502,
-                &Usage::default(),
-            );
+            let event = access_event(name, action, model, id, started, 502, &Usage::default());
+            state.log.write(&event);
             http_error::upstream_failed(id)
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn log_event(
+fn finish_ok(
     state: &AppState,
+    name: &str,
+    action: &Action,
+    model: Option<String>,
+    id: &str,
+    started: Instant,
+    response: Response,
+    usage: Usage,
+) -> Response {
+    let event = access_event(
+        name,
+        action,
+        model,
+        id,
+        started,
+        response.status().as_u16(),
+        &usage,
+    );
+    tap::wrap_logged(response, state.log.clone(), event, started, usage)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn access_event(
     name: &str,
     action: &Action,
     model: Option<String>,
@@ -196,8 +212,9 @@ fn log_event(
     started: Instant,
     status: u16,
     usage: &Usage,
-) {
-    state.log.write(&AccessEvent {
+) -> AccessEvent {
+    let ttfb_ms = access::elapsed_ms(started);
+    AccessEvent {
         ts: access::now_rfc3339(),
         id: id.to_string(),
         provider: name.to_string(),
@@ -205,13 +222,13 @@ fn log_event(
         path: action.as_str().to_string(),
         model,
         status,
-        ttfb_ms: access::elapsed_ms(started),
-        total_ms: access::elapsed_ms(started),
+        ttfb_ms,
+        total_ms: ttfb_ms,
         input_tokens: usage.input,
         output_tokens: usage.output,
         cached_tokens: usage.cached,
         upstream_id: usage.upstream_id.clone(),
-    });
+    }
 }
 
 fn deny_request(state: &AppState, method: &Method, headers: &HeaderMap) -> Option<Response> {

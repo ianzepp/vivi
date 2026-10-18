@@ -440,6 +440,9 @@ kind = "native"
 adapter = "chatgpt-codex"
 credentials = "~/.codex/auth.json"
 fallback_credentials = "~/.pi/agent/auth.json"
+# Optional. When omitted, /codex/v1/models serves a built-in list
+# (gpt-5.4, gpt-5.3-codex, gpt-5.3, gpt-5.2, gpt-5.1, gpt-5).
+# models = ["gpt-5.4", "gpt-5.3-codex", "gpt-5"]
 
 [providers.kimi]
 kind = "native"

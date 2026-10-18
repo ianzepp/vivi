@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use vivi::cli::ProxyCheckCommand;
+use vivi::proxy::check;
 use vivi::proxy::config::{self, ProxyConfig};
+use vivi::proxy::providers;
 use vivi::proxy::runtime;
 
 #[path = "support/proxy_upstream.rs"]
@@ -496,4 +499,344 @@ fn launchd_plist_mentions_label() {
     );
     assert!(plist.contains("com.vivi.proxy"));
     assert!(plist.contains("proxy"));
+}
+
+fn last_access_log(dir: &TempDir) -> Value {
+    let path = dir.path().join("logs").join("proxy-access.jsonl");
+    for _ in 0..50 {
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Some(line) = text.lines().last()
+            && let Ok(value) = serde_json::from_str(line)
+        {
+            return value;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("no access log at {}", path.display());
+}
+
+fn header_value<'a>(seen: &'a proxy_upstream::Seen, name: &str) -> Option<&'a str> {
+    seen.headers
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+}
+
+fn write_codex_auth(dir: &TempDir) -> std::path::PathBuf {
+    let creds = dir.path().join("auth.json");
+    std::fs::write(
+        &creds,
+        json!({"tokens":{"access_token":"tok","account_id":"acct"}}).to_string(),
+    )
+    .unwrap();
+    creds
+}
+
+fn load_codex(dir: &TempDir, creds: &std::path::Path, addr: std::net::SocketAddr) -> ProxyConfig {
+    load(
+        dir,
+        &format!(
+            r#"
+            log_dir = "{}"
+            [providers.codex]
+            kind = "native"
+            adapter = "chatgpt-codex"
+            credentials = "{}"
+            upstream = "http://{addr}/backend-api/codex/responses"
+            "#,
+            dir.path().join("logs").display(),
+            creds.display()
+        ),
+    )
+    .1
+}
+
+#[test]
+fn native_codex_rebuilds_body_length_and_forces_store_false() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: sse_body(&[
+            r#"{"type":"response.completed","response":{"id":"resp_1","output":[]}}"#,
+        ]),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock.clone());
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_codex(&dir, &creds, addr));
+    let inbound = json!({
+        "model": "gpt-6-luna",
+        "instructions": "You are terse.",
+        "input": [{"role":"user","content":[{"type":"input_text","text":"Reply with OK"}]}],
+        "stream": true,
+        "store": false,
+        "user": "drop-me",
+        "metadata": {"pad": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+    });
+    let response = get(&base)
+        .post(format!("{base}/codex/v1/responses"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(inbound.to_string())
+        .send()
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let seen = mock.seen();
+    let last = seen.last().expect("upstream saw the sanitized body");
+    let forwarded: Value = serde_json::from_slice(&last.body).unwrap();
+    assert_eq!(forwarded["store"], false);
+    assert!(forwarded.get("user").is_none());
+    assert!(forwarded.get("metadata").is_none());
+    let expected_len = last.body.len().to_string();
+    assert_eq!(
+        header_value(last, "content-length"),
+        Some(expected_len.as_str())
+    );
+    server.stop();
+}
+
+#[test]
+fn native_codex_chat_shim_rebuilds_body_length_and_forces_store_false() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: sse_body(&[
+            r#"{"type":"response.output_text.delta","delta":"OK"}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","output":[]}}"#,
+        ]),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock.clone());
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_codex(&dir, &creds, addr));
+    let inbound = json!({
+        "model": "gpt-6-luna",
+        "messages": [{"role":"user","content":"Reply with OK"}],
+        "stream": false,
+        "user": "drop-me",
+        "metadata": {"pad": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+    });
+    let response = get(&base)
+        .post(format!("{base}/codex/v1/chat/completions"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(inbound.to_string())
+        .send()
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let seen = mock.seen();
+    let last = seen.last().expect("upstream saw the shim body");
+    let forwarded: Value = serde_json::from_slice(&last.body).unwrap();
+    assert_eq!(forwarded["store"], false);
+    assert!(forwarded.get("user").is_none());
+    let expected_len = last.body.len().to_string();
+    assert_eq!(
+        header_value(last, "content-length"),
+        Some(expected_len.as_str())
+    );
+    server.stop();
+}
+
+#[test]
+fn native_codex_invalid_json_is_local_400() {
+    let mock = Mock::new();
+    let addr = proxy_upstream::serve(mock.clone());
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_codex(&dir, &creds, addr));
+    let response = get(&base)
+        .post(format!("{base}/codex/v1/responses"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body("{not-json")
+        .send()
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    assert!(mock.seen().is_empty());
+    server.stop();
+}
+
+#[test]
+fn native_codex_error_keeps_upstream_json_content_type() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 400,
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: br#"{"detail":"Store must be set to false"}"#.to_vec(),
+        sse: false,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_codex(&dir, &creds, addr));
+    let response = get(&base)
+        .post(format!("{base}/codex/v1/responses"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(r#"{"model":"gpt-6-luna","input":[],"store":false}"#)
+        .send()
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(content_type.contains("application/json"));
+    assert!(!content_type.contains("event-stream"));
+    server.stop();
+}
+
+#[test]
+fn native_codex_log_id_matches_header_and_records_usage() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: sse_body(&[
+            r#"{"type":"response.output_item.done","item":{"id":"msg_1","type":"message","content":[{"text":"OK"}]}}"#,
+            r#"{"type":"response.completed","response":{"id":"resp_1","output":[],"usage":{"input_tokens":3,"output_tokens":1}}}"#,
+        ]),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_codex(&dir, &creds, addr));
+    let response = get(&base)
+        .post(format!("{base}/codex/v1/responses"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(r#"{"model":"gpt-6-luna","input":[{"role":"user","content":"hi"}]}"#)
+        .send()
+        .unwrap();
+    let header_id = response
+        .headers()
+        .get("x-vivi-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap()
+        .to_string();
+    let _body = response.text().unwrap();
+    let event = last_access_log(&dir);
+    assert_eq!(event["id"], header_id);
+    assert_eq!(event["input_tokens"], 3);
+    assert_eq!(event["output_tokens"], 1);
+    assert!(event["total_ms"].as_u64().unwrap() >= event["ttfb_ms"].as_u64().unwrap());
+    server.stop();
+}
+
+#[test]
+fn native_codex_models_uses_builtin_list() {
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(
+        &rt,
+        load(
+            &dir,
+            &format!(
+                r#"
+                log_dir = "{}"
+                [providers.codex]
+                kind = "native"
+                adapter = "chatgpt-codex"
+                credentials = "{}"
+                "#,
+                dir.path().join("logs").display(),
+                creds.display()
+            ),
+        )
+        .1,
+    );
+    let value: Value = get(&base)
+        .get(format!("{base}/codex/v1/models"))
+        .header("host", "127.0.0.1")
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert!(!value["data"].as_array().unwrap().is_empty());
+    server.stop();
+}
+
+#[test]
+fn check_non_2xx_is_an_error() {
+    let dir = TempDir::new().unwrap();
+    let (path, config) = load(
+        &dir,
+        &format!(
+            r#"
+            log_dir = "{}"
+            [providers.cursor]
+            kind = "upstream"
+            backend = "http://127.0.0.1:9"
+            "#,
+            dir.path().join("logs").display()
+        ),
+    );
+    let rt = runtime();
+    let (server, _) = wait(&rt, config);
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+            listen = "{}"
+            log_dir = "{}"
+            [providers.cursor]
+            kind = "upstream"
+            backend = "http://127.0.0.1:9"
+            "#,
+            server.addr,
+            dir.path().join("logs").display()
+        ),
+    )
+    .unwrap();
+    let result = check::print(&ProxyCheckCommand {
+        provider: Some("cursor".into()),
+        config: Some(path),
+    });
+    assert!(result.is_err());
+    server.stop();
+}
+
+#[test]
+fn providers_row_includes_health() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: b"ok".to_vec(),
+        sse: false,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let (_path, mut config) = load(
+        &dir,
+        &format!(
+            r#"
+            log_dir = "{}"
+            [providers.llama]
+            kind = "upstream"
+            backend = "http://{addr}"
+            health = "/health"
+            "#,
+            dir.path().join("logs").display()
+        ),
+    );
+    let rt = runtime();
+    let (server, _) = wait(&rt, config.clone());
+    config.listen = server.addr;
+    let row = providers::format_row(&config, "llama", &config.providers["llama"]);
+    assert!(row.contains("health=ok"), "{row}");
+    assert!(row.contains("credentials="), "{row}");
+    server.stop();
 }

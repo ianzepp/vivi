@@ -42,3 +42,17 @@ fn help_lists_proxy() {
     assert!(text.contains("providers"));
     assert!(text.contains("check"));
 }
+
+#[test]
+fn run_help_names_platform_config_dir() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .args(["proxy", "run", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("vivi/proxy.toml"), "{text}");
+    assert!(
+        !text.contains("dir `/vivi/proxy.toml`"),
+        "missing prefix: {text}"
+    );
+}

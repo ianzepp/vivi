@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use super::codex_sse;
 
 /// Fields dropped from a Responses body before it is sent upstream.
+/// `store` is not dropped: the Codex backend requires `store=false`.
 const DROP_FIELDS: &[&str] = &[
-    "store",
     "prompt_cache_key",
     "safety_identifier",
     "service_tier",
@@ -19,7 +19,7 @@ const DROP_FIELDS: &[&str] = &[
 ];
 
 /// Sanitize a Responses body: drop rejected fields, strip system/developer,
-/// force `stream: true`.
+/// force `stream: true` and `store: false`.
 #[must_use]
 pub fn sanitize_responses(mut value: Value) -> Value {
     if let Some(object) = value.as_object_mut() {
@@ -27,6 +27,7 @@ pub fn sanitize_responses(mut value: Value) -> Value {
             object.remove(*field);
         }
         object.insert("stream".into(), json!(true));
+        object.insert("store".into(), json!(false));
         if let Some(input) = object.get_mut("input") {
             *input = filter_input(input.take());
         }

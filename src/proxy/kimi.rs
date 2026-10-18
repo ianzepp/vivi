@@ -11,7 +11,7 @@ use super::cmd;
 use super::config::ProviderConfig;
 use super::credentials;
 use super::forward;
-use super::http_error::{self, request_id};
+use super::http_error;
 use super::paths::expand_user_str;
 use super::route::Action;
 use super::usage::Usage;
@@ -28,6 +28,7 @@ const DEFAULT_CLIENT_VERSION: &str = "1.15.0";
 ///
 /// Returns a configuration error when credentials cannot be read. Token
 /// endpoint bodies are never included in the error text.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     client: &reqwest::Client,
     provider: &ProviderConfig,
@@ -36,8 +37,8 @@ pub async fn handle(
     query: Option<&str>,
     headers: HeaderMap,
     body: Bytes,
+    request_id: &str,
 ) -> Result<(Response, Usage), VivariumError> {
-    let id = request_id();
     if matches!(action, Action::Health) {
         return Ok((health_response(provider), Usage::default()));
     }
@@ -55,6 +56,7 @@ pub async fn handle(
         query,
         &headers,
         body.clone(),
+        request_id,
         false,
     )
     .await;
@@ -62,12 +64,12 @@ pub async fn handle(
         Ok((response, usage)) if response.status() == axum::http::StatusCode::UNAUTHORIZED => {
             if refresh(client, provider).await.is_ok() {
                 dispatch(
-                    client, provider, action, &method, query, &headers, body, true,
+                    client, provider, action, &method, query, &headers, body, request_id, true,
                 )
                 .await
             } else {
-                tracing::warn!(request_id = %id, "kimi refresh after 401 failed");
-                Ok((http_error::credential_failed(&id), usage))
+                tracing::warn!(request_id = %request_id, "kimi refresh after 401 failed");
+                Ok((http_error::credential_failed(request_id), usage))
             }
         }
         other => other,
@@ -83,19 +85,28 @@ async fn dispatch(
     query: Option<&str>,
     headers: &HeaderMap,
     body: Bytes,
+    request_id: &str,
     _retried: bool,
 ) -> Result<(Response, Usage), VivariumError> {
-    let id = request_id();
     let token = match bearer(provider) {
         Ok(token) => token,
         Err(error) => {
-            tracing::warn!(%error, request_id = %id, "kimi credentials unreadable");
-            return Ok((http_error::credential_failed(&id), Usage::default()));
+            tracing::warn!(%error, request_id = %request_id, "kimi credentials unreadable");
+            return Ok((http_error::credential_failed(request_id), Usage::default()));
         }
     };
     let url = upstream_url(provider, action, query);
     let extra = identity_headers(provider, &token);
-    forward::proxy_request(client, method.clone(), url, headers.clone(), body, extra).await
+    forward::proxy_request(
+        client,
+        method.clone(),
+        url,
+        headers.clone(),
+        body,
+        extra,
+        request_id,
+    )
+    .await
 }
 
 fn bearer(provider: &ProviderConfig) -> Result<String, VivariumError> {
