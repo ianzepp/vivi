@@ -45,7 +45,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
             ctx.log(&format!(
                 "control state read failed; skipping dispatch: {error}"
             ));
-            write_status(ctx, st);
+            write_status(ctx, st, &merger.lane_lines(ctx.now()));
             return Err(error);
         }
     };
@@ -54,7 +54,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
         plan::ingest(ctx, st);
         crate::pump::alarm::check(ctx, st);
         save(ctx, st)?;
-        write_status(ctx, st);
+        write_status(ctx, st, &merger.lane_lines(ctx.now()));
         return Ok(());
     }
     dispatch::dispatch(ctx, st);
@@ -80,15 +80,16 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
     plan::ingest(ctx, st);
     crate::pump::alarm::check(ctx, st);
     save(ctx, st)?;
-    write_status(ctx, st);
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
     Ok(())
 }
 
 /// Write the status lines to `<home>/status.txt`: a UTC timestamp, unit
-/// counts, plan verdict counts, the merge/gate counters, then the stall
-/// lines from [`crate::pump::alarm::status_lines`]. A write failure is
-/// logged, never fatal.
-pub fn write_status(ctx: &Ctx, st: &State) {
+/// counts, plan verdict counts, the merge/gate counters, the stall lines
+/// from [`crate::pump::alarm::status_lines`], then one line per merge lane
+/// (`lanes`, from [`Merger::lane_lines`]). A write failure is logged, never
+/// fatal.
+pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for need in st.needs.values() {
         *verdicts.entry(need.verdict.clone()).or_default() += 1;
@@ -122,6 +123,7 @@ pub fn write_status(ctx: &Ctx, st: &State) {
         ),
     ];
     lines.extend(crate::pump::alarm::status_lines(ctx, st));
+    lines.extend(lanes.iter().cloned());
     let path = ctx.home.join("status.txt");
     if let Err(err) = fs::write(&path, lines.join("\n") + "\n") {
         ctx.log(&format!("status write failed at {}: {err}", path.display()));

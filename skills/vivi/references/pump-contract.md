@@ -93,10 +93,10 @@ directory:
 | `state.json.imported` | one-time import, then left alone | operator (rollback) | the predecessor's JSON shape (§5) |
 | `pump.db-wal`, `pump.db-shm` | SQLite | SQLite | WAL sidecars |
 | `pump_control` in `pump.db` | pump control commands and service | pump and service | durable mode and transient service shutdown request |
-| `log.txt` | pump `log` | operator | one line per event: `HH:MM:SS msg`, UTC |
+| `log.txt` | pump `log` | operator | one line per event: `HH:MM:SS msg`, UTC; a merge lane thread's lines start `lane <target>/<n>: ` (see below) |
 | `exceptions.txt` | pump `exception` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars |
 | `needs-ready.txt` | pump on need completion (merge_apply) | operator | `need tip10 unit,unit` per line |
-| `status.txt` | pump `write_status` | `pump status` | 4 lines: timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …` |
+| `status.txt` | pump `write_status` | `pump status` | timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …`, the three stall lines below, then one line per merge lane |
 | `lock` | pump opens for flock | none (lock only) | empty |
 | `skip.txt` | operator | board pass | need handles to never plan, whitespace separated |
 | `plans/` | planner writes `<need>.json`, `<need>.r<N>.json` (a revision) and `<uid>.split.json` | pump ingest | plan JSON; see [`pump-protocols.md`](pump-protocols.md) |
@@ -588,6 +588,21 @@ target never promoted; only for targets with promotion enabled) and
 `last promote <age> ago (<tip10>)` or `last promote never`, `oldest waiting fix
 <uid> <age>` or `oldest waiting fix none`, and `delivered waiting <n>, oldest
 <age>`; ages read `2h05m` or `14m`.
+
+Merge lane visibility. Every `log.txt` line written from a lane thread starts
+with `lane <target>/<n>: `, so parallel lanes can be told apart; lines from the
+main thread stay unprefixed. A lane logs each step as it starts or ends:
+`clone start: <dir>` / `clone done <s>s`, `merge <uid> <k>/<n> ok|conflict|
+already integrated|integration check failed|fetch failed: <text>`, `format:
+<cmd>` / `format done <s>s` / `style commit`, `check <i>/<n> start: <cmd>`
+(then the existing `batch N shared rc=…` end line), `proof <uid> start: <cmd>`
+(then `proof <uid> rc=… <s>s: <cmd>`), `publish: fetch`, `publish: merging
+moved <branch> tip <sha10>`, `publish: push attempt <k>`, `publish: pushed
+<sha10>` or `publish: failed <why>`, and the quarantine lines. After the stall
+lines, `status.txt` carries one line per lane, in lane order:
+`lane <target>/<n> busy <units> units <batch age>: <current step> (<step age>)`,
+`lane <target>/<n> idle`, `lane <target>/<n> backoff <time> left` or
+`lane <target>/<n> gone`; durations read `45s`, `2m10s`, `1h05m00s`.
 
 `[pump.merge]`:
 

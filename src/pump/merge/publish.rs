@@ -35,13 +35,16 @@ pub(super) fn publish(ctx: &Ctx) -> Result<String, PublishFailure> {
     let mut last = String::new();
     for attempt in 1..=ATTEMPTS {
         sync_remote_tip(ctx)?;
+        ctx.step(&format!("publish: push attempt {attempt}"));
         let out = ctx.git(&format!("push {} {target}", ctx.cfg.remote), 180);
         if out.code == 0 {
-            return Ok(ctx
+            let tip = ctx
                 .git("rev-parse HEAD", GIT_TIMEOUT)
                 .text
                 .trim()
-                .to_string());
+                .to_string();
+            ctx.log(&format!("publish: pushed {}", short(&tip)));
+            return Ok(tip);
         }
         ctx.log(&format!(
             "push of {} rejected (attempt {attempt}/{ATTEMPTS})",
@@ -50,10 +53,16 @@ pub(super) fn publish(ctx: &Ctx) -> Result<String, PublishFailure> {
         last = out.text;
     }
     reset_repo(ctx);
+    ctx.log("publish: failed push-failed");
     Err(PublishFailure {
         why: "push-failed",
         detail: tail(&last, 200),
     })
+}
+
+/// The first ten characters of a commit id.
+fn short(sha: &str) -> String {
+    sha.trim().chars().take(10).collect()
 }
 
 /// Drop whatever the checks left in the working tree.
@@ -69,6 +78,7 @@ fn discard_dirt(ctx: &Ctx) {
 fn sync_remote_tip(ctx: &Ctx) -> Result<(), PublishFailure> {
     let remote = ctx.cfg.remote.as_str();
     let branch = ctx.cfg.branch.as_str();
+    ctx.step("publish: fetch");
     let fetch = ctx.git(&format!("fetch -q {remote} {branch}"), 180);
     if fetch.code != 0 {
         return Err(abandon(ctx, "publish-fetch-failed", &fetch.text));
@@ -85,6 +95,12 @@ fn sync_remote_tip(ctx: &Ctx) -> Result<(), PublishFailure> {
 /// Merge the moved remote tip into `HEAD`; a conflict aborts the merge and
 /// fails the publish.
 fn merge_remote_tip(ctx: &Ctx, tip: &str) -> Result<(), PublishFailure> {
+    let sha = ctx.git(&format!("rev-parse {tip}"), GIT_TIMEOUT).text;
+    ctx.step(&format!(
+        "publish: merging moved {} tip {}",
+        ctx.cfg.branch,
+        short(&sha)
+    ));
     let msg = shell_quote(&format!("merge {tip} into lane"));
     let cmd = format!(
         "{} merge --no-ff --no-edit -m {msg} {tip}",
@@ -104,6 +120,7 @@ fn merge_remote_tip(ctx: &Ctx, tip: &str) -> Result<(), PublishFailure> {
 
 /// Reset the checkout and shape the failure.
 fn abandon(ctx: &Ctx, why: &'static str, detail: &str) -> PublishFailure {
+    ctx.log(&format!("publish: failed {why}"));
     reset_repo(ctx);
     PublishFailure {
         why,

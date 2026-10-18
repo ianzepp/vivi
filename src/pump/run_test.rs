@@ -98,10 +98,11 @@ fn write_status_writes_counts_then_stall_lines() {
     st.merges = 3;
     st.closed_needs = vec![String::from("n1"), String::from("n2")];
     st.gates.push(crate::pump::state::GateRecord::default());
-    write_status(&ctx, &st);
+    let (merger, _results, _jobs) = Merger::detached();
+    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 7);
+    assert_eq!(lines.len(), 8);
     assert_eq!(lines[0], "1970-01-12T13:46:40Z");
     assert_eq!(lines[1], "units merged=1 pending=2");
     assert_eq!(lines[2], "plans closed=2 units=1");
@@ -109,6 +110,7 @@ fn write_status_writes_counts_then_stall_lines() {
     assert_eq!(lines[4], "last promote never");
     assert_eq!(lines[5], "oldest waiting fix none");
     assert_eq!(lines[6], "delivered waiting 0, oldest none");
+    assert_eq!(lines[7], "lane default/0 idle");
 }
 
 #[test]
@@ -145,7 +147,7 @@ fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     assert!(!commands.iter().any(|c| c.contains("pool status")));
     assert!(!commands.iter().any(|c| c.contains("task send")));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert_eq!(text.lines().count(), 7);
+    assert_eq!(text.lines().count(), 8);
 }
 
 #[test]

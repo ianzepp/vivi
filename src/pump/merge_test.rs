@@ -118,8 +118,14 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
     assert_eq!(
         host.logs(),
         vec![
+            "merge u1 1/1 ok",
+            "check 1/1 start: cargo test --lib",
             "proof u1 rc=0 0s: cargo test --lib",
+            "proof u1 start: ./proof-u1.sh",
             "proof u1 rc=0 0s: ./proof-u1.sh",
+            "publish: fetch",
+            "publish: push attempt 1",
+            "publish: pushed tip123",
         ]
     );
 }
@@ -185,7 +191,7 @@ fn an_already_integrated_replay_restores_only_the_receipt() {
         "only reset, fetch and ancestry lookup"
     );
     assert_eq!(host.commands().last().unwrap(), "git rev-parse origin/next");
-    assert!(host.logs().is_empty());
+    assert_eq!(host.logs(), vec!["merge u1 1/1 already integrated"]);
 }
 
 #[test]
@@ -207,7 +213,7 @@ fn an_ancestry_error_retries_without_merging_checking_or_pushing() {
         host.commands().last().unwrap(),
         "git merge-base --is-ancestor origin/work/u1 origin/next"
     );
-    assert!(host.logs().is_empty());
+    assert_eq!(host.logs(), vec!["merge u1 1/1 integration check failed"]);
 }
 
 #[test]
@@ -315,7 +321,7 @@ fn a_failing_shared_check_is_proof_failed_and_names_the_command() {
     assert!(detail.contains("this command failed (exit 1):\ncargo test --lib"));
     assert!(detail.contains("Last output:\nerror[E0308]: mismatched types"));
     assert_eq!(
-        host.logs().first().map(String::as_str),
+        host.logs().get(2).map(String::as_str),
         Some("proof u1 rc=1 0s: cargo test --lib")
     );
     assert_eq!(
@@ -613,9 +619,11 @@ fn a_shared_check_failure_with_one_job_is_proof_failed() {
     let detail = results[0].detail.as_deref().unwrap_or_default();
     assert!(detail.contains("What failed:\nerror: boom"));
     let logs = host.logs();
-    assert_eq!(logs[0], "batch 1 shared rc=1 0s: cargo test --lib");
-    assert_eq!(logs[1], "  error: boom");
-    assert!(logs[2..].iter().all(|l| l.starts_with("  ")));
+    assert_eq!(logs[0], "merge u1 1/1 ok");
+    assert_eq!(logs[1], "check 1/1 start: cargo test --lib");
+    assert_eq!(logs[2], "batch 1 shared rc=1 0s: cargo test --lib");
+    assert_eq!(logs[3], "  error: boom");
+    assert!(logs[4..].iter().all(|l| l.starts_with("  ")));
     let cmds = host.commands();
     assert!(cmds.iter().all(|c| !c.contains("./proof-u1.sh")));
     assert!(cmds.iter().all(|c| !c.contains("push")));
