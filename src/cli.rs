@@ -8,6 +8,7 @@ mod board_command;
 mod mailspace_command;
 mod mcp_command;
 mod pool_command;
+mod proxy_command;
 mod pump_command;
 mod role_command;
 mod skills_command;
@@ -31,6 +32,9 @@ pub use mcp_command::McpCommand;
 pub use pool_command::{
     PoolCreateCommand, PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand,
     PoolReconcileCommand, PoolScaleCommand, PoolStatusCommand, PoolSubcommand, PoolWaitCommand,
+};
+pub use proxy_command::{
+    ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,
 };
 pub use pump_command::{
     PumpCloseoutCommand, PumpControlCommand, PumpExportCommand, PumpLogCommand, PumpOnceCommand,
@@ -137,6 +141,12 @@ pub enum Command {
     Pump {
         #[command(subcommand)]
         command: PumpSubcommand,
+    },
+
+    /// Local loopback front door for model providers
+    Proxy {
+        #[command(subcommand)]
+        command: ProxySubcommand,
     },
 
     /// Manage first-class mailspace agent seats (roles)

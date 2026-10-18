@@ -189,6 +189,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `mcp` | Needs a server: a stdio bridge to the project server's MCP endpoint |
 | `pool` | `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `doctor` |
 | `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`) |
+| `proxy` | Local loopback front door for model providers: `run`, `install`, `uninstall`, `status`, `log`, `providers`, `check` |
 | `skills` | `list`, `show <name> [--file <path>]`, `install <dir> [--force]` for the skills embedded in the binary; needs no mailspace |
 
 Commands that list, show or dump take `--json`. A large dump to stdout needs
@@ -364,6 +365,102 @@ The design record is
 It ships inside the binary: `vivi skills show vivi --file references/pump-contract.md`. As with any design record,
 check a detail against the code before relying on it.
 
+## The proxy
+
+`vivi proxy` is a user-level loopback front door. One listener (default
+`127.0.0.1:18180`) path-routes `/<provider>/v1/{responses,chat/completions,messages,models}`
+— and the same paths without `/v1` — to native adapters, supervised child
+processes, or an already-running upstream. Config lives next to the pump
+service registry, at the platform config dir under `vivi/proxy.toml`
+(`--config` or `VIVI_PROXY_CONFIG` overrides it). The file holds paths and
+`key_cmd` / `auth_token_cmd` only; never inline secrets.
+
+```sh
+vivi proxy run                 # foreground listener + child supervisor
+vivi proxy install             # macOS LaunchAgent, or Linux systemd --user
+vivi proxy uninstall
+vivi proxy status
+vivi proxy log [-f] [--provider <name>]
+vivi proxy providers           # Pi base URLs, health, credential expiry
+vivi proxy check [provider]    # tiny live GET to /<p>/v1/models
+```
+
+`install` writes `com.vivi.proxy` (launchd) or `vivi-proxy.service` (systemd
+`--user`) so the pump job and the proxy job are independent. A second
+`vivi proxy run` refuses the instance lock.
+
+Backends:
+
+| `kind` | Meaning |
+| --- | --- |
+| `native` | In-process adapter (`chatgpt-codex` or `kimi-coding` / `openai-passthrough`) |
+| `child` | Vivi spawns the command, health-checks it, restarts with backoff |
+| `upstream` | Reverse-proxy to a server that is already listening |
+
+Native Codex reads `~/.codex/auth.json` (then `~/.pi/agent/auth.json`) in
+place, refreshes 30s before JWT expiry under an advisory lock, writes back
+atomically at mode `0600`, filters SSE to an allowlist and rebuilds an empty
+`response.completed.output`, and keeps the existing non-streaming, tool-less,
+usage-0 chat shim. Native Kimi re-reads its credential file on every request,
+injects `X-Msh-*` identity headers, passes bytes through, and retries once
+after a 401 refresh. Cursor stays a `child` (Bun/protobuf engine). Local
+llama-server is an `upstream`.
+
+The listener refuses a non-loopback bind unless `allow_remote = true` and
+`auth_token_cmd` are both set. Inbound requests need `Host` of localhost /
+the bind address, no `Origin`, and `Content-Type: application/json` on POST.
+Credential and token-endpoint failures become a fixed message plus a request
+id; token-endpoint bodies are never echoed. Access log is rotated JSONL under
+`log_dir` (bodies are never written).
+
+### Migration from separate `com.ianzepp.proxy.*` jobs
+
+Point each Pi provider `baseUrl` at the one listener and retire the old
+per-port jobs:
+
+| Provider | Old base | New base |
+| --- | --- | --- |
+| Codex | `http://127.0.0.1:18181` | `http://127.0.0.1:18180/codex/v1` |
+| Kimi | `http://127.0.0.1:18182/v1` | `http://127.0.0.1:18180/kimi/v1` |
+| llama | `http://127.0.0.1:18173/v1` | `http://127.0.0.1:18180/llama/v1` |
+| Cursor | `http://127.0.0.1:18183/v1` | `http://127.0.0.1:18180/cursor/v1` |
+
+Keep the Python Codex/Kimi scripts as `kind = "child"` if you want a fallback
+instead of the native adapters.
+
+A Mac starting point, written to
+`~/Library/Application Support/vivi/proxy.toml` (Linux:
+`~/.config/vivi/proxy.toml`):
+
+```toml
+listen = "127.0.0.1:18180"
+
+[providers.codex]
+kind = "native"
+adapter = "chatgpt-codex"
+credentials = "~/.codex/auth.json"
+fallback_credentials = "~/.pi/agent/auth.json"
+
+[providers.kimi]
+kind = "native"
+adapter = "kimi-coding"
+credentials = "~/.kimi-code/credentials/kimi-code.json"
+
+[providers.llama]
+kind = "upstream"
+backend = "http://127.0.0.1:18173"
+
+[providers.cursor]
+kind = "child"
+command = ["bun", "run", "/path/to/cursor-proxy"]
+backend = "http://127.0.0.1:18183"
+```
+
+Adjust the Cursor `command` to the Bun entrypoint you already run. Credential
+paths may be omitted when the adapter defaults are enough (`~/.codex/auth.json`
+then `~/.pi/agent/auth.json` for Codex; `~/.kimi-code/credentials/kimi-code.json`
+then `~/.kimi/credentials/kimi-code.json` for Kimi).
+
 ## Sync, the server and MCP
 
 ```toml
@@ -410,7 +507,7 @@ installed skill text always matches `vivi --version`:
 
 | Skill | Load it for |
 | --- | --- |
-| [`vivi`](skills/vivi/SKILL.md) | The CLI: mailspaces, roles, goals, work graphs, pools, sync. Load this one always |
+| [`vivi`](skills/vivi/SKILL.md) | The CLI: mailspaces, roles, goals, work graphs, pools, sync, proxy. Load this one always |
 | [`tugboat`](skills/tugboat/SKILL.md) | A deliberate multi-agent protocol on a Vivi backlog: a Mind routes, Hands implement, Auditors and Heads review |
 | [`speedboat`](skills/speedboat/SKILL.md) | A fast delivery protocol on the same backlog: small parallel Hands, minimum verification |
 
@@ -432,11 +529,11 @@ vivi skills install ~/.agents/skills     # writes vivi/, tugboat/, speedboat/
 
 ## Security
 
-- Vivi keeps no credentials in `mailspace.toml`. Fly and RunPod tokens come from
-  the environment or their own tools; the judgment provider key comes from
-  `key_cmd` (run with `sh -c` only when `vivi step --apply` consults the
-  provider); a project API key is read from `VIVI_MCP_API_KEY` or written to a
-  file you name.
+- Vivi keeps no credentials in `mailspace.toml` or `proxy.toml`. Fly and RunPod
+  tokens come from the environment or their own tools; the judgment provider
+  key and the optional proxy bearer come from `key_cmd` / `auth_token_cmd`
+  (run with `sh -c`); a project API key is read from `VIVI_MCP_API_KEY` or
+  written to a file you name.
 - `.vivi/` is machine-local and ignores itself in Git. It holds your sync key
   seed and your whole item history, so do not force-add it to a repository or
   copy it to a machine you do not trust.

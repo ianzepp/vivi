@@ -17,6 +17,7 @@ pub mod mailspace;
 pub mod mcp;
 pub mod message;
 pub mod pool;
+pub mod proxy;
 pub mod pump;
 pub mod role_schedule;
 pub mod role_status;

@@ -35,6 +35,9 @@ The three share no code and no data. The mailspace lives at
   registry** (pointers to on-disk factory/campaign goal files), and
   **executable work graphs** (Mermaid import, ready frontier, task-attempt
   binding)
+- User-level **model proxy** (`vivi proxy`): one loopback front door that
+  path-routes to native Codex/Kimi adapters, supervised children, or an
+  already-running upstream. Config is `<config_dir>/vivi/proxy.toml`.
 
 ## Agent skills
 
