@@ -259,6 +259,46 @@ pub(crate) fn regenerate_generated(ctx: &Ctx, entries: &[&Generated]) -> Result<
     Ok(())
 }
 
+/// Run a check, and when it fails with a declared drift signature, regenerate
+/// the named generated entry and run the check once more. Returns the
+/// decisive output: the rerun's when a retry happened, otherwise the first.
+pub(crate) fn check_with_drift_retry(
+    ctx: &Ctx,
+    uid: &str,
+    cmd: &str,
+) -> crate::pump::host::CmdOutput {
+    let first = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+    if first.code == 0 {
+        return first;
+    }
+    let drifted = ctx.cfg.merge.generated.iter().find(|entry| {
+        entry
+            .drift
+            .iter()
+            .any(|sig| first.text.contains(sig.as_str()))
+    });
+    let Some(entry) = drifted else {
+        return first;
+    };
+    let Some(head) = entry.paths.first() else {
+        return first;
+    };
+    if let Err(text) = regenerate_generated(ctx, &[entry]) {
+        ctx.log(&format!("generated regenerate failed {uid}: {text}"));
+        return first;
+    }
+    let msg = shell_quote(&format!("regen: {head} after {uid}"));
+    let commit = format!("{} commit -q -m {msg}", identity_args(ctx));
+    if ctx.git(&commit, GIT_TIMEOUT).code != 0 {
+        return first;
+    }
+    ctx.log(&format!(
+        "drift {uid}: regenerated {}; retrying once",
+        entry.paths.join(" ")
+    ));
+    ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout)
+}
+
 /// Resolve a merge conflict touching only generated files: take the
 /// integration side, regenerate the files, and conclude the merge commit.
 /// Any failing step resets the repo; success logs the resolution.
@@ -379,7 +419,7 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
             ctx.step(&format!("proof {} start: {head}", job.uid));
         }
         let t1 = ctx.now();
-        let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+        let out = check_with_drift_retry(ctx, &job.uid, cmd);
         ctx.log(&format!(
             "proof {} rc={} {}s: {head}",
             job.uid,

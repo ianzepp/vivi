@@ -380,6 +380,66 @@ fn a_conflict_on_generated_and_source_files_still_fails() {
     );
 }
 
+/// A context whose generated ledger carries a drift signature.
+fn setup_drift() -> (TempDir, Ctx, Arc<FakeHost>) {
+    let (dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.merge.generated.push(Generated {
+        paths: vec![String::from("scripta/e2e-coverage-ledger.toml")],
+        regenerate: String::from("./regen-ledger.sh"),
+        drift: vec![String::from("coverage_rows ")],
+    });
+    ctx.cfg = Arc::new(cfg);
+    (dir, ctx, host)
+}
+
+#[test]
+fn a_drift_signature_failure_regenerates_and_passes() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply_once("cargo test --lib", 1, "coverage_rows 810 != 811\n");
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let cmds = host.commands();
+    assert!(
+        cmds.iter().any(|c| c.contains("./regen-ledger.sh")),
+        "{cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| c.contains("commit -q -m 'regen: scripta/e2e-coverage-ledger.toml after u1'")),
+        "{cmds:?}"
+    );
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| c.contains("cargo test --lib"))
+            .count(),
+        2,
+        "{cmds:?}"
+    );
+    assert!(host.logs().iter().any(|l| {
+        l.contains("drift u1: regenerated scripta/e2e-coverage-ledger.toml; retrying once")
+    }));
+}
+
+#[test]
+fn a_drift_retry_that_fails_again_is_proof_failed() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply_once("cargo test --lib", 1, "coverage_rows 810 != 811");
+    host.reply("cargo test --lib", 1, "coverage_rows 810 != 811");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let cmds = host.commands();
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| c.contains("./regen-ledger.sh"))
+            .count(),
+        1,
+        "{cmds:?}"
+    );
+}
+
 #[test]
 fn files_changed_outside_the_write_scope_are_listed_in_outside() {
     let (_dir, ctx, host) = setup("");
