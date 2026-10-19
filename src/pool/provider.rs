@@ -171,11 +171,13 @@ pub struct OpenedSlot {
 /// Methods after `destroy` act on one machine by id.
 pub trait PoolProvider {
     /// Prepare a target-specific local worktree after the shared slot is claimed.
+    /// `job` names the job, for a host that gives it storage of its own.
     fn prepare_target_checkout(
         &self,
         _id: &str,
         target: &super::dispatch::target::JobTarget,
         _start: &str,
+        _job: &str,
     ) -> Result<(), VivariumError> {
         if target.local_source.is_some() {
             return Err(VivariumError::Config(

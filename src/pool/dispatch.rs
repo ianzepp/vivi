@@ -385,7 +385,7 @@ fn deliver(
             .checkout
             .as_ref()
             .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
-        provider.prepare_target_checkout(id, target, start)?;
+        provider.prepare_target_checkout(id, target, start, &plan.job)?;
     }
     let archive = job::pack(&build_bundle(plan, &claim.slot.name, launch.token))?;
     provider.put_file(id, &claim.hold, JOB_ARCHIVE, &archive)?;

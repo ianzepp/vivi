@@ -73,7 +73,7 @@ fn private_dirs(path: &Path) -> Result<(), VivariumError> {
         .map_err(|e| failed("cannot create", path, &e))
 }
 
-fn write_file(path: &Path, content: &[u8], mode: u32) -> Result<(), VivariumError> {
+pub(crate) fn write_file(path: &Path, content: &[u8], mode: u32) -> Result<(), VivariumError> {
     if let Some(parent) = path.parent() {
         private_dirs(parent)?;
     }

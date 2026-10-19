@@ -28,15 +28,24 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use super::config::PoolConfig;
+use super::config::config_ramdisk::PoolRamDisk;
 use super::docker::{env_is_set, unset_names};
 use super::docker_cli::{RunOutput, finish};
 use super::doctor::Check;
+use super::local_git;
 use super::local_proc as proc;
 use super::local_slots as slots;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
+use super::ramdisk::{self, RealRunner, Runner};
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_state::{self as state, is_slot_id};
 use crate::error::VivariumError;
+
+/// The file in a slot that records the RAM disk its job runs on, so a disk
+/// that outlives its job is recognizable and can be torn down.
+pub const RAMDISK_FILE: &str = "ramdisk";
+/// The lock every mount takes, so two jobs never admit themselves at once.
+const RAMDISK_LOCK: &str = ".ramdisk.lock";
 
 /// Pool provider for this machine.
 pub struct LocalProvider {
@@ -48,6 +57,16 @@ pub struct LocalProvider {
     /// The pool's `build_baseline_gib` in bytes, for reclaim of a slot that
     /// carries no recorded baseline.
     build_baseline: Option<u64>,
+    /// The pool's `[pools.<name>.ramdisk]` table: off unless a job gets a
+    /// disk of its own.
+    ramdisk: PoolRamDisk,
+    /// The `hdiutil` / `diskutil` seam, replaced by a scripted runner in
+    /// tests.
+    runner: Box<dyn Runner>,
+    /// Tests: the bytes of memory admission is told are free. Production
+    /// reads the machine ([`ramdisk::admit`]).
+    #[cfg(test)]
+    available: Option<u64>,
 }
 
 impl LocalProvider {
@@ -58,7 +77,32 @@ impl LocalProvider {
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
             build_baseline: config.build_baseline_bytes(),
+            ramdisk: config.ramdisk.clone(),
+            runner: Box::new(RealRunner),
+            #[cfg(test)]
+            available: None,
         }
+    }
+
+    /// The provider with a scripted RAM disk runner, so a test never mounts a
+    /// disk on the machine it runs on. Admission is told the machine has
+    /// memory to spare unless the test says otherwise
+    /// ([`LocalProvider::with_available`]), since real free memory is not
+    /// what a mount test is about.
+    #[cfg(test)]
+    pub(super) fn with_runner(config: &PoolConfig, runner: Box<dyn Runner>) -> Self {
+        Self {
+            runner,
+            available: Some(u64::MAX),
+            ..Self::new(config)
+        }
+    }
+
+    /// Test only: the bytes of memory admission is told are free.
+    #[cfg(test)]
+    pub(super) fn with_available(mut self, available: u64) -> Self {
+        self.available = Some(available);
+        self
     }
 
     pub(super) fn root(&self) -> &std::path::Path {
@@ -87,6 +131,115 @@ impl LocalProvider {
             Err(VivariumError::Message(format!("no such slot: {id}")))
         }
     }
+
+    /// Give this job a fresh RAM disk of its own, mounted at the target cache
+    /// directory, so both its worktree and its build output are in memory.
+    /// A job is admitted first and stays queued (`ramdisk-wait:`) when its
+    /// disk does not fit; a disk a crashed job left behind is torn down
+    /// first, through the marker in the slot.
+    fn mount_ramdisk(
+        &self,
+        id: &str,
+        target: &super::dispatch::target::JobTarget,
+        job: &str,
+    ) -> Result<(), VivariumError> {
+        let slot = self.known(id)?;
+        let marker = slot.join(RAMDISK_FILE);
+        if marker.is_file() {
+            if let Some(disk) = read_marker(&marker) {
+                drop(ramdisk::teardown(self.runner.as_ref(), &disk));
+            }
+            drop(std::fs::remove_file(&marker));
+        }
+        let _held = local_git::lock_path(&self.admission_lock()?)?;
+        let (size, margin) = (self.ramdisk.size_gib, self.ramdisk.margin_gib);
+        self.admit(size, margin).map_err(VivariumError::Message)?;
+        let cache = slot.join("targets").join(&target.cache_key);
+        std::fs::create_dir_all(&cache)?;
+        let volume = ramdisk::volume_name(&volume_parts(id, job));
+        let disk = ramdisk::mount(self.runner.as_ref(), &volume, size, &cache)
+            .map_err(VivariumError::Message)?;
+        let source = target.local_source.as_deref().unwrap_or_default();
+        let text = marker_text(&disk, job, source);
+        if let Err(e) = slots::write_file(&marker, text.as_bytes(), 0o600) {
+            drop(ramdisk::teardown(self.runner.as_ref(), &disk));
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Admit a disk wanting `size` GiB with `margin` GiB kept free. Tests
+    /// name the free memory; production reads it from the machine.
+    fn admit(&self, size: u64, margin: u64) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(available) = self.available {
+            return ramdisk::admit_with(self.runner.as_ref(), available, size, margin);
+        }
+        ramdisk::admit(self.runner.as_ref(), size, margin)
+    }
+
+    /// The lock file every mount takes, made once.
+    fn admission_lock(&self) -> Result<PathBuf, VivariumError> {
+        let path = self.root.join(RAMDISK_LOCK);
+        if !path.is_file() {
+            std::fs::write(&path, b"").map_err(|e| {
+                VivariumError::Message(format!("cannot write {}: {e}", path.display()))
+            })?;
+        }
+        Ok(path)
+    }
+}
+
+/// The parts a slot's RAM disk volume name is made of:
+/// `<mailspace>-<pool>-slot-<index>-<job>`, so an orphan names its owner.
+fn volume_parts<'a>(id: &'a str, job: &'a str) -> [&'a str; 4] {
+    let mut parts = id.split('/');
+    let mut out = ["", "", "", job];
+    for slot in out.iter_mut().take(3) {
+        *slot = parts.next().unwrap_or_default();
+    }
+    out
+}
+
+/// The marker text for a mounted disk: the device and volume its teardown
+/// needs, and the job, mount and source for whoever reads it.
+fn marker_text(disk: &ramdisk::Disk, job: &str, source: &str) -> String {
+    format!(
+        "device={}\nvolume={}\nsize_gib={}\njob={job}\nmount={}\nsource={source}\n",
+        disk.device,
+        disk.volume,
+        disk.size_gib,
+        disk.mount.display()
+    )
+}
+
+/// The disk a slot's marker records, for a best-effort teardown of a disk a
+/// crashed job left behind. A marker naming no device or volume is `None`.
+fn read_marker(path: &std::path::Path) -> Option<ramdisk::Disk> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut disk = ramdisk::Disk {
+        device: String::new(),
+        volume: String::new(),
+        size_gib: 0,
+        mount: PathBuf::new(),
+    };
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key {
+            "device" => disk.device = value.to_string(),
+            "volume" => disk.volume = value.to_string(),
+            "size_gib" => disk.size_gib = value.parse().unwrap_or_default(),
+            "mount" => disk.mount = PathBuf::from(value),
+            _ => {}
+        }
+    }
+    if disk.device.is_empty() || disk.volume.is_empty() {
+        return None;
+    }
+    Some(disk)
 }
 
 /// The id a new slot gets from its spec: `<mailspace>/<pool>/slot-<index>`.
@@ -110,14 +263,18 @@ impl PoolProvider for LocalProvider {
         id: &str,
         target: &super::dispatch::target::JobTarget,
         start: &str,
+        job: &str,
     ) -> Result<(), VivariumError> {
-        let Some(source) = &target.local_source else {
-            return Ok(());
-        };
         if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
         {
             return Err(VivariumError::Config("invalid target checkout key".into()));
         }
+        if self.ramdisk.enabled {
+            self.mount_ramdisk(id, target, job)?;
+        }
+        let Some(source) = &target.local_source else {
+            return Ok(());
+        };
         let targets = self.known(id)?.join("targets");
         let cache = targets.join(&target.cache_key);
         for path in [&targets, &cache, &cache.join(slots::CHECKOUT)] {

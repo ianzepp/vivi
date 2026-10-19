@@ -3,6 +3,7 @@
 //! harness. Each test has a rig of its own.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -672,13 +673,13 @@ fn a_shared_slot_keeps_dynamic_target_worktrees_and_removes_them_on_destroy() {
     let start_a = git(&rig.f.repo, &["rev-parse", "HEAD"]);
     let start_b = git(&second.repo, &["rev-parse", "HEAD"]);
     rig.provider
-        .prepare_target_checkout(&slot.id, &a, &start_a)
+        .prepare_target_checkout(&slot.id, &a, &start_a, "job-a")
         .unwrap();
     rig.provider
-        .prepare_target_checkout(&slot.id, &b, &start_b)
+        .prepare_target_checkout(&slot.id, &b, &start_b, "job-b")
         .unwrap();
     rig.provider
-        .prepare_target_checkout(&slot.id, &a, &start_a)
+        .prepare_target_checkout(&slot.id, &a, &start_a, "job-a")
         .unwrap();
     let caches = rig.root.join(&slot.id).join("targets");
     assert_eq!(
@@ -696,4 +697,216 @@ fn a_shared_slot_keeps_dynamic_target_worktrees_and_removes_them_on_destroy() {
     rig.provider.destroy(&slot.id).unwrap();
     assert_eq!(Repo::new(&second.repo).worktrees().unwrap().len(), 1);
     assert!(!caches.exists());
+}
+
+// ---------------------------------------------------------------------------
+// A job's own RAM disk, over a scripted `hdiutil` / `diskutil` seam: no disk
+// is made on the machine running the tests.
+// ---------------------------------------------------------------------------
+
+/// One scripted RAM disk runner: it records every command line, reports the
+/// `vivi-` disks it was told are attached, and hands out one device.
+#[derive(Clone)]
+struct FakeRamRunner {
+    commands: Arc<Mutex<Vec<String>>>,
+    disks: Arc<Vec<(String, u64)>>,
+    device: &'static str,
+}
+
+impl FakeRamRunner {
+    fn new(disks: &[(&str, u64)]) -> Self {
+        Self {
+            commands: Arc::new(Mutex::new(Vec::new())),
+            disks: Arc::new(disks.iter().map(|(m, g)| ((*m).to_string(), *g)).collect()),
+            device: "/dev/disk9",
+        }
+    }
+
+    fn commands(&self) -> Vec<String> {
+        self.commands.lock().unwrap().clone()
+    }
+
+    fn find(&self, needle: &str) -> Option<String> {
+        self.commands().into_iter().find(|line| line.contains(needle))
+    }
+}
+
+impl crate::pool::ramdisk::Runner for FakeRamRunner {
+    fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
+        self.commands.lock().unwrap().push(argv.join(" "));
+        match argv {
+            ["mount"] => Ok(self
+                .disks
+                .iter()
+                .map(|(mount, _)| format!("/dev/disk5s1 on {mount} (apfs, local, journaled)"))
+                .collect::<Vec<_>>()
+                .join("\n")),
+            ["df", "-g"] => {
+                let mut out = String::from("Filesystem 1G-blocks Used Available Capacity Mounted\n");
+                for (mount, gib) in self.disks.iter() {
+                    out.push_str(&format!("/dev/disk5s1 {gib} 1 1 1% {mount}\n"));
+                }
+                Ok(out)
+            }
+            ["hdiutil", "attach", ..] => Ok(format!("{}\n", self.device)),
+            _ => Ok(String::new()),
+        }
+    }
+}
+
+/// A slot made without starting it: the provider only reads its marks here.
+fn quiet_slot(root: &std::path::Path, id: &str) {
+    let spec = CreateSpec {
+        name: "ms-e2e-slot-0".into(),
+        image: String::new(),
+        metadata: crate::pool::slot::slot_metadata(&PoolId::new("ms", "", "e2e"), 0, "main"),
+        env: BTreeMap::new(),
+        once_env: BTreeMap::new(),
+        passthrough_env: Vec::new(),
+        files: Vec::new(),
+        command: vec!["true".into()],
+        build_dir: None,
+        tmpfs: String::new(),
+    };
+    slots::create(root, id, &spec).unwrap();
+}
+
+/// A `local` pool whose jobs run on a RAM disk of `size_gib`.
+fn ramdisk_config(root: &std::path::Path, repo: &std::path::Path, size_gib: u64) -> PoolConfig {
+    toml::from_str(&format!(
+        "provider = \"local\"\nslots = 1\n[local]\nroot = \"{}\"\nworktree_of = \"{}\"\n[ramdisk]\nenabled = true\nsize_gib = {size_gib}\nmargin_gib = 0\n",
+        root.display(),
+        repo.display()
+    ))
+    .unwrap()
+}
+
+/// The target of one job against `repo`, under cache key `key`.
+fn ram_target(repo: &std::path::Path, key: char) -> dispatch::target::JobTarget {
+    dispatch::target::JobTarget {
+        id: "t".into(),
+        source: repo.to_string_lossy().into_owned(),
+        cache_key: key.to_string().repeat(64),
+        local_source: Some(repo.to_string_lossy().into_owned()),
+        seed: Vec::new(),
+        requires: Vec::new(),
+        build_dir: None,
+    }
+}
+
+#[test]
+fn mounts_ramdisk_a_job_gets_a_disk_at_its_target_cache_and_a_marker_in_the_slot() {
+    let f = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap().join("lanes");
+    let config = ramdisk_config(&root, &f.repo, 8);
+    let runner = FakeRamRunner::new(&[]);
+    let provider = LocalProvider::with_runner(&config, Box::new(runner.clone()));
+    let id = "ms/e2e/slot-0";
+    quiet_slot(&root, id);
+    let target = ram_target(&f.repo, 'a');
+    let start = git(&f.repo, &["rev-parse", "HEAD"]);
+    provider
+        .prepare_target_checkout(id, &target, &start, "job123")
+        .unwrap();
+    let slot = root.join(id);
+    let cache = slot.join("targets").join(&target.cache_key);
+    let marker = std::fs::read_to_string(slot.join("ramdisk")).unwrap();
+    assert!(
+        marker.contains("volume=vivi-ms-e2e-slot-0-job123"),
+        "{marker}"
+    );
+    assert!(marker.contains("device=/dev/disk9"), "{marker}");
+    assert!(marker.contains("size_gib=8"), "{marker}");
+    assert!(marker.contains("job=job123"), "{marker}");
+    assert!(
+        marker.contains(&format!("mount={}", cache.display())),
+        "{marker}"
+    );
+    assert!(
+        marker.contains(&format!("source={}", f.repo.display())),
+        "{marker}"
+    );
+    let attach = runner.find("hdiutil attach -nomount ram://").unwrap();
+    assert!(
+        attach.contains(&format!("ram://{}", ramdisk::sectors(8))),
+        "{attach}"
+    );
+    let erase = runner.find("diskutil eraseVolume APFS").unwrap();
+    assert!(erase.contains("vivi-ms-e2e-slot-0-job123"), "{erase}");
+    let mount = runner.find("diskutil mount -mountPoint").unwrap();
+    assert!(
+        mount.contains(&cache.display().to_string()),
+        "the disk is mounted at the target cache: {mount}"
+    );
+    assert_eq!(
+        Repo::new(&cache.join("repo")).common_dir().unwrap(),
+        Repo::new(&f.repo).common_dir().unwrap(),
+        "the worktree is added under the mounted cache"
+    );
+}
+
+#[test]
+fn mounts_ramdisk_a_marker_from_a_crashed_job_is_torn_down_before_the_new_disk() {
+    let f = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap().join("lanes");
+    let config = ramdisk_config(&root, &f.repo, 8);
+    let runner = FakeRamRunner::new(&[]);
+    let provider = LocalProvider::with_runner(&config, Box::new(runner.clone()));
+    let id = "ms/e2e/slot-0";
+    quiet_slot(&root, id);
+    std::fs::write(
+        root.join(id).join("ramdisk"),
+        "device=/dev/disk3\nvolume=vivi-ms-e2e-slot-0-old\nsize_gib=8\njob=old\nmount=/Volumes/vivi-ms-e2e-slot-0-old\nsource=\n",
+    )
+    .unwrap();
+    let target = ram_target(&f.repo, 'a');
+    let start = git(&f.repo, &["rev-parse", "HEAD"]);
+    provider
+        .prepare_target_checkout(id, &target, &start, "job123")
+        .unwrap();
+    let commands = runner.commands();
+    let eject = commands
+        .iter()
+        .position(|line| line == "diskutil eject /dev/disk3")
+        .unwrap_or_else(|| panic!("no eject of the crashed disk: {commands:?}"));
+    let attach = commands
+        .iter()
+        .position(|line| line.starts_with("hdiutil attach"))
+        .unwrap_or_else(|| panic!("no attach: {commands:?}"));
+    assert!(eject < attach, "{commands:?}");
+    let marker = std::fs::read_to_string(root.join(id).join("ramdisk")).unwrap();
+    assert!(marker.contains("device=/dev/disk9"), "{marker}");
+    assert!(marker.contains("job=job123"), "{marker}");
+}
+
+#[test]
+fn mounts_ramdisk_an_admission_refusal_queues_the_job_and_writes_no_marker() {
+    let f = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap().join("lanes");
+    // Two held 32 GiB disks and 16 GiB free: an 8 GiB disk does not fit.
+    let config = ramdisk_config(&root, &f.repo, 8);
+    let runner = FakeRamRunner::new(&[
+        ("/Volumes/vivi-ms-e2e-slot-0-a", 32),
+        ("/Volumes/vivi-ms-e2e-slot-0-b", 32),
+    ]);
+    let provider = LocalProvider::with_runner(&config, Box::new(runner.clone()))
+        .with_available(16 * 1024 * 1024 * 1024);
+    let id = "ms/e2e/slot-0";
+    quiet_slot(&root, id);
+    let target = ram_target(&f.repo, 'a');
+    let start = git(&f.repo, &["rev-parse", "HEAD"]);
+    let said = provider
+        .prepare_target_checkout(id, &target, &start, "job123")
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("ramdisk-wait:"), "{said}");
+    assert!(said.contains("32 GiB held"), "{said}");
+    assert!(
+        !root.join(id).join("ramdisk").exists(),
+        "a queued job points at no disk"
+    );
+    assert!(runner.find("hdiutil attach").is_none(), "nothing was mounted");
 }
