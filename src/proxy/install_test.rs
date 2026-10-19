@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{launch_agent_plist, prefer_stable_link, systemd_unit};
+use super::{launch_agent_plist, prefer_stable_link, systemd_apply_steps, systemd_unit};
 
 #[test]
 fn systemd_unit_limits_crash_loops() {
@@ -10,6 +10,18 @@ fn systemd_unit_limits_crash_loops() {
     assert!(unit.contains("StartLimitIntervalSec=60"));
     assert!(unit.contains("StartLimitBurst=5"));
     assert!(!unit.contains("Restart=always"));
+}
+
+#[test]
+fn systemd_apply_steps_restarts_active_unit() {
+    let steps = systemd_apply_steps();
+    assert_eq!(steps.first(), Some(&vec!["--user", "daemon-reload"]));
+    assert!(steps.contains(&vec!["--user", "enable", "vivi-proxy.service"]));
+    assert_eq!(
+        steps.last(),
+        Some(&vec!["--user", "restart", "vivi-proxy.service"])
+    );
+    assert!(steps.iter().all(|step| !step.contains(&"--now")));
 }
 
 #[test]
