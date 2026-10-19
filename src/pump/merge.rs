@@ -432,10 +432,17 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
         ));
         if out.code != 0 {
             reset_repo(ctx);
+            let last = failure_text(&out.text);
+            if crate::pump::envfail::missing_tool(out.code, &out.text) {
+                let detail = format!(
+                    "After merging into the integration branch, this command could not run (exit {}):\n{cmd}\n\nLast output:\n{last}",
+                    out.code
+                );
+                return Some(undecided_result(&job.uid, "proof-missing-tool", &detail));
+            }
             let detail = format!(
-                "After merging into the integration branch, this command failed (exit {}):\n{cmd}\n\nLast output:\n{}",
-                out.code,
-                failure_text(&out.text)
+                "After merging into the integration branch, this command failed (exit {}):\n{cmd}\n\nLast output:\n{last}",
+                out.code
             );
             return Some(failed(&job.uid, "proof-failed", detail));
         }
