@@ -47,7 +47,7 @@ async fn aggregate_health(State(state): State<Arc<AppState>>, headers: HeaderMap
     let names = provider_kinds(&state.config);
     refresh_upstream_health(&state).await;
     let rows = state.health.snapshot(&names);
-    let status = if rows.iter().all(|row| row.status == "ok") {
+    let status = if health::aggregate_ok(&rows) {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
