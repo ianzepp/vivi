@@ -59,7 +59,11 @@ pub fn resolve(
 }
 
 /// A project-relative root must stay inside the project and use plain parts.
-fn refuse_unsafe_relative(root: &str, project: &Path, resolved: &Path) -> Result<(), VivariumError> {
+fn refuse_unsafe_relative(
+    root: &str,
+    project: &Path,
+    resolved: &Path,
+) -> Result<(), VivariumError> {
     if let Some(part) = root
         .split('/')
         .find(|part| part.is_empty() || *part == "." || *part == "..")

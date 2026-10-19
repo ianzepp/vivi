@@ -35,7 +35,10 @@ fn home_root_expands() {
     let project = tempdir().expect("temp project");
     let home = dirs::home_dir().expect("home dir");
     let site = resolve("~/x", project.path(), "ms", "here").expect("resolve");
-    assert_eq!(site.root.to_string_lossy(), home.join("x").to_string_lossy());
+    assert_eq!(
+        site.root.to_string_lossy(),
+        home.join("x").to_string_lossy()
+    );
     assert_eq!(
         site.pool_dir.to_string_lossy(),
         home.join("x/ms/here").to_string_lossy()

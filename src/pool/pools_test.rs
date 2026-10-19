@@ -200,8 +200,7 @@ fn pool_identity_uses_the_mailspace_id() {
     space.config.id = Some("aeff60b0-a1c4-4eaa-b688-7afcff51c659".into());
     for handle in open_unvalidated(&space, None, Need::Any).unwrap() {
         assert_eq!(
-            handle.id.mailspace,
-            "aeff60b0-a1c4-4eaa-b688-7afcff51c659",
+            handle.id.mailspace, "aeff60b0-a1c4-4eaa-b688-7afcff51c659",
             "the pool of mailspace id is keyed by the id, not the name slug"
         );
     }
