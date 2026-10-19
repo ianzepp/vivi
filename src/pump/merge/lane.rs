@@ -29,6 +29,7 @@ use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::progress::{LaneProgress, duration_text};
 use crate::pump::quarantine;
 use crate::pump::ready::{dependency_holds, note_hold, ranked};
+use crate::pump::reclaim::Reclaimer;
 use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
@@ -166,6 +167,9 @@ impl Lane {
 /// the state; every effect on units flows back through the results channel.
 pub struct Merger {
     lanes: Mutex<Vec<Lane>>,
+    /// The post-merge pool reclaim worker: cleaning a merged work lane runs
+    /// there, not on the tick thread.
+    reclaims: Reclaimer,
     pub(crate) results: Receiver<MergeResult>,
 }
 
@@ -201,6 +205,7 @@ impl Merger {
         }
         Merger {
             lanes: Mutex::new(lanes),
+            reclaims: Reclaimer::start(ctx),
             results,
         }
     }
@@ -229,6 +234,7 @@ impl Merger {
         }
         let merger = Merger {
             lanes: Mutex::new(lanes),
+            reclaims: Reclaimer::detached(),
             results,
         };
         (merger, out, receivers)
@@ -288,16 +294,29 @@ impl Merger {
     /// outside files — closing the need and appending `needs-ready.txt` when
     /// its last unit just became satisfied. A lane whose last outstanding
     /// result is applied is idle again.
+    ///
+    /// A merge's work-lane recycle is *requested* onto the reclaim worker
+    /// ([`Reclaimer`]) rather than run inline, so a slow deletion never
+    /// blocks this drain; finished reclaims are folded at the top of each
+    /// pass.
     pub fn apply(&self, ctx: &Ctx, st: &mut State) {
+        self.reclaims.fold();
         while let Ok(result) = self.results.try_recv() {
             self.release(ctx, &result);
             match result.ok {
                 None if result.quarantine.is_some() => quarantine::set_aside(ctx, st, &result),
                 None => apply_undecided(ctx, st, &result),
                 Some(false) => apply_failure(ctx, st, &result),
-                Some(true) => apply_merged(ctx, st, &result),
+                Some(true) => apply_merged(ctx, st, &result, &self.reclaims),
             }
         }
+    }
+
+    /// Serve one deferred reclaim on the calling thread; the detached test
+    /// mergers have no worker, so this is how a test lands a request.
+    #[cfg(test)]
+    pub(crate) fn serve_reclaim(&self, ctx: &Ctx) {
+        self.reclaims.serve(ctx);
     }
 
     /// The lanes, whether or not a panicking thread poisoned the lock.

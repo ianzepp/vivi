@@ -8,6 +8,7 @@ use crate::pump::collect;
 use crate::pump::host::Ctx;
 use crate::pump::quarantine;
 use crate::pump::ready::satisfied;
+use crate::pump::reclaim::Reclaimer;
 use crate::pump::state::{MergeResult, State, Status};
 
 /// `ok=null`: the unit returns to `delivered` for a later retry, and the
@@ -74,7 +75,13 @@ fn apply_needs_replan(ctx: &Ctx, st: &mut State, result: &MergeResult, detail: &
 
 /// `ok=true`: the unit becomes `merged` with its tip and outside files, the
 /// merge counter ticks, and the `scope-warn` and `merged` lines are logged.
-pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+///
+/// The work-lane recycle is only *requested* here: it runs on the reclaim
+/// worker thread, off the tick thread
+/// ([`Reclaimer`](crate::pump::reclaim::Reclaimer)), so a merge never waits
+/// for a deletion. A pump exit truncating one is safe: build output is
+/// disposable.
+pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult, reclaim: &Reclaimer) {
     let now = ctx.now();
     if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Merged;
@@ -105,41 +112,31 @@ pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
         result.secs.unwrap_or(0)
     ));
     close_need(ctx, st, &result.uid, &tip);
-    land_quarantined(ctx, st, result);
-    reclaim_work_lane(ctx, st, &result.uid);
+    land_quarantined(ctx, st, result, reclaim);
+    reclaim_work_lane(ctx, st, &result.uid, reclaim);
 }
 
-/// Recycle the unit's pool work lane now that it is on the merge lane.
+/// Ask the reclaim worker to recycle the unit's pool work lane now that it is
+/// on the merge lane; the cleaning itself is
+/// [`Reclaimer::reclaim_one`](crate::pump::reclaim::Reclaimer) inside the
+/// worker thread.
 ///
 /// Pump did not do this before: [`apply_merged`] only set [`Status::Merged`]
 /// (integration-branch success) and left the worktree, `targets/<hash>`
 /// caches, and local `unit/` scratch branch in place. Promote to main is a
 /// later gate step and is not a unit status — cleanup must not wait for it.
-/// Missing mailspace or pool is a no-op; a failure is logged, not raised.
-fn reclaim_work_lane(ctx: &Ctx, st: &State, uid: &str) {
+/// A unit missing from the state is a no-op.
+fn reclaim_work_lane(ctx: &Ctx, st: &State, uid: &str, reclaim: &Reclaimer) {
     let Some(unit) = st.units.get(uid) else {
         return;
     };
-    match crate::pool::clean::after_merged(&ctx.project, unit) {
-        Ok(report) => {
-            for action in &report.actions {
-                ctx.log(&format!(
-                    "work-lane clean {} {} {} {}",
-                    action.kind.word(),
-                    action.slot,
-                    action.bytes,
-                    action.note
-                ));
-            }
-        }
-        Err(e) => ctx.log(&format!("work-lane clean {uid}: {e}")),
-    }
+    reclaim.request(ctx, unit);
 }
 
 /// A repair unit landed: the batch it repaired is on the integration branch
 /// with it, so every unit still set aside under its quarantine id merges with
 /// the repair's tip, closing needs like any other merge.
-fn land_quarantined(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+fn land_quarantined(ctx: &Ctx, st: &mut State, result: &MergeResult, reclaim: &Reclaimer) {
     let Some(id) = quarantine::repair_of(ctx, st, &result.uid) else {
         return;
     };
@@ -151,7 +148,7 @@ fn land_quarantined(ctx: &Ctx, st: &mut State, result: &MergeResult) {
             secs: result.secs,
             ..MergeResult::default()
         };
-        apply_merged(ctx, st, &landed);
+        apply_merged(ctx, st, &landed, reclaim);
     }
 }
 

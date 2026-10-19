@@ -26,6 +26,7 @@ pub mod progress;
 pub mod proof;
 pub mod quarantine;
 pub mod ready;
+pub mod reclaim;
 pub mod remote;
 pub mod report;
 pub mod requeue;
