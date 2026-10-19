@@ -66,6 +66,11 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             newest,
             project,
         } => show_need(handle, *json, *latest, *newest, project.as_deref())?,
+        NeedCommand::Attempts {
+            handle,
+            json,
+            project,
+        } => print_need_attempts(handle, *json, project.as_deref())?,
         NeedCommand::Dump(command) => dump_work_items(command, "needs", "need", "Vivi Need Dump")?,
         NeedCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("need", command)?;
@@ -507,6 +512,63 @@ fn show_need(
         println!("  units    {rendered}");
     }
     print_pump_need(&mailspace, handle, registry_open);
+    Ok(())
+}
+
+/// `need attempts`: every pump attempt record on a need thread plus the
+/// anchor's open epoch, in one read for a synced second member.
+fn print_need_attempts(
+    handle: &str,
+    json: bool,
+    project: Option<&std::path::Path>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    let messages = mailspace.thread(handle, false, usize::MAX, usize::MAX)?;
+    let attempts: Vec<_> = messages
+        .iter()
+        .filter_map(|message| vivi::pump::attempt_read::parse_record(&message.body))
+        .collect();
+    let opened = messages
+        .first()
+        .and_then(|message| vivi::pump::attempt_read::opened_epoch(&message.date));
+    if json {
+        print_attempts_json(&messages, &attempts, opened)?;
+        return Ok(());
+    }
+    for attempt in &attempts {
+        let seconds = attempt
+            .agent_seconds
+            .map_or_else(|| String::from("-"), |secs| secs.to_string());
+        println!(
+            "{}  {}  {}s  {}  {}/{}",
+            attempt.attempt,
+            attempt.outcome,
+            seconds,
+            attempt.model.as_deref().unwrap_or("-"),
+            attempt.pool.as_deref().unwrap_or("-"),
+            attempt.slot.as_deref().unwrap_or("-"),
+        );
+    }
+    Ok(())
+}
+
+/// The `--json` shape: one object with the anchor handle, the open epoch and
+/// every attempt record.
+fn print_attempts_json(
+    messages: &[vivi::mailspace::MailspaceThreadMessage],
+    attempts: &[vivi::pump::attempt_read::AttemptFields],
+    opened: Option<u64>,
+) -> Result<(), VivariumError> {
+    let need = messages
+        .first()
+        .map(|message| message.handle.clone())
+        .unwrap_or_default();
+    let out = serde_json::json!({ "need": need, "opened": opened, "attempts": attempts });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&out)
+            .map_err(|error| VivariumError::Other(format!("failed to encode JSON: {error}")))?
+    );
     Ok(())
 }
 
