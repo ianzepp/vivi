@@ -7,7 +7,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::VivariumError;
 use crate::mailspace::Mailspace;
@@ -305,7 +305,9 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     Ok(())
 }
 
-/// The pump's status text plus its durable control mode. No pump lock is taken.
+/// The pump's status text plus its durable control mode, whether a writer
+/// process holds the pump lock, and how old the snapshot is. No pump lock is
+/// taken.
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when a mailspace is found but carries
@@ -321,7 +323,28 @@ pub fn status(project: &Path) -> Result<String, VivariumError> {
     let path = home.join("status.txt");
     let text = fs::read_to_string(&path).unwrap_or_else(|_| String::from("no status yet\n"));
     let control = crate::pump::control::inspect(&home)?;
-    Ok(format!("{text}control  {}\n", control.mode))
+    let writer = match lock_is_held(&home) {
+        Ok(true) => "running",
+        Ok(false) => "not running",
+        Err(_) => "unknown",
+    };
+    Ok(format!(
+        "{text}control  {}\nwriter   {writer}\nage      {}\n",
+        control.mode,
+        status_age(&path)
+    ))
+}
+
+/// How old `status.txt` is, in whole seconds, or `never` when it is missing
+/// or its modification time cannot be read.
+fn status_age(path: &Path) -> String {
+    let Ok(modified) = fs::metadata(path).and_then(|meta| meta.modified()) else {
+        return String::from("never");
+    };
+    let age = SystemTime::now()
+        .duration_since(modified)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    format!("{age}s")
 }
 
 /// Load the state, start the merge thread, and drive the tick loop over an
