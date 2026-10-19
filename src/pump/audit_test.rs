@@ -3,15 +3,18 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::sync::Arc;
 
 use tempfile::tempdir;
 
 use crate::pump::audit::{
-    AuditRun, Cause, apply_report, audit_brief, current, parse_report, start_audit, store,
+    AuditRun, Cause, apply_report, audit_brief, current, parse_report, prior_reports, start_audit,
+    store,
 };
 use crate::pump::config::{GateConfig, PumpConfig};
 use crate::pump::gatefix::fix_need;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobStatus, dispatch_pending};
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedRole};
 
@@ -87,12 +90,15 @@ fn audit_run_round_trips_through_state_extra() {
 
     let run = AuditRun {
         task: Some(String::from("task-1")),
+        job_id: Some(String::from("audit-1")),
         need: String::from("pumpfix-g01234567"),
         tip: String::from("abc1234"),
         pool: Some(String::from("here")),
         at: 1_000_000,
         fails: 2,
         retry_at: Some(1_000_060),
+        new: 1,
+        residual: 2,
     };
     store(&mut st, Some(run.clone()));
     assert_eq!(current(&st), Some(run));
@@ -232,12 +238,119 @@ fn apply_report_mints_one_unit_per_cause() {
 }
 
 #[test]
+fn prior_reports_reads_distinct_residual_owners_and_caps_the_context() {
+    let (_dir, ctx, _host) = setup(None);
+    let audit_dir = ctx.home.join("audit");
+    fs::create_dir_all(&audit_dir).unwrap();
+    fs::write(audit_dir.join("owner-a.report"), "first cause\n").unwrap();
+    fs::write(audit_dir.join("owner-b.report"), "x".repeat(5000)).unwrap();
+    let residual = vec![
+        (String::from("test::a"), String::from("owner-a")),
+        (String::from("test::b"), String::from("owner-a")),
+        (String::from("test::c"), String::from("owner-b")),
+    ];
+
+    let prior = prior_reports(&ctx, &residual).expect("prior reports should be read");
+
+    assert!(prior.contains("prior report for owner-a:\nfirst cause"));
+    assert!(prior.contains("prior report for owner-b:"));
+    assert_eq!(prior.chars().count(), 4000);
+    assert_eq!(prior.matches("prior report for owner-a:").count(), 1);
+}
+
+#[test]
+fn a_completed_audit_mints_fix_units_and_applies_once() {
+    let (_dir, ctx, host) = setup(None);
+    ready(&host);
+    let mut st = State::default();
+    start_audit(
+        &ctx,
+        &mut st,
+        TIP,
+        "test result: FAILED",
+        &[String::from("gate::a_fails")],
+        &[],
+        None,
+    );
+    let job_id = current(&st).unwrap().job_id.unwrap();
+    let job = st.jobs.get_mut(&job_id).unwrap();
+    job.status = JobStatus::Finished;
+    job.task = Some(String::from("audit-task"));
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::new(),
+        receipt: String::from(
+            "agent exit 0 in 1s\nAUDIT-BEGIN\n[{\"root_cause\":\"broken\",\"brief\":\"fix it\",\"write_scope\":[\"src/a.rs\"]}]\nAUDIT-END\n",
+        ),
+        at: ctx.now(),
+    });
+
+    crate::pump::audit::collect_completed(&ctx, &mut st);
+    assert!(current(&st).is_none());
+    assert_eq!(st.units["pumpfix-g01234567-1"].title, "broken");
+    assert_eq!(st.jobs[&job_id].applied_at, Some(ctx.now()));
+    crate::pump::audit::collect_completed(&ctx, &mut st);
+    assert_eq!(st.order, ["pumpfix-g01234567-1"]);
+}
+
+#[test]
+fn an_audit_timeout_backs_off_then_fails_over_to_another_pool() {
+    let (_dir, mut ctx, host) = setup(None);
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.gate.pools = vec![String::from("g1"), String::from("g2")];
+    ctx.cfg = Arc::new(cfg);
+    host.reply(
+        "pool status --porcelain",
+        0,
+        "slot g1 bridge slot-1 free\nslot g2 bridge slot-2 free\n",
+    );
+    let mut st = State::default();
+    start_audit(
+        &ctx,
+        &mut st,
+        TIP,
+        "test result: FAILED",
+        &[String::from("gate::a_fails")],
+        &[],
+        None,
+    );
+    let first_id = current(&st).unwrap().job_id.unwrap();
+    let first = st.jobs.get_mut(&first_id).unwrap();
+    first.pool = Some(String::from("g1"));
+    first.status = JobStatus::Timeout;
+    first.outcome = Some(JobOutcome {
+        state: String::from("timeout"),
+        detail: String::from("budget exceeded"),
+        receipt: String::from("agent exit 124 after 600s"),
+        at: ctx.now(),
+    });
+
+    crate::pump::audit::collect_completed(&ctx, &mut st);
+    assert_eq!(current(&st).unwrap().retry_at, Some(ctx.now() + 60));
+    let commands = host.commands().len();
+    host.advance(59);
+    crate::pump::audit::retry_due(&ctx, &mut st);
+    assert_eq!(host.commands().len(), commands);
+    host.advance(1);
+    crate::pump::audit::retry_due(&ctx, &mut st);
+    let run = current(&st).unwrap();
+    let retry_id = run.job_id.clone().unwrap();
+    assert_ne!(retry_id, first_id);
+    let retry = &st.jobs[&retry_id];
+    assert_eq!(retry.pool_candidates, ["g2"]);
+    assert_eq!(retry.pool_exclude, ["g1"]);
+    dispatch_pending(&ctx, &mut st).unwrap();
+    assert!(dispatch_command(&host).contains("--pool g2"));
+}
+
+#[test]
 fn start_audit_dispatches_to_the_auditor_role() {
     let (_dir, ctx, host) = setup(Some(auditor_routing()));
     ready(&host);
     let mut st = State::default();
     let new = vec![String::from("gate::a_fails")];
     start_audit(&ctx, &mut st, TIP, "test result: FAILED", &new, &[], None);
+    dispatch_pending(&ctx, &mut st).unwrap();
 
     let dispatch = dispatch_command(&host);
     assert!(dispatch.contains("--pool apool"), "{dispatch}");
@@ -246,12 +359,18 @@ fn start_audit_dispatches_to_the_auditor_role() {
     assert!(!dispatch.contains("--read-only"), "{dispatch}");
 
     let run = current(&st).expect("no audit run stored");
-    assert_eq!(run.task.as_deref(), Some("1234abcd"));
+    let job = st
+        .jobs
+        .get(run.job_id.as_deref().expect("no job ID"))
+        .unwrap();
+    assert_eq!(job.role, "auditor");
+    assert_eq!(job.task.as_deref(), Some("1234abcd"));
+    assert_eq!(job.from_ref.as_deref(), Some(TIP));
     assert_eq!(run.need, fix_need(&ctx, TIP));
-    assert_eq!(run.pool.as_deref(), Some("apool"));
+    assert_eq!(job.pool.as_deref(), Some("apool"));
     let logs = host.logs();
     assert!(
-        logs.iter().any(|line| line.contains("audit started for")),
+        logs.iter().any(|line| line.contains("audit queued for")),
         "{logs:?}"
     );
 }
@@ -270,15 +389,19 @@ fn start_audit_falls_back_to_the_gate_style_worker() {
         &[],
         None,
     );
+    dispatch_pending(&ctx, &mut st).unwrap();
 
     let dispatch = dispatch_command(&host);
     assert!(dispatch.contains("--read-only"), "{dispatch}");
     assert!(dispatch.contains("--model gatemodel"), "{dispatch}");
     assert!(dispatch.contains("--pool apool"), "{dispatch}");
-    assert_eq!(
-        current(&st).and_then(|run| run.task).as_deref(),
-        Some("1234abcd")
-    );
+    let run = current(&st).expect("no audit run stored");
+    let job = st
+        .jobs
+        .get(run.job_id.as_deref().expect("no job ID"))
+        .unwrap();
+    assert_eq!(job.task.as_deref(), Some("1234abcd"));
+    assert_eq!(job.builtin_role.as_deref(), Some("auditor"));
 }
 
 #[test]

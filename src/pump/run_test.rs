@@ -600,6 +600,8 @@ fn a_finished_gate_task_reaches_finish_gate_through_collect() {
             at: T0,
             merges: 0,
             task: Some(String::from("g1a2b3c4d")),
+            job_id: None,
+            source_jobs: Vec::new(),
             tip: Some(String::from("0123456789abcdef0123456789abcdef01234567")),
             pool: Some(String::from("flygate")),
         },

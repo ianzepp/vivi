@@ -371,6 +371,12 @@ pub struct GateRun {
     /// Vivi task handle, when the gate runs as a task.
     #[serde(default)]
     pub task: Option<String>,
+    /// Durable job ID while the gate is queued or running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// Role jobs whose merged tips this gate is responsible for proving.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_jobs: Vec<String>,
     /// Integration branch tip at start.
     #[serde(default)]
     pub tip: Option<String>,
@@ -605,25 +611,28 @@ pub fn with_target_state<T>(st: &mut State, target: &str, run: impl FnOnce(&mut 
 }
 
 impl State {
-    /// Whether any target currently owns an open gate task.
+    /// Whether any target currently owns an open gate job or task.
     #[must_use]
     pub fn has_active_gate(&self) -> bool {
         self.last_gate.task.is_some()
+            || self.last_gate.job_id.is_some()
             || self
                 .target_states
                 .values()
-                .any(|target| target.last_gate.task.is_some())
+                .any(|target| target.last_gate.task.is_some() || target.last_gate.job_id.is_some())
     }
 
-    /// Target ID whose gate task is open, if any.
+    /// Target ID whose gate job or task is open, if any.
     #[must_use]
     pub fn active_gate_target(&self) -> Option<String> {
-        if self.last_gate.task.is_some() {
+        if self.last_gate.task.is_some() || self.last_gate.job_id.is_some() {
             return Some(String::from("default"));
         }
         self.target_states
             .iter()
-            .find(|(_, target)| target.last_gate.task.is_some())
+            .find(|(_, target)| {
+                target.last_gate.task.is_some() || target.last_gate.job_id.is_some()
+            })
             .map(|(id, _)| id.clone())
     }
 }

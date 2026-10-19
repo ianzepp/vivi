@@ -12,7 +12,9 @@ use crate::pump::gate::{
     external_gates, finish_gate, hold_cycle, parse_failing, start_gate, target_deaths,
 };
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobStatus, dispatch_pending};
 use crate::pump::state::{GateRecord, GateRun, State, Status, Unit};
+use crate::routing::{RoleRouting, RoutedRole};
 
 /// The fake clock's start.
 const T0: u64 = 1_000_000;
@@ -55,6 +57,8 @@ fn fresh_state() -> State {
             at: T0,
             merges: 4,
             task: None,
+            job_id: None,
+            source_jobs: Vec::new(),
             tip: None,
             pool: None,
         },
@@ -77,6 +81,34 @@ fn wire(host: &Arc<FakeHost>) {
         0,
         &format!("dispatched {TASK} bridge slot-9"),
     );
+}
+
+/// Start a gate and let the durable jobs dispatcher assign its pool slot.
+fn start_and_dispatch(ctx: &Ctx, st: &mut State) {
+    start_gate(ctx, st);
+    dispatch_pending(ctx, st).unwrap();
+}
+
+/// The durable job associated with the latest started gate.
+fn gate_job(st: &State) -> &crate::pump::jobs::PoolJob {
+    let id = st.last_gate.job_id.as_deref().expect("no gate job ID");
+    st.jobs.get(id).expect("gate job is not stored")
+}
+
+/// Add the release role required for dispatched promotions.
+fn with_release_role(ctx: Ctx) -> Ctx {
+    ctx.with_routing(RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("release"),
+            kind: Some(String::from("merge")),
+            status: String::from("active"),
+            pool: Some(String::from("flygate")),
+            read_only: None,
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: std::collections::BTreeMap::new(),
+    })
 }
 
 #[test]
@@ -155,7 +187,7 @@ fn target_deaths_reads_the_marker_block_and_parse_failing_skips_them() {
 #[test]
 fn missing_tool_failures_are_environment_not_new_reds() {
     let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), planner_cfg());
+    let (ctx, host) = test_ctx(dir.path(), gate_cfg());
     let mut st = fresh_state();
     finish_gate(
         &ctx,
@@ -179,9 +211,7 @@ fn missing_tool_failures_are_environment_not_new_reds() {
         .unwrap();
     assert!(new_line.contains("1 new: vivi pump::real"));
     assert!(!new_line.contains("radix-hir-ts"));
-    for prompt in host.spawned() {
-        assert!(!prompt.contains("radix-hir-ts"));
-    }
+    assert!(host.spawned().is_empty(), "the gate never starts a planner");
     drop(dir);
 }
 
@@ -202,7 +232,7 @@ fn start_gate_is_not_due_when_no_merge_landed_since_the_last_gate() {
     let (dir, ctx, host) = setup();
     let mut st = fresh_state();
     host.advance(1000);
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(host.commands().is_empty());
     assert!(st.last_gate.task.is_none());
     drop(dir);
@@ -213,15 +243,16 @@ fn a_gate_is_due_after_every_landed_batch() {
     let (dir, ctx, host) = setup();
     let mut st = fresh_state();
     st.last_gate.at = ctx.now();
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(host.commands().is_empty());
     assert!(st.last_gate.task.is_none());
     st.merges = 3;
     st.last_gate.merges = 2;
     wire(&host);
-    start_gate(&ctx, &mut st);
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    start_and_dispatch(&ctx, &mut st);
+    assert!(st.last_gate.job_id.is_some());
     assert_eq!(st.last_gate.tip.as_deref(), Some(TIP));
+    assert_eq!(gate_job(&st).task.as_deref(), Some(TASK));
     let dispatched: Vec<String> = host
         .commands()
         .into_iter()
@@ -239,22 +270,23 @@ fn a_second_batch_while_a_gate_runs_coalesces_to_one_followup() {
     let (dir, ctx, host) = setup();
     let mut st = gate_state(4);
     st.merges = 5;
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(host.commands().is_empty(), "refused while the gate is open");
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(st.last_gate.task.as_deref().is_some());
 
     st.last_gate.task = None;
     wire(&host);
     host.reply("git ls-remote", 0, &format!("{NEW_TIP}\trefs/heads/next\n"));
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     let dispatched: Vec<String> = host
         .commands()
         .into_iter()
         .filter(|cmd| cmd.contains("pool dispatch"))
         .collect();
     assert_eq!(dispatched.len(), 1, "one follow-up gate, not a stack");
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(st.last_gate.job_id.is_some());
     assert_eq!(st.last_gate.tip.as_deref(), Some(NEW_TIP));
+    assert_eq!(gate_job(&st).task.as_deref(), Some(TASK));
     drop(dir);
 }
 
@@ -266,24 +298,26 @@ fn start_gate_is_due_with_no_baseline_and_dispatches_read_only_to_the_first_pool
         baseline: None,
         ..fresh_state()
     };
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     let gate = &st.last_gate;
-    assert_eq!(gate.task.as_deref(), Some(TASK));
+    assert!(gate.job_id.is_some());
     assert_eq!(gate.tip.as_deref(), Some(TIP));
-    assert_eq!(gate.pool.as_deref(), Some("flygate"));
     assert_eq!(gate.merges, 4);
     assert_eq!(gate.at, ctx.now());
+    assert_eq!(gate_job(&st).task.as_deref(), Some(TASK));
+    assert_eq!(gate_job(&st).pool.as_deref(), Some("flygate"));
     let commands = host.commands();
     let send = commands.iter().find(|c| c.contains("task send")).unwrap();
-    assert!(send.contains("--subject '[pump gate] stage 4b at 0123456789'"));
+    assert!(send.contains("[pump gate] stage 4b at 0123456789"));
     assert!(send.contains("--body-file"));
     let dispatch = commands
         .iter()
         .find(|c| c.contains("pool dispatch"))
         .unwrap();
     assert!(dispatch.contains(&format!("--pool flygate {TASK}")));
-    assert!(dispatch.contains("--model zai/glm-5.3-flash --read-only --from"));
-    assert!(dispatch.contains(&format!("--from {TIP} --budget 1800 --porcelain")));
+    assert!(dispatch.contains("--model zai/glm-5.3-flash"));
+    assert!(dispatch.contains("--read-only"));
+    assert!(dispatch.contains(&format!("--from {TIP} --budget 1800")));
     let brief = fs::read_to_string(ctx.home.join("briefs/gate.txt")).unwrap();
     assert!(brief.contains("FAILING-BEGIN"));
     drop(dir);
@@ -326,13 +360,12 @@ fn a_named_target_gate_uses_its_branch_and_persists_its_own_run() {
     );
     let mut state = State::default();
     crate::pump::state::with_target_state(&mut state, "radix", |target| {
-        start_gate(&target_ctx, target);
+        start_and_dispatch(&target_ctx, target);
     });
     assert_eq!(state.last_gate.task, None);
-    assert_eq!(
-        state.target_states["radix"].last_gate.task.as_deref(),
-        Some(TASK)
-    );
+    let target_st = &state.target_states["radix"];
+    assert!(target_st.last_gate.job_id.is_some());
+    assert_eq!(gate_job(target_st).task.as_deref(), Some(TASK));
     assert!(
         host.commands()
             .iter()
@@ -346,15 +379,16 @@ fn start_gate_force_flag_is_removed_when_the_gate_dispatches() {
     wire(&host);
     fs::write(ctx.home.join("FORCE-GATE"), "after fixes\n").unwrap();
     let mut st = fresh_state();
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(!ctx.flag("FORCE-GATE"));
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
-    assert_eq!(st.last_gate.pool.as_deref(), Some("flygate"));
+    assert!(st.last_gate.job_id.is_some());
+    assert_eq!(gate_job(&st).task.as_deref(), Some(TASK));
+    assert_eq!(gate_job(&st).pool.as_deref(), Some("flygate"));
     drop(dir);
 }
 
 #[test]
-fn a_failed_gate_dispatch_marks_the_task_done_and_records_nothing() {
+fn a_failed_gate_job_dispatch_stays_pending_for_retry() {
     let (dir, ctx, host) = setup();
     wire(&host);
     host.reply("pool dispatch", 1, "boom: no worker online\n");
@@ -363,19 +397,17 @@ fn a_failed_gate_dispatch_marks_the_task_done_and_records_nothing() {
         baseline: None,
         ..fresh_state()
     };
-    start_gate(&ctx, &mut st);
-    let commands = host.commands();
-    let done = commands.iter().find(|c| c.contains("task done")).unwrap();
-    assert!(done.contains(&format!(
-        "task done {TASK} --for operator --note 'dispatch failed'"
-    )));
+    start_and_dispatch(&ctx, &mut st);
+    let job = gate_job(&st);
+    assert_eq!(job.status, crate::pump::jobs::JobStatus::Pending);
+    assert_eq!(job.task.as_deref(), Some(TASK));
+    assert!(st.last_gate.job_id.is_some());
+    assert!(!ctx.flag("FORCE-GATE"));
     assert!(
         host.logs()
             .iter()
-            .any(|line| line.contains("gate dispatch failed: boom: no worker online"))
+            .any(|line| line.contains("job dispatch deferred"))
     );
-    assert!(ctx.flag("FORCE-GATE"));
-    assert!(st.last_gate.task.is_none());
     drop(dir);
 }
 
@@ -383,18 +415,6 @@ fn a_failed_gate_dispatch_marks_the_task_done_and_records_nothing() {
 const CLEAN: &str = "fedcba9876543210fedcba9876543210fedcba98";
 /// A newer 40-hex tip that lands while a gate is running.
 const NEW_TIP: &str = "9876543210987654321098765432109876543210";
-
-/// A planner command so gatefix spawns are visible.
-fn planner_cfg() -> PumpConfig {
-    PumpConfig {
-        planner: crate::pump::config::PlannerConfig {
-            run: String::from("claude -p --model claude-sonnet-5-5 {charter}"),
-            charter: String::from("planner-charter.md"),
-            ..crate::pump::config::PlannerConfig::default()
-        },
-        ..gate_cfg()
-    }
-}
 
 /// A state with a baseline, a merge count and an open gate task at `TIP`.
 fn gate_state(merges: u64) -> State {
@@ -405,6 +425,8 @@ fn gate_state(merges: u64) -> State {
             at: T0,
             merges,
             task: Some(String::from(TASK)),
+            job_id: None,
+            source_jobs: Vec::new(),
             tip: Some(String::from(TIP)),
             pool: Some(String::from("flygate")),
         },
@@ -432,6 +454,33 @@ fn wire_promote(host: &Arc<FakeHost>) {
     host.reply("git fetch", 0, "");
     host.reply("git merge-base", 0, "");
     host.reply("git push", 0, "To origin\n   abc..def  main -> main\n");
+}
+
+/// The task-send and pool-dispatch lines of the one audit a gate started.
+fn one_audit(host: &Arc<FakeHost>) -> (String, String) {
+    let commands = host.commands();
+    let sends: Vec<&String> = commands
+        .iter()
+        .filter(|cmd| cmd.contains("task send") && cmd.contains("[pump audit]"))
+        .collect();
+    assert_eq!(sends.len(), 1, "audit task sends: {sends:?}");
+    let dispatches: Vec<&String> = commands
+        .iter()
+        .filter(|cmd| {
+            cmd.contains("pool dispatch")
+                && cmd.contains("--read-only")
+                && cmd.contains("--model")
+                && cmd.contains(&format!("--from {TIP}"))
+        })
+        .collect();
+    assert_eq!(dispatches.len(), 1, "audit dispatches: {dispatches:?}");
+    assert!(dispatches[0].contains(&format!("--from {TIP}")));
+    assert!(
+        dispatches[0].contains("--pool flygate"),
+        "{}",
+        dispatches[0]
+    );
+    ((*sends[0]).clone(), (*dispatches[0]).clone())
 }
 
 /// Pin a file's modification time to `secs` after the epoch.
@@ -508,9 +557,10 @@ fn names_in_the_baseline_the_ignore_file_or_owned_are_not_new() {
 }
 
 #[test]
-fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
+fn a_new_failure_is_owned_by_the_fix_need_and_starts_an_auditor() {
     let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), planner_cfg());
+    let (ctx, host) = test_ctx(dir.path(), gate_cfg());
+    wire(&host);
     let mut st = gate_state(3);
     st.gates.push(GateRecord {
         tip: String::from(CLEAN),
@@ -525,43 +575,42 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
         &mut st,
         "FAILING-BEGIN\nvivi pump::gate::gone\nFAILING-END\n",
     );
+    dispatch_pending(&ctx, &mut st).unwrap();
     assert_eq!(
         st.red.get("vivi pump::gate::gone"),
         Some(&String::from("pumpfix-g01234567"))
     );
-    let spawned = host.spawned();
-    assert_eq!(spawned.len(), 1);
-    assert!(spawned[0].contains("claude -p --model claude-sonnet-5-5 planner-charter.md"));
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains(&format!("commit {TIP} shows these failing tests")));
-    assert!(prompt.contains(&format!("(commit {CLEAN}):")));
-    assert!(prompt.contains("- vivi pump::gate::gone"));
-    assert!(prompt.contains(&format!("git log --oneline {CLEAN}..{TIP}")));
-    assert!(prompt.contains(&format!("` in {} ", ctx.repo.display())));
-    assert!(prompt.contains(&format!(
-        "Write {}/plans/pumpfix-g01234567.json",
-        ctx.home.display()
-    )));
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    let (send, dispatch) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 1 failures at 0123456789"),
+        "{send}"
+    );
+    assert!(dispatch.contains("--pool flygate"), "{dispatch}");
+    assert!(ctx.home.join("HOLD-MERGE").is_file());
     assert!(
         host.logs()
             .iter()
-            .any(|l| l.contains("gatefix planner started for pumpfix-g01234567 (1 new)"))
+            .any(|l| l.contains("audit queued for pumpfix-g01234567 (1 new"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("hold set automatically: gate red at 0123456789"))
     );
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
-    assert!(
-        exceptions.contains(
-            "gate-new-failures 0123456789 1 new: vivi pump::gate::gone ; suspects: u2 u3"
-        )
-    );
+    assert!(exceptions.contains("gate-new-failures 0123456789 1 new: vivi pump::gate::gone"));
+    assert!(!exceptions.contains("suspects:"));
     drop(dir);
 }
 
 #[test]
-fn a_red_gate_sends_a_real_backing_need_and_plans_under_it() {
+fn a_red_gate_sends_a_real_backing_need_and_audits_under_it() {
     let dir = tempdir().unwrap();
-    let mut cfg = planner_cfg();
+    let mut cfg = gate_cfg();
     cfg.board.from = vec![String::from("operator")];
     let (ctx, host) = test_ctx(dir.path(), cfg);
+    wire(&host);
     host.reply("need send", 0, "created operator ab12cd34\nsent ab12cd34\n");
     let mut st = gate_state(3);
     st.gates.push(GateRecord {
@@ -577,6 +626,7 @@ fn a_red_gate_sends_a_real_backing_need_and_plans_under_it() {
         &mut st,
         "FAILING-BEGIN\nvivi pump::gate::gone\nFAILING-END\n",
     );
+    dispatch_pending(&ctx, &mut st).unwrap();
     assert_eq!(
         st.red.get("vivi pump::gate::gone"),
         Some(&String::from("ab12cd34"))
@@ -589,13 +639,17 @@ fn a_red_gate_sends_a_real_backing_need_and_plans_under_it() {
     assert!(need_send.contains("--from mind"));
     assert!(need_send.contains("--to operator"));
     assert!(need_send.contains("gate fix for g01234567"));
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/ab12cd34.prompt")).unwrap();
-    assert!(prompt.contains("plans/ab12cd34.json"));
-    assert!(prompt.contains("Unit ids \"pumpfix-g01234567-"));
+    assert!(host.spawned().is_empty());
+    let (send, _) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 1 failures at 0123456789"),
+        "{send}"
+    );
+    assert!(ctx.home.join("HOLD-MERGE").is_file());
     assert!(
         host.logs()
             .iter()
-            .any(|l| l.contains("gatefix planner started for ab12cd34 (1 new)"))
+            .any(|l| l.contains("audit queued for ab12cd34 (1 new"))
     );
     drop(dir);
 }
@@ -617,43 +671,58 @@ fn an_owned_name_that_passes_again_is_released() {
 }
 
 #[test]
-fn a_gate_with_no_new_failure_promotes_main_by_fast_forward_push() {
-    let (dir, ctx, host) = setup();
-    wire_promote(&host);
+fn a_gate_with_no_new_failure_enqueues_a_fast_forward_promotion_job() {
+    let (dir, base, host) = setup();
+    let ctx = with_release_role(base);
     let mut st = gate_state(4);
     finish_gate(
         &ctx,
         &mut st,
         "FAILING-BEGIN\nold crate::base\nFAILING-END\n",
     );
-    let commands = host.commands();
-    let push = commands.iter().find(|c| c.contains("git push")).unwrap();
-    assert_eq!(*push, format!("git push origin {TIP}:refs/heads/main"));
+    let promotion = st
+        .jobs
+        .values()
+        .find(|job| job.kind == "promote")
+        .expect("green gate should enqueue promotion");
+    assert_eq!(promotion.role, "release");
+    assert_eq!(promotion.from_ref.as_deref(), Some(TIP));
+    assert_eq!(promotion.branch.as_deref(), Some("main"));
+    assert!(host.commands().iter().all(|cmd| !cmd.contains("git push")));
+    assert!(st.promotions.is_empty(), "receipt has not landed yet");
     assert!(
         host.logs()
             .iter()
-            .any(|l| l.contains("promote main -> 0123456789 rc=0"))
+            .any(|l| l.contains("promote queued: main -> 0123456789"))
     );
+    let job_id = promotion.id.clone();
+    let job = st.jobs.get_mut(&job_id).unwrap();
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: format!("pushed main {}", &TIP[..10]),
+        receipt: format!("PUMP_PROMOTE_RESULT={{\"status\":\"pushed\",\"tip\":\"{TIP}\"}}"),
+        at: ctx.now(),
+    });
+    crate::pump::gate::collect_completed(&ctx, &mut st);
     assert_eq!(st.promotions.len(), 1);
     assert_eq!(st.promotions[0].tip, TIP);
-    assert_eq!(st.promotions[0].at, ctx.now());
+    assert_eq!(
+        st.promotions[0].failing,
+        Some(vec![String::from("old crate::base")])
+    );
     drop(dir);
 }
 
 #[test]
-fn promote_is_skipped_when_main_has_commits_the_integration_branch_lacks() {
-    let (dir, ctx, host) = setup();
-    host.reply("git fetch", 0, "");
-    host.reply("git merge-base", 1, "");
+fn a_non_fast_forward_decision_is_delegated_to_the_promotion_job() {
+    let (dir, base, host) = setup();
+    let ctx = with_release_role(base);
     let mut st = gate_state(4);
     finish_gate(&ctx, &mut st, "FAILING-BEGIN\nFAILING-END\n");
+    assert!(st.jobs.values().any(|job| job.kind == "promote"));
     assert!(host.commands().iter().all(|c| !c.contains("git push")));
     assert!(st.promotions.is_empty());
-    assert!(
-        host.logs()
-            .iter()
-            .any(|l| l.contains("promote skipped: main has commits next does not have yet"))
-    );
     drop(dir);
 }
 
@@ -669,25 +738,70 @@ fn an_unreadable_reply_raises_gate_unreadable_and_records_names_none() {
     assert_eq!(rec.new, None);
     assert_eq!(st.last_gate.task, None);
     assert!(st.red.is_empty());
+    assert!(ctx.flag("FORCE-GATE"), "unreadable receipts are retried");
     drop(dir);
 }
 
 #[test]
 fn a_build_failed_reply_raises_gate_build_failed() {
-    let (dir, ctx, _host) = setup();
+    let (dir, ctx, host) = setup();
+    wire(&host);
     let mut st = gate_state(4);
     finish_gate(
         &ctx,
         &mut st,
         "rc=1\nFAILING-BEGIN\nBUILD-FAILED\nFAILING-END\nerror: could not compile\n",
     );
+    dispatch_pending(&ctx, &mut st).unwrap();
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exceptions.contains("gate-build-failed 0123456789"));
     assert!(exceptions.contains("error: could not compile"));
     let rec = st.gates.last().unwrap();
     assert_eq!(rec.names, Some(vec![String::from("BUILD-FAILED")]));
-    assert_eq!(rec.new, None);
+    assert_eq!(rec.new, Some(vec![String::from("BUILD-FAILED")]));
     assert_eq!(st.baseline, Some(vec![String::from("old crate::base")]));
+    assert_eq!(
+        st.red.get("BUILD-FAILED"),
+        Some(&String::from("pumpfix-g01234567"))
+    );
+    assert!(
+        one_audit(&host)
+            .0
+            .contains("[pump audit] 1 failures at 0123456789")
+    );
+    assert!(ctx.home.join("HOLD-MERGE").is_file());
+    assert!(st.promotions.is_empty());
+    drop(dir);
+}
+
+#[test]
+fn a_build_failed_first_gate_is_audited_without_becoming_a_clean_baseline() {
+    let (dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = gate_state(4);
+    st.baseline = None;
+    finish_gate(
+        &ctx,
+        &mut st,
+        "rc=1\nFAILING-BEGIN\nBUILD-FAILED\nFAILING-END\nerror: could not compile\n",
+    );
+    dispatch_pending(&ctx, &mut st).unwrap();
+
+    assert_eq!(st.baseline, Some(Vec::new()));
+    assert_eq!(
+        st.gates.last().unwrap().new,
+        Some(vec![String::from("BUILD-FAILED")])
+    );
+    assert_eq!(
+        st.red.get("BUILD-FAILED"),
+        Some(&String::from("pumpfix-g01234567"))
+    );
+    assert!(
+        one_audit(&host)
+            .0
+            .contains("[pump audit] 1 failures at 0123456789")
+    );
+    assert!(st.promotions.is_empty());
     drop(dir);
 }
 
@@ -718,7 +832,10 @@ fn red_after_fix_is_reported_once_when_the_fix_units_are_settled_and_the_name_st
         exceptions.matches("red-after-fix pumpfix-settled").count(),
         1
     );
-    assert!(exceptions.contains(&format!("red-after-fix pumpfix-settled {name}")));
+    assert!(exceptions.contains(&format!(
+        "red-after-fix pumpfix-settled {name}; audits for this name: 0; last report: {}/audit/pumpfix-settled.report",
+        ctx.home.display()
+    )));
     assert_eq!(st.red_reported, vec![format!("pumpfix-settled:{name}")]);
     drop(dir);
 }
@@ -727,7 +844,7 @@ fn red_after_fix_is_reported_once_when_the_fix_units_are_settled_and_the_name_st
 fn hold_cycle_forces_a_gate_after_the_fixes_merge_and_lifts_the_hold_on_a_clean_gate() {
     let (dir, ctx, host) = setup();
     let hold = ctx.home.join("HOLD-MERGE");
-    fs::write(&hold, "hold\n").unwrap();
+    fs::write(&hold, "gate red\n").unwrap();
     set_mtime(&hold, 500);
     let mut st = State::default();
     st.units.insert(
@@ -781,6 +898,36 @@ fn hold_cycle_forces_a_gate_after_the_fixes_merge_and_lifts_the_hold_on_a_clean_
 }
 
 #[test]
+fn a_queued_gate_keeps_hold_cycle_from_lifting_a_hold() {
+    let (dir, ctx, _host) = setup();
+    let hold = ctx.home.join("HOLD-MERGE");
+    fs::write(&hold, "gate red\n").unwrap();
+    set_mtime(&hold, 500);
+    let mut st = State {
+        last_gate: GateRun {
+            job_id: Some(String::from("gate-job")),
+            ..GateRun::default()
+        },
+        ..State::default()
+    };
+    st.gates.push(GateRecord {
+        tip: String::from(TIP),
+        at: T0,
+        merges: 1,
+        names: Some(Vec::new()),
+        new: Some(Vec::new()),
+    });
+
+    hold_cycle(&ctx, &mut st);
+
+    assert!(
+        hold.is_file(),
+        "the queued gate has not proved a clean result"
+    );
+    drop(dir);
+}
+
+#[test]
 fn hold_on_red_writes_hold_merge_while_reds_are_owned() {
     let dir = tempdir().unwrap();
     let mut cfg = gate_cfg();
@@ -791,7 +938,7 @@ fn hold_on_red_writes_hold_merge_while_reds_are_owned() {
         .insert(String::from("vivi pump::gate::red"), String::from("u1"));
     hold_cycle(&ctx, &mut st);
     let hold = ctx.home.join("HOLD-MERGE");
-    assert_eq!(fs::read_to_string(&hold).unwrap(), "red\n");
+    assert_eq!(fs::read_to_string(&hold).unwrap(), "gate red\n");
     assert!(
         host.logs().iter().any(|line| {
             line.contains("hold on red: 1 owned names unfixed; HOLD-MERGE written")
@@ -803,6 +950,42 @@ fn hold_on_red_writes_hold_merge_while_reds_are_owned() {
         fs::metadata(&hold).unwrap().modified().unwrap(),
         std::time::UNIX_EPOCH + std::time::Duration::from_secs(500)
     );
+    drop(dir);
+}
+
+#[test]
+fn a_clean_gate_preserves_an_operator_owned_hold() {
+    let (dir, ctx, _host) = setup();
+    let hold = ctx.home.join("HOLD-MERGE");
+    fs::write(&hold, "operator hold\n").unwrap();
+    set_mtime(&hold, 500);
+    let mut st = State::default();
+    st.gates.push(GateRecord {
+        tip: String::from(TIP),
+        at: T0,
+        merges: 1,
+        names: Some(vec![]),
+        new: Some(vec![]),
+    });
+
+    hold_cycle(&ctx, &mut st);
+
+    assert_eq!(fs::read_to_string(&hold).unwrap(), "operator hold\n");
+    drop(dir);
+}
+
+#[test]
+fn a_red_gate_does_not_overwrite_an_operator_owned_hold() {
+    let (dir, ctx, _host) = setup();
+    let hold = ctx.home.join("HOLD-MERGE");
+    fs::write(&hold, "operator hold\n").unwrap();
+    let mut st = gate_state(4);
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nfresh crate::red\nFAILING-END\n",
+    );
+    assert_eq!(fs::read_to_string(&hold).unwrap(), "operator hold\n");
     drop(dir);
 }
 
@@ -959,9 +1142,10 @@ fn no_heartbeat_means_no_external_wait() {
         baseline: None,
         ..fresh_state()
     };
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(!st.extra.contains_key("external_wait_since"));
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(st.last_gate.job_id.is_some());
+    assert_eq!(gate_job(&st).task.as_deref(), Some(TASK));
     assert!(host.logs().iter().any(|line| {
         line.contains("external gate runner heartbeat missing; not waiting for results_dir")
     }));
@@ -978,7 +1162,7 @@ fn a_fresh_heartbeat_waits() {
         baseline: None,
         ..fresh_state()
     };
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(host.commands().is_empty());
     assert_eq!(
         st.extra["external_wait_since"],
@@ -1005,9 +1189,10 @@ fn a_stale_heartbeat_does_not_wait() {
         String::from("external_wait_since"),
         serde_json::json!(ctx.now()),
     );
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(!st.extra.contains_key("external_wait_since"));
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(st.last_gate.job_id.is_some());
+    assert_eq!(gate_job(&st).task.as_deref(), Some(TASK));
     assert!(host.logs().iter().any(|line| {
         line.contains("external gate runner heartbeat stale; not waiting for results_dir")
     }));
@@ -1041,7 +1226,7 @@ fn an_idle_external_runner_does_not_hold_the_gate() {
 
     // Control: a result 60 s ago means a runner is alive, so the gate waits.
     let (dir, ctx, host, mut st) = idle_setup(60);
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(host.commands().is_empty());
     assert!(st.last_gate.task.is_none());
     assert_eq!(
@@ -1052,10 +1237,11 @@ fn an_idle_external_runner_does_not_hold_the_gate() {
     // No result for 7200 s (past the 3600 s idle window): a runner that has
     // produced nothing is not running, so the pool gate goes out at once.
     let (idle_dir, idle, idle_host, mut idle_st) = idle_setup(7200);
-    start_gate(&idle, &mut idle_st);
+    start_and_dispatch(&idle, &mut idle_st);
     assert!(!idle_st.extra.contains_key("external_wait_since"));
-    assert_eq!(idle_st.last_gate.task.as_deref(), Some(TASK));
-    assert_eq!(idle_st.last_gate.pool.as_deref(), Some("flygate"));
+    assert!(idle_st.last_gate.job_id.is_some());
+    assert_eq!(gate_job(&idle_st).task.as_deref(), Some(TASK));
+    assert_eq!(gate_job(&idle_st).pool.as_deref(), Some("flygate"));
     assert!(
         idle_host
             .logs()
@@ -1094,6 +1280,56 @@ fn an_external_result_for_the_tip_finishes_the_gate_and_promotes() {
         host.logs()
             .iter()
             .any(|l| l.contains("external gate at 0123456789 (412s) host=runner-1"))
+    );
+    drop(dir);
+}
+
+#[test]
+fn an_external_result_waits_while_a_durable_gate_job_is_open() {
+    let (dir, ctx, _host) = external_setup();
+    let body = format!(r#"{{"tip": "{TIP}", "seconds": 1, "names": [], "build_failed": false}}"#);
+    let path = write_result(&ctx, TIP, &body);
+    let mut st = gate_state(6);
+    st.last_gate.task = None;
+    st.last_gate.job_id = Some(String::from("gate-job"));
+
+    external_gates(&ctx, &mut st);
+
+    assert!(path.exists(), "the pool gate still owns this result slot");
+    assert!(st.gates.is_empty());
+    assert_eq!(st.last_gate.job_id.as_deref(), Some("gate-job"));
+    drop(dir);
+}
+
+#[test]
+fn a_duplicate_external_tip_does_not_finish_a_second_gate() {
+    let (dir, ctx, host) = external_setup();
+    let body = format!(r#"{{"tip": "{TIP}", "seconds": 1, "names": [], "build_failed": false}}"#);
+    let path = write_result(&ctx, TIP, &body);
+    let mut st = gate_state(6);
+    st.last_gate.task = None;
+    st.gates.push(GateRecord {
+        tip: String::from(TIP),
+        at: T0,
+        merges: 6,
+        names: Some(Vec::new()),
+        new: Some(Vec::new()),
+    });
+
+    external_gates(&ctx, &mut st);
+
+    assert!(!path.exists());
+    assert!(
+        path.parent()
+            .unwrap()
+            .join(format!("done/{TIP}.json"))
+            .exists()
+    );
+    assert_eq!(st.gates.len(), 1);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("duplicate ignored"))
     );
     drop(dir);
 }
@@ -1181,7 +1417,7 @@ fn a_due_gate_waits_for_an_external_result_then_falls_back_to_a_pool() {
         baseline: None,
         ..fresh_state()
     };
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(host.commands().is_empty());
     assert_eq!(
         st.extra["external_wait_since"],
@@ -1191,14 +1427,15 @@ fn a_due_gate_waits_for_an_external_result_then_falls_back_to_a_pool() {
     // The wait window is `results_wait_seconds` (600) and the heartbeat stays
     // fresh for twice that; a gate still waiting inside the window is quiet.
     host.advance(599);
-    start_gate(&ctx, &mut st);
+    start_and_dispatch(&ctx, &mut st);
     assert!(host.commands().is_empty());
 
     // Past twice the window the heartbeat is stale: the pool gate goes out.
     host.advance(602);
-    start_gate(&ctx, &mut st);
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
-    assert_eq!(st.last_gate.pool.as_deref(), Some("flygate"));
+    start_and_dispatch(&ctx, &mut st);
+    assert!(st.last_gate.job_id.is_some());
+    assert_eq!(gate_job(&st).task.as_deref(), Some(TASK));
+    assert_eq!(gate_job(&st).pool.as_deref(), Some("flygate"));
     assert!(!st.extra.contains_key("external_wait_since"));
     drop(dir);
 }
@@ -1227,12 +1464,13 @@ fn residual_state(unit: Status) -> State {
     st
 }
 
-/// A context with a planner and promotion wired.
+/// A context with the audit pool and promotion wired.
 fn residual_setup(max_replans: u32) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
-    let mut cfg = planner_cfg();
+    let mut cfg = gate_cfg();
     cfg.gate.max_replans = max_replans;
     let (ctx, host) = test_ctx(dir.path(), cfg);
+    wire(&host);
     wire_promote(&host);
     (dir, ctx, host)
 }
@@ -1245,26 +1483,40 @@ fn write_owner_plan(ctx: &Ctx, owner: &str) {
 }
 
 #[test]
-fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
+fn residual_failures_of_a_settled_owner_are_handed_to_the_audit_need() {
     let (dir, ctx, host) = residual_setup(2);
     write_owner_plan(&ctx, OLD_OWNER);
+    fs::create_dir_all(ctx.home.join("audit")).unwrap();
+    fs::write(
+        ctx.home.join("audit").join(format!("{OLD_OWNER}.report")),
+        "prior cause: off-by-one in the bounds check",
+    )
+    .unwrap();
     let mut st = residual_state(Status::Merged);
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    dispatch_pending(&ctx, &mut st).unwrap();
     assert_eq!(
         st.red.get(RESIDUAL),
         Some(&String::from("pumpfix-g01234567"))
     );
     assert_eq!(st.extra["replans"][RESIDUAL], 1);
-    assert_eq!(host.spawned().len(), 1);
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains(&format!("owned by fix plan {OLD_OWNER}")));
-    assert!(prompt.contains(&format!("still fail at commit {TIP}")));
-    assert!(prompt.contains("- crate::residual"));
-    assert!(prompt.contains(&format!("log --grep {OLD_OWNER}")));
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    let (send, _) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 1 failures at 0123456789"),
+        "{send}"
+    );
+    let brief = fs::read_to_string(ctx.home.join("briefs/audit.txt")).unwrap();
+    assert!(brief.contains("prior cause: off-by-one in the bounds check"));
     assert!(
         host.logs()
             .iter()
             .any(|l| l.contains("replan: 1 residual failures of pumpfix-gold"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("audit queued for pumpfix-g01234567 (0 new, 1 residual)"))
     );
     assert!(host.commands().iter().all(|c| !c.contains("git push")));
     assert!(st.promotions.is_empty());
@@ -1290,35 +1542,39 @@ fn units_of_a_real_handle_need_settle_their_owner_even_when_uids_differ() {
         },
     );
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    dispatch_pending(&ctx, &mut st).unwrap();
     assert_eq!(st.red.get(RESIDUAL), Some(&String::from("ef012345")));
     assert_eq!(st.extra["replans"][RESIDUAL], 1);
-    assert_eq!(host.spawned().len(), 1);
+    assert!(host.spawned().is_empty());
+    let (send, _) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 1 failures at 0123456789"),
+        "{send}"
+    );
     drop(dir);
 }
 
 #[test]
-fn residual_planning_takes_the_next_free_id_when_the_tip_plan_exists() {
+fn residual_auditing_uses_the_fix_need_even_when_the_tip_plan_exists() {
     let (dir, ctx, host) = residual_setup(2);
     write_owner_plan(&ctx, OLD_OWNER);
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans/pumpfix-g01234567.json"), "{}").unwrap();
     let mut st = residual_state(Status::Stuck);
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    dispatch_pending(&ctx, &mut st).unwrap();
     assert_eq!(
         st.red.get(RESIDUAL),
-        Some(&String::from("pumpfix-g01234567-r1"))
+        Some(&String::from("pumpfix-g01234567"))
     );
-    assert_eq!(host.spawned().len(), 1);
-    assert!(
-        ctx.home
-            .join("gatefix/pumpfix-g01234567-r1.prompt")
-            .exists()
-    );
+    assert!(host.spawned().is_empty());
+    let (_, dispatch) = one_audit(&host);
+    assert!(dispatch.contains("--pool flygate"), "{dispatch}");
     drop(dir);
 }
 
 #[test]
-fn new_and_residual_failures_are_planned_together() {
+fn new_and_residual_failures_are_audited_together() {
     let (dir, ctx, host) = residual_setup(2);
     write_owner_plan(&ctx, OLD_OWNER);
     let mut st = residual_state(Status::Merged);
@@ -1327,15 +1583,27 @@ fn new_and_residual_failures_are_planned_together() {
         &mut st,
         "FAILING-BEGIN\nold crate::base\ncrate::residual\ncrate::fresh\nFAILING-END\n",
     );
-    assert_eq!(host.spawned().len(), 1);
+    dispatch_pending(&ctx, &mut st).unwrap();
+    assert!(host.spawned().is_empty());
     assert_eq!(
         st.red.get("crate::fresh"),
         st.red.get(RESIDUAL),
         "one need owns both"
     );
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains("- crate::fresh"));
-    assert!(prompt.contains(&format!("owned by fix plan {OLD_OWNER}")));
+    let (send, _) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 2 failures at 0123456789"),
+        "{send}"
+    );
+    assert_eq!(
+        st.red.get("crate::fresh"),
+        Some(&String::from("pumpfix-g01234567"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("audit queued for pumpfix-g01234567 (1 new, 1 residual)"))
+    );
     drop(dir);
 }
 
@@ -1346,11 +1614,14 @@ fn residual_failures_stop_replanning_at_max_replans_and_raise_red_after_fix() {
     st.extra
         .insert(String::from("replans"), serde_json::json!({ RESIDUAL: 1 }));
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    dispatch_pending(&ctx, &mut st).unwrap();
     assert!(host.spawned().is_empty());
     assert_eq!(st.red.get(RESIDUAL), Some(&String::from(OLD_OWNER)));
     assert_eq!(st.extra["replans"][RESIDUAL], 1);
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exceptions.contains(&format!("red-after-fix {OLD_OWNER} {RESIDUAL}")));
+    assert!(exceptions.contains("audits for this name: 1"));
+    assert!(exceptions.contains("/audit/pumpfix-gold.report"));
     assert!(st.promotions.is_empty());
     drop(dir);
 }
@@ -1366,22 +1637,25 @@ fn zero_max_replans_never_replans() {
 }
 
 #[test]
-fn residual_failures_replan_orphaned_red_owners() {
+fn residual_failures_are_handed_to_the_audit_for_orphaned_red_owners() {
     let (dir, ctx, host) = residual_setup(2);
     let mut st = gate_state(4);
     st.red
         .insert(String::from(RESIDUAL), String::from(OLD_OWNER));
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
-    assert_eq!(host.spawned().len(), 1, "a fresh gate-fix planner starts");
+    dispatch_pending(&ctx, &mut st).unwrap();
+    assert!(host.spawned().is_empty());
     assert_eq!(
         st.red.get(RESIDUAL),
         Some(&String::from("pumpfix-g01234567")),
         "the new gate-fix need re-owns the name"
     );
     assert_eq!(st.extra["replans"][RESIDUAL], 1);
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains("- crate::residual"));
-    assert!(prompt.contains("never wrote a plan"));
+    let (send, _) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 1 failures at 0123456789"),
+        "{send}"
+    );
     drop(dir);
 }
 

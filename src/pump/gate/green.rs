@@ -63,8 +63,8 @@ pub(super) fn green_candidate(
         .map(|gate| (gate.tip.clone(), gate.names.clone().unwrap_or_default()))
 }
 
-/// Fast-forward main to the last green gated commit, skipping the push when
-/// main already sits at that candidate.
+/// Queue a role-addressed fast-forward promotion to the last green gated
+/// commit, skipping duplicate jobs when main already has that candidate.
 pub(super) fn promote_last_green(ctx: &Ctx, st: &mut State, tip: &str, names: &[String]) {
     let Some((candidate, failing)) = green_candidate(st, tip, names) else {
         return;
@@ -72,5 +72,5 @@ pub(super) fn promote_last_green(ctx: &Ctx, st: &mut State, tip: &str, names: &[
     if st.promotions.last().is_some_and(|p| p.tip == candidate) {
         return;
     }
-    super::promote(ctx, st, &candidate, &failing);
+    super::jobs::promote(ctx, st, &candidate, &failing);
 }

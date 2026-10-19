@@ -59,6 +59,41 @@ pub fn missing_tool(code: i32, text: &str) -> bool {
     code == 126 || code == 127 || text.contains("command not found")
 }
 
+/// Whether the check was killed by Vivi's timeout wrapper.
+///
+/// The process runner uses exit 124 and appends `[timeout after Ns]`. Accept
+/// either signal so callers also handle receipts that preserve only one part
+/// of the evidence.
+#[must_use]
+pub fn timed_out(code: i32, text: &str) -> bool {
+    code == 124 || (code != 0 && text.lines().any(timeout_marker))
+}
+
+/// The duration from the timeout wrapper's exact marker line, when present.
+#[must_use]
+pub fn timeout_seconds(text: &str) -> Option<u64> {
+    text.lines().rev().find_map(|line| {
+        let seconds = line
+            .trim()
+            .strip_prefix("[timeout after ")?
+            .strip_suffix("s]")?;
+        if seconds.is_empty() || !seconds.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        seconds.parse().ok()
+    })
+}
+
+/// Match only the exact marker appended by the host timeout wrapper.
+fn timeout_marker(line: &str) -> bool {
+    let line = line.trim();
+    line.strip_prefix("[timeout after ")
+        .and_then(|seconds| seconds.strip_suffix("s]"))
+        .is_some_and(|seconds| {
+            !seconds.is_empty() && seconds.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
 /// The push outcome names a host problem and the pool finished the job.
 fn push_outcome(why: &str, detail: &str) -> Option<HostFailure> {
     let outcome = detail.split_whitespace().next()?;

@@ -7,10 +7,12 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use crate::pump::config::{GateConfig, PumpConfig};
-use crate::pump::gate::{finish_gate, start_gate};
+use crate::pump::gate::{collect_completed, finish_gate, start_gate};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobStatus, PoolJob};
 use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::routing::{RoleRouting, RoutedRole};
 
 /// The fake clock's start.
 const T0: u64 = 1_000_000;
@@ -39,9 +41,18 @@ fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
         ..PumpConfig::default()
     };
     let (ctx, host) = test_ctx(dir.path(), cfg);
-    host.reply("git fetch", 0, "");
-    host.reply("git merge-base", 0, "");
-    host.reply("git push", 0, "To origin\n   abc..def  main -> main\n");
+    let ctx = ctx.with_routing(RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("release"),
+            kind: Some(String::from("merge")),
+            status: String::from("active"),
+            pool: Some(String::from("flygate")),
+            read_only: None,
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: std::collections::BTreeMap::new(),
+    });
     (dir, ctx, host)
 }
 
@@ -54,6 +65,8 @@ fn state(baseline: &[&str]) -> State {
             at: T0,
             merges: 4,
             task: Some(String::from(TASK)),
+            job_id: None,
+            source_jobs: Vec::new(),
             tip: Some(String::from(TIP)),
             pool: Some(String::from("flygate")),
         },
@@ -69,8 +82,51 @@ fn reply(list: &[&str]) -> String {
     format!("FAILING-BEGIN\n{}\nFAILING-END\n", list.join("\n"))
 }
 
-fn pushed(host: &Arc<FakeHost>) -> bool {
-    host.commands().iter().any(|c| c.contains("git push"))
+fn promotion_job(st: &State) -> Option<&PoolJob> {
+    st.jobs.values().find(|job| job.kind == "promote")
+}
+
+/// Feed a successful fast-forward receipt to the promotion collector.
+fn confirm_promotion(ctx: &Ctx, st: &mut State, id: &str, tip: &str) {
+    let job = st.jobs.get_mut(id).unwrap();
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: format!("pushed main {}", &tip[..10]),
+        receipt: format!("PUMP_PROMOTE_RESULT={{\"status\":\"pushed\",\"tip\":\"{tip}\"}}"),
+        at: ctx.now(),
+    });
+    collect_completed(ctx, st);
+}
+
+/// Feed a worker's recovery marker and verify its main-branch ancestry.
+fn confirm_already_on_main(
+    ctx: &Ctx,
+    host: &Arc<FakeHost>,
+    st: &mut State,
+    id: &str,
+    tip: &str,
+    remote_tip: &str,
+    ancestry_code: i32,
+) {
+    host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{remote_tip}\trefs/heads/main\n"),
+    );
+    host.reply("cat-file -e", 0, "");
+    host.reply("merge-base --is-ancestor", ancestry_code, "");
+    let job = st.jobs.get_mut(id).unwrap();
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("no_changes"),
+        receipt: format!(
+            "PUMP_PROMOTE_RESULT={{\"status\":\"already-on-main\",\"tip\":\"{tip}\"}}"
+        ),
+        at: ctx.now(),
+    });
+    collect_completed(ctx, st);
 }
 
 fn promote_held(host: &Arc<FakeHost>) -> Option<String> {
@@ -94,7 +150,10 @@ fn promotes_when_failing_is_within_main_even_with_owned_reds_outstanding() {
     own(&mut st, "c");
     own(&mut st, "d");
     finish_gate(&ctx, &mut st, &reply(&["a", "c"]));
-    assert!(pushed(&host));
+    let job = promotion_job(&st).expect("green gate queues promotion");
+    assert_eq!(job.role, "release");
+    let id = job.id.clone();
+    confirm_promotion(&ctx, &mut st, &id, TIP);
     assert!(promote_held(&host).is_none());
     let last = st.promotions.last().unwrap();
     assert_eq!(last.tip, TIP);
@@ -116,7 +175,7 @@ fn is_held_when_a_name_is_not_on_main_and_lists_up_to_five() {
     let mut failing = vec!["a"];
     failing.extend(extra);
     finish_gate(&ctx, &mut st, &reply(&failing));
-    assert!(!pushed(&host));
+    assert!(promotion_job(&st).is_none());
     assert!(st.promotions.is_empty());
     assert_eq!(
         promote_held(&host).unwrap(),
@@ -131,6 +190,9 @@ fn main_set_follows_the_last_promotion() {
     let (dir, ctx, host) = setup();
     let mut st = state(&["a", "b"]);
     finish_gate(&ctx, &mut st, &reply(&["a"]));
+    let job = promotion_job(&st).unwrap();
+    let id = job.id.clone();
+    confirm_promotion(&ctx, &mut st, &id, TIP);
     assert_eq!(st.promotions.len(), 1);
     assert_eq!(st.promotions[0].failing, Some(names(&["a"])));
     // b was on main by baseline, but main now carries only a.
@@ -147,7 +209,9 @@ fn the_baseline_is_main_before_the_first_promotion() {
     let (dir, ctx, host) = setup();
     let mut st = state(&["a", "b"]);
     finish_gate(&ctx, &mut st, &reply(&["b"]));
-    assert!(pushed(&host));
+    let job = promotion_job(&st).expect("the first green gate should queue promotion");
+    let id = job.id.clone();
+    confirm_promotion(&ctx, &mut st, &id, TIP);
     assert_eq!(st.promotions[0].failing, Some(names(&["b"])));
     drop(dir);
 }
@@ -170,7 +234,7 @@ fn a_promotion_without_a_recorded_set_uses_its_gate_record() {
     });
     own(&mut st, "g");
     finish_gate(&ctx, &mut st, &reply(&["g"]));
-    assert!(pushed(&host));
+    assert_eq!(promotion_job(&st).unwrap().from_ref.as_deref(), Some(TIP));
     drop(dir);
 }
 
@@ -290,74 +354,117 @@ fn a_fix_merged_before_the_last_gate_or_a_non_fix_unit_forces_nothing() {
     drop(dir);
 }
 
-fn commands_matching(host: &Arc<FakeHost>, needle: &str) -> Vec<usize> {
-    host.commands()
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.contains(needle))
-        .map(|(i, _)| i)
-        .collect()
-}
-
-fn promote_error(host: &Arc<FakeHost>) -> Option<String> {
-    host.logs()
-        .into_iter()
-        .find(|l| l.contains("promote error"))
-}
-
 #[test]
-fn promote_fetches_main_and_the_integration_branch_before_the_ancestor_check() {
+fn promotion_is_a_durable_job_and_runs_no_local_git_push() {
     let (dir, ctx, host) = setup();
     let mut st = state(&["a"]);
     finish_gate(&ctx, &mut st, &reply(&["a"]));
-    let fetch = commands_matching(&host, "git fetch -q origin main next");
-    let check = commands_matching(&host, "merge-base --is-ancestor origin/main");
-    let push = commands_matching(&host, "git push");
-    assert_eq!((fetch.len(), check.len(), push.len()), (1, 1, 1));
-    assert!(fetch[0] < check[0] && check[0] < push[0]);
-    assert_eq!(st.promotions.len(), 1);
+    let job = promotion_job(&st).expect("the gate queues a promotion role job");
+    assert_eq!(job.from_ref.as_deref(), Some(TIP));
+    assert_eq!(job.branch.as_deref(), Some("main"));
+    assert!(host.commands().iter().all(|cmd| {
+        !cmd.contains("git fetch") && !cmd.contains("merge-base") && !cmd.contains("git push")
+    }));
+    assert!(st.promotions.is_empty(), "the receipt has not landed");
     drop(dir);
 }
 
 #[test]
-fn an_ancestor_check_that_errors_is_a_promote_error_and_does_not_push() {
+fn already_on_main_is_accepted_only_after_remote_ancestry_verification() {
     let (dir, ctx, host) = setup();
-    host.reply("git merge-base", 128, "fatal: Not a valid commit name 0123");
     let mut st = state(&["a"]);
     finish_gate(&ctx, &mut st, &reply(&["a"]));
-    assert!(!pushed(&host));
-    assert!(st.promotions.is_empty());
-    let line = promote_error(&host).unwrap();
-    assert!(line.contains("fatal: Not a valid commit name"), "{line}");
-    assert!(host.logs().iter().all(|l| !l.contains("promote skipped")));
-    drop(dir);
-}
-
-#[test]
-fn a_main_that_moved_skips_the_promotion_without_an_error() {
-    let (dir, ctx, host) = setup();
-    host.reply("git merge-base", 1, "");
-    let mut st = state(&["a"]);
-    finish_gate(&ctx, &mut st, &reply(&["a"]));
-    assert!(!pushed(&host));
-    assert!(promote_error(&host).is_none());
+    let id = promotion_job(&st).unwrap().id.clone();
+    let descendant = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    confirm_already_on_main(&ctx, &host, &mut st, &id, TIP, descendant, 0);
+    assert_eq!(st.promotions.last().unwrap().tip, TIP);
+    let commands = host.commands();
     assert!(
-        host.logs()
+        commands
             .iter()
-            .any(|l| l.contains("promote skipped: main has commits next does not have yet"))
+            .any(|cmd| { cmd.contains(&format!("merge-base --is-ancestor {TIP} {descendant}")) })
     );
     drop(dir);
 }
 
 #[test]
-fn a_failed_fetch_is_a_promote_error_and_does_not_push() {
+fn already_on_main_with_a_non_ancestor_tip_is_rejected() {
     let (dir, ctx, host) = setup();
-    host.reply("git fetch", 128, "fatal: unable to access remote");
     let mut st = state(&["a"]);
     finish_gate(&ctx, &mut st, &reply(&["a"]));
-    assert!(!pushed(&host));
-    assert!(commands_matching(&host, "merge-base").is_empty());
-    assert!(promote_error(&host).unwrap().contains("unable to access"));
+    let id = promotion_job(&st).unwrap().id.clone();
+    let other = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    confirm_already_on_main(&ctx, &host, &mut st, &id, TIP, other, 1);
+    assert!(st.promotions.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("promote-job-failed"))
+            || std::fs::read_to_string(ctx.home.join("exceptions.txt"))
+                .unwrap()
+                .contains("promote-job-failed")
+    );
+    drop(dir);
+}
+
+#[test]
+fn unavailable_remote_ancestry_keeps_the_receipt_pending_for_retry() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    let id = promotion_job(&st).unwrap().id.clone();
+    confirm_already_on_main(
+        &ctx,
+        &host,
+        &mut st,
+        &id,
+        TIP,
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        128,
+    );
+    assert!(st.promotions.is_empty());
+    assert!(st.jobs.get(&id).unwrap().applied_at.is_none());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("promote verification unavailable"))
+    );
+    drop(dir);
+}
+
+#[test]
+fn worker_push_marker_alone_does_not_count_without_remote_or_runner_proof() {
+    let (dir, ctx, _host) = setup();
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    let id = promotion_job(&st).unwrap().id.clone();
+    let job = st.jobs.get_mut(&id).unwrap();
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("no_changes"),
+        receipt: format!("PUMP_PROMOTE_RESULT={{\"status\":\"pushed\",\"tip\":\"{TIP}\"}}"),
+        at: ctx.now(),
+    });
+    collect_completed(&ctx, &mut st);
+    assert!(st.promotions.is_empty());
+    assert!(st.jobs.get(&id).unwrap().applied_at.is_none());
+    drop(dir);
+}
+
+#[test]
+fn main_ancestry_decisions_are_left_to_the_dispatched_promotion_role() {
+    let (dir, ctx, host) = setup();
+    host.reply("git merge-base", 128, "fatal: Not a valid commit name 0123");
+    let mut st = state(&["a"]);
+    finish_gate(&ctx, &mut st, &reply(&["a"]));
+    assert!(promotion_job(&st).is_some());
+    assert!(host.commands().iter().all(|cmd| !cmd.contains("git push")));
+    assert!(
+        host.logs()
+            .iter()
+            .all(|line| !line.contains("promote error"))
+    );
     drop(dir);
 }
 
@@ -428,7 +535,7 @@ fn an_unknown_main_set_is_logged_once_per_tip_and_falls_back_to_the_baseline() {
     own(&mut st, "x");
     finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
     // Held against the baseline: x is not on main by the baseline set.
-    assert!(!pushed(&host));
+    assert!(promotion_job(&st).is_none());
     let logs = unknown_set_logs(&host);
     assert_eq!(logs.len(), 1);
     assert!(logs[0].contains("fedcba9876") && logs[0].contains("using baseline"));
@@ -467,11 +574,10 @@ fn a_red_tip_promotes_the_newest_green_commit_below_it() {
     });
     own(&mut st, "x");
     finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
-    assert!(
-        host.commands()
-            .iter()
-            .any(|c| c.contains("git push") && c.contains(GREEN))
-    );
+    let job = promotion_job(&st).expect("last green tip should be queued for promotion");
+    assert_eq!(job.from_ref.as_deref(), Some(GREEN));
+    let id = job.id.clone();
+    confirm_promotion(&ctx, &mut st, &id, GREEN);
     let last = st.promotions.last().unwrap();
     assert_eq!(last.tip, GREEN);
     assert_eq!(last.failing, Some(names(&["a"])));
@@ -496,11 +602,10 @@ fn a_red_tip_with_new_failures_still_promotes_the_last_green_gate() {
         new: Some(vec![]),
     });
     finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
-    assert!(
-        host.commands()
-            .iter()
-            .any(|c| c.contains("git push") && c.contains(GREEN))
-    );
+    let job = promotion_job(&st).expect("last green tip should be queued for promotion");
+    assert_eq!(job.from_ref.as_deref(), Some(GREEN));
+    let id = job.id.clone();
+    confirm_promotion(&ctx, &mut st, &id, GREEN);
     assert_eq!(st.promotions.last().unwrap().tip, GREEN);
     let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exceptions.contains("gate-new-failures"), "{exceptions}");
@@ -525,7 +630,7 @@ fn a_green_candidate_main_already_sits_at_is_not_pushed_again() {
     });
     own(&mut st, "x");
     finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
-    assert!(host.commands().iter().all(|c| !c.contains("git push")));
+    assert!(promotion_job(&st).is_none());
     assert_eq!(st.promotions.len(), 1);
     drop(dir);
 }
@@ -536,7 +641,7 @@ fn a_red_tip_with_no_green_gate_below_promotes_nothing() {
     let mut st = state(&["a"]);
     own(&mut st, "x");
     finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
-    assert!(!pushed(&host));
+    assert!(promotion_job(&st).is_none());
     assert!(st.promotions.is_empty());
     assert!(promote_held(&host).is_some());
     drop(dir);

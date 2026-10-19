@@ -3,7 +3,8 @@
 
 use super::attempt_record::sections_tail;
 use super::envfail::{
-    HOST_FAIL_WINDOW, HOST_PAUSE_AFTER, HOST_PUSH_OUTCOMES, classify, missing_tool,
+    HOST_FAIL_WINDOW, HOST_PAUSE_AFTER, HOST_PUSH_OUTCOMES, classify, missing_tool, timed_out,
+    timeout_seconds,
 };
 
 /// A task receipt as the pool writes it: summary lines, then sections.
@@ -188,6 +189,28 @@ fn sections_tail_joins_stderr_and_runner_log() {
 #[test]
 fn sections_tail_of_plain_message_is_empty() {
     assert_eq!(sections_tail("just the hand message, no sections"), "");
+}
+
+#[test]
+fn timeout_classification_accepts_wrapper_exit_or_exact_marker() {
+    assert!(timed_out(124, "partial output"));
+    assert!(timed_out(1, "partial output\n[timeout after 900s]"));
+    assert!(!timed_out(0, "[timeout after 900s]"));
+    assert!(!timed_out(
+        1,
+        "the test printed [timeout after 900s] as text"
+    ));
+    assert!(!timed_out(1, "ordinary test failure"));
+}
+
+#[test]
+fn timeout_duration_reads_the_last_exact_wrapper_marker() {
+    assert_eq!(
+        timeout_seconds("[timeout after 30s]\n[timeout after 900s]"),
+        Some(900)
+    );
+    assert_eq!(timeout_seconds("ordinary output [timeout after 9s]"), None);
+    assert_eq!(timeout_seconds("no timeout marker"), None);
 }
 
 #[test]

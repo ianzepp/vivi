@@ -3,7 +3,7 @@
 //! shared check is bisected: the members that pass alone land in the same
 //! cycle and only the members that fail alone are set aside (quarantine).
 
-use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::host::{CmdOutput, Ctx, shell_quote};
 use crate::pump::quarantine;
 use crate::pump::state::{MergeJob, MergeResult, Quarantine};
 
@@ -244,13 +244,27 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
     for (i, cmd) in checks.iter().enumerate() {
         ctx.step(&format!("check {}/{total} start: {cmd}", i + 1));
         let t1 = ctx.now();
-        let out = check_with_drift_retry(ctx, &tag, &format!("{env}{cmd}"));
+        let out = check_shared_with_timeout_retry(ctx, &tag, &format!("{env}{cmd}"));
         ctx.log(&format!(
             "batch {} shared rc={} {}s: {cmd}",
             merged.len(),
             out.code,
             ctx.now().saturating_sub(t1)
         ));
+        if crate::pump::envfail::timed_out(out.code, &out.text) {
+            let seconds = crate::pump::envfail::timeout_seconds(&out.text)
+                .unwrap_or(ctx.cfg.merge.proof_timeout);
+            let detail = format!(
+                "Shared check timed out after {seconds}s and timed out again on its one retry:\n{cmd}\nLast output:\n{}",
+                tail(&out.text, 300)
+            );
+            ctx.exception("shared-check-timeout", &tag, &detail);
+            let undecided = merged
+                .iter()
+                .map(|m| undecided_result(&m.job.uid, "shared-check-timeout", &detail))
+                .collect();
+            return SharedOutcome::Undecided(undecided);
+        }
         if out.code != 0 {
             if crate::pump::envfail::missing_tool(out.code, &out.text) {
                 log_failure(ctx, &out.text);
@@ -267,6 +281,27 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
     SharedOutcome::Pass
 }
 
+/// Retry a timed-out shared check once before returning its result to the
+/// ordinary missing-tool or failure classification.
+fn check_shared_with_timeout_retry(ctx: &Ctx, tag: &str, cmd: &str) -> CmdOutput {
+    let first = check_with_drift_retry(ctx, tag, cmd);
+    if !crate::pump::envfail::timed_out(first.code, &first.text) {
+        return first;
+    }
+    let seconds =
+        crate::pump::envfail::timeout_seconds(&first.text).unwrap_or(ctx.cfg.merge.proof_timeout);
+    ctx.log(&format!(
+        "shared-check timeout retry 1 for {tag} after {seconds}s: {cmd}"
+    ));
+    let retry = check_with_drift_retry(ctx, tag, cmd);
+    if crate::pump::envfail::timed_out(retry.code, &retry.text) {
+        ctx.log(&format!(
+            "shared-check timeout retry 1 timed out for {tag}: {cmd}"
+        ));
+    }
+    retry
+}
+
 /// Decide a failed shared check. The failure text is logged first: one
 /// merged job is the culprit and fails with `proof-failed`; several are
 /// bisected, so the members that fail alone are set aside together (see
@@ -281,8 +316,17 @@ fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str
     }
     let split = bisect_shared(ctx, merged, cmd);
     let quarantine_set = if split.culprits.is_empty() {
-        ctx.log("bisect: no member fails alone; whole batch aside");
-        merged.iter().map(|m| m.job.clone()).collect()
+        if split
+            .undecided
+            .iter()
+            .any(|result| result.why.as_deref() == Some("bisect-check-timeout"))
+        {
+            ctx.log("bisect: no culprit proven; timed-out members stay undecided");
+            Vec::new()
+        } else {
+            ctx.log("bisect: no member fails alone; whole batch aside");
+            merged.iter().map(|m| m.job.clone()).collect()
+        }
     } else {
         ctx.log(&format!(
             "bisect: culprits {}; clean: {}",
@@ -292,7 +336,9 @@ fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str
         split.culprits.clone()
     };
     let mut decided = split.undecided;
-    decided.extend(quarantine_members(ctx, &quarantine_set, cmd, code, text));
+    if !quarantine_set.is_empty() {
+        decided.extend(quarantine_members(ctx, &quarantine_set, cmd, code, text));
+    }
     if split.clean.is_empty() {
         return SharedOutcome::Failed(decided);
     }
@@ -336,7 +382,19 @@ fn bisect_shared(ctx: &Ctx, merged: &[Merged], cmd: &str) -> Bisect {
             out.code,
             ctx.now().saturating_sub(t1)
         ));
-        if out.code == 0 {
+        if crate::pump::envfail::timed_out(out.code, &out.text) {
+            let seconds = crate::pump::envfail::timeout_seconds(&out.text)
+                .unwrap_or(ctx.cfg.merge.proof_timeout);
+            let detail = format!(
+                "Solo shared check timed out after {seconds}s; this unit remains undecided:\n{cmd}\nLast output:\n{}",
+                tail(&out.text, 300)
+            );
+            split.undecided.push(undecided_result(
+                &m.job.uid,
+                "bisect-check-timeout",
+                &detail,
+            ));
+        } else if out.code == 0 {
             split.clean.push(m.job.clone());
         } else {
             split.culprits.push(m.job.clone());
@@ -473,22 +531,41 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             ));
             if out.code != 0 {
                 culprits.push(m.job.uid.clone());
-                let result = if crate::pump::envfail::missing_tool(out.code, &out.text) {
-                    let detail = proof_detail(out.code, cmd, &out.text);
-                    undecided_result(&m.job.uid, "proof-missing-tool", &detail)
-                } else if crate::pump::proof::usage_failure(&out.text) {
-                    let detail = usage_detail(out.code, cmd, &out.text);
-                    failed(&m.job.uid, "proof-usage", detail)
-                } else {
-                    let detail = proof_detail(out.code, cmd, &out.text);
-                    failed(&m.job.uid, "proof-failed", detail)
-                };
-                results.push(result);
+                results.push(proof_failure(ctx, &m.job.uid, cmd, &out));
                 break;
             }
         }
     }
     culprits
+}
+
+/// Preserve host timeouts as undecided instead of attributing them to a unit.
+fn proof_failure(
+    ctx: &Ctx,
+    uid: &str,
+    cmd: &str,
+    out: &crate::pump::host::CmdOutput,
+) -> MergeResult {
+    if crate::pump::envfail::timed_out(out.code, &out.text) {
+        let seconds =
+            crate::pump::envfail::timeout_seconds(&out.text).unwrap_or(ctx.cfg.merge.proof_timeout);
+        let detail = format!(
+            "Unit proof timed out after {seconds}s; it remains undecided:\n{cmd}\nLast output:\n{}",
+            tail(&out.text, 300)
+        );
+        return undecided_result(uid, "proof-timeout", &detail);
+    }
+    if crate::pump::envfail::missing_tool(out.code, &out.text) {
+        return undecided_result(
+            uid,
+            "proof-missing-tool",
+            &proof_detail(out.code, cmd, &out.text),
+        );
+    }
+    if crate::pump::proof::usage_failure(&out.text) {
+        return failed(uid, "proof-usage", usage_detail(out.code, cmd, &out.text));
+    }
+    failed(uid, "proof-failed", proof_detail(out.code, cmd, &out.text))
 }
 
 /// The batch usage-error detail: the proof command that could not parse.

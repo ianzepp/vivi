@@ -1092,6 +1092,120 @@ fn a_shared_check_failure_with_several_jobs_quarantines_the_batch_not_one_at_a_t
 }
 
 #[test]
+fn a_shared_timeout_retry_that_passes_keeps_the_batch_moving() {
+    let (_dir, ctx, host) = setup("");
+    host.reply_once(
+        "cargo test --lib",
+        124,
+        "partial output\n[timeout after 7s]",
+    );
+    host.reply("rev-parse HEAD", 0, "tip-timeout-pass\n");
+
+    let results = batch_work(&ctx, &batch());
+
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert!(
+        results.iter().all(|result| result.ok == Some(true)),
+        "{results:?}"
+    );
+    assert_eq!(count(&host.commands(), "cargo test --lib"), 2);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("shared-check timeout retry 1 for batch of 2 after 7s")),
+        "{:?}",
+        host.logs()
+    );
+    assert!(!ctx.home.join("exceptions.txt").exists());
+}
+
+#[test]
+fn a_shared_timeout_retry_that_times_out_returns_the_batch_undecided() {
+    let (_dir, ctx, host) = setup("");
+    host.reply_once(
+        "cargo test --lib",
+        124,
+        "partial output\n[timeout after 900s]",
+    );
+    host.reply(
+        "cargo test --lib",
+        0,
+        "partial output\n[timeout after 900s]",
+    );
+
+    let results = batch_work(&ctx, &batch());
+
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert!(
+        results.iter().all(|result| result.ok.is_none()),
+        "{results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|result| result.why.as_deref() == Some("shared-check-timeout")),
+        "{results:?}"
+    );
+    assert!(results.iter().all(|result| result.quarantine.is_none()));
+    let commands = host.commands();
+    assert_eq!(count(&commands, "cargo test --lib"), 2);
+    assert!(!commands.iter().any(|cmd| cmd.contains("pump/quarantine")));
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exceptions.contains("shared-check-timeout batch of 2"),
+        "{exceptions}"
+    );
+    assert!(exceptions.contains("timed out after 900s"), "{exceptions}");
+    assert!(exceptions.contains("cargo test --lib"), "{exceptions}");
+}
+
+#[test]
+fn a_bisect_timeout_is_undecided_and_never_quarantined() {
+    let (_dir, ctx, host) = setup("");
+    host.reply_once("cargo test --lib", 1, "error: actual shared failure\n");
+    host.reply_once(
+        "cargo test --lib",
+        124,
+        "partial output\n[timeout after 900s]",
+    );
+    host.reply_once("cargo test --lib", 0, "");
+    host.reply("rev-parse HEAD", 0, "tip-after-bisect\n");
+
+    let results = batch_work(&ctx, &batch());
+
+    let timed_out = for_uid(&results, "u1");
+    assert_eq!(timed_out.ok, None, "{timed_out:?}");
+    assert_eq!(timed_out.why.as_deref(), Some("bisect-check-timeout"));
+    assert!(timed_out.quarantine.is_none(), "{timed_out:?}");
+    assert_eq!(for_uid(&results, "u2").ok, Some(true), "{results:?}");
+    assert!(
+        host.commands()
+            .iter()
+            .all(|cmd| !cmd.contains("pump/quarantine")),
+        "{:?}",
+        host.commands()
+    );
+}
+
+#[test]
+fn a_unit_proof_timeout_is_undecided_and_never_quarantined() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("./proof-u1.sh", 124, "partial output\n[timeout after 900s]");
+    host.reply("rev-parse HEAD", 0, "tip-after-proof-timeout\n");
+
+    let results = batch_work(&ctx, &batch());
+
+    let timed_out = for_uid(&results, "u1");
+    assert_eq!(timed_out.ok, None, "{timed_out:?}");
+    assert_eq!(timed_out.why.as_deref(), Some("proof-timeout"));
+    assert!(timed_out.quarantine.is_none(), "{timed_out:?}");
+    assert_eq!(for_uid(&results, "u2").ok, Some(true), "{results:?}");
+    let commands = host.commands();
+    assert_eq!(count(&commands, "./proof-u1.sh"), 1);
+    assert!(!commands.iter().any(|cmd| cmd.contains("pump/quarantine")));
+}
+
+#[test]
 fn a_shared_check_failure_with_one_job_is_proof_failed() {
     let (_dir, ctx, host) = setup("");
     host.reply("cargo test --lib", 1, "error: boom\n");

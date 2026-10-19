@@ -1,23 +1,23 @@
-//! Gate start, finish, gate-fix, the hold cycle and promotion.
+//! Gate start, finish, audit handoff, the hold cycle and promotion.
 //!
-//! The gate: `start_gate`, `finish_gate`, `gatefix`, `promote` and the
-//! hold cycle.
+//! The gate: `start_gate`, `finish_gate`, the auditor handoff, `promote` and
+//! the hold cycle.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::pump::brief::gate_brief;
-use crate::pump::dispatch::{parse_created_handle, slots};
-use crate::pump::gatefix::{
-    gatefix, plan_need, replans_left, residual_failures, send_fix_need, take_residuals,
-};
-use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
+use crate::pump::gatefix::{replans_left, residual_failures};
+use crate::pump::host::Ctx;
+use crate::pump::jobs::{JobSpec, enqueue};
+use crate::pump::state::{GateRecord, GateRun, State, Status, Unit};
 
 pub(crate) mod green;
+mod jobs;
 mod parse;
 
+pub use jobs::collect_completed;
 use parse::{BEGIN, BUILD_FAILED, END, last_usable_block};
 pub use parse::{env_failed, parse_failing, target_deaths};
 
@@ -42,8 +42,10 @@ const RESULT_KEY: &str = "last_external_result_at";
 const HEARTBEAT: &str = "heartbeat";
 /// The payload the hold cycle writes into `FORCE-GATE`.
 const FORCE_TEXT: &str = "after fixes\n";
-/// The payload written to `HOLD-MERGE` while owned reds remain.
-const HOLD_RED_TEXT: &str = "red\n";
+/// The payload that marks an automatic `HOLD-MERGE` owner.
+const HOLD_AUTO_TEXT: &str = "gate red\n";
+/// The automatic hold marker written by older pump versions.
+const HOLD_LEGACY_AUTO_TEXT: &str = "red\n";
 /// The characters `ctx.exception` keeps of a text.
 const EXCEPTION_LIMIT: usize = 600;
 
@@ -58,6 +60,9 @@ const EXCEPTION_LIMIT: usize = 600;
 /// names nor `build_failed` is finished with an empty reply, which raises
 /// `gate-unreadable`.
 pub fn external_gates(ctx: &Ctx, st: &mut State) {
+    if st.has_active_gate() {
+        return;
+    }
     let Some(dir) = ctx.cfg.results_dir(&ctx.project) else {
         return;
     };
@@ -73,15 +78,18 @@ pub fn external_gates(ctx: &Ctx, st: &mut State) {
             continue;
         }
         let short = tip_short(&result.tip);
-        if st.last_gate.task.is_some() && st.last_gate.pool.as_deref() != Some(EXTERNAL_POOL) {
+        if st.gates.iter().any(|gate| gate.tip == result.tip) {
             ctx.log(&format!(
-                "external gate {short} taken while a pool gate is running; the pool result will follow"
+                "external gate {short} already has a collected receipt; duplicate ignored"
             ));
+            continue;
         }
         st.last_gate = GateRun {
             at: ctx.now(),
             merges: st.merges,
             task: Some(String::from(EXTERNAL_POOL)),
+            job_id: None,
+            source_jobs: Vec::new(),
             tip: Some(result.tip.clone()),
             pool: Some(String::from(EXTERNAL_POOL)),
         };
@@ -259,16 +267,14 @@ fn stalled_runner(ctx: &Ctx, dir: &Path, now: u64) -> Option<&'static str> {
     None
 }
 
-/// Start a gate when one is due: send the gate brief as a task
-/// and dispatch it read-only on the first gate pool with a free slot. Does
+/// Start a gate when one is due by enqueuing a durable read-only job. Does
 /// nothing while a gate task is open, when no pool is free, when the remote
 /// tip is not a 40-hex commit, or while a due gate is still inside its
 /// `results_wait_seconds` wait for an external result (a pool gate is only
 /// the fallback). The wait only happens while `results_dir` holds a fresh
 /// `heartbeat` file; a missing or stale one dispatches the pool gate at once.
-/// A failed dispatch closes the task and
-/// records nothing; a successful one clears `FORCE-GATE` (when it forced the
-/// gate) and stores the run in `last_gate`.
+/// The generic dispatcher owns task creation, pool selection and execution;
+/// this function stores its job ID in `last_gate` and returns.
 pub fn start_gate(ctx: &Ctx, st: &mut State) {
     if st.has_active_gate() {
         return;
@@ -278,23 +284,47 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     if !gate_due(st, force) || waiting_for_external(ctx, st) {
         return;
     }
-    let Some(pool) = crate::routing::RoleRouting::first_free(
-        ctx.routing.gate().and_then(|role| role.pool.as_deref()),
-        &ctx.cfg.gate.pools,
-        &slots(ctx),
-    ) else {
-        return;
-    };
     let Some(tip) = remote_tip(ctx) else {
         return;
     };
     let Some(path) = write_gate_brief(ctx, &tip) else {
         return;
     };
-    let Some(task) = send_gate_task(ctx, &path, &tip) else {
+    let Ok(brief) = fs::read_to_string(&path) else {
+        ctx.log(&format!("gate brief read failed: {}", path.display()));
         return;
     };
-    if !dispatch_gate(ctx, &pool, &task, &tip) {
+    enqueue_gate(ctx, st, tip, brief, force);
+}
+
+/// Queue the read-only gate job and retain its tip and merge sources.
+fn enqueue_gate(ctx: &Ctx, st: &mut State, tip: String, brief: String, force: bool) {
+    let role = ctx.routing.gate();
+    let fallback = role.is_none();
+    let recipient = role.map_or_else(|| ctx.cfg.to.clone(), |role| role.name.clone());
+    let job_id = gate_job_id(ctx, st, &tip);
+    let source_jobs = crate::pump::jobs::sources_waiting_for_gate(st, &ctx.target_id);
+    let subject = format!(
+        "[pump gate] {} at {}",
+        ctx.cfg.gate.command,
+        tip_short(&tip)
+    );
+    let mut spec = JobSpec::new(job_id.clone(), "gate", recipient, subject, brief);
+    spec.pool_candidates = ctx.cfg.gate.pools.clone();
+    spec.target = Some(ctx.target_id.clone());
+    spec.from_ref = Some(tip.clone());
+    spec.budget = ctx.cfg.gate.budget;
+    spec.read_only = true;
+    spec.model = fallback.then(|| ctx.cfg.gate.model.clone());
+    spec.source_jobs.clone_from(&source_jobs);
+    spec.payload = serde_json::json!({
+        "tip": tip,
+        "merges": st.merges,
+        "command": ctx.cfg.gate.command,
+        "source_jobs": source_jobs,
+    });
+    if let Err(err) = enqueue(st, spec) {
+        ctx.log(&format!("gate enqueue failed: {err}"));
         return;
     }
     if force {
@@ -303,12 +333,38 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     st.last_gate = GateRun {
         at: ctx.now(),
         merges: st.merges,
-        task: Some(task.clone()),
+        task: None,
+        job_id: Some(job_id.clone()),
+        source_jobs,
         tip: Some(tip.clone()),
-        pool: Some(pool.clone()),
+        pool: None,
     };
     let short = tip_short(&tip);
-    ctx.log(&format!("gate started at {short} on {pool} task={task}"));
+    ctx.log(&format!("gate queued at {short} job={job_id}"));
+}
+
+/// A stable job identity for a gate start at this target/tip/sequence.
+fn gate_job_id(ctx: &Ctx, st: &State, tip: &str) -> String {
+    format!(
+        "gate-{}-{}-{}",
+        safe_job_id(&ctx.target_id),
+        safe_job_id(&tip[..tip.len().min(12)]),
+        st.gates.len().saturating_add(1)
+    )
+}
+
+/// Keep only characters accepted by the durable job ID validator.
+fn safe_job_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 /// Force the next gate when a fix unit of this target merged after the last
@@ -376,57 +432,6 @@ fn write_gate_brief(ctx: &Ctx, tip: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// Send the gate task; the subject names the command and the tip. Returns the
-/// created task handle.
-fn send_gate_task(ctx: &Ctx, path: &Path, tip: &str) -> Option<String> {
-    let to = ctx
-        .routing
-        .gate()
-        .map_or_else(|| ctx.cfg.to.clone(), |role| role.name.clone());
-    let subject = format!("[pump gate] {} at {}", ctx.cfg.gate.command, tip_short(tip));
-    let out = ctx.vivi(
-        &format!(
-            "task send --from {} --to {} --subject {} --body-file {}",
-            shell_quote(&ctx.cfg.from),
-            shell_quote(&to),
-            shell_quote(&subject),
-            shell_quote(&path.to_string_lossy()),
-        ),
-        120,
-    );
-    parse_created_handle(&out.text)
-}
-
-/// Dispatch the gate task read-only from `tip`. On failure, log the reply
-/// tail and close the task; `false` means the gate did not start.
-fn dispatch_gate(ctx: &Ctx, pool: &str, task: &str, tip: &str) -> bool {
-    let out = ctx.vivi(
-        &format!(
-            "pool dispatch --pool {pool} {task} --model {} --read-only --from {tip} \
-             --budget {} --porcelain",
-            ctx.cfg.gate.model, ctx.cfg.gate.budget,
-        ),
-        180,
-    );
-    if out.code == 0 && out.text.contains("dispatched") {
-        return true;
-    }
-    let count = out.text.chars().count();
-    let tail: String = out.text.chars().skip(count.saturating_sub(200)).collect();
-    ctx.log(&format!(
-        "gate dispatch failed: {}",
-        tail.replace('\n', " | ")
-    ));
-    drop(ctx.vivi(
-        &format!(
-            "task done {task} --for {} --note 'dispatch failed'",
-            ctx.cfg.from
-        ),
-        120,
-    ));
-    false
-}
-
 /// The forced-gate flag file name for this context's target: `FORCE-GATE`
 /// for `default`, `FORCE-GATE-<target>` otherwise.
 fn force_flag(ctx: &Ctx) -> String {
@@ -443,8 +448,8 @@ fn tip_short(tip: &str) -> String {
 }
 
 /// Finish the open gate from its receipt: classify the reply,
-/// keep the owned-red map honest, then set the baseline, report new failures
-/// with a gate-fix planner, or promote a clean gate. The gate task is cleared
+/// keep the owned-red map honest, then set the baseline, audit red gates, or
+/// promote a clean gate. The gate task is cleared
 /// whatever the reply said.
 pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
     let names = parse_failing(text);
@@ -471,6 +476,8 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
     st.last_gate.task = None;
     if let Some(kind) = unreadable_kind(names.as_deref()) {
         ctx.exception(kind, &tip_short(&tip), &tail_chars(text, 500));
+        write_force_flag(ctx);
+        ctx.log("gate retry forced after unreadable receipt");
         st.gates.push(rec);
         return;
     }
@@ -481,23 +488,54 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
         .filter(|name| !ignored.contains(name))
         .collect();
     rec.names = Some(names.clone());
-    if st.baseline.is_none() {
-        st.baseline = Some(names.clone());
-        ctx.log(&format!(
-            "gate baseline at {}: {} failing names",
-            tip_short(&tip),
-            names.len()
-        ));
+    let build_failed = names.as_slice() == [BUILD_FAILED];
+    if build_failed {
+        ctx.exception(
+            "gate-build-failed",
+            &tip_short(&tip),
+            &tail_chars(text, 500),
+        );
+    }
+    if !establish_baseline(ctx, st, &tip, &names, build_failed) {
         st.gates.push(rec);
         return;
     }
-    finish_known_gate(ctx, st, &mut rec, &names, &deaths);
+    finish_known_gate(ctx, st, &tail_chars(text, 4000), &mut rec, &names, &deaths);
     st.gates.push(rec);
+}
+
+/// Establish the first readable baseline; a build failure starts from empty
+/// so it is sent through the auditor and remains held.
+fn establish_baseline(
+    ctx: &Ctx,
+    st: &mut State,
+    tip: &str,
+    names: &[String],
+    build_failed: bool,
+) -> bool {
+    if st.baseline.is_some() {
+        return true;
+    }
+    if build_failed {
+        st.baseline = Some(Vec::new());
+        ctx.log(&format!(
+            "gate build failed at {}; auditor will establish a passing baseline",
+            tip_short(tip)
+        ));
+        return true;
+    }
+    st.baseline = Some(names.to_vec());
+    ctx.log(&format!(
+        "gate baseline at {}: {} failing names",
+        tip_short(tip),
+        names.len()
+    ));
+    false
 }
 
 /// One line naming the names that failed only on missing tools: they are
 /// already out of the failing set, so they are never owned, never new, and no
-/// gate-fix planner runs for them.
+/// audit runs for them.
 fn environment_text(env: &[(String, String)]) -> String {
     let listed = env
         .iter()
@@ -513,12 +551,10 @@ fn environment_text(env: &[(String, String)]) -> String {
     )
 }
 
-/// `Some(kind)` when the reply cannot be trusted: no names at all is
-/// `gate-unreadable`, a lone `BUILD-FAILED` line is `gate-build-failed`.
+/// `Some("gate-unreadable")` when the reply contains no failing-name list.
 fn unreadable_kind(names: Option<&[String]>) -> Option<&'static str> {
     match names {
         None => Some("gate-unreadable"),
-        Some([one]) if one.as_str() == BUILD_FAILED => Some("gate-build-failed"),
         Some(_) => None,
     }
 }
@@ -566,17 +602,31 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
             continue;
         }
         st.red_reported.push(mark);
-        ctx.exception("red-after-fix", &owner, &name);
+        let attempts = st
+            .extra
+            .get("replans")
+            .and_then(|counts| counts.get(&name))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        ctx.exception(
+            "red-after-fix",
+            &owner,
+            &format!(
+                "{name}; audits for this name: {attempts}; last report: {}/audit/{owner}.report",
+                ctx.home.display()
+            ),
+        );
     }
 }
 
 /// A readable gate against an existing baseline: release
 /// owned names that pass again, compute the new failures and the residual
-/// ones (owned names whose owner settled but that still fail), then either
-/// plan them (owning each name and starting a gate-fix planner) or promote.
+/// ones (owned names whose owner settled but that still fail), then hand reds
+/// to the auditor or promote a clean gate.
 fn finish_known_gate(
     ctx: &Ctx,
     st: &mut State,
+    output_tail: &str,
     rec: &mut GateRecord,
     names: &[String],
     deaths: &[String],
@@ -586,33 +636,33 @@ fn finish_known_gate(
     rec.new = Some(new.clone());
     let residual = residual_failures(ctx, st, names);
     if !new.is_empty() || !residual.is_empty() {
-        let owner = send_fix_need(ctx, &rec.tip, &new, &residual)
-            .unwrap_or_else(|| plan_need(ctx, &rec.tip, !residual.is_empty()));
-        for name in &new {
-            st.red.insert(name.clone(), owner.clone());
-        }
-        let clean = last_clean_tip(st, &rec.tip);
-        take_residuals(ctx, st, &owner, &residual);
-        gatefix(ctx, &rec.tip, &clean, &owner, &new, &residual);
+        let prior = crate::pump::audit::prior_reports(ctx, &residual);
+        crate::pump::audit::start_audit(
+            ctx,
+            st,
+            &rec.tip,
+            output_tail,
+            &new,
+            &residual,
+            prior.as_deref(),
+        );
+        write_hold_flag(ctx, &rec.tip);
     }
     if new.is_empty() {
+        let source_jobs = st.last_gate.source_jobs.clone();
+        crate::pump::jobs::mark_gated(st, &source_jobs, &rec.tip);
         ctx.log(&gate_summary(rec, names, 0));
         note_unknown_main_set(ctx, st);
         let off_main = not_on_main(st, names);
         if off_main.is_empty() {
-            promote(ctx, st, &rec.tip, names);
+            jobs::promote(ctx, st, &rec.tip, names);
         } else {
             green::promote_last_green(ctx, st, &rec.tip, names);
             ctx.log(&held_message(&off_main, &rec.tip));
         }
         return;
     }
-    report_new_failures(
-        ctx,
-        rec,
-        &new,
-        &suspect_ids(st, st.gates.last().map_or(0, |g| g.merges), rec.merges),
-    );
+    report_new_failures(ctx, rec, &new);
     green::promote_last_green(ctx, st, &rec.tip, names);
     ctx.log(&gate_summary(rec, names, new.len()));
 }
@@ -746,123 +796,14 @@ fn ignored_names(ctx: &Ctx) -> BTreeSet<String> {
     }
 }
 
-/// The merged units in `st.order[prev..merges]`: the merges
-/// between the previous gate and this one.
-fn suspect_ids(st: &State, prev: u64, merges: u64) -> Vec<String> {
-    let list: Vec<&String> = st
-        .order
-        .iter()
-        .filter(|uid| {
-            st.units
-                .get(*uid)
-                .is_some_and(|u| u.status == Status::Merged)
-        })
-        .collect();
-    let start = usize::try_from(prev).unwrap_or(usize::MAX).min(list.len());
-    let end = usize::try_from(merges)
-        .unwrap_or(usize::MAX)
-        .min(list.len());
-    if start >= end {
-        Vec::new()
-    } else {
-        list[start..end]
-            .iter()
-            .map(|s| String::from(s.as_str()))
-            .collect()
-    }
-}
-
-/// Own every new name, then raise the `gate-new-failures` exception with the
-/// suspect merge window.
-fn report_new_failures(ctx: &Ctx, rec: &GateRecord, new: &[String], suspects: &[String]) {
+/// Raise the `gate-new-failures` exception without assigning blame.
+fn report_new_failures(ctx: &Ctx, rec: &GateRecord, new: &[String]) {
     let joined = cut_chars(&new.join("; "), 350);
-    let ids = cut_chars(&suspects.join(" "), 200);
     ctx.exception(
         "gate-new-failures",
         &tip_short(&rec.tip),
-        &format!("{} new: {joined} ; suspects: {ids}", new.len()),
+        &format!("{} new: {joined}", new.len()),
     );
-}
-
-/// The tip of the last gate with readable names and no new failure, else the
-/// first gate's tip, else the current one.
-fn last_clean_tip(st: &State, current: &str) -> String {
-    for gate in st.gates.iter().rev() {
-        if gate.names.is_some() && gate.new.as_ref().is_none_or(Vec::is_empty) {
-            return gate.tip.clone();
-        }
-    }
-    st.gates
-        .first()
-        .map_or_else(|| current.to_owned(), |gate| gate.tip.clone())
-}
-
-/// Fast-forward main to a gated tip of the integration branch.
-/// Never forces: a main that moved elsewhere waits for the next batch.
-fn promote(ctx: &Ctx, st: &mut State, tip: &str, failing: &[String]) {
-    if !ctx.cfg.promote || ctx.cfg.main.is_empty() || !main_is_behind(ctx, tip) {
-        return;
-    }
-    let out = ctx.git(
-        &format!("push {} {tip}:refs/heads/{}", ctx.cfg.remote, ctx.cfg.main),
-        180,
-    );
-    let tail = cut_chars(last_line(&out.text).trim(), 120);
-    ctx.log(&format!(
-        "promote {} -> {} rc={} {tail}",
-        ctx.cfg.main,
-        tip_short(tip),
-        out.code
-    ));
-    if out.code == 0 {
-        st.promotions.push(Promotion {
-            tip: tip.to_owned(),
-            at: ctx.now(),
-            failing: Some(failing.to_vec()),
-        });
-    }
-}
-
-/// `true` when remote main is an ancestor of the gated `tip`, so the push is a
-/// fast-forward. Fetches main and the integration branch first: another merge
-/// lane's clone may have pushed the tip, which this checkout lacks until it
-/// fetches. `merge-base --is-ancestor` exits 0 for an ancestor and 1 when main
-/// moved; a failed fetch or any other exit is a logged `promote error`.
-fn main_is_behind(ctx: &Ctx, tip: &str) -> bool {
-    let (remote, main) = (&ctx.cfg.remote, &ctx.cfg.main);
-    let fetch = ctx.git(&format!("fetch -q {remote} {main} {}", ctx.cfg.branch), 120);
-    if fetch.code != 0 {
-        ctx.log(&format!(
-            "promote error: {}",
-            tail_chars(fetch.text.trim(), 120)
-        ));
-        return false;
-    }
-    let check = ctx.git(
-        &format!("merge-base --is-ancestor {remote}/{main} {tip}"),
-        120,
-    );
-    match check.code {
-        0 => return true,
-        1 => ctx.log(&format!(
-            "promote skipped: main has commits {} does not have yet",
-            ctx.cfg.branch
-        )),
-        _ => ctx.log(&format!(
-            "promote error: {}",
-            tail_chars(check.text.trim(), 120)
-        )),
-    }
-    false
-}
-
-/// The last line of a command's output, python's
-/// `out.strip().splitlines()[-1]`.
-fn last_line(text: &str) -> String {
-    text.trim()
-        .lines()
-        .next_back()
-        .map_or_else(String::new, String::from)
 }
 
 /// While merging is held: once every fix unit has settled, a
@@ -870,7 +811,7 @@ fn last_line(text: &str) -> String {
 /// after the last gate (or an unreadable one) force a new gate.
 pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
     if ctx.cfg.gate.hold_on_red && !st.red.is_empty() && !ctx.flag(HOLD_FLAG) {
-        match fs::write(ctx.home.join(HOLD_FLAG), HOLD_RED_TEXT) {
+        match fs::write(ctx.home.join(HOLD_FLAG), HOLD_AUTO_TEXT) {
             Ok(()) => ctx.log(&format!(
                 "hold on red: {} owned names unfixed; HOLD-MERGE written",
                 st.red.len()
@@ -878,7 +819,11 @@ pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
             Err(err) => ctx.log(&format!("hold flag write failed: {err}")),
         }
     }
-    if !ctx.flag(HOLD_FLAG) || st.last_gate.task.is_some() || ctx.flag(&force_flag(ctx)) {
+    if !ctx.flag(HOLD_FLAG)
+        || st.last_gate.task.is_some()
+        || st.last_gate.job_id.is_some()
+        || ctx.flag(&force_flag(ctx))
+    {
         return;
     }
     let prefix = ctx.cfg.fix_prefix.as_str();
@@ -889,6 +834,10 @@ pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
         return;
     };
     if clean_gate(&last) && last.at > file_mtime(&ctx.home.join(HOLD_FLAG)) {
+        if !automatic_hold(ctx) {
+            ctx.log("hold retained: HOLD-MERGE belongs to the operator");
+            return;
+        }
         remove_flag(ctx, HOLD_FLAG);
         ctx.log(&format!(
             "hold lifted: gate at {} is clean",
@@ -899,6 +848,27 @@ pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
     if newest_merged_fix(st, prefix) > last.at || last.names.is_none() {
         write_force_flag(ctx);
         ctx.log("hold: fixes merged, forcing a gate");
+    }
+}
+
+/// Whether Vivi owns the current hold marker and may clear it after a clean gate.
+fn automatic_hold(ctx: &Ctx) -> bool {
+    fs::read_to_string(ctx.home.join(HOLD_FLAG))
+        .is_ok_and(|text| text == HOLD_AUTO_TEXT || text == HOLD_LEGACY_AUTO_TEXT)
+}
+
+/// Write the automatic hold when a readable red gate starts an audit.
+fn write_hold_flag(ctx: &Ctx, tip: &str) {
+    if ctx.flag(HOLD_FLAG) {
+        ctx.log("hold already set; existing HOLD-MERGE preserved");
+        return;
+    }
+    match fs::write(ctx.home.join(HOLD_FLAG), HOLD_AUTO_TEXT) {
+        Ok(()) => ctx.log(&format!(
+            "hold set automatically: gate red at {}",
+            tip_short(tip)
+        )),
+        Err(err) => ctx.log(&format!("hold flag write failed: {err}")),
     }
 }
 

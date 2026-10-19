@@ -376,6 +376,9 @@ pub(crate) fn check_with_drift_retry(
     if first.code == 0 {
         return first;
     }
+    if crate::pump::envfail::timed_out(first.code, &first.text) {
+        return first;
+    }
     let drifted = ctx.cfg.merge.generated.iter().find(|entry| {
         entry
             .drift

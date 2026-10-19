@@ -261,7 +261,7 @@ fn a_failing_unit_is_retried_on_a_new_branch_and_is_stuck_after_max_attempts() {
 }
 
 #[test]
-fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_merging() {
+fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     let dir = tempdir().unwrap();
     let mut cfg = config();
     cfg.gate.command = String::from("./gate-run");
@@ -327,54 +327,111 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
     );
     fs::write(ctx.home.join("FORCE-GATE"), b"").unwrap();
     tick(&ctx, &mut st, &merger); // the forced gate starts
-    assert_eq!(st.last_gate.task.as_deref(), Some(GATE_TASK));
+    assert!(st.last_gate.job_id.is_some());
+    let gate_job = st
+        .jobs
+        .get(st.last_gate.job_id.as_deref().unwrap())
+        .unwrap();
+    assert_eq!(gate_job.task.as_deref(), Some(GATE_TASK));
     assert!(!ctx.home.join("FORCE-GATE").exists());
     tick(&ctx, &mut st, &merger); // the forced red gate finishes
     assert_eq!(st.gates.len(), 3);
     let owner = "pumpfix-g01234567";
     assert_eq!(st.red.get("crate::a::t1").map(String::as_str), Some(owner));
-    let prompt = ctx.home.join("gatefix").join(format!("{owner}.prompt"));
-    assert!(
-        prompt.is_file(),
-        "no gatefix prompt at {}",
-        prompt.display()
+    let audits: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains("task send") && cmd.contains("[pump audit]"))
+        .collect();
+    assert_eq!(audits.len(), 1, "{audits:?}");
+    assert!(audits[0].contains("[pump audit] 1 failures at 0123456789"));
+    let dispatches: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains("pool dispatch") && cmd.contains("--from 0123456789"))
+        .collect();
+    assert_eq!(
+        dispatches.len(),
+        1,
+        "the auditor is dispatched: {dispatches:?}"
     );
-    assert_eq!(host.spawned().len(), 1); // the gatefix planner, detached
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    let hold = ctx.home.join("HOLD-MERGE");
+    assert!(hold.is_file(), "a red gate holds the merge queue");
+    set_mtime(&hold, 999_999);
     let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exc.contains("gate-new-failures"), "{exc}");
 
-    // Red never holds the queue: a fresh unit still delivers and merges.
+    // A fresh unit can deliver, but the red gate holds it from merging.
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans").join("ny.json"), SECOND_PLAN).unwrap();
     tick(&ctx, &mut st, &merger); // ingest mints y-b1, dispatch runs
     assert_eq!(st.units.get("y-b1").unwrap().status, Status::Inflight);
-    tick(&ctx, &mut st, &merger); // deliver and feed y-b1
+    assert!(drive_until(&ctx, &mut st, &merger, |st| sits(
+        st,
+        "y-b1",
+        Status::Delivered
+    )));
+    tick(&ctx, &mut st, &merger);
+    tick(&ctx, &mut st, &merger);
+    assert_eq!(st.merges, 1);
+    assert!(!sits(&st, "y-b1", Status::Merged));
+
+    // A clean forced gate after the fix releases the hold and pending work.
+    host.reply("task show 99887766", 0, "FAILING-BEGIN\n\nFAILING-END\n");
+    fs::write(ctx.home.join("FORCE-GATE"), b"").unwrap();
+    tick(&ctx, &mut st, &merger);
+    assert!(
+        drive_until(&ctx, &mut st, &merger, |st| st.gates.len() == 4
+            && st.last_gate.task.is_none()),
+        "the clean gate never finished; gates: {}",
+        st.gates.len()
+    );
     assert!(
         drive_until(&ctx, &mut st, &merger, |st| sits(
             st,
             "y-b1",
             Status::Merged
         )),
-        "y-b1 never merged; units: {:?}",
+        "y-b1 never merged after the clean gate; units: {:?}",
         st.counts()
     );
     assert_eq!(st.merges, 2);
-    // A merge through red still re-gates under the batch rule, but the red map
-    // and the fix queue are untouched: the name is already owned, so the gate
-    // starts no new gatefix planner and adds no new failure line.
+    assert!(!hold.exists());
     assert!(
-        drive_until(&ctx, &mut st, &merger, |st| st.gates.len() == 4
-            && st.last_gate.task.is_none()),
-        "the post-merge re-gate through red never finished; finished gates: {}",
-        st.gates.len()
+        host.logs()
+            .iter()
+            .any(|line| line.contains("hold lifted: gate at 0123456789 is clean")),
+        "{:?}",
+        host.logs()
     );
-    assert_eq!(st.gates.len(), 4);
-    assert_eq!(st.merges, 2);
-    assert_eq!(host.spawned().len(), 1); // still only the first gatefix planner
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("red fixed: crate::a::t1 (owner pumpfix-g01234567)"))
+    );
+    assert!(st.red.is_empty());
+    assert!(host.spawned().is_empty());
+    assert_eq!(
+        host.commands()
+            .iter()
+            .filter(|cmd| cmd.contains("task send") && cmd.contains("[pump audit]"))
+            .count(),
+        1
+    );
     let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert_eq!(exc.matches("gate-new-failures").count(), 1, "{exc}");
     assert!(st.closed_needs.iter().any(|n| n == "ny"));
-    assert_eq!(st.red.get("crate::a::t1").map(String::as_str), Some(owner));
+}
+
+/// Pin a file's modification time to `secs` after the epoch.
+fn set_mtime(path: &std::path::Path, secs: u64) {
+    let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_times(
+        fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+    )
+    .unwrap();
 }
 
 #[test]
