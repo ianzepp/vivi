@@ -80,6 +80,18 @@ pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
     uids
 }
 
+/// The scope entries that are not generated paths for `target`: the files
+/// the agent actually writes, with machine-regenerated paths excluded so
+/// two units rebuilding the same generated file never block each other.
+fn generated_free(ctx: &Ctx, target: &str, scope: &[String]) -> Vec<String> {
+    let generated = ctx.cfg.generated_paths_for(target);
+    scope
+        .iter()
+        .filter(|path| !overlaps(&[(*path).clone()], &generated))
+        .cloned()
+        .collect()
+}
+
 /// A unit is ready to dispatch when it is pending, outside its transient
 /// backoff window, its need has no unlanded dependency, its write scope
 /// overlaps no reserved path, every `after` dependency is satisfied, and no
@@ -103,7 +115,7 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<S
         return false;
     }
     let held = reserved_paths(ctx);
-    if !held.is_empty() && overlaps(&u.write_scope, &held) {
+    if !held.is_empty() && overlaps(&generated_free(ctx, u.target_id(), &u.write_scope), &held) {
         return false;
     }
     if u.after.iter().any(|dep| !satisfied(st, dep, 0)) {
@@ -233,7 +245,12 @@ fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
             continue;
         }
         let busy = o.status == Status::Inflight;
-        if busy && overlaps(&u.write_scope, &o.write_scope) {
+        if busy
+            && overlaps(
+                &generated_free(ctx, u.target_id(), &u.write_scope),
+                &generated_free(ctx, o.target_id(), &o.write_scope),
+            )
+        {
             if fix && !oid.starts_with(ctx.cfg.fix_prefix.as_str()) {
                 continue;
             }

@@ -458,6 +458,27 @@ fn files_changed_outside_the_write_scope_are_listed_in_outside() {
 }
 
 #[test]
+fn a_generated_path_does_not_count_as_outside() {
+    let (_dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.merge.generated.push(Generated {
+        paths: vec![String::from("Cargo.lock")],
+        regenerate: String::from("cargo generate-lockfile"),
+        drift: vec![],
+    });
+    ctx.cfg = Arc::new(cfg);
+    host.reply(
+        "diff --name-only HEAD~1 HEAD",
+        0,
+        "src/pump/merge.rs\nREADME.md\nCargo.lock\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}");
+    assert_eq!(result.outside, vec![String::from("README.md")]);
+}
+
+#[test]
 fn a_failing_shared_check_is_proof_failed_and_names_the_command() {
     let (_dir, ctx, host) = setup("");
     host.reply("cargo test --lib", 1, "error[E0308]: mismatched types\n");

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::{DispatchConfig, Lane, PumpConfig};
+use crate::pump::config::{DispatchConfig, Generated, Lane, MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::ready::{dependency_holds, is_ready, pick_model, ranked, satisfied};
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
@@ -118,6 +118,39 @@ fn an_inflight_unit_with_an_overlapping_scope_blocks() {
     st.units.insert(vid, vu);
     assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
     assert!(is_ready(&ctx, &st, "v", &BTreeMap::new()));
+}
+
+/// A config whose merge lane regenerates `scripta/ledger.toml`.
+fn generated_cfg() -> PumpConfig {
+    PumpConfig {
+        merge: MergeConfig {
+            generated: vec![Generated {
+                paths: vec![String::from("scripta/ledger.toml")],
+                regenerate: String::from("./regen-ledger.sh"),
+                drift: vec![],
+            }],
+            ..MergeConfig::default()
+        },
+        ..PumpConfig::default()
+    }
+}
+
+#[test]
+fn a_generated_path_overlap_does_not_block_dispatch() {
+    let (_dir, ctx, _host, mut st) = setup_cfg(generated_cfg());
+    let (bid, busy_u) = mk(
+        "busy",
+        Status::Inflight,
+        &["src/a.rs", "scripta/ledger.toml"],
+    );
+    let (uid, uu) = mk("u", Status::Pending, &["src/b.rs", "scripta/ledger.toml"]);
+    st.units.insert(bid, busy_u);
+    st.units.insert(uid, uu);
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
+    // Control: an overlap on a hand-written path still blocks.
+    let (vid, vu) = mk("v", Status::Pending, &["src/a.rs", "src/v.rs"]);
+    st.units.insert(vid, vu);
+    assert!(!is_ready(&ctx, &st, "v", &BTreeMap::new()));
 }
 
 #[test]

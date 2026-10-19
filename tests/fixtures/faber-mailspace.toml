@@ -1830,7 +1830,7 @@ push_since = "30m"
 [pump.planner]
 run = 'pi -p --model zai/glm-5.3 --thinking high --append-system-prompt {charter} "$(cat)"'
 charter = "/Users/ianzepp/work/faberlang/.vivi/pump/planner-charter.md"
-split_timeout = 1500
+split_hard_cap = 5400
 
 [pump.dispatch]
 last_resort = "codex/gpt-6-luna"
