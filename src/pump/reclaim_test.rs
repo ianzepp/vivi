@@ -17,9 +17,7 @@ fn a_busy_reclaimer_defers_a_second_request_until_folded() {
     let deferred = || {
         host.logs()
             .iter()
-            .filter(|line| {
-                line.contains("work-lane clean deferred: reclaim still running")
-            })
+            .filter(|line| line.contains("work-lane clean deferred: reclaim still running"))
             .count()
     };
 
