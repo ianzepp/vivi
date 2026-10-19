@@ -238,6 +238,7 @@ fn job() -> MergeJob {
         proof: Vec::new(),
         tools: String::from("plain"),
         write_scope: vec![String::from("src/pump/merge.rs")],
+        source: None,
     }
 }
 

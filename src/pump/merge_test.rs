@@ -44,6 +44,7 @@ fn job() -> MergeJob {
             String::from("src/pump/merge.rs"),
             String::from("src/pump/merge_test.rs"),
         ],
+        source: None,
     }
 }
 
@@ -674,6 +675,7 @@ pub(super) fn unit(uid: &str, branch: &str) -> MergeJob {
             String::from("src/pump/merge.rs"),
             String::from("src/pump/merge_test.rs"),
         ],
+        source: None,
     }
 }
 
