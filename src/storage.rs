@@ -17,6 +17,7 @@ mod backlog_graph;
 pub use backlog_graph::{
     BACKLOG_GRAPH_CODE, BacklogMintCommit, BacklogMintInput, BacklogNodeInput,
 };
+mod event_deferrals;
 mod events;
 mod goals;
 mod graph;

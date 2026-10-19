@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::error::VivariumError;
 
-const STORAGE_SCHEMA_VERSION: &str = "8";
+const STORAGE_SCHEMA_VERSION: &str = "9";
 
 pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     let existing: Option<String> = conn
@@ -23,6 +23,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
         .map_err(|e| VivariumError::Other(format!("failed to initialize storage schema: {e}")))?;
     ensure_absorb_columns(conn)?;
     ensure_work_graph_columns(conn)?;
+    migrate_event_deferrals(conn)?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS message_metadata_from_addr_date_idx ON message_metadata(from_addr, date)",
         [],
@@ -119,6 +120,10 @@ const SCHEMA_DDL: &str = "BEGIN;
          );
          CREATE INDEX IF NOT EXISTS mailspace_item_metadata_key_idx
            ON mailspace_item_metadata(key, value);
+         CREATE TABLE IF NOT EXISTS event_deferrals (
+           message_id TEXT PRIMARY KEY REFERENCES messages(message_id) ON DELETE CASCADE,
+           until INTEGER NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS mailspace_links (
            child_content_id TEXT PRIMARY KEY REFERENCES blobs(content_id) ON DELETE CASCADE,
            parent_content_id TEXT NOT NULL REFERENCES blobs(content_id) ON DELETE RESTRICT,
@@ -220,6 +225,24 @@ fn ensure_work_graph_columns(conn: &Connection) -> Result<(), VivariumError> {
         "style",
         "TEXT NOT NULL DEFAULT 'solid'",
     )
+}
+
+/// Move the receiver's event-deferral marks out of the user item-metadata
+/// table into their own table. Idempotent: a no-op once no legacy rows remain.
+fn migrate_event_deferrals(conn: &Connection) -> Result<(), VivariumError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO event_deferrals (message_id, until)
+         SELECT message_id, CAST(value AS INTEGER) FROM mailspace_item_metadata
+         WHERE key = 'event_deferred_until'",
+        [],
+    )
+    .map_err(|e| VivariumError::Other(format!("failed to migrate event deferrals: {e}")))?;
+    conn.execute(
+        "DELETE FROM mailspace_item_metadata WHERE key = 'event_deferred_until'",
+        [],
+    )
+    .map(|_| ())
+    .map_err(|e| VivariumError::Other(format!("failed to clear legacy event deferrals: {e}")))
 }
 
 fn ensure_absorb_columns(conn: &Connection) -> Result<(), VivariumError> {
