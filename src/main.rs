@@ -14,6 +14,7 @@ use vivi::update::CheckOutcome;
 mod local_board_command;
 mod local_boot_command;
 mod local_config_command;
+mod local_delivery_command;
 mod local_goal_command;
 mod local_graph_command;
 mod local_mail_list;

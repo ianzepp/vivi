@@ -125,6 +125,12 @@ pub enum Command {
         command: NeedCommand,
     },
 
+    /// Deliver an integration branch to a merge role and record its receipt
+    Delivery {
+        #[command(subcommand)]
+        command: DeliveryCommand,
+    },
+
     /// Send and promote project-local wants for later prioritization
     Want {
         #[command(subcommand)]
@@ -222,5 +228,77 @@ pub enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeliveryCommand {
+    /// Push a scoped Mind's branch and file its structured delivery need
+    Send {
+        /// Identity filing the delivery
+        #[arg(long = "from")]
+        from_identity: String,
+
+        /// Merge role address, such as merge@<member-prefix>.local
+        #[arg(long = "to")]
+        to: String,
+
+        /// Local integration branch (the remote ref is placed under mind/)
+        #[arg(long)]
+        branch: String,
+
+        /// Tip commit the gate result describes
+        #[arg(long)]
+        tip: String,
+
+        /// Base commit from which the integration branch was built
+        #[arg(long)]
+        base: String,
+
+        /// Git remote to push to
+        #[arg(long, default_value = "origin")]
+        remote: String,
+
+        /// Gate command run against the tip
+        #[arg(long)]
+        gate: String,
+
+        /// Result of that gate on the tip
+        #[arg(long)]
+        gate_result: String,
+
+        /// Need closed by this delivery; repeatable
+        #[arg(long = "closes")]
+        closes: Vec<String>,
+
+        /// Blocked need in HANDLE=REASON form; repeatable
+        #[arg(long = "blocked")]
+        blocked: Vec<String>,
+
+        /// Newly filed work handle; repeatable
+        #[arg(long = "filed")]
+        filed: Vec<String>,
+
+        /// Project root to use
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Close a delivered branch after merge, recording the merge commit
+    Close {
+        /// Delivery need handle or unambiguous prefix
+        handle: String,
+
+        /// Merge identity accepting the delivery
+        #[arg(long = "for")]
+        for_identity: String,
+
+        /// Commit that landed the delivered branch on main
+        #[arg(long)]
+        merge_commit: String,
+
+        /// Project root to use
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
 }

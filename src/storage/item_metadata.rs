@@ -33,7 +33,8 @@ impl Storage {
         Ok(())
     }
 
-    /// Retrieve all metadata key-value pairs for a message.
+    /// Retrieve all visible metadata key-value pairs for a message. Empty
+    /// branch/commit values are internal reset markers and are omitted.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] if the token resolution or database
@@ -55,9 +56,15 @@ impl Storage {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|e| VivariumError::Other(format!("failed to query metadata: {e}")))?;
-        rows.map(|row| {
-            row.map_err(|e| VivariumError::Other(format!("failed to read metadata row: {e}")))
-        })
-        .collect()
+        let mut metadata = BTreeMap::new();
+        for row in rows {
+            let (key, value) =
+                row.map_err(|e| VivariumError::Other(format!("failed to read metadata row: {e}")))?;
+            if matches!(key.as_str(), "branch" | "commit") && value.is_empty() {
+                continue;
+            }
+            metadata.insert(key, value);
+        }
+        Ok(metadata)
     }
 }

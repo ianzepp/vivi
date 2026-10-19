@@ -24,8 +24,8 @@ pub struct LetterHeaders {
     /// The letter carries an `X-Vivi-Event` header: it is an item-state
     /// event, which files read.
     pub is_event: bool,
-    /// The letter carries an `X-Vivi-Verdict` or `X-Vivi-Repo` header: a
-    /// close or report letter carrying verdict metadata.
+    /// The letter carries close metadata: an `X-Vivi-Verdict`,
+    /// `X-Vivi-Repo`, `X-Vivi-Branch`, or `X-Vivi-Commit` header.
     pub has_verdict: bool,
 }
 
@@ -82,7 +82,10 @@ pub fn parse_headers(data: &[u8]) -> LetterHeaders {
         .any(|header| header.name().eq_ignore_ascii_case(EVENT_HEADER));
     let has_verdict = parsed.headers().iter().any(|header| {
         let name = header.name();
-        name.eq_ignore_ascii_case("X-Vivi-Verdict") || name.eq_ignore_ascii_case("X-Vivi-Repo")
+        name.eq_ignore_ascii_case("X-Vivi-Verdict")
+            || name.eq_ignore_ascii_case("X-Vivi-Repo")
+            || name.eq_ignore_ascii_case("X-Vivi-Branch")
+            || name.eq_ignore_ascii_case("X-Vivi-Commit")
     });
     LetterHeaders {
         subject: parsed.subject().unwrap_or_default().to_string(),

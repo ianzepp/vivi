@@ -706,6 +706,23 @@ impl Mailspace {
         command: &str,
         metadata: Option<&std::collections::BTreeMap<String, String>>,
     ) -> Result<MoveOutcome, VivariumError> {
+        if metadata.is_some_and(|metadata| {
+            metadata.contains_key("branch") != metadata.contains_key("commit")
+        }) {
+            return Err(VivariumError::Other(
+                "branch and commit close metadata must be provided together".into(),
+            ));
+        }
+        if metadata.is_some_and(|metadata| {
+            [metadata.get("branch"), metadata.get("commit")]
+                .into_iter()
+                .flatten()
+                .any(|value| value.trim().is_empty())
+        }) {
+            return Err(VivariumError::Other(
+                "branch and commit close metadata cannot be empty".into(),
+            ));
+        }
         let identity = self.resolve_identity(identity)?;
         let role = canonical_local_role(role)?;
         let storage = self.storage()?;

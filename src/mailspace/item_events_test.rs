@@ -112,6 +112,13 @@ fn a_property_event_without_its_payload_or_a_matching_reply_is_plain_mail() {
 fn a_letter_carries_verdict_only_with_the_verdict_headers() {
     assert!(carries_verdict(&letter("X-Vivi-Verdict: fixed\r\n")));
     assert!(carries_verdict(&letter("X-Vivi-Repo: vivi=sha9\r\n")));
+    assert!(carries_verdict(&letter(
+        "X-Vivi-Branch: mind/review\r\nX-Vivi-Commit: deadbeef\r\n"
+    )));
+    assert!(carries_verdict(&letter(
+        "X-Vivi-Branch: -\r\nX-Vivi-Commit: -\r\n"
+    )));
+    assert!(!carries_verdict(&letter("X-Vivi-Branch: mind/review\r\n")));
     assert!(
         !carries_verdict(&letter("X-Vivi-Repo: no-tip\r\n")),
         "a repo header without '=' carries nothing"

@@ -80,16 +80,17 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             handle,
             for_identity,
             note,
+            branch,
+            commit,
             project,
         } => {
-            move_item(
+            move_item_with_close_location(
                 handle,
                 for_identity,
                 note.as_ref(),
+                branch.as_deref(),
+                commit.as_deref(),
                 project.as_deref(),
-                "done",
-                "need done",
-                "done",
             )?;
             print_close_timing(project.as_deref(), handle, false);
         }
@@ -484,6 +485,39 @@ fn move_item(
         None,
     )?;
     print_move_receipt(&moved, verb);
+    Ok(())
+}
+
+fn move_item_with_close_location(
+    handle: &str,
+    for_identity: &str,
+    note: Option<&String>,
+    branch: Option<&str>,
+    commit: Option<&str>,
+    project: Option<&std::path::Path>,
+) -> Result<(), VivariumError> {
+    if branch.is_some() != commit.is_some() {
+        return Err(VivariumError::Other(
+            "--branch and --commit must be provided together".into(),
+        ));
+    }
+    let mailspace = Mailspace::discover(project)?;
+    let metadata = match (branch, commit) {
+        (Some(branch), Some(commit)) => std::collections::BTreeMap::from([
+            ("branch".into(), branch.to_string()),
+            ("commit".into(), commit.to_string()),
+        ]),
+        _ => std::collections::BTreeMap::new(),
+    };
+    let moved = mailspace.move_item_outcome(
+        for_identity,
+        handle,
+        "done",
+        note.map(String::as_str),
+        "need done",
+        (!metadata.is_empty()).then_some(&metadata),
+    )?;
+    print_move_receipt(&moved, "done");
     Ok(())
 }
 

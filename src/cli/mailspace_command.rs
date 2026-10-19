@@ -676,6 +676,14 @@ pub enum TaskCommand {
         #[arg(long)]
         tip: Vec<String>,
 
+        /// Integration branch holding the completed task; paired with --commit
+        #[arg(long, requires = "commit")]
+        branch: Option<String>,
+
+        /// Commit on the integration branch holding the completed task; paired with --branch
+        #[arg(long, requires = "branch")]
+        commit: Option<String>,
+
         /// Project root to use
         #[arg(long)]
         project: Option<PathBuf>,

@@ -31,6 +31,7 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Mail { command } => handle_mail_command(command),
         Command::Task { command } => handle_task_command(command),
         Command::Need { command } => crate::local_work_command::handle_need_command(command),
+        Command::Delivery { command } => crate::local_delivery_command::handle(command),
         Command::Want { command } => crate::local_work_command::handle_want_command(command),
         Command::Memo { command } => handle_memo_command(command),
         Command::Rule { command } => crate::local_rule_command::handle_rule_command(command),
@@ -564,6 +565,8 @@ fn handle_task_command(command: &TaskCommand) -> Result<(), VivariumError> {
             verdict,
             repo,
             tip,
+            branch,
+            commit,
             project,
         } => done_task(
             handle,
@@ -572,6 +575,8 @@ fn handle_task_command(command: &TaskCommand) -> Result<(), VivariumError> {
             verdict.as_deref(),
             repo,
             tip,
+            branch.as_deref(),
+            commit.as_deref(),
             project.as_deref(),
         )?,
         TaskCommand::Reopen {
@@ -591,6 +596,8 @@ fn done_task(
     verdict: Option<&str>,
     repo: &[String],
     tip: &[String],
+    branch: Option<&str>,
+    commit: Option<&str>,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     move_task(
@@ -602,6 +609,8 @@ fn done_task(
         verdict,
         repo,
         tip,
+        branch,
+        commit,
     )?;
     // Task threads carry the pool's result replies, not attempt records.
     crate::local_work_command::print_close_timing(project, handle, true);
@@ -614,7 +623,18 @@ fn reopen_task(
     note: Option<&str>,
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
-    move_task(handle, for_identity, note, project, "tasks", None, &[], &[])
+    move_task(
+        handle,
+        for_identity,
+        note,
+        project,
+        "tasks",
+        None,
+        &[],
+        &[],
+        None,
+        None,
+    )
 }
 
 fn run_task_list(command: &TaskCommand) -> Result<(), VivariumError> {
@@ -884,15 +904,43 @@ fn move_task(
     verdict: Option<&str>,
     repo: &[String],
     tip: &[String],
+    branch: Option<&str>,
+    commit: Option<&str>,
 ) -> Result<(), VivariumError> {
     if repo.len() != tip.len() {
         return Err(VivariumError::Other(
             "--repo and --tip must be provided in matching pairs".into(),
         ));
     }
+    if branch.is_some() != commit.is_some() {
+        return Err(VivariumError::Other(
+            "--branch and --commit must be provided together".into(),
+        ));
+    }
     let mailspace = Mailspace::discover(project)?;
-    let moved =
-        mailspace.move_task_outcome(for_identity, handle, role, note, verdict, repo, tip)?;
+    let mut metadata = std::collections::BTreeMap::new();
+    if let Some(verdict) = verdict {
+        metadata.insert("verdict".into(), verdict.to_string());
+    }
+    for (repo, tip) in repo.iter().zip(tip) {
+        metadata.insert(format!("repo:{repo}"), tip.clone());
+    }
+    if let (Some(branch), Some(commit)) = (branch, commit) {
+        metadata.insert("branch".into(), branch.to_string());
+        metadata.insert("commit".into(), commit.to_string());
+    }
+    let moved = mailspace.move_item_outcome(
+        for_identity,
+        handle,
+        role,
+        note,
+        if role == "done" {
+            "task done"
+        } else {
+            "task reopen"
+        },
+        (!metadata.is_empty()).then_some(&metadata),
+    )?;
     let verb = if role == "done" { "done" } else { "reopened" };
     crate::local_work_command::print_move_receipt(&moved, verb);
     Ok(())

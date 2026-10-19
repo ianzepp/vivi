@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use vivi::cli::{
-    Cli, Command, CycleCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
+    Cli, Command, CycleCommand, DeliveryCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
     MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, SkillsCommand,
     TaskCommand, TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand, WantSendCommand,
 };
@@ -602,6 +602,8 @@ fn parses_task_done() {
                     verdict,
                     repo,
                     tip,
+                    branch,
+                    commit,
                     project,
                 },
         } => {
@@ -611,6 +613,8 @@ fn parses_task_done() {
             assert_eq!(verdict, None);
             assert!(repo.is_empty());
             assert!(tip.is_empty());
+            assert_eq!(branch, None);
+            assert_eq!(commit, None);
             assert_eq!(project, None);
         }
         other => panic!("unexpected command: {other:?}"),
@@ -651,6 +655,8 @@ fn parses_task_done_with_verdict_and_tips() {
                     verdict,
                     repo,
                     tip,
+                    branch,
+                    commit,
                     project,
                 },
         } => {
@@ -660,10 +666,61 @@ fn parses_task_done_with_verdict_and_tips() {
             assert_eq!(verdict.as_deref(), Some("clean_pass"));
             assert_eq!(repo, vec!["examples", "hosts"]);
             assert_eq!(tip, vec!["e968cc3", "0de5c36"]);
+            assert_eq!(branch, None);
+            assert_eq!(commit, None);
             assert_eq!(project, None);
         }
         other => panic!("unexpected command: {other:?}"),
     }
+}
+
+#[test]
+fn parses_task_done_with_integration_location() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "task",
+        "done",
+        "abc123",
+        "--for",
+        "mind",
+        "--branch",
+        "mind/review",
+        "--commit",
+        "deadbeef",
+    ])
+    .unwrap();
+
+    let Command::Task {
+        command: TaskCommand::Done { branch, commit, .. },
+    } = cli.command
+    else {
+        panic!("unexpected command");
+    };
+    assert_eq!(branch.as_deref(), Some("mind/review"));
+    assert_eq!(commit.as_deref(), Some("deadbeef"));
+}
+
+#[test]
+fn task_done_requires_branch_and_commit_together() {
+    assert!(
+        Cli::try_parse_from([
+            "vivi",
+            "task",
+            "done",
+            "abc123",
+            "--for",
+            "mind",
+            "--branch",
+            "mind/review",
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "vivi", "task", "done", "abc123", "--for", "mind", "--commit", "deadbeef",
+        ])
+        .is_err()
+    );
 }
 
 #[test]
@@ -761,16 +818,131 @@ fn parses_need_done_with_note() {
                     handle,
                     for_identity,
                     note,
+                    branch,
+                    commit,
                     project,
                 },
         } => {
             assert_eq!(handle, "abc123");
             assert_eq!(for_identity, "ceo");
             assert_eq!(note.as_deref(), Some("tasks completed"));
+            assert_eq!(branch, None);
+            assert_eq!(commit, None);
             assert_eq!(project, None);
         }
         other => panic!("unexpected command: {other:?}"),
     }
+}
+
+#[test]
+fn parses_need_done_with_integration_location() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "need",
+        "done",
+        "abc123",
+        "--for",
+        "mind",
+        "--branch",
+        "mind/review",
+        "--commit",
+        "deadbeef",
+    ])
+    .unwrap();
+
+    let Command::Need {
+        command: NeedCommand::Done { branch, commit, .. },
+    } = cli.command
+    else {
+        panic!("unexpected command");
+    };
+    assert_eq!(branch.as_deref(), Some("mind/review"));
+    assert_eq!(commit.as_deref(), Some("deadbeef"));
+}
+
+#[test]
+fn parses_delivery_send_fields() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "delivery",
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        "merge@1234abcd.local",
+        "--branch",
+        "review",
+        "--tip",
+        "deadbeef",
+        "--base",
+        "feedface",
+        "--gate",
+        "cargo test -p vivi",
+        "--gate-result",
+        "passed",
+        "--closes",
+        "aabbccdd",
+        "--blocked",
+        "eeff0011=waiting on review",
+        "--filed",
+        "33445566",
+    ])
+    .unwrap();
+
+    let Command::Delivery {
+        command:
+            DeliveryCommand::Send {
+                branch,
+                tip,
+                base,
+                gate_result,
+                closes,
+                blocked,
+                filed,
+                ..
+            },
+    } = cli.command
+    else {
+        panic!("unexpected command");
+    };
+    assert_eq!(branch, "review");
+    assert_eq!(tip, "deadbeef");
+    assert_eq!(base, "feedface");
+    assert_eq!(gate_result, "passed");
+    assert_eq!(closes, vec!["aabbccdd".to_string()]);
+    assert_eq!(blocked, vec!["eeff0011=waiting on review".to_string()]);
+    assert_eq!(filed, vec!["33445566".to_string()]);
+}
+
+#[test]
+fn parses_delivery_close_merge_commit() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "delivery",
+        "close",
+        "aabbccdd",
+        "--for",
+        "merge",
+        "--merge-commit",
+        "deadbeef",
+    ])
+    .unwrap();
+
+    let Command::Delivery {
+        command:
+            DeliveryCommand::Close {
+                handle,
+                for_identity,
+                merge_commit,
+                ..
+            },
+    } = cli.command
+    else {
+        panic!("unexpected command");
+    };
+    assert_eq!(handle, "aabbccdd");
+    assert_eq!(for_identity, "merge");
+    assert_eq!(merge_commit, "deadbeef");
 }
 
 #[test]

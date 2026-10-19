@@ -56,6 +56,8 @@ const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
 const EVENT_STATE_HEADER: &str = "X-Vivi-Event-State";
 const VERDICT_HEADER: &str = "X-Vivi-Verdict";
 const REPO_HEADER: &str = "X-Vivi-Repo";
+/// Paired on an event letter to clear the latest branch/commit metadata.
+pub(super) const PROVENANCE_CLEAR_SENTINEL: &str = "-";
 
 /// What a property event puts on an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,8 +176,8 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
     })
 }
 
-/// One verdict value a letter carries: the metadata key it stores under
-/// (`verdict`, `repo:<name>`), its value, and the letter's `(instant,
+/// One close-metadata value a letter carries: the metadata key it stores
+/// under (`verdict`, `repo:<name>`, `branch`, `commit`), its value, and the letter's `(instant,
 /// Message-ID)` order — the order a newer letter must beat.
 struct LetterVerdict {
     key: String,
@@ -183,8 +185,9 @@ struct LetterVerdict {
     stamp: (i64, String),
 }
 
-/// The verdict metadata a letter carries — `X-Vivi-Verdict` (single) and
-/// repeatable `X-Vivi-Repo: <repo>=<tip>`, the headers a close writes via
+/// The close metadata a letter carries — `X-Vivi-Verdict` (single),
+/// repeatable `X-Vivi-Repo: <repo>=<tip>`, and paired `X-Vivi-Branch` /
+/// `X-Vivi-Commit` headers a close writes via
 /// [`Mailspace::verdict_headers`] — each stamped with the letter's instant
 /// (`X-Vivi-Event-At` RFC 3339, else `Date`) and normalized `Message-ID`.
 /// Empty for a letter that carries neither, or has no `Message-ID`.
@@ -197,6 +200,8 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
     };
     let mut at = None;
     let mut values: Vec<(String, String)> = Vec::new();
+    let mut branch = None;
+    let mut commit = None;
     for header in parsed.headers() {
         let HeaderValue::Text(text) = header.value() else {
             continue;
@@ -210,6 +215,19 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
             && let Some((repo, tip)) = text.trim().split_once('=')
         {
             values.push((format!("repo:{}", repo.trim()), tip.trim().to_string()));
+        } else if name.eq_ignore_ascii_case("X-Vivi-Branch") {
+            branch = Some(text.trim().to_string());
+        } else if name.eq_ignore_ascii_case("X-Vivi-Commit") {
+            commit = Some(text.trim().to_string());
+        }
+    }
+    if let (Some(branch), Some(commit)) = (branch, commit) {
+        if branch == PROVENANCE_CLEAR_SENTINEL && commit == PROVENANCE_CLEAR_SENTINEL {
+            values.push(("branch".into(), String::new()));
+            values.push(("commit".into(), String::new()));
+        } else {
+            values.push(("branch".into(), branch));
+            values.push(("commit".into(), commit));
         }
     }
     let stamp = (at.unwrap_or_else(|| date_micros(&parsed)), id);
@@ -223,8 +241,9 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
         .collect()
 }
 
-/// True when the letter carries verdict metadata — `X-Vivi-Verdict` or a
-/// well-formed `X-Vivi-Repo: <repo>=<tip>` — stamped with a `Message-ID`:
+/// True when the letter carries close metadata — `X-Vivi-Verdict`, a
+/// well-formed `X-Vivi-Repo: <repo>=<tip>`, or paired branch/commit headers —
+/// stamped with a `Message-ID`:
 /// the letter a report about closed work travels as.
 pub(super) fn carries_verdict(bytes: &[u8]) -> bool {
     !parse_letter_verdicts(bytes).is_empty()
@@ -254,11 +273,11 @@ pub(super) fn verdict_report_item(
         .map(|item| item.content_id))
 }
 
-/// Store the verdict metadata the letters held for `item` carry: letters
+/// Store the close metadata the letters held for `item` carry: letters
 /// from a sender that speaks for the item count, the newest value per key
 /// by `(instant, Message-ID)` wins, and the winners land — the same keys a
 /// local close writes — on each unabsorbed row's item metadata. A letter
-/// with no verdict headers stores nothing.
+/// with no recognized close metadata stores nothing.
 pub(super) fn store_letter_verdicts(
     mailspace: &Mailspace,
     storage: &Storage,
@@ -272,18 +291,13 @@ pub(super) fn store_letter_verdicts(
         let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
             continue;
         };
-        let stamp = super::parse_event(&bytes)
-            .map(|event| (event.at, event.id))
-            .or_else(|| parse_property_event(&bytes).map(|event| (event.at, event.id)));
-        let speaks = first_bare_address(&view.from_addr).is_some_and(|from| {
-            stamp
-                .as_ref()
-                .is_some_and(|(at, id)| mailspace.event_may_speak(item, &from, *at, id))
-        });
-        if !speaks {
+        let Some(from) = first_bare_address(&view.from_addr) else {
             continue;
-        }
+        };
         for verdict in parse_letter_verdicts(&bytes) {
+            if !mailspace.event_may_speak(item, &from, verdict.stamp.0, &verdict.stamp.1) {
+                continue;
+            }
             let newer = newest
                 .get(&verdict.key)
                 .is_none_or(|held| verdict.stamp > held.stamp);

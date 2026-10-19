@@ -996,6 +996,107 @@ fn a_pulled_close_letter_stores_its_verdict_in_item_metadata() {
 }
 
 #[test]
+fn a_pulled_close_letter_stores_and_shows_its_integration_location() {
+    let p = pair();
+    let metadata = std::collections::BTreeMap::from([
+        ("branch".into(), "mind/review".into()),
+        ("commit".into(), "deadbeef".into()),
+    ]);
+    p.a.mailspace
+        .move_item_outcome("mind", &p.task, "done", None, "task done", Some(&metadata))
+        .unwrap();
+
+    p.sync_a_to_b();
+
+    let received =
+        p.b.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.b.id_of(&p.task))
+            .unwrap();
+    assert_eq!(
+        received.get("branch").map(String::as_str),
+        Some("mind/review")
+    );
+    assert_eq!(received.get("commit").map(String::as_str), Some("deadbeef"));
+    let thread =
+        p.b.mailspace
+            .thread(&p.task, false, usize::MAX, usize::MAX)
+            .unwrap();
+    let item = thread
+        .iter()
+        .find(|message| message.handle == p.task)
+        .unwrap();
+    assert_eq!(item.close_branch.as_deref(), Some("mind/review"));
+    assert_eq!(item.close_commit.as_deref(), Some("deadbeef"));
+}
+
+#[test]
+fn a_reopen_and_a_later_unlocated_close_clear_stale_branch_provenance() {
+    let p = pair();
+    let location = std::collections::BTreeMap::from([
+        ("branch".into(), "mind/review".into()),
+        ("commit".into(), "deadbeef".into()),
+    ]);
+    p.a.mailspace
+        .move_item_outcome("mind", &p.task, "done", None, "task done", Some(&location))
+        .unwrap();
+    p.sync_a_to_b();
+    assert_eq!(
+        p.b.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.b.id_of(&p.task))
+            .unwrap()
+            .get("branch")
+            .map(String::as_str),
+        Some("mind/review")
+    );
+
+    p.a.mailspace
+        .move_item_outcome("mind", &p.task, "tasks", None, "task reopen", None)
+        .unwrap();
+    p.sync_a_to_b();
+    let after_reopen =
+        p.b.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.b.id_of(&p.task))
+            .unwrap();
+    assert!(!after_reopen.contains_key("branch"), "{after_reopen:?}");
+    assert!(!after_reopen.contains_key("commit"), "{after_reopen:?}");
+
+    p.a.mailspace
+        .move_item_outcome("mind", &p.task, "done", None, "task done", None)
+        .unwrap();
+    p.sync_a_to_b();
+    let after_unlocated_close =
+        p.b.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.b.id_of(&p.task))
+            .unwrap();
+    assert!(
+        !after_unlocated_close.contains_key("branch"),
+        "{after_unlocated_close:?}"
+    );
+    assert!(
+        !after_unlocated_close.contains_key("commit"),
+        "{after_unlocated_close:?}"
+    );
+    let thread =
+        p.b.mailspace
+            .thread(&p.task, false, usize::MAX, usize::MAX)
+            .unwrap();
+    let item = thread
+        .iter()
+        .find(|message| message.handle == p.task)
+        .unwrap();
+    assert!(item.close_branch.is_none());
+    assert!(item.close_commit.is_none());
+}
+
+#[test]
 fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
     let p = pair();
     // hand is the assignee, so its close travels as a report letter

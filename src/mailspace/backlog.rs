@@ -2,6 +2,8 @@
 //! per-mailspace `backlog` graph, so readiness spans the whole backlog
 //! without a separate graph-management step.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use super::Mailspace;
@@ -363,6 +365,68 @@ impl Mailspace {
             joined.push(self.shown_handle(parent));
         }
         Ok(())
+    }
+
+    /// Carry a joined need's close location only when every bound unit has
+    /// complete provenance on the same branch. For a shared branch, the
+    /// commit from the latest unit close event (ordered by event instant and
+    /// Message-ID) is the recorded tip. Conflicting branches or any unit
+    /// without provenance leave the joined need without a branch/commit
+    /// claim; each unit keeps its own record.
+    pub(super) fn joined_close_location(
+        &self,
+        storage: &Storage,
+        parent: &str,
+    ) -> Result<BTreeMap<String, String>, VivariumError> {
+        let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
+            return Ok(BTreeMap::new());
+        };
+        let units = storage.work_graph_nodes_by_subgraph(&graph.handle, parent)?;
+        if units.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let mut branch: Option<String> = None;
+        let mut latest: Option<((i64, String), String)> = None;
+        for unit in units {
+            let metadata = storage.item_metadata(&unit.source_id)?;
+            let (Some(unit_branch), Some(commit)) = (
+                metadata.get("branch").filter(|value| !value.is_empty()),
+                metadata.get("commit").filter(|value| !value.is_empty()),
+            ) else {
+                return Ok(BTreeMap::new());
+            };
+            if branch.as_ref().is_some_and(|seen| seen != unit_branch) {
+                return Ok(BTreeMap::new());
+            }
+            branch.get_or_insert_with(|| unit_branch.clone());
+            let Some(state) = self.item_event_state(&unit.source_id)? else {
+                return Ok(BTreeMap::new());
+            };
+            if state.state != "done" {
+                return Ok(BTreeMap::new());
+            }
+            let Some(event_row) = storage.live_message_by_rfc_id(&state.event)? else {
+                return Ok(BTreeMap::new());
+            };
+            let bytes = storage.read_message(&event_row.message_id)?;
+            let Some(event) = super::item_events::parse_event(&bytes) else {
+                return Ok(BTreeMap::new());
+            };
+            let order = (event.at, event.id);
+            if latest
+                .as_ref()
+                .is_none_or(|(seen, _)| order.cmp(seen).is_gt())
+            {
+                latest = Some((order, commit.clone()));
+            }
+        }
+        let (Some(branch), Some((_, commit))) = (branch, latest) else {
+            return Ok(BTreeMap::new());
+        };
+        Ok(BTreeMap::from([
+            ("branch".into(), branch),
+            ("commit".into(), commit),
+        ]))
     }
 
     /// The handle the mailspace shows for the item `handle` names — the same

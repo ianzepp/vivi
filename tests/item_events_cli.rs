@@ -246,6 +246,51 @@ fn the_owners_flow_with_no_sync_is_letters_all_the_way() {
     assert_eq!(again, out);
 }
 
+#[test]
+fn a_need_close_records_and_shows_its_integration_location() {
+    let tmp = project();
+    let p = tmp.path();
+    let (need, _) = send(p, "need", "N with branch provenance");
+
+    ok(
+        p,
+        &[
+            "need",
+            "done",
+            &need,
+            "--for",
+            "mind",
+            "--branch",
+            "mind/review",
+            "--commit",
+            "deadbeef",
+        ],
+    );
+
+    let shown = ok(p, &["need", "show", &need]);
+    assert!(shown.contains("Done on: mind/review deadbeef"), "{shown}");
+    let json: serde_json::Value =
+        serde_json::from_str(&ok(p, &["need", "show", &need, "--json"])).unwrap();
+    let item = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["handle"] == need)
+        .unwrap();
+    assert_eq!(item["close_branch"], "mind/review");
+    assert_eq!(item["close_commit"], "deadbeef");
+
+    ok(p, &["need", "reopen", &need, "--for", "mind"]);
+    let reopened = ok(p, &["need", "show", &need]);
+    assert!(!reopened.contains("Done on:"), "{reopened}");
+    ok(p, &["need", "done", &need, "--for", "mind"]);
+    let closed_without_location = ok(p, &["need", "show", &need]);
+    assert!(
+        !closed_without_location.contains("Done on:"),
+        "{closed_without_location}"
+    );
+}
+
 fn ready_has(p: &Path, handle: &str) -> bool {
     ok(p, &["graph", "ready", "backlog"]).contains(handle)
 }

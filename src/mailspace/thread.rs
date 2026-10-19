@@ -26,6 +26,12 @@ pub struct MailspaceThreadMessage {
     pub inferred: bool,
     /// Folded mark slugs, sorted. Empty when the item has none.
     pub marks: Vec<String>,
+    /// Integration branch recorded by the item's close, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_branch: Option<String>,
+    /// Commit recorded by the item's close, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_commit: Option<String>,
 }
 
 struct ThreadCandidate {
@@ -33,6 +39,8 @@ struct ThreadCandidate {
     body: String,
     kind: Option<String>,
     marks: Vec<String>,
+    close_branch: Option<String>,
+    close_commit: Option<String>,
 }
 
 /// Print a thread of messages by handle.
@@ -278,11 +286,20 @@ fn load_candidate(
     let body = text_body(&data);
     let kind = effective_kind(&view.local_role, &data, &events);
     let marks = super::marks::folded_marks(&events);
+    let metadata = storage.item_metadata(&view.message_id)?;
     Ok(ThreadCandidate {
         view,
         body,
         kind,
         marks,
+        close_branch: metadata
+            .get("branch")
+            .filter(|value| !value.is_empty())
+            .cloned(),
+        close_commit: metadata
+            .get("commit")
+            .filter(|value| !value.is_empty())
+            .cloned(),
     })
 }
 
@@ -405,6 +422,8 @@ fn thread_message(
         link_source: link.map(|link| link.source.clone()),
         inferred: link.is_some_and(|link| link.source == "inferred"),
         marks: candidate.marks.clone(),
+        close_branch: candidate.close_branch.clone(),
+        close_commit: candidate.close_commit.clone(),
     }
 }
 
@@ -451,6 +470,9 @@ fn print_text_message(message: &MailspaceThreadMessage) {
     println!("Subject: {}", message.subject);
     if !message.marks.is_empty() {
         println!("Marks: {}", message.marks.join(" "));
+    }
+    if let (Some(branch), Some(commit)) = (&message.close_branch, &message.close_commit) {
+        println!("Done on: {branch} {commit}");
     }
     println!();
     println!("{}", message.body.trim());

@@ -31,8 +31,8 @@ pub(super) struct EmitRequest<'a> {
     pub(super) command: &'a str,
     /// Why, when no person acted (`join`): the lifecycle row's note.
     pub(super) via: Option<&'a str>,
-    /// Extra letter headers the event carries (a close's verdict and repo
-    /// tips), beyond the event chain's own.
+    /// Extra letter headers the event carries (a close's verdict, repo tips,
+    /// and integration branch/commit), beyond the event chain's own.
     pub(super) headers: Vec<(String, String)>,
 }
 
@@ -66,16 +66,21 @@ struct EventLetterDraft {
 }
 
 impl Mailspace {
-    /// A close's verdict metadata as letter headers: `verdict` becomes
-    /// `X-Vivi-Verdict`, and each `repo:<name>` becomes
-    /// `X-Vivi-Repo: <name>=<tip>`. A close that travels as an event letter
-    /// carries them to every mailspace holding the item.
+    /// Close metadata as letter headers: `verdict` becomes `X-Vivi-Verdict`,
+    /// each `repo:<name>` becomes `X-Vivi-Repo: <name>=<tip>`, and the
+    /// integration `branch` and `commit` each get their own header. A close
+    /// that travels as an event letter carries them to every mailspace holding
+    /// the item.
     pub(in crate::mailspace) fn verdict_headers(
         metadata: &BTreeMap<String, String>,
     ) -> Vec<(String, String)> {
         let mut headers = Vec::new();
         if let Some(verdict) = metadata.get("verdict") {
             headers.push(("X-Vivi-Verdict".into(), verdict.clone()));
+        }
+        if let (Some(branch), Some(commit)) = (metadata.get("branch"), metadata.get("commit")) {
+            headers.push(("X-Vivi-Branch".into(), branch.clone()));
+            headers.push(("X-Vivi-Commit".into(), commit.clone()));
         }
         for (key, tip) in metadata {
             if let Some(repo) = key.strip_prefix("repo:") {
@@ -160,7 +165,7 @@ impl Mailspace {
         let Some(item) = held_item(storage, &view.content_id)? else {
             return Ok(false);
         };
-        let Some(identity) = self.item_author(&item) else {
+        let Some(identity) = self.item_event_writer_identity(&item) else {
             return Ok(false);
         };
         let kind = if to_done {
@@ -174,6 +179,11 @@ impl Mailspace {
         {
             return Ok(true);
         }
+        let metadata = if to_done && via == "join" {
+            self.joined_close_location(storage, &view.handle)?
+        } else {
+            BTreeMap::new()
+        };
         let request = EmitRequest {
             identity: &identity,
             before: view,
@@ -181,9 +191,12 @@ impl Mailspace {
             note: None,
             command,
             via: Some(via),
-            headers: Vec::new(),
+            headers: Self::verdict_headers(&metadata),
         };
         self.emit_item_event(storage, &item, &request, joined)?;
+        if !metadata.is_empty() {
+            storage.set_item_metadata(&view.message_id, &metadata)?;
+        }
         Ok(true)
     }
 
@@ -309,6 +322,19 @@ impl Mailspace {
             parent_content_id: &item.content_id,
             moves: &moves,
         })?;
+        if matches!(request.kind, ItemEventKind::Done | ItemEventKind::Reopened) {
+            let location = BTreeMap::from([
+                (
+                    "branch".into(),
+                    close_header_value(&request.headers, "X-Vivi-Branch").unwrap_or_default(),
+                ),
+                (
+                    "commit".into(),
+                    close_header_value(&request.headers, "X-Vivi-Commit").unwrap_or_default(),
+                ),
+            ]);
+            storage.set_item_metadata(&request.before.message_id, &location)?;
+        }
         self.sync_item_nodes(storage, item, request.kind, "via=lifecycle", joined)?;
         // The last row is the actor's own sent copy of the letter.
         let event = written
@@ -402,6 +428,21 @@ impl Mailspace {
         for (name, value) in &request.headers {
             data = add_header(&data, name, value)?;
         }
+        if matches!(request.kind, ItemEventKind::Done | ItemEventKind::Reopened)
+            && close_header_value(&request.headers, "X-Vivi-Branch").is_none()
+            && close_header_value(&request.headers, "X-Vivi-Commit").is_none()
+        {
+            data = add_header(
+                &data,
+                "X-Vivi-Branch",
+                super::property::PROVENANCE_CLEAR_SENTINEL,
+            )?;
+            data = add_header(
+                &data,
+                "X-Vivi-Commit",
+                super::property::PROVENANCE_CLEAR_SENTINEL,
+            )?;
+        }
         data = add_reply_headers(&data, &item.bytes)?;
         Ok(EventLetterDraft {
             data: data.into_bytes(),
@@ -459,6 +500,13 @@ impl Mailspace {
             })
             .collect()
     }
+}
+
+fn close_header_value(headers: &[(String, String)], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(header, _)| header.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
 }
 
 /// The `X-Vivi-Event-At` value for a new event: the clock, or one

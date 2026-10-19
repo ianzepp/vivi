@@ -282,6 +282,73 @@ fn bind_joins_need_completion_on_last_unit() {
 }
 
 #[test]
+fn joined_need_uses_common_unit_branch_and_latest_unit_commit() {
+    let (mailspace, _tmp) = roster();
+    let need = send_item(&mailspace, "needs", Some("need"), "lower me", Vec::new());
+    let first = send_item(&mailspace, "tasks", Some("task"), "unit 1", Vec::new());
+    let second = send_item(&mailspace, "tasks", Some("task"), "unit 2", Vec::new());
+    mailspace
+        .backlog_bind_units(&need, &[first.clone(), second.clone()])
+        .unwrap();
+
+    for (unit, commit) in [(&first, "1111111"), (&second, "2222222")] {
+        let metadata = BTreeMap::from([
+            ("branch".into(), "mind/review".into()),
+            ("commit".into(), commit.into()),
+        ]);
+        mailspace
+            .move_item_outcome("ceo", unit, "done", None, "task done", Some(&metadata))
+            .unwrap();
+    }
+
+    let metadata = mailspace.storage().unwrap().item_metadata(&need).unwrap();
+    assert_eq!(
+        metadata.get("branch").map(String::as_str),
+        Some("mind/review")
+    );
+    assert_eq!(metadata.get("commit").map(String::as_str), Some("2222222"));
+    let state = mailspace.item_event_state(&need).unwrap().unwrap();
+    let storage = mailspace.storage().unwrap();
+    let event = storage
+        .live_message_by_rfc_id(&state.event)
+        .unwrap()
+        .unwrap();
+    let bytes = storage.read_message(&event.message_id).unwrap();
+    let letter = String::from_utf8_lossy(&bytes);
+    assert!(letter.contains("X-Vivi-Branch: mind/review"), "{letter}");
+    assert!(letter.contains("X-Vivi-Commit: 2222222"), "{letter}");
+}
+
+#[test]
+fn joined_need_omits_provenance_when_units_name_different_branches() {
+    let (mailspace, _tmp) = roster();
+    let need = send_item(&mailspace, "needs", Some("need"), "lower me", Vec::new());
+    let first = send_item(&mailspace, "tasks", Some("task"), "unit 1", Vec::new());
+    let second = send_item(&mailspace, "tasks", Some("task"), "unit 2", Vec::new());
+    mailspace
+        .backlog_bind_units(&need, &[first.clone(), second.clone()])
+        .unwrap();
+
+    for (unit, branch, commit) in [
+        (&first, "mind/a", "1111111"),
+        (&second, "mind/b", "2222222"),
+    ] {
+        let metadata = BTreeMap::from([
+            ("branch".into(), branch.into()),
+            ("commit".into(), commit.into()),
+        ]);
+        mailspace
+            .move_item_outcome("ceo", unit, "done", None, "task done", Some(&metadata))
+            .unwrap();
+    }
+
+    let metadata = mailspace.storage().unwrap().item_metadata(&need).unwrap();
+    assert!(!metadata.contains_key("branch"), "{metadata:?}");
+    assert!(!metadata.contains_key("commit"), "{metadata:?}");
+    assert_eq!(node(&mailspace, &need).state, "done");
+}
+
+#[test]
 fn retro_bind_of_done_units_completes_need() {
     let (mailspace, _tmp) = roster();
     let need = send_item(

@@ -320,6 +320,14 @@ pub enum NeedCommand {
         #[arg(long)]
         note: Option<String>,
 
+        /// Integration branch holding the completed need; paired with --commit
+        #[arg(long, requires = "commit")]
+        branch: Option<String>,
+
+        /// Commit on the integration branch holding the completed need; paired with --branch
+        #[arg(long, requires = "branch")]
+        commit: Option<String>,
+
         /// Project root to use
         #[arg(long)]
         project: Option<PathBuf>,
