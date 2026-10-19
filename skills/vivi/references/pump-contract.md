@@ -101,7 +101,7 @@ directory:
 | `log.txt` | pump `log` | operator | one line per event: `HH:MM:SS msg`, UTC; a merge lane thread's lines start `lane <target>/<n>: ` (see below) |
 | `exceptions.txt` | pump `exception` and `resolve` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars; a resolution is a row with kind `resolved` |
 | `needs-ready.txt` | pump on need completion (merge_apply) | operator | `need tip10 unit,unit` per line |
-| `status.txt` | pump `write_status` | `pump status` | timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …`, the three stall lines below, then one line per merge lane |
+| `status.txt` | pump `write_status` | `pump status` | timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …`, the four stall lines below, then one line per merge lane |
 | `lock` | pump opens for flock | none (lock only) | empty |
 | `skip.txt` | operator | board pass | need handles to never plan, whitespace separated |
 | `plans/` | planner writes `<need>.json`, `<need>.r<N>.json` (a revision) and `<uid>.split.json` | pump ingest | plan JSON; see [`pump-protocols.md`](pump-protocols.md) |
@@ -676,8 +676,10 @@ unchanged and `requeued` set, and hands a stuck unit that is still stuck
 `blocking_replan_minutes` in to a fresh split planner (`resplit/<uid>.json`,
 status `splitting`); a repair unit is never split. Parked-verdict roots are
 only alerted here, never re-planned, and a starved `pending` root surfaces in
-`status.txt` only. `status.txt` carries three stall
-lines, `last promote <age> ago (<tip10>)` or `last promote never`, `oldest
+`status.txt` only. `status.txt` carries four stall
+lines, `last promote <age> ago (<tip10>)` or `last promote never`, `last green
+<age> ago (<tip10>)` or `last green never` (the newest gate whose failing set
+main carries, across targets), `oldest
 waiting fix <uid> <age>` or `oldest waiting fix none`, `delivered waiting <n>,
 oldest <age>`, and then up to three `blocker <need> <state> age <age> held <n>`
 lines, largest hold first; ages read `2h05m` or `14m`.
