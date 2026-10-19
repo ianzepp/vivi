@@ -231,5 +231,8 @@ fn legacy_marked_slots_stay_owned() {
 fn the_id_prefix_names_slots_and_marks() {
     let pool = PoolId::new("app", ID_A, "here");
     assert_eq!(pool.slot_name(1), "app-11111111-here-slot-1");
-    assert_eq!(slot_metadata(&pool, 1, "abc")[META_MAILSPACE], "app-11111111");
+    assert_eq!(
+        slot_metadata(&pool, 1, "abc")[META_MAILSPACE],
+        "app-11111111"
+    );
 }
