@@ -643,6 +643,47 @@ fn the_merged_reply_waits_until_every_unit_is_satisfied() {
 }
 
 #[test]
+fn the_merged_reply_carries_the_timing_summary() {
+    let (_dir, ctx, host) = setup();
+    host.reply("mail reply n2", 0, "queued");
+    host.reply(
+        "need attempts n2",
+        0,
+        concat!(
+            "{\"need\":\"n2\",\"opened\":910000,\"attempts\":[",
+            "{\"attempt\":\"n2-1-a1\",\"outcome\":\"delivered\",\"agent_seconds\":60},",
+            "{\"attempt\":\"n2-1-a2\",\"outcome\":\"delivered\",\"agent_seconds\":3600}]}",
+        ),
+    );
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("n2"),
+        NeedRecord {
+            verdict: String::from("units"),
+            reason: String::from("one unit"),
+            units: vec![String::from("u1")],
+            revision: 1,
+            ..NeedRecord::default()
+        },
+    );
+    st.units
+        .insert(String::from("u1"), merged_unit("One", "1111111111aaaa"));
+    let rows = vec![need_row("n2", "2026-10-15", "One unit")];
+    assert!(post_replies(&ctx, &mut st, &rows));
+    let merged = fs::read_to_string(ctx.home.join("board/reply-n2-merged.txt")).unwrap();
+    assert!(
+        merged.contains(
+            "timing: open-to-done 1d1h; attempts 2; agent time 1h1m; slowest n2-1-a2 (1h)"
+        ),
+        "merged reply was {merged:?}"
+    );
+    assert_eq!(
+        st.board.replied,
+        vec![String::from("n2:planned"), String::from("n2:merged")]
+    );
+}
+
+#[test]
 fn a_failed_reply_is_retried_on_the_next_pass() {
     let (_dir, ctx, host) = setup();
     host.reply("mail reply f1", 1, "relay down\ncome back later");
