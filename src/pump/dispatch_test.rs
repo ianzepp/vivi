@@ -737,3 +737,40 @@ fn a_full_role_pool_waits_and_does_not_spill_to_another_pool() {
     assert_eq!(st.units["u1"].pool, None);
     assert_eq!(st.units["u2"].status, Status::Pending);
 }
+
+#[test]
+fn apply_start_on_dispatch_failure_closes_the_task_and_zeroes_the_pool() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    let mut free = BTreeMap::from([(String::from("fly4"), 2)]);
+    let started = apply_start(
+        &ctx,
+        &mut st,
+        "u1",
+        &Plan {
+            pool: String::from("fly4"),
+            model: Some(String::from("m/a")),
+            attempt: 1,
+            branch: String::from("unit/u1-a1"),
+        },
+        "m/a",
+        UnitStart::DispatchFailed {
+            task: String::from("1a2b3c4d"),
+            text: String::from("error: no free slot on fly4"),
+        },
+        &mut free,
+    );
+    assert!(!started);
+    assert_eq!(free.get("fly4"), Some(&0));
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["u1"].task, None);
+    let done = commands_with(&host, "task done");
+    assert_eq!(done.len(), 1);
+    assert!(
+        done[0]
+            .contains("task done 1a2b3c4d --for operator --note 'dispatch failed; superseded'"),
+        "{:?}",
+        done
+    );
+}
