@@ -148,7 +148,7 @@ fn merge_units(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>) 
 /// Fetch and merge job number `at.0` of `at.1`. `None` means it merged
 /// cleanly.
 fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResult> {
-    let out = fetch_unit_branch(ctx, &job.branch);
+    let out = fetch_unit_branch(ctx, job);
     if out.code != 0 {
         merge_line(
             ctx,

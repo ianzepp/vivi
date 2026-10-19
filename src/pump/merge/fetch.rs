@@ -6,18 +6,22 @@
 //! works in that repository, so such a branch is already local there. Every
 //! other lane is a separate `--reference` clone, which cannot see it; a
 //! second remote named [`BASE_REMOTE`] in the clone points back at the base
-//! repository so the branch can be fetched from there.
+//! repository so the branch can be fetched from there. A unit from a `local`
+//! worktree pool names its own pool repository in `source`; that branch is
+//! fetched straight from the pool path.
 
 use std::path::{Path, PathBuf};
 
 use crate::pump::host::{CmdOutput, Ctx, shell_quote};
+use crate::pump::state::MergeJob;
 
 /// The remote in a lane clone that points at the target's own repository.
 pub(super) const BASE_REMOTE: &str = "pump-base";
 
-/// Put the unit branch `branch` at `refs/remotes/<remote>/<branch>` in the
+/// Put the unit branch `job.branch` at `refs/remotes/<remote>/<branch>` in the
 /// checkout of `ctx`, ready to merge. Where the branch comes from:
 ///
+/// * a `local` worktree pool unit: `job.source`, the pool's own repository;
 /// * a local-worktree target, lane 0: the local branch of the checkout;
 /// * a local-worktree target, any other lane: the base repository, through
 ///   [`BASE_REMOTE`], when it has the branch there;
@@ -26,9 +30,14 @@ pub(super) const BASE_REMOTE: &str = "pump-base";
 /// Used by both [`super::merge_work`] and the batch path, so they agree on
 /// where a branch can be found.
 #[must_use]
-pub(crate) fn fetch_unit_branch(ctx: &Ctx, branch: &str) -> CmdOutput {
-    let b = shell_quote(branch);
+pub(crate) fn fetch_unit_branch(ctx: &Ctx, job: &MergeJob) -> CmdOutput {
+    let b = shell_quote(&job.branch);
     let remote = ctx.cfg.remote.as_str();
+    if let Some(source) = &job.source {
+        let path = shell_quote(&source.to_string_lossy());
+        let cmd = format!("fetch {path} +refs/heads/{b}:refs/remotes/{remote}/{b}");
+        return ctx.git(&cmd, 180);
+    }
     if !ctx.cfg.targets.is_empty() {
         match lane_base(ctx) {
             None if is_local(ctx, &b) => {
