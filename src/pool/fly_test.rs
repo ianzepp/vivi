@@ -186,7 +186,10 @@ fn listing(id: &str, name: &str) -> MachineRecord {
 fn salvaged_id_reads_the_machine_id_or_falls_back_to_the_name() {
     let wait = "Error: machine failed to reach desired start state, and restart policy was set to no restart";
     let said = format!("Some preamble\nMachine ID: 9187f2c1\n{wait}\n");
-    assert_eq!(salvaged_id("ms-p-slot-1", &said, &[]).as_deref(), Some("9187f2c1"));
+    assert_eq!(
+        salvaged_id("ms-p-slot-1", &said, &[]).as_deref(),
+        Some("9187f2c1")
+    );
     let machines = [listing("e73f11", "ms-p-slot-1")];
     assert_eq!(
         salvaged_id("ms-p-slot-1", "", &machines).as_deref(),

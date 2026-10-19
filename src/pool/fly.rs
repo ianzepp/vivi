@@ -46,10 +46,7 @@ impl FlyctlProvider {
 
     /// Run one `fly` call and report stdout, stderr and whether it succeeded,
     /// so a caller can recover from a partial success without losing the text.
-    pub(super) fn spawn(
-        &self,
-        args: &[String],
-    ) -> Result<(String, String, bool), VivariumError> {
+    pub(super) fn spawn(&self, args: &[String]) -> Result<(String, String, bool), VivariumError> {
         let output = Command::new(&self.bin).args(args).output().map_err(|e| {
             VivariumError::Message(format!(
                 "failed to run `{}` (is flyctl installed and on PATH?): {e}",
@@ -366,11 +363,7 @@ pub fn is_start_wait_failure(text: &str) -> bool {
 /// run output when it got that far, else from the listing by name (`--name`
 /// makes that deterministic).
 #[must_use]
-pub fn salvaged_id(
-    spec_name: &str,
-    output: &str,
-    machines: &[MachineRecord],
-) -> Option<String> {
+pub fn salvaged_id(spec_name: &str, output: &str, machines: &[MachineRecord]) -> Option<String> {
     parse_run_output(output).or_else(|| {
         machines
             .iter()
