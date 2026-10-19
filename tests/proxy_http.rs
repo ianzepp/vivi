@@ -537,6 +537,52 @@ fn health_aggregates_providers() {
 }
 
 #[test]
+fn provider_path_health_reports_status() {
+    let dir = TempDir::new().unwrap();
+    let live = Mock::new();
+    let live_addr = proxy_upstream::serve(live);
+    let (_path, config) = load(
+        &dir,
+        &format!(
+            r#"
+            log_dir = "{}"
+            [providers.deadone]
+            kind = "upstream"
+            backend = "http://127.0.0.1:9"
+            [providers.liveone]
+            kind = "upstream"
+            backend = "http://{live_addr}"
+            "#,
+            dir.path().join("logs").display()
+        ),
+    );
+    let rt = runtime();
+    let (server, base) = wait(&rt, config);
+    let client = get(&base);
+    let dead: Value = client
+        .get(format!("{base}/deadone/health"))
+        .header("host", "127.0.0.1")
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(dead["ok"], false);
+    assert_eq!(dead["provider"], "deadone");
+    assert_eq!(dead["status"], "down");
+    let live: Value = client
+        .get(format!("{base}/liveone/health"))
+        .header("host", "127.0.0.1")
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(live["ok"], true);
+    assert_eq!(live["provider"], "liveone");
+    assert_eq!(live["status"], "ok");
+    server.stop();
+}
+
+#[test]
 fn child_restarts_after_exit() {
     let dir = TempDir::new().unwrap();
     let script = dir.path().join("child.sh");
