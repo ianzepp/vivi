@@ -693,6 +693,8 @@ impl Mailspace {
         // A role that may close the work (its author, or a mind) writes an
         // event letter, which carries the move to every mailspace holding
         // the item; any other move is local, and a close is a report.
+        let empty = std::collections::BTreeMap::new();
+        let extras = Self::verdict_headers(metadata.unwrap_or(&empty));
         let event = self.try_emit_for_move(
             &storage,
             &identity,
@@ -700,6 +702,7 @@ impl Mailspace {
             &role,
             note,
             command,
+            &extras,
             &mut joined_needs,
         )?;
         if event.is_none() {

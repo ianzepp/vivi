@@ -220,6 +220,52 @@ fn deliver_keeps_an_attachment_letter_byte_for_byte() {
 }
 
 #[test]
+fn a_close_with_verdict_carries_it_as_letter_headers() {
+    let (_tmp, mailspace) = space(false);
+    let mut sent = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "unit".into(),
+            body: "done_when: lands\n".into(),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let handle = sent.delivered.remove(0).handle;
+
+    let outcome = mailspace
+        .move_task_outcome(
+            "mind",
+            &handle,
+            "done",
+            None,
+            Some("accepted"),
+            &["vivi".into()],
+            &["abc123".into()],
+        )
+        .unwrap();
+
+    assert!(outcome.event.is_some(), "{outcome:?}");
+    let storage = mailspace.storage().unwrap();
+    let event = outcome.event.unwrap();
+    let id = storage.resolve_message_token(&event).unwrap();
+    let letter = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(
+        letter.contains("X-Vivi-Verdict: accepted"),
+        "no verdict header: {letter}"
+    );
+    assert!(
+        letter.contains("X-Vivi-Repo: vivi=abc123"),
+        "no repo header: {letter}"
+    );
+}
+
+#[test]
 fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     let (_tmp, mailspace) = space(false);
     let domain = mailspace.address_domain();

@@ -1,6 +1,6 @@
 //! Writing an item-state event: the owner's `done` and `reopen`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mail_parser::{Address, Message, MessageParser};
 
@@ -31,6 +31,9 @@ pub(super) struct EmitRequest<'a> {
     pub(super) command: &'a str,
     /// Why, when no person acted (`join`): the lifecycle row's note.
     pub(super) via: Option<&'a str>,
+    /// Extra letter headers the event carries (a close's verdict and repo
+    /// tips), beyond the event chain's own.
+    pub(super) headers: Vec<(String, String)>,
 }
 
 impl EmitRequest<'_> {
@@ -61,6 +64,25 @@ struct EventLetterDraft {
 }
 
 impl Mailspace {
+    /// A close's verdict metadata as letter headers: `verdict` becomes
+    /// `X-Vivi-Verdict`, and each `repo:<name>` becomes
+    /// `X-Vivi-Repo: <name>=<tip>`. A close that travels as an event letter
+    /// carries them to every mailspace holding the item.
+    pub(in crate::mailspace) fn verdict_headers(
+        metadata: &BTreeMap<String, String>,
+    ) -> Vec<(String, String)> {
+        let mut headers = Vec::new();
+        if let Some(verdict) = metadata.get("verdict") {
+            headers.push(("X-Vivi-Verdict".into(), verdict.clone()));
+        }
+        for (key, tip) in metadata {
+            if let Some(repo) = key.strip_prefix("repo:") {
+                headers.push(("X-Vivi-Repo".into(), format!("{repo}={tip}")));
+            }
+        }
+        headers
+    }
+
     /// Write the event letter for a `done` or `reopen` move by a role that
     /// may close the item (its author, or a mind or operator) and apply it; the result is
     /// the event letter's handle. `Ok(None)` when the move is not an event:
@@ -76,6 +98,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
+        extras: &[(String, String)],
         joined: &mut Vec<String>,
     ) -> Result<Option<String>, VivariumError> {
         let Some(kind) = event_kind_for_move(&before.local_role, role) else {
@@ -113,6 +136,7 @@ impl Mailspace {
             note,
             command,
             via: None,
+            headers: extras.to_vec(),
         };
         self.emit_item_event(storage, &item, &request, joined)
             .map(Some)
@@ -155,6 +179,7 @@ impl Mailspace {
             note: None,
             command,
             via: Some(via),
+            headers: Vec::new(),
         };
         self.emit_item_event(storage, &item, &request, joined)?;
         Ok(true)
@@ -367,6 +392,9 @@ impl Mailspace {
         data = add_header(&data, EVENT_AT_HEADER, at)?;
         for prev in prevs {
             data = add_header(&data, EVENT_PREV_HEADER, &format!("<{prev}>"))?;
+        }
+        for (name, value) in &request.headers {
+            data = add_header(&data, name, value)?;
         }
         data = add_reply_headers(&data, &item.bytes)?;
         Ok(EventLetterDraft {
