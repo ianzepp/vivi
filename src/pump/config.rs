@@ -599,6 +599,11 @@ pub struct GateConfig {
     /// How many times a name that still fails after every unit of its owner
     /// settled is handed to a fresh gate-fix planner. 0 never re-plans.
     pub max_replans: u32,
+    /// While any owned red is unfixed the pump writes `HOLD-MERGE` itself.
+    pub hold_on_red: bool,
+    /// Under `HOLD-MERGE`, a need's priority level bypasses the hold only at
+    /// or above this floor.
+    pub hold_priority_floor: i64,
 }
 
 impl Default for GateConfig {
@@ -614,6 +619,8 @@ impl Default for GateConfig {
             results_wait_seconds: 0,
             ignore_file: None,
             max_replans: 2,
+            hold_on_red: false,
+            hold_priority_floor: 0,
         }
     }
 }

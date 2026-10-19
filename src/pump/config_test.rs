@@ -181,6 +181,13 @@ fn a_minimal_pump_table_takes_every_default() {
 }
 
 #[test]
+fn gate_hold_defaults_are_off_and_zero() {
+    let gate = crate::pump::config::GateConfig::default();
+    assert!(!gate.hold_on_red);
+    assert_eq!(gate.hold_priority_floor, 0);
+}
+
+#[test]
 fn legacy_split_timeout_loads_as_split_hard_cap() {
     let cfg =
         pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_timeout = 1800\n");

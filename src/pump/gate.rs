@@ -36,6 +36,8 @@ const EXTERNAL_POOL: &str = "external";
 const WAIT_KEY: &str = "external_wait_since";
 /// The payload the hold cycle writes into `FORCE-GATE`.
 const FORCE_TEXT: &str = "after fixes\n";
+/// The payload the hold cycle writes into `HOLD-MERGE` while reds are owned.
+const HOLD_RED_TEXT: &str = "red\n";
 /// The characters `ctx.exception` keeps of a text.
 const EXCEPTION_LIMIT: usize = 600;
 
@@ -804,6 +806,15 @@ fn last_line(text: &str) -> String {
 /// clean gate newer than the `HOLD-MERGE` flag lifts the hold; fixes merged
 /// after the last gate (or an unreadable one) force a new gate.
 pub fn hold_cycle(ctx: &Ctx, st: &mut State) {
+    if ctx.cfg.gate.hold_on_red && !st.red.is_empty() && !ctx.flag(HOLD_FLAG) {
+        if let Err(err) = fs::write(ctx.home.join(HOLD_FLAG), HOLD_RED_TEXT) {
+            ctx.log(&format!("hold flag write failed: {err}"));
+        }
+        ctx.log(&format!(
+            "hold on red: {} owned names unfixed; HOLD-MERGE written",
+            st.red.len()
+        ));
+    }
     if !ctx.flag(HOLD_FLAG) || st.last_gate.task.is_some() || ctx.flag(&force_flag(ctx)) {
         return;
     }
