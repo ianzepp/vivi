@@ -162,6 +162,10 @@ pub struct PumpBoot {
     pub amendments: usize,
     /// Exception rows in the pump database.
     pub exceptions: usize,
+    /// Planners the board currently has in flight.
+    pub planning: usize,
+    /// Handles parked after exhausting planner retries.
+    pub planner_parked: usize,
 }
 
 /// The full boot digest.
@@ -296,6 +300,8 @@ fn collect_pump(
         stuck: summary.stuck,
         amendments: summary.amendments,
         exceptions: summary.exceptions,
+        planning: summary.planning,
+        planner_parked: summary.planner_parked,
         units: summary.units,
     })
 }
