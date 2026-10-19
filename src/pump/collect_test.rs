@@ -636,8 +636,9 @@ fn a_dead_split_planner_is_reported_and_retried() {
     assert_eq!(u.split_retry_at, Some(T0 + 60));
     assert!(!ctx.home.join("resplit/u-1.out.rc").exists());
     assert!(
-        exceptions(&ctx)
-            .contains("split-planner-failed u-1 planner exited 127 without a plan; retry 1/3 in 60s"),
+        exceptions(&ctx).contains(
+            "split-planner-failed u-1 planner exited 127 without a plan; retry 1/3 in 60s"
+        ),
         "{:?}",
         exceptions(&ctx)
     );
