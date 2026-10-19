@@ -770,10 +770,9 @@ fn a_stop_request_ends_the_board_pass_between_needs() {
     assert!(planner_spawns(&host) <= 1, "the second need is skipped");
     assert!(!st.board.planning.contains_key("n2"));
     assert!(
-        host.logs()
-            .contains(&String::from(
-                "board: control stop requested; finishing the pass early"
-            )),
+        host.logs().contains(&String::from(
+            "board: control stop requested; finishing the pass early"
+        )),
         "logs: {:?}",
         host.logs()
     );
