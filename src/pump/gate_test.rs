@@ -603,6 +603,7 @@ fn red_after_fix_is_reported_once_when_the_fix_units_are_settled_and_the_name_st
     st.units.insert(
         String::from("pumpfix-settled-1"),
         Unit {
+            need: String::from("pumpfix-settled"),
             status: Status::Merged,
             ..Unit::default()
         },
@@ -910,6 +911,7 @@ fn residual_state(unit: Status) -> State {
     st.units.insert(
         format!("{OLD_OWNER}-1"),
         Unit {
+            need: String::from(OLD_OWNER),
             status: unit,
             ..Unit::default()
         },
@@ -952,6 +954,32 @@ fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
     assert!(st.promotions.is_empty());
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default();
     assert!(!exceptions.contains("red-after-fix"));
+    drop(dir);
+}
+
+#[test]
+fn units_of_a_real_handle_need_settle_their_owner_even_when_uids_differ() {
+    let (dir, ctx, host) = residual_setup(2);
+    host.reply(
+        "need send",
+        0,
+        "created operator ef012345\nsent ef012345\n",
+    );
+    let mut st = gate_state(4);
+    st.red
+        .insert(String::from(RESIDUAL), String::from("ab12cd34"));
+    st.units.insert(
+        String::from("pumpfix-g01234567-1"),
+        Unit {
+            need: String::from("ab12cd34"),
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert_eq!(st.red.get(RESIDUAL), Some(&String::from("ef012345")));
+    assert_eq!(st.extra["replans"][RESIDUAL], 1);
+    assert_eq!(host.spawned().len(), 1);
     drop(dir);
 }
 
