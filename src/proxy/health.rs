@@ -134,12 +134,21 @@ fn intern_known_status(status: &str) -> &'static str {
     }
 }
 
-/// Aggregate JSON: `ok` only when every named provider is `ok`.
+/// Overall health: `ok` when at least one named provider is `ok`.
+#[must_use]
+pub fn aggregate_ok(rows: &[ProviderHealth]) -> bool {
+    !rows.is_empty() && rows.iter().any(|row| row.status == "ok")
+}
+
+/// Aggregate JSON: `ok` is true when at least one named provider is `ok`.
 #[must_use]
 pub fn aggregate_json(rows: &[ProviderHealth]) -> serde_json::Value {
-    let ok = !rows.is_empty() && rows.iter().all(|row| row.status == "ok");
     serde_json::json!({
-        "ok": ok,
+        "ok": aggregate_ok(rows),
         "providers": rows,
     })
 }
+
+#[cfg(test)]
+#[path = "health_test.rs"]
+mod health_test;
