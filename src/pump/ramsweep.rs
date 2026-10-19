@@ -49,7 +49,15 @@ pub(crate) fn sweep_ramdisks_with(
         if !disk.volume.starts_with(&scope) {
             continue;
         }
+        let pool_mount = ramdisk::pool_slot_for_mount(&disk.mount).is_some();
         let pool_owner = pool_owner_for_disk(&disk);
+        if pool_mount && pool_owner.is_none() {
+            lines.push(format!(
+                "WARNING ramdisk sweep: preserving {} because its pool ownership marker does not match the attached device",
+                disk.volume
+            ));
+            continue;
+        }
         if let Some(owner) = &pool_owner
             && slot_is_alive(&owner.slot)
         {
@@ -100,7 +108,9 @@ fn pool_owner_for_disk(disk: &Disk) -> Option<PoolRamOwner> {
             .lines()
             .find_map(|line| line.strip_prefix(&format!("{name}=")))
     };
+    let device = ramdisk::whole_disk(&disk.device);
     (field("volume") == Some(disk.volume.as_str())
+        && field("device") == Some(device.as_str())
         && field("mount") == Some(disk.mount.to_string_lossy().as_ref())
         && field("job").is_some_and(|job| !job.is_empty()))
     .then(|| PoolRamOwner {

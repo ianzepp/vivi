@@ -411,6 +411,36 @@ fn mounted_reports_nothing_when_the_listings_fail() {
     assert!(mounted(&runner).is_empty());
 }
 
+#[test]
+#[ignore = "manual 1 GiB macOS hdiutil mount/eject smoke"]
+fn real_runner_mounts_and_releases_one_gib_at_an_owned_temp_path() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let pid = std::process::id().to_string();
+    let volume = volume_name(&["smoke", &pid]);
+    let runner = RealRunner;
+
+    let disk = mount(&runner, &volume, 1, temp.path()).unwrap();
+    let write = std::fs::write(temp.path().join("smoke.txt"), b"RAM disk smoke\n");
+    let detach = teardown(&runner, &disk);
+
+    assert!(
+        write.is_ok(),
+        "mounted RAM disk was not writable: {write:?}"
+    );
+    assert!(
+        detach.is_ok(),
+        "RAM disk did not detach cleanly: {detach:?}"
+    );
+    assert!(
+        !mounted(&runner)
+            .iter()
+            .any(|attached| attached.volume == volume)
+    );
+}
+
 /// A runner whose listings report no attached disks, so `held_gib` is zero.
 fn empty_runner() -> FakeRunner {
     FakeRunner::new(&[("mount", Ok("")), ("df -g", Ok(""))])

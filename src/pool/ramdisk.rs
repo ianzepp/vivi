@@ -450,7 +450,7 @@ fn still_attached(runner: &dyn Runner, device: &str, volume: &str) -> Result<boo
 /// `device` with any `sN` slice suffix stripped (`/dev/disk7s1` ->
 /// `/dev/disk7`, `/dev/disk5s1s1` -> `/dev/disk5`), which is what `diskutil
 /// eject` takes.
-fn whole_disk(device: &str) -> String {
+pub(crate) fn whole_disk(device: &str) -> String {
     let mut out = device.to_string();
     loop {
         let cut = out.rfind('s').filter(|&pos| {

@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::pool::slot::{META_STATE, PoolId, STATE_READY, slot_metadata, slot_state};
 
+const RAMDISK_SLOT_ID: &str = "ms/pool/slot-0";
+
 fn provider(root: &std::path::Path) -> LocalProvider {
     provider_for(
         root.parent().unwrap(),
@@ -35,6 +37,19 @@ fn provider_for(
             pools: vec![pool.into()],
         },
     )
+}
+
+fn local_host_context(
+    project: &std::path::Path,
+    mailspace: &str,
+    pool: &str,
+) -> super::super::runpod::HostContext {
+    super::super::runpod::HostContext {
+        dir: project.join(".vivi"),
+        mailspace: mailspace.into(),
+        pool: pool.into(),
+        pools: vec![pool.into()],
+    }
 }
 
 fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
@@ -460,7 +475,8 @@ fn local_ramdisk_provider(
         root.display()
     ))
     .unwrap();
-    LocalProvider::with_runner(&config, runner).with_available_memory(available)
+    let context = local_host_context(root.parent().unwrap(), "ms", "pool");
+    LocalProvider::with_runner(&config, &context, runner).with_available_memory(available)
 }
 
 fn local_worktree_ramdisk_provider(
@@ -475,7 +491,8 @@ fn local_worktree_ramdisk_provider(
         source.to_string_lossy()
     ))
     .unwrap();
-    LocalProvider::with_runner(&config, runner).with_available_memory(u64::MAX)
+    let context = local_host_context(root.parent().unwrap(), "ms", "pool");
+    LocalProvider::with_runner(&config, &context, runner).with_available_memory(u64::MAX)
 }
 
 fn local_target(
@@ -568,6 +585,38 @@ fn local_gate_pool_mounts_the_configured_full_size_without_a_local_source() {
 }
 
 #[test]
+fn a_project_relative_pool_two_part_slot_id_mounts_and_tears_down_ram() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().join("poolroot");
+    let id = "pool/slot-1";
+    let config: PoolConfig = toml::from_str(
+        "provider = \"local\"\nslots = 2\n[local]\nroot = \"poolroot\"\n\
+         [ramdisk]\nenabled = true\nsize_gib = 1\nmargin_gib = 0\n",
+    )
+    .unwrap();
+    let runner = Arc::new(LocalPoolRamRunner::new(&[]));
+    let context = local_host_context(project.path(), "ms", "pool");
+    let provider = LocalProvider::with_runner(&config, &context, runner.clone())
+        .with_available_memory(u64::MAX);
+    slots::create(&root, id, &spec("pool", 1, "exit 0\n")).unwrap();
+
+    let workspace = provider
+        .prepare_job(id, None, "tip", "two-part-job")
+        .unwrap()
+        .unwrap();
+    let slot = root.join(id);
+    let marker = std::fs::read_to_string(slot.join("ramdisk")).unwrap();
+    assert!(marker.contains("volume=vivi-pool-slot-1-two-part-job\n"));
+    assert!(slot.join("targets").join(workspace.cache_key).is_dir());
+    assert_eq!(runner.attached().len(), 1);
+
+    teardown_ramdisk(&slot, id, &*runner).unwrap();
+
+    assert!(!slot.join("ramdisk").exists());
+    assert!(runner.attached().is_empty());
+}
+
+#[test]
 fn a_no_target_worktree_job_runs_under_ram_and_preserves_the_seeded_checkout() {
     let (_tmp, root) = root();
     let id = create_idle_slot(&root);
@@ -600,7 +649,7 @@ fn a_no_target_worktree_job_runs_under_ram_and_preserves_the_seeded_checkout() {
             .contains(&format!("mount={}\n", mount.display()))
     );
 
-    teardown_ramdisk(&slot, &*runner).unwrap();
+    teardown_ramdisk(&slot, &id, &*runner).unwrap();
 
     assert!(!job_worktree.exists());
     assert!(slot.join(slots::CHECKOUT).join(".git").is_file());
@@ -660,7 +709,7 @@ fn ramdisk_teardown_removes_its_worktree_ejects_and_clears_the_marker() {
     ramdisk_marker(slot.path(), &mount, &fixture.repo);
     let runner = RamdiskTestRunner::new(&mount, false);
 
-    teardown_ramdisk(slot.path(), &runner).unwrap();
+    teardown_ramdisk(slot.path(), RAMDISK_SLOT_ID, &runner).unwrap();
 
     assert!(!slot.path().join("ramdisk").exists());
     assert!(!worktree.exists());
@@ -683,7 +732,7 @@ fn ramdisk_teardown_failure_keeps_the_marker_for_retry() {
     ramdisk_marker(slot.path(), &mount, &fixture.repo);
     let runner = RamdiskTestRunner::new(&mount, true);
 
-    let error = teardown_ramdisk(slot.path(), &runner).unwrap_err();
+    let error = teardown_ramdisk(slot.path(), RAMDISK_SLOT_ID, &runner).unwrap_err();
 
     assert!(error.to_string().contains("still attached"), "{error}");
     assert!(slot.path().join("ramdisk").is_file());
@@ -696,13 +745,65 @@ fn ramdisk_teardown_failure_keeps_the_marker_for_retry() {
 }
 
 #[test]
+fn a_marker_for_another_device_is_not_ejected_or_removed() {
+    let fixture = crate::pool::local_fixture::fixture();
+    let slot = tempfile::tempdir().unwrap();
+    let mount = slot.path().join("targets").join("cache-key");
+    ramdisk_marker(slot.path(), &mount, &fixture.repo);
+    let marker = std::fs::read_to_string(slot.path().join("ramdisk")).unwrap();
+    std::fs::write(
+        slot.path().join("ramdisk"),
+        marker.replace("device=/dev/disk7", "device=/dev/disk8"),
+    )
+    .unwrap();
+    let runner = RamdiskTestRunner::new(&mount, false);
+
+    assert!(teardown_ramdisk(slot.path(), RAMDISK_SLOT_ID, &runner).is_err());
+
+    assert!(slot.path().join("ramdisk").is_file());
+    assert!(
+        !runner
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("diskutil eject "))
+    );
+}
+
+#[test]
+fn teardown_keeps_the_disk_when_the_recorded_repository_does_not_own_the_worktree() {
+    let actual = crate::pool::local_fixture::fixture();
+    let recorded = crate::pool::local_fixture::fixture();
+    let slot = tempfile::tempdir().unwrap();
+    let mount = slot.path().join("targets").join("cache-key");
+    let worktree = mount.join("repo");
+    std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+    let repo = crate::pool::local_git::Repo::new(&actual.repo);
+    repo.add_worktree(&worktree, "main").unwrap();
+    ramdisk_marker(slot.path(), &mount, &recorded.repo);
+    let runner = RamdiskTestRunner::new(&mount, false);
+
+    let error = teardown_ramdisk(slot.path(), RAMDISK_SLOT_ID, &runner).unwrap_err();
+
+    assert!(error.to_string().contains("belongs to another repository"));
+    assert!(slot.path().join("ramdisk").is_file());
+    assert!(worktree.join(".git").is_file());
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
+    assert!(
+        !runner
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("diskutil eject "))
+    );
+}
+
+#[test]
 fn malformed_ramdisk_marker_causes_no_runner_or_worktree_operations() {
     let slot = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(slot.path().join("targets/cache-key")).unwrap();
     std::fs::write(slot.path().join("ramdisk"), "volume=vivi-unknown\n").unwrap();
     let runner = RamdiskTestRunner::new(&slot.path().join("targets/cache-key"), false);
 
-    assert!(teardown_ramdisk(slot.path(), &runner).is_err());
+    assert!(teardown_ramdisk(slot.path(), RAMDISK_SLOT_ID, &runner).is_err());
 
     assert!(runner.calls().is_empty());
     assert!(slot.path().join("ramdisk").is_file());
@@ -719,7 +820,7 @@ fn root_seed_checkout_marker_is_rejected_without_removing_the_worktree() {
     ramdisk_marker(slot.path(), &worktree, &fixture.repo);
     let runner = RamdiskTestRunner::new(&worktree, false);
 
-    assert!(teardown_ramdisk(slot.path(), &runner).is_err());
+    assert!(teardown_ramdisk(slot.path(), RAMDISK_SLOT_ID, &runner).is_err());
 
     assert!(worktree.join(".git").is_file());
     assert_eq!(
@@ -744,7 +845,7 @@ fn symlinked_ramdisk_marker_is_preserved_without_mount_operations() {
     symlink(external.path(), slot.path().join("ramdisk")).unwrap();
     let runner = RamdiskTestRunner::new(&slot.path().join("targets/cache-key"), false);
 
-    assert!(teardown_ramdisk(slot.path(), &runner).is_err());
+    assert!(teardown_ramdisk(slot.path(), RAMDISK_SLOT_ID, &runner).is_err());
 
     assert!(
         slot.path()

@@ -111,18 +111,22 @@ detach_local() {
 [ -z "${LOCAL_ACTION:-}" ] || trap detach_local EXIT
 [ -z "${LOCAL_ACTION:-}" ] || trap 'exit 143' TERM HUP INT
 
+RAMDISK_FULL_DETECTED=0
+ramdisk_full_output() {
+  grep -Eq 'No space left on device|os error 28' "$@" 2>/dev/null
+}
+
 ramdisk_full() { # ramdisk_full <push-outcome>
   [[ "${RAMDISK_SIZE_GIB:-0}" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ "$RAMDISK_FULL_DETECTED" -eq 1 ] && return 0
   if [ -n "${AGENT_RC:-}" ] && [ "$AGENT_RC" -ne 0 ]; then
-    grep -Eq 'No space left on device|os error 28' \
-      "$J/agent.out" "$J/agent.err" "$J/run.log" 2>/dev/null
+    ramdisk_full_output "$J/agent.out" "$J/agent.err" "$J/run.log"
     return $?
   fi
   case "$1" in
     pushed|committed|no_changes|read_only_*) return 1 ;;
   esac
-  grep -Eq 'No space left on device|os error 28' \
-    "$J/agent.out" "$J/agent.err" "$J/run.log" 2>/dev/null
+  ramdisk_full_output "$J/agent.out" "$J/agent.err" "$J/run.log"
 }
 
 finish() { # finish <push-outcome> [sha]
@@ -365,7 +369,8 @@ done
 # the first 40 lines and 4096 bytes, control characters dropped, backslash and
 # line break escaped so a value is one line. A command gets FACT_SECS seconds
 # and may write 8 MB to each stream (it is stopped beyond that, and a stopped
-# command counts as failed). A failing fact never fails the job.
+# command counts as failed). A failing fact is only fatal when its output proves
+# that the per-job RAM disk filled; otherwise it remains report-only.
 FACT_SECS=10
 FACTS_EXTRA=
 esc() {
@@ -385,6 +390,10 @@ run_facts() {
     [ -n "$cmd" ] || continue
     n=$((n + 1))
     run_fact "$cmd"; rc=$?
+    if [ "$rc" -ne 0 ] && [[ "${RAMDISK_SIZE_GIB:-0}" =~ ^[1-9][0-9]*$ ]] &&
+       ramdisk_full_output "$J/fact.out" "$J/fact.err"; then
+      RAMDISK_FULL_DETECTED=1
+    fi
     if [ "$rc" -eq 0 ] || [ ! -s "$J/fact.err" ]; then out=$(keep_head "$J/fact.out"); else out=$(keep_head "$J/fact.err"); fi
     [ -z "$FACTS_EXTRA" ] || FACTS_EXTRA+=$'\n'
     FACTS_EXTRA+="fact_${n}_cmd=$(esc "$cmd")"$'\n'"fact_${n}_exit=$rc"$'\n'"fact_${n}_out=$(esc "$out")"
@@ -393,6 +402,7 @@ run_facts() {
   kill_agent
 }
 run_facts
+[ "$RAMDISK_FULL_DETECTED" -ne 1 ] || finish ramdisk_full
 A0=$(now)
 as_hand env -i "${HARNESS_ENV[@]}" timeout -k 15 "$BUDGET" bash -c "$HARNESS_CMD" \
   > "$J/agent.out" 2> "$J/agent.err"

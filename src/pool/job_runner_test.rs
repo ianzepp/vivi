@@ -216,6 +216,23 @@ fn ramdisk_full_agent_failure_is_reported_with_configured_size() {
 }
 
 #[test]
+fn a_failed_pool_fact_that_fills_ram_is_reported_before_the_harness_runs() {
+    let rig = Rig::new();
+    let settings = "RAMDISK_SIZE_GIB='8'\nRAMDISK_ENV_COUNT='0'\n";
+
+    let result = rig.run_with_ramdisk_settings(
+        "touch harness-ran",
+        &["echo 'No space left on device' >&2; exit 28"],
+        settings,
+    );
+
+    assert_eq!(result.push(), "ramdisk_full", "{:?}", result.fields);
+    assert_eq!(result.get("ramdisk_size_gib"), "8");
+    assert_eq!(result.get("fact_1_exit"), "28");
+    assert!(!rig.repo().join("harness-ran").exists());
+}
+
+#[test]
 fn a_tree_the_agent_only_read_is_reported_unchanged() {
     let rig = Rig::new();
     let (branches, refs) = (rig.branches(), rig.origin_refs());

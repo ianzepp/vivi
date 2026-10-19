@@ -269,6 +269,35 @@ fn sweep_preserves_a_live_dispatched_pool_job_across_pump_restart() {
 }
 
 #[test]
+fn sweep_preserves_a_pool_mount_when_its_marker_names_another_device() {
+    let scratch = Scratch::new("pool-device-mismatch");
+    let mount = scratch.pool_mount_point("vivi-here-slot-0-build", "build");
+    let marker = PathBuf::from(&mount)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("ramdisk");
+    let text = std::fs::read_to_string(&marker).unwrap();
+    std::fs::write(
+        &marker,
+        text.replace("device=/dev/disk7", "device=/dev/disk8"),
+    )
+    .unwrap();
+    let runner = FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]);
+    let (ctx, host) = ctx_with("here", &scratch);
+
+    let lines = sweep_ramdisks_with(&ctx, &runner, |_| false);
+
+    assert!(runner.ejections().is_empty());
+    assert!(removals(&host).is_empty());
+    assert!(
+        lines.is_empty(),
+        "a pool mount without a matching device marker is not swept"
+    );
+}
+
+#[test]
 fn sweep_warns_when_the_disk_survives_teardown() {
     let scratch = Scratch::new("survivor");
     let mount = scratch.mount_point("vivi-here-slot1-job1", &["repo"]);
