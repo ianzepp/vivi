@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::tempdir;
 
-use crate::skills::{self, SkillCopyStatus, catalog};
+use crate::skills::{self, Skill, SkillCopyStatus, catalog};
 
 #[test]
 fn catalog_has_the_three_shipped_skills_at_crate_version() {
@@ -224,6 +224,20 @@ fn copy_status_up_to_date_and_absent() {
         skills::copy_status(empty.path()),
         SkillCopyStatus::NotInstalled
     );
+}
+
+#[test]
+fn catalog_matches_json_detects_change() {
+    let payload: Vec<_> = catalog().iter().map(Skill::summary).collect();
+    let json = serde_json::to_string(&payload).unwrap();
+    assert_eq!(skills::catalog_matches_json(&json), Some(false));
+
+    let version = env!("CARGO_PKG_VERSION");
+    let bumped = json.replacen(version, "0.0.0-changed", 1);
+    assert_ne!(bumped, json);
+    assert_eq!(skills::catalog_matches_json(&bumped), Some(true));
+
+    assert_eq!(skills::catalog_matches_json("not json"), None);
 }
 
 /// Lay down every catalog skill, file for file, exactly as embedded.
