@@ -79,6 +79,24 @@ impl Mailspace {
                 StepOutcome::Exception(exc) => exceptions.push(exc),
             }
         }
+        // Blocked nodes never dispatch, but a dependent whose letter names a
+        // dependency this mailspace does not hold is not merely waiting: the
+        // reference must be filed or fetched. Report it so the gap is visible.
+        for node in show
+            .nodes
+            .iter()
+            .filter(|node| node.readiness == "blocked" && !node.awaiting_dependencies.is_empty())
+        {
+            exceptions.push(exception(
+                node,
+                &node.kind,
+                "awaiting_dependency",
+                &format!(
+                    "waits on {} not held in this mailspace",
+                    node.awaiting_dependencies.join(", ")
+                ),
+            ));
+        }
         Ok(StepManifest {
             graph: graph.code,
             dispatches,
