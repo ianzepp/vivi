@@ -601,6 +601,41 @@ fn a_splitting_unit_with_no_answer_for_1500_seconds_is_stuck() {
     );
 }
 
+#[test]
+fn a_splitting_unit_with_a_written_plan_is_left_to_ingest() {
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            split_hard_cap: 1500,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/u-1.split.json"), "{}").unwrap();
+    host.advance(1501);
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Splitting);
+    assert!(!exceptions(&ctx).contains("split-no-answer"));
+}
+
+#[test]
+fn spawn_planner_removes_a_stale_exit_receipt() {
+    let (_dir, ctx, host) = setup_with(planner_cfg());
+    let dir = ctx.home.join("resplit");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("u-9.out.rc"), "127\n").unwrap();
+
+    spawn_planner(&ctx, "resplit", "u-9", "p");
+
+    assert!(!ctx.home.join("resplit/u-9.out.rc").exists());
+    assert_eq!(
+        host.spawned(),
+        vec![String::from("plan-it /charter/path.md --quiet")]
+    );
+}
+
 /// Write the split planner's raw output for `uid`.
 fn write_planner_out(ctx: &Ctx, uid: &str, text: &str) {
     let dir = ctx.home.join("resplit");
