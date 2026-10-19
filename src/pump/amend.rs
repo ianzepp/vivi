@@ -87,8 +87,21 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
             record.thread_sha256 = Some(hash);
             record.thread_seen_at = Some(last);
         }
-        launch_revision(ctx, st, handle);
+        launch_revision(ctx, st, handle, None);
     }
+}
+
+/// Ask for a revision of `handle`'s plan with a reason for the planner, ahead
+/// of any thread move.
+///
+/// `amendment_pending` is set before the planner starts so
+/// [`detect`] does not launch a second one; the landing revision clears it.
+pub fn request(ctx: &Ctx, st: &mut State, handle: &str, note: &str) {
+    let Some(record) = st.needs.get_mut(handle) else {
+        return;
+    };
+    record.amendment_pending = true;
+    launch_revision(ctx, st, handle, Some(note));
 }
 
 /// Epoch seconds of every open need's newest event, from one `board --json`.
@@ -150,8 +163,9 @@ fn thread_hash(ctx: &Ctx, handle: &str) -> Option<String> {
     Some(format!("{HASH_SCHEME}{}", hex::encode(hasher.finalize())))
 }
 
-/// Write the revision prompt and spawn the planner for one need.
-fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str) {
+/// Write the revision prompt and spawn the planner for one need, naming
+/// `note` as the reason when the caller has one.
+fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) {
     let Some(record) = st.needs.get(handle) else {
         return;
     };
@@ -197,6 +211,10 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str) {
          addendum; list withdrawn pending unit ids in \"withdraw\". Your final message is one line: handle, \
          revision, number of units."
     );
+    let prompt = match note {
+        Some(note) => format!("{prompt} Reason for this revision: {note}."),
+        None => prompt,
+    };
     if ctx.cfg.planner.run.is_empty() {
         ctx.log(&format!(
             "amendment: {handle} needs a revision but [pump.planner] run is empty"

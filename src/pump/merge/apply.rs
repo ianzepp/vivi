@@ -27,12 +27,49 @@ pub(super) fn apply_undecided(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     ctx.log(&format!("{why} {}: {head}", result.uid));
 }
 
-/// `ok=false`: a decided failure — the unit is failed through
-/// [`collect::fail`], which retries it or marks it stuck.
+/// `ok=false`: a decided failure. A proof that failed as a *usage* error is
+/// a plan defect, not a hand failure ([`apply_needs_replan`]); every other
+/// failure goes through [`collect::fail`], which retries it or marks it
+/// stuck.
 pub(super) fn apply_failure(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     let why = result.why.clone().unwrap_or_default();
     let detail = result.detail.clone().unwrap_or_default();
+    if why == "proof-usage" {
+        apply_needs_replan(ctx, st, result, &detail);
+        return;
+    }
     collect::fail(ctx, st, &result.uid, &why, &detail);
+}
+
+/// A proof whose command cannot run as written is a defect in the plan: park
+/// the unit `needs-replan`, name the unit and command in an exception, and ask
+/// for a revision of the need's plan.
+///
+/// No history attempt is pushed, no attempt record is posted, and
+/// `unit.attempts` is left alone: the dispatch already counted this attempt,
+/// and the unit is not redispatched until a revision amends it.
+fn apply_needs_replan(ctx: &Ctx, st: &mut State, result: &MergeResult, detail: &str) {
+    let uid = result.uid.as_str();
+    let need = match st.units.get_mut(uid) {
+        Some(unit) => {
+            unit.status = Status::NeedsReplan;
+            unit.since = ctx.now();
+            unit.task = None;
+            Some(unit.need.clone())
+        }
+        None => None,
+    };
+    let text: String = detail.chars().take(300).collect();
+    ctx.exception("needs-replan", uid, &text);
+    ctx.log(&format!("needs-replan {uid}: proof usage error"));
+    if let Some(need) = need.filter(|need| st.needs.contains_key(need)) {
+        crate::pump::amend::request(
+            ctx,
+            st,
+            &need,
+            &format!("unit {uid} failed its proof as a usage error"),
+        );
+    }
 }
 
 /// `ok=true`: the unit becomes `merged` with its tip and outside files, the
