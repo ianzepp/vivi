@@ -83,7 +83,10 @@ fn feed_sends_a_local_pool_job_with_its_worktree_source() {
     st.units.get_mut("u1").unwrap().pool = Some(String::from("glm"));
     merger.feed(&ctx, &mut st);
     assert_eq!(st.units["u1"].status, Status::Merging);
-    assert_eq!(take(&jobs).remove(0).source, Some(PathBuf::from("/wtree/repo")));
+    assert_eq!(
+        take(&jobs).remove(0).source,
+        Some(PathBuf::from("/wtree/repo"))
+    );
 }
 
 #[test]
