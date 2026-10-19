@@ -957,3 +957,80 @@ fn parse_dispatched_slot_needs_a_slot_token() {
     assert_eq!(parse_dispatched_slot("dispatched 1a2b3c4d fly4"), None);
     assert_eq!(parse_dispatched_slot("nothing to see here"), None);
 }
+
+/// A config whose one plain kind pool (`fly4`) is also the gate pool, with
+/// `per_tick` room for both a plain and a fix unit.
+fn gate_pool_cfg() -> PumpConfig {
+    let mut cfg = cfg_with(3);
+    cfg.gate.pools = vec![String::from("fly4")];
+    cfg
+}
+
+/// Wire one free gate-pool slot plus the sends a start needs.
+fn wire_gate_pool(host: &Arc<FakeHost>) {
+    host.reply("pool status", 0, "slot fly4 bridge slot-1 free\n");
+    wire_sends(host);
+}
+
+#[test]
+fn a_forced_gate_reserves_the_last_gate_pool_slot() {
+    let (dir, ctx, host) = setup_with(gate_pool_cfg());
+    wire_gate_pool(&host);
+    fs::write(dir.path().join("home/FORCE-GATE"), "after fixes\n").unwrap();
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "pumpfix-1"]);
+    // The fix unit must wait, so only the reservation can hold the plain one.
+    st.units.get_mut("pumpfix-1").unwrap().retry_not_before = Some(T0 + 60);
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["pumpfix-1"].status, Status::Pending);
+    assert!(commands_with(&host, "task send").is_empty());
+    assert!(commands_with(&host, "pool dispatch").is_empty());
+
+    // The flag clears but the fix unit still waits: the plain unit may not
+    // take the last gate-pool slot that the fix unit needs.
+    fs::remove_file(dir.path().join("home/FORCE-GATE")).unwrap();
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["pumpfix-1"].status, Status::Pending);
+    assert!(commands_with(&host, "task send").is_empty());
+
+    // The fix unit becomes ready and takes the reserved slot; the plain unit
+    // still cannot take the last slot while the fix unit is pending.
+    host.advance(120);
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["pumpfix-1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    let sent = commands_with(&host, "task send --from operator --to hand");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("[pumpfix-1 a1]"));
+}
+
+#[test]
+fn a_waiting_fix_unit_reserves_the_gate_pool_slot() {
+    let (_dir, ctx, host) = setup_with(gate_pool_cfg());
+    wire_gate_pool(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "pumpfix-1"]);
+    dispatch(&ctx, &mut st);
+    // No forced gate: the fix unit takes the reserved slot and the plain unit
+    // cannot have it.
+    assert_eq!(st.units["pumpfix-1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(commands_with(&host, "task send").len(), 1);
+
+    // A fix unit that must wait still holds the slot: the plain unit cannot
+    // take the last gate-pool slot.
+    let mut blocked = State::default();
+    ordered(&mut blocked, &["u2", "pumpfix-2"]);
+    blocked.units.get_mut("pumpfix-2").unwrap().retry_not_before = Some(T0 + 3600);
+    dispatch(&ctx, &mut blocked);
+    assert_eq!(blocked.units["u2"].status, Status::Pending);
+    assert_eq!(blocked.units["u2"].task, None);
+
+    // With no fix unit pending the plain unit dispatches.
+    let mut plain_only = State::default();
+    ordered(&mut plain_only, &["u3"]);
+    dispatch(&ctx, &mut plain_only);
+    assert_eq!(plain_only.units["u3"].status, Status::Inflight);
+}

@@ -16,6 +16,58 @@ use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, rank
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::{choose_model, lanes_for};
 
+/// The forced-gate flag prefix: `FORCE-GATE` names the `default` target's
+/// flag, `FORCE-GATE-<target>` a named target's.
+const FORCE_FLAG: &str = "FORCE-GATE";
+
+/// The gate-pool slot a dispatch tick holds back: `reserved` while a forced
+/// gate or a waiting fix unit needs a slot, `forced` when a `FORCE-GATE` flag
+/// already claims it (then even a fix unit leaves the slot alone).
+#[derive(Clone, Copy)]
+struct GateSlot {
+    /// One slot of every `[pump.gate].pools` pool is not offered to units.
+    reserved: bool,
+    /// A forced gate's flag exists, so the reserved slot is strictly the
+    /// gate's.
+    forced: bool,
+}
+
+impl GateSlot {
+    /// The free slots `pool` offers `uid` under this reservation: a gate pool
+    /// counts one slot lower, except for a fix-prefixed unit while no
+    /// `FORCE-GATE` flag exists.
+    fn free_for(&self, ctx: &Ctx, pool: &str, free: &BTreeMap<String, u32>, uid: &str) -> u32 {
+        let n = free.get(pool).copied().unwrap_or(0);
+        if !self.reserved || !ctx.cfg.gate.pools.iter().any(|name| name == pool) {
+            return n;
+        }
+        if !self.forced && uid.starts_with(ctx.cfg.fix_prefix.as_str()) {
+            return n;
+        }
+        n.saturating_sub(1)
+    }
+}
+
+/// `true` when a forced gate is waiting to start: this target's flag exists,
+/// or any configured target's does.
+fn force_gate_pending(ctx: &Ctx) -> bool {
+    if ctx.flag(FORCE_FLAG) {
+        return true;
+    }
+    ctx.cfg
+        .target_configs()
+        .keys()
+        .any(|id| ctx.flag(&format!("{FORCE_FLAG}-{id}")))
+}
+
+/// `true` when a unit handled by a fix need is still pending, so a fix unit is
+/// waiting for a slot.
+fn fix_unit_waiting(st: &State, prefix: &str) -> bool {
+    st.units
+        .iter()
+        .any(|(uid, unit)| unit.status == Status::Pending && uid.starts_with(prefix))
+}
+
 /// The I/O outcome of trying to start one unit: pure command results with no
 /// state applied, so [`start_unit`] can run off-thread and [`apply_start`]
 /// can write the state later.
@@ -139,6 +191,13 @@ fn tail(s: &str, n: usize) -> String {
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
     apply_env_pauses(ctx, st, &mut free);
+    let forced = force_gate_pending(ctx);
+    let reserve = !ctx.cfg.gate.pools.is_empty()
+        && (forced || fix_unit_waiting(st, &ctx.cfg.fix_prefix));
+    let gate = GateSlot {
+        reserved: reserve,
+        forced,
+    };
     let holds = dependency_holds(ctx, st);
     let order = ranked(ctx, st, st.order.clone());
     let mut planned: Vec<Planned> = Vec::new();
@@ -161,7 +220,7 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         if report_unknown_kind(ctx, st, &uid) {
             continue;
         }
-        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned) else {
+        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned, gate) else {
             continue;
         };
         let Some(model) = plan.model.clone() else {
@@ -318,6 +377,7 @@ fn plan_unit(
     free: &BTreeMap<String, u32>,
     holds: &BTreeMap<String, Vec<String>>,
     planned: &[Planned],
+    gate: GateSlot,
 ) -> Option<Plan> {
     let unit = st.units.get(uid)?;
     if !is_ready(ctx, st, uid, holds) {
@@ -337,7 +397,7 @@ fn plan_unit(
     {
         return None;
     }
-    let pool = assigned_pool(ctx, &kind.pools, free)?;
+    let pool = assigned_pool(ctx, uid, &kind.pools, free, gate)?;
     let attempt = unit.attempts + 1;
     Some(Plan {
         pool: pool.clone(),
@@ -348,16 +408,23 @@ fn plan_unit(
 }
 
 /// The role's pool when the hand role sets one (wait if it is full); else
-/// the kind's pool with the most free slots.
-fn assigned_pool(ctx: &Ctx, kind_pools: &[String], free: &BTreeMap<String, u32>) -> Option<String> {
+/// the kind's pool with the most free slots. A gate-pool slot held back for a
+/// forced gate or a waiting fix unit is not offered here.
+fn assigned_pool(
+    ctx: &Ctx,
+    uid: &str,
+    kind_pools: &[String],
+    free: &BTreeMap<String, u32>,
+    gate: GateSlot,
+) -> Option<String> {
     if let Some(pool) = ctx
         .routing
         .hand(&ctx.cfg.to)
         .and_then(|role| role.pool.clone())
     {
-        return (free.get(&pool).copied().unwrap_or(0) >= 1).then_some(pool);
+        return (gate.free_for(ctx, &pool, free, uid) >= 1).then_some(pool);
     }
-    pick_pool(kind_pools, free)
+    pick_pool(ctx, uid, kind_pools, free, gate)
 }
 
 fn pick_unit_model(
@@ -403,12 +470,18 @@ fn inflight_models(st: &State, pool: Option<&str>) -> BTreeMap<String, u32> {
     load
 }
 
-/// The pool with the most free slots among `pools` (ties: first listed);
-/// `None` when none has a free slot.
-fn pick_pool(pools: &[String], free: &BTreeMap<String, u32>) -> Option<String> {
+/// The pool with the most free slots for `uid` among `pools` (ties: first
+/// listed); `None` when none has a free slot.
+fn pick_pool(
+    ctx: &Ctx,
+    uid: &str,
+    pools: &[String],
+    free: &BTreeMap<String, u32>,
+    gate: GateSlot,
+) -> Option<String> {
     let mut best: Option<(&String, u32)> = None;
     for pool in pools {
-        let n = free.get(pool).copied().unwrap_or(0);
+        let n = gate.free_for(ctx, pool, free, uid);
         if n >= 1 && best.is_none_or(|(_, top)| n > top) {
             best = Some((pool, n));
         }
