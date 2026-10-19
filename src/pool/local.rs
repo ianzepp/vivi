@@ -23,7 +23,7 @@
 //!   detached HEAD so no branch is held (see [`super::local_branch`]).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -102,6 +102,31 @@ fn new_slot_id(spec: &CreateSpec) -> Result<String, VivariumError> {
     } else {
         Err(VivariumError::Message(format!("not a slot id: {id}")))
     }
+}
+
+/// Refuse a slot whose `worktree_of` names a repository other than the pool's
+/// configured source: its jobs would commit into a foreign repository. A
+/// missing file (a fetch slot) or an unreadable one claims as before.
+fn refuse_foreign_worktree(
+    id: &str,
+    dir: &Path,
+    configured: &Path,
+) -> Result<(), VivariumError> {
+    let file = dir.join(slots::WORKTREE_OF_FILE);
+    let Ok(recorded) = std::fs::read_to_string(&file) else {
+        return Ok(());
+    };
+    let recorded = recorded.trim();
+    let real =
+        |path: &str| std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+    if real(recorded) == real(&configured.to_string_lossy()) {
+        return Ok(());
+    }
+    Err(VivariumError::Message(format!(
+        "slot {id} is a worktree of {recorded}, not of this pool's repository {}; \
+         remake it from this pool's repository with `vivi pool destroy {id}` then `vivi pool create`",
+        configured.display()
+    )))
 }
 
 impl PoolProvider for LocalProvider {
@@ -234,7 +259,11 @@ impl PoolProvider for LocalProvider {
 
     fn claim(&self, id: &str, task: &str, now: u64) -> Result<Option<Hold>, VivariumError> {
         super::ssh::one_line(task)?;
-        slots::claim(&self.dir(id)?, task, now)
+        let dir = self.dir(id)?;
+        if let Some(configured) = self.source.as_deref() {
+            refuse_foreign_worktree(id, &dir, configured)?;
+        }
+        slots::claim(&dir, task, now)
     }
 
     /// The slot is free again: back on a detached HEAD, so its branch is free.

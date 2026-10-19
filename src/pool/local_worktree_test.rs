@@ -697,3 +697,62 @@ fn a_shared_slot_keeps_dynamic_target_worktrees_and_removes_them_on_destroy() {
     assert_eq!(Repo::new(&second.repo).worktrees().unwrap().len(), 1);
     assert!(!caches.exists());
 }
+
+/// A bare provider over a worktree pool rooted at `root` whose configured
+/// source is `source`: no seeding, no mailspace, just the config.
+fn bare_provider(root: &std::path::Path, source: &std::path::Path) -> LocalProvider {
+    let config: PoolConfig = toml::from_str(&format!(
+        "provider = \"local\"\nslots = 2\n[local]\nroot = \"{}\"\nworktree_of = \"{}\"\n[harness]\nname = \"standin\"\nrun = \"true\"\nmodels = [\"standin\"]\n[committer]\nname = \"Pool Test\"\nemail = \"pool-test@localhost\"\n",
+        root.display(),
+        source.display()
+    ))
+    .unwrap();
+    LocalProvider::new(&config)
+}
+
+/// Lay out slot `id` as a ready worktree slot of `repo` under `root`.
+fn ready_worktree_slot(root: &std::path::Path, id: &str, repo: &std::path::Path) {
+    use crate::pool::slot::{META_STATE, STATE_READY, slot_metadata};
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    let spec = CreateSpec {
+        name: id.replace('/', "-"),
+        image: String::new(),
+        metadata: slot_metadata(&PoolId::new("e2e", "", "wt"), 1, "main"),
+        env: BTreeMap::from([
+            ("WORKTREE_OF".to_string(), repo.display().to_string()),
+            ("BASE".to_string(), base),
+        ]),
+        once_env: BTreeMap::new(),
+        passthrough_env: Vec::new(),
+        files: Vec::new(),
+        command: vec!["true".into()],
+        build_dir: None,
+        tmpfs: String::new(),
+    };
+    slots::create(root, id, &spec).unwrap();
+    slots::seal(&root.join(id), META_STATE, STATE_READY).unwrap();
+}
+
+#[test]
+fn claim_refuses_a_slot_that_is_a_worktree_of_another_repository() {
+    let a = fixture();
+    let b = fixture();
+    let root_dir = tempfile::tempdir().unwrap();
+    let root = root_dir.path().canonicalize().unwrap().join("lanes");
+    let provider = bare_provider(&root, &a.repo);
+
+    ready_worktree_slot(&root, "e2e/wt/slot-1", &b.repo);
+    let said = provider
+        .claim("e2e/wt/slot-1", "task1", 100)
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("worktree of"), "{said}");
+    assert!(said.contains(&a.repo.display().to_string()), "{said}");
+    assert!(said.contains(&b.repo.display().to_string()), "{said}");
+    assert!(said.contains("vivi pool destroy e2e/wt/slot-1"), "{said}");
+    assert!(!root.join("e2e/wt/slot-1/claim").exists(), "no claim landed");
+
+    ready_worktree_slot(&root, "e2e/wt/slot-2", &a.repo);
+    let hold = provider.claim("e2e/wt/slot-2", "task2", 100).unwrap();
+    assert!(hold.is_some(), "the pool's own worktree slot claims");
+}
