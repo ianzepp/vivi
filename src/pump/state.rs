@@ -246,6 +246,10 @@ pub struct Unit {
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_on: Option<String>,
+    /// The unit was requeued once by the blocking-stuck response, so a second
+    /// stall parks it stuck again instead of being requeued a second time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requeued: bool,
     /// Transient-class failures already retried without counting toward
     /// max_attempts. `pump.db` keeps it in the unit's `extra_json` column.
     #[serde(default)]
