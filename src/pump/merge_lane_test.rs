@@ -142,6 +142,46 @@ fn feed_under_hold_merge_also_sends_priority_units() {
 }
 
 #[test]
+fn feed_under_hold_allows_fix_floor_and_clear_scopes() {
+    let (_dir, mut ctx, _host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.gate.hold_priority_floor = 10;
+    ctx.cfg = std::sync::Arc::new(cfg);
+    std::fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
+    crate::pump::priority::set(&ctx.home, "warm", 5).unwrap();
+    crate::pump::priority::set(&ctx.home, "hot", 20).unwrap();
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[
+        ("pumpfixa", Status::Delivered),
+        ("plain", Status::Delivered),
+        ("crate", Status::Delivered),
+        ("low", Status::Delivered),
+        ("high", Status::Delivered),
+    ]);
+    st.red.insert(
+        String::from("radix-cli some::test"),
+        String::from("pumpfix-gx"),
+    );
+    st.units.get_mut("plain").unwrap().write_scope = vec![String::from("docs/x.md")];
+    for uid in ["crate", "low", "high"] {
+        st.units.get_mut(uid).unwrap().write_scope =
+            vec![String::from("crates/radix-cli/src/lib.rs")];
+    }
+    st.units.get_mut("low").unwrap().need = String::from("warm");
+    st.units.get_mut("high").unwrap().need = String::from("hot");
+    merger.feed(&ctx, &mut st);
+    for uid in ["pumpfixa", "plain", "high"] {
+        assert_eq!(st.units[uid].status, Status::Merging, "{uid} is fed");
+    }
+    for uid in ["crate", "low"] {
+        assert_eq!(st.units[uid].status, Status::Delivered, "{uid} is held");
+    }
+    let sent: Vec<String> = take(&jobs).into_iter().map(|job| job.uid).collect();
+    assert_eq!(sent, ["pumpfixa", "high", "plain"]);
+    assert!(jobs.try_recv().is_err());
+}
+
+#[test]
 fn feed_holds_a_delivered_unit_until_its_need_dependency_lands() {
     let (_dir, ctx, host) = setup("");
     host.reply(
