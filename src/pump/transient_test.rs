@@ -1,6 +1,6 @@
 //! Tests for [`super::transient`].
 
-use super::transient::{classify, jitter, provider_rate_limited};
+use super::transient::{build_only_check, classify, jitter, provider_rate_limited};
 
 /// A `merge-conflict` detail shaped exactly like `merge` writes it.
 fn conflict(files: &[&str]) -> String {
@@ -73,6 +73,25 @@ fn provider_rate_limit_markers_are_transient() {
     assert!(!provider_rate_limited("planner exited 1: no plan written"));
     assert!(!provider_rate_limited("cargo test finished ok"));
     assert!(!provider_rate_limited(""));
+}
+
+#[test]
+fn build_only_checks() {
+    // The lane-timeout shape `merge` writes: command embedded after the exit.
+    let killed = |cmd: &str| {
+        format!(
+            "After merging into the integration branch, this command failed (exit 124):\n\
+             {cmd}\n\nWhat failed:\n[timeout after 480s]"
+        )
+    };
+    assert!(build_only_check(&killed("cargo test --workspace --no-run --quiet")));
+    assert!(build_only_check(&killed("cargo build --release")));
+    assert!(build_only_check(&killed("cargo check --workspace")));
+    assert!(build_only_check(&killed("cargo clippy --all-targets")));
+    assert!(!build_only_check(&killed("cargo test --workspace --quiet")));
+    // No embedded command at all: empty detail, and the bare timeout marker.
+    assert!(!build_only_check(""));
+    assert!(!build_only_check("partial output\n[timeout after 1s]"));
 }
 
 #[test]
