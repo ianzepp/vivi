@@ -1,13 +1,15 @@
 //! Tests for [`super::merge`] part 1: `failure_text`, `reset_repo` and
 //! `merge_work`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::merge::{batch_work, failure_text, merge_work};
+use crate::pump::merge::{batch_work, clear_stale_lock, failure_text, merge_work};
 use crate::pump::state::{MergeJob, MergeResult};
 
 /// A context whose integration branch is `next`, with one shared check,
@@ -1097,4 +1099,62 @@ fn every_commit_making_command_carries_the_configured_identity() {
     }
     assert!(commits.iter().any(|c| c.contains(" commit -q")));
     assert!(commits.iter().any(|c| c.contains("merge main into next")));
+}
+
+/// Create `<repo>/.git/index.lock` with an mtime `age` seconds before now.
+fn lock_file(ctx: &Ctx, age: u64) -> PathBuf {
+    let git = ctx.repo.join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    let path = git.join("index.lock");
+    let file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    let at = SystemTime::now() - Duration::from_secs(age);
+    file.set_times(std::fs::FileTimes::new().set_modified(at))
+        .unwrap();
+    path
+}
+
+/// Bring the fake clock onto real time, so lock mtimes are comparable.
+fn set_real_clock(host: &FakeHost) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    host.set_now(now);
+    now
+}
+
+#[test]
+fn a_stale_index_lock_is_cleared_and_logged() {
+    let (_dir, ctx, host) = setup("");
+    set_real_clock(&host);
+    let path = lock_file(&ctx, 10 * 60);
+    assert_eq!(clear_stale_lock(&ctx), Ok(()));
+    assert!(!path.exists(), "the stale lock is gone");
+    let last = host.logs().last().cloned().unwrap_or_default();
+    assert!(last.contains("cleared stale index.lock"), "{last}");
+}
+
+#[test]
+fn a_young_index_lock_is_left_alone_and_fails_the_check() {
+    let (_dir, ctx, host) = setup("");
+    set_real_clock(&host);
+    let path = lock_file(&ctx, 0);
+    let err = clear_stale_lock(&ctx).unwrap_err();
+    assert!(err.contains("not cleared"), "{err}");
+    assert!(path.exists(), "the young lock is kept: {err}");
+    assert!(host.logs().is_empty(), "{:?}", host.logs());
+}
+
+#[test]
+fn an_absent_index_lock_is_ok_and_creates_nothing() {
+    let (_dir, ctx, host) = setup("");
+    set_real_clock(&host);
+    assert_eq!(clear_stale_lock(&ctx), Ok(()));
+    assert!(!ctx.repo.join(".git/index.lock").exists());
+    assert!(host.logs().is_empty(), "{:?}", host.logs());
 }
