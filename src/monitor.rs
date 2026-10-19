@@ -6,4 +6,5 @@
 //! Model and provider information comes from vivi's own records, never from
 //! inspecting a live process.
 
+pub mod events;
 pub mod model;
