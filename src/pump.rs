@@ -9,6 +9,7 @@ pub mod blockers;
 pub mod board;
 pub mod boardpass;
 pub mod brief;
+pub mod cadence;
 pub mod closeout;
 pub mod collect;
 pub mod config;
