@@ -15,7 +15,8 @@ use serde::Serialize;
 use crate::VivariumError;
 use crate::pump::attempt_record::{self, Ending};
 use crate::pump::host::{Ctx, shell_quote, shell_split};
-use crate::pump::state::{Attempt, State, Status};
+use crate::pump::state::{Attempt, State, Status, Unit};
+use crate::pump::transient;
 
 /// Seconds a unit may stay unreported by reconcile before the pool-status
 /// fallback decides.
@@ -122,6 +123,10 @@ pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) -> Option<u32
 /// either return the unit to `pending` or park it as `stuck` with an
 /// exception once `max_attempts` is reached. The attempt record is posted on
 /// the need thread (see [`attempt_record`]), fetching the task receipt.
+///
+/// A transient-class failure (see [`transient::classify`]) backs off and
+/// retries instead of counting toward `max_attempts`, up to
+/// `transient_max` retries; past that cap the unit takes the normal path.
 pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
     fail_with(ctx, st, uid, why, detail, None);
 }
@@ -130,6 +135,8 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
 fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, receipt: Option<&str>) {
     let now = ctx.now();
     let max = ctx.cfg.dispatch.max_attempts;
+    let cap = ctx.cfg.dispatch.transient_max;
+    let backoff = ctx.cfg.dispatch.transient_backoff;
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
@@ -143,22 +150,50 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         task: unit.task.clone(),
     });
     let attempts = unit.attempts;
-    let stuck = attempts >= max;
     attempt_record::post(ctx, st, uid, &Ending::failed(why, detail, receipt));
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
     unit.task = None;
-    unit.status = if stuck {
-        Status::Stuck
-    } else {
-        Status::Pending
-    };
-    if stuck {
-        ctx.exception("stuck", uid, &format!("{why}: {}", tail(detail, 300)));
-        crate::pump::quarantine::repair_stuck(ctx, st, uid);
+    let mut transient = false;
+    if let Some(class) = transient::classify(why, detail) {
+        transient = transient_retry(unit, now, cap, backoff);
+        if transient {
+            ctx.log(&format!(
+                "transient-retry {uid} {class} {}/{cap}",
+                unit.transient_retries
+            ));
+        }
+    }
+    if !transient {
+        let stuck = attempts.saturating_sub(unit.transient_retries) >= max;
+        unit.status = if stuck {
+            Status::Stuck
+        } else {
+            Status::Pending
+        };
+        if stuck {
+            ctx.exception("stuck", uid, &format!("{why}: {}", tail(detail, 300)));
+            crate::pump::quarantine::repair_stuck(ctx, st, uid);
+        }
     }
     ctx.log(&format!("fail {uid} attempt={attempts} {why}"));
+}
+
+/// Back off and retry a transient-class failure: return the unit to
+/// `pending`, count the retry, and set the clock it may be redispatched at
+/// (`backoff * 2^retries_before`). Returns `false` at the retry cap, leaving
+/// the unit for the normal stuck/pending decision; the caller logs the class.
+fn transient_retry(unit: &mut Unit, now: u64, cap: u32, backoff: u64) -> bool {
+    if unit.transient_retries >= cap {
+        return false;
+    }
+    let retries_before = unit.transient_retries;
+    unit.transient_retries = retries_before.saturating_add(1);
+    let wait = backoff.saturating_mul(2u64.saturating_pow(retries_before));
+    unit.retry_not_before = Some(now.saturating_add(wait));
+    unit.status = Status::Pending;
+    true
 }
 
 /// Send a unit to the split planner: write the resplit record,
