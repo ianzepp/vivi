@@ -35,7 +35,7 @@ fn planner_cfg() -> PumpConfig {
             run: String::from("plan-it {charter} --quiet"),
             charter: String::from("/charter/path.md"),
             split_hard_cap: 1500,
-            split_timeout_present: false,
+            ..PlannerConfig::default()
         },
         ..PumpConfig::default()
     }
@@ -695,6 +695,42 @@ fn a_dead_split_planner_is_reported_and_retried() {
     assert_eq!(u.status, Status::Splitting);
     assert_eq!(u.since, T0 + 61);
     assert_eq!(u.split_retry_at, None);
+}
+
+#[test]
+fn a_due_split_retry_defers_when_the_planner_cap_is_full() {
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            run: String::from("plan-it {charter} --quiet"),
+            split_hard_cap: 1500,
+            planners_max: 1,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    let mut waiting = unit(Status::Splitting, None, None);
+    waiting.split_retry_at = Some(T0);
+    put(&mut st, "u-2", waiting);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    assert!(
+        host.spawned().is_empty(),
+        "one planner already runs; the cap is 1: {:?}",
+        host.spawned()
+    );
+    let u = st.units.get("u-2").unwrap();
+    assert_eq!(u.status, Status::Splitting, "a deferred unit is not parked");
+    assert_eq!(u.split_retry_at, Some(T0 + 60), "launch staggers");
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("split-launch-deferred u-2")),
+        "the deferral is logged: {:?}",
+        host.logs()
+    );
 }
 
 /// The exact provider 429 line a rate-limited split planner leaves behind.

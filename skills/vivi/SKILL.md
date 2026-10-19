@@ -2450,6 +2450,7 @@ push_since   = "30m"                   # `vivi sync push --since` after replying
 run           = "<command>"            # required while board from or mark is set; stdin is the prompt file
 charter       = "<path>"               # substituted for {charter} in `run`
 split_hard_cap = 5400                 # hard cap on a receipt-less split planner; an exited planner is retried
+planners_max  = 3                     # concurrent split planners; extra launches stagger
 
 [pump.dispatch]
 # lanes is legacy: required only when no role has a pool. Role→pool
