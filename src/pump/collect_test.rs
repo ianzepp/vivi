@@ -9,7 +9,7 @@ use tempfile::tempdir;
 use crate::pump::collect::*;
 use crate::pump::config::{PlannerConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{GateRun, State, Status, Unit};
+use crate::pump::state::{Attempt, GateRun, State, Status, Unit};
 
 /// The fake clock's start; units are created "now".
 const T0: u64 = 1_000_000;
@@ -570,6 +570,78 @@ fn a_splitting_unit_with_no_answer_for_1500_seconds_is_stuck() {
     assert!(
         exceptions(&ctx)
             .contains("split-no-answer u-1 the split planner wrote no plan in 25 minutes")
+    );
+}
+
+/// Write the split planner's raw output for `uid`.
+fn write_planner_out(ctx: &Ctx, uid: &str, text: &str) {
+    let dir = ctx.home.join("resplit");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{uid}.out")), text).unwrap();
+}
+
+#[test]
+fn a_split_planner_that_died_host_class_returns_the_unit_pending() {
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            split_hard_cap: 1500,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let mut st = State::default();
+    let mut splitting = unit(Status::Splitting, None, None);
+    splitting.attempts = 1;
+    splitting.history.push(Attempt {
+        attempt: 1,
+        why: String::from("timeout"),
+        at: T0,
+        ..Attempt::default()
+    });
+    put(&mut st, "u-1", splitting);
+    write_planner_out(&ctx, "u-1", "bash: line 1: pi: command not found\n");
+    host.advance(60);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    let stuck = st.units.get("u-1").unwrap();
+    assert_eq!(stuck.status, Status::Pending);
+    assert!(stuck.task.is_none());
+    assert!(stuck.since > T0, "the unit restarts its pending clock");
+    let lines: Vec<String> = exceptions(&ctx)
+        .lines()
+        .filter(|line| line.contains("environment u-1"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(lines.len(), 1, "{:?}", exceptions(&ctx));
+    assert!(
+        lines[0].contains("split planner died: bash: line 1: pi: command not found"),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
+fn a_silent_split_planner_still_goes_stuck() {
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            split_hard_cap: 1500,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    write_planner_out(&ctx, "u-1", "thinking...\n");
+
+    host.advance(1501);
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
+    assert!(
+        exceptions(&ctx)
+            .contains("split-no-answer u-1 the split planner wrote no plan in 25 minutes"),
+        "{:?}",
+        exceptions(&ctx)
     );
 }
 
