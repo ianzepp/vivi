@@ -60,7 +60,8 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
 fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumError> {
     match command {
         MailspaceCommand::Init { project } => {
-            let mailspace = Mailspace::init(project.as_deref())?;
+            let mut mailspace = Mailspace::init(project.as_deref())?;
+            mailspace.ensure_operator_role()?;
             println!("mailspace {}", mailspace.config.name);
             println!("root      {}", mailspace.root.display());
             println!("store     {}", mailspace.store_path().display());
