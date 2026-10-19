@@ -1,6 +1,6 @@
 //! The command-line seam: the Host trait, its real and fake implementations.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -108,6 +108,9 @@ pub struct Ctx {
     pub lane: Option<Arc<LaneProgress>>,
     /// Role → pool map. Empty means the pump uses only the legacy tables.
     pub routing: Arc<RoleRouting>,
+    /// Pool name -> the local repository a `local` worktree pool commits unit
+    /// branches into (single-target pumps); empty when none.
+    pub pool_sources: Arc<BTreeMap<String, PathBuf>>,
     /// Who runs this pump: mailspace address prefix plus sync name.
     pub actor: String,
 }
@@ -137,6 +140,7 @@ impl Ctx {
             shell_prefix,
             lane: None,
             routing: Arc::new(RoleRouting::default()),
+            pool_sources: Arc::new(BTreeMap::new()),
             actor: String::new(),
         }
     }
@@ -145,6 +149,13 @@ impl Ctx {
     #[must_use]
     pub fn with_routing(mut self, routing: RoleRouting) -> Self {
         self.routing = Arc::new(routing);
+        self
+    }
+
+    /// Attach a pool name → local repository map for `local` worktree pools.
+    #[must_use]
+    pub fn with_pool_sources(mut self, sources: BTreeMap<String, PathBuf>) -> Self {
+        self.pool_sources = Arc::new(sources);
         self
     }
 
@@ -183,6 +194,7 @@ impl Ctx {
         );
         target.target_id = id.to_string();
         target.routing = self.routing.clone();
+        target.pool_sources = self.pool_sources.clone();
         Some(target)
     }
 
