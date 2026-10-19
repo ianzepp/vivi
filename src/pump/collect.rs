@@ -679,8 +679,8 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         drop(fs::remove_file(&receipt));
         // A provider 429 is not the unit's fault: retry it with its own
         // growing backoff and leave the split-planner retry budget alone.
-        let out = fs::read_to_string(ctx.home.join(format!("resplit/{uid}.out")))
-            .unwrap_or_default();
+        let out =
+            fs::read_to_string(ctx.home.join(format!("resplit/{uid}.out"))).unwrap_or_default();
         if transient::provider_rate_limited(&out) {
             unit.split_rate_retries = unit.split_rate_retries.saturating_add(1);
             let base = (120u64 << unit.split_rate_retries.saturating_sub(1).min(3)).min(900);

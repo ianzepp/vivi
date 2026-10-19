@@ -118,7 +118,11 @@ fn release_skills_reminder_matches_the_release_answer() {
     let candidates = vec![dir];
 
     let changed = release_skills_reminders(&candidates, Some(true));
-    assert_eq!(changed.len(), 1, "one up-to-date copy is named: {changed:?}");
+    assert_eq!(
+        changed.len(),
+        1,
+        "one up-to-date copy is named: {changed:?}"
+    );
     let line = &changed[0];
     assert!(
         line.contains("this release changed skills") && line.contains("may be stale"),
@@ -130,7 +134,11 @@ fn release_skills_reminder_matches_the_release_answer() {
     );
 
     let unknown = release_skills_reminders(&candidates, None);
-    assert_eq!(unknown.len(), 1, "one up-to-date copy is named: {unknown:?}");
+    assert_eq!(
+        unknown.len(),
+        1,
+        "one up-to-date copy is named: {unknown:?}"
+    );
     let line = &unknown[0];
     assert!(
         line.contains("if this release changed skills"),
@@ -152,7 +160,9 @@ fn write_script(path: &std::path::Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::write(path, body).expect("write script");
-    let mut permissions = std::fs::metadata(path).expect("script metadata").permissions();
+    let mut permissions = std::fs::metadata(path)
+        .expect("script metadata")
+        .permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(path, permissions).expect("make executable");
 }
