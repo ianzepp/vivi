@@ -33,6 +33,7 @@ fn sample() -> State {
         since: 10,
         since_dispatch: Some(11),
         ready_at: Some(8),
+        next_branch_suffix: Some(5),
         pool: Some(String::from("glm")),
         commit: Some(String::from("abc123")),
         merged_at: Some(12),
@@ -153,6 +154,7 @@ fn a_saved_state_round_trips() {
     assert_eq!(unit.commit.as_deref(), Some("abc123"));
     assert_eq!(unit.merged_at, Some(12));
     assert_eq!(unit.ready_at, Some(8));
+    assert_eq!(unit.next_branch_suffix, Some(5));
     assert!(unit.send_reported);
     assert_eq!(unit.split_fails, 2);
     assert_eq!(unit.split_retry_at, Some(99));

@@ -784,6 +784,59 @@ fn a_failed_pool_dispatch_marks_the_task_done_and_leaves_the_unit_pending() {
 }
 
 #[test]
+fn existing_attempt_branches_advance_until_dispatch_succeeds_without_extra_charge() {
+    let (dir, ctx, host) = setup();
+    wire(&host);
+    host.reply_once(
+        "pool dispatch --pool fly4",
+        1,
+        "error: message error: branch \"unit/u1-a2\" already exists and --from is \"origin/next\": refusing to move or reset it",
+    );
+    host.reply_once(
+        "pool dispatch --pool fly4",
+        1,
+        "error: message error: branch \"unit/u1-a3\" already exists and --from is \"origin/next\": refusing to move or reset it",
+    );
+    let mut st = State::default();
+    let mut unit = pending_unit("u1");
+    unit.attempts = 1;
+    unit.branch = Some(String::from("unit/u1-a1"));
+    ordered(&mut st, &["u1"]);
+    st.units.insert(String::from("u1"), unit);
+
+    dispatch(&ctx, &mut st);
+    dispatch(&ctx, &mut st);
+    dispatch(&ctx, &mut st);
+
+    let unit = &st.units["u1"];
+    assert_eq!(unit.status, Status::Inflight);
+    assert_eq!(
+        unit.attempts, 2,
+        "only the successful start charged a hand attempt"
+    );
+    assert!(unit.history.is_empty());
+    assert_eq!(unit.branch.as_deref(), Some("unit/u1-a4"));
+    assert_eq!(unit.next_branch_suffix, None);
+    assert_eq!(commands_with(&host, "task send").len(), 3);
+    let dispatches = commands_with(&host, "pool dispatch --pool fly4");
+    assert_eq!(dispatches.len(), 3);
+    for (dispatch, suffix) in dispatches.iter().zip(["a2", "a3", "a4"]) {
+        assert!(
+            dispatch.contains(&format!("unit/u1-{suffix}")),
+            "{dispatch}"
+        );
+    }
+    assert_eq!(commands_with(&host, "task done").len(), 2);
+    let exceptions = fs::read_to_string(dir.path().join("home/exceptions.txt")).unwrap();
+    assert_eq!(
+        exceptions.matches("branch-exists u1").count(),
+        1,
+        "{exceptions}"
+    );
+    assert!(exceptions.contains("dispatch will advance to the next suffix"));
+}
+
+#[test]
 fn no_free_slot_in_the_failure_text_stops_further_dispatch_to_that_pool() {
     let (_dir, ctx, host) = setup();
     host.reply("pool status", 0, "slot fly4 bridge slot-1 free\n");
@@ -1062,6 +1115,7 @@ fn apply_start_on_dispatch_failure_closes_the_task_and_zeroes_the_pool() {
             pool: String::from("fly4"),
             model: Some(String::from("m/a")),
             attempt: 1,
+            branch_suffix: 1,
             branch: String::from("unit/u1-a1"),
         },
         "m/a",

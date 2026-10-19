@@ -209,6 +209,11 @@ pub struct Unit {
     /// Attempts so far.
     #[serde(default)]
     pub attempts: u32,
+    /// Next branch suffix to try after a refused `unit/<id>-a<n>` branch.
+    /// This stays separate from `attempts`: branch collisions do not charge a
+    /// hand attempt, and the value is persisted in `units.extra_json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_branch_suffix: Option<u32>,
     /// Attempt log.
     #[serde(default)]
     pub history: Vec<Attempt>,

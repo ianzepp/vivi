@@ -129,22 +129,55 @@ fn validate_words(
     // real command is whatever follows the flags and assignments.
     let assignment_prefix = words[0].contains('=') && !words[0].starts_with('-');
     if base == "env" || assignment_prefix {
-        let tail = wrapped_tail(&words[1..]);
-        return if tail.is_empty() {
-            Ok(())
-        } else {
-            validate_words(&tail, depth + 1, cmd, repo, allow)
-        };
+        return validate_env_wrapper(&words, depth, cmd, repo, allow);
     }
     if matches!(base, "sh" | "bash" | "zsh") && words.len() > 2 && words[1] == "-c" {
-        for command in split_chain(&words[2]) {
-            let inner = crate::pump::host::shell_split(&command);
-            if !inner.is_empty() {
-                validate_words(&inner, depth + 1, cmd, repo, allow)?;
-            }
-        }
-        return Ok(());
+        return validate_shell_wrapper(&words, depth, cmd, repo, allow);
     }
+    validate_leaf(&words, base, cmd, repo, allow)
+}
+
+/// Validate the command nested after an `env` or assignment wrapper.
+fn validate_env_wrapper(
+    words: &[String],
+    depth: usize,
+    cmd: &str,
+    repo: &Path,
+    allow: &[String],
+) -> Result<(), String> {
+    let tail = wrapped_tail(&words[1..]);
+    if tail.is_empty() {
+        Ok(())
+    } else {
+        validate_words(&tail, depth + 1, cmd, repo, allow)
+    }
+}
+
+/// Validate every chained command inside `sh -c`.
+fn validate_shell_wrapper(
+    words: &[String],
+    depth: usize,
+    cmd: &str,
+    repo: &Path,
+    allow: &[String],
+) -> Result<(), String> {
+    for command in split_chain(&words[2]) {
+        let inner = crate::pump::host::shell_split(&command);
+        if !inner.is_empty() {
+            validate_words(&inner, depth + 1, cmd, repo, allow)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate one unwrapped command's executable and binary-specific syntax.
+fn validate_leaf(
+    words: &[String],
+    base: &str,
+    cmd: &str,
+    repo: &Path,
+    allow: &[String],
+) -> Result<(), String> {
     // A repo-relative path must name an executable file in the target
     // repository; it never goes through the bare-name allowlist.
     if words[0].contains('/') && !words[0].starts_with('/') {

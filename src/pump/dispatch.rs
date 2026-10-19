@@ -102,7 +102,10 @@ pub(crate) struct Plan {
     pub(crate) model: Option<String>,
     /// One more than the unit's attempts so far.
     pub(crate) attempt: u32,
-    /// `unit/<uid>-a<attempt>`.
+    /// Next unused branch suffix. This can exceed `attempt` after a stale
+    /// branch refusal without charging a hand attempt.
+    pub(crate) branch_suffix: u32,
+    /// `unit/<uid>-a<branch_suffix>`.
     pub(crate) branch: String,
 }
 
@@ -534,13 +537,32 @@ fn plan_unit(
     }
     let kind_pools = kind.map_or(&[][..], |kind| kind.pools.as_slice());
     let pool = assigned_pool(ctx, uid, kind_pools, free, gate)?;
-    let attempt = unit.attempts + 1;
+    let attempt = unit.attempts.saturating_add(1);
+    let branch_suffix = next_branch_suffix(uid, unit, attempt);
     Some(Plan {
         pool: pool.clone(),
         model: pick_unit_model(ctx, st, unit, &pool, planned),
         attempt,
-        branch: format!("unit/{uid}-a{attempt}"),
+        branch_suffix,
+        branch: format!("unit/{uid}-a{branch_suffix}"),
     })
+}
+
+/// Choose a branch after both charged attempts and the last known branch. A
+/// refused suffix advances this independently without spending an attempt.
+fn next_branch_suffix(uid: &str, unit: &Unit, attempt: u32) -> u32 {
+    let last = unit
+        .branch
+        .as_deref()
+        .and_then(|branch| branch.strip_prefix(&format!("unit/{uid}-a")))
+        .and_then(|suffix| match suffix.parse::<u32>() {
+            Ok(suffix) => Some(suffix),
+            Err(_) => None,
+        })
+        .map_or(0, |suffix| suffix.saturating_add(1));
+    attempt
+        .max(last)
+        .max(unit.next_branch_suffix.unwrap_or_default())
 }
 
 /// The hand role's pool and fallback chain when assigned; otherwise the kind's
@@ -807,10 +829,44 @@ pub(crate) fn apply_start(
             if let Some(unit) = st.units.get_mut(uid) {
                 unit.send_reported = false;
             }
+            let branch_exists = branch_exists_refusal(&text, &plan.branch);
             dispatch_failed(ctx, uid, &task, &plan.pool, &text, free);
+            if branch_exists {
+                let exhausted = plan.branch_suffix == u32::MAX;
+                let report = if let Some(unit) = st.units.get_mut(uid) {
+                    let report = unit.next_branch_suffix.is_none();
+                    unit.next_branch_suffix = (!exhausted).then(|| plan.branch_suffix + 1);
+                    if exhausted {
+                        unit.status = Status::Stuck;
+                    }
+                    report
+                } else {
+                    false
+                };
+                if report {
+                    ctx.exception(
+                        "branch-exists",
+                        uid,
+                        &format!(
+                            "pool refused existing branch {}; no attempt was charged; {}",
+                            plan.branch,
+                            if exhausted {
+                                "the branch suffix range is exhausted, so the unit is parked"
+                            } else {
+                                "dispatch will advance to the next suffix"
+                            }
+                        ),
+                    );
+                }
+            }
             false
         }
     }
+}
+
+/// A pool refused to reset or reuse the exact branch this dispatch requested.
+fn branch_exists_refusal(text: &str, branch: &str) -> bool {
+    text.contains("already exists") && text.contains(branch)
 }
 
 /// Give a slot reserved at plan time back to its pool.
@@ -837,6 +893,7 @@ fn apply_started(
     let now = ctx.now();
     unit.status = Status::Inflight;
     unit.attempts = plan.attempt;
+    unit.next_branch_suffix = None;
     unit.task = Some(task.to_owned());
     unit.branch = Some(plan.branch.clone());
     unit.model = Some(model.to_owned());

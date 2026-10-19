@@ -9,6 +9,7 @@
 mod apply;
 mod batch;
 mod fetch;
+mod flaky;
 mod lane;
 mod pool_dispatch;
 mod publish;

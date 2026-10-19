@@ -131,23 +131,51 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
 
 /// [`fail`] with the task's full receipt when the caller already has it.
 fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, receipt: Option<&str>) {
-    if let Some(path) = receipt
+    if replan_out_of_scope(ctx, st, uid, detail, receipt) {
+        return;
+    }
+    record_failure_attempt(ctx, st, uid, why, detail, receipt);
+}
+
+/// Send structured out-of-scope evidence to replanning before recording an
+/// attempt; `true` means the ordinary failure path was fully replaced.
+fn replan_out_of_scope(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    detail: &str,
+    receipt: Option<&str>,
+) -> bool {
+    let Some(path) = receipt
         .map(attempt_record::hand_message)
         .and_then(|message| {
             st.units
                 .get(uid)
                 .and_then(|unit| out_of_scope_marker(&message, &unit.write_scope))
         })
-    {
-        needs_replan(
-            ctx,
-            st,
-            uid,
-            "hand identified a blocked file outside write scope",
-            &format!("OUT-OF-SCOPE: {path}; {}", tail(detail, 250)),
-        );
-        return;
-    }
+    else {
+        return false;
+    };
+    needs_replan(
+        ctx,
+        st,
+        uid,
+        "hand identified a blocked file outside write scope",
+        &format!("OUT-OF-SCOPE: {path}; {}", tail(detail, 250)),
+    );
+    true
+}
+
+/// Post one failed attempt, then back off, refund a build-only timeout, or
+/// park a unit that exhausted its charged-attempt budget.
+fn record_failure_attempt(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    why: &str,
+    detail: &str,
+    receipt: Option<&str>,
+) {
     let now = ctx.now();
     let max = ctx.cfg.dispatch.max_attempts;
     let cap = ctx.cfg.dispatch.transient_max;
@@ -170,18 +198,7 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         return;
     };
     unit.task = None;
-    let mut transient = false;
-    let mut refund = false;
-    if let Some(class) = transient::classify(why, detail) {
-        transient = transient_retry(unit, now, cap, backoff);
-        if transient {
-            refund = class == "timeout" && transient::build_only_check(detail);
-            ctx.log(&format!(
-                "transient-retry {uid} {class} {}/{cap}",
-                unit.transient_retries
-            ));
-        }
-    }
+    let (transient, refund) = try_transient_retry(ctx, st, uid, why, detail, now, cap, backoff);
     if refund {
         refund_unmeasured_attempt(ctx, st, uid);
     }
@@ -206,6 +223,36 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         }
     }
     ctx.log(&format!("fail {uid} attempt={attempts} {why}"));
+}
+
+/// Apply the transient retry budget and report whether the attempt was
+/// retried or refunded as unmeasured.
+fn try_transient_retry(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    why: &str,
+    detail: &str,
+    now: u64,
+    cap: u32,
+    backoff: u64,
+) -> (bool, bool) {
+    let Some(class) = transient::classify(why, detail) else {
+        return (false, false);
+    };
+    let Some(unit) = st.units.get_mut(uid) else {
+        return (false, false);
+    };
+    let retried = transient_retry(unit, now, cap, backoff);
+    if !retried {
+        return (false, false);
+    }
+    let refund = class == "timeout" && transient::build_only_check(detail);
+    ctx.log(&format!(
+        "transient-retry {uid} {class} {}/{cap}",
+        unit.transient_retries
+    ));
+    (true, refund)
 }
 
 /// Give the attempt back when a transient retry never measured the unit: a
@@ -374,25 +421,9 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     let now = ctx.now();
     let cap = split_planner_cap(ctx);
     let deferred = live_split_planners(st) >= cap;
-    let record = {
-        let Some(unit) = st.units.get(uid) else {
-            return;
-        };
-        ResplitRecord {
-            id: uid.to_owned(),
-            need: unit.need.clone(),
-            target: unit.target_id().to_string(),
-            title: unit.title.clone(),
-            brief: unit.brief.clone(),
-            write_scope: unit.write_scope.clone(),
-            proof: unit.proof.clone(),
-            tools: unit.tools.clone(),
-            worker_said: tail(text, 3000),
-        }
+    let Some(record) = write_resplit_record(ctx, st, uid, text) else {
+        return;
     };
-    let dir = ctx.home.join("resplit");
-    drop(fs::create_dir_all(&dir));
-    drop(write_json(&dir.join(format!("{uid}.json")), &record));
     let queue_error = if deferred {
         None
     } else {
@@ -434,6 +465,26 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     if let Some(error) = queue_error {
         split_expiry::mark_queue_failure(ctx, st, uid, now, &error);
     }
+}
+
+/// Save the split planner's complete pump-local input before it is queued.
+fn write_resplit_record(ctx: &Ctx, st: &State, uid: &str, text: &str) -> Option<ResplitRecord> {
+    let unit = st.units.get(uid)?;
+    let record = ResplitRecord {
+        id: uid.to_owned(),
+        need: unit.need.clone(),
+        target: unit.target_id().to_string(),
+        title: unit.title.clone(),
+        brief: unit.brief.clone(),
+        write_scope: unit.write_scope.clone(),
+        proof: unit.proof.clone(),
+        tools: unit.tools.clone(),
+        worker_said: tail(text, 3000),
+    };
+    let dir = ctx.home.join("resplit");
+    drop(fs::create_dir_all(&dir));
+    drop(write_json(&dir.join(format!("{uid}.json")), &record));
+    Some(record)
 }
 
 /// Re-ask the split planner once after it wrote a bad split plan: the plan

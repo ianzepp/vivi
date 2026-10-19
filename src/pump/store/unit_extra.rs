@@ -5,8 +5,9 @@
 //! bookkeeping are real fields on
 //! [`Unit`], but they are rare, so they
 //! ride in the same JSON object that holds a unit's unknown keys instead of
-//! getting columns (and a schema bump). [`pack`] writes them next to the unknown keys; [`lift`] takes them
-//! back out, so `Unit::extra` never carries them.
+//! getting columns (and a schema bump). [`pack`] writes them next to the
+//! unknown keys; [`lift`] takes them back out, so `Unit::extra` never carries
+//! them.
 
 use serde_json::Value;
 
@@ -29,6 +30,8 @@ const TRANSIENT_RETRIES_KEY: &str = "transient_retries";
 const RETRY_NOT_BEFORE_KEY: &str = "retry_not_before";
 /// The `extra_json` key of [`Unit::ready_at`].
 const READY_AT_KEY: &str = "ready_at";
+/// The `extra_json` key of [`Unit::next_branch_suffix`].
+const NEXT_BRANCH_SUFFIX_KEY: &str = "next_branch_suffix";
 /// The `extra_json` key of [`Unit::split_fails`].
 const SPLIT_FAILS_KEY: &str = "split_fails";
 /// The `extra_json` key of [`Unit::split_retry_at`].
@@ -65,6 +68,9 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
     }
     if let Some(secs) = unit.ready_at {
         extra.insert(READY_AT_KEY.to_string(), Value::from(secs));
+    }
+    if let Some(suffix) = unit.next_branch_suffix {
+        extra.insert(NEXT_BRANCH_SUFFIX_KEY.to_string(), Value::from(suffix));
     }
     if unit.split_fails > 0 {
         extra.insert(SPLIT_FAILS_KEY.to_string(), Value::from(unit.split_fails));
@@ -116,6 +122,13 @@ pub(super) fn lift(unit: &mut Unit) {
         .and_then(|value| value.as_u64())
     {
         unit.ready_at = Some(secs);
+    }
+    if let Some(suffix) = unit
+        .extra
+        .remove(NEXT_BRANCH_SUFFIX_KEY)
+        .and_then(|value| value.as_u64())
+    {
+        unit.next_branch_suffix = Some(u32::try_from(suffix).unwrap_or(u32::MAX));
     }
     if let Some(fails) = unit
         .extra

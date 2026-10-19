@@ -126,17 +126,7 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     }
     let replaces = str_field(&plan, "replaces");
     let revision = plan.get("revision").and_then(Value::as_u64);
-    if replaces.is_none()
-        && let Some(current) = st.needs.get(need)
-    {
-        // A plan without a revision is the old one-shot path: ignore it for a
-        // known need. A revision at or below the current one is stale.
-        if revision.is_none_or(|revision| revision <= current.revision) {
-            st.plans_seen.push(key.to_string());
-            return;
-        }
-        st.plans_seen.push(key.to_string());
-        apply_revision(ctx, st, need, revision.unwrap_or(0), &plan, &text);
+    if ingest_existing_revision(ctx, st, key, need, revision, replaces, &plan, &text) {
         return;
     }
     st.plans_seen.push(key.to_string());
@@ -174,6 +164,32 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     let revision = revision.unwrap_or(1);
     mint(ctx, st, need, &minted, revision);
     record(ctx, st, &plan, need, replaces, &minted, revision);
+}
+
+/// Consume a current-need revision plan, returning `true` when the file was
+/// stale or revision application handled it.
+fn ingest_existing_revision(
+    ctx: &Ctx,
+    st: &mut State,
+    key: &str,
+    need: &str,
+    revision: Option<u64>,
+    replaces: Option<&str>,
+    plan: &Value,
+    text: &str,
+) -> bool {
+    let Some(current) = st.needs.get(need).filter(|_| replaces.is_none()) else {
+        return false;
+    };
+    // A plan without a revision is the old one-shot path; a revision at or
+    // below the current one is stale.
+    if revision.is_none_or(|revision| revision <= current.revision) {
+        st.plans_seen.push(key.to_string());
+        return true;
+    }
+    st.plans_seen.push(key.to_string());
+    apply_revision(ctx, st, need, revision.unwrap_or(0), plan, text);
+    true
 }
 
 fn is_hold_reason(reason: &str) -> bool {
