@@ -10,19 +10,19 @@ use crate::message::normalize_message_id;
 use crate::storage::{Storage, StoredMessageView};
 
 /// A work item held here: its rows and the facts events are judged by.
-pub(super) struct HeldItem {
-    pub(super) content_id: String,
-    pub(super) rfc_id: String,
-    pub(super) from_addr: String,
+pub(in crate::mailspace) struct HeldItem {
+    pub(in crate::mailspace) content_id: String,
+    pub(in crate::mailspace) rfc_id: String,
+    pub(in crate::mailspace) from_addr: String,
     /// `need`, `task`, or `want`.
-    pub(super) kind: &'static str,
-    pub(super) rows: Vec<StoredMessageView>,
-    pub(super) bytes: Vec<u8>,
-    pub(super) delegation: DelegationState,
+    pub(in crate::mailspace) kind: &'static str,
+    pub(in crate::mailspace) rows: Vec<StoredMessageView>,
+    pub(in crate::mailspace) bytes: Vec<u8>,
+    pub(in crate::mailspace) delegation: DelegationState,
 }
 
 /// The held work item behind `content_id`, if it is one.
-pub(super) fn held_item(
+pub(in crate::mailspace) fn held_item(
     storage: &Storage,
     content_id: &str,
 ) -> Result<Option<HeldItem>, VivariumError> {
