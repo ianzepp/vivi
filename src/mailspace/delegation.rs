@@ -190,7 +190,7 @@ impl Mailspace {
             return Ok(());
         };
         let handle = storage.display_handle(&row.message_id)?;
-        if super::backlog::backlog_node_of(storage, &handle)?.is_none() {
+        if Self::backlog_node_of(storage, &handle)?.is_none() {
             self.backlog_attach("need", &handle, &row.subject, &[])?;
             tally.applied += 1;
         }
