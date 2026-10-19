@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    MergeReceipt, SourceResult, apply_source, parse_receipt, published_integration_tip, valid_sha,
+    MERGE_TIMEOUT_RULES, MergeReceipt, SourceResult, apply_source, parse_receipt,
+    published_integration_tip, record_shared_timeout_exception, timeout_status_line, valid_sha,
     valid_sources,
 };
 use crate::pump::config::{Generated, PumpConfig};
 use crate::pump::host::test_ctx;
-use crate::pump::jobs::{JobOutcome, JobSpec, PoolJob};
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::merge::dispatch_pool;
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
@@ -108,6 +109,35 @@ fn merge_receipt_rejects_missing_or_duplicated_sources() {
         &[unit.clone(), unit, role_job],
         &expected_units,
         &expected_jobs,
+    ));
+}
+
+#[test]
+fn an_exhausted_shared_timeout_must_leave_every_source_undecided() {
+    let expected_units = BTreeSet::from([String::from("u1"), String::from("u2")]);
+    let undecided = |id: &str| SourceResult {
+        kind: String::from("unit"),
+        id: id.to_owned(),
+        status: String::from("undecided"),
+        why: String::from("shared-check-timeout"),
+        detail: String::from("cargo check timed out after 300s; retry timed out"),
+        outside: Vec::new(),
+        secs: None,
+    };
+    let mut merged = undecided("u2");
+    merged.status = String::from("merged");
+    merged.why.clear();
+    merged.detail.clear();
+
+    assert!(valid_sources(
+        &[undecided("u1"), undecided("u2")],
+        &expected_units,
+        &BTreeSet::new()
+    ));
+    assert!(!valid_sources(
+        &[undecided("u1"), merged],
+        &expected_units,
+        &BTreeSet::new()
     ));
 }
 
@@ -237,4 +267,165 @@ fn merge_receipt_requires_the_versioned_fields() {
     let parsed: MergeReceipt = serde_json::from_value(value).unwrap();
     assert_eq!(parsed.version, 1);
     assert!(parsed.sources.is_empty());
+}
+
+#[test]
+fn worker_recovery_receipt_preserves_check_identity_and_first_failure() {
+    let receipt = parse_receipt(
+        "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"0123456789012345678901234567890123456789\",\"shared_check_timeouts\":0,\"shared_check_timeout_retries\":0,\"shared_check_recoveries\":[{\"name\":\"stage-4b\",\"command\":\"cargo test --workspace\",\"detail\":\"first run was transiently locked\"}],\"sources\":[]}",
+    )
+    .unwrap();
+    let recovery = &receipt.shared_check_recoveries.unwrap()[0];
+    assert_eq!(recovery.name, "stage-4b");
+    assert_eq!(recovery.command, "cargo test --workspace");
+    assert_eq!(recovery.detail, "first run was transiently locked");
+}
+
+#[test]
+fn merge_timeout_brief_specifies_retry_bisect_and_metric_contract() {
+    assert!(MERGE_TIMEOUT_RULES.contains("shared-check-timeout"));
+    assert!(MERGE_TIMEOUT_RULES.contains("bisect-check-timeout"));
+    assert!(MERGE_TIMEOUT_RULES.contains("shared_check_timeouts"));
+    assert!(MERGE_TIMEOUT_RULES.contains("shared_check_timeout_retries"));
+    assert!(MERGE_TIMEOUT_RULES.contains("shared_check_recoveries"));
+    assert!(MERGE_TIMEOUT_RULES.contains("same tree"));
+}
+
+#[test]
+fn status_sums_timeout_metrics_from_terminal_merge_worker_receipts() {
+    let mut state = State::default();
+    for (id, timeouts, retries) in [("merge-1", 2, 1), ("merge-2", 1, 1)] {
+        let mut job = PoolJob::from(JobSpec::new(id, "merge", "merge", "s", "b"));
+        job.status = JobStatus::Finished;
+        job.outcome = Some(JobOutcome {
+            state: String::from("finished"),
+            detail: String::from("done"),
+            receipt: format!(
+                "PUMP_MERGE_RESULT={{\"version\":1,\"target\":\"default\",\"tip\":\"0123456789012345678901234567890123456789\",\"shared_check_timeouts\":{timeouts},\"shared_check_timeout_retries\":{retries},\"shared_check_recoveries\":[],\"sources\":[]}}"
+            ),
+            at: 1,
+        });
+        state.jobs.insert(String::from(id), job);
+    }
+
+    assert_eq!(
+        timeout_status_line(&state),
+        "shared-check timeouts 3, timeout retries 2, recovered checks 0"
+    );
+}
+
+#[test]
+fn status_does_not_turn_missing_timeout_metrics_into_zeroes() {
+    let mut state = State::default();
+    let mut job = PoolJob::from(JobSpec::new("merge-old", "merge", "merge", "s", "b"));
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("done"),
+        receipt: String::from(
+            "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"0123456789012345678901234567890123456789\",\"sources\":[]}",
+        ),
+        at: 1,
+    });
+    state.jobs.insert(String::from("merge-old"), job);
+
+    assert!(timeout_status_line(&state).contains("metrics incomplete"));
+    assert!(timeout_status_line(&State::default()).contains("unavailable"));
+}
+
+#[test]
+fn status_counts_recovered_shared_checks_from_worker_receipts() {
+    let mut state = State::default();
+    let mut job = PoolJob::from(JobSpec::new("merge-recovered", "merge", "merge", "s", "b"));
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("done"),
+        receipt: String::from(
+            "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"0123456789012345678901234567890123456789\",\"shared_check_timeouts\":1,\"shared_check_timeout_retries\":1,\"shared_check_recoveries\":[{\"name\":\"check-a\",\"command\":\"cargo test --lib check_a\",\"detail\":\"first run timed out after 300s\"}],\"sources\":[]}",
+        ),
+        at: 1,
+    });
+    state.jobs.insert(String::from("merge-recovered"), job);
+
+    assert_eq!(
+        timeout_status_line(&state),
+        "shared-check timeouts 1, timeout retries 1, recovered checks 1"
+    );
+}
+
+#[test]
+fn exhausted_worker_timeout_retry_records_command_and_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _) = test_ctx(dir.path(), PumpConfig::default());
+    let job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
+    let receipt = MergeReceipt {
+        version: 1,
+        target: String::from("default"),
+        tip: String::from("0123456789012345678901234567890123456789"),
+        shared_check_timeouts: Some(2),
+        shared_check_timeout_retries: Some(1),
+        shared_check_recoveries: Some(Vec::new()),
+        sources: vec![SourceResult {
+            kind: String::from("unit"),
+            id: String::from("u1"),
+            status: String::from("undecided"),
+            why: String::from("shared-check-timeout"),
+            detail: String::from(
+                "shared check cargo test --workspace timed out after 900s; its retry also timed out",
+            ),
+            outside: Vec::new(),
+            secs: None,
+        }],
+    };
+
+    record_shared_timeout_exception(&ctx, &job, &receipt);
+
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exceptions.contains("shared-check-timeout merge-1"),
+        "{exceptions}"
+    );
+    assert!(
+        exceptions.contains("cargo test --workspace"),
+        "{exceptions}"
+    );
+    assert!(exceptions.contains("timed out after 900s"), "{exceptions}");
+}
+
+#[test]
+fn accepted_shared_timeout_result_requeues_without_opening_a_repair() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _) = test_ctx(dir.path(), PumpConfig::default());
+    let mut job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
+    job.units = vec![String::from("u1")];
+    let mut state = State::default();
+    state.units.insert(
+        String::from("u1"),
+        Unit {
+            status: Status::Merging,
+            ..Unit::default()
+        },
+    );
+    let source = SourceResult {
+        kind: String::from("unit"),
+        id: String::from("u1"),
+        status: String::from("undecided"),
+        why: String::from("shared-check-timeout"),
+        detail: String::from("cargo check timed out after 300s; retry timed out"),
+        outside: Vec::new(),
+        secs: None,
+    };
+
+    apply_source(
+        &ctx,
+        &mut state,
+        &job,
+        &source,
+        "0123456789012345678901234567890123456789",
+    );
+
+    assert_eq!(state.units["u1"].status, Status::Delivered);
+    assert_eq!(state.units["u1"].repairs, None);
+    assert_eq!(state.units["u1"].quarantine, None);
 }

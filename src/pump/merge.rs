@@ -21,7 +21,7 @@ pub use lane::Merger;
 pub(crate) use lane::dispatch_results;
 #[cfg(test)]
 pub(crate) use lane::{LaneRam, detached_worker, lane_work, ramdisk_batch_after_admit};
-pub(crate) use pool_dispatch::{apply_dispatched, dispatch_pool};
+pub(crate) use pool_dispatch::{apply_dispatched, dispatch_pool, timeout_status_line};
 
 use std::time::UNIX_EPOCH;
 use std::{fs, io};

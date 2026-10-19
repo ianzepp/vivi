@@ -21,12 +21,29 @@ Classify the result honestly. If the source branch merges cleanly against the re
 
 End your receipt with one minified JSON line prefixed exactly `PUMP_MERGE_RESULT=`. Use this shape: `{"version":1,"target":"<target>","tip":"<full candidate SHA>","sources":[{"kind":"unit","id":"<unit id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0},{"kind":"job","id":"<origin job id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0}]}`. Include every requested source exactly once. `outside` is the repository paths changed outside a unit's write scope; use an empty list for role branches. The result tip is the full SHA you committed for runner publication."#;
 
+const MERGE_TIMEOUT_RULES: &str = r#"These retry rules refine the timeout sentence above: retry every failing shared/scoped check exactly once on the same tree before bisect or quarantine. If one run fails and its immediate retry passes, continue as passing and include one `shared_check_recoveries` record with the check's stable name (or an empty name when none exists), command and first failure detail. A timeout (rc=124 or the timeout wrapper's kill) is infrastructure, not a source defect. If either attempt timed out and the retry did not pass, report every source as undecided with `why=shared-check-timeout` and a `detail` naming the command and timeout; do not bisect, quarantine, or open a repair unit. Bisect only after a non-timeout check failure remains after its one retry. A solo check timeout during bisect is undecided (`why=bisect-check-timeout`), never clean or a culprit. Never open a quarantine repair for a timeout.
+
+Add `shared_check_timeouts` and `shared_check_timeout_retries` integer fields to the result JSON above. Count every shared/scoped check execution that timed out in `shared_check_timeouts`, including retry and solo-bisect executions; count additional attempts made after an initial timeout in `shared_check_timeout_retries`. Include both fields even when zero. Also include `shared_check_recoveries` as an array of `{name,command,detail}` objects, empty when no failed check recovered; `detail` is the first failure diagnostic. A timeout followed by a pass is a recovered check and belongs in this array. A retry that times out is never a recovery."#;
+
 #[derive(Debug, Clone, Deserialize)]
 struct MergeReceipt {
     version: u32,
     target: String,
     tip: String,
+    #[serde(default)]
+    shared_check_timeouts: Option<u64>,
+    #[serde(default)]
+    shared_check_timeout_retries: Option<u64>,
+    #[serde(default)]
+    shared_check_recoveries: Option<Vec<SharedCheckRecovery>>,
     sources: Vec<SourceResult>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SharedCheckRecovery {
+    name: String,
+    command: String,
+    detail: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -179,7 +196,7 @@ fn merge_spec(
         "merge",
         role,
         &format!("merge batch for {}", target.target_id),
-        &format!("{MERGE_BRIEF}\n\nInput JSON:\n{payload}"),
+        &format!("{MERGE_BRIEF}\n\n{MERGE_TIMEOUT_RULES}\n\nInput JSON:\n{payload}"),
     );
     spec.target = Some(target.target_id.clone());
     spec.from_ref = Some(target.cfg.branch.clone());
@@ -337,7 +354,10 @@ fn apply_job(ctx: &Ctx, st: &mut State, job: &PoolJob) {
         apply_source(ctx, st, job, source, &integration_tip);
     }
     jobs::mark_merged(st, &merged_jobs, &integration_tip);
-    jobs::mark_applied(st, &job.id, ctx.now());
+    if jobs::mark_applied(st, &job.id, ctx.now()) {
+        record_shared_timeout_exception(ctx, job, &receipt);
+        record_shared_recoveries(ctx, &receipt);
+    }
 }
 
 fn valid_result(
@@ -425,11 +445,89 @@ fn parse_receipt(receipt: &str) -> Option<MergeReceipt> {
     serde_json::from_str(line).ok()
 }
 
+/// Report an exhausted shared-check retry once for its merge job.
+fn record_shared_timeout_exception(ctx: &Ctx, job: &PoolJob, receipt: &MergeReceipt) {
+    if let Some(source) = receipt
+        .sources
+        .iter()
+        .find(|source| source.why == "shared-check-timeout")
+    {
+        ctx.exception("shared-check-timeout", &job.id, &source.detail);
+    }
+}
+
+/// Record recovered failed checks only after their merge receipt was accepted.
+fn record_shared_recoveries(ctx: &Ctx, receipt: &MergeReceipt) {
+    for recovery in receipt.shared_check_recoveries.iter().flatten() {
+        super::flaky::record_worker_flake(ctx, &recovery.name, &recovery.command, &recovery.detail);
+    }
+}
+
+/// Count shared-check timeouts from terminal durable merge-worker receipts.
+/// Older receipts without metrics make the line explicitly incomplete.
+pub(crate) fn timeout_status_line(st: &State) -> String {
+    let jobs: Vec<&PoolJob> = st
+        .jobs
+        .values()
+        .filter(|job| job.kind == "merge" && job.status.is_terminal())
+        .collect();
+    if jobs.is_empty() {
+        return String::from(
+            "shared-check timeout counts unavailable (no terminal merge worker receipts)",
+        );
+    }
+    let mut timeouts = 0_u64;
+    let mut retries = 0_u64;
+    let mut recoveries = 0_u64;
+    let mut missing = 0_usize;
+    for job in &jobs {
+        let metrics = job
+            .outcome
+            .as_ref()
+            .and_then(|outcome| parse_receipt(&outcome.receipt))
+            .and_then(|receipt| timeout_metrics(&receipt));
+        if let Some((job_timeouts, job_retries, job_recoveries)) = metrics {
+            timeouts = timeouts.saturating_add(job_timeouts);
+            retries = retries.saturating_add(job_retries);
+            recoveries = recoveries.saturating_add(job_recoveries);
+        } else {
+            missing += 1;
+        }
+    }
+    if missing == 0 {
+        format!(
+            "shared-check timeouts {timeouts}, timeout retries {retries}, recovered checks {recoveries}"
+        )
+    } else {
+        format!(
+            "shared-check timeout metrics incomplete: {timeouts} timeouts, {retries} retries, {recoveries} recoveries; {missing}/{} terminal merge receipts lack metrics",
+            jobs.len()
+        )
+    }
+}
+
+fn timeout_metrics(receipt: &MergeReceipt) -> Option<(u64, u64, u64)> {
+    let timeouts = receipt.shared_check_timeouts?;
+    let retries = receipt.shared_check_timeout_retries?;
+    let recoveries = u64::try_from(receipt.shared_check_recoveries.as_ref()?.len()).ok()?;
+    (retries <= timeouts).then_some((timeouts, retries, recoveries))
+}
+
 fn valid_sources(
     sources: &[SourceResult],
     units: &BTreeSet<String>,
     jobs: &BTreeSet<String>,
 ) -> bool {
+    let retry_timed_out = sources
+        .iter()
+        .any(|source| source.why == "shared-check-timeout");
+    if retry_timed_out
+        && sources
+            .iter()
+            .any(|source| source.status != "undecided" || source.why != "shared-check-timeout")
+    {
+        return false;
+    }
     let mut seen_units = BTreeSet::new();
     let mut seen_jobs = BTreeSet::new();
     for source in sources {

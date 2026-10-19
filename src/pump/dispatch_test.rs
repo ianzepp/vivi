@@ -1092,6 +1092,35 @@ fn a_hand_role_uses_its_configured_fallback_when_the_primary_pool_is_full() {
 }
 
 #[test]
+fn a_quarantine_repair_uses_the_separate_merge_repair_budget() {
+    let mut cfg = dispatch_cfg();
+    cfg.merge.proof_timeout = 900;
+    cfg.merge.repair_budget = Some(1800);
+    let (_dir, ctx, host) = setup_with(cfg);
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched task1 bridge slot-1 m/a pumpfix-q1-a1",
+    );
+    let mut unit = pending_unit("pumpfix-q1");
+    unit.repairs = Some(String::from("q1"));
+    let plan = Plan {
+        pool: String::from("fly4"),
+        model: Some(String::from("m/a")),
+        attempt: 1,
+        branch: String::from("pumpfix-q1-a1"),
+    };
+
+    let _ = dispatch_cmd(&ctx, &unit, &plan, "m/a", "task1");
+
+    assert!(
+        host.commands().iter().any(|command| {
+            command.contains("pool dispatch") && command.contains("--budget 1800")
+        })
+    );
+}
+
+#[test]
 fn a_full_role_pool_waits_and_does_not_spill_to_another_pool() {
     let status = "slot a bridge slot-1 busy\nslot b bridge slot-1 free\n";
     let st = run_full_units_routed(status, &["u1", "u2"], hand_on("a"));

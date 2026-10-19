@@ -447,6 +447,10 @@ pub struct MergeConfig {
     pub checks_for: BTreeMap<String, Vec<String>>,
     /// Seconds per check command.
     pub proof_timeout: u64,
+    /// Optional wall-clock budget for quarantine repair units. When absent,
+    /// the effective budget is `proof_timeout` plus repair headroom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_budget: Option<u64>,
     /// Seconds a remote merger has to claim a batch before this host merges.
     pub remote_wait: u64,
     /// Seconds a claimed batch may take.
@@ -464,6 +468,7 @@ impl Default for MergeConfig {
             shared_checks: Vec::new(),
             checks_for: BTreeMap::new(),
             proof_timeout: 300,
+            repair_budget: None,
             remote_wait: 90,
             remote_limit: 1800,
             generated: Vec::new(),
@@ -472,6 +477,13 @@ impl Default for MergeConfig {
 }
 
 impl MergeConfig {
+    /// Budget for a quarantine repair, with headroom above its failing proof.
+    #[must_use]
+    pub fn quarantine_repair_budget(&self) -> u64 {
+        self.repair_budget
+            .unwrap_or_else(|| self.proof_timeout.saturating_add(300))
+    }
+
     /// Every declared generated path, in declaration order, across all
     /// entries.
     #[must_use]
@@ -804,6 +816,13 @@ impl PumpConfig {
         if self.merge.lanes == 0 {
             bad.push("[pump.merge] lanes must be >= 1".into());
         }
+        if self
+            .merge
+            .repair_budget
+            .is_some_and(|budget| budget == 0 || budget < self.merge.proof_timeout)
+        {
+            bad.push("[pump.merge] repair_budget must be >= proof_timeout and >= 1".into());
+        }
         for entry in &self.merge.generated {
             if entry.paths.is_empty() {
                 bad.push("[[pump.merge.generated]] paths must not be empty".into());
@@ -864,6 +883,15 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Ve
     }
     if merge.is_some_and(|merge| merge.lanes == 0) {
         bad.push(format!("{prefix}.merge lanes must be >= 1"));
+    }
+    if merge.is_some_and(|merge| {
+        merge
+            .repair_budget
+            .is_some_and(|budget| budget == 0 || budget < merge.proof_timeout)
+    }) {
+        bad.push(format!(
+            "{prefix}.merge repair_budget must be >= proof_timeout and >= 1"
+        ));
     }
     validate_target_generated(id, merge, bad);
     if target.promote

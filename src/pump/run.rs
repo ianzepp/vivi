@@ -173,6 +173,7 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
         ),
     ];
     lines.extend(crate::pump::alarm::status_lines(ctx, st));
+    lines.push(crate::pump::merge::timeout_status_line(st));
     let send_failed: Vec<&str> = st
         .units
         .iter()

@@ -15,7 +15,7 @@ use crate::pump::config::{
     BoardConfig, DispatchConfig, GateConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
 };
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
-use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::merge::Merger;
 use crate::pump::run::{
     actor_string, ensure_repo, refresh_config, run, run_with, status, tick as run_tick,
@@ -160,7 +160,7 @@ fn write_status_writes_counts_then_stall_lines() {
     write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 9);
+    assert_eq!(lines.len(), 10);
     assert_eq!(lines[0], "1970-01-12T13:46:40Z");
     assert_eq!(lines[1], "units merged=1 pending=2");
     assert_eq!(lines[2], "plans closed=2 units=1");
@@ -169,7 +169,36 @@ fn write_status_writes_counts_then_stall_lines() {
     assert_eq!(lines[5], "last green never");
     assert_eq!(lines[6], "oldest waiting fix none");
     assert_eq!(lines[7], "delivered waiting 0, oldest none");
-    assert_eq!(lines[8], "lane default/0 idle merged 0 conflict 0");
+    assert_eq!(
+        lines[8],
+        "shared-check timeout counts unavailable (no terminal merge worker receipts)"
+    );
+    assert_eq!(lines[9], "lane default/0 idle merged 0 conflict 0");
+}
+
+#[test]
+fn write_status_reports_timeout_metrics_from_merge_worker_receipts() {
+    let (dir, ctx, _host) = setup();
+    let mut st = State::default();
+    let mut job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("done"),
+        receipt: String::from(
+            "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"0123456789012345678901234567890123456789\",\"shared_check_timeouts\":2,\"shared_check_timeout_retries\":1,\"shared_check_recoveries\":[],\"sources\":[]}",
+        ),
+        at: 1,
+    });
+    st.jobs.insert(String::from("merge-1"), job);
+
+    write_status(&ctx, &st, &[]);
+
+    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
+    assert!(
+        text.contains("shared-check timeouts 2, timeout retries 1, recovered checks 0"),
+        "{text}"
+    );
 }
 
 #[test]

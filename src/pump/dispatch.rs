@@ -711,6 +711,14 @@ fn dispatch_cmd(
     model: &str,
     task: &str,
 ) -> UnitStart {
+    let target_cfg = ctx.cfg.for_target(unit.target_id());
+    let budget = target_cfg.map_or(ctx.cfg.dispatch.budget, |config| {
+        if unit.repairs.is_some() {
+            config.merge.quarantine_repair_budget()
+        } else {
+            config.dispatch.budget
+        }
+    });
     let cmd = format!(
         "pool dispatch --pool {} {} --need {} --kind {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
         shell_quote(&plan.pool),
@@ -721,7 +729,7 @@ fn dispatch_cmd(
         shell_quote(model),
         shell_quote(&unit_base(ctx, unit)),
         shell_quote(&plan.branch),
-        ctx.cfg.dispatch.budget,
+        budget,
     );
     let out = ctx.vivi(&cmd, 180);
     if out.code != 0 || !out.text.contains("dispatched") {
