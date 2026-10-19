@@ -154,6 +154,8 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.budget, 600);
     assert_eq!(cfg.dispatch.overdue_grace, 900);
     assert_eq!(cfg.dispatch.per_tick, 6);
+    assert_eq!(cfg.dispatch.transient_max, 2, "default transient retry cap");
+    assert_eq!(cfg.dispatch.transient_backoff, 120, "default transient backoff seconds");
     assert_eq!(cfg.dispatch.from, None);
     assert!(cfg.dispatch.kinds.is_empty());
     assert_eq!(cfg.dispatch.default_kind, "");
@@ -172,6 +174,19 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.gate.budget, 1800);
     assert_eq!(cfg.dispatch_from(), "next");
     assert_eq!(cfg.reply_to(), "");
+}
+
+#[test]
+fn transient_retry_knobs_parse_and_take_defaults() {
+    let set = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.dispatch]\n\
+         transient_max = 5\ntransient_backoff = 30\n",
+    );
+    assert_eq!(set.dispatch.transient_max, 5);
+    assert_eq!(set.dispatch.transient_backoff, 30);
+    let none = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(none.dispatch.transient_max, 2);
+    assert_eq!(none.dispatch.transient_backoff, 120);
 }
 
 #[test]
