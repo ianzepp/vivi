@@ -338,9 +338,10 @@ fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str)
 }
 
 /// Check every unit of a plan before anything is minted: `id`, `brief` and a
-/// non-empty `write_scope` must be present, `proof` must be a list, and ids
-/// must not collide with existing units. Returns the valid `(id, unit)`
-/// pairs, or the reason the plan was rejected.
+/// non-empty `write_scope` must be present, `proof` must be a list of commands
+/// this toolchain can parse (see [`crate::pump::proof`]), and ids must not
+/// collide with existing units. Returns the valid `(id, unit)` pairs, or the
+/// reason the plan was rejected.
 fn validate_units<'a>(
     ctx: &Ctx,
     st: &State,
@@ -361,6 +362,11 @@ fn validate_units<'a>(
         let ok_proof = u.get("proof").is_none_or(Value::is_array);
         if !ok_brief || !ok_scope || !ok_proof {
             return (minted, Some(BAD_UNIT.to_string()));
+        }
+        for cmd in str_list(u.get("proof")) {
+            if let Err(reason) = crate::pump::proof::check(&cmd) {
+                return (minted, Some(format!("unit {uid}: {reason}")));
+            }
         }
         if let Err(reason) = target_for_plan(ctx, u) {
             return (minted, Some(reason));
