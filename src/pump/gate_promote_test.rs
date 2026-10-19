@@ -18,6 +18,8 @@ const T0: u64 = 1_000_000;
 const TIP: &str = "0123456789abcdef0123456789abcdef01234567";
 /// An earlier promoted tip.
 const OLD: &str = "fedcba9876543210fedcba9876543210fedcba98";
+/// A commit gated green before the red tip.
+const GREEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /// The gate task handle the fake `task send` reports.
 const TASK: &str = "1a2b3c4d";
 
@@ -444,5 +446,98 @@ fn a_known_or_absent_promotion_never_logs_an_unknown_set() {
     st.last_gate.task = Some(String::from(TASK));
     finish_gate(&ctx, &mut st, &reply(&["a"]));
     assert!(unknown_set_logs(&host).is_empty());
+    drop(dir);
+}
+
+#[test]
+fn a_red_tip_promotes_the_newest_green_commit_below_it() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    st.promotions.push(Promotion {
+        tip: String::from(OLD),
+        at: T0 - 100,
+        failing: Some(names(&["a"])),
+    });
+    st.gates.push(GateRecord {
+        tip: String::from(GREEN),
+        at: T0 - 200,
+        merges: 2,
+        names: Some(names(&["a"])),
+        new: Some(vec![]),
+    });
+    own(&mut st, "x");
+    finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
+    assert!(
+        host.commands()
+            .iter()
+            .any(|c| c.contains("git push") && c.contains(GREEN))
+    );
+    let last = st.promotions.last().unwrap();
+    assert_eq!(last.tip, GREEN);
+    assert_eq!(last.failing, Some(names(&["a"])));
+    assert!(promote_held(&host).is_some());
+    drop(dir);
+}
+
+#[test]
+fn a_red_tip_with_new_failures_still_promotes_the_last_green_gate() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    st.promotions.push(Promotion {
+        tip: String::from(OLD),
+        at: T0 - 100,
+        failing: Some(names(&["a"])),
+    });
+    st.gates.push(GateRecord {
+        tip: String::from(GREEN),
+        at: T0 - 200,
+        merges: 2,
+        names: Some(names(&["a"])),
+        new: Some(vec![]),
+    });
+    finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
+    assert!(
+        host.commands()
+            .iter()
+            .any(|c| c.contains("git push") && c.contains(GREEN))
+    );
+    assert_eq!(st.promotions.last().unwrap().tip, GREEN);
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("gate-new-failures"), "{exceptions}");
+    drop(dir);
+}
+
+#[test]
+fn a_green_candidate_main_already_sits_at_is_not_pushed_again() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    st.promotions.push(Promotion {
+        tip: String::from(GREEN),
+        at: T0 - 100,
+        failing: Some(names(&["a"])),
+    });
+    st.gates.push(GateRecord {
+        tip: String::from(GREEN),
+        at: T0 - 200,
+        merges: 2,
+        names: Some(names(&["a"])),
+        new: Some(vec![]),
+    });
+    own(&mut st, "x");
+    finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
+    assert!(host.commands().iter().all(|c| !c.contains("git push")));
+    assert_eq!(st.promotions.len(), 1);
+    drop(dir);
+}
+
+#[test]
+fn a_red_tip_with_no_green_gate_below_promotes_nothing() {
+    let (dir, ctx, host) = setup();
+    let mut st = state(&["a"]);
+    own(&mut st, "x");
+    finish_gate(&ctx, &mut st, &reply(&["a", "x"]));
+    assert!(!pushed(&host));
+    assert!(st.promotions.is_empty());
+    assert!(promote_held(&host).is_some());
     drop(dir);
 }

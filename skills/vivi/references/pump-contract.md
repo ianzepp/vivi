@@ -547,7 +547,7 @@ unless marked.
 | `committer_email` | string | none — **required** | `user.email`, passed as `git -c user.email=…` |
 | `branch` | string | none — **required** | the integration branch |
 | `main` | string | `main` | main branch merged into the integration branch each batch; `""` disables both merging main in and promotion |
-| `promote` | bool | `true` | a gate with no new failure and no owned failure still red fast-forwards main to the gated tip |
+| `promote` | bool | `true` | the newest gated commit no redder than main fast-forwards main — the gated tip when it qualifies, else the last green gate below it |
 | `tick` | int seconds | `20` | sleep between ticks |
 | `shell_prefix` | string | `""` | prepended to every command line (§2); runs many times per tick — keep it near-free |
 | `hand_rules` | path | embedded generic text | file whose text opens every unit brief; a relative path joins the project root like `home`; `validate` rejects a file that cannot be read |
@@ -769,9 +769,12 @@ Validation rules (`vivi pump` refuses to start when one fails):
    still red fast-forwards main — never forces (a gate that still shows an
    owned failure logs `promote held` and main waits for a clean one: main never
    gets redder); a main with commits the tip lacks waits for the next batch
-   (`merge-base --is-ancestor` check). NOTE: a single-job batch skips the batch
-   path and goes straight to `merge_work`, which does not merge main first;
-   record as-is.
+   (`merge-base --is-ancestor` check). When the gated tip is red, the pump
+   instead fast-forwards main to the newest earlier gated commit whose failing
+   set is within main's (the last green), so a moving tip cannot hold main
+   behind; a candidate main already sits at is skipped. NOTE: a single-job
+   batch skips the batch path and goes straight to `merge_work`, which does not
+   merge main first; record as-is.
 3. **Hands run only the unit's proof plus what the hand rules ask for.** The
    merger runs the shared checks plus the unit's proof on the merged result
    (the proof is skipped for a `skip_proof` kind). A timeout means split the

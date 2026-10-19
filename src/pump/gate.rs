@@ -639,6 +639,7 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
         if off_main.is_empty() {
             promote(ctx, st, &rec.tip, names);
         } else {
+            green::promote_last_green(ctx, st, &rec.tip, names);
             ctx.log(&held_message(&off_main, &rec.tip));
         }
         return;
@@ -649,6 +650,7 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
         &new,
         &suspect_ids(st, st.gates.last().map_or(0, |g| g.merges), rec.merges),
     );
+    green::promote_last_green(ctx, st, &rec.tip, names);
     ctx.log(&gate_summary(rec, names, new.len()));
 }
 
