@@ -719,8 +719,8 @@ beside its siblings.
 | key | type | default | controls |
 | --- | --- | --- | --- |
 | `command` | command | none — **required** | run by a read-only gate worker; it must list failing tests between FAILING-BEGIN / FAILING-END |
-| `every_merges` | int | `8` | merges since the last gate that make one due |
-| `every_seconds` | int seconds | `1800` | also due when merges > the last gate's and this long has passed |
+| `every_merges` | retired | none | accepted and ignored so an old `mailspace.toml` still parses; a gate is due after every merge batch that lands (need e90b0221) |
+| `every_seconds` | retired | none | accepted and ignored so an old `mailspace.toml` still parses; a gate is due after every merge batch that lands (need e90b0221) |
 | `pools` | list of pool names | none | pools a gate worker may use; the first with a free slot wins |
 | `model` | string | none | the gate worker's model |
 | `budget` | int seconds | `1800` | the gate dispatch budget |
@@ -757,8 +757,7 @@ Validation rules (`vivi pump` refuses to start when one fails):
   list is empty, or holds a blank command, is rejected.
 - `hand_rules`, when set, must be a readable file (relative to the project
   root).
-- `tick`, `max_attempts`, `budget`, `per_tick`, `merge.batch` and
-  `gate.every_merges` >= 1.
+- `tick`, `max_attempts`, `budget`, `per_tick` and `merge.batch` >= 1.
 - `lanes` is non-empty and every lane's `cap` >= 1 and `model` non-empty.
 - `[pump.planner] run` must be set while `board.from` or `board.mark` is set.
 - Every kind needs a `pool` naming an existing `[pools.*]` table, and `max`,
