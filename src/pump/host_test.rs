@@ -184,6 +184,27 @@ fn pool_sources_travel_to_derived_contexts() {
 }
 
 #[test]
+fn mailspace_travels_to_derived_target_contexts() {
+    let dir = tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("tela"),
+        PumpTarget {
+            path: String::from("tela"),
+            branch: String::from("main"),
+            ..PumpTarget::default()
+        },
+    );
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let ctx = ctx.with_mailspace(String::from("abc123"));
+    assert_eq!(ctx.mailspace, "abc123");
+    let target = ctx.for_target("tela").unwrap();
+    assert_eq!(target.mailspace, "abc123");
+    let (bare, _bare_host) = test_ctx(dir.path(), PumpConfig::default());
+    assert_eq!(bare.mailspace, "");
+}
+
+#[test]
 fn ctx_vivi_appends_the_quoted_project() {
     let dir = tempdir().unwrap();
     let host = FakeHost::new();
