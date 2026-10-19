@@ -391,3 +391,32 @@ fn install_sh_warns_when_another_vivi_is_earlier_on_path() {
     );
     assert!(text.contains("earlier on PATH"), "{text}");
 }
+
+#[test]
+fn update_prints_path_hint_when_bin_dir_off_path() {
+    let triple = current_triple();
+    let temp = TempDir::new().unwrap();
+    let mirror = temp.path().join("mirror");
+    let prefix = temp.path().join("prefix");
+    write_release(&mirror, "14.1.0", triple, b"vivi-14.1.0-bytes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .args([
+            "update",
+            "--version",
+            "14.1.0",
+            "--prefix",
+            prefix.to_str().unwrap(),
+            "--base-url",
+            mirror.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("add to PATH: export PATH=\""), "{text}");
+}
