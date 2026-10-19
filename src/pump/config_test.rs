@@ -155,7 +155,10 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.dispatch.overdue_grace, 900);
     assert_eq!(cfg.dispatch.per_tick, 6);
     assert_eq!(cfg.dispatch.transient_max, 2, "default transient retry cap");
-    assert_eq!(cfg.dispatch.transient_backoff, 120, "default transient backoff seconds");
+    assert_eq!(
+        cfg.dispatch.transient_backoff, 120,
+        "default transient backoff seconds"
+    );
     assert_eq!(cfg.dispatch.from, None);
     assert!(cfg.dispatch.kinds.is_empty());
     assert_eq!(cfg.dispatch.default_kind, "");

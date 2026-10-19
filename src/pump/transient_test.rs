@@ -45,7 +45,10 @@ fn proof_timeouts() {
 #[test]
 fn lockfile_only_conflict_is_generated() {
     let detail = conflict(&["Cargo.lock", "crates/app/Cargo.lock"]);
-    assert_eq!(classify("merge-conflict", &detail), Some("generated-conflict"));
+    assert_eq!(
+        classify("merge-conflict", &detail),
+        Some("generated-conflict")
+    );
 }
 
 #[test]
