@@ -75,13 +75,7 @@ pub fn render(
         warning_count
     );
     let block = Block::default().title(title).borders(Borders::ALL);
-    let items = rows.iter().map(|item| {
-        let mut row = Row::new(cells(item));
-        if matches!(item.state, RowState::Finished(_)) {
-            row = row.style(Style::default().fg(Color::DarkGray));
-        }
-        row
-    });
+    let items = rows.iter().map(styled_row);
     let table = Table::new(
         items,
         [
@@ -124,6 +118,15 @@ pub fn render(
     let mut state = TableState::default();
     state.select((!rows.is_empty()).then_some(selected.min(rows.len().saturating_sub(1))));
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn styled_row(item: &MonitorRow) -> Row<'static> {
+    let row = Row::new(cells(item));
+    if matches!(item.state, RowState::Finished(_)) {
+        row.style(Style::default().fg(Color::DarkGray))
+    } else {
+        row
+    }
 }
 
 fn cells(row: &MonitorRow) -> Vec<Cell<'static>> {
