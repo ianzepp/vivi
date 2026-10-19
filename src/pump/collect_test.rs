@@ -553,6 +553,30 @@ fn an_unreported_unit_still_listed_by_pool_status_is_left_alone() {
 }
 
 #[test]
+fn a_silent_failure_past_grace_renders_an_empty_reason_not_none() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected deadbeef bridge slot-9 finished \"someone else\"",
+    );
+    host.reply("pool status", 0, "pool fly4 slot-1 cafebabe running since 100\n");
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u-1",
+        unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/u-1-a1")),
+    );
+    host.advance(91);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Pending);
+    let why = &u.history.last().unwrap().why;
+    assert_eq!(why, "");
+    assert!(!format!("{why:?}").contains("None"), "why is {why:?}");
+}
+
+#[test]
 fn a_splitting_unit_with_no_answer_for_1500_seconds_is_stuck() {
     let (_dir, ctx, host) = setup_with(PumpConfig {
         planner: PlannerConfig {
