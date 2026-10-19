@@ -18,7 +18,9 @@ const TIP: &str = "0123456789abcdef0123456789abcdef01234567";
 /// The gate task handle the fake `task send` reports.
 const TASK: &str = "1a2b3c4d";
 
-/// A gate config with two pools, the count at 8 and the clock at 1800 s.
+/// A gate config with two pools; the retired `every_merges`/`every_seconds`
+/// thresholds stay at their defaults (8 / 1800 s) to prove they no longer
+/// matter.
 fn gate_cfg() -> PumpConfig {
     PumpConfig {
         branch: String::from("next"),
@@ -145,16 +147,65 @@ fn parse_failing_returns_none_for_prose() {
 }
 
 #[test]
-fn start_gate_is_not_due_before_the_merge_count_or_the_clock() {
+fn start_gate_is_not_due_when_no_merge_landed_since_the_last_gate() {
     let (dir, ctx, host) = setup();
     let mut st = fresh_state();
     host.advance(1000);
     start_gate(&ctx, &mut st);
     assert!(host.commands().is_empty());
+    assert!(st.last_gate.task.is_none());
+    drop(dir);
+}
+
+#[test]
+fn a_gate_is_due_after_every_landed_batch() {
+    let (dir, ctx, host) = setup();
+    let mut st = fresh_state();
+    st.baseline = Some(vec![]);
+    st.last_gate.at = ctx.now();
+    start_gate(&ctx, &mut st);
+    assert!(host.commands().is_empty());
+
+    st.merges = 3;
+    st.last_gate.merges = 2;
+    wire(&host);
+    start_gate(&ctx, &mut st);
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert_eq!(st.last_gate.tip.as_deref(), Some(TIP));
+    drop(dir);
+}
+
+#[test]
+fn a_second_batch_while_a_gate_runs_coalesces_to_one_followup() {
+    let (dir, ctx, host) = setup();
+    let mut st = gate_state(4);
     st.merges = 5;
     start_gate(&ctx, &mut st);
     assert!(host.commands().is_empty());
-    assert!(st.last_gate.task.is_none());
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+
+    st.last_gate.task = None;
+    host.reply(
+        "pool status",
+        0,
+        "slot flyfull bridge slot-1 occupied\nslot flygate bridge slot-9 free\n",
+    );
+    host.reply("task send", 0, &format!("created hand {TASK}\nnode {TASK}"));
+    host.reply(
+        "pool dispatch",
+        0,
+        &format!("dispatched {TASK} bridge slot-9"),
+    );
+    host.reply("git ls-remote", 0, &format!("{NEW_TIP}\trefs/heads/next\n"));
+    start_gate(&ctx, &mut st);
+    let dispatches = host
+        .commands()
+        .iter()
+        .filter(|c| c.contains("pool dispatch"))
+        .count();
+    assert_eq!(dispatches, 1);
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert_eq!(st.last_gate.tip.as_deref(), Some(NEW_TIP));
     drop(dir);
 }
 
@@ -281,6 +332,8 @@ fn a_failed_gate_dispatch_marks_the_task_done_and_records_nothing() {
 
 /// A second 40-hex tip: the last clean gate.
 const CLEAN: &str = "fedcba9876543210fedcba9876543210fedcba98";
+/// A newer 40-hex tip that lands while a gate is running.
+const NEW_TIP: &str = "9876543210987654321098765432109876543210";
 
 /// A planner command so gatefix spawns are visible.
 fn planner_cfg() -> PumpConfig {
