@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::skills::{self, SkillCopyStatus};
+
 /// The two user-level unit directories a vivi install can occupy.
 pub(crate) struct UnitDirs {
     /// macOS launchd agents (`~/Library/LaunchAgents`).
@@ -43,6 +45,39 @@ pub(crate) fn service_restart_reminders(dirs: &UnitDirs) -> Vec<String> {
     }
     lines.sort();
     lines.into_iter().map(|(_, line)| line).collect()
+}
+
+/// Every directory an agent client may hold an installed skill copy in,
+/// most common first.
+///
+/// Without a home directory the list is empty, so no copy is reported.
+pub(crate) fn skills_candidate_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    match home {
+        Some(home) => vec![
+            home.join(".agents/skills"),
+            home.join(".claude/skills"),
+            home.join(".codex/skills"),
+        ],
+        None => Vec::new(),
+    }
+}
+
+/// One reminder line per installed skill copy that no longer matches this
+/// binary's embedded catalog, each naming the reinstall command.
+pub(crate) fn stale_skills_reminders(candidates: &[PathBuf]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for dir in candidates {
+        if let SkillCopyStatus::Stale(names) = skills::copy_status(dir) {
+            lines.push(format!(
+                "note: installed skills at {} are stale ({}); refresh: \
+                 vivi skills install {} --force",
+                dir.display(),
+                names.join(", "),
+                dir.display()
+            ));
+        }
+    }
+    lines
 }
 
 fn launchd_reminder(path: &Path) -> String {

@@ -1,6 +1,10 @@
 //! Tests for `update::reminders`.
 
-use super::{UnitDirs, service_restart_reminders, unit_dirs_from_home};
+use super::{
+    UnitDirs, service_restart_reminders, skills_candidate_dirs, stale_skills_reminders,
+    unit_dirs_from_home,
+};
+use crate::skills;
 
 #[test]
 fn service_restart_reminders_name_installed_units() {
@@ -52,6 +56,54 @@ fn service_restart_reminders_name_installed_units() {
         !joined.contains("com.other") && !joined.contains("notes.txt"),
         "unrelated files are not reported: {joined}"
     );
+}
+
+#[test]
+fn stale_skills_reminder_names_dir_and_command() {
+    let home = tempfile::tempdir().expect("tmp");
+    let stale_dir = home.path().join(".agents/skills");
+    let fresh_dir = home.path().join(".claude/skills");
+
+    skills::install(&stale_dir, false).expect("install stale copy");
+    let modified = stale_dir.join("vivi/SKILL.md");
+    let mut bytes = std::fs::read(&modified).expect("read skill");
+    bytes.extend_from_slice(b"\n<!-- local edit -->\n");
+    std::fs::write(&modified, bytes).expect("edit skill");
+
+    skills::install(&fresh_dir, false).expect("install fresh copy");
+
+    let candidates = skills_candidate_dirs(Some(home.path()));
+    assert_eq!(
+        candidates,
+        vec![
+            home.path().join(".agents/skills"),
+            home.path().join(".claude/skills"),
+            home.path().join(".codex/skills"),
+        ],
+        "candidate directories keep a fixed order"
+    );
+
+    let lines = stale_skills_reminders(&candidates);
+    assert_eq!(lines.len(), 1, "exactly one stale copy is reported: {lines:?}");
+    let line = &lines[0];
+    assert!(
+        line.contains(".agents/skills"),
+        "the reminder names the stale directory: {line}"
+    );
+    assert!(
+        line.contains("vivi skills install") && line.contains("--force"),
+        "the reminder carries the reinstall command: {line}"
+    );
+    assert!(
+        !line.contains(".claude/skills"),
+        "an up-to-date copy is not reported: {line}"
+    );
+}
+
+#[test]
+fn skills_candidate_dirs_without_home_are_empty() {
+    assert!(skills_candidate_dirs(None).is_empty());
+    assert!(stale_skills_reminders(&skills_candidate_dirs(None)).is_empty());
 }
 
 #[test]
