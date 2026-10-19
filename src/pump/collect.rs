@@ -458,7 +458,7 @@ fn collect_one(
     let (state, detail) = seen
         .get(task)
         .map_or((None, None), |(s, d)| (Some(s.as_str()), Some(d.as_str())));
-    let (since, branch, target) = {
+    let (since, branch, target, pool) = {
         let Some(unit) = st.units.get(uid) else {
             return;
         };
@@ -466,6 +466,7 @@ fn collect_one(
             unit.since,
             unit.branch.clone().unwrap_or_default(),
             unit.target_id().to_string(),
+            unit.pool.clone(),
         )
     };
     if state == Some("running") {
@@ -487,7 +488,17 @@ fn collect_one(
         return;
     }
     let target_ctx = ctx.for_target(&target).unwrap_or_else(|| ctx.clone());
-    if local_branch_exists(&target_ctx, &branch) || remote_has(&target_ctx, &branch) {
+    // A local worktree pool commits its unit branch into the pool's own
+    // repository and never pushes to the target remote, so only that
+    // repository can answer for it.
+    let source = pool
+        .as_deref()
+        .and_then(|name| ctx.pool_sources.get(name));
+    let reachable = source.map_or_else(
+        || local_branch_exists(&target_ctx, &branch) || remote_has(&target_ctx, &branch),
+        |source| pool_source_has(ctx, source, &branch),
+    );
+    if reachable {
         deliver(ctx, st, task, uid, &branch, state);
         return;
     }
@@ -701,6 +712,20 @@ pub(crate) fn remote_has(ctx: &Ctx, branch: &str) -> bool {
         &format!(
             "ls-remote {} refs/heads/{}",
             ctx.cfg.remote,
+            shell_quote(branch)
+        ),
+        60,
+    );
+    out.code == 0 && !out.text.trim().is_empty()
+}
+
+/// True when `git ls-remote` lists the branch in a local worktree pool's
+/// repository, where that pool commits unit branches instead of pushing.
+fn pool_source_has(ctx: &Ctx, source: &Path, branch: &str) -> bool {
+    let out = ctx.git(
+        &format!(
+            "ls-remote {} refs/heads/{}",
+            shell_quote(&source.to_string_lossy()),
             shell_quote(branch)
         ),
         60,

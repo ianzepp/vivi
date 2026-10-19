@@ -1,7 +1,9 @@
 //! Tests for [`crate::pump::collect`]: the reconcile parser and the
 //! in-flight unit state machine, driven through [`FakeHost`] replies.
 
+use std::collections::BTreeMap;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tempfile::tempdir;
@@ -229,6 +231,35 @@ fn a_finished_unit_whose_branch_is_on_the_remote_is_delivered() {
     assert_eq!(
         host.logs().last().unwrap(),
         "delivered u-1 unit/x-a1 secs=500 model=zai/glm-5.3-flash pool=fly4"
+    );
+}
+
+#[test]
+fn a_local_pool_branch_is_delivered_from_its_worktree_repository() {
+    let (_dir, ctx, host) = setup();
+    let ctx = ctx.with_pool_sources(BTreeMap::from([(
+        String::from("glm"),
+        PathBuf::from("/wtree/repo"),
+    )]));
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d glm slot-1 finished \"committed unit/x-a1 abc\"",
+    );
+    host.reply("/wtree/repo refs/heads/unit/x-a1", 0, "abc123\trefs/heads/unit/x-a1\n");
+    host.reply("task show", 0, "done, committed");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
+    u.pool = Some(String::from("glm"));
+    u.since_dispatch = Some(T0 - 500);
+    put(&mut st, "u-1", u);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Delivered);
+    assert!(
+        host.commands()
+            .iter()
+            .any(|command| command.contains("ls-remote /wtree/repo refs/heads/unit/x-a1"))
     );
 }
 
