@@ -215,9 +215,12 @@ creates a graph edge; handles are validated before anything is created, so
 an unknown dependency fails the send. `X-Vivi-Depends-On` headers remain on
 the message and travel with it: whatever files a work letter (local send, pull,
 fetch, resync, `pull --refs`, audit repair) builds the edges its headers name
-for every dependency this mailspace holds as work, with or without `[sync]`. A
-dependency not held yet waits and its edge is made when that letter arrives; a
-reference that can never name work here blocks nothing. There is one dependency
+for every dependency this mailspace holds as work, with or without `[sync]`.
+A listed dependency always blocks: a reference this mailspace does not hold
+yet (not yet synced, or unknown) leaves the dependent blocked and reported as
+an exception until the dependency is present and done, and the edge is made
+when the letter arrives by any route — `pull --refs` fetches named
+dependencies. There is one dependency
 substrate — the graph — for small and multi-unit relationships alike.
 
 Closing a task, need, or want records its current disposition, as a letter on
@@ -550,7 +553,8 @@ configured and records `via=step-apply` only when the node was still open.
 Use `graph show`, `graph ready`, `graph blocked`, and `board --graph` for
 inspection. `graph blocked [GRAPH] [--kind …]` lists each blocked node with
 the prerequisites it is still waiting on, and `--json` gives the same rows as
-`{source_id, kind, label, blocked_by}`. `graph
+`{source_id, kind, label, blocked_by}`; a blocked node whose prerequisite is
+an unheld reference lists the raw reference in `blocked_by`. `graph
 ready` prints a `counts` line first (`ready`, `blocked`, `active`, `awaiting`,
 `reported`, `gates`; `--json` has the same lists as fields) — use it (or
 `--kind task|need|want|decision|stub|parked`) instead of reading long id
@@ -572,7 +576,8 @@ shows it. Use `vivi step [--json]` for a mechanical adjudication of the
 backlog into `dispatches` (ready, verifiable work with clause counts) and
 `exceptions` (reason vocabulary: `want_requires_promotion`,
 `lowered_awaiting_units`, `no_done_when`, `item_missing`, `not_settled`,
-`untracked_item`, `awaiting_remote`, `awaiting_acceptance`). Wants render as
+`untracked_item`, `awaiting_remote`, `awaiting_acceptance`,
+`awaiting_dependency`). Wants render as
 parked in their exception detail. A clauseless task/need body warns at send
 time, and a duplicate work send (same sender, same subject, still open in the
 recipient's folder) warns on stderr without blocking. `vivi step --apply
