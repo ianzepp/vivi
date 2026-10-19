@@ -192,8 +192,8 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
     apply_env_pauses(ctx, st, &mut free);
     let forced = force_gate_pending(ctx);
-    let reserve = !ctx.cfg.gate.pools.is_empty()
-        && (forced || fix_unit_waiting(st, &ctx.cfg.fix_prefix));
+    let reserve =
+        !ctx.cfg.gate.pools.is_empty() && (forced || fix_unit_waiting(st, &ctx.cfg.fix_prefix));
     let gate = GateSlot {
         reserved: reserve,
         forced,
