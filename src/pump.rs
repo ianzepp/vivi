@@ -119,6 +119,10 @@ mod remote_test;
 mod gate_test;
 
 #[cfg(test)]
+#[path = "pump/gatefix_test.rs"]
+mod gatefix_test;
+
+#[cfg(test)]
 #[path = "pump/gate_promote_test.rs"]
 mod gate_promote_test;
 

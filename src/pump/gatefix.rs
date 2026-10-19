@@ -6,7 +6,7 @@ use std::fs;
 
 use crate::pump::collect::spawn_planner;
 use crate::pump::gate::is_settled;
-use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
 use crate::pump::state::{State, Status};
 
 /// The `state.json` key holding how many times each failing name has been
@@ -186,6 +186,77 @@ fn parse_need_handle(text: &str) -> Option<String> {
 fn last_line(text: &str) -> String {
     let line = text.trim().lines().last().unwrap_or("");
     line.chars().take(80).collect()
+}
+
+/// The `state.json` key holding, per gate-fix need id, how many times its
+/// planner has exited without writing a plan.
+const GATEFIX_FAILS_KEY: &str = "gatefix_fails";
+
+/// The `state.json` key holding, per gate-fix need id, the epoch second of
+/// the next gatefix expiry retry.
+const GATEFIX_RETRY_KEY: &str = "gatefix_retry_at";
+
+/// The u64 entry `need` holds under extra-map `key`, else 0.
+fn gatefix_count(st: &State, key: &str, need: &str) -> u64 {
+    st.extra
+        .get(key)
+        .and_then(|map| map.get(need))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
+/// Set the u64 entry `need` holds under extra-map `key`.
+fn gatefix_set(st: &mut State, key: &str, need: &str, value: u64) {
+    let map = st
+        .extra
+        .entry(String::from(key))
+        .or_insert_with(|| serde_json::json!({}));
+    if let serde_json::Value::Object(entries) = map {
+        entries.insert(String::from(need), serde_json::json!(value));
+    }
+}
+
+/// Remove `need`'s entry under extra-map `key`.
+fn gatefix_remove(st: &mut State, key: &str, need: &str) {
+    if let Some(serde_json::Value::Object(entries)) = st.extra.get_mut(key) {
+        entries.remove(need);
+    }
+}
+
+/// Expire gate-fix planners: one receipt check per owner need of the red
+/// names, counting planner exits without a plan and arming the backoff.
+pub(crate) fn expire_gatefix(ctx: &Ctx, st: &mut State) {
+    let needs: BTreeSet<String> = st.red.values().cloned().collect();
+    for need in &needs {
+        expire_one_gatefix(ctx, st, need);
+    }
+}
+
+/// One gate-fix owner's expiry: a written plan clears the retry state, and
+/// an exit receipt without a plan counts the failure with backoff.
+fn expire_one_gatefix(ctx: &Ctx, st: &mut State, need: &str) {
+    if ctx.home.join("plans").join(format!("{need}.json")).exists() {
+        gatefix_remove(st, GATEFIX_FAILS_KEY, need);
+        gatefix_remove(st, GATEFIX_RETRY_KEY, need);
+        return;
+    }
+    let receipt = exit_receipt_path(&ctx.home.join("gatefix").join(format!("{need}.out")));
+    if !receipt.exists() {
+        return;
+    }
+    let code = fs::read_to_string(&receipt)
+        .unwrap_or_default()
+        .trim()
+        .parse::<i32>()
+        .unwrap_or(-1);
+    drop(fs::remove_file(&receipt));
+    let fails = gatefix_count(st, GATEFIX_FAILS_KEY, need) + 1;
+    gatefix_set(st, GATEFIX_FAILS_KEY, need, fails);
+    let delay = (60u64 << (fails - 1).min(4)).min(900);
+    gatefix_set(st, GATEFIX_RETRY_KEY, need, ctx.now() + delay);
+    ctx.log(&format!(
+        "gatefix planner for {need} exited rc={code} without a plan; retry {fails}/3 in {delay}s"
+    ));
 }
 
 /// Start the gate-fix planner for a red gate under `need`, skipped when its
