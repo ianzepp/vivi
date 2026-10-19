@@ -298,7 +298,7 @@ fn inflight_of_kind(ctx: &Ctx, st: &State, name: &str) -> usize {
 /// Write `<home>/briefs/<uid>.txt` and send the unit's task; returns the
 /// created task handle, or `None` when the brief could not be written or the
 /// output carries no handle (logged as `task send failed`).
-fn send_brief(ctx: &Ctx, st: &State, uid: &str, attempt: u32) -> Option<String> {
+fn send_brief(ctx: &Ctx, st: &mut State, uid: &str, attempt: u32) -> Option<String> {
     let unit = st.units.get(uid)?;
     let dir = ctx.home.join("briefs");
     if let Err(err) = fs::create_dir_all(&dir) {
@@ -324,9 +324,36 @@ fn send_brief(ctx: &Ctx, st: &State, uid: &str, attempt: u32) -> Option<String> 
     let out = ctx.vivi(&cmd, 120);
     let Some(task) = parse_created_handle(&out.text) else {
         ctx.log(&format!("task send failed {uid}: {}", tail(&out.text, 200)));
+        report_send_failure(ctx, st, uid, &out.text);
         return None;
     };
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.send_reported = false;
+    }
     Some(task)
+}
+
+/// Raise the unit's one `unknown-role` exception when a task send failed for
+/// a config reason — the CLI refused a pump identity ("unknown local role
+/// ..."), so retrying cannot help. Transient failures stay log-only. The
+/// flag rides on the unit, so a restart does not repeat the exception; a
+/// later successful send clears it (see [`send_brief`]).
+fn report_send_failure(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
+    if !text.contains("unknown local role") {
+        return;
+    }
+    let Some(unit) = st.units.get_mut(uid) else {
+        return;
+    };
+    if unit.send_reported {
+        return;
+    }
+    unit.send_reported = true;
+    ctx.exception(
+        "unknown-role",
+        uid,
+        &format!("task send failed: {}", tail(text, 300)),
+    );
 }
 
 /// The ref a unit is dispatched from: its own `base` when it has one (a

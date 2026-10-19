@@ -38,6 +38,7 @@ fn sample() -> State {
         replaced_by: vec![String::from("u1.1")],
         verdict_text: Some(String::from("ok")),
         kind_reported: true,
+        send_reported: true,
         history: vec![Attempt {
             attempt: 1,
             model: Some(String::from("m")),
@@ -125,6 +126,7 @@ fn a_saved_state_round_trips() {
     assert_eq!(unit.status, Status::Merged);
     assert_eq!(unit.commit.as_deref(), Some("abc123"));
     assert_eq!(unit.merged_at, Some(12));
+    assert!(unit.send_reported);
     assert_eq!(unit.history.len(), 1);
     assert_eq!(unit.history[0].why, "timeout");
     assert_eq!(unit.history[0].branch.as_deref(), Some("unit/u1-a1"));
