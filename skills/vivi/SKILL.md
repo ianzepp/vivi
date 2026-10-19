@@ -2381,7 +2381,7 @@ branch       = "<branch>"             # required: the integration branch
 main         = "main"                  # "" disables merging main in and promotion
 promote      = true                    # a clean gate fast-forwards main to the gated tip
 tick         = 20                      # seconds between ticks
-shell_prefix = ""                      # prepended to every command line
+shell_prefix = ""                      # prepended to every command line; runs before every command, many per tick — keep it near-free
 hand_rules   = "<path>"                # absent: the embedded generic hand-rules text; relative paths join the project root; must be readable
 reserved_file = "reserved.txt"         # paths held by another session; units overlapping them are not dispatched; relative paths join `home`
 # priority_file is retired: still parsed, ignored; use `vivi pump priority set <need> <level>`

@@ -74,7 +74,11 @@ with `shell_prefix` the configured prefix (for example
 `. /srv/pump/env.sh`; empty means none), an optional cwd, and a timeout (default
 120 s). It returns the exit code and combined stdout+stderr. On timeout it
 returns exit code 124 plus the text `[timeout after Ns]` appended to whatever
-partial output was captured. This seam is also the test seam:
+partial output was captured. The prefix runs before EVERY command — each git
+and vivi call, several per tick — so its cost multiplies across the whole pump:
+keep it near-free. Fetch/push housekeeping does not belong in it: a `local`
+pool with `worktree_of` needs no push hook because the pump reads that pool's
+unit branches from its repository directly. This seam is also the test seam:
 tests script a fake host that answers command lines. Detached processes
 (planner, split, gatefix, sync push) run detached with redirected output
 files instead.
@@ -506,7 +510,7 @@ unless marked.
 | `main` | string | `main` | main branch merged into the integration branch each batch; `""` disables both merging main in and promotion |
 | `promote` | bool | `true` | a gate with no new failure and no owned failure still red fast-forwards main to the gated tip |
 | `tick` | int seconds | `20` | sleep between ticks |
-| `shell_prefix` | string | `""` | prepended to every command line (§2) |
+| `shell_prefix` | string | `""` | prepended to every command line (§2); runs many times per tick — keep it near-free |
 | `hand_rules` | path | embedded generic text | file whose text opens every unit brief; a relative path joins the project root like `home`; `validate` rejects a file that cannot be read |
 | `reserved_file` | path | `reserved.txt` | paths held by another session; units overlapping them are not dispatched; a relative value joins `home` |
 | `priority_file` | retired | | accepted and ignored so an old `mailspace.toml` still parses. Need priority is set per need in `pump.db`: `vivi pump priority set <need> <level>` (integer, higher is more urgent, 0 removes), `clear <need>`, `list`. The running pump reads the levels every tick. Dispatch and merge-feed order is fix units first, then units by their need's level (highest first), then the rest (stable); a need with a level above zero is also fed under `HOLD-MERGE` and gets the fix-unit scope bypass. A leftover `priority.txt` is imported once at startup as level 1 and renamed to `priority.txt.imported` |
