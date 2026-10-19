@@ -36,8 +36,8 @@ verifies the archive SHA-256, writes a versioned binary, and points a
 relative `vivi` symlink at it:
 
 ```text
-~/.local/bin/vivi-14.1.0
-~/.local/bin/vivi -> vivi-14.1.0
+~/.local/bin/vivi-15.0.0
+~/.local/bin/vivi -> vivi-15.0.0
 ```
 
 The prefix is `~/.local`, so binaries live in `~/.local/bin` (usually
@@ -47,11 +47,11 @@ already on `PATH`). That is not `~/.vivi`, which is a mailspace
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
 # or pin a release / prefix:
-curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 14.1.0 --prefix "$HOME/.local"
+curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 15.0.0 --prefix "$HOME/.local"
 ```
 
 The script defaults to the release it shipped with (`VIVI_VERSION`, currently
-14.1.0) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
+15.0.0) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
 can point at a local mirror. Optional `GITHUB_TOKEN` / `GH_TOKEN` raises
 the GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`.
@@ -59,9 +59,9 @@ the GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
 ```sh
 vivi update --check            # compare this binary to the newest public release
 vivi update                    # install that release and flip the symlink
-vivi update --version 14.0.0   # pin / roll back (when that release has a .sha256)
+vivi update --version 14.1.1   # pin / roll back (when that release has a .sha256)
 vivi versions                  # list versioned installs; * is active
-vivi uninstall --version 14.0.0
+vivi uninstall --version 14.1.1
 ```
 
 `~/.local/bin` is shared with other tools. `vivi uninstall` only deletes
