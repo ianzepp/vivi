@@ -100,6 +100,26 @@ pub enum MemoCommand {
         #[arg(long = "for")]
         for_identity: String,
 
+        /// Keep only memos carrying this tag (repeatable, all must match)
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+
+        /// Drop memos carrying this tag (repeatable)
+        #[arg(long = "exclude-tag", value_name = "TAG")]
+        exclude_tags: Vec<String>,
+
+        /// Keep only memos at or after this point: duration, date, or RFC3339
+        #[arg(long, value_name = "SINCE")]
+        since: Option<String>,
+
+        /// Stop after this many memos
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Include hidden-tagged memos (e.g. digest)
+        #[arg(long)]
+        all: bool,
+
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -121,6 +141,26 @@ pub enum MemoCommand {
         /// Search subject only
         #[arg(long)]
         subject: bool,
+
+        /// Keep only memos carrying this tag (repeatable, all must match)
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+
+        /// Drop memos carrying this tag (repeatable)
+        #[arg(long = "exclude-tag", value_name = "TAG")]
+        exclude_tags: Vec<String>,
+
+        /// Keep only memos at or after this point: duration, date, or RFC3339
+        #[arg(long, value_name = "SINCE")]
+        since: Option<String>,
+
+        /// Stop after this many memos
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Include hidden-tagged memos (e.g. digest)
+        #[arg(long)]
+        all: bool,
 
         /// Output as JSON
         #[arg(long)]
