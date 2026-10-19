@@ -9,6 +9,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobStatus, PoolJob};
 use crate::pump::plan::{ingest, overlaps};
 use crate::pump::state::{State, Status, Unit};
 
@@ -18,6 +19,14 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>, State) {
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     (dir, ctx, host, State::default())
+}
+
+fn split_planner_job<'a>(st: &'a State, uid: &str) -> Option<&'a PoolJob> {
+    let output = format!("resplit/{uid}.out");
+    st.jobs.values().find(|job| {
+        job.kind == "planner:split"
+            && job.payload["planner_output"]["out"].as_str() == Some(output.as_str())
+    })
 }
 
 /// Write a plan file into the home's `plans/` directory.
@@ -419,7 +428,12 @@ fn second_bad_split_plan_archives_and_marks_the_unit_stuck() {
         exc.contains("vivi pump replan d107efc1-8"),
         "exceptions: {exc}"
     );
-    assert!(!ctx.home.join("resplit/u-8.prompt").exists());
+    assert!(
+        !st.jobs.values().any(|job| {
+            job.kind == "planner:split" && job.payload["planner_output"]["out"] == "resplit/u-8.out"
+        }),
+        "spent re-ask does not queue another planner job"
+    );
     assert!(
         !host
             .logs()
@@ -882,7 +896,7 @@ fn a_stale_or_duplicate_revision_is_ignored() {
 /// validation error, and a second bad plan is not re-asked again.
 #[test]
 fn a_bad_split_plan_is_re_asked_once() {
-    let (_dir, ctx, host, mut st) = setup();
+    let (_dir, ctx, _host, mut st) = setup();
     st.units.insert(
         "u1".to_string(),
         Unit {
@@ -906,9 +920,12 @@ fn a_bad_split_plan_is_re_asked_once() {
     };
     write_plan(&ctx, "u1.split.json", &bad_plan());
     ingest(&ctx, &mut st);
-    assert_eq!(host.spawned().len(), 1);
-    let prompt = fs::read_to_string(ctx.home.join("resplit/u1.prompt")).unwrap();
-    assert!(prompt.contains("unit missing id, brief or write_scope"));
+    let job = split_planner_job(&st, "u1").expect("re-ask is durably queued");
+    assert_eq!(job.role, "planner");
+    assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
+    assert_eq!(job.status, JobStatus::Pending);
+    assert!(job.body.contains("unit missing id, brief or write_scope"));
+    assert!(job.body.contains("PUMP-PLAN-BEGIN"));
     let unit = &st.units["u1"];
     assert_eq!(unit.status, Status::Splitting);
     assert_eq!(unit.split_reasks, 1);
@@ -931,7 +948,15 @@ fn a_bad_split_plan_is_re_asked_once() {
     // unit instead of leaving a permanent file that blocks split expiry.
     write_plan(&ctx, "u1.split.json", &bad_plan());
     ingest(&ctx, &mut st);
-    assert_eq!(host.spawned().len(), 1);
+    assert!(split_planner_job(&st, "u1").is_some());
+    assert_eq!(
+        st.jobs
+            .values()
+            .filter(|job| job.kind == "planner:split")
+            .count(),
+        1,
+        "spent re-ask does not enqueue another planner job"
+    );
     assert!(!ctx.home.join("plans/u1.split.json").exists());
     assert_eq!(st.units["u1"].status, Status::Stuck);
     assert!(!st.plans_seen.iter().any(|key| key == "u1.split.json"));

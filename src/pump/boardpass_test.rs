@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 use tempfile::{TempDir, tempdir};
 
 use crate::pump::boardpass::{BoardPass, merge_back};
-use crate::pump::config::{BoardConfig, PlannerConfig, PumpConfig};
+use crate::pump::config::{BoardConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::state::{NeedRecord, State};
 
 /// A context with an operator sender, the `since` cutoff and the `pump` mark.
@@ -21,15 +22,61 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
             ..BoardConfig::default()
         },
         branch: String::from("next"),
-        planner: PlannerConfig {
-            run: String::from("planner-run {charter}"),
-            ..PlannerConfig::default()
-        },
         ..PumpConfig::default()
     };
     let dir = tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), cfg);
     (dir, ctx, host)
+}
+
+#[test]
+fn merge_back_keeps_new_outbox_jobs_and_preserves_live_dispatch_progress() {
+    let pending = |id: &str| {
+        PoolJob::from(JobSpec::new(
+            id,
+            "planner:board",
+            "planner",
+            format!("plan {id}"),
+            "plan this need",
+        ))
+    };
+    let mut snap = State::default();
+    snap.jobs
+        .insert(String::from("planner-live"), pending("planner-live"));
+    snap.jobs
+        .insert(String::from("planner-updated"), pending("planner-updated"));
+
+    let mut live = snap.clone();
+    let dispatched = live.jobs.get_mut("planner-live").unwrap();
+    dispatched.status = JobStatus::Dispatched;
+    dispatched.pool = Some(String::from("test-planner-pool"));
+    dispatched.task = Some(String::from("task-1"));
+    dispatched.dispatched_at = Some(101);
+
+    let mut done = snap.clone();
+    let worker_update = done.jobs.get_mut("planner-updated").unwrap();
+    worker_update.status = JobStatus::Finished;
+    worker_update.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("agent exit 0"),
+        receipt: String::new(),
+        at: 102,
+    });
+    let new_job = pending("planner-new");
+    done.jobs.insert(new_job.id.clone(), new_job.clone());
+    // A stale worker snapshot must not replace newer dispatch state.
+    done.jobs.get_mut("planner-live").unwrap().status = JobStatus::Lost;
+
+    merge_back(&mut live, &snap, &done);
+
+    assert_eq!(live.jobs.get("planner-new"), Some(&new_job));
+    assert_eq!(live.jobs["planner-updated"].status, JobStatus::Finished);
+    assert_eq!(live.jobs["planner-live"].status, JobStatus::Dispatched);
+    assert_eq!(live.jobs["planner-live"].task.as_deref(), Some("task-1"));
+    assert_eq!(
+        live.jobs["planner-live"].pool.as_deref(),
+        Some("test-planner-pool")
+    );
 }
 
 /// One JSON row for a `need list` reply.
@@ -236,5 +283,16 @@ fn a_full_pass_round_trips_through_the_worker_thread() {
 
     assert_eq!(st.board.at, ctx.now());
     assert!(st.board.planning.contains_key("n1"));
-    assert!(host.spawned().iter().any(|cmd| cmd.contains("planner-run")));
+    let job = st
+        .jobs
+        .values()
+        .find(|job| job.kind == "planner:board")
+        .expect("worker planner outbox entry was merged into the live state");
+    assert_eq!(job.role, "planner");
+    assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.payload["planner_output"]["out"], "board/n1.out");
+    assert!(job.body.contains("PUMP-NEED-INPUT-BEGIN"));
+    assert!(job.body.contains("PUMP-PLAN-BEGIN"));
+    assert!(host.spawned().is_empty(), "pool owns planner execution");
 }

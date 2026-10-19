@@ -10,6 +10,8 @@
 //! The worker never touches the live state. Every field it reads is a
 //! snapshot, so [`merge_back`] copies back only what the board pass itself
 //! owns, and the rules below name who else mutates each field concurrently.
+//! Newly queued planner jobs return through the outbox merge without
+//! rewinding tick-side dispatch or reconciliation.
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
@@ -154,12 +156,32 @@ pub(crate) fn merge_back(st: &mut State, snap: &State, done: &State) {
     merge_needs(st, snap, done);
     merge_plans_seen(st, snap, done);
     merge_planning(st, snap, done);
+    merge_jobs(st, snap, done);
     merge_replied(st, snap, done);
     // Only the board pass writes `replan`.
     st.board.replan.clone_from(&done.board.replan);
     merge_revision_planning(st, snap, done);
     // The interval restarts at completion.
     st.board.at = done.board.at;
+}
+
+/// Fold worker-created jobs into the live outbox without rewinding jobs that
+/// the tick thread dispatched or reconciled while the board pass was running.
+fn merge_jobs(st: &mut State, snap: &State, done: &State) {
+    for (id, completed) in &done.jobs {
+        let Some(snapshot) = snap.jobs.get(id) else {
+            st.jobs
+                .entry(id.clone())
+                .or_insert_with(|| completed.clone());
+            continue;
+        };
+        if snapshot == completed {
+            continue;
+        }
+        if st.jobs.get(id).is_none_or(|live| live == snapshot) {
+            st.jobs.insert(id.clone(), completed.clone());
+        }
+    }
 }
 
 /// (a) A need the worker dropped (replan surgery) leaves the live state; a

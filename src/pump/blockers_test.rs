@@ -24,13 +24,12 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     (dir, ctx, host)
 }
 
-/// A context whose planner command names the resplit spawn.
+/// A context with two concurrent split-planner slots.
 fn response_setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
         branch: String::from("next"),
         planner: PlannerConfig {
-            run: String::from("plan-resplit {charter} --quiet"),
             planners_max: 2,
             ..PlannerConfig::default()
         },
@@ -38,6 +37,13 @@ fn response_setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     };
     let (ctx, host) = test_ctx(dir.path(), cfg);
     (dir, ctx, host)
+}
+
+fn split_planner_jobs(st: &State) -> Vec<&crate::pump::jobs::PoolJob> {
+    st.jobs
+        .values()
+        .filter(|job| job.kind == "planner:split")
+        .collect()
 }
 
 /// A unit of `need` in `status`, created `since` epoch seconds.
@@ -289,8 +295,8 @@ fn a_transient_blocking_root_is_requeued_once_and_prioritized() {
             .any(|line| line.contains("blockers: requeued r-1 once"))
     );
     assert!(
-        host.spawned().is_empty(),
-        "a transient root needs no planner"
+        split_planner_jobs(&st).is_empty(),
+        "a transient root queues no split planner"
     );
 
     st.units.get_mut("r-1").unwrap().status = Status::Stuck;
@@ -319,11 +325,15 @@ fn a_persistent_old_blocking_root_goes_to_the_resplit_planner() {
     assert_eq!(root.status, Status::Splitting);
     assert!(!root.requeued, "an exit-1 failure is not transient");
     assert!(ctx.home.join("resplit/r-1.json").exists());
-    assert!(
-        host.spawned()
-            .iter()
-            .any(|command| command.contains("resplit"))
+    let jobs = split_planner_jobs(&st);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].role, "planner");
+    assert_eq!(
+        jobs[0].pool_candidates,
+        vec![String::from("test-planner-pool")]
     );
+    assert_eq!(jobs[0].status, crate::pump::jobs::JobStatus::Pending);
+    assert_eq!(jobs[0].payload["planner_output"]["out"], "resplit/r-1.out");
     assert!(
         crate::pump::priority::list(&ctx.home)
             .unwrap()
@@ -349,9 +359,9 @@ fn a_burst_blocker_pass_starts_no_more_than_the_planner_cap() {
     check(&ctx, &mut st);
 
     assert_eq!(
-        host.spawned().len(),
+        split_planner_jobs(&st).len(),
         2,
-        "two split planners start at once, the rest stagger"
+        "two split jobs queue now, the rest stagger"
     );
     let mut launched = 0;
     let mut deferred = 0;
@@ -394,7 +404,7 @@ fn a_young_persistent_root_waits() {
         "priority is raised immediately"
     );
     assert!(
-        host.spawned().is_empty(),
+        split_planner_jobs(&st).is_empty(),
         "no resplit before blocking_replan_minutes"
     );
 }
@@ -415,5 +425,5 @@ fn a_small_hold_gets_no_response() {
     assert_eq!(root.status, Status::Stuck);
     assert!(!root.requeued);
     assert!(crate::pump::priority::list(&ctx.home).unwrap().is_empty());
-    assert!(host.spawned().is_empty());
+    assert!(split_planner_jobs(&st).is_empty());
 }

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::pump::config::PumpConfig;
 use crate::pump::progress::LaneProgress;
-use crate::routing::RoleRouting;
+use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The outcome of running one command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -595,13 +595,37 @@ impl Host for FakeHost {
 
 /// A [`Ctx`] rooted at `dir` with a [`FakeHost`]: home is `dir/home`, repo is
 /// `dir/home/repo`, project is `dir/project`, `vivi` is `"vivi"`, and the
-/// shell prefix is empty. Creates the home and repo directories.
+/// shell prefix is empty. Creates the home and repo directories, and provides
+/// an active planner role routed to a test pool so planner tests exercise the
+/// durable outbox. Tests for missing routes can replace it with empty routing.
 #[must_use]
 pub fn test_ctx(dir: &Path, cfg: PumpConfig) -> (Ctx, Arc<FakeHost>) {
     let home = dir.join("home");
     let repo = home.join("repo");
     drop(fs::create_dir_all(&repo));
     let host = FakeHost::new();
+    let routing = RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("planner"),
+            kind: Some(String::from("planner")),
+            status: String::from("active"),
+            pool: Some(String::from("test-planner-pool")),
+            read_only: Some(true),
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: BTreeMap::from([(
+            String::from("test-planner-pool"),
+            RoutedPool {
+                slots: 4,
+                provider: String::from("local"),
+                fallback: None,
+                caps: BTreeMap::new(),
+                models: Vec::new(),
+                has_bands: false,
+            },
+        )]),
+    };
     let ctx = Ctx::with_parts(
         cfg,
         host.clone(),
@@ -610,7 +634,8 @@ pub fn test_ctx(dir: &Path, cfg: PumpConfig) -> (Ctx, Arc<FakeHost>) {
         String::new(),
         home,
         repo,
-    );
+    )
+    .with_routing(routing);
     (ctx, host)
 }
 

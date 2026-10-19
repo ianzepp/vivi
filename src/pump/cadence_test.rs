@@ -215,7 +215,16 @@ fn investigation_report_must_be_a_recent_auditor_reply_on_the_want() {
             String::from("The issue is already fixed."),
         )
         .unwrap();
-    assert!(investigations::report_landed(&mailspace, &run));
+    assert!(
+        investigations::report_landed(&mailspace, &run),
+        "thread={:?}; auditor={}; head-ceo={}; started_at={}",
+        mailspace
+            .thread(&want, false, usize::MAX, usize::MAX)
+            .unwrap(),
+        mailspace.address_for("auditor"),
+        mailspace.address_for("head-ceo"),
+        run.started_at
+    );
 }
 
 fn investigation_run(want: &str, started_at: u64) -> InvestigationRun {

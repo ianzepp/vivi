@@ -11,10 +11,12 @@ use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 
 use crate::pump::board::*;
-use crate::pump::config::{BoardConfig, PlannerConfig, PumpConfig};
+use crate::pump::config::{BoardConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobStatus, PoolJob};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::routing::RoleRouting;
 
 /// A context with an operator sender and the `since` cutoff set; default
 /// mark `pump`, three planners, 1800 s plan timeout.
@@ -31,10 +33,6 @@ fn setup_with(board: BoardConfig) -> (TempDir, Ctx, Arc<FakeHost>) {
     let cfg = PumpConfig {
         board,
         branch: String::from("next"),
-        planner: PlannerConfig {
-            run: String::from("planner-run {charter}"),
-            ..PlannerConfig::default()
-        },
         ..PumpConfig::default()
     };
     let dir = tempdir().unwrap();
@@ -392,7 +390,7 @@ fn planners_max_caps_concurrent_planners() {
 }
 
 #[test]
-fn a_launched_planner_gets_the_need_file_and_the_prompt_and_is_recorded() {
+fn a_launched_planner_queues_the_need_file_and_prompt_for_the_routed_role() {
     let (_dir, ctx, host) = setup();
     host.reply("need show n1", 0, &"x".repeat(40_010));
     let mut st = State::default();
@@ -407,27 +405,42 @@ fn a_launched_planner_gets_the_need_file_and_the_prompt_and_is_recorded() {
     assert_eq!(parsed["subject"], subject);
     assert_eq!(parsed["triage"], "");
     assert_eq!(parsed["thread"].as_str().unwrap().chars().count(), 40_000);
-    let home = ctx.home.display().to_string();
-    let want_prompt = format!(
-        "Plan one need, as your system prompt describes. Its thread is in {home}/needs/n1.json. \
-         Available repository targets (id and workspace-relative path): [{{\"id\":\"default\",\"path\":\".\"}}]. \
-         Every unit must name exactly one target from this list in its `target` field, and its `write_scope` \
-         must be relative to that repository. Do not make an `after` dependency cross targets: the pump \
-         cannot pass an unpublished branch from one repository into another; park the need if that handoff \
-         is required. Write {home}/plans/n1.json. Your final message is one line: \
-         handle, verdict, number of units."
+    let job = board_planner_job(&st, "n1").expect("planner job is durably queued");
+    assert_eq!(job.role, "planner");
+    assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.payload["planner_output"]["out"], "board/n1.out");
+    assert_eq!(job.payload["planner_output"]["plan"], "plans/n1.json");
+    let marker = "PUMP-NEED-INPUT-BEGIN\n";
+    let start = job.body.find(marker).unwrap() + marker.len();
+    let end = job.body[start..].find("\nPUMP-NEED-INPUT-END").unwrap() + start;
+    let input: Value = serde_json::from_str(&job.body[start..end]).unwrap();
+    assert_eq!(input, parsed);
+    assert!(job.body.contains("PUMP-PLAN-BEGIN"));
+    assert!(
+        host.spawned().is_empty(),
+        "planner execution belongs to the pool"
     );
-    assert_eq!(
-        fs::read_to_string(ctx.home.join("board/n1.prompt")).unwrap(),
-        want_prompt
-    );
-    assert!(host.spawned().iter().any(|cmd| cmd.contains("planner-run")));
     assert_eq!(st.board.planning.get("n1"), Some(&ctx.now()));
     let short_subject: String = subject.chars().take(70).collect();
     assert!(
         host.logs()
             .contains(&format!("board: planning new need n1 {short_subject}"))
     );
+}
+
+#[test]
+fn a_missing_planner_route_does_not_create_a_phantom_outbox_job() {
+    let (_dir, ctx, _host) = setup();
+    let ctx = ctx.with_routing(RoleRouting::default());
+    let mut st = State::default();
+    let rows = vec![need_row("n1", "2026-10-15", "Needs a planner")];
+
+    launch_planners(&ctx, &mut st, &rows, &BTreeSet::new(), &mut BTreeSet::new());
+
+    assert!(st.board.planning.is_empty());
+    assert!(st.jobs.is_empty());
+    assert!(exceptions(&ctx).contains("planner-dispatch-failed n1"));
 }
 
 #[test]
@@ -760,7 +773,7 @@ fn board_skips_a_pass_inside_the_every_window_and_pulls_then_plans_otherwise() {
             .contains(&"sync pull rc=0 pulled 3 messages".to_string())
     );
     assert!(st.board.planning.contains_key("n9"));
-    assert!(host.spawned().iter().any(|cmd| cmd.contains("planner-run")));
+    assert!(board_planner_job(&st, "n9").is_some());
     assert!(!host.spawned().iter().any(|cmd| cmd.contains("sync push")));
 }
 
@@ -833,7 +846,7 @@ fn a_stop_request_ends_the_board_pass_between_needs() {
         .filter(|cmd| cmd.contains("need show"))
         .count();
     assert_eq!(shown, 1, "commands: {:?}", host.commands());
-    assert!(planner_spawns(&host) <= 1, "the second need is skipped");
+    assert!(planner_job_count(&st) <= 1, "the second need is skipped");
     assert!(!st.board.planning.contains_key("n2"));
     assert!(
         host.logs().contains(&String::from(
@@ -991,12 +1004,20 @@ fn a_landed_plan_resets_planner_bookkeeping() {
     assert!(!exceptions(&ctx).contains("n1"));
 }
 
-/// How many `planner-run` command lines the fake host has been asked to spawn.
-fn planner_spawns(host: &FakeHost) -> usize {
-    host.spawned()
-        .iter()
-        .filter(|cmd| cmd.contains("planner-run"))
+/// How many durable planner jobs the board has queued.
+fn planner_job_count(st: &State) -> usize {
+    st.jobs
+        .values()
+        .filter(|job| job.kind.starts_with("planner:"))
         .count()
+}
+
+fn board_planner_job<'a>(st: &'a State, handle: &str) -> Option<&'a PoolJob> {
+    let output = format!("board/{handle}.out");
+    st.jobs.values().find(|job| {
+        job.kind == "planner:board"
+            && job.payload["planner_output"]["out"].as_str() == Some(output.as_str())
+    })
 }
 
 #[test]
@@ -1011,30 +1032,30 @@ fn a_need_in_backoff_waits_before_relaunch() {
     let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
-    assert_eq!(planner_spawns(&host), 0);
+    assert_eq!(planner_job_count(&st), 0);
     assert!(!st.board.planning.contains_key("n1"));
     host.advance(61);
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
-    assert_eq!(planner_spawns(&host), 1);
+    assert_eq!(planner_job_count(&st), 1);
     assert!(st.board.planning.contains_key("n1"));
 }
 
 #[test]
 fn a_parked_need_is_never_relaunched() {
-    let (_dir, ctx, host) = setup();
+    let (_dir, ctx, _host) = setup();
     let mut st = State::default();
     st.board.planner_failed.push(String::from("n1"));
     let rows = vec![need_row("n1", "2026-10-15", "Parked")];
     let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
-    assert_eq!(planner_spawns(&host), 0);
+    assert_eq!(planner_job_count(&st), 0);
     assert!(!st.board.planning.contains_key("n1"));
 }
 
 #[test]
-fn launch_records_the_planner_pid_and_clears_the_stale_receipt() {
-    let (_dir, ctx, host) = setup();
+fn launch_records_a_durable_planner_job_and_clears_the_stale_receipt() {
+    let (_dir, ctx, _host) = setup();
     fs::create_dir_all(ctx.home.join("board")).unwrap();
     fs::write(ctx.home.join("board/n1.out"), "stale run\n").unwrap();
     fs::write(ctx.home.join("board/n1.out.rc"), "127").unwrap();
@@ -1043,14 +1064,12 @@ fn launch_records_the_planner_pid_and_clears_the_stale_receipt() {
     let approved = BTreeSet::new();
     let mut replan = BTreeSet::new();
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
-    assert!(
-        st.board
-            .planner_pids
-            .get("n1")
-            .is_some_and(|pid| *pid >= 1000),
-        "pids: {:?}",
-        st.board.planner_pids
-    );
+    let job = board_planner_job(&st, "n1").expect("planner job is durable");
+    assert_eq!(job.role, "planner");
+    assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
+    assert_eq!(job.status, JobStatus::Pending);
+    assert!(job.task.is_none());
+    assert!(!st.board.planner_pids.contains_key("n1"));
     assert!(!ctx.home.join("board/n1.out.rc").exists());
     assert_eq!(
         fs::read_to_string(ctx.home.join("board/n1.out")).unwrap(),
@@ -1078,13 +1097,13 @@ fn a_planner_that_exits_127_is_freed_and_retried_once_then_parked() {
 
     board(&ctx, &mut st);
     assert!(st.board.planning.contains_key("n1"));
-    assert_eq!(planner_spawns(&host), 1);
+    assert_eq!(planner_job_count(&st), 1);
 
     exited_planner(&ctx, "n1");
     host.advance(61);
     board(&ctx, &mut st);
     assert!(!st.board.planning.contains_key("n1"));
-    assert_eq!(planner_spawns(&host), 1);
+    assert_eq!(planner_job_count(&st), 1);
     assert!(host.logs().join("\n").contains("rc=127"));
     assert!(exceptions(&ctx).contains("plan-crashed n1"));
     assert!(
@@ -1096,29 +1115,29 @@ fn a_planner_that_exits_127_is_freed_and_retried_once_then_parked() {
 
     host.advance(61);
     board(&ctx, &mut st);
-    assert_eq!(planner_spawns(&host), 2);
+    assert_eq!(planner_job_count(&st), 2);
     assert!(st.board.planning.contains_key("n1"));
 
     exited_planner(&ctx, "n1");
     host.advance(61);
     board(&ctx, &mut st);
-    assert_eq!(planner_spawns(&host), 2);
+    assert_eq!(planner_job_count(&st), 2);
     assert_eq!(st.board.planner_fails.get("n1"), Some(&2));
 
     host.advance(121);
     board(&ctx, &mut st);
-    assert_eq!(planner_spawns(&host), 3);
+    assert_eq!(planner_job_count(&st), 3);
 
     exited_planner(&ctx, "n1");
     host.advance(61);
     board(&ctx, &mut st);
     assert!(st.board.planner_failed.contains(&String::from("n1")));
     assert!(exceptions(&ctx).contains("plan-failed n1"));
-    let after_park = planner_spawns(&host);
+    let after_park = planner_job_count(&st);
 
     host.advance(601);
     board(&ctx, &mut st);
-    assert_eq!(planner_spawns(&host), after_park);
+    assert_eq!(planner_job_count(&st), after_park);
     assert!(!st.board.planning.contains_key("n1"));
 }
 
@@ -1143,7 +1162,7 @@ fn a_dependent_is_not_planned_before_its_prerequisite() {
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
     assert!(st.board.planning.contains_key("a"));
     assert!(!st.board.planning.contains_key("b"));
-    assert_eq!(planner_spawns(&host), 1);
+    assert_eq!(planner_job_count(&st), 1);
     assert!(
         host.logs()
             .join("\n")
@@ -1174,7 +1193,7 @@ fn a_dependent_is_planned_once_its_prerequisite_has_a_plan() {
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
     assert!(st.board.planning.contains_key("b"));
     assert!(!st.board.planning.contains_key("a"));
-    assert_eq!(planner_spawns(&host), 1);
+    assert_eq!(planner_job_count(&st), 1);
 }
 
 #[test]
@@ -1191,7 +1210,7 @@ fn an_unreadable_dependency_read_does_not_gate_planning() {
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
     assert!(st.board.planning.contains_key("a"));
     assert!(st.board.planning.contains_key("b"));
-    assert_eq!(planner_spawns(&host), 2);
+    assert_eq!(planner_job_count(&st), 2);
     assert!(host.logs().join("\n").contains("graph blocked unreadable"));
 }
 
@@ -1216,12 +1235,12 @@ fn a_need_depended_on_by_others_is_planned_before_an_independent_same_date_need(
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
     assert!(st.board.planning.contains_key("root"));
     assert!(!st.board.planning.contains_key("indep"));
-    assert_eq!(planner_spawns(&host), 1);
+    assert_eq!(planner_job_count(&st), 1);
 }
 
 #[test]
 fn the_need_list_order_is_kept_among_needs_nobody_depends_on() {
-    let (_dir, ctx, host) = setup_with(BoardConfig {
+    let (_dir, ctx, _host) = setup_with(BoardConfig {
         planners_max: 1,
         ..BoardConfig::default()
     });
@@ -1235,5 +1254,5 @@ fn the_need_list_order_is_kept_among_needs_nobody_depends_on() {
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
     assert!(st.board.planning.contains_key("x"));
     assert!(!st.board.planning.contains_key("y"));
-    assert_eq!(planner_spawns(&host), 1);
+    assert_eq!(planner_job_count(&st), 1);
 }
