@@ -148,7 +148,11 @@ fn a_job_with_a_pool_source_fetches_from_the_pool_repository() {
         ),
         "{commands:?}"
     );
-    assert!(!commands.iter().any(|c| c.contains("fetch origin refs/heads/work/u1")));
+    assert!(
+        !commands
+            .iter()
+            .any(|c| c.contains("fetch origin refs/heads/work/u1"))
+    );
 }
 
 #[test]
