@@ -116,5 +116,8 @@ fn slot_dirs_resolve_through_symlinked_roots() {
     let link = tmp.path().join("link");
     std::os::unix::fs::symlink(&real, &link).unwrap();
     let got = slot_dir_under(&link, &slot.join("repo"));
-    assert_eq!(got, Some(real.canonicalize().unwrap().join("proj/lanes/slot-9")));
+    assert_eq!(
+        got,
+        Some(real.canonicalize().unwrap().join("proj/lanes/slot-9"))
+    );
 }
