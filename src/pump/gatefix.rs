@@ -48,7 +48,12 @@ fn orphaned(ctx: &Ctx, st: &State, owner: &str) -> bool {
     if st.units.values().any(|unit| unit.need == owner) {
         return false;
     }
-    if ctx.home.join("plans").join(format!("{owner}.json")).exists() {
+    if ctx
+        .home
+        .join("plans")
+        .join(format!("{owner}.json"))
+        .exists()
+    {
         return false;
     }
     let dir = ctx.home.join("gatefix");
@@ -422,7 +427,12 @@ fn residual_section(ctx: &Ctx, tip: &str, owner: &str, names: &[&str]) -> String
         .map(|name| format!("- {name}"))
         .collect::<Vec<_>>()
         .join("\n");
-    if !ctx.home.join("plans").join(format!("{owner}.json")).exists() {
+    if !ctx
+        .home
+        .join("plans")
+        .join(format!("{owner}.json"))
+        .exists()
+    {
         return format!(
             "These tests were owned by fix plan {owner}, but its planner never wrote a plan (it died before planning), so no unit of that plan ran and they still fail at commit {tip}:
 {list}
