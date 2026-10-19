@@ -885,9 +885,8 @@ fn validate_rejects_target_checks_for_with_blank_commands() {
         .validate(Path::new("."), &pool_names())
         .expect_err("blank target checks_for command must fail");
     assert!(
-        err.to_string().contains(
-            "[pump.targets.tela.merge.checks_for] 'src/**' must have non-empty commands"
-        ),
+        err.to_string()
+            .contains("[pump.targets.tela.merge.checks_for] 'src/**' must have non-empty commands"),
         "{err}"
     );
 }
