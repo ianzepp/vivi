@@ -150,3 +150,33 @@ fn a_due_gatefix_retry_respawns_the_planner() {
     );
     drop(dir);
 }
+
+/// A third planner exit without a plan raises `gatefix-no-plan`, drops the
+/// retry entry, and stops respawning the planner.
+#[test]
+fn three_exits_without_a_plan_raise_gatefix_no_plan() {
+    let (dir, ctx, host) = setup();
+    host.set_now(T0);
+    let gatefix = ctx.home.join("gatefix");
+    drop(fs::create_dir_all(&gatefix));
+    let receipt = gatefix.join(format!("{NEED}.out.rc"));
+    let mut st = red_state();
+    for _ in 0..3 {
+        fs::write(&receipt, "1\n").unwrap();
+        expire_gatefix(&ctx, &mut st);
+        host.advance(900);
+    }
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(
+        exceptions.contains("gatefix-no-plan pumpfix-g01234567"),
+        "exceptions: {exceptions}"
+    );
+    assert!(
+        st.extra
+            .get("gatefix_retry_at")
+            .and_then(|map| map.get(NEED))
+            .is_none()
+    );
+    assert!(host.spawned().is_empty(), "spawned: {:?}", host.spawned());
+    drop(dir);
+}
