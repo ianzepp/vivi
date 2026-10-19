@@ -289,6 +289,19 @@ fn install_sh_defaults_to_crate_version() {
 }
 
 #[test]
+fn install_sh_prints_path_hint_skills_and_service_notes() {
+    let text = include_str!("../install.sh");
+    for needle in [
+        "add to PATH: export PATH=",
+        "vivi skills install",
+        "launchctl bootout gui/$(id -u)",
+        "systemctl --user restart",
+    ] {
+        assert!(text.contains(needle), "install.sh must mention {needle}");
+    }
+}
+
+#[test]
 fn resolve_bin_dir_refuses_a_mailspace_prefix() {
     let temp = tempfile::tempdir().expect("tmp");
     let space = temp.path().join(".vivi");

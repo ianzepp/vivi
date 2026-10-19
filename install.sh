@@ -196,3 +196,12 @@ if [ -n "$on_path" ] && [ "$on_path" != "$managed" ]; then
     echo "warning: a different vivi is earlier on PATH ($on_path) than the managed install ($managed)" >&2
 fi
 "${PREFIX}/bin/vivi" --version
+echo "note: if this release changed skills, refresh installed copies: vivi skills install <dir> --force"
+for unit in "${HOME}/Library/LaunchAgents/"com.vivi*.plist; do
+    [ -f "$unit" ] || continue
+    echo "note: restart ${unit} to pick up the new binary: launchctl bootout gui/$(id -u) ${unit} && launchctl bootstrap gui/$(id -u) ${unit}"
+done
+for unit in "${HOME}/.config/systemd/user/"vivi*.service; do
+    [ -f "$unit" ] || continue
+    echo "note: restart ${unit##*/} to pick up the new binary: systemctl --user restart ${unit##*/}"
+done
