@@ -149,6 +149,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.planner.run, "");
     assert_eq!(cfg.planner.charter, "");
     assert_eq!(cfg.planner.split_hard_cap, 5400);
+    assert_eq!(cfg.planner.planners_max, 3);
     assert!(!cfg.planner.split_timeout_present);
     assert!(cfg.dispatch.lanes.is_empty());
     assert_eq!(cfg.dispatch.last_resort, "");
@@ -197,6 +198,14 @@ fn legacy_split_timeout_loads_as_split_hard_cap() {
         cfg.planner.split_timeout_present,
         "the legacy key's presence must survive parsing"
     );
+}
+
+#[test]
+fn planner_planners_max_reads_toml_and_defaults_to_3() {
+    let set = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nplanners_max = 5\n");
+    assert_eq!(set.planner.planners_max, 5);
+    let none = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(none.planner.planners_max, 3);
 }
 
 #[test]
