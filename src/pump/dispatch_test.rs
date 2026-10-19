@@ -856,7 +856,10 @@ fn parse_dispatched_slot_reads_the_real_porcelain_line() {
 
 #[test]
 fn parse_dispatched_slot_treats_a_dash_as_absent() {
-    assert_eq!(parse_dispatched_slot("dispatched 1a2b3c4d fly4 - job001"), None);
+    assert_eq!(
+        parse_dispatched_slot("dispatched 1a2b3c4d fly4 - job001"),
+        None
+    );
 }
 
 #[test]

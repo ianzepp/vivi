@@ -144,11 +144,9 @@ fn deferral_marks_leave_the_user_metadata_table() {
         .unwrap();
     assert_eq!(metadata_rows, 0);
     let (message_id, until): (String, i64) = conn
-        .query_row(
-            "SELECT message_id, until FROM event_deferrals",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row("SELECT message_id, until FROM event_deferrals", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .unwrap();
     assert_eq!(message_id, "m1");
     assert_eq!(until, 123);

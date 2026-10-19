@@ -70,7 +70,9 @@ impl Storage {
             )
             .map_err(|e| VivariumError::Other(format!("failed to prepare deferral query: {e}")))?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .map_err(|e| VivariumError::Other(format!("failed to query deferrals: {e}")))?;
         let mut earliest: BTreeMap<String, i64> = BTreeMap::new();
         for row in rows {
