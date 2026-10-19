@@ -28,9 +28,9 @@ fn config() -> PoolConfig {
 
 fn spec(index: u32) -> CreateSpec {
     CreateSpec {
-        name: PoolId::new("livetest", POOL).slot_name(index),
+        name: PoolId::new("livetest", "", POOL).slot_name(index),
         image: IMAGE.into(),
-        metadata: slot::slot_metadata(&PoolId::new("livetest", POOL), index, "main"),
+        metadata: slot::slot_metadata(&PoolId::new("livetest", "", POOL), index, "main"),
         env: Default::default(),
         once_env: Default::default(),
         passthrough_env: Vec::new(),

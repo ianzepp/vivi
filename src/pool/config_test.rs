@@ -31,7 +31,7 @@ fn full() -> PoolConfig {
 
 /// The identity every test pool has: pool `main` of mailspace `space`.
 fn id() -> PoolId {
-    PoolId::new("space", "main")
+    PoolId::new("space", "", "main")
 }
 
 fn err(config: &PoolConfig) -> String {
@@ -156,17 +156,17 @@ fn every_message_names_the_pool() {
 fn pool_names_are_slugs_that_start_and_end_with_a_letter_or_digit() {
     let config = full();
     for good in ["local", "lanes-2", "a", "9"] {
-        config.validate(&PoolId::new("space", good)).unwrap();
+        config.validate(&PoolId::new("space", "", good)).unwrap();
     }
     for bad in ["", "Local", "has space", "-x", "x-", "a_b", "a.b", "a/b"] {
         let said = config
-            .validate(&PoolId::new("space", bad))
+            .validate(&PoolId::new("space", "", bad))
             .unwrap_err()
             .to_string();
         assert!(said.contains("pool name"), "{bad:?}: {said}");
     }
     let said = config
-        .validate(&PoolId::new("space", "local-doctor"))
+        .validate(&PoolId::new("space", "", "local-doctor"))
         .unwrap_err()
         .to_string();
     assert!(said.contains("-doctor"), "{said}");
@@ -175,7 +175,7 @@ fn pool_names_are_slugs_that_start_and_end_with_a_letter_or_digit() {
 #[test]
 fn a_mailspace_name_with_no_letter_or_digit_is_refused() {
     let said = full()
-        .validate(&PoolId::new("!!!", "main"))
+        .validate(&PoolId::new("!!!", "", "main"))
         .unwrap_err()
         .to_string();
     assert!(said.contains("mailspace name"), "{said}");

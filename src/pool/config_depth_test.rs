@@ -13,7 +13,7 @@ fn config(depth: Option<u32>) -> PoolConfig {
 }
 
 fn id() -> PoolId {
-    PoolId::new("space", "main")
+    PoolId::new("space", "", "main")
 }
 
 #[test]

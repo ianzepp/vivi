@@ -35,8 +35,10 @@ fn parses_machine_list_fixture() {
 #[test]
 fn fixture_becomes_slot_status() {
     let machines = parse_machine_list(LIST).unwrap();
-    let slots =
-        crate::pool::slot::pool_slots(&crate::pool::slot::PoolId::new("ms", "faber"), &machines);
+    let slots = crate::pool::slot::pool_slots(
+        &crate::pool::slot::PoolId::new("ms", "", "faber"),
+        &machines,
+    );
     assert_eq!(slots.len(), 2);
     assert_eq!(slots[0].name, "faber-slot-1");
     assert_eq!(slots[0].state, "unseeded", "no seed mark in the fixture");

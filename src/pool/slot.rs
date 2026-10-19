@@ -10,7 +10,9 @@ use super::provider::MachineRecord;
 /// Metadata key marking a machine as a member of a pool (value: pool name).
 pub const META_POOL: &str = "vivi_pool";
 /// Metadata key naming the mailspace the pool belongs to (value: the
-/// mailspace's slug). A slot belongs to a mailspace AND a pool: two
+/// mailspace's space key, see [`space_key`]: the name slug qualified by the
+/// first 8 characters of the id in `.vivi/mailspace.id`, or the bare slug
+/// when the config has no id). A slot belongs to a mailspace AND a pool: two
 /// mailspaces may each have a pool of the same name on one host.
 pub const META_MAILSPACE: &str = "vivi_pool_mailspace";
 /// Metadata key holding the slot's 1-based index.
@@ -37,9 +39,10 @@ pub const STATE_READY: &str = "ready";
 pub const DOCTOR_SUFFIX: &str = "-doctor";
 
 /// The identity of a pool: the mailspace it belongs to (identified by its
-/// id, falling back to the name slug only when the config has no id) and its
-/// own name (the key of its `[pools.<name>]` table). Every mark, machine name
-/// and directory a pool makes derives from both.
+/// space key, [`space_key`] over the name and the id in
+/// `.vivi/mailspace.id`; the bare name slug when the config has no id) and
+/// its own name (the key of its `[pools.<name>]` table). Every mark, machine
+/// name and directory a pool makes derives from both.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PoolId {
     pub mailspace: String,
@@ -47,12 +50,14 @@ pub struct PoolId {
 }
 
 impl PoolId {
-    /// The pool `pool` of the mailspace named `mailspace_name` (the name is
-    /// normalised by [`space_slug`]).
+    /// The pool `pool` of the mailspace named `mailspace_name` and identified
+    /// by `mailspace_id` (the contents of `.vivi/mailspace.id`, empty when the
+    /// config has none). The mailspace part is [`space_key`] over the two, so
+    /// two mailspaces named alike stay distinct.
     #[must_use]
-    pub fn new(mailspace_name: &str, pool: &str) -> Self {
+    pub fn new(mailspace_name: &str, mailspace_id: &str, pool: &str) -> Self {
         Self {
-            mailspace: space_slug(mailspace_name),
+            mailspace: space_key(mailspace_name, mailspace_id),
             pool: pool.to_string(),
         }
     }
@@ -90,7 +95,7 @@ impl PoolId {
     pub fn owns(&self, machine: &MachineRecord) -> bool {
         let mark = |key: &str| machine.metadata.get(key).map(String::as_str);
         mark(META_POOL) == Some(self.pool.as_str())
-            && mark(META_MAILSPACE) == Some(self.mailspace.as_str())
+            && mark(META_MAILSPACE).is_some_and(|m| space_mark_matches(&self.mailspace, m))
     }
 }
 

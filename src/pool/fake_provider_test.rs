@@ -136,7 +136,7 @@ pub const SPACE: &str = "ms";
 
 /// The identity of pool `pool` in the fake's mailspace.
 pub fn pid(pool: &str) -> PoolId {
-    PoolId::new(SPACE, pool)
+    PoolId::new(SPACE, "", pool)
 }
 
 /// A seeded pool slot of the fake's mailspace.
