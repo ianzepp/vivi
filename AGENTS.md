@@ -163,6 +163,28 @@ as risk increases:
 For documentation-only edits, at least inspect links or run a small local
 Markdown link scan when the touched file contains links.
 
+## Measured development loop
+
+Measured on burgus on 2026-10-19 with a warm development target. These are
+wall times, including incremental compilation where applicable. Measure again
+when the command or source shape changes materially; do not raise a timeout
+to hide a slowdown.
+
+| Command | Wall time | Development timeout |
+| --- | ---: | ---: |
+| `cargo fmt --check` | 0.79s | 15s |
+| `cargo check --quiet` | 17.03s | 60s |
+| `cargo build --bin vivi --quiet` | 20.52s | 75s |
+| `cargo test --lib --quiet` | 78.98s | 180s |
+| `cargo test --test hygiene --quiet` | 20.54s | 60s |
+| `cargo test --test '*' --quiet --no-fail-fast` | 145.66s | 270s |
+
+The integration measurement included one obsolete status-line assertion;
+its runtime is a timing baseline, not a clean-gate receipt. A full delivery
+still requires `cargo test` and the source hygiene check on the delivered tip.
+Keep one Cargo writer per shared target. Run the final gate from the integration
+checkout and refresh generated embedded skills after changing checkout roots.
+
 ## Git Workflow
 
 Standing authorization from the repo owner for agent development:
