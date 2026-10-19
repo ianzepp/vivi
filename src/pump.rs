@@ -26,6 +26,7 @@ pub mod priority;
 pub mod progress;
 pub mod proof;
 pub mod quarantine;
+pub mod ramsweep;
 pub mod ready;
 pub mod remote;
 pub mod report;
@@ -183,3 +184,7 @@ mod proof_test;
 #[cfg(test)]
 #[path = "pump/audit_test.rs"]
 mod audit_test;
+
+#[cfg(test)]
+#[path = "pump/ramsweep_test.rs"]
+mod ramsweep_test;
