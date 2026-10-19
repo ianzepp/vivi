@@ -2480,6 +2480,8 @@ remote_wait   = 90                     # seconds for a remote merger to claim a 
 remote_limit  = 1800                   # seconds a claimed batch may take
 # lanes is legacy: unused when the merge role sets pool (slots win)
 
+# `[pump.ramdisk] lane_gib = 8` enables an 8-GiB per-lane RAM disk; it is off when omitted, reserves 6 GiB by default, and its Cargo environment applies only to check/proof commands.
+
 [pump.gate]
 command       = "<command>"            # run by a read-only gate worker
 every_merges  = 8                      # merges since the last gate that make one due

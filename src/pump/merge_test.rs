@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpTarget};
+use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpRamDisk, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::{batch_work, clear_stale_lock, failure_text, merge_work};
 use crate::pump::state::{MergeJob, MergeResult};
@@ -1420,4 +1420,63 @@ fn a_failing_scoped_check_is_proof_failed() {
         "{:?}",
         host.commands()
     );
+}
+
+const LANE_ENV: &str = "env CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_STRIP=symbols CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_STRIP=symbols ";
+
+fn setup_ramdisk(lane_gib: Option<u64>) -> (TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        committer_name: String::from("Pump Tester"),
+        committer_email: String::from("pump@example.com"),
+        merge: MergeConfig {
+            shared_checks: vec![String::from("cargo test --lib")],
+            ..MergeConfig::default()
+        },
+        ramdisk: PumpRamDisk {
+            lane_gib,
+            ..PumpRamDisk::default()
+        },
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    (dir, ctx, host)
+}
+
+fn exercise_ramdisk_merge(lane_gib: Option<u64>) -> (Vec<String>, MergeResult) {
+    let (_dir, ctx, host) = setup_ramdisk(lane_gib);
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    (host.commands(), result)
+}
+
+#[test]
+fn ramdisk_env_prefix_wraps_lane_checks_and_proofs_only_when_enabled() {
+    let (commands, result) = exercise_ramdisk_merge(Some(8));
+    assert_eq!(result.ok, Some(true), "{result:?}");
+    assert!(commands.contains(&format!("{LANE_ENV}cargo test --lib")), "{commands:?}");
+    assert!(commands.contains(&format!("{LANE_ENV}./proof-u1.sh")), "{commands:?}");
+    assert!(commands.iter().any(|cmd| cmd == "git rev-parse HEAD"), "{commands:?}");
+}
+
+#[test]
+fn ramdisk_env_prefix_leaves_checks_unprefixed_when_disabled() {
+    let (commands, result) = exercise_ramdisk_merge(None);
+    assert_eq!(result.ok, Some(true), "{result:?}");
+    assert!(commands.contains(&String::from("cargo test --lib")), "{commands:?}");
+    assert!(commands.contains(&String::from("./proof-u1.sh")), "{commands:?}");
+    assert!(!commands.iter().any(|cmd| cmd.starts_with("env ")), "{commands:?}");
+}
+
+#[test]
+fn ramdisk_env_prefix_wraps_batch_checks_and_proofs() {
+    let (_dir, ctx, host) = setup_ramdisk(Some(8));
+    host.reply("rev-parse origin/next", 0, "tip-batch\n");
+    let results = batch_work(&ctx, &batch());
+    assert!(results.iter().all(|result| result.ok == Some(true)), "{results:?}");
+    let commands = host.commands();
+    assert!(commands.contains(&format!("{LANE_ENV}cargo test --lib")), "{commands:?}");
+    assert!(commands.contains(&format!("{LANE_ENV}./proof-u1.sh")), "{commands:?}");
 }

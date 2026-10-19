@@ -1,7 +1,9 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{AlarmConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
+use crate::pump::config::{
+    AlarmConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpRamDisk, PumpTarget,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -94,6 +96,24 @@ fn mailspace(text: &str) -> MailspaceConfig {
 
 fn pump(text: &str) -> PumpConfig {
     mailspace(text).pump.expect("pump table should be present")
+}
+
+#[test]
+fn ramdisk_defaults_and_partial_table_parse() {
+    let defaults = PumpRamDisk::default();
+    assert_eq!(defaults.lane_gib, None);
+    assert_eq!(defaults.margin_gib, 6);
+    assert_eq!(defaults.env.len(), 5);
+    assert_eq!(defaults.env["CARGO_INCREMENTAL"], "0");
+    assert_eq!(defaults.env["CARGO_PROFILE_DEV_DEBUG"], "0");
+    assert_eq!(defaults.env["CARGO_PROFILE_TEST_DEBUG"], "0");
+    assert_eq!(defaults.env["CARGO_PROFILE_DEV_STRIP"], "symbols");
+    assert_eq!(defaults.env["CARGO_PROFILE_TEST_STRIP"], "symbols");
+
+    let parsed = pump("[pump]\nbranch = 'next'\n[pump.ramdisk]\nlane_gib = 8\n");
+    assert_eq!(parsed.ramdisk.lane_gib, Some(8));
+    assert_eq!(parsed.ramdisk.margin_gib, 6);
+    assert_eq!(parsed.ramdisk.env, defaults.env);
 }
 
 fn pools(names: &[&str]) -> Vec<String> {

@@ -8,32 +8,28 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct PumpConfig {
-    /// Pump home directory; relative paths join the project root and `~` is
-    /// not expanded. Default `<project>/.vivi/pump`.
+    /// Pump home; relative paths use the project root and `~` is literal.
+    /// Default `<project>/.vivi/pump`.
     pub home: Option<String>,
-    /// The integration clone; cloned from `remote_url` at startup when
-    /// absent. Default `<home>/repo`.
+    /// Integration clone, cloned from `remote_url` at startup when absent.
+    /// Default `<home>/repo`.
     pub repo: Option<String>,
     /// Git remote (name) the integration branch and main live on.
     pub remote: String,
-    /// URL or path the integration clone is created from when `repo` is
-    /// missing at startup; the clone's remote is named `remote`. With none
-    /// set, a missing `repo` stops the pump with an error.
+    /// Clone URL/path when `repo` is missing at startup; its remote is named
+    /// `remote`. Without one, a missing `repo` stops the pump.
     pub remote_url: Option<String>,
-    /// Named repository execution targets within this mailspace. When empty,
-    /// the legacy single-repository settings form the `default` target.
+    /// Named repository targets; when empty, legacy settings form `default`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub targets: BTreeMap<String, PumpTarget>,
-    /// Git author and committer name of every commit and merge the pump
-    /// makes. Required: `validate` rejects an empty one.
+    /// Git author/committer name; required, and `validate` rejects empty values.
     pub committer_name: String,
-    /// Git author and committer email of every commit and merge the pump
-    /// makes. Required: `validate` rejects an empty one.
+    /// Git author/committer email; required, and `validate` rejects empty values.
     pub committer_email: String,
     /// The integration branch. Required: `validate` rejects an empty one.
     pub branch: String,
-    /// Main branch merged into the integration branch each batch; empty
-    /// disables merging main in and promotion.
+    /// Main branch merged into integration each batch; empty disables that
+    /// merge and promotion.
     pub main: String,
     /// A clean gate fast-forwards main to the gated tip.
     pub promote: bool,
@@ -41,17 +37,14 @@ pub struct PumpConfig {
     pub tick: u64,
     /// Shell fragment prepended to every command line.
     pub shell_prefix: String,
-    /// File whose text opens every unit brief; absent means the embedded
-    /// default text. A relative path joins the project root. `validate`
-    /// rejects a path that cannot be read.
+    /// File whose text opens every unit brief; absent uses the embedded
+    /// default. Relative paths use the project root; `validate` checks reads.
     pub hand_rules: Option<String>,
-    /// Paths held by another session; units overlapping them are not
-    /// dispatched. A relative value resolves against `home`. Default
-    /// `reserved.txt`.
+    /// Paths held by another session; overlapping units are not dispatched.
+    /// Relative paths use `home`; default `reserved.txt`.
     pub reserved_file: String,
-    /// Retired: need priority lives in `pump.db` (`vivi pump priority`). The
-    /// key is accepted and ignored so an old `priority_file = "priority.txt"`
-    /// line in `mailspace.toml` still parses; it is never written back.
+    /// Retired: priority lives in `pump.db` (`vivi pump priority`). This key
+    /// accepts old config lines but is never written back.
     #[serde(rename = "priority_file", skip_serializing)]
     pub retired_priority_file: Option<String>,
     /// Unit ids with this prefix are fix units.
@@ -70,6 +63,8 @@ pub struct PumpConfig {
     pub dispatch: DispatchConfig,
     /// Merge settings (the `[pump.merge]` table).
     pub merge: MergeConfig,
+    /// Per-lane RAM disk settings (the `[pump.ramdisk]` table).
+    pub ramdisk: PumpRamDisk,
     /// Gate settings (the `[pump.gate]` table).
     pub gate: GateConfig,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
@@ -102,6 +97,7 @@ impl Default for PumpConfig {
             planner: PlannerConfig::default(),
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
+            ramdisk: PumpRamDisk::default(),
             gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
         }
@@ -666,6 +662,7 @@ impl PumpConfig {
         if self.tick == 0 {
             bad.push("[pump] tick must be >= 1".into());
         }
+        self.ramdisk.validate(&mut bad);
         self.validate_dispatch(pools, role_pool, &mut bad);
         if self.targets.is_empty() {
             if self.branch.is_empty() {
@@ -997,3 +994,6 @@ fn resolve(project: &Path, value: &str) -> PathBuf {
 fn known(pools: &[String], name: &str) -> bool {
     pools.iter().any(|pool| pool == name)
 }
+#[path = "config_ramdisk.rs"]
+pub mod ramdisk;
+pub use ramdisk::PumpRamDisk;
