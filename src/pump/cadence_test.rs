@@ -15,7 +15,11 @@ fn run(ended_at: Option<u64>, retry_at: Option<u64>) -> RoleRun {
         task: String::from("t"),
         started_at: 1_000,
         ended_at,
-        outcome: Some(String::from(if ended_at.is_some() { "done" } else { "running" })),
+        outcome: Some(String::from(if ended_at.is_some() {
+            "done"
+        } else {
+            "running"
+        })),
         attempt: 1,
         retry_at,
     }
