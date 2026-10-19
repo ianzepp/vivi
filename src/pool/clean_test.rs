@@ -161,7 +161,9 @@ fn clean_mailspace_leaves_a_foreign_mailspaces_slots_alone() {
         "a foreign mailspace's slot build dir must be left alone"
     );
     assert_eq!(
-        fs::read_to_string(foreign.join("marks/build_baseline")).unwrap().trim(),
+        fs::read_to_string(foreign.join("marks/build_baseline"))
+            .unwrap()
+            .trim(),
         "10",
         "a foreign mailspace's slot marks must be left alone"
     );

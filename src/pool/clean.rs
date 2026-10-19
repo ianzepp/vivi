@@ -403,8 +403,7 @@ fn sweep(
     };
     let lane = merge_lane_ref(space, "default");
     let prefix = root.to_path_buf();
-    let pool_root =
-        clean_work::real_path(&root.join(&handle.id.mailspace).join(&handle.id.pool));
+    let pool_root = clean_work::real_path(&root.join(&handle.id.mailspace).join(&handle.id.pool));
     let (a, s) = clean_work::sweep_orphans(
         &handle.id.pool,
         &source,
@@ -414,8 +413,7 @@ fn sweep(
             // A worktree outside this pool's own `<mailspace>/<pool>`
             // prefix belongs to another mailspace sharing the root; leave
             // it alone.
-            clean_work::real_path(path).starts_with(&pool_root)
-                && orphan_is_done(st, &prefix, path)
+            clean_work::real_path(path).starts_with(&pool_root) && orphan_is_done(st, &prefix, path)
         },
         dry_run,
     )?;
