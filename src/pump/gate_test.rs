@@ -739,9 +739,11 @@ fn hold_on_red_writes_hold_merge_while_reds_are_owned() {
     hold_cycle(&ctx, &mut st);
     let hold = ctx.home.join("HOLD-MERGE");
     assert_eq!(fs::read_to_string(&hold).unwrap(), "red\n");
-    assert!(host.logs().iter().any(|line| {
-        line.contains("hold on red: 1 owned names unfixed; HOLD-MERGE written")
-    }));
+    assert!(
+        host.logs().iter().any(|line| {
+            line.contains("hold on red: 1 owned names unfixed; HOLD-MERGE written")
+        })
+    );
     set_mtime(&hold, 500);
     hold_cycle(&ctx, &mut st);
     assert_eq!(
