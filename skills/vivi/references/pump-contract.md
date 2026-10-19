@@ -592,6 +592,7 @@ configuration remains the implicit `default` target.
 | `run` | command template | none — **required** while `board.from` or `board.mark` is set | the planner command; prompt file on stdin, stdout+stderr to the `.out` file, cwd `home`; `{charter}` is replaced by `charter` |
 | `charter` | path | none | the file substituted for `{charter}` in `run` |
 | `split_hard_cap` | int seconds | `5400` | hard cap while the split planner is alive or unreachable; an exited planner is retried with backoff |
+| `planners_max` | int | `3` | concurrent split planners; further split launches stagger by 60s |
 
 `[pump.dispatch]`:
 

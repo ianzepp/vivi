@@ -35,7 +35,7 @@ fn planner_cfg() -> PumpConfig {
             run: String::from("plan-it {charter} --quiet"),
             charter: String::from("/charter/path.md"),
             split_hard_cap: 1500,
-            split_timeout_present: false,
+            ..PlannerConfig::default()
         },
         ..PumpConfig::default()
     }
