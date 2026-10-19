@@ -644,6 +644,47 @@ fn a_conflicting_job_is_a_merge_conflict_result_and_the_others_still_merge() {
 }
 
 #[test]
+fn a_batch_conflict_only_on_generated_files_merges_both_units() {
+    let (_dir, ctx, host) = setup_generated();
+    host.reply("merge u1:", 0, "");
+    host.reply(
+        "merge u2:",
+        1,
+        "Auto-merging scripta/e2e-coverage-ledger.toml\nCONFLICT (content): merge conflict in scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply(
+        "diff --name-only --diff-filter=U",
+        0,
+        "scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip9\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|r| r.ok == Some(true) && r.tip.as_deref() == Some("tip9")),
+        "{results:?}\n{:?}",
+        host.commands()
+    );
+    assert!(
+        !results
+            .iter()
+            .any(|r| r.why.as_deref() == Some("merge-conflict"))
+    );
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "./regen-ledger.sh"), 1, "{cmds:?}");
+    let commit = cmds
+        .iter()
+        .position(|c| c.contains("commit --no-edit"))
+        .unwrap();
+    assert!(index_of(&cmds, "merge u2:") < commit, "{cmds:?}");
+    assert!(index_of(&cmds, "./regen-ledger.sh") < commit, "{cmds:?}");
+    // Each unit merged once: neither failed, so no attempt was consumed.
+    assert_eq!(count(&cmds, "merge --no-ff"), 2, "{cmds:?}");
+}
+
+#[test]
 fn a_job_whose_own_proof_fails_is_the_culprit_and_the_rest_are_retried_in_round_two() {
     let (_dir, ctx, host) = setup("");
     host.reply("./proof-u1.sh", 1, "panicked at 'boom'\n");
