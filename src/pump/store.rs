@@ -19,8 +19,10 @@ use crate::error::VivariumError;
 
 mod priority;
 mod promotions;
+mod requeue;
 mod schema;
 mod unit_extra;
+pub use requeue::RequeueRequest;
 use schema::{newer_schema, schema_version, take_migration_lock};
 
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
@@ -478,7 +480,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     if version > SCHEMA_VERSION {
         return Err(newer_schema(version));
     }
-    conn.execute_batch(SCHEMA_DDL)
+    conn.execute_batch(&format!("{SCHEMA_DDL}\n{}", requeue::SCHEMA_DDL))
         .map_err(db_err("create schema"))?;
     promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
