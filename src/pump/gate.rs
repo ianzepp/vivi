@@ -34,6 +34,9 @@ const EXTERNAL_POOL: &str = "external";
 /// The `state.json` key holding the epoch seconds a due gate began waiting
 /// for an external result.
 const WAIT_KEY: &str = "external_wait_since";
+/// The `state.json` key holding the epoch seconds the last external result was
+/// consumed; `results_idle_seconds` measures the gap from it.
+const RESULT_KEY: &str = "last_external_result_at";
 /// The file an external gate runner touches in `results_dir` to prove it is
 /// alive; its age decides whether a due gate waits at all.
 const HEARTBEAT: &str = "heartbeat";
@@ -83,6 +86,8 @@ pub fn external_gates(ctx: &Ctx, st: &mut State) {
             pool: Some(String::from(EXTERNAL_POOL)),
         };
         st.extra.remove(WAIT_KEY);
+        st.extra
+            .insert(String::from(RESULT_KEY), serde_json::json!(ctx.now()));
         let host = result
             .host
             .as_deref()
@@ -179,18 +184,29 @@ fn set_aside(ctx: &Ctx, dir: &Path, path: &Path, why: &str) {
 }
 
 /// `true` while a due gate should keep waiting for an external result:
-/// `results_dir` is set, its `heartbeat` file is younger than twice
-/// `results_wait_seconds`, and the wait, started the first time a gate was due,
-/// is younger than `results_wait_seconds`. Starts the wait when it is not
-/// running yet; an elapsed wait is cleared so the pool gate goes out. A missing
-/// or stale heartbeat means no external runner is alive: the marker is cleared
-/// and the pool gate goes out at once, because a dead runner must never delay
-/// a gate.
+/// `results_dir` is set, it has not been idle for `results_idle_seconds`, its
+/// `heartbeat` file is younger than twice `results_wait_seconds`, and the wait,
+/// started the first time a gate was due, is younger than
+/// `results_wait_seconds`. Starts the wait when it is not running yet; an
+/// elapsed wait is cleared so the pool gate goes out. A missing or stale
+/// heartbeat, or an idle runner, means no external runner is alive: the marker
+/// is cleared and the pool gate goes out at once, because a dead runner must
+/// never delay a gate. `results_idle_seconds` (when > 0) counts from the last
+/// consumed result; with no result consumed yet the clock starts at the epoch,
+/// so an enabled idle rule skips the wait until the first result arrives.
 fn waiting_for_external(ctx: &Ctx, st: &mut State) -> bool {
     let Some(dir) = ctx.cfg.results_dir(&ctx.project) else {
         return false;
     };
     let now = ctx.now();
+    if idle_external(ctx, st, now) {
+        st.extra.remove(WAIT_KEY);
+        ctx.log(&format!(
+            "external gate runner idle over {}s; not waiting for results_dir",
+            ctx.cfg.gate.results_idle_seconds
+        ));
+        return false;
+    }
     if let Some(reason) = stalled_runner(ctx, &dir, now) {
         st.extra.remove(WAIT_KEY);
         ctx.log(&format!(
@@ -210,6 +226,22 @@ fn waiting_for_external(ctx: &Ctx, st: &mut State) -> bool {
     }
     st.extra.remove(WAIT_KEY);
     false
+}
+
+/// `true` when `results_idle_seconds` is on and no external result has been
+/// consumed for longer than that: the runner is not running, so the wait must
+/// not hold the gate. Off (`0`) is always `false`.
+fn idle_external(ctx: &Ctx, st: &State, now: u64) -> bool {
+    let idle = ctx.cfg.gate.results_idle_seconds;
+    if idle == 0 {
+        return false;
+    }
+    let last = st
+        .extra
+        .get(RESULT_KEY)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    now.saturating_sub(last) > idle
 }
 
 /// Why `results_dir` holds no proof of a live external runner at `now`:

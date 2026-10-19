@@ -1015,6 +1015,57 @@ fn a_stale_heartbeat_does_not_wait() {
 }
 
 #[test]
+fn an_idle_external_runner_does_not_hold_the_gate() {
+    // A context with an external wait far longer than the idle window.
+    let idle_setup = |last: u64| {
+        let dir = tempdir().unwrap();
+        let mut cfg = gate_cfg();
+        cfg.gate.results_dir = Some(dir.path().join("results").display().to_string());
+        cfg.gate.results_wait_seconds = 2700;
+        cfg.gate.results_idle_seconds = 3600;
+        let (ctx, host) = test_ctx(dir.path(), cfg);
+        let now = real_now();
+        write_heartbeat(&ctx);
+        host.set_now(now);
+        wire(&host);
+        let mut st = State {
+            baseline: None,
+            ..fresh_state()
+        };
+        st.extra.insert(
+            String::from("last_external_result_at"),
+            serde_json::json!(now - last),
+        );
+        (dir, ctx, host, st)
+    };
+
+    // Control: a result 60 s ago means a runner is alive, so the gate waits.
+    let (dir, ctx, host, mut st) = idle_setup(60);
+    start_gate(&ctx, &mut st);
+    assert!(host.commands().is_empty());
+    assert!(st.last_gate.task.is_none());
+    assert_eq!(
+        st.extra["external_wait_since"],
+        serde_json::json!(ctx.now())
+    );
+
+    // No result for 7200 s (past the 3600 s idle window): a runner that has
+    // produced nothing is not running, so the pool gate goes out at once.
+    let (idle_dir, idle, idle_host, mut idle_st) = idle_setup(7200);
+    start_gate(&idle, &mut idle_st);
+    assert!(!idle_st.extra.contains_key("external_wait_since"));
+    assert_eq!(idle_st.last_gate.task.as_deref(), Some(TASK));
+    assert_eq!(idle_st.last_gate.pool.as_deref(), Some("flygate"));
+    assert!(
+        idle_host
+            .logs()
+            .iter()
+            .any(|line| line.contains("external gate runner idle over 3600s"))
+    );
+    drop((dir, idle_dir));
+}
+
+#[test]
 fn an_external_result_for_the_tip_finishes_the_gate_and_promotes() {
     let (dir, ctx, host) = external_setup();
     wire_promote(&host);
