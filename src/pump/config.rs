@@ -196,6 +196,42 @@ impl PumpConfig {
         config.gate = target.gate.unwrap_or_default();
         Some(config)
     }
+
+    /// Pool name → the local repository its units commit into, for the `local`
+    /// pools a single-target pump dispatches into.
+    ///
+    /// A pool is included exactly when [`crate::pool::target::resolve`] would
+    /// treat it as local: its provider is `local`, and it either names a
+    /// `worktree_of` repository or names no GitHub source. Its value is the
+    /// worktree repository, else the project checkout the pool falls back to.
+    ///
+    /// Multi-target pumps get an empty map: each target reads delivered
+    /// branches from its own integration clone, so a flat pool-to-path map
+    /// would name the wrong repository.
+    #[must_use]
+    pub fn pool_sources(
+        &self,
+        config: &crate::mailspace::MailspaceConfig,
+        project: &Path,
+    ) -> BTreeMap<String, PathBuf> {
+        if !self.targets.is_empty() {
+            return BTreeMap::new();
+        }
+        config
+            .pools
+            .iter()
+            .filter(|(_, pool)| {
+                pool.provider == "local"
+                    && (pool.local.worktree_of.is_some() || pool.github.is_none())
+            })
+            .map(|(name, pool)| {
+                let source = pool
+                    .worktree_source()
+                    .unwrap_or_else(|| project.to_path_buf());
+                (name.clone(), source)
+            })
+            .collect()
+    }
 }
 
 /// Repository-specific integration settings. Pool capacity and provider
