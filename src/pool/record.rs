@@ -23,6 +23,12 @@ pub struct DispatchRecord {
     /// has none (empty) and reads as a pool that no longer exists.
     #[serde(default)]
     pub pool: String,
+    /// The need this task serves, when the dispatcher has a truthful source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub need: Option<String>,
+    /// The role or unit kind recorded at dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub slot: String,
     pub machine: String,
     pub job: String,

@@ -147,16 +147,15 @@ fn throughput_rows(attempts: &[&AttemptRecord], filter: &Filter) -> Vec<Value> {
     let dimension = filter.by.unwrap_or(Dimension::Day);
     let mut groups: BTreeMap<String, Counts> = BTreeMap::new();
     for attempt in attempts {
-        if !in_window(attempt.start, filter) {
-            continue;
-        }
-        let count = groups
-            .entry(key(attempt, dimension, attempt.start))
-            .or_default();
-        if attempt.start.is_some() {
-            count.dispatched += 1;
-        } else {
-            count.missing_dispatched += 1;
+        if in_window(attempt.start, filter) {
+            let count = groups
+                .entry(key(attempt, dimension, attempt.start))
+                .or_default();
+            if attempt.start.is_some() {
+                count.dispatched += 1;
+            } else {
+                count.missing_dispatched += 1;
+            }
         }
         count_delivery(attempt, dimension, &mut groups, filter);
         count_merge(attempt, dimension, &mut groups, filter);
@@ -212,7 +211,7 @@ fn count_merge(
             .or_default()
             .merged += 1;
     } else if attempt.outcome == "delivered"
-        && (attempt.ready_at.is_none() || attempt.delivered_at.is_none())
+        && attempt.merged_at.is_none()
         && in_window(None, filter)
     {
         groups
@@ -295,11 +294,19 @@ fn duration_rows(attempts: &[&AttemptRecord], filter: &Filter) -> Vec<Value> {
 
 fn missing_is_unavailable(attempt: &AttemptRecord, measure: &str) -> bool {
     match measure {
-        "wait_while_ready" => attempt.ready_at.is_none() || attempt.start.is_none(),
+        "wait_while_ready" => attempt
+            .ready_at
+            .zip(attempt.start)
+            .and_then(|(ready, start)| start.checked_sub(ready))
+            .is_none(),
         "agent_time" => attempt.agent_seconds.is_none(),
         "delivered_to_merged" => {
             attempt.outcome == "delivered"
-                && (attempt.ready_at.is_none() || attempt.delivered_at.is_none())
+                && attempt
+                    .delivered_at
+                    .zip(attempt.merged_at)
+                    .and_then(|(delivered, merged)| merged.checked_sub(delivered))
+                    .is_none()
         }
         _ => false,
     }

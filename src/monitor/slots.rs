@@ -80,6 +80,12 @@ fn row(
     let info = task
         .as_ref()
         .and_then(|handle| events.task_info.get(handle));
+    let need = dispatch
+        .and_then(|open| open.record.need.clone())
+        .or_else(|| info.and_then(|item| item.need.clone()));
+    let work_kind = dispatch
+        .and_then(|open| open.record.kind.clone())
+        .or_else(|| info.and_then(|item| item.kind.clone()));
     let started_at = dispatch.map(|open| open.record.at).or(slot.claimed_at);
     MonitorRow {
         project: project.to_owned(),
@@ -89,6 +95,8 @@ fn row(
         provider: "local".into(),
         role: info.map_or_else(String::new, |item| item.role.clone()),
         task,
+        need,
+        work_kind,
         subject: info.map(|item| item.subject.clone()),
         model: dispatch.map_or_else(String::new, |open| open.record.model.clone()),
         state: if slot.state == "busy" {

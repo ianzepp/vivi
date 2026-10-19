@@ -553,6 +553,7 @@ fn drive(
 ) -> Result<(), VivariumError> {
     let mut config_fingerprint = None;
     let mut config_error = None;
+    let mut cycle_sequence = 0;
     loop {
         if exit_requested(ctx) {
             boardpass.apply(ctx, st);
@@ -560,14 +561,7 @@ fn drive(
             return Ok(());
         }
         refresh_config(ctx, &mut config_fingerprint, &mut config_error);
-        let tick_once = AssertUnwindSafe(|| tick(ctx, st, boardpass));
-        match catch_unwind(tick_once) {
-            Ok(result) => result?,
-            Err(err) => {
-                ctx.log(&format!("TICK ERROR {}", panic_note(&err)));
-                save(ctx, st)?;
-            }
-        }
+        run_recorded_tick(ctx, st, boardpass, &mut cycle_sequence)?;
         if once {
             boardpass.apply(ctx, st);
             save(ctx, st)?;
@@ -580,6 +574,69 @@ fn drive(
             return Ok(());
         }
     }
+}
+
+fn run_recorded_tick(
+    ctx: &Ctx,
+    st: &mut State,
+    boardpass: &mut BoardPass,
+    sequence: &mut u64,
+) -> Result<(), VivariumError> {
+    let cycle_id = crate::pump::cycle::new_id(*sequence);
+    *sequence = (*sequence).saturating_add(1);
+    let started_at = epoch_seconds();
+    let recorded = record_cycle_start(ctx, &cycle_id, started_at);
+    let started = Instant::now();
+    let outcome = catch_unwind(AssertUnwindSafe(|| tick(ctx, st, boardpass)));
+    let duration = started.elapsed().as_secs();
+    let ended_at = epoch_seconds();
+    match outcome {
+        Ok(Ok(())) => finish_cycle(ctx, recorded, &cycle_id, ended_at, duration, "ok"),
+        Ok(Err(error)) => {
+            finish_cycle(ctx, recorded, &cycle_id, ended_at, duration, "error");
+            return Err(error);
+        }
+        Err(error) => {
+            finish_cycle(ctx, recorded, &cycle_id, ended_at, duration, "panic");
+            ctx.log(&format!("TICK ERROR {}", panic_note(&error)));
+            save(ctx, st)?;
+        }
+    }
+    Ok(())
+}
+
+fn record_cycle_start(ctx: &Ctx, id: &str, started_at: u64) -> bool {
+    match crate::pump::cycle::begin(&ctx.home, id.to_owned(), started_at) {
+        Ok(()) => true,
+        Err(error) => {
+            ctx.log(&format!("pump monitor cycle start receipt failed: {error}"));
+            false
+        }
+    }
+}
+
+fn finish_cycle(
+    ctx: &Ctx,
+    recorded: bool,
+    id: &str,
+    ended_at: u64,
+    duration_secs: u64,
+    outcome: &str,
+) {
+    if recorded
+        && let Err(error) =
+            crate::pump::cycle::finish(&ctx.home, id, ended_at, duration_secs, outcome)
+    {
+        ctx.log(&format!(
+            "pump monitor cycle finish receipt failed: {error}"
+        ));
+    }
+}
+
+fn epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 /// Refresh the live mailspace config between ticks. The pump home and target

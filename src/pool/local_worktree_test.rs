@@ -216,6 +216,8 @@ impl Rig {
         config.harness.as_mut().unwrap().run = harness.to_string();
         let flags = DispatchFlags {
             model: "standin".into(),
+            need: None,
+            kind: None,
             from: Some(from.into()),
             branch: branch.map(str::to_string),
             publish_ref: None,
@@ -480,6 +482,8 @@ fn a_branch_that_appeared_after_the_decision_is_refused_by_the_runner_and_never_
             (&task, "subject", ""),
             &DispatchFlags {
                 model: "standin".into(),
+                need: None,
+                kind: None,
                 from: Some("main".into()),
                 branch: Some("topic".into()),
                 publish_ref: None,

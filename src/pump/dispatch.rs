@@ -683,9 +683,11 @@ fn dispatch_cmd(
     task: &str,
 ) -> UnitStart {
     let cmd = format!(
-        "pool dispatch --pool {} {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
+        "pool dispatch --pool {} {} --need {} --kind {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
         shell_quote(&plan.pool),
         shell_quote(task),
+        shell_quote(&unit.need),
+        shell_quote(ctx.cfg.kind_name(&unit.tools)),
         shell_quote(unit.target_id()),
         shell_quote(model),
         shell_quote(&unit_base(ctx, unit)),

@@ -6,7 +6,7 @@
 //! `SQLITE_OPEN_READ_ONLY`, a query-only pragma, and a short busy timeout —
 //! it never blocks a writer.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -22,6 +22,8 @@ use crate::storage::Storage;
 pub struct TaskInfo {
     pub subject: String,
     pub role: String,
+    pub need: Option<String>,
+    pub kind: Option<String>,
 }
 
 /// One collected dispatch in a project's history.
@@ -33,6 +35,8 @@ pub struct FinishedDispatch {
     pub outcome: String,
     pub model: String,
     pub pool: String,
+    pub need: Option<String>,
+    pub kind: Option<String>,
     pub slot: String,
     pub machine: String,
     pub started_at: u64,
@@ -182,6 +186,8 @@ fn finished_rows(rows: &[EventRow], handles: &HashMap<String, String>) -> Vec<Fi
             outcome: outcome_text(&row.note),
             model: record.model,
             pool: record.pool,
+            need: record.need,
+            kind: record.kind,
             slot: record.slot,
             machine: record.machine,
             started_at: record.at,
@@ -224,6 +230,8 @@ pub fn read(db: &Path, last_finished: usize) -> Result<ProjectEvents, VivariumEr
             TaskInfo {
                 subject: row.subject.clone(),
                 role: role_of(row),
+                need: None,
+                kind: None,
             },
         );
         pool_rows.push(PoolEventRow {
@@ -232,14 +240,68 @@ pub fn read(db: &Path, last_finished: usize) -> Result<ProjectEvents, VivariumEr
             note: row.note.clone(),
         });
     }
+    let open = fold_open(&pool_rows);
     let mut finished = finished_rows(&rows, &handles);
     let skip = finished.len().saturating_sub(last_finished);
     finished.drain(..skip);
+    let relevant: HashSet<&str> = open
+        .iter()
+        .map(|dispatch| dispatch.task.as_str())
+        .chain(finished.iter().map(|dispatch| dispatch.task.as_str()))
+        .collect();
+    task_info.retain(|handle, _| relevant.contains(handle.as_str()));
+    add_record_metadata(&mut task_info, &open, &finished);
+    let dir = db.parent().ok_or_else(|| {
+        VivariumError::Other(format!(
+            "mail database path has no parent: {}",
+            db.display()
+        ))
+    })?;
+    if task_info.values().any(|info| info.need.is_none()) {
+        add_task_need_metadata(&mut task_info, dir)?;
+    }
     Ok(ProjectEvents {
-        open: fold_open(&pool_rows),
+        open,
         task_info,
         finished,
     })
+}
+
+fn add_record_metadata(
+    task_info: &mut BTreeMap<String, TaskInfo>,
+    open: &[OpenDispatch],
+    finished: &[FinishedDispatch],
+) {
+    for dispatch in open {
+        let info = task_info.entry(dispatch.task.clone()).or_default();
+        info.need.clone_from(&dispatch.record.need);
+        info.kind.clone_from(&dispatch.record.kind);
+    }
+    for dispatch in finished {
+        let info = task_info.entry(dispatch.task.clone()).or_default();
+        info.need.clone_from(&dispatch.need);
+        info.kind.clone_from(&dispatch.kind);
+    }
+}
+
+fn add_task_need_metadata(
+    task_info: &mut BTreeMap<String, TaskInfo>,
+    dir: &Path,
+) -> Result<(), VivariumError> {
+    let storage = Storage::open_mailspace_read_only(dir)?;
+    for (handle, info) in task_info.iter_mut().filter(|(_, info)| info.need.is_none()) {
+        let Ok(id) = storage.resolve_message_token(handle) else {
+            continue;
+        };
+        let metadata = storage.item_metadata(&id)?;
+        if metadata.get("source_kind").map(String::as_str) == Some("need") {
+            info.need = metadata
+                .get("source_handle")
+                .filter(|handle| !handle.is_empty())
+                .cloned();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -286,8 +286,24 @@ fn resolve_dispatch(
         )
     });
     let role_line = role_line(command, role.as_ref(), &resolved);
+    let need = command
+        .need
+        .clone()
+        .filter(|need| !need.trim().is_empty())
+        .or(source_need(space, &task.handle)?);
+    let kind = command
+        .kind
+        .clone()
+        .filter(|kind| !kind.trim().is_empty())
+        .or_else(|| {
+            role.as_ref()
+                .and_then(|role| role.kind.clone())
+                .filter(|kind| !kind.trim().is_empty())
+        });
     let flags = DispatchFlags {
         model: resolved.model,
+        need,
+        kind,
         from: command.from.clone(),
         branch: command.branch.clone(),
         publish_ref: command.publish_ref.clone(),
@@ -323,6 +339,19 @@ fn role_facts(space: &Mailspace, task: &PoolTask) -> Option<RoleFacts> {
             }),
             Err(_) => None,
         })
+}
+
+fn source_need(space: &Mailspace, task: &str) -> Result<Option<String>, VivariumError> {
+    let storage = space.storage()?;
+    let id = storage.resolve_message_token(task)?;
+    let metadata = storage.item_metadata(&id)?;
+    if metadata.get("source_kind").map(String::as_str) == Some("need") {
+        return Ok(metadata
+            .get("source_handle")
+            .filter(|handle| !handle.trim().is_empty())
+            .cloned());
+    }
+    Ok(None)
 }
 
 /// The `  role ...` suffix of the human dispatch line: the role, the band

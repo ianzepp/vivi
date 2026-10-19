@@ -14,6 +14,7 @@ pub mod closeout;
 pub mod collect;
 pub mod config;
 pub mod control;
+pub(crate) mod cycle;
 pub mod dispatch;
 pub mod envfail;
 pub mod gate;

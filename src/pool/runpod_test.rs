@@ -27,6 +27,8 @@ fn open(r: &Rig, task: &str) -> crate::pool::provider::OpenedSlot {
 fn plan(r: &Rig) -> JobPlan {
     let flags = DispatchFlags {
         model: "m/ok".into(),
+        need: None,
+        kind: None,
         from: Some("main".into()),
         branch: Some("factory/a".into()),
         publish_ref: None,

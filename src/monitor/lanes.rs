@@ -22,12 +22,16 @@ pub fn rows(
         .iter()
         .filter_map(|open| open_row(project, open, pools, events, now))
         .collect::<Vec<_>>();
-    rows.extend(
-        events
-            .finished
-            .iter()
-            .filter_map(|done| finished_row(project, project_root, mailspace_id, done, pools)),
-    );
+    rows.extend(events.finished.iter().filter_map(|done| {
+        finished_row(
+            project,
+            project_root,
+            mailspace_id,
+            done,
+            pools,
+            events.task_info.get(&done.task),
+        )
+    }));
     rows
 }
 
@@ -59,6 +63,16 @@ fn open_row(
         budget_secs: Some(open.record.budget),
         read_only: Some(open.record.read_only),
         remote: true,
+        need: open
+            .record
+            .need
+            .clone()
+            .or_else(|| info.and_then(|item| item.need.clone())),
+        work_kind: open
+            .record
+            .kind
+            .clone()
+            .or_else(|| info.and_then(|item| item.kind.clone())),
         tail: None,
     })
 }
@@ -69,6 +83,7 @@ fn finished_row(
     mailspace_id: &str,
     done: &FinishedDispatch,
     pools: &BTreeMap<String, PoolConfig>,
+    info: Option<&super::events::TaskInfo>,
 ) -> Option<MonitorRow> {
     let config = pools.get(&done.pool)?;
     let local = config.provider == "local";
@@ -92,6 +107,14 @@ fn finished_row(
         budget_secs: Some(done.budget_secs),
         read_only: Some(done.read_only),
         remote: !local,
+        need: done
+            .need
+            .clone()
+            .or_else(|| info.and_then(|item| item.need.clone())),
+        work_kind: done
+            .kind
+            .clone()
+            .or_else(|| info.and_then(|item| item.kind.clone())),
         tail: if local {
             super::slots::local_slot_dir(
                 project,

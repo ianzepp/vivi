@@ -8,6 +8,8 @@ fn record(job: &str) -> DispatchRecord {
         target: None,
         repository: None,
         pool: "p".into(),
+        need: None,
+        kind: None,
         slot: "p-slot-1".into(),
         machine: "m1".into(),
         job: job.into(),
@@ -74,6 +76,16 @@ fn dispatch_note_round_trips() {
     let back: DispatchRecord = serde_json::from_str(&dispatch_note(&r)).unwrap();
     assert_eq!(back, r);
     assert!(dispatch_text(&r).contains("branch factory/a"));
+}
+
+#[test]
+fn older_dispatch_receipts_leave_need_and_kind_unavailable() {
+    let mut old = serde_json::to_value(record("j1")).unwrap();
+    old.as_object_mut().unwrap().remove("need");
+    old.as_object_mut().unwrap().remove("kind");
+    let back: DispatchRecord = serde_json::from_value(old).unwrap();
+    assert_eq!(back.need, None);
+    assert_eq!(back.kind, None);
 }
 
 #[test]

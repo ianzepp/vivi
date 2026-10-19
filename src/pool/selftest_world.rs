@@ -259,6 +259,8 @@ impl<'a> World<'a> {
         }
         let flags = DispatchFlags {
             model: source::MODEL.to_string(),
+            need: None,
+            kind: None,
             from: Some(refs.0.to_string()),
             branch: Some(refs.1.to_string()),
             publish_ref: None,

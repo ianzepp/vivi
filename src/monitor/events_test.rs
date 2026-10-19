@@ -3,7 +3,7 @@ use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::Storage;
 use std::fs;
 
-const DISPATCH: &str = r#"{"pool":"here","slot":"vivarium-here-slot-1","machine":"burgus","job":"3cc45261-3-a1","model":"zai/glm-5.3-flash","from":"mind","branch":"unit/3cc45261-3-a1","start":"1792421950abc","budget":1800,"at":1792421950,"read_only":false}"#;
+const DISPATCH: &str = r#"{"pool":"here","need":"need1234","kind":"fix","slot":"vivarium-here-slot-1","machine":"burgus","job":"3cc45261-3-a1","model":"zai/glm-5.3-flash","from":"mind","branch":"unit/3cc45261-3-a1","start":"1792421950abc","budget":1800,"at":1792421950,"read_only":false}"#;
 const COLLECT: &str = r#"{"job":"3cc45261-3-a1","pool":"here","slot":"vivarium-here-slot-1","outcome":"failed","agent_rc":"1"}"#;
 
 fn space_with_task() -> (tempfile::TempDir, Mailspace, String) {
@@ -40,11 +40,47 @@ fn a_dispatched_task_reads_open_with_task_info() {
     assert_eq!(events.open[0].task, handle);
     assert_eq!(events.open[0].record.model, "zai/glm-5.3-flash");
     assert_eq!(events.open[0].record.pool, "here");
+    assert_eq!(events.open[0].record.need.as_deref(), Some("need1234"));
+    assert_eq!(events.open[0].record.kind.as_deref(), Some("fix"));
     assert_eq!(events.open[0].record.slot, "vivarium-here-slot-1");
     let info = events.task_info.get(&handle).unwrap();
     assert_eq!(info.subject, "Fix the edge");
     assert_eq!(info.role, "hand");
     assert!(events.finished.is_empty());
+}
+
+#[test]
+fn a_legacy_dispatch_uses_only_a_recorded_need_source_handle() {
+    let (_tmp, space, handle) = space_with_task();
+    let mut record: serde_json::Value = serde_json::from_str(DISPATCH).unwrap();
+    record.as_object_mut().unwrap().remove("need");
+    record.as_object_mut().unwrap().remove("kind");
+    space
+        .record_pool_note(
+            &handle,
+            "pool_dispatched",
+            &record.to_string(),
+            "dispatched",
+        )
+        .unwrap();
+    let storage = space.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    storage
+        .set_item_metadata(
+            &id,
+            &std::collections::BTreeMap::from([
+                ("source_handle".into(), "need5678".into()),
+                ("source_kind".into(), "need".into()),
+            ]),
+        )
+        .unwrap();
+    drop(storage);
+
+    let events = read(&space.dir.join("mail.sqlite"), 8).unwrap();
+    assert_eq!(events.open[0].record.need, None);
+    assert_eq!(events.open[0].record.kind, None);
+    assert_eq!(events.task_info[&handle].need.as_deref(), Some("need5678"));
+    assert_eq!(events.task_info[&handle].kind, None);
 }
 
 #[test]
@@ -67,6 +103,8 @@ fn a_collected_dispatch_reads_finished_with_result_keys() {
     assert!(done.outcome.contains("agent_rc=1"), "{}", done.outcome);
     assert_eq!(done.model, "zai/glm-5.3-flash");
     assert_eq!(done.pool, "here");
+    assert_eq!(done.need.as_deref(), Some("need1234"));
+    assert_eq!(done.kind.as_deref(), Some("fix"));
     assert_eq!(done.slot, "vivarium-here-slot-1");
     assert!(!done.read_only);
     assert!(!done.ended_at.is_empty());

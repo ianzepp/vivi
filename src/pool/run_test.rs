@@ -456,6 +456,8 @@ fn status_shows_how_long_a_busy_slot_has_run_and_its_budget() {
             target: None,
             repository: None,
             pool: "p".into(),
+            need: None,
+            kind: None,
             slot: "p-slot-1".into(),
             machine: "m1".into(),
             job: "j".into(),

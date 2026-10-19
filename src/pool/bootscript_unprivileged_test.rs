@@ -199,6 +199,8 @@ fn a_job_runs_unprivileged_pushes_and_leaves_the_warm_build_in_place() {
         ("task-1", "subject", ""),
         &DispatchFlags {
             model: source::MODEL.to_string(),
+            need: None,
+            kind: None,
             from: Some("main".into()),
             branch: Some("work/one".into()),
             publish_ref: None,
@@ -287,6 +289,8 @@ fn one_job_archive(config: &PoolConfig, id: &str) -> Vec<u8> {
         ("task-2", "subject", ""),
         &DispatchFlags {
             model: source::MODEL.to_string(),
+            need: None,
+            kind: None,
             from: Some("main".into()),
             branch: Some("work/two".into()),
             publish_ref: None,

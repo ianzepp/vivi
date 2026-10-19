@@ -94,6 +94,16 @@ pub struct PoolDispatchCommand {
     /// Task handle; its body is the brief
     pub task: String,
 
+    /// Need provenance supplied by the pump for monitor and dispatch receipts.
+    /// This metadata does not change the role or its permissions.
+    #[arg(long, hide = true)]
+    pub need: Option<String>,
+
+    /// Work kind supplied by the pump for monitor and dispatch receipts.
+    /// This metadata does not change the role or its permissions.
+    #[arg(long, hide = true)]
+    pub kind: Option<String>,
+
     /// Model slug; must be one of `[pools.<name>.harness].models`
     /// (default: the model the task's role band picks from the pool's band table)
     #[arg(long)]

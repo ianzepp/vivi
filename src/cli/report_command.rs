@@ -58,9 +58,6 @@ pub struct ReportCommon {
     /// Include records at or before this age, date, or RFC 3339 time
     #[arg(long, value_name = "UNTIL")]
     pub until: Option<String>,
-    /// Group by one fixed dimension
-    #[arg(long, value_enum)]
-    pub by: Option<ReportBy>,
     /// Keep only one need
     #[arg(long)]
     pub need: Option<String>,
@@ -70,9 +67,6 @@ pub struct ReportCommon {
     /// Keep only one model
     #[arg(long)]
     pub model: Option<String>,
-    /// Show at most this many rows
-    #[arg(long)]
-    pub top: Option<usize>,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,
@@ -91,6 +85,12 @@ pub struct ReportRecordsCommand {
 pub struct ReportViewCommand {
     #[command(flatten)]
     pub common: ReportCommon,
+    /// Group by one fixed dimension
+    #[arg(long, value_enum)]
+    pub by: Option<ReportBy>,
+    /// Show at most this many rows
+    #[arg(long)]
+    pub top: Option<usize>,
     /// Output format
     #[arg(long, value_enum, default_value = "table")]
     pub format: ReportFormat,

@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use vivi::cli::{
     Cli, Command, CycleCommand, DeliveryCommand, MailAbsorbStatus, MailCommand, MailspaceCommand,
-    MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, SkillsCommand,
-    TaskCommand, TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand, WantSendCommand,
+    MailspaceIdentityCommand, MemoCommand, NeedCommand, NeedSendCommand, PoolSubcommand,
+    SkillsCommand, TaskCommand, TaskDumpStatusArg, TaskSendCommand, TaskStatus, WantCommand,
+    WantSendCommand,
 };
 
 #[test]
@@ -49,6 +50,50 @@ fn parses_doctor_flags_and_global_project() {
         Cli::try_parse_from(["vivi", "--project", "/tmp/global-project", "doctor"]).unwrap();
     assert_eq!(global.project, Some(PathBuf::from("/tmp/global-project")));
     assert!(matches!(global.command, Command::Doctor(_)));
+}
+
+#[test]
+fn pool_dispatch_accepts_pump_owned_need_and_kind_metadata() {
+    let cli = Cli::try_parse_from([
+        "vivi", "pool", "dispatch", "abcd1234", "--need", "need1234", "--kind", "fix",
+    ])
+    .unwrap();
+    let Command::Pool {
+        command: PoolSubcommand::Dispatch(command),
+    } = cli.command
+    else {
+        panic!("unexpected command");
+    };
+    assert_eq!(command.need.as_deref(), Some("need1234"));
+    assert_eq!(command.kind.as_deref(), Some("fix"));
+}
+
+#[test]
+fn report_records_rejects_view_only_grouping_and_top_flags() {
+    assert!(
+        Cli::try_parse_from([
+            "vivi", "report", "records", "--format", "csv", "--by", "day",
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "vivi", "report", "records", "--format", "jsonl", "--top", "10",
+        ])
+        .is_err()
+    );
+    assert!(
+        Cli::try_parse_from([
+            "vivi",
+            "report",
+            "throughput",
+            "--by",
+            "hour",
+            "--top",
+            "10",
+        ])
+        .is_ok()
+    );
 }
 
 #[test]

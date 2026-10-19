@@ -662,6 +662,11 @@ fn once_runs_exactly_one_tick() {
         .count();
     assert_eq!(statuses, 1);
     assert!(dir.path().join("home").join(DB_FILENAME).is_file());
+    let cycles = crate::pump::cycle::read(&dir.path().join("home")).unwrap();
+    assert_eq!(cycles.len(), 1);
+    assert!(cycles[0].is_finished());
+    assert_eq!(cycles[0].outcome.as_deref(), Some("ok"));
+    assert!(cycles[0].duration_secs.is_some());
 }
 
 #[test]

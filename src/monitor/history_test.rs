@@ -10,6 +10,8 @@ fn row(task: &str) -> MonitorRow {
         provider: "local".into(),
         role: "hand".into(),
         task: Some(task.into()),
+        need: None,
+        work_kind: None,
         subject: None,
         model: "m".into(),
         state: RowState::Running,

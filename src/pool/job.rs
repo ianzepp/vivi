@@ -352,6 +352,10 @@ pub struct JobPlan {
     /// branch.
     pub checkout: Option<Checkout>,
     pub task: String,
+    /// Need handle supplied by the pump or proven from task metadata.
+    pub need: Option<String>,
+    /// Work or role kind supplied by the dispatcher.
+    pub kind: Option<String>,
     pub subject: String,
     pub brief: String,
     pub rules: String,

@@ -87,6 +87,8 @@ pub fn render(
         [
             Constraint::Length(12),
             Constraint::Length(8),
+            Constraint::Length(9),
+            Constraint::Length(12),
             Constraint::Length(15),
             Constraint::Length(12),
             Constraint::Length(10),
@@ -102,6 +104,8 @@ pub fn render(
         Row::new([
             "project",
             "pool",
+            "kind",
+            "need",
             "slot",
             "provider",
             "role",
@@ -123,6 +127,10 @@ pub fn render(
 }
 
 fn cells(row: &MonitorRow) -> Vec<Cell<'static>> {
+    cell_text(row).into_iter().map(Cell::from).collect()
+}
+
+fn cell_text(row: &MonitorRow) -> Vec<String> {
     let state = match &row.state {
         RowState::Running => "running".to_owned(),
         RowState::Finished(outcome) => outcome.clone(),
@@ -132,15 +140,21 @@ fn cells(row: &MonitorRow) -> Vec<Cell<'static>> {
     } else {
         row.provider.clone()
     };
-    let task = match (&row.task, &row.subject) {
-        (Some(handle), Some(subject)) => format!("{handle} {subject}"),
-        (Some(handle), None) => handle.clone(),
-        (None, Some(subject)) => subject.clone(),
-        (None, None) => String::new(),
+    let task = if matches!(&row.kind, super::model::RowKind::Pump) {
+        row.subject.clone().unwrap_or_default()
+    } else {
+        match (&row.task, &row.subject) {
+            (Some(handle), Some(subject)) => format!("{handle} {subject}"),
+            (Some(handle), None) => handle.clone(),
+            (None, Some(subject)) => subject.clone(),
+            (None, None) => String::new(),
+        }
     };
-    [
+    vec![
         row.project.clone(),
         row.pool.clone(),
+        row.work_kind.clone().unwrap_or_else(|| "-".into()),
+        row.need.clone().unwrap_or_else(|| "-".into()),
         row.slot.clone(),
         provider,
         row.role.clone(),
@@ -154,9 +168,6 @@ fn cells(row: &MonitorRow) -> Vec<Cell<'static>> {
             |read_only| if read_only { "ro" } else { "rw" }.into(),
         ),
     ]
-    .into_iter()
-    .map(Cell::from)
-    .collect()
 }
 
 pub fn run(roots: &[PathBuf]) -> Result<(), crate::VivariumError> {

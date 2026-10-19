@@ -11,6 +11,8 @@ fn row(state: RowState) -> MonitorRow {
         provider: "local".to_string(),
         role: "hand".to_string(),
         task: Some("a1b2c3d4".to_string()),
+        need: None,
+        work_kind: None,
         subject: Some("Fix the thing".to_string()),
         model: "test/model".to_string(),
         state,

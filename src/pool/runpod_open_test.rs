@@ -458,6 +458,8 @@ fn the_uncollected_note_states_the_cost_and_the_unverified_deadline() {
         target: None,
         repository: None,
         pool: "gpu".into(),
+        need: None,
+        kind: None,
         slot: "ms-gpu-slot-1".into(),
         machine: "rp000001".into(),
         job: "j".into(),

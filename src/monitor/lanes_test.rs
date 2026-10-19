@@ -11,6 +11,8 @@ fn dispatch(pool: &str) -> DispatchRecord {
         target: None,
         repository: None,
         pool: pool.into(),
+        need: Some("need1234".into()),
+        kind: Some("fix".into()),
         slot: "slot-1".into(),
         machine: "alpha/lanes/slot-1".into(),
         job: "job-1".into(),
@@ -42,6 +44,8 @@ fn remote_open_dispatch_is_visible_and_has_no_tail() {
             TaskInfo {
                 subject: "Review".into(),
                 role: "auditor".into(),
+                need: None,
+                kind: None,
             },
         )]),
         ..ProjectEvents::default()
@@ -60,6 +64,8 @@ fn remote_open_dispatch_is_visible_and_has_no_tail() {
     assert_eq!(found[0].provider, "ssh");
     assert_eq!(found[0].running_secs, Some(60));
     assert_eq!(found[0].role, "auditor");
+    assert_eq!(found[0].need.as_deref(), Some("need1234"));
+    assert_eq!(found[0].work_kind.as_deref(), Some("fix"));
     assert!(found[0].tail.is_none());
 }
 
@@ -79,6 +85,8 @@ fn finished_local_dispatch_keeps_outcome_and_log_tail() {
             task: "abcd1234".into(),
             subject: "Review".into(),
             role: "hand".into(),
+            need: Some("need1234".into()),
+            kind: Some("fix".into()),
             outcome: "pushed".into(),
             model: "model-x".into(),
             pool: "lanes".into(),
@@ -101,6 +109,8 @@ fn finished_local_dispatch_keeps_outcome_and_log_tail() {
     );
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].state, RowState::Finished("pushed".into()));
+    assert_eq!(found[0].need.as_deref(), Some("need1234"));
+    assert_eq!(found[0].work_kind.as_deref(), Some("fix"));
     assert!(
         found[0]
             .tail

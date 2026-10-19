@@ -84,10 +84,10 @@ fn collect_rows(
         now,
     ));
     if let Some(pump_config) = &config.pump {
-        match pump::row(&config.name, &pump_config.home_dir(root), now) {
-            Ok(row) => rows.push(row),
-            Err(error) => warnings.push(format!("{} pump: {error}", root.display())),
-        }
+        let (mut pump_rows, mut pump_warnings) =
+            pump::rows(&config.name, &pump_config.home_dir(root), now);
+        rows.append(&mut pump_rows);
+        warnings.append(&mut pump_warnings);
     }
     Ok((rows, warnings))
 }

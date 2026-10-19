@@ -44,6 +44,8 @@ fn plan() -> JobPlan {
         remote: "https://github.com/acme/widgets.git".into(),
         checkout: None,
         task: "abcd1234".into(),
+        need: None,
+        kind: None,
         subject: "Fix the thing's edge case\nsecond line".into(),
         brief: "do the work\nfrom: main\nbranch: factory/x\n".into(),
         rules: DEFAULT_RULES.into(),

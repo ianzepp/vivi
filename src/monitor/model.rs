@@ -35,8 +35,12 @@ pub struct MonitorRow {
     pub provider: String,
     /// Task addressee role; empty when unknown.
     pub role: String,
-    /// Display handle of the task being worked, when known.
+    /// Task handle for lanes or stable cycle identity for pump rows.
     pub task: Option<String>,
+    /// Parent need handle, when the task or pool record names one.
+    pub need: Option<String>,
+    /// Work kind carried by the task or pool record, when known.
+    pub work_kind: Option<String>,
     pub subject: Option<String>,
     pub model: String,
     pub state: RowState,

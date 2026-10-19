@@ -52,6 +52,8 @@ fn go(
 fn flags(model: &str) -> DispatchFlags {
     DispatchFlags {
         model: model.into(),
+        need: None,
+        kind: None,
         from: Some("main".into()),
         branch: Some("factory/a".into()),
         publish_ref: None,
@@ -73,6 +75,19 @@ fn plan(flags: &DispatchFlags) -> Result<JobPlan, VivariumError> {
         "rules".into(),
         "job000000001".into(),
     )
+}
+
+#[test]
+fn monitor_need_and_kind_metadata_survive_job_planning_without_changing_permissions() {
+    let flags = DispatchFlags {
+        need: Some("need1234".into()),
+        kind: Some("fix".into()),
+        ..flags("m/ok")
+    };
+    let plan = plan(&flags).unwrap();
+    assert_eq!(plan.need.as_deref(), Some("need1234"));
+    assert_eq!(plan.kind.as_deref(), Some("fix"));
+    assert!(!plan.read_only);
 }
 
 fn pacing() -> Pacing {

@@ -77,6 +77,43 @@ fn durations_use_exact_ready_delivery_and_merge_times() {
 }
 
 #[test]
+fn invalid_or_missing_duration_endpoints_remain_unavailable() {
+    let mut invalid_order = attempt("unit-1-a1");
+    invalid_order.start = Some(100);
+    invalid_order.ready_at = Some(120);
+    invalid_order.delivered_at = Some(300);
+    invalid_order.merged_at = Some(200);
+
+    let mut missing_merge = attempt("unit-2-a1");
+    missing_merge.start = Some(110);
+    missing_merge.ready_at = Some(100);
+    missing_merge.delivered_at = Some(130);
+    missing_merge.merged_at = None;
+
+    let rows = views::rows(
+        &ReportData {
+            attempts: vec![invalid_order, missing_merge],
+            needs: Vec::new(),
+        },
+        View::Durations,
+        &Filter::default(),
+    );
+    let wait = rows
+        .iter()
+        .find(|row| row["measure"] == "wait_while_ready")
+        .unwrap();
+    assert_eq!(wait["samples"], 1);
+    assert_eq!(wait["unavailable"], 1);
+
+    let merge = rows
+        .iter()
+        .find(|row| row["measure"] == "delivered_to_merged")
+        .unwrap();
+    assert_eq!(merge["samples"], 0);
+    assert_eq!(merge["unavailable"], 2);
+}
+
+#[test]
 fn need_lead_time_effort_and_attempt_count_preserve_unknowns() {
     let rows = views::rows(
         &ReportData {
@@ -157,6 +194,63 @@ fn throughput_counts_lifecycle_events_in_their_own_buckets() {
     assert_eq!(rows[0]["delivered"], 1);
     assert_eq!(rows[0]["merged"], 1);
     assert_eq!(rows[0]["failed"], 1);
+}
+
+#[test]
+fn throughput_keeps_a_missing_merge_time_unavailable() {
+    let mut delivered = attempt("unit-1-a1");
+    delivered.merged_at = None;
+    let rows = views::rows(
+        &ReportData {
+            attempts: vec![delivered],
+            needs: Vec::new(),
+        },
+        View::Throughput,
+        &Filter {
+            by: Some(Dimension::Need),
+            ..Filter::default()
+        },
+    );
+    assert_eq!(rows[0]["merged"], serde_json::Value::Null);
+    assert_eq!(rows[0]["unavailable"], 1);
+}
+
+#[test]
+fn throughput_filters_each_lifecycle_event_by_its_own_time() {
+    let mut delivery_inside = attempt("unit-1-a1");
+    delivery_inside.need = "n1".into();
+    delivery_inside.start = Some(100);
+    delivery_inside.delivered_at = Some(210);
+    delivery_inside.merged_at = Some(240);
+
+    let mut lifecycle_outside = attempt("unit-2-a1");
+    lifecycle_outside.need = "n2".into();
+    lifecycle_outside.start = Some(220);
+    lifecycle_outside.delivered_at = Some(300);
+    lifecycle_outside.merged_at = Some(310);
+
+    let rows = views::rows(
+        &ReportData {
+            attempts: vec![delivery_inside, lifecycle_outside],
+            needs: Vec::new(),
+        },
+        View::Throughput,
+        &Filter {
+            since: Some(200),
+            until: Some(250),
+            by: Some(Dimension::Need),
+            ..Filter::default()
+        },
+    );
+    let first = rows.iter().find(|row| row["group"] == "n1").unwrap();
+    assert_eq!(first["dispatched"], 0);
+    assert_eq!(first["delivered"], 1);
+    assert_eq!(first["merged"], 1);
+
+    let second = rows.iter().find(|row| row["group"] == "n2").unwrap();
+    assert_eq!(second["dispatched"], 1);
+    assert_eq!(second["delivered"], 0);
+    assert_eq!(second["merged"], 0);
 }
 
 #[test]

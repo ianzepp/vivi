@@ -38,6 +38,10 @@ struct ResolvedJob {
 #[derive(Debug, Clone, Default)]
 pub struct DispatchFlags {
     pub model: String,
+    /// Need provenance for a monitor row and synced dispatch receipt.
+    pub need: Option<String>,
+    /// Work/role kind for a monitor row and synced dispatch receipt.
+    pub kind: Option<String>,
     pub from: Option<String>,
     pub branch: Option<String>,
     /// Remote branch ref the privileged runner publishes after agent success.
@@ -156,6 +160,8 @@ fn assemble_job_plan(
         remote: config.remote_address(),
         checkout: None,
         task: handle.to_string(),
+        need: flags.need.clone(),
+        kind: flags.kind.clone(),
         subject: subject.to_string(),
         brief: brief_for(config, handle, subject, body),
         rules,
@@ -406,6 +412,8 @@ pub fn dispatch(
         target: plan.target.as_ref().map(|t| t.id.clone()),
         repository: plan.target.as_ref().map(|t| t.source.clone()),
         pool: id.pool.clone(),
+        need: plan.need.clone(),
+        kind: plan.kind.clone(),
         slot: claim.slot.name,
         machine: claim.slot.id,
         job: plan.job.clone(),

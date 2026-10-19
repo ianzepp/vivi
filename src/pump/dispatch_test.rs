@@ -195,7 +195,7 @@ fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     let disp = commands_with(&host, "pool dispatch --pool fly4 1a2b3c4d");
     assert_eq!(disp.len(), 1);
     assert!(
-        disp[0].contains("--model m/a --from next --branch unit/u1-a1 --budget 600 --porcelain")
+        disp[0].contains("--need n1 --kind plain --target default --model m/a --from next --branch unit/u1-a1 --budget 600 --porcelain")
     );
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
     assert!(brief.contains("UNIT u1: Do u1"));

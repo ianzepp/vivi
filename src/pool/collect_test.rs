@@ -15,6 +15,8 @@ fn open(task: &str, job: &str, at: u64) -> OpenDispatch {
             target: None,
             repository: None,
             pool: "p".into(),
+            need: None,
+            kind: None,
             slot: "p-slot-1".into(),
             machine: "m1".into(),
             job: job.into(),

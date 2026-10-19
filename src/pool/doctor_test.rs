@@ -48,6 +48,8 @@ fn open_dispatch(task: &str, machine: &str, at: u64, budget: u64) -> OpenDispatc
             target: None,
             repository: None,
             pool: "p".into(),
+            need: None,
+            kind: None,
             slot: "p-slot-1".into(),
             machine: machine.into(),
             job: "j1".into(),

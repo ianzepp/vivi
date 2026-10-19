@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::error::VivariumError;
 use crate::pump::attempt_read::{AttemptFields, AttemptStatusEvent};
-use crate::storage::{MailspaceEvent, Storage};
+use crate::storage::Storage;
 
 use super::model::{AttemptRecord, NeedWindow, ReportData};
 
@@ -84,19 +84,40 @@ fn need_windows(
 fn need_window(storage: &Storage, need: &str) -> Result<NeedWindow, VivariumError> {
     let id = storage.resolve_message_token(need)?;
     let view = storage.message_by_id(&id)?;
-    let opened_at = view
+    let mut opened_at = view
         .as_ref()
         .and_then(|message| crate::pump::attempt_read::opened_epoch(&message.date));
-    let done_at = storage
-        .list_mailspace_events(&id)?
-        .iter()
-        .filter(|event: &&MailspaceEvent| event.event_type == "done")
-        .filter_map(|event| crate::pump::attempt_read::opened_epoch(&event.occurred_at))
-        .max();
-    let done = done_at.is_some()
-        || view
-            .as_ref()
-            .is_some_and(|message| message.local_role == "done");
+    let mut done_at = None;
+    let mut latest_lifecycle_state = None;
+    let mut events = storage.list_mailspace_events(&id)?;
+    events.sort_by_key(|event| event.event_id);
+    for event in events {
+        let at = crate::pump::attempt_read::opened_epoch(&event.occurred_at);
+        match event.command.as_str() {
+            "need send" => {
+                if at.is_some() {
+                    opened_at = at;
+                }
+            }
+            "need reopen" => {
+                opened_at = at;
+                done_at = None;
+                latest_lifecycle_state = Some(false);
+            }
+            "need done" => {
+                done_at = at;
+                latest_lifecycle_state = Some(true);
+            }
+            _ => {}
+        }
+    }
+    let done = latest_lifecycle_state.unwrap_or_else(|| {
+        view.as_ref()
+            .is_some_and(|message| message.local_role == "done")
+    });
+    if !done {
+        done_at = None;
+    }
     Ok(NeedWindow {
         need: need.to_owned(),
         opened_at,
