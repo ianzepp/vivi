@@ -990,3 +990,44 @@ fn two_host_failures_pause_the_pool_with_one_environment_exception() {
     assert_eq!(lines.len(), 1, "exceptions: {recorded}");
     assert!(lines[0].contains("pi"), "exceptions: {recorded}");
 }
+
+/// The state `quarantine::open_repair` leaves: member `u1` parked under
+/// quarantine `q1-aaaaaa`, plus its repair unit mid-flight.
+fn quarantine_repair_state() -> State {
+    let mut st = State::default();
+    let mut u1 = unit(Status::Quarantined, None, None);
+    u1.quarantine = Some(String::from("q1-aaaaaa"));
+    put(&mut st, "u1", u1);
+    st.order.push(String::from("u1"));
+    let mut fix = unit(Status::Inflight, Some("pumpfix-q1-aaaaaa"), None);
+    fix.need = String::from("pumpfix-q1-aaaaaa");
+    fix.attempts = 1;
+    fix.repairs = Some(String::from("q1-aaaaaa"));
+    fix.base = Some(String::from("origin/pump/quarantine/q1-aaaaaa"));
+    put(&mut st, "pumpfix-q1-aaaaaa", fix);
+    st.order.push(String::from("pumpfix-q1-aaaaaa"));
+    st
+}
+
+#[test]
+fn a_repair_timeout_dissolves_the_quarantine_at_once() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = quarantine_repair_state();
+
+    fail(&ctx, &mut st, "pumpfix-q1-aaaaaa", "timeout", "killed by budget");
+
+    assert_eq!(
+        st.units["pumpfix-q1-aaaaaa"].status,
+        Status::Stuck,
+        "a timed-out repair must dissolve its quarantine instead of retrying"
+    );
+    let member = &st.units["u1"];
+    assert_eq!(member.status, Status::Delivered);
+    assert!(member.solo);
+    assert_eq!(member.quarantine, None);
+    assert!(
+        exceptions(&ctx).contains("quarantine-stuck"),
+        "exceptions: {}",
+        exceptions(&ctx)
+    );
+}

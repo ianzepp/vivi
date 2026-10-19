@@ -170,7 +170,12 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         }
     }
     if !transient {
-        let stuck = attempts.saturating_sub(unit.transient_retries) >= max;
+        // Operator ruling (need a9571e50): a repair that times out or finds no
+        // changes dissolves its quarantine at once instead of burning attempts.
+        // Key on `Unit.repairs` (not the pumpfix uid prefix) so gate-fix units
+        // (`repairs = None`) and ordinary units keep the retry budget.
+        let dissolve = unit.repairs.is_some() && (why == "timeout" || why.contains("no_changes"));
+        let stuck = dissolve || attempts.saturating_sub(unit.transient_retries) >= max;
         unit.status = if stuck {
             Status::Stuck
         } else {
