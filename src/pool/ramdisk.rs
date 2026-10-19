@@ -308,11 +308,9 @@ fn eject(runner: &dyn Runner, device: &str) {
 /// final component is `volume`.
 fn still_attached(runner: &dyn Runner, device: &str, volume: &str) -> Result<bool, String> {
     let text = runner.run(&["mount"], LIST_SECS)?;
-    Ok(parse_mounts(&text)
-        .iter()
-        .any(|(mounted_device, mount)| {
-            whole_disk(mounted_device) == device || last_component(mount) == volume
-        }))
+    Ok(parse_mounts(&text).iter().any(|(mounted_device, mount)| {
+        whole_disk(mounted_device) == device || last_component(mount) == volume
+    }))
 }
 
 /// `device` with any `sN` slice suffix stripped (`/dev/disk7s1` ->
@@ -327,7 +325,10 @@ fn whole_disk(device: &str) -> String {
             !suffix.is_empty()
                 && suffix.bytes().all(|b| b.is_ascii_digit())
                 && head.bytes().last().is_some_and(|b| b.is_ascii_digit())
-                && head.rsplit('/').next().is_some_and(|n| n.starts_with("disk"))
+                && head
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|n| n.starts_with("disk"))
         });
         match cut {
             Some(pos) => out.truncate(pos),
@@ -385,7 +386,9 @@ fn tail(text: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect();
     let start = lines.len().saturating_sub(5);
-    let joined = lines.get(start..).map_or_else(String::new, |tail| tail.join("; "));
+    let joined = lines
+        .get(start..)
+        .map_or_else(String::new, |tail| tail.join("; "));
     let mut short: String = joined.chars().take(500).collect();
     if joined.chars().count() > 500 {
         short.push('…');

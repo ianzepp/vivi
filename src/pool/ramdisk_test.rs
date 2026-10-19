@@ -164,16 +164,16 @@ fn mount_runs_attach_erase_unmount_mount_in_order() {
     let mount_line = format!("diskutil mount -mountPoint {} /dev/disk7s1", at.display());
     let erased = format!("diskutil eraseVolume APFS vivi-here-slot3-job1 /dev/disk7");
     let runner = FakeRunner::new(&[
-        (
-            "hdiutil attach -nomount ram://16777216",
-            Ok("/dev/disk7\n"),
-        ),
+        ("hdiutil attach -nomount ram://16777216", Ok("/dev/disk7\n")),
         (erased.as_str(), Ok("Started erase on disk7")),
         (
             "diskutil unmount /dev/disk7s1",
             Ok("Volume vivi-here-slot3-job1 on disk7s1 unmounted"),
         ),
-        (mount_line.as_str(), Ok("/dev/disk7s1 on /Volumes/vivi-here-slot3-job1")),
+        (
+            mount_line.as_str(),
+            Ok("/dev/disk7s1 on /Volumes/vivi-here-slot3-job1"),
+        ),
     ]);
 
     let disk = mount(&runner, "vivi-here-slot3-job1", 8, &at).expect("mount");
@@ -204,10 +204,7 @@ fn mount_runs_attach_erase_unmount_mount_in_order() {
 fn mount_ejects_the_whole_disk_when_a_step_fails() {
     let at = mount_point("mount-fail");
     let runner = FakeRunner::new(&[
-        (
-            "hdiutil attach -nomount ram://2097152",
-            Ok("/dev/disk9\n"),
-        ),
+        ("hdiutil attach -nomount ram://2097152", Ok("/dev/disk9\n")),
         (
             "diskutil eraseVolume APFS vivi-x /dev/disk9",
             Err("eraseVolume: Volume name is not valid"),
@@ -253,7 +250,9 @@ fn teardown_ejects_the_whole_disk_and_verifies_with_mount() {
         ("diskutil eject /dev/disk7", Ok("disk7 ejected")),
         (
             "mount",
-            Ok("/dev/disk1s1s1 on / (apfs, local, journaled)\nmap auto_home on /System/Volumes/Data/home (autofs)\n"),
+            Ok(
+                "/dev/disk1s1s1 on / (apfs, local, journaled)\nmap auto_home on /System/Volumes/Data/home (autofs)\n",
+            ),
         ),
     ]);
     let disk = Disk {
@@ -316,7 +315,10 @@ fn teardown_surfaces_an_eject_error_when_the_disk_is_gone() {
         mount: PathBuf::from("/Volumes/vivi-x"),
     };
 
-    assert_eq!(teardown(&runner, &disk), Err("eject: Resource busy".to_string()));
+    assert_eq!(
+        teardown(&runner, &disk),
+        Err("eject: Resource busy".to_string())
+    );
 }
 
 #[test]
@@ -324,11 +326,15 @@ fn mounted_merges_mount_devices_with_df_sizes() {
     let runner = FakeRunner::new(&[
         (
             "mount",
-            Ok("/dev/disk5s1 on /Volumes/vivi-here-slot3-job1 (apfs, local)\n/dev/disk7s1 on /Volumes/vivi-here-slot4-job2 (apfs, local)\n/dev/disk9s1 on /Volumes/vivi-here-slot5-job3 (apfs, local)\n/dev/disk1s1s1 on / (apfs, local, journaled)\n"),
+            Ok(
+                "/dev/disk5s1 on /Volumes/vivi-here-slot3-job1 (apfs, local)\n/dev/disk7s1 on /Volumes/vivi-here-slot4-job2 (apfs, local)\n/dev/disk9s1 on /Volumes/vivi-here-slot5-job3 (apfs, local)\n/dev/disk1s1s1 on / (apfs, local, journaled)\n",
+            ),
         ),
         (
             "df -g",
-            Ok("Filesystem     1G-blocks Used Available Capacity Mounted on\n/dev/disk5s1          30    1        29     4%   /Volumes/vivi-here-slot3-job1\n/dev/disk7s1           8    1         7     4%   /Volumes/vivi-here-slot4-job2\n/dev/disk1s1s1       466  200       266    43%   /\n"),
+            Ok(
+                "Filesystem     1G-blocks Used Available Capacity Mounted on\n/dev/disk5s1          30    1        29     4%   /Volumes/vivi-here-slot3-job1\n/dev/disk7s1           8    1         7     4%   /Volumes/vivi-here-slot4-job2\n/dev/disk1s1s1       466  200       266    43%   /\n",
+            ),
         ),
     ]);
 
@@ -357,7 +363,10 @@ fn mounted_merges_mount_devices_with_df_sizes() {
             },
         ]
     );
-    assert_eq!(runner.calls(), vec!["mount".to_string(), "df -g".to_string()]);
+    assert_eq!(
+        runner.calls(),
+        vec!["mount".to_string(), "df -g".to_string()]
+    );
 }
 
 #[test]
