@@ -440,6 +440,7 @@ fn gate_brief_names_the_gate_command_and_the_marker_block() {
     assert!(text.contains("FAILING-BEGIN\n<crate> <test name>\nFAILING-END"));
     assert!(text.contains("BUILD-FAILED"));
     assert!(text.contains("TARGET-DIED <target>"));
+    assert!(text.contains("ENV <crate> <test name> ::"));
     assert!(text.ends_with("done_when: the marker block is in the reply\n"));
     assert!(!text.contains("five minutes"));
 }

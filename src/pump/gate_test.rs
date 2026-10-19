@@ -151,6 +151,36 @@ fn target_deaths_reads_the_marker_block_and_parse_failing_skips_them() {
 }
 
 #[test]
+fn missing_tool_failures_are_environment_not_new_reds() {
+    let dir = tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), planner_cfg());
+    let mut st = fresh_state();
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nENV radix-hir-ts a::b :: node not found\nvivi pump::real\nFAILING-END\n",
+    );
+    let rec = st.gates.last().unwrap();
+    assert_eq!(rec.names, Some(vec![String::from("vivi pump::real")]));
+    assert!(!st.red.contains_key("radix-hir-ts a::b"));
+    assert_eq!(st.red.get("vivi pump::real"), Some(&String::from("pumpfix-g")));
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("gate-environment"));
+    assert!(exceptions.contains("node not found"));
+    assert!(exceptions.contains("1 new: vivi pump::real"));
+    let new_line = exceptions
+        .lines()
+        .find(|line| line.contains("gate-new-failures"))
+        .unwrap();
+    assert!(new_line.contains("1 new: vivi pump::real"));
+    assert!(!new_line.contains("radix-hir-ts"));
+    for prompt in host.spawned() {
+        assert!(!prompt.contains("radix-hir-ts"));
+    }
+    drop(dir);
+}
+
+#[test]
 fn parse_failing_returns_none_for_prose() {
     assert_eq!(
         parse_failing("all 120 tests passed, nothing to see\n"),

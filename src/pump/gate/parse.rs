@@ -14,13 +14,17 @@ pub(crate) const BUILD_FAILED: &str = "BUILD-FAILED";
 /// The prefix of the line naming a test target whose run died without a
 /// libtest summary.
 pub(crate) const TARGET_DIED: &str = "TARGET-DIED";
+/// The prefix of the line naming a test that failed only because an
+/// executable or tool was missing.
+pub(crate) const ENV: &str = "ENV";
 
 /// Read the failing-test names from a gate reply.
 ///
 /// The last `FAILING-BEGIN ... FAILING-END` block that is usable supplies the
 /// names: an entirely empty block means zero failures, `<`-prefixed template
-/// lines are skipped, and a `TARGET-DIED <target>` line names no test. A block
-/// holding only `TARGET-DIED` lines is usable and yields the empty list, so the
+/// lines are skipped, and a `TARGET-DIED <target>` or `ENV ...` line names no
+/// test. A block holding only those lines is usable and yields the empty list,
+/// so the
 /// fallback never re-reads the names out of the rest of the text. With no
 /// usable block and no `BUILD-FAILED` in the text, the fallback reads
 /// `<crate> <path>` pairs (crate at least two
@@ -84,26 +88,66 @@ pub(crate) fn marker_blocks(text: &str) -> Vec<String> {
 /// The last block with a usable line — non-empty and not a `<template>` — or
 /// an entirely empty block, which yields the empty name list.
 ///
-/// A `TARGET-DIED <target>` line is a usable line that is not a name: it keeps
-/// the block usable while contributing nothing to the list, so a block naming
-/// only dead targets yields the empty list instead of falling through to the
-/// `<crate> <path>` scan.
+/// A `TARGET-DIED <target>` or `ENV ...` line is a usable line that is not a
+/// name: it keeps the block usable while contributing nothing to the list, so
+/// a block naming only dead targets or missing tools yields the empty list
+/// instead of falling through to the `<crate> <path>` scan.
 pub(crate) fn last_usable_block(text: &str) -> Option<Vec<String>> {
     for block in marker_blocks(text).iter().rev() {
-        let mut deaths = false;
+        let mut marker = false;
         let mut lines = Vec::new();
         for line in block.lines().map(str::trim) {
-            if is_death_line(line) {
-                deaths = true;
+            if is_death_line(line) || is_env_line(line) {
+                marker = true;
             } else if !line.is_empty() && !line.starts_with('<') {
                 lines.push(line.to_owned());
             }
         }
-        if deaths || !lines.is_empty() || block.trim().is_empty() {
+        if marker || !lines.is_empty() || block.trim().is_empty() {
             return Some(lines);
         }
     }
     None
+}
+
+/// The test names the gate worker reported failing only because an executable
+/// or tool was missing, with what was missing, deduplicated and sorted.
+///
+/// Every `ENV <crate> <test name> :: <what was missing>` line in every marker
+/// block contributes the first two whitespace tokens as the name (a trailing
+/// `::` glued to the second stripped) and the text after the first `" :: "` as
+/// the evidence.
+#[must_use]
+pub fn env_failed(text: &str) -> Vec<(String, String)> {
+    let mut found = BTreeSet::new();
+    for block in marker_blocks(text) {
+        for line in block.lines().map(str::trim) {
+            if let Some(pair) = env_entry(line) {
+                found.insert(pair);
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// `true` for an `ENV` line, with or without a name after it.
+fn is_env_line(line: &str) -> bool {
+    line.strip_prefix(ENV)
+        .is_some_and(|rest| rest.starts_with([' ', '\t']))
+}
+
+/// The `(name, evidence)` an `ENV <crate> <test name> :: <evidence>` line
+/// carries, if it is one and names a test.
+fn env_entry(line: &str) -> Option<(String, String)> {
+    if !is_env_line(line) {
+        return None;
+    }
+    let (head, evidence) = line[ENV.len()..].split_once(" :: ")?;
+    let mut tokens = head.split_whitespace();
+    let krate = tokens.next()?;
+    let path = tokens.next()?;
+    let path = path.strip_suffix("::").unwrap_or(path);
+    Some((format!("{krate} {path}"), evidence.trim().to_owned()))
 }
 
 /// `true` for a `TARGET-DIED` line, with or without a target after it.
