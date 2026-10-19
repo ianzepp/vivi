@@ -433,12 +433,13 @@ fn validate_units<'a>(
             }
         }
         if let Some(existing) = st.units.get(uid) {
-            if existing.need != need {
-                return (minted, Some(format!("unit {uid} belongs to another need")));
-            }
             match (existing_policy, existing.status) {
-                (ExistingUnitPolicy::SameNeed, _) => {}
-                (ExistingUnitPolicy::WithdrawnSameNeed, Status::Withdrawn) => {}
+                (ExistingUnitPolicy::SameNeed, _) if existing.need == need => {}
+                (ExistingUnitPolicy::SameNeed, _) => {
+                    return (minted, Some(format!("unit {uid} belongs to another need")));
+                }
+                (ExistingUnitPolicy::WithdrawnSameNeed, Status::Withdrawn)
+                    if existing.need == need => {}
                 _ => return (minted, Some(format!("duplicate unit id {uid}"))),
             }
         }

@@ -5,7 +5,7 @@
 //! unit's brief as a task, then hand the task to a pool with a model, branch
 //! and budget.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::thread;
 
@@ -189,6 +189,16 @@ fn tail(s: &str, n: usize) -> String {
 /// so a failed send no longer falls through to the next unit within the same
 /// tick; the next tick retries it.
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
+    let done_needs = if st.units.values().any(|unit| {
+        matches!(
+            unit.status,
+            Status::Pending | Status::Held | Status::NeedsReplan
+        )
+    }) {
+        crate::pump::board::reconcile_done_needs(ctx, st).unwrap_or_default()
+    } else {
+        BTreeSet::new()
+    };
     let mut free = slots(ctx);
     apply_env_pauses(ctx, st, &mut free);
     let forced = force_gate_pending(ctx);
@@ -200,10 +210,17 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
     };
     let holds = dependency_holds(ctx, st);
     let order = ranked(ctx, st, st.order.clone());
+    revalidate_proofs(ctx, st, &order, &holds, &done_needs);
     let mut planned: Vec<Planned> = Vec::new();
     for uid in order {
         if planned.len() as u32 >= ctx.cfg.dispatch.per_tick {
             break;
+        }
+        let Some(current) = st.units.get(&uid) else {
+            continue;
+        };
+        if done_needs.contains(&current.need) || st.closed_needs.contains(&current.need) {
+            continue;
         }
         let dependency = st
             .units
@@ -243,6 +260,94 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         });
     }
     run_starts(ctx, st, &planned, &mut free);
+}
+
+/// Recheck ready proofs against the current target checkout before a worker
+/// attempt is charged; removed local scripts belong to the plan, not the hand.
+fn revalidate_proofs(
+    ctx: &Ctx,
+    st: &mut State,
+    order: &[String],
+    holds: &BTreeMap<String, Vec<String>>,
+    done_needs: &BTreeSet<String>,
+) {
+    let mut invalid: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for uid in order {
+        let Some((need, reason)) = invalid_ready_proof(ctx, st, uid, holds, done_needs) else {
+            continue;
+        };
+        invalid.entry(need).or_default().push((uid.clone(), reason));
+    }
+    report_invalid_proofs(ctx, st, invalid);
+}
+
+/// Validate one dispatchable unit and park it if a proof no longer exists or
+/// parses in the target repository.
+fn invalid_ready_proof(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    holds: &BTreeMap<String, Vec<String>>,
+    done_needs: &BTreeSet<String>,
+) -> Option<(String, String)> {
+    let unit = st.units.get(uid)?;
+    if !is_ready(ctx, st, uid, holds)
+        || done_needs.contains(&unit.need)
+        || st.closed_needs.contains(&unit.need)
+        || !ctx.cfg.target_configs().contains_key(unit.target_id())
+        || ctx.cfg.kind_of(&unit.tools).is_none()
+    {
+        return None;
+    }
+    let need = unit.need.clone();
+    let repo = ctx
+        .cfg
+        .target_path(&ctx.project, unit.target_id())
+        .unwrap_or_else(|| ctx.project.clone());
+    let reason = unit
+        .proof
+        .iter()
+        .find_map(|cmd| crate::pump::proof::check(cmd, &repo, &ctx.cfg.proof.allow).err())?;
+    let parked = st.units.get_mut(uid)?;
+    parked.status = Status::NeedsReplan;
+    parked.since = ctx.now();
+    Some((need, reason))
+}
+
+/// Record one replan exception per affected need and enqueue its amendment.
+fn report_invalid_proofs(
+    ctx: &Ctx,
+    st: &mut State,
+    invalid: BTreeMap<String, Vec<(String, String)>>,
+) {
+    for (need, failures) in invalid {
+        let detail = failures
+            .iter()
+            .map(|(uid, reason)| format!("{uid}: {reason}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        ctx.exception(
+            "needs-replan",
+            &need,
+            &format!(
+                "{} unit(s) parked before dispatch: {detail}",
+                failures.len()
+            ),
+        );
+        let revision_pending = st
+            .needs
+            .get(&need)
+            .is_some_and(|record| record.amendment_pending)
+            || st.board.revision_planning.contains_key(&need);
+        if st.needs.contains_key(&need) && !revision_pending {
+            crate::pump::amend::request(
+                ctx,
+                st,
+                &need,
+                &format!("proof validation failed: {detail}"),
+            );
+        }
+    }
 }
 
 /// `true` when the hand role names a pool, so a unit whose lanes are all full
@@ -417,14 +522,23 @@ fn assigned_pool(
     free: &BTreeMap<String, u32>,
     gate: GateSlot,
 ) -> Option<String> {
-    if let Some(pool) = ctx
+    let assigned = ctx
         .routing
         .hand(&ctx.cfg.to)
-        .and_then(|role| role.pool.clone())
-    {
-        return (gate.free_for(ctx, &pool, free, uid) >= 1).then_some(pool);
+        .and_then(|role| role.pool.clone());
+    let candidates = if assigned.is_some() {
+        Vec::new()
+    } else {
+        kind_pools.to_vec()
+    };
+    let mut pools = crate::pump::jobs::candidate_pools(ctx, &ctx.cfg.to, &candidates, false, &[]);
+    if pools.is_empty() {
+        pools = assigned.into_iter().collect();
+        if pools.is_empty() {
+            pools = kind_pools.to_vec();
+        }
     }
-    pick_pool(ctx, uid, kind_pools, free, gate)
+    pick_pool(ctx, uid, &pools, free, gate)
 }
 
 fn pick_unit_model(
@@ -435,7 +549,7 @@ fn pick_unit_model(
     planned: &[Planned],
 ) -> Option<String> {
     let role = ctx.routing.hand(&ctx.cfg.to);
-    if role.and_then(|role| role.pool.as_deref()) == Some(pool) {
+    if ctx.routing.pools.contains_key(pool) {
         let lanes = lanes_for(&ctx.routing, &ctx.cfg, Some(pool));
         let mut load = inflight_models(st, Some(pool));
         for p in planned.iter().filter(|p| p.plan.pool == pool) {

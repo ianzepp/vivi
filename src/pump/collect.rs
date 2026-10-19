@@ -26,7 +26,11 @@ pub(crate) use replan_failure::{needs_replan, out_of_scope_marker};
 #[path = "collect/burst.rs"]
 mod burst;
 
+#[path = "collect/split_expiry.rs"]
+mod split_expiry;
+
 pub(crate) use burst::{RATE_LIMIT_EXCEPTION_WINDOW, rate_limit_burst};
+use split_expiry::expire_splits;
 
 /// Seconds a unit may stay unreported by reconcile before the pool-status
 /// fallback decides.
@@ -41,16 +45,19 @@ pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
 /// Seconds a deferred split launch waits before it retries.
 const SPLIT_LAUNCH_STAGGER: u64 = 60;
 
-/// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
+/// `SPLIT_PROMPT`; the resplit record and unit handle are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
 
-The unit is in {home}/resplit/{uid}.json (id, need, target, title, brief, write_scope, proof, and what the worker last said). Read the code it names. Write {home}/plans/{uid}.split.json (write .tmp, then mv) in the plan format of your system prompt, with these extra rules:
+The unit record is the JSON between `PUMP-RESPLIT-INPUT-BEGIN` and `PUMP-RESPLIT-INPUT-END` below. Read the code it names in your current target checkout. Return one complete split plan in the format of your system prompt, with these extra rules:
 - top level: {"need": "<the unit's need>", "replaces": "{uid}", "verdict": "units", "reason": "...", "units": [...]}
 - unit ids are "{uid}.1", "{uid}.2", ... ; two to four units; each one must be finishable in 5 minutes by a mid-level model
 - retain the original unit's target for every replacement unit
 - chain them with `after` when they touch the same file
 - if the worker's last message shows the work is in fact already done or not a defect, write "units": [] and say why in "reason"
-Your final message is one line.
+Input JSON:
+PUMP-RESPLIT-INPUT-BEGIN
+{input}
+PUMP-RESPLIT-INPUT-END
 "#;
 
 /// One unit handed to the split planner (`resplit/<uid>.json`).
@@ -150,12 +157,8 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
 
 /// [`fail`] with the task's full receipt when the caller already has it.
 fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, receipt: Option<&str>) {
-    let now = ctx.now();
-    let max = ctx.cfg.dispatch.max_attempts;
-    let cap = ctx.cfg.dispatch.transient_max;
-    let backoff = ctx.cfg.dispatch.transient_backoff;
     if let Some(path) = receipt
-        .map(crate::pump::attempt_record::hand_message)
+        .map(attempt_record::hand_message)
         .and_then(|message| {
             st.units
                 .get(uid)
@@ -171,6 +174,10 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         );
         return;
     }
+    let now = ctx.now();
+    let max = ctx.cfg.dispatch.max_attempts;
+    let cap = ctx.cfg.dispatch.transient_max;
+    let backoff = ctx.cfg.dispatch.transient_backoff;
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
@@ -360,8 +367,16 @@ fn drop_attempt_branch(ctx: &Ctx, st: &State, uid: &str) {
 /// safe side).
 fn live_split_planners(st: &State) -> usize {
     st.units
-        .values()
-        .filter(|unit| unit.status == Status::Splitting && unit.split_retry_at.is_none())
+        .iter()
+        .filter(|(_, unit)| unit.status == Status::Splitting && unit.split_retry_at.is_none())
+        .filter(|(uid, unit)| {
+            match crate::pump::planner_jobs::lifecycle(st, "split", uid, unit.since) {
+                Some((crate::pump::jobs::JobStatus::Pending, _)) => true,
+                Some((crate::pump::jobs::JobStatus::Dispatched, _)) => true,
+                Some(_) => false,
+                None => true,
+            }
+        })
         .count()
 }
 
@@ -370,8 +385,8 @@ fn split_planner_cap(ctx: &Ctx) -> usize {
     usize::try_from(ctx.cfg.planner.planners_max.max(1)).unwrap_or(usize::MAX)
 }
 
-/// Send a unit to the split planner: write the resplit record,
-/// spawn the planner, and move the unit to `splitting` with a fresh clock.
+/// Send a unit to the split planner: write the resplit record, queue the
+/// planner durably, and move the unit to `splitting` with a fresh clock.
 /// A quarantine repair unit (one with a `base`) is never split: its work is
 /// one branch, so a timeout counts as a failed attempt instead.
 /// When `planners_max` split planners are already live, the launch is
@@ -404,12 +419,20 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     let dir = ctx.home.join("resplit");
     drop(fs::create_dir_all(&dir));
     drop(write_json(&dir.join(format!("{uid}.json")), &record));
+    let queue_error = if deferred {
+        None
+    } else {
+        let prompt = split_prompt(ctx, uid);
+        split_expiry::enqueue_split(ctx, st, uid, now, &prompt, &record.target)
+            .err()
+            .map(|error| error.to_string())
+    };
     if deferred {
         ctx.log(&format!(
             "split-launch-deferred {uid}: {cap} split planners already running"
         ));
-    } else {
-        spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    } else if let Some(error) = &queue_error {
+        ctx.log(&format!("split planner {uid} could not be queued: {error}"));
     }
     let Some(unit) = st.units.get_mut(uid) else {
         return;
@@ -434,6 +457,9 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
         unit.task = None;
     }
     ctx.log(&format!("split-requested {uid}"));
+    if let Some(error) = queue_error {
+        split_expiry::mark_queue_failure(ctx, st, uid, now, &error);
+    }
 }
 
 /// Re-ask the split planner once after it wrote a bad split plan: the plan
@@ -461,13 +487,23 @@ pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &st
         "{}\nYour previous plan was rejected: {reason}. Fix that and write the complete plan again.\n",
         split_prompt(ctx, uid)
     );
-    spawn_planner(ctx, "resplit", uid, &prompt);
+    let target = st
+        .units
+        .get(uid)
+        .map(|unit| unit.target_id().to_string())
+        .unwrap_or_default();
+    let queue_error = split_expiry::enqueue_split(ctx, st, uid, now, &prompt, &target)
+        .err()
+        .map(|error| error.to_string());
     if let Some(unit) = st.units.get_mut(uid) {
         unit.split_reasks = 1;
         unit.split_retry_at = None;
         unit.split_fails = 0;
         unit.split_rate_retries = 0;
         unit.since = now;
+    }
+    if let Some(error) = queue_error {
+        split_expiry::mark_queue_failure(ctx, st, uid, now, &error);
     }
     ctx.log(&format!("split-reask {uid} {}", tail(reason, 120)));
     true
@@ -485,15 +521,21 @@ pub fn collect(ctx: &Ctx, st: &mut State) -> Option<String> {
         .filter_map(|(uid, unit)| unit.task.as_ref().map(|task| (task.clone(), uid.clone())))
         .collect();
     let gate_task = st.last_gate.task.clone();
-    let out = if inflight.is_empty() && gate_task.is_none() {
-        String::new()
+    let reconcile_jobs = crate::pump::jobs::has_dispatched(st);
+    let (out, reconcile_ok) = if inflight.is_empty() && gate_task.is_none() && !reconcile_jobs {
+        (String::new(), true)
     } else {
-        ctx.vivi("pool reconcile --porcelain", 300).text
+        let output = ctx.vivi("pool reconcile --porcelain", 300);
+        (output.text, output.code == 0)
     };
     let seen = parse_reconcile(&out);
+    if reconcile_ok {
+        let _terminal_jobs = crate::pump::jobs::apply_reconcile(ctx, st, &seen);
+    }
     for (task, uid) in &inflight {
         collect_one(ctx, st, &seen, task, uid);
     }
+    crate::pump::planner_jobs::apply_completions(ctx, st);
     expire_splits(ctx, st);
     gate_receipt(ctx, st, &seen, gate_task.as_deref())
 }
@@ -647,11 +689,15 @@ fn collect_one(
 /// budget, which means split, or exited nonzero, which makes the attempt a
 /// failed one (its branch is kept and recorded, never merged).
 fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state: Option<&str>) {
-    let full = if state == Some("finished") {
-        receipt_full(ctx, task)
-    } else {
-        String::new()
-    };
+    let output = ctx.vivi(&format!("task show {task} --latest"), 60);
+    let full = output.text;
+    if output.code != 0 || attempt_record::agent_exit(&full).is_none() {
+        ctx.log(&format!(
+            "delivered branch {uid} has no readable task receipt (state={:?}, rc={}); leaving inflight",
+            state, output.code
+        ));
+        return;
+    }
     if is_timeout(&full) {
         split(ctx, st, uid, &full);
         return;
@@ -724,166 +770,6 @@ fn fail_from_receipt(
         return;
     }
     fail_with(ctx, st, uid, &why, &text, Some(&full));
-}
-
-/// The dead split planner's raw output (`resplit/<uid>.out`) when the host
-/// or harness killed the planner before it could plan — for example a
-/// 28-byte `bash: pi: command not found`. The output has no receipt sections,
-/// so the whole text is scanned as detail. `None` means the planner is
-/// silent or answered: today's timeout path still decides.
-fn dead_planner_output(ctx: &Ctx, uid: &str) -> Option<String> {
-    let path = ctx.home.join("resplit").join(format!("{uid}.out"));
-    let Ok(text) = fs::read_to_string(path) else {
-        return None;
-    };
-    envfail::classify("planner", &text, "").map(|_| text)
-}
-
-/// Expire splitting units: a planner that died is retried with backoff,
-/// a silent one past the hard cap is parked.
-fn expire_splits(ctx: &Ctx, st: &mut State) {
-    let now = ctx.now();
-    let mut rate_limited = Vec::new();
-    let splitting: Vec<String> = st
-        .units
-        .iter()
-        .filter(|(_, unit)| unit.status == Status::Splitting)
-        .map(|(id, _)| id.clone())
-        .collect();
-    for uid in splitting {
-        if expire_one_split(ctx, st, &uid, now, &mut rate_limited) {
-            crate::pump::quarantine::repair_stuck(ctx, st, &uid);
-        }
-    }
-    rate_limit_burst(ctx, st, &rate_limited);
-}
-
-/// Decide one splitting unit: a written plan belongs to ingest, an exit
-/// receipt without a plan is a dead planner retried with backoff, a due
-/// retry respawns the planner, a planner that died host-class returns its
-/// unit to `pending`, and a silent one past the hard cap is parked. True
-/// when the unit became `Stuck`.
-fn expire_one_split(
-    ctx: &Ctx,
-    st: &mut State,
-    uid: &str,
-    now: u64,
-    rate_limited: &mut Vec<String>,
-) -> bool {
-    if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
-        return false;
-    }
-    let receipt = exit_receipt_path(&ctx.home.join(format!("resplit/{uid}.out")));
-    let cap = split_planner_cap(ctx);
-    let live = live_split_planners(st);
-    let Some(unit) = st.units.get_mut(uid) else {
-        return false;
-    };
-    if receipt.exists() {
-        let raw = fs::read_to_string(&receipt).unwrap_or_default();
-        let code = raw.trim().parse::<i32>().unwrap_or(-1);
-        drop(fs::remove_file(&receipt));
-        if let Some(wait) = rate_limited_retry(ctx, unit, uid) {
-            unit.split_retry_at = Some(now + wait);
-            rate_limited.push(uid.to_owned());
-            ctx.log(&format!(
-                "split-rate-limited {uid} retry in {wait}s; retry budget untouched"
-            ));
-            return false;
-        }
-        let fails = unit.split_fails + 1;
-        unit.split_fails = fails;
-        if fails >= SPLIT_RETRY_MAX {
-            let text = format!(
-                "the split planner exited without a plan {SPLIT_RETRY_MAX} times \
-                 (last exit {code})"
-            );
-            unit.status = Status::Stuck;
-            ctx.exception("split-planner-failed", uid, &text);
-            return true;
-        }
-        let backoff = (60u64 << (fails - 1)).min(900);
-        unit.split_retry_at = Some(now + backoff);
-        ctx.exception(
-            "split-planner-failed",
-            uid,
-            &format!("planner exited {code} without a plan; retry {fails}/3 in {backoff}s"),
-        );
-        return false;
-    }
-    if retry_split(ctx, unit, uid, now, live, cap) {
-        return false;
-    }
-    if let Some(text) = dead_planner_output(ctx, uid) {
-        return split_planner_died(ctx, unit, uid, now, &text);
-    }
-    if now.saturating_sub(unit.since) > ctx.cfg.planner.split_hard_cap {
-        unit.status = Status::Stuck;
-        let text = format!(
-            "the split planner is still unreachable after {} minutes",
-            ctx.cfg.planner.split_hard_cap / 60
-        );
-        ctx.exception("split-no-answer", uid, &text);
-        return true;
-    }
-    false
-}
-
-/// A provider 429 is not the unit's fault: count it on its own growing
-/// backoff and leave the split-planner retry budget alone. Returns the wait
-/// in seconds, or `None` when the planner output is not a rate limit.
-fn rate_limited_retry(ctx: &Ctx, unit: &mut Unit, uid: &str) -> Option<u64> {
-    let out = fs::read_to_string(ctx.home.join(format!("resplit/{uid}.out"))).unwrap_or_default();
-    if !transient::provider_rate_limited(&out) {
-        return None;
-    }
-    unit.split_rate_retries = unit.split_rate_retries.saturating_add(1);
-    let base = (120u64 << unit.split_rate_retries.saturating_sub(1).min(3)).min(900);
-    Some(base + transient::jitter(uid))
-}
-
-/// A recorded split retry: wait out the backoff, then respawn the planner
-/// (which drops the stale receipt) with a fresh clock. A due retry at the
-/// planner cap staggers instead: the retry stamp moves out by
-/// [`SPLIT_LAUNCH_STAGGER`] and no planner spawns. Returns true when the
-/// caller should stop here — waiting units are never parked, even past the
-/// hard cap.
-fn retry_split(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64, live: usize, cap: usize) -> bool {
-    let Some(at) = unit.split_retry_at else {
-        return false;
-    };
-    if now < at {
-        return true;
-    }
-    if live >= cap {
-        unit.split_retry_at = Some(now + SPLIT_LAUNCH_STAGGER);
-        ctx.log(&format!(
-            "split-launch-deferred {uid}: {cap} split planners already running"
-        ));
-        return true;
-    }
-    unit.split_retry_at = None;
-    unit.since = now;
-    spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
-    ctx.log(&format!("split-retry {uid}"));
-    true
-}
-
-/// The split planner died host-class: return its unit to `pending` so it is
-/// redispatched, and report the evidence. Never stuck.
-fn split_planner_died(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64, text: &str) -> bool {
-    let evidence: String = text.trim().chars().take(200).collect();
-    unit.status = Status::Pending;
-    unit.task = None;
-    unit.since = now;
-    unit.since_dispatch = None;
-    ctx.exception(
-        "environment",
-        uid,
-        &format!("split planner died: {evidence}"),
-    );
-    ctx.log(&format!("split-planner-dead {uid}"));
-    false
 }
 
 /// The gate task's receipt when the gate finished; `None`
@@ -964,12 +850,17 @@ fn is_timeout(text: &str) -> bool {
         })
 }
 
-/// `SPLIT_PROMPT` with the pump home and the unit handle substituted.
+/// `SPLIT_PROMPT` with the stored resplit record and unit handle substituted.
 #[must_use]
 fn split_prompt(ctx: &Ctx, uid: &str) -> String {
+    let input =
+        fs::read_to_string(ctx.home.join(format!("resplit/{uid}.json"))).unwrap_or_else(|error| {
+            ctx.log(&format!("resplit input {uid} could not be read: {error}"));
+            String::new()
+        });
     SPLIT_PROMPT
-        .replace("{home}", &ctx.home.to_string_lossy())
         .replace("{uid}", uid)
+        .replace("{input}", &input)
 }
 
 /// The last `max` characters of `text` (Python's `text[-max:]`).

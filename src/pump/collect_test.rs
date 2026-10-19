@@ -474,6 +474,78 @@ fn a_successful_receipt_quoting_timeouts_is_delivered() {
     assert!(!ctx.home.join("resplit/u-1.json").exists());
 }
 
+/// A reconciled-away inflight task with a branch still on the remote.
+fn recovered_branch_setup(receipt: Option<&str>) -> (tempfile::TempDir, Ctx, Arc<FakeHost>, State) {
+    let (dir, ctx, host) = setup();
+    host.reply("pool reconcile", 0, "");
+    host.reply("pool status", 0, "");
+    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/x-a1\n");
+    if let Some(receipt) = receipt {
+        host.reply("task show", 0, receipt);
+    }
+    let mut st = State::default();
+    let mut running = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
+    running.attempts = 1;
+    put(&mut st, "u-1", running);
+    host.advance(RECONCILE_GRACE + 1);
+    (dir, ctx, host, st)
+}
+
+#[test]
+fn a_reconciled_away_branch_timeout_receipt_still_splits() {
+    let (_dir, ctx, host, mut st) = recovered_branch_setup(Some(
+        "agent exit 124 after 5s\n\n--- receipt\nworker timed out",
+    ));
+
+    collect(&ctx, &mut st);
+
+    assert_eq!(st.units["u-1"].status, Status::Splitting);
+    assert_eq!(st.units["u-1"].history.last().unwrap().why, "timeout");
+    assert!(host.commands().iter().any(|cmd| cmd.contains("task show")));
+}
+
+#[test]
+fn a_reconciled_away_branch_nonzero_receipt_is_classified_as_failure() {
+    let (_dir, ctx, _host, mut st) =
+        recovered_branch_setup(Some("agent exit 1 after 5s\n\n--- receipt\nchecks failed"));
+
+    collect(&ctx, &mut st);
+
+    assert_eq!(st.units["u-1"].status, Status::Pending);
+    assert_eq!(
+        st.units["u-1"].history.last().unwrap().why,
+        "finished/agent exit 1"
+    );
+    assert_ne!(st.units["u-1"].status, Status::Delivered);
+}
+
+#[test]
+fn a_reconciled_away_branch_with_no_readable_receipt_stays_inflight() {
+    let (_dir, ctx, host, mut st) = recovered_branch_setup(None);
+
+    collect(&ctx, &mut st);
+
+    assert_eq!(st.units["u-1"].status, Status::Inflight);
+    assert_eq!(st.units["u-1"].task.as_deref(), Some("1a2b3c4d"));
+    assert!(st.units["u-1"].history.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("no readable task receipt"))
+    );
+}
+
+#[test]
+fn a_reconciled_away_branch_with_a_success_receipt_is_delivered() {
+    let (_dir, ctx, _host, mut st) =
+        recovered_branch_setup(Some("agent exit 0 after 5s\n\n--- receipt\nDone"));
+
+    collect(&ctx, &mut st);
+
+    assert_eq!(st.units["u-1"].status, Status::Delivered);
+    assert!(st.units["u-1"].task.is_some());
+}
+
 #[test]
 fn a_finished_unit_without_a_branch_and_with_the_no_defect_marker_becomes_no_defect_and_raises_an_exception()
  {

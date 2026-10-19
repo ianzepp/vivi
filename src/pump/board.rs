@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
 use crate::pump::planner_jobs;
 use crate::pump::ready::{blocked_needs, satisfied};
-use crate::pump::state::State;
+use crate::pump::state::{State, Status};
 
 /// One row of `vivi need list --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +149,58 @@ fn is_investigation_need(row: &NeedRow) -> bool {
         .any(|mark| mark.eq_ignore_ascii_case("investigate"))
 }
 
+/// Reconcile manually completed needs before dispatch. Withdraw only units
+/// that have never started; keep their status distinct from merged.
+pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
+    let out = ctx.vivi(
+        &format!(
+            "need list --status done --to {} --json",
+            shell_quote(&ctx.cfg.reply_from)
+        ),
+        60,
+    );
+    let rows = match (out.code == 0).then(|| parse_rows(&out.text)).flatten() {
+        Some(rows) => rows,
+        None => {
+            ctx.log(&format!(
+                "done need list unreadable: {}",
+                tail_note(&out.text, 150)
+            ));
+            return None;
+        }
+    };
+    let done: BTreeSet<String> = rows
+        .into_iter()
+        .map(|row| row.handle)
+        .filter(|handle| !handle.is_empty())
+        .collect();
+    let mut withdrawn = BTreeMap::<String, usize>::new();
+    let now = ctx.now();
+    for unit in st.units.values_mut() {
+        if done.contains(&unit.need)
+            && unit.task.is_none()
+            && unit.branch.is_none()
+            && unit.attempts == 0
+            && unit.since_dispatch.is_none()
+            && unit.history.is_empty()
+            && matches!(
+                unit.status,
+                Status::Pending | Status::Held | Status::NeedsReplan
+            )
+        {
+            unit.status = Status::Withdrawn;
+            unit.since = now;
+            *withdrawn.entry(unit.need.clone()).or_default() += 1;
+        }
+    }
+    for (need, count) in withdrawn {
+        ctx.log(&format!(
+            "closed need {need}: withdrew {count} queued unit(s)"
+        ));
+    }
+    Some(done)
+}
+
 /// Whitespace-separated handles of `<home>/skip.txt`; missing file means
 /// nothing is skipped.
 #[must_use]
@@ -174,9 +226,17 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
         .planning
         .iter()
         .filter(|(handle, at)| {
+            let timed_out = match crate::pump::planner_jobs::lifecycle(st, "board", handle, **at) {
+                Some((crate::pump::jobs::JobStatus::Pending, _)) => false,
+                Some((crate::pump::jobs::JobStatus::Dispatched, started)) => {
+                    now.saturating_sub(started.unwrap_or(**at)) > timeout
+                }
+                Some(_) => false,
+                None => now.saturating_sub(**at) > timeout,
+            };
             plan_path(ctx, handle).exists()
                 || exit_receipt_path(&out_path(ctx, handle)).exists()
-                || now.saturating_sub(**at) > timeout
+                || timed_out
         })
         .map(|(handle, _)| handle.clone())
         .collect();
@@ -390,25 +450,26 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<St
     let thread: String = thread.chars().take(40_000).collect();
     let needs = ctx.home.join("needs");
     drop(fs::create_dir_all(&needs));
+    let need_file = NeedFile {
+        need: handle,
+        subject: row.subject.as_str(),
+        triage: "",
+        thread: thread.as_str(),
+    };
     drop(write_json(
         &needs.join(format!("{handle}.json")),
-        &NeedFile {
-            need: handle,
-            subject: row.subject.as_str(),
-            triage: "",
-            thread: thread.as_str(),
-        },
+        &need_file,
     ));
-    let home = ctx.home.to_string_lossy();
+    let input = serde_json::to_string(&need_file).unwrap_or_default();
     let targets = target_catalog(ctx);
     let prompt = format!(
-        "Plan one need, as your system prompt describes. Its thread is in {home}/needs/{handle}.json. \
+        "Plan one need, as your system prompt describes. Input JSON follows between the input markers:\n\
+         PUMP-NEED-INPUT-BEGIN\n{input}\nPUMP-NEED-INPUT-END\n\
          Available repository targets (id and workspace-relative path): {targets}. Every unit must name \
          exactly one target from this list in its `target` field, and its `write_scope` must be relative \
          to that repository. Do not make an `after` dependency cross targets: the pump cannot pass an \
          unpublished branch from one repository into another; park the need if that handoff is required. \
-         Write {home}/plans/{handle}.json. Your final message is one line: handle, \
-         verdict, number of units."
+         Return the plan for this need; do not write to a pump-local path."
     );
     let queued_at = ctx.now();
     let queued = planner_jobs::enqueue(

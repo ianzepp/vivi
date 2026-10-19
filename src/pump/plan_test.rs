@@ -927,12 +927,16 @@ fn a_bad_split_plan_is_re_asked_once() {
     let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exc.contains("bad-plan u1.split.json unit missing id, brief or write_scope"));
 
-    // The one re-ask is spent: a second bad plan stays in plans_seen and
-    // never spawns the planner again.
+    // The one re-ask is spent: the second bad plan is archived and parks the
+    // unit instead of leaving a permanent file that blocks split expiry.
     write_plan(&ctx, "u1.split.json", &bad_plan());
     ingest(&ctx, &mut st);
     assert_eq!(host.spawned().len(), 1);
-    assert!(st.plans_seen.iter().any(|key| key == "u1.split.json"));
+    assert!(!ctx.home.join("plans/u1.split.json").exists());
+    assert_eq!(st.units["u1"].status, Status::Stuck);
+    assert!(!st.plans_seen.iter().any(|key| key == "u1.split.json"));
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exc.contains("split-plan-rejected u1"), "exceptions: {exc}");
 }
 
 /// A late split plan recovers a stuck unit, so the exception it was parked

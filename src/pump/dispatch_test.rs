@@ -2,6 +2,7 @@
 //! and the dispatch state machine driven through [`FakeHost`] replies.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 
 use tempfile::tempdir;
 
@@ -198,6 +199,112 @@ fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     );
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
     assert!(brief.contains("UNIT u1: Do u1"));
+}
+
+#[test]
+fn deleted_proof_scripts_are_parked_before_dispatch_without_charging_attempts() {
+    let (_dir, ctx, host) = setup();
+    let script = ctx.project.join("scripta/proof.sh");
+    fs::create_dir_all(script.parent().unwrap()).unwrap();
+    fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&script).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script, permissions).unwrap();
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(
+        ctx.home.join("plans/n1.json"),
+        r#"{"need":"n1","verdict":"units","units":[{"id":"n1-1","brief":"one","write_scope":["src/a"],"proof":["scripta/proof.sh"]},{"id":"n1-2","brief":"two","write_scope":["src/b"],"proof":["scripta/proof.sh"]}]}"#,
+    )
+    .unwrap();
+    let mut st = State::default();
+    crate::pump::plan::ingest(&ctx, &mut st);
+    assert_eq!(st.units.len(), 2);
+    fs::remove_file(script).unwrap();
+    host.reply("pool status", 0, "slot fly4 bridge slot-1 free\n");
+
+    dispatch(&ctx, &mut st);
+
+    for unit in st.units.values() {
+        assert_eq!(unit.status, Status::NeedsReplan);
+        assert_eq!(unit.attempts, 0);
+        assert_eq!(unit.task, None);
+    }
+    assert!(commands_with(&host, "task send").is_empty());
+    let recorded = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    let needs: Vec<&str> = recorded
+        .lines()
+        .filter(|line| line.contains("needs-replan n1"))
+        .collect();
+    assert_eq!(needs.len(), 1, "exceptions: {recorded}");
+    assert!(needs[0].contains("2 unit(s)"), "exceptions: {recorded}");
+    assert!(
+        needs[0].contains("scripta/proof.sh"),
+        "exceptions: {recorded}"
+    );
+    assert!(needs[0].contains("n1-1") && needs[0].contains("n1-2"));
+}
+
+#[test]
+fn manually_done_needs_withdraw_only_queued_units_and_preserve_live_receipts() {
+    let (_dir, ctx, host) = setup();
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(
+        ctx.home.join("plans/n1.json"),
+        r#"{"need":"n1","verdict":"units","units":[{"id":"n1-1","brief":"queued","write_scope":["src/a"]},{"id":"n1-2","brief":"merged","write_scope":["src/b"]},{"id":"n1-3","brief":"live","write_scope":["src/c"]},{"id":"n1-4","brief":"retried","write_scope":["src/d"]}]}"#,
+    )
+    .unwrap();
+    let mut st = State::default();
+    crate::pump::plan::ingest(&ctx, &mut st);
+    st.units.get_mut("n1-2").unwrap().status = Status::Merged;
+    let live = st.units.get_mut("n1-3").unwrap();
+    live.status = Status::Inflight;
+    live.task = Some(String::from("live-task"));
+    live.branch = Some(String::from("unit/n1-3-a1"));
+    let retried = st.units.get_mut("n1-4").unwrap();
+    retried.attempts = 1;
+    retried.history.push(Attempt {
+        why: String::from("finished/agent exit 1"),
+        ..Attempt::default()
+    });
+    host.reply(
+        "need list --status done",
+        0,
+        r#"[{"handle":"n1","date":"2026-10-19","subject":"Done","marks":[]}]"#,
+    );
+    host.reply("pool status", 0, "slot fly4 bridge slot-1 free\n");
+
+    dispatch(&ctx, &mut st);
+
+    assert_eq!(st.units["n1-1"].status, Status::Withdrawn);
+    assert_eq!(st.units["n1-2"].status, Status::Merged);
+    assert_eq!(st.units["n1-3"].status, Status::Inflight);
+    assert_eq!(st.units["n1-3"].task.as_deref(), Some("live-task"));
+    assert_eq!(st.units["n1-4"].status, Status::Pending);
+    assert!(
+        st.closed_needs.is_empty(),
+        "manual completion is not a merge receipt"
+    );
+    assert_eq!(st.merges, 0);
+    assert!(commands_with(&host, "task send").is_empty());
+}
+
+#[test]
+fn unreadable_done_need_query_does_not_withdraw_a_queued_unit() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    host.reply(
+        "need list --status done",
+        1,
+        r#"[{"handle":"u1","date":"2026-10-19","subject":"Done","marks":[]}]"#,
+    );
+
+    dispatch(&ctx, &mut st);
+
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].attempts, 1);
+    assert_eq!(commands_with(&host, "task send").len(), 1);
 }
 
 /// A state with `fly4` paused since `T0` under `probe`.
@@ -881,6 +988,16 @@ fn a_hand_role_pool_is_used_even_when_another_pool_has_more_slots() {
         "slot a bridge slot-1 free\nslot b bridge slot-1 free\nslot b bridge slot-2 free\n";
     let st = run_full_units_routed(status, &["u1"], hand_on("a"));
     assert_eq!(st.units["u1"].pool.as_deref(), Some("a"));
+}
+
+#[test]
+fn a_hand_role_uses_its_configured_fallback_when_the_primary_pool_is_full() {
+    let status = "slot a bridge slot-1 busy\nslot b bridge slot-1 free\n";
+    let mut routing = hand_on("a");
+    routing.pools.get_mut("a").unwrap().fallback = Some(String::from("b"));
+    let st = run_full_units_routed(status, &["u1"], routing);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("b"));
 }
 
 #[test]
