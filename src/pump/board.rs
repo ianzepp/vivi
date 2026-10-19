@@ -532,15 +532,50 @@ fn reply_stages(
         if st.board.replied.iter().any(|sent| sent == &key) {
             continue;
         }
-        let Some(body) = reply_body(st, &stage, verdict, reason, units, revision) else {
+        let Some(mut body) = reply_body(st, &stage, verdict, reason, units, revision) else {
             continue;
         };
+        if stage == "merged"
+            && let Some(line) = merged_timing(ctx, handle)
+        {
+            body.push('\n');
+            body.push_str(&line);
+        }
         if send_reply(ctx, handle, &stage, &body) {
             st.board.replied.push(key);
             said = true;
         }
     }
     said
+}
+
+/// The timing summary for a need's `merged` reply, read back through the CLI
+/// so the pump consumes its own posted records like a synced second member.
+/// Any failure (nonzero exit, unreadable JSON, no `attempts` array) is `None`:
+/// the reply is never blocked or failed by this.
+fn merged_timing(ctx: &Ctx, handle: &str) -> Option<String> {
+    let out = ctx.vivi(&format!("need attempts {handle} --json"), 60);
+    if out.code != 0 {
+        return None;
+    }
+    let start = out.text.find('{')?;
+    let Ok(value) = serde_json::from_str::<Value>(&out.text[start..]) else {
+        return None;
+    };
+    let mut attempts: Vec<crate::pump::attempt_read::AttemptFields> = Vec::new();
+    for attempt in value.get("attempts")?.as_array()? {
+        if let Ok(fields) =
+            serde_json::from_value::<crate::pump::attempt_read::AttemptFields>(attempt.clone())
+        {
+            attempts.push(fields);
+        }
+    }
+    let opened = value.get("opened").and_then(Value::as_u64);
+    Some(crate::pump::attempt_read::timing_summary(
+        opened,
+        &attempts,
+        ctx.now(),
+    ))
 }
 
 /// The reply body for one stage, or `None` when the stage must wait:
