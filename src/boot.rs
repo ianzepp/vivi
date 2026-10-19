@@ -327,8 +327,7 @@ fn collect_pump(
 /// Whole seconds since `<home>/status.txt` was last written, when the file
 /// exists and its modification time can be read.
 fn status_age_seconds(home: &Path) -> Option<u64> {
-    let modified = match std::fs::metadata(home.join("status.txt"))
-        .and_then(|meta| meta.modified())
+    let modified = match std::fs::metadata(home.join("status.txt")).and_then(|meta| meta.modified())
     {
         Ok(modified) => modified,
         Err(_) => return None,
