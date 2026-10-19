@@ -223,7 +223,7 @@ pub fn after_slot_freed(
     dir: &Path,
     configured: Option<&str>,
 ) -> Result<CleanReport, VivariumError> {
-    let (actions, skips) = clean_slot::reclaim_builds("-", "-", dir, configured, false)?;
+    let (actions, skips) = clean_slot::reclaim_builds("-", "-", dir, configured, None, false)?;
     Ok(CleanReport {
         actions,
         skips,
@@ -307,7 +307,14 @@ fn clean_pool(
             continue;
         }
         let dir = root.join(&machine.id);
-        let (a, s) = clean_slot::reclaim_builds(pool, &machine.name, &dir, configured, dry_run)?;
+        let (a, s) = clean_slot::reclaim_builds(
+            pool,
+            &machine.name,
+            &dir,
+            configured,
+            handle.config.build_baseline_bytes(),
+            dry_run,
+        )?;
         actions.extend(a);
         skips.extend(s);
         if lane_is_done(st, hint, &dir) {
