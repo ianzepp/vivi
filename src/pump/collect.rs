@@ -131,6 +131,8 @@ pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) -> Option<u32
 /// A transient-class failure (see [`transient::classify`]) backs off and
 /// retries instead of counting toward `max_attempts`, up to
 /// `transient_max` retries; past that cap the unit takes the normal path.
+/// A transient retry of a build/no-run proof killed by the lane timeout also
+/// refunds the attempt, since it never measured the unit.
 pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
     fail_with(ctx, st, uid, why, detail, None);
 }
@@ -160,15 +162,23 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
     };
     unit.task = None;
     let mut transient = false;
+    let mut refund = false;
     if let Some(class) = transient::classify(why, detail) {
         transient = transient_retry(unit, now, cap, backoff);
         if transient {
+            refund = class == "timeout" && transient::build_only_check(detail);
             ctx.log(&format!(
                 "transient-retry {uid} {class} {}/{cap}",
                 unit.transient_retries
             ));
         }
     }
+    if refund {
+        refund_unmeasured_attempt(ctx, st, uid);
+    }
+    let Some(unit) = st.units.get_mut(uid) else {
+        return;
+    };
     if !transient {
         // Operator ruling (need a9571e50): a repair that times out or finds no
         // changes dissolves its quarantine at once instead of burning attempts.
@@ -187,6 +197,22 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         }
     }
     ctx.log(&format!("fail {uid} attempt={attempts} {why}"));
+}
+
+/// Give the attempt back when a transient retry never measured the unit: a
+/// build/no-run proof killed by the lane timeout. Drop the attempt branch
+/// first so the re-dispatch cannot collide with it — the re-dispatch reuses
+/// the same a-number because the attempt counter drops by one — then restore
+/// the counter. History and the retry backoff are left alone.
+fn refund_unmeasured_attempt(ctx: &Ctx, st: &mut State, uid: &str) {
+    drop_attempt_branch(ctx, st, uid);
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.attempts = unit.attempts.saturating_sub(1);
+        unit.branch = None;
+    }
+    ctx.log(&format!(
+        "refund {uid} build-only timeout; attempt restored"
+    ));
 }
 
 /// Back off and retry a transient-class failure: return the unit to

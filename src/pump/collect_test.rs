@@ -1232,3 +1232,78 @@ fn an_ordinary_or_gate_fix_timeout_still_returns_to_pending() {
         "a gate-fix unit (repairs = None) must still retry, not dissolve"
     );
 }
+
+/// A `proof-failed` detail shaped exactly like `merge` writes it: the failed
+/// command, then the host's timeout marker.
+fn proof_timeout_detail(command: &str) -> String {
+    format!(
+        "After merging into the integration branch, this command failed (exit 124):\n\
+         {command}\n\
+         \n\
+         What failed:\n\
+         [timeout after 480s]"
+    )
+}
+
+#[test]
+fn a_build_only_proof_timeout_refunds_the_attempt() {
+    let (_dir, ctx, host) = setup();
+    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/u-1-a1\n");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("task-1"), Some("unit/u-1-a1"));
+    u.attempts = 1;
+    put(&mut st, "u-1", u);
+
+    fail(
+        &ctx,
+        &mut st,
+        "u-1",
+        "proof-failed",
+        &proof_timeout_detail("cargo test --workspace --no-run --quiet"),
+    );
+
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.attempts, 0, "the attempt is refunded");
+    assert_eq!(u.status, Status::Pending);
+    assert_eq!(u.transient_retries, 1);
+    assert_eq!(u.retry_not_before, Some(T0 + 120));
+    assert_eq!(u.branch, None, "the attempt branch is dropped");
+    assert_eq!(u.history.len(), 1, "the incident stays in history");
+    assert!(
+        host.commands().iter().any(
+            |command| command.contains("push origin --delete") || command.contains("branch -D")
+        ),
+        "commands: {:?}",
+        host.commands()
+    );
+}
+
+#[test]
+fn a_test_proof_timeout_still_charges_the_attempt() {
+    let (_dir, ctx, host) = setup();
+    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/u-1-a1\n");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("task-1"), Some("unit/u-1-a1"));
+    u.attempts = 1;
+    put(&mut st, "u-1", u);
+
+    fail(
+        &ctx,
+        &mut st,
+        "u-1",
+        "proof-failed",
+        &proof_timeout_detail("cargo test --workspace --quiet"),
+    );
+
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.attempts, 1, "a real test timeout still charges");
+    assert_eq!(u.status, Status::Pending);
+    assert_eq!(u.branch.as_deref(), Some("unit/u-1-a1"));
+    assert!(
+        !host.commands().iter().any(
+            |command| command.contains("push origin --delete") || command.contains("branch -D")
+        ),
+        "commands: {:?}",
+        host.commands()
+    );
+}
