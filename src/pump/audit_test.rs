@@ -304,6 +304,8 @@ fn an_audit_timeout_backs_off_then_fails_over_to_another_pool() {
         0,
         "slot g1 bridge slot-1 free\nslot g2 bridge slot-2 free\n",
     );
+    host.reply("task send", 0, "created 5678abcd");
+    host.reply("pool dispatch", 0, "dispatched 5678abcd to g2");
     let mut st = State::default();
     start_audit(
         &ctx,

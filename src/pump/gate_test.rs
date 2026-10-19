@@ -317,7 +317,8 @@ fn start_gate_is_due_with_no_baseline_and_dispatches_read_only_to_the_first_pool
     assert!(dispatch.contains(&format!("--pool flygate {TASK}")));
     assert!(dispatch.contains("--model zai/glm-5.3-flash"));
     assert!(dispatch.contains("--read-only"));
-    assert!(dispatch.contains(&format!("--from {TIP} --budget 1800")));
+    assert!(dispatch.contains(&format!("--from {TIP}")));
+    assert!(dispatch.contains("--budget 1800"));
     let brief = fs::read_to_string(ctx.home.join("briefs/gate.txt")).unwrap();
     assert!(brief.contains("FAILING-BEGIN"));
     drop(dir);
@@ -365,7 +366,12 @@ fn a_named_target_gate_uses_its_branch_and_persists_its_own_run() {
     assert_eq!(state.last_gate.task, None);
     let target_st = &state.target_states["radix"];
     assert!(target_st.last_gate.job_id.is_some());
-    assert_eq!(state.jobs[target_st.last_gate.job_id.as_ref().unwrap()].task.as_deref(), Some(TASK));
+    assert_eq!(
+        state.jobs[target_st.last_gate.job_id.as_ref().unwrap()]
+            .task
+            .as_deref(),
+        Some(TASK)
+    );
     assert!(
         host.commands()
             .iter()
@@ -447,13 +453,6 @@ fn add_merged_units(st: &mut State) {
         );
         st.order.push(String::from(uid));
     }
-}
-
-/// Replies for a successful promote.
-fn wire_promote(host: &Arc<FakeHost>) {
-    host.reply("git fetch", 0, "");
-    host.reply("git merge-base", 0, "");
-    host.reply("git push", 0, "To origin\n   abc..def  main -> main\n");
 }
 
 /// The task-send and pool-dispatch lines of the one audit a gate started.
@@ -687,7 +686,13 @@ fn a_gate_with_no_new_failure_enqueues_a_fast_forward_promotion_job() {
         .expect("green gate should enqueue promotion");
     assert_eq!(promotion.role, "release");
     assert_eq!(promotion.from_ref.as_deref(), Some(TIP));
-    assert_eq!(promotion.branch.as_deref(), Some("main"));
+    assert!(
+        promotion
+            .branch
+            .as_deref()
+            .is_some_and(|branch| branch.starts_with("pump/promotion/default/"))
+    );
+    assert_eq!(promotion.payload["branch"], "main");
     assert!(host.commands().iter().all(|cmd| !cmd.contains("git push")));
     assert!(st.promotions.is_empty(), "receipt has not landed yet");
     assert!(
@@ -1025,7 +1030,6 @@ fn owned_red_state() -> State {
 #[test]
 fn promote_is_held_while_an_owned_failure_is_still_red() {
     let (dir, ctx, host) = setup();
-    wire_promote(&host);
     let mut st = owned_red_state();
     finish_gate(&ctx, &mut st, "FAILING-BEGIN\nold\ncrate::c\nFAILING-END\n");
     assert!(host.commands().iter().all(|c| !c.contains("git push")));
@@ -1042,13 +1046,17 @@ fn promote_is_held_while_an_owned_failure_is_still_red() {
 
 #[test]
 fn promote_goes_once_the_owned_failure_is_gone_from_the_gate() {
-    let (dir, ctx, host) = setup();
-    wire_promote(&host);
+    let (dir, base, host) = setup();
+    let ctx = with_release_role(base);
     let mut st = owned_red_state();
     finish_gate(&ctx, &mut st, "FAILING-BEGIN\nold\nFAILING-END\n");
     assert!(st.red.is_empty());
-    assert_eq!(st.promotions.len(), 1);
-    assert_eq!(st.promotions[0].tip, TIP);
+    assert!(st.jobs.values().any(|job| job.kind == "promote"));
+    assert!(
+        st.promotions.is_empty(),
+        "a queued job is not a landed promotion"
+    );
+    assert!(host.commands().iter().all(|cmd| !cmd.contains("git push")));
     assert!(host.logs().iter().all(|l| !l.contains("promote held")));
     drop(dir);
 }
@@ -1253,8 +1261,8 @@ fn an_idle_external_runner_does_not_hold_the_gate() {
 
 #[test]
 fn an_external_result_for_the_tip_finishes_the_gate_and_promotes() {
-    let (dir, ctx, host) = external_setup();
-    wire_promote(&host);
+    let (dir, base, host) = external_setup();
+    let ctx = with_release_role(base);
     let mut st = gate_state(6);
     st.last_gate.task = None;
     st.baseline = Some(vec![String::from("old")]);
@@ -1275,7 +1283,12 @@ fn an_external_result_for_the_tip_finishes_the_gate_and_promotes() {
     assert_eq!(st.gates[0].merges, 6);
     assert_eq!(st.last_gate.task, None);
     assert_eq!(st.last_gate.pool.as_deref(), Some("external"));
-    assert_eq!(st.promotions.len(), 1);
+    assert!(st.jobs.values().any(|job| job.kind == "promote"));
+    assert!(
+        st.promotions.is_empty(),
+        "the promotion job has not completed"
+    );
+    assert!(host.commands().iter().all(|cmd| !cmd.contains("git push")));
     assert!(
         host.logs()
             .iter()
@@ -1337,7 +1350,6 @@ fn a_duplicate_external_tip_does_not_finish_a_second_gate() {
 #[test]
 fn an_external_result_holds_promotion_while_an_owned_failure_is_red() {
     let (dir, ctx, host) = external_setup();
-    wire_promote(&host);
     let mut st = owned_red_state();
     st.last_gate.task = None;
     let body = format!(
@@ -1357,7 +1369,6 @@ fn an_external_result_holds_promotion_while_an_owned_failure_is_red() {
 #[test]
 fn an_external_build_failure_raises_gate_build_failed() {
     let (dir, ctx, host) = external_setup();
-    wire_promote(&host);
     let mut st = fresh_state();
     let body = format!(
         r#"{{"tip": "{TIP}", "names": null, "build_failed": true, "tail": "error: could not compile"}}"#
@@ -1471,7 +1482,6 @@ fn residual_setup(max_replans: u32) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     cfg.gate.max_replans = max_replans;
     let (ctx, host) = test_ctx(dir.path(), cfg);
     wire(&host);
-    wire_promote(&host);
     (dir, ctx, host)
 }
 

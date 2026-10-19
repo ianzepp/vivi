@@ -332,9 +332,10 @@ fn a_merged_fix_forces_one_gate_even_when_the_gate_is_not_due() {
     wire_gate(&host);
     start_gate(&ctx, &mut st);
     assert!(!ctx.flag("FORCE-GATE"));
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(st.last_gate.job_id.is_some());
     // The gate started after the merge: the same fix forces nothing more.
     st.last_gate.task = None;
+    st.last_gate.job_id = None;
     start_gate(&ctx, &mut st);
     assert!(!ctx.flag("FORCE-GATE"));
     assert_eq!(forced_logs(&host), 1);
@@ -361,7 +362,12 @@ fn promotion_is_a_durable_job_and_runs_no_local_git_push() {
     finish_gate(&ctx, &mut st, &reply(&["a"]));
     let job = promotion_job(&st).expect("the gate queues a promotion role job");
     assert_eq!(job.from_ref.as_deref(), Some(TIP));
-    assert_eq!(job.branch.as_deref(), Some("main"));
+    assert!(
+        job.branch
+            .as_deref()
+            .is_some_and(|branch| branch.starts_with("pump/promotion/default/"))
+    );
+    assert_eq!(job.payload["branch"], "main");
     assert!(host.commands().iter().all(|cmd| {
         !cmd.contains("git fetch") && !cmd.contains("merge-base") && !cmd.contains("git push")
     }));
@@ -504,14 +510,14 @@ fn a_forced_gate_is_consumed_only_by_its_own_target() {
     assert!(ctx.flag("FORCE-GATE"));
     let mut st = quiet_state();
     start_gate(&ctx, &mut st);
-    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(st.last_gate.job_id.is_some());
     assert!(!ctx.flag("FORCE-GATE"));
     // The beta target is forced by its own suffixed flag.
     std::fs::write(ctx.home.join("FORCE-GATE-beta"), "").unwrap();
     start_gate(&ctx, &mut quiet_state());
     assert!(ctx.flag("FORCE-GATE-beta"));
     start_gate(&beta, &mut other);
-    assert_eq!(other.last_gate.task.as_deref(), Some(TASK));
+    assert!(other.last_gate.job_id.is_some());
     assert!(!ctx.flag("FORCE-GATE-beta"));
     drop(dir);
 }

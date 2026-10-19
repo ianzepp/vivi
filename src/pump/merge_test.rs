@@ -1129,7 +1129,7 @@ fn a_shared_timeout_retry_that_times_out_returns_the_batch_undecided() {
     );
     host.reply(
         "cargo test --lib",
-        0,
+        124,
         "partial output\n[timeout after 900s]",
     );
 
