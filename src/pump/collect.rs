@@ -563,7 +563,11 @@ fn fail_from_receipt(
         crate::pump::quarantine::repair_no_defect(ctx, st, uid);
         return;
     }
-    let why = [state, detail].into_iter().flatten().collect::<Vec<_>>().join("/");
+    let why = [state, detail]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("/");
     if let Some(failure) = envfail::classify(&why, detail.unwrap_or(""), &full) {
         host_fail(ctx, st, uid, &failure, &full);
         return;

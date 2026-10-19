@@ -560,7 +560,11 @@ fn a_silent_failure_past_grace_renders_an_empty_reason_not_none() {
         0,
         "collected deadbeef bridge slot-9 finished \"someone else\"",
     );
-    host.reply("pool status", 0, "pool fly4 slot-1 cafebabe running since 100\n");
+    host.reply(
+        "pool status",
+        0,
+        "pool fly4 slot-1 cafebabe running since 100\n",
+    );
     let mut st = State::default();
     put(
         &mut st,
