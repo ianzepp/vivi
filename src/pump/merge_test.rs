@@ -557,6 +557,37 @@ fn a_failing_unit_proof_is_proof_failed() {
 }
 
 #[test]
+fn a_unit_proof_that_fails_as_a_usage_error_is_proof_usage() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "./proof-u1.sh",
+        1,
+        "error: unexpected argument 'an_event_applied_by_pull' found\n\nUsage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-usage"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(detail.contains("./proof-u1.sh"));
+    assert!(detail.contains("failed as a usage error before anything ran"));
+    assert!(detail.contains("Last output:\nerror: unexpected argument"));
+}
+
+#[test]
+fn a_shared_check_that_fails_as_a_usage_error_is_still_proof_failed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "cargo test --lib",
+        1,
+        "error: unexpected argument 'an_event_applied_by_pull' found\n\nUsage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    assert!(result.detail.unwrap_or_default().contains("this command failed"));
+}
+
+#[test]
 fn a_skip_proof_kind_skips_its_own_proof() {
     let (_dir, mut ctx, host) = setup("");
     let mut cfg = (*ctx.cfg).clone();
@@ -833,6 +864,31 @@ fn a_job_whose_own_proof_fails_is_the_culprit_and_the_rest_are_retried_in_round_
             .iter()
             .any(|l| l == "proof u1 rc=1 0s: ./proof-u1.sh")
     );
+}
+
+#[test]
+fn a_job_whose_own_proof_is_a_usage_error_is_the_culprit_with_proof_usage() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "./proof-u1.sh",
+        1,
+        "error: unexpected argument 'an_event_applied_by_pull' found\n\nUsage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n",
+    );
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "src/pump/merge.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip5\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, Some(false));
+    assert_eq!(u1.why.as_deref(), Some("proof-usage"));
+    let detail = u1.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("./proof-u1.sh"));
+    assert!(detail.contains("failed as a usage error before anything ran"));
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, Some(true));
+    assert_eq!(u2.tip.as_deref(), Some("tip5"));
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "merge u2"), 2);
 }
 
 #[test]

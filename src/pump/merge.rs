@@ -440,6 +440,13 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
                 );
                 return Some(undecided_result(&job.uid, "proof-missing-tool", &detail));
             }
+            if i >= shared && crate::pump::proof::usage_failure(&out.text) {
+                let detail = format!(
+                    "The unit's proof command failed as a usage error before anything ran (exit {}):\n{cmd}\n\nLast output:\n{last}",
+                    out.code
+                );
+                return Some(failed(&job.uid, "proof-usage", detail));
+            }
             let detail = format!(
                 "After merging into the integration branch, this command failed (exit {}):\n{cmd}\n\nLast output:\n{last}",
                 out.code
