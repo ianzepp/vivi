@@ -801,7 +801,10 @@ fn a_ramdisk_table_defaults_to_a_small_disk_with_the_cargo_settings() {
             ("CARGO_PROFILE_DEV_DEBUG".to_string(), "0".to_string()),
             ("CARGO_PROFILE_DEV_STRIP".to_string(), "symbols".to_string()),
             ("CARGO_PROFILE_TEST_DEBUG".to_string(), "0".to_string()),
-            ("CARGO_PROFILE_TEST_STRIP".to_string(), "symbols".to_string()),
+            (
+                "CARGO_PROFILE_TEST_STRIP".to_string(),
+                "symbols".to_string()
+            ),
         ]
     );
     let mut sorted = env.clone();
@@ -811,8 +814,7 @@ fn a_ramdisk_table_defaults_to_a_small_disk_with_the_cargo_settings() {
 
 #[test]
 fn an_absent_or_disabled_ramdisk_table_has_no_job_env() {
-    let plain: PoolConfig =
-        toml::from_str(&RAMDISK_POOL.replace("enabled = true", "")).unwrap();
+    let plain: PoolConfig = toml::from_str(&RAMDISK_POOL.replace("enabled = true", "")).unwrap();
     plain.validate(&id()).unwrap();
     assert!(!plain.ramdisk.enabled);
     assert!(plain.ramdisk.job_env().is_empty());
