@@ -578,7 +578,9 @@ fn fail_from_receipt(
 /// silent or answered: today's timeout path still decides.
 fn dead_planner_output(ctx: &Ctx, uid: &str) -> Option<String> {
     let path = ctx.home.join("resplit").join(format!("{uid}.out"));
-    let text = fs::read_to_string(path).ok()?;
+    let Ok(text) = fs::read_to_string(path) else {
+        return None;
+    };
     envfail::classify("planner", &text, "").map(|_| text)
 }
 
