@@ -22,6 +22,7 @@ pub mod priority;
 pub mod progress;
 pub mod quarantine;
 pub mod ready;
+pub mod requeue;
 pub mod remote;
 pub mod report;
 pub mod run;
@@ -141,6 +142,10 @@ mod alarm_test;
 #[cfg(test)]
 #[path = "pump/quarantine_test.rs"]
 mod quarantine_test;
+
+#[cfg(test)]
+#[path = "pump/requeue_test.rs"]
+mod requeue_test;
 
 #[cfg(test)]
 #[path = "pump/attempt_record_test.rs"]
