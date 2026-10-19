@@ -99,7 +99,7 @@ fn a_need_held_only_foreign_moves_with_its_events() {
 }
 
 #[test]
-fn an_absorbed_foreign_row_does_not_move_and_the_event_is_ignored() {
+fn an_absorbed_foreign_row_does_not_move_and_adds_nothing_to_ignored() {
     let w = World::new();
     let fx = foreign_need(&w);
     // The lifecycle refuses to seal another mailspace's work, so the test
@@ -113,7 +113,10 @@ fn an_absorbed_foreign_row_does_not_move_and_the_event_is_ignored() {
     put_event(&w, 2, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
     let pulled = w.bob.pull(&w.bob_client);
 
-    assert_eq!(pulled.events_ignored, 1);
+    // Ruling: a fully absorbed item adds nothing to `ignored` on every
+    // settle: its letters were counted when they arrived, so the seal holds
+    // the row still without reporting an ignored event.
+    assert_eq!(pulled.events_ignored, 0);
     assert_eq!(pulled.events_applied, 0);
     assert_eq!(role_of(&w.bob, &fx.handle), "needs", "the seal holds");
 }

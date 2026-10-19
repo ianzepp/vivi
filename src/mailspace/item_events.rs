@@ -202,7 +202,8 @@ pub struct EventTally {
     pub applied: usize,
     /// Events that were not applied: from a sender that speaks for no role
     /// here (a foreign domain, or an own-domain role that may not close the
-    /// item), dated past the clock, or for an item sealed by absorb.
+    /// item), dated past the clock, or held by an item sealed by a counted
+    /// absorb letter.
     pub ignored: usize,
 }
 
@@ -728,9 +729,10 @@ impl Mailspace {
         };
         // Sealed work stays sealed only when every row of it is absorbed:
         // an item held only as foreign rows settles too, and its unabsorbed
-        // rows move.
+        // rows move. A fully absorbed item adds nothing to the tally: its
+        // letters were counted when they arrived, so re-settling it never
+        // inflates `ignored`.
         if !item.rows.is_empty() && item.rows.iter().all(|row| row.absorbed_at.is_some()) {
-            tally.ignored += 1;
             return Ok(());
         }
         self.apply_item_moves(storage, &item, kind, keep_reports, tally)
