@@ -28,12 +28,17 @@ use crate::pump::store::{DB_FILENAME, PumpStore};
 /// first ingest, so a requeued unit can dispatch in the same tick and the
 /// change lands at the next save point. The board pass itself runs on
 /// [`BoardPass`]'s worker thread, so a slow pass never holds the tick.
+///
+/// Status is written at tick start and after each phase (merge feed,
+/// dispatch, gates/merge), so `status.txt` never goes stale for a whole
+/// long tick.
 pub fn tick(
     ctx: &Ctx,
     st: &mut State,
     merger: &Merger,
     boardpass: &mut BoardPass,
 ) -> Result<(), VivariumError> {
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
     boardpass.apply(ctx, st);
     merger.apply(ctx, st);
     plan::ingest(ctx, st);
@@ -50,6 +55,7 @@ pub fn tick(
     merger.apply(ctx, st);
     merger.feed(ctx, st);
     save(ctx, st)?;
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
         Err(error) => {
@@ -67,6 +73,19 @@ pub fn tick(
     }
     dispatch::dispatch(ctx, st);
     save(ctx, st)?;
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    gates_pass(ctx, st);
+    merger.apply(ctx, st);
+    merger.feed(ctx, st);
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    periodic(ctx, st, boardpass)?;
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    Ok(())
+}
+
+/// Run the per-target gate passes: hold cycle, external gates, then start
+/// gate, each against that target's own state.
+fn gates_pass(ctx: &Ctx, st: &mut State) {
     for target in ctx.cfg.target_configs().keys() {
         let Some(target_ctx) = ctx.for_target(target) else {
             ctx.exception(
@@ -82,11 +101,6 @@ pub fn tick(
             gate::start_gate(&target_ctx, st);
         });
     }
-    merger.apply(ctx, st);
-    merger.feed(ctx, st);
-    periodic(ctx, st, boardpass)?;
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
-    Ok(())
 }
 
 /// The periodic board pass, shared by the paused branch and the normal path:

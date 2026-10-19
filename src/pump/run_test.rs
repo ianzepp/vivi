@@ -442,6 +442,28 @@ fn a_tick_stops_when_its_state_cannot_be_saved() {
 }
 
 #[test]
+fn a_tick_writes_status_before_its_first_save() {
+    let (_dir, ctx, _host) = setup();
+    let path = ctx.home.join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        .unwrap();
+    drop(conn);
+    let (merger, _results, _jobs) = Merger::detached();
+    let (mut pass, _requests, _results) = BoardPass::detached();
+
+    let err = run_tick(&ctx, &mut State::default(), &merger, &mut pass).unwrap_err();
+
+    assert!(err.to_string().contains("state save failed"), "{err}");
+    let text = fs::read_to_string(ctx.home.join("status.txt")).unwrap();
+    assert!(
+        text.starts_with("1970-01-12T13:46:40Z\n"),
+        "status was not written before the first save: {text}"
+    );
+}
+
+#[test]
 fn a_finished_gate_task_reaches_finish_gate_through_collect() {
     let (_dir, ctx, host) = setup();
     host.reply(
