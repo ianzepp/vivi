@@ -22,6 +22,7 @@ Rules:
 - Read AGENTS.md at the repository root first.
 - First reproduce the defect or confirm the gap on this checkout. If it does not reproduce, or the work is already done, change NOTHING and end your reply with the line `VERDICT: no-defect` and your evidence.
 - Change only the files in WRITE SCOPE. If the work truly needs another file, say which and why in your reply, and keep the change minimal.
+- If the failure depends on a file outside WRITE SCOPE, include `OUT-OF-SCOPE: <repo-relative/path>` in your final report and explain why. Do not change that file.
 - Do NOT run `git commit` or `git push`: the runner commits what you leave in the checkout. Scratch files go under /tmp.
 - Run every PROOF command and make it pass.
 - Never weaken, delete, ignore or cfg-gate a test to make it pass.

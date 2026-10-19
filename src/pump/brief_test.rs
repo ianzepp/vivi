@@ -47,6 +47,7 @@ fn the_default_rules_name_no_project_specific_tool() {
     assert!(DEFAULT_HAND_RULES.contains("Read AGENTS.md"));
     assert!(DEFAULT_HAND_RULES.contains("VERDICT: no-defect"));
     assert!(DEFAULT_HAND_RULES.contains("Change only the files in WRITE SCOPE"));
+    assert!(DEFAULT_HAND_RULES.contains("OUT-OF-SCOPE: <repo-relative/path>"));
     assert!(DEFAULT_HAND_RULES.contains("git commit"));
     assert!(DEFAULT_HAND_RULES.contains("Run every PROOF command and make it pass"));
     assert!(DEFAULT_HAND_RULES.contains("cfg-gate"));

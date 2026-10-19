@@ -16,7 +16,11 @@
 //!
 //! Never touches a slot that is claimed or whose boot process is alive.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use super::clean_pump::{self, is_done, load_state, merge_lane_ref, unit_for};
 use super::clean_rule::{
@@ -28,7 +32,58 @@ use super::clean_work;
 use super::pools::{self, Need, PoolHandle};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
-use crate::pump::state::{State, Unit};
+use crate::pump::state::{State, Status, Unit};
+
+/// Portable post-merge cleanup request carried by a dispatched reclaim job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReclaimRequest {
+    pub version: u32,
+    pub source_project: PathBuf,
+    pub mailspace_id: String,
+    pub unit: ReclaimUnit,
+    pub pools: Vec<String>,
+    pub merging_targets: Vec<String>,
+}
+
+/// Unit fields the cleaner needs to identify and recycle its exact lane.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReclaimUnit {
+    pub need: String,
+    pub target: String,
+    pub status: Status,
+    pub task: Option<String>,
+    pub branch: Option<String>,
+    pub pool: Option<String>,
+}
+
+impl From<&Unit> for ReclaimUnit {
+    fn from(unit: &Unit) -> Self {
+        Self {
+            need: unit.need.clone(),
+            target: unit.target_id().to_string(),
+            status: unit.status,
+            task: unit.task.clone(),
+            branch: unit.branch.clone(),
+            pool: unit.pool.clone(),
+        }
+    }
+}
+
+impl ReclaimUnit {
+    fn as_unit(&self) -> Unit {
+        Unit {
+            need: self.need.clone(),
+            target: self.target.clone(),
+            status: self.status,
+            task: self.task.clone(),
+            branch: self.branch.clone(),
+            pool: self.pool.clone(),
+            ..Unit::default()
+        }
+    }
+}
 
 pub mod rule {
     pub use super::super::clean_rule::*;
@@ -162,19 +217,139 @@ pub fn after_merged(project: &Path, unit: &Unit) -> Result<CleanReport, Vivarium
     let Ok(space) = Mailspace::discover(Some(project)) else {
         return Ok(CleanReport::default());
     };
-    let st = load_state(&space);
+    after_merged_in_space(&space, unit)
+}
+
+/// Run post-merge cleanup from a validated snapshot carried by a pool job.
+///
+/// # Errors
+/// Returns an error when the request is malformed, names another mailspace,
+/// or asks to clean a non-local/unconfigured pool.
+pub fn after_merged_request(
+    request_path: &Path,
+    expected_project: Option<&Path>,
+) -> Result<CleanReport, VivariumError> {
+    let bytes = fs::read(request_path)?;
+    let request: ReclaimRequest = serde_json::from_slice(&bytes)
+        .map_err(|error| VivariumError::Message(format!("reclaim request: {error}")))?;
+    if request.version != 1 {
+        return Err(VivariumError::Message(format!(
+            "unsupported reclaim request version {}",
+            request.version
+        )));
+    }
+    if !request.source_project.is_absolute() {
+        return Err(VivariumError::Message(String::from(
+            "reclaim request project root must be absolute",
+        )));
+    }
+    let root = request.source_project.canonicalize()?;
+    if let Some(expected) = expected_project {
+        if expected.canonicalize()? != root {
+            return Err(VivariumError::Message(String::from(
+                "reclaim request project does not match --project",
+            )));
+        }
+    }
+    let space = Mailspace::discover(Some(&root))?;
+    if space.mailspace_id() != request.mailspace_id {
+        return Err(VivariumError::Message(String::from(
+            "reclaim request belongs to another mailspace",
+        )));
+    }
+    if request.unit.status != Status::Merged {
+        return Err(VivariumError::Message(format!(
+            "post-merge reclaim unit {} has status {}",
+            request.unit.need,
+            request.unit.status.as_str()
+        )));
+    }
+    let targets: BTreeSet<String> = space
+        .config
+        .pump
+        .as_ref()
+        .ok_or_else(|| VivariumError::Config(String::from("no [pump] table in mailspace")))?
+        .target_configs()
+        .into_keys()
+        .collect();
+    if !targets.contains(&request.unit.target)
+        || request
+            .merging_targets
+            .iter()
+            .any(|target| !targets.contains(target))
+    {
+        return Err(VivariumError::Message(String::from(
+            "reclaim request names an unknown target",
+        )));
+    }
+    if request.pools.iter().collect::<BTreeSet<_>>().len() != request.pools.len() {
+        return Err(VivariumError::Message(String::from(
+            "reclaim request repeats a pool",
+        )));
+    }
+    validate_local_pools(&space, &request.pools)?;
+    let unit = request.unit.as_unit();
+    after_merged_snapshot(&space, &unit, &request.pools, &request.merging_targets)
+}
+
+fn after_merged_in_space(space: &Mailspace, unit: &Unit) -> Result<CleanReport, VivariumError> {
+    let st = load_state(space);
     let mut report = CleanReport::default();
-    for selector in recycle_selectors(&space, unit) {
+    for selector in recycle_selectors(space, unit) {
         take_local_pools(
-            &space,
+            space,
             selector.as_deref(),
             st.as_ref(),
             Some(unit),
             &mut report,
         )?;
     }
-    report.take(clean_pump::reclaim_lanes(&space, st.as_ref(), false)?);
+    report.take(clean_pump::reclaim_lanes(space, st.as_ref(), false)?);
     Ok(report)
+}
+
+fn after_merged_snapshot(
+    space: &Mailspace,
+    unit: &Unit,
+    pools: &[String],
+    merging_targets: &[String],
+) -> Result<CleanReport, VivariumError> {
+    let state = merging_state(merging_targets);
+    let mut report = CleanReport::default();
+    for pool in pools {
+        take_local_pools(space, Some(pool), Some(&state), Some(unit), &mut report)?;
+    }
+    report.take(clean_pump::reclaim_lanes(space, Some(&state), false)?);
+    Ok(report)
+}
+
+fn validate_local_pools(space: &Mailspace, pools: &[String]) -> Result<(), VivariumError> {
+    for name in pools {
+        let config = space.config.pools.get(name).ok_or_else(|| {
+            VivariumError::Config(format!("reclaim pool {name:?} is not configured"))
+        })?;
+        if config.provider != "local" {
+            return Err(VivariumError::Config(format!(
+                "reclaim pool {name:?} is not local"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn merging_state(targets: &[String]) -> State {
+    let mut state = State::default();
+    for (index, target) in targets.iter().enumerate() {
+        state.units.insert(
+            format!("reclaim-active-{index}"),
+            Unit {
+                target: target.clone(),
+                status: Status::Merging,
+                ..Unit::default()
+            },
+        );
+    }
+    state
 }
 
 /// The unit's work pool, plus the merge role's pool when that is a

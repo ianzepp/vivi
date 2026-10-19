@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::attempt_record::{agent_exit, agent_secs, clear_ready, mark_ready, post_status};
+use crate::pump::attempt_record::{agent_exit, agent_secs, clear_ready, hand_message, mark_ready, post_status};
 use crate::pump::board::board;
 use crate::pump::collect::{collect, fail};
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig, PumpTarget};
@@ -19,6 +19,12 @@ const T0: u64 = 1_000_000;
 const TASK: &str = "1a2b3c4d";
 const BRANCH: &str = "unit/u-1-a1";
 const RECONCILE: &str = "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/u-1-a1 abc\"";
+
+#[test]
+fn hand_message_reads_the_receipt_section_only() {
+    let receipt = "summary\n\n--- receipt\nOUT-OF-SCOPE: docs/budget.toml\n\n--- stderr tail\nOUT-OF-SCOPE: secrets.txt";
+    assert_eq!(hand_message(receipt), "OUT-OF-SCOPE: docs/budget.toml");
+}
 
 fn config() -> PumpConfig {
     PumpConfig {

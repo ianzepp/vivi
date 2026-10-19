@@ -215,6 +215,12 @@ pub(crate) fn sections_tail(text: &str) -> String {
     tail
 }
 
+/// The hand's final message from a full pool task receipt.
+#[must_use]
+pub(crate) fn hand_message(text: &str) -> String {
+    parse_receipt(text).message
+}
+
 /// Split a task receipt: the pool's summary lines come first, then sections
 /// each opened by a `--- <title>` line after a blank line. A receipt with no
 /// `--- receipt` section is taken as the hand's message whole.

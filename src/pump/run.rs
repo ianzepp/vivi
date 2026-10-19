@@ -17,32 +17,23 @@ use crate::pump::config::PumpConfig;
 use crate::pump::dispatch;
 use crate::pump::gate;
 use crate::pump::host::{Ctx, RealHost, shell_quote};
-use crate::pump::merge::Merger;
 use crate::pump::plan;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
-/// One pump tick: fold in a finished board pass, ingest and collect, feed
-/// merges, dispatch ready work, run gates, request the periodic board pass,
-/// and write status. Pending operator requeue requests apply right after the
-/// first ingest, so a requeued unit can dispatch in the same tick and the
-/// change lands at the next save point. The board pass itself runs on
-/// [`BoardPass`]'s worker thread, so a slow pass never holds the tick.
-///
-/// Status is written at tick start and after each phase (merge feed,
-/// dispatch, gates/merge), so `status.txt` never goes stale for a whole
-/// long tick.
-pub fn tick(
-    ctx: &Ctx,
-    st: &mut State,
-    merger: &Merger,
-    boardpass: &mut BoardPass,
-) -> Result<(), VivariumError> {
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+/// One pump tick: fold board results, ingest and collect, apply job receipts,
+/// dispatch ready work, run gates, request the periodic board pass, and write
+/// status. Pending operator requeue requests apply after the first ingest, so
+/// a requeued unit can dispatch in the same tick. The board pass is
+/// bookkeeping; durable execution runs through dispatched pool jobs.
+pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
+    write_status(ctx, st, &[]);
     boardpass.apply(ctx, st);
-    merger.apply(ctx, st);
     plan::ingest(ctx, st);
     crate::pump::requeue::apply_pending(ctx, st);
+    if !ctx.mailspace.is_empty() {
+        crate::pump::replan::apply_pending(ctx, st);
+    }
     let gate_target = st
         .active_gate_target()
         .unwrap_or_else(|| String::from("default"));
@@ -53,25 +44,38 @@ pub fn tick(
             gate::finish_gate(&gate_ctx, st, &text);
         }
     });
+    crate::pump::gate::collect_completed(ctx, st);
+    crate::pump::merge::apply_dispatched(ctx, st);
+    crate::pump::audit::collect_completed(ctx, st);
+    crate::pump::reclaim::collect_completed(ctx, st);
     ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
-    merger.apply(ctx, st);
-    merger.feed(ctx, st);
     save(ctx, st)?;
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    write_status(ctx, st, &[]);
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
         Err(error) => {
             ctx.log(&format!(
                 "control state read failed; skipping dispatch: {error}"
             ));
-            write_status(ctx, st, &merger.lane_lines(ctx.now()));
+            write_status(ctx, st, &[]);
             return Err(error);
         }
     };
     if control.mode == crate::pump::control::PumpMode::Paused {
         periodic(ctx, st, boardpass)?;
-        write_status(ctx, st, &merger.lane_lines(ctx.now()));
+        write_status(ctx, st, &[]);
         return Ok(());
+    }
+    gates_pass(ctx, st);
+    if !ctx.mailspace.is_empty() {
+        crate::pump::merge::dispatch_pool(ctx, st)?;
+    }
+    if !ctx.mailspace.is_empty() {
+        crate::pump::cadence::prepare_due(ctx, st);
+        crate::pump::reclaim::refresh_pending(ctx, st);
+        save(ctx, st)?;
+        crate::pump::jobs::dispatch_pending(ctx, st)?;
+        save(ctx, st)?;
     }
     let t_dispatch = Instant::now();
     dispatch::dispatch(ctx, st);
@@ -80,13 +84,9 @@ pub fn tick(
         t_dispatch.elapsed().as_secs()
     ));
     save(ctx, st)?;
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
-    gates_pass(ctx, st);
-    merger.apply(ctx, st);
-    merger.feed(ctx, st);
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    write_status(ctx, st, &[]);
     periodic(ctx, st, boardpass)?;
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    write_status(ctx, st, &[]);
     Ok(())
 }
 
@@ -103,7 +103,7 @@ fn gates_pass(ctx: &Ctx, st: &mut State) {
             continue;
         };
         crate::pump::state::with_target_state(st, target, |st| {
-            crate::pump::gatefix::expire_gatefix(&target_ctx, st);
+            crate::pump::audit::retry_due(&target_ctx, st);
             gate::hold_cycle(&target_ctx, st);
             gate::external_gates(&target_ctx, st);
             gate::start_gate(&target_ctx, st);
@@ -128,10 +128,8 @@ fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 /// from [`crate::pump::alarm::status_lines`], a `send-failed` line naming
 /// every unit whose task send was refused for a config reason, the blocker
 /// lines from [`crate::pump::blockers::status_lines`], the in-flight planner
-/// lines, the red lines from [`red_plan_lines`], then one line per merge lane
-/// (`lanes`, from [`Merger::lane_lines`]); each alive lane line ends with
-/// `merged <m> conflict <c>`, its counts of merged and conflicted results so
-/// far in this pump run, so a lane that never lands anything stands out. A
+/// lines, the red lines from [`red_plan_lines`], then any lane lines supplied
+/// by a caller. The dispatcher path supplies no process-owned lane lines. A
 /// `send-failed` line appears only while at least one unit carries the
 /// one-shot send-failure report, so a broken pump cannot look idle. An idle
 /// board adds no planner lines, and no red line appears while every red
@@ -181,6 +179,7 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     }
     lines.extend(crate::pump::blockers::status_lines(ctx, st));
     lines.extend(planner_lines(ctx, st));
+    lines.extend(crate::pump::cadence::status_lines(ctx, st));
     lines.extend(red_plan_lines(ctx, st));
     lines.extend(lanes.iter().cloned());
     let path = ctx.home.join("status.txt");
@@ -392,8 +391,8 @@ fn status_age(path: &Path) -> String {
     format!("{age}s")
 }
 
-/// Load the state, start the merge thread, and drive the tick loop over an
-/// already-built context (the testable half of [`run`]).
+/// Load state and drive the tick loop over an already-built context, the
+/// testable half of [`run`].
 ///
 /// # Errors
 /// Returns whatever loading the state fails with.
@@ -412,6 +411,7 @@ fn run_with_lock_policy(
     caller_holds_pump_lock: bool,
 ) -> Result<(), VivariumError> {
     ensure_repo(ctx)?;
+    let mut run_ctx = ctx.clone();
     let mut store = if caller_holds_pump_lock {
         PumpStore::open_for_run(&ctx.home.join(DB_FILENAME))?
     } else {
@@ -432,15 +432,17 @@ fn run_with_lock_policy(
     } else {
         store.load()?
     };
-    // The previous controller's in-memory merge queue no longer exists.
-    // Repair both persisted formats before the new worker can receive jobs.
+    // Reattach pool jobs before repairing stale merge states so a dispatched
+    // merge remains owned by its durable job after a pump restart.
+    if !ctx.mailspace.is_empty() {
+        crate::pump::jobs::recover_dispatched(ctx, &mut st)?;
+    }
     st.recover_after_restart();
     plan::ingest(ctx, &mut st);
     collect::recover_pushed_pending(ctx, &mut st)?;
     store.save(&st)?;
-    let merger = Merger::start(ctx);
-    let mut boardpass = BoardPass::start(ctx);
-    drive(ctx, &mut st, &merger, &mut boardpass, once)
+    let mut boardpass = BoardPass::start(&run_ctx);
+    drive(&mut run_ctx, &mut st, &mut boardpass, once)
 }
 
 /// Startup check: the integration clone must exist. A missing `repo` is
@@ -559,19 +561,21 @@ fn clone_command(ctx: &Ctx, url: &str) -> String {
 /// board pass always lands before a return. A panic inside a tick is caught,
 /// logged as `TICK ERROR`, and the state saved.
 fn drive(
-    ctx: &Ctx,
+    ctx: &mut Ctx,
     st: &mut State,
-    merger: &Merger,
     boardpass: &mut BoardPass,
     once: bool,
 ) -> Result<(), VivariumError> {
+    let mut config_fingerprint = None;
+    let mut config_error = None;
     loop {
         if exit_requested(ctx) {
             boardpass.apply(ctx, st);
             save(ctx, st)?;
             return Ok(());
         }
-        let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger, boardpass));
+        refresh_config(ctx, &mut config_fingerprint, &mut config_error);
+        let tick_once = AssertUnwindSafe(|| tick(ctx, st, boardpass));
         match catch_unwind(tick_once) {
             Ok(result) => result?,
             Err(err) => {
@@ -591,6 +595,111 @@ fn drive(
             return Ok(());
         }
     }
+}
+
+/// Refresh the live mailspace config between ticks. The pump home and target
+/// checkout paths stay fixed for the life of the lock; valid pool, routing,
+/// dispatch, merge, gate, budget, and check changes apply to the next tick.
+pub(super) fn refresh_config(
+    ctx: &mut Ctx,
+    fingerprint: &mut Option<Vec<u8>>,
+    last_error: &mut Option<String>,
+) -> bool {
+    let loaded = match load_runtime_config(&ctx.project) {
+        Ok(loaded) => loaded,
+        Err(error) => return report_config_error(ctx, last_error, error.to_string()),
+    };
+    if fingerprint.as_ref() == Some(&loaded.fingerprint) {
+        *last_error = None;
+        return false;
+    }
+    if !runtime_paths_match(ctx, &loaded.cfg) {
+        return report_config_error(
+            ctx,
+            last_error,
+            String::from("pump home or repository target paths changed; restart required"),
+        );
+    }
+    let changed = fingerprint.is_some();
+    ctx.shell_prefix.clone_from(&loaded.cfg.shell_prefix);
+    ctx.cfg = Arc::new(loaded.cfg);
+    ctx.routing = Arc::new(loaded.routing);
+    ctx.pool_sources = Arc::new(loaded.pool_sources);
+    ctx.actor = loaded.actor;
+    ctx.mailspace = loaded.mailspace;
+    *fingerprint = Some(loaded.fingerprint);
+    *last_error = None;
+    if changed {
+        ctx.log("pump config reloaded");
+    }
+    changed
+}
+
+/// Read and validate one complete runtime config snapshot.
+fn load_runtime_config(project: &Path) -> Result<LoadedRuntimeConfig, VivariumError> {
+    let mailspace = Mailspace::discover(Some(project))?;
+    let cfg = pump_config(&mailspace)?;
+    let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
+    let role_pool = mailspace
+        .config
+        .identities
+        .iter()
+        .any(|role| role.pool.is_some());
+    cfg.validate_for(project, &pools, role_pool)?;
+    let roster = identity_issues(&mailspace, &cfg);
+    if !roster.is_empty() {
+        return Err(VivariumError::Config(roster.join("; ")));
+    }
+    let issues = crate::routing::validate(&mailspace.config);
+    crate::routing::require_ok(&issues)?;
+    let fingerprint = serde_json::to_vec(&mailspace.config)
+        .map_err(|error| VivariumError::Message(error.to_string()))?;
+    Ok(LoadedRuntimeConfig {
+        pool_sources: cfg.pool_sources(&mailspace.config, project),
+        routing: crate::routing::from_mailspace(&mailspace.config),
+        actor: actor_string(&mailspace),
+        mailspace: mailspace.mailspace_id().to_string(),
+        cfg,
+        fingerprint,
+    })
+}
+
+struct LoadedRuntimeConfig {
+    cfg: PumpConfig,
+    routing: crate::routing::RoleRouting,
+    pool_sources: std::collections::BTreeMap<String, std::path::PathBuf>,
+    actor: String,
+    mailspace: String,
+    fingerprint: Vec<u8>,
+}
+
+/// Reject live changes that would move the lock or an integration checkout.
+fn runtime_paths_match(ctx: &Ctx, cfg: &PumpConfig) -> bool {
+    if cfg.home_dir(&ctx.project) != ctx.home {
+        return false;
+    }
+    runtime_repo_paths(&ctx.cfg, &ctx.project) == runtime_repo_paths(cfg, &ctx.project)
+}
+
+fn runtime_repo_paths(
+    cfg: &PumpConfig,
+    project: &Path,
+) -> std::collections::BTreeMap<String, std::path::PathBuf> {
+    cfg.target_configs()
+        .keys()
+        .filter_map(|id| {
+            cfg.target_repo_dir(project, id)
+                .map(|path| (id.clone(), path))
+        })
+        .collect()
+}
+
+fn report_config_error(ctx: &Ctx, last_error: &mut Option<String>, error: String) -> bool {
+    if last_error.as_deref() != Some(error.as_str()) {
+        ctx.log(&format!("pump config reload skipped: {error}"));
+    }
+    *last_error = Some(error);
+    false
 }
 
 /// Sleep until the next tick is due in one-second slices, re-reading control

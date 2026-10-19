@@ -8,7 +8,6 @@ use tempfile::{TempDir, tempdir};
 use crate::cli::PumpRequeueCommand;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::merge::Merger;
 use crate::pump::requeue::{apply_pending, run, would_line};
 use crate::pump::state::{Attempt, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -250,9 +249,8 @@ fn a_tick_applies_a_pending_requeue_request() {
         .unwrap();
     drop(store);
 
-    let merger = Merger::start(&ctx);
     let (mut pass, requests, results) = crate::pump::boardpass::BoardPass::detached();
-    crate::pump::run::tick(&ctx, &mut st, &merger, &mut pass).unwrap();
+    crate::pump::run::tick(&ctx, &mut st, &mut pass).unwrap();
     pass.serve(&ctx, &mut st, &requests, &results);
 
     let unit = &st.units["u1"];

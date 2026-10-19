@@ -18,6 +18,42 @@ fn after_merged_is_a_noop_without_a_mailspace() {
     assert!(report.skips.is_empty());
 }
 
+#[test]
+fn dispatched_reclaim_uses_the_original_mailspace_snapshot_without_pump_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("shared-pool");
+    let toml = format!(
+        "name = \"alpha\"\n\n[pump]\nbranch = \"next\"\n\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pools.here.local]\nroot = \"{}\"\n",
+        root.display()
+    );
+    let (project, space) = routing_space(&toml);
+    let request = ReclaimRequest {
+        version: 1,
+        source_project: project.path().canonicalize().unwrap(),
+        mailspace_id: space.mailspace_id().to_owned(),
+        unit: ReclaimUnit {
+            need: String::from("need-1"),
+            target: String::from("default"),
+            status: Status::Merged,
+            task: None,
+            branch: None,
+            pool: Some(String::from("here")),
+        },
+        pools: vec![String::from("here")],
+        merging_targets: Vec::new(),
+    };
+    let request_path = tmp.path().join("reclaim-request.json");
+    fs::write(&request_path, serde_json::to_vec(&request).unwrap()).unwrap();
+
+    let report = after_merged_request(&request_path, Some(project.path())).unwrap();
+
+    assert!(report.actions.is_empty());
+    assert!(
+        !project.path().join(".vivi/pump/pump.db").exists(),
+        "the worker request path must not depend on the pump state database"
+    );
+}
+
 fn routing_space(toml: &str) -> (tempfile::TempDir, Mailspace) {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join(".vivi")).unwrap();

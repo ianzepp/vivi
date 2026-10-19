@@ -34,11 +34,40 @@ pub(super) fn apply_undecided(ctx: &Ctx, st: &mut State, result: &MergeResult) {
 pub(super) fn apply_failure(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     let why = result.why.clone().unwrap_or_default();
     let detail = result.detail.clone().unwrap_or_default();
+    if let Some(path) = reported_out_of_scope_file(ctx, st, &result.uid) {
+        collect::needs_replan(
+            ctx,
+            st,
+            &result.uid,
+            "hand identified a blocked file outside write scope",
+            &format!("OUT-OF-SCOPE: {path}"),
+        );
+        return;
+    }
     if why == "proof-usage" {
         apply_needs_replan(ctx, st, result, &detail);
         return;
     }
+    if why == "proof-failed" && repeated_proof_failure(st, &result.uid, &detail) {
+        collect::needs_replan(
+            ctx,
+            st,
+            &result.uid,
+            "repeated identical proof failure",
+            &detail,
+        );
+        return;
+    }
     collect::fail(ctx, st, &result.uid, &why, &detail);
+}
+
+/// Read only the hand's structured final-report marker; test/compiler paths
+/// by themselves do not establish that a file is outside the unit's scope.
+fn reported_out_of_scope_file(ctx: &Ctx, st: &State, uid: &str) -> Option<String> {
+    let unit = st.units.get(uid)?;
+    let task = unit.task.as_deref()?;
+    let message = crate::pump::attempt_record::hand_message(&collect::receipt_full(ctx, task));
+    collect::out_of_scope_marker(&message, &unit.write_scope)
 }
 
 /// A proof whose command cannot run as written is a defect in the plan: park
@@ -49,41 +78,37 @@ pub(super) fn apply_failure(ctx: &Ctx, st: &mut State, result: &MergeResult) {
 /// `unit.attempts` is left alone: the dispatch already counted this attempt,
 /// and the unit is not redispatched until a revision amends it.
 fn apply_needs_replan(ctx: &Ctx, st: &mut State, result: &MergeResult, detail: &str) {
-    let uid = result.uid.as_str();
-    let need = match st.units.get_mut(uid) {
-        Some(unit) => {
-            unit.status = Status::NeedsReplan;
-            unit.since = ctx.now();
-            unit.task = None;
-            Some(unit.need.clone())
-        }
-        None => None,
-    };
-    let text: String = detail.chars().take(300).collect();
-    ctx.exception("needs-replan", uid, &text);
-    ctx.log(&format!("needs-replan {uid}: proof usage error"));
-    if let Some(need) = need.filter(|need| st.needs.contains_key(need)) {
-        crate::pump::amend::request(
-            ctx,
-            st,
-            &need,
-            &format!("unit {uid} failed its proof as a usage error"),
-        );
-    }
+    collect::needs_replan(ctx, st, &result.uid, "proof usage error", detail);
+}
+
+/// True when the previous attempt failed the same proof with the same
+/// recorded output. A first proof defect keeps the ordinary failure path.
+fn repeated_proof_failure(st: &State, uid: &str, detail: &str) -> bool {
+    st.units.get(uid).is_some_and(|unit| {
+        unit.history.last().is_some_and(|attempt| {
+            attempt.why == "proof-failed" && attempt.detail == collect::tail(detail, 2500)
+        })
+    })
 }
 
 /// `ok=true`: the unit becomes `merged` with its tip and outside files, the
 /// merge counter ticks, and the `scope-warn` and `merged` lines are logged.
 pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     let now = ctx.now();
-    if let Some(unit) = st.units.get_mut(&result.uid) {
+    let landed = if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Merged;
         unit.commit.clone_from(&result.tip);
         unit.merged_at = Some(now);
         unit.since = now;
         unit.outside.clone_from(&result.outside);
-    }
+        true
+    } else {
+        false
+    };
     st.merges += 1;
+    if landed {
+        crate::pump::attempt_record::post_status(ctx, st, &result.uid, "merged", now);
+    }
     if !result.outside.is_empty() {
         let files: String = result.outside.join(" ").chars().take(300).collect();
         ctx.log(&format!(
@@ -109,6 +134,13 @@ pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
     reclaim_work_lane(ctx, st, &result.uid);
 }
 
+/// Apply one completed dispatched merge job to pump state. The pool worker
+/// has already merged and published; this path only records its receipt and
+/// queues post-merge cleanup.
+pub(super) fn apply_merged_dispatched(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    apply_merged(ctx, st, result);
+}
+
 /// Recycle the unit's pool work lane now that it is on the merge lane.
 ///
 /// Pump did not do this before: [`apply_merged`] only set [`Status::Merged`]
@@ -116,24 +148,11 @@ pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
 /// caches, and local `unit/` scratch branch in place. Promote to main is a
 /// later gate step and is not a unit status — cleanup must not wait for it.
 /// Missing mailspace or pool is a no-op; a failure is logged, not raised.
-fn reclaim_work_lane(ctx: &Ctx, st: &State, uid: &str) {
-    let Some(unit) = st.units.get(uid) else {
+fn reclaim_work_lane(ctx: &Ctx, st: &mut State, uid: &str) {
+    let Some(unit) = st.units.get(uid).cloned() else {
         return;
     };
-    match crate::pool::clean::after_merged(&ctx.project, unit) {
-        Ok(report) => {
-            for action in &report.actions {
-                ctx.log(&format!(
-                    "work-lane clean {} {} {} {}",
-                    action.kind.word(),
-                    action.slot,
-                    action.bytes,
-                    action.note
-                ));
-            }
-        }
-        Err(e) => ctx.log(&format!("work-lane clean {uid}: {e}")),
-    }
+    crate::pump::reclaim::enqueue_merged(ctx, st, uid, &unit);
 }
 
 /// A repair unit landed: the batch it repaired is on the integration branch
@@ -175,6 +194,10 @@ fn close_need(ctx: &Ctx, st: &mut State, uid: &str, tip: &str) {
         ctx.log(&format!("needs-ready: cannot append {need_id}"));
     }
 }
+
+#[cfg(test)]
+#[path = "apply_test.rs"]
+mod tests;
 
 /// Append one line to `<home>/needs-ready.txt`, creating the file when it
 /// does not exist yet.

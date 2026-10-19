@@ -32,10 +32,9 @@ pub enum Status {
     Inflight,
     /// The agent finished; awaiting merge.
     Delivered,
-    /// A merge lane has taken it and is working on it: the unit is inside
-    /// exactly one lane's batch (in memory only; load folds this back to
-    /// `Delivered`, since a crash mid-merge proves nothing). Units waiting
-    /// for a free lane stay `Delivered`.
+    /// A dispatched merge job owns it. Its durable job record lets startup
+    /// reattach after a pump restart; units waiting for a free pool stay
+    /// `Delivered`.
     Merging,
     /// Merged into the integration branch.
     Merged,
@@ -520,9 +519,22 @@ pub struct State {
     /// last raised; board and split planners share the ten-minute window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limited_at: Option<u64>,
+    /// Durable non-unit jobs, keyed by their deterministic job id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub jobs: BTreeMap<String, crate::pump::jobs::PoolJob>,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl crate::pump::jobs::JobStore for State {
+    fn jobs(&self) -> &BTreeMap<String, crate::pump::jobs::PoolJob> {
+        &self.jobs
+    }
+
+    fn jobs_mut(&mut self) -> &mut BTreeMap<String, crate::pump::jobs::PoolJob> {
+        &mut self.jobs
+    }
 }
 
 /// Gate state isolated to one named repository target.
@@ -784,11 +796,20 @@ impl State {
         }
     }
 
-    /// Startup repairs: fold `merging` back to `delivered`, rebuild an empty
+    /// Startup repairs: requeue legacy merge rows without a live pool job,
+    /// preserve dispatched merge rows for job recovery, and rebuild an empty
     /// `plans_seen` from `needs`.
     pub(crate) fn recover_after_restart(&mut self) {
-        for unit in self.units.values_mut() {
-            if unit.status == Status::Merging {
+        let orphaned: Vec<String> = self
+            .units
+            .iter()
+            .filter(|(uid, unit)| {
+                unit.status == Status::Merging && !crate::pump::jobs::owns_merging_unit(self, uid)
+            })
+            .map(|(uid, _)| uid.clone())
+            .collect();
+        for uid in orphaned {
+            if let Some(unit) = self.units.get_mut(&uid) {
                 unit.status = Status::Delivered;
             }
         }

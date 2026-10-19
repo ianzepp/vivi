@@ -17,7 +17,8 @@ use crate::pump::config::{
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::merge::Merger;
 use crate::pump::run::{
-    actor_string, ensure_repo, run, run_with, status, tick as run_tick, write_status,
+    actor_string, ensure_repo, refresh_config, run, run_with, status, tick as run_tick,
+    write_status,
 };
 use crate::pump::state::{Attempt, GateRun, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
@@ -27,7 +28,10 @@ const T0: u64 = 1_000_000;
 
 fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     let (mut pass, requests, results) = BoardPass::detached();
-    run_tick(ctx, st, merger, &mut pass).unwrap();
+    merger.apply(ctx, st);
+    run_tick(ctx, st, &mut pass).unwrap();
+    merger.apply(ctx, st);
+    merger.feed(ctx, st);
     pass.serve(ctx, st, &requests, &results);
 }
 
@@ -81,6 +85,38 @@ fn mailspace_project(toml: &str) -> tempfile::TempDir {
     fs::create_dir_all(dir.path().join(".vivi")).unwrap();
     fs::write(dir.path().join(".vivi").join("mailspace.toml"), toml).unwrap();
     dir
+}
+
+#[test]
+fn config_changes_are_applied_before_the_next_tick() {
+    let initial = format!("{PUMP_TOML}{PUMP_TOML_IDENTITIES}");
+    let dir = mailspace_project(&initial);
+    let mailspace = Mailspace::discover(Some(dir.path())).unwrap();
+    let cfg = mailspace.config.pump.clone().unwrap();
+    let host = FakeHost::new();
+    let mut ctx = Ctx::new(cfg, host, dir.path().to_path_buf(), String::from("vivi"))
+        .with_routing(crate::routing::from_mailspace(&mailspace.config))
+        .with_actor(actor_string(&mailspace))
+        .with_mailspace(mailspace.mailspace_id().to_string())
+        .with_pool_sources(
+            mailspace
+                .config
+                .pump
+                .as_ref()
+                .unwrap()
+                .pool_sources(&mailspace.config, dir.path()),
+        );
+    let mut fingerprint = None;
+    let mut last_error = None;
+
+    assert!(!refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(ctx.cfg.dispatch.lanes[0].cap, 2);
+
+    let changed = initial.replace("cap = 2", "cap = 7");
+    fs::write(dir.path().join(".vivi/mailspace.toml"), changed).unwrap();
+    assert!(refresh_config(&mut ctx, &mut fingerprint, &mut last_error));
+    assert_eq!(ctx.cfg.dispatch.lanes[0].cap, 7);
+    assert!(last_error.is_none());
 }
 
 /// The first index of a command line containing `fragment`.
@@ -484,7 +520,7 @@ fn a_tick_stops_when_its_state_cannot_be_saved() {
     let (merger, _results, _jobs) = Merger::detached();
 
     let (mut pass, _requests, _results) = BoardPass::detached();
-    let err = run_tick(&ctx, &mut State::default(), &merger, &mut pass).unwrap_err();
+    let err = run_tick(&ctx, &mut State::default(), &mut pass).unwrap_err();
 
     assert!(err.to_string().contains("state save failed"), "{err}");
     assert!(
@@ -509,7 +545,7 @@ fn a_tick_writes_status_before_its_first_save() {
     let (merger, _results, _jobs) = Merger::detached();
     let (mut pass, _requests, _results) = BoardPass::detached();
 
-    let err = run_tick(&ctx, &mut State::default(), &merger, &mut pass).unwrap_err();
+    let err = run_tick(&ctx, &mut State::default(), &mut pass).unwrap_err();
 
     assert!(err.to_string().contains("state save failed"), "{err}");
     let text = fs::read_to_string(ctx.home.join("status.txt")).unwrap();
@@ -1062,7 +1098,7 @@ fn a_blocked_board_pass_does_not_block_dispatch_or_the_tick() {
     wait_until_arrived(&park);
     let (merger, _results, _jobs) = Merger::detached();
 
-    run_tick(&ctx, &mut st, &merger, &mut pass).unwrap();
+    run_tick(&ctx, &mut st, &mut pass).unwrap();
 
     assert!(
         host.commands()

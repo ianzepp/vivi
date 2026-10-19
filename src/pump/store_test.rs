@@ -5,6 +5,7 @@ use std::fs::File;
 
 use tempfile::tempdir;
 
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus};
 use crate::pump::state::{
     Attempt, EnvPause, GateRecord, NeedRecord, Promotion, State, Status, TargetState, Unit,
 };
@@ -116,7 +117,27 @@ fn schema_is_versioned_and_a_new_store_is_empty() {
 fn a_saved_state_round_trips() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);
-    let state = sample();
+    let mut state = sample();
+    let mut spec = JobSpec::new(
+        String::from("reclaim:u1"),
+        String::from("reclaim"),
+        String::from("hand"),
+        String::from("reclaim u1"),
+        String::from("cleanup request"),
+    );
+    spec.local_only = true;
+    spec.pool_candidates = vec![String::from("here")];
+    spec.payload = serde_json::json!({"request": {"version": 1}});
+    crate::pump::jobs::enqueue(&mut state, &spec).unwrap();
+    let job = state.jobs.get_mut("reclaim:u1").unwrap();
+    job.status = JobStatus::Finished;
+    job.applied_at = Some(43);
+    job.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("cleaned 1 slot"),
+        receipt: String::from("cleaned lanes slot-1 build 80"),
+        at: 42,
+    });
     let mut store = PumpStore::open(&path).unwrap();
     store.save(&state).unwrap();
     assert!(!store.is_empty().unwrap());
@@ -160,6 +181,14 @@ fn a_saved_state_round_trips() {
     assert_eq!(back.red_reported, vec![String::from("n1:x")]);
     assert_eq!(back.merges, 3);
     assert_eq!(back.rate_limited_at, Some(1_700_000_123));
+    let job = &back.jobs["reclaim:u1"];
+    assert!(job.local_only);
+    assert_eq!(job.status, JobStatus::Finished);
+    assert_eq!(job.applied_at, Some(43));
+    assert_eq!(
+        job.outcome.as_ref().unwrap().receipt,
+        "cleaned lanes slot-1 build 80"
+    );
     assert_eq!(
         back.extra.get("future").unwrap(),
         &serde_json::json!("kept")

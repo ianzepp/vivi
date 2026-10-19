@@ -4,6 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use vivi::pool::clean::{ReclaimRequest, ReclaimUnit};
+use vivi::pump::state::Status;
+
 fn vivi(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args(args)
@@ -117,6 +120,7 @@ fn clean_help_names_dry_run() {
     assert!(said.contains("--dry-run"), "{said}");
     assert!(said.contains("reclaim"), "{said}");
     assert!(said.contains("--base"), "{said}");
+    assert!(said.contains("--after-merged-request"), "{said}");
 }
 
 #[test]
@@ -144,6 +148,45 @@ fn dry_run_reports_bytes_and_live_clean_empties_the_build_dir() {
     assert_eq!(
         std::fs::read_to_string(slot.join("repo/src/lib.rs")).unwrap(),
         "fn x() {}\n"
+    );
+}
+
+#[test]
+fn dispatched_reclaim_uses_the_request_source_project_not_the_worker_checkout() {
+    let (_tmp, project, _repo, root) = scaffold();
+    let slot = plant_slot(&root, &project);
+    let request = ReclaimRequest {
+        version: 1,
+        source_project: project.canonicalize().unwrap(),
+        mailspace_id: mailspace_key(&project),
+        unit: ReclaimUnit {
+            need: String::from("need-1"),
+            target: String::from("default"),
+            status: Status::Merged,
+            task: None,
+            branch: None,
+            pool: Some(String::from("lanes")),
+        },
+        pools: vec![String::from("lanes")],
+        merging_targets: Vec::new(),
+    };
+    let request_path = project.join("reclaim-request.json");
+    std::fs::write(&request_path, serde_json::to_vec(&request).unwrap()).unwrap();
+
+    let out = vivi(&[
+        "pool",
+        "clean",
+        "--after-merged-request",
+        request_path.to_str().unwrap(),
+        "--porcelain",
+    ]);
+
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("cleaned"), "{}", text(&out));
+    assert!(!slot.join("repo/target/blob").exists());
+    assert!(
+        !project.join("pump-home/pump.db").exists(),
+        "the dispatched cleanup must not read or depend on pump.db"
     );
 }
 

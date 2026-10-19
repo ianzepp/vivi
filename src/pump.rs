@@ -28,6 +28,7 @@ pub mod proof;
 pub mod quarantine;
 pub mod ramsweep;
 pub mod ready;
+pub mod reclaim;
 pub mod remote;
 pub mod replan;
 pub mod report;

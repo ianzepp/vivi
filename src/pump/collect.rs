@@ -17,7 +17,11 @@ use crate::pump::attempt_record::{self, Ending};
 use crate::pump::envfail;
 use crate::pump::host::{Ctx, exit_receipt_path, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status, Unit};
+
+#[path = "collect_replan.rs"]
+mod replan_failure;
 use crate::pump::transient;
+pub(crate) use replan_failure::{needs_replan, out_of_scope_marker};
 
 #[path = "collect/burst.rs"]
 mod burst;
@@ -150,6 +154,23 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
     let max = ctx.cfg.dispatch.max_attempts;
     let cap = ctx.cfg.dispatch.transient_max;
     let backoff = ctx.cfg.dispatch.transient_backoff;
+    if let Some(path) = receipt
+        .map(crate::pump::attempt_record::hand_message)
+        .and_then(|message| {
+            st.units
+                .get(uid)
+                .and_then(|unit| out_of_scope_marker(&message, &unit.write_scope))
+        })
+    {
+        needs_replan(
+            ctx,
+            st,
+            uid,
+            "hand identified a blocked file outside write scope",
+            &format!("OUT-OF-SCOPE: {path}; {}", tail(detail, 250)),
+        );
+        return;
+    }
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };

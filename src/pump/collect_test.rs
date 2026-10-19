@@ -16,6 +16,18 @@ use crate::pump::state::{Attempt, GateRun, State, Status, Unit};
 /// The fake clock's start; units are created "now".
 const T0: u64 = 1_000_000;
 
+#[test]
+fn explicit_out_of_scope_marker_requires_a_safe_path_outside_write_scope() {
+    let scope = vec![String::from("src/pump/")];
+    assert_eq!(
+        out_of_scope_marker("OUT-OF-SCOPE: docs/budget.toml", &scope).as_deref(),
+        Some("docs/budget.toml")
+    );
+    assert!(out_of_scope_marker("OUT-OF-SCOPE: src/pump/run.rs", &scope).is_none());
+    assert!(out_of_scope_marker("OUT-OF-SCOPE: ../secrets.txt", &scope).is_none());
+    assert!(out_of_scope_marker("OUT-OF-SCOPE: ..\\secrets.txt", &scope).is_none());
+}
+
 /// A context with default config, home at `dir/home`.
 fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     setup_with(PumpConfig::default())

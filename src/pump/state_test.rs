@@ -6,9 +6,40 @@ use std::fs;
 use serde_json::json;
 use tempfile::tempdir;
 
+use crate::pump::jobs::{JobSpec, JobStatus};
 use crate::pump::state::{
     Board, MergeResult, NeedRecord, Promotion, State, Status, Unit, with_target_state,
 };
+
+#[test]
+fn restart_keeps_merging_units_owned_by_dispatched_merge_jobs_only() {
+    let mut state = State::default();
+    for uid in ["u-live", "u-orphan"] {
+        state.units.insert(
+            uid.to_owned(),
+            Unit {
+                need: String::from("n1"),
+                status: Status::Merging,
+                ..Unit::default()
+            },
+        );
+    }
+    let mut spec = JobSpec::new(
+        String::from("merge-n1"),
+        String::from("merge"),
+        String::from("merge"),
+        String::from("merge n1"),
+        String::from("merge u-live"),
+    );
+    spec.units.push(String::from("u-live"));
+    crate::pump::jobs::enqueue(&mut state, &spec).unwrap();
+    state.jobs.get_mut("merge-n1").unwrap().status = JobStatus::Dispatched;
+
+    state.recover_after_restart();
+
+    assert_eq!(state.units["u-live"].status, Status::Merging);
+    assert_eq!(state.units["u-orphan"].status, Status::Delivered);
+}
 
 /// A `state.json` as the pump writes it: one-space indent, `null`s
 /// for absent models, `baseline` null before the first gate, `rr` an int.

@@ -269,6 +269,10 @@ pub struct PoolScaleCommand {
 
 #[derive(Debug, Args)]
 pub struct PoolCleanCommand {
+    /// Reclaim from a serialized request written by a dispatched cleanup job
+    #[arg(long, conflicts_with_all = ["dry_run", "pool", "base"])]
+    pub after_merged_request: Option<PathBuf>,
+
     /// Report reclaimable space and stay put
     #[arg(long)]
     pub dry_run: bool,

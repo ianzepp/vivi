@@ -33,7 +33,10 @@ const GATE_TASK: &str = "99887766";
 
 fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     let (mut pass, requests, results) = BoardPass::detached();
-    run_tick(ctx, st, merger, &mut pass).unwrap();
+    merger.apply(ctx, st);
+    run_tick(ctx, st, &mut pass).unwrap();
+    merger.apply(ctx, st);
+    merger.feed(ctx, st);
     pass.serve(ctx, st, &requests, &results);
 }
 /// A second plan file, ingested mid-test to mint a fresh unit.
