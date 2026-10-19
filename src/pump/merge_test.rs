@@ -499,6 +499,48 @@ fn a_failing_shared_check_is_proof_failed_and_names_the_command() {
 }
 
 #[test]
+fn a_proof_exit_127_leaves_the_unit_undecided() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "deno test x.test.ts",
+        127,
+        "bash: deno: command not found\n",
+    );
+    let mut unit = job();
+    unit.proof = vec![String::from("deno test x.test.ts")];
+    let result = merge_work(&ctx, &unit);
+    assert_eq!(result.ok, None, "{result:?}\n{:?}", host.commands());
+    assert_eq!(result.why.as_deref(), Some("proof-missing-tool"));
+    assert_ne!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(
+        detail.contains("could not run (exit 127):\ndeno test x.test.ts"),
+        "{detail}"
+    );
+    assert!(detail.contains("command not found"), "{detail}");
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
+#[test]
+fn proof_exit_127_contrast_exit_1_is_still_a_decided_proof_failure() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("deno test x.test.ts", 1, "1 test failed\n");
+    let mut unit = job();
+    unit.proof = vec![String::from("deno test x.test.ts")];
+    let result = merge_work(&ctx, &unit);
+    assert_eq!(result.ok, Some(false), "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(
+        detail.contains("this command failed (exit 1):\ndeno test x.test.ts"),
+        "{detail}"
+    );
+}
+
+#[test]
 fn a_failing_unit_proof_is_proof_failed() {
     let (_dir, ctx, host) = setup("");
     host.reply(
