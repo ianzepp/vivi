@@ -51,7 +51,7 @@ fn show_defaults_to_skill_md_and_rejects_escapes() {
     assert!(flow.contents.contains("Work-graph"));
 
     let contract = skills::show("vivi", Some("references/pump-contract.md")).unwrap();
-    assert!(contract.contents.contains("The pump's contract"));
+    assert!(contract.contents.starts_with("# Pump contract"));
     let protocols = skills::show("vivi", Some("references/pump-protocols.md")).unwrap();
     assert!(protocols.contents.contains("Pump protocols"));
 
