@@ -343,6 +343,25 @@ pub(crate) fn regenerate_generated(ctx: &Ctx, entries: &[&Generated]) -> Result<
     Ok(())
 }
 
+/// The shell prefix a merge lane puts in front of one check or proof command:
+/// `env K=V K=V ... ` when `[pump.ramdisk] lane_gib` is set, else empty.
+///
+/// It wraps that one command line and nothing else, so no pump command, no
+/// git command, and no file in the repository (in particular `Cargo.toml`)
+/// is affected.
+pub(crate) fn ramdisk_env_prefix(cfg: &crate::pump::config::PumpConfig) -> String {
+    if cfg.ramdisk.lane_gib.is_none() {
+        return String::new();
+    }
+    let mut prefix = String::from("env");
+    for (key, value) in &cfg.ramdisk.env {
+        prefix.push(' ');
+        prefix.push_str(&shell_quote(&format!("{key}={value}")));
+    }
+    prefix.push(' ');
+    prefix
+}
+
 /// Run a check, and when it fails with a declared drift signature, regenerate
 /// the named generated entry and run the check once more. Returns the
 /// decisive output: the rerun's when a retry happened, otherwise the first.
@@ -531,6 +550,7 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
         checks.extend(job.proof.iter().cloned());
     }
     let shared = ctx.cfg.merge.shared_checks.len() + scoped.len();
+    let env = ramdisk_env_prefix(&ctx.cfg);
     for (i, cmd) in checks.iter().enumerate() {
         let head: String = cmd.chars().take(90).collect();
         if i < shared {
@@ -539,7 +559,7 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
             ctx.step(&format!("proof {} start: {head}", job.uid));
         }
         let t1 = ctx.now();
-        let out = check_with_drift_retry(ctx, &job.uid, cmd);
+        let out = check_with_drift_retry(ctx, &job.uid, &format!("{env}{cmd}"));
         ctx.log(&format!(
             "proof {} rc={} {}s: {head}",
             job.uid,
