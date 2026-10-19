@@ -34,6 +34,7 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
         | Status::Merging
         | Status::Quarantined
         | Status::Stuck
+        | Status::NeedsReplan
         | Status::Splitting
         | Status::Withdrawn
         | Status::Other(_) => false,

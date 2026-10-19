@@ -303,7 +303,7 @@ fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str)
         return Apply::Conflict;
     }
     match unit.status {
-        Status::Pending | Status::Held => {
+        Status::Pending | Status::Held | Status::NeedsReplan => {
             unit.status = Status::Pending;
             set_fields(unit, plan, revision);
             Apply::Amended

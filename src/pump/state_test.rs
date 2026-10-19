@@ -402,6 +402,21 @@ fn status_names_are_kebab_case_including_no_defect() {
 }
 
 #[test]
+fn a_needs_replan_unit_round_trips_through_serde() {
+    let st: State = serde_json::from_value(json!({
+        "units": {"u1": {"status": "needs-replan"}}
+    }))
+    .unwrap();
+    assert_eq!(st.units["u1"].status, Status::NeedsReplan);
+    assert_eq!(st.units["u1"].status.as_str(), "needs-replan");
+
+    let text = serde_json::to_string(&st).unwrap();
+    let back: State = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.units["u1"].status, Status::NeedsReplan);
+    assert_eq!(back.units["u1"].status.as_str(), "needs-replan");
+}
+
+#[test]
 fn counts_groups_units_by_status_name() {
     let st: State = serde_json::from_value(json!({
         "units": {

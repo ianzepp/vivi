@@ -49,6 +49,9 @@ pub enum Status {
     NoDefect,
     /// Failed too many times; parked.
     Stuck,
+    /// Parked because its plan is defective (proof usage error); waits for a
+    /// revision, never dispatched.
+    NeedsReplan,
     /// Being split into sub-units.
     Splitting,
     /// Superseded by a replacement unit.
@@ -74,6 +77,7 @@ impl Status {
             Self::Quarantined => "quarantined",
             Self::NoDefect => "no-defect",
             Self::Stuck => "stuck",
+            Self::NeedsReplan => "needs-replan",
             Self::Splitting => "splitting",
             Self::Replaced => "replaced",
             Self::Withdrawn => "withdrawn",
@@ -94,6 +98,7 @@ impl Status {
             "quarantined" => Self::Quarantined,
             "no-defect" => Self::NoDefect,
             "stuck" => Self::Stuck,
+            "needs-replan" => Self::NeedsReplan,
             "splitting" => Self::Splitting,
             "replaced" => Self::Replaced,
             "withdrawn" => Self::Withdrawn,

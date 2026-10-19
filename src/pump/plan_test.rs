@@ -566,6 +566,32 @@ fn a_revision_amends_pending_and_keeps_merged_units() {
 }
 
 #[test]
+fn a_revision_amends_a_needs_replan_unit_back_to_pending() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    st.units.get_mut("n1-1").unwrap().status = Status::NeedsReplan;
+
+    let mut fixed = plan_unit("n1-1", "first pass");
+    fixed["proof"] = json!(["cargo test --lib pump::state"]);
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({
+            "need": "n1",
+            "revision": 2,
+            "verdict": "units",
+            "reason": "fix the proof command",
+            "units": [fixed]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["n1-1"].status, Status::Pending);
+    assert_eq!(st.units["n1-1"].proof, vec!["cargo test --lib pump::state"]);
+    assert_eq!(st.units["n1-1"].revision, 2);
+}
+
+#[test]
 fn a_revision_cannot_change_a_merged_unit() {
     let (_dir, ctx, _host, mut st) = setup();
     write_plan(&ctx, "n1.json", &first_plan());
