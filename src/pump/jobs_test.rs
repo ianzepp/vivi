@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use super::{
     JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
-    branch_sources_pending, candidate_pools, dispatch_order, enqueue, enqueue_promotion,
-    integration_error, mark_applied, mark_gated, mark_merged, pool_command, recover_dispatched,
+    branch_sources_pending, candidate_pools, dispatch_order, dispatch_pending, enqueue,
+    enqueue_promotion, integration_error, mark_applied, mark_gated, mark_merged, pool_command,
+    recover_dispatched,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{FakeHost, test_ctx};
@@ -129,6 +130,115 @@ fn role_pool_and_explicit_candidates_expand_as_primary_then_fallbacks() {
         candidate_pools(&ctx, "gate", &[String::from("declared")], false, &[]),
         ["role", "role-fallback", "declared", "declared-fallback"]
     );
+}
+
+#[test]
+fn durable_merge_dispatch_uses_the_configured_pool_fallback_when_primary_is_full() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(Some("backup")));
+    host.reply(
+        "pool status",
+        0,
+        "slot primary bridge slot-1 occupied\nslot backup bridge slot-1 free\n",
+    );
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched a1b2c3d4 bridge slot-1 model/default unit/task\n",
+    );
+    let mut store = Store::default();
+    enqueue(
+        &mut store,
+        JobSpec::new(
+            "merge-fallback",
+            "merge",
+            "merge",
+            "integrate",
+            "merge branches",
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        dispatch_pending(&ctx, &mut store).unwrap(),
+        vec![String::from("merge-fallback")]
+    );
+
+    let job = &store.jobs["merge-fallback"];
+    assert_eq!(job.status, JobStatus::Dispatched);
+    assert_eq!(job.pool.as_deref(), Some("backup"));
+    assert_eq!(job.task.as_deref(), Some("a1b2c3d4"));
+    assert!(
+        host.commands().iter().any(|command| {
+            command.contains("pool dispatch") && command.contains("--pool backup")
+        })
+    );
+}
+
+#[test]
+fn durable_merge_without_a_configured_fallback_stays_queued_without_sending_a_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(merge_routing(None));
+    host.reply(
+        "pool status",
+        0,
+        "slot primary bridge slot-1 occupied\nslot unrelated bridge slot-1 free\n",
+    );
+    let mut store = Store::default();
+    enqueue(
+        &mut store,
+        JobSpec::new(
+            "merge-no-fallback",
+            "merge",
+            "merge",
+            "integrate",
+            "merge branches",
+        ),
+    )
+    .unwrap();
+
+    assert!(dispatch_pending(&ctx, &mut store).unwrap().is_empty());
+
+    let job = &store.jobs["merge-no-fallback"];
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.task, None);
+    assert_eq!(job.dispatched_at, None);
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|command| { command.contains("task send") || command.contains("pool dispatch") })
+    );
+}
+
+fn merge_routing(fallback: Option<&str>) -> RoleRouting {
+    let pool = |fallback: Option<&str>| RoutedPool {
+        slots: 1,
+        provider: String::from("local"),
+        fallback: fallback.map(str::to_owned),
+        caps: BTreeMap::new(),
+        models: Vec::new(),
+        has_bands: false,
+    };
+    let mut pools = BTreeMap::from([(String::from("primary"), pool(fallback))]);
+    if fallback.is_some() {
+        pools.insert(String::from("backup"), pool(None));
+    }
+    RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("merge"),
+            kind: Some(String::from("merge")),
+            status: String::from("active"),
+            pool: Some(String::from("primary")),
+            read_only: Some(false),
+            model: None,
+            models: Vec::new(),
+        }],
+        pools,
+    }
 }
 
 #[test]
