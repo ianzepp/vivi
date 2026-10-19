@@ -4,7 +4,9 @@
 //! single-instance lock.
 
 use std::fs::{self, File};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use vivi::pump::state::{NeedRecord, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
@@ -279,6 +281,71 @@ fn a_second_instance_is_refused() {
     );
     drop(held);
     assert_success(&vivi(["pump", "once", "--project", root(&project)]));
+}
+
+#[test]
+fn a_service_child_pump_refreshes_status_every_tick() {
+    let project = temp_mailspace();
+    let status = pump_home(&project).join("status.txt");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .args([
+            "pump",
+            "run",
+            "--service-child",
+            "--project",
+            root(&project),
+        ])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    // The first tick writes status.txt; wait for it before taking its mtime.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !status.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the service child wrote no status.txt within 10s"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    let first = fs::metadata(&status).unwrap().modified().unwrap();
+    // Every tick rewrites the file, so the mtime must advance within a few
+    // one-second ticks.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut next = first;
+    while next <= first {
+        assert!(
+            Instant::now() < deadline,
+            "status.txt was not refreshed in 30s: first {first:?}, latest {next:?}"
+        );
+        thread::sleep(Duration::from_millis(200));
+        next = fs::metadata(&status).unwrap().modified().unwrap();
+    }
+    let refreshed = next > first;
+    // Stop the child: `pump stop`, then wait; kill it if either step stalls.
+    let stopped = vivi(["pump", "stop", "--project", root(&project)]);
+    let mut exited = stopped.status.success();
+    if exited {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                exited = false;
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+    if !exited {
+        child.kill().unwrap();
+    }
+    let _ = child.wait().unwrap();
+    assert!(
+        refreshed,
+        "status.txt mtime did not advance: first {first:?}, latest {next:?}"
+    );
 }
 
 /// A temp project mailspace with the minimal `[pump]` table appended.
