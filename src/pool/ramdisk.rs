@@ -99,6 +99,15 @@ pub fn held_gib(runner: &dyn Runner) -> u64 {
     mounted(runner).iter().map(|disk| disk.size_gib).sum()
 }
 
+/// The memory held by attached RAM disks, or an error when either inventory
+/// listing failed and the admission total cannot be trusted.
+pub fn held_gib_checked(runner: &dyn Runner) -> Result<u64, String> {
+    Ok(mounted_checked(runner)?
+        .iter()
+        .map(|disk| disk.size_gib)
+        .sum())
+}
+
 /// Admit a job wanting `want_gib` against `available` bytes of memory, with
 /// `margin_gib` kept free for the compiler and the system. This is the half
 /// tests drive directly, since it never reads real memory.
@@ -113,7 +122,8 @@ pub fn admit_with(
     want_gib: u64,
     margin_gib: u64,
 ) -> Result<(), String> {
-    let held = held_gib(runner);
+    let held = held_gib_checked(runner)
+        .map_err(|error| format!("ramdisk-wait: cannot inventory held disks: {error}"))?;
     if admits(available, held, want_gib, margin_gib) {
         return Ok(());
     }
@@ -150,19 +160,10 @@ pub fn enospc(text: &str) -> bool {
 /// done here.
 #[must_use]
 pub fn parse_mounts(text: &str) -> Vec<(String, String)> {
-    let mut mounts = Vec::new();
-    for line in text.lines() {
-        let Some((device, rest)) = line.split_once(" on ") else {
-            continue;
-        };
-        let Some((mount, _options)) = rest.split_once(" (") else {
-            continue;
-        };
-        if last_component(mount).starts_with(VOLUME_PREFIX) {
-            mounts.push((device.to_string(), mount.to_string()));
-        }
-    }
-    mounts
+    parse_mount_rows(text)
+        .into_iter()
+        .filter(|(_, mount)| last_component(mount).starts_with(VOLUME_PREFIX))
+        .collect()
 }
 
 /// `(mount point, size in GiB)` pairs from `df -g` output, keeping rows
@@ -171,21 +172,35 @@ pub fn parse_mounts(text: &str) -> Vec<(String, String)> {
 /// parse.
 #[must_use]
 pub fn parse_df_gib(text: &str) -> Vec<(String, u64)> {
-    let mut rows = Vec::new();
-    for line in text.lines() {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        let size: u64 = match cols.get(1).map(|col| col.parse::<u64>()) {
-            Some(Ok(size)) => size,
-            _ => continue,
-        };
-        let Some(mount) = cols.last() else {
-            continue;
-        };
-        if last_component(mount).starts_with(VOLUME_PREFIX) {
-            rows.push(((*mount).to_string(), size));
-        }
-    }
-    rows
+    parse_df_rows(text)
+        .into_iter()
+        .filter(|(mount, _)| last_component(mount).starts_with(VOLUME_PREFIX))
+        .collect()
+}
+
+/// Every well-shaped `(device, mount point)` row from `mount` output.
+fn parse_mount_rows(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let (device, rest) = line.split_once(" on ")?;
+            let (mount, _) = rest.split_once(" (")?;
+            Some((device.to_string(), mount.to_string()))
+        })
+        .collect()
+}
+
+/// Every well-shaped `(mount point, size in GiB)` row from `df -g` output.
+fn parse_df_rows(text: &str) -> Vec<(String, u64)> {
+    text.lines()
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            let size = match cols.get(1)?.parse::<u64>() {
+                Ok(size) => size,
+                Err(_) => return None,
+            };
+            Some((cols.last()?.to_string(), size))
+        })
+        .collect()
 }
 
 /// The final `/`-separated path component (`""` for a root path).
@@ -293,23 +308,87 @@ pub fn teardown(runner: &dyn Runner, disk: &Disk) -> Result<(), String> {
 /// `df -g` the size. A disk missing from the `df` listing reports zero.
 #[must_use]
 pub fn mounted(runner: &dyn Runner) -> Vec<Disk> {
-    let mounts = parse_mounts(&runner.run(&["mount"], LIST_SECS).unwrap_or_default());
-    let sizes = parse_df_gib(&runner.run(&["df", "-g"], LIST_SECS).unwrap_or_default());
-    mounts
+    mounted_checked(runner).unwrap_or_default()
+}
+
+/// The attached RAM disks, failing if either operating-system listing failed.
+/// Admission uses this form so a listing error cannot admit another disk
+/// while existing memory use is unknown.
+pub fn mounted_checked(runner: &dyn Runner) -> Result<Vec<Disk>, String> {
+    let mounts = parse_mount_rows(&runner.run(&["mount"], LIST_SECS)?);
+    let sizes = parse_df_rows(&runner.run(&["df", "-g"], LIST_SECS)?);
+    Ok(mounts
         .into_iter()
-        .map(|(device, mount)| {
+        .filter_map(|(device, mount)| {
+            let mount_path = PathBuf::from(&mount);
+            let volume = if last_component(&mount).starts_with(VOLUME_PREFIX) {
+                Some((last_component(&mount).to_string(), None))
+            } else {
+                pool_marker(&mount_path, &device)
+            }?;
             let size_gib = sizes
                 .iter()
                 .find(|(path, _)| path == &mount)
-                .map_or(0, |(_, gib)| *gib);
-            Disk {
+                .map(|(_, gib)| *gib)
+                .or(volume.1)
+                .unwrap_or_default();
+            Some(Disk {
                 device,
-                volume: last_component(&mount).to_string(),
+                volume: volume.0,
                 size_gib,
-                mount: PathBuf::from(mount),
-            }
+                mount: mount_path,
+            })
         })
-        .collect()
+        .collect())
+}
+
+/// RAM disks mounted over a local pool target cache do not have a `vivi-*`
+/// mountpoint basename. Their exact slot marker carries the volume identity,
+/// configured size, and mount path. A stale or mismatched marker is ignored.
+fn pool_marker(mount: &Path, device: &str) -> Option<(String, Option<u64>)> {
+    let slot = pool_slot_for_mount(mount)?;
+    let marker_path = slot.join("ramdisk");
+    if !marker_path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_file())
+    {
+        return None;
+    }
+    let Ok(marker) = std::fs::read_to_string(marker_path) else {
+        return None;
+    };
+    let field = |name: &str| {
+        marker
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+    };
+    let volume = field("volume")?;
+    let marked_device = field("device")?;
+    let marked_mount = field("mount")?;
+    let job = field("job")?;
+    if !volume.starts_with(VOLUME_PREFIX)
+        || job.is_empty()
+        || marked_device != whole_disk(device)
+        || marked_mount != mount.to_string_lossy()
+    {
+        return None;
+    }
+    Some((
+        volume.to_string(),
+        field("size_gib").and_then(|size| match size.parse::<u64>() {
+            Ok(size) => Some(size),
+            Err(_) => None,
+        }),
+    ))
+}
+
+/// Slot root for a RAM mount at `<slot>/targets/<key>`. Root `repo` is the
+/// seeded checkout and is never a RAM mount point.
+pub(crate) fn pool_slot_for_mount(mount: &Path) -> Option<PathBuf> {
+    let targets = mount.parent()?;
+    (targets.file_name().is_some_and(|name| name == "targets"))
+        .then(|| targets.parent().map(Path::to_path_buf))
+        .flatten()
 }
 
 /// Attach an unformatted RAM disk of `gib` GiB and return its device (the
@@ -354,9 +433,18 @@ fn eject(runner: &dyn Runner, device: &str) {
 /// final component is `volume`.
 fn still_attached(runner: &dyn Runner, device: &str, volume: &str) -> Result<bool, String> {
     let text = runner.run(&["mount"], LIST_SECS)?;
-    Ok(parse_mounts(&text).iter().any(|(mounted_device, mount)| {
-        whole_disk(mounted_device) == device || last_component(mount) == volume
-    }))
+    Ok(parse_mount_rows(&text)
+        .iter()
+        .any(|(mounted_device, mount)| {
+            if whole_disk(mounted_device) == device {
+                return true;
+            }
+            if last_component(mount) == volume {
+                return true;
+            }
+            pool_marker(Path::new(mount), mounted_device)
+                .is_some_and(|(mounted_volume, _)| mounted_volume == volume)
+        }))
 }
 
 /// `device` with any `sN` slice suffix stripped (`/dev/disk7s1` ->

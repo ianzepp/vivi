@@ -4,7 +4,8 @@
 # under a hard time limit. Everything it needs is in $WORK/job (default
 # /work/job), delivered as one archive:
 #   params.env   REMOTE FROM BRANCH DEPTH BUDGET MODEL SLOT SUBJECT JOB TASK
-#                COMMIT_NAME COMMIT_EMAIL ENV_NAMES
+#                COMMIT_NAME COMMIT_EMAIL ENV_NAMES RAMDISK_SIZE_GIB
+#                RAMDISK_ENV_COUNT and numbered RAMDISK_ENV_<n>_NAME/VALUE
 #                READ_ONLY (set to 1 for a read-only job; BRANCH is then empty)
 #                (REMOTE is the full Git address; https gets the token below,
 #                a file:// address is used as given). A worktree slot has no
@@ -110,16 +111,37 @@ detach_local() {
 [ -z "${LOCAL_ACTION:-}" ] || trap detach_local EXIT
 [ -z "${LOCAL_ACTION:-}" ] || trap 'exit 143' TERM HUP INT
 
+ramdisk_full() { # ramdisk_full <push-outcome>
+  [[ "${RAMDISK_SIZE_GIB:-0}" =~ ^[1-9][0-9]*$ ]] || return 1
+  if [ -n "${AGENT_RC:-}" ] && [ "$AGENT_RC" -ne 0 ]; then
+    grep -Eq 'No space left on device|os error 28' \
+      "$J/agent.out" "$J/agent.err" "$J/run.log" 2>/dev/null
+    return $?
+  fi
+  case "$1" in
+    pushed|committed|no_changes|read_only_*) return 1 ;;
+  esac
+  grep -Eq 'No space left on device|os error 28' \
+    "$J/agent.out" "$J/agent.err" "$J/run.log" 2>/dev/null
+}
+
 finish() { # finish <push-outcome> [sha]
+  local push_word=$1 sha=${2:-}
+  if ramdisk_full "$push_word"; then
+    push_word=ramdisk_full
+    sha=
+    AGENT_RC=${AGENT_RC:-1}
+    RESULT_EXTRA="ramdisk_size_gib=$RAMDISK_SIZE_GIB"
+  fi
   detach_local
   {
     echo "job=$JOB"
     [ -z "${TARGET:-}" ] || echo "target=$TARGET"
     [ -z "${REPOSITORY:-}" ] || echo "repository=$REPOSITORY"
     echo "state=done"
-    echo "push=$1"
+    echo "push=$push_word"
     echo "branch=$BRANCH"
-    echo "sha=${2:-}"
+    echo "sha=$sha"
     echo "start=$START"
     echo "agent_rc=$AGENT_RC"
     echo "agent_s=$AGENT_S"
@@ -319,6 +341,13 @@ HARNESS_ENV+=("GIT_COMMITTER_NAME=$COMMIT_NAME" "GIT_COMMITTER_EMAIL=$COMMIT_EMA
 [ -z "${VIVI_SLOT_ROOT:-}" ] || HARNESS_ENV+=("VIVI_SLOT_ROOT=$VIVI_SLOT_ROOT")
 for name in $ENV_NAMES; do
   [ -n "${!name+x}" ] && HARNESS_ENV+=("$name=${!name}")
+done
+for ((i=0; i<${RAMDISK_ENV_COUNT:-0}; i++)); do
+  name_var=RAMDISK_ENV_${i}_NAME
+  value_var=RAMDISK_ENV_${i}_VALUE
+  name=${!name_var}
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || finish ramdisk_env_invalid
+  HARNESS_ENV+=("$name=${!value_var}")
 done
 # The MCP bridge, when the job carries a grant: the agent reads its task and
 # reports as the dispatching member. The facts (run_fact) keep their own

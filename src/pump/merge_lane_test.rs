@@ -1,6 +1,7 @@
 //! Tests for the merge lanes: the pull-model `feed`, `apply`, and the lane
 //! thread.
 
+use std::process::Command;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -413,7 +414,6 @@ fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use crate::pump::config::{GateConfig, MergeConfig, PumpConfig, PumpTarget};
@@ -685,7 +685,7 @@ fn lane_lines_count_merged_and_conflicted_results_per_lane() {
 // ------------------------------------------------------------- the lane RAM disk
 
 use crate::pool::ramdisk::Runner;
-use crate::pump::merge::{LaneRam, detached_worker, lane_work};
+use crate::pump::merge::{LaneRam, detached_worker, lane_work, ramdisk_batch_after_admit};
 use std::sync::Mutex;
 
 /// An attached fake RAM disk: whole-disk device and mount point.
@@ -724,6 +724,13 @@ impl LaneFakeRunner {
             .retain(|(whole, _)| whole != device && !whole.starts_with(&format!("{device}s")));
     }
 
+    fn mount(&self, device: &str, path: &str) {
+        self.attached
+            .lock()
+            .expect("attach list")
+            .push((device.to_string(), path.to_string()));
+    }
+
     /// Every command line the fake was asked to run, in order.
     fn calls(&self) -> Vec<String> {
         self.calls.lock().expect("call log").clone()
@@ -734,6 +741,18 @@ impl Runner for LaneFakeRunner {
     fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
         let line = argv.join(" ");
         self.calls.lock().expect("call log").push(line.clone());
+        if line.starts_with("hdiutil attach -nomount ram://") {
+            return Ok(String::from("/dev/disk13\n"));
+        }
+        if line.starts_with("diskutil eraseVolume APFS ") || line.starts_with("diskutil unmount ") {
+            return Ok(String::new());
+        }
+        if let Some(args) = line.strip_prefix("diskutil mount -mountPoint ")
+            && let Some((path, device)) = args.split_once(' ')
+        {
+            self.mount(device, path);
+            return Ok(String::new());
+        }
         match line.as_str() {
             "mount" => Ok(self
                 .attached()
@@ -756,6 +775,30 @@ impl Runner for LaneFakeRunner {
             },
         }
     }
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(args)
+        .output()
+        .expect("git starts");
+    assert!(
+        output.status.success(),
+        "git {:?}: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn initialize_git_repo(repo: &std::path::Path) {
+    git(repo, &["init", "-q", "-b", "main"]);
+    git(repo, &["config", "user.name", "Lane Test"]);
+    git(repo, &["config", "user.email", "lane@example.com"]);
+    std::fs::write(repo.join("seed.txt"), "seed\n").expect("seed file");
+    git(repo, &["add", "seed.txt"]);
+    git(repo, &["commit", "-q", "-m", "seed"]);
 }
 
 #[test]
@@ -781,6 +824,7 @@ fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
         Some(LaneRam {
             gib: 8,
             runner: fake.clone(),
+            available: None,
         }),
     );
 
@@ -796,5 +840,64 @@ fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
         !fake.calls().iter().any(|c| c.starts_with("hdiutil attach")),
         "the job waits queued; no disk is mounted: {:?}",
         fake.calls()
+    );
+}
+
+#[test]
+fn merge_lane_runs_a_failing_batch_in_a_ram_worktree_then_ejects() {
+    let (_dir, ctx, _host) = setup("");
+    initialize_git_repo(&ctx.repo);
+    let worker = detached_worker(&ctx, 0, None);
+    let fake = Arc::new(LaneFakeRunner::new(&[]));
+    let ram = LaneRam {
+        gib: 8,
+        runner: fake.clone(),
+        available: Some(u64::MAX),
+    };
+    let job = tela_job("u-ramdisk");
+    let mut observed = None;
+
+    let results = ramdisk_batch_after_admit(&worker, &ram, &[job], |mounted, jobs| {
+        observed = Some(mounted.repo_path().to_path_buf());
+        assert_eq!(mounted.repo_path().file_name().unwrap(), "w");
+        assert!(mounted.repo_path().join(".git").is_file());
+        assert_eq!(jobs.len(), 1);
+        vec![MergeResult {
+            uid: jobs[0].uid.clone(),
+            ok: Some(false),
+            why: Some(String::from("check-failed")),
+            ..MergeResult::default()
+        }]
+    });
+
+    let worktree = observed.expect("batch ran in the mounted worktree");
+    assert!(
+        worktree.starts_with(std::env::temp_dir().join("vivi-ramdisk")),
+        "worktree on RAM mount: {}",
+        worktree.display()
+    );
+    assert!(!worktree.exists(), "worktree removed before disk eject");
+    assert_eq!(results[0].why.as_deref(), Some("check-failed"));
+    assert!(
+        fake.attached().is_empty(),
+        "RAM disk released after failure"
+    );
+    let calls = fake.calls();
+    let mount = calls
+        .iter()
+        .position(|call| call.starts_with("diskutil mount -mountPoint "))
+        .expect("disk mounted");
+    let eject = calls
+        .iter()
+        .position(|call| call == "diskutil eject /dev/disk13")
+        .expect("disk ejected");
+    assert!(mount < eject, "mount precedes teardown: {calls:?}");
+    assert_eq!(
+        crate::pool::local_git::Repo::new(&ctx.repo)
+            .worktrees()
+            .unwrap()
+            .len(),
+        1,
+        "the RAM worktree registration is removed"
     );
 }

@@ -748,13 +748,13 @@ fn a_shared_slot_keeps_dynamic_target_worktrees_and_removes_them_on_destroy() {
     let start_a = git(&rig.f.repo, &["rev-parse", "HEAD"]);
     let start_b = git(&second.repo, &["rev-parse", "HEAD"]);
     rig.provider
-        .prepare_target_checkout(&slot.id, &a, &start_a)
+        .prepare_target_checkout(&slot.id, &a, &start_a, "job-a")
         .unwrap();
     rig.provider
-        .prepare_target_checkout(&slot.id, &b, &start_b)
+        .prepare_target_checkout(&slot.id, &b, &start_b, "job-b")
         .unwrap();
     rig.provider
-        .prepare_target_checkout(&slot.id, &a, &start_a)
+        .prepare_target_checkout(&slot.id, &a, &start_a, "job-a")
         .unwrap();
     let caches = rig.root.join(&slot.id).join("targets");
     assert_eq!(

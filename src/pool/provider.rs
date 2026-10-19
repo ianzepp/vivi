@@ -39,6 +39,14 @@ pub struct MachineRecord {
     pub exit_code: Option<i64>,
 }
 
+/// A provider-prepared per-job repository cache and, for a local worktree,
+/// the source repository owning its checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedWorkspace {
+    pub cache_key: String,
+    pub local_source: Option<String>,
+}
+
 impl MachineRecord {
     /// What the provider's answer for a machine that no longer exists reads
     /// as: state `destroyed`, nothing else known.
@@ -182,12 +190,36 @@ pub trait PoolProvider {
         None
     }
 
+    /// RAM-disk settings copied into the job bundle when this provider mounts
+    /// RAM for each dispatched job. Empty on hosts without local RAM disks.
+    fn ramdisk_job_settings(&self) -> Option<(u64, Vec<(String, String)>)> {
+        None
+    }
+
+    /// Prepare one job's repository, when it has a target, and any provider
+    /// resources needed before the job archive is delivered.
+    fn prepare_job(
+        &self,
+        id: &str,
+        target: Option<&super::dispatch::target::JobTarget>,
+        start: &str,
+        job: &str,
+    ) -> Result<Option<PreparedWorkspace>, VivariumError> {
+        match target {
+            Some(target) => self
+                .prepare_target_checkout(id, target, start, job)
+                .map(|()| None),
+            None => Ok(None),
+        }
+    }
+
     /// Prepare a target-specific local worktree after the shared slot is claimed.
     fn prepare_target_checkout(
         &self,
         _id: &str,
         target: &super::dispatch::target::JobTarget,
         _start: &str,
+        _job: &str,
     ) -> Result<(), VivariumError> {
         if target.local_source.is_some() {
             return Err(VivariumError::Config(

@@ -39,6 +39,10 @@ fn repo_with_branch() -> (tempfile::TempDir, std::path::PathBuf) {
 fn plan_with(names: &[&str]) -> job::JobPlan {
     job::JobPlan {
         target: None,
+        prepared_cache_key: None,
+        prepared_local_source: None,
+        ramdisk_size_gib: None,
+        ramdisk_env: Vec::new(),
         job: "0123456789ab".into(),
         remote: String::new(),
         checkout: None,

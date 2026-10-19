@@ -121,6 +121,26 @@ impl PoolRamDisk {
                 self.margin_gib
             )));
         }
+        if let Some(name) = self
+            .env
+            .keys()
+            .find(|name| !is_env_name(name) || name.as_str() == "GH_TOKEN")
+        {
+            return Err(bad(format!(
+                "ramdisk.env key {name:?} is not an allowed environment name"
+            )));
+        }
+        if self.env.values().any(|value| value.contains('\0')) {
+            return Err(bad("ramdisk.env values cannot contain NUL"));
+        }
         Ok(())
     }
+}
+
+fn is_env_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }

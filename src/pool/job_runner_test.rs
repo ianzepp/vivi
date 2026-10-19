@@ -69,7 +69,17 @@ impl Rig {
         build_dir: &str,
         facts: &[&str],
     ) -> (JobResult, String) {
-        self.run_in_context_logged(harness, build_dir, facts, &self.f.repo, None)
+        self.run_in_context_logged(harness, build_dir, facts, &self.f.repo, None, "")
+    }
+
+    fn run_with_ramdisk_settings(
+        &self,
+        harness: &str,
+        facts: &[&str],
+        settings: &str,
+    ) -> JobResult {
+        self.run_in_context_logged(harness, "build", facts, &self.f.repo, None, settings)
+            .0
     }
 
     fn run_in_context(
@@ -80,7 +90,7 @@ impl Rig {
         source: &Path,
         target: Option<(&str, &str)>,
     ) -> JobResult {
-        self.run_in_context_logged(harness, build_dir, facts, source, target)
+        self.run_in_context_logged(harness, build_dir, facts, source, target, "")
             .0
     }
 
@@ -91,6 +101,7 @@ impl Rig {
         facts: &[&str],
         source: &Path,
         target: Option<(&str, &str)>,
+        extra_params: &str,
     ) -> (JobResult, String) {
         let job = self.work.path().join("job");
         if job.exists() {
@@ -107,6 +118,7 @@ impl Rig {
                 source.display()
             ));
         }
+        params.push_str(extra_params);
         for (name, content) in [
             ("params.env", params.as_str()),
             ("token", ""),
@@ -164,6 +176,43 @@ impl Rig {
             "detached"
         );
     }
+}
+
+#[test]
+fn ramdisk_environment_is_applied_to_the_harness_but_not_facts() {
+    let rig = Rig::new();
+    let output = rig.work.path().join("ramdisk-env.txt");
+    let settings = format!(
+        "RAMDISK_SIZE_GIB='8'\nRAMDISK_ENV_COUNT='3'\n\
+         RAMDISK_ENV_0_NAME='CARGO_INCREMENTAL'\nRAMDISK_ENV_0_VALUE='0'\n\
+         RAMDISK_ENV_1_NAME='RAMDISK_TEST'\nRAMDISK_ENV_1_VALUE='from-config'\n\
+         RAMDISK_ENV_2_NAME='RAMDISK_OUTPUT'\nRAMDISK_ENV_2_VALUE={}\n",
+        crate::pool::job::sh_quote(&output.to_string_lossy())
+    );
+
+    let result = rig.run_with_ramdisk_settings(
+        "printf '%s|%s' \"$CARGO_INCREMENTAL\" \"$RAMDISK_TEST\" > \"$RAMDISK_OUTPUT\"",
+        &["test -z \"${RAMDISK_TEST:-}\" && echo clean"],
+        &settings,
+    );
+
+    assert_eq!(result.push(), "read_only_unchanged");
+    assert_eq!(std::fs::read_to_string(output).unwrap(), "0|from-config");
+    assert_eq!(result.facts()[0].output, "clean");
+}
+
+#[test]
+fn ramdisk_full_agent_failure_is_reported_with_configured_size() {
+    let rig = Rig::new();
+    let settings = "RAMDISK_SIZE_GIB='8'\nRAMDISK_ENV_COUNT='0'\n";
+
+    let result =
+        rig.run_with_ramdisk_settings("echo 'No space left on device' >&2; exit 28", &[], settings);
+
+    assert_eq!(result.push(), "ramdisk_full", "{:?}", result.fields);
+    assert_eq!(result.get("ramdisk_size_gib"), "8");
+    assert_eq!(result.push_line(), "RAM disk full (size 8 GiB)");
+    assert!(result.summary().contains("RAM disk full (size 8 GiB)"));
 }
 
 #[test]

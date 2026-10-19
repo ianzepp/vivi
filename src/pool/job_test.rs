@@ -16,6 +16,10 @@ fn committer() -> PoolCommitter {
 fn plan() -> JobPlan {
     JobPlan {
         target: None,
+        prepared_cache_key: None,
+        prepared_local_source: None,
+        ramdisk_size_gib: None,
+        ramdisk_env: Vec::new(),
         job: "0123456789ab".into(),
         remote: "https://github.com/acme/widgets.git".into(),
         checkout: None,
@@ -69,6 +73,60 @@ fn the_bundle_carries_the_pool_fetch_depth() {
         "params.env",
     );
     assert!(params.contains("DEPTH='50'\n"));
+}
+
+#[test]
+fn a_ramdisk_job_gets_its_size_and_quoted_environment_in_params_only() {
+    let mut p = plan();
+    p.ramdisk_size_gib = Some(8);
+    p.ramdisk_env = vec![
+        ("CARGO_INCREMENTAL".into(), "0".into()),
+        ("RAMDISK_TEST".into(), "a 'value'\nsecond line".into()),
+    ];
+
+    let bundle = build_bundle(&p, "p-slot-2", &Secret::new(SECRET.into()));
+    let params = text(&bundle, "params.env");
+
+    assert!(params.contains("RAMDISK_SIZE_GIB='8'\n"), "{params}");
+    assert!(params.contains("RAMDISK_ENV_COUNT='2'\n"), "{params}");
+    assert!(
+        params.contains("RAMDISK_ENV_0_NAME='CARGO_INCREMENTAL'\n"),
+        "{params}"
+    );
+    assert!(params.contains("RAMDISK_ENV_0_VALUE='0'\n"), "{params}");
+    assert!(
+        params.contains("RAMDISK_ENV_1_VALUE='a '\\''value'\\''\nsecond line'\n"),
+        "{params}"
+    );
+    assert!(
+        bundle
+            .agent_visible()
+            .iter()
+            .all(|file| file.name != "params.env"),
+        "RAM settings stay runner-only"
+    );
+}
+
+#[test]
+fn a_prepared_local_source_is_delivered_as_a_target_worktree() {
+    let mut p = plan();
+    p.remote.clear();
+    p.prepared_cache_key = Some("b".repeat(64));
+    p.prepared_local_source = Some("/repos/widgets".into());
+    p.checkout = Some(Checkout {
+        action: BranchAction::Create,
+        start: "a".repeat(40),
+    });
+
+    let params = text(
+        &build_bundle(&p, "p-slot-2", &Secret::new(SECRET.into())),
+        "params.env",
+    );
+
+    assert!(params.contains(&format!("CHECKOUT_KEY='{}'\n", "b".repeat(64))));
+    assert!(params.contains("TARGET_LOCAL_SOURCE='/repos/widgets'\n"));
+    assert!(params.contains("LOCAL_ACTION='create'\n"));
+    assert!(params.contains(&format!("LOCAL_START='{}'\n", "a".repeat(40))));
 }
 
 #[test]

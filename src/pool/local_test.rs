@@ -1,6 +1,7 @@
 //! The provider through its trait, against directories and processes on this
 //! machine.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -311,4 +312,447 @@ fn creating_a_slot_whose_boot_cannot_start_removes_it_again() {
             .contains("lacks vivi_pool_slot")
     );
     assert!(p.list().unwrap().is_empty());
+}
+
+// ------------------------------------------------------ RAM disk lifecycle
+
+struct RamdiskTestRunner {
+    mount: PathBuf,
+    attached: Mutex<bool>,
+    keep_attached: bool,
+    calls: Mutex<Vec<String>>,
+}
+
+impl RamdiskTestRunner {
+    fn new(mount: &Path, keep_attached: bool) -> Self {
+        Self {
+            mount: mount.to_path_buf(),
+            attached: Mutex::new(true),
+            keep_attached,
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl crate::pool::ramdisk::Runner for RamdiskTestRunner {
+    fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
+        let line = argv.join(" ");
+        self.calls.lock().unwrap().push(line.clone());
+        match line.as_str() {
+            "mount" => {
+                if *self.attached.lock().unwrap() {
+                    Ok(format!(
+                        "/dev/disk7s1 on {} (apfs, local)\n",
+                        self.mount.display()
+                    ))
+                } else {
+                    Ok(String::new())
+                }
+            }
+            "df -g" => {
+                if *self.attached.lock().unwrap() {
+                    Ok(format!(
+                        "Filesystem 1G-blocks Used Available Capacity Mounted on\n\
+                         /dev/disk7s1 8 1 7 4% {}\n",
+                        self.mount.display()
+                    ))
+                } else {
+                    Ok(String::new())
+                }
+            }
+            "diskutil eject /dev/disk7" => {
+                if !self.keep_attached {
+                    *self.attached.lock().unwrap() = false;
+                }
+                Ok(String::from("disk7 ejected"))
+            }
+            _ => Err(format!("unexpected RAM disk command: {line}")),
+        }
+    }
+}
+
+type AttachedDisks = Vec<(String, String, u64)>;
+
+struct LocalPoolRamRunner {
+    attached: Mutex<AttachedDisks>,
+    calls: Mutex<Vec<String>>,
+}
+
+impl LocalPoolRamRunner {
+    fn new(attached: &[(&str, &str, u64)]) -> Self {
+        Self {
+            attached: Mutex::new(
+                attached
+                    .iter()
+                    .map(|(device, mount, gib)| ((*device).to_string(), (*mount).to_string(), *gib))
+                    .collect(),
+            ),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn attached(&self) -> AttachedDisks {
+        self.attached.lock().unwrap().clone()
+    }
+}
+
+impl crate::pool::ramdisk::Runner for LocalPoolRamRunner {
+    fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
+        let line = argv.join(" ");
+        self.calls.lock().unwrap().push(line.clone());
+        match line.as_str() {
+            "mount" => Ok(self
+                .attached()
+                .iter()
+                .map(|(device, mount, _)| format!("{device} on {mount} (apfs, local)"))
+                .collect::<Vec<_>>()
+                .join("\n")),
+            "df -g" => Ok(self
+                .attached()
+                .iter()
+                .map(|(device, mount, gib)| format!("{device} {gib} 1 1 4% {mount}"))
+                .collect::<Vec<_>>()
+                .join("\n")),
+            _ if line.starts_with("hdiutil attach -nomount ram://") => {
+                Ok(String::from("/dev/disk13\n"))
+            }
+            _ if line.starts_with("diskutil eraseVolume APFS ")
+                || line.starts_with("diskutil unmount ") =>
+            {
+                Ok(String::new())
+            }
+            _ if argv.len() == 5 && argv[0] == "diskutil" && argv[1] == "mount" => {
+                self.attached
+                    .lock()
+                    .unwrap()
+                    .push((argv[4].to_string(), argv[3].to_string(), 8));
+                Ok(String::new())
+            }
+            _ if argv.len() == 3 && argv[0] == "diskutil" && argv[1] == "eject" => {
+                let device = argv[2];
+                self.attached.lock().unwrap().retain(|(attached, _, _)| {
+                    attached != device && !attached.starts_with(&format!("{device}s"))
+                });
+                Ok(String::new())
+            }
+            _ => Err(format!("unexpected RAM disk command: {line}")),
+        }
+    }
+}
+
+fn local_ramdisk_provider(
+    root: &Path,
+    size_gib: u64,
+    runner: Arc<LocalPoolRamRunner>,
+    available: u64,
+) -> LocalProvider {
+    let config: PoolConfig = toml::from_str(&format!(
+        "provider = \"local\"\nslots = 2\n[local]\nroot = \"{}\"\n\
+         [ramdisk]\nenabled = true\nsize_gib = {size_gib}\nmargin_gib = 6\n",
+        root.display()
+    ))
+    .unwrap();
+    LocalProvider::with_runner(&config, runner).with_available_memory(available)
+}
+
+fn local_worktree_ramdisk_provider(
+    root: &Path,
+    source: &Path,
+    runner: Arc<LocalPoolRamRunner>,
+) -> LocalProvider {
+    let config: PoolConfig = toml::from_str(&format!(
+        "provider = \"local\"\nslots = 2\n[local]\nroot = {:?}\nworktree_of = {:?}\n\
+         [ramdisk]\nenabled = true\nsize_gib = 8\nmargin_gib = 6\n",
+        root.to_string_lossy(),
+        source.to_string_lossy()
+    ))
+    .unwrap();
+    LocalProvider::with_runner(&config, runner).with_available_memory(u64::MAX)
+}
+
+fn local_target(
+    cache_key: char,
+    source: Option<&Path>,
+) -> super::super::dispatch::target::JobTarget {
+    let source = source.map(|path| path.to_string_lossy().into_owned());
+    super::super::dispatch::target::JobTarget {
+        id: String::from("default"),
+        source: source.clone().unwrap_or_default(),
+        cache_key: cache_key.to_string().repeat(64),
+        local_source: source,
+        seed: Vec::new(),
+        requires: Vec::new(),
+        build_dir: None,
+    }
+}
+
+fn create_idle_slot(root: &Path) -> String {
+    let id = String::from("ms/pool/slot-1");
+    slots::create(root, &id, &spec("pool", 1, "exit 0\n")).unwrap();
+    id
+}
+
+#[test]
+fn local_provider_mounts_the_target_worktree_on_a_fresh_ram_disk() {
+    let (_tmp, root) = root();
+    let id = create_idle_slot(&root);
+    let fixture = crate::pool::local_fixture::fixture();
+    let start = crate::pool::local_fixture::git(&fixture.repo, &["rev-parse", "HEAD"]);
+    let runner = Arc::new(LocalPoolRamRunner::new(&[]));
+    let provider = local_ramdisk_provider(&root, 8, runner.clone(), u64::MAX);
+    let target = local_target('a', Some(&fixture.repo));
+
+    provider
+        .prepare_target_checkout(&id, &target, &start, "job-123456")
+        .unwrap();
+
+    let slot = root.join(&id);
+    let mount = slot.join("targets").join(&target.cache_key);
+    let marker = std::fs::read_to_string(slot.join("ramdisk")).unwrap();
+    assert!(marker.contains("volume=vivi-ms-pool-slot-1-job-123456\n"));
+    assert!(marker.contains("size_gib=8\n"));
+    assert!(marker.contains(&format!("mount={}\n", mount.display())));
+    assert!(mount.join("repo/.git").is_file());
+    assert_eq!(runner.attached().len(), 1);
+    assert!(
+        runner
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("hdiutil attach -nomount ram://"))
+    );
+}
+
+#[test]
+fn local_gate_pool_mounts_the_configured_full_size_without_a_local_source() {
+    let (_tmp, root) = root();
+    let id = create_idle_slot(&root);
+    let slot = root.join(&id);
+    let fixture = crate::pool::local_fixture::fixture();
+    crate::pool::local_git::Repo::new(&fixture.repo)
+        .add_worktree(&slot.join(slots::CHECKOUT), "main")
+        .unwrap();
+    let runner = Arc::new(LocalPoolRamRunner::new(&[]));
+    let provider = local_ramdisk_provider(&root, 32, runner.clone(), u64::MAX);
+
+    let workspace = provider
+        .prepare_job(&id, None, "tip", "gate-123456")
+        .unwrap()
+        .unwrap();
+
+    let mount = slot.join("targets").join(&workspace.cache_key);
+    assert!(workspace.local_source.is_none());
+    let marker = std::fs::read_to_string(slot.join("ramdisk")).unwrap();
+    assert!(marker.contains("volume=vivi-ms-pool-slot-1-gate-123456\n"));
+    assert!(marker.contains("size_gib=32\n"));
+    assert!(marker.contains(&format!("mount={}\n", mount.display())));
+    assert!(marker.contains("source=\n"));
+    assert!(mount.is_dir());
+    assert!(slot.join(slots::CHECKOUT).join(".git").is_file());
+    assert_eq!(
+        crate::pool::local_git::Repo::new(&fixture.repo)
+            .worktrees()
+            .unwrap()
+            .len(),
+        2,
+        "the seeded checkout remains registered"
+    );
+    assert_eq!(runner.attached().len(), 1);
+}
+
+#[test]
+fn a_no_target_worktree_job_runs_under_ram_and_preserves_the_seeded_checkout() {
+    let (_tmp, root) = root();
+    let id = create_idle_slot(&root);
+    let slot = root.join(&id);
+    let fixture = crate::pool::local_fixture::fixture();
+    let repo = crate::pool::local_git::Repo::new(&fixture.repo);
+    repo.add_worktree(&slot.join(slots::CHECKOUT), "main")
+        .unwrap();
+    let start = crate::pool::local_fixture::git(&fixture.repo, &["rev-parse", "main"]);
+    let runner = Arc::new(LocalPoolRamRunner::new(&[]));
+    let provider = local_worktree_ramdisk_provider(&root, &fixture.repo, runner.clone());
+
+    let workspace = provider
+        .prepare_job(&id, None, &start, "job-ram-worktree")
+        .unwrap()
+        .unwrap();
+
+    let mount = slot.join("targets").join(&workspace.cache_key);
+    let job_worktree = mount.join(slots::CHECKOUT);
+    assert_eq!(
+        workspace.local_source.as_deref(),
+        Some(fixture.repo.to_str().unwrap())
+    );
+    assert!(job_worktree.join(".git").is_file());
+    assert!(slot.join(slots::CHECKOUT).join(".git").is_file());
+    assert_eq!(repo.worktrees().unwrap().len(), 3);
+    assert!(
+        std::fs::read_to_string(slot.join("ramdisk"))
+            .unwrap()
+            .contains(&format!("mount={}\n", mount.display()))
+    );
+
+    teardown_ramdisk(&slot, &*runner).unwrap();
+
+    assert!(!job_worktree.exists());
+    assert!(slot.join(slots::CHECKOUT).join(".git").is_file());
+    assert_eq!(repo.worktrees().unwrap().len(), 2);
+}
+
+#[test]
+fn local_provider_waits_for_memory_without_ssd_fallback() {
+    let (_tmp, root) = root();
+    let id = create_idle_slot(&root);
+    let runner = Arc::new(LocalPoolRamRunner::new(&[
+        ("/dev/disk3s1", "/Volumes/vivi-held-a", 32),
+        ("/dev/disk5s1", "/Volumes/vivi-held-b", 32),
+    ]));
+    let available = 70 * 1024 * 1024 * 1024;
+    let provider = local_ramdisk_provider(&root, 8, runner.clone(), available);
+    let target = local_target('c', None);
+
+    let error = provider
+        .prepare_target_checkout(&id, &target, "tip", "job-wait")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.starts_with("ramdisk-wait:"), "{error}");
+    assert!(!root.join(&id).join("ramdisk").exists());
+    assert!(
+        !runner
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("hdiutil attach"))
+    );
+}
+
+fn ramdisk_marker(slot: &Path, mount: &Path, source: &Path) {
+    std::fs::create_dir_all(mount).unwrap();
+    std::fs::write(
+        slot.join("ramdisk"),
+        format!(
+            "device=/dev/disk7\nvolume=vivi-ms-pool-slot-0-build\
+             \nsize_gib=8\njob=build\nmount={}\nsource={}\n",
+            mount.display(),
+            source.display()
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn ramdisk_teardown_removes_its_worktree_ejects_and_clears_the_marker() {
+    let fixture = crate::pool::local_fixture::fixture();
+    let slot = tempfile::tempdir().unwrap();
+    let mount = slot.path().join("targets").join("cache-key");
+    let worktree = mount.join("repo");
+    std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+    let repo = crate::pool::local_git::Repo::new(&fixture.repo);
+    repo.add_worktree(&worktree, "main").unwrap();
+    ramdisk_marker(slot.path(), &mount, &fixture.repo);
+    let runner = RamdiskTestRunner::new(&mount, false);
+
+    teardown_ramdisk(slot.path(), &runner).unwrap();
+
+    assert!(!slot.path().join("ramdisk").exists());
+    assert!(!worktree.exists());
+    assert_eq!(repo.worktrees().unwrap().len(), 1);
+    assert_eq!(
+        runner
+            .calls()
+            .iter()
+            .filter(|call| *call == "diskutil eject /dev/disk7")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn ramdisk_teardown_failure_keeps_the_marker_for_retry() {
+    let fixture = crate::pool::local_fixture::fixture();
+    let slot = tempfile::tempdir().unwrap();
+    let mount = slot.path().join("targets").join("cache-key");
+    ramdisk_marker(slot.path(), &mount, &fixture.repo);
+    let runner = RamdiskTestRunner::new(&mount, true);
+
+    let error = teardown_ramdisk(slot.path(), &runner).unwrap_err();
+
+    assert!(error.to_string().contains("still attached"), "{error}");
+    assert!(slot.path().join("ramdisk").is_file());
+    assert!(
+        runner
+            .calls()
+            .iter()
+            .any(|call| call == "diskutil eject /dev/disk7")
+    );
+}
+
+#[test]
+fn malformed_ramdisk_marker_causes_no_runner_or_worktree_operations() {
+    let slot = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(slot.path().join("targets/cache-key")).unwrap();
+    std::fs::write(slot.path().join("ramdisk"), "volume=vivi-unknown\n").unwrap();
+    let runner = RamdiskTestRunner::new(&slot.path().join("targets/cache-key"), false);
+
+    assert!(teardown_ramdisk(slot.path(), &runner).is_err());
+
+    assert!(runner.calls().is_empty());
+    assert!(slot.path().join("ramdisk").is_file());
+}
+
+#[test]
+fn root_seed_checkout_marker_is_rejected_without_removing_the_worktree() {
+    let fixture = crate::pool::local_fixture::fixture();
+    let slot = tempfile::tempdir().unwrap();
+    let worktree = slot.path().join(slots::CHECKOUT);
+    crate::pool::local_git::Repo::new(&fixture.repo)
+        .add_worktree(&worktree, "main")
+        .unwrap();
+    ramdisk_marker(slot.path(), &worktree, &fixture.repo);
+    let runner = RamdiskTestRunner::new(&worktree, false);
+
+    assert!(teardown_ramdisk(slot.path(), &runner).is_err());
+
+    assert!(worktree.join(".git").is_file());
+    assert_eq!(
+        crate::pool::local_git::Repo::new(&fixture.repo)
+            .worktrees()
+            .unwrap()
+            .len(),
+        2,
+        "the seeded slot checkout remains registered"
+    );
+    assert!(runner.calls().is_empty());
+    assert!(slot.path().join("ramdisk").is_file());
+}
+
+#[test]
+fn symlinked_ramdisk_marker_is_preserved_without_mount_operations() {
+    use std::os::unix::fs::symlink;
+
+    let slot = tempfile::tempdir().unwrap();
+    let external = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(external.path(), "volume=vivi-unknown\n").unwrap();
+    symlink(external.path(), slot.path().join("ramdisk")).unwrap();
+    let runner = RamdiskTestRunner::new(&slot.path().join("targets/cache-key"), false);
+
+    assert!(teardown_ramdisk(slot.path(), &runner).is_err());
+
+    assert!(
+        slot.path()
+            .join("ramdisk")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(runner.calls().is_empty());
 }

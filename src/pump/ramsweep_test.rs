@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::pool::ramdisk::Runner;
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::ramsweep::sweep_ramdisks;
+use crate::pump::ramsweep::{sweep_ramdisks, sweep_ramdisks_with};
 
 /// One attached fake RAM disk: whole-disk device and mount point.
 type Attached = Vec<(String, String)>;
@@ -124,6 +124,22 @@ impl Scratch {
         mount.to_string_lossy().into_owned()
     }
 
+    /// A local pool RAM disk mounted at `<slot>/targets/<key>`, with the
+    /// ownership marker written by LocalProvider.
+    fn pool_mount_point(&self, volume: &str, job: &str) -> String {
+        let mount = self.path.join("slot-0").join("targets").join("cache-key");
+        std::fs::create_dir_all(&mount).expect("pool mount directory");
+        std::fs::write(
+            mount.parent().unwrap().parent().unwrap().join("ramdisk"),
+            format!(
+                "device=/dev/disk7\nvolume={volume}\nsize_gib=8\njob={job}\nmount={}\nsource=/repo\n",
+                mount.display()
+            ),
+        )
+        .expect("pool marker");
+        mount.to_string_lossy().into_owned()
+    }
+
     /// The repository the fake `rev-parse` names as every worktree's owner.
     fn owner(&self) -> PathBuf {
         let owner = self.path.join("owner");
@@ -230,6 +246,25 @@ fn sweep_skips_a_mount_without_worktrees() {
     assert_eq!(
         lines,
         vec!["ramdisk sweep: detached vivi-here-slot1-job1".to_string()]
+    );
+}
+
+#[test]
+fn sweep_preserves_a_live_dispatched_pool_job_across_pump_restart() {
+    let scratch = Scratch::new("live-pool-job");
+    let mount = scratch.pool_mount_point("vivi-here-slot-0-build", "build");
+    let runner = FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]);
+    let (ctx, host) = ctx_with("here", &scratch);
+    let lines = sweep_ramdisks_with(&ctx, &runner, |_| true);
+
+    assert!(runner.ejections().is_empty(), "live job disk stays mounted");
+    assert!(
+        removals(&host).is_empty(),
+        "live job worktree stays registered"
+    );
+    assert_eq!(
+        lines,
+        vec!["ramdisk sweep: preserving vivi-here-slot-0-build for live dispatched job"]
     );
 }
 

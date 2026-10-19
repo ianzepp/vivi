@@ -32,10 +32,31 @@ const GIT_SECS: u64 = 120;
 /// swept and each line says the scope is off.
 #[must_use]
 pub fn sweep_ramdisks(ctx: &Ctx, runner: &dyn crate::pool::ramdisk::Runner) -> Vec<String> {
+    sweep_ramdisks_with(ctx, runner, crate::pool::local_proc::is_alive)
+}
+
+/// The same sweep with the slot-liveness probe supplied by the caller. Kept
+/// private so tests can prove that live dispatched jobs keep their mounts
+/// without depending on a real process table.
+pub(crate) fn sweep_ramdisks_with(
+    ctx: &Ctx,
+    runner: &dyn crate::pool::ramdisk::Runner,
+    mut slot_is_alive: impl FnMut(&Path) -> bool,
+) -> Vec<String> {
     let scope = scope_prefix(ctx);
     let mut lines = Vec::new();
     for disk in ramdisk::mounted(runner) {
         if !disk.volume.starts_with(&scope) {
+            continue;
+        }
+        let pool_owner = pool_owner_for_disk(&disk);
+        if let Some(owner) = &pool_owner
+            && slot_is_alive(&owner.slot)
+        {
+            lines.push(format!(
+                "ramdisk sweep: preserving {} for live dispatched job",
+                disk.volume
+            ));
             continue;
         }
         if ctx.mailspace.is_empty() {
@@ -44,12 +65,48 @@ pub fn sweep_ramdisks(ctx: &Ctx, runner: &dyn crate::pool::ramdisk::Runner) -> V
                 disk.volume
             ));
         }
-        for dir in [disk.mount.join("repo"), disk.mount.join("w")] {
-            remove_worktree(ctx, &dir);
+        if let Some(owner) = pool_owner {
+            if !owner.source.is_empty() {
+                let worktree = disk.mount.join("repo");
+                remove_worktree(ctx, &worktree);
+            }
+        } else {
+            for dir in [disk.mount.join("repo"), disk.mount.join("w")] {
+                remove_worktree(ctx, &dir);
+            }
         }
         lines.push(teardown_line(runner, &disk));
     }
     lines
+}
+
+/// The local slot holding `disk`, but only when its marker still names this
+/// exact mount and volume. Pool jobs run in detached slot processes, so a
+/// matching live slot owns the disk across pump restarts.
+struct PoolRamOwner {
+    slot: PathBuf,
+    source: String,
+}
+
+/// The slot and local source recorded for a pool RAM disk, but only when the
+/// marker still names the exact mounted volume and path.
+fn pool_owner_for_disk(disk: &Disk) -> Option<PoolRamOwner> {
+    let slot = ramdisk::pool_slot_for_mount(&disk.mount)?;
+    let Ok(marker) = std::fs::read_to_string(slot.join("ramdisk")) else {
+        return None;
+    };
+    let field = |name: &str| {
+        marker
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+    };
+    (field("volume") == Some(disk.volume.as_str())
+        && field("mount") == Some(disk.mount.to_string_lossy().as_ref())
+        && field("job").is_some_and(|job| !job.is_empty()))
+    .then(|| PoolRamOwner {
+        slot,
+        source: field("source").unwrap_or_default().to_string(),
+    })
 }
 
 /// The volume prefix this sweep claims: `vivi-<mailspace>-`, or the bare

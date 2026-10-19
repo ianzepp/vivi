@@ -336,6 +336,14 @@ pub struct Checkout {
 pub struct JobPlan {
     /// Explicit workspace repository selection; absent retains legacy slots.
     pub target: Option<super::dispatch::target::JobTarget>,
+    /// Provider-prepared checkout cache for a no-target job, used for
+    /// per-job RAM disks such as read-only gate runs.
+    pub prepared_cache_key: Option<String>,
+    /// Provider-prepared local source for a no-target local-worktree job.
+    pub prepared_local_source: Option<String>,
+    /// Size and environment settings for a provider-mounted per-job RAM disk.
+    pub ramdisk_size_gib: Option<u64>,
+    pub ramdisk_env: Vec<(String, String)>,
     pub job: String,
     /// Full Git address the runner fetches from and pushes to. Empty for a
     /// worktree slot, which has no remote.
@@ -409,10 +417,11 @@ pub fn sh_quote(value: &str) -> String {
 /// configuration in the agent-visible `mcp.json`.
 #[must_use]
 pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
-    let params: String = params_fields(spec, slot)
+    let mut params: String = params_fields(spec, slot)
         .into_iter()
         .map(|(k, v)| format!("{k}={}\n", sh_quote(&v)))
         .collect();
+    params.push_str(&ramdisk_params(spec));
     let file = |name, content: &str, mode| BundleFile {
         name,
         content: content.as_bytes().to_vec(),
@@ -450,6 +459,31 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
         files.push(file("restore.list", &list, 0o600));
     }
     Bundle { files }
+}
+
+/// RAM-disk controls and environment values, kept as quoted params rather
+/// than host environment so the runner applies them only to this job.
+fn ramdisk_params(spec: &JobPlan) -> String {
+    let mut fields = vec![
+        (
+            "RAMDISK_SIZE_GIB".to_string(),
+            spec.ramdisk_size_gib.unwrap_or_default().to_string(),
+        ),
+        (
+            "RAMDISK_ENV_COUNT".to_string(),
+            spec.ramdisk_env.len().to_string(),
+        ),
+    ];
+    for (index, (name, value)) in spec.ramdisk_env.iter().enumerate() {
+        fields.extend([
+            (format!("RAMDISK_ENV_{index}_NAME"), name.clone()),
+            (format!("RAMDISK_ENV_{index}_VALUE"), value.clone()),
+        ]);
+    }
+    fields
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}\n", sh_quote(&value)))
+        .collect()
 }
 
 /// Repository metadata and preparation scripts delivered only for target jobs.
@@ -502,6 +536,15 @@ fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
             (
                 "TARGET_LOCAL_SOURCE",
                 target.local_source.clone().unwrap_or_default(),
+            ),
+        ]);
+    } else if let Some(cache_key) = &spec.prepared_cache_key {
+        fields.extend([
+            ("REPOSITORY", spec.remote.clone()),
+            ("CHECKOUT_KEY", cache_key.clone()),
+            (
+                "TARGET_LOCAL_SOURCE",
+                spec.prepared_local_source.clone().unwrap_or_default(),
             ),
         ]);
     }

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use super::bridge::bridge_brief;
 use super::claim::{Claim, claim_slot, open_slot, unclaim};
 use super::collect::Pacing;
-use super::config::PoolConfig;
+use super::config::{PoolCommitter, PoolConfig};
 use super::github::Secret;
 use super::job::{self, JOB_ARCHIVE, JobPlan, build_bundle};
 use super::progress::Progress;
@@ -25,6 +25,14 @@ pub mod target;
 pub const DEFAULT_BUDGET_SECS: u64 = 1800;
 /// Bounds for `--budget`.
 pub const BUDGET_RANGE: std::ops::RangeInclusive<u64> = 1..=43_200;
+
+struct ResolvedJob {
+    refs: job::Refs,
+    with: Vec<job::WithRef>,
+    budget: u64,
+    reasoning: Option<String>,
+    committer: PoolCommitter,
+}
 
 /// The flags of `vivi pool dispatch`.
 #[derive(Debug, Clone, Default)]
@@ -71,7 +79,7 @@ pub fn plan_job(
     rules: String,
     job: String,
 ) -> Result<JobPlan, VivariumError> {
-    let (handle, subject, body) = task;
+    let (_, _, body) = task;
     validate_source(config, pool)?;
     let harness = config.harness.as_ref().ok_or_else(|| {
         VivariumError::Config(format!("[pools.{pool}.harness] is required to dispatch"))
@@ -99,8 +107,46 @@ pub fn plan_job(
             BUDGET_RANGE.end()
         )));
     }
-    Ok(JobPlan {
+    Ok(assemble_job_plan(
+        config,
+        task,
+        flags,
+        rules,
+        job,
+        harness,
+        ResolvedJob {
+            refs,
+            with,
+            budget,
+            reasoning,
+            committer,
+        },
+    ))
+}
+
+fn assemble_job_plan(
+    config: &PoolConfig,
+    task: (&str, &str, &str),
+    flags: &DispatchFlags,
+    rules: String,
+    job: String,
+    harness: &super::config::PoolHarness,
+    resolved: ResolvedJob,
+) -> JobPlan {
+    let (handle, subject, body) = task;
+    let ResolvedJob {
+        refs,
+        with,
+        budget,
+        reasoning,
+        committer,
+    } = resolved;
+    JobPlan {
         target: None,
+        prepared_cache_key: None,
+        prepared_local_source: None,
+        ramdisk_size_gib: None,
+        ramdisk_env: Vec::new(),
         job,
         remote: config.remote_address(),
         checkout: None,
@@ -120,7 +166,7 @@ pub fn plan_job(
         facts: config.facts.clone(),
         restore: config.restore.clone(),
         bridge: None,
-    })
+    }
 }
 
 fn validate_source(config: &PoolConfig, pool: &str) -> Result<(), VivariumError> {
@@ -380,14 +426,22 @@ fn deliver(
     if let Some(base) = launch.reset_base.as_deref() {
         super::reset::reset_slot(launch.config, provider, id, base, "dispatch")?;
     }
-    if let Some(target) = &plan.target {
-        let start = plan
-            .checkout
-            .as_ref()
-            .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
-        provider.prepare_target_checkout(id, target, start)?;
+    let start = plan
+        .checkout
+        .as_ref()
+        .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
+    let prepared_workspace = provider.prepare_job(id, plan.target.as_ref(), start, &plan.job)?;
+    let mut bundle_plan = plan.clone();
+    bundle_plan.prepared_cache_key = prepared_workspace
+        .as_ref()
+        .map(|workspace| workspace.cache_key.clone());
+    bundle_plan.prepared_local_source =
+        prepared_workspace.and_then(|workspace| workspace.local_source);
+    if let Some((size_gib, env)) = provider.ramdisk_job_settings() {
+        bundle_plan.ramdisk_size_gib = Some(size_gib);
+        bundle_plan.ramdisk_env = env;
     }
-    let archive = job::pack(&build_bundle(plan, &claim.slot.name, launch.token))?;
+    let archive = job::pack(&build_bundle(&bundle_plan, &claim.slot.name, launch.token))?;
     provider.put_file(id, &claim.hold, JOB_ARCHIVE, &archive)?;
     provider.release(id, &claim.hold)?;
     wait_stopped(provider, id, pacing)?;

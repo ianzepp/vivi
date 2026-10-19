@@ -161,6 +161,9 @@ impl JobResult {
     #[must_use]
     pub fn push_line(&self) -> String {
         match (self.push(), self.get("sha")) {
+            ("ramdisk_full", _) => {
+                format!("RAM disk full (size {} GiB)", self.get("ramdisk_size_gib"))
+            }
             (READ_ONLY_DISCARDED, _) => {
                 format!("{READ_ONLY_DISCARDED} {}", self.get("discarded_count"))
             }

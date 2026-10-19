@@ -370,6 +370,38 @@ fn mounted_merges_mount_devices_with_df_sizes() {
 }
 
 #[test]
+fn mounted_recognizes_local_pool_mounts_through_the_exact_slot_marker() {
+    let slot = mount_point("pool-marker");
+    let mount = slot.join("targets").join("cache-key");
+    std::fs::create_dir_all(&mount).unwrap();
+    std::fs::write(
+        slot.join("ramdisk"),
+        format!(
+            "device=/dev/disk13\nvolume=vivi-here-pool-slot-0-job\nsize_gib=8\njob=job\nmount={}\nsource=/repo\n",
+            mount.display()
+        ),
+    )
+    .unwrap();
+    let mount_text = format!("/dev/disk13s1 on {} (apfs, local)\n", mount.display());
+    let runner = FakeRunner::new(&[
+        ("mount", Ok(mount_text.as_str())),
+        (
+            "df -g",
+            Ok("Filesystem 1G-blocks Used Available Capacity Mounted on\n"),
+        ),
+    ]);
+
+    let disks = mounted(&runner);
+
+    assert_eq!(disks.len(), 1);
+    assert_eq!(disks[0].volume, "vivi-here-pool-slot-0-job");
+    assert_eq!(disks[0].size_gib, 8, "marker size covers absent df rows");
+    assert_eq!(disks[0].mount, mount);
+    assert_eq!(held_gib(&runner), 8);
+    let _ = std::fs::remove_dir_all(&slot);
+}
+
+#[test]
 fn mounted_reports_nothing_when_the_listings_fail() {
     let runner = FakeRunner::new(&[
         ("mount", Err("mount: command failed")),
@@ -423,6 +455,18 @@ fn admit_with_queues_the_job_when_held_disks_push_it_over() {
     assert!(error.starts_with("ramdisk-wait:"), "{error}");
     assert!(error.contains("16 GiB free"), "{error}");
     assert!(error.contains("4 GiB held"), "{error}");
+}
+
+#[test]
+fn admission_waits_when_the_attached_disk_inventory_is_unavailable() {
+    let runner = FakeRunner::new(&[("mount", Err("inventory unavailable"))]);
+
+    let error = admit_with(&runner, 64 * GIB, 8, 6).expect_err("unknown held memory");
+
+    assert!(error.starts_with("ramdisk-wait:"), "{error}");
+    assert!(error.contains("cannot inventory held disks"), "{error}");
+    assert!(error.contains("inventory unavailable"), "{error}");
+    assert_eq!(runner.calls(), ["mount"]);
 }
 
 #[test]

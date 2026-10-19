@@ -23,11 +23,14 @@
 //!   detached HEAD so no branch is held (see [`super::local_branch`]).
 
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::config::PoolConfig;
+use super::config::config_ramdisk::PoolRamDisk;
 use super::docker::{env_is_set, unset_names};
 use super::docker_cli::{RunOutput, finish};
 use super::doctor::Check;
@@ -37,6 +40,7 @@ use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider}
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_state as state;
 use crate::error::VivariumError;
+use sha2::{Digest, Sha256};
 
 /// Pool provider for this machine.
 pub struct LocalProvider {
@@ -49,6 +53,10 @@ pub struct LocalProvider {
     /// The pool's `build_baseline_gib` in bytes, for reclaim of a slot that
     /// carries no recorded baseline.
     build_baseline: Option<u64>,
+    ramdisk: PoolRamDisk,
+    ramdisk_runner: Arc<dyn crate::pool::ramdisk::Runner>,
+    #[cfg(test)]
+    available_memory: Option<u64>,
 }
 
 impl LocalProvider {
@@ -70,6 +78,10 @@ impl LocalProvider {
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
             build_baseline: config.build_baseline_bytes(),
+            ramdisk: config.ramdisk.clone(),
+            ramdisk_runner: Arc::new(crate::pool::ramdisk::RealRunner),
+            #[cfg(test)]
+            available_memory: None,
         }
     }
 
@@ -77,6 +89,22 @@ impl LocalProvider {
         self.site
             .as_ref()
             .map_err(|message| VivariumError::Config(message.clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_runner(
+        config: &PoolConfig,
+        runner: Arc<dyn crate::pool::ramdisk::Runner>,
+    ) -> Self {
+        let mut provider = Self::new(config);
+        provider.ramdisk_runner = runner;
+        provider
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_available_memory(mut self, available: u64) -> Self {
+        self.available_memory = Some(available);
+        self
     }
 
     pub(super) fn root(&self) -> &std::path::Path {
@@ -170,6 +198,359 @@ pub(super) fn refuse_foreign_worktree(
     )))
 }
 
+/// Tear down the RAM disk owned by `dir`, if its marker names one exact
+/// attached local-pool disk. Unknown or malformed markers are retained and
+/// fail closed; teardown failures retain the marker for retry and diagnosis.
+pub(super) fn teardown_ramdisk(
+    dir: &Path,
+    runner: &dyn crate::pool::ramdisk::Runner,
+) -> Result<(), VivariumError> {
+    let marker_path = dir.join("ramdisk");
+    let record = match read_ramdisk_record(&marker_path, dir)? {
+        Some(record) => record,
+        None => return Ok(()),
+    };
+    let disk = find_attached_ramdisk(&record, runner)?;
+    teardown_owned_ramdisk(&marker_path, runner, &record, &disk)
+}
+
+fn read_ramdisk_record(
+    marker_path: &Path,
+    dir: &Path,
+) -> Result<Option<RamDiskRecord>, VivariumError> {
+    match marker_path.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        _ => {
+            let detail = format!(
+                "malformed RAM disk marker {}; preserving it",
+                marker_path.display()
+            );
+            eprintln!("warning: {detail}");
+            return Err(VivariumError::Message(detail));
+        }
+    }
+    let marker = std::fs::read_to_string(marker_path)?;
+    let Some(record) = ramdisk_record(&marker, dir) else {
+        eprintln!(
+            "warning: malformed RAM disk marker {}; preserving it",
+            marker_path.display()
+        );
+        return Err(VivariumError::Message(format!(
+            "malformed RAM disk marker {}",
+            marker_path.display()
+        )));
+    };
+    Ok(Some(record))
+}
+
+fn find_attached_ramdisk(
+    record: &RamDiskRecord,
+    runner: &dyn crate::pool::ramdisk::Runner,
+) -> Result<crate::pool::ramdisk::Disk, VivariumError> {
+    crate::pool::ramdisk::mounted(runner)
+        .into_iter()
+        .find(|disk| disk.volume == record.volume && disk.mount == record.mount)
+        .ok_or_else(|| {
+            let detail = format!(
+                "RAM disk {} at {} is not visible as an attached disk; preserving marker",
+                record.volume,
+                record.mount.display()
+            );
+            eprintln!("warning: {detail}");
+            VivariumError::Message(detail)
+        })
+}
+
+fn teardown_owned_ramdisk(
+    marker_path: &Path,
+    runner: &dyn crate::pool::ramdisk::Runner,
+    record: &RamDiskRecord,
+    disk: &crate::pool::ramdisk::Disk,
+) -> Result<(), VivariumError> {
+    let worktree_error = remove_ramdisk_worktree(&record);
+    let teardown = crate::pool::ramdisk::teardown(runner, &disk);
+    if let Some(error) = worktree_error {
+        eprintln!(
+            "warning: RAM disk {} worktree removal failed: {error}",
+            record.volume
+        );
+        if let Err(teardown_error) = teardown {
+            eprintln!(
+                "warning: RAM disk {} teardown verification failed: {teardown_error}",
+                record.volume
+            );
+        }
+        return Err(VivariumError::Message(format!(
+            "RAM disk {} cleanup incomplete: {error}",
+            record.volume
+        )));
+    }
+    if let Err(error) = teardown {
+        eprintln!(
+            "warning: RAM disk {} teardown verification failed: {error}",
+            record.volume
+        );
+        return Err(VivariumError::Message(error));
+    }
+    std::fs::remove_file(&marker_path).map_err(|error| {
+        VivariumError::Message(format!(
+            "RAM disk {} detached but marker removal failed: {error}",
+            record.volume
+        ))
+    })?;
+    eprintln!(
+        "RAM disk {} detached ({} GiB released)",
+        record.volume, record.size_gib
+    );
+    Ok(())
+}
+
+/// Parsed fields from the local provider's slot RAM-disk marker.
+struct RamDiskRecord {
+    volume: String,
+    size_gib: u64,
+    mount: PathBuf,
+    source: Option<PathBuf>,
+}
+
+/// Parse and confine a slot RAM-disk marker to its `<slot>/targets/<key>`
+/// mount path. A root `repo` marker could hide the seeded checkout, so it is
+/// never accepted. The OS listing proves the exact mounted volume before
+/// teardown.
+fn ramdisk_record(marker: &str, dir: &Path) -> Option<RamDiskRecord> {
+    let field = |name: &str| {
+        marker
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+    };
+    let volume = field("volume")?.to_string();
+    let size_gib = match field("size_gib")?.parse() {
+        Ok(size_gib) => size_gib,
+        Err(_) => return None,
+    };
+    let mount = PathBuf::from(field("mount")?);
+    let source = field("source")
+        .filter(|source| !source.is_empty())
+        .map(PathBuf::from);
+    let relative = mount.strip_prefix(dir.join("targets"));
+    let target_mount = relative.as_ref().is_ok_and(|relative| {
+        relative.components().count() == 1
+            && relative
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+    });
+    if !volume.starts_with(crate::pool::ramdisk::VOLUME_PREFIX)
+        || field("device").is_none_or(str::is_empty)
+        || field("job").is_none_or(str::is_empty)
+        || !target_mount
+    {
+        return None;
+    }
+    Some(RamDiskRecord {
+        volume,
+        size_gib,
+        mount,
+        source,
+    })
+}
+
+/// Remove only the `repo` worktree under a RAM mount when its source repo is
+/// recorded and its Git marker is still present. Fetch-mode pools own a clone
+/// on the RAM disk and need no external worktree removal.
+fn remove_ramdisk_worktree(record: &RamDiskRecord) -> Option<String> {
+    let source = record.source.as_deref()?;
+    let worktree = record.mount.join("repo");
+    if !worktree.join(".git").exists() {
+        return None;
+    }
+    crate::pool::local_git::Repo::new(source)
+        .remove_worktree(&worktree)
+        .err()
+        .map(|error| error.to_string())
+}
+
+/// Remove a prior SSD-backed checkout at this exact cache path before the
+/// RAM disk covers it, after proving it belongs to the configured source.
+fn remove_cached_worktree(source: &str, checkout: &Path) -> Result<(), VivariumError> {
+    if !checkout.exists() {
+        return Ok(());
+    }
+    let repo = crate::pool::local_git::Repo::new(Path::new(source));
+    let actual = crate::pool::local_git::Repo::new(checkout).common_dir()?;
+    if actual != repo.common_dir()? {
+        return Err(VivariumError::Config(
+            "target cache belongs to another repository".into(),
+        ));
+    }
+    repo.remove_worktree(checkout)
+}
+
+/// Start a remote-backed job from a fresh, empty Git repository on its RAM
+/// mount. The job runner fetches the requested commit and pushes by URL.
+/// The volume label for a local slot job: `vivi-<mailspace>-<pool>-<slot>-<job>`.
+fn pool_job_volume(id: &str, job: &str) -> Result<String, VivariumError> {
+    let mut parts = id.split('/');
+    let (Some(mailspace), Some(pool), Some(slot), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(VivariumError::Message(format!("not a slot id: {id}")));
+    };
+    Ok(crate::pool::ramdisk::volume_name(&[
+        mailspace, pool, slot, job,
+    ]))
+}
+
+/// The marker stays on the SSD slot root so unclaim, destroy, and pump restart
+/// can prove ownership after the RAM volume itself is gone.
+fn ramdisk_marker(disk: &crate::pool::ramdisk::Disk, job: &str, source: &str) -> String {
+    format!(
+        "device={}\nvolume={}\nsize_gib={}\njob={job}\nmount={}\nsource={source}\n",
+        disk.device,
+        disk.volume,
+        disk.size_gib,
+        disk.mount.display()
+    )
+}
+
+/// Prepare a default repository workspace for a job without an explicit
+/// target. The returned key is added to its bundle so the runner works under
+/// `<slot>/targets/<key>/repo`, on the mounted disk.
+fn prepare_default_job_ramdisk(
+    provider: &LocalProvider,
+    id: &str,
+    job: &str,
+    start: &str,
+) -> Result<super::provider::PreparedWorkspace, VivariumError> {
+    let slot = provider.known(id)?;
+    let key = hex::encode(Sha256::digest(format!("{id}\0{job}")));
+    let targets = slot.join("targets");
+    let cache = targets.join(&key);
+    reject_target_symlinks(&targets, &cache)?;
+    std::fs::create_dir_all(&cache)?;
+    let source = provider.source.as_deref();
+    let source_text = source.map(|path| path.to_string_lossy().into_owned());
+    mount_job_ramdisk(provider, id, job, &slot, &cache, source_text.as_deref())?;
+    if let Some(source) = source {
+        let checkout = cache.join(slots::CHECKOUT);
+        crate::pool::local_git::Repo::new(source).add_worktree(&checkout, start)?;
+        std::fs::write(
+            cache.join(slots::WORKTREE_OF_FILE),
+            source_text.as_deref().unwrap_or_default(),
+        )?;
+    }
+    Ok(super::provider::PreparedWorkspace {
+        cache_key: key,
+        local_source: source_text,
+    })
+}
+
+/// Reject symlinked target cache paths before the provider mounts a volume
+/// over them.
+fn reject_target_symlinks(targets: &Path, cache: &Path) -> Result<(), VivariumError> {
+    for path in [targets, cache, &cache.join(slots::CHECKOUT)] {
+        if path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(VivariumError::Config(
+                "target checkout cannot be a symlink".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Mount a fresh volume after memory admission, then atomically record its
+/// owner on the slot root for teardown and pump-start recovery.
+fn mount_job_ramdisk(
+    provider: &LocalProvider,
+    id: &str,
+    job: &str,
+    slot: &Path,
+    cache: &Path,
+    source: Option<&str>,
+) -> Result<(), VivariumError> {
+    super::ssh::one_line(job)?;
+    if let Some(source) = source {
+        super::ssh::one_line(source)?;
+    }
+    teardown_marked_ramdisk(slot, provider.ramdisk_runner.as_ref())?;
+    if let Some(source) = source {
+        remove_cached_worktree(source, &cache.join(slots::CHECKOUT))?;
+    }
+    mount_ramdisk_at(provider, id, job, slot, cache, source.unwrap_or_default())
+}
+
+fn teardown_marked_ramdisk(
+    slot: &Path,
+    runner: &dyn crate::pool::ramdisk::Runner,
+) -> Result<(), VivariumError> {
+    let marker = slot.join("ramdisk");
+    match marker.symlink_metadata() {
+        Ok(_) => teardown_ramdisk(slot, runner),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(VivariumError::Message(format!(
+            "cannot inspect RAM disk marker {}: {error}",
+            marker.display()
+        ))),
+    }
+}
+
+fn mount_ramdisk_at(
+    provider: &LocalProvider,
+    id: &str,
+    job: &str,
+    slot: &Path,
+    mount: &Path,
+    source: &str,
+) -> Result<(), VivariumError> {
+    let lock_path = provider.root.join(".ramdisk.lock");
+    drop(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&lock_path)?,
+    );
+    let _admission_lock = super::local_git::lock_path(&lock_path)?;
+    let want = provider.ramdisk.size_gib;
+    crate::pool::ramdisk::admit_with(
+        provider.ramdisk_runner.as_ref(),
+        available_memory(provider),
+        want,
+        provider.ramdisk.margin_gib,
+    )
+    .map_err(VivariumError::Message)?;
+    let volume = pool_job_volume(id, job)?;
+    let disk = crate::pool::ramdisk::mount(provider.ramdisk_runner.as_ref(), &volume, want, mount)
+        .map_err(VivariumError::Message)?;
+    let marker = ramdisk_marker(&disk, job, source);
+    if let Err(error) = slots::replace_file(&slot.join("ramdisk"), marker.as_bytes()) {
+        if let Err(teardown) =
+            crate::pool::ramdisk::teardown(provider.ramdisk_runner.as_ref(), &disk)
+        {
+            eprintln!(
+                "warning: RAM disk {} teardown verification failed after marker write error: {teardown}",
+                disk.volume
+            );
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn available_memory(provider: &LocalProvider) -> u64 {
+    provider
+        .available_memory
+        .unwrap_or_else(crate::pool::ramdisk::available_bytes)
+}
+
+#[cfg(not(test))]
+fn available_memory(_provider: &LocalProvider) -> u64 {
+    crate::pool::ramdisk::available_bytes()
+}
+
 impl PoolProvider for LocalProvider {
     fn local_root(&self) -> Option<PathBuf> {
         self.site.as_ref().ok().map(|site| site.root.clone())
@@ -179,20 +560,47 @@ impl PoolProvider for LocalProvider {
         self.site.as_ref().ok().map(|site| site.pool_dir.clone())
     }
 
+    fn ramdisk_job_settings(&self) -> Option<(u64, Vec<(String, String)>)> {
+        self.ramdisk
+            .enabled
+            .then(|| (self.ramdisk.size_gib, self.ramdisk.job_env()))
+    }
+
+    fn prepare_job(
+        &self,
+        id: &str,
+        target: Option<&super::dispatch::target::JobTarget>,
+        start: &str,
+        job: &str,
+    ) -> Result<Option<super::provider::PreparedWorkspace>, VivariumError> {
+        match target {
+            Some(target) => self
+                .prepare_target_checkout(id, target, start, job)
+                .map(|()| None),
+            None if self.ramdisk.enabled => {
+                prepare_default_job_ramdisk(self, id, job, start).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
     fn prepare_target_checkout(
         &self,
         id: &str,
         target: &super::dispatch::target::JobTarget,
         start: &str,
+        job: &str,
     ) -> Result<(), VivariumError> {
-        let Some(source) = &target.local_source else {
+        let source = target.local_source.as_deref();
+        if source.is_none() && !self.ramdisk.enabled {
             return Ok(());
-        };
+        }
         if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
         {
             return Err(VivariumError::Config("invalid target checkout key".into()));
         }
-        let targets = self.known(id)?.join("targets");
+        let slot = self.known(id)?;
+        let targets = slot.join("targets");
         let cache = targets.join(&target.cache_key);
         for path in [&targets, &cache, &cache.join(slots::CHECKOUT)] {
             if path
@@ -205,8 +613,14 @@ impl PoolProvider for LocalProvider {
             }
         }
         std::fs::create_dir_all(&cache)?;
+        if self.ramdisk.enabled {
+            mount_job_ramdisk(self, id, job, &slot, &cache, source)?;
+        }
+        let Some(source) = source else {
+            return Ok(());
+        };
         let checkout = cache.join(slots::CHECKOUT);
-        let repo = super::local_git::Repo::new(std::path::Path::new(source));
+        let repo = super::local_git::Repo::new(Path::new(source));
         if checkout.exists() {
             let actual = super::local_git::Repo::new(&checkout).common_dir()?;
             if actual != repo.common_dir()? {
@@ -297,6 +711,7 @@ impl PoolProvider for LocalProvider {
         if let Some(configured) = self.source.as_deref() {
             refuse_foreign_worktree(id, &dir, configured)?;
         }
+        teardown_ramdisk(&dir, self.ramdisk_runner.as_ref())?;
         slots::destroy(&self.site()?.root, id)
     }
 
@@ -329,6 +744,7 @@ impl PoolProvider for LocalProvider {
     /// The slot is free again: back on a detached HEAD, so its branch is free.
     fn unclaim(&self, id: &str) -> Result<(), VivariumError> {
         let dir = self.dir(id)?;
+        teardown_ramdisk(&dir, self.ramdisk_runner.as_ref())?;
         slots::unclaim(&dir)?;
         slots::detach_if_idle(&dir);
         let _ignored =
