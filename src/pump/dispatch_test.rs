@@ -2,15 +2,18 @@
 //! and the dispatch state machine driven through [`FakeHost`] replies.
 
 use std::fs;
-use std::sync::Arc;
 
 use tempfile::tempdir;
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::dispatch::*;
-use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::state::{Attempt, EnvPause, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
@@ -480,6 +483,93 @@ fn per_tick_caps_the_number_of_started_units() {
         commands_with(&host, "pool dispatch --pool fly4 1a2b3c4d").len(),
         2
     );
+}
+
+/// A [`FakeHost`] gate proving concurrency: the first `pool dispatch` parks
+/// until a second one arrives, or a 3-second deadline passes so a serial
+/// regression fails the test instead of hanging the suite. Every other
+/// call delegates straight to the inner host.
+struct GateHost {
+    inner: Arc<FakeHost>,
+    arrived: AtomicUsize,
+    open: Mutex<bool>,
+    signal: Condvar,
+}
+
+impl Host for GateHost {
+    fn now(&self) -> u64 {
+        self.inner.now()
+    }
+
+    fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
+        if !cmd.contains("pool dispatch") {
+            return self.inner.run(cmd, cwd, timeout_secs);
+        }
+        let n = self.arrived.fetch_add(1, Ordering::SeqCst);
+        let mut open = self.open.lock().unwrap();
+        if n == 0 {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !*open {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                let (guard, _) = self.signal.wait_timeout(open, remaining).unwrap();
+                open = guard;
+            }
+        } else {
+            *open = true;
+            self.signal.notify_all();
+        }
+        self.inner.run(cmd, cwd, timeout_secs)
+    }
+
+    fn spawn(
+        &self,
+        cmd: &str,
+        cwd: Option<&Path>,
+        stdin: Option<&Path>,
+        out: &Path,
+    ) -> Option<u32> {
+        self.inner.spawn(cmd, cwd, stdin, out)
+    }
+
+    fn log(&self, line: &str) {
+        self.inner.log(line)
+    }
+}
+
+#[test]
+fn dispatches_for_different_slots_run_concurrently() {
+    let (_dir, ctx, host) = setup_with(cfg_with(2));
+    wire(&host);
+    let gate = Arc::new(GateHost {
+        inner: host.clone(),
+        arrived: AtomicUsize::new(0),
+        open: Mutex::new(false),
+        signal: Condvar::new(),
+    });
+    let ctx = Ctx { host: gate, ..ctx };
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2"]);
+    let began = Instant::now();
+    dispatch(&ctx, &mut st);
+    let elapsed = began.elapsed();
+    // The task sends are instant through the fake, so a concurrent tick has
+    // the second pool dispatch open the gate almost immediately; a serial
+    // regression parks the first pool dispatch the full 3 seconds.
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "dispatch took {elapsed:?}; the pool dispatches did not run concurrently"
+    );
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u2"].status, Status::Inflight);
+    assert_eq!(commands_with(&host, "pool dispatch").len(), 2);
+    let started = host
+        .logs()
+        .into_iter()
+        .filter(|line| line.starts_with("dispatch "))
+        .collect::<Vec<_>>();
+    assert_eq!(started.len(), 2, "{started:?}");
 }
 
 #[test]
