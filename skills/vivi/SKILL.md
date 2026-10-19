@@ -1189,6 +1189,17 @@ facts    = ["gpu-query --name --driver --memory --csv", "uname -srm"]
   `slots` in config), seeds them in parallel, waits until each is stopped, and
   prints one line per slot with its id, state, and seed seconds. Existing slots
   are left alone. It exits nonzero if a slot timed out or exited nonzero.
+- Pin the Fly image by digest, not by tag:
+  `image = "registry.fly.io/<app>@sha256:..."`. Starting by tag twice returned
+  `MANIFEST_UNKNOWN` (404) for the digest the tag resolved to, immediately after
+  `fly deploy --build-only --push`; the digest itself worked. Fly also refuses
+  an image over 8 GiB unpacked ("Not enough space to unpack image ... possibly
+  exceeds maximum of 8GiB uncompressed"), and `rootfs_gb` does not lift that
+  cap: the image has to be made smaller. A large image takes minutes to unpack
+  and `fly machine run` gives up waiting after about a minute (flyctl has no
+  wait-timeout flag), so `create` recognizes that error, keeps watching the
+  machine, and adopts a slot left unseeded by an interrupted `create` whose
+  boot finished cleanly.
 - Slot state comes from Fly, never from local files: machine metadata
   `vivi_pool`, `vivi_pool_slot`, `vivi_pool_base`, `vivi_pool_state`
   (`seeding`|`ready`), and, while a task holds the slot, `vivi_pool_task` and
@@ -1798,7 +1809,9 @@ app = "my-fly-app"            # REQUIRED, no default; created by `pool create` i
 # size = "performance-8x"     # default
 # memory = 32768              # MB; default 32768
 # tmpfs = "16g"               # memory disk over build_dir; default 16g
-# rootfs_gb = 24             # optional root disk size in GB, for an image too large for the provider default (Fly: "Not enough space to unpack image")
+# rootfs_gb = 24             # optional: GB of the machine's writable root disk
+#                            # for the slot's own files; it does NOT lift Fly's
+#                            # cap on the image itself (max 8 GiB unpacked)
 
 # [pools.lanes.docker]        # only with provider = "docker"; every key optional
 # host = "ssh://user@server"  # a remote daemon; omit for the local one
