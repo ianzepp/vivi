@@ -849,13 +849,12 @@ fn a_pulled_close_letter_stores_its_verdict_in_item_metadata() {
         .unwrap();
     p.sync_a_to_b();
 
-    let metadata = p
-        .b
-        .mailspace
-        .storage()
-        .unwrap()
-        .item_metadata(&p.b.id_of(&p.task))
-        .unwrap();
+    let metadata =
+        p.b.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.b.id_of(&p.task))
+            .unwrap();
     assert_eq!(
         metadata.get("verdict").map(String::as_str),
         Some("clean_pass")
