@@ -50,10 +50,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
         }
     };
     if control.mode == crate::pump::control::PumpMode::Paused {
-        board::board(ctx, st);
-        plan::ingest(ctx, st);
-        crate::pump::alarm::check(ctx, st);
-        save(ctx, st)?;
+        periodic(ctx, st)?;
         write_status(ctx, st, &merger.lane_lines(ctx.now()));
         return Ok(());
     }
@@ -76,12 +73,20 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
     }
     merger.apply(ctx, st);
     merger.feed(ctx, st);
+    periodic(ctx, st)?;
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    Ok(())
+}
+
+/// The periodic board pass, shared by the paused branch and the normal path:
+/// refresh the board, ingest plans, raise the stall and blocking alarms, then
+/// run the blocking-stuck automatic response before the state is saved.
+fn periodic(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
     board::board(ctx, st);
     plan::ingest(ctx, st);
     crate::pump::alarm::check(ctx, st);
-    save(ctx, st)?;
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
-    Ok(())
+    crate::pump::blockers::check(ctx, st);
+    save(ctx, st)
 }
 
 /// Write the status lines to `<home>/status.txt`: a UTC timestamp, unit

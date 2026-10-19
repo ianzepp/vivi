@@ -69,6 +69,110 @@ pub(crate) fn findings(ctx: &Ctx, st: &State, now: u64) -> Vec<crate::pump::alar
         .collect()
 }
 
+/// The automatic response to a blocking-stuck root holding at least
+/// `alarm.blocking_hold_units` units: raise its need to priority 1, requeue a
+/// transient-class stuck unit once, and hand a persistently stuck unit to a
+/// fresh split planner after `alarm.blocking_replan_minutes`. Parked-verdict
+/// roots get no action here: the recurring exception is their alert.
+pub fn check(ctx: &Ctx, st: &mut State) {
+    let threshold = ctx.cfg.alarm.blocking_hold_units;
+    for blocker in compute(ctx, st) {
+        if blocker.state != "stuck" || blocker.held < threshold {
+            continue;
+        }
+        if bump_priority(ctx, &blocker.need, blocker.held) {
+            respond(ctx, st, &blocker.need);
+        }
+    }
+}
+
+/// Set the blocking need to level 1 unless it already carries a level; true
+/// when the response may go on. A failure is logged, never fatal.
+fn bump_priority(ctx: &Ctx, need: &str, held: usize) -> bool {
+    if crate::pump::priority::levels(ctx).contains_key(need) {
+        return true;
+    }
+    match crate::pump::priority::set(&ctx.home, need, 1) {
+        Ok(()) => {
+            ctx.log(&format!(
+                "blockers: priority 1 on {need} (holds {held} units)"
+            ));
+            true
+        }
+        Err(err) => {
+            ctx.log(&format!("blockers: priority set failed on {need}: {err}"));
+            false
+        }
+    }
+}
+
+/// Respond to every stuck unit of `need`: the uids are collected first so
+/// the per-unit response can mutate the unit map.
+fn respond(ctx: &Ctx, st: &mut State, need: &str) {
+    let stuck: Vec<String> = st
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.status == Status::Stuck && unit.need == need)
+        .map(|(uid, _)| uid.clone())
+        .collect();
+    for uid in stuck {
+        respond_unit(ctx, st, &uid);
+    }
+}
+
+/// Requeue `uid` once when its last attempt failed transiently; otherwise
+/// hand it to the split planner once it has been stuck long enough.
+fn respond_unit(ctx: &Ctx, st: &mut State, uid: &str) {
+    let Some(unit) = st.units.get(uid) else {
+        return;
+    };
+    if !unit.requeued && transient_failure(unit) {
+        requeue(ctx, st, uid);
+        return;
+    }
+    let age = ctx.now().saturating_sub(unit.since);
+    if age < ctx.cfg.alarm.blocking_replan_minutes.saturating_mul(60) {
+        return;
+    }
+    let text = last_attempt_text(unit);
+    crate::pump::collect::split(ctx, st, uid, &text);
+}
+
+/// Requeue one unit: back to `pending` with `requeued` set. Attempts are
+/// kept, so exactly one more attempt is possible before it parks stuck
+/// again.
+fn requeue(ctx: &Ctx, st: &mut State, uid: &str) {
+    let Some(unit) = st.units.get_mut(uid) else {
+        return;
+    };
+    unit.requeued = true;
+    unit.status = Status::Pending;
+    ctx.log(&format!(
+        "blockers: requeued {uid} once (transient-class failures)"
+    ));
+}
+
+/// True when the unit's last attempt failed in a way a retry can clear: the
+/// conservative timeout classes only. A plain `exit 1` timing flake stays on
+/// the re-plan path.
+fn transient_failure(unit: &Unit) -> bool {
+    let Some(attempt) = unit.history.last() else {
+        return false;
+    };
+    attempt.why == "timeout"
+        || attempt.why == "finished/agent exit 124"
+        || attempt.detail.contains("failed (exit 124)")
+}
+
+/// `why: detail` from the unit's last attempt; empty when there is none.
+fn last_attempt_text(unit: &Unit) -> String {
+    unit.history
+        .last()
+        .map_or_else(String::new, |attempt| {
+            format!("{}: {}", attempt.why, attempt.detail)
+        })
+}
+
 /// The `status.txt` lines for the largest holds: up to three blockers, each as
 /// `blocker <need> <state> age <age> held <n>`. Empty when nothing is held.
 #[must_use]
