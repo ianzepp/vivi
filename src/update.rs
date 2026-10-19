@@ -62,6 +62,7 @@ pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
     stage_binary(args, &target, triple, &bin_dir)?;
     activate(&bin_dir, &target, args.adopt)?;
     warn_if_path_shadowed(&bin_dir);
+    warn_if_bin_dir_off_path(&bin_dir);
     remind_proxy_restart();
     Ok(())
 }
@@ -207,6 +208,31 @@ fn warn_if_path_shadowed(bin_dir: &std::path::Path) {
         other.display(),
         bin_dir.join("vivi").display()
     );
+}
+
+fn warn_if_bin_dir_off_path(bin_dir: &std::path::Path) {
+    let Ok(path_var) = std::env::var("PATH") else {
+        return;
+    };
+    if bin_dir_on_path(bin_dir, &path_var) {
+        return;
+    }
+    println!("{}", path_hint_line(bin_dir));
+}
+
+fn path_hint_line(bin_dir: &std::path::Path) -> String {
+    format!("add to PATH: export PATH=\"{}:$PATH\"", bin_dir.display())
+}
+
+/// Whether `bin_dir` appears as a literal entry in a `:`-separated `PATH`.
+fn bin_dir_on_path(bin_dir: &std::path::Path, path_var: &str) -> bool {
+    path_var.split(':').any(|entry| {
+        if entry.is_empty() {
+            return false;
+        }
+        let entry = std::path::Path::new(entry);
+        entry == bin_dir || same_entry(entry, bin_dir)
+    })
 }
 
 fn remind_proxy_restart() {
