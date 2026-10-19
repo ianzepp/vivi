@@ -1,7 +1,7 @@
 //! A real local pool outlives its pump. The pump is killed after all workers
 //! started, then restarted to reattach and apply each role receipt once.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -37,7 +37,11 @@ case "$kind" in
     printf '%s\n' 'PUMP-PLAN-BEGIN' '{"need":"planner-survival","verdict":"hold","reason":"recovered once"}' 'PUMP-PLAN-END'
     ;;
   merge)
-    printf '%s\n' "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"$VIVI_TEST_TIP\",\"sources\":[]}"
+    printf 'survived merge\n' > .survival-merge.txt
+    git add .survival-merge.txt
+    git -c user.name='Survival Test' -c user.email=survival@localhost commit -q -m 'survival merge candidate'
+    candidate=$(git rev-parse HEAD)
+    printf '%s\n' "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"$candidate\",\"sources\":[]}"
     ;;
   gate)
     printf '%s\n' 'FAILING-BEGIN' 'FAILING-END'
@@ -46,7 +50,7 @@ case "$kind" in
     printf '%s\n' 'AUDIT-BEGIN' '[{"root_cause":"survived audit","brief":"record the recovered audit","tests":["survival::audit"],"write_scope":["audit.txt"],"proof":["true"]}]' 'AUDIT-END'
     ;;
   promote)
-    printf '%s\n' "PUMP_PROMOTE_RESULT={\"status\":\"already-on-main\",\"tip\":\"$VIVI_TEST_TIP\"}"
+    printf '%s\n' "PUMP_PROMOTE_RESULT={\"status\":\"ready\",\"tip\":\"$VIVI_TEST_TIP\"}"
     ;;
   hand)
     printf '%s\n' 'VERDICT: no-defect'
@@ -64,6 +68,7 @@ struct Rig {
     project: PathBuf,
     home: PathBuf,
     marker_dir: PathBuf,
+    child_log: PathBuf,
     tip: String,
 }
 
@@ -107,16 +112,24 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
         .map(|(id, _, _)| (*id).to_owned())
         .chain(std::iter::once(UNIT.to_owned()))
         .collect();
-    assert!(
-        wait_until(Duration::from_secs(30), || {
-            expected
-                .iter()
-                .all(|id| rig.marker_dir.join(format!("{id}.started")).is_file())
-                && dispatched(&rig)
-        }),
-        "workers did not all start; pump output: {:?}",
-        first.try_wait()
-    );
+    let workers_started = wait_until(Duration::from_secs(30), || {
+        expected
+            .iter()
+            .all(|id| rig.marker_dir.join(format!("{id}.started")).is_file())
+            && dispatched(&rig)
+    });
+    if !workers_started {
+        let pump_state = first.try_wait();
+        let details = startup_diagnostics(&rig);
+        let _ = first.kill();
+        let _ = first.wait();
+        let _ = fs::write(rig.marker_dir.join("release-workers"), "release\n");
+        let saved = rig._dir.keep();
+        panic!(
+            "workers did not all start; pump={pump_state:?}; fixture={}\n{details}",
+            saved.display()
+        );
+    }
 
     // The pump has saved every task handle before it dies. Only the pump is
     // killed; the local pool runner and its harness processes stay alive.
@@ -198,6 +211,20 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
             receipt.contains(marker),
             "{id} has the wrong saved receipt: {receipt}"
         );
+        if matches!(job.kind.as_str(), "merge" | "promote") {
+            let publication = job.outcome.as_ref().unwrap().runner_publish().unwrap();
+            assert!(publication.succeeded(), "{id}: {publication:?}");
+            assert_eq!(
+                publication.reference,
+                if job.kind == "merge" {
+                    "refs/heads/next"
+                } else {
+                    "refs/heads/main"
+                },
+                "{id} published the wrong integration ref"
+            );
+            assert_eq!(publication.candidate, publication.remote_sha);
+        }
         assert_eq!(
             task_occurrences(&rig.project, id, role_for(id)),
             1,
@@ -235,6 +262,7 @@ fn scaffold() -> Rig {
     let tip = git_output(&repo, &["rev-parse", "HEAD"]);
     let markers = base.join("markers");
     fs::create_dir(&markers).unwrap();
+    let child_log = base.join("pump-child.log");
     let script = base.join("worker.sh");
     fs::write(&script, TEST_HARNESS).unwrap();
 
@@ -261,16 +289,19 @@ fn scaffold() -> Rig {
         ("release", "merge"),
     ] {
         config.push_str(&format!(
-            "\n[[identities]]\nname = \"{role}\"\nkind = \"{kind}\"\nmodel = \"standin\"\npool = \"p\"\n"
+            "\n[[identities]]\nname = \"{role}\"\nkind = \"{kind}\"\npool = \"p\"\n"
         ));
     }
     config.push_str(&additions);
     fs::write(config_path, config).unwrap();
+    let created = vivi(["pool", "create", "--pool", "p", "--project", path(&project)]);
+    assert_success(&created);
     Rig {
         _dir: dir,
         project,
         home,
         marker_dir: markers,
+        child_log,
         tip,
     }
 }
@@ -334,9 +365,12 @@ fn seed_state(rig: &Rig) {
         spec.read_only = matches!(*kind, "planner:board" | "gate" | "audit");
         if *kind == "merge" {
             spec.branch = Some(String::from("pump/merge/default/survival"));
+            spec.publish_ref = Some(String::from("refs/heads/next"));
         }
         if *kind == "promote" {
             spec.branch = Some(String::from("pump/promotion/default/survival"));
+            spec.publish_ref = Some(String::from("refs/heads/main"));
+            spec.publish_expect = Some(rig.tip.clone());
             spec.payload = serde_json::json!({
                 "target": "default",
                 "branch": "main",
@@ -368,6 +402,12 @@ fn seed_state(rig: &Rig) {
 }
 
 fn pump_child(rig: &Rig) -> PumpChild {
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&rig.child_log)
+        .unwrap();
+    let stderr = stdout.try_clone().unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_vivi"))
         .args([
             "pump",
@@ -379,8 +419,8 @@ fn pump_child(rig: &Rig) -> PumpChild {
         .env("VIVI_TEST_MARKERS", &rig.marker_dir)
         .env("VIVI_TEST_UNIT_ID", UNIT)
         .env("VIVI_TEST_TIP", &rig.tip)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn()
         .unwrap();
     PumpChild {
@@ -438,6 +478,102 @@ fn load_state(rig: &Rig) -> State {
         .expect("pump.db")
         .load()
         .unwrap()
+}
+
+fn startup_diagnostics(rig: &Rig) -> String {
+    let state = load_state(rig);
+    let jobs = state
+        .jobs
+        .values()
+        .map(|job| {
+            format!(
+                "{} kind={} status={:?} task={:?} pool={:?}",
+                job.id, job.kind, job.status, job.task, job.pool
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut tasks = Vec::new();
+    for role in ["hand", "planner", "merge", "gate", "auditor", "release"] {
+        tasks.push(command_report([
+            "task",
+            "list",
+            "--for",
+            role,
+            "--status",
+            "all",
+            "--json",
+            "--project",
+            path(&rig.project),
+        ]));
+    }
+    let receipts = state
+        .jobs
+        .values()
+        .filter_map(|job| {
+            job.task.as_deref().map(|task| {
+                format!(
+                    "{}:\n{}",
+                    job.id,
+                    command_report([
+                        "task",
+                        "show",
+                        task,
+                        "--latest",
+                        "--project",
+                        path(&rig.project)
+                    ])
+                )
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    [
+        format!(
+            "pump status:\n{}",
+            command_report(["pump", "status", "--project", path(&rig.project)])
+        ),
+        format!(
+            "pool status:\n{}",
+            command_report([
+                "pool",
+                "status",
+                "--porcelain",
+                "--project",
+                path(&rig.project)
+            ])
+        ),
+        format!("jobs:\n{jobs}"),
+        format!("tasks:\n{}", tasks.join("\n")),
+        format!("receipts:\n{receipts}"),
+        format!(
+            "mailspace config:\n{}",
+            fs::read_to_string(rig.project.join(".vivi/mailspace.toml")).unwrap_or_default()
+        ),
+        format!(
+            "state status:\n{}",
+            fs::read_to_string(rig.home.join("status.txt")).unwrap_or_default()
+        ),
+        format!(
+            "pump log:\n{}",
+            fs::read_to_string(rig.home.join("log.txt")).unwrap_or_default()
+        ),
+        format!(
+            "child log:\n{}",
+            fs::read_to_string(&rig.child_log).unwrap_or_default()
+        ),
+    ]
+    .join("\n\n")
+}
+
+fn command_report<const N: usize>(args: [&str; N]) -> String {
+    let output = vivi(args);
+    format!(
+        "status={}\nstdout={}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 fn task_occurrences(project: &Path, needle: &str, role: &str) -> usize {
