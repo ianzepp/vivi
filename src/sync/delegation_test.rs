@@ -158,8 +158,8 @@ fn assigned_foreign_need_binds_local_units_and_join_close_travels_home() {
             .work_graph_nodes(&home_graph.handle)
             .unwrap()
             .iter()
-            .any(|node| node.source_id == need && node.state == "complete"),
-        "the author's backlog node completes with the joined need"
+            .any(|node| node.source_id == need && node.state == "done"),
+        "the author's backlog node reaches the graph's done state with the joined need"
     );
     assert!(
         BootReport::collect(&a.mailspace)
