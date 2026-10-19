@@ -7,6 +7,7 @@ use tempfile::tempdir;
 
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::merge::Merger;
 use crate::pump::requeue::apply_pending;
 use crate::pump::state::{Attempt, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -224,4 +225,43 @@ fn requeue_refunds_transient_history() {
         &host,
         "requeue u1 by operator: refund the host failures"
     ));
+}
+
+#[test]
+fn a_tick_applies_a_pending_requeue_request() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(
+        &mut st,
+        "u1",
+        Unit {
+            status: Status::Stuck,
+            attempts: 1,
+            task: Some(String::from("task-1")),
+            since: 1,
+            ..Unit::default()
+        },
+    );
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.save(&st).unwrap();
+    store
+        .add_requeue_request("u1", None, false, false, "operator asked", T0)
+        .unwrap();
+    drop(store);
+
+    let merger = Merger::start(&ctx);
+    crate::pump::run::tick(&ctx, &mut st, &merger).unwrap();
+
+    let unit = &st.units["u1"];
+    assert_eq!(unit.status, Status::Pending, "the tick did not requeue u1");
+    assert_eq!(unit.task, None);
+    assert_eq!(unit.attempts, 1, "no branch exists, so no bump");
+    assert!(logged(&host, "requeue u1 by operator: operator asked"));
+    let store = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
+        .unwrap()
+        .unwrap();
+    assert!(
+        store.pending_requeue_requests().unwrap().is_empty(),
+        "the request was not consumed"
+    );
 }
