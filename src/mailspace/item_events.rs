@@ -214,7 +214,6 @@ pub struct EventTally {
 pub(super) struct HeldItem {
     pub(super) content_id: String,
     pub(super) rfc_id: String,
-    pub(super) from_domain: String,
     pub(super) from_addr: String,
     /// `need`, `task`, or `want`.
     pub(super) kind: &'static str,
@@ -240,17 +239,13 @@ pub(super) fn held_item(
     let Some(parsed) = MessageParser::default().parse(&bytes) else {
         return Ok(None);
     };
-    let (Some(rfc_id), Some(from_domain)) = (
-        parsed.message_id().and_then(normalize_message_id),
-        from_domain_of(&parsed),
-    ) else {
+    let Some(rfc_id) = parsed.message_id().and_then(normalize_message_id) else {
         return Ok(None);
     };
     let from_addr = first_bare_address(&first.from_addr).unwrap_or_default();
     Ok(Some(HeldItem {
         content_id: content_id.to_string(),
         rfc_id,
-        from_domain,
         from_addr,
         kind,
         rows,
