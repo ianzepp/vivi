@@ -32,6 +32,40 @@ fn rebuilds_empty_completed_output() {
 }
 
 #[test]
+fn rebuilt_frame_has_no_interior_blank_line() {
+    let mut rebuild = Rebuild::default();
+    rebuild.push_item(json!({"id": "msg_1", "type": "message", "content": [{"text": "hi"}]}));
+    let completed = Event {
+        raw: "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"
+            .to_string(),
+    };
+    let mapped = codex_sse::filter(completed, &mut rebuild).expect("kept");
+    let trimmed = mapped.raw.trim_end_matches('\n');
+    assert!(!trimmed.contains("\n\n"), "interior blank line in {:?}", mapped.raw);
+    assert!(
+        trimmed.starts_with("event: response.completed\ndata: "),
+        "bad frame: {:?}",
+        mapped.raw
+    );
+}
+
+#[test]
+fn rebuilt_frame_round_trips() {
+    let mut rebuild = Rebuild::default();
+    rebuild.push_item(json!({"id": "msg_1", "type": "message", "content": [{"text": "hi"}]}));
+    let completed = Event {
+        raw: "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"
+            .to_string(),
+    };
+    let mapped = codex_sse::filter(completed, &mut rebuild).expect("kept");
+    let mut buffer = mapped.to_bytes().to_vec();
+    let events = super::sse::take_events(&mut buffer);
+    assert_eq!(events.len(), 1, "expected one frame, got {events:?}");
+    let data: serde_json::Value = serde_json::from_str(&events[0].data().unwrap()).unwrap();
+    assert_eq!(data["type"], "response.completed");
+}
+
+#[test]
 fn keeps_populated_completed_output() {
     let mut rebuild = Rebuild::default();
     rebuild.push_item(json!({"id": "ignored"}));
