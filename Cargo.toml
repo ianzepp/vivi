@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
 dirs = "6"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hex = "0.4"
@@ -24,6 +25,7 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 mail-builder = "0.3"
 mail-parser = "0.9"
 rand_core = { version = "0.6", features = ["getrandom"] }
+ratatui = "0.29"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "brotli", "deflate", "gzip", "json", "rustls-tls", "stream", "zstd"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 bytes = "1"
