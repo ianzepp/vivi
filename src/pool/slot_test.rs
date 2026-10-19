@@ -28,12 +28,26 @@ fn machine(
 }
 
 fn pid(pool: &str) -> PoolId {
-    PoolId::new("ms", pool)
+    PoolId::new("ms", "", pool)
+}
+
+/// A machine carrying an explicit mailspace mark, for ownership tests.
+fn machine_marked(mailspace: &str, pool: &str) -> MachineRecord {
+    let mut m = machine(
+        "m",
+        &format!("{mailspace}-{pool}-slot-1"),
+        "stopped",
+        Some(pool),
+        Some(1),
+    );
+    m.metadata
+        .insert(META_MAILSPACE.to_string(), mailspace.to_string());
+    m
 }
 
 #[test]
 fn names_and_metadata() {
-    let id = PoolId::new("My Project", "faber");
+    let id = PoolId::new("My Project", "", "faber");
     assert_eq!(id.mailspace, "my-project");
     assert_eq!(id.slot_name(3), "my-project-faber-slot-3");
     let meta = slot_metadata(&id, 3, "abc");
@@ -146,7 +160,7 @@ fn a_pool_of_the_same_name_in_another_mailspace_is_not_a_member() {
     assert_eq!(ours.len(), 1);
     assert_eq!(ours[0].id, "m1");
     assert_eq!(ours[0].pool, "p");
-    let other = pool_slots(&PoolId::new("other", "p"), &machines);
+    let other = pool_slots(&PoolId::new("other", "", "p"), &machines);
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].id, "m2");
 }
@@ -158,4 +172,41 @@ fn the_self_test_pool_is_the_doctor_pool_of_the_same_mailspace() {
         (id.mailspace.as_str(), id.pool.as_str()),
         ("ms", "lanes-doctor")
     );
+}
+
+#[test]
+fn same_name_different_id_mailspaces_do_not_own_each_other() {
+    const ID_A: &str = "11111111-1111-1111-1111-111111111111";
+    const ID_B: &str = "22222222-2222-2222-2222-222222222222";
+    assert!(
+        PoolId::new("app", ID_A, "here").owns(&machine_marked("app-11111111", "here")),
+        "a pool owns its own id-qualified slots"
+    );
+    assert!(
+        !PoolId::new("app", ID_A, "here").owns(&machine_marked("app-22222222", "here")),
+        "a pool must not own another mailspace's slots when names match"
+    );
+}
+
+#[test]
+fn legacy_marked_slots_stay_owned() {
+    const ID_A: &str = "11111111-1111-1111-1111-111111111111";
+    assert!(
+        PoolId::new("app", ID_A, "here").owns(&machine_marked("app", "here")),
+        "slots made before the mark carried the id stay owned"
+    );
+    assert!(
+        PoolId::new("app", "", "here").owns(&machine_marked("app", "here")),
+        "an empty id keys the pool on the legacy slug, matching itself"
+    );
+}
+
+#[test]
+fn the_id_prefix_names_slots_and_marks() {
+    const ID_A: &str = "11111111-1111-1111-1111-111111111111";
+    let id = PoolId::new("app", ID_A, "here");
+    assert_eq!(id.slot_name(1), "app-11111111-here-slot-1");
+    assert_eq!(slot_metadata(&id, 1, "base")[META_MAILSPACE], "app-11111111");
+    assert!(space_mark_matches("app", "app"));
+    assert!(!space_mark_matches("app-11111111", "app-22222222"));
 }

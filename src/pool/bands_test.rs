@@ -128,7 +128,7 @@ fn a_pool_config_roundtrips_through_its_bands_table() {
     let config = bridge();
     let text = toml::to_string(&config).unwrap();
     let again: PoolConfig = toml::from_str(&text).unwrap();
-    again.validate(&PoolId::new("space", "main")).unwrap();
+    again.validate(&PoolId::new("space", "", "main")).unwrap();
     assert_eq!(
         choose(&again, "bridge", 1).unwrap(),
         choose(&config, "bridge", 1).unwrap()

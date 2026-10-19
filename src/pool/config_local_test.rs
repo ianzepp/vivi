@@ -26,7 +26,7 @@ models = ["m"]
 "#;
 
 fn id() -> PoolId {
-    PoolId::new("space", "here")
+    PoolId::new("space", "", "here")
 }
 
 fn parse(text: &str) -> PoolConfig {

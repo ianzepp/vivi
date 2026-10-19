@@ -218,7 +218,7 @@ fn open_one_and_open_apply_the_same_rules_to_a_real_mailspace() {
 #[test]
 fn a_pool_set_covers_its_members_and_an_all_set_also_the_removed() {
     let (a, b) = (Fake::default(), Fake::default());
-    let (ia, ib) = (PoolId::new("ms", "a"), PoolId::new("ms", "b"));
+    let (ia, ib) = (PoolId::new("ms", "", "a"), PoolId::new("ms", "", "b"));
     let one = PoolSet::single(&ia, &a);
     assert!(one.covers("a") && !one.covers("b") && !one.covers("gone"));
     assert!(one.find("a").is_some() && one.find("b").is_none());

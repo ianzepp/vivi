@@ -10,8 +10,9 @@ use super::provider::MachineRecord;
 /// Metadata key marking a machine as a member of a pool (value: pool name).
 pub const META_POOL: &str = "vivi_pool";
 /// Metadata key naming the mailspace the pool belongs to (value: the
-/// mailspace's slug). A slot belongs to a mailspace AND a pool: two
-/// mailspaces may each have a pool of the same name on one host.
+/// mailspace's space key, see [`space_key`]). A slot belongs to a mailspace
+/// AND a pool: two mailspaces may each have a pool of the same name on one
+/// host.
 pub const META_MAILSPACE: &str = "vivi_pool_mailspace";
 /// Metadata key holding the slot's 1-based index.
 pub const META_SLOT: &str = "vivi_pool_slot";
@@ -36,9 +37,9 @@ pub const STATE_READY: &str = "ready";
 /// Suffix of the self-test pool that belongs to a pool (`<pool>-doctor`).
 pub const DOCTOR_SUFFIX: &str = "-doctor";
 
-/// The identity of a pool: the mailspace it belongs to (as a slug) and its
-/// own name (the key of its `[pools.<name>]` table). Every mark, machine name
-/// and directory a pool makes derives from both.
+/// The identity of a pool: the mailspace it belongs to (as a space key, see
+/// [`space_key`]) and its own name (the key of its `[pools.<name>]` table).
+/// Every mark, machine name and directory a pool makes derives from both.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PoolId {
     pub mailspace: String,
@@ -46,12 +47,13 @@ pub struct PoolId {
 }
 
 impl PoolId {
-    /// The pool `pool` of the mailspace named `mailspace_name` (the name is
-    /// normalised by [`space_slug`]).
+    /// The pool `pool` of the mailspace named `mailspace_name` carrying
+    /// `mailspace_id` (the name is normalised by [`space_key`], the id is the
+    /// contents of `.vivi/mailspace.id`).
     #[must_use]
-    pub fn new(mailspace_name: &str, pool: &str) -> Self {
+    pub fn new(mailspace_name: &str, mailspace_id: &str, pool: &str) -> Self {
         Self {
-            mailspace: space_slug(mailspace_name),
+            mailspace: space_key(mailspace_name, mailspace_id),
             pool: pool.to_string(),
         }
     }
@@ -71,12 +73,15 @@ impl PoolId {
         format!("{}-{}-slot-{index}", self.mailspace, self.pool)
     }
 
-    /// True when `machine` carries both marks of this pool.
+    /// True when `machine` carries both marks of this pool. The mailspace
+    /// mark also matches the bare legacy slug of slots made before the mark
+    /// carried the id ([`space_mark_matches`]).
     #[must_use]
     pub fn owns(&self, machine: &MachineRecord) -> bool {
         let mark = |key: &str| machine.metadata.get(key).map(String::as_str);
         mark(META_POOL) == Some(self.pool.as_str())
-            && mark(META_MAILSPACE) == Some(self.mailspace.as_str())
+            && mark(META_MAILSPACE)
+                .is_some_and(|m| space_mark_matches(&self.mailspace, m))
     }
 }
 
@@ -97,6 +102,38 @@ pub fn space_slug(name: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     mapped.trim_matches('-').to_string()
+}
+
+/// The pool identity key of a mailspace: [`space_slug`] of its name when it
+/// carries no id, else `<slug>-<first 8 chars of id>`. The id prefix keeps
+/// two mailspaces named alike on distinct directories, marks and names.
+#[must_use]
+pub fn space_key(name: &str, id: &str) -> String {
+    let slug = space_slug(name);
+    if id.is_empty() {
+        return slug;
+    }
+    format!("{slug}-{}", id.get(..8).unwrap_or(id))
+}
+
+/// True when `actual` is the mailspace mark of the space key `key`: either
+/// the key itself, or the bare legacy slug `key` starts with — the mark of
+/// slots made by vivi 15.0.0 and earlier, which must keep working.
+#[must_use]
+pub fn space_mark_matches(key: &str, actual: &str) -> bool {
+    if actual == key {
+        return true;
+    }
+    if key.len() < 9 || !key.is_char_boundary(key.len() - 9) {
+        return false;
+    }
+    let (slug, tail) = key.split_at(key.len() - 9);
+    let Some(hex) = tail.strip_prefix('-') else {
+        return false;
+    };
+    hex.bytes()
+        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && actual == slug
 }
 
 /// Metadata written onto a new slot.

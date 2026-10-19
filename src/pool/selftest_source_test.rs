@@ -33,7 +33,7 @@ email = "real@example.com"
 
 #[test]
 fn the_test_pool_is_the_doctor_pool_of_the_same_mailspace() {
-    let real = crate::pool::slot::PoolId::new("Space", "main");
+    let real = crate::pool::slot::PoolId::new("Space", "", "main");
     let test = real.doctor();
     assert_eq!(
         (test.mailspace.as_str(), test.pool.as_str()),
@@ -70,7 +70,7 @@ fn the_test_config_replaces_every_project_setting_but_keeps_the_host() {
     assert_eq!(config.remote_address(), REMOTE);
     assert!(
         config
-            .validate(&crate::pool::slot::PoolId::new("ms", "main"))
+            .validate(&crate::pool::slot::PoolId::new("ms", "", "main"))
             .is_ok()
     );
 }

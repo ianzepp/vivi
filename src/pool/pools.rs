@@ -107,7 +107,7 @@ pub fn open_unvalidated(
             let config = all.get(&name)?.clone();
             let ctx = host(&name);
             Some(PoolHandle {
-                id: PoolId::new(&space.config.name, &name),
+                id: PoolId::new(&space.config.name, "", &name),
                 provider: open_provider(&config, &ctx),
                 config,
             })
