@@ -161,7 +161,7 @@ mod refresh {
     #[test]
     fn a_claimed_start_sends_its_lease_nonce() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
+        let base = format!("http://{}/v1/apps", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
             let mut reader = std::io::BufReader::new(conn);
