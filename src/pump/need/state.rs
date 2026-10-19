@@ -103,6 +103,12 @@ pub fn fully_landed(st: &State, need: &str) -> Result<bool, VivariumError> {
             || record.revision != current_revision(st, need)
             || record.landing_receipt.is_none()
             || record.cleanup_receipt.is_none()
+            || st
+                .needs
+                .get(need)
+                .is_some_and(|plan| plan.amendment_pending)
+            || record.frozen_units != current_unit_ids(st, &target, need, record.revision)
+            || !current_units_settled(st, &target, need, record.revision)?
         {
             return Ok(false);
         }

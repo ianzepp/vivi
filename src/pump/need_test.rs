@@ -57,6 +57,114 @@ fn frozen_state() -> State {
     state
 }
 
+fn merge_routing() -> RoleRouting {
+    RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("merge"),
+            kind: Some(String::from("merge")),
+            status: String::from("active"),
+            pool: Some(String::from("merge-pool")),
+            read_only: None,
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: BTreeMap::from([(
+            String::from("merge-pool"),
+            RoutedPool {
+                slots: 1,
+                provider: String::from("local"),
+                fallback: None,
+                caps: BTreeMap::new(),
+                models: Vec::new(),
+                has_bands: false,
+            },
+        )]),
+    }
+}
+
+fn merge_ctx(
+    dir: &std::path::Path,
+    config: PumpConfig,
+) -> (
+    crate::pump::host::Ctx,
+    std::sync::Arc<crate::pump::host::FakeHost>,
+) {
+    let (ctx, host) = test_ctx(dir, config);
+    (ctx.with_routing(merge_routing()), host)
+}
+
+fn landed_noop_need(ctx: &crate::pump::host::Ctx) -> (State, String) {
+    let mut state = State::default();
+    state.needs.insert(
+        String::from("n1"),
+        NeedRecord {
+            verdict: String::from("units"),
+            units: vec![String::from("u1")],
+            revision: 1,
+            ..NeedRecord::default()
+        },
+    );
+    state.units.insert(
+        String::from("u1"),
+        Unit {
+            need: String::from("n1"),
+            target: String::from("default"),
+            revision: 1,
+            status: Status::NoDefect,
+            ..Unit::default()
+        },
+    );
+    assert!(!ensure_creation(ctx, &mut state, "default", "n1", 1).unwrap());
+    let created = get(&state, "default", "n1").unwrap().unwrap();
+    let init_job_id = created.create_job_id.unwrap();
+    record_created(&mut state, "default", "n1", &init_job_id, BASE, BASE).unwrap();
+    let binding = freeze(&mut state, "default", "n1", 1, BASE).unwrap();
+    finish_noop_landing(&mut state, binding);
+    (state, init_job_id)
+}
+
+fn finish_noop_landing(state: &mut State, binding: crate::pump::need::NeedAuditBinding) {
+    reserve_landing(state, "default", "n1", &binding, "land-n1").unwrap();
+    record_landing(
+        state,
+        "default",
+        "n1",
+        "land-n1",
+        NeedLandingReceipt {
+            binding,
+            acceptance_receipt_key: String::from("accept-noop"),
+            acceptance_job_id: String::from("audit-noop"),
+            verdict: String::from("clean_pass"),
+            landing_job_id: String::from("land-n1"),
+            target_ref: String::from("refs/heads/next"),
+            candidate_sha: String::from(BASE),
+            runner_published_sha: String::from(BASE),
+            observed_target_sha: String::from(BASE),
+            accepted_tip_in_candidate: true,
+            candidate_in_observed_target: true,
+            merge_report: String::from("verified no-op inclusion"),
+        },
+    )
+    .unwrap();
+    record_cleanup_job(state, "default", "n1", "delete-n1").unwrap();
+    finish_cleanup(
+        state,
+        "default",
+        "n1",
+        "delete-n1",
+        NeedCleanupReceipt {
+            cleanup_job_id: String::from("delete-n1"),
+            branch_ref: String::from("refs/heads/vivi/need/n1"),
+            expected_sha: String::from(BASE),
+            runner_state: String::from("deleted"),
+            before_sha: Some(String::from(BASE)),
+            verified_absent: true,
+            completed_at: 1,
+        },
+    )
+    .unwrap();
+}
+
 #[test]
 fn namespaces_are_stable_and_scoped() {
     assert_eq!(unit_branch("u1", 3), "vivi/unit/u1-a3");
@@ -444,6 +552,64 @@ fn a_fully_merged_legacy_need_keeps_its_legacy_revision() {
 }
 
 #[test]
+fn landed_need_can_start_a_higher_revision_after_cleanup() {
+    let dir = tempdir().unwrap();
+    let config = PumpConfig {
+        branch: String::from("next"),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = merge_ctx(dir.path(), config);
+    host.reply(
+        "git ls-remote origin refs/heads/next",
+        0,
+        &format!("{BASE}\trefs/heads/next\n"),
+    );
+    let (mut state, _) = landed_noop_need(&ctx);
+
+    assert!(!ensure_creation(&ctx, &mut state, "default", "n1", 2).unwrap());
+    let new = get(&state, "default", "n1").unwrap().unwrap();
+    assert_eq!(new.status, NeedBranchStatus::Creating);
+    assert_eq!(new.revision, 2);
+    assert_eq!(new.base_sha, BASE);
+    assert_eq!(
+        new.extra["previous_branch"]["landing_receipt"]["landing_job_id"],
+        "land-n1"
+    );
+    assert_eq!(
+        new.extra["previous_branch"]["cleanup_receipt"]["verified_absent"],
+        true
+    );
+}
+
+#[test]
+fn branch_init_job_identity_changes_with_revision_when_base_is_unchanged() {
+    let dir = tempdir().unwrap();
+    let config = PumpConfig {
+        branch: String::from("next"),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = merge_ctx(dir.path(), config);
+    host.reply(
+        "git ls-remote origin refs/heads/next",
+        0,
+        &format!("{BASE}\trefs/heads/next\n"),
+    );
+    let (mut state, first_job) = landed_noop_need(&ctx);
+
+    assert!(!ensure_creation(&ctx, &mut state, "default", "n1", 2).unwrap());
+    let second_job = get(&state, "default", "n1")
+        .unwrap()
+        .unwrap()
+        .create_job_id
+        .unwrap();
+    assert_ne!(first_job, second_job);
+    assert_eq!(
+        get(&state, "default", "n1").unwrap().unwrap().base_sha,
+        BASE
+    );
+}
+
+#[test]
 fn listed_units_from_an_older_revision_do_not_allow_an_empty_freeze() {
     let mut state = base_state();
     state.units.get_mut("u1").unwrap().revision = 0;
@@ -558,4 +724,34 @@ fn first_dispatch_persists_a_durable_merge_role_branch_init_job_and_holds_the_un
     assert_eq!(job.publish_expect.as_deref(), Some(BASE));
     assert!(job.units.is_empty());
     assert!(job.source_jobs.is_empty());
+}
+
+#[test]
+fn landed_receipts_do_not_complete_reopened_units_or_pending_amendments() {
+    let dir = tempdir().unwrap();
+    let config = PumpConfig {
+        branch: String::from("next"),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = merge_ctx(dir.path(), config);
+    host.reply(
+        "git ls-remote origin refs/heads/next",
+        0,
+        &format!("{BASE}\trefs/heads/next\n"),
+    );
+    let (mut state, _) = landed_noop_need(&ctx);
+    assert!(crate::pump::need::fully_landed(&state, "n1").unwrap());
+    state.units.get_mut("u1").unwrap().status = Status::Pending;
+    assert!(!crate::pump::need::fully_landed(&state, "n1").unwrap());
+    state.units.get_mut("u1").unwrap().status = Status::NoDefect;
+    state.needs.get_mut("n1").unwrap().amendment_pending = true;
+    assert!(!crate::pump::need::fully_landed(&state, "n1").unwrap());
+    state.needs.get_mut("n1").unwrap().amendment_pending = false;
+    state
+        .needs
+        .get_mut("n1")
+        .unwrap()
+        .units
+        .push(String::from("missing-new-unit"));
+    assert!(!crate::pump::need::fully_landed(&state, "n1").unwrap());
 }

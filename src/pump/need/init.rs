@@ -75,7 +75,7 @@ pub fn ensure_creation(
         return Ok(false);
     }
     if let Some(record) = get(st, target, need)? {
-        if record.landing_job_id.is_some() {
+        if record.landing_job_id.is_some() && record.status != NeedBranchStatus::Landed {
             return Ok(false);
         }
         if record.status == NeedBranchStatus::Unverified {
@@ -208,6 +208,7 @@ fn init_job_spec(
     let id = init_job_id(
         &record.target,
         &record.need,
+        record.revision,
         &record.base_sha,
         record.create_attempt,
     );
@@ -338,7 +339,11 @@ fn observed_integration_tip(ctx: &Ctx, target: &str) -> Result<String, VivariumE
     Ok(sha.to_owned())
 }
 
-fn init_job_id(target: &str, need: &str, base_sha: &str, attempt: u32) -> String {
-    let digest = Sha256::digest(format!("{target}\0{need}\0{base_sha}\0{attempt}").as_bytes());
-    format!("need-init-{}-a{attempt}", hex::encode(&digest[..6]))
+fn init_job_id(target: &str, need: &str, revision: u64, base_sha: &str, attempt: u32) -> String {
+    let digest =
+        Sha256::digest(format!("{target}\0{need}\0{revision}\0{base_sha}\0{attempt}").as_bytes());
+    format!(
+        "need-init-{}-r{revision}-a{attempt}",
+        hex::encode(&digest[..6])
+    )
 }

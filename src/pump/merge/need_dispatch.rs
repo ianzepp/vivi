@@ -67,10 +67,9 @@ fn dispatch_need_group(
         return Ok(());
     };
     let mut branch = need::get(st, target, need_id)?;
-    if branch
-        .as_ref()
-        .is_some_and(|record| record.landing_job_id.is_some())
-    {
+    if branch.as_ref().is_some_and(|record| {
+        record.status != NeedBranchStatus::Landed && record.landing_job_id.is_some()
+    }) {
         ctx.log(&format!(
             "need branch held by active landing {target}/{need_id}"
         ));
@@ -276,7 +275,7 @@ pub(crate) fn refresh_freezes(ctx: &Ctx, st: &mut State) -> Result<(), VivariumE
         else {
             continue;
         };
-        if branch.landing_job_id.is_some()
+        if (branch.status != NeedBranchStatus::Landed && branch.landing_job_id.is_some())
             || matches!(
                 branch.status,
                 NeedBranchStatus::Collision | NeedBranchStatus::Unverified
@@ -422,7 +421,7 @@ fn seed_completed_no_defect_needs(
     for (target, need_id, revision) in candidates {
         let branch = need::get(st, &target, &need_id)?;
         if branch.as_ref().is_some_and(|record| {
-            record.landing_job_id.is_some()
+            (record.status != NeedBranchStatus::Landed && record.landing_job_id.is_some())
                 || matches!(
                     record.status,
                     NeedBranchStatus::Collision | NeedBranchStatus::Unverified

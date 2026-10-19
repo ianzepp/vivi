@@ -152,8 +152,13 @@ elif kind == "gate":
     print("FAILING-BEGIN\nFAILING-END")
 
 elif kind == "promote":
-    payload = read_json_after("Input JSON:\n")
-    print("PUMP_PROMOTE_RESULT=" + json.dumps({"status": "ready", "tip": payload["tip"]},
+    match = re.search(r"The green integration tip is `([0-9a-f]+)`", body)
+    if not match:
+        raise RuntimeError("promotion assignment omitted its exact green tip")
+    tip = match.group(1)
+    if git_output("rev-parse", "HEAD") != tip or git_output("status", "--porcelain"):
+        raise RuntimeError("promotion checkout differs from its green tip or is dirty")
+    print("PUMP_PROMOTE_RESULT=" + json.dumps({"status": "ready", "tip": tip},
         separators=(",", ":")))
 
 elif kind == "reclaim":
