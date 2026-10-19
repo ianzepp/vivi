@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::VivariumError;
 use crate::pump::attempt_record::{self, Ending};
 use crate::pump::envfail;
-use crate::pump::host::{Ctx, shell_quote, shell_split};
+use crate::pump::host::{Ctx, exit_receipt_path, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status, Unit};
 use crate::pump::transient;
 
@@ -116,6 +116,7 @@ pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) -> Option<u32
         format!("{}; {command}", ctx.shell_prefix)
     };
     let out = dir_path.join(format!("{id}.out"));
+    drop(fs::remove_file(exit_receipt_path(&out)));
     ctx.host
         .spawn(&command, Some(&ctx.home), Some(&prompt_path), &out)
 }
@@ -597,6 +598,9 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
     let mut expired = Vec::new();
     for (uid, unit) in &mut st.units {
         if unit.status != Status::Splitting {
+            continue;
+        }
+        if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
             continue;
         }
         if let Some(text) = dead_planner_output(ctx, uid) {
