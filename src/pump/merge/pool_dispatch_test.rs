@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::{
-    MergeReceipt, SourceResult, parse_receipt, published_integration_tip, runner_result_matches,
-    valid_sha, valid_sources,
+    MergeReceipt, SourceResult, parse_receipt, published_integration_tip, valid_sha, valid_sources,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::host::test_ctx;
@@ -57,36 +56,20 @@ fn merge_receipt_rejects_missing_or_duplicated_sources() {
 }
 
 #[test]
-fn pool_output_must_name_the_job_branch_and_candidate_sha() {
-    let mut job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
-    job.branch = Some(String::from("pump/merge/default/merge-default-1"));
+fn runner_publish_receipt_names_ref_candidate_and_remote_sha() {
+    let candidate = "0123456789012345678901234567890123456789";
+    let remote_tip = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
     let outcome = JobOutcome {
         state: String::from("finished"),
-        detail: String::from("pushed pump/merge/default/merge-default-1 0123456789"),
-        receipt: String::new(),
+        detail: String::from("no_changes"),
+        receipt: format!("runner publish: pushed refs/heads/next {candidate} {remote_tip}"),
         at: 1,
     };
-    assert!(runner_result_matches(
-        &outcome,
-        &job,
-        "0123456789012345678901234567890123456789"
-    ));
-    assert!(!runner_result_matches(
-        &JobOutcome {
-            detail: String::from("committed other 0123456789"),
-            ..outcome.clone()
-        },
-        &job,
-        "0123456789012345678901234567890123456789"
-    ));
-    assert!(runner_result_matches(
-        &JobOutcome {
-            detail: String::from("no_changes"),
-            ..outcome
-        },
-        &job,
-        "0123456789012345678901234567890123456789"
-    ));
+    let publish = outcome.runner_publish().unwrap();
+    assert!(publish.succeeded());
+    assert_eq!(publish.reference, "refs/heads/next");
+    assert_eq!(publish.candidate, candidate);
+    assert_eq!(publish.remote_sha, remote_tip);
     assert!(valid_sha("0123456789012345678901234567890123456789"));
     assert!(!valid_sha("not-a-commit"));
 }
@@ -112,9 +95,15 @@ fn merge_result_requires_remote_integration_ancestry() {
     );
     let mut job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
     job.target = Some(String::from("default"));
+    let outcome = JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("no_changes"),
+        receipt: format!("runner publish: pushed refs/heads/next {candidate} {remote_tip}"),
+        at: 1,
+    };
 
     assert_eq!(
-        published_integration_tip(&ctx, &job, candidate).as_deref(),
+        published_integration_tip(&ctx, &job, &outcome, candidate).as_deref(),
         Some(remote_tip)
     );
     assert!(host.commands().iter().any(|command| {

@@ -120,6 +120,36 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
     })
 }
 
+/// Require privileged publication to be explicitly addressed to merge/release roles.
+/// Promotion schedulers bind publication to one expected full commit SHA.
+pub fn validate_publish(
+    role: Option<&RoleFacts>,
+    publish_ref: Option<&str>,
+    publish_expect: Option<&str>,
+) -> Result<(), VivariumError> {
+    let Some(reference) = publish_ref else {
+        return if publish_expect.is_none() {
+            Ok(())
+        } else {
+            Err(VivariumError::Config(
+                "publish expectation requires a publish ref".into(),
+            ))
+        };
+    };
+    let kind = role.and_then(|role| role.kind.as_deref());
+    match kind {
+        Some(kind) if kind.eq_ignore_ascii_case("merge") => Ok(()),
+        Some(kind) if kind.eq_ignore_ascii_case("release") && publish_expect.is_some() => Ok(()),
+        Some(kind) if kind.eq_ignore_ascii_case("release") => Err(VivariumError::Config(
+            "release publication requires an exact expected commit SHA".into(),
+        )),
+        _ => Err(VivariumError::Config(format!(
+            "role {} is not authorized to publish {reference}",
+            role.map_or("(none)", |role| role.name.as_str())
+        ))),
+    }
+}
+
 /// The `--read-only` flag, the role's `read_only`, or the kind default.
 fn is_read_only(input: &Input) -> bool {
     resolve_read_only(

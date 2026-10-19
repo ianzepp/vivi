@@ -40,6 +40,10 @@ pub struct DispatchFlags {
     pub model: String,
     pub from: Option<String>,
     pub branch: Option<String>,
+    /// Remote branch ref the privileged runner publishes after agent success.
+    pub publish_ref: Option<String>,
+    /// Exact commit expected for guarded promotion publication.
+    pub publish_expect: Option<String>,
     /// Extra refs the job may read (`--with`); when any are given they beat
     /// `with:` body lines, which [`job::resolve_with`] applies otherwise.
     pub with: Vec<String>,
@@ -91,6 +95,7 @@ pub fn plan_job(
     })?;
     let reasoning = plan_reasoning(pool, &harness.run, flags)?;
     job::check_model(&flags.model, &harness.models)?;
+    validate_publish_flags(flags)?;
     let refs = plan_refs(flags, body)?;
     let with = job::resolve_with(&flags.with, body, &refs.from, &refs.branch)?
         .into_iter()
@@ -155,6 +160,9 @@ fn assemble_job_plan(
         brief: brief_for(config, handle, subject, body),
         rules,
         refs,
+        publish_ref: flags.publish_ref.clone(),
+        publish_expect: flags.publish_expect.clone(),
+        publish_remote: None,
         with,
         model: flags.model.clone(),
         budget,
@@ -167,6 +175,47 @@ fn assemble_job_plan(
         restore: config.restore.clone(),
         bridge: None,
     }
+}
+
+fn validate_publish_flags(flags: &DispatchFlags) -> Result<(), VivariumError> {
+    if flags.read_only && flags.publish_ref.is_some() {
+        return Err(VivariumError::Config(
+            "read-only jobs cannot request privileged publication".into(),
+        ));
+    }
+    if flags.publish_ref.is_none() && flags.publish_expect.is_some() {
+        return Err(VivariumError::Config(
+            "publish expectation requires --publish-ref".into(),
+        ));
+    }
+    if let Some(reference) = flags.publish_ref.as_deref() {
+        let branch = reference.strip_prefix("refs/heads/").unwrap_or_default();
+        if !valid_publish_ref(branch) {
+            return Err(VivariumError::Config(format!(
+                "publish ref must be a valid refs/heads branch, got {reference:?}"
+            )));
+        }
+    }
+    if let Some(expected) = flags.publish_expect.as_deref()
+        && (!matches!(expected.len(), 40 | 64)
+            || !expected
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    {
+        return Err(VivariumError::Config(
+            "publish expectation must be a full 40- or 64-character commit SHA".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_publish_ref(branch: &str) -> bool {
+    job::plain_ref(branch)
+        && !branch.ends_with('.')
+        && !branch.contains("@{")
+        && branch
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 fn validate_source(config: &PoolConfig, pool: &str) -> Result<(), VivariumError> {

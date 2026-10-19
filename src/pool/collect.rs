@@ -186,7 +186,7 @@ impl JobResult {
         } else {
             "push"
         };
-        format!(
+        let mut summary = format!(
             "{label}: {}\nagent exit {} in {}s, job {}s, started from {}",
             self.push_line(),
             self.get("agent_rc"),
@@ -195,7 +195,17 @@ impl JobResult {
             self.get("start")
                 .get(..10)
                 .unwrap_or_else(|| self.get("start")),
-        )
+        );
+        if !self.get("publish_state").is_empty() {
+            summary.push_str(&format!(
+                "\nrunner publish: {} {} {} {}",
+                self.get("publish_state"),
+                self.get("publish_ref"),
+                self.get("publish_candidate"),
+                self.get("publish_sha")
+            ));
+        }
+        summary
     }
 }
 

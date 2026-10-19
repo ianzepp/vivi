@@ -35,7 +35,7 @@ fn collect_gate_job(ctx: &Ctx, st: &mut State) {
         st.last_gate.task.clone_from(&job.task);
         st.last_gate.pool.clone_from(&job.pool);
     }
-    if outcome.state != "finished" {
+    if outcome.state != "finished" || outcome.agent_success() != Some(true) {
         let tip = st.last_gate.tip.clone().unwrap_or_default();
         ctx.exception(
             "gate-job-failed",
@@ -88,17 +88,7 @@ fn apply_promotion(ctx: &Ctx, st: &mut State, id: &str) {
         .get("tip")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    if outcome.state != "finished" {
-        reject_promotion(
-            ctx,
-            st,
-            id,
-            tip,
-            &format!("{}; promotion job did not finish", outcome.detail),
-        );
-        return;
-    }
-    match promotion_landed(ctx, &outcome, branch, tip) {
+    match promotion_landed(ctx, &job, &outcome, branch, tip) {
         Some(true) => {}
         Some(false) => {
             reject_promotion(
@@ -166,57 +156,38 @@ fn reject_promotion(ctx: &Ctx, st: &mut State, id: &str, tip: &str, detail: &str
 /// Resolve the marker claim against the durable runner push receipt or remote.
 fn promotion_landed(
     ctx: &Ctx,
+    job: &crate::pump::jobs::PoolJob,
     outcome: &crate::pump::jobs::JobOutcome,
     branch: &str,
     tip: &str,
 ) -> Option<bool> {
-    let Some((status, claimed_tip)) = promotion_marker(&outcome.receipt) else {
-        return Some(false);
-    };
-    if claimed_tip != tip {
+    let expected_ref = format!("refs/heads/{branch}");
+    if outcome.agent_success() != Some(true)
+        || job.publish_ref.as_deref() != Some(expected_ref.as_str())
+        || job.publish_expect.as_deref() != Some(tip)
+    {
         return Some(false);
     }
-    match status.as_str() {
-        "pushed" if pushed_sha(outcome, branch).is_some_and(|sha| tip.starts_with(&sha)) => {
-            Some(true)
-        }
-        "pushed" => remote_contains(ctx, branch, tip),
-        "already-on-main" => remote_contains(ctx, branch, tip),
-        _ => Some(false),
+    let remote_tip = remote_branch_tip(ctx, branch)?;
+    if !ancestor(ctx, tip, &remote_tip)? {
+        return Some(false);
     }
-}
-
-/// Parse the exact machine-readable promotion marker from the worker receipt.
-fn promotion_marker(receipt: &str) -> Option<(String, String)> {
-    let line = receipt
-        .lines()
-        .rev()
-        .find(|line| line.starts_with("PUMP_PROMOTE_RESULT="))?;
-    let marker: serde_json::Value =
-        serde_json::from_str(line.strip_prefix("PUMP_PROMOTE_RESULT=")?).ok()?;
-    Some((
-        marker.get("status")?.as_str()?.to_owned(),
-        marker.get("tip")?.as_str()?.to_owned(),
-    ))
+    if let Some(publication) = outcome.runner_publish()
+        && publication.succeeded()
+        && publication.reference == expected_ref
+        && publication.candidate == tip
+        && full_sha(&publication.remote_sha)
+        && !ancestor(ctx, &publication.remote_sha, &remote_tip)?
+    {
+        ctx.log(&format!(
+            "promotion runner receipt was superseded at {branch}; remote contains {}",
+            tip_short(tip)
+        ));
+    }
+    Some(true)
 }
 
 /// Check whether the configured remote branch contains the requested tip.
-fn remote_contains(ctx: &Ctx, branch: &str, tip: &str) -> Option<bool> {
-    if !full_sha(tip) {
-        return Some(false);
-    }
-    let tip_on_remote = remote_branch_tip(ctx, branch)?;
-    let ancestry = ctx.git(
-        &format!("merge-base --is-ancestor {tip} {tip_on_remote}"),
-        30,
-    );
-    match ancestry.code {
-        0 => Some(true),
-        1 => Some(false),
-        _ => None,
-    }
-}
-
 /// Read the configured remote branch SHA when its commit is available locally.
 fn remote_branch_tip(ctx: &Ctx, branch: &str) -> Option<String> {
     let reference = format!("refs/heads/{branch}");
@@ -254,6 +225,18 @@ fn remote_branch_tip(ctx: &Ctx, branch: &str) -> Option<String> {
     Some(sha)
 }
 
+fn ancestor(ctx: &Ctx, candidate: &str, descendant: &str) -> Option<bool> {
+    let output = ctx.git(
+        &format!("merge-base --is-ancestor {candidate} {descendant}"),
+        30,
+    );
+    match output.code {
+        0 => Some(true),
+        1 => Some(false),
+        _ => None,
+    }
+}
+
 /// Whether `sha` is a full SHA-1 object name.
 fn full_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -268,20 +251,6 @@ fn json_names(value: &serde_json::Value) -> Option<Vec<String>> {
             .map(String::from)
             .collect()
     })
-}
-
-/// Extract a reconcile detail of the form `pushed <branch> <sha>`.
-fn pushed_sha(outcome: &crate::pump::jobs::JobOutcome, branch: &str) -> Option<String> {
-    let mut words = outcome.detail.split_whitespace();
-    if words.next() != Some("pushed") || words.next() != Some(branch) {
-        return None;
-    }
-    words
-        .next()
-        .filter(|sha| {
-            (7..=40).contains(&sha.len()) && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
-        .map(str::to_owned)
 }
 
 /// Queue a fast-forward-only promotion on a role-addressed pool job.

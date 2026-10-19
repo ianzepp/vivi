@@ -102,6 +102,20 @@ fn builtin_auditor_uses_the_shipped_charter_and_stays_read_only_with_a_model_ove
 }
 
 #[test]
+fn privileged_publication_is_limited_to_merge_and_guarded_release_roles() {
+    let merge = role("merge", Some("merge"), None);
+    let release = role("release", Some("release"), None);
+    let hand = role("hand", Some("hand"), None);
+    let sha = "a".repeat(40);
+    assert!(validate_publish(Some(&merge), Some("refs/heads/next"), None).is_ok());
+    assert!(validate_publish(Some(&merge), Some("refs/heads/main"), Some(&sha)).is_ok());
+    assert!(validate_publish(Some(&release), Some("refs/heads/main"), Some(&sha)).is_ok());
+    assert!(validate_publish(Some(&release), Some("refs/heads/main"), None).is_err());
+    assert!(validate_publish(Some(&hand), Some("refs/heads/main"), None).is_err());
+    assert!(validate_publish(None, Some("refs/heads/main"), None).is_err());
+}
+
+#[test]
 fn triage_and_cadence_kinds_are_read_only_too() {
     for kind in [
         "triage", "cadence", "AUDITOR", "Triage", "steward", "head", "gate",

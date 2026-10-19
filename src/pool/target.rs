@@ -13,6 +13,8 @@ use crate::pump::config::PumpConfig;
 pub struct JobTarget {
     pub id: String,
     pub source: String,
+    /// Repository's configured push/fetch URL for local privileged publication.
+    pub publish_remote: Option<String>,
     pub cache_key: String,
     pub local_source: Option<String>,
     pub seed: Vec<String>,
@@ -39,6 +41,10 @@ pub fn resolve(
     let path = pump
         .target_path(root, id)
         .ok_or_else(|| VivariumError::Config(format!("repository target {id:?} has no path")))?;
+    let publish_remote = target
+        .remote_url
+        .clone()
+        .or_else(|| super::super::local_git::Repo::new(&path).remote_url(&target.remote));
     let mut config = pool.clone();
     config.embedded = None;
     config.repo = None;
@@ -65,6 +71,7 @@ pub fn resolve(
         target: JobTarget {
             id: id.to_string(),
             source,
+            publish_remote,
             cache_key,
             local_source: config.local.worktree_of.clone(),
             seed: config.seed.clone(),

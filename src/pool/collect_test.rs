@@ -842,6 +842,16 @@ fn facts_survive_the_collect_output_as_result_lines() {
 }
 
 #[test]
+fn runner_publication_is_recorded_as_an_exact_receipt_line() {
+    let result = JobResult::parse(
+        "push=committed\nbranch=pump/merge/default/merge-default-1\nsha=0123456789abcdef\npublish_state=pushed\npublish_ref=refs/heads/next\npublish_candidate=0123456789012345678901234567890123456789\npublish_sha=0123456789012345678901234567890123456789\nagent_rc=0",
+    );
+    assert!(result.summary().contains(
+        "runner publish: pushed refs/heads/next 0123456789012345678901234567890123456789 0123456789012345678901234567890123456789"
+    ));
+}
+
+#[test]
 fn target_result_must_match_the_dispatched_repository() {
     let mut record = open("t1", "j1", 0).record;
     record.target = Some("radix".into());

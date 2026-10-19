@@ -54,6 +54,8 @@ fn flags(model: &str) -> DispatchFlags {
         model: model.into(),
         from: Some("main".into()),
         branch: Some("factory/a".into()),
+        publish_ref: None,
+        publish_expect: None,
         with: Vec::new(),
         budget: None,
         allow_default_branch: false,
@@ -265,6 +267,24 @@ fn from_and_branch_default_to_the_body() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn publish_flags_require_a_full_heads_ref_and_full_candidate_sha() {
+    let mut f = flags("m/ok");
+    f.publish_ref = Some("refs/heads/next".into());
+    let planned = plan(&f).unwrap();
+    assert_eq!(planned.publish_ref.as_deref(), Some("refs/heads/next"));
+
+    f.publish_ref = Some("main".into());
+    assert!(plan(&f).is_err());
+    f.publish_ref = Some("refs/heads/next.lock".into());
+    assert!(plan(&f).is_err());
+    f.publish_ref = Some("refs/heads/main".into());
+    f.publish_expect = Some("a".repeat(39));
+    assert!(plan(&f).is_err());
+    f.publish_ref = None;
+    assert!(plan(&f).is_err());
 }
 
 #[test]

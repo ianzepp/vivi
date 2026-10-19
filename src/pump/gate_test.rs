@@ -693,6 +693,9 @@ fn a_gate_with_no_new_failure_enqueues_a_fast_forward_promotion_job() {
             .is_some_and(|branch| branch.starts_with("pump/promotion/default/"))
     );
     assert_eq!(promotion.payload["branch"], "main");
+    assert_ne!(promotion.branch.as_deref(), Some("main"));
+    assert_eq!(promotion.publish_ref.as_deref(), Some("refs/heads/main"));
+    assert_eq!(promotion.publish_expect.as_deref(), Some(TIP));
     assert!(host.commands().iter().all(|cmd| !cmd.contains("git push")));
     assert!(st.promotions.is_empty(), "receipt has not landed yet");
     assert!(
@@ -701,12 +704,21 @@ fn a_gate_with_no_new_failure_enqueues_a_fast_forward_promotion_job() {
             .any(|l| l.contains("promote queued: main -> 0123456789"))
     );
     let job_id = promotion.id.clone();
+    host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{TIP}\trefs/heads/main\n"),
+    );
+    host.reply("cat-file -e", 0, "");
+    host.reply("merge-base --is-ancestor", 0, "");
     let job = st.jobs.get_mut(&job_id).unwrap();
     job.status = JobStatus::Finished;
     job.outcome = Some(JobOutcome {
         state: String::from("finished"),
-        detail: format!("pushed main {}", &TIP[..10]),
-        receipt: format!("PUMP_PROMOTE_RESULT={{\"status\":\"pushed\",\"tip\":\"{TIP}\"}}"),
+        detail: String::from("no_changes"),
+        receipt: format!(
+            "agent exit 0 in 1s\nPUMP_PROMOTE_RESULT={{\"status\":\"ready\",\"tip\":\"{TIP}\"}}\nrunner publish: pushed refs/heads/main {TIP} {TIP}"
+        ),
         at: ctx.now(),
     });
     crate::pump::gate::collect_completed(&ctx, &mut st);

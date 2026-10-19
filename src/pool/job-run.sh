@@ -12,6 +12,9 @@
 #                REMOTE and also gets LOCAL_ACTION (create | continue) and
 #                LOCAL_START (the commit FROM resolved to). With a bridge
 #                grant also BRIDGE_SERVER and BRIDGE_PROJECT (not secret).
+#                PUBLISH_REF, PUBLISH_EXPECT and PUBLISH_REMOTE are runner-only:
+#                after agent exit 0, the runner may publish HEAD to the exact
+#                heads ref and optionally require HEAD to equal the expected SHA.
 #   token        Git token, empty for a file:// remote; root-only, never
 #                copied to the agent
 #   bridge.key   the job's project API key for `vivi mcp`, present only when
@@ -57,6 +60,12 @@
 # (`push=committed`), and the worktree goes back to a detached HEAD at the
 # end, whatever the outcome, so the branch is free again.
 #
+# A privileged publish ref is never added to the agent environment. After a
+# clean exit the runner pushes the exact checked HEAD with a plain push, then
+# reads the remote ref back and records its full SHA. An expected SHA prevents
+# promotion from publishing a changed candidate. Local worktree jobs publish
+# through the configured remote without updating a local checked-out branch.
+#
 # A read-only job (READ_ONLY set) publishes nothing. FROM is checked out
 # detached and no branch is made or moved. After the agent, the runner never
 # commits and never pushes: it lists the paths that differ from FROM (tracked
@@ -85,6 +94,9 @@ T0=$(now)
 START=
 AGENT_RC=
 AGENT_S=
+PUBLISH_STATE=
+PUBLISH_CANDIDATE=
+PUBLISH_SHA=
 if [ -n "${UNPRIVILEGED:-}" ]; then
   as_hand() { "$@"; }
   AGENT_HOME=$W/home
@@ -152,12 +164,76 @@ finish() { # finish <push-outcome> [sha]
     echo "job_s=$(( $(now) - T0 ))"
     echo "model=$MODEL"
     echo "slot=$SLOT"
+    if [ -n "${PUBLISH_REF:-}" ]; then
+      echo "publish_state=${PUBLISH_STATE:-not-attempted}"
+      echo "publish_ref=$PUBLISH_REF"
+      echo "publish_candidate=${PUBLISH_CANDIDATE:--}"
+      echo "publish_sha=${PUBLISH_SHA:--}"
+    fi
     [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
     [ -z "${RESTORE_EXTRA:-}" ] || printf '%s\n' "$RESTORE_EXTRA"
     [ -z "${FACTS_EXTRA:-}" ] || printf '%s\n' "$FACTS_EXTRA"
   } > "$J/result.partial"
   mv "$J/result.partial" "$J/result"
   exit 0
+}
+
+# Publish a verified candidate with the runner's credentials, never from the
+# agent environment. A plain push is fast-forward-only; remote ancestry is
+# read back before the result claims publication.
+publish_target() {
+  [ -n "${PUBLISH_REF:-}" ] || return 0
+  if [ "${AGENT_RC:-1}" != 0 ]; then
+    PUBLISH_STATE=agent_failed
+    return 0
+  fi
+  case "$PUBLISH_REF" in refs/heads/*) ;; *) PUBLISH_STATE=invalid_ref; return 0 ;; esac
+  git -C "$RD" check-ref-format "$PUBLISH_REF" >/dev/null 2>&1 || {
+    PUBLISH_STATE=invalid_ref
+    return 0
+  }
+  PUBLISH_CANDIDATE=$(git -C "$RD" rev-parse --verify HEAD 2>/dev/null) || {
+    PUBLISH_STATE=candidate_missing
+    return 0
+  }
+  if [ -n "${PUBLISH_EXPECT:-}" ] && [ "$PUBLISH_CANDIDATE" != "$PUBLISH_EXPECT" ]; then
+    PUBLISH_STATE=candidate_mismatch
+    return 0
+  fi
+  PUBLISH_URL=${PUBLISH_REMOTE:-$URL}
+  if [ -z "$PUBLISH_URL" ]; then
+    PUBLISH_STATE=remote_missing
+    return 0
+  fi
+  if git -C "$RD" push -q "$PUBLISH_URL" "$PUBLISH_CANDIDATE:$PUBLISH_REF"; then
+    PUSH_STATE=pushed
+  else
+    PUSH_STATE=already-on-remote
+  fi
+  git -C "$RD" fetch -q "$PUBLISH_URL" "$PUBLISH_REF" 2>/dev/null || {
+    PUBLISH_STATE=verify_failed
+    return 0
+  }
+  PUBLISH_SHA=$(git -C "$RD" rev-parse --verify --quiet 'FETCH_HEAD^{commit}' 2>/dev/null) || {
+    PUBLISH_STATE=verify_failed
+    return 0
+  }
+  REMOTE_LINE=$(git -C "$RD" ls-remote --heads "$PUBLISH_URL" "$PUBLISH_REF" 2>/dev/null) || {
+    PUBLISH_STATE=verify_failed
+    return 0
+  }
+  read -r REMOTE_SHA REMOTE_REF <<< "$REMOTE_LINE"
+  if [ "$REMOTE_REF" != "$PUBLISH_REF" ] || [ "$REMOTE_SHA" != "$PUBLISH_SHA" ]; then
+    PUBLISH_STATE=verify_failed
+    PUBLISH_SHA=
+    return 0
+  fi
+  if git -C "$RD" merge-base --is-ancestor "$PUBLISH_CANDIDATE" "$PUBLISH_SHA"; then
+    PUBLISH_STATE=$PUSH_STATE
+  else
+    PUBLISH_STATE=not_ancestor
+    PUBLISH_SHA=
+  fi
 }
 
 # A shared slot keeps repository caches isolated; never recycle another
@@ -473,6 +549,8 @@ CHANGED=$(as_hand git status --porcelain -- "${EXCLUDE[@]}")
 MOVED=
 [ -n "${READ_ONLY:-}" ] || [ "$(as_hand git rev-parse HEAD)" = "$START" ] || MOVED=1
 if [ -z "$CHANGED" ] && [ -z "$MOVED" ]; then
+  [ -z "${PUBLISH_REF:-}" ] && finish no_changes
+  publish_target
   finish no_changes
 fi
 [ "${LOCAL_ACTION:-}" != create ] || as_hand git checkout -q -b "$BRANCH" || finish branch_exists
@@ -494,10 +572,13 @@ if [ -n "$CHANGED" ] || [ "${AGENT_RC:-0}" != 0 ]; then
     && as_hand git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
          commit -q -m "$COMMIT_SUBJECT" -m "$TRAILER" "${COMMIT_ALLOW[@]}" || finish commit_failed
 fi
+RUNNER_SHA=$(as_hand git rev-parse HEAD)
 if [ -n "${LOCAL_ACTION:-}" ]; then
-  finish committed "$(as_hand git rev-parse HEAD)"
+  RUNNER_PUSH=committed
+elif as_hand git push -q "$URL" "HEAD:refs/heads/$BRANCH"; then
+  RUNNER_PUSH=pushed
+else
+  RUNNER_PUSH=push_refused
 fi
-if as_hand git push -q "$URL" "HEAD:refs/heads/$BRANCH"; then
-  finish pushed "$(as_hand git rev-parse HEAD)"
-fi
-finish push_refused
+publish_target
+finish "$RUNNER_PUSH" "$RUNNER_SHA"

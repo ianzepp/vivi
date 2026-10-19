@@ -17,11 +17,11 @@ const MERGE_BRIEF: &str = r#"You are the configured Vivi merge role. The pump se
 
 Fetch and merge each source branch. Resolve ordinary conflicts within the branch write scopes. For configured generated paths, take the target side on conflict, run its configured regeneration command, and continue. Run the configured formatter, every shared check, and each unit proof. When a failing proof matches a configured generated-file drift signature, regenerate and retry that proof once.
 
-Classify the result honestly. If the source branch merges cleanly against the refreshed target but conflicts only because another integration job moved the target, return `undecided` with `why=lane-race`. A timeout, index lock, provider problem, or failed push is also `undecided`; it is not a unit defect and must not consume a hand attempt. A conflict or failing proof that is isolated to a source is `dropped` only after you have diagnosed it. If a publish or re-merge conflict is only in a configured generated/counter path after green checks, refresh the target, regenerate or re-ask, and retry without charging the source. After all checks pass, commit the final integration tree yourself and record its full commit SHA. Push that exact commit with a plain fast-forward push to the configured integration remote and branch in the input JSON. Never force or reset. Verify the integration remote branch contains that commit before reporting any source as merged. If the branch moved, push was refused, or ancestry cannot be verified, report every affected source as `undecided`; do not consume a hand attempt. End your receipt only after the push and verification.
+Classify the result honestly. If the source branch merges cleanly against the refreshed target but conflicts only because another integration job moved the target, return `undecided` with `why=lane-race`. A timeout, index lock, provider problem, or conflict during runner publication is also `undecided`; it is not a unit defect and must not consume a hand attempt. A conflict or failing proof that is isolated to a source is `dropped` only after you have diagnosed it. If a publish or re-merge conflict is only in a configured generated/counter path after green checks, refresh the target, regenerate or re-ask, and retry without charging the source. After all checks pass, commit the final integration tree yourself and record its full candidate SHA. Do not push. After your clean exit, the privileged pool runner publishes the exact candidate to the configured integration ref. The controller accepts `merged` only when the runner receipt names this candidate and the host independently verifies it on the remote integration ref. Never force, reset, or claim remote publication. The JSON `tip` is the candidate commit, not a claim about the later runner result.
 
-End your receipt with one minified JSON line prefixed exactly `PUMP_MERGE_RESULT=`. Use this shape: `{"version":1,"target":"<target>","tip":"<full pushed candidate SHA>","sources":[{"kind":"unit","id":"<unit id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0},{"kind":"job","id":"<origin job id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0}]}`. Include every requested source exactly once. `outside` is the repository paths changed outside a unit's write scope; use an empty list for role branches. The result tip is the full SHA you committed and pushed to the integration branch."#;
+End your receipt with one minified JSON line prefixed exactly `PUMP_MERGE_RESULT=`. Use this shape: `{"version":1,"target":"<target>","tip":"<full candidate SHA>","sources":[{"kind":"unit","id":"<unit id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0},{"kind":"job","id":"<origin job id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0}]}`. Include every requested source exactly once. `outside` is the repository paths changed outside a unit's write scope; use an empty list for role branches. The result tip is the full SHA you committed for runner publication."#;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct MergeReceipt {
     version: u32,
     target: String,
@@ -55,7 +55,10 @@ pub(crate) fn dispatch_pool(ctx: &Ctx, st: &mut State) -> Result<Vec<String>, Vi
         .map(|(id, target)| {
             (
                 id.clone(),
-                target.merge.as_ref().map_or(1, |merge| merge.batch as usize),
+                target
+                    .merge
+                    .as_ref()
+                    .map_or(1, |merge| merge.batch as usize),
             )
         })
         .collect();
@@ -169,6 +172,7 @@ fn merge_spec(
     spec.target = Some(target.target_id.clone());
     spec.from_ref = Some(target.cfg.branch.clone());
     spec.branch = Some(runner_branch);
+    spec.publish_ref = Some(format!("refs/heads/{}", target.cfg.branch));
     spec.budget = target
         .cfg
         .merge
@@ -221,6 +225,7 @@ fn merge_payload(
         "version": 1,
         "target": target.target_id,
         "integration_branch": target.cfg.branch,
+        "integration_ref": format!("refs/heads/{}", target.cfg.branch),
         "integration_remote": target.cfg.remote,
         "runner_branch": runner_branch,
         "base_ref": target.cfg.branch,
@@ -300,7 +305,7 @@ fn apply_job(ctx: &Ctx, st: &mut State, job: &PoolJob) {
         );
         return;
     }
-    let Some(integration_tip) = published_integration_tip(ctx, job, &receipt.tip) else {
+    let Some(integration_tip) = published_integration_tip(ctx, job, outcome, &receipt.tip) else {
         reject_job(
             ctx,
             st,
@@ -334,7 +339,7 @@ fn valid_result(
         && receipt.target == job.target.as_deref().unwrap_or_default()
         && valid_sha(&receipt.tip)
         && valid_sources(&receipt.sources, expected_units, expected_jobs)
-        && runner_result_matches(outcome, job, &receipt.tip)
+        && outcome.agent_success() == Some(true)
 }
 
 fn reject_job(ctx: &Ctx, st: &mut State, job: &PoolJob, why: &str, detail: &str) {
@@ -439,20 +444,24 @@ fn valid_sources(
     &seen_units == units && &seen_jobs == jobs
 }
 
-fn runner_result_matches(outcome: &jobs::JobOutcome, job: &PoolJob, tip: &str) -> bool {
-    if outcome.detail == "no_changes" {
-        return true;
-    }
-    let expected_branch = job.branch.as_deref().unwrap_or_default();
-    let mut words = outcome.detail.split_whitespace();
-    matches!(words.next(), Some("pushed" | "committed"))
-        && words.next() == Some(expected_branch)
-        && words.next().is_some_and(|short| tip.starts_with(short))
-}
-
-fn published_integration_tip(ctx: &Ctx, job: &PoolJob, candidate: &str) -> Option<String> {
+fn published_integration_tip(
+    ctx: &Ctx,
+    job: &PoolJob,
+    outcome: &jobs::JobOutcome,
+    candidate: &str,
+) -> Option<String> {
     let target = ctx.for_target(job.target.as_deref()?)?;
     let branch = format!("refs/heads/{}", target.cfg.branch);
+    if job.publish_ref.as_deref() != Some(branch.as_str()) || job.publish_expect.is_some() {
+        return None;
+    }
+    let publication = outcome.runner_publish()?;
+    if !publication.succeeded()
+        || publication.reference != branch
+        || publication.candidate != candidate
+    {
+        return None;
+    }
     let fetch = target.git(
         &format!(
             "fetch --quiet {} {}",
@@ -476,7 +485,8 @@ fn published_integration_tip(ctx: &Ctx, job: &PoolJob, candidate: &str) -> Optio
         &format!("merge-base --is-ancestor {candidate} {integration_tip}"),
         30,
     );
-    (ancestry.code == 0).then(|| integration_tip.to_owned())
+    (ancestry.code == 0 && publication.remote_sha == integration_tip)
+        .then(|| integration_tip.to_owned())
 }
 
 fn valid_sha(sha: &str) -> bool {

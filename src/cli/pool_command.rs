@@ -107,6 +107,19 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub branch: Option<String>,
 
+    /// Publish the runner-verified candidate to this remote heads ref after a clean agent exit.
+    #[arg(long, value_name = "REF", conflicts_with = "read_only")]
+    pub publish_ref: Option<String>,
+
+    /// Require the candidate commit to equal this full SHA before publishing (promotion jobs).
+    #[arg(
+        long,
+        value_name = "SHA",
+        requires = "publish_ref",
+        conflicts_with = "read_only"
+    )]
+    pub publish_expect: Option<String>,
+
     /// Extra ref the job may read besides where it starts, repeatable, at
     /// most 8 (default: every `with: <ref>` line of the task body, in order;
     /// flags win when both are given). Each is resolved to a commit before a

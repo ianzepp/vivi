@@ -13,6 +13,26 @@ fn committer() -> PoolCommitter {
     }
 }
 
+#[test]
+fn privileged_publish_controls_are_runner_only_job_parameters() {
+    let mut p = plan();
+    p.publish_ref = Some("refs/heads/next".into());
+    p.publish_expect = Some("a".repeat(40));
+    p.publish_remote = Some("file:///tmp/pump-target.git".into());
+    let bundle = build_bundle(&p, "s", &Secret::new(SECRET.into()));
+    let params = text(&bundle, "params.env");
+
+    assert!(params.contains("PUBLISH_REF='refs/heads/next'"));
+    assert!(params.contains(&format!("PUBLISH_EXPECT='{}'", "a".repeat(40))));
+    assert!(params.contains("PUBLISH_REMOTE='file:///tmp/pump-target.git'"));
+    assert!(
+        !bundle
+            .agent_visible()
+            .iter()
+            .any(|file| { String::from_utf8_lossy(&file.content).contains("PUBLISH_REMOTE") })
+    );
+}
+
 fn plan() -> JobPlan {
     JobPlan {
         target: None,
@@ -31,6 +51,9 @@ fn plan() -> JobPlan {
             from: "main".into(),
             branch: "factory/x".into(),
         },
+        publish_ref: None,
+        publish_expect: None,
+        publish_remote: None,
         with: Vec::new(),
         model: "zai/glm-5.3-flash".into(),
         budget: 900,
@@ -704,6 +727,7 @@ fn target_jobs_deliver_cache_identity_and_repository_preparation() {
     p.target = Some(crate::pool::dispatch::target::JobTarget {
         id: "radix".into(),
         source: p.remote.clone(),
+        publish_remote: None,
         cache_key: "a".repeat(64),
         local_source: None,
         seed: vec!["cargo build".into()],

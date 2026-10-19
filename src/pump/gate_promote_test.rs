@@ -44,7 +44,7 @@ fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     let ctx = ctx.with_routing(RoleRouting {
         roles: vec![RoutedRole {
             name: String::from("release"),
-            kind: Some(String::from("merge")),
+            kind: Some(String::from("release")),
             status: String::from("active"),
             pool: Some(String::from("flygate")),
             read_only: None,
@@ -87,13 +87,22 @@ fn promotion_job(st: &State) -> Option<&PoolJob> {
 }
 
 /// Feed a successful fast-forward receipt to the promotion collector.
-fn confirm_promotion(ctx: &Ctx, st: &mut State, id: &str, tip: &str) {
+fn confirm_promotion(ctx: &Ctx, host: &Arc<FakeHost>, st: &mut State, id: &str, tip: &str) {
+    host.reply(
+        "ls-remote origin refs/heads/main",
+        0,
+        &format!("{tip}\trefs/heads/main\n"),
+    );
+    host.reply("cat-file -e", 0, "");
+    host.reply("merge-base --is-ancestor", 0, "");
     let job = st.jobs.get_mut(id).unwrap();
     job.status = JobStatus::Finished;
     job.outcome = Some(JobOutcome {
         state: String::from("finished"),
-        detail: format!("pushed main {}", &tip[..10]),
-        receipt: format!("PUMP_PROMOTE_RESULT={{\"status\":\"pushed\",\"tip\":\"{tip}\"}}"),
+        detail: String::from("no_changes"),
+        receipt: format!(
+            "agent exit 0 in 1s\nPUMP_PROMOTE_RESULT={{\"status\":\"ready\",\"tip\":\"{tip}\"}}\nrunner publish: pushed refs/heads/main {tip} {tip}"
+        ),
         at: ctx.now(),
     });
     collect_completed(ctx, st);
@@ -117,12 +126,13 @@ fn confirm_already_on_main(
     host.reply("cat-file -e", 0, "");
     host.reply("merge-base --is-ancestor", ancestry_code, "");
     let job = st.jobs.get_mut(id).unwrap();
+    let published = "already-on-remote";
     job.status = JobStatus::Finished;
     job.outcome = Some(JobOutcome {
         state: String::from("finished"),
         detail: String::from("no_changes"),
         receipt: format!(
-            "PUMP_PROMOTE_RESULT={{\"status\":\"already-on-main\",\"tip\":\"{tip}\"}}"
+            "agent exit 0 in 1s\nPUMP_PROMOTE_RESULT={{\"status\":\"ready\",\"tip\":\"{tip}\"}}\nrunner publish: {published} refs/heads/main {tip} {remote_tip}"
         ),
         at: ctx.now(),
     });
@@ -153,7 +163,7 @@ fn promotes_when_failing_is_within_main_even_with_owned_reds_outstanding() {
     let job = promotion_job(&st).expect("green gate queues promotion");
     assert_eq!(job.role, "release");
     let id = job.id.clone();
-    confirm_promotion(&ctx, &mut st, &id, TIP);
+    confirm_promotion(&ctx, &host, &mut st, &id, TIP);
     assert!(promote_held(&host).is_none());
     let last = st.promotions.last().unwrap();
     assert_eq!(last.tip, TIP);
@@ -192,7 +202,7 @@ fn main_set_follows_the_last_promotion() {
     finish_gate(&ctx, &mut st, &reply(&["a"]));
     let job = promotion_job(&st).unwrap();
     let id = job.id.clone();
-    confirm_promotion(&ctx, &mut st, &id, TIP);
+    confirm_promotion(&ctx, &host, &mut st, &id, TIP);
     assert_eq!(st.promotions.len(), 1);
     assert_eq!(st.promotions[0].failing, Some(names(&["a"])));
     // b was on main by baseline, but main now carries only a.
@@ -211,7 +221,7 @@ fn the_baseline_is_main_before_the_first_promotion() {
     finish_gate(&ctx, &mut st, &reply(&["b"]));
     let job = promotion_job(&st).expect("the first green gate should queue promotion");
     let id = job.id.clone();
-    confirm_promotion(&ctx, &mut st, &id, TIP);
+    confirm_promotion(&ctx, &host, &mut st, &id, TIP);
     assert_eq!(st.promotions[0].failing, Some(names(&["b"])));
     drop(dir);
 }
@@ -368,6 +378,9 @@ fn promotion_is_a_durable_job_and_runs_no_local_git_push() {
             .is_some_and(|branch| branch.starts_with("pump/promotion/default/"))
     );
     assert_eq!(job.payload["branch"], "main");
+    assert_ne!(job.branch.as_deref(), Some("main"));
+    assert_eq!(job.publish_ref.as_deref(), Some("refs/heads/main"));
+    assert_eq!(job.publish_expect.as_deref(), Some(TIP));
     assert!(host.commands().iter().all(|cmd| {
         !cmd.contains("git fetch") && !cmd.contains("merge-base") && !cmd.contains("git push")
     }));
@@ -449,12 +462,14 @@ fn worker_push_marker_alone_does_not_count_without_remote_or_runner_proof() {
     job.outcome = Some(JobOutcome {
         state: String::from("finished"),
         detail: String::from("no_changes"),
-        receipt: format!("PUMP_PROMOTE_RESULT={{\"status\":\"pushed\",\"tip\":\"{TIP}\"}}"),
+        receipt: format!(
+            "agent exit 0 in 1s\nPUMP_PROMOTE_RESULT={{\"status\":\"ready\",\"tip\":\"{TIP}\"}}"
+        ),
         at: ctx.now(),
     });
     collect_completed(&ctx, &mut st);
     assert!(st.promotions.is_empty());
-    assert!(st.jobs.get(&id).unwrap().applied_at.is_none());
+    assert!(st.jobs.get(&id).unwrap().applied_at.is_some());
     drop(dir);
 }
 
@@ -583,7 +598,7 @@ fn a_red_tip_promotes_the_newest_green_commit_below_it() {
     let job = promotion_job(&st).expect("last green tip should be queued for promotion");
     assert_eq!(job.from_ref.as_deref(), Some(GREEN));
     let id = job.id.clone();
-    confirm_promotion(&ctx, &mut st, &id, GREEN);
+    confirm_promotion(&ctx, &host, &mut st, &id, GREEN);
     let last = st.promotions.last().unwrap();
     assert_eq!(last.tip, GREEN);
     assert_eq!(last.failing, Some(names(&["a"])));
@@ -611,7 +626,7 @@ fn a_red_tip_with_new_failures_still_promotes_the_last_green_gate() {
     let job = promotion_job(&st).expect("last green tip should be queued for promotion");
     assert_eq!(job.from_ref.as_deref(), Some(GREEN));
     let id = job.id.clone();
-    confirm_promotion(&ctx, &mut st, &id, GREEN);
+    confirm_promotion(&ctx, &host, &mut st, &id, GREEN);
     assert_eq!(st.promotions.last().unwrap().tip, GREEN);
     let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exceptions.contains("gate-new-failures"), "{exceptions}");

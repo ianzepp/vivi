@@ -73,6 +73,11 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         job_id.clone(),
     )?;
     plan.target = selected.as_ref().map(|selected| selected.target.clone());
+    if config.provider == "local" {
+        plan.publish_remote = selected
+            .as_ref()
+            .and_then(|selected| selected.target.publish_remote.clone());
+    }
     read_only_notes(flags.read_only, config, &task.body, &progress);
     let (token, start) = match (config.worktree_source(), flags.read_only) {
         (Some(path), true) => worktree_read_only_start(&path, &mut plan, &progress)?,
@@ -257,6 +262,11 @@ fn resolve_dispatch(
     // An addressee that is not a known local role is no role at all, not an
     // error: the dispatch then runs without one.
     let role = role_facts(space, task);
+    role_dispatch::validate_publish(
+        role.as_ref(),
+        command.publish_ref.as_deref(),
+        command.publish_expect.as_deref(),
+    )?;
     let resolved = role_dispatch::resolve(
         config,
         pool,
@@ -280,6 +290,8 @@ fn resolve_dispatch(
         model: resolved.model,
         from: command.from.clone(),
         branch: command.branch.clone(),
+        publish_ref: command.publish_ref.clone(),
+        publish_expect: command.publish_expect.clone(),
         with: command.with.clone(),
         budget: command.budget,
         allow_default_branch: command.allow_default_branch,

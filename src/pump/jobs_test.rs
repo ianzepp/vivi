@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 
 use super::{
     JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
-    branch_sources_pending, dispatch_order, enqueue, integration_error, mark_applied, mark_gated,
-    mark_merged, pool_command, recover_dispatched,
+    branch_sources_pending, dispatch_order, enqueue, enqueue_promotion, integration_error,
+    mark_applied, mark_gated, mark_merged, pool_command, recover_dispatched,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{FakeHost, test_ctx};
+use crate::routing::{RoleRouting, RoutedRole};
 
 #[derive(Default)]
 struct Store {
@@ -227,6 +228,8 @@ fn pool_command_carries_repository_and_write_context() {
     job.with = vec![String::from("unit/u1-a1")];
     job.model = Some(String::from("model/a"));
     job.allow_default_branch = true;
+    job.publish_ref = Some(String::from("refs/heads/next"));
+    job.publish_expect = Some(String::from("a".repeat(40)));
     let command = pool_command(&job, "local", "a1b2c3d4");
     assert!(command.contains("--pool 'local'"));
     assert!(command.contains("a1b2c3d4"));
@@ -238,6 +241,42 @@ fn pool_command_carries_repository_and_write_context() {
     assert!(command.contains("--allow-default-branch"));
     assert!(command.contains("--budget 45"));
     assert!(command.contains("--read-only"));
+    assert!(command.contains("--publish-ref 'refs/heads/next'"));
+    assert!(command.contains(&format!("--publish-expect '{}'", "a".repeat(40))));
+}
+
+#[test]
+fn promotion_job_binds_an_exact_green_candidate_to_main_on_a_scratch_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.branch = String::from("next");
+    config.main = String::from("main");
+    let (ctx, _) = test_ctx(dir.path(), config);
+    let ctx = ctx.with_routing(RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("release"),
+            kind: Some(String::from("release")),
+            status: String::from("active"),
+            pool: Some(String::from("local")),
+            read_only: Some(false),
+            model: None,
+            models: Vec::new(),
+        }],
+        ..RoleRouting::default()
+    });
+    let mut store = Store::default();
+    let tip = "0123456789012345678901234567890123456789";
+    let id = enqueue_promotion(&ctx, &mut store, "default", tip, &[])
+        .unwrap()
+        .unwrap();
+    let job = &store.jobs[&id];
+
+    assert_eq!(job.publish_ref.as_deref(), Some("refs/heads/main"));
+    assert_eq!(job.publish_expect.as_deref(), Some(tip));
+    assert_eq!(job.from_ref.as_deref(), Some(tip));
+    assert_ne!(job.branch.as_deref(), Some("main"));
+    assert!(!job.allow_default_branch);
+    assert!(job.body.contains("Do not push"));
 }
 
 #[test]

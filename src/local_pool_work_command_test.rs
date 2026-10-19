@@ -54,6 +54,9 @@ fn plan_with(names: &[&str]) -> job::JobPlan {
             from: "main".into(),
             branch: "factory/x".into(),
         },
+        publish_ref: None,
+        publish_expect: None,
+        publish_remote: None,
         with: names
             .iter()
             .map(|n| job::WithRef {

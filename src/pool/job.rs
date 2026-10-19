@@ -356,6 +356,12 @@ pub struct JobPlan {
     pub brief: String,
     pub rules: String,
     pub refs: Refs,
+    /// Remote branch the privileged runner publishes after agent success.
+    pub publish_ref: Option<String>,
+    /// Exact commit the runner must publish (promotion jobs only).
+    pub publish_expect: Option<String>,
+    /// Remote address for privileged publication when the pool itself has no remote.
+    pub publish_remote: Option<String>,
     /// Extra refs the job may read; `commit` is filled before a slot is
     /// claimed (empty in a plan that is not resolved yet).
     pub with: Vec<WithRef>,
@@ -524,6 +530,19 @@ fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
         ("COMMIT_EMAIL", spec.committer.email.clone()),
         ("ENV_NAMES", spec.env_names.join(" ")),
     ];
+    if let Some(reference) = &spec.publish_ref {
+        fields.extend([
+            ("PUBLISH_REF", reference.clone()),
+            (
+                "PUBLISH_EXPECT",
+                spec.publish_expect.clone().unwrap_or_default(),
+            ),
+            (
+                "PUBLISH_REMOTE",
+                spec.publish_remote.clone().unwrap_or_default(),
+            ),
+        ]);
+    }
     if spec.read_only {
         fields.push(("READ_ONLY", "1".to_string()));
     }

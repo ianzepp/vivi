@@ -52,6 +52,10 @@ pub struct JobSpec {
     pub branch: Option<String>,
     /// Grant this job the configured fast-forward-only default branch target.
     pub allow_default_branch: bool,
+    /// Remote refs the privileged runner may publish after clean worker exit.
+    pub publish_ref: Option<String>,
+    /// Exact source commit required for guarded promotion.
+    pub publish_expect: Option<String>,
     /// Pool execution budget in seconds.
     pub budget: u64,
     /// Explicit read-only request; the role can also require this mode.
@@ -92,6 +96,8 @@ impl JobSpec {
             builtin_role: None,
             branch: None,
             allow_default_branch: false,
+            publish_ref: None,
+            publish_expect: None,
             budget: 0,
             read_only: false,
             units: Vec::new(),
@@ -153,6 +159,10 @@ pub struct PoolJob {
     pub branch: Option<String>,
     #[serde(default)]
     pub allow_default_branch: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_expect: Option<String>,
     pub budget: u64,
     pub read_only: bool,
     pub units: Vec<String>,
@@ -202,6 +212,8 @@ impl From<JobSpec> for PoolJob {
             builtin_role: spec.builtin_role,
             branch: spec.branch,
             allow_default_branch: spec.allow_default_branch,
+            publish_ref: spec.publish_ref,
+            publish_expect: spec.publish_expect,
             budget: spec.budget,
             read_only: spec.read_only,
             units: spec.units,
@@ -234,6 +246,22 @@ pub struct JobOutcome {
     pub at: u64,
 }
 
+/// Verified privileged-runner publication receipt carried in the pool summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerPublishReceipt {
+    pub state: String,
+    pub reference: String,
+    pub candidate: String,
+    pub remote_sha: String,
+}
+
+impl RunnerPublishReceipt {
+    #[must_use]
+    pub fn succeeded(&self) -> bool {
+        matches!(self.state.as_str(), "pushed" | "already-on-remote")
+    }
+}
+
 impl JobOutcome {
     /// Whether the pool receipt explicitly reports a successful worker exit.
     #[must_use]
@@ -245,6 +273,23 @@ impl JobOutcome {
     #[must_use]
     pub fn host_failure(&self) -> Option<crate::pump::envfail::HostFailure> {
         crate::pump::envfail::classify(&self.state, &self.detail, &self.receipt)
+    }
+
+    /// Parse `runner publish: STATE REF CANDIDATE_SHA REMOTE_SHA` from the
+    /// task's collected pool summary.
+    #[must_use]
+    pub fn runner_publish(&self) -> Option<RunnerPublishReceipt> {
+        let line = self
+            .receipt
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("runner publish: "))?;
+        let mut words = line.split_whitespace();
+        Some(RunnerPublishReceipt {
+            state: words.next()?.to_owned(),
+            reference: words.next()?.to_owned(),
+            candidate: words.next()?.to_owned(),
+            remote_sha: words.next()?.to_owned(),
+        })
     }
 }
 
@@ -300,9 +345,7 @@ pub fn enqueue_promotion(
     let remote = target_ctx.cfg.remote.clone();
     let runner_branch = format!("pump/promotion/{}/{}", safe_component(target), short);
     let body = format!(
-        "You have explicit authority to fast-forward repository target `{target}` branch `{}` to the green integration tip `{tip}`. Fetch `{remote}`'s `refs/heads/{}` and inspect its exact current commit. If the green tip is already an ancestor of the remote branch, report `already-on-main`. Otherwise verify the remote branch tip is an ancestor of the green tip, then run a plain `git push {remote} {tip}:refs/heads/{}`. Never force, reset, or push any other commit. If the branch moved to a divergent tip, report `blocked` and stop. End your receipt with one minified JSON line prefixed `PUMP_PROMOTE_RESULT=` and containing `{{\"status\":\"pushed|already-on-main|blocked\",\"tip\":\"{tip}\"}}`. The pool runner branch is only scratch output; do not push the promotion result there.\n\nGreen gate failing names at this tip: {}",
-        target_ctx.cfg.main,
-        target_ctx.cfg.main,
+        "The green integration tip is `{tip}`. Confirm your checkout HEAD is exactly that commit and the worktree is clean. Do not push or change branches. If HEAD differs, report `blocked`. Otherwise report `ready`; after your clean exit, the privileged pool runner may publish only this exact SHA to `{remote}` `refs/heads/{}`. The controller requires the runner's actual publish receipt and independently verifies the remote ref. End your receipt with one minified JSON line prefixed `PUMP_PROMOTE_RESULT=` and containing `{{\"status\":\"ready|blocked\",\"tip\":\"{tip}\"}}`. The pool runner branch is only scratch output; do not push the promotion result there.\n\nGreen gate failing names at this tip: {}",
         target_ctx.cfg.main,
         if failing.is_empty() {
             "(not recorded)".to_owned()
@@ -314,6 +357,8 @@ pub fn enqueue_promotion(
     spec.target = Some(target.to_owned());
     spec.from_ref = Some(tip.to_owned());
     spec.branch = Some(runner_branch);
+    spec.publish_ref = Some(format!("refs/heads/{}", target_ctx.cfg.main));
+    spec.publish_expect = Some(tip.to_owned());
     spec.budget = target_ctx.cfg.dispatch.budget;
     spec.payload = serde_json::json!({
         "target": target,
@@ -794,6 +839,12 @@ fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
     if job.allow_default_branch {
         args.push("--allow-default-branch".into());
     }
+    if let Some(reference) = &job.publish_ref {
+        args.push(format!("--publish-ref {}", shell_quote(reference)));
+    }
+    if let Some(expected) = &job.publish_expect {
+        args.push(format!("--publish-expect {}", shell_quote(expected)));
+    }
     if job.budget > 0 {
         args.push(format!("--budget {}", job.budget));
     }
@@ -873,6 +924,8 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.builtin_role == spec.builtin_role
         && job.branch == spec.branch
         && job.allow_default_branch == spec.allow_default_branch
+        && job.publish_ref == spec.publish_ref
+        && job.publish_expect == spec.publish_expect
         && job.budget == spec.budget
         && job.read_only == spec.read_only
         && job.units == spec.units
