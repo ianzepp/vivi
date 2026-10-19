@@ -27,6 +27,7 @@ pub mod run;
 pub mod service;
 pub mod state;
 pub mod store;
+pub mod transient;
 
 #[cfg(test)]
 #[path = "pump/logview_test.rs"]
@@ -47,6 +48,10 @@ mod state_test;
 #[cfg(test)]
 #[path = "pump/store_test.rs"]
 mod store_test;
+
+#[cfg(test)]
+#[path = "pump/transient_test.rs"]
+mod transient_test;
 
 #[cfg(test)]
 #[path = "pump/report_test.rs"]
