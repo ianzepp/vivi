@@ -369,6 +369,18 @@ pub struct Board {
     /// Need handle -> epoch seconds a revision planner started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub revision_planning: BTreeMap<String, u64>,
+    /// Handle -> pid of the board planner currently running.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub planner_pids: BTreeMap<String, u32>,
+    /// Handle -> consecutive planner exits without a plan.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub planner_fails: BTreeMap<String, u32>,
+    /// Handle -> earliest epoch seconds the planner may relaunch.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub planner_retry_at: BTreeMap<String, u64>,
+    /// Handles parked after exhausting planner retries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planner_failed: Vec<String>,
     /// An attempt record was posted since the last sync push: the next board
     /// pass ships it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

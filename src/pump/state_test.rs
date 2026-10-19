@@ -7,7 +7,7 @@ use serde_json::json;
 use tempfile::tempdir;
 
 use crate::pump::state::{
-    MergeResult, NeedRecord, Promotion, State, Status, Unit, with_target_state,
+    Board, MergeResult, NeedRecord, Promotion, State, Status, Unit, with_target_state,
 };
 
 /// A `state.json` as the pump writes it: one-space indent, `null`s
@@ -193,6 +193,31 @@ fn a_state_written_by_pump_py_loads() {
     assert_eq!(st.plans_seen, vec!["84eaff6a.json", "9fec06b7.json"]);
     assert!(st.promotions.is_empty());
     assert_eq!(st.extra.get("rr"), Some(&json!(17)));
+}
+
+#[test]
+fn board_loads_old_shape_and_round_trips_new_fields() {
+    let old: Board = serde_json::from_str(r#"{"planning":{"n1":123}}"#).unwrap();
+    assert_eq!(old.planning.get("n1"), Some(&123));
+    assert!(old.planner_pids.is_empty());
+    assert!(old.planner_fails.is_empty());
+    assert!(old.planner_retry_at.is_empty());
+    assert!(old.planner_failed.is_empty());
+
+    let board = Board {
+        planner_pids: BTreeMap::from([("n1".to_string(), 4242)]),
+        planner_fails: BTreeMap::from([("n1".to_string(), 2)]),
+        planner_retry_at: BTreeMap::from([("n1".to_string(), 1_800_000_000)]),
+        planner_failed: vec!["n2".to_string()],
+        ..Board::default()
+    };
+
+    let text = serde_json::to_string(&board).unwrap();
+    let back: Board = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.planner_pids.get("n1"), Some(&4242));
+    assert_eq!(back.planner_fails.get("n1"), Some(&2));
+    assert_eq!(back.planner_retry_at.get("n1"), Some(&1_800_000_000));
+    assert_eq!(back.planner_failed, vec!["n2"]);
 }
 
 #[test]
