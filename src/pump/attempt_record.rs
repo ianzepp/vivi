@@ -29,6 +29,8 @@ const FINAL_MESSAGE_CHARS: usize = 1500;
 const EXCERPT_CHARS: usize = 800;
 /// The pool summary line that carries the agent's exit code.
 const EXIT_MARKER: &str = "agent exit ";
+/// The pool summary fragment that carries the dispatch time.
+const STARTED_MARKER: &str = "started from ";
 /// The receipt section titles the pool writes after its summary lines.
 const SECTION_RECEIPT: &str = "receipt";
 const SECTION_STDERR: &str = "stderr tail";
@@ -164,6 +166,35 @@ pub fn agent_exit(receipt: &str) -> Option<i32> {
     }
 }
 
+/// The agent's wall-clock seconds in a task receipt's summary line: the
+/// number after `agent exit <n> in <m>s` or `agent exit <n> after <m>s`.
+#[must_use]
+pub fn agent_secs(text: &str) -> Option<u64> {
+    let (_, rest) = text.split_once(EXIT_MARKER)?;
+    let rest = rest
+        .trim_start()
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '-');
+    let after = [" in ", " after "]
+        .into_iter()
+        .find_map(|m| rest.strip_prefix(m))?;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    match digits.parse() {
+        Ok(secs) => Some(secs),
+        Err(_) => None,
+    }
+}
+
+/// The dispatch time in a task receipt's summary line: the epoch seconds
+/// after `started from `.
+fn started_from(text: &str) -> Option<u64> {
+    let (_, rest) = text.split_once(STARTED_MARKER)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    match digits.parse() {
+        Ok(at) => Some(at),
+        Err(_) => None,
+    }
+}
+
 /// The joined text of the stderr and runner-log tail sections of a task
 /// receipt: evidence scans that must not read the agent's own message
 /// section read this instead of the whole receipt.
@@ -233,12 +264,19 @@ enum Branch {
 
 /// Everything a record says.
 struct Facts {
+    need: String,
+    task: Option<String>,
+    actor: String,
+    role: String,
+    slot: Option<String>,
+    start: Option<u64>,
+    end: u64,
+    agent_secs: Option<u64>,
     uid: String,
     attempt: u32,
     model: String,
     pool: String,
     target: String,
-    task: Option<String>,
     branch: Option<String>,
     base: String,
     shape: Branch,
@@ -284,13 +322,24 @@ fn gather(ctx: &Ctx, tctx: &Ctx, st: &State, uid: &str, base: &str, ending: &End
         let task = unit.task.as_deref()?;
         Some(receipt_full(ctx, task))
     });
+    let secs = receipt.as_deref().and_then(agent_secs);
+    let start = unit
+        .since_dispatch
+        .or_else(|| receipt.as_deref().and_then(started_from));
     Facts {
+        need: unit.need.clone(),
+        task: unit.task.clone(),
+        actor: ctx.actor.clone(),
+        role: ctx.cfg.to.clone(),
+        slot: unit.slot.clone(),
+        start,
+        end: ctx.now(),
+        agent_secs: secs,
         uid: uid.to_owned(),
         attempt: unit.attempts,
         model: unit.model.clone().unwrap_or_else(|| "None".to_owned()),
         pool: unit.pool.clone().unwrap_or_else(|| "?".to_owned()),
         target: unit.target_id().to_owned(),
-        task: unit.task.clone(),
         branch: unit.branch.clone(),
         base: base.to_owned(),
         shape,
@@ -450,10 +499,12 @@ fn slug(label: &str) -> String {
 
 /// The text of the record.
 fn compose(facts: &Facts) -> String {
-    let mut out = format!(
-        "pump: attempt record\nunit: {}  attempt: {}  model: {}  pool: {}  target: {}\noutcome: {}\n",
-        facts.uid, facts.attempt, facts.model, facts.pool, facts.target, facts.label
-    );
+    let mut out = String::from("pump: attempt record\n");
+    out.push_str(&header_block(facts));
+    out.push_str(&format!(
+        "unit: {}  attempt: {}  model: {}  pool: {}  target: {}\n",
+        facts.uid, facts.attempt, facts.model, facts.pool, facts.target
+    ));
     out.push_str(&format!(
         "branch: {}\n",
         branch_line(facts.branch.as_deref(), &facts.shape)
@@ -473,6 +524,51 @@ fn compose(facts: &Facts) -> String {
     out.push_str("hand's final message:\n");
     out.push_str(&indent(&facts.message, "(none)"));
     out
+}
+
+/// The machine-readable `key: value` block that opens every record: one
+/// line per fact, `none` for absent values, decimal epochs.
+fn header_block(facts: &Facts) -> String {
+    format!(
+        "attempt: {}-a{}\n\
+         need: {}\n\
+         task: {}\n\
+         actor: {}\n\
+         role: {}\n\
+         pool: {}\n\
+         slot: {}\n\
+         model: {}\n\
+         start: {}\n\
+         end: {}\n\
+         agent-seconds: {}\n\
+         outcome: {}\n",
+        facts.uid,
+        facts.attempt,
+        or_none(Some(facts.need.as_str())),
+        or_none(facts.task.as_deref()),
+        or_none(Some(facts.actor.as_str())),
+        or_none(Some(facts.role.as_str())),
+        or_none(Some(facts.pool.as_str())),
+        or_none(facts.slot.as_deref()),
+        or_none(Some(facts.model.as_str())),
+        num(facts.start),
+        facts.end,
+        num(facts.agent_secs),
+        &facts.label,
+    )
+}
+
+/// A header value: `none` when it is absent or blank.
+fn or_none(value: Option<&str>) -> &str {
+    match value {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => "none",
+    }
+}
+
+/// A header number: decimal, or `none` when it is absent.
+fn num(value: Option<u64>) -> String {
+    value.map_or_else(|| String::from("none"), |n| n.to_string())
 }
 
 /// The `branch:` line.
