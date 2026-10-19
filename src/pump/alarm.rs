@@ -2,10 +2,10 @@
 //!
 //! A person should not have to read `log.txt` to learn that fix units sit
 //! unmerged or that `main` has not been promoted for hours. [`check`] files
-//! three exceptions (`stall-fix-unit`, `stall-promote`, `stall-merge`), each
-//! at most once per subject per hour; [`status_lines`] adds the same facts to
-//! `status.txt`. See skills/vivi/references/pump-contract.md, section
-//! "Stall alarms".
+//! four exceptions (`stall-fix-unit`, `stall-promote`, `stall-merge`, and
+//! `blocking-stuck` from [`crate::pump::blockers`]), each at most once per
+//! subject per hour; [`status_lines`] adds the same facts to `status.txt`. See
+//! skills/vivi/references/pump-contract.md, section "Stall alarms".
 
 use serde_json::{Map, Value, json};
 
@@ -20,10 +20,10 @@ const REPEAT_SECS: u64 = 3600;
 const FORGET_SECS: u64 = 86_400;
 
 /// One exception about to be filed.
-struct Finding {
-    kind: &'static str,
-    unit: String,
-    text: String,
+pub(crate) struct Finding {
+    pub(crate) kind: &'static str,
+    pub(crate) unit: String,
+    pub(crate) text: String,
 }
 
 /// One repository target's promotion history.
@@ -42,6 +42,7 @@ pub fn check(ctx: &Ctx, st: &mut State) {
     let mut findings = fix_unit_findings(ctx, st, now);
     findings.extend(promote_findings(ctx, st, now));
     findings.extend(merge_findings(ctx, st, now));
+    findings.extend(crate::pump::blockers::findings(ctx, st, now));
     let raised = raised_map(st);
     raised.retain(|_, at| {
         at.as_u64()
@@ -279,7 +280,7 @@ fn merge_findings(ctx: &Ctx, st: &State, now: u64) -> Vec<Finding> {
 }
 
 /// `2h05m` from an hour up, else `14m`.
-fn age(secs: u64) -> String {
+pub(crate) fn age(secs: u64) -> String {
     let minutes = secs / 60;
     if minutes >= 60 {
         format!("{}h{:02}m", minutes / 60, minutes % 60)

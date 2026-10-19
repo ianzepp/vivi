@@ -114,6 +114,66 @@ fn write_status_writes_counts_then_stall_lines() {
 }
 
 #[test]
+fn write_status_lists_top_blockers_after_the_stall_lines() {
+    let (dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("r"),
+        NeedRecord {
+            verdict: String::from("units"),
+            units: vec![String::from("r-1")],
+            ..NeedRecord::default()
+        },
+    );
+    st.units.insert(
+        String::from("r-1"),
+        Unit {
+            need: String::from("r"),
+            status: Status::Stuck,
+            since: T0 - 30 * 60,
+            ..Unit::default()
+        },
+    );
+    let mut pairs: Vec<serde_json::Value> = Vec::new();
+    for index in 1..=12 {
+        let need = format!("m{index}");
+        st.needs.insert(
+            need.clone(),
+            NeedRecord {
+                verdict: String::from("units"),
+                ..NeedRecord::default()
+            },
+        );
+        st.units.insert(
+            format!("{need}-1"),
+            Unit {
+                need: need.clone(),
+                status: Status::Pending,
+                since: T0 - 600,
+                ..Unit::default()
+            },
+        );
+        pairs.push(serde_json::json!({"source_id": need, "blocked_by": ["r"]}));
+    }
+    host.reply(
+        "graph blocked",
+        0,
+        &serde_json::Value::Array(pairs).to_string(),
+    );
+    host.set_now(T0);
+    let (merger, _results, _jobs) = Merger::detached();
+    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
+    assert!(
+        text.contains("blocker r stuck age 30m held 13"),
+        "no blocker line in {text}"
+    );
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 9, "one blocker line: {text}");
+    assert_eq!(lines[7], "blocker r stuck age 30m held 13");
+}
+
+#[test]
 fn write_status_lists_in_flight_planners_with_pid_and_age() {
     let (dir, ctx, _host) = setup();
     let mut st = State::default();

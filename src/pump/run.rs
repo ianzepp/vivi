@@ -86,7 +86,8 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
 
 /// Write the status lines to `<home>/status.txt`: a UTC timestamp, unit
 /// counts, plan verdict counts, the merge/gate counters, the stall lines
-/// from [`crate::pump::alarm::status_lines`], the in-flight planner lines,
+/// from [`crate::pump::alarm::status_lines`], the blocker lines from
+/// [`crate::pump::blockers::status_lines`], the in-flight planner lines,
 /// then one line per merge lane (`lanes`, from [`Merger::lane_lines`]). An
 /// idle board adds no planner lines. A write failure is logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
@@ -123,6 +124,7 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
         ),
     ];
     lines.extend(crate::pump::alarm::status_lines(ctx, st));
+    lines.extend(crate::pump::blockers::status_lines(ctx, st));
     lines.extend(planner_lines(ctx, st));
     lines.extend(lanes.iter().cloned());
     let path = ctx.home.join("status.txt");
