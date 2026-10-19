@@ -90,7 +90,12 @@ fn reclaim_builds_held(
     if dir.join("claim").is_file() {
         return Ok((
             Vec::new(),
-            vec![skip(pool, slot, ActionKind::Build, "claimed while reclaiming")],
+            vec![skip(
+                pool,
+                slot,
+                ActionKind::Build,
+                "claimed while reclaiming",
+            )],
         ));
     }
     let mut actions = Vec::new();

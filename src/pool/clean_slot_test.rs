@@ -55,7 +55,10 @@ fn reclaim_builds_skips_while_another_reclaim_holds() {
     assert!(acts.is_empty());
     assert_eq!(skips.len(), 1, "{skips:?}");
     assert!(dir.join("repo/target/blob").is_file());
-    assert!(dir.join("reclaim").is_file(), "the planted hold must survive");
+    assert!(
+        dir.join("reclaim").is_file(),
+        "the planted hold must survive"
+    );
 }
 
 #[test]
