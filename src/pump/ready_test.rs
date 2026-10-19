@@ -182,6 +182,18 @@ fn a_unit_that_is_not_pending_is_not_ready() {
 }
 
 #[test]
+fn a_unit_inside_its_backoff_window_is_not_ready() {
+    let (_dir, ctx, _host, mut st) = setup();
+    let now = ctx.now();
+    let (uid, mut u) = mk("u", Status::Pending, &["src/a"]);
+    u.retry_not_before = Some(now + 300);
+    st.units.insert(uid, u);
+    assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
+    st.units.get_mut("u").unwrap().retry_not_before = Some(now - 1);
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
+}
+
+#[test]
 fn pick_model_alternates_lanes_by_attempt_parity() {
     let mut cfg = lane_cfg(vec![("m-a", 1), ("m-b", 1)], "");
     // Bump max_attempts so attempts 0-2 all stay in the lane walk.
