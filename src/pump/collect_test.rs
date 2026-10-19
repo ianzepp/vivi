@@ -799,8 +799,9 @@ fn a_silent_split_planner_still_goes_stuck() {
     assert_eq!(collect(&ctx, &mut st), None);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(
-        exceptions(&ctx)
-            .contains("split-no-answer u-1 the split planner is still unreachable after 25 minutes"),
+        exceptions(&ctx).contains(
+            "split-no-answer u-1 the split planner is still unreachable after 25 minutes"
+        ),
         "{:?}",
         exceptions(&ctx)
     );
