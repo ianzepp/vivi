@@ -228,6 +228,10 @@ pub struct Unit {
     /// Epoch seconds of the last dispatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_dispatch: Option<u64>,
+    /// Epoch seconds the current attempt first became dispatch-ready.
+    /// `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_at: Option<u64>,
     /// Pool the task was dispatched to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,

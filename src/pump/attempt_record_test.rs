@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::attempt_record::{agent_exit, agent_secs};
+use crate::pump::attempt_record::{agent_exit, agent_secs, clear_ready, mark_ready, post_status};
 use crate::pump::board::board;
 use crate::pump::collect::{collect, fail};
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig, PumpTarget};
@@ -57,6 +57,7 @@ fn inflight() -> Unit {
         model: Some(String::from("zai/glm")),
         pool: Some(String::from("fly4")),
         since: T0,
+        ready_at: Some(T0 - 90),
         since_dispatch: Some(T0 - 60),
         ..Unit::default()
     }
@@ -142,18 +143,23 @@ fn a_delivered_attempt_posts_the_full_record_once_and_marks_the_sync() {
     let mut st = state_with(unit);
     collect(&ctx, &mut st);
     assert_eq!(st.units["u-1"].status, Status::Delivered);
+    assert_eq!(st.units["u-1"].ready_at, None);
     let expected = "pump: attempt record\n\
         attempt: u-1-a1\n\
         need: n1\n\
         task: 1a2b3c4d\n\
         actor: none\n\
         role: hand\n\
+        kind: plain\n\
         pool: fly4\n\
         slot: s1\n\
         model: zai/glm\n\
+        ready-at: 999910\n\
         start: 999940\n\
         end: 1000000\n\
         agent-seconds: 12\n\
+        delivered-at: 1000000\n\
+        merged-at: none\n\
         outcome: delivered\n\
         unit: u-1  attempt: 1  model: zai/glm  pool: fly4  target: default\n\
         branch: unit/u-1-a1 (pushed to the target remote, kept)\n\
@@ -172,6 +178,36 @@ fn a_delivered_attempt_posts_the_full_record_once_and_marks_the_sync() {
     // The unit left `inflight`: a second pass posts nothing more.
     collect(&ctx, &mut st);
     assert_eq!(mails(&host).len(), 1);
+}
+
+#[test]
+fn a_merged_status_posts_a_synced_attempt_event() {
+    let (_dir, ctx, host) = setup();
+    let mut st = state_with(inflight());
+
+    post_status(&ctx, &mut st, "u-1", "merged", T0 + 42);
+
+    let text =
+        fs::read_to_string(ctx.home.join("board/reply-n1-attempt-u-1-a1-merged.txt")).unwrap();
+    assert_eq!(
+        text.trim_end(),
+        "pump: attempt status event\nattempt: u-1-a1\nneed: n1\nstatus: merged\nat: 1000042"
+    );
+    assert_eq!(mails(&host).len(), 1);
+    assert!(st.board.sync_pending);
+}
+
+#[test]
+fn ready_time_keeps_the_first_observation_until_cleared() {
+    let mut st = state_with(Unit::default());
+
+    mark_ready(&mut st, "u-1", T0);
+    mark_ready(&mut st, "u-1", T0 + 20);
+    assert_eq!(st.units["u-1"].ready_at, Some(T0));
+
+    clear_ready(&mut st, "u-1");
+    mark_ready(&mut st, "u-1", T0 + 30);
+    assert_eq!(st.units["u-1"].ready_at, Some(T0 + 30));
 }
 
 #[test]

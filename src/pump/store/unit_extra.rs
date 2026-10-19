@@ -27,6 +27,8 @@ const SEND_REPORTED_KEY: &str = "send_reported";
 const TRANSIENT_RETRIES_KEY: &str = "transient_retries";
 /// The `extra_json` key of [`Unit::retry_not_before`].
 const RETRY_NOT_BEFORE_KEY: &str = "retry_not_before";
+/// The `extra_json` key of [`Unit::ready_at`].
+const READY_AT_KEY: &str = "ready_at";
 /// The `extra_json` key of [`Unit::split_fails`].
 const SPLIT_FAILS_KEY: &str = "split_fails";
 /// The `extra_json` key of [`Unit::split_retry_at`].
@@ -60,6 +62,9 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
     }
     if let Some(secs) = unit.retry_not_before {
         extra.insert(RETRY_NOT_BEFORE_KEY.to_string(), Value::from(secs));
+    }
+    if let Some(secs) = unit.ready_at {
+        extra.insert(READY_AT_KEY.to_string(), Value::from(secs));
     }
     if unit.split_fails > 0 {
         extra.insert(SPLIT_FAILS_KEY.to_string(), Value::from(unit.split_fails));
@@ -104,6 +109,13 @@ pub(super) fn lift(unit: &mut Unit) {
         .and_then(|value| value.as_u64())
     {
         unit.retry_not_before = Some(secs);
+    }
+    if let Some(secs) = unit
+        .extra
+        .remove(READY_AT_KEY)
+        .and_then(|value| value.as_u64())
+    {
+        unit.ready_at = Some(secs);
     }
     if let Some(fails) = unit
         .extra

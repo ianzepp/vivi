@@ -268,10 +268,13 @@ struct Facts {
     task: Option<String>,
     actor: String,
     role: String,
+    kind: Option<String>,
     slot: Option<String>,
+    ready_at: Option<u64>,
     start: Option<u64>,
     end: u64,
     agent_secs: Option<u64>,
+    delivered_at: Option<u64>,
     uid: String,
     attempt: u32,
     model: String,
@@ -308,10 +311,55 @@ pub fn post(ctx: &Ctx, st: &mut State, uid: &str, ending: &Ending) {
     let base = dispatch_base(&tctx, st, uid);
     let facts = gather(ctx, &tctx, st, uid, &base, ending);
     let stage = format!("attempt-{uid}-a{attempt}-{}", slug(&ending.label));
-    if send_reply(ctx, &need, &stage, &compose(&facts)) {
+    let sent = send_reply(ctx, &need, &stage, &compose(&facts));
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.ready_at = None;
+    }
+    if sent {
         st.board.sync_pending = true;
     } else {
         ctx.log(&format!("attempt record send failed {uid}"));
+    }
+}
+
+/// Post a lifecycle event that enriches the synced attempt record.
+pub(crate) fn post_status(ctx: &Ctx, st: &mut State, uid: &str, status: &str, at: u64) {
+    let Some(unit) = st.units.get(uid) else {
+        return;
+    };
+    if unit.repairs.is_some() || unit.need.starts_with(ctx.cfg.fix_prefix.as_str()) {
+        return;
+    }
+    let need = unit.need.clone();
+    let attempt = unit.attempts;
+    let attempt_id = format!("{uid}-a{attempt}");
+    let body = format!(
+        "pump: attempt status event\n\
+         attempt: {attempt_id}\n\
+         need: {}\n\
+         status: {status}\n\
+         at: {at}",
+        or_none(Some(&need))
+    );
+    let stage = format!("attempt-{uid}-a{attempt}-{status}");
+    if send_reply(ctx, &need, &stage, &body) {
+        st.board.sync_pending = true;
+    } else {
+        ctx.log(&format!("attempt status event send failed {uid} {status}"));
+    }
+}
+
+/// Mark the first tick when a pending unit enters the dispatch-ready frontier.
+pub(crate) fn mark_ready(st: &mut State, uid: &str, at: u64) {
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.ready_at.get_or_insert(at);
+    }
+}
+
+/// Clear a readiness interval when a unit returns to a dependency hold.
+pub(crate) fn clear_ready(st: &mut State, uid: &str) {
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.ready_at = None;
     }
 }
 
@@ -335,10 +383,13 @@ fn gather(ctx: &Ctx, tctx: &Ctx, st: &State, uid: &str, base: &str, ending: &End
         task: unit.task.clone(),
         actor: ctx.actor.clone(),
         role: ctx.cfg.to.clone(),
+        kind: nonempty(ctx.cfg.kind_name(&unit.tools)),
         slot: unit.slot.clone(),
+        ready_at: unit.ready_at,
         start,
         end: ctx.now(),
         agent_secs: secs,
+        delivered_at: (ending.label == "delivered").then_some(unit.since),
         uid: uid.to_owned(),
         attempt: unit.attempts,
         model: unit.model.clone().unwrap_or_else(|| "None".to_owned()),
@@ -539,12 +590,16 @@ fn header_block(facts: &Facts) -> String {
          task: {}\n\
          actor: {}\n\
          role: {}\n\
+         kind: {}\n\
          pool: {}\n\
          slot: {}\n\
          model: {}\n\
+         ready-at: {}\n\
          start: {}\n\
          end: {}\n\
          agent-seconds: {}\n\
+         delivered-at: {}\n\
+         merged-at: none\n\
          outcome: {}\n",
         facts.uid,
         facts.attempt,
@@ -552,12 +607,15 @@ fn header_block(facts: &Facts) -> String {
         or_none(facts.task.as_deref()),
         or_none(Some(facts.actor.as_str())),
         or_none(Some(facts.role.as_str())),
+        or_none(facts.kind.as_deref()),
         or_none(Some(facts.pool.as_str())),
         or_none(facts.slot.as_deref()),
         or_none(Some(facts.model.as_str())),
+        num(facts.ready_at),
         num(facts.start),
         facts.end,
         num(facts.agent_secs),
+        num(facts.delivered_at),
         &facts.label,
     )
 }
@@ -568,6 +626,11 @@ fn or_none(value: Option<&str>) -> &str {
         Some(text) if !text.trim().is_empty() => text,
         _ => "none",
     }
+}
+
+/// An empty value is absent in the machine-readable attempt block.
+fn nonempty(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_owned())
 }
 
 /// A header number: decimal, or `none` when it is absent.

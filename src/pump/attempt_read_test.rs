@@ -2,7 +2,8 @@
 //! result replies, and the close-line timing summary.
 
 use crate::pump::attempt_read::{
-    AttemptFields, human_secs, opened_epoch, parse_receipt, parse_record, timing_summary,
+    AttemptFields, AttemptStatusEvent, human_secs, opened_epoch, parse_receipt, parse_record,
+    parse_status_event, timing_summary,
 };
 
 /// A full attempt record body: the block unit eb093a9c-3 writes, then its
@@ -17,9 +18,13 @@ role: hand
 pool: here
 slot: s1
 model: zai/glm-5.3
+kind: plain
+ready-at: 999930
 start: 999940
 end: 1000000
 agent-seconds: 12
+delivered-at: 1000000
+merged-at: none
 outcome: delivered
 unit: eb093a9c-3  attempt: 2  model: zai/glm-5.3  pool: here  target: default
 branch: unit/eb093a9c-3-a2 (pushed to the target remote, kept)
@@ -55,9 +60,13 @@ fn the_block_of_an_attempt_record_parses_field_by_field() {
     assert_eq!(fields.pool, Some(String::from("here")));
     assert_eq!(fields.slot, Some(String::from("s1")));
     assert_eq!(fields.model, Some(String::from("zai/glm-5.3")));
+    assert_eq!(fields.kind, Some(String::from("plain")));
+    assert_eq!(fields.ready_at, Some(999_930));
     assert_eq!(fields.start, Some(999_940));
     assert_eq!(fields.end, Some(1_000_000));
     assert_eq!(fields.agent_seconds, Some(12));
+    assert_eq!(fields.delivered_at, Some(1_000_000));
+    assert_eq!(fields.merged_at, None);
     assert_eq!(fields.outcome, "delivered");
 }
 
@@ -78,7 +87,70 @@ fn absent_values_parse_as_none() {
     assert_eq!(fields.task, None);
     assert_eq!(fields.slot, None);
     assert_eq!(fields.start, None);
+    assert_eq!(fields.kind, Some(String::from("plain")));
+    assert_eq!(fields.ready_at, Some(999_930));
+    assert_eq!(fields.delivered_at, Some(1_000_000));
+    assert_eq!(fields.merged_at, None);
     assert_eq!(fields.model, Some(String::from("zai/glm-5.3")));
+}
+
+#[test]
+fn old_records_leave_new_capture_fields_unavailable() {
+    let old = RECORD
+        .lines()
+        .filter(|line| {
+            !line.starts_with("kind:")
+                && !line.starts_with("ready-at:")
+                && !line.starts_with("delivered-at:")
+                && !line.starts_with("merged-at:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fields = parse_record(&old).expect("legacy record parses");
+
+    assert_eq!(fields.kind, None);
+    assert_eq!(fields.ready_at, None);
+    assert_eq!(fields.delivered_at, None);
+    assert_eq!(fields.merged_at, None);
+}
+
+#[test]
+fn a_merged_status_event_enriches_only_its_attempt() {
+    let event = parse_status_event(
+        "pump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged\nat: 1000042",
+    )
+    .expect("status event parses");
+    assert_eq!(event.attempt, "n1-1-a2");
+    assert_eq!(event.need, Some(String::from("n1")));
+    assert_eq!(event.status, "merged");
+    assert_eq!(event.at, Some(1_000_042));
+
+    let mut record = attempt("n1-1-a2", Some(12));
+    assert!(record.apply_status_event(&event));
+    assert_eq!(record.merged_at, Some(1_000_042));
+    assert!(!record.apply_status_event(&AttemptStatusEvent {
+        attempt: String::from("n1-1-a3"),
+        ..event
+    }));
+    assert!(!record.apply_status_event(&AttemptStatusEvent {
+        attempt: String::from("n1-1-a2"),
+        need: Some(String::from("other")),
+        status: String::from("merged"),
+        at: Some(1_000_099),
+    }));
+    assert_eq!(record.merged_at, Some(1_000_042));
+}
+
+#[test]
+fn a_status_event_without_a_timestamp_stays_unavailable() {
+    let event = parse_status_event(
+        "pump: attempt status event\nattempt: n1-1-a2\nneed: n1\nstatus: merged",
+    )
+    .expect("status event still identifies the attempt");
+    assert_eq!(event.at, None);
+    let mut record = attempt("n1-1-a2", Some(12));
+    assert!(record.apply_status_event(&event));
+    assert_eq!(record.merged_at, None);
 }
 
 #[test]
