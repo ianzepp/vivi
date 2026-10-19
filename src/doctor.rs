@@ -44,8 +44,9 @@ impl Project {
         let path = dir.join("mailspace.toml");
         let raw = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read mailspace config: {error}"))?;
-        let config = toml::from_str(&raw)
-            .map_err(|error| format!("mailspace config is invalid: {error}"))?;
+        let mut config: crate::mailspace::MailspaceConfig =
+            toml::from_str(&raw).map_err(|_| "mailspace config is invalid".to_string())?;
+        resolve_read_only_identity(&dir, &mut config)?;
         Ok(Self { root, dir, config })
     }
 
@@ -54,6 +55,49 @@ impl Project {
         crate::storage::Storage::open_mailspace_read_only(&self.dir)
             .map_err(|error| format!("mail store cannot be opened read-only: {error}"))
     }
+
+    pub(crate) fn mailspace_view(&self) -> crate::mailspace::Mailspace {
+        crate::mailspace::Mailspace::from_read_only_config(self.root.clone(), self.config.clone())
+    }
+}
+
+fn resolve_read_only_identity(
+    dir: &Path,
+    config: &mut crate::mailspace::MailspaceConfig,
+) -> Result<(), String> {
+    if config.id.as_deref().is_some_and(|id| !canonical_id(id)) {
+        return Err("mailspace identity in config is invalid".into());
+    }
+    let sidecar_path = dir.join("mailspace.id");
+    let sidecar = match std::fs::read_to_string(&sidecar_path) {
+        Ok(id) => {
+            let id = id.trim();
+            if !canonical_id(id) {
+                return Err("mailspace identity sidecar is invalid".into());
+            }
+            Some(id.to_string())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("mailspace identity sidecar is unreadable".into()),
+    };
+    match (&config.id, sidecar) {
+        (Some(config_id), Some(sidecar_id)) if *config_id != sidecar_id => {
+            Err("mailspace config and sidecar identities disagree".into())
+        }
+        (None, Some(sidecar_id)) => {
+            config.id = Some(sidecar_id);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn canonical_id(id: &str) -> bool {
+    id.len() == 36
+        && id.char_indices().all(|(index, ch)| match index {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_digit() || ('a'..='f').contains(&ch),
+        })
 }
 
 /// The overall health of a doctor report.

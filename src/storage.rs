@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -170,15 +171,22 @@ impl Storage {
         Self::open_with_db(mailspace_dir, &mailspace_dir.join(MAILSPACE_DB_FILENAME))
     }
 
-    /// Open an existing mailspace database without creating files or
-    /// migrating its schema. Read operations work as usual; any attempted
-    /// write is rejected by SQLite's read-only connection.
+    /// Open an existing mailspace database without creating the database or
+    /// migrating its schema. If a WAL-mode database lacks `-shm`, opening it
+    /// read-only would create that sidecar, so the open refuses it instead.
+    /// Read operations work as usual; any attempted write is rejected by
+    /// SQLite's read-only connection.
     ///
     /// # Errors
     /// Returns an error when the database is missing, unreadable, or the
     /// connection cannot be configured.
     pub fn open_mailspace_read_only(mailspace_dir: &Path) -> Result<Self, VivariumError> {
         let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
+        if Self::read_only_wal_index_missing(mailspace_dir) {
+            return Err(VivariumError::Other(
+                "read-only inspection skipped: the WAL-mode mail store has no mail.sqlite-shm sidecar; doctor will not create it".into(),
+            ));
+        }
         let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| {
                 VivariumError::Other(format!("failed to open storage database read-only: {e}"))
@@ -190,6 +198,24 @@ impl Storage {
             conn: RefCell::new(conn),
             handle_index: RefCell::new(None),
         })
+    }
+
+    /// True when a read-only WAL open would need to create the missing
+    /// shared-memory index beside the database.
+    #[must_use]
+    pub(crate) fn read_only_wal_index_missing(mailspace_dir: &Path) -> bool {
+        let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
+        if mailspace_dir
+            .join(format!("{MAILSPACE_DB_FILENAME}-shm"))
+            .exists()
+        {
+            return false;
+        }
+        let Ok(mut file) = fs::File::open(db_path) else {
+            return false;
+        };
+        let mut header = [0_u8; 20];
+        file.read_exact(&mut header).is_ok() && header[18] == 2 && header[19] == 2
     }
 
     fn open_with_db(mail_root: &Path, db_path: &Path) -> Result<Self, VivariumError> {

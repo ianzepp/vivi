@@ -48,6 +48,16 @@ pub fn check_for_update() -> Result<CheckOutcome, VivariumError> {
     Ok(compare_versions(&newest.version, &current))
 }
 
+/// Compare this binary with the latest public release without printing.
+///
+/// The top-level doctor uses a short per-page timeout and turns an unavailable
+/// update service into a skipped finding.
+pub fn compare_latest() -> Result<CheckOutcome, VivariumError> {
+    let current = current_version()?;
+    let newest = release::latest_release_with_timeout(std::time::Duration::from_secs(2))?;
+    Ok(compare_versions(&newest.version, &current))
+}
+
 /// Install or activate a release.
 ///
 /// # Errors

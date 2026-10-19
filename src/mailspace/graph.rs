@@ -126,17 +126,27 @@ impl Mailspace {
     /// Returns not-found or storage errors.
     pub fn graph_show(&self, code_or_handle: &str) -> Result<GraphShow, VivariumError> {
         let storage = self.storage()?;
-        let graph = resolve_graph(&storage, code_or_handle)?;
+        self.graph_show_with_storage(&storage, code_or_handle)
+    }
+
+    /// Build the same graph projection using caller-owned storage. This is
+    /// used by read-only diagnostics with a SQLite read-only connection.
+    pub(crate) fn graph_show_with_storage(
+        &self,
+        storage: &crate::storage::Storage,
+        code_or_handle: &str,
+    ) -> Result<GraphShow, VivariumError> {
+        let graph = resolve_graph(storage, code_or_handle)?;
         let nodes = storage.work_graph_nodes(&graph.handle)?;
         let edges = storage.work_graph_edges(&graph.handle)?;
         let hash = storage.work_graph_revision_hash(&graph.handle, graph.current_revision)?;
         let (mut node_views, mut ready, mut blocked) = project_nodes(&nodes, &edges);
         if graph.code == BACKLOG_GRAPH_CODE {
             // Foreign and sent-copy nodes are not this mailspace's dispatch.
-            self.mark_holdings(&storage, &mut node_views)?;
+            self.mark_holdings(storage, &mut node_views)?;
             // A dependency the letter names that is not present and done
             // blocks its node too, edge or no edge.
-            self.mark_awaiting_dependencies(&storage, &nodes, &mut node_views)?;
+            self.mark_awaiting_dependencies(storage, &nodes, &mut node_views)?;
             ready = with_readiness(&node_views, "ready");
             blocked = with_readiness(&node_views, "blocked");
         }

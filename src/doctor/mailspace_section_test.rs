@@ -23,13 +23,14 @@ fn status_of<'a>(findings: &'a [Finding], name: &str) -> &'a Finding {
 }
 
 #[test]
-fn healthy_mailspace_is_all_ok() {
+fn mailspace_without_wal_sidecar_skips_store_checks() {
     let (_mailspace, tmp) = open_mailspace();
     let findings = findings(Some(tmp.path()));
     let names: Vec<&str> = findings.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["config", "store", "unabsorbed", "done_when"]);
-    for finding in &findings {
-        assert_eq!(finding.status, Status::Ok, "{finding:#?}");
+    assert_eq!(status_of(&findings, "config").status, Status::Ok);
+    for name in ["store", "unabsorbed", "done_when"] {
+        assert_eq!(status_of(&findings, name).status, Status::Skipped);
     }
 }
 
@@ -37,14 +38,15 @@ fn healthy_mailspace_is_all_ok() {
 fn broken_config_fails() {
     let (_mailspace, tmp) = open_mailspace();
     let config = tmp.path().join(".vivi/mailspace.toml");
-    std::fs::write(&config, "not = [valid").unwrap();
+    std::fs::write(&config, "not = [valid\napi_key = 'SECRETTOKEN123'\n").unwrap();
     let findings = findings(Some(tmp.path()));
     assert_eq!(findings.len(), 1, "{findings:#?}");
     assert_eq!(findings[0].name, "config");
     assert_eq!(findings[0].status, Status::Fail, "{findings:#?}");
     assert!(findings[0].fix.is_some(), "{findings:#?}");
     // The broken config's contents never reach the finding.
-    assert!(!findings[0].detail.contains("[valid"), "{findings:#?}");
+    let output = serde_json::to_string(&findings).unwrap();
+    assert!(!output.contains("SECRETTOKEN123"), "{output}");
 }
 
 #[test]
@@ -66,6 +68,31 @@ fn legacy_mailspace_check_does_not_create_identity_store_or_gitignore() {
 }
 
 #[test]
+fn readonly_wal_inspection_skips_without_creating_a_missing_shm_sidecar() {
+    let tmp = tempfile::tempdir().unwrap();
+    Mailspace::init(Some(tmp.path())).unwrap();
+    let db = tmp.path().join(".vivi/mail.sqlite");
+    let shm = db.with_extension("sqlite-shm");
+    let wal = db.with_extension("sqlite-wal");
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(connection);
+    let _ = std::fs::remove_file(&shm);
+    let _ = std::fs::remove_file(&wal);
+    assert!(!shm.exists(), "test setup requires no -shm sidecar");
+    let database_before = std::fs::read(&db).unwrap();
+
+    let report = findings(Some(tmp.path()));
+    for name in ["store", "unabsorbed", "done_when"] {
+        assert_eq!(status_of(&report, name).status, Status::Skipped);
+    }
+    assert!(!shm.exists(), "doctor must not create a -shm sidecar");
+    assert_eq!(std::fs::read(&db).unwrap(), database_before);
+}
+
+#[test]
 fn older_schema_warns() {
     let (mailspace, tmp) = open_mailspace();
     let conn = rusqlite::Connection::open(mailspace.store_path()).unwrap();
@@ -74,10 +101,10 @@ fn older_schema_warns() {
         [],
     )
     .unwrap();
-    drop(conn);
     let findings = findings(Some(tmp.path()));
     let store = status_of(&findings, "store");
     assert_eq!(store.status, Status::Warn, "{store:#?}");
+    drop(conn);
 }
 
 #[test]
@@ -104,4 +131,49 @@ fn need_without_done_when_warns() {
     let done_when = status_of(&findings, "done_when");
     assert_eq!(done_when.status, Status::Warn, "{done_when:#?}");
     assert!(done_when.detail.contains(&handle), "{done_when:#?}");
+}
+
+#[test]
+fn done_when_matches_step_and_ignores_blocked_needs() {
+    let (mailspace, tmp) = with_roster();
+    let ready = mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec!["cto".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "ready need".into(),
+            body: "no clause here".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+    let blocked = mailspace
+        .send(SendRequest {
+            from: "ceo".into(),
+            to: vec!["cto".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "blocked need".into(),
+            body: "also no clause here".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: vec![ready.clone()],
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+
+    let report = findings(Some(tmp.path()));
+    let done_when = status_of(&report, "done_when");
+    assert_eq!(done_when.status, Status::Warn, "{done_when:#?}");
+    assert!(done_when.detail.contains(&ready), "{done_when:#?}");
+    assert!(!done_when.detail.contains(&blocked), "{done_when:#?}");
 }

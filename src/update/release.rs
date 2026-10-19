@@ -2,6 +2,7 @@
 
 use semver::Version;
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::VivariumError;
 
@@ -33,10 +34,16 @@ pub(crate) struct PublicRelease {
 
 /// Resolve the newest public stable `v*` release by semver, not list order.
 pub(crate) fn latest_release() -> Result<PublicRelease, VivariumError> {
+    latest_release_with_timeout(Duration::from_secs(60))
+}
+
+pub(crate) fn latest_release_with_timeout(
+    timeout: Duration,
+) -> Result<PublicRelease, VivariumError> {
     let mut best = None;
     for page in 1..=MAX_RELEASE_PAGES {
         let url = format!("{RELEASES_API}?per_page=100&page={page}");
-        let body = http_get(&url)?;
+        let body = http_get_with_timeout(&url, timeout)?;
         let releases: Vec<ReleaseJson> = serde_json::from_slice(&body).map_err(|error| {
             VivariumError::Other(format!("cannot parse the release list from {url}: {error}"))
         })?;
@@ -77,15 +84,19 @@ pub(crate) fn consider_release(best: &mut Option<PublicRelease>, release: &Relea
 }
 
 pub(crate) fn http_get(url: &str) -> Result<Vec<u8>, VivariumError> {
+    http_get_with_timeout(url, Duration::from_secs(60))
+}
+
+fn http_get_with_timeout(url: &str, timeout: Duration) -> Result<Vec<u8>, VivariumError> {
     let url = url.to_string();
-    std::thread::spawn(move || http_get_blocking(&url))
+    std::thread::spawn(move || http_get_blocking(&url, timeout))
         .join()
         .map_err(|_| VivariumError::Other("update HTTP thread panicked".into()))?
 }
 
-fn http_get_blocking(url: &str) -> Result<Vec<u8>, VivariumError> {
+fn http_get_blocking(url: &str, timeout: Duration) -> Result<Vec<u8>, VivariumError> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(timeout)
         .build()
         .map_err(|error| VivariumError::Other(format!("http client: {error}")))?;
     let mut request = client

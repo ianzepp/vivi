@@ -8,6 +8,7 @@ use crate::boot::PumpView;
 
 mod board_command;
 mod config_command;
+mod doctor_command;
 mod mailspace_command;
 mod mcp_command;
 mod pool_command;
@@ -20,6 +21,7 @@ mod update_command;
 
 pub use board_command::BoardCommand;
 pub use config_command::ConfigCommand;
+pub use doctor_command::DoctorCommand;
 pub use mailspace_command::{
     AbsorbCommand, CycleCommand, GoalCommand, GraphActivateCommand, GraphApplyCommand,
     GraphAuditCommand, GraphBlockedCommand, GraphCommand, GraphCompleteCommand,
@@ -75,6 +77,9 @@ pub struct Cli {
 pub enum Command {
     /// Show project-local actionable work across tasks, needs, and wants
     Board(BoardCommand),
+
+    /// Give one read-only project health verdict and ranked findings
+    Doctor(DoctorCommand),
 
     /// Show the whole project frame in one read: seats, loops, unabsorbed mail,
     /// handles with verdicts, goals with register tallies, and the backlog

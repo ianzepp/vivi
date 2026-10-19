@@ -26,6 +26,32 @@ fn parses_mailspace_identity_add() {
 }
 
 #[test]
+fn parses_doctor_flags_and_global_project() {
+    let cli = Cli::try_parse_from([
+        "vivi",
+        "doctor",
+        "--project",
+        "/tmp/vivi-project",
+        "--json",
+        "--fix-hints",
+    ])
+    .unwrap();
+    match cli.command {
+        Command::Doctor(command) => {
+            assert_eq!(command.project, Some(PathBuf::from("/tmp/vivi-project")));
+            assert!(command.json);
+            assert!(command.fix_hints);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let global =
+        Cli::try_parse_from(["vivi", "--project", "/tmp/global-project", "doctor"]).unwrap();
+    assert_eq!(global.project, Some(PathBuf::from("/tmp/global-project")));
+    assert!(matches!(global.command, Command::Doctor(_)));
+}
+
+#[test]
 fn parses_mailspace_archive_set_and_clear() {
     let set = Cli::try_parse_from(["vivi", "mailspace", "archive", "--set", "../vivi"]).unwrap();
     match set.command {

@@ -48,6 +48,15 @@ impl Mailspace {
     /// Returns a [`VivariumError`] on storage failure.
     pub fn step_shadow(&self) -> Result<StepManifest, VivariumError> {
         let storage = self.storage()?;
+        self.step_shadow_with_storage(&storage)
+    }
+
+    /// Adjudicate using caller-owned storage. Doctor uses this seam with a
+    /// SQLite read-only connection so the graph projection cannot migrate.
+    pub(crate) fn step_shadow_with_storage(
+        &self,
+        storage: &crate::storage::Storage,
+    ) -> Result<StepManifest, VivariumError> {
         let Some(graph) = storage.work_graph_by_code(BACKLOG_GRAPH_CODE)? else {
             return Ok(StepManifest {
                 graph: BACKLOG_GRAPH_CODE.to_string(),
@@ -56,7 +65,7 @@ impl Mailspace {
                 decisions: Vec::new(),
             });
         };
-        let show = self.graph_show(BACKLOG_GRAPH_CODE)?;
+        let show = self.graph_show_with_storage(storage, BACKLOG_GRAPH_CODE)?;
         let mut dispatches = Vec::new();
         let mut exceptions = Vec::new();
         let frontier = show.nodes.iter().filter(|node| {
@@ -67,14 +76,14 @@ impl Mailspace {
         });
         for node in frontier {
             if node.readiness == READINESS_AWAITING {
-                exceptions.push(self.awaiting_remote(&storage, node)?);
+                exceptions.push(self.awaiting_remote(storage, node)?);
                 continue;
             }
             if node.readiness == READINESS_REPORTED {
-                exceptions.push(self.awaiting_acceptance(&storage, node)?);
+                exceptions.push(self.awaiting_acceptance(storage, node)?);
                 continue;
             }
-            match adjudicate_node(&storage, &graph.handle, node)? {
+            match adjudicate_node(storage, &graph.handle, node)? {
                 StepOutcome::Dispatch(dispatch) => dispatches.push(dispatch),
                 StepOutcome::Exception(exc) => exceptions.push(exc),
             }

@@ -38,6 +38,15 @@ pub fn findings(project: Option<&Path>) -> Vec<Finding> {
             project.dir.join("mail.sqlite").display()
         ),
     );
+    if crate::storage::Storage::read_only_wal_index_missing(&project.dir) {
+        let reason = "read-only WAL inspection unavailable: mail.sqlite-shm is missing; doctor will not create it";
+        return vec![
+            config,
+            Finding::skipped(SECTION, "store", reason),
+            Finding::skipped(SECTION, "unabsorbed", reason),
+            Finding::skipped(SECTION, "done_when", reason),
+        ];
+    }
     let store = store_finding(&project);
     let mut out = vec![config, store];
     match project.open_storage_read_only() {
@@ -138,8 +147,8 @@ fn unabsorbed_finding(project: &Project, storage: &crate::storage::Storage) -> F
 }
 
 fn done_when_finding(project: &Project, storage: &crate::storage::Storage) -> Finding {
-    let needs = match storage.list_messages_by_role("needs") {
-        Ok(messages) => messages,
+    let manifest = match project.mailspace_view().step_shadow_with_storage(storage) {
+        Ok(manifest) => manifest,
         Err(error) => {
             return Finding::fail(
                 SECTION,
@@ -149,38 +158,20 @@ fn done_when_finding(project: &Project, storage: &crate::storage::Storage) -> Fi
             );
         }
     };
-    let accounts = local_accounts(project);
-    let mut missing = Vec::new();
-    for need in needs
+    let missing: Vec<&str> = manifest
+        .exceptions
         .iter()
-        .filter(|message| accounts.contains(&message.account))
-    {
-        let body = match storage
-            .read_listed_blob(&need.blob_relpath)
-            .and_then(|bytes| crate::extract::extract_text(&bytes).map_err(Into::into))
-        {
-            Ok(body) => body,
-            Err(error) => {
-                return Finding::fail(
-                    SECTION,
-                    "done_when",
-                    &format!("need body check failed: {}", first_line(&error.to_string())),
-                    DONE_WHEN_FIX,
-                );
-            }
-        };
-        if !crate::mailspace::body_has_labeled_clause(&body, "done_when") {
-            missing.push(need.handle.as_str());
-        }
-    }
+        .filter(|exception| exception.reason == "no_done_when")
+        .map(|exception| exception.item.as_str())
+        .collect();
     if missing.is_empty() {
-        return Finding::ok(SECTION, "done_when", "open needs declare done_when");
+        return Finding::ok(SECTION, "done_when", "every ready item declares done_when");
     }
     Finding::warn(
         SECTION,
         "done_when",
         &format!(
-            "{} open need(s) declare no done_when: {}",
+            "{} ready item(s) declare no done_when: {}",
             missing.len(),
             missing
                 .iter()

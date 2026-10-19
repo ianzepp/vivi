@@ -274,6 +274,17 @@ pub struct DeliveredMessage {
 }
 
 impl Mailspace {
+    /// Construct a mailspace view from already-parsed config without running
+    /// open-time identity or ignore-file repairs.
+    pub(crate) fn from_read_only_config(root: PathBuf, config: MailspaceConfig) -> Self {
+        Self {
+            dir: root.join(MAILSPACE_DIR),
+            root,
+            config,
+            storage: RefCell::new(None),
+        }
+    }
+
     /// Initialise a new mailspace at the given project path, or the current
     /// directory. Creates the `.vivi` directory, config, and store.
     ///
