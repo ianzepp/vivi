@@ -401,7 +401,9 @@ only, so it lists every reply in the thread even when the message blocks
 below stop at the 50-message thread cap; `--json` and `--latest` skip it.
 `need show --newest N` prints the newest N messages of the whole thread,
 oldest first (text or `--json`). `--latest` is the single-message form
-and exists on `need`, `want`, and `task` show.
+and exists on `need`, `want`, and `task` show. `need attempts <handle>
+[--json]` reads the pump's structured attempt records off a need thread
+(one JSON object with `opened` and `attempts`).
 
 This is local-first. It works with no `[sync]`; the server only carries
 letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they

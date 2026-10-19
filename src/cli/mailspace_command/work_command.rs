@@ -243,6 +243,20 @@ pub enum NeedCommand {
         project: Option<PathBuf>,
     },
 
+    /// List the pump's attempt records on a need thread
+    Attempts {
+        /// Need handle or unambiguous prefix
+        handle: String,
+
+        /// Output as one JSON object
+        #[arg(long)]
+        json: bool,
+
+        /// Project root to use
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
     /// Dump local need messages for audit and board review
     Dump(TaskDumpCommand),
 
