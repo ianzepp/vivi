@@ -10,7 +10,7 @@
 //! no error-swallowing: appending to a `String` cannot fail.
 
 use super::truncate::{CAP_CHARTER_LINES, CAP_PROBE_LINES};
-use super::{BootReport, GoalRow, goal_line, seat_line};
+use super::{BootReport, GoalRow, goal_line, pump_state_line, seat_line};
 
 /// Render the digest.
 #[must_use]
@@ -180,6 +180,10 @@ fn pump(out: &mut String, report: &BootReport) {
             pump.planning,
             pump.planner_parked
         ),
+    );
+    line(
+        out,
+        pump_state_line(&pump.control, &pump.writer, pump.status_age),
     );
 }
 
