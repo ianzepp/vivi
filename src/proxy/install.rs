@@ -101,6 +101,20 @@ pub fn launch_agent_plist(
     )
 }
 
+/// systemctl --user steps applied after writing the unit file, in order.
+///
+/// The final `restart` both starts an inactive unit and replaces a running
+/// one, so it subsumes the old `enable --now` and a rewritten unit takes
+/// effect on every install instead of leaving a stale process running.
+#[must_use]
+pub fn systemd_apply_steps() -> Vec<Vec<&'static str>> {
+    vec![
+        vec!["--user", "daemon-reload"],
+        vec!["--user", "enable", SYSTEMD_UNIT],
+        vec!["--user", "restart", SYSTEMD_UNIT],
+    ]
+}
+
 /// Render the systemd --user unit. Public for tests.
 #[must_use]
 pub fn systemd_unit(executable: &Path, config: Option<&Path>) -> String {
@@ -172,8 +186,9 @@ fn install_systemd(explicit: Option<&Path>) -> Result<(), VivariumError> {
     }
     let executable = service_executable()?;
     fs::write(&path, systemd_unit(&executable, explicit))?;
-    systemctl(&["--user", "daemon-reload"])?;
-    systemctl(&["--user", "enable", "--now", SYSTEMD_UNIT])?;
+    for step in systemd_apply_steps() {
+        systemctl(&step)?;
+    }
     println!("installed and started {}", path.display());
     Ok(())
 }
