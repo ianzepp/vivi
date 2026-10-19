@@ -239,10 +239,7 @@ fn host_fail(ctx: &Ctx, st: &mut State, uid: &str, host: &envfail::HostFailure, 
             ctx.exception("environment", &pool, &evidence);
         }
     }
-    ctx.log(&format!(
-        "host-fail {uid} {}; attempt restored",
-        host.class
-    ));
+    ctx.log(&format!("host-fail {uid} {}; attempt restored", host.class));
 }
 
 /// Delete the unit's attempt branch, locally and on the remote, when either

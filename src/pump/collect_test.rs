@@ -661,10 +661,9 @@ fn an_agent_exit_127_with_a_branch_is_a_host_failure_not_an_attempt() {
     assert_eq!(u.branch, None);
     assert_eq!(u.since_dispatch, None);
     assert!(
-        host.commands()
-            .iter()
-            .any(|command| command.contains("push origin --delete")
-                || command.contains("branch -D")),
+        host.commands().iter().any(
+            |command| command.contains("push origin --delete") || command.contains("branch -D")
+        ),
         "commands: {:?}",
         host.commands()
     );
