@@ -10,13 +10,15 @@ use tempfile::tempdir;
 use crate::pump::amend::{detect, request};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::jobs::{JobOutcome, JobStatus};
+use crate::pump::planner_jobs;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
+use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>, State) {
     let dir = tempdir().unwrap();
-    let mut cfg = PumpConfig::default();
-    cfg.planner.run = String::from("planner-model");
-    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(planner_routing());
     let mut st = State::default();
     st.needs.insert(
         String::from("n1"),
@@ -41,6 +43,38 @@ fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>, State) {
     (dir, ctx, host, st)
 }
 
+fn planner_routing() -> RoleRouting {
+    RoleRouting {
+        roles: vec![RoutedRole {
+            name: "planner".into(),
+            kind: Some("planner".into()),
+            status: "active".into(),
+            pool: Some("here".into()),
+            read_only: None,
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: std::collections::BTreeMap::from([(
+            "here".into(),
+            RoutedPool {
+                slots: 1,
+                provider: "local".into(),
+                fallback: None,
+                caps: std::collections::BTreeMap::new(),
+                models: Vec::new(),
+                has_bands: false,
+            },
+        )]),
+    }
+}
+
+fn revision_job(st: &State) -> &crate::pump::jobs::PoolJob {
+    st.jobs
+        .values()
+        .find(|job| job.kind == "planner:revision")
+        .expect("revision job")
+}
+
 fn script_thread(host: &FakeHost, body: &str) {
     host.reply(
         "board --json",
@@ -62,17 +96,12 @@ fn a_changed_thread_starts_a_revision() {
     detect(&ctx, &mut st);
     assert!(st.needs["n1"].amendment_pending);
     assert!(st.board.revision_planning.contains_key("n1"));
-    assert!(ctx.home.join("board/n1.revision.prompt").exists());
     assert!(
         fs::read_to_string(ctx.home.join("needs/n1.json"))
             .unwrap()
             .contains("\"revision\": 2")
     );
-    assert!(
-        host.spawned()
-            .iter()
-            .any(|cmd| cmd.contains("planner-model"))
-    );
+    assert!(revision_job(&st).body.contains("REVISION-INPUT-BEGIN"));
     assert!(
         host.logs()
             .iter()
@@ -82,13 +111,39 @@ fn a_changed_thread_starts_a_revision() {
 
 #[test]
 fn a_requested_revision_names_the_reason_in_the_prompt() {
-    let (_dir, ctx, host, mut st) = setup();
+    let (_dir, ctx, _host, mut st) = setup();
     request(&ctx, &mut st, "n1", "unit n1-1 failed its proof");
     assert!(st.needs["n1"].amendment_pending);
     assert!(ctx.home.join("needs/n1.json").exists());
-    let prompt = fs::read_to_string(ctx.home.join("board/n1.revision.prompt")).unwrap();
-    assert!(prompt.contains("Reason for this revision: unit n1-1 failed its proof"));
-    assert!(!host.spawned().is_empty());
+    assert!(
+        revision_job(&st)
+            .body
+            .contains("Reason for this revision: unit n1-1 failed its proof")
+    );
+}
+
+#[test]
+fn an_immediate_revision_exit_is_reported_without_waiting_for_plan_timeout() {
+    let (_dir, ctx, host, mut st) = setup();
+    request(&ctx, &mut st, "n1", "unit n1-1 failed its proof");
+    let queued_at = st.board.revision_planning["n1"];
+    let id = planner_jobs::job_id("revision", "n1.revision", queued_at);
+    let job = st.jobs.get_mut(&id).expect("revision job");
+    job.status = JobStatus::Finished;
+    job.outcome = Some(JobOutcome {
+        state: "finished".into(),
+        detail: "agent_rc 127".into(),
+        receipt: "agent_rc 127 agent_s 0\nhand's final message:\nConnection error.\n".into(),
+        at: queued_at + 1,
+    });
+    planner_jobs::apply_completions(&ctx, &mut st);
+    script_thread(&host, "same body");
+    detect(&ctx, &mut st);
+
+    assert!(!st.board.revision_planning.contains_key("n1"));
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("revision-no-answer n1"), "{exceptions}");
+    assert!(exceptions.contains("rc=127"), "{exceptions}");
 }
 
 #[test]
@@ -119,7 +174,7 @@ fn an_unchanged_thread_keeps_the_need_closed() {
     assert!(st.closed_needs.iter().any(|closed| closed == "n1"));
     assert!(!st.needs["n1"].amendment_pending);
     assert!(st.board.revision_planning.is_empty());
-    assert!(host.spawned().is_empty());
+    assert!(st.jobs.is_empty());
     assert!(st.needs["n1"].thread_seen_at.unwrap() > 1_000);
 }
 
@@ -137,11 +192,7 @@ fn a_closed_need_with_a_changed_thread_reopens_and_plans_a_revision() {
             .unwrap()
             .contains("\"revision\": 2")
     );
-    assert!(
-        host.spawned()
-            .iter()
-            .any(|cmd| cmd.contains("planner-model"))
-    );
+    assert!(revision_job(&st).body.contains("REVISION-INPUT-BEGIN"));
     assert!(
         host.logs()
             .iter()
@@ -171,7 +222,7 @@ fn a_pump_attempt_record_reply_does_not_amend() {
         assert_eq!(st.needs["n1"].thread_sha256, hash);
         assert!(!st.needs["n1"].amendment_pending);
         assert!(st.needs["n1"].thread_seen_at.unwrap() > 1_000);
-        assert!(host.spawned().is_empty());
+        assert!(st.jobs.is_empty());
     }
 }
 
@@ -194,7 +245,7 @@ fn an_operator_reply_still_amends_after_a_pump_reply() {
     detect(&ctx, &mut st);
     assert!(st.needs["n1"].amendment_pending);
     assert!(st.board.revision_planning.contains_key("n1"));
-    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(st.jobs.len(), 1);
 }
 
 #[test]
@@ -218,9 +269,9 @@ fn an_amendment_is_not_detected_twice() {
     script_thread(&host, "add the second half");
     detect(&ctx, &mut st);
     assert!(st.needs["n1"].amendment_pending);
-    let spawned = host.spawned().len();
+    let queued = st.jobs.len();
     detect(&ctx, &mut st);
-    assert_eq!(host.spawned().len(), spawned);
+    assert_eq!(st.jobs.len(), queued);
 }
 
 #[test]

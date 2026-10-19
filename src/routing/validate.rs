@@ -51,8 +51,30 @@ pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     check_read_only(&routing, &mut issues);
     if let Some(pump) = &config.pump {
         check_pump(pump, &routing, &mut issues);
+        check_planner_role(&routing, &mut issues);
     }
     issues
+}
+
+fn check_planner_role(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.lookup("planner") else {
+        issues.push(Issue::error(
+            "the pump needs an active planner role assigned to a pool for durable planning jobs",
+        ));
+        return;
+    };
+    if role.status != "active" {
+        issues.push(Issue::error(format!(
+            "planner role {} must be active to receive durable planning jobs",
+            role.name
+        )));
+    }
+    if role.pool.is_none() {
+        issues.push(Issue::error(format!(
+            "planner role {} must name a pool for durable planning jobs",
+            role.name
+        )));
+    }
 }
 
 /// Format findings for humans. Errors first.

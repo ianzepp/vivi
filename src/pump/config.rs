@@ -630,14 +630,6 @@ impl PumpConfig {
                 validate_target(&id, &target, pools, &mut bad);
             }
         }
-        if (self.board.from.iter().any(|from| !from.is_empty()) || !self.board.mark.is_empty())
-            && self.planner.run.is_empty()
-        {
-            bad.push(
-                "[pump.planner] run must not be empty while [pump.board] from or mark is set"
-                    .into(),
-            );
-        }
         if bad.is_empty() {
             Ok(())
         } else {

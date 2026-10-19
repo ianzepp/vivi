@@ -208,6 +208,33 @@ to = "hand"
 }
 
 #[test]
+fn validate_requires_an_active_pool_planner_role_for_pumps() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "here"
+[pools.here]
+provider = "local"
+slots = 1
+[pump]
+branch = "next"
+to = "hand"
+"#);
+    let issues = validate(&config);
+    assert!(
+        issues.iter().any(|issue| {
+            issue.severity == Severity::Error
+                && issue
+                    .message
+                    .contains("active planner role assigned to a pool")
+        }),
+        "{issues:?}"
+    );
+}
+
+#[test]
 fn validate_warns_on_legacy_routing_and_bands_without_a_table() {
     let config = cfg(r#"
 name = "t"
@@ -218,6 +245,10 @@ model = "P2-S0"
 [[identities]]
 name = "merge"
 kind = "merge"
+[[identities]]
+name = "planner"
+kind = "planner"
+pool = "glm"
 [pools.glm]
 provider = "local"
 slots = 2
@@ -307,6 +338,10 @@ name = "t"
 [[identities]]
 name = "hand"
 kind = "hand"
+pool = "glm"
+[[identities]]
+name = "planner"
+kind = "planner"
 pool = "glm"
 [pools.glm]
 provider = "local"

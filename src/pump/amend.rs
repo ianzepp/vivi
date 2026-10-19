@@ -12,8 +12,8 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::pump::collect::spawn_planner;
 use crate::pump::host::Ctx;
+use crate::pump::planner_jobs;
 use crate::pump::state::State;
 
 /// Detect post-plan thread changes on every planned need.
@@ -183,6 +183,7 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
         return;
     };
     let revision = record.revision.saturating_add(1);
+    let previous_revision = record.revision;
     let thread = ctx.vivi(&format!("need show {handle}"), 60).text;
     let thread: String = thread.chars().take(40_000).collect();
     let units: Vec<Value> = record
@@ -206,41 +207,66 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
         .collect();
     let needs = ctx.home.join("needs");
     drop(fs::create_dir_all(&needs));
-    drop(write_json(
-        &needs.join(format!("{handle}.json")),
-        &RevisionFile {
-            need: handle,
-            revision,
-            thread: &thread,
-            units: &units,
-        },
-    ));
-    let home = ctx.home.to_string_lossy();
+    let input = RevisionFile {
+        need: handle,
+        revision,
+        thread: &thread,
+        units: &units,
+    };
+    if let Err(error) = write_json(&needs.join(format!("{handle}.json")), &input) {
+        ctx.exception(
+            "revision-input",
+            handle,
+            &format!("could not save revision input: {error}"),
+        );
+        return;
+    }
+    let input_json = match serde_json::to_string(&input) {
+        Ok(text) => text,
+        Err(error) => {
+            ctx.exception(
+                "revision-input",
+                handle,
+                &format!("could not encode revision input: {error}"),
+            );
+            return;
+        }
+    };
     let prompt = format!(
-        "Revise one plan, as your system prompt describes. The need thread is in {home}/needs/{handle}.json \
-         (keys: need, revision, thread, units). Write {home}/plans/{handle}.r{revision}.json with \
-         \"revision\": {revision} and the complete unit set. Keep every existing unit id. Never change a \
-         merged, no-defect, inflight or delivered unit; amend only pending units; add new units for the \
-         addendum; list withdrawn pending unit ids in \"withdraw\". Your final message is one line: handle, \
-         revision, number of units."
+        "Revise one plan, as your system prompt describes. The complete input JSON is between \
+         REVISION-INPUT-BEGIN and REVISION-INPUT-END. Return the full plan with revision {revision} \
+         and the complete unit set. Keep every existing unit id. Never change a merged, no-defect, \
+         inflight or delivered unit; amend only pending units; add new units for the addendum; list \
+         withdrawn pending unit ids in \"withdraw\".\n\nREVISION-INPUT-BEGIN\n{input_json}\n\
+         REVISION-INPUT-END"
     );
     let prompt = match note {
         Some(note) => format!("{prompt} Reason for this revision: {note}."),
         None => prompt,
     };
-    if ctx.cfg.planner.run.is_empty() {
-        ctx.log(&format!(
-            "amendment: {handle} needs a revision but [pump.planner] run is empty"
-        ));
+    let owner = format!("{handle}.revision");
+    let queued_at = ctx.now();
+    if let Err(error) = planner_jobs::enqueue(
+        ctx,
+        st,
+        "revision",
+        &owner,
+        queued_at,
+        &prompt,
+        ctx.cfg.board.plan_timeout,
+        &format!("board/{owner}.out"),
+        &format!("plans/{handle}.r{revision}.json"),
+        None,
+    ) {
+        ctx.exception("planner-dispatch-failed", handle, &error.to_string());
         return;
     }
-    spawn_planner(ctx, "board", &format!("{handle}.revision"), &prompt);
     st.board
         .revision_planning
-        .insert(handle.to_owned(), ctx.now());
+        .insert(handle.to_owned(), queued_at);
     ctx.log(&format!(
         "amendment: {handle} changed after r{}; revision planner started",
-        record.revision
+        previous_revision
     ));
 }
 
@@ -254,21 +280,53 @@ fn expire_revisions(ctx: &Ctx, st: &mut State) {
         .iter()
         .filter(|(handle, at)| {
             revision_path(ctx, st, handle).is_some_and(|path| path.exists())
-                || now.saturating_sub(**at) > timeout
+                || crate::pump::host::exit_receipt_path(&revision_out_path(ctx, handle)).exists()
+                || revision_timed_out(st, handle, **at, now, timeout)
         })
         .map(|(handle, _)| handle.clone())
         .collect();
     for handle in expired {
         let landed = revision_path(ctx, st, &handle).is_some_and(|path| path.exists());
         if !landed {
-            ctx.exception(
-                "revision-no-answer",
-                &handle,
-                "the revision planner wrote no plan before the timeout",
-            );
+            let out = revision_out_path(ctx, &handle);
+            let receipt = crate::pump::host::exit_receipt_path(&out);
+            if receipt.exists() {
+                let code = fs::read_to_string(&receipt).unwrap_or_default();
+                let output = fs::read_to_string(&out).unwrap_or_default();
+                ctx.exception(
+                    "revision-no-answer",
+                    &handle,
+                    &format!(
+                        "revision planner exited rc={} without a plan: {}",
+                        code.trim(),
+                        crate::pump::collect::tail(&output, 200)
+                    ),
+                );
+                drop(fs::remove_file(receipt));
+            } else {
+                ctx.exception(
+                    "revision-no-answer",
+                    &handle,
+                    "the revision planner wrote no plan before the timeout",
+                );
+            }
         }
         st.board.revision_planning.remove(&handle);
     }
+}
+
+fn revision_timed_out(st: &State, handle: &str, queued_at: u64, now: u64, timeout: u64) -> bool {
+    match planner_jobs::lifecycle(st, "revision", &format!("{handle}.revision"), queued_at) {
+        Some((_status, Some(started))) => now.saturating_sub(started) > timeout,
+        Some((status, None)) => status.is_terminal(),
+        None => now.saturating_sub(queued_at) > timeout,
+    }
+}
+
+fn revision_out_path(ctx: &Ctx, handle: &str) -> std::path::PathBuf {
+    ctx.home
+        .join("board")
+        .join(format!("{handle}.revision.out"))
 }
 
 /// The expected revision file for a need, when it has a record.

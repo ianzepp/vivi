@@ -3,9 +3,9 @@
 /// Planner settings (the `[pump.planner]` table).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlannerConfig {
-    /// Planner command; its stdin is the prompt file.
+    /// Retired local command setting; durable planner jobs use the planner role.
     pub run: String,
-    /// Charter file substituted for `{charter}` in `run`.
+    /// Retired local charter path; durable planner jobs use the role charter.
     pub charter: String,
     /// Seconds a receipt-less (alive or unreachable) split planner may run
     /// before the unit is stuck; a planner that exits is retried instead.

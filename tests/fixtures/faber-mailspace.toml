@@ -1299,6 +1299,7 @@ kind = "planner"
 labels = ["planner"]
 status = "active"
 harness = "subagent"
+pool = "glm"
 model = "P1-S2"
 
 [[identities]]

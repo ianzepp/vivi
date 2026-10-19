@@ -188,25 +188,10 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     }
 }
 
-/// The lines `status.txt` carries for the planner board: one line per
-/// in-flight planner with its pid and age, the consecutive-failure counts,
-/// and the parked handles. Empty when the board has nothing to report.
+/// The lines `status.txt` carries for durable planner jobs, their failure
+/// counts, and the parked handles. Empty when the board has nothing to report.
 fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
-    let now = ctx.now();
-    let mut lines: Vec<String> = st
-        .board
-        .planning
-        .iter()
-        .map(|(handle, at)| {
-            let pid = st
-                .board
-                .planner_pids
-                .get(handle)
-                .map_or_else(|| String::from("-"), u32::to_string);
-            let age = now.saturating_sub(*at);
-            format!("planner {handle} pid {pid} age {age}s")
-        })
-        .collect();
+    let mut lines = crate::pump::planner_jobs::status_lines(ctx, st);
     if !st.board.planner_fails.is_empty() {
         let counts: Vec<String> = st
             .board

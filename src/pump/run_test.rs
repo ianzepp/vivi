@@ -15,6 +15,7 @@ use crate::pump::config::{
     BoardConfig, DispatchConfig, GateConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
 };
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
+use crate::pump::jobs::{JobSpec, JobStatus, PoolJob};
 use crate::pump::merge::Merger;
 use crate::pump::run::{
     actor_string, ensure_repo, refresh_config, run, run_with, status, tick as run_tick,
@@ -35,15 +36,16 @@ fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     pass.serve(ctx, st, &requests, &results);
 }
 
-/// A mailspace whose `[pump]` table passes `validate`: the default
-/// `board.mark` is set, so `planner.run` must be non-empty.
+/// A mailspace whose `[pump]` table passes `validate` with a pool-backed
+/// planner role.
 const PUMP_TOML: &str = concat!(
     "name = \"pump\"\n\n",
+    "[[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"here\"\n\n",
+    "[pools.here]\nprovider = \"local\"\nslots = 1\n\n",
     "[pump]\nbranch = \"next\"\ntick = 1\n",
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
     "[pump.merge]\nshared_checks = [\"true\"]\n\n[pump.gate]\ncommand = \"true\"\n\n",
     "[pump.dispatch]\nlanes = [{ model = \"m\", cap = 2 }]\n\n",
-    "[pump.planner]\nrun = \"planner-model\"\n",
 );
 
 /// The roster roles the default `[pump]` identities name, so a project
@@ -230,24 +232,29 @@ fn write_status_lists_top_blockers_after_the_stall_lines() {
 }
 
 #[test]
-fn write_status_lists_in_flight_planners_with_pid_and_age() {
+fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
     let (dir, ctx, _host) = setup();
     let mut st = State::default();
     let now = ctx.now();
-    st.board.planning.insert(String::from("n1"), now - 310);
-    st.board.planning.insert(String::from("n2"), now);
-    st.board.planner_pids.insert(String::from("n1"), 1042);
+    st.jobs.insert(
+        "plan1".into(),
+        planner_job("plan1", JobStatus::Dispatched, now - 310, Some(now - 310)),
+    );
+    st.jobs.insert(
+        "plan2".into(),
+        planner_job("plan2", JobStatus::Pending, now, None),
+    );
     st.board.planner_fails.insert(String::from("n7"), 2);
     st.board.planner_failed.push(String::from("n8"));
     let (merger, _results, _jobs) = Merger::detached();
     write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(
-        text.contains("planner n1 pid 1042 age 310s"),
+        text.contains("planner-job plan1 in-flight pool=here task=task-plan1 age=310s"),
         "no n1 planner line in {text}"
     );
     assert!(
-        text.contains("planner n2 pid - age 0s"),
+        text.contains("planner-job plan2 queued pool=here task=pending age=0s"),
         "no n2 planner line in {text}"
     );
     assert!(
@@ -258,6 +265,25 @@ fn write_status_lists_in_flight_planners_with_pid_and_age() {
         text.contains("planner-parked n8"),
         "no parked line in {text}"
     );
+}
+
+fn planner_job(id: &str, status: JobStatus, queued: u64, dispatched: Option<u64>) -> PoolJob {
+    let active = status == JobStatus::Dispatched;
+    let mut job = PoolJob::from(JobSpec::new(
+        id,
+        "planner:board",
+        "planner",
+        format!("planner {id}"),
+        String::new(),
+    ));
+    job.queued_at = queued;
+    job.pool_candidates = vec!["here".into()];
+    job.read_only = true;
+    job.task = active.then(|| format!("task-{id}"));
+    job.pool = active.then(|| String::from("here"));
+    job.dispatched_at = dispatched;
+    job.status = status;
+    job
 }
 
 #[test]

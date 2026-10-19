@@ -22,6 +22,7 @@ pub mod host;
 pub mod logview;
 pub mod merge;
 pub mod plan;
+pub mod planner_jobs;
 pub mod priority;
 pub mod progress;
 pub mod proof;

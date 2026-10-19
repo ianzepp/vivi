@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::pump::collect::spawn_planner;
 use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
+use crate::pump::planner_jobs;
 use crate::pump::ready::{blocked_needs, satisfied};
 use crate::pump::state::State;
 
@@ -401,18 +401,25 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<St
          Write {home}/plans/{handle}.json. Your final message is one line: handle, \
          verdict, number of units."
     );
-    let out = out_path(ctx, handle);
-    drop(fs::remove_file(exit_receipt_path(&out)));
-    drop(fs::File::create(&out));
-    match spawn_planner(ctx, "board", handle, &prompt) {
-        Some(pid) => {
-            st.board.planner_pids.insert(handle.to_owned(), pid);
-        }
-        None => {
-            st.board.planner_pids.remove(handle);
-        }
+    let queued_at = ctx.now();
+    let queued = planner_jobs::enqueue(
+        ctx,
+        st,
+        "board",
+        handle,
+        queued_at,
+        &prompt,
+        ctx.cfg.board.plan_timeout,
+        &format!("board/{handle}.out"),
+        &format!("plans/{handle}.json"),
+        None,
+    );
+    if let Err(error) = queued {
+        ctx.exception("planner-dispatch-failed", handle, &error.to_string());
+        return;
     }
-    st.board.planning.insert(handle.to_owned(), ctx.now());
+    st.board.planner_pids.remove(handle);
+    st.board.planning.insert(handle.to_owned(), queued_at);
     if replan.remove(handle) {
         st.board.replan = replan.iter().cloned().collect();
     }
