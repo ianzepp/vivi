@@ -141,31 +141,40 @@ pub(crate) fn release_skills_changed(staged_binary: &Path) -> Option<bool> {
 /// Returns the lossy stdout of a zero exit; `None` on a spawn error, a
 /// timeout (the child is killed), or a non-zero exit.
 fn run_capture_timeout(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = std::process::Command::new(program)
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
+    let mut child = spawn_piped(program, args)?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                let output = child.wait_with_output().ok()?;
-                return Some(String::from_utf8_lossy(&output.stdout).into_owned());
+            Ok(Some(status)) if !status.success() => return None,
+            Ok(Some(_)) => {
+                return match child.wait_with_output() {
+                    Ok(output) => Some(String::from_utf8_lossy(&output.stdout).into_owned()),
+                    Err(_) => None,
+                };
             }
             Ok(None) => {}
             Err(_) => return None,
         }
         if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
+            drop(child.kill());
+            drop(child.wait());
             return None;
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Spawn `program` with both output streams piped, or `None` when it could
+/// not be started.
+fn spawn_piped(program: &Path, args: &[&str]) -> Option<std::process::Child> {
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    match command.spawn() {
+        Ok(child) => Some(child),
+        Err(_) => None,
     }
 }
 
