@@ -2558,8 +2558,10 @@ paths without `/v1`, supervises `kind = child` processes, and prints
 `VIVI_PROXY_READY <addr>` when the socket is open. A second instance takes
 the lock next to the config file and exits. `install` writes a macOS
 LaunchAgent (`com.vivi.proxy`) or a Linux systemd `--user` unit
-(`vivi-proxy.service`). The unit starts the stable `vivi` symlink when the
-running binary is a versioned `vivi-<semver>` next to that link. systemd
+(`vivi-proxy.service`), (re)starts the unit when it is already running, and
+prints the new PID (`pid unknown` when it cannot be read). The unit starts
+the stable `vivi` symlink when the running binary is a versioned
+`vivi-<semver>` next to that link. systemd
 uses `Restart=on-failure` and a start limit (5 in 60s); launchd keeps
 `KeepAlive` and sets `ThrottleInterval` 10. `providers` prints the base URL
 to paste into a client, the backend kind, and credential expiry (never

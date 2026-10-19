@@ -141,6 +141,19 @@ pub fn systemd_unit(executable: &Path, config: Option<&Path>) -> String {
     )
 }
 
+/// Parse the value of `systemctl --user show -p MainPID --value`.
+///
+/// systemd prints `0` while the unit is not running, so that value means no
+/// PID rather than PID zero. Public and platform-free so tests compile
+/// everywhere.
+#[must_use]
+pub fn parse_systemd_mainpid(output: &str) -> Option<u32> {
+    match output.trim().parse().ok()? {
+        0 => None,
+        pid => Some(pid),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn install_launchd(explicit: Option<&Path>) -> Result<(), VivariumError> {
     let path = launch_agent_path()?;
@@ -199,8 +212,26 @@ fn install_systemd(explicit: Option<&Path>) -> Result<(), VivariumError> {
     for step in systemd_apply_steps() {
         systemctl(&step)?;
     }
-    println!("installed and started {}", path.display());
+    match wait_for_systemd_pid() {
+        Some(pid) => println!("installed and started {} (pid {pid})", path.display()),
+        None => println!("installed and started {} (pid unknown)", path.display()),
+    }
     Ok(())
+}
+
+/// Poll the unit's `MainPID` after a restart so install can report it.
+#[cfg(target_os = "linux")]
+fn wait_for_systemd_pid() -> Option<u32> {
+    for _ in 0..10 {
+        let args = ["--user", "show", "-p", "MainPID", "--value", SYSTEMD_UNIT];
+        if let Ok(output) = systemctl(&args) {
+            if let Some(pid) = parse_systemd_mainpid(&output) {
+                return Some(pid);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
