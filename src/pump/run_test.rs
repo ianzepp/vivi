@@ -10,7 +10,7 @@ use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::Merger;
 use crate::pump::run::{ensure_repo, run, run_with, status, tick as run_tick, write_status};
-use crate::pump::state::{GateRun, NeedRecord, State, Status, Unit};
+use crate::pump::state::{Attempt, GateRun, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// The fake clock's start (1970-01-12T13:46:40Z).
@@ -270,6 +270,120 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
     assert!(reconcile < usize::MAX, "no pool reconcile in {commands:?}");
     assert!(pool_status < usize::MAX, "no pool status in {commands:?}");
     assert!(reconcile < pool_status && pool_status < sync);
+}
+
+/// The `graph blocked --kind need --json` answer: twenty needs waiting on
+/// the stuck root `r`.
+fn twenty_dependents_on_r() -> String {
+    let rows: Vec<serde_json::Value> = (1..=20)
+        .map(|index| {
+            serde_json::json!({
+                "source_id": format!("m{index}"),
+                "kind": "need",
+                "label": format!("M{index}"),
+                "blocked_by": ["r"],
+            })
+        })
+        .collect();
+    serde_json::Value::Array(rows).to_string()
+}
+
+/// A state with `r-1` stuck at its attempt cap after a timeout and twenty
+/// pending units of the needs that wait on `r`.
+fn stuck_root_with_twenty_dependents() -> State {
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("r"),
+        NeedRecord {
+            verdict: String::from("units"),
+            units: vec![String::from("r-1")],
+            ..NeedRecord::default()
+        },
+    );
+    put(
+        &mut st,
+        "r-1",
+        Unit {
+            need: String::from("r"),
+            status: Status::Stuck,
+            attempts: 3,
+            since: T0 - 3600,
+            history: vec![Attempt {
+                attempt: 3,
+                why: String::from("timeout"),
+                detail: String::from("killed by budget"),
+                at: T0 - 3600,
+                ..Attempt::default()
+            }],
+            ..Unit::default()
+        },
+    );
+    for index in 1..=20 {
+        let need = format!("m{index}");
+        st.needs.insert(
+            need.clone(),
+            NeedRecord {
+                verdict: String::from("units"),
+                units: vec![format!("{need}-1")],
+                ..NeedRecord::default()
+            },
+        );
+        put(
+            &mut st,
+            &format!("{need}-1"),
+            Unit {
+                need,
+                status: Status::Pending,
+                write_scope: vec![format!("src/m{index}/x.rs")],
+                since: T0,
+                ..Unit::default()
+            },
+        );
+    }
+    st
+}
+
+#[test]
+fn a_stuck_root_with_twenty_dependents_alarms_bumps_and_requeues_in_one_tick() {
+    let (dir, ctx, host) = setup();
+    host.set_now(T0);
+    host.reply("graph blocked", 0, &twenty_dependents_on_r());
+    let mut st = stuck_root_with_twenty_dependents();
+    let (merger, _results, _jobs) = Merger::detached();
+    tick(&ctx, &mut st, &merger);
+
+    let exceptions = fs::read_to_string(dir.path().join("home/exceptions.txt")).unwrap();
+    assert!(
+        exceptions.contains("blocking-stuck r-1"),
+        "no blocking-stuck alarm in {exceptions}"
+    );
+    assert!(
+        exceptions.contains("holds 21 units"),
+        "the alarm does not count r-1 plus its dependents: {exceptions}"
+    );
+
+    let root = &st.units["r-1"];
+    assert_eq!(root.status, Status::Pending, "the stuck root was not requeued");
+    assert!(root.requeued, "the requeue was not recorded on r-1");
+
+    let levels = crate::pump::priority::list(&ctx.home).unwrap();
+    assert!(levels.contains(&(String::from("r"), 1)), "{levels:?}");
+
+    let status = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
+    let line = status
+        .lines()
+        .find(|line| line.starts_with("blocker r "))
+        .unwrap_or_default();
+    assert!(line.contains("held 21"), "no 21-unit blocker line in {status}");
+
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|command| command.contains("task send") && command.contains("[r-1 ")),
+        "dispatch ran before the requeue, so r-1 must not be sent: {:?}",
+        host.commands()
+    );
 }
 
 #[test]
