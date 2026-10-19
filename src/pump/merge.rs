@@ -18,6 +18,7 @@ pub use lane::Merger;
 #[cfg(test)]
 pub(crate) use lane::dispatch_results;
 
+use crate::pump::config::Generated;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
 use crate::pump::state::{MergeJob, MergeResult};
@@ -214,7 +215,88 @@ fn failed(uid: &str, why: &str, detail: String) -> MergeResult {
     }
 }
 
-/// Merge the unit branch; on conflict, reset and report the conflicting
+/// The declared generated-file entries covering every file in `files`,
+/// deduplicated by entry; `None` when any file has no covering entry.
+pub(crate) fn generated_entries<'a>(
+    ctx: &'a Ctx,
+    files: &[String],
+) -> Option<Vec<&'a Generated>> {
+    let mut entries: Vec<&Generated> = Vec::new();
+    'files: for file in files {
+        for entry in &ctx.cfg.merge.generated {
+            if overlaps(&[file.clone()], &entry.paths) {
+                if !entries.iter().any(|e| std::ptr::eq(*e, entry)) {
+                    entries.push(entry);
+                }
+                continue 'files;
+            }
+        }
+        return None;
+    }
+    Some(entries)
+}
+
+/// Regenerate the generated files from source of truth and stage them. No
+/// reset inside: the caller owns recovery.
+pub(crate) fn regenerate_generated(
+    ctx: &Ctx,
+    entries: &[&Generated],
+) -> Result<(), String> {
+    for entry in entries {
+        let out = ctx.sh(&entry.regenerate, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+        if out.code != 0 {
+            return Err(tail(&out.text, 300));
+        }
+        let paths = entry
+            .paths
+            .iter()
+            .map(|p| shell_quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let out = ctx.git(&format!("add -- {paths}"), GIT_TIMEOUT);
+        if out.code != 0 {
+            return Err(tail(&out.text, 300));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a merge conflict touching only generated files: take the
+/// integration side, regenerate the files, and conclude the merge commit.
+/// Any failing step resets the repo; success logs the resolution.
+pub(crate) fn resolve_generated(ctx: &Ctx, uid: &str, files: &[String]) -> bool {
+    let Some(entries) = generated_entries(ctx, files) else {
+        return false;
+    };
+    for file in files {
+        let out = ctx.git(&format!("checkout --ours -- {file}"), GIT_TIMEOUT);
+        if out.code != 0 {
+            reset_repo(ctx);
+            return false;
+        }
+    }
+    if let Err(text) = regenerate_generated(ctx, &entries) {
+        reset_repo(ctx);
+        ctx.log(&format!(
+            "generated regenerate failed {uid}: {text}"
+        ));
+        return false;
+    }
+    let commit = format!("{} commit --no-edit", identity_args(ctx));
+    let out = ctx.git(&commit, GIT_TIMEOUT);
+    if out.code != 0 {
+        reset_repo(ctx);
+        return false;
+    }
+    ctx.log(&format!(
+        "resolved generated conflicts {uid}: {}",
+        files.join(" ")
+    ));
+    true
+}
+
+/// Merge the unit branch; on conflict, resolve conflicts on generated files
+/// by regenerating them, and otherwise reset and report the conflicting
 /// files. `None` means the merge landed.
 fn merge_branch(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     let title: String = job.title.chars().take(80).collect();
@@ -229,12 +311,21 @@ fn merge_branch(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     if out.code == 0 {
         return None;
     }
-    let files = ctx
+    let raw = ctx
         .git("diff --name-only --diff-filter=U", GIT_TIMEOUT)
         .text;
+    let files: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !files.is_empty() && resolve_generated(ctx, &job.uid, &files) {
+        return None;
+    }
     reset_repo(ctx);
     let detail = format!(
-        "The branch no longer merges into the integration branch. Conflicting files: {files}"
+        "The branch no longer merges into the integration branch. Conflicting files: {raw}"
     );
     Some(failed(&job.uid, "merge-conflict", detail))
 }
