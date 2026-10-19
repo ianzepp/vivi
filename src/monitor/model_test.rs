@@ -82,7 +82,10 @@ fn activity_key_is_stable_shape() {
 
 #[test]
 fn row_state_serializes() {
-    assert_eq!(serde_json::to_string(&RowState::Running).unwrap(), "\"running\"");
+    assert_eq!(
+        serde_json::to_string(&RowState::Running).unwrap(),
+        "\"running\""
+    );
     assert_eq!(
         serde_json::to_string(&RowState::Finished("pushed".to_string())).unwrap(),
         "{\"finished\":\"pushed\"}"

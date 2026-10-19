@@ -72,22 +72,12 @@ impl Finding {
     }
 
     #[must_use]
-    pub fn warn(
-        section: &str,
-        name: &str,
-        detail: &str,
-        fix: impl Into<String>,
-    ) -> Self {
+    pub fn warn(section: &str, name: &str, detail: &str, fix: impl Into<String>) -> Self {
         Self::new(section, name, Status::Warn, detail, Some(fix.into()))
     }
 
     #[must_use]
-    pub fn fail(
-        section: &str,
-        name: &str,
-        detail: &str,
-        fix: impl Into<String>,
-    ) -> Self {
+    pub fn fail(section: &str, name: &str, detail: &str, fix: impl Into<String>) -> Self {
         Self::new(section, name, Status::Fail, detail, Some(fix.into()))
     }
 
@@ -108,13 +98,13 @@ impl DoctorReport {
     /// Build a report, ignoring skipped checks when calculating its verdict.
     #[must_use]
     pub fn from_findings(mut findings: Vec<Finding>) -> Self {
-        let verdict = findings.iter().fold(Verdict::Ok, |current, finding| {
-            match finding.status {
+        let verdict = findings
+            .iter()
+            .fold(Verdict::Ok, |current, finding| match finding.status {
                 Status::Fail => current.worst(Verdict::Fail),
                 Status::Warn => current.worst(Verdict::Warn),
                 Status::Ok | Status::Skipped => current,
-            }
-        });
+            });
         findings.sort_by_key(|finding| match finding.status {
             Status::Fail => 0,
             Status::Warn => 1,

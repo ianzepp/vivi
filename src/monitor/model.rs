@@ -82,7 +82,9 @@ pub fn running_text(row: &MonitorRow) -> String {
     match (row.running_secs, row.budget_secs) {
         (running, None) => running.map_or("-".to_string(), format_secs),
         (None, Some(budget)) => format!("-/{}", format_secs(budget)),
-        (Some(running), Some(budget)) => format!("{}/{}", format_secs(running), format_secs(budget)),
+        (Some(running), Some(budget)) => {
+            format!("{}/{}", format_secs(running), format_secs(budget))
+        }
     }
 }
 

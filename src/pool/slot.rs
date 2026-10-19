@@ -146,9 +146,7 @@ pub fn space_mark_matches(key: &str, actual: &str) -> bool {
     let Some(hex) = tail.strip_prefix('-') else {
         return false;
     };
-    hex.bytes()
-        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-        && actual == slug
+    hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && actual == slug
 }
 
 /// Metadata written onto a new slot.
