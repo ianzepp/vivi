@@ -107,6 +107,11 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+/// Serde skip predicate: an absent counter is zero.
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
 /// Intern an unknown status string so [`Status`] can stay `Copy`. One leaked
 /// allocation per distinct string for the life of the process; the set of
 /// hand-set statuses in a state file is tiny.
@@ -243,6 +248,18 @@ pub struct Unit {
     /// later successful send clears it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub send_reported: bool,
+    /// Consecutive split-planner exits that produced no plan. `pump.db`
+    /// keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub split_fails: u32,
+    /// Earliest epoch seconds the split planner may respawn for this unit.
+    /// `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_retry_at: Option<u64>,
+    /// Bad split plans already re-asked; one maximum. `pump.db` keeps it in
+    /// the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub split_reasks: u32,
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_on: Option<String>,

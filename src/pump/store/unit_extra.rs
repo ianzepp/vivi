@@ -1,7 +1,8 @@
 //! The unit fields `pump.db` keeps inside the `units.extra_json` column.
 //!
 //! The quarantine id, the dispatch base, the solo flag, the task-send
-//! exception flag and the transient-retry bookkeeping are real fields on
+//! exception flag, the transient-retry bookkeeping and the split-planner
+//! bookkeeping are real fields on
 //! [`Unit`], but they are rare, so they
 //! ride in the same JSON object that holds a unit's unknown keys instead of
 //! getting columns (and a schema bump). [`pack`] writes them next to the unknown keys; [`lift`] takes them
@@ -26,6 +27,12 @@ const SEND_REPORTED_KEY: &str = "send_reported";
 const TRANSIENT_RETRIES_KEY: &str = "transient_retries";
 /// The `extra_json` key of [`Unit::retry_not_before`].
 const RETRY_NOT_BEFORE_KEY: &str = "retry_not_before";
+/// The `extra_json` key of [`Unit::split_fails`].
+const SPLIT_FAILS_KEY: &str = "split_fails";
+/// The `extra_json` key of [`Unit::split_retry_at`].
+const SPLIT_RETRY_AT_KEY: &str = "split_retry_at";
+/// The `extra_json` key of [`Unit::split_reasks`].
+const SPLIT_REASKS_KEY: &str = "split_reasks";
 
 /// The `extra_json` text for `unit`: its unknown keys plus the set fields.
 pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
@@ -53,6 +60,15 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
     }
     if let Some(secs) = unit.retry_not_before {
         extra.insert(RETRY_NOT_BEFORE_KEY.to_string(), Value::from(secs));
+    }
+    if unit.split_fails > 0 {
+        extra.insert(SPLIT_FAILS_KEY.to_string(), Value::from(unit.split_fails));
+    }
+    if let Some(secs) = unit.split_retry_at {
+        extra.insert(SPLIT_RETRY_AT_KEY.to_string(), Value::from(secs));
+    }
+    if unit.split_reasks > 0 {
+        extra.insert(SPLIT_REASKS_KEY.to_string(), Value::from(unit.split_reasks));
     }
     serde_json::to_string(&extra)
         .map_err(|err| VivariumError::Other(format!("pump.db encode unit extra: {err}")))
@@ -88,5 +104,26 @@ pub(super) fn lift(unit: &mut Unit) {
         .and_then(|value| value.as_u64())
     {
         unit.retry_not_before = Some(secs);
+    }
+    if let Some(fails) = unit
+        .extra
+        .remove(SPLIT_FAILS_KEY)
+        .and_then(|value| value.as_u64())
+    {
+        unit.split_fails = u32::try_from(fails).unwrap_or(u32::MAX);
+    }
+    if let Some(secs) = unit
+        .extra
+        .remove(SPLIT_RETRY_AT_KEY)
+        .and_then(|value| value.as_u64())
+    {
+        unit.split_retry_at = Some(secs);
+    }
+    if let Some(reasks) = unit
+        .extra
+        .remove(SPLIT_REASKS_KEY)
+        .and_then(|value| value.as_u64())
+    {
+        unit.split_reasks = u32::try_from(reasks).unwrap_or(u32::MAX);
     }
 }
