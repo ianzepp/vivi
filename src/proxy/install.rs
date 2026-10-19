@@ -181,7 +181,7 @@ fn uninstall_launchd() -> Result<(), VivariumError> {
     let path = launch_agent_path()?;
     if path.exists() {
         let domain = launch_domain()?;
-        let _ = bootout_if_loaded(&domain, &path)?;
+        bootout_if_loaded(&domain, &path)?;
         fs::remove_file(&path)?;
     }
     println!("proxy service removed");
@@ -259,11 +259,14 @@ fn bootout_if_loaded(domain: &str, path: &Path) -> Result<bool, VivariumError> {
 /// dictionaries come after it, so the first match is the job's own PID.
 #[must_use]
 pub fn parse_launchd_pid(output: &str) -> Option<u32> {
-    output
+    let raw = output
         .lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix("pid = "))
-        .and_then(|value| value.trim().parse().ok())
+        .find_map(|line| line.strip_prefix("pid = "))?;
+    match raw.trim().parse() {
+        Ok(pid) => Some(pid),
+        Err(_) => None,
+    }
 }
 
 #[cfg(target_os = "macos")]
