@@ -171,10 +171,13 @@ pub struct Merger {
 
 /// The lane's RAM disk request: a fresh disk of `gib` GiB per batch, driven
 /// through `runner`. Admission (memory only — no SSD fallback) happens before
-/// the batch runs; mounting the disk is unit .2.
+/// the disk is mounted, and the disk is torn down when the batch ends.
 pub(crate) struct LaneRam {
     pub(crate) gib: u64,
     pub(crate) runner: std::sync::Arc<dyn crate::pool::ramdisk::Runner>,
+    /// Bytes to admit against; `None` reads the machine's free memory now.
+    /// A test pins it, so its outcome does not depend on the host's memory.
+    pub(crate) available: Option<u64>,
 }
 
 /// What a lane thread needs to do its work.
@@ -540,6 +543,7 @@ fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
         ram: target.cfg.ramdisk.lane_gib.map(|gib| LaneRam {
             gib,
             runner: std::sync::Arc::new(crate::pool::ramdisk::RealRunner),
+            available: None,
         }),
     };
     let out = out.clone();
@@ -595,18 +599,70 @@ pub(crate) fn lane_work(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult
 /// Admit the batch onto the lane's RAM disk: free memory (minus what attached
 /// disks hold and the margin) must cover the disk. A job that does not fit
 /// stays queued — every result undecided, so the units return to `Delivered`
-/// and are re-fed later; there is no SSD fallback. On admit the batch runs in
-/// the plain path for now: unit .2 replaces this pass-through with mounting
-/// the disk and running the worktree on it.
+/// and are re-fed later; there is no SSD fallback. A disk that mounts is
+/// held by a [`RamGuard`], so it is torn down on every exit path of the batch.
 fn ramdisk_batch(lane: &LaneWorker, ram: &LaneRam, jobs: &[MergeJob]) -> Vec<MergeResult> {
-    match crate::pool::ramdisk::admit_with(
-        &*ram.runner,
-        crate::pool::ramdisk::available_bytes(),
-        ram.gib,
-        lane.ctx.cfg.ramdisk.margin_gib,
-    ) {
-        Ok(()) => run_batch(lane, jobs),
-        Err(err) => undecided_all(jobs, "ramdisk-wait", &err),
+    let free = ram
+        .available
+        .unwrap_or_else(crate::pool::ramdisk::available_bytes);
+    let margin = lane.ctx.cfg.ramdisk.margin_gib;
+    if let Err(err) = crate::pool::ramdisk::admit_with(&*ram.runner, free, ram.gib, margin) {
+        return undecided_all(jobs, "ramdisk-wait", &err);
+    }
+    let volume = lane_volume(lane);
+    match crate::pool::ramdisk::mount(&*ram.runner, &volume, ram.gib, &lane_mount(&volume)) {
+        Ok(disk) => {
+            let _guard = RamGuard {
+                ctx: &lane.ctx,
+                runner: &*ram.runner,
+                disk,
+            };
+            run_batch(lane, jobs)
+        }
+        Err(err) => undecided_all(jobs, "ramdisk-mount-failed", &err),
+    }
+}
+
+/// The volume name of this lane's RAM disk: `vivi-<mailspace|merge>-lane-
+/// <target>-<n>`, so an orphaned disk names its owner.
+fn lane_volume(lane: &LaneWorker) -> String {
+    let scope = if lane.ctx.mailspace.is_empty() {
+        String::from("merge")
+    } else {
+        lane.ctx.mailspace.clone()
+    };
+    crate::pool::ramdisk::volume_name(&[
+        scope.as_str(),
+        "lane",
+        lane.ctx.target_id.as_str(),
+        lane.n.to_string().as_str(),
+    ])
+}
+
+/// Where the lane's RAM disk is mounted: a per-volume directory under the
+/// system temp directory (the disk has no standing name of its own).
+fn lane_mount(volume: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join("vivi-ramdisk").join(volume)
+}
+
+/// Holds one mounted lane RAM disk and tears it down when the batch ends:
+/// on success, on an early return, and on a panic unwind (`lane_loop` catches
+/// those). A teardown failure is logged, never propagated — a panic in `Drop`
+/// during an unwind would abort the process.
+struct RamGuard<'a> {
+    ctx: &'a Ctx,
+    runner: &'a dyn crate::pool::ramdisk::Runner,
+    disk: crate::pool::ramdisk::Disk,
+}
+
+impl Drop for RamGuard<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = crate::pool::ramdisk::teardown(self.runner, &self.disk) {
+            self.ctx.log(&format!(
+                "WARNING lane ramdisk {} teardown failed: {error}",
+                self.disk.volume
+            ));
+        }
     }
 }
 

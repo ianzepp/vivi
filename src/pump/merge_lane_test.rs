@@ -688,40 +688,109 @@ use crate::pool::ramdisk::Runner;
 use crate::pump::merge::{LaneRam, detached_worker, lane_work};
 use std::sync::Mutex;
 
-/// An attached fake RAM disk: whole-disk device and mount point.
-type Attached = Vec<(String, String)>;
+/// One attached fake RAM disk: whole-disk device (`/dev/disk9`), its size,
+/// and where it is mounted (none between attach and `-mountPoint`).
+#[derive(Clone)]
+struct FakeDisk {
+    device: String,
+    size_gib: u64,
+    mount: Option<String>,
+}
 
-/// A `Runner` serving `mount` / `df -g` from an attach list that `diskutil
-/// eject` shrinks; every other command fails, so a test notices an unexpected
-/// call. Each attached disk reports 9999 GiB, more than any machine's free
+/// A `Runner` serving `mount` / `df -g` from an attach list that `hdiutil
+/// attach` grows, `diskutil mount -mountPoint` pins, and `diskutil eject`
+/// shrinks; every other command fails, so a test notices an unexpected call.
+/// A disk listed up front reports 9999 GiB, more than any machine's free
 /// memory.
 struct LaneFakeRunner {
-    attached: Mutex<Attached>,
+    disks: Mutex<Vec<FakeDisk>>,
     calls: Mutex<Vec<String>>,
+    /// The next `disk<N>` id `hdiutil attach` picks, from 9 up.
+    next_id: Mutex<u32>,
+    /// When set, `hdiutil attach` reports no device, like a refusing kernel.
+    attach_fails: bool,
 }
+
+/// One gibibyte, for the `ram://` sector arithmetic.
+const GIB: u64 = 1024 * 1024 * 1024;
 
 impl LaneFakeRunner {
     fn new(attached: &[(&str, &str)]) -> Self {
         Self {
-            attached: Mutex::new(
+            disks: Mutex::new(
                 attached
                     .iter()
-                    .map(|(device, mount)| ((*device).to_string(), (*mount).to_string()))
+                    .map(|(device, mount)| FakeDisk {
+                        device: (*device).to_string(),
+                        size_gib: 9999,
+                        mount: Some((*mount).to_string()),
+                    })
                     .collect(),
             ),
             calls: Mutex::new(Vec::new()),
+            next_id: Mutex::new(9),
+            attach_fails: false,
         }
     }
 
-    fn attached(&self) -> Attached {
-        self.attached.lock().expect("attach list").clone()
+    /// A runner whose `hdiutil attach` returns no device.
+    fn fail_attach() -> Self {
+        Self {
+            attach_fails: true,
+            ..Self::new(&[])
+        }
+    }
+
+    fn disks(&self) -> Vec<FakeDisk> {
+        self.disks.lock().expect("attach list").clone()
+    }
+
+    fn mounted(&self) -> Vec<FakeDisk> {
+        self.disks()
+            .into_iter()
+            .filter(|disk| disk.mount.is_some())
+            .collect()
+    }
+
+    /// Attach a fresh disk of `sectors` 512-byte sectors, named by the next
+    /// `disk<N>` id from 9 up (the id the real `hdiutil` picks here).
+    fn attach(&self, sectors: u64) -> String {
+        let mut next = self.next_id.lock().expect("device ids");
+        let device = format!("/dev/disk{next}");
+        *next += 1;
+        drop(next);
+        let mut disks = self.disks.lock().expect("attach list");
+        disks.push(FakeDisk {
+            mount: None,
+            size_gib: sectors.saturating_mul(512) / GIB,
+            device: device.clone(),
+        });
+        device
+    }
+
+    /// Mount the slice of `device` at `at`.
+    fn mount_at(&self, device: &str, at: &str) {
+        for disk in self.disks.lock().expect("attach list").iter_mut() {
+            if disk.device == device {
+                disk.mount = Some(at.to_string());
+            }
+        }
+    }
+
+    /// Unmount the slice of `device`, keeping the disk attached.
+    fn unmount(&self, device: &str) {
+        for disk in self.disks.lock().expect("attach list").iter_mut() {
+            if disk.device == device {
+                disk.mount = None;
+            }
+        }
     }
 
     fn eject(&self, device: &str) {
-        self.attached
+        self.disks
             .lock()
             .expect("attach list")
-            .retain(|(whole, _)| whole != device && !whole.starts_with(&format!("{device}s")));
+            .retain(|disk| disk.device != device);
     }
 
     /// Every command line the fake was asked to run, in order.
@@ -736,26 +805,76 @@ impl Runner for LaneFakeRunner {
         self.calls.lock().expect("call log").push(line.clone());
         match line.as_str() {
             "mount" => Ok(self
-                .attached()
+                .mounted()
                 .iter()
-                .map(|(device, mount)| format!("{device} on {mount} (apfs, local, nodev)"))
+                .map(|disk| {
+                    let mount = mounted_at(disk);
+                    format!("{}s1 on {mount} (apfs, local, nodev)", disk.device)
+                })
                 .collect::<Vec<_>>()
                 .join("\n")),
             "df -g" => Ok(self
-                .attached()
+                .mounted()
                 .iter()
-                .map(|(device, mount)| format!("{device} 9999 9999 0 0 100% {mount}"))
+                .map(|disk| {
+                    format!(
+                        "{}s1 {} 9999 0 0 100% {}",
+                        disk.device,
+                        disk.size_gib,
+                        mounted_at(disk)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n")),
-            _ => match line.strip_prefix("diskutil eject ") {
-                Some(device) => {
-                    self.eject(device);
-                    Ok(String::new())
-                }
-                None => Err(format!("fake: unexpected `{line}`")),
-            },
+            _ => self.diskutil(&line),
         }
     }
+}
+
+/// Where an attached fake disk is mounted (`""` while unmounted).
+fn mounted_at(disk: &FakeDisk) -> String {
+    disk.mount.clone().unwrap_or_default()
+}
+
+impl LaneFakeRunner {
+    /// The `diskutil` half of the fake: attach already happened elsewhere.
+    fn diskutil(&self, line: &str) -> Result<String, String> {
+        let argv: Vec<&str> = line.split(' ').collect();
+        match argv.as_slice() {
+            ["hdiutil", "attach", "-nomount", _] if self.attach_fails => {
+                Ok(String::from("no device\n"))
+            }
+            ["hdiutil", "attach", "-nomount", sectors] => Ok(self.attach_ram(sectors)),
+            ["diskutil", "eraseVolume", "APFS", _, _] => Ok(String::new()),
+            ["diskutil", "unmount", slice] => {
+                self.unmount(whole_slice(slice));
+                Ok(String::new())
+            }
+            ["diskutil", "mount", "-mountPoint", at, slice] => {
+                self.mount_at(whole_slice(slice), at);
+                Ok(String::new())
+            }
+            ["diskutil", "eject", device] => {
+                self.eject(device);
+                Ok(String::new())
+            }
+            _ => Err(format!("fake: unexpected `{line}`")),
+        }
+    }
+
+    /// Attach `ram://<sectors>`; the attach output is the device plus a newline.
+    fn attach_ram(&self, sectors: &str) -> String {
+        let count: u64 = sectors
+            .trim_start_matches("ram://")
+            .parse()
+            .unwrap_or_default();
+        format!("{}\n", self.attach(count))
+    }
+}
+
+/// `/dev/disk9s1` -> `/dev/disk9`: the whole-disk device of a slice.
+fn whole_slice(slice: &str) -> &str {
+    slice.rsplit_once('s').map_or(slice, |(device, _)| device)
 }
 
 #[test]
@@ -770,7 +889,7 @@ fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
     let (ctx, _host) = test_ctx(dir.path(), cfg);
     let tela = ctx.for_target("tela").unwrap();
     // One attached `vivi-` disk holding 9999 GiB, so held plus the 8 GiB disk
-    // plus the 6 GiB margin exceeds any machine's free memory.
+    // plus the 6 GiB margin exceeds the 8 GiB of memory the test pins.
     let fake = Arc::new(LaneFakeRunner::new(&[(
         "/dev/disk7s1",
         "/Volumes/vivi-huge",
@@ -781,6 +900,7 @@ fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
         Some(LaneRam {
             gib: 8,
             runner: fake.clone(),
+            available: Some(8 * GIB),
         }),
     );
 
@@ -795,6 +915,114 @@ fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
     assert!(
         !fake.calls().iter().any(|c| c.starts_with("hdiutil attach")),
         "the job waits queued; no disk is mounted: {:?}",
+        fake.calls()
+    );
+}
+
+/// A `tela` config asking every lane for a 1 GiB RAM disk with no safety
+/// margin: 1 GiB fits any machine that can run cargo.
+fn ram_config() -> PumpConfig {
+    let mut cfg = tela_config();
+    cfg.ramdisk = crate::pump::config::config_ramdisk::PumpRamDisk {
+        lane_gib: Some(1),
+        margin_gib: 0,
+        ..Default::default()
+    };
+    cfg
+}
+
+/// The `hdiutil attach` and `diskutil eject` lines of `calls`, in order: the
+/// life of each disk, without the erase/mount/verification calls between.
+fn disk_lifecycle(calls: &[String]) -> Vec<String> {
+    calls
+        .iter()
+        .filter(|call| call.starts_with("hdiutil attach") || call.starts_with("diskutil eject"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn merge_lane_mounts_a_fresh_ram_disk_per_batch_and_always_ejects_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), ram_config());
+    let tela = ctx.for_target("tela").unwrap();
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    host.reply("rev-parse HEAD", 0, "tipram123\n");
+    host.reply("rev-parse origin/main", 0, "tipram123\n");
+    let fake = Arc::new(LaneFakeRunner::new(&[]));
+    let worker = detached_worker(
+        &tela,
+        1,
+        Some(LaneRam {
+            gib: 1,
+            runner: fake.clone(),
+            available: Some(8 * GIB),
+        }),
+    );
+
+    let results = lane_work(&worker, &[tela_job("u1")]);
+
+    assert_eq!(results[0].ok, Some(true), "{results:?}");
+    assert_eq!(
+        disk_lifecycle(&fake.calls()),
+        [
+            "hdiutil attach -nomount ram://2097152",
+            "diskutil eject /dev/disk9",
+        ],
+        "{:?}",
+        fake.calls()
+    );
+
+    // A second batch gets its own fresh disk, and that one is ejected too.
+    let results = lane_work(&worker, &[tela_job("u2")]);
+
+    assert_eq!(results[0].ok, Some(true), "{results:?}");
+    assert_eq!(
+        disk_lifecycle(&fake.calls()),
+        [
+            "hdiutil attach -nomount ram://2097152",
+            "diskutil eject /dev/disk9",
+            "hdiutil attach -nomount ram://2097152",
+            "diskutil eject /dev/disk10",
+        ],
+        "{:?}",
+        fake.calls()
+    );
+    assert_eq!(fake.disks().len(), 0, "nothing stays attached");
+}
+
+#[test]
+fn merge_lane_leaves_the_batch_undecided_when_the_ram_disk_will_not_mount() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), ram_config());
+    let tela = ctx.for_target("tela").unwrap();
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    host.reply("rev-parse HEAD", 0, "tipram123\n");
+    host.reply("rev-parse origin/main", 0, "tipram123\n");
+    let fake = Arc::new(LaneFakeRunner::fail_attach());
+    let worker = detached_worker(
+        &tela,
+        1,
+        Some(LaneRam {
+            gib: 1,
+            runner: fake.clone(),
+            available: Some(8 * GIB),
+        }),
+    );
+
+    let results = lane_work(&worker, &[tela_job("u1"), tela_job("u2")]);
+
+    assert_eq!(results.len(), 2);
+    for result in &results {
+        assert_eq!(result.ok, None, "undecided: the unit is re-fed");
+        assert_eq!(result.why.as_deref(), Some("ramdisk-mount-failed"));
+    }
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("diskutil eraseVolume")),
+        "a disk that never attached is never shaped: {:?}",
         fake.calls()
     );
 }
