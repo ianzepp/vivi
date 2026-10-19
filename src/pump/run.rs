@@ -160,7 +160,10 @@ fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
         lines.push(format!("planner-failures {}", counts.join(" ")));
     }
     if !st.board.planner_failed.is_empty() {
-        lines.push(format!("planner-parked {}", st.board.planner_failed.join(" ")));
+        lines.push(format!(
+            "planner-parked {}",
+            st.board.planner_failed.join(" ")
+        ));
     }
     lines
 }
