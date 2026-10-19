@@ -8,10 +8,7 @@ use crate::pump::state::{GateRecord, Promotion};
 /// The failing names recorded for the newest promotion: those stored with it,
 /// else the failing set of the gate that tested that tip (a promotion made
 /// before the names were recorded). `None` with no promotion or no record.
-pub(crate) fn promoted_set(
-    promotions: &[Promotion],
-    gates: &[GateRecord],
-) -> Option<Vec<String>> {
+pub(crate) fn promoted_set(promotions: &[Promotion], gates: &[GateRecord]) -> Option<Vec<String>> {
     let promotion = promotions.last()?;
     promotion.failing.clone().or_else(|| {
         gates
@@ -29,7 +26,8 @@ pub(crate) fn main_set(
     gates: &[GateRecord],
     baseline: Option<&[String]>,
 ) -> Vec<String> {
-    promoted_set(promotions, gates).unwrap_or_else(|| baseline.map_or_else(Vec::new, |b| b.to_vec()))
+    promoted_set(promotions, gates)
+        .unwrap_or_else(|| baseline.map_or_else(Vec::new, |b| b.to_vec()))
 }
 
 /// The newest gate whose recorded failing set main carries whole: every one
