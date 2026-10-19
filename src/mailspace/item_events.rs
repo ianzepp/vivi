@@ -699,6 +699,10 @@ impl Mailspace {
         // Test seam: fail exactly the armed settle, before any state moves.
         #[cfg(test)]
         fail_next_settle()?;
+        // A `task from` a need lowers the unit by letter, not by bind
+        // letter: rebuild the bind from the parent header first, so a letter
+        // with no replies yet is still bound however it arrived.
+        self.rebuild_parent_binds(storage, content_id)?;
         // Most work has no replies at all: skip the parse for it.
         if storage.reply_child_contents(content_id)?.is_empty() {
             return Ok(());

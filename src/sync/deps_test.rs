@@ -2,7 +2,7 @@
 //! route files a letter, the receiver's graph, `step` and
 //! `task list --blocked` agree.
 
-use crate::mailspace::{GraphNodeView, RoleUpdate};
+use crate::mailspace::{GraphNodeView, RoleUpdate, SourceTaskRequest};
 use crate::sync::fake_server::{LETTER_DATE, World, wire_id};
 use crate::sync::fetch::fetch_handles;
 use crate::sync::pull::{PullPlan, pull_with};
@@ -250,6 +250,55 @@ fn a_replay_of_held_letters_changes_nothing() {
         w.bob
             .mailspace
             .backlog_audit(false)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+}
+
+#[test]
+fn filing_rebuilds_the_need_bind_from_the_parent_header() {
+    let w = World::new();
+    let hand = w.bob.address("hand");
+    // Alice sends the need to bob's hand and pushes it; bob pulls it.
+    let need = w.alice.send_need("mind", &hand, "the need");
+    w.alice.push(&w.alice.client(&w.server));
+    w.bob.pull(&w.bob_client);
+    assert_eq!(node(&w, "the need").state, "open", "the need is held work");
+
+    // Alice lowers the need into a unit task addressed to bob's hand. The
+    // bind is local to alice: the letter carries only the parent header.
+    w.alice
+        .mailspace
+        .task_from_source(SourceTaskRequest {
+            source_handle: need,
+            actor: "mind".into(),
+            to: vec![hand.clone()],
+            cc: Vec::new(),
+            subject: "the unit".into(),
+            body: "do the first part\r\n".into(),
+        })
+        .unwrap();
+    w.alice.push(&w.alice.client(&w.server));
+    w.bob.pull(&w.bob_client);
+
+    let need_node = node(&w, "the need");
+    assert_eq!(need_node.state, "open");
+    let unit = node(&w, "the unit");
+    assert_eq!(
+        unit.subgraph.as_deref(),
+        Some(need_node.source_id.as_str()),
+        "filing derives the bind from X-Vivi-Parent"
+    );
+
+    // Pulling the same letters again writes no second bind.
+    let before = w.bob.mailspace.graph_show("backlog").unwrap().nodes;
+    w.bob.pull(&w.bob_client);
+    assert_eq!(w.bob.mailspace.graph_show("backlog").unwrap().nodes, before);
+    assert!(
+        w.bob
+            .mailspace
+            .backlog_audit(true)
             .unwrap()
             .findings
             .is_empty()
