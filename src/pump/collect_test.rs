@@ -1037,3 +1037,32 @@ fn a_repair_timeout_dissolves_the_quarantine_at_once() {
         exceptions(&ctx)
     );
 }
+
+#[test]
+fn a_repair_no_changes_dissolves_the_quarantine_at_once() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = quarantine_repair_state();
+
+    fail(
+        &ctx,
+        &mut st,
+        "pumpfix-q1-aaaaaa",
+        "finished/no_changes",
+        "nothing pushed",
+    );
+
+    assert_eq!(
+        st.units["pumpfix-q1-aaaaaa"].status,
+        Status::Stuck,
+        "a repair that found no changes must dissolve its quarantine instead of retrying"
+    );
+    let member = &st.units["u1"];
+    assert_eq!(member.status, Status::Delivered);
+    assert!(member.solo);
+    assert_eq!(member.quarantine, None);
+    assert!(
+        exceptions(&ctx).contains("quarantine-stuck"),
+        "exceptions: {}",
+        exceptions(&ctx)
+    );
+}
