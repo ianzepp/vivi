@@ -1,4 +1,4 @@
-use super::property::{PropertyKind, parse_property_event};
+use super::property::{PropertyKind, carries_verdict, parse_property_event};
 use super::*;
 use crate::mailspace::SendRequest;
 
@@ -106,6 +106,17 @@ fn a_property_event_without_its_payload_or_a_matching_reply_is_plain_mail() {
             "{headers}"
         );
     }
+}
+
+#[test]
+fn a_letter_carries_verdict_only_with_the_verdict_headers() {
+    assert!(carries_verdict(&letter("X-Vivi-Verdict: fixed\r\n")));
+    assert!(carries_verdict(&letter("X-Vivi-Repo: vivi=sha9\r\n")));
+    assert!(
+        !carries_verdict(&letter("X-Vivi-Repo: no-tip\r\n")),
+        "a repo header without '=' carries nothing"
+    );
+    assert!(!carries_verdict(&letter("X-Vivi-Note: hi\r\n")));
 }
 
 /// The event letters held for `item`, oldest first, as `(kind, prev count)`.
