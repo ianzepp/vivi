@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -17,6 +18,8 @@ include!(concat!(env!("OUT_DIR"), "/embedded_skills.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SKILL_MD: &str = "SKILL.md";
+const CONFIG_DIRECTORY: &str = "vivi";
+const TARGETS_FILENAME: &str = "skills-targets.txt";
 
 /// One embedded skill: `SKILL.md` plus the supporting files it links to.
 #[derive(Debug)]
@@ -222,6 +225,44 @@ pub fn catalog_matches_json(text: &str) -> Option<bool> {
     actual.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     expected.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     Some(actual != expected)
+}
+
+/// Record an install target for later stale-copy checks.
+///
+/// # Errors
+///
+/// Returns an error when the user's config directory is unknown or the record
+/// cannot be read or written.
+pub fn record_target(dir: &Path) -> Result<(), VivariumError> {
+    let root = dirs::config_dir().ok_or_else(|| {
+        VivariumError::Config("could not find the user's config directory".into())
+    })?;
+    record_target_in(&root, dir)
+}
+
+/// Append `dir` to the target list under `config_root`, skipping duplicates.
+fn record_target_in(config_root: &Path, dir: &Path) -> Result<(), VivariumError> {
+    let path = config_root.join(CONFIG_DIRECTORY).join(TARGETS_FILENAME);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let target = match fs::canonicalize(dir) {
+        Ok(absolute) => absolute,
+        Err(_) => std::path::absolute(dir)?,
+    };
+    let entry = target.display().to_string();
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+    if lines.contains(&entry.as_str()) {
+        return Ok(());
+    }
+    lines.push(&entry);
+    fs::write(&path, format!("{}\n", lines.join("\n")))?;
+    Ok(())
 }
 
 fn differs(root: &Path, file: &SkillFile) -> bool {
