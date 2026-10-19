@@ -594,6 +594,24 @@ fn transient_retry_fields_round_trip_and_default() {
 }
 
 #[test]
+fn split_planner_fields_round_trip_and_default() {
+    let mut unit = Unit::default();
+    unit.split_fails = 2;
+    unit.split_retry_at = Some(99);
+    unit.split_reasks = 1;
+    let back: Unit = serde_json::from_str(&serde_json::to_string(&unit).unwrap()).unwrap();
+    assert_eq!(back.split_fails, 2);
+    assert_eq!(back.split_retry_at, Some(99));
+    assert_eq!(back.split_reasks, 1);
+
+    // A unit from an older pump has none of the keys; all load as defaults.
+    let old: Unit = serde_json::from_str(r#"{"need": "n", "status": "pending"}"#).unwrap();
+    assert_eq!(old.split_fails, 0);
+    assert_eq!(old.split_retry_at, None);
+    assert_eq!(old.split_reasks, 0);
+}
+
+#[test]
 fn a_withdrawn_or_unknown_unit_is_not_dispatched_and_does_not_satisfy_after() {
     use crate::pump::config::PumpConfig;
     use crate::pump::host::test_ctx;

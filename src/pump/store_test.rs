@@ -39,6 +39,9 @@ fn sample() -> State {
         verdict_text: Some(String::from("ok")),
         kind_reported: true,
         send_reported: true,
+        split_fails: 2,
+        split_retry_at: Some(99),
+        split_reasks: 1,
         history: vec![Attempt {
             attempt: 1,
             model: Some(String::from("m")),
@@ -127,6 +130,12 @@ fn a_saved_state_round_trips() {
     assert_eq!(unit.commit.as_deref(), Some("abc123"));
     assert_eq!(unit.merged_at, Some(12));
     assert!(unit.send_reported);
+    assert_eq!(unit.split_fails, 2);
+    assert_eq!(unit.split_retry_at, Some(99));
+    assert_eq!(unit.split_reasks, 1);
+    assert!(!unit.extra.contains_key("split_fails"));
+    assert!(!unit.extra.contains_key("split_retry_at"));
+    assert!(!unit.extra.contains_key("split_reasks"));
     assert_eq!(unit.history.len(), 1);
     assert_eq!(unit.history[0].why, "timeout");
     assert_eq!(unit.history[0].branch.as_deref(), Some("unit/u1-a1"));
