@@ -436,6 +436,68 @@ fn the_third_failed_attempt_makes_the_unit_stuck_and_raises_an_exception() {
 }
 
 #[test]
+fn a_transient_failure_retries_without_sticking() {
+    let (_dir, ctx, host) = setup();
+    host.reply("pool reconcile", 0, "reconciled t1 pool slot error host-down");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("t1"), Some("unit/x-a5"));
+    u.attempts = 5;
+    put(&mut st, "u-1", u);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Pending, "transient never sticks");
+    assert_eq!(u.transient_retries, 1);
+    assert_eq!(u.retry_not_before, Some(T0 + 120));
+    assert_eq!(u.task, None);
+    assert!(!exceptions(&ctx).contains("stuck"));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("transient-retry u-1 host 1/2")),
+        "logs: {:?}",
+        host.logs()
+    );
+}
+
+#[test]
+fn transient_retries_escalate_at_the_cap() {
+    let (_dir, ctx, host) = setup();
+    host.reply("pool reconcile", 0, "reconciled t1 pool slot error host-down");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("t1"), Some("unit/x-a5"));
+    u.attempts = 5;
+    u.transient_retries = ctx.cfg.dispatch.transient_max;
+    put(&mut st, "u-1", u);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Stuck);
+    assert_eq!(u.transient_retries, ctx.cfg.dispatch.transient_max);
+    assert!(exceptions(&ctx).contains("stuck u-1 error/host-down"));
+    assert!(!host.logs().iter().any(|line| line.contains("transient-retry")));
+}
+
+#[test]
+fn a_real_failure_still_sticks() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/x-a1 abc\"",
+    );
+    host.reply("ls-remote", 0, "abc123 refs/heads/unit/x-a1");
+    host.reply("task show", 0, "agent exit 1 after 10s");
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
+    u.attempts = 3;
+    put(&mut st, "u-1", u);
+    assert_eq!(collect(&ctx, &mut st), None);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Stuck);
+    assert_eq!(u.transient_retries, 0);
+    assert!(exceptions(&ctx).contains("stuck u-1 finished/agent exit 1"));
+}
+
+#[test]
 fn a_unit_unreported_for_under_90_seconds_is_left_alone() {
     let (_dir, ctx, host) = setup();
     host.reply(
