@@ -693,8 +693,7 @@ impl Mailspace {
         // A role that may close the work (its author, or a mind) writes an
         // event letter, which carries the move to every mailspace holding
         // the item; any other move is local, and a close is a report.
-        let empty = std::collections::BTreeMap::new();
-        let extras = Self::verdict_headers(metadata.unwrap_or(&empty));
+        let extras = metadata.map(Self::verdict_headers).unwrap_or_default();
         let event = self.try_emit_for_move(
             &storage,
             &identity,
@@ -707,7 +706,8 @@ impl Mailspace {
         )?;
         if event.is_none() {
             self.refuse_sent_copy_reopen(handle, &before, &role)?;
-            self.move_row_locally(&storage, &identity, &before, &role, note, command)?;
+            let note = report_note(note, &extras);
+            self.move_row_locally(&storage, &identity, &before, &role, note, command, &extras)?;
         }
         if let Some(metadata) = metadata {
             storage.set_item_metadata(&before.message_id, metadata)?;
@@ -769,6 +769,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
+        extras: &[(String, String)],
     ) -> Result<(), VivariumError> {
         // Stored messages keep the account name they were ingested under
         // even after a rename, so the storage-layer mutation must target
@@ -778,7 +779,7 @@ impl Mailspace {
             storage.move_message_to_role(&account, &before.message_id, role)?;
             return log_move_event(storage, identity, role, before, command, None);
         };
-        let reply = self.note_reply(storage, identity, before, note)?;
+        let reply = self.note_reply(storage, identity, before, note, extras)?;
         let event = Self::move_event(command, identity, &account, before, role, note);
         storage.move_message_with_reply(&MailspaceMoveWithReply {
             account: &account,
@@ -810,6 +811,11 @@ impl Mailspace {
             None => VivariumError::Message(format!("message not found: {token}")),
         }
     }
+}
+
+/// A verdict-only report still sends a letter, so the owner sees the verdict.
+fn report_note<'a>(note: Option<&'a str>, extras: &[(String, String)]) -> Option<&'a str> {
+    note.or((!extras.is_empty()).then_some("done"))
 }
 
 fn role_implies_kind(role: &str, kind: &str) -> bool {
