@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use tempfile::{TempDir, tempdir};
 
 use crate::cli::PumpReplanCommand;
+use crate::pump::audit::{AuditRun, current as current_audit, store as store_audit};
 use crate::pump::config::PumpConfig;
 use crate::pump::control::project_home as resolve_project_home;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
@@ -379,6 +380,55 @@ fn run_replan_writes_a_request_row() {
         .unwrap();
     apply_pending(&ctx, &mut st);
     assert!(!st.needs.contains_key("n1"));
+}
+
+#[test]
+fn explicit_replan_rearms_an_exhausted_gatefix_audit_without_a_need_record() {
+    let dir = mailspace_project();
+    let need = "pumpfix-g01234567";
+    let mut st = State::default();
+    store_audit(
+        &mut st,
+        Some(AuditRun {
+            need: need.to_owned(),
+            tip: String::from("0123456789abcdef0123456789abcdef01234567"),
+            fails: 3,
+            attempts: 3,
+            exhausted: true,
+            last_error: Some(String::from("provider: Connection error.")),
+            ..AuditRun::default()
+        }),
+    );
+    let mut store = PumpStore::open(&project_home(&dir).join(DB_FILENAME)).unwrap();
+    store.save(&st).unwrap();
+
+    run(dir.path(), &command(need, false)).unwrap();
+    let (ctx, _host) = apply_ctx(&dir);
+    let mut st = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
+        .unwrap()
+        .unwrap()
+        .load()
+        .unwrap();
+    apply_pending(&ctx, &mut st);
+
+    let audit = current_audit(&st).unwrap();
+    assert!(!audit.exhausted);
+    assert_eq!(audit.fails, 0);
+    assert_eq!(audit.attempts, 3);
+    assert_eq!(audit.retry_at, Some(T0));
+    assert!(
+        audit
+            .last_error
+            .unwrap()
+            .contains("operator replan requested")
+    );
+    assert!(pending_in(&ctx.home).is_empty());
+    let durable = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
+        .unwrap()
+        .unwrap()
+        .load()
+        .unwrap();
+    assert!(!current_audit(&durable).unwrap().exhausted);
 }
 
 #[test]

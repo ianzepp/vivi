@@ -14,7 +14,7 @@ use crate::pump::audit::{
 use crate::pump::config::{GateConfig, PumpConfig};
 use crate::pump::gatefix::fix_need;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::jobs::{JobOutcome, JobStatus, dispatch_pending};
+use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob, dispatch_pending};
 use crate::pump::state::{State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedRole};
 
@@ -99,6 +99,10 @@ fn audit_run_round_trips_through_state_extra() {
         retry_at: Some(1_000_060),
         new: 1,
         residual: 2,
+        failures: vec![String::from("gate::a"), String::from("gate::b")],
+        attempts: 2,
+        exhausted: false,
+        last_error: Some(String::from("timeout")),
     };
     store(&mut st, Some(run.clone()));
     assert_eq!(current(&st), Some(run));
@@ -343,6 +347,223 @@ fn an_audit_timeout_backs_off_then_fails_over_to_another_pool() {
     assert_eq!(retry.pool_exclude, ["g1"]);
     dispatch_pending(&ctx, &mut st).unwrap();
     assert!(dispatch_command(&host).contains("--pool g2"));
+}
+
+#[test]
+fn a_provider_error_retries_then_a_valid_audit_creates_fix_units() {
+    let (_dir, mut ctx, host) = setup(None);
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.gate.pools = vec![String::from("g1"), String::from("g2")];
+    ctx.cfg = Arc::new(cfg);
+    host.reply(
+        "pool status --porcelain",
+        0,
+        "slot g1 bridge slot-1 free\nslot g2 bridge slot-2 free\n",
+    );
+    host.reply("task send", 0, "created 1111aaaa");
+    host.reply("pool dispatch", 0, "dispatched 1111aaaa to g1");
+    host.reply("task send", 0, "created 2222bbbb");
+    host.reply("pool dispatch", 0, "dispatched 2222bbbb to g2");
+    let mut st = State::default();
+    start_audit(
+        &ctx,
+        &mut st,
+        TIP,
+        "test result: FAILED",
+        &[String::from("gate::a_fails")],
+        &[],
+        None,
+    );
+    let first_id = current(&st).unwrap().job_id.unwrap();
+    let first = st.jobs.get_mut(&first_id).unwrap();
+    first.pool = Some(String::from("g1"));
+    first.status = JobStatus::Finished;
+    first.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("agent failed"),
+        receipt: String::from(
+            "pool result j1: finished\nagent exit 1 in 0s\n\n--- stderr tail\nConnection error.\n",
+        ),
+        at: ctx.now(),
+    });
+
+    crate::pump::audit::collect_completed(&ctx, &mut st);
+    let run = current(&st).unwrap();
+    assert_eq!(run.fails, 1);
+    assert_eq!(run.retry_at, Some(ctx.now() + 60));
+    assert!(!run.exhausted);
+    let exception = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exception.contains("environment"), "{exception}");
+    assert!(exception.contains("exit=1"), "{exception}");
+    assert!(exception.contains("Connection error."), "{exception}");
+    assert!(host.logs().iter().any(|line| {
+        line.contains("audit retry 1")
+            && line.contains("exit=1")
+            && line.contains("Connection error.")
+    }));
+
+    host.advance(60);
+    crate::pump::audit::retry_due(&ctx, &mut st);
+    let retry_id = current(&st).unwrap().job_id.clone().unwrap();
+    assert_ne!(retry_id, first_id);
+    assert_eq!(st.jobs[&retry_id].pool_candidates, ["g2"]);
+    dispatch_pending(&ctx, &mut st).unwrap();
+    let retry = st.jobs.get_mut(&retry_id).unwrap();
+    retry.status = JobStatus::Finished;
+    retry.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::new(),
+        receipt: String::from(
+            "agent exit 0 in 1s\nAUDIT-BEGIN\n[{\"root_cause\":\"broken\",\"brief\":\"fix it\",\"write_scope\":[\"src/a.rs\"]}]\nAUDIT-END\n",
+        ),
+        at: ctx.now(),
+    });
+    crate::pump::audit::collect_completed(&ctx, &mut st);
+
+    assert!(current(&st).is_none());
+    assert_eq!(st.units["pumpfix-g01234567-1"].status, Status::Pending);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("audit retry 1"))
+    );
+}
+
+#[test]
+fn an_unavailable_auditor_slot_defers_without_spending_a_failed_attempt() {
+    let (_dir, ctx, host) = setup(None);
+    let mut st = State::default();
+    start_audit(
+        &ctx,
+        &mut st,
+        TIP,
+        "tail",
+        &[String::from("gate::a_fails")],
+        &[],
+        None,
+    );
+    let run = current(&st).unwrap();
+    assert_eq!(run.fails, 0);
+    assert_eq!(run.attempts, 0);
+    assert_eq!(run.retry_at, Some(ctx.now() + 60));
+    assert!(run.job_id.is_none());
+    assert!(st.jobs.is_empty());
+    host.advance(60);
+    crate::pump::audit::retry_due(&ctx, &mut st);
+    let run = current(&st).unwrap();
+    assert_eq!(run.fails, 0);
+    assert_eq!(run.attempts, 0);
+    assert_eq!(run.retry_at, Some(ctx.now() + 60));
+}
+
+#[test]
+fn an_audit_stops_after_three_failures_and_does_not_restart_the_same_red_result() {
+    let (_dir, ctx, host) = setup(None);
+    ready(&host);
+    let mut st = State::default();
+    let failure = vec![String::from("gate::a_fails")];
+    start_audit(&ctx, &mut st, TIP, "tail", &failure, &[], None);
+
+    for attempt in 1..=crate::pump::audit::MAX_AUDIT_ATTEMPTS {
+        let job_id = current(&st).unwrap().job_id.clone().unwrap();
+        let job = st.jobs.get_mut(&job_id).unwrap();
+        job.status = JobStatus::Finished;
+        job.outcome = Some(JobOutcome {
+            state: String::from("finished"),
+            detail: String::from("agent failed"),
+            receipt: String::from("agent exit 1 in 1s\n--- receipt\nno audit report\n"),
+            at: ctx.now(),
+        });
+        crate::pump::audit::collect_completed(&ctx, &mut st);
+        let run = current(&st).unwrap();
+        assert_eq!(run.fails, attempt);
+        assert_eq!(
+            run.exhausted,
+            attempt == crate::pump::audit::MAX_AUDIT_ATTEMPTS
+        );
+        if attempt < crate::pump::audit::MAX_AUDIT_ATTEMPTS {
+            let wait = if attempt == 1 { 60 } else { 120 };
+            host.advance(wait);
+            crate::pump::audit::retry_due(&ctx, &mut st);
+        }
+    }
+
+    let run = current(&st).unwrap();
+    assert_eq!(run.attempts, crate::pump::audit::MAX_AUDIT_ATTEMPTS);
+    assert_eq!(run.retry_at, None);
+    let jobs = st.jobs.len();
+    start_audit(&ctx, &mut st, TIP, "tail", &failure, &[], None);
+    assert_eq!(st.jobs.len(), jobs);
+    let changed = vec![String::from("gate::b_fails")];
+    start_audit(&ctx, &mut st, TIP, "tail", &changed, &[], None);
+    let restarted = current(&st).unwrap();
+    assert!(!restarted.exhausted);
+    assert_eq!(restarted.fails, 0);
+    assert_eq!(restarted.attempts, 4);
+    assert!(restarted.job_id.unwrap().ends_with("-4"));
+    let exception = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exception.contains("gatefix-planner-failed"), "{exception}");
+    assert!(exception.contains("vivi pump replan"), "{exception}");
+}
+
+#[test]
+fn status_explains_exhausted_red_work_and_operator_recovery() {
+    let (_dir, ctx, _host) = setup(None);
+    let mut st = State::default();
+    let run = AuditRun {
+        job_id: Some(String::from("audit-job")),
+        need: String::from("pumpfix-g01234567"),
+        tip: TIP.to_owned(),
+        fails: 1,
+        attempts: 2,
+        last_error: Some(String::from("provider: Connection error.")),
+        ..AuditRun::default()
+    };
+    st.red
+        .insert(run.need.clone(), String::from("pumpfix-g01234567"));
+    let mut job = PoolJob::from(JobSpec::new(
+        "audit-job",
+        "audit",
+        "auditor",
+        "audit subject",
+        "audit body",
+    ));
+    job.status = JobStatus::Dispatched;
+    st.jobs.insert(String::from("audit-job"), job);
+    store(&mut st, Some(run));
+
+    let lines = crate::pump::audit::status_lines(&ctx, &st);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("gatefix-active"), "{lines:?}");
+    assert!(lines[0].contains("audit=in-flight"), "{lines:?}");
+    assert!(lines[0].contains("jobs=2 failures=1/3"), "{lines:?}");
+    let mut run = current(&st).unwrap();
+    run.job_id = None;
+    run.fails = 3;
+    run.attempts = 3;
+    run.exhausted = true;
+    store(&mut st, Some(run));
+    let lines = crate::pump::audit::status_lines(&ctx, &st);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("gatefix-no-live-work"), "{lines:?}");
+    assert!(lines[0].contains("audit=failed"), "{lines:?}");
+    assert!(lines[0].contains("failures=3/3"), "{lines:?}");
+    assert!(lines[0].contains("Connection error."), "{lines:?}");
+    assert!(
+        lines[0].contains("vivi pump replan pumpfix-g01234567"),
+        "{lines:?}"
+    );
+    crate::pump::run::write_status(&ctx, &st, &[]);
+    let status = fs::read_to_string(ctx.home.join("status.txt")).unwrap();
+    assert!(status.contains("gatefix-no-live-work"), "{status}");
+    assert!(
+        status.contains("vivi pump replan pumpfix-g01234567"),
+        "{status}"
+    );
+    assert!(
+        !status.contains("red owned by pumpfix-g01234567"),
+        "{status}"
+    );
 }
 
 #[test]

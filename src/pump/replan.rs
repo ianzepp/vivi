@@ -57,6 +57,9 @@ pub fn apply_pending(ctx: &Ctx, st: &mut State) {
 /// Apply one request unless live work requires an explicit force.
 fn apply_one(ctx: &Ctx, st: &mut State, request: &ReplanRequest) -> Result<bool, VivariumError> {
     let need = request.need.as_str();
+    if crate::pump::audit::rearm_operator_replan(ctx, st, need) {
+        return Ok(true);
+    }
     let Some(units) = st.needs.get(need).map(|record| record.units.clone()) else {
         ctx.log(&format!("replan: {need} unknown; nothing to supersede"));
         return Ok(false);
@@ -197,7 +200,8 @@ fn persist_and_mark(ctx: &Ctx, path: &Path, st: &State, processed: &[i64], chang
     }
 }
 
-/// Queue a replan for the next pump tick.
+/// Queue a replan for the next pump tick. An exhausted audit may be retried
+/// even when it has no board `NeedRecord`.
 ///
 /// # Errors
 /// Returns an error for an unknown need, live work without `--force`, a
@@ -206,12 +210,20 @@ pub fn run(project: &Path, cmd: &PumpReplanCommand) -> Result<(), VivariumError>
     let home = project_home(project)?;
     let path = home.join(DB_FILENAME);
     let st = load_state(&path)?;
-    let Some(record) = st.needs.get(&cmd.need) else {
-        return Err(VivariumError::Message(format!(
-            "unknown need: {}",
-            cmd.need
-        )));
+    let audit_retry = crate::pump::audit::operator_replan_allowed(&st, &cmd.need);
+    let record = match st.needs.get(&cmd.need) {
+        Some(record) => record,
+        None if audit_retry => return queue_request(&path, &cmd.need, cmd.force),
+        None => {
+            return Err(VivariumError::Message(format!(
+                "unknown need: {}",
+                cmd.need
+            )));
+        }
     };
+    if audit_retry {
+        return queue_request(&path, &cmd.need, cmd.force);
+    }
     if !cmd.force {
         if let Some((uid, status)) = live_unit(&st, &record.units) {
             return Err(VivariumError::Message(format!(
@@ -226,12 +238,14 @@ pub fn run(project: &Path, cmd: &PumpReplanCommand) -> Result<(), VivariumError>
             )));
         }
     }
-    let mut store = PumpStore::open(&path)?;
-    store.add_replan_request(&cmd.need, cmd.force, now())?;
-    println!(
-        "replan {} requested; the pump applies it at its next tick",
-        cmd.need
-    );
+    queue_request(&path, &cmd.need, cmd.force)
+}
+
+/// Save one operator replan request for the next pump tick.
+fn queue_request(path: &Path, need: &str, force: bool) -> Result<(), VivariumError> {
+    let mut store = PumpStore::open(path)?;
+    store.add_replan_request(need, force, now())?;
+    println!("replan {need} requested; the pump applies it at its next tick");
     Ok(())
 }
 

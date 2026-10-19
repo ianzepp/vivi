@@ -1,18 +1,25 @@
 //! Red-gate auditing state and the auditor's fix-forward brief.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use serde::{Deserialize, Serialize};
 
 use crate::pump::dispatch::slots;
+use crate::pump::envfail::HostFailure;
 use crate::pump::gatefix::{fix_need, send_fix_need, take_residuals};
 use crate::pump::host::Ctx;
-use crate::pump::jobs::{JobSpec, completion, enqueue, mark_applied};
+use crate::pump::jobs::{
+    JobOutcome, JobSpec, JobStatus, PoolJob, completion, enqueue, mark_applied,
+};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::routing::RoleRouting;
 
 /// Seconds before an audit that could not start is retried.
 const RETRY_SECONDS: u64 = 60;
+
+/// Failed launched audits before the run stops for operator attention.
+pub const MAX_AUDIT_ATTEMPTS: u64 = 3;
 
 /// The `state.extra` key holding the live audit run.
 pub(crate) const AUDIT_KEY: &str = "audit";
@@ -76,6 +83,18 @@ pub struct AuditRun {
     /// Number of residual failing names covered by the audit.
     #[serde(default)]
     pub residual: usize,
+    /// Sorted failing-name set that identifies this red result.
+    #[serde(default)]
+    pub failures: Vec<String>,
+    /// Total queued audit job IDs, retained across operator retries.
+    #[serde(default)]
+    pub attempts: u64,
+    /// This exact red result reached its bounded retry limit.
+    #[serde(default)]
+    pub exhausted: bool,
+    /// Latest retry or terminal reason shown in status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 /// Start the red-gate audit for `tip`.
@@ -98,7 +117,18 @@ pub fn start_audit(
     residual: &[(String, String)],
     prior: Option<&str>,
 ) {
-    if current(st).is_some_and(|run| run.task.is_some() || run.job_id.is_some()) {
+    let failures = failure_names(new, residual);
+    let previous = current(st);
+    if previous
+        .as_ref()
+        .is_some_and(|run| run.task.is_some() || run.job_id.is_some())
+    {
+        return;
+    }
+    if let Some(run) = previous.as_ref()
+        && same_failure(st, run, tip, &failures, new.len(), residual.len())
+        && (run.exhausted || run.fails >= MAX_AUDIT_ATTEMPTS || run.retry_at.is_some())
+    {
         return;
     }
     let base = fix_need(ctx, tip);
@@ -116,11 +146,15 @@ pub fn start_audit(
         at: ctx.now(),
         new: new.len(),
         residual: residual.len(),
+        failures,
+        attempts: previous
+            .as_ref()
+            .map_or(0, |run| run.attempts.max(run.fails)),
         ..AuditRun::default()
     };
     let brief = audit_brief(ctx, tip, output_tail, new, residual, prior);
     if !write_audit_brief(ctx, &brief) {
-        retry_later(ctx, &mut run, "audit brief could not be saved");
+        defer_retry(ctx, &mut run, "audit brief could not be saved");
         store(st, Some(run));
         return;
     }
@@ -148,7 +182,7 @@ fn enqueue_attempt(ctx: &Ctx, st: &mut State, run: &mut AuditRun, brief: &str) {
         .collect();
     if fallback {
         let Some(pool) = RoleRouting::first_free(None, &candidates, &slots(ctx)) else {
-            retry_later(ctx, run, "no free auditor pool slot");
+            defer_retry(ctx, run, "no free auditor pool slot");
             return;
         };
         run.pool = Some(pool.clone());
@@ -169,9 +203,10 @@ fn enqueue_attempt(ctx: &Ctx, st: &mut State, run: &mut AuditRun, brief: &str) {
         "residual": run.residual,
     });
     if let Err(err) = enqueue(st, spec) {
-        retry_later(ctx, run, &format!("job enqueue failed: {err}"));
+        defer_retry(ctx, run, &format!("job enqueue failed: {err}"));
         return;
     }
+    run.attempts = run.attempts.max(run.fails).saturating_add(1);
     run.job_id = Some(job_id);
     run.task = None;
     run.at = ctx.now();
@@ -187,12 +222,24 @@ pub fn retry_due(ctx: &Ctx, st: &mut State) {
     let Some(mut run) = current(st) else {
         return;
     };
+    if run.exhausted {
+        return;
+    }
+    if run.fails >= MAX_AUDIT_ATTEMPTS {
+        let reason = run
+            .last_error
+            .clone()
+            .unwrap_or_else(|| String::from("retry limit reached"));
+        exhaust_audit(ctx, &mut run, &reason);
+        store(st, Some(run));
+        return;
+    }
     if run.job_id.is_some() || run.task.is_some() || run.retry_at.is_none_or(|at| ctx.now() < at) {
         return;
     }
     let path = ctx.home.join("briefs").join("audit.txt");
     let Ok(brief) = fs::read_to_string(&path) else {
-        retry_later(ctx, &mut run, "saved audit brief is missing");
+        defer_retry(ctx, &mut run, "saved audit brief is missing");
         store(st, Some(run));
         return;
     };
@@ -224,18 +271,52 @@ pub fn collect_completed(ctx: &Ctx, st: &mut State) {
     if let Some(causes) = causes {
         let raw = report_block(&outcome.receipt).unwrap_or_else(|| outcome.receipt.clone());
         apply_report(ctx, st, &run.need, &raw, &causes);
+        if run.fails > 0 || run.attempts > 1 {
+            ctx.resolve(
+                "gatefix-planner-failed",
+                &run.need,
+                "a valid audit report arrived and fix units were created",
+            );
+        }
         store(st, None);
         return;
     }
-    let reason = if outcome.state != "finished" {
-        outcome.state
+    let (reason, host_failure) = failure_reason(&outcome);
+    if let Some(failure) = host_failure {
+        record_environment_failure(ctx, &run.need, &failure, &reason);
+    }
+    retry_later(ctx, &mut run, &reason);
+    store(st, Some(run));
+}
+
+/// Build retry evidence from the durable pool outcome.
+fn failure_reason(outcome: &JobOutcome) -> (String, Option<HostFailure>) {
+    let host_failure = outcome.host_failure();
+    let exit = crate::pump::attempt_record::agent_exit(&outcome.receipt)
+        .map_or_else(|| String::from("unknown"), |code| code.to_string());
+    let reason = if let Some(failure) = &host_failure {
+        format!(
+            "{}; exit={exit}; receipt tail: {}",
+            failure.detail,
+            receipt_tail(&outcome.receipt)
+        )
+    } else if outcome.state != "finished" {
+        outcome.state.clone()
     } else if outcome.agent_success() != Some(true) {
         String::from("auditor did not report success")
     } else {
         String::from("auditor report was unreadable")
     };
-    retry_later(ctx, &mut run, &reason);
-    store(st, Some(run));
+    (reason, host_failure)
+}
+
+/// Record provider or harness evidence with the exit and receipt tail.
+fn record_environment_failure(ctx: &Ctx, need: &str, failure: &HostFailure, reason: &str) {
+    ctx.exception(
+        "environment",
+        need,
+        &format!("audit {} failure: {reason}", failure.class),
+    );
 }
 
 /// Write the rendered brief to `<home>/briefs/audit.txt`.
@@ -272,7 +353,7 @@ fn audit_job_id(ctx: &Ctx, run: &AuditRun) -> String {
         "audit-{}-{}-{}",
         safe_id(&ctx.target_id),
         safe_id(&run.need),
-        run.fails.saturating_add(1)
+        run.attempts.max(run.fails).saturating_add(1)
     )
 }
 
@@ -295,12 +376,332 @@ fn retry_later(ctx: &Ctx, run: &mut AuditRun, reason: &str) {
     run.task = None;
     run.job_id = None;
     run.fails = run.fails.saturating_add(1);
-    let delay = (RETRY_SECONDS << run.fails.saturating_sub(1).min(4)).min(900);
+    run.last_error = Some(reason.to_owned());
+    if run.fails >= MAX_AUDIT_ATTEMPTS {
+        exhaust_audit(ctx, run, reason);
+        return;
+    }
+    let delay = retry_delay(run.fails);
     run.retry_at = Some(ctx.now().saturating_add(delay));
     ctx.log(&format!(
         "audit retry {} for {} in {delay}s: {reason}",
         run.fails, run.need
     ));
+}
+
+/// Record the bounded stop and the command that can explicitly restart it.
+fn exhaust_audit(ctx: &Ctx, run: &mut AuditRun, reason: &str) {
+    run.retry_at = None;
+    run.exhausted = true;
+    run.last_error = Some(reason.to_owned());
+    let text = format!(
+        "audit failed {}/{} times for this red result: {reason}; run `vivi pump replan {}` to retry",
+        run.fails, MAX_AUDIT_ATTEMPTS, run.need
+    );
+    ctx.exception("gatefix-planner-failed", &run.need, &text);
+    ctx.log(&text);
+}
+
+/// Defer work that did not reach a launched audit attempt.
+fn defer_retry(ctx: &Ctx, run: &mut AuditRun, reason: &str) {
+    run.task = None;
+    run.job_id = None;
+    run.last_error = Some(reason.to_owned());
+    run.retry_at = Some(ctx.now().saturating_add(RETRY_SECONDS));
+    ctx.log(&format!("audit retry deferred for {}: {reason}", run.need));
+}
+
+/// Existing audit backoff, retained across the bounded retry change.
+fn retry_delay(fails: u64) -> u64 {
+    (RETRY_SECONDS << fails.saturating_sub(1).min(4)).min(900)
+}
+
+/// Stable sorted names from the new and residual gate failures.
+fn failure_names(new: &[String], residual: &[(String, String)]) -> Vec<String> {
+    new.iter()
+        .cloned()
+        .chain(residual.iter().map(|(name, _)| name.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Whether a stored run covers the same tip and red-name set.
+fn same_failure(
+    st: &State,
+    run: &AuditRun,
+    tip: &str,
+    failures: &[String],
+    new: usize,
+    residual: usize,
+) -> bool {
+    if run.tip != tip {
+        return false;
+    }
+    if !run.failures.is_empty() {
+        return run.failures == failures;
+    }
+    let previous: Vec<String> = st
+        .red
+        .iter()
+        .filter(|(_, owner)| *owner == &run.need)
+        .map(|(name, _)| name.clone())
+        .collect();
+    if previous.is_empty() {
+        run.new == new && run.residual == residual
+    } else {
+        previous == failures
+    }
+}
+
+/// A short receipt tail for logs and environment exceptions.
+fn receipt_tail(receipt: &str) -> String {
+    let chars: Vec<char> = receipt.chars().collect();
+    let start = chars.len().saturating_sub(300);
+    chars[start..].iter().collect()
+}
+
+/// Status lines for red gatefix work, including owners with no live worker.
+pub fn status_lines(_ctx: &Ctx, st: &State) -> Vec<String> {
+    let mut red = BTreeMap::new();
+    add_red_counts(&mut red, &st.red);
+    for target in st.target_states.values() {
+        add_red_counts(&mut red, &target.red);
+    }
+    let runs = audit_runs(st);
+    for run in &runs {
+        red.entry(run.need.clone()).or_insert(0);
+    }
+    red.into_iter()
+        .map(|(need, names)| status_for_need(st, &runs, &need, names))
+        .collect()
+}
+
+/// Count the failing names still owned by each gatefix need.
+fn add_red_counts(counts: &mut BTreeMap<String, usize>, red: &BTreeMap<String, String>) {
+    for owner in red.values() {
+        *counts.entry(owner.clone()).or_default() += 1;
+    }
+}
+
+/// Find audit state in the global state and every target's isolated state.
+fn audit_runs(st: &State) -> Vec<AuditRun> {
+    let mut runs = Vec::new();
+    if let Some(run) = audit_from_extra(&st.extra) {
+        runs.push(run);
+    }
+    for target in st.target_states.values() {
+        if let Some(run) = audit_from_extra(&target.extra) {
+            runs.push(run);
+        }
+    }
+    runs
+}
+
+/// Whether a red owner already has durable audit state reported elsewhere.
+pub(crate) fn has_run_for_need(st: &State, need: &str) -> bool {
+    current(st).is_some_and(|run| run.need == need)
+        || st
+            .target_states
+            .values()
+            .any(|target| audit_from_extra(&target.extra).is_some_and(|run| run.need == need))
+}
+
+/// Decode one audit run from a state's forward-compatible extra map.
+fn audit_from_extra(extra: &BTreeMap<String, serde_json::Value>) -> Option<AuditRun> {
+    let value = extra.get(AUDIT_KEY)?.clone();
+    match serde_json::from_value(value) {
+        Ok(run) => Some(run),
+        Err(_) => None,
+    }
+}
+
+/// Render one owner's current audit and unit activity.
+fn status_for_need(st: &State, runs: &[AuditRun], need: &str, red: usize) -> String {
+    let run = runs.iter().find(|run| run.need.as_str() == need);
+    let units = unit_counts(st, need);
+    let (audit, audit_live, reason) = audit_status(st, run);
+    let live = audit_live || units.active > 0;
+    let action = status_action(run, need);
+    let label = if live {
+        "gatefix-active"
+    } else {
+        "gatefix-no-live-work"
+    };
+    format!(
+        "{label} {need} red={red} audit={audit} jobs={} failures={}/{} units=active:{} queued:{} parked:{} reason={reason:?} action={action:?}",
+        run.map_or(0, |run| run.attempts),
+        run.map_or(0, |run| run.fails),
+        MAX_AUDIT_ATTEMPTS,
+        units.active,
+        units.queued,
+        units.parked,
+    )
+}
+
+/// Give the operator the recovery or wait action that matches the audit.
+fn status_action(run: Option<&AuditRun>, need: &str) -> String {
+    if let Some(run) = run {
+        if run.exhausted {
+            return format!("vivi pump replan {need}");
+        }
+        if run.job_id.is_none()
+            && let Some(at) = run.retry_at
+        {
+            return format!("wait-until {at}");
+        }
+    }
+    String::from("vivi pump once")
+}
+
+/// Activity counts for units owned by one gatefix need.
+#[derive(Default)]
+struct UnitActivity {
+    active: usize,
+    queued: usize,
+    parked: usize,
+}
+
+/// Count queued, running and parked fix units for a need.
+fn unit_counts(st: &State, need: &str) -> UnitActivity {
+    let mut counts = UnitActivity::default();
+    for unit in st.units.values().filter(|unit| unit.need == need) {
+        match unit.status {
+            Status::Pending | Status::Held => counts.queued += 1,
+            Status::Inflight | Status::Delivered | Status::Merging | Status::Splitting => {
+                counts.active += 1;
+            }
+            Status::Quarantined | Status::Stuck | Status::NeedsReplan => counts.parked += 1,
+            Status::Merged
+            | Status::NoDefect
+            | Status::Replaced
+            | Status::Withdrawn
+            | Status::Other => {}
+        }
+    }
+    counts
+}
+
+/// Describe the stored run and whether a worker is actively executing it.
+fn audit_status(st: &State, run: Option<&AuditRun>) -> (String, bool, String) {
+    let Some(run) = run else {
+        return (
+            String::from("missing"),
+            false,
+            String::from("no audit run recorded"),
+        );
+    };
+    if run.exhausted {
+        return (
+            String::from("failed"),
+            false,
+            run.last_error
+                .clone()
+                .unwrap_or_else(|| String::from("retry limit reached")),
+        );
+    }
+    if run.task.is_some() {
+        return (
+            String::from("in-flight"),
+            true,
+            String::from("legacy audit task is running"),
+        );
+    }
+    if let Some(job) = run.job_id.as_ref().and_then(|id| st.jobs.get(id)) {
+        return job_status(job);
+    }
+    if let Some(at) = run.retry_at {
+        return (
+            String::from("retry-wait"),
+            false,
+            format!(
+                "retry scheduled at {at}: {}",
+                run.last_error.as_deref().unwrap_or("retry")
+            ),
+        );
+    }
+    (
+        String::from("idle"),
+        false,
+        run.last_error
+            .clone()
+            .unwrap_or_else(|| String::from("audit has no active job or retry")),
+    )
+}
+
+/// Render one durable audit-job lifecycle state.
+fn job_status(job: &PoolJob) -> (String, bool, String) {
+    match job.status {
+        JobStatus::Pending => (
+            String::from("queued"),
+            false,
+            String::from("waiting for a pool slot"),
+        ),
+        JobStatus::Dispatched => (
+            String::from("in-flight"),
+            true,
+            String::from("auditor job dispatched"),
+        ),
+        JobStatus::Finished | JobStatus::Timeout | JobStatus::Lost => (
+            String::from("result-pending"),
+            false,
+            String::from("terminal result awaits collection"),
+        ),
+    }
+}
+
+/// Whether an explicit operator replan can recover this exhausted audit.
+pub(crate) fn operator_replan_allowed(st: &State, need: &str) -> bool {
+    current(st).is_some_and(|run| exhausted_for(&run, need))
+        || st.target_states.values().any(|target| {
+            audit_from_extra(&target.extra).is_some_and(|run| exhausted_for(&run, need))
+        })
+}
+
+/// Rearm an exhausted audit after an explicit operator replan request.
+pub(crate) fn rearm_operator_replan(ctx: &Ctx, st: &mut State, need: &str) -> bool {
+    if current(st).is_some_and(|run| exhausted_for(&run, need)) {
+        return rearm_current(ctx, st, need);
+    }
+    let Some(target) = st.target_states.iter().find_map(|(target, state)| {
+        audit_from_extra(&state.extra)
+            .is_some_and(|run| exhausted_for(&run, need))
+            .then(|| target.clone())
+    }) else {
+        return false;
+    };
+    crate::pump::state::with_target_state(st, &target, |target_st| {
+        rearm_current(ctx, target_st, need)
+    })
+}
+
+/// Check whether one persisted audit has stopped and can be restarted.
+fn exhausted_for(run: &AuditRun, need: &str) -> bool {
+    run.need == need && run.exhausted && run.job_id.is_none() && run.task.is_none()
+}
+
+/// Clear the bounded stop and queue its next retry after the explicit request.
+fn rearm_current(ctx: &Ctx, st: &mut State, need: &str) -> bool {
+    let Some(mut run) = current(st) else {
+        return false;
+    };
+    if !exhausted_for(&run, need) {
+        return false;
+    }
+    let prior = run
+        .last_error
+        .clone()
+        .unwrap_or_else(|| String::from("retry limit reached"));
+    run.attempts = run.attempts.max(run.fails);
+    run.fails = 0;
+    run.exhausted = false;
+    run.retry_at = Some(ctx.now());
+    run.last_error = Some(format!("operator replan requested after: {prior}"));
+    store(st, Some(run));
+    ctx.log(&format!(
+        "audit retry rearmed by operator replan for {need}"
+    ));
+    true
 }
 
 /// The first ten characters of a tip, for log and subject lines.

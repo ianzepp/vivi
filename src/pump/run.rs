@@ -133,12 +133,13 @@ fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 /// from [`crate::pump::alarm::status_lines`], a `send-failed` line naming
 /// every unit whose task send was refused for a config reason, the blocker
 /// lines from [`crate::pump::blockers::status_lines`], the in-flight planner
-/// lines, the red lines from [`red_plan_lines`], then any lane lines supplied
-/// by a caller. The dispatcher path supplies no process-owned lane lines. A
-/// `send-failed` line appears only while at least one unit carries the
-/// one-shot send-failure report, so a broken pump cannot look idle. An idle
-/// board adds no planner lines, and no red line appears while every red
-/// owner has a plan. A write failure is logged, never fatal.
+/// lines, gatefix audit activity, the red lines from [`red_plan_lines`], then
+/// any lane lines supplied by a caller. The dispatcher path supplies no
+/// process-owned lane lines. A `send-failed` line appears only while at least
+/// one unit carries the one-shot send-failure report, so a broken pump cannot
+/// look idle. An idle board adds no planner lines, and no red-plan line
+/// appears while every red owner has a plan or audit state. A write failure is
+/// logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for need in st.needs.values() {
@@ -186,6 +187,7 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     lines.extend(crate::pump::blockers::status_lines(ctx, st));
     lines.extend(planner_lines(ctx, st));
     lines.extend(crate::pump::cadence::status_lines(ctx, st));
+    lines.extend(crate::pump::audit::status_lines(ctx, st));
     lines.extend(red_plan_lines(ctx, st));
     lines.extend(lanes.iter().cloned());
     let path = ctx.home.join("status.txt");
@@ -219,10 +221,10 @@ fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
 /// The lines `status.txt` carries for red names whose fix never grew a plan:
 /// the names of `st.red` and of every target's red map counted by the owner
 /// that took them, then one `red owned by <owner>: <n> names, plan none`
-/// line for each owner with no `plans/<owner>.json` on disk, owners in
-/// sorted order. A red name with a plan behind it has work in flight; a red
-/// name without one is gate red that nothing is fixing. Empty when every
-/// red owner has a plan.
+/// line for each owner with no `plans/<owner>.json` on disk and no audit
+/// state, owners in sorted order. A red name with a plan behind it has work
+/// in flight; a red name without one is gate red that nothing is fixing.
+/// Empty when every red owner has a plan or audit state.
 fn red_plan_lines(ctx: &Ctx, st: &State) -> Vec<String> {
     let mut owned: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     let reds = std::iter::once(&st.red).chain(st.target_states.values().map(|target| &target.red));
@@ -234,10 +236,12 @@ fn red_plan_lines(ctx: &Ctx, st: &State) -> Vec<String> {
     owned
         .into_iter()
         .filter(|(owner, _)| {
-            !ctx.home
-                .join("plans")
-                .join(format!("{owner}.json"))
-                .exists()
+            !crate::pump::audit::has_run_for_need(st, owner)
+                && !ctx
+                    .home
+                    .join("plans")
+                    .join(format!("{owner}.json"))
+                    .exists()
         })
         .map(|(owner, count)| format!("red owned by {owner}: {count} names, plan none"))
         .collect()
