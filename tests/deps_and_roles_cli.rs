@@ -117,15 +117,15 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
     assert!(!audit.contains("missing_node"), "{audit}");
     assert!(!audit.contains("[repaired]"), "{audit}");
 
+    // A reference that never resolves blocks its dependent: the gap stays
+    // visible in every projection instead of silently dispatching.
     let blocked = ok(p, &["task", "list", "--for", "hand", "--blocked"]);
     assert!(blocked.contains("second"), "{blocked}");
-    assert!(
-        !blocked.contains("orphan"),
-        "a reference that never resolves blocks nothing:\n{blocked}"
-    );
+    assert!(blocked.contains("orphan"), "{blocked}");
     let ready = ok(p, &["graph", "ready"]);
-    assert!(ready.contains("blocked=1"), "{ready}");
+    assert!(ready.contains("blocked=2"), "{ready}");
     let second = handle_of(p, "task", "second");
+    let orphan = handle_of(p, "task", "orphan");
     let rows: Vec<serde_json::Value> = serde_json::from_str(&ok(
         p,
         &["graph", "blocked", "backlog", "--kind", "task", "--json"],
@@ -136,10 +136,27 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
         .find(|row| row["source_id"] == second.as_str())
         .expect("the dependent task is listed as blocked");
     assert_eq!(row["blocked_by"], serde_json::json!([first]));
+    let row = rows
+        .iter()
+        .find(|row| row["source_id"] == orphan.as_str())
+        .expect("the orphan task is listed as blocked");
+    assert_eq!(row["blocked_by"], serde_json::json!(["deadbeef"]));
     let step = ok(p, &["step"]);
-    assert!(step.contains("first"), "{step}");
-    assert!(step.contains("orphan"), "{step}");
+    let (dispatches, exceptions) = step
+        .split_once("  node  item  kind  reason  detail")
+        .expect("the manifest prints an exception table");
+    assert!(dispatches.contains("first"), "{step}");
+    assert!(
+        !dispatches.contains(&orphan),
+        "the orphan must not dispatch:\n{step}"
+    );
     assert!(!step.contains("second"), "{step}");
+    let line = exceptions
+        .lines()
+        .find(|line| line.contains("awaiting_dependency"))
+        .expect("the unheld dependency is reported as an exception");
+    assert!(line.contains(&orphan), "{step}");
+    assert!(line.contains("deadbeef"), "{step}");
 }
 
 #[test]
