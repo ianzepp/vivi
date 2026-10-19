@@ -178,7 +178,7 @@ impl Mailspace {
         }
         let state = match self.folded_item_state(storage, &item)? {
             ItemEventKind::Done => "done",
-            ItemEventKind::Reopened => "open",
+            ItemEventKind::Reopened | ItemEventKind::Promoted => "open",
         };
         let extras = [("X-Vivi-Event-State", state.to_string())];
         self.emit_property_event(

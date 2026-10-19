@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! In-Reply-To: <item Message-ID>
-//! X-Vivi-Event: done | reopened
+//! X-Vivi-Event: done | reopened | promoted
 //! X-Vivi-Event-Of: <item Message-ID>
 //! X-Vivi-Event-Prev: <Message-ID of the event this one follows>   (repeatable)
 //! ```
@@ -15,12 +15,12 @@
 //! `X-Vivi-Event-At` (RFC 3339), else its `Date` — and the newest event is
 //! the state. On equal instants the deeper chain wins (a direct successor
 //! names the other as its `Prev`, so it carries strictly more history),
-//! else the larger normalized `Message-ID`, so every checkout that holds
-//! the same letters agrees whatever order they arrived in. A chain no
-//! longer beats a later clock: a later instant wins even over an event that
-//! names it as `Prev`, and a fork is settled the same way on every checkout
-//! alike. An instant more than ten minutes past the receiver's clock counts
-//! for nothing at all: no letter can lock an item from the future.
+//! else the larger normalized `Message-ID`, so every checkout agrees
+//! whatever order the letters arrived in. A chain no longer beats a later
+//! clock: a later instant wins even over an event that names it as `Prev`,
+//! and a fork is settled the same way everywhere. An instant more than ten
+//! minutes past the receiver's clock counts for nothing: no letter can lock
+//! an item from the future.
 //!
 //! An event counts when the From address names a role that may write it.
 //! From this mailspace's own domain (`<prefix>.local`, or the legacy
@@ -35,12 +35,11 @@
 //! name domain that is not this mailspace's own is a claim anyone can make:
 //! it is filed as plain mail and never counts.
 //!
-//! One function projects a head onto the rows and the backlog node. The owner
-//! calls it when it writes an event; every other route (pull, fetch, resync,
-//! reference follow, `graph audit --repair`) calls it for the letters it
-//! sees, so a store with stale rows converges. Replies are found through the
-//! reply links, so an event that arrives before its item is applied when the
-//! item arrives and the link is made.
+//! One function projects a head onto the rows and the backlog node; every
+//! route that sees a letter (the owner's write, pull, fetch, resync,
+//! reference follow, `graph audit --repair`) calls it, so a store with stale
+//! rows converges. Replies are found through the reply links, so an event
+//! that arrives before its item is applied when the item arrives.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -71,6 +70,7 @@ const EVENT_AT_HEADER: &str = "X-Vivi-Event-At";
 pub enum ItemEventKind {
     Done,
     Reopened,
+    Promoted,
 }
 
 impl ItemEventKind {
@@ -80,6 +80,7 @@ impl ItemEventKind {
         match self {
             Self::Done => "done",
             Self::Reopened => "reopened",
+            Self::Promoted => "promoted",
         }
     }
 
@@ -87,6 +88,7 @@ impl ItemEventKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "done" => Some(Self::Done),
             "reopened" => Some(Self::Reopened),
+            "promoted" => Some(Self::Promoted),
             _ => None,
         }
     }
@@ -96,6 +98,7 @@ impl ItemEventKind {
         match self {
             Self::Done => format!("{kind} done"),
             Self::Reopened => format!("{kind} reopen"),
+            Self::Promoted => format!("{kind} promote"),
         }
     }
 }
@@ -187,7 +190,7 @@ fn from_domain_of(parsed: &mail_parser::Message<'_>) -> Option<String> {
 /// The current state of an item and the event that says so.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ItemEventState {
-    /// `done` or `reopened`.
+    /// `done`, `reopened` or `promoted`.
     pub state: String,
     /// The head event's `Message-ID`.
     pub event: String,
@@ -616,6 +619,10 @@ impl Mailspace {
                 (ItemEventKind::Done, "sent") if self.all_recipients_remote(row) => {
                     "done".to_string()
                 }
+                (ItemEventKind::Promoted, "wants") => "needs".to_string(),
+                (ItemEventKind::Promoted, "sent") if self.all_recipients_remote(row) => {
+                    "needs".to_string()
+                }
                 (ItemEventKind::Reopened, "done")
                     if keep_reports && self.is_report_row(item, row) =>
                 {
@@ -681,6 +688,7 @@ impl Mailspace {
             let moved = match kind {
                 ItemEventKind::Done => self.backlog_complete_item_collect(&handle, via, joined)?,
                 ItemEventKind::Reopened => self.backlog_reopen_item_changed(&handle)?,
+                ItemEventKind::Promoted => false,
             };
             changed += usize::from(moved);
         }
@@ -840,14 +848,13 @@ impl Mailspace {
 
     /// Settle the items that hold an event letter this mailspace skipped
     /// as dated more than ten minutes past its clock, once the clock has
-    /// passed the bound. The letter counts now, and nothing else would
-    /// bring it back: the bound is judged when a letter is folded, and an
-    /// arrival-driven settle only reaches the items a pull touched. Each
-    /// such item is settled as if the letter had just arrived, so its head
-    /// moves every row it names. Idempotent: the mark is dropped only after
-    /// a successful settle, so a settle that errors leaves it and the next
-    /// pass retries the item. Events ignored here were counted when
-    /// they arrived and are not counted twice.
+    /// passed the bound. The letter counts now, and nothing else would bring
+    /// it back: the bound is judged when a letter is folded, and an
+    /// arrival-driven settle only reaches the items a pull touched. Each such
+    /// item is settled as if the letter had just arrived. Idempotent: the mark
+    /// is dropped only after a successful settle, so a settle that errors
+    /// leaves it and the next pass retries the item. Events ignored here were
+    /// counted when they arrived and are not counted twice.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
@@ -881,7 +888,6 @@ impl Mailspace {
     /// The current state of the item `handle` names, from its events: the
     /// newest one, and how many chain heads (a fork) are held. `None` when
     /// the item has no authorized event or is not work.
-    ///
     /// # Errors
     /// Returns a [`VivariumError`] when the handle does not resolve or on
     /// storage failure.
