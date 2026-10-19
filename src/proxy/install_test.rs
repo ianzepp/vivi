@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use super::{
-    launch_agent_plist, parse_launchd_pid, prefer_stable_link, systemd_apply_steps, systemd_unit,
+    launch_agent_plist, parse_launchd_pid, parse_systemd_mainpid, prefer_stable_link,
+    systemd_apply_steps, systemd_unit,
 };
 
 #[test]
@@ -41,6 +42,13 @@ fn launchd_print_pid_is_parsed() {
     assert_eq!(parse_launchd_pid(running), Some(85306));
     let stopped = "gui/501/com.vivi.proxy = {\n\tactive count = 0\n\tstate = not running\n}";
     assert_eq!(parse_launchd_pid(stopped), None);
+}
+
+#[test]
+fn systemd_mainpid_is_parsed() {
+    assert_eq!(parse_systemd_mainpid("85306\n"), Some(85306));
+    assert_eq!(parse_systemd_mainpid("0\n"), None);
+    assert_eq!(parse_systemd_mainpid("\n"), None);
 }
 
 #[cfg(unix)]
