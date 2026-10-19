@@ -93,20 +93,37 @@ fn a_dependency_that_arrives_in_a_later_pull_makes_the_edge_then() {
     let hand = w.bob.address("hand");
     put(&w, 0xb2, "task", &hand, "second", &[0xa1]);
     w.bob.pull(&w.bob_client);
+    let waiting = node(&w, "second");
     assert_eq!(
-        node(&w, "second").readiness,
-        "ready",
-        "nothing held to wait on"
+        waiting.readiness, "blocked",
+        "the unheld dependency blocks it"
     );
-    assert!(blocked_subjects(&w, "hand").is_empty());
-    assert_eq!(dispatched(&w), ["second"], "until its dependency arrives");
+    assert!(
+        waiting.blocked_by.contains(&"000000a1".to_string()),
+        "{waiting:?}"
+    );
+    assert_eq!(blocked_subjects(&w, "hand"), ["second"]);
+    assert!(
+        dispatched(&w).is_empty(),
+        "it waits until its dependency arrives"
+    );
 
     put(&w, 0xa1, "need", &hand, "first", &[]);
     w.bob.pull(&w.bob_client);
 
     assert_eq!(node(&w, "second").readiness, "blocked");
     assert_eq!(blocked_subjects(&w, "hand"), ["second"]);
-    assert_eq!(dispatched(&w), ["first"]);
+    assert_eq!(
+        dispatched(&w),
+        ["first"],
+        "the dependency, not the dependent"
+    );
+
+    // Once the dependency arrives and is done, the dependent becomes ready.
+    let first = node(&w, "first").source_id;
+    w.bob.mailspace.backlog_complete_item(&first).unwrap();
+    assert_eq!(node(&w, "second").readiness, "ready");
+    assert_eq!(dispatched(&w), ["second"]);
 }
 
 #[test]
@@ -118,6 +135,11 @@ fn a_dependency_that_arrives_by_fetch_makes_the_edge() {
     // The dependency is on the server but behind bob's cursor: fetched, not
     // pulled.
     put(&w, 0xa1, "need", &hand, "first", &[]);
+    assert_eq!(
+        node(&w, "second").readiness,
+        "blocked",
+        "the fetch has nothing to unblock until the dependency lands"
+    );
 
     let report = fetch_handles(
         &w.bob.mailspace,
@@ -155,7 +177,20 @@ fn a_dependency_that_arrives_by_reference_follow_makes_the_edge() {
     .unwrap();
     assert!(has_node(&w, "second"));
     assert!(!has_node(&w, "first"), "outside the window");
-    assert_eq!(node(&w, "second").readiness, "ready");
+    assert_eq!(
+        node(&w, "second").readiness,
+        "blocked",
+        "the dependency is outside the window, not satisfied"
+    );
+    assert!(dispatched(&w).is_empty());
+    let manifest = w.bob.mailspace.step_shadow().unwrap();
+    let waiting: Vec<_> = manifest
+        .exceptions
+        .iter()
+        .filter(|exc| exc.reason == "awaiting_dependency")
+        .collect();
+    assert_eq!(waiting.len(), 1, "{:?}", manifest.exceptions);
+    assert_eq!(waiting[0].item, node(&w, "second").source_id);
 
     follow_refs(
         &w.bob.mailspace,
