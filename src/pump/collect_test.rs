@@ -1014,7 +1014,13 @@ fn a_repair_timeout_dissolves_the_quarantine_at_once() {
     let (_dir, ctx, _host) = setup();
     let mut st = quarantine_repair_state();
 
-    fail(&ctx, &mut st, "pumpfix-q1-aaaaaa", "timeout", "killed by budget");
+    fail(
+        &ctx,
+        &mut st,
+        "pumpfix-q1-aaaaaa",
+        "timeout",
+        "killed by budget",
+    );
 
     assert_eq!(
         st.units["pumpfix-q1-aaaaaa"].status,
