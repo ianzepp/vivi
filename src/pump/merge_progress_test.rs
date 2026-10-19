@@ -181,8 +181,7 @@ fn lane_lines_show_idle_busy_and_backoff() {
     }
     let lines = merger.lane_lines(1_180);
     assert_eq!(
-        lines[0],
-        "lane default/0 backoff 7m00s left merged 0 conflict 0",
+        lines[0], "lane default/0 backoff 7m00s left merged 0 conflict 0",
         "{lines:?}"
     );
 }
