@@ -443,6 +443,10 @@ pub(super) fn eligible(
     st: &mut State,
     known: &BTreeSet<String>,
 ) -> BTreeMap<String, VecDeque<String>> {
+    let Some(manually_closed) = crate::pump::board::reconcile_done_needs(ctx, st) else {
+        ctx.log("merge feed paused: could not confirm done needs");
+        return BTreeMap::new();
+    };
     let hold = ctx.flag("HOLD-MERGE");
     let floor = ctx.cfg.gate.hold_priority_floor.max(1);
     let levels = crate::pump::priority::levels(ctx);
@@ -450,6 +454,12 @@ pub(super) fn eligible(
     let holds = dependency_holds(ctx, st);
     let mut waiting: BTreeMap<String, VecDeque<String>> = BTreeMap::new();
     for uid in ranked(ctx, st, st.order.clone()) {
+        let Some(unit) = st.units.get(&uid) else {
+            continue;
+        };
+        if manually_closed.contains(&unit.need) || st.closed_needs.contains(&unit.need) {
+            continue;
+        }
         let dependency = st
             .units
             .get(&uid)

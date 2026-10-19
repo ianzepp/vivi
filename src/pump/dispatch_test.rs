@@ -289,7 +289,7 @@ fn manually_done_needs_withdraw_only_queued_units_and_preserve_live_receipts() {
 }
 
 #[test]
-fn unreadable_done_need_query_does_not_withdraw_a_queued_unit() {
+fn unreadable_done_need_query_pauses_dispatch() {
     let (_dir, ctx, host) = setup();
     wire(&host);
     let mut st = State::default();
@@ -302,9 +302,9 @@ fn unreadable_done_need_query_does_not_withdraw_a_queued_unit() {
 
     dispatch(&ctx, &mut st);
 
-    assert_eq!(st.units["u1"].status, Status::Inflight);
-    assert_eq!(st.units["u1"].attempts, 1);
-    assert_eq!(commands_with(&host, "task send").len(), 1);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["u1"].attempts, 0);
+    assert!(commands_with(&host, "task send").is_empty());
 }
 
 /// A state with `fly4` paused since `T0` under `probe`.
@@ -848,11 +848,14 @@ fn a_need_dependency_hold_keeps_a_unit_pending_and_logs_once() {
     );
     let mut st = State::default();
     ordered(&mut st, &["n-1"]);
-    st.units.get_mut("n-1").unwrap().need = String::from("n");
+    let held = st.units.get_mut("n-1").unwrap();
+    held.need = String::from("n");
+    held.ready_at = Some(T0 - 100);
 
     dispatch(&ctx, &mut st);
     assert_eq!(st.units["n-1"].status, Status::Pending);
     assert_eq!(st.units["n-1"].held_on.as_deref(), Some("dep"));
+    assert_eq!(st.units["n-1"].ready_at, None);
     assert!(commands_with(&host, "task send").is_empty());
 
     dispatch(&ctx, &mut st);
@@ -865,9 +868,11 @@ fn a_need_dependency_hold_keeps_a_unit_pending_and_logs_once() {
 
     // The dependency lands: the next tick dispatches the unit.
     host.reply("graph blocked", 0, "[]");
+    host.advance(10);
     dispatch(&ctx, &mut st);
     assert_eq!(st.units["n-1"].status, Status::Inflight);
     assert!(st.units["n-1"].held_on.is_none());
+    assert_eq!(st.units["n-1"].ready_at, Some(T0 + 10));
     assert_eq!(commands_with(&host, "task send").len(), 1);
 }
 

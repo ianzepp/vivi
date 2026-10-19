@@ -12,6 +12,7 @@ use crate::pump::collect::*;
 use crate::pump::config::{PlannerConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{Attempt, GateRun, State, Status, Unit};
+use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The fake clock's start; units are created "now".
 const T0: u64 = 1_000_000;
@@ -38,19 +39,6 @@ fn setup_with(cfg: PumpConfig) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let (ctx, host) = test_ctx(dir.path(), cfg);
     (dir, ctx, host)
-}
-
-/// A planner config that marks its charter in the spawned command line.
-fn planner_cfg() -> PumpConfig {
-    PumpConfig {
-        planner: PlannerConfig {
-            run: String::from("plan-it {charter} --quiet"),
-            charter: String::from("/charter/path.md"),
-            split_hard_cap: 1500,
-            ..PlannerConfig::default()
-        },
-        ..PumpConfig::default()
-    }
 }
 
 /// One unit at the fake clock's start.
@@ -993,19 +981,68 @@ fn the_third_split_planner_failure_makes_the_unit_stuck() {
 }
 
 #[test]
-fn spawn_planner_removes_a_stale_exit_receipt() {
-    let (_dir, ctx, host) = setup_with(planner_cfg());
-    let dir = ctx.home.join("resplit");
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("u-9.out.rc"), "127\n").unwrap();
+fn split_planner_uses_durable_job_and_clears_stale_receipt() {
+    let (dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            split_hard_cap: 1500,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let ctx = ctx.with_routing(RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("planner"),
+            kind: Some(String::from("planner")),
+            status: String::from("active"),
+            pool: Some(String::from("planner-pool")),
+            read_only: Some(true),
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: BTreeMap::from([(
+            String::from("planner-pool"),
+            RoutedPool {
+                slots: 1,
+                provider: String::from("local"),
+                fallback: None,
+                caps: BTreeMap::new(),
+                models: Vec::new(),
+                has_bands: false,
+            },
+        )]),
+    });
+    let output = ctx.home.join("resplit/u-9.out");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    fs::write(&output, "old output").unwrap();
+    fs::write(crate::pump::host::exit_receipt_path(&output), "127\n").unwrap();
+    let mut st = State::default();
 
-    spawn_planner(&ctx, "resplit", "u-9", "p");
+    let id = crate::pump::planner_jobs::enqueue(
+        &ctx,
+        &mut st,
+        "split",
+        "u-9",
+        T0,
+        "split input",
+        ctx.cfg.planner.split_hard_cap,
+        "resplit/u-9.out",
+        "plans/u-9.split.json",
+        Some("default"),
+    )
+    .unwrap();
 
-    assert!(!ctx.home.join("resplit/u-9.out.rc").exists());
-    assert_eq!(
-        host.spawned(),
-        vec![String::from("plan-it /charter/path.md --quiet")]
-    );
+    let job = &st.jobs[&id];
+    assert_eq!(job.kind, "planner:split");
+    assert_eq!(job.pool_candidates, vec![String::from("planner-pool")]);
+    assert_eq!(job.status, crate::pump::jobs::JobStatus::Pending);
+    assert_eq!(job.target.as_deref(), Some("default"));
+    assert_eq!(job.budget, 1500);
+    assert_eq!(fs::read_to_string(output).unwrap(), "");
+    assert!(!crate::pump::host::exit_receipt_path(&ctx.home.join("resplit/u-9.out")).exists());
+    assert!(job.body.contains("split input"));
+    assert!(job.body.contains("PUMP-PLAN-BEGIN"));
+    assert!(host.spawned().is_empty());
+    assert!(dir.path().join("home/resplit/u-9.out").exists());
 }
 
 /// Write the split planner's raw output for `uid`.
@@ -1099,41 +1136,6 @@ fn a_finished_gate_task_returns_its_receipt_text() {
         ..State::default()
     };
     assert_eq!(collect(&ctx, &mut st), Some(String::from("GATE RECEIPT")));
-}
-
-#[test]
-fn spawn_planner_writes_the_prompt_and_spawns_with_the_charter_substituted() {
-    let (dir, ctx, host) = setup_with(planner_cfg());
-    spawn_planner(&ctx, "resplit", "u-9", "prompt body");
-    assert_eq!(
-        fs::read_to_string(dir.path().join("home/resplit/u-9.prompt")).unwrap(),
-        "prompt body"
-    );
-    assert_eq!(
-        host.spawned(),
-        vec![String::from("plan-it /charter/path.md --quiet")]
-    );
-
-    let dir2 = tempdir().unwrap();
-    let mut cfg = planner_cfg();
-    cfg.shell_prefix = String::from("source env.sh");
-    let host2 = FakeHost::new();
-    let ctx2 = Ctx::with_parts(
-        cfg,
-        host2.clone(),
-        dir2.path().join("project"),
-        String::from("vivi"),
-        String::from("source env.sh"),
-        dir2.path().join("home"),
-        dir2.path().join("home/repo"),
-    );
-    spawn_planner(&ctx2, "plans", "u-9", "p2");
-    assert_eq!(
-        host2.spawned(),
-        vec![String::from(
-            "source env.sh; plan-it /charter/path.md --quiet"
-        )]
-    );
 }
 
 #[test]

@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::VivariumError;
 use crate::pump::attempt_record::{self, Ending};
 use crate::pump::envfail;
-use crate::pump::host::{Ctx, exit_receipt_path, shell_quote, shell_split};
+use crate::pump::host::{Ctx, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status, Unit};
 
 #[path = "collect_replan.rs"]
@@ -113,32 +113,6 @@ pub fn receipt(ctx: &Ctx, task: &str) -> String {
 #[must_use]
 pub fn receipt_full(ctx: &Ctx, task: &str) -> String {
     ctx.vivi(&format!("task show {task} --latest"), 60).text
-}
-
-/// Write the planner prompt to `<home>/<dir>/<id>.prompt` and start the
-/// configured planner detached: stdin is the prompt file, output lands in
-/// `<home>/<dir>/<id>.out`, the working directory is the pump home
-/// Used by `split`, the board and gate fixes. Returns the detached child's
-/// pid, or `None` when it could not be started.
-pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) -> Option<u32> {
-    let dir_path = ctx.home.join(dir);
-    drop(fs::create_dir_all(&dir_path));
-    let prompt_path = dir_path.join(format!("{id}.prompt"));
-    drop(fs::write(&prompt_path, prompt));
-    let command = ctx
-        .cfg
-        .planner
-        .run
-        .replace("{charter}", &ctx.cfg.planner.charter);
-    let command = if ctx.shell_prefix.is_empty() {
-        command
-    } else {
-        format!("{}; {command}", ctx.shell_prefix)
-    };
-    let out = dir_path.join(format!("{id}.out"));
-    drop(fs::remove_file(exit_receipt_path(&out)));
-    ctx.host
-        .spawn(&command, Some(&ctx.home), Some(&prompt_path), &out)
 }
 
 /// Record a failed attempt: append the history entry, clear the task, and

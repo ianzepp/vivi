@@ -273,3 +273,10 @@ fn fake_host_reply_once_is_consumed_before_persistent_rules() {
     let second = host.run("make build", None, 1);
     assert_eq!((second.code, second.text.as_str()), (0, "persistent"));
 }
+
+#[test]
+fn fake_host_treats_an_unscripted_done_need_list_as_empty() {
+    let host = FakeHost::new();
+    let output = host.run("vivi need list --status done --to mind --json", None, 1);
+    assert_eq!((output.code, output.text.as_str()), (0, "[]"));
+}

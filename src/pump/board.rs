@@ -190,6 +190,7 @@ pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String
         {
             unit.status = Status::Withdrawn;
             unit.since = now;
+            unit.ready_at = None;
             *withdrawn.entry(unit.need.clone()).or_default() += 1;
         }
     }

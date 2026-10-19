@@ -73,6 +73,32 @@ fn feed_moves_delivered_units_to_merging_and_sends_a_job() {
 }
 
 #[test]
+fn feed_preserves_a_delivered_branch_when_its_need_is_manually_closed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "need list --status done",
+        0,
+        r#"[{"handle":"n1","date":"2026-10-19","subject":"Done","marks":[]}]"#,
+    );
+    host.reply("graph blocked", 0, "[]");
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Delivered)]);
+
+    merger.feed(&ctx, &mut st);
+
+    assert_eq!(st.units["u1"].status, Status::Delivered);
+    assert_eq!(st.units["u1"].branch.as_deref(), Some("work/u1"));
+    assert!(jobs.try_recv().is_err());
+
+    // A live list read avoids retaining stale manual-close state after reopen.
+    host.reply("need list --status done", 0, "[]");
+    host.reply("graph blocked", 0, "[]");
+    merger.feed(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Merging);
+    assert_eq!(take(&jobs)[0].uid, "u1");
+}
+
+#[test]
 fn feed_sends_a_local_pool_job_with_its_worktree_source() {
     let (_dir, ctx, _host) = setup("");
     let ctx = ctx.with_pool_sources(BTreeMap::from([(

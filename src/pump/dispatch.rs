@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::thread;
 
+use crate::pump::attempt_record;
 use crate::pump::brief::brief_for;
 use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote};
@@ -195,7 +196,11 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
             Status::Pending | Status::Held | Status::NeedsReplan
         )
     }) {
-        crate::pump::board::reconcile_done_needs(ctx, st).unwrap_or_default()
+        let Some(done_needs) = crate::pump::board::reconcile_done_needs(ctx, st) else {
+            ctx.log("dispatch paused: could not confirm done needs");
+            return;
+        };
+        done_needs
     } else {
         BTreeSet::new()
     };
@@ -220,6 +225,7 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
             continue;
         };
         if done_needs.contains(&current.need) || st.closed_needs.contains(&current.need) {
+            attempt_record::clear_ready(st, &uid);
             continue;
         }
         let dependency = st
@@ -228,13 +234,29 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
             .and_then(|unit| holds.get(&unit.need))
             .and_then(|deps| deps.first())
             .cloned();
+        let dependency_was_held = st
+            .units
+            .get(&uid)
+            .is_some_and(|unit| unit.held_on.is_some());
         if note_hold(ctx, st, &uid, Status::Pending, dependency) {
+            attempt_record::clear_ready(st, &uid);
             continue;
         }
+        if dependency_was_held {
+            attempt_record::clear_ready(st, &uid);
+        }
         if hold_unknown_target(ctx, st, &uid) {
+            attempt_record::clear_ready(st, &uid);
             continue;
         }
         if report_unknown_kind(ctx, st, &uid) {
+            attempt_record::clear_ready(st, &uid);
+            continue;
+        }
+        if is_ready(ctx, st, &uid, &holds) {
+            attempt_record::mark_ready(st, &uid, ctx.now());
+        } else {
+            attempt_record::clear_ready(st, &uid);
             continue;
         }
         let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned, gate) else {
@@ -311,6 +333,7 @@ fn invalid_ready_proof(
     let parked = st.units.get_mut(uid)?;
     parked.status = Status::NeedsReplan;
     parked.since = ctx.now();
+    attempt_record::clear_ready(st, uid);
     Some((need, reason))
 }
 
