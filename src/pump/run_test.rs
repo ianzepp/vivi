@@ -240,6 +240,32 @@ fn write_status_adds_no_planner_lines_when_idle() {
 }
 
 #[test]
+fn write_status_lists_red_owners_without_a_plan() {
+    let (dir, ctx, _host) = setup();
+    let mut st = State::default();
+    st.red
+        .insert(String::from("crate::alpha"), String::from("pumpfix-gdead"));
+    st.red
+        .insert(String::from("crate::beta"), String::from("pumpfix-gdead"));
+    let (merger, _results, _jobs) = Merger::detached();
+    let path = dir.path().join("home/status.txt");
+    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("red owned by pumpfix-gdead: 2 names, plan none"),
+        "no red owner line in {text}"
+    );
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/pumpfix-gdead.json"), "{}").unwrap();
+    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        !text.contains("red owned by pumpfix-gdead"),
+        "red owner line survived the plan in {text}"
+    );
+}
+
+#[test]
 fn write_status_lists_units_with_reported_send_failures() {
     let (dir, ctx, _host) = setup();
     let mut st = State::default();
