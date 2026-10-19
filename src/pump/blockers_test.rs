@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::blockers::compute;
-use crate::pump::config::PumpConfig;
+use crate::pump::blockers::{check, compute};
+use crate::pump::config::{PlannerConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{NeedRecord, State, Status, Unit};
+use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 
 /// The fake clock's start.
 const T0: u64 = 1_000_000;
@@ -18,6 +18,21 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {
         branch: String::from("next"),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    (dir, ctx, host)
+}
+
+/// A context whose planner command names the resplit spawn.
+fn response_setup() -> (TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        planner: PlannerConfig {
+            run: String::from("plan-resplit {charter} --quiet"),
+            ..PlannerConfig::default()
+        },
         ..PumpConfig::default()
     };
     let (ctx, host) = test_ctx(dir.path(), cfg);
@@ -217,4 +232,137 @@ fn merged_and_withdrawn_dependent_units_are_not_counted() {
         vec![(String::from("m1"), 1)],
         "merged, withdrawn and held needs hold nothing"
     );
+}
+
+/// A state with one stuck `r-1` root plus `dependents` dependent units, and
+/// the graph rows that make them depend on `r`.
+fn blocking_state(root: Unit, dependents: usize) -> (State, Vec<(String, Vec<String>)>) {
+    let mut st = State::default();
+    st.needs
+        .insert(String::from("r"), record("units", &["r-1"]));
+    st.units.insert(String::from("r-1"), root);
+    let mut pairs: Vec<(String, Vec<String>)> = Vec::new();
+    for index in 1..=dependents {
+        let need = format!("m{index}");
+        st.needs.insert(need.clone(), record("units", &[]));
+        st.units
+            .insert(format!("{need}-1"), unit(&need, Status::Pending, T0 - 600));
+        pairs.push(row(&need, &["r"]));
+    }
+    (st, pairs)
+}
+
+/// The root's last attempt.
+fn last_attempt(why: &str, detail: &str) -> Attempt {
+    Attempt {
+        why: why.to_string(),
+        detail: detail.to_string(),
+        ..Attempt::default()
+    }
+}
+
+#[test]
+fn a_transient_blocking_root_is_requeued_once_and_prioritized() {
+    let (_dir, ctx, host) = response_setup();
+    host.set_now(T0);
+    let mut root = unit("r", Status::Stuck, T0 - 3600);
+    root.history.push(last_attempt("timeout", "budget exceeded"));
+    let (mut st, pairs) = blocking_state(root, 12);
+    host.reply("graph blocked", 0, &rows(&pairs));
+
+    check(&ctx, &mut st);
+
+    let root = st.units.get("r-1").unwrap();
+    assert_eq!(root.status, Status::Pending);
+    assert!(root.requeued, "requeued once by the response");
+    assert_eq!(root.attempts, 0, "attempts unchanged: one extra try only");
+    assert!(crate::pump::priority::list(&ctx.home)
+        .unwrap()
+        .contains(&(String::from("r"), 1)));
+    assert!(host
+        .logs()
+        .iter()
+        .any(|line| line.contains("blockers: requeued r-1 once")));
+    assert!(host.spawned().is_empty(), "a transient root needs no planner");
+
+    st.units.get_mut("r-1").unwrap().status = Status::Stuck;
+    check(&ctx, &mut st);
+
+    let root = st.units.get("r-1").unwrap();
+    assert_eq!(root.status, Status::Stuck, "no second requeue");
+    assert!(root.requeued);
+}
+
+#[test]
+fn a_persistent_old_blocking_root_goes_to_the_resplit_planner() {
+    let (_dir, ctx, host) = response_setup();
+    host.set_now(T0);
+    let mut root = unit("r", Status::Stuck, T0 - 121 * 60);
+    root.history.push(last_attempt(
+        "proof-failed",
+        "proof failed (exit 1): tests failed",
+    ));
+    let (mut st, pairs) = blocking_state(root, 12);
+    host.reply("graph blocked", 0, &rows(&pairs));
+
+    check(&ctx, &mut st);
+
+    let root = st.units.get("r-1").unwrap();
+    assert_eq!(root.status, Status::Splitting);
+    assert!(!root.requeued, "an exit-1 failure is not transient");
+    assert!(ctx.home.join("resplit/r-1.json").exists());
+    assert!(host
+        .spawned()
+        .iter()
+        .any(|command| command.contains("resplit")));
+    assert!(crate::pump::priority::list(&ctx.home)
+        .unwrap()
+        .contains(&(String::from("r"), 1)));
+}
+
+#[test]
+fn a_young_persistent_root_waits() {
+    let (_dir, ctx, host) = response_setup();
+    host.set_now(T0);
+    let mut root = unit("r", Status::Stuck, T0 - 10 * 60);
+    root.history.push(last_attempt(
+        "proof-failed",
+        "proof failed (exit 1): tests failed",
+    ));
+    let (mut st, pairs) = blocking_state(root, 12);
+    host.reply("graph blocked", 0, &rows(&pairs));
+
+    check(&ctx, &mut st);
+
+    let root = st.units.get("r-1").unwrap();
+    assert_eq!(root.status, Status::Stuck);
+    assert!(!root.requeued);
+    assert!(
+        crate::pump::priority::list(&ctx.home)
+            .unwrap()
+            .contains(&(String::from("r"), 1)),
+        "priority is raised immediately"
+    );
+    assert!(
+        host.spawned().is_empty(),
+        "no resplit before blocking_replan_minutes"
+    );
+}
+
+#[test]
+fn a_small_hold_gets_no_response() {
+    let (_dir, ctx, host) = response_setup();
+    host.set_now(T0);
+    let mut root = unit("r", Status::Stuck, T0 - 121 * 60);
+    root.history.push(last_attempt("timeout", "budget exceeded"));
+    let (mut st, pairs) = blocking_state(root, 4);
+    host.reply("graph blocked", 0, &rows(&pairs));
+
+    check(&ctx, &mut st);
+
+    let root = st.units.get("r-1").unwrap();
+    assert_eq!(root.status, Status::Stuck);
+    assert!(!root.requeued);
+    assert!(crate::pump::priority::list(&ctx.home).unwrap().is_empty());
+    assert!(host.spawned().is_empty());
 }

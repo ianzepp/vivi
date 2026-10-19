@@ -246,6 +246,11 @@ pub struct Unit {
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_on: Option<String>,
+    /// Requeued once by the blocking-stuck response: a stuck unit whose
+    /// last attempt was transient-class gets exactly one extra dispatch
+    /// before it parks stuck again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requeued: bool,
     /// The quarantine id this unit is a member of: set on every unit set
     /// aside in a quarantined batch. A repair unit is never a member (see
     /// `repairs`). `pump.db` keeps it in the unit's `extra_json` column.

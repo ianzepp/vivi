@@ -185,6 +185,7 @@ as marked):
 | `replaced_by` | array of unit ids | runtime (replaced): the split's successor ids |
 | `verdict_text` | string | runtime (no-defect): tail of the no-defect receipt |
 | `held_on` | handle or null | runtime: the dependency currently holding the unit back; the first tick of each hold is logged |
+| `requeued` | bool, absent when false | runtime: requeued once by the blocking-stuck response (§9, `[pump.alarm]`); a later stall is never requeued again |
 | `quarantine` | quarantine id or null | runtime: set on every unit of a quarantined batch and on the repair unit that works on it. `pump.db` keeps it (like `base` and `solo`) as a key of `units.extra_json` |
 | `base` | ref or null | runtime: dispatch this unit `--from` this ref instead of `dispatch.from`; a repair unit carries `pump/quarantine/<id>` |
 | `solo` | bool, absent when false | runtime: merge this unit in a batch of its own; set when its quarantine repair went stuck |
@@ -591,7 +592,15 @@ dependency closure holds at least `blocking_hold_units` units; text: the state,
 the age, the transitive held count, the number of dependent needs, and the top
 held needs as `handle (n)`). A subject (`<kind> <unit>`) is filed at most once
 per hour, so a persisting block repeats on that cadence; the raised times are
-kept in `state.json` under `alarm_raised`. `status.txt` carries three stall
+kept in `state.json` under `alarm_raised`. Each tick the pump also answers a
+stuck root automatically, right after the alarm pass: the blocking need is
+set to dispatch priority 1 when it carries no level yet, a stuck unit whose
+last attempt was transient-class (`timeout`, `finished/agent exit 124`, or a
+detail containing `failed (exit 124)`) is requeued once (`requeued` on the
+unit; the next stall parks it stuck again), and a root still stuck after
+`blocking_replan_minutes` is sent to the resplit planner with its last
+attempt as the worker's word. Parked verdicts and pending starved roots get
+the exception only, never the response. `status.txt` carries three stall
 lines, `last promote <age> ago (<tip10>)` or `last promote never`, `oldest
 waiting fix <uid> <age>` or `oldest waiting fix none`, `delivered waiting <n>,
 oldest <age>`, and then up to three `blocker <need> <state> age <age> held <n>`

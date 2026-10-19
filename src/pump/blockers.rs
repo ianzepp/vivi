@@ -69,6 +69,97 @@ pub(crate) fn findings(ctx: &Ctx, st: &State, now: u64) -> Vec<crate::pump::alar
         .collect()
 }
 
+/// The automatic response to a blocking-stuck root: raise the blocking
+/// need's dispatch priority, requeue a stuck unit with transient-class
+/// failures once, and otherwise send the unit to a fresh planner (re-plan
+/// or split) after `alarm.blocking_replan_minutes` stuck. Parked-verdict
+/// roots get no action here (the recurring blocking-stuck exception is
+/// their alert); pending starved roots surface in status only.
+pub fn check(ctx: &Ctx, st: &mut State) {
+    for blocker in compute(ctx, st) {
+        if blocker.state != "stuck" || blocker.held < ctx.cfg.alarm.blocking_hold_units {
+            continue;
+        }
+        if !bump(ctx, &blocker) {
+            continue;
+        }
+        respond(ctx, st, &blocker);
+    }
+}
+
+/// True when the unit's last attempt is one of the conservative timeout
+/// classes: a `timeout` or `finished/agent exit 124` attempt, or one whose
+/// detail died with exit 124. Timing flakes exit 1 and stay on the re-plan
+/// path.
+fn transient_failure(unit: &Unit) -> bool {
+    unit.history.last().is_some_and(|attempt| {
+        attempt.why == "timeout"
+            || attempt.why == "finished/agent exit 124"
+            || attempt.detail.contains("failed (exit 124)")
+    })
+}
+
+/// Set the blocker's need to priority 1 when it carries no level yet.
+/// Returns whether the response continues for this blocker.
+fn bump(ctx: &Ctx, blocker: &Blocker) -> bool {
+    if crate::pump::priority::levels(ctx).contains_key(&blocker.need) {
+        return true;
+    }
+    match crate::pump::priority::set(&ctx.home, &blocker.need, 1) {
+        Ok(()) => {
+            ctx.log(&format!(
+                "blockers: priority 1 on {} (holds {} units)",
+                blocker.need, blocker.held
+            ));
+            true
+        }
+        Err(error) => {
+            ctx.log(&format!(
+                "blockers: priority set failed on {}: {error}",
+                blocker.need
+            ));
+            false
+        }
+    }
+}
+
+/// Requeue or re-plan the blocker need's stuck units: a transient-class
+/// unit goes back to `pending` once, an old one goes to the resplit
+/// planner (which refuses quarantine repair units via their base).
+fn respond(ctx: &Ctx, st: &mut State, blocker: &Blocker) {
+    let stuck: Vec<String> = st
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.status == Status::Stuck && unit.need == blocker.need)
+        .map(|(uid, _)| uid.clone())
+        .collect();
+    for uid in stuck {
+        let Some(unit) = st.units.get(&uid) else {
+            continue;
+        };
+        let requeue = !unit.requeued && transient_failure(unit);
+        let due =
+            ctx.now().saturating_sub(unit.since) >= ctx.cfg.alarm.blocking_replan_minutes * 60;
+        let text = unit
+            .history
+            .last()
+            .map_or_else(String::new, |attempt| {
+                format!("{}: {}", attempt.why, attempt.detail)
+            });
+        if requeue {
+            if let Some(unit) = st.units.get_mut(&uid) {
+                unit.requeued = true;
+                unit.status = Status::Pending;
+            }
+            ctx.log(&format!(
+                "blockers: requeued {uid} once (transient-class failures)"
+            ));
+        } else if due {
+            crate::pump::collect::split(ctx, st, &uid, &text);
+        }
+    }
+}
+
 /// The `status.txt` lines for the largest holds: up to three blockers, each as
 /// `blocker <need> <state> age <age> held <n>`. Empty when nothing is held.
 #[must_use]
