@@ -217,13 +217,18 @@ fn take_local_pools(
 /// Between jobs: apply the 2x rule to this free slot. Errors are swallowed
 /// by the caller; this returns them so tests can see them.
 ///
+/// `pool_default` is the pool's `build_baseline_gib` in bytes, used for a slot
+/// that carries no recorded baseline; absent, the 4 GiB default applies.
+///
 /// # Errors
 /// Returns an error if a build directory cannot be emptied.
 pub fn after_slot_freed(
     dir: &Path,
     configured: Option<&str>,
+    pool_default: Option<u64>,
 ) -> Result<CleanReport, VivariumError> {
-    let (actions, skips) = clean_slot::reclaim_builds("-", "-", dir, configured, None, false)?;
+    let (actions, skips) =
+        clean_slot::reclaim_builds("-", "-", dir, configured, pool_default, false)?;
     Ok(CleanReport {
         actions,
         skips,
