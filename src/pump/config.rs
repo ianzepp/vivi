@@ -569,6 +569,10 @@ pub struct GateConfig {
     pub results_dir: Option<String>,
     /// Seconds a due gate waits for an external result; >= 1 with results_dir.
     pub results_wait_seconds: u64,
+    /// Seconds without a consumed external result after which a due gate stops
+    /// waiting; `0` disables the rule. A runner that has produced nothing for
+    /// this long is not running, so the pool gate goes out at once.
+    pub results_idle_seconds: u64,
     /// Gate-ignored test names, one per line; `#` comments; relative paths resolve from project.
     pub ignore_file: Option<String>,
     /// Replans per name after owner units settle but the name still fails; 0 disables.
@@ -590,6 +594,7 @@ impl Default for GateConfig {
             budget: 1800,
             results_dir: None,
             results_wait_seconds: 0,
+            results_idle_seconds: 0,
             ignore_file: None,
             max_replans: 2,
             hold_on_red: false,
