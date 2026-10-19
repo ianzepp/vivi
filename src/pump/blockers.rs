@@ -27,6 +27,8 @@ pub struct Blocker {
     pub age_secs: u64,
     /// Units held, directly or through the dependency closure.
     pub held: usize,
+    /// Dependent needs whose units are held, the root's own need excluded.
+    pub dependents: usize,
     /// Up to three dependent needs, by held-unit count, largest first.
     pub top_needs: Vec<(String, usize)>,
 }
@@ -50,6 +52,91 @@ pub fn compute(ctx: &Ctx, st: &State) -> Vec<Blocker> {
         .collect();
     out.sort_by(|a, b| b.held.cmp(&a.held).then_with(|| a.need.cmp(&b.need)));
     out
+}
+
+/// The `blocking-stuck` exceptions: roots that are not moving (a stuck unit,
+/// or a need parked on a verdict) and hold at least
+/// `alarm.blocking_hold_units` units. They go through the same once-per-hour
+/// raised machinery as the stall alarms, so a persisting block repeats.
+/// `pub(crate)` because [`crate::pump::alarm::Finding`] is crate-private.
+#[must_use]
+pub(crate) fn findings(ctx: &Ctx, st: &State, now: u64) -> Vec<crate::pump::alarm::Finding> {
+    let threshold = ctx.cfg.alarm.blocking_hold_units;
+    compute(ctx, st)
+        .into_iter()
+        .filter(|blocker| blocker.held >= threshold && unmoving(blocker))
+        .map(|blocker| finding(ctx, now, &blocker))
+        .collect()
+}
+
+/// The `status.txt` lines for the largest holds: up to three blockers, each as
+/// `blocker <need> <state> age <age> held <n>`. Empty when nothing is held.
+#[must_use]
+pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
+    let now = ctx.now();
+    compute(ctx, st)
+        .iter()
+        .filter(|blocker| blocker.held >= 1)
+        .take(3)
+        .map(|blocker| {
+            format!(
+                "blocker {} {} age {} held {}",
+                blocker.need,
+                blocker.state,
+                crate::pump::alarm::age(age_at(ctx, now, blocker)),
+                blocker.held
+            )
+        })
+        .collect()
+}
+
+/// True for a root that is stuck or parked on a verdict.
+fn unmoving(blocker: &Blocker) -> bool {
+    blocker.state == "stuck" || board::PARKED.contains(&blocker.state.as_str())
+}
+
+/// One blocker as the exception the alarm layer files.
+fn finding(ctx: &Ctx, now: u64, blocker: &Blocker) -> crate::pump::alarm::Finding {
+    crate::pump::alarm::Finding {
+        kind: "blocking-stuck",
+        unit: blocker.root.clone(),
+        text: finding_text(ctx, now, blocker),
+    }
+}
+
+/// The blocker's age read at `now`: `age_secs` was measured when the blocker
+/// was computed, so its timestamp is recovered first.
+fn age_at(ctx: &Ctx, now: u64, blocker: &Blocker) -> u64 {
+    let since = ctx.now().saturating_sub(blocker.age_secs);
+    now.saturating_sub(since)
+}
+
+/// `<state> for <age>; holds <n> units across <k> needs; top held: ...`.
+fn finding_text(ctx: &Ctx, now: u64, blocker: &Blocker) -> String {
+    let age = crate::pump::alarm::age(age_at(ctx, now, blocker));
+    let needs = if blocker.dependents == 1 {
+        "need"
+    } else {
+        "needs"
+    };
+    format!(
+        "{} for {age}; holds {} units across {} {needs}; top held: {}",
+        blocker.state,
+        blocker.held,
+        blocker.dependents,
+        top_text(&blocker.top_needs)
+    )
+}
+
+/// `m1 (4), m2 (2)` from the top held needs, `none` when there are none.
+fn top_text(top: &[(String, usize)]) -> String {
+    if top.is_empty() {
+        return String::from("none");
+    }
+    top.iter()
+        .map(|(need, held)| format!("{need} ({held})"))
+        .collect::<Vec<String>>()
+        .join(", ")
 }
 
 /// The dependency map turned around: `dependency -> needs depending on it`.
@@ -82,8 +169,18 @@ fn blocker(
         state: root.state.clone(),
         age_secs: age_secs(st, root, &held, now),
         held: held.len(),
+        dependents: dependent_needs(&root.need, &held),
         top_needs: top_needs(&root.need, &held),
     }
+}
+
+/// How many distinct needs other than the root have units in the hold.
+fn dependent_needs(root: &str, held: &[(&str, &Unit)]) -> usize {
+    held.iter()
+        .map(|(_, unit)| unit.need.as_str())
+        .filter(|need| *need != root)
+        .collect::<BTreeSet<&str>>()
+        .len()
 }
 
 /// The root need plus every need that transitively depends on it.

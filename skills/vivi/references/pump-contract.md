@@ -577,18 +577,25 @@ A plan unit with `"tools": "full"` goes to the `flyfull` pool; one with no
 | `fix_wait_minutes` | int minutes | `30` | minutes a fix unit may sit `delivered` or `merging` before a `stall-fix-unit` exception |
 | `promote_hours` | int hours | `3` | hours without a promotion, while at least one unit has merged since the last one, before a `stall-promote` exception |
 | `merge_idle_minutes` | int minutes | `45` | minutes units may sit `delivered` with nothing merged before a `stall-merge` exception |
+| `blocking_hold_units` | int units | `10` | transitive held units at which a stuck or parked root raises `blocking-stuck` |
+| `blocking_replan_minutes` | int minutes | `120` | minutes a blocking stuck root waits before the pump re-plans it |
 
 Each tick the pump checks the stall signals and files `stall-fix-unit <uid>`
 (a `<fix_prefix>` unit waiting past `fix_wait_minutes`), `stall-promote
 <target>` (text: time since the last promotion, merges awaiting promotion, the
 last gate's failing count; measured from the first unpromoted merge when the
-target never promoted; only for targets with promotion enabled) and
-`stall-merge pump` (delivered units, oldest wait, last merge). A subject
-(`<kind> <unit>`) is filed at most once per hour; the raised times are kept in
-`state.json` under `alarm_raised`. `status.txt` carries three more lines:
-`last promote <age> ago (<tip10>)` or `last promote never`, `oldest waiting fix
-<uid> <age>` or `oldest waiting fix none`, and `delivered waiting <n>, oldest
-<age>`; ages read `2h05m` or `14m`.
+target never promoted; only for targets with promotion enabled),
+`stall-merge pump` (delivered units, oldest wait, last merge) and
+`blocking-stuck <uid|need>` (a stuck unit, or a need parked on a verdict, whose
+dependency closure holds at least `blocking_hold_units` units; text: the state,
+the age, the transitive held count, the number of dependent needs, and the top
+held needs as `handle (n)`). A subject (`<kind> <unit>`) is filed at most once
+per hour, so a persisting block repeats on that cadence; the raised times are
+kept in `state.json` under `alarm_raised`. `status.txt` carries three stall
+lines, `last promote <age> ago (<tip10>)` or `last promote never`, `oldest
+waiting fix <uid> <age>` or `oldest waiting fix none`, `delivered waiting <n>,
+oldest <age>`, and then up to three `blocker <need> <state> age <age> held <n>`
+lines, largest hold first; ages read `2h05m` or `14m`.
 
 Merge lane visibility. Every `log.txt` line written from a lane thread starts
 with `lane <target>/<n>: `, so parallel lanes can be told apart; lines from the
