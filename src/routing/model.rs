@@ -65,6 +65,12 @@ impl RoleRouting {
         self.lookup("gate")
     }
 
+    /// The auditor role: named `auditor`, or kind `auditor`.
+    #[must_use]
+    pub fn auditor(&self) -> Option<&RoutedRole> {
+        self.lookup("auditor")
+    }
+
     /// Assigned `pool` when it has a free slot; else the first listed pool
     /// with a free slot. `None` means wait.
     #[must_use]
