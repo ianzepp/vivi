@@ -116,7 +116,12 @@ fn mailspace_init_provisions_the_merge_role_and_default_charter_idempotently() {
         "model is left to role routing: {merge}"
     );
     assert_eq!(merge["has_charter"], true);
-    let charter = merge["charter"].as_str().unwrap();
+    let charter = merge["charter"]
+        .as_str()
+        .unwrap()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     for term in [
         "frozen base SHA",
         "PUMP_MERGE_RESULT=",

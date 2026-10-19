@@ -110,12 +110,14 @@ fn job_owns_frozen_branch(ctx: &Ctx, job: &PoolJob, branch: &NeedBranch, need_id
         .payload
         .get("source_branch")
         .and_then(serde_json::Value::as_str);
-    if source != Some(branch.branch.as_str()) || !job.with.iter().any(|r| r == &branch.branch) {
+    if source != Some(branch.branch.as_str())
+        || !matches!(job.with.as_slice(), [sha] if Some(sha) == branch.frozen_tip_sha.as_ref())
+    {
         hold_landing(
             ctx,
             job,
             need_id,
-            "landing job does not name the locked frozen source ref",
+            "landing job does not bind the owned need branch and exact frozen source SHA",
         );
         return false;
     }

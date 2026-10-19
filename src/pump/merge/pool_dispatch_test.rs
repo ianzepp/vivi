@@ -8,8 +8,8 @@ use super::{
 use crate::pump::config::{Generated, PumpConfig};
 use crate::pump::host::test_ctx;
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
-use crate::pump::merge::dispatch_pool;
-use crate::pump::state::{State, Status, Unit};
+use crate::pump::merge::{dispatch_pool, target_write_blocked};
+use crate::pump::state::{GateRecord, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[test]
@@ -71,6 +71,67 @@ fn local_pool() -> RoutedPool {
         models: Vec::new(),
         has_bands: false,
     }
+}
+
+#[test]
+fn an_unattempted_gate_blocks_new_target_writes() {
+    let mut state = State::default();
+    let source = merged_unapplied_source(None);
+    state.jobs.insert(source.id.clone(), source);
+
+    assert!(target_write_blocked(&mut state, "default"));
+}
+
+#[test]
+fn a_completed_red_gate_allows_a_later_accepted_need_write() {
+    let mut state = State::default();
+    state.merges = 1;
+    state.last_gate.merges = 1;
+    state.last_gate.tip = Some(String::from("0123456789012345678901234567890123456789"));
+    state.gates.push(GateRecord {
+        tip: String::from("0123456789012345678901234567890123456789"),
+        at: 1,
+        merges: 1,
+        names: Some(vec![String::from("known_red_check")]),
+        new: Some(vec![String::from("known_red_check")]),
+    });
+    let source = merged_unapplied_source(Some("0123456789012345678901234567890123456789"));
+    state.jobs.insert(source.id.clone(), source);
+
+    assert!(!target_write_blocked(&mut state, "default"));
+}
+
+#[test]
+fn an_active_gate_or_writer_still_blocks_new_target_writes() {
+    let mut active_gate = State::default();
+    active_gate.last_gate.job_id = Some(String::from("gate-active"));
+    assert!(target_write_blocked(&mut active_gate, "default"));
+
+    let mut active_writer = State::default();
+    let mut writer = PoolJob::from(JobSpec::new("merge-active", "merge", "merge", "s", "b"));
+    writer.target = Some(String::from("default"));
+    writer.status = JobStatus::Dispatched;
+    active_writer.jobs.insert(writer.id.clone(), writer);
+    assert!(target_write_blocked(&mut active_writer, "default"));
+}
+
+fn merged_unapplied_source(gate_attempted_tip: Option<&str>) -> PoolJob {
+    let tip = "0123456789012345678901234567890123456789";
+    let mut source = PoolJob::from(JobSpec::new("role-source", "role", "role", "s", "b"));
+    source.target = Some(String::from("default"));
+    source.integration_required = true;
+    source.status = JobStatus::Finished;
+    source.outcome = Some(JobOutcome {
+        state: String::from("finished"),
+        detail: String::from("agent exit 0"),
+        receipt: String::from("published candidate"),
+        at: 1,
+    });
+    source.merged_tip = Some(String::from(tip));
+    source.gated_tip = None;
+    source.gate_attempted_tip = gate_attempted_tip.map(str::to_owned);
+    source.applied_at = None;
+    source
 }
 
 #[test]

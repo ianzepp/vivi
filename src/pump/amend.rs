@@ -150,7 +150,15 @@ const LEGACY_HASH_SCHEME: &str = "v2:";
 fn thread_messages(ctx: &Ctx, handle: &str) -> Option<Vec<Value>> {
     let text = ctx.vivi(&format!("need show {handle} --json"), 60).text;
     let start = text.find('[')?;
-    serde_json::from_str::<Vec<Value>>(&text[start..]).ok()
+    match serde_json::from_str::<Vec<Value>>(&text[start..]) {
+        Ok(messages) => Some(messages),
+        Err(error) => {
+            ctx.log(&format!(
+                "amendment: need {handle} thread JSON unreadable: {error}"
+            ));
+            None
+        }
+    }
 }
 
 /// Source snapshot shared by amendment detection, audit jobs and audit

@@ -103,7 +103,7 @@ pub(crate) fn dispatch_pool(ctx: &Ctx, st: &mut State) -> Result<Vec<String>, Vi
         &mut waiting,
     )?;
     for target_id in targets.keys() {
-        if merge_blocked(st, target_id) {
+        if target_write_blocked(st, target_id) {
             continue;
         }
         let Some(target_ctx) = ctx.for_target(target_id) else {
@@ -158,18 +158,29 @@ pub(crate) fn apply_dispatched(ctx: &Ctx, st: &mut State) {
     }
 }
 
-fn merge_blocked(st: &mut State, target: &str) -> bool {
+/// Serialize target writes through their first gate attempt. A completed red
+/// gate holds promotion, while allowing later accepted repairs to advance next.
+pub(crate) fn target_write_blocked(st: &mut State, target: &str) -> bool {
     let active_job = st.jobs.values().any(|job| {
         matches!(job.kind.as_str(), "merge" | "need-merge")
             && job.target.as_deref() == Some(target)
             && !super::need_dispatch::is_need_merge_job(job)
-            && (!job.status.is_terminal() || job.applied_at.is_none())
+            && (!job.status.is_terminal()
+                || (job.applied_at.is_none()
+                    && job.merged_tip.is_none()
+                    && job.integration_error.is_none()))
     });
-    let waiting_gate = !jobs::sources_waiting_for_gate(st, target).is_empty();
+    let unattempted_gate = jobs::sources_waiting_for_gate(st, target).iter().any(|id| {
+        st.jobs
+            .get(id)
+            .is_some_and(|job| job.gate_attempted_tip.is_none())
+    });
     let waiting_unit_gate = crate::pump::state::with_target_state(st, target, |state| {
-        state.last_gate.task.is_some() || state.last_gate.merges < state.merges
+        state.last_gate.task.is_some()
+            || state.last_gate.job_id.is_some()
+            || state.last_gate.merges < state.merges
     });
-    active_job || waiting_gate || waiting_unit_gate
+    active_job || unattempted_gate || waiting_unit_gate
 }
 
 fn retain_branchable(ctx: &Ctx, st: &mut State, units: Vec<String>) -> Vec<String> {

@@ -9,7 +9,7 @@ use crate::pump::need::{
     self, CleanupRetryState, NeedAuditBinding, NeedBranch, NeedLandingReceipt,
 };
 use crate::pump::need_verdict::{self, AcceptedNeedReceipt};
-use crate::pump::state::{self, State};
+use crate::pump::state::State;
 
 use super::{RequiredCheck, full_sha, verdict_name};
 
@@ -45,7 +45,7 @@ fn dispatch_branch(
     };
     if binding != accepted.receipt.binding
         || target_started.contains(&branch.target)
-        || target_writer_active(st, &branch.target)
+        || crate::pump::merge::target_write_blocked(st, &branch.target)
     {
         return Ok(None);
     }
@@ -167,20 +167,6 @@ fn accepted_verdict(accepted: &AcceptedNeedReceipt) -> bool {
         crate::pump::need_audit::NeedAuditVerdict::CleanPass
             | crate::pump::need_audit::NeedAuditVerdict::Residual
     )
-}
-
-fn target_writer_active(st: &mut State, target: &str) -> bool {
-    st.jobs.values().any(|job| {
-        matches!(job.kind.as_str(), "merge" | "need-merge")
-            && job.target.as_deref() == Some(target)
-            && !crate::pump::merge::is_need_merge_job(job)
-            && (!job.status.is_terminal() || job.applied_at.is_none())
-    }) || !jobs::sources_waiting_for_gate(st, target).is_empty()
-        || state::with_target_state(st, target, |state| {
-            state.last_gate.task.is_some()
-                || state.last_gate.job_id.is_some()
-                || state.last_gate.merges < state.merges
-        })
 }
 
 fn merge_spec(

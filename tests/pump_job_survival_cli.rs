@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use vivi::pump::audit::AuditRun;
 use vivi::pump::jobs::{self, JobSpec, JobStatus};
-use vivi::pump::state::{GateRun, NeedRecord, State, Status, Unit};
+use vivi::pump::state::{GateRun, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
 const WORKERS: &[(&str, &str, &str)] = &[
@@ -347,7 +347,7 @@ fn seed_state(rig: &Rig) {
         .unwrap(),
     );
     let unit = Unit {
-        need: String::from("hand-survival-need"),
+        need: String::new(),
         title: String::from("survive pump restart"),
         brief: String::from("Return VERDICT: no-defect after the process restart."),
         write_scope: vec![String::from("survival.txt")],
@@ -356,14 +356,6 @@ fn seed_state(rig: &Rig) {
     };
     st.units.insert(UNIT.to_owned(), unit);
     st.order.push(UNIT.to_owned());
-    st.needs.insert(
-        String::from("hand-survival-need"),
-        NeedRecord {
-            verdict: String::from("units"),
-            units: vec![UNIT.to_owned()],
-            ..NeedRecord::default()
-        },
-    );
 
     for (id, kind, role) in WORKERS {
         let mut spec = JobSpec::new(
