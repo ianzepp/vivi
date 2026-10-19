@@ -121,8 +121,15 @@ Do not encode Fleet roles inside Vivi core.
 - Prefer `module.rs` files until a module genuinely needs submodules. When it
   does, use `module/leaf.rs` files with a parent `module.rs` rather than
   `module/mod.rs`.
-- Put inline unit tests in `#[cfg(test)]` modules near the code when that keeps
-  behavior easy to understand. Use `tests/` for integration and CLI behavior.
+- No inline unit tests in `src/`. The hygiene tests enforce a budget of zero
+  inline `#[cfg(test)]` module bodies (`hygiene_no_inline_test_modules`) and
+  zero `#[test]`/`#[tokio::test]`/`#[rstest]` attributes in production files
+  (`hygiene_no_test_attrs_in_production`). Put unit tests in a companion
+  `src/<module>_test.rs` file wired from the production module with
+  `#[cfg(test)]` then `#[path = "<module>_test.rs"]` then `mod tests;`
+  (companion files ending `_test.rs` or `_tests.rs`, and `tests.rs`, are
+  excluded from the production scan), or in `tests/` for integration and CLI
+  behavior.
 
 ## Entry Point
 
