@@ -233,14 +233,27 @@ impl FlyApi {
 
     fn update(&self, id: &str, nonce: Option<&str>, config: &Value) -> Result<(), VivariumError> {
         let body = json!({"config": config, "skip_launch": true});
-        self.require(
+        let reply = self.require(
             "POST",
             &format!("/machines/{id}"),
             nonce,
             Some(&body),
             &[200],
-        )
-        .map(|_| ())
+        )?;
+        let (version_key, version) = reply.body["instance_id"]
+            .as_str()
+            .map(|instance_id| ("instance_id", instance_id))
+            .or_else(|| {
+                reply.body["version"]
+                    .as_str()
+                    .map(|version| ("version", version))
+            })
+            .ok_or_else(|| {
+                VivariumError::Parse("Fly machine update response omitted its version".into())
+            })?;
+        // The old instance can still report stopped while this replacement is settling.
+        let wait = format!("/machines/{id}/wait?state=settled&{version_key}={version}&timeout=30");
+        self.require("GET", &wait, None, None, &[200]).map(|_| ())
     }
 
     /// Start a machine.
@@ -277,6 +290,22 @@ impl FlyApi {
             "POST",
             &format!("/machines/{id}/stop"),
             None,
+            Some(&body),
+            &[200],
+        )
+        .map(|_| ())
+    }
+
+    /// Stop a claimed machine using the lease that protects the operation.
+    ///
+    /// # Errors
+    /// Returns an error if the stop is refused.
+    pub fn stop_claimed(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
+        let body = json!({"signal": "SIGTERM", "timeout": "20s"});
+        self.require(
+            "POST",
+            &format!("/machines/{id}/stop"),
+            Some(&hold.nonce),
             Some(&body),
             &[200],
         )

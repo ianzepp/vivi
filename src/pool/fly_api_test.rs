@@ -159,56 +159,88 @@ mod refresh {
     }
 
     #[test]
-    fn a_claimed_start_sends_its_lease_nonce() {
+    fn config_replacement_settles_its_new_version_before_claimed_start() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/v1/apps", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
-            let (conn, _) = listener.accept().unwrap();
-            let mut reader = std::io::BufReader::new(conn);
-            let mut request = String::new();
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line.is_empty() {
-                    break;
+            let mut requests = Vec::new();
+            for body in [
+                r#"{"config":{"env":{},"files":[]}}"#,
+                r#"{"id":"machine-1","state":"replacing","instance_id":"new-instance","version":"new-version"}"#,
+                r#"{"ok":true}"#,
+                r#"{"previous_state":"stopped"}"#,
+            ] {
+                let (conn, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(conn);
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line.is_empty() {
+                        break;
+                    }
+                    let done = line == "\r\n";
+                    request.push_str(&line);
+                    if done {
+                        break;
+                    }
                 }
-                let done = line == "\r\n";
-                request.push_str(&line);
-                if done {
-                    break;
-                }
+                let content_length = request
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or_default();
+                let mut bytes = vec![0; content_length];
+                reader.read_exact(&mut bytes).unwrap();
+                request.push_str(&String::from_utf8(bytes).unwrap());
+                let mut conn = reader.into_inner();
+                write!(
+                    conn,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                requests.push(request);
             }
-            let mut conn = reader.into_inner();
-            let body = r#"{"ok":true}"#;
-            write!(
-                conn,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .unwrap();
-            request
+            requests
         });
         let api = FlyApi::with_parts("app", &base, fixed_token);
+        let hold = Hold {
+            nonce: "lease-123".into(),
+        };
 
-        api.start_claimed(
-            "machine-1",
-            &Hold {
-                nonce: "lease-123".into(),
-            },
-        )
-        .unwrap();
+        api.put_file("machine-1", &hold, "/work/job.tgz", b"archive")
+            .unwrap();
+        api.start_claimed("machine-1", &hold).unwrap();
 
-        let request = server.join().unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert!(requests[0].starts_with("GET /v1/apps/app/machines/machine-1 HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /v1/apps/app/machines/machine-1 HTTP/1.1"));
         assert!(
-            request.starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"),
-            "{request}"
+            requests[2].starts_with(
+                "GET /v1/apps/app/machines/machine-1/wait?state=settled&instance_id=new-instance&timeout=30 HTTP/1.1"
+            ),
+            "{}",
+            requests[2]
         );
-        let nonce = request.lines().find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("fly-machine-lease-nonce")
-                .then_some(value.trim())
-        });
-        assert_eq!(nonce, Some("lease-123"), "{request}");
+        assert!(requests[3].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
+        for request in [&requests[1], &requests[3]] {
+            let nonce = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("fly-machine-lease-nonce")
+                    .then_some(value.trim())
+            });
+            assert_eq!(nonce, Some("lease-123"), "{request}");
+        }
+        let update_body = requests[1].split_once("\r\n\r\n").unwrap().1;
+        assert_eq!(
+            serde_json::from_str::<Value>(update_body).unwrap()["skip_launch"],
+            true
+        );
     }
 
     static GONE: AtomicUsize = AtomicUsize::new(0);

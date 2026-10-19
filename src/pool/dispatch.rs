@@ -481,7 +481,14 @@ fn deliver(
     let id = &claim.slot.id;
     let plan = launch.plan;
     if let Some(base) = launch.reset_base.as_deref() {
-        super::reset::reset_slot(launch.config, provider, id, base, "dispatch")?;
+        super::reset::reset_claimed_slot(
+            launch.config,
+            provider,
+            id,
+            &claim.hold,
+            base,
+            "dispatch",
+        )?;
     }
     let start = plan
         .checkout

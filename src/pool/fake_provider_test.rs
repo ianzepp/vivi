@@ -33,6 +33,9 @@ pub struct Fake {
     pub exec_out: RefCell<HashMap<String, String>>,
     /// Every start/stop/exec in order, as `verb id`.
     pub calls: RefCell<Vec<String>>,
+    /// Starts and stops that arrived with the active claim hold.
+    pub claimed_starts: RefCell<Vec<String>>,
+    pub claimed_stops: RefCell<Vec<String>>,
     /// Runs right after a lease is granted (race simulation).
     pub after_lease: RefCell<Option<Hook>>,
     /// Starting a machine fails.
@@ -370,6 +373,7 @@ impl PoolProvider for Fake {
         if self.leases.borrow().get(id) != Some(&hold.nonce) {
             return Err(VivariumError::Message("not the lease holder".into()));
         }
+        self.claimed_starts.borrow_mut().push(id.to_string());
         self.start(id)
     }
 
@@ -379,6 +383,14 @@ impl PoolProvider for Fake {
             return Ok(());
         }
         self.edit(id, |m| m.state = "stopped".into())
+    }
+
+    fn stop_claimed(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
+        if self.leases.borrow().get(id) != Some(&hold.nonce) {
+            return Err(VivariumError::Message("not the lease holder".into()));
+        }
+        self.claimed_stops.borrow_mut().push(id.to_string());
+        self.stop(id)
     }
 
     fn exec(&self, id: &str, _script: &str, _timeout: u32) -> Result<ExecOutput, VivariumError> {

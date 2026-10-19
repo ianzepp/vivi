@@ -416,6 +416,15 @@ pub trait PoolProvider {
         self.start(id)
     }
 
+    /// Stop a machine while retaining the claim that protects the operation.
+    /// Providers with machine leases can attach the hold to the stop request.
+    ///
+    /// # Errors
+    /// Returns an error if the machine cannot be stopped.
+    fn stop_claimed(&self, id: &str, _hold: &Hold) -> Result<(), VivariumError> {
+        self.stop(id)
+    }
+
     /// Stop a machine; returns once the host accepted it.
     ///
     /// # Errors

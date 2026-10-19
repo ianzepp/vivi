@@ -388,6 +388,41 @@ fn dispatch_claims_delivers_one_archive_and_starts() {
 }
 
 #[test]
+fn dispatch_reset_starts_and_stops_the_machine_under_its_claim() {
+    let fake = Fake::default();
+    fake.add(slot("m1", "p-slot-1", "stopped", "p", 1));
+    fake.exec_out
+        .borrow_mut()
+        .insert("m1".into(), format!("{}\n", "a".repeat(40)));
+    let mut config = config();
+    config.provider = "fly".into();
+    let progress = crate::pool::progress::Progress::silent();
+    let token = Secret::new("tok-secret-value".into());
+    let plan = plan(&flags("m/ok")).unwrap();
+    let start = "c".repeat(40);
+    let launch = Launch {
+        config: &config,
+        plan: &plan,
+        token: &token,
+        start: &start,
+        progress: &progress,
+        ready_timeout: None,
+        reset_base: Some("main".into()),
+    };
+
+    let record = dispatch(&fake, &pid("p"), &launch, 5000, &pacing()).unwrap();
+
+    assert_eq!(record.machine, "m1");
+    assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1", "m1"]);
+    assert_eq!(fake.claimed_stops.borrow().as_slice(), ["m1"]);
+    assert!(
+        fake.leases.borrow().is_empty(),
+        "claim released after start"
+    );
+    assert_eq!(fake.state_of("m1"), "started");
+}
+
+#[test]
 fn dispatch_with_no_free_slot_touches_no_machine() {
     let fake = Fake::default();
     fake.add(claimed("m1", "p-slot-1", "stopped", "p", "oldtask1"));

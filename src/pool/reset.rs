@@ -14,7 +14,7 @@ use super::clean_slot::slot_is_free;
 use super::config::PoolConfig;
 use super::local_git::Repo;
 use super::local_slots::{CHECKOUT, WORKTREE_OF_FILE};
-use super::provider::{ExecOutput, PoolProvider};
+use super::provider::{ExecOutput, Hold, PoolProvider};
 use super::slot::META_BASE;
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -263,19 +263,55 @@ pub fn reset_slot(
     reset_remote(provider, machine_id, base, why)
 }
 
+/// Reset a slot while retaining the claim held by its dispatch.
+///
+/// # Errors
+/// Returns an error when the origin branch is missing or the checkout fails.
+pub fn reset_claimed_slot(
+    config: &PoolConfig,
+    provider: &dyn PoolProvider,
+    machine_id: &str,
+    hold: &Hold,
+    base: &str,
+    why: &'static str,
+) -> Result<ResetOutcome, VivariumError> {
+    if config.provider == "local" {
+        return reset_slot(config, provider, machine_id, base, why);
+    }
+    reset_remote_with_hold(provider, machine_id, base, why, Some(hold))
+}
+
 fn reset_remote(
     provider: &dyn PoolProvider,
     id: &str,
     base: &str,
     why: &'static str,
 ) -> Result<ResetOutcome, VivariumError> {
+    reset_remote_with_hold(provider, id, base, why, None)
+}
+
+fn reset_remote_with_hold(
+    provider: &dyn PoolProvider,
+    id: &str,
+    base: &str,
+    why: &'static str,
+    hold: Option<&Hold>,
+) -> Result<ResetOutcome, VivariumError> {
     let started = provider.machine(id)?.state == "started";
     if !started {
-        provider.start(id)?;
+        if let Some(hold) = hold {
+            provider.start_claimed(id, hold)?;
+        } else {
+            provider.start(id)?;
+        }
     }
     let out = provider.exec(id, &remote_script(base), 90)?;
     if !started {
-        let _ignored = provider.stop(id);
+        let _ignored = if let Some(hold) = hold {
+            provider.stop_claimed(id, hold)
+        } else {
+            provider.stop(id)
+        };
     }
     parse_remote(out, base, why)
 }
