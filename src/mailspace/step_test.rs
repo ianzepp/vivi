@@ -248,7 +248,13 @@ fn blocked_nodes_do_not_appear() {
 fn blocked_dependent_awaiting_unheld_dependency_is_exception() {
     let (mailspace, _tmp) = roster();
     // A task whose letter names a dependency this mailspace does not hold.
-    let waiting = file_letter(&mailspace, "cto", "task", "waits on a stranger", &["deadbeef"]);
+    let waiting = file_letter(
+        &mailspace,
+        "cto",
+        "task",
+        "waits on a stranger",
+        &["deadbeef"],
+    );
     let control = send_item(
         &mailspace,
         "tasks",
