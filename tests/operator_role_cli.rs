@@ -1,6 +1,5 @@
-//! `mailspace init` and `sync join` ensure an `operator` role of kind
-//! `operator`, so mail from `operator@<prefix>.local` speaks for a role that
-//! may close and reopen work it did not author.
+//! `mailspace init` and `sync join` provision the built-in operator and merge
+//! roles before a project relies on them.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -39,6 +38,11 @@ fn config_path(project: &Path) -> PathBuf {
 
 fn config(project: &Path) -> String {
     std::fs::read_to_string(config_path(project)).unwrap()
+}
+
+fn role(project: &Path, name: &str) -> serde_json::Value {
+    let name_and_flag = ["role", "show", name, "--json"];
+    serde_json::from_str(&ok(&run(project, &name_and_flag))).unwrap()
 }
 
 /// A project holding a hand-written `.vivi/mailspace.toml`.
@@ -95,6 +99,64 @@ fn mailspace_init_sets_the_kind_of_a_kindless_operator_role() {
 }
 
 #[test]
+fn mailspace_init_provisions_the_merge_role_and_default_charter_idempotently() {
+    let project = tempfile::tempdir().unwrap();
+    ok(&run(project.path(), &["mailspace", "init"]));
+
+    let merge = role(project.path(), "merge");
+    assert_eq!(merge["name"], "merge");
+    assert_eq!(merge["kind"], "merge");
+    assert_eq!(merge["status"], "active");
+    assert!(
+        merge["pool"].is_null(),
+        "pool is left to role routing: {merge}"
+    );
+    assert!(
+        merge["model"].is_null(),
+        "model is left to role routing: {merge}"
+    );
+    assert_eq!(merge["has_charter"], true);
+    let charter = merge["charter"].as_str().unwrap();
+    for term in [
+        "frozen base SHA",
+        "PUMP_MERGE_RESULT=",
+        "observed target SHA",
+        "expected merged ancestry",
+    ] {
+        assert!(charter.contains(term), "charter lacks {term:?}:\n{charter}");
+    }
+
+    ok(&run(project.path(), &["mailspace", "init"]));
+    let again = role(project.path(), "merge");
+    assert_eq!(again["charter"], merge["charter"]);
+    let toml = config(project.path());
+    assert_eq!(toml.matches("name = \"merge\"").count(), 1, "{toml}");
+}
+
+#[test]
+fn mailspace_init_preserves_merge_role_customizations_and_charter() {
+    let project = with_config(
+        "name = \"cli\"\n\n[[identities]]\nname = \"merge\"\nkind = \"review\"\n\
+         status = \"parked\"\nprovider = \"custom-provider\"\nmodel = \"custom-model\"\n\
+         thinking = \"high\"\npool = \"custom-pool\"\n",
+    );
+    let charter_dir = project.path().join(".vivi/charters");
+    std::fs::create_dir_all(&charter_dir).unwrap();
+    std::fs::write(charter_dir.join("merge.md"), "operator charter\n").unwrap();
+
+    ok(&run(project.path(), &["mailspace", "init"]));
+
+    let merge = role(project.path(), "merge");
+    assert_eq!(merge["kind"], "review");
+    assert_eq!(merge["status"], "parked");
+    assert_eq!(merge["provider"], "custom-provider");
+    assert_eq!(merge["model"], "custom-model");
+    assert_eq!(merge["thinking"], "high");
+    assert_eq!(merge["pool"], "custom-pool");
+    assert_eq!(merge["charter"], "operator charter\n");
+}
+
+#[test]
 fn sync_join_ensures_the_operator_role_before_the_server() {
     // The `synced()` shape: one mind identity and a `[sync]` table pointing at
     // a loopback port nothing listens on.
@@ -120,4 +182,7 @@ fn sync_join_ensures_the_operator_role_before_the_server() {
         toml.contains("kind = \"operator\""),
         "operator identity has no operator kind after a failed join in:\n{toml}"
     );
+    let merge = role(project.path(), "merge");
+    assert_eq!(merge["kind"], "merge");
+    assert_eq!(merge["has_charter"], true);
 }

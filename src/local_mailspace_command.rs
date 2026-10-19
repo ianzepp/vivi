@@ -77,6 +77,7 @@ fn handle_mailspace_command(command: &MailspaceCommand) -> Result<(), VivariumEr
         MailspaceCommand::Init { project } => {
             let mut mailspace = Mailspace::init(project.as_deref())?;
             mailspace.ensure_operator_role()?;
+            mailspace.ensure_merge_role()?;
             println!("mailspace {}", mailspace.config.name);
             println!("root      {}", mailspace.root.display());
             println!("store     {}", mailspace.store_path().display());

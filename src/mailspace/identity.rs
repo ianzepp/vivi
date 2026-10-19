@@ -224,6 +224,58 @@ impl Mailspace {
         Ok(())
     }
 
+    /// Ensure the predefined `merge` role and its shipped charter exist.
+    ///
+    /// New roles use the standard active status, but this helper does not
+    /// choose a pool, model, or other routing field. Existing role metadata and
+    /// charter files are preserved; a missing kind or charter receives the
+    /// shipped default.
+    ///
+    /// # Errors
+    /// Returns an error if the `merge` name is already reserved as another
+    /// role's alias, a role field is invalid, or config/charter persistence
+    /// fails.
+    pub fn ensure_merge_role(&mut self) -> Result<(), VivariumError> {
+        const MERGE: &str = "merge";
+        let index = self.find_role_index(MERGE);
+        let role_name = if let Some(index) = index {
+            let role_name = self.config.identities[index].name.clone();
+            if role_name != MERGE {
+                return Err(VivariumError::Message(format!(
+                    "cannot provision predefined role '{MERGE}': that name is an alias for '{role_name}'"
+                )));
+            }
+            if self.config.identities[index].kind.is_none() {
+                self.set_role(
+                    MERGE,
+                    RoleUpdate {
+                        kind: Some(Some(MERGE.into())),
+                        ..RoleUpdate::default()
+                    },
+                )?;
+            }
+            role_name
+        } else {
+            self.add_role(
+                MERGE,
+                RoleUpdate {
+                    kind: Some(Some(MERGE.into())),
+                    ..RoleUpdate::default()
+                },
+            )?;
+            MERGE.to_string()
+        };
+
+        let charter = self.charter_path(&role_name);
+        if !charter.exists() {
+            self.set_charter(
+                &role_name,
+                include_str!("../../skills/tugboat/references/charters/merge.md"),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Rename an identity. The old name is preserved as an alias.
     ///
     /// # Errors
