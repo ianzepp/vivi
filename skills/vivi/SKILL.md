@@ -842,6 +842,14 @@ vivi pool unset glm image
   clean additionally names it (`-e /$BUILD_DIR`), so it survives even when not
   gitignored; on fly and docker it is a memory disk packed at seed and
   restored before every job instead. Fly and Docker work with or without it.
+- **A `local` pool can give each job its own RAM disk.** A
+  `[pools.<name>.ramdisk]` table with `enabled = true` makes a fresh disk for
+  one job at the target cache and tears it down with the job; `size_gib`
+  defaults to 8 GiB (enough for a hand lane, so a gate pool sets 32),
+  `margin_gib` (6) is memory kept out of the admission sum, and `env` defaults
+  to the cargo settings that keep the build small (`CARGO_INCREMENTAL=0`, dev
+  and test `DEBUG=0`, dev and test `STRIP=symbols`), exported to that job only.
+  Only `local` pools may enable it.
 - **A pool with only provider settings.** `repo`, `github`, `harness` and
   `committer` are optional in a pool table (`github` goes with `repo`). Such a
   pool is for testing the provider: `status`, `destroy`, `reconcile`, `wait`,
