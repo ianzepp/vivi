@@ -323,6 +323,7 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     };
     unit.status = Status::Splitting;
     unit.since = now;
+    unit.split_rate_retries = 0;
     unit.history.push(Attempt {
         attempt: unit.attempts,
         model: unit.model.clone(),
@@ -369,6 +370,7 @@ pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &st
         unit.split_reasks = 1;
         unit.split_retry_at = None;
         unit.split_fails = 0;
+        unit.split_rate_retries = 0;
         unit.since = now;
     }
     ctx.log(&format!("split-reask {uid} {}", tail(reason, 120)));
@@ -675,6 +677,13 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         let raw = fs::read_to_string(&receipt).unwrap_or_default();
         let code = raw.trim().parse::<i32>().unwrap_or(-1);
         drop(fs::remove_file(&receipt));
+        if let Some(wait) = rate_limited_retry(ctx, unit, uid) {
+            unit.split_retry_at = Some(now + wait);
+            ctx.log(&format!(
+                "split-rate-limited {uid} retry in {wait}s; retry budget untouched"
+            ));
+            return false;
+        }
         let fails = unit.split_fails + 1;
         unit.split_fails = fails;
         if fails >= SPLIT_RETRY_MAX {
@@ -711,6 +720,19 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         return true;
     }
     false
+}
+
+/// A provider 429 is not the unit's fault: count it on its own growing
+/// backoff and leave the split-planner retry budget alone. Returns the wait
+/// in seconds, or `None` when the planner output is not a rate limit.
+fn rate_limited_retry(ctx: &Ctx, unit: &mut Unit, uid: &str) -> Option<u64> {
+    let out = fs::read_to_string(ctx.home.join(format!("resplit/{uid}.out"))).unwrap_or_default();
+    if !transient::provider_rate_limited(&out) {
+        return None;
+    }
+    unit.split_rate_retries = unit.split_rate_retries.saturating_add(1);
+    let base = (120u64 << unit.split_rate_retries.saturating_sub(1).min(3)).min(900);
+    Some(base + transient::jitter(uid))
 }
 
 /// A recorded split retry: wait out the backoff, then respawn the planner

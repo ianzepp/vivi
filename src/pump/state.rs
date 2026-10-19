@@ -260,6 +260,10 @@ pub struct Unit {
     /// keeps it in the unit's `extra_json` column.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub split_fails: u32,
+    /// Provider rate-limit (429) split-planner retries; never counts toward
+    /// `split_fails`. `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub split_rate_retries: u32,
     /// Earliest epoch seconds the split planner may respawn for this unit.
     /// `pump.db` keeps it in the unit's `extra_json` column.
     #[serde(default, skip_serializing_if = "Option::is_none")]

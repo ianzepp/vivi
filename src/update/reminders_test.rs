@@ -1,8 +1,8 @@
 //! Tests for `update::reminders`.
 
 use super::{
-    UnitDirs, service_restart_reminders, skills_candidate_dirs, stale_skills_reminders,
-    unit_dirs_from_home,
+    UnitDirs, release_skills_changed, release_skills_reminders, service_restart_reminders,
+    skills_candidate_dirs, stale_skills_reminders, unit_dirs_from_home,
 };
 use crate::skills;
 
@@ -145,6 +145,112 @@ fn skills_candidate_dirs_merge_recorded_targets() {
     unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), dirs.len(), "no duplicate entries: {dirs:?}");
+}
+
+#[test]
+fn release_skills_reminder_matches_the_release_answer() {
+    let home = tempfile::tempdir().expect("tmp");
+    let dir = home.path().join(".agents/skills");
+    skills::install(&dir, false).expect("install copy");
+    let candidates = vec![dir];
+
+    let changed = release_skills_reminders(&candidates, Some(true));
+    assert_eq!(
+        changed.len(),
+        1,
+        "one up-to-date copy is named: {changed:?}"
+    );
+    let line = &changed[0];
+    assert!(
+        line.contains("this release changed skills") && line.contains("may be stale"),
+        "a known change states it: {line}"
+    );
+    assert!(
+        line.contains("vivi skills install") && line.contains("--force"),
+        "the reminder carries the reinstall command: {line}"
+    );
+
+    let unknown = release_skills_reminders(&candidates, None);
+    assert_eq!(
+        unknown.len(),
+        1,
+        "one up-to-date copy is named: {unknown:?}"
+    );
+    let line = &unknown[0];
+    assert!(
+        line.contains("if this release changed skills"),
+        "an unknown answer asks instead of stating: {line}"
+    );
+    assert!(
+        !line.contains("may be stale"),
+        "an unknown answer does not claim the copy is stale: {line}"
+    );
+
+    assert!(
+        release_skills_reminders(&candidates, Some(false)).is_empty(),
+        "an unchanged release adds no reminder"
+    );
+}
+
+#[cfg(unix)]
+fn write_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, body).expect("write script");
+    let mut permissions = std::fs::metadata(path)
+        .expect("script metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("make executable");
+}
+
+#[cfg(unix)]
+fn catalog_json(version: Option<&str>) -> String {
+    let listings: Vec<serde_json::Value> = skills::catalog()
+        .iter()
+        .map(|skill| {
+            let summary = skill.summary();
+            serde_json::json!({
+                "name": summary.name,
+                "version": version.unwrap_or(summary.version),
+                "description": summary.description,
+                "files": summary.files,
+            })
+        })
+        .collect();
+    serde_json::to_string(&listings).expect("json")
+}
+
+#[cfg(unix)]
+#[test]
+fn release_skills_changed_runs_staged_binary() {
+    let temp = tempfile::tempdir().expect("tmp");
+
+    let same = temp.path().join("vivi-same");
+    let script = format!("#!/bin/sh\necho '{}'\n", catalog_json(None));
+    write_script(&same, &script);
+    assert_eq!(
+        release_skills_changed(&same),
+        Some(false),
+        "a matching catalog means the release kept skills"
+    );
+
+    let bumped = temp.path().join("vivi-bumped");
+    let script = format!("#!/bin/sh\necho '{}'\n", catalog_json(Some("999.0.0")));
+    write_script(&bumped, &script);
+    assert_eq!(
+        release_skills_changed(&bumped),
+        Some(true),
+        "a version-bumped catalog means the release changed skills"
+    );
+
+    let garbage = temp.path().join("vivi-garbage");
+    std::fs::write(&garbage, b"\x7fnot an executable").expect("garbage");
+    assert_eq!(
+        release_skills_changed(&garbage),
+        None,
+        "a binary that cannot run yields no answer"
+    );
 }
 
 #[test]

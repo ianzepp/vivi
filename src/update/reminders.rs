@@ -6,8 +6,12 @@
 //! unit directory is not an error — it just yields no reminder.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::skills::{self, SkillCopyStatus};
+
+/// How long the staged binary may take to list its skill catalog.
+const STAGED_CATALOG_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The two user-level unit directories a vivi install can occupy.
 pub(crate) struct UnitDirs {
@@ -104,6 +108,100 @@ pub(crate) fn stale_skills_reminders(candidates: &[PathBuf]) -> Vec<String> {
         }
     }
     lines
+}
+
+/// One reminder line per installed copy that still matches this binary,
+/// worded by what the staged binary said about the release.
+///
+/// `changed = Some(true)` states the release changed skills, `None` cannot
+/// tell and asks a conditional question, `Some(false)` adds nothing. Dirs
+/// the stale check already reported are skipped.
+pub(crate) fn release_skills_reminders(
+    candidates: &[PathBuf],
+    changed: Option<bool>,
+) -> Vec<String> {
+    if changed == Some(false) {
+        return Vec::new();
+    }
+    candidates
+        .iter()
+        .filter(|dir| skills::copy_status(dir) == SkillCopyStatus::UpToDate)
+        .map(|dir| release_skills_reminder(dir, changed))
+        .collect()
+}
+
+/// Reminder text for one up-to-date installed copy.
+fn release_skills_reminder(dir: &Path, changed: Option<bool>) -> String {
+    if changed == Some(true) {
+        format!(
+            "note: this release changed skills; installed copies at {} may be \
+             stale; refresh: vivi skills install {} --force",
+            dir.display(),
+            dir.display()
+        )
+    } else {
+        format!(
+            "note: if this release changed skills, refresh installed copies at \
+             {}: vivi skills install {} --force",
+            dir.display(),
+            dir.display()
+        )
+    }
+}
+
+/// Whether the staged binary's skill catalog differs from this one.
+///
+/// Runs `<staged> skills list --json`; `None` means the staged binary could
+/// not answer, so the caller must fall back to a generic reminder.
+pub(crate) fn release_skills_changed(staged_binary: &Path) -> Option<bool> {
+    let stdout = run_capture_timeout(
+        staged_binary,
+        &["skills", "list", "--json"],
+        STAGED_CATALOG_TIMEOUT,
+    )?;
+    skills::catalog_matches_json(&stdout)
+}
+
+/// Run `program` with piped output, giving up after `timeout`.
+///
+/// Returns the lossy stdout of a zero exit; `None` on a spawn error, a
+/// timeout (the child is killed), or a non-zero exit.
+fn run_capture_timeout(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut child = spawn_piped(program, args)?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => return None,
+            Ok(Some(_)) => {
+                return match child.wait_with_output() {
+                    Ok(output) => Some(String::from_utf8_lossy(&output.stdout).into_owned()),
+                    Err(_) => None,
+                };
+            }
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if started.elapsed() >= timeout {
+            drop(child.kill());
+            drop(child.wait());
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Spawn `program` with both output streams piped, or `None` when it could
+/// not be started.
+fn spawn_piped(program: &Path, args: &[&str]) -> Option<std::process::Child> {
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    match command.spawn() {
+        Ok(child) => Some(child),
+        Err(_) => None,
+    }
 }
 
 fn launchd_reminder(path: &Path) -> String {
