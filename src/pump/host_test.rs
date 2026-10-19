@@ -95,6 +95,44 @@ fn real_spawn_writes_the_output_file_without_waiting() {
 }
 
 #[test]
+fn real_spawn_writes_an_exit_receipt_for_a_failing_command() {
+    let dir = tempdir().unwrap();
+    let host = RealHost::new(dir.path());
+    let out_file = dir.path().join("detached.out");
+    let pid = host
+        .spawn("exit 127", None, None, &out_file)
+        .expect("spawn should report the child pid");
+    assert_ne!(pid, 0);
+    let receipt = dir.path().join("detached.out.rc");
+    assert_eq!(exit_receipt_path(&out_file), receipt);
+    let started = Instant::now();
+    let mut code = String::new();
+    while started.elapsed() < Duration::from_secs(4) {
+        if let Ok(text) = fs::read_to_string(&receipt) {
+            code = text.trim().to_string();
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(code, "127", "exit receipt at {receipt:?}");
+}
+
+#[test]
+fn fake_spawn_returns_distinct_pids() {
+    let dir = tempdir().unwrap();
+    let host = FakeHost::new();
+    let first = host
+        .spawn("echo a", None, None, &dir.path().join("a.out"))
+        .expect("first fake spawn should report a pid");
+    let second = host
+        .spawn("echo b", None, None, &dir.path().join("b.out"))
+        .expect("second fake spawn should report a pid");
+    assert!(first >= 1000, "first pid {first} should start at 1000");
+    assert!(second >= 1000, "second pid {second} should start at 1000");
+    assert_ne!(first, second);
+}
+
+#[test]
 fn ctx_sh_prepends_the_shell_prefix() {
     let dir = tempdir().unwrap();
     let host = FakeHost::new();

@@ -35,8 +35,11 @@ pub trait Host: Send + Sync {
     /// the text is the output so far plus `"\n[timeout after Ns]"`.
     fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput;
     /// Start `cmd` detached in its own process group, stdin from `stdin` when
-    /// given, stdout and stderr appended to `out`. Never waits.
-    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path);
+    /// given, stdout and stderr appended to `out`. Never waits. Returns the
+    /// spawned child's pid, or `None` when the command could not be started;
+    /// a reaper thread writes the exit code to [`exit_receipt_path`] once the
+    /// child exits.
+    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) -> Option<u32>;
     /// Append one log line.
     fn log(&self, line: &str);
 }
@@ -65,8 +68,8 @@ impl Host for RealHost {
         run_command(cmd, cwd, timeout_secs)
     }
 
-    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) {
-        spawn_detached(cmd, cwd, stdin, out);
+    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) -> Option<u32> {
+        spawn_detached(cmd, cwd, stdin, out)
     }
 
     fn log(&self, line: &str) {
@@ -374,6 +377,8 @@ struct FakeState {
 pub struct FakeHost {
     clock: AtomicU64,
     advance_on_run: AtomicU64,
+    /// The pid the next fake `spawn` hands back, starting at 1000.
+    next_pid: AtomicU64,
     state: Mutex<FakeState>,
 }
 
@@ -384,6 +389,7 @@ impl FakeHost {
         Arc::new(FakeHost {
             clock: AtomicU64::new(1_000_000),
             advance_on_run: AtomicU64::new(0),
+            next_pid: AtomicU64::new(1000),
             state: Mutex::new(FakeState::default()),
         })
     }
@@ -498,10 +504,12 @@ impl Host for FakeHost {
         }
     }
 
-    fn spawn(&self, cmd: &str, _cwd: Option<&Path>, _stdin: Option<&Path>, _out: &Path) {
+    fn spawn(&self, cmd: &str, _cwd: Option<&Path>, _stdin: Option<&Path>, _out: &Path) -> Option<u32> {
         if let Ok(mut state) = self.state.lock() {
             state.spawned.push(cmd.to_string());
         }
+        let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
+        Some(u32::try_from(pid).unwrap_or(0))
     }
 
     fn log(&self, line: &str) {
@@ -665,10 +673,20 @@ fn joined_output(out_buf: &SharedBuf, err_buf: &SharedBuf) -> String {
     text
 }
 
+/// The exit-receipt path for a detached command: `board/n1.out` becomes
+/// `board/n1.out.rc`.
+#[must_use]
+pub fn exit_receipt_path(out: &Path) -> PathBuf {
+    let mut path = out.to_path_buf();
+    path.as_mut_os_string().push(".rc");
+    path
+}
+
 /// Start `cmd` detached: own process group, stdin from `stdin` when given,
-/// stdout and stderr appended to `out`. Returns without waiting; a reaper
-/// thread collects the child so no zombie is left behind.
-fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) {
+/// stdout and stderr appended to `out`. Returns the child's pid without
+/// waiting; a reaper thread collects the child so no zombie is left behind,
+/// then writes its exit code to [`exit_receipt_path`].
+fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) -> Option<u32> {
     let mut command = bash_command(cmd, cwd);
     command.stdin(match stdin {
         Some(path) => match File::open(path) {
@@ -690,9 +708,26 @@ fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Pat
     }
     // Safety: only sets the child's own process group; no invariants involved.
     command.process_group(0);
-    if let Ok(mut child) = command.spawn() {
-        thread::spawn(move || drop(child.wait()));
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => return None,
+    };
+    let pid = child.id();
+    let receipt = exit_receipt_path(out);
+    thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            write_exit_receipt(&receipt, status.code().unwrap_or(-1));
+        }
+    });
+    Some(pid)
+}
+
+/// Write `code` as decimal text to the exit receipt at `path`.
+fn write_exit_receipt(path: &Path, code: i32) {
+    if let Some(parent) = path.parent() {
+        drop(fs::create_dir_all(parent));
     }
+    drop(fs::write(path, format!("{code}\n")));
 }
 
 /// Append one `line` (plus newline) to `path`, creating parent directories.
