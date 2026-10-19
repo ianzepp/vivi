@@ -1,8 +1,10 @@
 //! Gate-fix planning: the fix need id, the planner prompt, and the re-plan of
-//! residual failures (owned names still failing after their owner settled).
+//! residual failures (owned names still failing after their owner settled or was orphaned).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use crate::pump::collect::spawn_planner;
 use crate::pump::gate::is_settled;
@@ -10,7 +12,7 @@ use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
 use crate::pump::state::{State, Status};
 
 /// The `state.json` key holding how many times each failing name has been
-/// handed to a fresh gate-fix planner after its owner settled.
+/// handed to a fresh gate-fix planner after its owner settled or was orphaned.
 const REPLANS_KEY: &str = "replans";
 
 /// How many times `name` has been re-planned.
@@ -39,14 +41,45 @@ fn owner_settled(st: &State, owner: &str) -> bool {
     !statuses.is_empty() && statuses.iter().all(|&s| is_settled(s))
 }
 
-/// Owned names that still fail while every unit of their owner has settled
-/// and re-plans are left for them, as `(name, owner)` sorted by name.
+/// `true` when the owner has no units or plan and no live planner remains.
+fn orphaned(ctx: &Ctx, st: &State, owner: &str) -> bool {
+    if st.units.values().any(|unit| unit.need == owner)
+        || ctx.home.join("plans").join(format!("{owner}.json")).exists()
+    {
+        return false;
+    }
+    let dir = ctx.home.join("gatefix");
+    let prompt = dir.join(format!("{owner}.prompt"));
+    if !prompt.exists() || exit_receipt_path(&dir.join(format!("{owner}.out"))).exists() {
+        return true;
+    }
+    ctx.now().saturating_sub(file_mtime(&prompt)) > ctx.cfg.board.plan_timeout
+}
+
+/// A file's modification time as epoch seconds, or 0 when unavailable.
+fn file_mtime(path: &Path) -> u64 {
+    let Ok(metadata) = fs::metadata(path) else {
+        return 0;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return 0;
+    };
+    match modified.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(_) => 0,
+    }
+}
+
+/// Owned names that still fail after their owner settled or was orphaned,
+/// with re-plans left, as `(name, owner)` sorted by name.
 pub(crate) fn residual_failures(ctx: &Ctx, st: &State, names: &[String]) -> Vec<(String, String)> {
     let failing: BTreeSet<&String> = names.iter().collect();
     st.red
         .iter()
         .filter(|(name, owner)| {
-            failing.contains(name) && replans_left(ctx, st, name) && owner_settled(st, owner)
+            failing.contains(name)
+                && replans_left(ctx, st, name)
+                && (owner_settled(st, owner) || orphaned(ctx, st, owner))
         })
         .map(|(name, owner)| (name.clone(), owner.clone()))
         .collect()
@@ -387,6 +420,16 @@ fn residual_section(ctx: &Ctx, tip: &str, owner: &str, names: &[&str]) -> String
         .map(|name| format!("- {name}"))
         .collect::<Vec<_>>()
         .join("\n");
+    if !ctx.home.join("plans").join(format!("{owner}.json")).exists() {
+        return format!(
+            "These tests were owned by gate-fix planner {owner}, but it never wrote a plan (it died before planning), so no unit ran and they still fail at commit {tip}:
+{list}
+
+Fix the cause forward, and group the failures by cause.
+
+"
+        );
+    }
     format!(
         "These tests were owned by fix plan {owner}. Every unit of that plan has settled, and they still fail at commit {tip}, so the earlier fix was incomplete:
 {list}
