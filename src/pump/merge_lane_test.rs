@@ -127,6 +127,49 @@ fn feed_sends_fix_units_first_then_priority_units_then_the_rest() {
 }
 
 #[test]
+fn feed_under_hold_allows_fix_floor_and_clear_scopes() {
+    let (_dir, base, _host) = setup("");
+    let mut cfg = (*base.cfg).clone();
+    cfg.gate.hold_priority_floor = 10;
+    let ctx = Ctx {
+        cfg: Arc::new(cfg),
+        ..base
+    };
+    std::fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
+    crate::pump::priority::set(&ctx.home, "warm", 5).unwrap();
+    crate::pump::priority::set(&ctx.home, "hot", 20).unwrap();
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[
+        ("pumpfixa", Status::Delivered),
+        ("plain", Status::Delivered),
+        ("crate", Status::Delivered),
+        ("low", Status::Delivered),
+        ("high", Status::Delivered),
+    ]);
+    st.red.insert(
+        String::from("radix-cli some::test"),
+        String::from("pumpfix-gx"),
+    );
+    st.units.get_mut("plain").unwrap().write_scope = vec![String::from("docs/x.md")];
+    st.units.get_mut("crate").unwrap().write_scope =
+        vec![String::from("crates/radix-cli/src/lib.rs")];
+    st.units.get_mut("low").unwrap().need = String::from("warm");
+    st.units.get_mut("high").unwrap().need = String::from("hot");
+    merger.feed(&ctx, &mut st);
+    for (uid, u) in &st.units {
+        eprintln!("DBG {uid} {:?} need={} held={:?} scope={:?}", u.status, u.need, u.held_on, u.write_scope);
+    }
+    eprintln!("DBG fix_prefix={:?} batch={} hold={}", ctx.cfg.fix_prefix, ctx.cfg.merge.batch, ctx.flag("HOLD-MERGE"));
+    assert_eq!(st.units["pumpfixa"].status, Status::Merging);
+    assert_eq!(st.units["plain"].status, Status::Merging);
+    assert_eq!(st.units["high"].status, Status::Merging);
+    assert_eq!(st.units["crate"].status, Status::Delivered);
+    assert_eq!(st.units["low"].status, Status::Delivered);
+    let sent: Vec<String> = take(&jobs).into_iter().map(|job| job.uid).collect();
+    assert_eq!(sent, ["pumpfixa", "plain", "high"]);
+}
+
+#[test]
 fn feed_under_hold_merge_also_sends_priority_units() {
     let (_dir, ctx, _host) = setup("");
     std::fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
@@ -640,4 +683,14 @@ fn lane_lines_count_merged_and_conflicted_results_per_lane() {
         merger.lane_lines(ctx.now()),
         ["lane default/0 idle merged 1 conflict 1"]
     );
+}
+
+#[test]
+fn tmp_probe_overlaps() {
+    use crate::pump::plan::overlaps;
+    eprintln!("PROBE1 {}", overlaps(&[String::from("docs/x.md")], &[String::from("**/radix-cli/**")]));
+    eprintln!("PROBE2 {}", overlaps(&[String::from("crates/radix-cli/src/lib.rs")], &[String::from("**/radix-cli/**")]));
+    eprintln!("PROBE3 {}", overlaps(&[String::from("src/pump/merge.rs")], &[String::from("**/radix-cli/**")]));
+    eprintln!("PROBE4 {}", overlaps(&[String::from("crates/radix-cli/src/lib.rs")], &[String::from("radix-cli/**")]));
+    eprintln!("PROBE5 {}", overlaps(&[String::from("docs/x.md")], &[String::from("radix-cli/**")]));
 }

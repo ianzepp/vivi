@@ -28,7 +28,7 @@ use std::thread;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::progress::{LaneProgress, duration_text};
 use crate::pump::quarantine;
-use crate::pump::ready::{dependency_holds, note_hold, priority_needs, ranked};
+use crate::pump::ready::{dependency_holds, note_hold, ranked};
 use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
@@ -251,7 +251,9 @@ impl Merger {
     /// units of its target and move exactly those units to `merging`:
     /// `merging` means "inside a lane", the rest stay `delivered`. Priority
     /// units rank first, then fix units, then the rest. Under the
-    /// `HOLD-MERGE` flag only fix units and priority units are taken.
+    /// `HOLD-MERGE` flag only fix units, units of a need at or above the
+    /// hold priority floor, and units whose scope misses every failing crate
+    /// are taken.
     ///
     /// State change only: the lanes touch repositories, never the state, so
     /// a batch sent here is applied later by [`Merger::apply`].
@@ -383,16 +385,43 @@ fn recheck_held(st: &mut State, targets: &BTreeMap<String, usize>) {
     }
 }
 
+/// The write scopes that reach the failing crates: one `**/<crate>/**` glob
+/// per crate name named by a red test name (`radix-cli some::test` ->
+/// `radix-cli`), across the workspace red map and every target's.
+fn red_patterns(st: &State) -> Vec<String> {
+    let mut crates: BTreeSet<String> = BTreeSet::new();
+    let reds = std::iter::once(&st.red).chain(st.target_states.values().map(|t| &t.red));
+    for red in reds {
+        for name in red.keys() {
+            if let Some(krate) = name.split_whitespace().next() {
+                crates.insert(format!("**/{krate}/**"));
+            }
+        }
+    }
+    crates.into_iter().collect()
+}
+
 /// The `delivered` units that may be merged now, in rank order, grouped by
 /// target. Dependency holds, the `HOLD-MERGE` flag and the target check are
 /// applied here; a unit naming a target no lane serves is held and reported.
+///
+/// Under `HOLD-MERGE` a unit is taken when it is fix-prefixed, or when its
+/// need's priority level reaches `gate.hold_priority_floor`, or when its
+/// write scope reaches none of the failing crates ([`red_patterns`]), so
+/// work that cannot disturb a red test keeps merging.
 fn eligible(
     ctx: &Ctx,
     st: &mut State,
     known: &BTreeSet<String>,
 ) -> BTreeMap<String, VecDeque<String>> {
     let hold = ctx.flag("HOLD-MERGE");
-    let needs = priority_needs(ctx);
+    let levels = if hold {
+        crate::pump::priority::levels(ctx)
+    } else {
+        BTreeMap::new()
+    };
+    let red = if hold { red_patterns(st) } else { Vec::new() };
+    let floor = ctx.cfg.gate.hold_priority_floor;
     let holds = dependency_holds(ctx, st);
     let mut waiting: BTreeMap<String, VecDeque<String>> = BTreeMap::new();
     for uid in ranked(ctx, st, st.order.clone()) {
@@ -408,8 +437,11 @@ fn eligible(
         let Some(unit) = st.units.get_mut(&uid) else {
             continue;
         };
-        if hold && !uid.starts_with(&ctx.cfg.fix_prefix) && !needs.contains(&unit.need) {
-            continue;
+        if hold && !uid.starts_with(&ctx.cfg.fix_prefix) {
+            let level = levels.get(&unit.need).copied().unwrap_or(0);
+            if level < floor && crate::pump::plan::overlaps(&unit.write_scope, &red) {
+                continue;
+            }
         }
         if unit.status != Status::Delivered {
             continue;

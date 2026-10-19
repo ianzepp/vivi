@@ -128,7 +128,7 @@ Operator and pump flags live in `home`:
 
 | flag | exact effect | removed by |
 | --- | --- | --- |
-| `HOLD-MERGE` | `merge_feed` feeds only units whose id starts with the fix prefix, or whose need is in the priority file; once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`); with `gate.hold_on_red` the pump writes the flag itself (payload `red`) while any owned red is unfixed, and never rewrites an existing flag so the clean-gate lift still sees the original time | pump (`hold_cycle`) or operator |
+| `HOLD-MERGE` | `merge_feed` feeds a unit when its id starts with the fix prefix, or its need's priority level is at or above `gate.hold_priority_floor`, or its write scope misses every failing crate (the first word of each red test name, matched as `**/<crate>/**`); once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`); with `gate.hold_on_red` the pump writes the flag itself (payload `red`) while any owned red is unfixed, and never rewrites an existing flag so the clean-gate lift still sees the original time | pump (`hold_cycle`) or operator |
 | `FORCE-GATE` | `start_gate` treats the gate as due now, whatever the counters say | pump, when the gate dispatches; also written by `hold_cycle` |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
 
@@ -324,7 +324,7 @@ Transitions (from, to, trigger, guard, action):
 | `splitting` | `stuck` | no receipt and the planner is past `split_hard_cap` | — | `split-no-answer` exception |
 | `splitting` | `stuck` | the planner exited without a plan 3 times | — | `split-planner-failed` exception; each earlier exit is a `split-planner-failed` exception with a retry, backed off 60 s then 120 s |
 | `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
-| `delivered` | `merging` | merge feed after collect | not held by an unlanded need dependency; not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
+| `delivered` | `merging` | merge feed after collect | not held by an unlanded need dependency; under `HOLD-MERGE` the id starts with the fix prefix, or the need's priority level is at or above `gate.hold_priority_floor`, or the write scope misses every failing crate (`**/<crate>/**` per red test name) | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `merged_at`, `outside`, `merges+=1`; a `merges` row; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
