@@ -21,10 +21,14 @@ use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
+use crate::pool::local_git::Repo;
+use crate::pool::ramdisk::{self, Runner};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::progress::{LaneProgress, duration_text};
 use crate::pump::quarantine;
@@ -46,8 +50,9 @@ const LANE_BACKOFF_SECS: u64 = 600;
 /// `why` codes of an undecided result that say the lane itself cannot work
 /// (no checkout, a wedged git, no way to publish), as opposed to a batch
 /// whose content is at fault (`publish-conflict`, a fetch of one unit
-/// branch, ...).
-const LANE_LEVEL: [&str; 8] = [
+/// branch, ...). `ramdisk-wait` is deliberately absent: a batch waiting for
+/// memory is not a failing lane and must be retried on the next feed.
+const LANE_LEVEL: [&str; 10] = [
     "lane-checkout-failed",
     "lane-reset-failed",
     "merge-env-failed",
@@ -55,8 +60,19 @@ const LANE_LEVEL: [&str; 8] = [
     "publish-check-failed",
     "push-failed",
     "proof-missing-tool",
+    "ramdisk-mount-failed",
+    "ramdisk-worktree-failed",
     "merge-error",
 ];
+
+/// The directory under the system temp dir where lane RAM disks mount.
+const RAM_MOUNT: &str = "vivi-ramdisk";
+
+/// Seconds one `rev-parse` of a batch's base commit may take.
+const TIP_SECS: u64 = 60;
+
+/// Disks this process made, so two batches never share a mount directory.
+static RAM_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// The lane main thread's view of one merge lane.
 struct Lane {
@@ -177,6 +193,19 @@ struct LaneWorker {
     base: Ctx,
     /// This lane's context: its repository is the lane checkout.
     ctx: Ctx,
+    /// The fresh RAM disk each batch of this lane works on, when
+    /// `[pump.ramdisk] lane_gib` is set.
+    ram: Option<LaneRam>,
+}
+
+/// The RAM disk a lane batch works on: its size, and the runner that makes
+/// and ejects it.
+struct LaneRam {
+    /// Disk size in GiB.
+    gib: u64,
+    /// The seam `hdiutil` and `diskutil` go through ([`ramdisk::RealRunner`]
+    /// outside tests).
+    runner: Arc<dyn Runner>,
 }
 
 impl Merger {
@@ -185,6 +214,12 @@ impl Merger {
     /// channels, which ends each loop.
     #[must_use]
     pub fn start(ctx: &Ctx) -> Merger {
+        Merger::start_with(ctx, None)
+    }
+
+    /// Start the lanes with `runner` making their RAM disks in place of the
+    /// real one; `None` is [`ramdisk::RealRunner`].
+    fn start_with(ctx: &Ctx, runner: Option<&Arc<dyn Runner>>) -> Merger {
         let (out, results) = channel();
         let mut lanes = Vec::new();
         for id in ctx.cfg.target_configs().keys() {
@@ -193,7 +228,7 @@ impl Merger {
             };
             let lane_count = crate::routing::merge_lane_count(&ctx.routing, &target.cfg);
             for n in 0..lane_count {
-                lanes.push(start_lane(&target, n, &out));
+                lanes.push(start_lane(&target, n, &out, runner));
             }
         }
         if lanes.iter().any(|lane| !lane.alive) {
@@ -211,6 +246,13 @@ impl Merger {
     pub(crate) fn detached() -> (Merger, Sender<MergeResult>, Receiver<Vec<MergeJob>>) {
         let (merger, out, mut lanes) = Merger::detached_lanes(1);
         (merger, out, lanes.remove(0))
+    }
+
+    /// [`Merger::start`] whose lanes make their RAM disks through `runner`,
+    /// for tests. The lanes run as real threads.
+    #[cfg(test)]
+    pub(crate) fn start_test(ctx: &Ctx, runner: Arc<dyn Runner>) -> Merger {
+        Merger::start_with(ctx, Some(&runner))
     }
 
     /// `count` detached lanes of the `default` target, lane 0 first.
@@ -512,7 +554,7 @@ fn send_batch(ctx: &Ctx, st: &mut State, lane: &mut Lane, uids: Vec<String>) {
 /// own integration checkout (warm build directory, no cold clone); every
 /// other lane works in `<home>/merge-lanes/<target>/<n>`, cloned on first
 /// use.
-fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
+fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>, runner: Option<&Arc<dyn Runner>>) -> Lane {
     let (send, jobs) = channel();
     let name = format!("{}/{n}", target.target_id);
     let progress = Arc::new(LaneProgress::new(&name));
@@ -523,10 +565,18 @@ fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
             .with_repo(lane_dir(target, n))
             .with_lane(progress.clone())
     };
+    let ram = target.cfg.ramdisk.lane_gib.map(|gib| LaneRam {
+        gib,
+        runner: runner.map_or_else(
+            || Arc::new(ramdisk::RealRunner) as Arc<dyn Runner>,
+            Arc::clone,
+        ),
+    });
     let worker = LaneWorker {
         n,
         base: target.clone(),
         ctx,
+        ram,
     };
     let out = out.clone();
     let spawned = thread::Builder::new()
@@ -552,21 +602,15 @@ fn lane_loop(lane: &LaneWorker, batches: &Receiver<Vec<MergeJob>>, out: &Sender<
         let work = AssertUnwindSafe(|| lane_work(lane, &batch));
         let done = match catch_unwind(work) {
             Ok(results) => results,
-            Err(err) => {
-                let detail = panic_text(&err);
-                lane.ctx.log(&format!("MERGE ERROR {detail}"));
-                batch
-                    .iter()
-                    .map(|j| undecided_result(&j.uid, "merge-error", &detail))
-                    .collect()
-            }
+            Err(err) => panic_results(&lane.ctx, &batch, &err),
         };
         dispatch_results(&lane.ctx, out, &batch, done);
     }
 }
 
 /// Make sure the lane checkout exists, then merge the batch in it. A checkout
-/// that cannot be made leaves every job undecided, to be re-fed later.
+/// that cannot be made leaves every job undecided, to be re-fed later. A lane
+/// with a RAM disk works the batch in a worktree on a fresh disk instead.
 fn lane_work(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
     if let Err(detail) = ensure_checkout(&lane.base, &lane.ctx) {
         lane.ctx.log(&format!("checkout failed: {detail}"));
@@ -575,7 +619,133 @@ fn lane_work(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
             .map(|j| undecided_result(&j.uid, "lane-checkout-failed", &detail))
             .collect();
     }
-    run_batch(lane, jobs)
+    match &lane.ram {
+        Some(ram) => with_ramdisk(lane, ram, jobs),
+        None => run_batch(lane, jobs),
+    }
+}
+
+/// Merge the batch on a fresh RAM disk: admit it against free memory, mount
+/// the disk, work in a worktree on it, then eject it however the batch went.
+/// A batch that is not admitted waits queued — `ramdisk-wait` is undecided, so
+/// its units stay delivered and the next feed retries them; there is no SSD
+/// fallback.
+fn with_ramdisk(lane: &LaneWorker, ram: &LaneRam, jobs: &[MergeJob]) -> Vec<MergeResult> {
+    match disk_batch(lane, ram, jobs) {
+        Ok(results) => results,
+        Err((why, detail)) => {
+            lane.ctx.log(&format!("{why}: {detail}"));
+            blocked(jobs, &why, &detail)
+        }
+    }
+}
+
+/// Admission, mount, the worktree batch, then the eject: the eject runs for a
+/// mounted disk whatever the batch did, including a panic in the merge.
+fn disk_batch(
+    lane: &LaneWorker,
+    ram: &LaneRam,
+    jobs: &[MergeJob],
+) -> Result<Vec<MergeResult>, (String, String)> {
+    let margin = lane.ctx.cfg.ramdisk.margin_gib;
+    let runner = ram.runner.as_ref();
+    let available = ramdisk::available_bytes();
+    ramdisk::admit_with(runner, available, ram.gib, margin)
+        .map_err(|detail| (String::from("ramdisk-wait"), detail))?;
+    let volume = lane_volume(&lane.ctx, lane.n);
+    let at = mount_dir(&volume);
+    let disk = ramdisk::mount(runner, &volume, ram.gib, &at)
+        .map_err(|detail| (String::from("ramdisk-mount-failed"), detail))?;
+    let done = work_in_worktree(lane, jobs, &at);
+    eject(lane, ram, &disk);
+    done
+}
+
+/// Add the batch's worktree on the mount, merge in it, then remove it again:
+/// the worktree and the build directory both live on the disk, while the
+/// lane's own checkout stays the object store.
+fn work_in_worktree(
+    lane: &LaneWorker,
+    jobs: &[MergeJob],
+    at: &Path,
+) -> Result<Vec<MergeResult>, (String, String)> {
+    let work = at.join("w");
+    let repo = Repo::new(&lane.ctx.repo);
+    let tip = tip_commit(&lane.ctx)?;
+    repo.add_worktree(&work, &tip).map_err(|err| {
+        (
+            String::from("ramdisk-worktree-failed"),
+            err.to_string(),
+        )
+    })?;
+    let mounted = LaneWorker {
+        n: lane.n,
+        base: lane.base.clone(),
+        ctx: lane.ctx.with_repo(work.clone()),
+        ram: None,
+    };
+    let done = catch_unwind(AssertUnwindSafe(|| run_batch(&mounted, jobs)));
+    if let Err(err) = repo.remove_worktree(&work) {
+        lane.ctx
+            .log(&format!("worktree removal failed {}: {err}", work.display()));
+    }
+    Ok(match done {
+        Ok(results) => results,
+        Err(err) => panic_results(&lane.ctx, jobs, &err),
+    })
+}
+
+/// The commit the batch's worktree starts at: the tip of the target's
+/// integration ref in the lane's own checkout.
+fn tip_commit(ctx: &Ctx) -> Result<String, (String, String)> {
+    let remote_ref = format!("{}/{}", ctx.cfg.remote, ctx.cfg.branch);
+    let out = ctx.git(&format!("rev-parse {remote_ref}"), TIP_SECS);
+    let tip = out.text.trim().to_string();
+    if out.code != 0 || tip.is_empty() {
+        let detail = format!("rev-parse {remote_ref}: {}", tail(&out.text, 300));
+        return Err((String::from("ramdisk-worktree-failed"), detail));
+    }
+    Ok(tip)
+}
+
+/// Eject the batch's disk and verify the memory came back: one that stays
+/// attached is a loud line, since that batch's memory was not released.
+fn eject(lane: &LaneWorker, ram: &LaneRam, disk: &ramdisk::Disk) {
+    match ramdisk::teardown(ram.runner.as_ref(), disk) {
+        Ok(()) => lane.ctx.log(&format!("ramdisk {} ejected", disk.volume)),
+        Err(error) => lane.ctx.log(&format!(
+            "WARNING ramdisk teardown: {} did not eject: {error}",
+            disk.volume
+        )),
+    }
+}
+
+/// The volume name of the disk lane `n` makes: `vivi-<mailspace>-lane-
+/// <target>-<n>`, so an orphan stays recognizable and scoped.
+fn lane_volume(ctx: &Ctx, n: u32) -> String {
+    let scope = if ctx.mailspace.is_empty() {
+        "merge"
+    } else {
+        ctx.mailspace.as_str()
+    };
+    ramdisk::volume_name(&[scope, "lane", &ctx.target_id, &n.to_string()])
+}
+
+/// A fresh directory under the system temp dir for one batch's disk, unique
+/// per process and batch so a retry never lands on the previous worktree.
+fn mount_dir(volume: &str) -> PathBuf {
+    let seq = RAM_SEQ.fetch_add(1, Ordering::SeqCst);
+    std::env::temp_dir()
+        .join(RAM_MOUNT)
+        .join(format!("{volume}-{}-{seq}", std::process::id()))
+}
+
+/// One undecided result per job: the units stay delivered, and the next feed
+/// retries the batch.
+fn blocked(jobs: &[MergeJob], why: &str, detail: &str) -> Vec<MergeResult> {
+    jobs.iter()
+        .map(|job| undecided_result(&job.uid, why, detail))
+        .collect()
 }
 
 /// Create the lane's own clone when it does not exist yet: a separate
@@ -689,6 +859,15 @@ pub(crate) fn dispatch_results(
             return;
         }
     }
+}
+
+/// One `merge-error` result per job, from a panic in the lane's work.
+fn panic_results(ctx: &Ctx, jobs: &[MergeJob], err: &Box<dyn Any + Send>) -> Vec<MergeResult> {
+    let detail = panic_text(err);
+    ctx.log(&format!("MERGE ERROR {detail}"));
+    jobs.iter()
+        .map(|job| undecided_result(&job.uid, "merge-error", &detail))
+        .collect()
 }
 
 /// The panic payload as one line of at most 600 chars, like python's

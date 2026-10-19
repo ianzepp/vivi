@@ -125,15 +125,26 @@ pub fn admit_with(
 /// # Errors
 /// Same as [`admit_with`]: a `ramdisk-wait:` error means the job waits queued.
 pub fn admit(runner: &dyn Runner, want_gib: u64, margin_gib: u64) -> Result<(), String> {
-    admit_with(runner, available_memory(), want_gib, margin_gib)
+    admit_with(runner, available_bytes(), want_gib, margin_gib)
 }
 
-/// Available memory in bytes, as `sysinfo` reports it right now.
-fn available_memory() -> u64 {
+/// Available memory in bytes, as `sysinfo` reports it right now. [`admit`]
+/// reads it here; a caller that admits against a fixed memory reading (a
+/// lane) takes it from this function instead of reading it twice.
+///
+/// `sysinfo`'s available figure is free plus inactive plus purgeable pages,
+/// minus the compressor's; a machine whose compressed memory outweighs those
+/// pages reports zero. The free-page count is the smaller, safe stand-in
+/// then, so such a machine can still admit a job that fits its free memory.
+#[must_use]
+pub fn available_bytes() -> u64 {
     let system = System::new_with_specifics(
         RefreshKind::new().with_memory(MemoryRefreshKind::new().with_ram()),
     );
-    system.available_memory()
+    match system.available_memory() {
+        0 => system.free_memory(),
+        available => available,
+    }
 }
 
 /// Whether `text` reports a full disk (ENOSPC): the kernel phrase or the

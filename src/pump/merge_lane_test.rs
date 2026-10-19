@@ -681,3 +681,298 @@ fn lane_lines_count_merged_and_conflicted_results_per_lane() {
         ["lane default/0 idle merged 1 conflict 1"]
     );
 }
+
+// ------------------------------------------------------- lane RAM disks
+
+use std::sync::Mutex;
+
+use crate::pool::ramdisk::Runner;
+use crate::pump::config::config_ramdisk::PumpRamDisk;
+use crate::pump::host::{CmdOutput, Host};
+
+/// A ramdisk runner that answers like macOS, reports `held` GiB held by
+/// another disk, and records every argv.
+struct FakeRunner {
+    held: u64,
+    calls: Mutex<Vec<String>>,
+}
+
+impl FakeRunner {
+    /// A runner whose `df -g` names one foreign vivi disk of `held` GiB.
+    fn new(held: u64) -> Arc<FakeRunner> {
+        Arc::new(FakeRunner {
+            held,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Every command line the runner ran, in order.
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// The mount point the recorded `diskutil mount` named.
+    fn mount_point(&self) -> PathBuf {
+        let call = self
+            .calls()
+            .into_iter()
+            .find(|c| c.starts_with("diskutil mount "))
+            .expect("the disk was mounted");
+        PathBuf::from(call.split_whitespace().nth(3).unwrap())
+    }
+
+    /// How many disks the runner attached.
+    fn attaches(&self) -> usize {
+        self.count("hdiutil attach")
+    }
+
+    /// How many disks the runner ejected.
+    fn ejects(&self) -> usize {
+        self.count("diskutil eject")
+    }
+
+    fn count(&self, prefix: &str) -> usize {
+        self.calls().iter().filter(|c| c.starts_with(prefix)).count()
+    }
+
+    /// What `df -g` says: one foreign vivi disk holding `held` GiB.
+    fn df(&self) -> String {
+        if self.held == 0 {
+            return String::new();
+        }
+        format!("/dev/disk4 {} 1 1 50% /Volumes/vivi-other\n", self.held)
+    }
+}
+
+impl Runner for FakeRunner {
+    fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
+        self.calls.lock().unwrap().push(argv.join(" "));
+        Ok(match argv.first().copied() {
+            Some("hdiutil") => String::from("/dev/disk9\n"),
+            Some("mount") => String::from("/dev/disk1 on / (apfs, local, journaled)\n"),
+            Some("df") => self.df(),
+            _ => String::new(),
+        })
+    }
+}
+
+/// A host that records the working directory of every command and answers
+/// through an inner [`FakeHost`].
+struct CwdHost {
+    inner: Arc<FakeHost>,
+    seen: Mutex<Vec<(String, Option<PathBuf>)>>,
+}
+
+impl CwdHost {
+    fn new(inner: Arc<FakeHost>) -> Arc<CwdHost> {
+        Arc::new(CwdHost {
+            inner,
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// The working directory of the first command containing `fragment`.
+    fn cwd_of(&self, fragment: &str) -> Option<PathBuf> {
+        let seen = self.seen.lock().unwrap();
+        seen.iter()
+            .find(|(cmd, _)| cmd.contains(fragment))
+            .and_then(|(_, cwd)| cwd.clone())
+    }
+}
+
+impl Host for CwdHost {
+    fn now(&self) -> u64 {
+        self.inner.now()
+    }
+
+    fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((cmd.to_string(), cwd.map(Path::to_path_buf)));
+        self.inner.run(cmd, cwd, timeout_secs)
+    }
+
+    fn spawn(
+        &self,
+        cmd: &str,
+        cwd: Option<&Path>,
+        stdin: Option<&Path>,
+        out: &Path,
+    ) -> Option<u32> {
+        self.inner.spawn(cmd, cwd, stdin, out)
+    }
+
+    fn log(&self, line: &str) {
+        self.inner.log(line);
+    }
+}
+
+/// A lane-0 context whose `[pump.ramdisk] lane_gib` is `gib`, whose checkout
+/// is a real Git repository (the worktree on the mount is real), and whose
+/// host records working directories.
+fn ramdisk_setup(gib: u64) -> (tempfile::TempDir, Ctx, Arc<CwdHost>, Arc<FakeHost>) {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        committer_name: String::from("Pump Tester"),
+        committer_email: String::from("pump@example.com"),
+        merge: MergeConfig {
+            shared_checks: vec![String::from("cargo test --lib")],
+            ..MergeConfig::default()
+        },
+        ramdisk: PumpRamDisk {
+            lane_gib: Some(gib),
+            margin_gib: 0,
+            env: BTreeMap::new(),
+        },
+        ..PumpConfig::default()
+    };
+    let (mut ctx, host) = test_ctx(dir.path(), cfg);
+    let tip = git_init(&ctx.repo);
+    let cwd = CwdHost::new(host.clone());
+    ctx.host = cwd.clone();
+    host.reply("rev-parse origin/next", 0, &format!("{tip}\n"));
+    host.reply("rev-parse HEAD", 0, &format!("{tip}\n"));
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    (dir, ctx, cwd, host)
+}
+
+/// Make `dir` a Git repository with one commit, whose sha comes back.
+fn git_init(dir: &Path) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    git_in(dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("README.md"), "base\n").unwrap();
+    git_in(dir, &["add", "README.md"]);
+    git_in(dir, &["commit", "-q", "-m", "base"]);
+    git_in(dir, &["rev-parse", "HEAD"])
+}
+
+/// Poll `pred` for up to 30 seconds: lane threads are asynchronous.
+fn until(mut pred: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if pred() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for the lane");
+}
+
+/// The indices of the calls that start with `prefix`.
+fn positions(calls: &[String], prefix: &str) -> Vec<usize> {
+    calls
+        .iter()
+        .enumerate()
+        .filter(|(_, call)| call.starts_with(prefix))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[test]
+fn a_ramdisk_lane_mounts_and_ejects_one_disk_per_batch() {
+    let runner = FakeRunner::new(0);
+    let (_dir, ctx, _cwd, _host) = ramdisk_setup(1);
+    let merger = Merger::start_test(&ctx, runner.clone());
+    let mut st = state_with(&[("u1", Status::Delivered), ("u2", Status::Delivered)]);
+    for uid in ["u1", "u2"] {
+        merger.feed(&ctx, &mut st);
+        until(|| runner.ejects() == if uid == "u1" { 1 } else { 2 });
+        merger.apply(&ctx, &mut st);
+        assert_eq!(st.units[uid].status, Status::Merged, "{uid}");
+    }
+    let calls = runner.calls();
+    let attaches = positions(&calls, "hdiutil attach");
+    let mounts = positions(&calls, "diskutil mount ");
+    let ejects = positions(&calls, "diskutil eject");
+    assert_eq!(attaches.len(), 2, "{calls:?}");
+    assert_eq!(mounts.len(), 2, "{calls:?}");
+    assert_eq!(ejects.len(), 2, "{calls:?}");
+    assert!(attaches[0] < mounts[0] && mounts[0] < ejects[0], "{calls:?}");
+    assert!(ejects[0] < attaches[1], "the second batch mounts fresh");
+    assert!(attaches[1] < mounts[1] && mounts[1] < ejects[1], "{calls:?}");
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.contains("APFS vivi-merge-lane-default-0 ")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_ramdisk_lane_runs_the_check_in_a_worktree_on_the_mount() {
+    let runner = FakeRunner::new(0);
+    let (_dir, ctx, cwd, _host) = ramdisk_setup(1);
+    let merger = Merger::start_test(&ctx, runner.clone());
+    let mut st = state_with(&[("u1", Status::Delivered)]);
+    merger.feed(&ctx, &mut st);
+    until(|| runner.ejects() == 1);
+    let at = runner.mount_point();
+    let checked = cwd
+        .cwd_of("cargo test --lib")
+        .expect("the shared check ran");
+    assert_eq!(checked, at.join("w"), "{:?}", runner.calls());
+    assert!(checked.starts_with(std::env::temp_dir().join("vivi-ramdisk")));
+    assert!(!checked.exists(), "the worktree went with the disk");
+    assert!(
+        runner
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("diskutil eject /dev/disk9")),
+        "{:?}",
+        runner.calls()
+    );
+}
+
+#[test]
+fn a_batch_that_does_not_fit_free_memory_waits_and_mounts_nothing() {
+    // A foreign disk already holds far more memory than any machine has.
+    let runner = FakeRunner::new(4_000_000);
+    let (_dir, ctx, _cwd, host) = ramdisk_setup(1);
+    let merger = Merger::start_test(&ctx, runner.clone());
+    let mut st = state_with(&[("u1", Status::Delivered)]);
+    merger.feed(&ctx, &mut st);
+    until(|| {
+        merger.apply(&ctx, &mut st);
+        host.logs()
+            .iter()
+            .any(|line| line.starts_with("ramdisk-wait u1:"))
+    });
+    assert_eq!(st.units["u1"].status, Status::Delivered);
+    let waited = host
+        .logs()
+        .into_iter()
+        .find(|line| line.starts_with("ramdisk-wait u1:"))
+        .unwrap();
+    assert!(waited.contains("ramdisk-wait: need 1 GiB"), "{waited}");
+    assert_eq!(runner.attaches(), 0, "{:?}", runner.calls());
+    assert!(
+        !runner
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("diskutil mount ")),
+        "{:?}",
+        runner.calls()
+    );
+}
+
+#[test]
+fn a_failing_ramdisk_batch_still_ejects_the_disk() {
+    let runner = FakeRunner::new(0);
+    let (_dir, ctx, _cwd, host) = ramdisk_setup(1);
+    host.reply(
+        "merge --no-ff",
+        1,
+        "CONFLICT (content): merge conflict in src/pump/merge.rs\n",
+    );
+    host.reply("diff --name-only --diff-filter=U", 0, "src/pump/merge.rs\n");
+    let merger = Merger::start_test(&ctx, runner.clone());
+    let mut st = state_with(&[("u1", Status::Delivered)]);
+    merger.feed(&ctx, &mut st);
+    let result = merger.results.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(result.ok, Some(false), "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("merge-conflict"));
+    assert_eq!(runner.ejects(), 1, "{:?}", runner.calls());
+    assert!(!runner.mount_point().join("w").exists());
+}

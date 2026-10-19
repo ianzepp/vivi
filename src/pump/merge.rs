@@ -115,7 +115,16 @@ pub(crate) fn clear_stale_lock(ctx: &Ctx) -> Result<(), String> {
     let path = ctx.repo.join(".git/index.lock");
     let meta = match fs::metadata(&path) {
         Ok(meta) => meta,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        // A linked worktree keeps `.git` as a file, so a lock beneath it can
+        // never exist either.
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(());
+        }
         Err(err) => return Err(format!("index.lock: {err}")),
     };
     let modified = meta
