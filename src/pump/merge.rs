@@ -18,6 +18,9 @@ pub use lane::Merger;
 #[cfg(test)]
 pub(crate) use lane::dispatch_results;
 
+use std::time::UNIX_EPOCH;
+use std::{fs, io};
+
 use crate::pump::config::Generated;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
@@ -86,9 +89,46 @@ pub fn identity_args(ctx: &Ctx) -> String {
     )
 }
 
+/// Seconds a `.git/index.lock` must go untouched before a lane treats it as
+/// stale. The age threshold is the practical proxy for the "no live git
+/// process" probe: a live git process would have written the lock recently.
+pub(crate) const STALE_LOCK_SECS: u64 = 120;
+
+/// Clear a stale `.git/index.lock` in the checkout before a batch.
+///
+/// git refuses to touch the index while the lock exists, so a lane killed
+/// mid-checkout wedges every later merge as a phantom conflict. There is no
+/// process probing: the lock's mtime age stands in for "no live git process",
+/// because a live git process would have written the lock recently. A lock
+/// younger than [`STALE_LOCK_SECS`] may be held by a live git process (lane
+/// 0's checkout is also used by the gate pass on the main thread), so it is
+/// reported, never removed. An absent lock is `Ok(())`.
+pub(crate) fn clear_stale_lock(ctx: &Ctx) -> Result<(), String> {
+    let path = ctx.repo.join(".git/index.lock");
+    let meta = match fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("index.lock: {err}")),
+    };
+    let modified = meta
+        .modified()
+        .map_err(|err| format!("index.lock mtime: {err}"))?;
+    let written = modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let age = ctx.now().saturating_sub(written);
+    if age < STALE_LOCK_SECS {
+        return Err(format!("index.lock exists and is only {age}s old; not cleared"));
+    }
+    fs::remove_file(&path).map_err(|err| format!("remove index.lock: {err}"))?;
+    ctx.log(&format!("cleared stale index.lock (age {age}s)"));
+    Ok(())
+}
+
 /// Abort any merge in progress and hard-reset the integration clone to
 /// `remote/branch`.
 pub fn reset_repo(ctx: &Ctx) {
+    if let Err(err) = clear_stale_lock(ctx) {
+        ctx.log(&format!("lane reset: {err}"));
+    }
     let branch = ctx.cfg.branch.as_str();
     let remote = ctx.cfg.remote.as_str();
     drop(ctx.git("merge --abort", GIT_TIMEOUT));
