@@ -1,6 +1,7 @@
 //! Tests for [`super::plan`].
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -456,6 +457,85 @@ fn ingest_a_split_plan_replaces_the_unit_and_an_empty_split_raises_split_empty()
     let exc = fs::read_to_string(ctx2.home.join("exceptions.txt")).unwrap();
     assert!(exc.contains("split-empty u2 nothing to do"));
     assert!(host2.logs().iter().any(|l| l == "split u2 into 0 units"));
+}
+
+/// An executable placeholder file at `rel` under `ctx.project`.
+fn executable(ctx: &Ctx, rel: &str) {
+    let path = ctx.project.join(rel);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"#!/bin/sh\n").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn repo_relative_and_env_prefixed_proofs_ingest() {
+    let (_dir, ctx, host, mut st) = setup();
+    executable(&ctx, "scripta/check-corpus-suite");
+    executable(&ctx, "target/debug/faber");
+    write_plan(
+        &ctx,
+        "n1.json",
+        &json!({
+            "need": "n1",
+            "revision": 1,
+            "verdict": "units",
+            "units": [{
+                "id": "n1-1",
+                "brief": "first pass",
+                "write_scope": ["src/a.rs"],
+                "proof": [
+                    "./scripta/check-corpus-suite",
+                    "PATH=/opt/homebrew/bin:$PATH cargo test -p x --lib y",
+                    "target/debug/faber --help"
+                ]
+            }]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert!(
+        !host.logs().iter().any(|l| l.contains("EXCEPTION bad-plan")),
+        "logs were: {:?}",
+        host.logs()
+    );
+    assert_eq!(
+        st.units["n1-1"].proof,
+        vec![
+            "./scripta/check-corpus-suite".to_string(),
+            "PATH=/opt/homebrew/bin:$PATH cargo test -p x --lib y".to_string(),
+            "target/debug/faber --help".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn repo_relative_missing_proof_fails_the_plan() {
+    let (_dir, ctx, host, mut st) = setup();
+    write_plan(
+        &ctx,
+        "n1.json",
+        &json!({
+            "need": "n1",
+            "revision": 1,
+            "verdict": "units",
+            "units": [{
+                "id": "n1-1",
+                "brief": "first pass",
+                "write_scope": ["src/a.rs"],
+                "proof": ["./nope"]
+            }]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert!(st.units.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.starts_with("EXCEPTION bad-plan n1.json")),
+        "logs were: {:?}",
+        host.logs()
+    );
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exc.contains("missing or not executable"), "{exc}");
 }
 
 /// One unit in a plan body.

@@ -188,7 +188,7 @@ as marked):
 | `brief` | string | the unit's work description |
 | `write_scope` | array of path strings | files the unit may touch |
 | `after` | array of unit ids | prerequisites; must be satisfied before dispatch |
-| `proof` | array of command strings | commands that must exit 0 on the merged tree. Validated at ingest: the first word must be a known binary, and a `cargo test` proof takes one TESTNAME filter (use a full path such as `sync::watch::tests::name`, or two separate commands); an invalid proof rejects the plan with a `bad-plan` exception carrying the exact error |
+| `proof` | array of command strings | commands that must exit 0 on the merged tree. Validated at ingest: the first word must be a known binary, and a `cargo test` proof takes one TESTNAME filter (use a full path such as `sync::watch::tests::name`, or two separate commands); a repo-relative path (containing `/`, not absolute) is accepted when it exists and is executable in the unit's target repository, and leading `NAME=value` assignments are skipped like `env` before validation; an invalid proof rejects the plan with a `bad-plan` exception carrying the exact error |
 | `tools` | string | the unit's kind: a key of `[pump.dispatch.kinds]` (§9); empty means `default_kind`. Selects the pool, the in-flight cap, and whether the merger runs the unit's own proof |
 | `status` | string | the state machine state (§6) |
 | `attempts` | int | dispatches so far; incremented at dispatch |
