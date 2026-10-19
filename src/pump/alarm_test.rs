@@ -317,6 +317,7 @@ fn status_lines_report_promotion_fix_and_delivered_backlog() {
         status_lines(&ctx, &st),
         vec![
             String::from("last promote 2h05m ago (0123456789)"),
+            String::from("last green never"),
             String::from("oldest waiting fix pumpfix-2 20m"),
             String::from("delivered waiting 2, oldest 14m"),
         ]
@@ -331,10 +332,35 @@ fn status_lines_report_none_for_an_idle_pump() {
         status_lines(&ctx, &State::default()),
         vec![
             String::from("last promote never"),
+            String::from("last green never"),
             String::from("oldest waiting fix none"),
             String::from("delivered waiting 0, oldest none"),
         ]
     );
+}
+
+#[test]
+fn status_lines_show_the_last_green_gate() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.baseline = Some(vec![String::from("a")]);
+    st.gates = vec![
+        GateRecord {
+            tip: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            names: Some(Vec::new()),
+            at: T0 - 3600,
+            ..GateRecord::default()
+        },
+        GateRecord {
+            tip: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            names: Some(vec![String::from("x")]),
+            at: T0 - 600,
+            ..GateRecord::default()
+        },
+    ];
+    host.set_now(T0);
+    let lines = status_lines(&ctx, &st);
+    assert_eq!(lines[1], "last green 1h00m ago (aaaaaaaaaa)", "{lines:?}");
 }
 
 #[test]
