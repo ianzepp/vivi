@@ -32,7 +32,7 @@ fn schema_upgrade_creates_mid_version_tables_on_old_databases() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "8");
+    assert_eq!(version, "9");
 }
 
 #[test]
@@ -100,7 +100,129 @@ fn schema_v7_adds_node_kind_and_edge_style_on_upgrade() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "8");
+    assert_eq!(version, "9");
+}
+
+#[test]
+/// A deferral mark written by the receiver never lands in the table user
+/// item metadata lives in: user surfaces read every row there, so the
+/// internal key would leak into their metadata maps.
+#[test]
+fn deferral_marks_leave_the_user_metadata_table() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let db_path = tmp.path().join("mail.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO blobs (content_id, blob_relpath, byte_size, rfc_message_id, parsed_at)
+             VALUES ('c1', 'blobs/c1', 4, NULL, 't')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (message_id, account, content_id, local_role,
+                                   discovered_at, updated_at)
+             VALUES ('m1', 'mind', 'c1', 'needs', 't', 't')",
+            [],
+        )
+        .unwrap();
+    }
+
+    storage
+        .set_event_deferral(&["m1".to_string()], Some(123))
+        .unwrap();
+
+    assert!(storage.item_metadata("m1").unwrap().is_empty());
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let metadata_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM mailspace_item_metadata WHERE message_id = 'm1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(metadata_rows, 0);
+    let (message_id, until): (String, i64) = conn
+        .query_row(
+            "SELECT message_id, until FROM event_deferrals",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(message_id, "m1");
+    assert_eq!(until, 123);
+    assert_eq!(
+        storage.deferred_event_contents().unwrap(),
+        vec![("c1".to_string(), 123)]
+    );
+
+    storage
+        .set_event_deferral(&["m1".to_string()], None)
+        .unwrap();
+    assert!(storage.deferred_event_contents().unwrap().is_empty());
+}
+
+/// A schema-8 database keeps its deferral marks across the upgrade: they
+/// move into the dedicated table and out of the user item-metadata table.
+#[test]
+fn schema_upgrade_moves_deferral_marks_out_of_item_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("mail.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    schema::ensure_schema(&conn).unwrap();
+    conn.execute(
+        "UPDATE storage_metadata SET value = '8' WHERE key = 'schema_version'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO blobs (content_id, blob_relpath, byte_size, rfc_message_id, parsed_at)
+         VALUES ('c1', 'blobs/c1', 4, NULL, 't')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages (message_id, account, content_id, local_role,
+                               discovered_at, updated_at)
+         VALUES ('m1', 'mind', 'c1', 'needs', 't', 't')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO mailspace_item_metadata (message_id, key, value, updated_at)
+         VALUES ('m1', 'event_deferred_until', '123', 't')",
+        [],
+    )
+    .unwrap();
+
+    schema::ensure_schema(&conn).unwrap();
+
+    let until: i64 = conn
+        .query_row(
+            "SELECT until FROM event_deferrals WHERE message_id = 'm1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(until, 123);
+    let legacy: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM mailspace_item_metadata
+             WHERE key = 'event_deferred_until'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy, 0);
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM storage_metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "9");
 }
 
 #[test]
@@ -480,7 +602,7 @@ fn schema_v6_adds_from_addr_date_index_on_upgrade() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "8");
+    assert_eq!(version, "9");
 }
 
 fn ingest_dated(
