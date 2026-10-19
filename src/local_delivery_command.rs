@@ -355,7 +355,7 @@ fn require_delivery(mailspace: &Mailspace, handle: &str) -> Result<(), VivariumE
     let body = parsed
         .body_text(0)
         .ok_or_else(|| VivariumError::Message("delivery item has no structured body".into()))?;
-    let delivery: DeliveryNeed = serde_json::from_str(body).map_err(|_| {
+    let delivery: DeliveryNeed = serde_json::from_str(&body).map_err(|_| {
         VivariumError::Message(format!("{handle} is not a structured delivery need"))
     })?;
     if delivery.schema != 1 {
