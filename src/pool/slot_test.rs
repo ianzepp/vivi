@@ -1,5 +1,8 @@
 use super::*;
 
+const ID_A: &str = "11111111-1111-1111-1111-111111111111";
+const ID_B: &str = "22222222-2222-2222-2222-222222222222";
+
 fn machine(
     id: &str,
     name: &str,
@@ -23,6 +26,23 @@ fn machine(
         region: "iad".into(),
         created_at: "2026-10-11T01:00:00Z".into(),
         metadata,
+        exit_code: None,
+    }
+}
+
+fn machine_marked(space: &str, pool: &str) -> MachineRecord {
+    MachineRecord {
+        id: "m".into(),
+        name: "s-slot-1".into(),
+        state: "stopped".into(),
+        region: "iad".into(),
+        created_at: "2026-10-11T01:00:00Z".into(),
+        metadata: BTreeMap::from([
+            (META_MAILSPACE.to_string(), space.to_string()),
+            (META_POOL.to_string(), pool.to_string()),
+            (META_SLOT.to_string(), "1".to_string()),
+            (META_BASE.to_string(), "a".repeat(40)),
+        ]),
         exit_code: None,
     }
 }
@@ -191,4 +211,25 @@ fn space_key_and_space_mark_matches_basics() {
     assert!(!space_mark_matches("app", "app-11111111"));
     // The tail is not 8 hex characters.
     assert!(!space_mark_matches("app-short", "app"));
+}
+
+#[test]
+fn same_name_different_id_mailspaces_do_not_own_each_other() {
+    let pool = PoolId::new("app", ID_A, "here");
+    let other_space = format!("app-{}", &ID_B[..8]);
+    assert!(pool.owns(&machine_marked("app-11111111", "here")));
+    assert!(!pool.owns(&machine_marked(&other_space, "here")));
+}
+
+#[test]
+fn legacy_marked_slots_stay_owned() {
+    assert!(PoolId::new("app", ID_A, "here").owns(&machine_marked("app", "here")));
+    assert!(PoolId::new("app", "", "here").owns(&machine_marked("app", "here")));
+}
+
+#[test]
+fn the_id_prefix_names_slots_and_marks() {
+    let pool = PoolId::new("app", ID_A, "here");
+    assert_eq!(pool.slot_name(1), "app-11111111-here-slot-1");
+    assert_eq!(slot_metadata(&pool, 1, "abc")[META_MAILSPACE], "app-11111111");
 }
