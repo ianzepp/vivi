@@ -46,7 +46,14 @@ fn remote_open_dispatch_is_visible_and_has_no_tail() {
         )]),
         ..ProjectEvents::default()
     };
-    let found = rows("alpha", std::path::Path::new("."), &pools, &events, 1060);
+    let found = rows(
+        "alpha",
+        std::path::Path::new("."),
+        "",
+        &pools,
+        &events,
+        1060,
+    );
     assert_eq!(found.len(), 1);
     assert!(matches!(found[0].state, RowState::Running));
     assert!(found[0].remote);
@@ -84,7 +91,14 @@ fn finished_local_dispatch_keeps_outcome_and_log_tail() {
         }],
         ..ProjectEvents::default()
     };
-    let found = rows("alpha", std::path::Path::new("."), &pools, &events, 1060);
+    let found = rows(
+        "alpha",
+        std::path::Path::new("."),
+        "",
+        &pools,
+        &events,
+        1060,
+    );
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].state, RowState::Finished("pushed".into()));
     assert!(

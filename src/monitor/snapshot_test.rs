@@ -19,7 +19,7 @@ fn snapshot_reads_projects_without_opening_write_capable_mailspace() {
         std::fs::create_dir_all(root.join(".vivi")).unwrap();
         std::fs::write(root.join(".vivi/mailspace.toml"), config).unwrap();
     }
-    let slot = alpha.join("pool/alpha/lanes/slot-1");
+    let slot = alpha.join("pool/lanes/slot-1");
     std::fs::create_dir_all(slot.join("marks")).unwrap();
     for (name, value) in [
         ("vivi_pool", "lanes"),
@@ -63,5 +63,8 @@ fn registered_roots_precede_deduplicated_extra_roots() {
     std::fs::create_dir_all(&a).unwrap();
     std::fs::create_dir_all(&b).unwrap();
     let got = merge_roots(BTreeSet::from([b.clone()]), &[b.join("."), a.clone()]);
-    assert_eq!(got, vec![b, a]);
+    assert_eq!(
+        got,
+        vec![b.canonicalize().unwrap(), a.canonicalize().unwrap()]
+    );
 }

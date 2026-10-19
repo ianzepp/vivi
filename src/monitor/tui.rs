@@ -116,7 +116,7 @@ pub fn render(
     )
     .column_spacing(1)
     .block(block)
-    .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut state = TableState::default();
     state.select((!rows.is_empty()).then_some(selected.min(rows.len().saturating_sub(1))));
     frame.render_stateful_widget(table, area, &mut state);

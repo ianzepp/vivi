@@ -37,7 +37,7 @@ pub fn read(project: &Path) -> Result<ReportData, VivariumError> {
 fn text_body(bytes: &[u8]) -> String {
     mail_parser::MessageParser::default()
         .parse(bytes)
-        .and_then(|message| message.body_text(0).map(ToOwned::to_owned))
+        .and_then(|message| message.body_text(0).map(|body| body.into_owned()))
         .unwrap_or_default()
 }
 

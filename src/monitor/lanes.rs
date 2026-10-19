@@ -12,6 +12,7 @@ use super::slots::slot_tail;
 pub fn rows(
     project: &str,
     project_root: &Path,
+    mailspace_id: &str,
     pools: &BTreeMap<String, PoolConfig>,
     events: &ProjectEvents,
     now: u64,
@@ -25,7 +26,7 @@ pub fn rows(
         events
             .finished
             .iter()
-            .filter_map(|done| finished_row(project, project_root, done, pools)),
+            .filter_map(|done| finished_row(project, project_root, mailspace_id, done, pools)),
     );
     rows
 }
@@ -65,6 +66,7 @@ fn open_row(
 fn finished_row(
     project: &str,
     root: &Path,
+    mailspace_id: &str,
     done: &FinishedDispatch,
     pools: &BTreeMap<String, PoolConfig>,
 ) -> Option<MonitorRow> {
@@ -91,20 +93,20 @@ fn finished_row(
         read_only: Some(done.read_only),
         remote: !local,
         tail: if local {
-            slot_tail(&local_root(root, config).join(&done.machine))
+            super::slots::local_slot_dir(
+                project,
+                root,
+                mailspace_id,
+                &done.pool,
+                config,
+                &done.machine,
+            )
+            .as_deref()
+            .and_then(slot_tail)
         } else {
             None
         },
     })
-}
-
-fn local_root(project: &Path, config: &PoolConfig) -> std::path::PathBuf {
-    let root = crate::pool::local_slots::expand_root(config.local.root_or_default());
-    if root.is_absolute() {
-        root
-    } else {
-        project.join(root)
-    }
 }
 
 #[cfg(test)]

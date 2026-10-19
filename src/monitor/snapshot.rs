@@ -75,7 +75,14 @@ fn collect_rows(
     let mut rows = Vec::new();
     let (mut local, mut warnings) = slots::rows(&config.name, root, id, &config.pools, events, now);
     rows.append(&mut local);
-    rows.extend(lanes::rows(&config.name, root, &config.pools, events, now));
+    rows.extend(lanes::rows(
+        &config.name,
+        root,
+        id,
+        &config.pools,
+        events,
+        now,
+    ));
     if let Some(pump_config) = &config.pump {
         match pump::row(&config.name, &pump_config.home_dir(root), now) {
             Ok(row) => rows.push(row),

@@ -20,10 +20,17 @@ pub fn rows(
     let mut rows = Vec::new();
     let mut warnings = Vec::new();
     for (name, config) in pools.iter().filter(|(_, c)| c.provider == "local") {
-        let root = local_root(project_root, config);
-        match pool_rows(project, mailspace_id, name, &root, config, events, now) {
+        match pool_rows(
+            project,
+            project_root,
+            mailspace_id,
+            name,
+            config,
+            events,
+            now,
+        ) {
             Ok(mut found) => rows.append(&mut found),
-            Err(error) => warnings.push(format!("{} ({name}): {error}", root.display())),
+            Err(error) => warnings.push(format!("{project} ({name}): {error}")),
         }
     }
     (rows, warnings)
@@ -31,21 +38,28 @@ pub fn rows(
 
 fn pool_rows(
     project: &str,
+    project_root: &Path,
     mailspace_id: &str,
     name: &str,
-    root: &Path,
     config: &PoolConfig,
     events: &ProjectEvents,
     now: u64,
 ) -> Result<Vec<MonitorRow>, crate::VivariumError> {
-    let machines = crate::pool::local_slots::list(root)?;
-    let id = PoolId::new(project, mailspace_id, name);
+    let mailspace = slot::space_key(project, mailspace_id);
+    let site = crate::pool::local_site::resolve(
+        config.local.root_or_default(),
+        project_root,
+        &mailspace,
+        name,
+    )?;
+    let machines = crate::pool::local_slots::list(&site)?;
+    let id = PoolId::keyed(&mailspace, name);
     let mut slots = slot::pool_slots(&id, &machines);
     crate::pool::run::annotate_running(&mut slots, &events.open, now);
     Ok(slots
         .iter()
         .filter(|item| item.state == "busy" || item.state == "finished-uncollected")
-        .map(|item| row(project, root, item, events, now))
+        .map(|item| row(project, &site.pool_dir, item, events, now))
         .collect())
 }
 
@@ -93,17 +107,40 @@ fn row(
             .read_only
             .or_else(|| dispatch.map(|open| open.record.read_only)),
         remote: false,
-        tail: slot_tail(&root.join(&slot.id)),
+        tail: Path::new(&slot.id)
+            .file_name()
+            .and_then(|name| slot_tail(&root.join(name))),
     }
 }
 
-fn local_root(project: &Path, config: &PoolConfig) -> PathBuf {
-    let root = crate::pool::local_slots::expand_root(config.local.root_or_default());
-    if root.is_absolute() {
-        root
-    } else {
-        project.join(root)
+/// Resolve the slot directory named by a dispatch receipt under its configured pool.
+/// The receipt's machine id must match the current local-site layout exactly.
+pub fn local_slot_dir(
+    project: &str,
+    project_root: &Path,
+    mailspace_id: &str,
+    pool: &str,
+    config: &PoolConfig,
+    machine: &str,
+) -> Option<PathBuf> {
+    let mailspace = slot::space_key(project, mailspace_id);
+    let site = crate::pool::local_site::resolve(
+        config.local.root_or_default(),
+        project_root,
+        &mailspace,
+        pool,
+    )
+    .ok()?;
+    if !crate::pool::local_slots::slot_id_ok(machine) {
+        return None;
     }
+    let slot_name = Path::new(machine).file_name()?.to_str()?;
+    let expected = if site.relative {
+        format!("{pool}/{slot_name}")
+    } else {
+        format!("{mailspace}/{pool}/{slot_name}")
+    };
+    (machine == expected).then(|| site.pool_dir.join(slot_name))
 }
 
 pub fn slot_tail(slot_dir: &Path) -> Option<PathBuf> {
