@@ -83,6 +83,44 @@ fn text(output: &Output) -> String {
 }
 
 #[test]
+fn pool_set_creates_a_missing_nested_provider_table() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().to_str().unwrap();
+    let initialized = vivi(["mailspace", "init", "--project", root]);
+    assert!(initialized.status.success(), "{}", text(&initialized));
+
+    let added = vivi([
+        "pool",
+        "add",
+        "fly-smoke",
+        "--provider",
+        "fly",
+        "--slots",
+        "1",
+        "--project",
+        root,
+    ]);
+    assert!(added.status.success(), "{}", text(&added));
+
+    let set = vivi([
+        "pool",
+        "set",
+        "fly-smoke",
+        "fly.app",
+        "smoke-app",
+        "--project",
+        root,
+    ]);
+    assert!(set.status.success(), "{}", text(&set));
+
+    let config: toml::Value = toml::from_str(
+        &std::fs::read_to_string(project.path().join(".vivi/mailspace.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(config["pools"]["fly-smoke"]["fly"]["app"], "smoke-app");
+}
+
+#[test]
 fn dispatch_refuses_an_unlisted_model_before_touching_anything() {
     let project = tempfile::tempdir().unwrap();
     let handle = setup(project.path());

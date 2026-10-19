@@ -69,7 +69,7 @@ pub fn set_pool_key(
     } else {
         table_at(table, parents)?
     };
-    target[*leaf] = Item::Value(parse_value(raw));
+    target.insert(leaf, Item::Value(parse_value(raw)));
     Ok(())
 }
 

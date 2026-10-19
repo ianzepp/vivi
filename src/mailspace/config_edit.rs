@@ -125,12 +125,13 @@ pub(crate) fn table_at<'a>(
 }
 
 fn child_table<'a>(table: &'a mut Table, key: &str) -> Result<&'a mut Table, VivariumError> {
-    if !table[key].is_table() {
-        table[key] = Item::Table(Table::new());
-    }
-    table[key]
+    table
+        .entry(key)
+        .or_insert(Item::Table(Table::new()))
         .as_table_mut()
-        .ok_or_else(|| VivariumError::Config(format!("`{key}` is not a table")))
+        .ok_or_else(|| {
+            VivariumError::Config(format!("`{key}` must be a table for nested pool settings"))
+        })
 }
 
 /// The `[pools]` table, created if missing.
