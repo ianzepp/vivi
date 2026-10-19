@@ -94,7 +94,9 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<S
     if u.status != Status::Pending {
         return false;
     }
-    if u.retry_not_before.is_some_and(|not_before| ctx.now() < not_before) {
+    if u.retry_not_before
+        .is_some_and(|not_before| ctx.now() < not_before)
+    {
         return false;
     }
     if holds.contains_key(&u.need) {

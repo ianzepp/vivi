@@ -266,7 +266,8 @@ fn a_transient_blocking_root_is_requeued_once_and_prioritized() {
     let (_dir, ctx, host) = response_setup();
     host.set_now(T0);
     let mut root = unit("r", Status::Stuck, T0 - 3600);
-    root.history.push(last_attempt("timeout", "budget exceeded"));
+    root.history
+        .push(last_attempt("timeout", "budget exceeded"));
     let (mut st, pairs) = blocking_state(root, 12);
     host.reply("graph blocked", 0, &rows(&pairs));
 
@@ -276,14 +277,20 @@ fn a_transient_blocking_root_is_requeued_once_and_prioritized() {
     assert_eq!(root.status, Status::Pending);
     assert!(root.requeued, "requeued once by the response");
     assert_eq!(root.attempts, 0, "attempts unchanged: one extra try only");
-    assert!(crate::pump::priority::list(&ctx.home)
-        .unwrap()
-        .contains(&(String::from("r"), 1)));
-    assert!(host
-        .logs()
-        .iter()
-        .any(|line| line.contains("blockers: requeued r-1 once")));
-    assert!(host.spawned().is_empty(), "a transient root needs no planner");
+    assert!(
+        crate::pump::priority::list(&ctx.home)
+            .unwrap()
+            .contains(&(String::from("r"), 1))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("blockers: requeued r-1 once"))
+    );
+    assert!(
+        host.spawned().is_empty(),
+        "a transient root needs no planner"
+    );
 
     st.units.get_mut("r-1").unwrap().status = Status::Stuck;
     check(&ctx, &mut st);
@@ -311,13 +318,16 @@ fn a_persistent_old_blocking_root_goes_to_the_resplit_planner() {
     assert_eq!(root.status, Status::Splitting);
     assert!(!root.requeued, "an exit-1 failure is not transient");
     assert!(ctx.home.join("resplit/r-1.json").exists());
-    assert!(host
-        .spawned()
-        .iter()
-        .any(|command| command.contains("resplit")));
-    assert!(crate::pump::priority::list(&ctx.home)
-        .unwrap()
-        .contains(&(String::from("r"), 1)));
+    assert!(
+        host.spawned()
+            .iter()
+            .any(|command| command.contains("resplit"))
+    );
+    assert!(
+        crate::pump::priority::list(&ctx.home)
+            .unwrap()
+            .contains(&(String::from("r"), 1))
+    );
 }
 
 #[test]
@@ -354,7 +364,8 @@ fn a_small_hold_gets_no_response() {
     let (_dir, ctx, host) = response_setup();
     host.set_now(T0);
     let mut root = unit("r", Status::Stuck, T0 - 121 * 60);
-    root.history.push(last_attempt("timeout", "budget exceeded"));
+    root.history
+        .push(last_attempt("timeout", "budget exceeded"));
     let (mut st, pairs) = blocking_state(root, 4);
     host.reply("graph blocked", 0, &rows(&pairs));
 

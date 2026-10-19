@@ -166,11 +166,9 @@ fn transient_failure(unit: &Unit) -> bool {
 
 /// `why: detail` from the unit's last attempt; empty when there is none.
 fn last_attempt_text(unit: &Unit) -> String {
-    unit.history
-        .last()
-        .map_or_else(String::new, |attempt| {
-            format!("{}: {}", attempt.why, attempt.detail)
-        })
+    unit.history.last().map_or_else(String::new, |attempt| {
+        format!("{}: {}", attempt.why, attempt.detail)
+    })
 }
 
 /// The `status.txt` lines for the largest holds: up to three blockers, each as
