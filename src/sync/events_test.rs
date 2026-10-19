@@ -910,3 +910,67 @@ fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
     assert_eq!(need_state(&w, 1).0, "needs", "the newer stamp wins here");
     assert_eq!(state(&w.bob, &handle).as_deref(), Some("reopened"));
 }
+
+#[test]
+fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
+    let p = pair();
+    // The hand's close is a report, not an event: it carries verdict headers
+    // and answers the task letter, and the owner's side must store them.
+    p.b.mailspace
+        .move_task_outcome(
+            "hand",
+            &p.task,
+            "done",
+            None,
+            Some("fixed"),
+            &["vivi".into()],
+            &["sha9".into()],
+        )
+        .unwrap();
+    p.sync_b_to_a();
+
+    let metadata =
+        p.a.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.a.id_of(&p.task))
+            .unwrap();
+    assert_eq!(
+        metadata.get("verdict").map(String::as_str),
+        Some("fixed")
+    );
+    assert_eq!(metadata.get("repo:vivi").map(String::as_str), Some("sha9"));
+}
+
+#[test]
+fn a_report_letter_pulled_alone_settles_the_item_it_reports_on() {
+    let p = pair();
+    // The owner's own copy is already read, so this pull brings the report
+    // letter alone: nothing else on the page can settle the item for it.
+    p.a.pull(&p.a.client(&p.server));
+    p.b.mailspace
+        .move_task_outcome(
+            "hand",
+            &p.task,
+            "done",
+            None,
+            Some("fixed"),
+            &["vivi".into()],
+            &["sha9".into()],
+        )
+        .unwrap();
+    let pulled = p.sync_b_to_a();
+    assert!(pulled.filed.contains_key("inbox"), "{pulled:?}");
+
+    let metadata =
+        p.a.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.a.id_of(&p.task))
+            .unwrap();
+    assert_eq!(
+        metadata.get("verdict").map(String::as_str),
+        Some("fixed")
+    );
+    assert_eq!(metadata.get("repo:vivi").map(String::as_str), Some("sha9"));
+}

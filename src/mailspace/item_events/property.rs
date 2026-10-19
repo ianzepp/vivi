@@ -223,6 +223,12 @@ fn parse_letter_verdicts(bytes: &[u8]) -> Vec<LetterVerdict> {
         .collect()
 }
 
+/// Whether a letter carries the verdict metadata a close writes: an
+/// `X-Vivi-Verdict` or an `X-Vivi-Repo` header.
+pub(super) fn carries_verdict(bytes: &[u8]) -> bool {
+    !parse_letter_verdicts(bytes).is_empty()
+}
+
 /// Store the verdict metadata the letters held for `item` carry: letters
 /// from a sender that speaks for the item count, the newest value per key
 /// by `(instant, Message-ID)` wins, and the winners land — the same keys a

@@ -164,6 +164,20 @@ pub(crate) fn parse_event(bytes: &[u8]) -> Option<EventLetter> {
     })
 }
 
+/// The item a report letter answers: a letter carrying the verdict headers
+/// a close writes, by the normalized `Message-ID` its `In-Reply-To` names.
+/// `None` for any other letter, and for a verdict letter naming no parent.
+fn report_item(bytes: &[u8]) -> Option<String> {
+    if !property::carries_verdict(bytes) {
+        return None;
+    }
+    MessageParser::default()
+        .parse(bytes)?
+        .in_reply_to()
+        .as_text()
+        .and_then(normalize_message_id)
+}
+
 /// An `X-Vivi-Event-At` value (RFC 3339) as Unix microseconds.
 fn rfc3339_micros(value: &str) -> Option<i64> {
     let Ok(time) = chrono::DateTime::parse_from_rfc3339(value.trim()) else {
@@ -765,9 +779,19 @@ impl Mailspace {
                             by_event.insert(item.content_id);
                         }
                     }
-                    None => {
-                        by_item.insert(content_id.clone());
-                    }
+                    None => match report_item(&bytes) {
+                        // A report letter is a close's verdict headers on a
+                        // reply: it settles the item it answers, which is
+                        // where the verdict is stored.
+                        Some(of) => {
+                            if let Some(item) = storage.live_message_by_rfc_id(&of)? {
+                                by_event.insert(item.content_id);
+                            }
+                        }
+                        None => {
+                            by_item.insert(content_id.clone());
+                        }
+                    },
                 },
             }
         }
