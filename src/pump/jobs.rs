@@ -15,7 +15,12 @@ use crate::error::VivariumError;
 use crate::pump::dispatch;
 use crate::pump::host::{Ctx, shell_quote};
 
+mod gate_sources;
 mod recovery;
+pub use gate_sources::{
+    mark_gate_attempted, mark_gated, mark_integration_failed, mark_merged,
+    sources_need_gate_attempt, sources_waiting_for_gate,
+};
 pub use recovery::recover_dispatched;
 
 /// A request to make one durable role-addressed pool task.
@@ -188,6 +193,9 @@ pub struct PoolJob {
     /// Tip that passed the gate covering the merge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gated_tip: Option<String>,
+    /// Last integration tip checked by a gate, including a red result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_attempted_tip: Option<String>,
     /// A decided merge failure that needs a new role attempt or operator action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_error: Option<String>,
@@ -228,6 +236,7 @@ impl From<JobSpec> for PoolJob {
             applied_at: None,
             merged_tip: None,
             gated_tip: None,
+            gate_attempted_tip: None,
             integration_error: None,
         }
     }
@@ -588,56 +597,6 @@ pub fn branch_sources_pending(st: &impl JobStore, target: &str) -> Vec<BranchSou
             subject: job.subject.clone(),
         })
         .collect()
-}
-
-/// Role job IDs whose merged tips still await their gate receipt.
-#[must_use]
-pub fn sources_waiting_for_gate(st: &impl JobStore, target: &str) -> Vec<String> {
-    st.jobs()
-        .values()
-        .filter(|job| {
-            job.integration_required
-                && job.target.as_deref() == Some(target)
-                && job.merged_tip.is_some()
-                && job.gated_tip.is_none()
-                && job.integration_error.is_none()
-        })
-        .map(|job| job.id.clone())
-        .collect()
-}
-
-/// Record the integration tip for role branches accepted by a merge job.
-pub fn mark_merged(st: &mut impl JobStore, ids: &[String], tip: &str) {
-    for id in ids {
-        if let Some(job) = st.jobs_mut().get_mut(id)
-            && job.integration_required
-            && job.merged_tip.is_none()
-        {
-            job.merged_tip = Some(tip.to_owned());
-        }
-    }
-}
-
-/// Record the clean gate covering a role job's merged tip.
-pub fn mark_gated(st: &mut impl JobStore, ids: &[String], tip: &str) {
-    for id in ids {
-        if let Some(job) = st.jobs_mut().get_mut(id)
-            && job.integration_required
-            && job.merged_tip.as_deref() == Some(tip)
-        {
-            job.gated_tip = Some(tip.to_owned());
-        }
-    }
-}
-
-/// Record a decided failure in merging a role job's pushed output.
-pub fn mark_integration_failed(st: &mut impl JobStore, id: &str, detail: &str) {
-    if let Some(job) = st.jobs_mut().get_mut(id)
-        && job.integration_required
-        && job.integration_error.is_none()
-    {
-        job.integration_error = Some(detail.to_owned());
-    }
 }
 
 /// Mark a terminal result applied while keeping its receipt available to the

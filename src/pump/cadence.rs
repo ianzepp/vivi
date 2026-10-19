@@ -550,3 +550,7 @@ fn run_status(run: &RoleRun) -> String {
 #[cfg(test)]
 #[path = "cadence_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cadence_write_test.rs"]
+mod write_tests;

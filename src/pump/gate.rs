@@ -281,12 +281,18 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     }
     force_after_fix(ctx, st);
     let force = ctx.flag(&force_flag(ctx));
-    if !gate_due(st, force) || waiting_for_external(ctx, st) {
+    let unit_gate_due = gate_due(st, force);
+    let role_source_waiting =
+        !crate::pump::jobs::sources_waiting_for_gate(st, &ctx.target_id).is_empty();
+    if !(unit_gate_due || role_source_waiting) || waiting_for_external(ctx, st) {
         return;
     }
     let Some(tip) = remote_tip(ctx) else {
         return;
     };
+    if !unit_gate_due && !crate::pump::jobs::sources_need_gate_attempt(st, &ctx.target_id, &tip) {
+        return;
+    }
     let Some(path) = write_gate_brief(ctx, &tip) else {
         return;
     };
@@ -458,6 +464,7 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
     record_red_after_fix(ctx, st, names.as_deref());
     let run = st.last_gate.clone();
     let tip = run.tip.clone().unwrap_or_default();
+    crate::pump::jobs::mark_gate_attempted(st, &run.source_jobs, &tip);
     let env = env_failed(text);
     if !env.is_empty() {
         ctx.exception(
@@ -650,7 +657,7 @@ fn finish_known_gate(
     }
     if new.is_empty() {
         let source_jobs = st.last_gate.source_jobs.clone();
-        crate::pump::jobs::mark_gated(st, &source_jobs, &rec.tip);
+        jobs::mark_gated_sources(ctx, st, &source_jobs, &rec.tip);
         ctx.log(&gate_summary(rec, names, 0));
         note_unknown_main_set(ctx, st);
         let off_main = not_on_main(st, names);
