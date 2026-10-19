@@ -287,6 +287,10 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
     );
     // The first gate reply carries an empty marker block: the baseline gate.
     host.reply_once("task show 99887766", 0, "FAILING-BEGIN\n\nFAILING-END\n");
+    // Every later gate is green until the red reply below replaces this rule:
+    // the batch rule re-gates right after the merge, and that reply must be
+    // deterministic.
+    host.reply("task show 99887766", 0, "FAILING-BEGIN\n\nFAILING-END\n");
 
     tick(&ctx, &mut st, &merger); // deliver x-a1, feed it, start the gate
     assert!(
@@ -300,8 +304,17 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
     );
     assert_eq!(st.merges, 1);
     assert_eq!(st.baseline, Some(Vec::new())); // the baseline gate finished
-    assert_eq!(st.gates.len(), 1);
+    // The batch rule: the merger runs before the gates, so the merge that
+    // just landed is already one past the gate's start and a re-gate is due.
+    assert!(
+        drive_until(&ctx, &mut st, &merger, |st| st.gates.len() == 2
+            && st.last_gate.task.is_none()),
+        "the post-merge re-gate never finished; finished gates: {}",
+        st.gates.len()
+    );
+    assert_eq!(st.gates.len(), 2); // baseline plus one post-merge re-gate
     assert_eq!(st.last_gate.task, None);
+    assert_eq!(st.red.len(), 0); // the green re-gate owns nothing
 
     // A red gate: force one, answer with a name the baseline never had.
     host.reply(
@@ -313,8 +326,8 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
     tick(&ctx, &mut st, &merger); // the forced gate starts
     assert_eq!(st.last_gate.task.as_deref(), Some(GATE_TASK));
     assert!(!ctx.home.join("FORCE-GATE").exists());
-    tick(&ctx, &mut st, &merger); // the red gate finishes
-    assert_eq!(st.gates.len(), 2);
+    tick(&ctx, &mut st, &merger); // the forced red gate finishes
+    assert_eq!(st.gates.len(), 3);
     let owner = "pumpfix-g01234567";
     assert_eq!(st.red.get("crate::a::t1").map(String::as_str), Some(owner));
     let prompt = ctx.home.join("gatefix").join(format!("{owner}.prompt"));
@@ -343,7 +356,20 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
         st.counts()
     );
     assert_eq!(st.merges, 2);
-    assert_eq!(st.gates.len(), 2); // merging through red changed nothing
+    // A merge through red still re-gates under the batch rule, but the red map
+    // and the fix queue are untouched: the name is already owned, so the gate
+    // starts no new gatefix planner and adds no new failure line.
+    assert!(
+        drive_until(&ctx, &mut st, &merger, |st| st.gates.len() == 4
+            && st.last_gate.task.is_none()),
+        "the post-merge re-gate through red never finished; finished gates: {}",
+        st.gates.len()
+    );
+    assert_eq!(st.gates.len(), 4);
+    assert_eq!(st.merges, 2);
+    assert_eq!(host.spawned().len(), 1); // still only the first gatefix planner
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert_eq!(exc.matches("gate-new-failures").count(), 1, "{exc}");
     assert!(st.closed_needs.iter().any(|n| n == "ny"));
     assert_eq!(st.red.get("crate::a::t1").map(String::as_str), Some(owner));
 }
