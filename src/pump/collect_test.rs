@@ -438,7 +438,11 @@ fn the_third_failed_attempt_makes_the_unit_stuck_and_raises_an_exception() {
 #[test]
 fn a_transient_failure_retries_without_sticking() {
     let (_dir, ctx, host) = setup();
-    host.reply("pool reconcile", 0, "reconciled t1 pool slot error host-down");
+    host.reply(
+        "pool reconcile",
+        0,
+        "reconciled t1 pool slot error host-down",
+    );
     let mut st = State::default();
     let mut u = unit(Status::Inflight, Some("t1"), Some("unit/x-a5"));
     u.attempts = 5;
@@ -462,7 +466,11 @@ fn a_transient_failure_retries_without_sticking() {
 #[test]
 fn transient_retries_escalate_at_the_cap() {
     let (_dir, ctx, host) = setup();
-    host.reply("pool reconcile", 0, "reconciled t1 pool slot error host-down");
+    host.reply(
+        "pool reconcile",
+        0,
+        "reconciled t1 pool slot error host-down",
+    );
     let mut st = State::default();
     let mut u = unit(Status::Inflight, Some("t1"), Some("unit/x-a5"));
     u.attempts = 5;
@@ -473,7 +481,12 @@ fn transient_retries_escalate_at_the_cap() {
     assert_eq!(u.status, Status::Stuck);
     assert_eq!(u.transient_retries, ctx.cfg.dispatch.transient_max);
     assert!(exceptions(&ctx).contains("stuck u-1 error/host-down"));
-    assert!(!host.logs().iter().any(|line| line.contains("transient-retry")));
+    assert!(
+        !host
+            .logs()
+            .iter()
+            .any(|line| line.contains("transient-retry"))
+    );
 }
 
 #[test]
