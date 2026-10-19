@@ -247,6 +247,9 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
 /// dispatch until the prerequisite landed. A prerequisite merely being planned
 /// right now still gates, and gates lift as soon as its plan file exists. An
 /// unreadable dependency read gates nothing.
+///
+/// Candidates are walked in [`plan_order`], so within one arrival batch a
+/// need other open needs depend on takes a planner slot ahead of them.
 pub fn launch_planners(
     ctx: &Ctx,
     st: &mut State,
@@ -256,7 +259,7 @@ pub fn launch_planners(
 ) {
     let skip = read_skip(ctx);
     let gates = planning_gates(ctx, rows);
-    for row in rows {
+    for row in plan_order(rows, &gates) {
         let handle = row.handle.as_str();
         let old = row.date.as_str() < ctx.cfg.board.since.as_str();
         let parked = st.board.planner_failed.iter().any(|seen| seen == handle);
@@ -286,12 +289,28 @@ pub fn launch_planners(
         {
             continue;
         }
-        launch_one(ctx, st, row, replan);
+        launch_one(ctx, st, &row, replan);
         if stop_requested(ctx) {
             ctx.log(STOP_NOTE);
             return;
         }
     }
+}
+
+/// Candidate rows with the prerequisites of other open needs first: every
+/// handle in any `blocked_by` list is a prerequisite some open need still
+/// waits on — including dependents already planned whose units are held, the
+/// evidence case — and those rows come first. The sort is stable, so the
+/// `need list` order is kept everywhere else and within each group.
+fn plan_order(rows: &[NeedRow], blocked: &BTreeMap<String, Vec<String>>) -> Vec<NeedRow> {
+    let depended_on: BTreeSet<&str> = blocked
+        .values()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let mut ordered = rows.to_vec();
+    ordered.sort_by_key(|row| !depended_on.contains(row.handle.as_str()));
+    ordered
 }
 
 /// Prerequisite handles per need, from the backlog graph. Empty rows mean no

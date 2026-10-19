@@ -1071,6 +1071,49 @@ fn a_dependent_is_not_planned_before_its_prerequisite() {
 }
 
 #[test]
+fn a_need_depended_on_by_others_is_planned_before_an_independent_same_date_need() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"dep","blocked_by":["root"]}]"#,
+    );
+    let mut st = State::default();
+    let rows = vec![
+        need_row("indep", "2026-10-15", "Independent"),
+        need_row("root", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("root"));
+    assert!(!st.board.planning.contains_key("indep"));
+    assert_eq!(planner_spawns(&host), 1);
+}
+
+#[test]
+fn the_need_list_order_is_kept_among_needs_nobody_depends_on() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    let mut st = State::default();
+    let rows = vec![
+        need_row("x", "2026-10-15", "X"),
+        need_row("y", "2026-10-15", "Y"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("x"));
+    assert!(!st.board.planning.contains_key("y"));
+    assert_eq!(planner_spawns(&host), 1);
+}
+
+#[test]
 fn a_dependent_is_planned_once_its_prerequisite_has_a_plan() {
     let (_dir, ctx, host) = setup_with(BoardConfig {
         planners_max: 1,
