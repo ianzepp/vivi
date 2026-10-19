@@ -2,9 +2,9 @@
 
 pub mod alarm;
 pub mod amend;
-pub mod audit;
 pub mod attempt_read;
 pub mod attempt_record;
+pub mod audit;
 pub mod blockers;
 pub mod board;
 pub mod boardpass;

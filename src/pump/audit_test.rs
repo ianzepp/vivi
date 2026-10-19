@@ -35,10 +35,7 @@ fn audit_run_round_trips_through_state_extra() {
 fn audit_brief_carries_failings_rules_and_prior() {
     let dir = tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
-    let new = vec![
-        String::from("gate::a_fails"),
-        String::from("gate::b_fails"),
-    ];
+    let new = vec![String::from("gate::a_fails"), String::from("gate::b_fails")];
     let residual = vec![(String::from("gate::old_fails"), String::from("pumpfix-g1"))];
     let prior = "cause: off-by-one in x";
     let brief = audit_brief(
