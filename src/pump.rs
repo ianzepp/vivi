@@ -19,6 +19,7 @@ pub mod envfail;
 pub mod gate;
 pub mod gatefix;
 pub mod host;
+pub mod jobs;
 pub mod logview;
 pub mod merge;
 pub mod plan;

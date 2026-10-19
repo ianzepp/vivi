@@ -256,19 +256,7 @@ fn resolve_dispatch(
     }
     // An addressee that is not a known local role is no role at all, not an
     // error: the dispatch then runs without one.
-    let role = task
-        .addressee
-        .as_deref()
-        .and_then(|name| match space.role_view(name) {
-            Ok(view) => Some(RoleFacts {
-                name: view.name,
-                kind: view.kind,
-                band: view.model,
-                charter: view.charter,
-                read_only: view.read_only,
-            }),
-            Err(_) => None,
-        });
+    let role = role_facts(space, task);
     let resolved = role_dispatch::resolve(
         config,
         pool,
@@ -299,6 +287,30 @@ fn resolve_dispatch(
         reasoning: resolved.reasoning,
     };
     Ok((flags, rules, role_line))
+}
+
+/// Resolve the normal addressee role, or the shipped Auditor charter named
+/// by an internal pump job when the mailspace has no auditor identity.
+fn role_facts(space: &Mailspace, task: &PoolTask) -> Option<RoleFacts> {
+    if task
+        .body
+        .lines()
+        .any(|line| line.trim() == "pump-builtin-role: auditor")
+    {
+        return Some(RoleFacts::builtin_auditor());
+    }
+    task.addressee
+        .as_deref()
+        .and_then(|name| match space.role_view(name) {
+            Ok(view) => Some(RoleFacts {
+                name: view.name,
+                kind: view.kind,
+                band: view.model,
+                charter: view.charter,
+                read_only: view.read_only,
+            }),
+            Err(_) => None,
+        })
 }
 
 /// The `  role ...` suffix of the human dispatch line: the role, the band

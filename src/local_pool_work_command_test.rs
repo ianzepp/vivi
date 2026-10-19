@@ -74,6 +74,29 @@ fn plan_with(names: &[&str]) -> job::JobPlan {
     }
 }
 
+#[test]
+fn builtin_auditor_marker_replaces_the_recipient_charter_for_one_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = Mailspace::init(Some(tmp.path())).unwrap();
+    space.add_identity("hand").unwrap();
+    space
+        .set_charter("hand", "Hand-only standing instructions")
+        .unwrap();
+    let task = PoolTask {
+        handle: String::from("abcd1234"),
+        subject: String::from("audit"),
+        body: String::from("pump-builtin-role: auditor\nAudit this range."),
+        addressee: Some(String::from("hand")),
+    };
+
+    let role = role_facts(&space, &task).unwrap();
+
+    assert_eq!(role.kind.as_deref(), Some("auditor"));
+    assert!(role.read_only.unwrap_or(false));
+    assert!(role.charter.contains("# Auditor"));
+    assert!(!role.charter.contains("Hand-only standing instructions"));
+}
+
 fn commit_of(repo: &std::path::Path, rev: &str) -> String {
     let out = std::process::Command::new("git")
         .arg("-C")

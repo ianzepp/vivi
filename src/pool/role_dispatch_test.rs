@@ -81,6 +81,27 @@ fn an_auditor_role_is_read_only_and_takes_its_band_model_and_reasoning() {
 }
 
 #[test]
+fn builtin_auditor_uses_the_shipped_charter_and_stays_read_only_with_a_model_override() {
+    let auditor = RoleFacts::builtin_auditor();
+    assert!(auditor.charter.contains("# Auditor"));
+    assert_eq!(auditor.kind.as_deref(), Some("auditor"));
+    let resolved = resolve(
+        &pool(),
+        "bridge",
+        &input(
+            Some(&auditor),
+            "audit this range",
+            Some("other/model"),
+            false,
+        ),
+    )
+    .unwrap();
+    assert!(resolved.read_only);
+    assert_eq!(resolved.role.as_deref(), Some("auditor"));
+    assert_eq!(resolved.model, "other/model");
+}
+
+#[test]
 fn triage_and_cadence_kinds_are_read_only_too() {
     for kind in [
         "triage", "cadence", "AUDITOR", "Triage", "steward", "head", "gate",

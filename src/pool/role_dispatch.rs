@@ -44,6 +44,22 @@ pub struct RoleFacts {
     pub read_only: Option<bool>,
 }
 
+impl RoleFacts {
+    /// The shipped Auditor role used by an explicit built-in fallback when a
+    /// mailspace has no local auditor identity.
+    #[must_use]
+    pub fn builtin_auditor() -> Self {
+        Self {
+            name: String::from("auditor"),
+            kind: Some(String::from("auditor")),
+            band: None,
+            charter: include_str!("../../skills/tugboat/references/charters/auditor.md")
+                .to_string(),
+            read_only: Some(true),
+        }
+    }
+}
+
 /// The dispatch command's inputs for one job: the operator's flags, the
 /// role, and the task body.
 #[derive(Debug, Clone, PartialEq, Eq)]

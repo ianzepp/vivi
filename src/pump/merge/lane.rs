@@ -359,7 +359,7 @@ fn lane_level_failure(result: &MergeResult) -> bool {
 /// The next batch from the front of `queue`: up to `size` units, in rank
 /// order. A solo unit (its quarantine repair went stuck) goes alone, and in
 /// a batch of others it waits at the front of the queue for the next lane.
-fn take_batch(st: &State, queue: &mut VecDeque<String>, size: usize) -> Vec<String> {
+pub(super) fn take_batch(st: &State, queue: &mut VecDeque<String>, size: usize) -> Vec<String> {
     let solo = |uid: &String| st.units.get(uid).is_some_and(|unit| unit.solo);
     let Some(first) = queue.pop_front() else {
         return Vec::new();
@@ -384,7 +384,7 @@ fn take_batch(st: &State, queue: &mut VecDeque<String>, size: usize) -> Vec<Stri
 
 /// Held units whose repository target is configured again become
 /// `delivered` so they can be taken.
-fn recheck_held(st: &mut State, targets: &BTreeMap<String, usize>) {
+pub(super) fn recheck_held(st: &mut State, targets: &BTreeMap<String, usize>) {
     for unit in st.units.values_mut() {
         if unit.status == Status::Held
             && unit.branch.is_some()
@@ -427,7 +427,7 @@ fn touches_crate(write_scope: &[String], red: &BTreeSet<String>) -> bool {
 /// Under the hold a unit is taken when it is fix-prefixed, or its need's
 /// priority level reaches the configured floor (at least 1), or red tests
 /// exist and its write scope touches none of their crates.
-fn eligible(
+pub(super) fn eligible(
     ctx: &Ctx,
     st: &mut State,
     known: &BTreeSet<String>,
