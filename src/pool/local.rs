@@ -110,6 +110,7 @@ impl PoolProvider for LocalProvider {
         id: &str,
         target: &super::dispatch::target::JobTarget,
         start: &str,
+        _job: &str,
     ) -> Result<(), VivariumError> {
         let Some(source) = &target.local_source else {
             return Ok(());
