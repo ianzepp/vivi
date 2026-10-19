@@ -184,7 +184,10 @@ fn request_respects_the_interval_and_consumes_sync_pending() {
         requests.try_recv().is_err(),
         "a fresh board.at means no request"
     );
-    assert!(st.board.sync_pending, "nothing was shipped, so nothing is taken");
+    assert!(
+        st.board.sync_pending,
+        "nothing was shipped, so nothing is taken"
+    );
 
     st.board.at = ctx.now().saturating_sub(ctx.cfg.board.every + 1);
     pass.request(&ctx, &mut st);

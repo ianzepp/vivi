@@ -173,9 +173,8 @@ fn merge_needs(st: &mut State, snap: &State, done: &State) {
 /// (c) Entries the pass dropped (replan surgery); one `plan::ingest` added
 /// during the pass stays.
 fn merge_plans_seen(st: &mut State, snap: &State, done: &State) {
-    st.plans_seen.retain(|seen| {
-        !(snap.plans_seen.contains(seen) && !done.plans_seen.contains(seen))
-    });
+    st.plans_seen
+        .retain(|seen| !(snap.plans_seen.contains(seen) && !done.plans_seen.contains(seen)));
 }
 
 /// (d) Planning entries the pass expired go, entries it launched land with
@@ -200,9 +199,9 @@ fn merge_planning(st: &mut State, snap: &State, done: &State) {
 /// (e) Reply keys the pass did not record are dropped, the ones it recorded
 /// are appended in its order.
 fn merge_replied(st: &mut State, snap: &State, done: &State) {
-    st.board.replied.retain(|key| {
-        !(snap.board.replied.contains(key) && !done.board.replied.contains(key))
-    });
+    st.board
+        .replied
+        .retain(|key| !(snap.board.replied.contains(key) && !done.board.replied.contains(key)));
     for key in &done.board.replied {
         if snap.board.replied.contains(key) || st.board.replied.contains(key) {
             continue;

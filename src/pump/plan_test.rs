@@ -530,11 +530,7 @@ fn a_revision_with_an_invalid_proof_command_is_rejected_and_keeps_the_unit() {
     ingest(&ctx, &mut st);
     assert_eq!(st.needs["n1"].revision, 1);
     assert!(st.units["n1-1"].proof.is_empty());
-    assert!(
-        host.logs()
-            .iter()
-            .any(|l| l == "EXCEPTION bad-plan n1")
-    );
+    assert!(host.logs().iter().any(|l| l == "EXCEPTION bad-plan n1"));
     let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(
         exc.contains("bad-plan n1 unit n1-1: cargo test takes one TESTNAME filter"),
