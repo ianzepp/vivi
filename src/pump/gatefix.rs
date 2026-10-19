@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::Path;
 
 use crate::pump::collect::spawn_planner;
 use crate::pump::gate::is_settled;
@@ -39,14 +40,48 @@ fn owner_settled(st: &State, owner: &str) -> bool {
     !statuses.is_empty() && statuses.iter().all(|&s| is_settled(s))
 }
 
+/// `true` when the owner left no plan and no live planner behind: no unit
+/// carries its need, `plans/<owner>.json` is missing, and the planner is not
+/// live — its `gatefix/<owner>.prompt` is gone, its exit receipt exists, or
+/// the prompt has outlived `[pump.board] plan_timeout`.
+fn orphaned(ctx: &Ctx, st: &State, owner: &str) -> bool {
+    if st.units.values().any(|unit| unit.need == owner) {
+        return false;
+    }
+    if ctx.home.join("plans").join(format!("{owner}.json")).exists() {
+        return false;
+    }
+    let dir = ctx.home.join("gatefix");
+    let prompt = dir.join(format!("{owner}.prompt"));
+    if !prompt.exists() {
+        return true;
+    }
+    if exit_receipt_path(&dir.join(format!("{owner}.out"))).exists() {
+        return true;
+    }
+    ctx.now().saturating_sub(file_mtime(&prompt)) > ctx.cfg.board.plan_timeout
+}
+
+/// A file's modification time as epoch seconds, 0 when unknown.
+fn file_mtime(path: &Path) -> u64 {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|when| when.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |span| span.as_secs())
+}
+
 /// Owned names that still fail while every unit of their owner has settled
-/// and re-plans are left for them, as `(name, owner)` sorted by name.
+/// (or the owner died without a plan or a live planner) and re-plans are left
+/// for them, as `(name, owner)` sorted by name.
 pub(crate) fn residual_failures(ctx: &Ctx, st: &State, names: &[String]) -> Vec<(String, String)> {
     let failing: BTreeSet<&String> = names.iter().collect();
     st.red
         .iter()
         .filter(|(name, owner)| {
-            failing.contains(name) && replans_left(ctx, st, name) && owner_settled(st, owner)
+            failing.contains(name)
+                && replans_left(ctx, st, name)
+                && (owner_settled(st, owner) || orphaned(ctx, st, owner))
         })
         .map(|(name, owner)| (name.clone(), owner.clone()))
         .collect()
@@ -387,6 +422,16 @@ fn residual_section(ctx: &Ctx, tip: &str, owner: &str, names: &[&str]) -> String
         .map(|name| format!("- {name}"))
         .collect::<Vec<_>>()
         .join("\n");
+    if !ctx.home.join("plans").join(format!("{owner}.json")).exists() {
+        return format!(
+            "These tests were owned by fix plan {owner}, but its planner never wrote a plan (it died before planning), so no unit of that plan ran and they still fail at commit {tip}:
+{list}
+
+Fix the cause forward, and group the failures by cause.
+
+"
+        );
+    }
     format!(
         "These tests were owned by fix plan {owner}. Every unit of that plan has settled, and they still fail at commit {tip}, so the earlier fix was incomplete:
 {list}
