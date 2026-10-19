@@ -366,13 +366,18 @@ fn validate_units<'a>(
         if !ok_brief || !ok_scope || !ok_proof {
             return (minted, Some(BAD_UNIT.to_string()));
         }
+        let target = match target_for_plan(ctx, u) {
+            Ok(target) => target,
+            Err(reason) => return (minted, Some(reason)),
+        };
+        let repo = ctx
+            .cfg
+            .target_path(&ctx.project, &target)
+            .unwrap_or_else(|| ctx.project.clone());
         for cmd in str_list(u.get("proof")) {
-            if let Err(reason) = crate::pump::proof::check(&cmd) {
+            if let Err(reason) = crate::pump::proof::check(&cmd, &repo) {
                 return (minted, Some(format!("unit {uid}: {reason}")));
             }
-        }
-        if let Err(reason) = target_for_plan(ctx, u) {
-            return (minted, Some(reason));
         }
         if let Some(existing) = st.units.get(uid) {
             if !allow_existing {

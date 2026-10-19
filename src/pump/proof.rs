@@ -3,6 +3,10 @@
 //! at plan or dispatch time, instead of burning a hand attempt on a
 //! one-second usage error.
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
 /// Binaries a proof command may start with.
 const BINARIES: [&str; 26] = [
     "awk", "bash", "cargo", "cmake", "diff", "env", "find", "git", "go", "grep", "ls", "make",
@@ -34,20 +38,24 @@ const CARGO_VALUE_FLAGS: [&str; 17] = [
 /// How many wrapper levels (`env`, `sh -c`) validation may recurse into.
 const MAX_DEPTH: usize = 2;
 
-/// Validate one proof command. `Ok` means the binary could plausibly parse
-/// it; `Err` carries the reason it cannot, before any attempt is charged.
+/// Validate one proof command against the target repository at `repo`.
+/// `Ok` means the binary could plausibly parse it; `Err` carries the reason
+/// it cannot, before any attempt is charged. A first word that is a
+/// repo-relative path (contains `/` but does not start with it) must name an
+/// existing executable file under `repo`; absolute paths still go through
+/// the binary allowlist.
 #[must_use]
-pub fn check(cmd: &str) -> Result<(), String> {
+pub fn check(cmd: &str, repo: &Path) -> Result<(), String> {
     let words = crate::pump::host::shell_split(cmd);
     if words.is_empty() {
         return Err("empty proof command".to_string());
     }
-    validate_words(&words, 0, cmd)
+    validate_words(&words, 0, cmd, repo)
 }
 
 /// Validate `words` as one command, recursing through wrapper binaries up
 /// to `MAX_DEPTH` levels deep.
-fn validate_words(words: &[String], depth: usize, cmd: &str) -> Result<(), String> {
+fn validate_words(words: &[String], depth: usize, cmd: &str, repo: &Path) -> Result<(), String> {
     if depth > MAX_DEPTH {
         return Ok(());
     }
@@ -60,7 +68,7 @@ fn validate_words(words: &[String], depth: usize, cmd: &str) -> Result<(), Strin
         return if tail.is_empty() {
             Ok(())
         } else {
-            validate_words(&tail, depth + 1, cmd)
+            validate_words(&tail, depth + 1, cmd, repo)
         };
     }
     if matches!(base, "sh" | "bash" | "zsh") && words.len() > 2 && words[1] == "-c" {
@@ -68,7 +76,19 @@ fn validate_words(words: &[String], depth: usize, cmd: &str) -> Result<(), Strin
         return if inner.is_empty() {
             Ok(())
         } else {
-            validate_words(&inner, depth + 1, cmd)
+            validate_words(&inner, depth + 1, cmd, repo)
+        };
+    }
+    // A repo-relative path must name an executable file in the target
+    // repository; it never goes through the bare-name allowlist.
+    if words[0].contains('/') && !words[0].starts_with('/') {
+        let path = repo.join(&words[0]);
+        return match fs::metadata(&path) {
+            Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => Ok(()),
+            _ => Err(format!(
+                "proof command repo path `{}` is missing or not executable in the target repository",
+                words[0]
+            )),
         };
     }
     if !BINARIES.contains(&base) {
