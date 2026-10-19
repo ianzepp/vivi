@@ -11,7 +11,7 @@ use super::publish::publish;
 use super::{
     GIT_TIMEOUT, already_integrated, failed, failure_text, fetch_failure, flat,
     format_style_commit, identity_args, integrated_text, merge_line, merge_work, outside_files,
-    reset_repo, skips_proof, tail, undecided_result,
+    reset_repo, resolve_generated, skips_proof, tail, undecided_result,
 };
 
 /// A cleanly merged job plus the files its merge touched outside its scope.
@@ -171,13 +171,23 @@ fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResul
         merge_line(ctx, &job.uid, at, "ok");
         return None;
     }
-    merge_line(ctx, &job.uid, at, "conflict");
-    let files = ctx
+    let raw = ctx
         .git("diff --name-only --diff-filter=U", GIT_TIMEOUT)
         .text;
+    let files: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !files.is_empty() && resolve_generated(ctx, &job.uid, &files) {
+        merge_line(ctx, &job.uid, at, "generated");
+        return None;
+    }
+    merge_line(ctx, &job.uid, at, "conflict");
     drop(ctx.git("merge --abort", GIT_TIMEOUT));
     let detail = format!(
-        "The branch no longer merges into the integration branch. Conflicting files: {files}"
+        "The branch no longer merges into the integration branch. Conflicting files: {raw}"
     );
     Some(failed(&job.uid, "merge-conflict", detail))
 }
