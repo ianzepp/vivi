@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use crate::pump::brief::brief_for;
+use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, ranked};
 use crate::pump::state::{State, Status};
@@ -91,6 +92,7 @@ fn tail(s: &str, n: usize) -> String {
 /// the task as superseded and leaves the unit pending.
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
+    apply_env_pauses(ctx, st, &mut free);
     let holds = dependency_holds(ctx, st);
     let mut started: u32 = 0;
     let order = ranked(ctx, st, st.order.clone());
@@ -132,6 +134,28 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         };
         if dispatch_one(ctx, st, &uid, &plan, &model, &task, &mut free) {
             started += 1;
+        }
+    }
+}
+
+/// Apply the pool environment pauses at the top of a dispatch tick: a pool
+/// with a passing probe, or a probe-less pause older than
+/// [`envfail::HOST_FAIL_WINDOW`], resumes (entry removed, pool's free slots
+/// left in place); a still-paused pool keeps its entry and is dropped from
+/// `free`, so dispatch finds no slot there. Pools absent from `free` need no
+/// entry removal.
+fn apply_env_pauses(ctx: &Ctx, st: &mut State, free: &mut BTreeMap<String, u32>) {
+    for pool in st.env_pauses.keys().cloned().collect::<Vec<_>>() {
+        let pause = &st.env_pauses[&pool];
+        let paused = match &pause.probe {
+            Some(probe) => ctx.sh(probe, None, 30).code != 0,
+            None => ctx.now() - pause.fails.last().unwrap_or(&0) <= envfail::HOST_FAIL_WINDOW,
+        };
+        if paused {
+            free.remove(&pool);
+        } else {
+            st.env_pauses.remove(&pool);
+            ctx.log(&format!("environment cleared for pool {pool}"));
         }
     }
 }
