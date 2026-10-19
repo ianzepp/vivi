@@ -128,7 +128,7 @@ Operator and pump flags live in `home`:
 
 | flag | exact effect | removed by |
 | --- | --- | --- |
-| `HOLD-MERGE` | `merge_feed` feeds only units whose id starts with the fix prefix, or whose need is in the priority file; once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`) | pump (`hold_cycle`) or operator |
+| `HOLD-MERGE` | `merge_feed` feeds only units whose id starts with the fix prefix, or whose need is in the priority file; once every fix unit has settled and merged, `hold_cycle` writes `FORCE-GATE`; a clean gate newer than the hold lifts it (removes `HOLD-MERGE`); with `gate.hold_on_red` the pump writes the flag itself (payload `red`) while any owned red is unfixed, and never rewrites an existing flag so the clean-gate lift still sees the original time | pump (`hold_cycle`) or operator |
 | `FORCE-GATE` | `start_gate` treats the gate as due now, whatever the counters say | pump, when the gate dispatches; also written by `hold_cycle` |
 | `REMOTE-MERGE` | merge batches are offered to a remote merger first (file protocol under `merge-jobs/`); this host merges only if the offer is not claimed in time | operator |
 
@@ -727,6 +727,8 @@ beside its siblings.
 | `results_dir` | path, optional | unset | directory an external runner drops `<tip>.json` gate results in; relative paths join the project root like `home`. Unset: pool gates only |
 | `results_wait_seconds` | int seconds | `0`; must be >= 1 when `results_dir` is set | how long a due gate waits for an external result before a pool gate is dispatched instead |
 | `max_replans` | int | `2` | how many times a name that still fails after every unit of its owner settled is handed to a fresh gate-fix planner (counted per name in `state.extra["replans"]`); `0` never re-plans |
+| `hold_on_red` | bool | `false` | while any owned red is unfixed the pump writes `HOLD-MERGE` itself (payload `red`), holding the merge queue; only written when the flag is absent, so an existing flag's modification time is never refreshed |
+| `hold_priority_floor` | int | `0` | under `HOLD-MERGE`, a need's priority level bypasses the hold only at or above this floor |
 | `ignore_file` | path, optional | unset | test names dropped from every gate's failing set: one per line, blank lines and `#` comment lines skipped; relative paths join the project root |
 
 External gate results: when `results_dir` is set, every tick takes each
