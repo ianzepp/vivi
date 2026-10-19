@@ -105,9 +105,9 @@ pub fn import_mailspace(
     // One transaction: a conflict, or any failure, leaves the target as it was.
     target_storage.begin_batch()?;
     let outcome = run_import(&source_storage, &target_storage, false, &mut report)
-        .and_then(|()| report.binding_conflict_error().map_or(Ok(()), Err));
+        .and_then(|map| report.binding_conflict_error().map_or(Ok(map), Err));
     match outcome {
-        Ok(()) => {
+        Ok(_) => {
             target_storage.commit_batch()?;
             Ok(report)
         }
@@ -127,7 +127,7 @@ fn run_import(
     target_storage: &Storage,
     dry_run: bool,
     report: &mut MailspaceImportReport,
-) -> Result<(), VivariumError> {
+) -> Result<HashMap<String, String>, VivariumError> {
     let message_map = import_messages(source_storage, target_storage, dry_run, report)?;
     import_events(
         source_storage,
@@ -136,7 +136,8 @@ fn run_import(
         dry_run,
         report,
     )?;
-    import_links(source_storage, target_storage, dry_run, report)
+    import_links(source_storage, target_storage, dry_run, report)?;
+    Ok(message_map)
 }
 
 fn import_messages(
