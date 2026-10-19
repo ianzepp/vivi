@@ -242,11 +242,8 @@ impl PoolProvider for LocalProvider {
         let dir = self.dir(id)?;
         slots::unclaim(&dir)?;
         slots::detach_if_idle(&dir);
-        let _ignored = super::clean::after_slot_freed(
-            &dir,
-            self.build_dir.as_deref(),
-            self.build_baseline,
-        );
+        let _ignored =
+            super::clean::after_slot_freed(&dir, self.build_dir.as_deref(), self.build_baseline);
         Ok(())
     }
 
