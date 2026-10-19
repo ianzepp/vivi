@@ -423,3 +423,26 @@ fn save_replaces_rows_rather_than_accumulating_them() {
     assert!(back.needs.is_empty());
     assert_eq!(back.merges, 0);
 }
+
+#[test]
+fn requeue_requests_survive_a_state_save() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    store
+        .add_requeue_request("u1", Some(0), true, true, "operator asked", 5)
+        .unwrap();
+    store.save(&State::default()).unwrap();
+    let pending = store.pending_requeue_requests().unwrap();
+    assert_eq!(pending.len(), 1);
+    let request = &pending[0];
+    assert_eq!(request.unit, "u1");
+    assert_eq!(request.attempts, Some(0));
+    assert!(request.fresh);
+    assert!(request.refund);
+    assert_eq!(request.reason, "operator asked");
+    store
+        .mark_requeue_applied(request.request_id, 6)
+        .unwrap();
+    assert!(store.pending_requeue_requests().unwrap().is_empty());
+}
