@@ -1,8 +1,18 @@
 //! Red-gate auditing state and the auditor's fix-forward brief.
 
+use std::fs;
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
+use crate::pump::dispatch::{parse_created_handle, slots};
+use crate::pump::gatefix::{fix_need, send_fix_need, take_residuals};
+use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::State;
+use crate::routing::RoleRouting;
+
+/// Seconds before an audit that could not start is retried.
+const RETRY_SECONDS: u64 = 60;
 
 /// The `state.extra` key holding the live audit run.
 pub(crate) const AUDIT_KEY: &str = "audit";
@@ -57,6 +67,186 @@ pub struct AuditRun {
     /// Earliest epoch a retry may go out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_at: Option<u64>,
+}
+
+/// Start the red-gate audit for `tip`.
+///
+/// The failing names are owned by a gate-fix need first, so promotion stays
+/// held while the audit runs. The audit task then goes to the mailspace's
+/// `auditor` role through the normal role-to-pool routing: role charter,
+/// identity, pool and model all come from the role config. A mailspace with
+/// no auditor role falls back to `[pump] to`, a gate-style read-only worker
+/// dispatched with the gate model.
+///
+/// Nothing is sent while an audit task is open, and nothing is sent when fix
+/// units already exist for this tip.
+pub fn start_audit(
+    ctx: &Ctx,
+    st: &mut State,
+    tip: &str,
+    output_tail: &str,
+    new: &[String],
+    residual: &[(String, String)],
+    prior: Option<&str>,
+) {
+    if current(st).is_some_and(|run| run.task.is_some()) {
+        return;
+    }
+    let base = fix_need(ctx, tip);
+    if st.units.values().any(|unit| unit.need == base) {
+        return;
+    }
+    let owner = send_fix_need(ctx, tip, new, residual).unwrap_or(base);
+    for name in new {
+        st.red.insert(name.clone(), owner.clone());
+    }
+    take_residuals(ctx, st, &owner, residual);
+    let mut run = AuditRun {
+        need: owner.clone(),
+        tip: tip.to_owned(),
+        at: ctx.now(),
+        retry_at: Some(ctx.now().saturating_add(RETRY_SECONDS)),
+        ..AuditRun::default()
+    };
+    let role = ctx.routing.auditor();
+    let free = RoleRouting::first_free(
+        role.and_then(|role| role.pool.as_deref()),
+        &ctx.cfg.gate.pools,
+        &slots(ctx),
+    );
+    let Some(pool) = free else {
+        store(st, Some(run));
+        ctx.log(&format!("audit waiting for a free slot for {owner}"));
+        return;
+    };
+    run.pool = Some(pool);
+    let brief = audit_brief(ctx, tip, output_tail, new, residual, prior);
+    dispatch_audit(ctx, &mut run, Some(&brief), new.len(), residual.len());
+    store(st, Some(run));
+}
+
+/// Write the brief (when one is given), send the audit task and dispatch it.
+/// An attempt that leaves no audit running arms the run for a retry. A retry
+/// passes no brief and reuses the one already on disk.
+fn dispatch_audit(ctx: &Ctx, run: &mut AuditRun, brief: Option<&str>, new: usize, residual: usize) {
+    let role = ctx.routing.auditor();
+    let to = role.map_or_else(|| ctx.cfg.to.clone(), |role| role.name.clone());
+    let Some(pool) = run.pool.clone() else {
+        retry_later(ctx, run);
+        return;
+    };
+    let Some(path) = audit_brief_file(ctx, brief) else {
+        return;
+    };
+    let failures = new + residual;
+    let subject = format!(
+        "[pump audit] {failures} failures at {}",
+        tip_short(&run.tip)
+    );
+    let out = ctx.vivi(
+        &format!(
+            "task send --from {} --to {} --subject {} --body-file {}",
+            shell_quote(&ctx.cfg.from),
+            shell_quote(&to),
+            shell_quote(&subject),
+            shell_quote(&path.to_string_lossy()),
+        ),
+        120,
+    );
+    let Some(task) = parse_created_handle(&out.text) else {
+        ctx.log(&format!("audit task send failed: {}", last_line(&out.text)));
+        retry_later(ctx, run);
+        return;
+    };
+    let args = audit_dispatch_args(ctx, run, &pool, &task, role.is_none());
+    let out = ctx.vivi(&args, 180);
+    if out.code != 0 || !out.text.contains("dispatched") {
+        log_reply_tail(ctx, "audit dispatch failed", &out.text);
+        drop(ctx.vivi(
+            &format!(
+                "task done {task} --for {} --note 'dispatch failed'",
+                ctx.cfg.from
+            ),
+            120,
+        ));
+        retry_later(ctx, run);
+        return;
+    }
+    run.task = Some(task.clone());
+    run.at = ctx.now();
+    run.fails = 0;
+    run.retry_at = None;
+    ctx.log(&format!(
+        "audit started for {} ({new} new, {residual} residual) task={task}",
+        run.need
+    ));
+}
+
+/// The `pool dispatch` line for the audit task. A real auditor role supplies
+/// its own charter, read-only default and band model, so the gate model and
+/// `--read-only` are only sent for the built-in fallback worker.
+fn audit_dispatch_args(
+    ctx: &Ctx,
+    run: &AuditRun,
+    pool: &str,
+    task: &str,
+    fallback: bool,
+) -> String {
+    let mut args = format!(
+        "pool dispatch --pool {pool} {task} --from {} --budget {} --porcelain",
+        run.tip, ctx.cfg.gate.budget,
+    );
+    if fallback {
+        args.push_str(&format!(" --read-only --model {}", ctx.cfg.gate.model));
+    }
+    args
+}
+
+/// Write the rendered brief to `<home>/briefs/audit.txt`; no brief means a
+/// retry, which reuses the file the first attempt wrote.
+fn audit_brief_file(ctx: &Ctx, brief: Option<&str>) -> Option<PathBuf> {
+    let path = ctx.home.join("briefs").join("audit.txt");
+    let text = brief?;
+    if let Some(dir) = path.parent()
+        && let Err(err) = fs::create_dir_all(dir)
+    {
+        ctx.log(&format!("audit brief dir failed: {err}"));
+        return None;
+    }
+    if let Err(err) = fs::write(&path, text) {
+        ctx.log(&format!("audit brief write failed: {err}"));
+        return None;
+    }
+    Some(path)
+}
+
+/// Count one attempt that produced no running audit and arm the retry.
+fn retry_later(ctx: &Ctx, run: &mut AuditRun) {
+    run.task = None;
+    run.fails = run.fails.saturating_add(1);
+    run.retry_at = Some(ctx.now().saturating_add(RETRY_SECONDS));
+    ctx.log(&format!(
+        "audit retry {}/{}s for {}",
+        run.fails, RETRY_SECONDS, run.need
+    ));
+}
+
+/// Log the last 200 characters of a command reply as one line.
+fn log_reply_tail(ctx: &Ctx, what: &str, text: &str) {
+    let count = text.chars().count();
+    let tail: String = text.chars().skip(count.saturating_sub(200)).collect();
+    ctx.log(&format!("{what}: {}", tail.replace('\n', " | ")));
+}
+
+/// The last non-blank line of `text`, cut to 80 chars.
+fn last_line(text: &str) -> String {
+    let line = text.trim().lines().last().unwrap_or("");
+    line.chars().take(80).collect()
+}
+
+/// The first ten characters of a tip, for log and subject lines.
+fn tip_short(tip: &str) -> String {
+    tip.chars().take(10).collect()
 }
 
 /// Read the live audit run, if one is stored.
