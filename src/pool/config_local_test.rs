@@ -73,7 +73,10 @@ fn default_local_root_is_project_relative() {
         "here",
     )
     .unwrap();
-    assert!(site.relative, "the default root resolves against the project");
+    assert!(
+        site.relative,
+        "the default root resolves against the project"
+    );
     assert_eq!(
         site.pool_dir,
         std::path::Path::new("/proj/.vivi/pool/here"),
