@@ -134,8 +134,8 @@ fn lead<'a>(st: &State, q: &'a Quarantine) -> Option<&'a str> {
 }
 
 /// The kind (`tools` value) of the repair unit for `q`: the first member's
-/// non-empty `tools`, else `default_kind`. `None` when it names no defined
-/// kind, so the repair could never be dispatched.
+/// non-empty `tools`, else `default_kind`. Unknown kinds are allowed when the
+/// hand role has an assigned pool because that route does not need a kind pool.
 fn repair_kind(ctx: &Ctx, st: &State, q: &Quarantine) -> Option<String> {
     let tools = q
         .units
@@ -145,7 +145,14 @@ fn repair_kind(ctx: &Ctx, st: &State, q: &Quarantine) -> Option<String> {
         .map(|unit| unit.tools.as_str())
         .find(|tools| !tools.is_empty())
         .unwrap_or("");
-    ctx.cfg.kind_of(tools)?;
+    let hand_has_pool = ctx
+        .routing
+        .hand(&ctx.cfg.to)
+        .and_then(|role| ctx.routing.pool_of(role))
+        .is_some();
+    if !hand_has_pool && ctx.cfg.kind_of(tools).is_none() {
+        return None;
+    }
     Some(ctx.cfg.kind_name(tools).to_string())
 }
 

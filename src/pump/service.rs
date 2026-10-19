@@ -37,11 +37,7 @@ pub fn add(project: &Path) -> Result<(), VivariumError> {
         ))
     })?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let role_pool = mailspace
-        .config
-        .identities
-        .iter()
-        .any(|role| role.pool.is_some());
+    let role_pool = crate::pump::run::hand_role_pool(&mailspace, pump);
     pump.validate_for(&mailspace.root, &pools, role_pool)?;
     let roster = crate::pump::run::identity_issues(&mailspace, pump);
     if !roster.is_empty() {

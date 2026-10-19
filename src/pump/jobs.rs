@@ -863,7 +863,8 @@ fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
     args.join(" ")
 }
 
-/// Expand role/pool choices into their ordered fallback chain.
+/// Expand the assigned role pool first, then explicit candidates, including
+/// each pool's configured fallback chain in that order.
 #[must_use]
 pub fn candidate_pools(
     ctx: &Ctx,

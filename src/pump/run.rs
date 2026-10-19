@@ -283,11 +283,7 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let role_pool = mailspace
-        .config
-        .identities
-        .iter()
-        .any(|role| role.pool.is_some());
+    let role_pool = hand_role_pool(&mailspace, &cfg);
     cfg.validate_for(project, &pools, role_pool)?;
     let roster = identity_issues(&mailspace, &cfg);
     if !roster.is_empty() {
@@ -687,11 +683,7 @@ fn load_runtime_config(project: &Path) -> Result<LoadedRuntimeConfig, VivariumEr
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let role_pool = mailspace
-        .config
-        .identities
-        .iter()
-        .any(|role| role.pool.is_some());
+    let role_pool = hand_role_pool(&mailspace, &cfg);
     cfg.validate_for(project, &pools, role_pool)?;
     let roster = identity_issues(&mailspace, &cfg);
     if !roster.is_empty() {
@@ -785,6 +777,15 @@ fn pump_config(mailspace: &Mailspace) -> Result<PumpConfig, VivariumError> {
     mailspace.config.pump.clone().ok_or_else(|| {
         VivariumError::Config(String::from("no [pump] table in .vivi/mailspace.toml"))
     })
+}
+
+/// Whether `[pump.to]` resolves to a hand role with a configured pool.
+pub(crate) fn hand_role_pool(mailspace: &Mailspace, cfg: &PumpConfig) -> bool {
+    let routing = crate::routing::from_mailspace(&mailspace.config);
+    routing
+        .hand(&cfg.to)
+        .and_then(|role| routing.pool_of(role))
+        .is_some()
 }
 
 /// Roster complaints for the identities the pump speaks as: `[pump] from`,

@@ -21,16 +21,16 @@ use crate::routing::{choose_model, lanes_for};
 /// flag, `FORCE-GATE-<target>` a named target's.
 const FORCE_FLAG: &str = "FORCE-GATE";
 
-/// The gate-pool slot a dispatch tick holds back: `reserved` while a forced
-/// gate or a waiting fix unit needs a slot, `forced` when a `FORCE-GATE` flag
-/// already claims it (then even a fix unit leaves the slot alone).
-#[derive(Clone, Copy)]
+/// A gate-candidate slot a dispatch tick holds back while a forced gate or a
+/// waiting fix unit needs capacity. A forced gate's reserved slot is exclusive.
 struct GateSlot {
-    /// One slot of every `[pump.gate].pools` pool is not offered to units.
+    /// One slot of each eligible gate pool is not offered to units.
     reserved: bool,
     /// A forced gate's flag exists, so the reserved slot is strictly the
     /// gate's.
     forced: bool,
+    /// Every pool the generic dispatcher may choose for a gate job, in order.
+    pools: Vec<String>,
 }
 
 impl GateSlot {
@@ -39,7 +39,7 @@ impl GateSlot {
     /// `FORCE-GATE` flag exists.
     fn free_for(&self, ctx: &Ctx, pool: &str, free: &BTreeMap<String, u32>, uid: &str) -> u32 {
         let n = free.get(pool).copied().unwrap_or(0);
-        if !self.reserved || !ctx.cfg.gate.pools.iter().any(|name| name == pool) {
+        if !self.reserved || !self.pools.iter().any(|name| name == pool) {
             return n;
         }
         if !self.forced && uid.starts_with(ctx.cfg.fix_prefix.as_str()) {
@@ -207,11 +207,13 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
     apply_env_pauses(ctx, st, &mut free);
     let forced = force_gate_pending(ctx);
-    let reserve =
-        !ctx.cfg.gate.pools.is_empty() && (forced || fix_unit_waiting(st, &ctx.cfg.fix_prefix));
+    let gate_pools =
+        crate::pump::jobs::candidate_pools(ctx, "gate", &ctx.cfg.gate.pools, false, &[]);
+    let reserve = !gate_pools.is_empty() && (forced || fix_unit_waiting(st, &ctx.cfg.fix_prefix));
     let gate = GateSlot {
         reserved: reserve,
         forced,
+        pools: gate_pools,
     };
     let holds = dependency_holds(ctx, st);
     let order = ranked(ctx, st, st.order.clone());
@@ -221,49 +223,14 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         if planned.len() as u32 >= ctx.cfg.dispatch.per_tick {
             break;
         }
-        let Some(current) = st.units.get(&uid) else {
-            continue;
-        };
-        if done_needs.contains(&current.need) || st.closed_needs.contains(&current.need) {
-            attempt_record::clear_ready(st, &uid);
+        if !prepare_ready_unit(ctx, st, &uid, &holds, &done_needs) {
             continue;
         }
-        let dependency = st
-            .units
-            .get(&uid)
-            .and_then(|unit| holds.get(&unit.need))
-            .and_then(|deps| deps.first())
-            .cloned();
-        let dependency_was_held = st
-            .units
-            .get(&uid)
-            .is_some_and(|unit| unit.held_on.is_some());
-        if note_hold(ctx, st, &uid, Status::Pending, dependency) {
-            attempt_record::clear_ready(st, &uid);
-            continue;
-        }
-        if dependency_was_held {
-            attempt_record::clear_ready(st, &uid);
-        }
-        if hold_unknown_target(ctx, st, &uid) {
-            attempt_record::clear_ready(st, &uid);
-            continue;
-        }
-        if report_unknown_kind(ctx, st, &uid) {
-            attempt_record::clear_ready(st, &uid);
-            continue;
-        }
-        if is_ready(ctx, st, &uid, &holds) {
-            attempt_record::mark_ready(st, &uid, ctx.now());
-        } else {
-            attempt_record::clear_ready(st, &uid);
-            continue;
-        }
-        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned, gate) else {
+        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned, &gate) else {
             continue;
         };
         let Some(model) = plan.model.clone() else {
-            if hand_pool_is_fixed(ctx) {
+            if hand_role_has_pool(ctx) {
                 continue;
             }
             break;
@@ -282,6 +249,42 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         });
     }
     run_starts(ctx, st, &planned, &mut free);
+}
+
+/// Apply readiness holds and timestamp the unit when every blocker clears.
+fn prepare_ready_unit(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    holds: &BTreeMap<String, Vec<String>>,
+    done_needs: &BTreeSet<String>,
+) -> bool {
+    let Some(unit) = st.units.get(uid) else {
+        return false;
+    };
+    if done_needs.contains(&unit.need) || st.closed_needs.contains(&unit.need) {
+        attempt_record::clear_ready(st, uid);
+        return false;
+    }
+    let dependency = holds.get(&unit.need).and_then(|deps| deps.first()).cloned();
+    let dependency_was_held = unit.held_on.is_some();
+    if note_hold(ctx, st, uid, Status::Pending, dependency) {
+        attempt_record::clear_ready(st, uid);
+        return false;
+    }
+    if dependency_was_held {
+        attempt_record::clear_ready(st, uid);
+    }
+    if hold_unknown_target(ctx, st, uid) || report_unknown_kind(ctx, st, uid) {
+        attempt_record::clear_ready(st, uid);
+        return false;
+    }
+    if !is_ready(ctx, st, uid, holds) {
+        attempt_record::clear_ready(st, uid);
+        return false;
+    }
+    attempt_record::mark_ready(st, uid, ctx.now());
+    true
 }
 
 /// Recheck ready proofs against the current target checkout before a worker
@@ -317,7 +320,7 @@ fn invalid_ready_proof(
         || done_needs.contains(&unit.need)
         || st.closed_needs.contains(&unit.need)
         || !ctx.cfg.target_configs().contains_key(unit.target_id())
-        || ctx.cfg.kind_of(&unit.tools).is_none()
+        || (!hand_role_has_pool(ctx) && ctx.cfg.kind_of(&unit.tools).is_none())
     {
         return None;
     }
@@ -373,12 +376,11 @@ fn report_invalid_proofs(
     }
 }
 
-/// `true` when the hand role names a pool, so a unit whose lanes are all full
-/// waits for that pool instead of ending the tick.
-fn hand_pool_is_fixed(ctx: &Ctx) -> bool {
+/// `true` when the hand role has a configured pool and fallback chain.
+fn hand_role_has_pool(ctx: &Ctx) -> bool {
     ctx.routing
         .hand(&ctx.cfg.to)
-        .and_then(|role| role.pool.as_deref())
+        .and_then(|role| ctx.routing.pool_of(role))
         .is_some()
 }
 
@@ -468,13 +470,15 @@ fn hold_unknown_target(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
     true
 }
 
-/// `true` when the unit names a kind that is not defined, so it cannot be
-/// dispatched. A pending unit raises one `unknown-kind` exception, the first
-/// time only (recorded on the unit, so a restart does not repeat it).
+/// `true` when an unassigned hand route needs a missing kind, so the unit
+/// cannot be dispatched. A pending unit raises one `unknown-kind` exception.
 fn report_unknown_kind(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
     let Some(unit) = st.units.get_mut(uid) else {
         return false;
     };
+    if hand_role_has_pool(ctx) {
+        return false;
+    }
     if ctx.cfg.kind_of(&unit.tools).is_some() {
         return false;
     }
@@ -495,7 +499,7 @@ fn report_unknown_kind(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
 }
 
 /// Decide whether `uid` may start this tick and where: pending and ready,
-/// under its kind's `max`, and one of the kind's pools has a free slot; a
+/// under its kind's `max` when configured, and a routed pool has a free slot; a
 /// closed lane set is reported separately, since it breaks the loop rather
 /// than skipping the unit.
 fn plan_unit(
@@ -505,17 +509,20 @@ fn plan_unit(
     free: &BTreeMap<String, u32>,
     holds: &BTreeMap<String, Vec<String>>,
     planned: &[Planned],
-    gate: GateSlot,
+    gate: &GateSlot,
 ) -> Option<Plan> {
     let unit = st.units.get(uid)?;
     if !is_ready(ctx, st, uid, holds) {
         return None;
     }
-    let kind = ctx.cfg.kind_of(&unit.tools)?;
+    let kind = ctx.cfg.kind_of(&unit.tools);
+    if kind.is_none() && !hand_role_has_pool(ctx) {
+        return None;
+    }
     let kind_name = ctx.cfg.kind_name(&unit.tools);
     // While `max` units of this kind are inflight or planned this tick, a
     // further one waits.
-    if let Some(max) = kind.max
+    if let Some(max) = kind.and_then(|kind| kind.max)
         && inflight_of_kind(ctx, st, &kind_name)
             + planned
                 .iter()
@@ -525,7 +532,8 @@ fn plan_unit(
     {
         return None;
     }
-    let pool = assigned_pool(ctx, uid, &kind.pools, free, gate)?;
+    let kind_pools = kind.map_or(&[][..], |kind| kind.pools.as_slice());
+    let pool = assigned_pool(ctx, uid, kind_pools, free, gate)?;
     let attempt = unit.attempts + 1;
     Some(Plan {
         pool: pool.clone(),
@@ -535,20 +543,19 @@ fn plan_unit(
     })
 }
 
-/// The role's pool when the hand role sets one (wait if it is full); else
-/// the kind's pool with the most free slots. A gate-pool slot held back for a
-/// forced gate or a waiting fix unit is not offered here.
+/// The hand role's pool and fallback chain when assigned; otherwise the kind's
+/// pool with the most free slots. Reserved gate candidates are unavailable.
 fn assigned_pool(
     ctx: &Ctx,
     uid: &str,
     kind_pools: &[String],
     free: &BTreeMap<String, u32>,
-    gate: GateSlot,
+    gate: &GateSlot,
 ) -> Option<String> {
     let assigned = ctx
         .routing
         .hand(&ctx.cfg.to)
-        .and_then(|role| role.pool.clone());
+        .and_then(|role| ctx.routing.pool_of(role).map(str::to_owned));
     let candidates = if assigned.is_some() {
         Vec::new()
     } else {
@@ -614,7 +621,7 @@ fn pick_pool(
     uid: &str,
     pools: &[String],
     free: &BTreeMap<String, u32>,
-    gate: GateSlot,
+    gate: &GateSlot,
 ) -> Option<String> {
     let mut best: Option<(&String, u32)> = None;
     for pool in pools {

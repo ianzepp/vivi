@@ -997,6 +997,38 @@ fn a_hand_role_pool_is_used_even_when_another_pool_has_more_slots() {
 }
 
 #[test]
+fn a_hand_role_pool_dispatches_without_tools_or_a_default_kind() {
+    let config = PumpConfig {
+        branch: String::from("next"),
+        ..PumpConfig::default()
+    };
+    let (_dir, ctx, host) = setup_with(config);
+    let mut routing = hand_on("a");
+    routing.roles[0].model = Some(String::from("m/a"));
+    let ctx = ctx.with_routing(routing);
+    host.reply(
+        "pool status",
+        0,
+        "slot a bridge slot-1 free\nslot b bridge slot-1 free\n",
+    );
+    wire_sends(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    st.units.get_mut("u1").unwrap().tools.clear();
+
+    dispatch(&ctx, &mut st);
+
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("a"));
+    assert!(
+        !host
+            .logs()
+            .iter()
+            .any(|line| line.contains("EXCEPTION unknown-kind u1"))
+    );
+}
+
+#[test]
 fn a_hand_role_uses_its_configured_fallback_when_the_primary_pool_is_full() {
     let status = "slot a bridge slot-1 busy\nslot b bridge slot-1 free\n";
     let mut routing = hand_on("a");
@@ -1128,6 +1160,35 @@ fn a_forced_gate_reserves_the_last_gate_pool_slot() {
     let sent = commands_with(&host, "task send --from operator --to hand");
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert!(sent[0].contains("[pumpfix-1 a1]"));
+}
+
+#[test]
+fn an_assigned_gate_role_pool_is_reserved_without_explicit_gate_candidates() {
+    let mut cfg = cfg_with(3);
+    cfg.gate.pools.clear();
+    let (dir, base, host) = setup_with(cfg);
+    let mut routing = hand_on("a");
+    routing.roles.push(RoutedRole {
+        name: String::from("gate"),
+        kind: Some(String::from("gate")),
+        status: String::from("active"),
+        pool: Some(String::from("a")),
+        read_only: Some(true),
+        model: None,
+        models: Vec::new(),
+    });
+    let ctx = base.with_routing(routing);
+    host.reply("pool status", 0, "slot a bridge slot-1 free\n");
+    fs::write(dir.path().join("home/FORCE-GATE"), "test reservation\n").unwrap();
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    st.units.get_mut("u1").unwrap().tools = String::from("full");
+
+    dispatch(&ctx, &mut st);
+
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["u1"].task, None);
+    assert!(commands_with(&host, "pool dispatch").is_empty());
 }
 
 #[test]

@@ -335,6 +335,58 @@ fn start_gate_is_due_with_no_baseline_and_dispatches_read_only_to_the_first_pool
 }
 
 #[test]
+fn assigned_gate_pool_precedes_declared_gate_fallback_candidates() {
+    let (dir, base, host) = setup();
+    host.reply(
+        "pool status",
+        0,
+        "slot primary bridge slot-1 free\nslot flyfull bridge slot-2 free\nslot flygate bridge slot-9 free\n",
+    );
+    host.reply("git ls-remote", 0, &format!("{TIP}\trefs/heads/next\n"));
+    host.reply("task send", 0, &format!("created hand {TASK}\nnode {TASK}"));
+    host.reply(
+        "pool dispatch",
+        0,
+        &format!("dispatched {TASK} bridge slot-1"),
+    );
+    let pool = |slots| RoutedPool {
+        slots,
+        provider: String::from("local"),
+        fallback: None,
+        caps: std::collections::BTreeMap::new(),
+        models: Vec::new(),
+        has_bands: false,
+    };
+    let ctx = base.with_routing(RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("gate"),
+            kind: Some(String::from("gate")),
+            status: String::from("active"),
+            pool: Some(String::from("primary")),
+            read_only: Some(true),
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: std::collections::BTreeMap::from([
+            (String::from("primary"), pool(1)),
+            (String::from("flyfull"), pool(1)),
+            (String::from("flygate"), pool(1)),
+        ]),
+    });
+    let mut st = State {
+        baseline: None,
+        ..fresh_state()
+    };
+
+    start_and_dispatch(&ctx, &mut st);
+
+    let job = gate_job(&st);
+    assert_eq!(job.pool.as_deref(), Some("primary"));
+    assert_eq!(job.pool_candidates, ["flyfull", "flygate"]);
+    drop(dir);
+}
+
+#[test]
 fn a_named_target_gate_uses_its_branch_and_persists_its_own_run() {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {

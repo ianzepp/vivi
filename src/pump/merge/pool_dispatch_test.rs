@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    MergeReceipt, SourceResult, parse_receipt, published_integration_tip, valid_sha, valid_sources,
+    MergeReceipt, SourceResult, apply_source, parse_receipt, published_integration_tip, valid_sha,
+    valid_sources,
 };
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{Generated, PumpConfig};
 use crate::pump::host::test_ctx;
 use crate::pump::jobs::{JobOutcome, JobSpec, PoolJob};
 use crate::pump::merge::dispatch_pool;
-use crate::pump::state::State;
+use crate::pump::state::{State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[test]
@@ -130,6 +131,64 @@ fn runner_publish_receipt_names_ref_candidate_and_remote_sha() {
 }
 
 #[test]
+fn lane_race_and_generated_publish_conflicts_retry_solo_without_charging_attempts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.merge.generated.push(Generated {
+        paths: vec![String::from("generated/counter.rs")],
+        regenerate: String::from("./regenerate-counter"),
+        drift: Vec::new(),
+    });
+    let (ctx, _) = test_ctx(dir.path(), config);
+    let mut job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
+    job.units = vec![String::from("u1")];
+    for (why, detail) in [
+        (
+            "lane-race",
+            "source was clean against the refreshed integration tip",
+        ),
+        (
+            "generated-publish-conflict",
+            "publish conflicted only in configured generated/counter.rs after green checks",
+        ),
+    ] {
+        let mut st = State::default();
+        st.units.insert(
+            String::from("u1"),
+            Unit {
+                status: Status::Merging,
+                attempts: 2,
+                ..Unit::default()
+            },
+        );
+        let source = SourceResult {
+            kind: String::from("unit"),
+            id: String::from("u1"),
+            status: String::from("undecided"),
+            why: String::from(why),
+            detail: String::from(detail),
+            outside: Vec::new(),
+            secs: Some(1),
+        };
+
+        apply_source(
+            &ctx,
+            &mut st,
+            &job,
+            &source,
+            "0123456789012345678901234567890123456789",
+        );
+
+        let unit = &st.units["u1"];
+        assert_eq!(unit.status, Status::Delivered, "{why}");
+        assert!(unit.solo, "{why}");
+        assert_eq!(unit.attempts, 2, "{why}");
+        assert_eq!(st.merges, 0, "{why}");
+    }
+    assert_eq!(ctx.cfg.merge.generated_paths(), ["generated/counter.rs"]);
+}
+
+#[test]
 fn merge_result_requires_remote_integration_ancestry() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = PumpConfig::default();
@@ -150,6 +209,7 @@ fn merge_result_requires_remote_integration_ancestry() {
     );
     let mut job = PoolJob::from(JobSpec::new("merge-1", "merge", "merge", "s", "b"));
     job.target = Some(String::from("default"));
+    job.publish_ref = Some(String::from("refs/heads/next"));
     let outcome = JobOutcome {
         state: String::from("finished"),
         detail: String::from("no_changes"),

@@ -649,6 +649,9 @@ fn faber_fixture_migrates_hand_to_glm_and_merge_to_host() {
             .iter()
             .any(|cap| cap.pool == "glm" && cap.model.contains("deepseek") && cap.cap == 10)
     );
-    let issues = validate(&config);
+    let mut doc = raw.parse().unwrap();
+    apply_plan_to_document(&mut doc, &plan).unwrap();
+    let migrated: MailspaceConfig = toml::from_str(&doc.to_string()).unwrap();
+    let issues = validate(&migrated);
     assert!(require_ok(&issues).is_ok(), "{issues:?}");
 }

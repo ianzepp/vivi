@@ -136,7 +136,7 @@ fn boot_script_bounds_every_job_and_keeps_results_until_replaced() {
 }
 
 #[test]
-fn job_runner_is_generic_runs_as_hand_and_never_forces_a_push() {
+fn job_runner_is_generic_and_keeps_privileged_publish_outside_the_agent() {
     for project_word in ["faber", "radix", "cargo", "rustup", "pi ", "ZAI", "npm"] {
         assert!(
             !job::RUNNER.contains(project_word),
@@ -147,12 +147,22 @@ fn job_runner_is_generic_runs_as_hand_and_never_forces_a_push() {
     assert!(job::RUNNER.contains("env -i"));
     assert!(job::RUNNER.contains(r#"timeout -k 15 "$BUDGET""#));
     assert!(job::RUNNER.contains("HEAD:refs/heads/$BRANCH"));
+    assert!(
+        job::RUNNER
+            .contains(r#"git -C "$RD" push -q "$PUBLISH_URL" "$PUBLISH_CANDIDATE:$PUBLISH_REF""#)
+    );
     assert!(!job::RUNNER.contains("--force"));
     assert!(!job::RUNNER.contains("push -f"));
     // The Git token is read into the runner only, not into the agent's env.
     assert!(!job::RUNNER.contains("GH_TOKEN"));
     assert!(job::RUNNER.contains("finish no_changes"));
-    assert!(job::RUNNER.contains("finish push_refused"));
+    assert!(job::RUNNER.contains("RUNNER_PUSH=push_refused"));
+    let harness_env = &job::RUNNER
+        [job::RUNNER.find("HARNESS_ENV=(").unwrap()..job::RUNNER.find("# Facts:").unwrap()];
+    assert!(!harness_env.contains("PUBLISH_REF"));
+    assert!(!harness_env.contains("PUBLISH_EXPECT"));
+    assert!(!harness_env.contains("PUBLISH_REMOTE"));
+    assert!(!harness_env.contains("TOKEN"));
     assert!(job::RUNNER.contains("Pool-Run: slot=$SLOT model=$MODEL"));
 }
 

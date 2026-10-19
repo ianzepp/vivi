@@ -380,10 +380,11 @@ pub struct DispatchConfig {
     /// `--from` of a unit dispatch; absent means `branch`.
     pub from: Option<String>,
     /// Unit kinds (`[pump.dispatch.kinds.<name>]`): a unit's `tools` value
-    /// names its kind, and the kind names the pools the unit goes to.
+    /// names its kind. Without an assigned hand-role pool, the kind names the
+    /// pools the unit goes to; `max` and `skip_proof` also apply to role routes.
     pub kinds: BTreeMap<String, Kind>,
-    /// Kind of a unit with no `tools` value. Required (and must be a defined
-    /// kind) when `kinds` is non-empty.
+    /// Kind of a unit with no `tools` value. Required when `kinds` is non-empty
+    /// for legacy pool routing; role-pool routing can omit it.
     pub default_kind: String,
 }
 
@@ -391,9 +392,9 @@ pub struct DispatchConfig {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Kind {
-    /// Pools units of this kind are dispatched to; each must name a
-    /// `[pools.*]` table. Required, non-empty. A unit goes to the listed pool
-    /// with the most free slots (ties: first listed).
+    /// Pools units of this kind are dispatched to by legacy routing; each must
+    /// name a `[pools.*]` table. A unit goes to the listed pool with the most
+    /// free slots (ties: first listed). Ignored when the hand role has a pool.
     pub pools: Vec<String>,
     /// Units of this kind allowed in flight at once; absent = no cap. While
     /// this many are inflight, a further unit of the kind waits (skipped,
@@ -521,7 +522,8 @@ pub struct GateConfig {
     /// Retired: accepted and ignored. A gate is due after every merge batch
     /// that lands (need e90b0221).
     pub every_seconds: u64,
-    /// Pools a gate worker may use; each must name a `[pools.*]` table.
+    /// Ordered gate fallback pools after the assigned gate role's pool and its
+    /// configured fallback chain; each must name a `[pools.*]` table.
     pub pools: Vec<String>,
     /// Gate worker model.
     pub model: String,
@@ -582,8 +584,8 @@ impl PumpConfig {
     }
 
     /// Like [`Self::validate`], but empty `[pump.dispatch] lanes` is allowed
-    /// when `role_pool` is true (dispatch capacity comes from assigned
-    /// `[pools.<name>]` `slots` and optional `caps`).
+    /// when the hand role has a pool; capacity comes from its pool's slots and
+    /// optional caps, while kind-pool routing and `default_kind` are optional.
     ///
     /// # Errors
     /// [`VivariumError::Config`] naming every violated key when a rule fails.
@@ -591,7 +593,7 @@ impl PumpConfig {
         &self,
         project: &Path,
         pools: &[String],
-        role_pool: bool,
+        hand_role_pool: bool,
     ) -> Result<(), VivariumError> {
         let mut bad: Vec<String> = Vec::new();
         if self.committer_name.trim().is_empty() {
@@ -612,7 +614,7 @@ impl PumpConfig {
             bad.push("[pump] tick must be >= 1".into());
         }
         self.validate_ramdisk(&mut bad);
-        self.validate_dispatch(pools, role_pool, &mut bad);
+        self.validate_dispatch(pools, hand_role_pool, &mut bad);
         if self.targets.is_empty() {
             if self.branch.is_empty() {
                 bad.push("[pump] branch must not be empty".into());
@@ -708,8 +710,8 @@ impl PumpConfig {
             .unwrap_or_default()
     }
 
-    fn validate_dispatch(&self, pools: &[String], role_pool: bool, bad: &mut Vec<String>) {
-        if self.dispatch.lanes.is_empty() && !role_pool {
+    fn validate_dispatch(&self, pools: &[String], hand_role_pool: bool, bad: &mut Vec<String>) {
+        if self.dispatch.lanes.is_empty() && !hand_role_pool {
             bad.push("[pump.dispatch] lanes must not be empty".into());
         }
         for lane in &self.dispatch.lanes {
@@ -732,28 +734,30 @@ impl PumpConfig {
         if self.dispatch.per_tick == 0 {
             bad.push("[pump.dispatch] per_tick must be >= 1".into());
         }
-        self.validate_kinds(pools, bad);
+        self.validate_kinds(pools, hand_role_pool, bad);
     }
 
-    fn validate_kinds(&self, pools: &[String], bad: &mut Vec<String>) {
+    fn validate_kinds(&self, pools: &[String], hand_role_pool: bool, bad: &mut Vec<String>) {
         for (name, kind) in &self.dispatch.kinds {
-            if kind.pools.is_empty() {
-                bad.push(format!(
-                    "[pump.dispatch.kinds.{name}] pools must not be empty"
-                ));
-            }
-            for pool in &kind.pools {
-                if !known(pools, pool) {
+            if !hand_role_pool {
+                if kind.pools.is_empty() {
                     bad.push(format!(
-                        "[pump.dispatch.kinds.{name}] pools names unknown pool `{pool}`"
+                        "[pump.dispatch.kinds.{name}] pools must not be empty"
                     ));
+                }
+                for pool in &kind.pools {
+                    if !known(pools, pool) {
+                        bad.push(format!(
+                            "[pump.dispatch.kinds.{name}] pools names unknown pool `{pool}`"
+                        ));
+                    }
                 }
             }
             if kind.max == Some(0) {
                 bad.push(format!("[pump.dispatch.kinds.{name}] max must be >= 1"));
             }
         }
-        if !self.dispatch.kinds.is_empty() {
+        if !hand_role_pool && !self.dispatch.kinds.is_empty() {
             let default = &self.dispatch.default_kind;
             if default.is_empty() {
                 bad.push("[pump.dispatch] default_kind must be set when kinds is non-empty".into());

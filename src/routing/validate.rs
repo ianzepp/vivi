@@ -360,9 +360,15 @@ fn warn_legacy(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>
         .hand(&pump.to)
         .and_then(|role| role.pool.as_deref())
         .is_some();
-    if hand_assigned && !pump.dispatch.kinds.is_empty() {
+    if hand_assigned
+        && pump
+            .dispatch
+            .kinds
+            .values()
+            .any(|kind| !kind.pools.is_empty())
+    {
         issues.push(Issue::warning(
-            "[pump.dispatch.kinds] is unused for roles that set pool; remove it after migrate",
+            "[pump.dispatch.kinds.*].pools are unused for hand roles with a pool; kind max and skip_proof still apply",
         ));
     }
     if hand_assigned && !pump.dispatch.lanes.is_empty() {
@@ -384,11 +390,6 @@ fn warn_legacy(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>
     {
         issues.push(Issue::warning(
             "[pump.merge] lanes is unused; merge lanes follow the merge role's pool slots",
-        ));
-    }
-    if routing.gate().and_then(|role| role.pool.as_ref()).is_some() && !pump.gate.pools.is_empty() {
-        issues.push(Issue::warning(
-            "[pump.gate] pools is unused; the gate uses the gate role's pool",
         ));
     }
 }

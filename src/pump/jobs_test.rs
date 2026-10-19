@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use super::{
     JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
-    branch_sources_pending, dispatch_order, enqueue, enqueue_promotion, integration_error,
-    mark_applied, mark_gated, mark_merged, pool_command, recover_dispatched,
+    branch_sources_pending, candidate_pools, dispatch_order, enqueue, enqueue_promotion,
+    integration_error, mark_applied, mark_gated, mark_merged, pool_command, recover_dispatched,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{FakeHost, test_ctx};
@@ -93,6 +93,42 @@ fn recovery_and_fix_jobs_dispatch_before_ordinary_cadence_jobs() {
     assert!(ids[1..3].contains(&"merge-fix"));
     assert_eq!(ids[3], "plan-hot");
     assert_eq!(ids[4], "cadence-a");
+}
+
+#[test]
+fn role_pool_and_explicit_candidates_expand_as_primary_then_fallbacks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _) = test_ctx(dir.path(), PumpConfig::default());
+    let pool = |fallback: Option<&str>| RoutedPool {
+        slots: 1,
+        provider: String::from("local"),
+        fallback: fallback.map(str::to_owned),
+        caps: BTreeMap::new(),
+        models: Vec::new(),
+        has_bands: false,
+    };
+    let ctx = ctx.with_routing(RoleRouting {
+        roles: vec![RoutedRole {
+            name: String::from("gate"),
+            kind: Some(String::from("gate")),
+            status: String::from("active"),
+            pool: Some(String::from("role")),
+            read_only: Some(true),
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: BTreeMap::from([
+            (String::from("role"), pool(Some("role-fallback"))),
+            (String::from("role-fallback"), pool(None)),
+            (String::from("declared"), pool(Some("declared-fallback"))),
+            (String::from("declared-fallback"), pool(None)),
+        ]),
+    });
+
+    assert_eq!(
+        candidate_pools(&ctx, "gate", &[String::from("declared")], false, &[]),
+        ["role", "role-fallback", "declared", "declared-fallback"]
+    );
 }
 
 #[test]
@@ -231,18 +267,18 @@ fn pool_command_carries_repository_and_write_context() {
     job.publish_ref = Some(String::from("refs/heads/next"));
     job.publish_expect = Some(String::from("a".repeat(40)));
     let command = pool_command(&job, "local", "a1b2c3d4");
-    assert!(command.contains("--pool 'local'"));
+    assert!(command.contains("--pool local"));
     assert!(command.contains("a1b2c3d4"));
-    assert!(command.contains("--target 'default'"));
-    assert!(command.contains("--from 'origin/next'"));
-    assert!(command.contains("--branch 'next'"));
-    assert!(command.contains("--with 'unit/u1-a1'"));
-    assert!(command.contains("--model 'model/a'"));
+    assert!(command.contains("--target default"));
+    assert!(command.contains("--from origin/next"));
+    assert!(command.contains("--branch next"));
+    assert!(command.contains("--with unit/u1-a1"));
+    assert!(command.contains("--model model/a"));
     assert!(command.contains("--allow-default-branch"));
     assert!(command.contains("--budget 45"));
     assert!(!command.contains("--read-only"));
-    assert!(command.contains("--publish-ref 'refs/heads/next'"));
-    assert!(command.contains(&format!("--publish-expect '{}'", "a".repeat(40))));
+    assert!(command.contains("--publish-ref refs/heads/next"));
+    assert!(command.contains(&format!("--publish-expect {}", "a".repeat(40))));
 }
 
 #[test]

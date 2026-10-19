@@ -398,7 +398,7 @@ fn validate_rejects_empty_lanes_and_zero_caps() {
 
 #[test]
 fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
-    let cfg = PumpConfig {
+    let mut cfg = PumpConfig {
         committer_name: "Vivi".into(),
         committer_email: "vivi@example.invalid".into(),
         branch: "next".into(),
@@ -413,6 +413,14 @@ fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
         },
         ..PumpConfig::default()
     };
+    cfg.dispatch.kinds.insert(
+        String::from("special"),
+        Kind {
+            max: Some(2),
+            skip_proof: true,
+            ..Kind::default()
+        },
+    );
     assert!(
         cfg.dispatch.lanes.is_empty(),
         "this fixture must omit [pump.dispatch] lanes"
@@ -424,7 +432,7 @@ fn validate_allows_empty_lanes_when_a_role_assigns_a_pool() {
     let ok = cfg.validate_for(Path::new("."), &pools(&["glm"]), true);
     assert!(
         ok.is_ok(),
-        "role→pool capacity comes from the assigned pool: {ok:?}"
+        "role-pool dispatch does not need kind pools or a default kind: {ok:?}"
     );
 }
 
