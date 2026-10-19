@@ -266,6 +266,58 @@ fn a_close_with_verdict_carries_it_as_letter_headers() {
 }
 
 #[test]
+fn a_report_with_verdict_carries_it_as_a_letter() {
+    let (_tmp, mailspace) = space(false);
+    let mut sent = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "unit".into(),
+            body: "done_when: lands\n".into(),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let handle = sent.delivered.remove(0).handle;
+
+    let outcome = mailspace
+        .move_task_outcome(
+            "hand",
+            &handle,
+            "done",
+            None,
+            Some("fixed"),
+            &["vivi".into()],
+            &["sha1".into()],
+        )
+        .unwrap();
+
+    assert!(outcome.reported, "{outcome:?}");
+    assert!(outcome.event.is_none(), "{outcome:?}");
+    let thread = mailspace.thread(&handle, false, 10, 10).unwrap();
+    assert_eq!(thread.len(), 2, "the report is a letter on the thread");
+    let storage = mailspace.storage().unwrap();
+    let reply = thread
+        .iter()
+        .find(|message| message.message_id != storage.resolve_message_token(&handle).unwrap())
+        .unwrap();
+    let letter =
+        String::from_utf8_lossy(&storage.read_message(&reply.message_id).unwrap()).into_owned();
+    assert!(
+        letter.contains("X-Vivi-Verdict: fixed"),
+        "no verdict header: {letter}"
+    );
+    assert!(
+        letter.contains("X-Vivi-Repo: vivi=sha1"),
+        "no repo header: {letter}"
+    );
+}
+
+#[test]
 fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     let (_tmp, mailspace) = space(false);
     let domain = mailspace.address_domain();

@@ -118,7 +118,7 @@ impl Mailspace {
         let identity = self
             .identity_owning_account(&view.account)
             .unwrap_or_else(|| view.account.clone());
-        let reply = self.note_reply(&storage, &identity, &view, text)?;
+        let reply = self.note_reply(&storage, &identity, &view, text, &[])?;
         let event = pool_event(&view, &identity, event_type, record);
         storage.note_message_with_reply(&MailspaceNoteWithReply {
             message_id: &id,
