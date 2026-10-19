@@ -9,7 +9,7 @@
 
 use std::fs;
 
-use super::host::Ctx;
+use super::host::{Ctx, shell_quote};
 use super::state::Unit;
 
 /// The hand rules used when `cfg.hand_rules` is unset.
@@ -270,11 +270,22 @@ fn is_content_hash(line: &str) -> bool {
 
 /// The measurement-only brief sent to the read-only gate worker, with
 /// the configured gate command in place.
+///
+/// The gate log is `/tmp/pump-gate-<project>-<target>-<tip8>.log`, so two
+/// pumps on one host (or two gates at different tips) never overwrite each
+/// other's log.
 #[must_use]
-pub fn gate_brief(ctx: &Ctx) -> String {
+pub fn gate_brief(ctx: &Ctx, tip: &str) -> String {
+    let project = ctx.project.file_name().map_or_else(
+        || String::from("pump"),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let tip8: String = tip.chars().take(8).collect();
+    let log = format!("/tmp/pump-gate-{project}-{}-{tip8}.log", ctx.target_id);
     let command = format!(
-        "{} > /tmp/pump-gate.log 2>&1; echo \"rc=$?\"",
-        ctx.cfg.gate.command
+        "{} > {} 2>&1; echo \"rc=$?\"",
+        ctx.cfg.gate.command,
+        shell_quote(&log)
     );
     [
         "Measurement only. Change nothing in the repository; scratch files go under /tmp.",

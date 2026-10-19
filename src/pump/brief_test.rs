@@ -6,7 +6,7 @@ use tempfile::tempdir;
 
 use crate::pump::brief::{DEFAULT_HAND_RULES, brief_for, gate_brief, hand_rules};
 use crate::pump::config::{Generated, PumpConfig};
-use crate::pump::host::test_ctx;
+use crate::pump::host::{shell_quote, test_ctx};
 use crate::pump::state::{Attempt, Unit};
 
 const UID: &str = "56f1d749-2";
@@ -421,12 +421,22 @@ fn a_large_brief_shrinks_history_and_thread_but_never_the_unit() {
 fn gate_brief_names_the_gate_command_and_the_marker_block() {
     let dir = tempdir().unwrap();
     let (ctx, _host) = test_ctx(dir.path(), cfg_with_gate("make gate"));
-    let text = gate_brief(&ctx);
+    let text = gate_brief(&ctx, "0123456789abcdef0123456789abcdef01234567");
     assert!(text.starts_with(
         "Measurement only. Change nothing in the repository; scratch files \
                           go under /tmp."
     ));
-    assert!(text.contains("    make gate > /tmp/pump-gate.log 2>&1; echo \"rc=$?\""));
+    let project = ctx
+        .project
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let log = format!("/tmp/pump-gate-{project}-{}-01234567.log", ctx.target_id);
+    assert!(text.contains(&format!(
+        "    make gate > {} 2>&1; echo \"rc=$?\"",
+        shell_quote(&log)
+    )));
     assert!(text.contains("FAILING-BEGIN\n<crate> <test name>\nFAILING-END"));
     assert!(text.contains("BUILD-FAILED"));
     assert!(text.ends_with("done_when: the marker block is in the reply\n"));
