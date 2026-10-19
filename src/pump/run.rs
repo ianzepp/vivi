@@ -128,10 +128,12 @@ fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 /// every unit whose task send was refused for a config reason, the blocker
 /// lines from [`crate::pump::blockers::status_lines`], the in-flight planner
 /// lines, then one line per merge lane (`lanes`, from
-/// [`Merger::lane_lines`]). A `send-failed` line appears only while at least
-/// one unit carries the one-shot send-failure report, so a broken pump cannot
-/// look idle. An idle board adds no planner lines. A write failure is logged,
-/// never fatal.
+/// [`Merger::lane_lines`]); each alive lane line ends with `merged <m>
+/// conflict <c>`, its counts of merged and conflicted results so far in this
+/// pump run, so a lane that never lands anything stands out. A `send-failed`
+/// line appears only while at least one unit carries the one-shot
+/// send-failure report, so a broken pump cannot look idle. An idle board adds
+/// no planner lines. A write failure is logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for need in st.needs.values() {

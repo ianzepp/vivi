@@ -129,7 +129,7 @@ fn write_status_writes_counts_then_stall_lines() {
     assert_eq!(lines[4], "last promote never");
     assert_eq!(lines[5], "oldest waiting fix none");
     assert_eq!(lines[6], "delivered waiting 0, oldest none");
-    assert_eq!(lines[7], "lane default/0 idle");
+    assert_eq!(lines[7], "lane default/0 idle merged 0 conflict 0");
 }
 
 #[test]
