@@ -274,7 +274,26 @@ pub fn launch_planners(
             continue;
         }
         launch_one(ctx, st, row, replan);
+        if stop_requested(ctx) {
+            ctx.log(STOP_NOTE);
+            return;
+        }
     }
+}
+
+/// The log line a pass writes when control stops it between two needs.
+const STOP_NOTE: &str = "board: control stop requested; finishing the pass early";
+
+/// True when the operator asked the pump to stop or shut down. A read error
+/// returns false: the run loop's `exit_requested` already handles hard
+/// failures between ticks.
+fn stop_requested(ctx: &Ctx) -> bool {
+    matches!(
+        crate::pump::control::read(&ctx.home),
+        Ok(control)
+            if control.mode == crate::pump::control::PumpMode::Stopped
+                || control.shutdown_requested
+    )
 }
 
 /// Write the need file, spawn the planner for one row, and record it.
@@ -483,6 +502,10 @@ pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
         };
         if reply_stages(ctx, st, &row.handle, &verdict, &reason, &units, revision) {
             said = true;
+        }
+        if stop_requested(ctx) {
+            ctx.log(STOP_NOTE);
+            return said;
         }
     }
     said
