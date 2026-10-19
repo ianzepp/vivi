@@ -365,7 +365,7 @@ fn a_named_target_gate_uses_its_branch_and_persists_its_own_run() {
     assert_eq!(state.last_gate.task, None);
     let target_st = &state.target_states["radix"];
     assert!(target_st.last_gate.job_id.is_some());
-    assert_eq!(gate_job(target_st).task.as_deref(), Some(TASK));
+    assert_eq!(state.jobs[target_st.last_gate.job_id.as_ref().unwrap()].task.as_deref(), Some(TASK));
     assert!(
         host.commands()
             .iter()

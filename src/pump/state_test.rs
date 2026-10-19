@@ -32,7 +32,7 @@ fn restart_keeps_merging_units_owned_by_dispatched_merge_jobs_only() {
         String::from("merge u-live"),
     );
     spec.units.push(String::from("u-live"));
-    crate::pump::jobs::enqueue(&mut state, &spec).unwrap();
+    crate::pump::jobs::enqueue(&mut state, spec).unwrap();
     state.jobs.get_mut("merge-n1").unwrap().status = JobStatus::Dispatched;
 
     state.recover_after_restart();

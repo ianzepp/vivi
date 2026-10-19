@@ -128,7 +128,7 @@ fn a_saved_state_round_trips() {
     spec.local_only = true;
     spec.pool_candidates = vec![String::from("here")];
     spec.payload = serde_json::json!({"request": {"version": 1}});
-    crate::pump::jobs::enqueue(&mut state, &spec).unwrap();
+    crate::pump::jobs::enqueue(&mut state, spec).unwrap();
     let job = state.jobs.get_mut("reclaim:u1").unwrap();
     job.status = JobStatus::Finished;
     job.applied_at = Some(43);

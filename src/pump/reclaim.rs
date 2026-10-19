@@ -77,7 +77,7 @@ pub fn enqueue_merged(ctx: &Ctx, st: &mut State, uid: &str, unit: &Unit) {
             "no local pool can access the mailspace cleanup resources; request remains pending",
         );
     }
-    if let Err(error) = crate::pump::jobs::enqueue(st, &spec) {
+    if let Err(error) = crate::pump::jobs::enqueue(st, spec) {
         ctx.exception("reclaim-enqueue", uid, &error.to_string());
         return;
     }
