@@ -86,6 +86,16 @@ fn rig(server: &ProjectServer, sync_server: &str, bridge: &str, harness: &str) -
     std::fs::write(repo.join("a.txt"), "one\n").unwrap();
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "first"]);
+    let origin = base.join("origin.git");
+    git(
+        &repo,
+        &["clone", "-q", "--bare", ".", origin.to_str().unwrap()],
+    );
+    git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(&repo, &["fetch", "-q", "origin"]);
     let root = project.to_str().unwrap();
     vivi(&["mailspace", "init", "--project", root]);
     for identity in ["mind", "hand"] {
