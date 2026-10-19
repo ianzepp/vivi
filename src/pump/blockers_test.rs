@@ -31,6 +31,7 @@ fn response_setup() -> (TempDir, Ctx, Arc<FakeHost>) {
         branch: String::from("next"),
         planner: PlannerConfig {
             run: String::from("plan-resplit {charter} --quiet"),
+            planners_max: 2,
             ..PlannerConfig::default()
         },
         ..PumpConfig::default()
@@ -328,6 +329,45 @@ fn a_persistent_old_blocking_root_goes_to_the_resplit_planner() {
             .unwrap()
             .contains(&(String::from("r"), 1))
     );
+}
+
+#[test]
+fn a_burst_blocker_pass_starts_no_more_than_the_planner_cap() {
+    let (_dir, ctx, host) = response_setup();
+    host.set_now(T0);
+    let uids: Vec<String> = (1..=15).map(|index| format!("r-{index}")).collect();
+    let names: Vec<&str> = uids.iter().map(String::as_str).collect();
+    let mut st = State::default();
+    st.needs.insert(String::from("r"), record("units", &names));
+    for uid in &uids {
+        let mut stuck = unit("r", Status::Stuck, T0 - 3 * 3600);
+        stuck.history.push(last_attempt("finished", "agent exit 1"));
+        st.units.insert(uid.clone(), stuck);
+    }
+    host.reply("graph blocked", 0, &rows(&[]));
+
+    check(&ctx, &mut st);
+
+    assert_eq!(
+        host.spawned().len(),
+        2,
+        "two split planners start at once, the rest stagger"
+    );
+    let mut launched = 0;
+    let mut deferred = 0;
+    for uid in &uids {
+        let unit = st.units.get(uid).unwrap();
+        assert_eq!(unit.status, Status::Splitting, "{uid} waits in splitting");
+        match unit.split_retry_at {
+            Some(at) => {
+                assert_eq!(at, T0 + 60, "{uid} respawns one stagger later");
+                deferred += 1;
+            }
+            None => launched += 1,
+        }
+    }
+    assert_eq!(launched, 2, "only planners_max planners launch now");
+    assert_eq!(deferred, 13, "the burst tail defers");
 }
 
 #[test]
