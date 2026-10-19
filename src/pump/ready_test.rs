@@ -213,10 +213,7 @@ fn a_quarantine_repair_is_ready_despite_an_inflight_ordinary_unit_sharing_its_sc
     st.units.insert(oid, ou);
     assert!(!is_ready(&ctx, &st, "corpus-10", &BTreeMap::new()));
     // ... and an ordinary unit waits for a busy repair too.
-    st.units
-        .get_mut("pumpfix-q1-aaaaaa")
-        .unwrap()
-        .status = Status::Inflight;
+    st.units.get_mut("pumpfix-q1-aaaaaa").unwrap().status = Status::Inflight;
     st.units.remove("corpus-9");
     assert!(!is_ready(&ctx, &st, "corpus-10", &BTreeMap::new()));
 }
