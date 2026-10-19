@@ -68,6 +68,10 @@ pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
     for line in reminders::service_restart_reminders(&unit_dirs) {
         println!("{line}");
     }
+    let skill_dirs = reminders::skills_candidate_dirs(dirs::home_dir().as_deref());
+    for line in reminders::stale_skills_reminders(&skill_dirs) {
+        println!("{line}");
+    }
     Ok(())
 }
 
