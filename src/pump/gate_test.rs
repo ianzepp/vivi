@@ -728,6 +728,30 @@ fn hold_cycle_forces_a_gate_after_the_fixes_merge_and_lifts_the_hold_on_a_clean_
 }
 
 #[test]
+fn hold_on_red_writes_hold_merge_while_reds_are_owned() {
+    let dir = tempdir().unwrap();
+    let mut cfg = gate_cfg();
+    cfg.gate.hold_on_red = true;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let mut st = State::default();
+    st.red
+        .insert(String::from("vivi pump::gate::red"), String::from("u1"));
+    hold_cycle(&ctx, &mut st);
+    let hold = ctx.home.join("HOLD-MERGE");
+    assert_eq!(fs::read_to_string(&hold).unwrap(), "red\n");
+    assert!(host.logs().iter().any(|line| {
+        line.contains("hold on red: 1 owned names unfixed; HOLD-MERGE written")
+    }));
+    set_mtime(&hold, 500);
+    hold_cycle(&ctx, &mut st);
+    assert_eq!(
+        fs::metadata(&hold).unwrap().modified().unwrap(),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(500)
+    );
+    drop(dir);
+}
+
+#[test]
 fn a_red_gate_never_stops_the_merge_queue() {
     let (dir, ctx, _host) = setup();
     let mut st = gate_state(4);
