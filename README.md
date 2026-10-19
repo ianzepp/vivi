@@ -206,7 +206,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | Command | What it does |
 | --- | --- |
 | `board` | Actionable tasks, needs and wants per role. `--for`, `--since`, `--process`, `--graph`, `--json` |
-| `boot` | The whole project frame in one read-only read: seats, loops, unabsorbed mail, handles with verdicts, goals, and the backlog sliced for dispatch |
+| `boot` | The whole project frame in one read-only read: seats, loops, unabsorbed mail, handles with verdicts, goals, the backlog sliced for dispatch, and a role-gated pump/pool snapshot. `--role`, `--pump` (`full`, `own`, or `none`), `--json` |
 | `mailspace` | `init`, `status`, `description`, `archive` and `archive export`, `watch`, `import`, `identity add\|list\|rename` |
 | `role` | `list`, `show`, `add`, `set`, `rename`, `pool`, `status`, `charter show\|set` |
 | `mail` | `send`, `reply`, `deliver` (an `.eml` file), `list`, `show`, `thread`, `watch`, `absorb`, `dump` |

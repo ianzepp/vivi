@@ -31,6 +31,8 @@ pub mod format;
 pub mod goals;
 pub mod handles;
 pub mod probe;
+pub mod pump;
+pub mod pump_slots;
 pub mod render;
 pub mod truncate;
 
@@ -38,6 +40,7 @@ use format::{age_label, one_line};
 use goals::GoalRead;
 use handles::{HandleRow, TriageSlice, Verdict};
 use probe::{ProbeOutput, ProbeRun, ProbeSection};
+pub use pump::{BootOptions, PumpBoot, PumpSnapshot, PumpView};
 pub use truncate::Truncation;
 use truncate::{
     CAP_CHARTER_LINES, CAP_CHARTERS, CAP_GOALS, CAP_LOOPS, CAP_MEMOS, CAP_RULES, CAP_SEATS,
@@ -147,23 +150,6 @@ pub struct BootTotals {
     pub loops_action_required: usize,
 }
 
-/// Local pump state, when this host has a `pump.db`.
-#[derive(Debug, Clone, Serialize)]
-pub struct PumpBoot {
-    /// Unit counts by status.
-    pub units: std::collections::BTreeMap<String, usize>,
-    /// Needs whose every unit is satisfied.
-    pub complete: usize,
-    /// Complete needs still open in this mailspace.
-    pub complete_but_open: usize,
-    /// Units parked for a person.
-    pub stuck: usize,
-    /// Needs with a post-plan amendment waiting.
-    pub amendments: usize,
-    /// Exception rows in the pump database.
-    pub exceptions: usize,
-}
-
 /// The full boot digest.
 #[derive(Debug, Clone, Serialize)]
 pub struct BootReport {
@@ -180,7 +166,7 @@ pub struct BootReport {
     pub unabsorbed: Vec<MailRow>,
     /// Role names letters wait under that no seat here carries.
     pub held_unknown: Vec<UnknownRoleRow>,
-    /// Local pump execution state, when `pump.db` exists.
+    /// Local pump execution state, when `pump.db` or configured pools exist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pump: Option<PumpBoot>,
     /// Open tasks, needs, and wants with verdicts.
@@ -214,6 +200,16 @@ impl BootReport {
     /// probe that is missing, fails, or prints unparseable JSON is recorded as
     /// skipped and never fails the run.
     pub fn collect(mailspace: &Mailspace) -> Result<Self, VivariumError> {
+        Self::collect_with(mailspace, &BootOptions::default())
+    }
+
+    /// Collect the digest, gating the pump snapshot with `opts`.
+    ///
+    /// # Errors
+    /// Returns an error when the mailspace store cannot be opened or `--role`
+    /// names an unknown identity. A declared probe that is missing, fails, or
+    /// prints unparseable JSON is recorded as skipped and never fails the run.
+    pub fn collect_with(mailspace: &Mailspace, opts: &BootOptions) -> Result<Self, VivariumError> {
         let now = Utc::now();
         let storage = mailspace.storage()?;
         let views = mailspace.list_role_views()?;
@@ -227,7 +223,7 @@ impl BootReport {
             .filter(|row| row.kind == "need")
             .map(|row| row.handle.clone())
             .collect();
-        let pump = collect_pump(mailspace, &open_needs);
+        let pump = pump::collect(mailspace, &open_needs, opts, now, &mut truncations)?;
         let handles = cap_handles(rows, &mut truncations);
         let seats = collect_seats(&views, &handles, &mut truncations);
         let loops = collect_loops(mailspace, &storage, &views, &mut truncations);
@@ -270,34 +266,6 @@ impl BootReport {
     pub fn render(&self) -> String {
         render::to_text(self)
     }
-}
-
-/// The local pump section: counts from `pump.db`, plus how many complete
-/// needs are still open here. Missing or unreadable state is simply absent;
-/// boot never fails because a pump file is missing.
-fn collect_pump(
-    mailspace: &Mailspace,
-    open_needs: &std::collections::BTreeSet<String>,
-) -> Option<PumpBoot> {
-    let home = mailspace
-        .config
-        .pump
-        .as_ref()
-        .map(|config| config.home_dir(&mailspace.root))?;
-    let snapshot = match crate::pump::report::read(&home) {
-        Ok(crate::pump::report::PumpRead::Ready(snapshot)) => snapshot,
-        _ => return None,
-    };
-    let complete = snapshot.complete_needs();
-    let summary = snapshot.summary();
-    Some(PumpBoot {
-        complete_but_open: complete.intersection(open_needs).count(),
-        complete: summary.complete,
-        stuck: summary.stuck,
-        amendments: summary.amendments,
-        exceptions: summary.exceptions,
-        units: summary.units,
-    })
 }
 
 fn probe_verdicts(runs: &[ProbeRun]) -> Vec<probe::ProbeVerdict> {
