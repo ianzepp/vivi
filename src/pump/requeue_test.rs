@@ -421,12 +421,122 @@ fn run_requeue_rejects_unknown_uid_and_conflicting_flags() {
     let mut bulk = command(&[]);
     bulk.stuck_since = Some(String::from("1h"));
     let err = run(dir.path(), &bulk).unwrap_err();
-    assert!(err.to_string().contains("next unit"), "{err}");
+    assert!(err.to_string().contains("requires --why"), "{err}");
 
     let err = run(dir.path(), &command(&[])).unwrap_err();
     assert!(err.to_string().contains("at least one unit"), "{err}");
 
     assert!(pending(&dir).is_empty(), "a refused command writes nothing");
+}
+
+/// Epoch seconds right now, for the bulk form's wall-clock window.
+fn wall_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Write `units` into the project's `pump.db`.
+fn seed_units(dir: &TempDir, units: &[(&str, Unit)]) {
+    let home = project_home(dir);
+    let mut st = State::default();
+    for (uid, unit) in units {
+        put(&mut st, uid, unit.clone());
+    }
+    let mut store = PumpStore::open(&home.join(DB_FILENAME)).unwrap();
+    store.initialize_control("running").unwrap();
+    store.save(&st).unwrap();
+}
+
+/// A stuck unit whose last attempt landed `age` seconds ago.
+fn stuck_aged(age: u64) -> Unit {
+    let at = wall_now() - age;
+    Unit {
+        status: Status::Stuck,
+        attempts: 1,
+        history: vec![Attempt {
+            attempt: 1,
+            why: String::from("proof-failed"),
+            at,
+            ..Attempt::default()
+        }],
+        since: at,
+        ..Unit::default()
+    }
+}
+
+#[test]
+fn run_requeue_bulk_selects_recent_stuck_units() {
+    let dir = mailspace_project();
+    let merged = Unit {
+        status: Status::Merged,
+        since: wall_now(),
+        ..Unit::default()
+    };
+    seed_units(
+        &dir,
+        &[
+            ("u-stale", stuck_aged(7200)),
+            ("u-fresh", stuck_aged(60)),
+            ("u-merged", merged),
+        ],
+    );
+
+    let mut bulk = command(&[]);
+    bulk.stuck_since = Some(String::from("5m"));
+    bulk.why = Some(String::from("host-down"));
+    run(dir.path(), &bulk).unwrap();
+
+    let rows = pending(&dir);
+    assert_eq!(rows.len(), 1, "only the fresh stuck unit is selected");
+    assert_eq!(rows[0].unit, "u-fresh");
+    assert_eq!(rows[0].reason, "bulk host-down");
+    assert_eq!(
+        rows[0].attempts, None,
+        "the bulk form keeps the attempt count"
+    );
+    assert!(!rows[0].fresh && !rows[0].refund, "default policy");
+
+    // An empty window is a successful no-op once the requests are drained.
+    let mut store = PumpStore::open(&project_home(&dir).join(DB_FILENAME)).unwrap();
+    let pending_ids: Vec<i64> = store
+        .pending_requeue_requests()
+        .unwrap()
+        .iter()
+        .map(|row| row.request_id)
+        .collect();
+    for request_id in pending_ids {
+        store.mark_requeue_applied(request_id, T0).unwrap();
+    }
+    drop(store);
+    let mut narrow = command(&[]);
+    narrow.stuck_since = Some(String::from("30s"));
+    narrow.why = Some(String::from("host-down"));
+    run(dir.path(), &narrow).unwrap();
+    assert!(pending(&dir).is_empty(), "nothing recent is selected");
+}
+
+#[test]
+fn run_requeue_bulk_requires_why_and_forbids_uids() {
+    let dir = mailspace_project();
+    seed_stuck_unit(&dir);
+
+    let mut no_why = command(&[]);
+    no_why.stuck_since = Some(String::from("30s"));
+    let err = run(dir.path(), &no_why).unwrap_err();
+    assert!(err.to_string().contains("requires --why"), "{err}");
+
+    let mut with_uids = command(&["u1"]);
+    with_uids.stuck_since = Some(String::from("30s"));
+    with_uids.why = Some(String::from("host-down"));
+    let err = run(dir.path(), &with_uids).unwrap_err();
+    assert!(err.to_string().contains("no unit uids"), "{err}");
+
+    assert!(
+        pending(&dir).is_empty(),
+        "a refused bulk form writes nothing"
+    );
 }
 
 #[test]

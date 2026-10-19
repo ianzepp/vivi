@@ -304,19 +304,20 @@ fn mark_applied(ctx: &Ctx, path: &std::path::Path, processed: &[i64]) {
 /// running pump to apply at its next tick. `--dry-run` prints what each uid
 /// would become and writes nothing.
 ///
+/// `vivi pump requeue --stuck-since <time> --why <class>` is the bulk form:
+/// every unit still stuck inside that window is queued with a default-policy
+/// request whose reason records the incident class.
+///
 /// # Errors
-/// Returns [`VivariumError::Message`] for conflicting attempt flags, a bulk
-/// `--stuck-since` request (not implemented yet), no uid, an unknown uid, or
-/// a mailspace without a pump database; and whatever opening or writing the
+/// Returns [`VivariumError::Message`] for conflicting attempt flags, no uid,
+/// an unknown uid, or a mailspace without a pump database; a config error for
+/// an unparsable `--stuck-since` window; and whatever opening or writing the
 /// database fails with.
 pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError> {
     let home = project_home(project)?;
     let policy = AttemptPolicy::from_command(cmd)?;
     if cmd.stuck_since.is_some() {
-        // Temporary: the bulk form arrives in the next unit.
-        return Err(VivariumError::Message(String::from(
-            "bulk requeue (--stuck-since) arrives in the next unit",
-        )));
+        return run_bulk(project, cmd, &home);
     }
     if cmd.units.is_empty() {
         return Err(VivariumError::Message(String::from(
@@ -324,14 +325,7 @@ pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError
         )));
     }
     let path = home.join(DB_FILENAME);
-    let Some(store) = PumpStore::open_read_only(&path)? else {
-        return Err(VivariumError::Message(format!(
-            "no pump.db at {}",
-            path.display()
-        )));
-    };
-    let st = store.load()?;
-    drop(store);
+    let st = load_state(&path)?;
     for uid in &cmd.units {
         if !st.units.contains_key(uid.as_str()) {
             return Err(VivariumError::Message(format!("unknown unit: {uid}")));
@@ -339,21 +333,12 @@ pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError
     }
     let ctx = cli_ctx(project, &home)?;
     let branches = scan_targets(&ctx, &st, &cmd.units);
-    let mut planned: Vec<(String, Status, u32, u32)> = Vec::new();
-    for uid in &cmd.units {
-        let Some(unit) = st.units.get(uid.as_str()) else {
-            continue;
-        };
-        let remote_max = highest_branch(&branches, &st, uid);
-        let attempts = planned_attempts(unit, policy, remote_max);
-        planned.push((uid.clone(), unit.status, unit.attempts, attempts));
-    }
+    let planned = plan(&st, &branches, &cmd.units, policy);
     if cmd.dry_run {
         print_planned(&planned);
         return Ok(());
     }
     let reason = cmd.reason.as_deref().unwrap_or(DEFAULT_REASON);
-    let at = now();
     let mut store = PumpStore::open(&path)?;
     for (uid, ..) in &planned {
         store.add_requeue_request(
@@ -362,15 +347,130 @@ pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError
             policy.fresh,
             policy.refund,
             reason,
-            at,
+            now(),
         )?;
-        println!("requeue {uid} requested; the pump applies it at its next tick");
+        println!("{}", requested_line(uid));
     }
     Ok(())
 }
 
+/// `vivi pump requeue --stuck-since <time> --why <class>`: bulk recovery.
+///
+/// Selects every stuck unit whose last activity (`history` tail, else
+/// `since`) is inside the window, then queues one default-policy request per
+/// unit with reason `bulk <class>`. `--dry-run` prints the would-lines and
+/// writes nothing; an empty selection is a successful no-op.
+fn run_bulk(project: &Path, cmd: &PumpRequeueCommand, home: &Path) -> Result<(), VivariumError> {
+    let Some(since) = cmd.stuck_since.as_deref() else {
+        return Err(VivariumError::Message(String::from(
+            "bulk requeue needs --stuck-since",
+        )));
+    };
+    let Some(class) = cmd.why.as_deref() else {
+        return Err(VivariumError::Message(String::from(
+            "--stuck-since requires --why <class>",
+        )));
+    };
+    if !cmd.units.is_empty() {
+        return Err(VivariumError::Message(String::from(
+            "--stuck-since takes no unit uids",
+        )));
+    }
+    let window = crate::duration::parse_duration_secs(since)?;
+    let path = home.join(DB_FILENAME);
+    let st = load_state(&path)?;
+    let selected = select_stuck(&st, now().saturating_sub(window));
+    println!("{}", selected_line(&selected));
+    if selected.is_empty() {
+        return Ok(());
+    }
+    let ctx = cli_ctx(project, home)?;
+    let branches = scan_targets(&ctx, &st, &selected);
+    let planned = plan(&st, &branches, &selected, AttemptPolicy::default());
+    if cmd.dry_run {
+        print_planned(&planned);
+        return Ok(());
+    }
+    let reason = format!("bulk {class}");
+    let mut store = PumpStore::open(&path)?;
+    for (uid, ..) in &planned {
+        store.add_requeue_request(uid, None, false, false, &reason, now())?;
+        println!("{}", requested_line(uid));
+    }
+    Ok(())
+}
+
+/// Load the pump state at `path`, refusing a mailspace with no database.
+fn load_state(path: &Path) -> Result<State, VivariumError> {
+    let Some(store) = PumpStore::open_read_only(path)? else {
+        return Err(VivariumError::Message(format!(
+            "no pump.db at {}",
+            path.display()
+        )));
+    };
+    store.load()
+}
+
+/// The units the bulk form selects: stuck, and last active at or after
+/// `cutoff`. Ordered by uid.
+fn select_stuck(st: &State, cutoff: u64) -> Vec<String> {
+    st.units
+        .iter()
+        .filter(|(_, unit)| matches!(unit.status, Status::Stuck))
+        .filter(|(_, unit)| last_activity(unit) >= cutoff)
+        .map(|(uid, _)| uid.clone())
+        .collect()
+}
+
+/// When a unit was last touched: the tail of its attempt history, or `since`
+/// when it has no history.
+fn last_activity(unit: &Unit) -> u64 {
+    unit.history.last().map_or(unit.since, |attempt| attempt.at)
+}
+
+/// The selection receipt the bulk form prints first.
+fn selected_line(selected: &[String]) -> String {
+    if selected.is_empty() {
+        String::from("selected 0 stuck unit(s)")
+    } else {
+        format!(
+            "selected {} stuck unit(s): {}",
+            selected.len(),
+            selected.join(" ")
+        )
+    }
+}
+
+/// One planned requeue: uid, current status, current attempts, planned ones.
+type Planned = (String, Status, u32, u32);
+
+/// The requeue each uid in `uids` would get under `policy`, past any branch
+/// that already exists on the remote.
+fn plan(
+    st: &State,
+    branches: &BTreeMap<String, TargetBranches>,
+    uids: &[String],
+    policy: AttemptPolicy,
+) -> Vec<Planned> {
+    let mut planned: Vec<Planned> = Vec::new();
+    for uid in uids {
+        let Some(unit) = st.units.get(uid.as_str()) else {
+            continue;
+        };
+        let remote_max = highest_branch(branches, st, uid);
+        let attempts = planned_attempts(unit, policy, remote_max);
+        planned.push((uid.clone(), unit.status, unit.attempts, attempts));
+    }
+    planned
+}
+
+/// The line printed once a request is queued.
+fn requested_line(uid: &str) -> String {
+    format!("requeue {uid} requested; the pump applies it at its next tick")
+}
+
 /// The `--dry-run` lines for one planned requeue batch.
-fn print_planned(planned: &[(String, Status, u32, u32)]) {
+fn print_planned(planned: &[Planned]) {
     for (uid, status, old, attempts) in planned {
         println!("{}", would_line(uid, *status, *old, *attempts));
     }
