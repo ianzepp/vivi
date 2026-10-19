@@ -41,6 +41,7 @@ fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
 const PUMP_TOML: &str = concat!(
     "name = \"pump\"\n\n",
     "[[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"here\"\n\n",
+    "[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n\n",
     "[pools.here]\nprovider = \"local\"\nslots = 1\n\n",
     "[pump]\nbranch = \"next\"\ntick = 1\n",
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",

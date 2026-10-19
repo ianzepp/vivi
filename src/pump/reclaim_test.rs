@@ -41,6 +41,7 @@ fn merged_unit() -> Unit {
 fn merged_unit_enqueues_a_local_snapshot_without_cleaning_inline() {
     let (dir, space) = project_with_pool("local", "here");
     let (mut ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    ctx.project = dir.path().to_path_buf();
     ctx.mailspace = space.mailspace_id().to_string();
     ctx.routing = Arc::new(routing::from_mailspace(&space.config));
     let mut state = State::default();
@@ -80,6 +81,7 @@ fn merged_unit_enqueues_a_local_snapshot_without_cleaning_inline() {
 fn reclaim_without_a_local_executor_stays_pending_and_can_recover() {
     let (dir, space) = project_with_pool("fly", "remote");
     let (mut ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    ctx.project = dir.path().to_path_buf();
     ctx.mailspace = space.mailspace_id().to_string();
     ctx.routing = Arc::new(routing::from_mailspace(&space.config));
     let mut state = State::default();

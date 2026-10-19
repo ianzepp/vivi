@@ -35,9 +35,11 @@ fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     let (mut pass, requests, results) = BoardPass::detached();
     merger.apply(ctx, st);
     run_tick(ctx, st, &mut pass).unwrap();
+    crate::pump::jobs::dispatch_pending(ctx, st).unwrap();
     merger.apply(ctx, st);
     merger.feed(ctx, st);
     pass.serve(ctx, st, &requests, &results);
+    crate::pump::run::write_status(ctx, st, &[]);
 }
 /// A second plan file, ingested mid-test to mint a fresh unit.
 const SECOND_PLAN: &str = concat!(
@@ -280,7 +282,8 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     // Now the integration tip exists, the gate task mints, and the pool
     // reports both tasks finished.
     host.reply("refs/heads/next", 0, &format!("{TIP}\n"));
-    host.reply("[pump gate]", 0, &format!("created {GATE_TASK}\n"));
+    host.reply("pump-job:gate", 0, &format!("created hand {GATE_TASK}\n"));
+    host.reply("[pump audit]", 0, "created hand aabbccdd\n");
     host.reply(
         "pool reconcile",
         0,
@@ -290,11 +293,19 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
         ),
     );
     // The first gate reply carries an empty marker block: the baseline gate.
-    host.reply_once("task show 99887766", 0, "FAILING-BEGIN\n\nFAILING-END\n");
+    host.reply_once(
+        "task show 99887766",
+        0,
+        "agent exit 0 after 1s\nFAILING-BEGIN\n\nFAILING-END\n",
+    );
     // Every later gate is green until the red reply below replaces this rule:
     // the batch rule re-gates right after the merge, and that reply must be
     // deterministic.
-    host.reply("task show 99887766", 0, "FAILING-BEGIN\n\nFAILING-END\n");
+    host.reply(
+        "task show 99887766",
+        0,
+        "agent exit 0 after 1s\nFAILING-BEGIN\n\nFAILING-END\n",
+    );
 
     tick(&ctx, &mut st, &merger); // deliver x-a1, feed it, start the gate
     assert!(
@@ -324,7 +335,7 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     host.reply(
         "task show 99887766",
         0,
-        "FAILING-BEGIN\ncrate::a::t1\nFAILING-END\n",
+        "agent exit 0 after 1s\nFAILING-BEGIN\ncrate::a::t1\nFAILING-END\n",
     );
     fs::write(ctx.home.join("FORCE-GATE"), b"").unwrap();
     tick(&ctx, &mut st, &merger); // the forced gate starts
@@ -349,12 +360,12 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     let dispatches: Vec<String> = host
         .commands()
         .into_iter()
-        .filter(|cmd| cmd.contains("pool dispatch") && cmd.contains("--from 0123456789"))
+        .filter(|cmd| cmd.contains("pool dispatch") && cmd.contains("aabbccdd"))
         .collect();
     assert_eq!(
         dispatches.len(),
         1,
-        "the auditor is dispatched: {dispatches:?}"
+        "the auditor job is dispatched: {dispatches:?}"
     );
     assert!(host.spawned().is_empty(), "no planner process starts");
     let hold = ctx.home.join("HOLD-MERGE");
@@ -379,7 +390,11 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     assert!(!sits(&st, "y-b1", Status::Merged));
 
     // A clean forced gate after the fix releases the hold and pending work.
-    host.reply("task show 99887766", 0, "FAILING-BEGIN\n\nFAILING-END\n");
+    host.reply(
+        "task show 99887766",
+        0,
+        "agent exit 0 after 1s\nFAILING-BEGIN\n\nFAILING-END\n",
+    );
     fs::write(ctx.home.join("FORCE-GATE"), b"").unwrap();
     tick(&ctx, &mut st, &merger);
     assert!(
