@@ -397,11 +397,7 @@ fn write_slot(root: &std::path::Path, space: &str, index: u32) {
     fs::create_dir_all(dir.join("repo")).unwrap();
     fs::write(dir.join("marks/vivi_pool"), "here\n").unwrap();
     fs::write(dir.join("marks/vivi_pool_mailspace"), format!("{space}\n")).unwrap();
-    fs::write(
-        dir.join("marks/vivi_pool_slot"),
-        format!("{index}\n"),
-    )
-    .unwrap();
+    fs::write(dir.join("marks/vivi_pool_slot"), format!("{index}\n")).unwrap();
 }
 
 #[test]
