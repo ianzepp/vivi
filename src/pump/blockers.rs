@@ -68,7 +68,12 @@ fn reverse_holds(holds: &BTreeMap<String, Vec<String>>) -> BTreeMap<String, BTre
 
 /// Build one blocker from its root: the dependency closure, its held units,
 /// the oldest of them, and the needs under the root that hold the most.
-fn blocker(st: &State, root: &Root, reverse: &BTreeMap<String, BTreeSet<String>>, now: u64) -> Blocker {
+fn blocker(
+    st: &State,
+    root: &Root,
+    reverse: &BTreeMap<String, BTreeSet<String>>,
+    now: u64,
+) -> Blocker {
     let scope = closure(reverse, &root.need);
     let held = blocked_units(st, &scope);
     Blocker {
@@ -174,7 +179,11 @@ fn needs(st: &State) -> BTreeSet<String> {
 }
 
 /// The root a single need contributes, when it contributes one.
-fn root_of_need(st: &State, need: &str, reverse: &BTreeMap<String, BTreeSet<String>>) -> Option<Root> {
+fn root_of_need(
+    st: &State,
+    need: &str,
+    reverse: &BTreeMap<String, BTreeSet<String>>,
+) -> Option<Root> {
     if let Some(oldest) = oldest_stuck(st, need) {
         return Some(Root {
             need: need.to_string(),

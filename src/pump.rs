@@ -3,8 +3,8 @@
 pub mod alarm;
 pub mod amend;
 pub mod attempt_record;
-pub mod board;
 pub mod blockers;
+pub mod board;
 pub mod brief;
 pub mod closeout;
 pub mod collect;

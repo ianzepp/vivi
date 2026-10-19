@@ -1,9 +1,7 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{
-    AlarmConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget,
-};
+use crate::pump::config::{AlarmConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use std::collections::BTreeMap;
 use std::path::Path;
 

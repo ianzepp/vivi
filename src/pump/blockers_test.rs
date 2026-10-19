@@ -67,17 +67,16 @@ fn a_stuck_root_transitively_holds_dependent_units() {
     let (_dir, ctx, host) = setup();
     host.set_now(T0);
     let mut st = State::default();
-    st.needs.insert(String::from("r"), record("units", &["r-1"]));
+    st.needs
+        .insert(String::from("r"), record("units", &["r-1"]));
     st.units
         .insert(String::from("r-1"), unit("r", Status::Stuck, T0 - 3600));
     let mut pairs: Vec<(String, Vec<String>)> = Vec::new();
     for index in 1..=20 {
         let need = format!("m{index}");
         st.needs.insert(need.clone(), record("units", &[]));
-        st.units.insert(
-            format!("{need}-1"),
-            unit(&need, Status::Pending, T0 - 600),
-        );
+        st.units
+            .insert(format!("{need}-1"), unit(&need, Status::Pending, T0 - 600));
         pairs.push(row(&need, &["r"]));
     }
     host.reply("graph blocked", 0, &rows(&pairs));
@@ -128,12 +127,11 @@ fn a_pending_starved_need_surfaces_as_pending_blocker() {
     st.needs
         .insert(String::from("s"), record("units", &["s-1", "s-2", "s-3"]));
     for index in 1..=3 {
-        st.units.insert(
-            format!("s-{index}"),
-            unit("s", Status::Pending, T0 - 100),
-        );
+        st.units
+            .insert(format!("s-{index}"), unit("s", Status::Pending, T0 - 100));
     }
-    st.needs.insert(String::from("t"), record("units", &["t-1"]));
+    st.needs
+        .insert(String::from("t"), record("units", &["t-1"]));
     st.units
         .insert(String::from("t-1"), unit("t", Status::Pending, T0 - 50));
     host.reply("graph blocked", 0, &rows(&[row("t", &["s"])]));
@@ -153,16 +151,15 @@ fn an_unreadable_graph_holds_nothing() {
     let (_dir, ctx, host) = setup();
     host.set_now(T0);
     let mut st = State::default();
-    st.needs.insert(String::from("r"), record("units", &["r-1"]));
+    st.needs
+        .insert(String::from("r"), record("units", &["r-1"]));
     st.units
         .insert(String::from("r-1"), unit("r", Status::Stuck, T0 - 3600));
     for index in 1..=3 {
         let need = format!("d{index}");
         st.needs.insert(need.clone(), record("units", &[]));
-        st.units.insert(
-            format!("{need}-1"),
-            unit(&need, Status::Pending, T0 - 60),
-        );
+        st.units
+            .insert(format!("{need}-1"), unit(&need, Status::Pending, T0 - 60));
     }
     host.reply("graph blocked", 1, "error");
 
@@ -186,7 +183,8 @@ fn merged_and_withdrawn_dependent_units_are_not_counted() {
     let (_dir, ctx, host) = setup();
     host.set_now(T0);
     let mut st = State::default();
-    st.needs.insert(String::from("r"), record("units", &["r-1"]));
+    st.needs
+        .insert(String::from("r"), record("units", &["r-1"]));
     st.units
         .insert(String::from("r-1"), unit("r", Status::Stuck, T0 - 3600));
     for (need, status) in [
@@ -196,10 +194,8 @@ fn merged_and_withdrawn_dependent_units_are_not_counted() {
         ("m4", Status::Held),
     ] {
         st.needs.insert(String::from(need), record("units", &[]));
-        st.units.insert(
-            format!("{need}-1"),
-            unit(need, status, T0 - 600),
-        );
+        st.units
+            .insert(format!("{need}-1"), unit(need, status, T0 - 600));
     }
     host.reply(
         "graph blocked",
