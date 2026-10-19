@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tempfile::tempdir;
 
@@ -920,6 +921,99 @@ fn write_result(ctx: &Ctx, tip: &str, body: &str) -> std::path::PathBuf {
     path
 }
 
+/// A context whose gate takes external results from `dir/results` and waits
+/// 300 s for one, so a heartbeat decides whether that wait happens at all.
+fn heartbeat_setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let mut cfg = gate_cfg();
+    cfg.gate.results_dir = Some(dir.path().join("results").display().to_string());
+    cfg.gate.results_wait_seconds = 300;
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    (dir, ctx, host)
+}
+
+/// Write the external runner's `heartbeat` file, as a live runner would.
+fn write_heartbeat(ctx: &Ctx) -> std::path::PathBuf {
+    let dir = ctx.cfg.results_dir(&ctx.project).unwrap();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("heartbeat");
+    fs::write(&path, "alive\n").unwrap();
+    path
+}
+
+/// The real wall clock in epoch seconds, for tests that compare a file mtime
+/// against the fake clock.
+fn real_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |span| span.as_secs())
+}
+
+#[test]
+fn no_heartbeat_means_no_external_wait() {
+    let (dir, ctx, host) = heartbeat_setup();
+    fs::create_dir_all(ctx.cfg.results_dir(&ctx.project).unwrap()).unwrap();
+    host.set_now(real_now());
+    wire(&host);
+    let mut st = State {
+        baseline: None,
+        ..fresh_state()
+    };
+    start_gate(&ctx, &mut st);
+    assert!(!st.extra.contains_key("external_wait_since"));
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(host.logs().iter().any(|line| line.contains(
+        "external gate runner heartbeat missing; not waiting for results_dir"
+    )));
+    drop(dir);
+}
+
+#[test]
+fn a_fresh_heartbeat_waits() {
+    let (dir, ctx, host) = heartbeat_setup();
+    write_heartbeat(&ctx);
+    host.set_now(real_now());
+    wire(&host);
+    let mut st = State {
+        baseline: None,
+        ..fresh_state()
+    };
+    start_gate(&ctx, &mut st);
+    assert!(host.commands().is_empty());
+    assert_eq!(
+        st.extra["external_wait_since"],
+        serde_json::json!(ctx.now())
+    );
+    drop(dir);
+}
+
+#[test]
+fn a_stale_heartbeat_does_not_wait() {
+    let (dir, ctx, host) = heartbeat_setup();
+    let path = write_heartbeat(&ctx);
+    let file = fs::File::options().write(true).open(&path).unwrap();
+    let aged = SystemTime::now() - Duration::from_secs(1200);
+    file.set_times(fs::FileTimes::new().set_modified(aged))
+        .unwrap();
+    host.set_now(real_now());
+    wire(&host);
+    let mut st = State {
+        baseline: None,
+        ..fresh_state()
+    };
+    st.extra.insert(
+        String::from("external_wait_since"),
+        serde_json::json!(ctx.now()),
+    );
+    start_gate(&ctx, &mut st);
+    assert!(!st.extra.contains_key("external_wait_since"));
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert!(host.logs().iter().any(|line| line.contains(
+        "external gate runner heartbeat stale; not waiting for results_dir"
+    )));
+    drop(dir);
+}
+
 #[test]
 fn an_external_result_for_the_tip_finishes_the_gate_and_promotes() {
     let (dir, ctx, host) = external_setup();
@@ -1029,6 +1123,8 @@ fn an_unparseable_external_result_is_set_aside_once_and_no_dir_means_no_intake()
 #[test]
 fn a_due_gate_waits_for_an_external_result_then_falls_back_to_a_pool() {
     let (dir, ctx, host) = external_setup();
+    write_heartbeat(&ctx);
+    host.set_now(real_now());
     wire(&host);
     let mut st = State {
         baseline: None,
@@ -1041,11 +1137,14 @@ fn a_due_gate_waits_for_an_external_result_then_falls_back_to_a_pool() {
         serde_json::json!(ctx.now())
     );
 
+    // The wait window is `results_wait_seconds` (600) and the heartbeat stays
+    // fresh for twice that; a gate still waiting inside the window is quiet.
     host.advance(599);
     start_gate(&ctx, &mut st);
     assert!(host.commands().is_empty());
 
-    host.advance(1);
+    // Past twice the window the heartbeat is stale: the pool gate goes out.
+    host.advance(602);
     start_gate(&ctx, &mut st);
     assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
     assert_eq!(st.last_gate.pool.as_deref(), Some("flygate"));
