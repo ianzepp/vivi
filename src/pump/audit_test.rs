@@ -209,7 +209,10 @@ fn apply_report_mints_one_unit_per_cause() {
     assert_eq!(st.units["need-audit-1"].title, "first root cause");
     assert_eq!(st.units["need-audit-1"].brief, "fix the first cause");
     assert_eq!(st.units["need-audit-1"].write_scope, ["src/first.rs"]);
-    assert_eq!(st.units["need-audit-1"].proof, ["cargo test --lib pump::first"]);
+    assert_eq!(
+        st.units["need-audit-1"].proof,
+        ["cargo test --lib pump::first"]
+    );
     assert_eq!(st.units["need-audit-1"].tools, "");
 
     let record = &st.needs["need-audit"];
@@ -221,10 +224,11 @@ fn apply_report_mints_one_unit_per_cause() {
         fs::read_to_string(ctx.home.join("audit/need-audit.report")).unwrap(),
         raw
     );
-    assert!(host
-        .logs()
-        .iter()
-        .any(|line| line.contains("audit report for need-audit: 2 fix units")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("audit report for need-audit: 2 fix units"))
+    );
 }
 
 #[test]
