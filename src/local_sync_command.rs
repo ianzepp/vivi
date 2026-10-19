@@ -298,8 +298,11 @@ fn keep_local(project: Option<&Path>, handles: &[String], undo: bool) -> Result<
 }
 
 fn join(project: Option<&Path>) -> Result<(), VivariumError> {
-    let mailspace = Mailspace::discover(project)?;
+    let mut mailspace = Mailspace::discover(project)?;
     warn_if_config_tracked(&mailspace);
+    // Before the request, so an unreachable server still leaves the role in
+    // place.
+    mailspace.ensure_operator_role()?;
     let settings = SyncSettings::resolve(&mailspace)?;
     let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let receipt = http::join(&settings, &identity)?;

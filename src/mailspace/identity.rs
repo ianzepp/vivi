@@ -194,6 +194,36 @@ impl Mailspace {
         self.role_view(&role.name)
     }
 
+    /// Ensure an `operator` role of kind `operator` exists.
+    ///
+    /// Only kind `mind` or kind `operator` may close and reopen work it did not
+    /// author, so a mailspace without an operator role silently ignores mail
+    /// from `operator@<prefix>.local`. Idempotent: a settled mailspace is left
+    /// untouched and no config write happens.
+    ///
+    /// # Errors
+    /// Returns an error if a field value is invalid or config persistence
+    /// fails.
+    pub fn ensure_operator_role(&mut self) -> Result<(), VivariumError> {
+        const OPERATOR: &str = "operator";
+        let update = || RoleUpdate {
+            kind: Some(Some(OPERATOR.into())),
+            ..RoleUpdate::default()
+        };
+        let Some(index) = self.find_role_index(OPERATOR) else {
+            self.add_role(OPERATOR, update())?;
+            return Ok(());
+        };
+        let settled = self.config.identities[index]
+            .kind
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case(OPERATOR));
+        if !settled {
+            self.set_role(OPERATOR, update())?;
+        }
+        Ok(())
+    }
+
     /// Rename an identity. The old name is preserved as an alias.
     ///
     /// # Errors
