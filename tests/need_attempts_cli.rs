@@ -153,3 +153,49 @@ fn attempts_with_no_records_returns_an_empty_array() {
         "{out}"
     );
 }
+
+/// Both copies of a sent need share one date, so thread assembly may place
+/// either copy first. `--json` must report the handle the caller named.
+#[test]
+fn attempts_json_reports_the_named_anchor_for_sent_and_delivered_copies() {
+    let tmp = project();
+    let p = tmp.path();
+    let out = ok(
+        p,
+        &[
+            "need",
+            "send",
+            "--from",
+            "mind",
+            "--to",
+            "hand",
+            "--subject",
+            "N the anchor need",
+            "--body",
+            "need body",
+        ],
+    );
+    let delivered = out
+        .lines()
+        .find_map(|line| line.strip_prefix("created hand "))
+        .unwrap()
+        .trim()
+        .to_string();
+    let sent = out
+        .lines()
+        .find_map(|line| line.strip_prefix("sent "))
+        .unwrap()
+        .trim()
+        .to_string();
+    assert_ne!(sent, delivered, "{out}");
+
+    for handle in [&delivered, &sent] {
+        let json = ok(p, &["need", "attempts", handle, "--json"]);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["need"], handle.as_str(), "{json}");
+        assert!(
+            parsed["opened"].as_u64().is_some_and(|epoch| epoch > 0),
+            "{json}"
+        );
+    }
+}

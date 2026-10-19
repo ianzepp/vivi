@@ -571,16 +571,25 @@ fn print_need_attempts(
     project: Option<&std::path::Path>,
 ) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
+    // The anchor is the message the caller named, not whichever copy of the
+    // need the thread happens to place first: a sent and a delivered copy
+    // share the same date, so thread order between them is a tie-break, not
+    // an identity.
+    let anchor = {
+        let storage = mailspace.storage()?;
+        let anchor_id = storage.resolve_message_token(handle)?;
+        storage
+            .message_by_id(&anchor_id)?
+            .ok_or_else(|| VivariumError::Message(format!("message not found: {handle}")))?
+    };
     let messages = mailspace.thread(handle, false, usize::MAX, usize::MAX)?;
     let attempts: Vec<_> = messages
         .iter()
         .filter_map(|message| vivi::pump::attempt_read::parse_record(&message.body))
         .collect();
-    let opened = messages
-        .first()
-        .and_then(|message| vivi::pump::attempt_read::opened_epoch(&message.date));
+    let opened = vivi::pump::attempt_read::opened_epoch(&anchor.date);
     if json {
-        print_attempts_json(&messages, &attempts, opened)?;
+        print_attempts_json(&anchor.handle, &attempts, opened)?;
         return Ok(());
     }
     for attempt in &attempts {
@@ -603,14 +612,10 @@ fn print_need_attempts(
 /// The `--json` shape: one object with the anchor handle, the open epoch and
 /// every attempt record.
 fn print_attempts_json(
-    messages: &[vivi::mailspace::MailspaceThreadMessage],
+    need: &str,
     attempts: &[vivi::pump::attempt_read::AttemptFields],
     opened: Option<u64>,
 ) -> Result<(), VivariumError> {
-    let need = messages
-        .first()
-        .map(|message| message.handle.clone())
-        .unwrap_or_default();
     let out = serde_json::json!({ "need": need, "opened": opened, "attempts": attempts });
     println!(
         "{}",
