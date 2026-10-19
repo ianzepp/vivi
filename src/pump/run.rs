@@ -103,6 +103,7 @@ fn gates_pass(ctx: &Ctx, st: &mut State) {
             continue;
         };
         crate::pump::state::with_target_state(st, target, |st| {
+            crate::pump::gatefix::expire_gatefix(&target_ctx, st);
             gate::hold_cycle(&target_ctx, st);
             gate::external_gates(&target_ctx, st);
             gate::start_gate(&target_ctx, st);
