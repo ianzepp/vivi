@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use super::{launch_agent_plist, prefer_stable_link, systemd_apply_steps, systemd_unit};
+use super::{
+    launch_agent_plist, parse_launchd_pid, prefer_stable_link, systemd_apply_steps, systemd_unit,
+};
 
 #[test]
 fn systemd_unit_limits_crash_loops() {
@@ -30,6 +32,14 @@ fn launchd_plist_throttles_restarts() {
     assert!(plist.contains("com.vivi.proxy"));
     assert!(plist.contains("<key>KeepAlive</key><true/>"));
     assert!(plist.contains("<key>ThrottleInterval</key><integer>10</integer>"));
+}
+
+#[test]
+fn launchd_print_pid_is_parsed() {
+    let running = "gui/501/com.vivi.proxy = {\n\tactive count = 1\n\tpid = 85306\n\tstate = running\n}";
+    assert_eq!(parse_launchd_pid(running), Some(85306));
+    let stopped = "gui/501/com.vivi.proxy = {\n\tactive count = 0\n\tstate = not running\n}";
+    assert_eq!(parse_launchd_pid(stopped), None);
 }
 
 #[cfg(unix)]

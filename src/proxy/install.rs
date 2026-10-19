@@ -156,13 +156,23 @@ fn install_launchd(explicit: Option<&Path>) -> Result<(), VivariumError> {
     let plist = launch_agent_plist(&executable, &logs, &path_env, explicit);
     let temporary = path.with_extension("plist.tmp");
     fs::write(&temporary, plist)?;
-    if let Err(error) = bootout_if_loaded(&domain, &path) {
-        drop(fs::remove_file(&temporary));
-        return Err(error);
-    }
+    let was_loaded = match bootout_if_loaded(&domain, &path) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            drop(fs::remove_file(&temporary));
+            return Err(error);
+        }
+    };
     fs::rename(temporary, &path)?;
     launchctl(&["bootstrap", &domain, &path.to_string_lossy()])?;
-    println!("installed and started {}", path.display());
+    if was_loaded {
+        launchctl(&["kickstart", "-k", &format!("{domain}/{LAUNCHD_LABEL}")])?;
+    }
+    let pid = wait_for_launchd_pid(&domain);
+    match pid {
+        Some(pid) => println!("installed and started {} (pid {pid})", path.display()),
+        None => println!("installed and started {} (pid unknown)", path.display()),
+    }
     Ok(())
 }
 
@@ -171,7 +181,7 @@ fn uninstall_launchd() -> Result<(), VivariumError> {
     let path = launch_agent_path()?;
     if path.exists() {
         let domain = launch_domain()?;
-        bootout_if_loaded(&domain, &path)?;
+        let _ = bootout_if_loaded(&domain, &path)?;
         fs::remove_file(&path)?;
     }
     println!("proxy service removed");
@@ -229,13 +239,45 @@ fn launchctl(args: &[&str]) -> Result<String, VivariumError> {
     run_tool("launchctl", args)
 }
 
+/// Unload the agent when it is loaded, reporting whether it was.
+///
+/// `true` means the service was detected as loaded and a `bootout` ran, so
+/// the caller must force a fresh process after re-bootstrapping.
 #[cfg(target_os = "macos")]
-fn bootout_if_loaded(domain: &str, path: &Path) -> Result<(), VivariumError> {
+fn bootout_if_loaded(domain: &str, path: &Path) -> Result<bool, VivariumError> {
     let target = format!("{domain}/{LAUNCHD_LABEL}");
     if launchctl(&["print", &target]).is_ok() {
         launchctl(&["bootout", domain, &path.to_string_lossy()])?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
+}
+
+/// Parse the top-level `pid = <n>` line from `launchctl print` output.
+///
+/// `launchctl print` emits that line only while the job is running; nested
+/// dictionaries come after it, so the first match is the job's own PID.
+#[must_use]
+pub fn parse_launchd_pid(output: &str) -> Option<u32> {
+    output
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("pid = "))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_launchd_pid(domain: &str) -> Option<u32> {
+    let target = format!("{domain}/{LAUNCHD_LABEL}");
+    for _ in 0..10 {
+        if let Ok(output) = launchctl(&["print", &target]) {
+            if let Some(pid) = parse_launchd_pid(&output) {
+                return Some(pid);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
