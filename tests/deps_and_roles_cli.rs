@@ -142,6 +142,38 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
     assert!(!step.contains("second"), "{step}");
 }
 
+#[test]
+fn imported_letters_keep_their_backlog_nodes_and_edges() {
+    let src = project();
+    deliver(src.path(), "needs", "first", "need", &[]);
+    let first = handle_of(src.path(), "need", "first");
+    deliver(src.path(), "tasks", "second", "task", &[&first]);
+
+    // Same roles in the target: the imported account rows are locally held.
+    let target = project();
+    ok(
+        target.path(),
+        &["mailspace", "import", "--from", src.path().to_str().unwrap()],
+    );
+
+    // Import carries the minted nodes and edges, so no repair is ever needed.
+    let audit = ok(target.path(), &["graph", "audit"]);
+    assert!(audit.contains("missing=0"), "{audit}");
+    assert!(!audit.contains("missing_node"), "{audit}");
+    assert!(!audit.contains("[repaired]"), "{audit}");
+    // The letters really landed in the target, so the block below is theirs.
+    assert!(
+        ok(target.path(), &["need", "list", "--for", "hand"]).contains("first"),
+        "the imported need is held in the target"
+    );
+    assert!(
+        ok(target.path(), &["task", "list", "--for", "hand"]).contains("second"),
+        "the imported task is held in the target"
+    );
+    let ready = ok(target.path(), &["graph", "ready"]);
+    assert!(ready.contains("blocked=1"), "{ready}");
+}
+
 fn ingest_held(mailspace: &Mailspace, account: &str, role: &str, subject: &str, kind: &str) {
     ingest(mailspace, account, role, subject, kind, &[]);
 }
