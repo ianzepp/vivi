@@ -14,7 +14,7 @@ use super::layout::{
 use super::package::{install_release, sha256_hex};
 use super::parse_version;
 use super::release::{ReleaseJson, consider_release};
-use super::{first_shadowing_vivi, header_from_version};
+use super::{bin_dir_on_path, first_shadowing_vivi, header_from_version, path_hint_line};
 use crate::cli::UninstallCommand;
 
 fn release_json(tag: &str, prerelease: bool, draft: bool) -> ReleaseJson {
@@ -476,4 +476,23 @@ fn first_shadowing_vivi_reports_an_earlier_binary() {
     );
     let managed_first = format!("{}:{}", managed.display(), shadow.display());
     assert!(first_shadowing_vivi(&managed, &managed_first).is_none());
+}
+
+#[test]
+fn bin_dir_off_path_prints_export_hint() {
+    let temp = tempfile::tempdir().expect("tmp");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("bin dir");
+
+    assert!(!bin_dir_on_path(&bin_dir, "/usr/bin:/bin"));
+    assert!(!bin_dir_on_path(&bin_dir, ""));
+    assert!(!bin_dir_on_path(&bin_dir, "/usr/bin::/bin"));
+    let on_path = format!("/usr/bin:{}:/bin", bin_dir.display());
+    assert!(bin_dir_on_path(&bin_dir, &on_path));
+
+    let hint = path_hint_line(&bin_dir);
+    assert!(hint.contains("export PATH=\""), "{hint}");
+    assert!(hint.contains("$PATH"), "{hint}");
+    assert!(hint.contains(&bin_dir.display().to_string()), "{hint}");
+    assert!(hint.starts_with("add to PATH: "), "{hint}");
 }
