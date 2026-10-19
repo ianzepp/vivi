@@ -406,6 +406,16 @@ pub trait PoolProvider {
     /// Returns an error if the machine cannot be started.
     fn start(&self, id: &str) -> Result<(), VivariumError>;
 
+    /// Start a machine while retaining the claim that protects delivery.
+    /// Providers with machine leases can attach the hold to the start request;
+    /// providers whose claim is independent of the host start use `start`.
+    ///
+    /// # Errors
+    /// Returns an error if the machine cannot be started.
+    fn start_claimed(&self, id: &str, _hold: &Hold) -> Result<(), VivariumError> {
+        self.start(id)
+    }
+
     /// Stop a machine; returns once the host accepted it.
     ///
     /// # Errors

@@ -49,7 +49,7 @@ fn set_config_metadata_adds_to_existing_or_new_maps() {
 }
 
 mod refresh {
-    use std::io::{Read, Write};
+    use std::io::{BufRead, Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -151,6 +151,64 @@ mod refresh {
         }
         let seen = seen.lock().unwrap();
         assert_ne!(seen[0], seen[1]);
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn fixed_token() -> Result<Secret, VivariumError> {
+        Ok(Secret::new("test-token".into()))
+    }
+
+    #[test]
+    fn a_claimed_start_sends_its_lease_nonce() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(conn);
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.is_empty() {
+                    break;
+                }
+                let done = line == "\r\n";
+                request.push_str(&line);
+                if done {
+                    break;
+                }
+            }
+            let mut conn = reader.into_inner();
+            let body = r#"{"ok":true}"#;
+            write!(
+                conn,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            request
+        });
+        let api = FlyApi::with_parts("app", &base, fixed_token);
+
+        api.start_claimed(
+            "machine-1",
+            &Hold {
+                nonce: "lease-123".into(),
+            },
+        )
+        .unwrap();
+
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"),
+            "{request}"
+        );
+        let nonce = request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("fly-machine-lease-nonce")
+                .then_some(value.trim())
+        });
+        assert_eq!(nonce, Some("lease-123"), "{request}");
     }
 
     static GONE: AtomicUsize = AtomicUsize::new(0);

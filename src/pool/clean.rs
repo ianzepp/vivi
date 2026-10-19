@@ -229,34 +229,7 @@ pub fn after_merged_request(
     request_path: &Path,
     expected_project: Option<&Path>,
 ) -> Result<CleanReport, VivariumError> {
-    let bytes = fs::read(request_path)?;
-    let request: ReclaimRequest = serde_json::from_slice(&bytes)
-        .map_err(|error| VivariumError::Message(format!("reclaim request: {error}")))?;
-    if request.version != 1 {
-        return Err(VivariumError::Message(format!(
-            "unsupported reclaim request version {}",
-            request.version
-        )));
-    }
-    if !request.source_project.is_absolute() {
-        return Err(VivariumError::Message(String::from(
-            "reclaim request project root must be absolute",
-        )));
-    }
-    let root = request.source_project.canonicalize()?;
-    if let Some(expected) = expected_project {
-        if expected.canonicalize()? != root {
-            return Err(VivariumError::Message(String::from(
-                "reclaim request project does not match --project",
-            )));
-        }
-    }
-    let space = Mailspace::discover(Some(&root))?;
-    if space.mailspace_id() != request.mailspace_id {
-        return Err(VivariumError::Message(String::from(
-            "reclaim request belongs to another mailspace",
-        )));
-    }
+    let (request, space) = read_reclaim_request(request_path, expected_project)?;
     if request.unit.status != Status::Merged {
         return Err(VivariumError::Message(format!(
             "post-merge reclaim unit {} has status {}",
@@ -290,6 +263,41 @@ pub fn after_merged_request(
     validate_local_pools(&space, &request.pools)?;
     let unit = request.unit.as_unit();
     after_merged_snapshot(&space, &unit, &request.pools, &request.merging_targets)
+}
+
+fn read_reclaim_request(
+    request_path: &Path,
+    expected_project: Option<&Path>,
+) -> Result<(ReclaimRequest, Mailspace), VivariumError> {
+    let bytes = fs::read(request_path)?;
+    let request: ReclaimRequest = serde_json::from_slice(&bytes)
+        .map_err(|error| VivariumError::Message(format!("reclaim request: {error}")))?;
+    if request.version != 1 {
+        return Err(VivariumError::Message(format!(
+            "unsupported reclaim request version {}",
+            request.version
+        )));
+    }
+    if !request.source_project.is_absolute() {
+        return Err(VivariumError::Message(String::from(
+            "reclaim request project root must be absolute",
+        )));
+    }
+    let root = request.source_project.canonicalize()?;
+    if let Some(expected) = expected_project {
+        if expected.canonicalize()? != root {
+            return Err(VivariumError::Message(String::from(
+                "reclaim request project does not match --project",
+            )));
+        }
+    }
+    let space = Mailspace::discover(Some(&root))?;
+    if space.mailspace_id() != request.mailspace_id {
+        return Err(VivariumError::Message(String::from(
+            "reclaim request belongs to another mailspace",
+        )));
+    }
+    Ok((request, space))
 }
 
 fn after_merged_in_space(space: &Mailspace, unit: &Unit) -> Result<CleanReport, VivariumError> {
@@ -475,6 +483,17 @@ fn clean_pool(
     if handle.config.provider != "local" {
         return Ok(reset_remote_requested(handle, space, base, dry_run));
     }
+    clean_local_pool(handle, space, st, hint, base, dry_run)
+}
+
+fn clean_local_pool(
+    handle: &PoolHandle,
+    space: &Mailspace,
+    st: Option<&State>,
+    hint: Option<&Unit>,
+    base: Option<&str>,
+    dry_run: bool,
+) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     let root = handle.provider.local_root().ok_or_else(|| {
         VivariumError::Message(format!("pool {} has no local root", handle.id.pool))
     })?;

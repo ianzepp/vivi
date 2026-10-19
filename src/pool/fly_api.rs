@@ -252,6 +252,21 @@ impl FlyApi {
             .map(|_| ())
     }
 
+    /// Start a claimed machine using the lease that protects its delivery.
+    ///
+    /// # Errors
+    /// Returns an error if the start is refused.
+    pub fn start_claimed(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
+        self.require(
+            "POST",
+            &format!("/machines/{id}/start"),
+            Some(&hold.nonce),
+            None,
+            &[200],
+        )
+        .map(|_| ())
+    }
+
     /// Stop a machine.
     ///
     /// # Errors

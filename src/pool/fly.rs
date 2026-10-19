@@ -270,6 +270,10 @@ impl PoolProvider for FlyctlProvider {
         self.api.start(id)
     }
 
+    fn start_claimed(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
+        self.api.start_claimed(id, hold)
+    }
+
     fn stop(&self, id: &str) -> Result<(), VivariumError> {
         self.api.stop(id)
     }

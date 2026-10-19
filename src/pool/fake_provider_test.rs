@@ -366,6 +366,13 @@ impl PoolProvider for Fake {
         self.edit(id, |m| m.state = "started".into())
     }
 
+    fn start_claimed(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
+        if self.leases.borrow().get(id) != Some(&hold.nonce) {
+            return Err(VivariumError::Message("not the lease holder".into()));
+        }
+        self.start(id)
+    }
+
     fn stop(&self, id: &str) -> Result<(), VivariumError> {
         self.calls.borrow_mut().push(format!("stop {id}"));
         if take_one(&self.stops_ignored) {

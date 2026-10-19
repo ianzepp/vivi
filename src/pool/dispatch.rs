@@ -500,9 +500,12 @@ fn deliver(
     }
     let archive = job::pack(&build_bundle(&bundle_plan, &claim.slot.name, launch.token))?;
     provider.put_file(id, &claim.hold, JOB_ARCHIVE, &archive)?;
-    provider.release(id, &claim.hold)?;
     wait_stopped(provider, id, pacing)?;
-    provider.start(id)
+    provider.start_claimed(id, &claim.hold)?;
+    if let Err(error) = provider.release(id, &claim.hold) {
+        eprintln!("warning: started slot {id}, but could not release its claim: {error}");
+    }
+    Ok(())
 }
 
 /// A config update replaces the machine instance; wait for it to settle back
