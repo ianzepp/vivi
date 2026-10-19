@@ -505,6 +505,7 @@ fn local_target(
         source: source.clone().unwrap_or_default(),
         cache_key: cache_key.to_string().repeat(64),
         local_source: source,
+        publish_remote: None,
         seed: Vec::new(),
         requires: Vec::new(),
         build_dir: None,
