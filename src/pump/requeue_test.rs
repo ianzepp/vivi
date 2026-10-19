@@ -251,7 +251,9 @@ fn a_tick_applies_a_pending_requeue_request() {
     drop(store);
 
     let merger = Merger::start(&ctx);
-    crate::pump::run::tick(&ctx, &mut st, &merger).unwrap();
+    let (mut pass, requests, results) = crate::pump::boardpass::BoardPass::detached();
+    crate::pump::run::tick(&ctx, &mut st, &merger, &mut pass).unwrap();
+    pass.serve(&ctx, &mut st, &requests, &results);
 
     let unit = &st.units["u1"];
     assert_eq!(unit.status, Status::Pending, "the tick did not requeue u1");

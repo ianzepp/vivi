@@ -2,12 +2,18 @@
 //! flags, the lock, and the run/status entry points.
 
 use std::fs::{self, File};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
-use crate::pump::config::{PumpConfig, PumpTarget};
-use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::boardpass::BoardPass;
+use crate::pump::config::{
+    BoardConfig, DispatchConfig, GateConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
+};
+use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::merge::Merger;
 use crate::pump::run::{ensure_repo, run, run_with, status, tick as run_tick, write_status};
 use crate::pump::state::{Attempt, GateRun, NeedRecord, State, Status, Unit};
@@ -17,7 +23,9 @@ use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 const T0: u64 = 1_000_000;
 
 fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
-    run_tick(ctx, st, merger).unwrap();
+    let (mut pass, requests, results) = BoardPass::detached();
+    run_tick(ctx, st, merger, &mut pass).unwrap();
+    pass.serve(ctx, st, &requests, &results);
 }
 
 /// A mailspace whose `[pump]` table passes `validate`: the default
@@ -419,7 +427,8 @@ fn a_tick_stops_when_its_state_cannot_be_saved() {
     drop(conn);
     let (merger, _results, _jobs) = Merger::detached();
 
-    let err = run_tick(&ctx, &mut State::default(), &merger).unwrap_err();
+    let (mut pass, _requests, _results) = BoardPass::detached();
+    let err = run_tick(&ctx, &mut State::default(), &merger, &mut pass).unwrap_err();
 
     assert!(err.to_string().contains("state save failed"), "{err}");
     assert!(
@@ -759,4 +768,246 @@ fn an_existing_clone_is_left_alone() {
     let (_dir, ctx, host) = setup();
     crate::pump::run::ensure_repo(&ctx).unwrap();
     assert!(host.commands().is_empty());
+}
+
+/// The dispatch world of the lifecycle tests: one `m1` lane and the `plain`
+/// kind on pool `p1`, a one-second tick, and the board pass enabled and
+/// pulling so it has a `sync pull` to park on.
+fn dispatch_config() -> PumpConfig {
+    PumpConfig {
+        tick: 1,
+        branch: String::from("next"),
+        board: BoardConfig {
+            from: Vec::new(),
+            mark: String::new(),
+            pull: true,
+            ..BoardConfig::default()
+        },
+        dispatch: DispatchConfig {
+            lanes: vec![Lane {
+                model: String::from("m1"),
+                cap: 5,
+            }],
+            max_attempts: 3,
+            kinds: std::collections::BTreeMap::from([(
+                String::from("plain"),
+                Kind {
+                    pools: vec![String::from("p1")],
+                    ..Kind::default()
+                },
+            )]),
+            default_kind: String::from("plain"),
+            ..DispatchConfig::default()
+        },
+        merge: MergeConfig {
+            shared_checks: Vec::new(),
+            ..MergeConfig::default()
+        },
+        gate: GateConfig {
+            pools: vec![String::from("p1")],
+            ..GateConfig::default()
+        },
+        ..PumpConfig::default()
+    }
+}
+
+/// A pending unit of need `n1` that may write only `src/a.rs`.
+fn ready_unit() -> Unit {
+    Unit {
+        need: String::from("n1"),
+        title: String::from("a unit"),
+        brief: String::from("do the work"),
+        write_scope: vec![String::from("src/a.rs")],
+        proof: Vec::new(),
+        tools: String::from("plain"),
+        since: T0,
+        ..Unit::default()
+    }
+}
+
+/// State with `x-a1` planned for `n1` and ready to dispatch.
+fn ready_state() -> State {
+    let mut st = State::default();
+    st.order.push(String::from("x-a1"));
+    st.units.insert(String::from("x-a1"), ready_unit());
+    st.needs.insert(
+        String::from("n1"),
+        NeedRecord {
+            verdict: String::from("units"),
+            units: vec![String::from("x-a1")],
+            ..NeedRecord::default()
+        },
+    );
+    st
+}
+
+/// A host over the same [`FakeHost`] that parks every `sync pull` until the
+/// test releases it, so a board pass can be held open. The 30-second wait
+/// cap keeps a regression from hanging the suite.
+struct ParkHost {
+    inner: Arc<FakeHost>,
+    state: Mutex<(bool, bool)>,
+    released: Condvar,
+}
+
+impl ParkHost {
+    fn new(inner: Arc<FakeHost>) -> Arc<ParkHost> {
+        Arc::new(ParkHost {
+            inner,
+            state: Mutex::new((false, false)),
+            released: Condvar::new(),
+        })
+    }
+
+    /// True while a `sync pull` is parked and unreleased.
+    fn arrived(&self) -> bool {
+        self.lock().0
+    }
+
+    /// Let the parked `sync pull` finish.
+    fn release(&self) {
+        let mut guard = self.lock();
+        guard.1 = true;
+        self.released.notify_all();
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, (bool, bool)> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn park(&self) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut guard = self.lock();
+        guard.0 = true;
+        while !guard.1 && Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            guard = self
+                .released
+                .wait_timeout(guard, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        guard.0 = false;
+    }
+}
+
+impl Host for ParkHost {
+    fn now(&self) -> u64 {
+        self.inner.now()
+    }
+
+    fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
+        if cmd.contains("sync pull") {
+            self.park();
+        }
+        self.inner.run(cmd, cwd, timeout_secs)
+    }
+
+    fn spawn(
+        &self,
+        cmd: &str,
+        cwd: Option<&Path>,
+        stdin: Option<&Path>,
+        out: &Path,
+    ) -> Option<u32> {
+        self.inner.spawn(cmd, cwd, stdin, out)
+    }
+
+    fn log(&self, line: &str) {
+        self.inner.log(line);
+    }
+}
+
+/// `ctx` with its host wrapped in a [`ParkHost`] over the same [`FakeHost`].
+fn parked(ctx: &Ctx, host: &Arc<FakeHost>) -> (Ctx, Arc<ParkHost>) {
+    let park = ParkHost::new(host.clone());
+    let ctx = Ctx::with_parts(
+        (*ctx.cfg).clone(),
+        park.clone(),
+        ctx.project.clone(),
+        ctx.vivi.clone(),
+        ctx.shell_prefix.clone(),
+        ctx.home.clone(),
+        ctx.repo.clone(),
+    );
+    (ctx, park)
+}
+
+/// Wait until the parked pass arrives, or fail the test.
+fn wait_until_arrived(park: &ParkHost) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !park.arrived() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(park.arrived(), "the board pass never reached sync pull");
+}
+
+#[test]
+fn a_blocked_board_pass_does_not_block_dispatch_or_the_tick() {
+    let dir = tempdir().unwrap();
+    let (base, host) = test_ctx(dir.path(), dispatch_config());
+    let (ctx, park) = parked(&base, &host);
+    host.reply("pool status", 0, "slot p1 slot-1 id free x y z\n");
+    host.reply("task send", 0, "created hand 1a2b3c4d\n");
+    host.reply(
+        "pool dispatch",
+        0,
+        "dispatched 1a2b3c4d p1 slot-1 job m1 x y next unit/x-a1 600 write 0 -\n",
+    );
+    let mut st = ready_state();
+    let mut pass = BoardPass::start(&ctx);
+    pass.request(&ctx, &mut st);
+    wait_until_arrived(&park);
+    let (merger, _results, _jobs) = Merger::detached();
+
+    run_tick(&ctx, &mut st, &merger, &mut pass).unwrap();
+
+    assert!(
+        host.commands().iter().any(|cmd| cmd.contains("pool dispatch")),
+        "no dispatch while the pass was parked: {:?}",
+        host.commands()
+    );
+    assert!(
+        park.arrived(),
+        "the tick was not observed while the pass was still parked"
+    );
+
+    park.release();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while st.board.at == 0 && Instant::now() < deadline {
+        pass.apply(&ctx, &mut st);
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(st.board.at > 0, "the finished pass never landed");
+}
+
+#[test]
+fn stop_takes_effect_within_one_tick_while_a_board_pass_runs() {
+    let dir = tempdir().unwrap();
+    let (base, host) = test_ctx(dir.path(), dispatch_config());
+    let (ctx, park) = parked(&base, &host);
+    // The run loop only reads an initialized `pump_control` row.
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.initialize_control("running").unwrap();
+    drop(store);
+    let (done, outcome) = std::sync::mpsc::channel();
+    let runner = ctx.clone();
+    let handle = thread::spawn(move || {
+        let result = run_with(&runner, false);
+        let _ = done.send(result);
+    });
+    wait_until_arrived(&park);
+    thread::sleep(Duration::from_millis(500));
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.set_control_mode("stopped").unwrap();
+    drop(store);
+
+    let result = outcome
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the run loop did not return within 10s of stop");
+    assert!(result.is_ok(), "{:?}", result.err());
+    park.release();
+    drop(handle.join());
 }
