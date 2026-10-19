@@ -146,9 +146,10 @@ fn a_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
         "nothing to wait for yet"
     );
     assert_eq!(edge_count(&mailspace), 0);
-    assert!(
-        blocked_listing(&mailspace).is_empty(),
-        "an unheld dependency blocks nothing, in the list as in the graph"
+    assert_eq!(
+        blocked_listing(&mailspace),
+        ["second"],
+        "an unheld dependency blocks the dependent until it arrives"
     );
     let pending = mailspace.storage().unwrap().pending_dependencies().unwrap();
     assert_eq!(pending.len(), 1, "{pending:?}");
@@ -188,18 +189,43 @@ fn a_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
 }
 
 #[test]
-fn a_reference_that_can_never_resolve_blocks_nothing_and_is_not_remembered() {
+fn a_reference_that_can_never_resolve_is_remembered_and_unmet() {
     let (_tmp, mailspace) = space();
     let (_, task) = file(&mailspace, "hand", "task", "second", &["T1"]);
 
     assert_eq!(readiness(&mailspace, &task), "ready");
+    let pending = mailspace.storage().unwrap().pending_dependencies().unwrap();
     assert!(
-        mailspace
-            .storage()
-            .unwrap()
-            .pending_dependencies()
-            .unwrap()
-            .is_empty()
+        pending.iter().flat_map(|(_, refs)| refs).any(|r| r == "T1"),
+        "{pending:?}"
+    );
+    assert_eq!(
+        blocked_listing(&mailspace),
+        ["second"],
+        "an unresolved reference blocks the dependent"
+    );
+}
+
+#[test]
+fn dependency_satisfied_wants_a_held_done_row() {
+    let (_tmp, mailspace) = space();
+    assert!(
+        !dependency_satisfied(&mailspace.storage().unwrap(), "deadbeef"),
+        "an unknown token is not satisfied"
+    );
+    let (_, first) = file(&mailspace, "hand", "need", "first", &[]);
+    assert!(
+        !dependency_satisfied(&mailspace.storage().unwrap(), &first),
+        "a held open row is not satisfied"
+    );
+    mailspace
+        .storage()
+        .unwrap()
+        .move_message_to_role("hand", &first, "done")
+        .unwrap();
+    assert!(
+        dependency_satisfied(&mailspace.storage().unwrap(), &first),
+        "a held row moved to done is satisfied"
     );
 }
 
@@ -215,13 +241,16 @@ fn a_dependency_held_for_another_mailspace_makes_no_edge() {
     );
     assert_eq!(readiness(&mailspace, &task), "ready");
     assert_eq!(edge_count(&mailspace), 0);
-    assert!(
-        mailspace
-            .storage()
-            .unwrap()
-            .pending_dependencies()
-            .unwrap()
-            .is_empty()
+    let pending = mailspace.storage().unwrap().pending_dependencies().unwrap();
+    assert_eq!(
+        pending.iter().flat_map(|(_, refs)| refs).count(),
+        1,
+        "a foreign-held reference is remembered as unresolved: {pending:?}"
+    );
+    assert_eq!(
+        blocked_listing(&mailspace),
+        ["ours"],
+        "it blocks until the named work is present and done"
     );
 }
 

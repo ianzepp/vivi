@@ -12,9 +12,11 @@
 //! A dependency not held yet is recorded as pending in the store itself (not
 //! in sync state: a mailspace with no `[sync]` files letters too) and its
 //! edge is made when that letter is attached. A reference that can never name
-//! work here (foreign-held, plain mail, not a handle) makes no edge and
-//! blocks nothing. `graph audit` reads the same headers, so a drifted graph is
-//! reported and repaired from the letters alone.
+//! work here (foreign-held, plain mail, not a handle) is recorded the same
+//! way: unresolved references are remembered and block readiness until the
+//! named letter is present and done. Only a held reference mints an edge.
+//! `graph audit` reads the same headers, so a drifted graph is reported and
+//! repaired from the letters alone.
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,10 +38,14 @@ pub type ArrivedLetter = (String, String);
 pub(super) enum DepLookup {
     /// A backlog item held here.
     Held(BacklogDep),
-    /// Not held yet, or held for a role this mailspace does not have: the
-    /// edge waits for the letter.
+    /// Not held yet, or held for a role this mailspace does not have:
+    /// recorded as unresolved and blocking readiness until the letter is
+    /// present and done; the edge waits for the letter.
     Pending,
-    /// Can never order work here.
+    /// Can never order work here (a foreign-held letter, plain mail, not a
+    /// handle): recorded as unresolved exactly like [`DepLookup::Pending`], so
+    /// it blocks readiness until a present, done letter answers it, but it
+    /// mints no edge.
     Never,
 }
 
@@ -234,8 +240,10 @@ impl Mailspace {
         let mut plan = LinkPlan::default();
         for token in refs {
             match self.lookup_dependency(storage, token)? {
-                DepLookup::Pending => plan.pending.push(token.clone()),
-                DepLookup::Never => {}
+                // Unresolved references are remembered and block readiness
+                // until the named letter is present and done; only held
+                // references mint edges.
+                DepLookup::Pending | DepLookup::Never => plan.pending.push(token.clone()),
                 DepLookup::Held(dep) => {
                     let existing = backlog_node_by_token(storage, nodes, &dep.handle)?;
                     add_edge(&mut plan, edges, dependent, &dep, existing.as_ref());
@@ -273,14 +281,11 @@ impl Mailspace {
         })
     }
 
-    /// Whether `token` names held work that is not done: the one rule
-    /// `task list --blocked` and the graph share.
+    /// Whether `token` names work this mailspace does not hold as done: unmet
+    /// unless the named dependency is present and done.
     pub(super) fn dependency_is_unmet(&self, token: &str) -> Result<bool, VivariumError> {
         let storage = self.storage()?;
-        Ok(matches!(
-            self.lookup_dependency(&storage, token)?,
-            DepLookup::Held(dep) if dep.state != "done"
-        ))
+        Ok(!dependency_satisfied(&storage, token))
     }
 
     /// The edges the copies of one letter should have and do not: open nodes
@@ -328,6 +333,20 @@ impl Mailspace {
         }
         Ok(missing)
     }
+}
+
+/// Whether `token` names a dependency that is present and satisfied: a held
+/// message row (any account: local, foreign, unowned) whose local role is
+/// `done`. A token that resolves to no held row, or to a row still open, is
+/// unmet.
+pub(super) fn dependency_satisfied(storage: &Storage, token: &str) -> bool {
+    let Ok(message_id) = storage.resolve_message_token(token) else {
+        return false;
+    };
+    matches!(
+        storage.message_by_id(&message_id),
+        Ok(Some(view)) if view.local_role == "done"
+    )
 }
 
 /// Add the edge `dep -> dependent` to the plan unless it would order a node

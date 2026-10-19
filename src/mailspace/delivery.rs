@@ -536,9 +536,10 @@ impl Mailspace {
 
     /// List open tasks with their dependency handles, optionally filtered.
     ///
-    /// - `blocked` keeps only tasks with at least one unfinished dependency
-    ///   that names held backlog work (the rule the graph's edges follow: a
-    ///   reference that is not held, or never can be, blocks nothing).
+    /// - `blocked` keeps only tasks with at least one unmet dependency: a
+    ///   dependency is met only when it is present in this mailspace and done,
+    ///   so a reference that is not held yet, or can never name held work,
+    ///   still blocks the task.
     /// - `blocking` keeps only tasks that depend on the given handle.
     ///
     /// # Errors
