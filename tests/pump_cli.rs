@@ -113,6 +113,11 @@ fn boot_and_board_show_the_pump_section() {
         "{}",
         stdout(&boot)
     );
+    assert!(
+        stdout(&boot).contains("  state   control running, writer not running, status age never"),
+        "{}",
+        stdout(&boot)
+    );
     let board = vivi(["board", "--pump", "--project", root(&project)]);
     assert_success(&board);
     assert!(
