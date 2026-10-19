@@ -306,7 +306,7 @@ async fn backend_health(state: &AppState, name: &str, provider: &ProviderConfig)
             state
                 .health
                 .record(name, kind_name(provider.kind), true, None);
-            forward::json_ok(serde_json::json!({ "ok": true, "provider": name }))
+            forward::json_ok(serde_json::json!({ "ok": true, "provider": name, "status": "ok" }))
         }
         Err(error) => {
             state
@@ -314,7 +314,7 @@ async fn backend_health(state: &AppState, name: &str, provider: &ProviderConfig)
                 .record(name, kind_name(provider.kind), false, Some(error));
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                axum::Json(serde_json::json!({ "ok": false, "provider": name })),
+                axum::Json(serde_json::json!({ "ok": false, "provider": name, "status": "down" })),
             )
                 .into_response()
         }
