@@ -448,11 +448,9 @@ pub(super) fn event_release_due(
     storage: &Storage,
     content_id: &str,
 ) -> Result<bool, VivariumError> {
-    let now = clock_micros();
     Ok(storage
-        .deferred_event_contents()?
-        .iter()
-        .any(|(held, until)| held == content_id && *until <= now))
+        .event_deferral_until(content_id)?
+        .is_some_and(|until| until <= clock_micros()))
 }
 
 /// One folder change the head asks for.

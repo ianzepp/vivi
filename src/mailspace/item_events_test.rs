@@ -414,3 +414,35 @@ fn applying_the_same_head_again_changes_nothing() {
         before
     );
 }
+
+#[test]
+fn release_due_reads_only_the_named_item() {
+    let (_tmp, mailspace) = space();
+    let (a, _) = send(&mailspace, "need", "hand");
+    let (b, _) = send(&mailspace, "need", "hand");
+    let storage = mailspace.storage().unwrap();
+    let (row_a_id, content_a) = {
+        let id = storage.resolve_message_token(&a).unwrap();
+        let row = storage.message_by_id(&id).unwrap().unwrap();
+        (row.message_id, row.content_id)
+    };
+    let content_b = {
+        let id = storage.resolve_message_token(&b).unwrap();
+        storage.message_by_id(&id).unwrap().unwrap().content_id
+    };
+
+    storage
+        .set_event_deferral(&[row_a_id], Some(clock_micros() + 60_000_000))
+        .unwrap();
+    assert!(!event_release_due(&storage, &content_a).unwrap());
+    assert!(!event_release_due(&storage, &content_b).unwrap());
+
+    let (due_a, due_b) = with_clock_skew(61_000_000, || {
+        (
+            event_release_due(&storage, &content_a).unwrap(),
+            event_release_due(&storage, &content_b).unwrap(),
+        )
+    });
+    assert!(due_a, "the marked item's bound has passed");
+    assert!(!due_b, "the other item holds no deferral of its own");
+}

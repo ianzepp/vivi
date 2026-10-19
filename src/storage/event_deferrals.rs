@@ -54,6 +54,28 @@ impl Storage {
             .map_err(|e| VivariumError::Other(format!("failed to clear the event deferral: {e}")))
     }
 
+    /// The earliest clock reading at which a skipped event letter held by
+    /// the item `content_id` begins to count, or `None` when it holds
+    /// none. Only live, unabsorbed rows count — a sealed item takes no
+    /// events.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn event_deferral_until(&self, content_id: &str) -> Result<Option<i64>, VivariumError> {
+        self.conn
+            .borrow()
+            .query_row(
+                "SELECT MIN(d.until) FROM event_deferrals d
+                 JOIN messages m ON m.message_id = d.message_id
+                 WHERE m.content_id = ?1 AND m.deleted_at IS NULL AND m.absorbed_at IS NULL",
+                params![content_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                VivariumError::Other(format!("failed to query the deferral of an item: {e}"))
+            })
+    }
+
     /// Every item holding a skipped event letter: its content id and the
     /// earliest clock reading at which one of them begins to count. Only
     /// live, unabsorbed rows count — a sealed item takes no events.
