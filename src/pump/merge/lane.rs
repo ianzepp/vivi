@@ -46,11 +46,12 @@ const LANE_BACKOFF_SECS: u64 = 600;
 /// `why` codes of an undecided result that say the lane itself cannot work
 /// (no checkout, no way to publish), as opposed to a batch whose content is
 /// at fault (`publish-conflict`, a fetch of one unit branch, ...).
-const LANE_LEVEL: [&str; 5] = [
+const LANE_LEVEL: [&str; 6] = [
     "lane-checkout-failed",
     "publish-fetch-failed",
     "publish-check-failed",
     "push-failed",
+    "proof-missing-tool",
     "merge-error",
 ];
 
