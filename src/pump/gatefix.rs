@@ -198,11 +198,7 @@ const GATEFIX_RETRY_KEY: &str = "gatefix_retry_at";
 
 /// The u64 entry `need` holds under extra-map `key`, else 0.
 fn gatefix_count(st: &State, key: &str, need: &str) -> u64 {
-    st.extra
-        .get(key)
-        .and_then(|map| map.get(need))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
+    gatefix_at(st, key, need).unwrap_or(0)
 }
 
 /// Set the u64 entry `need` holds under extra-map `key`.
@@ -216,10 +212,40 @@ fn gatefix_set(st: &mut State, key: &str, need: &str, value: u64) {
     }
 }
 
+/// The u64 entry `need` holds under extra-map `key`, when it has one.
+fn gatefix_at(st: &State, key: &str, need: &str) -> Option<u64> {
+    st.extra
+        .get(key)
+        .and_then(|map| map.get(need))
+        .and_then(serde_json::Value::as_u64)
+}
+
 /// Remove `need`'s entry under extra-map `key`.
 fn gatefix_remove(st: &mut State, key: &str, need: &str) {
     if let Some(serde_json::Value::Object(entries)) = st.extra.get_mut(key) {
         entries.remove(need);
+    }
+}
+
+/// A recorded gatefix retry: once the backoff has run out, respawn the
+/// planner from its saved prompt (which `spawn_planner` rewrites) and drop
+/// the retry entry. A prompt that has gone missing drops the entry alone, so
+/// the need is not retried forever.
+fn retry_gatefix(ctx: &Ctx, st: &mut State, need: &str, now: u64) {
+    let Some(at) = gatefix_at(st, GATEFIX_RETRY_KEY, need) else {
+        return;
+    };
+    if now < at {
+        return;
+    }
+    let prompt = fs::read_to_string(ctx.home.join("gatefix").join(format!("{need}.prompt")));
+    gatefix_remove(st, GATEFIX_RETRY_KEY, need);
+    match prompt {
+        Ok(prompt) => {
+            spawn_planner(ctx, "gatefix", need, &prompt);
+            ctx.log(&format!("gatefix retry {need}"));
+        }
+        Err(_) => ctx.log(&format!("gatefix prompt missing for {need}")),
     }
 }
 
@@ -242,6 +268,7 @@ fn expire_one_gatefix(ctx: &Ctx, st: &mut State, need: &str) {
     }
     let receipt = exit_receipt_path(&ctx.home.join("gatefix").join(format!("{need}.out")));
     if !receipt.exists() {
+        retry_gatefix(ctx, st, need, ctx.now());
         return;
     }
     let code = fs::read_to_string(&receipt)

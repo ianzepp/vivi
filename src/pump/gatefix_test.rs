@@ -103,3 +103,47 @@ fn a_written_plan_clears_the_gatefix_retry_state() {
     );
     drop(dir);
 }
+
+/// A due retry with a saved prompt respawns the planner exactly once.
+#[test]
+fn a_due_gatefix_retry_respawns_the_planner() {
+    let (dir, ctx, host) = setup();
+    host.set_now(T0);
+    let gatefix = ctx.home.join("gatefix");
+    drop(fs::create_dir_all(&gatefix));
+    fs::write(gatefix.join(format!("{NEED}.prompt")), b"plan the fix").unwrap();
+    let mut st = red_state();
+    let mut fails = serde_json::Map::new();
+    fails.insert(String::from(NEED), serde_json::json!(1_u64));
+    st.extra
+        .insert(String::from("gatefix_fails"), serde_json::Value::Object(fails));
+    let mut retries = serde_json::Map::new();
+    retries.insert(String::from(NEED), serde_json::json!(T0 + 60));
+    st.extra.insert(
+        String::from("gatefix_retry_at"),
+        serde_json::Value::Object(retries),
+    );
+    host.set_now(T0 + 59);
+    expire_gatefix(&ctx, &mut st);
+    assert!(host.spawned().is_empty());
+    assert_eq!(
+        st.extra["gatefix_retry_at"][NEED],
+        serde_json::json!(T0 + 60)
+    );
+    host.set_now(T0 + 60);
+    expire_gatefix(&ctx, &mut st);
+    let spawned = host.spawned();
+    assert_eq!(spawned.len(), 1, "spawned: {spawned:?}");
+    assert!(spawned[0].contains("claude -p --model claude-sonnet-5-5"));
+    assert!(
+        st.extra
+            .get("gatefix_retry_at")
+            .and_then(|map| map.get(NEED))
+            .is_none()
+    );
+    assert!(host
+        .logs()
+        .iter()
+        .any(|line| line.contains("gatefix retry pumpfix-g01234567")));
+    drop(dir);
+}
