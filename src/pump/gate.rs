@@ -590,12 +590,11 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
         .map(|(name, owner)| (name.clone(), owner.clone()))
         .collect();
     for (name, owner) in owned {
-        let prefix = format!("{owner}-");
         let statuses: Vec<Status> = st
             .units
-            .iter()
-            .filter(|(uid, _)| uid.starts_with(&prefix))
-            .map(|(_, unit)| unit.status)
+            .values()
+            .filter(|unit| unit.need == owner)
+            .map(|unit| unit.status)
             .collect();
         let mark = format!("{owner}:{name}");
         let failing = names.iter().any(|n| n == &name);

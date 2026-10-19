@@ -30,12 +30,11 @@ pub(crate) fn replans_left(ctx: &Ctx, st: &State, name: &str) -> bool {
 
 /// `true` when the owner has units and every one of them is settled.
 fn owner_settled(st: &State, owner: &str) -> bool {
-    let prefix = format!("{owner}-");
     let statuses: Vec<Status> = st
         .units
-        .iter()
-        .filter(|(uid, _)| uid.starts_with(&prefix))
-        .map(|(_, unit)| unit.status)
+        .values()
+        .filter(|unit| unit.need == owner)
+        .map(|unit| unit.status)
         .collect();
     !statuses.is_empty() && statuses.iter().all(|&s| is_settled(s))
 }
