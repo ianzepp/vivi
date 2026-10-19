@@ -28,7 +28,7 @@ use std::thread;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::progress::{LaneProgress, duration_text};
 use crate::pump::quarantine;
-use crate::pump::ready::{dependency_holds, note_hold, priority_needs, ranked};
+use crate::pump::ready::{dependency_holds, note_hold, ranked};
 use crate::pump::remote;
 use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
@@ -251,7 +251,9 @@ impl Merger {
     /// units of its target and move exactly those units to `merging`:
     /// `merging` means "inside a lane", the rest stay `delivered`. Priority
     /// units rank first, then fix units, then the rest. Under the
-    /// `HOLD-MERGE` flag only fix units and priority units are taken.
+    /// `HOLD-MERGE` flag only fix units, units whose need is at or above
+    /// the configured priority floor, and units whose write scope is clear
+    /// of every red crate are taken.
     ///
     /// State change only: the lanes touch repositories, never the state, so
     /// a batch sent here is applied later by [`Merger::apply`].
@@ -383,16 +385,47 @@ fn recheck_held(st: &mut State, targets: &BTreeMap<String, usize>) {
     }
 }
 
+/// The crates named by the current red tests: the first whitespace token of
+/// every key of the state's red map and of every target's red map. A key
+/// reads `<crate> <test>`.
+fn red_crates(st: &State) -> BTreeSet<String> {
+    let mut crates = BTreeSet::new();
+    for name in st
+        .red
+        .keys()
+        .chain(st.target_states.values().flat_map(|t| t.red.keys()))
+    {
+        if let Some(krate) = name.split_whitespace().next() {
+            crates.insert(krate.to_string());
+        }
+    }
+    crates
+}
+
+/// True when any `/`-separated segment of any write scope entry names a red
+/// crate: `crates/radix-cli/src/lib.rs` touches `radix-cli`, while
+/// `docs/x.md` does not.
+fn touches_crate(write_scope: &[String], red: &BTreeSet<String>) -> bool {
+    write_scope
+        .iter()
+        .any(|path| path.split('/').any(|segment| red.contains(segment)))
+}
+
 /// The `delivered` units that may be merged now, in rank order, grouped by
 /// target. Dependency holds, the `HOLD-MERGE` flag and the target check are
 /// applied here; a unit naming a target no lane serves is held and reported.
+/// Under the hold a unit is taken when it is fix-prefixed, or its need's
+/// priority level reaches the configured floor (at least 1), or red tests
+/// exist and its write scope touches none of their crates.
 fn eligible(
     ctx: &Ctx,
     st: &mut State,
     known: &BTreeSet<String>,
 ) -> BTreeMap<String, VecDeque<String>> {
     let hold = ctx.flag("HOLD-MERGE");
-    let needs = priority_needs(ctx);
+    let floor = ctx.cfg.gate.hold_priority_floor.max(1);
+    let levels = crate::pump::priority::levels(ctx);
+    let red = red_crates(st);
     let holds = dependency_holds(ctx, st);
     let mut waiting: BTreeMap<String, VecDeque<String>> = BTreeMap::new();
     for uid in ranked(ctx, st, st.order.clone()) {
@@ -408,8 +441,12 @@ fn eligible(
         let Some(unit) = st.units.get_mut(&uid) else {
             continue;
         };
-        if hold && !uid.starts_with(&ctx.cfg.fix_prefix) && !needs.contains(&unit.need) {
-            continue;
+        if hold && !uid.starts_with(&ctx.cfg.fix_prefix) {
+            let level = levels.get(&unit.need).copied().unwrap_or(0);
+            let clear = !red.is_empty() && !touches_crate(&unit.write_scope, &red);
+            if level < floor && !clear {
+                continue;
+            }
         }
         if unit.status != Status::Delivered {
             continue;
