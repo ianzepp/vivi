@@ -540,3 +540,81 @@ fn failed_release_keeps_the_deferral_mark() {
         "a successful settle drops the mark"
     );
 }
+
+/// The raw bytes of the event letters held for `handle`, oldest first.
+fn event_letters(mailspace: &Mailspace, handle: &str) -> Vec<String> {
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    let mut found: Vec<(i64, String)> = Vec::new();
+    for child in storage.reply_child_contents(&view.content_id).unwrap() {
+        let row = storage.message_by_content_id(&child).unwrap().unwrap();
+        let bytes = storage.read_listed_blob(&row.blob_relpath).unwrap();
+        if let Some(event) = parse_event(&bytes) {
+            found.push((event.date, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+    found.sort();
+    found.into_iter().map(|(_, bytes)| bytes).collect()
+}
+
+#[test]
+fn want_promote_writes_a_promoted_event_letter() {
+    let (_tmp, mailspace) = space();
+    // A want of mind's own: mind holds the delivered copy in `wants`, so the
+    // promotion is the author's move and travels.
+    let (want, _sent) = send(&mailspace, "want", "mind");
+
+    let promoted = mailspace
+        .move_item("mind", &want, "needs", None, "want promote", None)
+        .unwrap();
+
+    assert!(
+        mailspace
+            .list("mind", "needs")
+            .unwrap()
+            .iter()
+            .any(|row| row.handle == promoted),
+        "the promoted row is in needs"
+    );
+    let state = mailspace.item_event_state(&want).unwrap().unwrap();
+    assert_eq!(state.state, "promoted");
+    assert_eq!(events_of(&mailspace, &want), [("promoted".to_string(), 0)]);
+    let letters = event_letters(&mailspace, &promoted);
+    assert_eq!(letters.len(), 1);
+    assert!(
+        letters[0].contains("X-Vivi-Event: promoted"),
+        "{}",
+        letters[0]
+    );
+    // A promotion is not a close: the backlog node stays open.
+    let node = mailspace
+        .graph_show("backlog")
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|node| node.source_id == promoted)
+        .expect("the promoted want has a backlog node");
+    assert_eq!(node.state, "open");
+}
+
+#[test]
+fn a_hand_promoting_another_roles_want_stays_a_local_move() {
+    let (_tmp, mailspace) = space();
+    let (want, _sent) = send(&mailspace, "want", "hand");
+
+    let moved = mailspace
+        .move_item("hand", &want, "needs", None, "want promote", None)
+        .unwrap();
+
+    assert_eq!(mailspace.item_event_state(&want).unwrap(), None);
+    assert!(events_of(&mailspace, &want).is_empty());
+    assert!(
+        mailspace
+            .list("hand", "needs")
+            .unwrap()
+            .iter()
+            .any(|row| row.handle == moved),
+        "the reporter's copy still moves"
+    );
+}

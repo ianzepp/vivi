@@ -44,14 +44,16 @@ impl EmitRequest<'_> {
     }
 }
 
-/// The event kind a folder move is, if it is one: a close of open work, or a
-/// reopen of closed work. A reopen may point at the owner's `sent` record of
-/// a send whose delivered copies are closed; the caller checks that. A close
-/// may point at a copy an assignee already reported done, which the owner
-/// still has to close; the caller checks that too.
+/// The event kind a folder move is, if it is one: a close of open work, a
+/// reopen of closed work, or a want's promotion into `needs`. A reopen may
+/// point at the owner's `sent` record of a send whose delivered copies are
+/// closed; the caller checks that. A close may point at a copy an assignee
+/// already reported done, which the owner still has to close; the caller
+/// checks that too.
 fn event_kind_for_move(from: &str, to: &str) -> Option<ItemEventKind> {
     match (from, to) {
         ("tasks" | "needs" | "wants" | "sent" | "done", "done") => Some(ItemEventKind::Done),
+        ("wants", "needs") => Some(ItemEventKind::Promoted),
         ("done" | "sent", "tasks" | "needs" | "wants") => Some(ItemEventKind::Reopened),
         _ => None,
     }
@@ -83,13 +85,13 @@ impl Mailspace {
         headers
     }
 
-    /// Write the event letter for a `done` or `reopen` move by a role that
-    /// may close the item (its author, or a mind or operator) and apply it; the result is
-    /// the event letter's handle. `Ok(None)` when the move is not an event:
-    /// not a close or reopen, not work, or the actor may not close the item
-    /// (an assignee's move is a local report). Needs the applied event's
-    /// join rule completes are pushed onto `joined` as the mailspace shows
-    /// them.
+    /// Write the event letter for a `done`, `reopen` or `promote` move by a
+    /// role that may close the item (its author, or a mind or operator) and
+    /// apply it; the result is the event letter's handle. `Ok(None)` when the
+    /// move is not an event: not a close, reopen or promotion, not work, or the
+    /// actor may not close the item (an assignee's move is a local report).
+    /// Needs the applied event's join rule completes are pushed onto `joined`
+    /// as the mailspace shows them.
     pub(in crate::mailspace) fn try_emit_for_move(
         &self,
         storage: &Storage,
@@ -106,6 +108,18 @@ impl Mailspace {
         };
         let Some(item) = held_item(storage, &before.content_id)? else {
             return Ok(None);
+        };
+        // A want's own `sent` record moving into `needs` is `want promote`,
+        // never a reopen: a want reopens into `wants`, so the folder alone
+        // cannot tell the two apart by role.
+        let kind = if kind == ItemEventKind::Reopened
+            && before.local_role == "sent"
+            && item.kind == "want"
+            && role == "needs"
+        {
+            ItemEventKind::Promoted
+        } else {
+            kind
         };
         let head = self.item_head(storage, &item)?;
         if !self.may_close(&item, identity) {
@@ -512,6 +526,7 @@ fn refuse_assignee_reopen(
 /// The folder the actor's row heads to.
 fn target_role(item: &HeldItem, kind: ItemEventKind) -> &'static str {
     match (kind, item.kind) {
+        (ItemEventKind::Promoted, _) => "needs",
         (ItemEventKind::Done, _) => "done",
         (ItemEventKind::Reopened, "need") => "needs",
         (ItemEventKind::Reopened, "want") => "wants",
