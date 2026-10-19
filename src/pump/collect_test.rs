@@ -627,3 +627,133 @@ fn spawn_planner_writes_the_prompt_and_spawns_with_the_charter_substituted() {
         )]
     );
 }
+
+#[test]
+fn an_agent_exit_127_with_a_branch_is_a_host_failure_not_an_attempt() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d here slot-1 finished \"pushed unit/x-a1 abc\"",
+    );
+    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/x-a1\n");
+    host.reply(
+        "task show",
+        0,
+        "agent exit 127 in 1s, job 12s, started from abc\n\
+         \n\
+         --- stderr tail\n\
+         bash: line 1: pi: command not found",
+    );
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
+    u.attempts = 1;
+    u.pool = Some(String::from("here"));
+    put(&mut st, "u-1", u);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Pending);
+    assert_eq!(u.attempts, 0);
+    assert!(u.history.is_empty());
+    assert_eq!(u.task, None);
+    assert_eq!(u.branch, None);
+    assert_eq!(u.since_dispatch, None);
+    assert!(
+        host.commands()
+            .iter()
+            .any(|command| command.contains("push origin --delete")
+                || command.contains("branch -D")),
+        "commands: {:?}",
+        host.commands()
+    );
+    let pause = &st.env_pauses["here"];
+    assert_eq!(pause.fails.len(), 1);
+    assert_eq!(pause.paused_at, None);
+    assert!(exceptions(&ctx).is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("host-fail u-1 agent_exit; attempt restored")),
+        "logs: {:?}",
+        host.logs()
+    );
+}
+
+#[test]
+fn a_checkout_failed_result_is_a_host_failure_that_restores_the_attempt() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 finished \"checkout_failed\"",
+    );
+    host.reply("ls-remote", 0, "");
+    host.reply(
+        "task show",
+        0,
+        "agent exit 1 in 2s, job 5s\n\
+         \n\
+         --- runner log tail\n\
+         Unable to create '/repo/.git/index.lock': File exists.",
+    );
+    let mut st = State::default();
+    let mut u = unit(Status::Inflight, Some("1a2b3c4d"), None);
+    u.attempts = 2;
+    u.pool = Some(String::from("here"));
+    put(&mut st, "u-1", u);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Pending);
+    assert_eq!(u.attempts, 1);
+    assert!(u.history.is_empty());
+    assert_eq!(u.task, None);
+    let pause = &st.env_pauses["here"];
+    assert_eq!(pause.fails.len(), 1);
+    assert_eq!(pause.paused_at, None);
+    assert!(exceptions(&ctx).is_empty());
+}
+
+#[test]
+fn two_host_failures_pause_the_pool_with_one_environment_exception() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected task-1 here slot-1 finished \"pushed nothing\"\n\
+         collected task-2 here slot-2 finished \"pushed nothing\"",
+    );
+    host.reply("ls-remote", 0, "");
+    host.reply(
+        "task show",
+        0,
+        "agent exit 127 in 1s, job 12s\n\
+         \n\
+         --- stderr tail\n\
+         bash: line 1: pi: command not found",
+    );
+    let mut st = State::default();
+    let mut u1 = unit(Status::Inflight, Some("task-1"), None);
+    u1.pool = Some(String::from("here"));
+    let mut u2 = unit(Status::Inflight, Some("task-2"), None);
+    u2.pool = Some(String::from("here"));
+    put(&mut st, "u-1", u1);
+    put(&mut st, "u-2", u2);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    assert!(st.units.values().all(|u| u.status == Status::Pending));
+    let pause = &st.env_pauses["here"];
+    assert_eq!(pause.fails.len(), 2);
+    assert_eq!(pause.paused_at, Some(T0));
+    let recorded = exceptions(&ctx);
+    let lines: Vec<&str> = recorded
+        .lines()
+        .filter(|line| line.contains("environment here"))
+        .collect();
+    assert_eq!(lines.len(), 1, "exceptions: {recorded}");
+    assert!(lines[0].contains("pi"), "exceptions: {recorded}");
+}

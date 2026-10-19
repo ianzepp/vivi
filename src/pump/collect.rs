@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::VivariumError;
 use crate::pump::attempt_record::{self, Ending};
+use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status, Unit};
 use crate::pump::transient;
@@ -194,6 +195,92 @@ fn transient_retry(unit: &mut Unit, now: u64, cap: u32, backoff: u64) -> bool {
     unit.retry_not_before = Some(now.saturating_add(wait));
     unit.status = Status::Pending;
     true
+}
+
+/// A host-class failure (see [`envfail`]): the attempt never measured the
+/// unit, so undo the dispatch instead of failing it — drop the attempt
+/// branch, restore the attempt (no history entry, no record posted, no
+/// quarantine repair), count the failure toward pausing the unit's pool,
+/// and log.
+fn host_fail(ctx: &Ctx, st: &mut State, uid: &str, host: &envfail::HostFailure, receipt: &str) {
+    drop_attempt_branch(ctx, st, uid);
+    let now = ctx.now();
+    let pool = {
+        let Some(unit) = st.units.get_mut(uid) else {
+            return;
+        };
+        unit.attempts = unit.attempts.saturating_sub(1);
+        unit.status = Status::Pending;
+        unit.task = None;
+        unit.branch = None;
+        unit.since = now;
+        unit.since_dispatch = None;
+        unit.pool.clone()
+    };
+    let evidence = format!(
+        "{}: {}: {}",
+        host.class,
+        host.command.as_deref().unwrap_or("?"),
+        tail(&attempt_record::sections_tail(receipt), 300)
+    );
+    if let Some(pool) = pool {
+        let entry = st.env_pauses.entry(pool.clone()).or_default();
+        entry.fails.push(now);
+        entry
+            .fails
+            .retain(|at| now.saturating_sub(*at) <= envfail::HOST_FAIL_WINDOW);
+        entry.evidence = evidence.clone();
+        entry.probe = host
+            .command
+            .as_ref()
+            .map(|tool| format!("command -v {tool}"));
+        if entry.fails.len() >= envfail::HOST_PAUSE_AFTER && entry.paused_at.is_none() {
+            entry.paused_at = Some(now);
+            ctx.exception("environment", &pool, &evidence);
+        }
+    }
+    ctx.log(&format!(
+        "host-fail {uid} {}; attempt restored",
+        host.class
+    ));
+}
+
+/// Delete the unit's attempt branch, locally and on the remote, when either
+/// has it: the branch only holds a `WIP (attempt failed)` marker, and the
+/// restored attempt must not be mistaken for a delivered one. Failures are
+/// logged and never fatal.
+fn drop_attempt_branch(ctx: &Ctx, st: &State, uid: &str) {
+    let Some(unit) = st.units.get(uid) else {
+        return;
+    };
+    let Some(branch) = unit.branch.clone() else {
+        return;
+    };
+    let target = unit.target_id().to_string();
+    let tctx = ctx.for_target(&target).unwrap_or_else(|| ctx.clone());
+    if local_branch_exists(&tctx, &branch) {
+        let out = tctx.git(&format!("branch -D {}", shell_quote(&branch)), 60);
+        ctx.log(&format!(
+            "host-fail {uid} drop local branch {}: {}",
+            branch,
+            out.text.trim()
+        ));
+    }
+    if remote_has(&tctx, &branch) {
+        let out = tctx.git(
+            &format!(
+                "push {} --delete {}",
+                shell_quote(&tctx.cfg.remote),
+                shell_quote(&branch)
+            ),
+            60,
+        );
+        ctx.log(&format!(
+            "host-fail {uid} drop remote branch {}: {}",
+            branch,
+            out.text.trim()
+        ));
+    }
 }
 
 /// Send a unit to the split planner: write the resplit record,
@@ -423,6 +510,10 @@ fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state
     }
     if let Some(code) = attempt_record::agent_exit(&full).filter(|code| *code != 0) {
         let why = format!("finished/agent exit {code}");
+        if let Some(failure) = envfail::classify(&why, "", &full) {
+            host_fail(ctx, st, uid, &failure, &full);
+            return;
+        }
         fail_with(ctx, st, uid, &why, &tail(&full, 3000), Some(&full));
         return;
     }
@@ -476,6 +567,10 @@ fn fail_from_receipt(
         return;
     }
     let why = format!("{}/{}", state.unwrap_or("None"), detail.unwrap_or("None"));
+    if let Some(failure) = envfail::classify(&why, detail.unwrap_or(""), &full) {
+        host_fail(ctx, st, uid, &failure, &full);
+        return;
+    }
     fail_with(ctx, st, uid, &why, &text, Some(&full));
 }
 
