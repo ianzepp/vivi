@@ -96,8 +96,9 @@ pub fn receipt_full(ctx: &Ctx, task: &str) -> String {
 /// Write the planner prompt to `<home>/<dir>/<id>.prompt` and start the
 /// configured planner detached: stdin is the prompt file, output lands in
 /// `<home>/<dir>/<id>.out`, the working directory is the pump home
-/// Used by `split`, the board and gate fixes.
-pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) {
+/// Used by `split`, the board and gate fixes. Returns the detached child's
+/// pid, or `None` when it could not be started.
+pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) -> Option<u32> {
     let dir_path = ctx.home.join(dir);
     drop(fs::create_dir_all(&dir_path));
     let prompt_path = dir_path.join(format!("{id}.prompt"));
@@ -114,7 +115,7 @@ pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) {
     };
     let out = dir_path.join(format!("{id}.out"));
     ctx.host
-        .spawn(&command, Some(&ctx.home), Some(&prompt_path), &out);
+        .spawn(&command, Some(&ctx.home), Some(&prompt_path), &out)
 }
 
 /// Record a failed attempt: append the history entry, clear the task, and

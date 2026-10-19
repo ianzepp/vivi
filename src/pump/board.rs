@@ -252,10 +252,18 @@ pub fn launch_planners(
     for row in rows {
         let handle = row.handle.as_str();
         let old = row.date.as_str() < ctx.cfg.board.since.as_str();
+        let parked = st.board.planner_failed.iter().any(|seen| seen == handle);
+        let waiting = st
+            .board
+            .planner_retry_at
+            .get(handle)
+            .is_some_and(|at| *at > ctx.now());
         if (old && !replan.contains(handle) && !approved.contains(handle))
             || skip.contains(handle)
             || st.needs.contains_key(handle)
             || st.board.planning.contains_key(handle)
+            || parked
+            || waiting
         {
             continue;
         }
@@ -296,7 +304,17 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<St
          Write {home}/plans/{handle}.json. Your final message is one line: handle, \
          verdict, number of units."
     );
-    spawn_planner(ctx, "board", handle, &prompt);
+    let out = out_path(ctx, handle);
+    drop(fs::remove_file(exit_receipt_path(&out)));
+    drop(fs::File::create(&out));
+    match spawn_planner(ctx, "board", handle, &prompt) {
+        Some(pid) => {
+            st.board.planner_pids.insert(handle.to_owned(), pid);
+        }
+        None => {
+            st.board.planner_pids.remove(handle);
+        }
+    }
     st.board.planning.insert(handle.to_owned(), ctx.now());
     if replan.remove(handle) {
         st.board.replan = replan.iter().cloned().collect();

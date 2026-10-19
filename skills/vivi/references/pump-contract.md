@@ -103,7 +103,7 @@ directory:
 | `plans/` | planner writes `<need>.json`, `<need>.r<N>.json` (a revision) and `<uid>.split.json` | pump ingest | plan JSON; see [`pump-protocols.md`](pump-protocols.md) |
 | `plans/superseded/` | re-plan moves old plans here | operator | `<need>.<epoch>.json` |
 | `needs/` | board dumps the need thread | planner (the plan prompt) | JSON `{need, subject, triage, thread}` |
-| `board/` | pump writes `<need>.prompt`; planner shell writes `<need>.out` | operator | prompt text; planner stdout+stderr |
+| `board/` | pump writes `<need>.prompt`; planner shell writes `<need>.out`; the spawn reaper writes `<need>.out.rc` | operator | prompt text; planner stdout+stderr; the exit receipt the board reads to notice a dead planner |
 | `resplit/` | pump writes `<unit>.json` and `<unit>.prompt`; planner writes `<unit>.out` | split planner | JSON + prompt text |
 | `gatefix/` | pump writes `<need>.prompt`; planner writes `<need>.out` | gatefix planner | prompt text |
 | `merge-jobs/` | pump writes `<bid>.job.json`; remote merger writes `.claimed.json`/`.result.json` | pump reads the result | batch protocol; see [`pump-protocols.md`](pump-protocols.md) |
@@ -153,6 +153,15 @@ Each unit stores a `target` ID. Existing rows migrate to `default`. Named
 target gate state (baseline, last gate, gate history, promotions, and owned
 failures) is stored per target in `meta.target_states`; need and unit lifecycle
 remain workspace-wide.
+
+The `meta.board` key holds the board state: `at` (last pass), `planning`
+(handle → planner start), `replied`, `replan`, `revision_planning`, and the
+planner supervision keys — `planner_pids` (handle → pid of the running
+planner), `planner_fails` (consecutive planner exits without a plan),
+`planner_retry_at` (earliest epoch seconds a handle may relaunch), and
+`planner_failed` (handles parked after the retries ran out). A handle never
+relaunches while it is before its `planner_retry_at` deadline, and a parked
+handle never relaunches at all.
 
 Per-unit fields are the columns of `units` (all units carry the ingest-time
 fields; runtime fields appear as marked):
