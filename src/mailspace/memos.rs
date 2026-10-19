@@ -188,15 +188,18 @@ fn memo_date(raw: &str) -> Option<DateTime<Utc>> {
 }
 
 /// Sort newest-first (undated last, stable) and apply the filter's result cap.
-fn sort_and_limit(mut memos: Vec<(StoredMessageView, Vec<String>)>, filter: &MemoFilter) -> Vec<(StoredMessageView, Vec<String>)> {
-    memos.sort_by(|left, right| {
-        match (memo_date(&left.0.date), memo_date(&right.0.date)) {
+fn sort_and_limit(
+    mut memos: Vec<(StoredMessageView, Vec<String>)>,
+    filter: &MemoFilter,
+) -> Vec<(StoredMessageView, Vec<String>)> {
+    memos.sort_by(
+        |left, right| match (memo_date(&left.0.date), memo_date(&right.0.date)) {
             (Some(left), Some(right)) => right.cmp(&left),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => Ordering::Equal,
-        }
-    });
+        },
+    );
     if let Some(limit) = filter.limit {
         memos.truncate(limit);
     }

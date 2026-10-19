@@ -511,7 +511,10 @@ fn print_memo_list_items(
         } else {
             tags.join(",")
         };
-        println!("  {}  {}  {}  {}", memo.handle, memo.date, tags, memo.subject);
+        println!(
+            "  {}  {}  {}  {}",
+            memo.handle, memo.date, tags, memo.subject
+        );
     }
     Ok(())
 }

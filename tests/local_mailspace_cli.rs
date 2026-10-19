@@ -2363,16 +2363,44 @@ fn memo_list_filters_and_hides_digest() {
     let p = project.path().to_str().unwrap();
 
     assert_success(&vivi([
-        "memo", "save", "--for", "mind", "--subject", "plain note", "--body",
-        "no tags here", "--project", p,
+        "memo",
+        "save",
+        "--for",
+        "mind",
+        "--subject",
+        "plain note",
+        "--body",
+        "no tags here",
+        "--project",
+        p,
     ]));
     assert_success(&vivi([
-        "memo", "save", "--for", "mind", "--subject", "Daily digest", "--body",
-        "the digest", "--tag", "digest", "--project", p,
+        "memo",
+        "save",
+        "--for",
+        "mind",
+        "--subject",
+        "Daily digest",
+        "--body",
+        "the digest",
+        "--tag",
+        "digest",
+        "--project",
+        p,
     ]));
     assert_success(&vivi([
-        "memo", "save", "--for", "mind", "--subject", "ops runbook", "--body",
-        "restart steps", "--tag", "ops", "--project", p,
+        "memo",
+        "save",
+        "--for",
+        "mind",
+        "--subject",
+        "ops runbook",
+        "--body",
+        "restart steps",
+        "--tag",
+        "ops",
+        "--project",
+        p,
     ]));
 
     // Default list hides the digest-tagged memo.
@@ -2385,7 +2413,14 @@ fn memo_list_filters_and_hides_digest() {
 
     // Naming the hidden tag reveals it, and only it.
     let out = vivi([
-        "memo", "list", "--for", "mind", "--tag", "digest", "--project", p,
+        "memo",
+        "list",
+        "--for",
+        "mind",
+        "--tag",
+        "digest",
+        "--project",
+        p,
     ]);
     assert_success(&out);
     let text = stdout(&out);
@@ -2403,7 +2438,14 @@ fn memo_list_filters_and_hides_digest() {
 
     // --exclude-tag drops that memo.
     let out = vivi([
-        "memo", "list", "--for", "mind", "--exclude-tag", "ops", "--project", p,
+        "memo",
+        "list",
+        "--for",
+        "mind",
+        "--exclude-tag",
+        "ops",
+        "--project",
+        p,
     ]);
     assert_success(&out);
     let text = stdout(&out);
@@ -2413,7 +2455,14 @@ fn memo_list_filters_and_hides_digest() {
 
     // A recent duration keeps the memos; a far-future floor drops them all.
     let out = vivi([
-        "memo", "list", "--for", "mind", "--since", "1h", "--project", p,
+        "memo",
+        "list",
+        "--for",
+        "mind",
+        "--since",
+        "1h",
+        "--project",
+        p,
     ]);
     assert_success(&out);
     let text = stdout(&out);
@@ -2421,7 +2470,14 @@ fn memo_list_filters_and_hides_digest() {
     assert!(text.contains("ops runbook"), "{text}");
 
     let out = vivi([
-        "memo", "list", "--for", "mind", "--since", "2999-01-01", "--project", p,
+        "memo",
+        "list",
+        "--for",
+        "mind",
+        "--since",
+        "2999-01-01",
+        "--project",
+        p,
     ]);
     assert_success(&out);
     let text = stdout(&out);
@@ -2430,17 +2486,27 @@ fn memo_list_filters_and_hides_digest() {
 
     // --limit 1 prints exactly one memo line.
     let out = vivi([
-        "memo", "list", "--for", "mind", "--all", "--limit", "1", "--project", p,
+        "memo",
+        "list",
+        "--for",
+        "mind",
+        "--all",
+        "--limit",
+        "1",
+        "--project",
+        p,
     ]);
     assert_success(&out);
     let text = stdout(&out);
-    let rows: Vec<&str> = text.lines().skip(1).filter(|line| !line.trim().is_empty()).collect();
+    let rows: Vec<&str> = text
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     assert_eq!(rows.len(), 1, "{text}");
 
     // JSON rows carry the tags array alongside handle/date/subject.
-    let out = vivi([
-        "memo", "list", "--for", "mind", "--json", "--project", p,
-    ]);
+    let out = vivi(["memo", "list", "--for", "mind", "--json", "--project", p]);
     assert_success(&out);
     let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
     let items = v.as_array().unwrap();
@@ -2469,14 +2535,30 @@ fn memo_list_filters_and_hides_digest() {
     assert!(!text.contains("Daily digest"), "{text}");
 
     let out = vivi([
-        "memo", "search", "digest", "--for", "mind", "--tag", "digest", "--project", p,
+        "memo",
+        "search",
+        "digest",
+        "--for",
+        "mind",
+        "--tag",
+        "digest",
+        "--project",
+        p,
     ]);
     assert_success(&out);
     let text = stdout(&out);
     assert!(text.contains("Daily digest"), "{text}");
 
     let out = vivi([
-        "memo", "search", "restart", "--for", "mind", "--exclude-tag", "ops", "--project", p,
+        "memo",
+        "search",
+        "restart",
+        "--for",
+        "mind",
+        "--exclude-tag",
+        "ops",
+        "--project",
+        p,
     ]);
     assert_success(&out);
     let text = stdout(&out);
