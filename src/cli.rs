@@ -45,9 +45,9 @@ pub use proxy_command::{
 };
 pub use pump_command::{
     PumpCloseoutCommand, PumpControlCommand, PumpExportCommand, PumpLogCommand, PumpOnceCommand,
-    PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand, PumpRequeueCommand,
-    PumpRunCommand, PumpServiceCommand, PumpServiceProjectCommand, PumpStatusCommand,
-    PumpSubcommand,
+    PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand, PumpReplanCommand,
+    PumpRequeueCommand, PumpRunCommand, PumpServiceCommand, PumpServiceProjectCommand,
+    PumpStatusCommand, PumpSubcommand,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;

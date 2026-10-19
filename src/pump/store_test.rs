@@ -455,6 +455,23 @@ fn requeue_requests_survive_a_state_save() {
 }
 
 #[test]
+fn replan_requests_survive_a_state_save() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    store.add_replan_request("n1", false, 5).unwrap();
+    store.save(&State::default()).unwrap();
+
+    let pending = store.pending_replan_requests().unwrap();
+    assert_eq!(pending.len(), 1);
+    let request = &pending[0];
+    assert_eq!(request.need, "n1");
+    assert!(!request.force);
+    store.mark_replan_applied(request.request_id, 6).unwrap();
+    assert!(store.pending_replan_requests().unwrap().is_empty());
+}
+
+#[test]
 fn env_pauses_round_trip_through_pump_db() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);

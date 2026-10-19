@@ -29,6 +29,7 @@ pub mod quarantine;
 pub mod ramsweep;
 pub mod ready;
 pub mod remote;
+pub mod replan;
 pub mod report;
 pub mod requeue;
 pub mod run;
@@ -68,6 +69,10 @@ mod transient_test;
 #[cfg(test)]
 #[path = "pump/report_test.rs"]
 mod report_test;
+
+#[cfg(test)]
+#[path = "pump/replan_test.rs"]
+mod replan_test;
 
 #[cfg(test)]
 #[path = "pump/amend_test.rs"]

@@ -33,6 +33,8 @@ pub enum PumpSubcommand {
     },
     /// Queue a requeue for one or more units; the pump applies it at its next tick
     Requeue(PumpRequeueCommand),
+    /// Supersede a need's plan and queue a fresh planner run
+    Replan(PumpReplanCommand),
     /// Supervise the pumps registered in the user's Vivi service config
     Service {
         #[command(subcommand)]
@@ -103,6 +105,25 @@ pub struct PumpRequeueCommand {
     /// Restrict the requeue to this failure class (bulk form)
     #[arg(long, value_name = "CLASS")]
     pub why: Option<String>,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+/// Supersede a need's plan and queue a fresh planner run that reads the whole
+/// thread. The running pump applies it at its next tick: the plan moves to
+/// `plans/superseded/`, the need record and its replies are forgotten, pending,
+/// held, stuck and needs-replan units are withdrawn and never dispatched,
+/// while merged units stay merged and live work finishes on its own. Refuses
+/// while any unit is inflight, delivered, merging, quarantined or splitting,
+/// or while a planner runs for the need, unless `--force`.
+#[derive(Debug, Args)]
+pub struct PumpReplanCommand {
+    /// Need handle to replan
+    pub need: String,
+    /// Replan even while units are inflight, delivered, merging, quarantined or splitting, or a planner runs
+    #[arg(long)]
+    pub force: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

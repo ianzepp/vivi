@@ -71,6 +71,47 @@ fn export_writes_the_state_json_shape() {
 }
 
 #[test]
+fn replan_queues_a_request_and_refuses_live_work() {
+    let help = stdout(&vivi(["pump", "--help"]));
+    assert!(help.contains("replan"), "{help}");
+
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump_status(&project, &handle, Status::Pending);
+    let queued = vivi(["pump", "replan", &handle, "--project", root(&project)]);
+    assert_success(&queued);
+    let path = pump_home(&project).join(DB_FILENAME);
+    let rows = PumpStore::open_read_only(&path)
+        .unwrap()
+        .unwrap()
+        .pending_replan_requests()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].need, handle);
+    assert!(!rows[0].force);
+
+    write_pump_status(&project, &handle, Status::Inflight);
+    let refused = vivi(["pump", "replan", &handle, "--project", root(&project)]);
+    assert!(!refused.status.success(), "{}", stdout(&refused));
+    assert!(
+        stderr(&refused).contains("inflight"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(stderr(&refused).contains("--force"), "{}", stderr(&refused));
+    assert_eq!(
+        PumpStore::open_read_only(&path)
+            .unwrap()
+            .unwrap()
+            .pending_replan_requests()
+            .unwrap()
+            .len(),
+        1,
+        "refusal must not queue another request"
+    );
+}
+
+#[test]
 fn need_show_prints_the_pump_section() {
     let project = temp_mailspace();
     let handle = send_need(&project);
