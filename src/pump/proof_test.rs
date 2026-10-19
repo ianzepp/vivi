@@ -61,6 +61,19 @@ fn wrappers_are_validated_too() {
 }
 
 #[test]
+fn env_assignment_prefixes_are_skipped_like_env() {
+    for cmd in [
+        "PATH=/opt/homebrew/bin:$PATH cargo test -p x --lib y",
+        "A=1 B=2 cargo test one",
+    ] {
+        assert_eq!(check(cmd), Ok(()), "want {cmd:?} accepted");
+    }
+    err_containing("FOO=1 cargo test a b", "one TESTNAME filter");
+    err_containing("FOO=1 pytest -x", "unknown binary");
+    err_containing("FOO=1 BAR=2 pytest -x", "unknown binary");
+}
+
+#[test]
 fn empty_proof_is_rejected() {
     err_containing("   ", "empty proof command");
     err_containing("", "empty proof command");
