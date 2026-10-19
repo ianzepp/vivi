@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::dispatch::*;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{Attempt, State, Status, Unit};
+use crate::pump::state::{Attempt, EnvPause, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The fake clock's start; units are created "now".
@@ -195,6 +195,70 @@ fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     );
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
     assert!(brief.contains("UNIT u1: Do u1"));
+}
+
+/// A state with `fly4` paused since `T0` under `probe`.
+fn paused_fly4(probe: Option<String>) -> State {
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    st.env_pauses.insert(
+        String::from("fly4"),
+        EnvPause {
+            fails: vec![T0, T0],
+            paused_at: Some(T0),
+            probe,
+            ..EnvPause::default()
+        },
+    );
+    st
+}
+
+#[test]
+fn a_paused_pool_is_not_dispatched_to() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    host.reply("command -v pi", 1, "");
+    let mut st = paused_fly4(Some(String::from("command -v pi")));
+    dispatch(&ctx, &mut st);
+    assert!(commands_with(&host, "pool dispatch --pool fly4").is_empty());
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    let pause = st.env_pauses.get("fly4").expect("pause survives");
+    assert_eq!(pause.probe.as_deref(), Some("command -v pi"));
+    assert_eq!(pause.paused_at, Some(T0));
+}
+
+#[test]
+fn a_paused_pool_resumes_when_the_probe_passes() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    host.reply("command -v pi", 0, "/opt/homebrew/bin/pi");
+    let mut st = paused_fly4(Some(String::from("command -v pi")));
+    dispatch(&ctx, &mut st);
+    assert_eq!(commands_with(&host, "pool dispatch --pool fly4").len(), 1);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert!(st.env_pauses.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("environment cleared for pool fly4"))
+    );
+}
+
+#[test]
+fn a_paused_pool_without_probe_resumes_once_the_fail_window_passes() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = paused_fly4(None);
+    host.advance(301);
+    dispatch(&ctx, &mut st);
+    assert_eq!(commands_with(&host, "pool dispatch --pool fly4").len(), 1);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert!(st.env_pauses.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("environment cleared for pool fly4"))
+    );
 }
 
 #[test]
