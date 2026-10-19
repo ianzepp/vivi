@@ -446,3 +446,41 @@ fn release_due_reads_only_the_named_item() {
     assert!(due_a, "the marked item's bound has passed");
     assert!(!due_b, "the other item holds no deferral of its own");
 }
+
+#[test]
+fn failed_release_keeps_the_deferral_mark() {
+    let (_tmp, mailspace) = space();
+    let (delivered, _sent) = send(&mailspace, "need", "hand");
+    let storage = mailspace.storage().unwrap();
+    let row_id = storage.resolve_message_token(&delivered).unwrap();
+    let content_id = storage
+        .message_by_id(&row_id)
+        .unwrap()
+        .unwrap()
+        .content_id
+        .clone();
+    // A mark whose bound the clock has passed: the release is due.
+    let bound = clock_micros() - 1;
+    storage
+        .set_event_deferral(&[row_id], Some(bound))
+        .unwrap();
+
+    arm_fail_next_settle();
+    assert!(
+        mailspace.apply_released_events().is_err(),
+        "the armed settle fails"
+    );
+    assert!(
+        storage
+            .deferred_event_contents()
+            .unwrap()
+            .contains(&(content_id, bound)),
+        "a settle that errors must leave the mark, so the next pass retries"
+    );
+
+    assert!(mailspace.apply_released_events().is_ok());
+    assert!(
+        storage.deferred_event_contents().unwrap().is_empty(),
+        "a successful settle drops the mark"
+    );
+}
