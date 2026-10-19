@@ -40,6 +40,21 @@ impl Mailspace {
     /// resolved, if message composition fails, or if a storage operation fails.
     #[allow(clippy::needless_pass_by_value)]
     pub fn send(&self, request: SendRequest) -> Result<DeliveryResult, VivariumError> {
+        self.send_with_extras(request, &[])
+    }
+
+    /// [`Mailspace::send`] with extra headers written on the letter, in order,
+    /// after the kind and dependency headers. Used by a caller that must mark
+    /// the letter with where it came from (`task from` names its parent).
+    ///
+    /// # Errors
+    /// Returns the errors [`Mailspace::send`] returns.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(super) fn send_with_extras(
+        &self,
+        request: SendRequest,
+        extras: &[(String, String)],
+    ) -> Result<DeliveryResult, VivariumError> {
         if !request.bcc.is_empty() {
             return Err(VivariumError::Message(
                 "Bcc is not supported for local mailspace delivery in v1".into(),
@@ -66,6 +81,7 @@ impl Mailspace {
             &from,
             &request,
             reply_parent.as_ref().map(|(_, data)| data.as_slice()),
+            extras,
         )?;
         self.check_letter_size(eml.len())?;
         if work_kind.is_some() {
@@ -166,6 +182,7 @@ impl Mailspace {
         from: &str,
         request: &SendRequest,
         parent: Option<&[u8]>,
+        extras: &[(String, String)],
     ) -> Result<String, VivariumError> {
         let to = self.addresses_for(&request.to)?;
         let cc = self.addresses_for(&request.cc)?;
@@ -183,6 +200,9 @@ impl Mailspace {
         }
         for dependency in &request.depends_on {
             eml = add_header(&eml, "X-Vivi-Depends-On", dependency)?;
+        }
+        for (name, value) in extras {
+            eml = add_header(&eml, name, value)?;
         }
         if let Some(parent) = parent {
             eml = add_reply_headers(&eml, parent)?;
