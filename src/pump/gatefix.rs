@@ -6,7 +6,7 @@ use std::fs;
 
 use crate::pump::collect::spawn_planner;
 use crate::pump::gate::is_settled;
-use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
 use crate::pump::state::{State, Status};
 
 /// The `state.json` key holding how many times each failing name has been
@@ -212,6 +212,104 @@ pub(crate) fn gatefix(
         "gatefix planner started for {need} ({} new{more})",
         new.len()
     ));
+}
+
+/// The `state.json` key holding how many times each gate-fix planner has
+/// exited without writing its plan.
+const FAILS_KEY: &str = "gatefix_fails";
+
+/// The `state.json` key holding when each gate-fix planner is next retried.
+const RETRY_KEY: &str = "gatefix_retry_at";
+
+/// How many planless gate-fix planner exits are allowed before the owned
+/// names are reported and left alone.
+const MAX_GATEFIX_FAILS: u64 = 3;
+
+/// Expire the gate-fix planner state of every owner need in `st.red`: clear
+/// the bookkeeping once a plan landed, retry a planner that exited without
+/// writing one, and raise `gatefix-no-plan` when its retries are used up.
+pub(crate) fn expire_gatefix(ctx: &Ctx, st: &mut State) {
+    let needs: BTreeSet<String> = st.red.values().cloned().collect();
+    for need in needs {
+        expire_need(ctx, st, &need);
+    }
+}
+
+/// The gate-fix expiry for one owner need: (a) a plan clears the
+/// bookkeeping; (b) an exit receipt counts a fail and arms the backoff retry
+/// or raises the exception at the cap; (c) a due retry respawns the planner
+/// from its prompt.
+fn expire_need(ctx: &Ctx, st: &mut State, need: &str) {
+    if ctx.home.join("plans").join(format!("{need}.json")).exists() {
+        extra_remove(st, FAILS_KEY, need);
+        extra_remove(st, RETRY_KEY, need);
+        return;
+    }
+    let out = ctx.home.join("gatefix").join(format!("{need}.out"));
+    let receipt = exit_receipt_path(&out);
+    if receipt.exists() {
+        let code = fs::read_to_string(&receipt).unwrap_or_default();
+        let code = code.trim();
+        drop(fs::remove_file(&receipt));
+        let fails = extra_u64(st, FAILS_KEY, need).unwrap_or(0) + 1;
+        extra_set(st, FAILS_KEY, need, fails);
+        if fails >= MAX_GATEFIX_FAILS {
+            ctx.exception(
+                "gatefix-no-plan",
+                need,
+                "the gate-fix planner exited 3 times without writing a plan; its names stay owned red",
+            );
+            extra_remove(st, RETRY_KEY, need);
+        } else {
+            let delay = (60u64 << (fails - 1)).min(900);
+            extra_set(st, RETRY_KEY, need, ctx.now() + delay);
+            ctx.log(&format!(
+                "gatefix planner for {need} exited rc={code} without a plan; retry {fails}/3 in {delay}s"
+            ));
+        }
+        return;
+    }
+    if extra_u64(st, RETRY_KEY, need).is_some_and(|at| at <= ctx.now()) {
+        let prompt = fs::read_to_string(ctx.home.join("gatefix").join(format!("{need}.prompt")))
+            .unwrap_or_default();
+        drop(spawn_planner(ctx, "gatefix", need, &prompt));
+        extra_remove(st, RETRY_KEY, need);
+        ctx.log(&format!("gatefix retry {need}"));
+    }
+}
+
+/// The u64 value of `key -> field` in the extra state maps, else `None`.
+fn extra_u64(st: &State, key: &str, field: &str) -> Option<u64> {
+    st.extra
+        .get(key)
+        .and_then(|map| map.get(field))
+        .and_then(serde_json::Value::as_u64)
+}
+
+/// Set `key -> field` to `value` in the extra state maps.
+fn extra_set(st: &mut State, key: &str, field: &str, value: u64) {
+    let entry = st
+        .extra
+        .entry(key.to_owned())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(object) = entry.as_object_mut() {
+        object.insert(field.to_owned(), serde_json::json!(value));
+    }
+}
+
+/// Remove `key -> field` from the extra state maps, dropping an emptied map.
+fn extra_remove(st: &mut State, key: &str, field: &str) {
+    let emptied = if let Some(map) = st.extra.get_mut(key)
+        && let Some(object) = map.as_object_mut()
+    {
+        object.remove(field);
+        object.is_empty()
+    } else {
+        return;
+    };
+    if emptied {
+        st.extra.remove(key);
+    }
 }
 
 /// The gate-fix planner prompt, with the repo, home and plan
