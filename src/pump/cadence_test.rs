@@ -182,19 +182,20 @@ fn investigation_report_must_be_a_recent_auditor_reply_on_the_want() {
     for role in ["head-cto", "head-ceo", "auditor"] {
         mailspace.add_identity(role).unwrap();
     }
+    let domain = mailspace.address_domain();
+    // This places the root after the later same-day auditor reply in sorted
+    // thread output, independently of its content hash.
+    let future_date =
+        (chrono::Utc::now() + chrono::Duration::days(1)).format("%a, %d %b %Y %H:%M:%S +0000");
+    let want_letter = format!(
+        "From: {}\r\nTo: {}\r\nSubject: review this issue\r\n\
+         Message-ID: <investigation-want@{domain}>\r\nDate: {future_date}\r\n\
+         X-Vivi-Kind: want\r\n\r\ntriage requested\r\n",
+        mailspace.address_for("head-cto"),
+        mailspace.address_for("head-ceo"),
+    );
     let want = mailspace
-        .send(crate::mailspace::SendRequest {
-            from: String::from("head-cto"),
-            to: vec![String::from("head-ceo")],
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: String::from("review this issue"),
-            body: String::from("triage requested"),
-            role: String::from("wants"),
-            kind: Some(String::from("want")),
-            reply_to: None,
-            depends_on: Vec::new(),
-        })
+        .deliver_raw(want_letter.as_bytes(), "wants")
         .unwrap()
         .delivered[0]
         .handle
@@ -215,12 +216,26 @@ fn investigation_report_must_be_a_recent_auditor_reply_on_the_want() {
             String::from("The issue is already fixed."),
         )
         .unwrap();
+    let thread = mailspace
+        .thread(&want, false, usize::MAX, usize::MAX)
+        .unwrap();
+    let root_index = thread
+        .iter()
+        .position(|message| message.handle == want)
+        .unwrap();
+    let reply_index = thread
+        .iter()
+        .position(|message| message.parent_content_id.is_some())
+        .unwrap();
+    assert!(reply_index < root_index, "thread={thread:?}");
+    assert_eq!(
+        thread[reply_index].parent_content_id.as_deref(),
+        Some(thread[root_index].content_id.as_str())
+    );
     assert!(
         investigations::report_landed(&mailspace, &run),
         "thread={:?}; auditor={}; head-ceo={}; started_at={}",
-        mailspace
-            .thread(&want, false, usize::MAX, usize::MAX)
-            .unwrap(),
+        thread,
         mailspace.address_for("auditor"),
         mailspace.address_for("head-ceo"),
         run.started_at

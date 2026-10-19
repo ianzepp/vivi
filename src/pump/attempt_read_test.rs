@@ -125,7 +125,10 @@ fn a_merged_status_event_enriches_only_its_attempt() {
     assert_eq!(event.status, "merged");
     assert_eq!(event.at, Some(1_000_042));
 
-    let mut record = attempt("n1-1-a2", Some(12));
+    let mut record = AttemptFields {
+        need: Some(String::from("n1")),
+        ..attempt("n1-1-a2", Some(12))
+    };
     assert!(record.apply_status_event(&event));
     assert_eq!(record.merged_at, Some(1_000_042));
     assert!(!record.apply_status_event(&AttemptStatusEvent {

@@ -612,18 +612,27 @@ pub(super) fn report_landed(mailspace: &Mailspace, run: &InvestigationRun) -> bo
     let Ok(thread) = mailspace.thread(&run.want, false, usize::MAX, usize::MAX) else {
         return false;
     };
+    let Some(root) = thread.iter().find(|message| message.handle == run.want) else {
+        return false;
+    };
+    let root_content_id = root.content_id.as_str();
     let address = mailspace.address_for(&run.auditor).to_ascii_lowercase();
     let ceo_address = mailspace.address_for("head-ceo").to_ascii_lowercase();
-    thread.iter().skip(1).any(|message| {
-        let date = match chrono::DateTime::parse_from_rfc3339(&message.date) {
-            Ok(date) => date,
-            Err(_) => return false,
-        };
-        date.timestamp() >= i64::try_from(run.started_at).unwrap_or(i64::MAX)
-            && message.from.to_ascii_lowercase().contains(&address)
-            && message.to.to_ascii_lowercase().contains(&ceo_address)
-            && !message.body.trim().is_empty()
-    })
+    // Threads are sorted by date and content ID; same-second replies can sort
+    // before their root. Select direct children by the explicit parent link.
+    thread
+        .iter()
+        .filter(|message| message.parent_content_id.as_deref() == Some(root_content_id))
+        .any(|message| {
+            let date = match chrono::DateTime::parse_from_rfc3339(&message.date) {
+                Ok(date) => date,
+                Err(_) => return false,
+            };
+            date.timestamp() >= i64::try_from(run.started_at).unwrap_or(i64::MAX)
+                && message.from.to_ascii_lowercase().contains(&address)
+                && message.to.to_ascii_lowercase().contains(&ceo_address)
+                && !message.body.trim().is_empty()
+        })
 }
 
 fn close_investigation_need(
