@@ -32,15 +32,23 @@ use super::docker::{env_is_set, unset_names};
 use super::docker_cli::{RunOutput, finish};
 use super::doctor::Check;
 use super::local_proc as proc;
+use super::local_site::{self, LocalSite};
 use super::local_slots as slots;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
+use super::runpod::HostContext;
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
-use super::ssh_state::{self as state, is_slot_id};
+use super::ssh_state as state;
 use crate::error::VivariumError;
 
 /// Pool provider for this machine.
 pub struct LocalProvider {
+    /// The pool root, for display only: the resolved site's root when the
+    /// configured root resolves, else the raw root with `~/` expanded. The
+    /// doctor reads it before any slot exists, so it never fails.
     root: PathBuf,
+    /// The pool directory of this mailspace, or why the configured root
+    /// cannot be used at all.
+    site: Result<LocalSite, String>,
     /// The repository the pool's slots are worktrees of, as configured; the
     /// doctor looks at it. The slots themselves carry what they need.
     source: Option<PathBuf>,
@@ -49,9 +57,21 @@ pub struct LocalProvider {
 
 impl LocalProvider {
     #[must_use]
-    pub fn new(config: &PoolConfig) -> Self {
+    pub fn new(config: &PoolConfig, ctx: &HostContext) -> Self {
+        let raw = config.local.root_or_default();
+        let project = ctx.dir.parent().unwrap_or(ctx.dir.as_path());
+        let site = local_site::resolve(raw, project, &ctx.mailspace, &ctx.pool).map_err(|e| {
+            match e {
+                VivariumError::Config(msg) => msg,
+                other => other.to_string(),
+            }
+        });
+        let root = site
+            .as_ref()
+            .map_or_else(|_| slots::expand_root(raw), |site| site.root.clone());
         Self {
-            root: slots::expand_root(config.local.root_or_default()),
+            root,
+            site,
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
         }
@@ -61,14 +81,23 @@ impl LocalProvider {
         &self.root
     }
 
+    /// The resolved site; a configured root that cannot be used errors here,
+    /// so no path-taking method reaches the disk with it.
+    fn site(&self) -> Result<&LocalSite, VivariumError> {
+        self.site
+            .as_ref()
+            .map_err(|why| VivariumError::Config(why.clone()))
+    }
+
     pub(super) fn source(&self) -> Option<&std::path::Path> {
         self.source.as_deref()
     }
 
     /// The directory of slot `id`, which must be a slot id.
     fn dir(&self, id: &str) -> Result<PathBuf, VivariumError> {
-        if is_slot_id(id) {
-            Ok(self.root.join(id))
+        let site = self.site()?;
+        if slots::slot_id_ok(id) {
+            Ok(site.root.join(id))
         } else {
             Err(VivariumError::Message(format!("not a slot id: {id}")))
         }
@@ -85,18 +114,26 @@ impl LocalProvider {
     }
 }
 
-/// The id a new slot gets from its spec: `<mailspace>/<pool>/slot-<index>`.
-fn new_slot_id(spec: &CreateSpec) -> Result<String, VivariumError> {
-    let field = |key: &str| {
-        spec.metadata
-            .get(key)
-            .ok_or_else(|| VivariumError::Message(format!("slot spec lacks {key}")))
-    };
-    let id = state::slot_id(field(META_MAILSPACE)?, field(META_POOL)?, field(META_SLOT)?);
-    if is_slot_id(&id) {
-        Ok(id)
-    } else {
-        Err(VivariumError::Message(format!("not a slot id: {id}")))
+impl LocalProvider {
+    /// The id a new slot gets from its spec: `<mailspace>/<pool>/slot-<index>`
+    /// under an absolute root, `<pool>/slot-<index>` under a project-relative
+    /// one, which already sits inside that project's mailspace.
+    fn new_slot_id(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
+        let field = |key: &str| {
+            spec.metadata
+                .get(key)
+                .ok_or_else(|| VivariumError::Message(format!("slot spec lacks {key}")))
+        };
+        let id = if self.site()?.relative {
+            format!("{}/slot-{}", field(META_POOL)?, field(META_SLOT)?)
+        } else {
+            state::slot_id(field(META_MAILSPACE)?, field(META_POOL)?, field(META_SLOT)?)
+        };
+        if slots::slot_id_ok(&id) {
+            Ok(id)
+        } else {
+            Err(VivariumError::Message(format!("not a slot id: {id}")))
+        }
     }
 }
 
@@ -191,12 +228,13 @@ impl PoolProvider for LocalProvider {
 
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
         proc::reap();
-        slots::list(&self.root)
+        slots::list(self.site()?)
     }
 
     fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
-        let id = new_slot_id(spec)?;
-        slots::create(&self.root, &id, spec)?;
+        let root = self.site()?.root.clone();
+        let id = self.new_slot_id(spec)?;
+        slots::create(&root, &id, spec)?;
         if let Err(e) = self.start(&id) {
             if let Err(undo) = self.destroy(&id) {
                 eprintln!("warning: could not remove {}: {undo}", spec.name);
@@ -208,7 +246,7 @@ impl PoolProvider for LocalProvider {
 
     fn destroy(&self, id: &str) -> Result<(), VivariumError> {
         self.dir(id)?;
-        slots::destroy(&self.root, id)
+        slots::destroy(&self.site()?.root, id)
     }
 
     fn destroy_command(&self, id: &str) -> String {

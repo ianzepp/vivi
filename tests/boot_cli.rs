@@ -447,6 +447,13 @@ fn write_boot_pump(root: &Path) {
 
 fn mailspace_slug(root: &Path) -> String {
     let text = fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap();
+    let id = text
+        .lines()
+        .find_map(|line| line.strip_prefix("id = "))
+        .map(|value| value.trim().trim_matches('"').to_string());
+    if let Some(id) = id {
+        return id;
+    }
     let name = text
         .lines()
         .find_map(|line| line.strip_prefix("name = "))

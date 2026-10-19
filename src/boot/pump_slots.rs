@@ -1,12 +1,15 @@
 //! Cheap local slot reads for the boot pump snapshot.
 //!
-//! Only the `local` provider is walked: `<root>/<mailspace>/<pool>/slot-N`.
-//! Remote providers are never contacted; boot records them as remote.
+//! Only the `local` provider is walked: `<root>/<mailspace>/<pool>/slot-N`
+//! under an absolute root, `<project>/<root>/<pool>/slot-N` under a
+//! project-relative one. Remote providers are never contacted; boot records
+//! them as remote.
 
 use std::path::{Path, PathBuf};
 
 use crate::mailspace::MailspaceConfig;
 use crate::pool::config::PoolConfig;
+use crate::pool::local_site;
 use crate::pool::local_slots::{self, CHECKOUT};
 use crate::pool::reset::{MARK_BASE_REF, MARK_BASE_SHA};
 use crate::pool::slot::{META_CLAIMED, META_TASK, space_slug};
@@ -15,7 +18,8 @@ use crate::pool::slot::{META_CLAIMED, META_TASK, space_slug};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalSlotMark {
     pub pool: String,
-    /// `<mailspace>/<pool>/slot-N` when local.
+    /// `<mailspace>/<pool>/slot-N`, or `<pool>/slot-N` under a
+    /// project-relative root.
     pub id: String,
     pub dir: PathBuf,
     pub checkout: Option<PathBuf>,
@@ -25,37 +29,34 @@ pub struct LocalSlotMark {
     pub base_sha: Option<String>,
 }
 
-/// Walk every local pool's slot directories. Remote pools contribute nothing.
+/// Walk every local pool's own slot directory; `project` is where a
+/// project-relative root resolves. Remote pools contribute nothing.
 #[must_use]
-pub fn scan(config: &MailspaceConfig) -> Vec<LocalSlotMark> {
-    let slug = space_slug(&config.name);
+pub fn scan(config: &MailspaceConfig, project: &Path) -> Vec<LocalSlotMark> {
+    let key = config
+        .id
+        .clone()
+        .unwrap_or_else(|| space_slug(&config.name));
     let mut marks = Vec::new();
     for (name, pool) in &config.pools {
         if !is_local(pool) {
             continue;
         }
-        marks.extend(scan_pool(&slug, name, pool));
+        let Ok(site) = local_site::resolve(pool.local.root_or_default(), project, &key, name) else {
+            continue;
+        };
+        let records = local_slots::list(&site).unwrap_or_default();
+        marks.extend(
+            records
+                .into_iter()
+                .map(|record| mark_from(&site.root, name, &record)),
+        );
     }
     marks
 }
 
 fn is_local(pool: &PoolConfig) -> bool {
     pool.provider.eq_ignore_ascii_case("local")
-}
-
-fn scan_pool(slug: &str, name: &str, pool: &PoolConfig) -> Vec<LocalSlotMark> {
-    let root = local_slots::expand_root(pool.local.root_or_default());
-    let records = local_slots::list(&root).unwrap_or_default();
-    records
-        .into_iter()
-        .filter(|record| slot_belongs(slug, name, &record.id))
-        .map(|record| mark_from(&root, name, &record))
-        .collect()
-}
-
-fn slot_belongs(slug: &str, pool: &str, id: &str) -> bool {
-    let parts: Vec<&str> = id.split('/').collect();
-    matches!(parts.as_slice(), [space, name, _] if *space == slug && *name == pool)
 }
 
 fn mark_from(
@@ -79,6 +80,10 @@ fn mark_from(
         dir,
     }
 }
+
+#[cfg(test)]
+#[path = "pump_slots_test.rs"]
+mod tests;
 
 /// The slot this process occupies: `VIVI_SLOT_ROOT`, else a `cwd` inside a
 /// scanned slot directory.

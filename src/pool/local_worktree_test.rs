@@ -60,7 +60,15 @@ impl Rig {
             f.repo.display()
         ))
         .unwrap();
-        let provider = LocalProvider::new(&config);
+        let provider = LocalProvider::new(
+            &config,
+            &crate::pool::runpod::HostContext {
+                dir: root_dir.path().join(".vivi"),
+                mailspace: "e2e".to_string(),
+                pool: "wt".to_string(),
+                pools: vec!["wt".to_string()],
+            },
+        );
         let id = PoolId::new("e2e", "wt");
         let base = local_branch::base_commit(&Repo::new(&f.repo), None).unwrap();
         let options = CreateOptions {

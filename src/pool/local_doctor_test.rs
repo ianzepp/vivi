@@ -119,7 +119,17 @@ fn unset_harness_names_warn_and_are_named_without_values() {
 
 fn provider_for(toml: &str) -> LocalProvider {
     let config: PoolConfig = toml::from_str(toml).unwrap();
-    LocalProvider::new(&config)
+    LocalProvider::new(&config, &ctx())
+}
+
+/// A host context for an absolute-root pool; only its paths are used.
+fn ctx() -> crate::pool::runpod::HostContext {
+    crate::pool::runpod::HostContext {
+        dir: std::path::PathBuf::from("/tmp/vivi-test-project/.vivi"),
+        mailspace: "space".to_string(),
+        pool: "lanes".to_string(),
+        pools: vec!["lanes".to_string()],
+    }
 }
 
 #[test]

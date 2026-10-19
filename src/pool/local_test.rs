@@ -1,10 +1,27 @@
 //! The provider through its trait, against directories and processes on this
 //! machine.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::pool::runpod::HostContext;
 use crate::pool::slot::{META_STATE, PoolId, STATE_READY, slot_metadata, slot_state};
+
+/// A host context for the `ms` mailspace and pool `pool`, for a project that
+/// does not exist: only its paths are used.
+fn ctx(pool: &str) -> HostContext {
+    ctx_of(Path::new("/tmp/vivi-test-project"), "ms", pool)
+}
+
+fn ctx_of(project: &std::path::Path, mailspace: &str, pool: &str) -> HostContext {
+    HostContext {
+        dir: project.join(".vivi"),
+        mailspace: mailspace.to_string(),
+        pool: pool.to_string(),
+        pools: vec![pool.to_string()],
+    }
+}
 
 fn provider(root: &std::path::Path) -> LocalProvider {
     let config: PoolConfig = toml::from_str(&format!(
@@ -12,14 +29,18 @@ fn provider(root: &std::path::Path) -> LocalProvider {
         root.display()
     ))
     .unwrap();
-    LocalProvider::new(&config)
+    LocalProvider::new(&config, &ctx("lanes-a"))
 }
 
 fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
+    spec_of("ms", pool, index, boot)
+}
+
+fn spec_of(mailspace: &str, pool: &str, index: u32, boot: &str) -> CreateSpec {
     CreateSpec {
         name: format!("ms-{pool}-slot-{index}"),
         image: String::new(),
-        metadata: slot_metadata(&PoolId::new("ms", pool), index, "main"),
+        metadata: slot_metadata(&PoolId::new(mailspace, pool), index, "main"),
         env: BTreeMap::new(),
         once_env: BTreeMap::new(),
         passthrough_env: vec!["IGNORED".into()],
@@ -186,4 +207,61 @@ fn creating_a_slot_whose_boot_cannot_start_removes_it_again() {
             .contains("lacks vivi_pool_slot")
     );
     assert!(p.list().unwrap().is_empty());
+}
+
+#[test]
+fn project_relative_root_lays_out_pool_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().canonicalize().unwrap();
+    let config: PoolConfig =
+        toml::from_str("provider = \"local\"\nslots = 1\n[local]\nroot = \"pool\"\n").unwrap();
+    let p = LocalProvider::new(&config, &ctx_of(&project, "space", "here"));
+    let id = p.create(&spec_of("space", "here", 1, "exit 0\n")).unwrap();
+    assert_eq!(id, "here/slot-1");
+    assert!(
+        project.join("pool/here/slot-1").is_dir(),
+        "the slot sits in the project's own pool directory"
+    );
+    assert_eq!(p.list().unwrap().len(), 1);
+    assert_eq!(p.list().unwrap()[0].id, "here/slot-1");
+}
+
+#[test]
+fn absolute_root_keeps_mailspace_segment() {
+    let (_tmp, root) = root();
+    let config: PoolConfig = toml::from_str(&format!(
+        "provider = \"local\"\nslots = 1\n[local]\nroot = \"{}\"\n",
+        root.display()
+    ))
+    .unwrap();
+    let p = LocalProvider::new(&config, &ctx_of(Path::new("/tmp/vivi-test-project"), "space", "here"));
+    let id = p.create(&spec_of("space", "here", 1, "exit 0\n")).unwrap();
+    assert_eq!(id, "space/here/slot-1");
+    assert!(root.join("space/here/slot-1").is_dir());
+    assert_eq!(p.list().unwrap()[0].id, "space/here/slot-1");
+}
+
+#[test]
+fn list_never_leaves_the_pool_dir() {
+    let (_tmp, root) = root();
+    let config: PoolConfig = toml::from_str(&format!(
+        "provider = \"local\"\nslots = 2\n[local]\nroot = \"{}\"\n",
+        root.display()
+    ))
+    .unwrap();
+    let p = LocalProvider::new(&config, &ctx_of(Path::new("/tmp/vivi-test-project"), "space", "here"));
+    p.create(&spec_of("space", "here", 1, "exit 0\n")).unwrap();
+    // A sibling pool of the same mailspace, planted by hand.
+    let sibling = root.join("space/here-fetch/slot-1");
+    std::fs::create_dir_all(sibling.join("marks")).unwrap();
+    std::fs::write(sibling.join("marks/vivi_pool"), "here-fetch\n").unwrap();
+    std::fs::write(sibling.join("marks/vivi_pool_mailspace"), "space\n").unwrap();
+    // A foreign mailspace with a same-named pool.
+    let foreign = root.join("other/here/slot-1");
+    std::fs::create_dir_all(foreign.join("marks")).unwrap();
+    std::fs::write(foreign.join("marks/vivi_pool"), "here\n").unwrap();
+    std::fs::write(foreign.join("marks/vivi_pool_mailspace"), "other\n").unwrap();
+    let found = p.list().unwrap();
+    let ids: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["space/here/slot-1"]);
 }

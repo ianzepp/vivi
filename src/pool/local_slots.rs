@@ -1,6 +1,8 @@
 //! A slot of the `local` provider is a directory under the pool's root:
-//! `<root>/<mailspace>/<pool>/slot-<n>/`. Everything about the slot is a file
-//! in that directory, and nothing is kept anywhere else:
+//! `<root>/<mailspace>/<pool>/slot-<n>/` for an absolute root, and
+//! `<root>/<pool>/slot-<n>/` for a project-relative one (the project already
+//! is the mailspace). Everything about the slot is a file in that directory,
+//! and nothing is kept anywhere else:
 //!
 //! - `marks/<name>`: one small file per mark (mailspace, pool, slot, base,
 //!   state, arch)
@@ -25,6 +27,7 @@ use super::docker::slot_files;
 use super::job::sh_quote;
 use super::local_git::Repo;
 use super::local_proc as proc;
+use super::local_site::LocalSite;
 use super::provider::{CreateSpec, Hold, MachineRecord};
 use super::slot::{META_CLAIMED, META_STATE, META_TASK, STATE_READY};
 use super::ssh::{one_line, relative};
@@ -150,23 +153,66 @@ pub fn record_of(dir: &Path, id: &str) -> MachineRecord {
     }
 }
 
-/// Every slot under `root`, from the directories alone.
+/// Every slot in the site's own pool directory, from the directories alone.
+///
+/// The walk never leaves `site.pool_dir`: a sibling pool (`here-fetch`), a
+/// foreign mailspace or another root is not this pool's business.
 ///
 /// # Errors
-/// Returns an error if a directory of the root cannot be read.
-pub fn list(root: &Path) -> Result<Vec<MachineRecord>, VivariumError> {
+/// Returns an error if the pool directory cannot be read.
+pub fn list(site: &LocalSite) -> Result<Vec<MachineRecord>, VivariumError> {
     let mut found = Vec::new();
-    for space in subdirs(root)? {
-        for pool in subdirs(&space)? {
-            for slot in subdirs(&pool)? {
-                let id = id_below(root, &slot);
-                if is_known(&slot) && is_slot_id(&id) {
-                    found.push(record_of(&slot, &id));
-                }
-            }
+    for dir in subdirs(&site.pool_dir)? {
+        let name = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !name.starts_with("slot-") {
+            continue;
+        }
+        let id = id_in(site, &name);
+        if is_known(&dir) && slot_id_ok(&id) {
+            found.push(record_of(&dir, &id));
         }
     }
     Ok(found)
+}
+
+/// The id of the slot directory `name` inside `site`.
+fn id_in(site: &LocalSite, name: &str) -> String {
+    if site.relative {
+        format!("{}/{name}", site.pool)
+    } else {
+        format!("{}/{}/{name}", site.mailspace, site.pool)
+    }
+}
+
+/// True for a slot id of either layout: `<mailspace>/<pool>/slot-<digits>`
+/// under an absolute root, `<pool>/slot-<digits>` under a project-relative
+/// one.
+#[must_use]
+pub fn slot_id_ok(id: &str) -> bool {
+    if is_slot_id(id) {
+        return true;
+    }
+    let parts: Vec<&str> = id.split('/').collect();
+    let [pool, name] = parts.as_slice() else {
+        return false;
+    };
+    plain(pool)
+        && name
+            .strip_prefix("slot-")
+            .is_some_and(|index| !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A path word: lowercase letters, digits and dashes, not starting with a
+/// dash.
+fn plain(word: &str) -> bool {
+    !word.starts_with('-')
+        && !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn id_below(root: &Path, dir: &Path) -> String {
@@ -478,7 +524,7 @@ fn mark_is(dir: &Path, name: &str, want: &str) -> bool {
 /// Vivi's own marks naming this pool and this mailspace. `Ok(None)` when
 /// there is nothing to delete.
 fn checked_slot(root: &Path, id: &str) -> Result<Option<(PathBuf, PathBuf)>, VivariumError> {
-    if !is_slot_id(id) {
+    if !slot_id_ok(id) {
         return Err(refuse(&format!("not a slot id: {id}")));
     }
     let Ok(real_root) = root.canonicalize() else {
@@ -498,16 +544,17 @@ fn checked_slot(root: &Path, id: &str) -> Result<Option<(PathBuf, PathBuf)>, Viv
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(refuse(&format!("{id} is not a plain directory")));
     }
-    let (space, rest) = id.split_once('/').unwrap_or_default();
-    let pool = rest.split('/').next().unwrap_or_default();
+    let parts: Vec<&str> = id.split('/').collect();
+    let pool = parts[parts.len() - 2];
     if !mark_is(&dir, "vivi_pool", pool) {
         return Err(refuse(&format!(
             "{id} carries no Vivi mark for pool {pool}"
         )));
     }
-    if !mark_is(&dir, "vivi_pool_mailspace", space) {
+    if parts.len() == 3 && !mark_is(&dir, "vivi_pool_mailspace", parts[0]) {
         return Err(refuse(&format!(
-            "{id} carries no Vivi mark for mailspace {space}"
+            "{id} carries no Vivi mark for mailspace {}",
+            parts[0]
         )));
     }
     let real = dir
@@ -572,16 +619,18 @@ fn remove_target_worktrees(slot: &Path) -> Result<(), VivariumError> {
     Ok(())
 }
 
-/// Remove the pool directory, the mailspace directory and, if Vivi made it,
-/// the root, as each becomes empty.
+/// Remove the pool directory (and, for an absolute root, the mailspace
+/// directory) and, if Vivi made it, the root, as each becomes empty.
 fn tidy(root: &Path, id: &str) {
-    let mut parts = id.split('/');
-    let (space, pool) = (
-        parts.next().unwrap_or_default(),
-        parts.next().unwrap_or_default(),
-    );
-    for dir in [root.join(space).join(pool), root.join(space)] {
-        std::fs::remove_dir(&dir).map(drop).unwrap_or_default();
+    let parents = id.rsplit_once('/').map(|(parents, _)| parents);
+    let mut made = Vec::new();
+    let mut dir = root.to_path_buf();
+    for part in parents.unwrap_or_default().split('/').filter(|p| !p.is_empty()) {
+        dir = dir.join(part);
+        made.push(dir.clone());
+    }
+    for dir in made.iter().rev() {
+        std::fs::remove_dir(dir).map(drop).unwrap_or_default();
     }
     let only_mark = std::fs::read_dir(root).is_ok_and(|entries| {
         let names: Vec<String> = entries

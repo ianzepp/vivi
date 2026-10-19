@@ -108,14 +108,14 @@ pub use provider::PoolProvider;
 /// The machine host `config` names, ready to use. A `fly` pool without an
 /// `app` gets an empty one here; validation rejects it before anything acts.
 /// `ctx` says where the mailspace keeps files and which pools it holds, for the
-/// hosts that need it (`runpod`).
+/// hosts that need it (`runpod`, and `local` to place its pool directory).
 #[must_use]
 pub fn open_provider(config: &PoolConfig, ctx: &runpod::HostContext) -> Box<dyn PoolProvider> {
     match config.provider.as_str() {
         "runpod" => Box::new(runpod::RunpodProvider::new(config, ctx)),
         "docker" => Box::new(docker::DockerProvider::new(config)),
         "ssh" => Box::new(ssh::SshProvider::new(config)),
-        "local" => Box::new(local::LocalProvider::new(config)),
+        "local" => Box::new(local::LocalProvider::new(config, ctx)),
         _ => Box::new(fly::FlyctlProvider::new(
             config.fly.app.as_deref().unwrap_or_default(),
             &config.fly,

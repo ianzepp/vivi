@@ -3,6 +3,7 @@ use std::sync::{Arc, Barrier};
 
 use super::*;
 use crate::pool::local_fixture::{fixture, git};
+use crate::pool::local_site::LocalSite;
 use crate::pool::slot::{PoolId, slot_metadata};
 
 fn spec(pool: &str, index: u32) -> CreateSpec {
@@ -34,6 +35,17 @@ fn make(root: &Path, pool: &str, index: u32) -> (String, PathBuf) {
     create(root, &id, &spec(pool, index)).unwrap();
     let dir = root.join(&id);
     (id, dir)
+}
+
+/// The site of one mailspace pool under an absolute `root`.
+fn site(root: &Path, mailspace: &str, pool: &str) -> LocalSite {
+    LocalSite {
+        root: root.to_path_buf(),
+        pool_dir: root.join(mailspace).join(pool),
+        relative: false,
+        mailspace: mailspace.to_string(),
+        pool: pool.to_string(),
+    }
 }
 
 fn mode(path: &Path) -> u32 {
@@ -89,7 +101,7 @@ fn a_slot_value_with_a_line_break_is_refused_and_leaves_nothing_behind() {
     let mut bad = spec("lanes-a", 1);
     bad.metadata.insert("vivi_pool_base".into(), "a\nb".into());
     assert!(create(&root, "ms/lanes-a/slot-1", &bad).is_err());
-    assert!(list(&root).unwrap().is_empty());
+    assert!(list(&site(&root, "ms", "lanes-a")).unwrap().is_empty());
     let leftovers: Vec<_> = std::fs::read_dir(root.join("ms/lanes-a"))
         .unwrap()
         .flatten()
@@ -100,16 +112,17 @@ fn a_slot_value_with_a_line_break_is_refused_and_leaves_nothing_behind() {
 #[test]
 fn slots_are_listed_from_their_directories_alone() {
     let (_tmp, root) = root();
+    let lanes_a = site(&root, "ms", "lanes-a");
     assert!(
-        list(&root).unwrap().is_empty(),
+        list(&lanes_a).unwrap().is_empty(),
         "no root yet is an empty list"
     );
     let (id, _) = make(&root, "lanes-a", 1);
     make(&root, "lanes-b", 2);
     std::fs::create_dir_all(root.join("ms/lanes-a/not-a-slot")).unwrap();
     std::fs::create_dir_all(root.join("ms/lanes-a/.partial-slot-9.1")).unwrap();
-    let found = list(&root).unwrap();
-    assert_eq!(found.len(), 2);
+    let found = list(&lanes_a).unwrap();
+    assert_eq!(found.len(), 1);
     let first = found.iter().find(|m| m.id == id).unwrap();
     assert_eq!(first.name, "ms-lanes-a-slot-1");
     assert_eq!(first.state, "stopped");
@@ -126,13 +139,40 @@ fn two_mailspaces_with_one_pool_name_keep_separate_directories_and_marks() {
     let mut other = spec("lanes-a", 1);
     other.metadata = slot_metadata(&PoolId::new("other", "lanes-a"), 1, "main");
     create(&root, "other/lanes-a/slot-1", &other).unwrap();
-    let found = list(&root).unwrap();
-    assert_eq!(found.len(), 2);
-    let spaces: Vec<_> = found
-        .iter()
-        .map(|m| m.metadata["vivi_pool_mailspace"].clone())
-        .collect();
-    assert!(spaces.contains(&"ms".to_string()) && spaces.contains(&"other".to_string()));
+    let found = list(&site(&root, "ms", "lanes-a")).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].metadata["vivi_pool_mailspace"], "ms");
+    let found = list(&site(&root, "other", "lanes-a")).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].metadata["vivi_pool_mailspace"], "other");
+}
+
+#[test]
+fn a_listing_never_leaves_the_pool_directory() {
+    let (_tmp, root) = root();
+    make(&root, "here", 1);
+    make(&root, "here-fetch", 1);
+    make(&root, "here", 2);
+    // A foreign mailspace with the same pool name, planted by hand.
+    let foreign = root.join("other/here/slot-1");
+    std::fs::create_dir_all(foreign.join("marks")).unwrap();
+    std::fs::write(foreign.join("marks/vivi_pool"), "here\n").unwrap();
+    std::fs::write(foreign.join("marks/vivi_pool_mailspace"), "other\n").unwrap();
+    let found = list(&site(&root, "ms", "here")).unwrap();
+    let ids: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["ms/here/slot-1", "ms/here/slot-2"]);
+}
+
+#[test]
+fn slot_id_ok_accepts_both_shapes() {
+    assert!(slot_id_ok("ms/lanes-a/slot-1"));
+    assert!(slot_id_ok("here/slot-12"));
+    assert!(!slot_id_ok("here/slot-x"));
+    assert!(!slot_id_ok("here/slot-"));
+    assert!(!slot_id_ok("Here/slot-1"));
+    assert!(!slot_id_ok("-here/slot-1"));
+    assert!(!slot_id_ok("here"));
+    assert!(!slot_id_ok("a/b/slot-1/slot-2"));
 }
 
 #[test]
@@ -293,6 +333,21 @@ fn destroy_leaves_a_root_it_did_not_make_and_other_pools_and_files_alone() {
 }
 
 #[test]
+fn destroy_refuses_a_directory_marked_for_another_pool() {
+    let (_tmp, root) = root();
+    let dir = root.join("here/slot-1");
+    std::fs::create_dir_all(dir.join("marks")).unwrap();
+    std::fs::write(dir.join("marks/vivi_pool"), "here-fetch\n").unwrap();
+    std::fs::write(dir.join("marks/vivi_pool_mailspace"), "space\n").unwrap();
+    assert!(refused(destroy(&root, "here/slot-1")));
+    assert!(dir.is_dir());
+    std::fs::write(dir.join("marks/vivi_pool"), "here\n").unwrap();
+    destroy(&root, "here/slot-1").unwrap();
+    assert!(!dir.exists());
+    assert!(!root.join("here").exists(), "the empty pool directory goes");
+}
+
+#[test]
 fn destroy_refuses_ids_that_climb_out_of_the_root_or_are_no_slot_ids() {
     let (_tmp, root) = root();
     make(&root, "lanes-a", 1);
@@ -403,7 +458,7 @@ fn a_worktree_slot_whose_repository_refuses_the_base_is_not_left_behind() {
     .unwrap_err()
     .to_string();
     assert!(said.contains("worktree"), "{said}");
-    assert!(list(&root).unwrap().is_empty());
+    assert!(list(&site(&root, "ms", "wt")).unwrap().is_empty());
     assert!(!root.join("ms/wt/slot-1").exists());
     assert_eq!(git(&f.repo, &["worktree", "list"]).lines().count(), 1);
 }

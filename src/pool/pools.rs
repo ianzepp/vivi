@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 
 use super::config::PoolConfig;
+use super::local_site;
 use super::open_provider;
 use super::provider::PoolProvider;
 use super::runpod::HostContext;
@@ -108,18 +109,32 @@ pub fn open_unvalidated(
         pool: pool.to_string(),
         pools: names.iter().map(|n| (*n).to_string()).collect(),
     };
-    Ok(chosen
+    chosen
         .into_iter()
-        .filter_map(|name| {
-            let config = all.get(&name)?.clone();
-            let ctx = host(&name);
-            Some(PoolHandle {
+        .filter_map(|name| all.get(&name).map(|config| (name, config.clone())))
+        .map(|(name, config)| {
+            // A local pool's root is resolved here, before the provider sees
+            // it: a root that cannot be used fails the command naming the pool
+            // instead of surfacing later as a path inside the wrong place.
+            if config.provider.eq_ignore_ascii_case("local") {
+                local_site::resolve(config.local.root_or_default(), &space.root, &key, &name)
+                    .map_err(|e| local_root_error(&name, e))?;
+            }
+            Ok(PoolHandle {
                 id: PoolId::keyed(&key, &name),
-                provider: open_provider(&config, &ctx),
+                provider: open_provider(&config, &host(&name)),
                 config,
             })
         })
-        .collect())
+        .collect()
+}
+
+/// A pool's local root error, naming the pool.
+fn local_root_error(pool: &str, e: VivariumError) -> VivariumError {
+    match e {
+        VivariumError::Config(msg) => VivariumError::Config(format!("pool {pool}: {msg}")),
+        other => other,
+    }
 }
 
 /// The selected pools, open and validated.

@@ -196,7 +196,7 @@ pub fn collect(
 ) -> Result<Option<PumpBoot>, crate::error::VivariumError> {
     let home = pump_home(mailspace);
     let loaded = load_snapshot(&home);
-    let slots = pump_slots::scan(&mailspace.config);
+    let slots = pump_slots::scan(&mailspace.config, &mailspace.root);
     let cwd = current_dir();
     let role = resolve_role(mailspace, opts.role.as_deref(), &slots, cwd.as_deref())?;
     if loaded.is_none() && mailspace.config.pools.is_empty() {
