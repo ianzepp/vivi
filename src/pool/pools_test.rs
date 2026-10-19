@@ -195,6 +195,31 @@ fn an_unknown_pool_lists_the_known_ones() {
 }
 
 #[test]
+fn pool_identity_uses_the_mailspace_id() {
+    let (_tmp, mut space) = space_with(&two());
+    space.config.id = Some("aeff60b0-a1c4-4eaa-b688-7afcff51c659".into());
+    for handle in open_unvalidated(&space, None, Need::Any).unwrap() {
+        assert_eq!(
+            handle.id.mailspace,
+            "aeff60b0-a1c4-4eaa-b688-7afcff51c659",
+            "the pool of mailspace id is keyed by the id, not the name slug"
+        );
+    }
+}
+
+#[test]
+fn pool_identity_falls_back_to_the_name_slug() {
+    let (_tmp, mut space) = space_with(&two());
+    space.config.id = None;
+    for handle in open_unvalidated(&space, None, Need::Any).unwrap() {
+        assert_eq!(
+            handle.id.mailspace,
+            crate::pool::slot::space_slug(&space.config.name)
+        );
+    }
+}
+
+#[test]
 fn open_one_and_open_apply_the_same_rules_to_a_real_mailspace() {
     let (_tmp, space) = space_with(&two());
     assert!(
@@ -207,12 +232,10 @@ fn open_one_and_open_apply_the_same_rules_to_a_real_mailspace() {
     assert_eq!(open_one(&space, Some("local")).unwrap().id.pool, "local");
     assert_eq!(open(&space, Some("local"), Need::Any).unwrap().len(), 1);
     assert_eq!(open(&space, None, Need::Any).unwrap().len(), 2);
-    // Identity: the mailspace slug is part of every pool's id.
+    // Identity: the mailspace id (not the name slug) is part of every
+    // pool's id.
     let id = open_one(&space, Some("local")).unwrap().id;
-    assert_eq!(
-        id.mailspace,
-        crate::pool::slot::space_slug(&space.config.name)
-    );
+    assert_eq!(id.mailspace, space.config.id.as_deref().unwrap());
 }
 
 #[test]

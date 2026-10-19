@@ -45,6 +45,15 @@ fn names_and_metadata() {
 }
 
 #[test]
+fn keyed_stores_the_key_unchanged() {
+    let id = PoolId::keyed("aeff60b0-a1c4-4eaa-b688-7afcff51c659", "lanes");
+    assert_eq!(id.mailspace, "aeff60b0-a1c4-4eaa-b688-7afcff51c659");
+    assert_eq!(id.pool, "lanes");
+    // A caller may also pass an already-sluged name.
+    assert_eq!(PoolId::keyed("my-project", "p").mailspace, "my-project");
+}
+
+#[test]
 fn claim_marks_show_in_status() {
     let mut m = machine("m", "p-slot-1", "stopped", Some("p"), Some(1));
     m.metadata.insert(META_STATE.into(), STATE_READY.into());

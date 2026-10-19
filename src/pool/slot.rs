@@ -36,7 +36,8 @@ pub const STATE_READY: &str = "ready";
 /// Suffix of the self-test pool that belongs to a pool (`<pool>-doctor`).
 pub const DOCTOR_SUFFIX: &str = "-doctor";
 
-/// The identity of a pool: the mailspace it belongs to (as a slug) and its
+/// The identity of a pool: the mailspace it belongs to (identified by its
+/// id, falling back to the name slug only when the config has no id) and its
 /// own name (the key of its `[pools.<name>]` table). Every mark, machine name
 /// and directory a pool makes derives from both.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -52,6 +53,19 @@ impl PoolId {
     pub fn new(mailspace_name: &str, pool: &str) -> Self {
         Self {
             mailspace: space_slug(mailspace_name),
+            pool: pool.to_string(),
+        }
+    }
+
+    /// The pool `pool` of the mailspace identified by `mailspace_key`, stored
+    /// unchanged (unlike [`PoolId::new`], no slug mapping). Callers pass the
+    /// mailspace id — the canonical lowercase hyphenated uuid, which is
+    /// already slug-charset safe — or, when the config has no id, a pre-sluged
+    /// name.
+    #[must_use]
+    pub fn keyed(mailspace_key: &str, pool: &str) -> Self {
+        Self {
+            mailspace: mailspace_key.to_string(),
             pool: pool.to_string(),
         }
     }

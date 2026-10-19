@@ -73,23 +73,32 @@ fn scaffold() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     (dir, project, repo, root)
 }
 
-fn plant_slot(root: &Path, project_name: &str) -> PathBuf {
-    let slug = project_name
-        .to_lowercase()
+/// The key pools are keyed by: the `id = "..."` line of the project's
+/// mailspace config, falling back to the name slug when the config has none.
+fn mailspace_key(project: &Path) -> String {
+    let text = std::fs::read_to_string(project.join(".vivi/mailspace.toml")).unwrap();
+    if let Some(id) = text.lines().find_map(|l| l.strip_prefix("id = ")) {
+        return id.trim_matches('"').to_string();
+    }
+    let name = text
+        .lines()
+        .find_map(|l| l.strip_prefix("name = "))
+        .map(|s| s.trim_matches('"').to_string())
+        .unwrap();
+    name.to_lowercase()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>();
-    let dir = root
-        .join(slug.trim_matches('-'))
-        .join("lanes")
-        .join("slot-1");
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn plant_slot(root: &Path, project: &Path) -> PathBuf {
+    let key = mailspace_key(project);
+    let dir = root.join(&key).join("lanes").join("slot-1");
     std::fs::create_dir_all(dir.join("marks")).unwrap();
     std::fs::write(dir.join("marks/vivi_pool"), "lanes\n").unwrap();
-    std::fs::write(
-        dir.join("marks/vivi_pool_mailspace"),
-        format!("{}\n", slug.trim_matches('-')),
-    )
-    .unwrap();
+    std::fs::write(dir.join("marks/vivi_pool_mailspace"), format!("{key}\n")).unwrap();
     std::fs::write(dir.join("marks/vivi_pool_slot"), "1\n").unwrap();
     std::fs::write(dir.join("marks/vivi_pool_state"), "ready\n").unwrap();
     std::fs::write(dir.join("marks/build_baseline"), "10\n").unwrap();
@@ -113,13 +122,7 @@ fn clean_help_names_dry_run() {
 #[test]
 fn dry_run_reports_bytes_and_live_clean_empties_the_build_dir() {
     let (_tmp, project, _repo, root) = scaffold();
-    let name = std::fs::read_to_string(project.join(".vivi/mailspace.toml"))
-        .unwrap()
-        .lines()
-        .find_map(|l| l.strip_prefix("name = "))
-        .map(|s| s.trim_matches('"').to_string())
-        .unwrap();
-    let slot = plant_slot(&root, &name);
+    let slot = plant_slot(&root, &project);
     let proj = project.to_str().unwrap();
     let dry = vivi(&[
         "pool",
@@ -145,13 +148,7 @@ fn dry_run_reports_bytes_and_live_clean_empties_the_build_dir() {
 }
 
 fn plant_worktree(root: &Path, project: &Path, repo: &Path, dirty: bool) -> PathBuf {
-    let name = std::fs::read_to_string(project.join(".vivi/mailspace.toml"))
-        .unwrap()
-        .lines()
-        .find_map(|l| l.strip_prefix("name = "))
-        .map(|s| s.trim_matches('"').to_string())
-        .unwrap();
-    let slot = plant_slot(root, &name);
+    let slot = plant_slot(root, project);
     std::fs::write(slot.join("marks/last_task"), "abcd1234\n").unwrap();
     std::fs::write(
         slot.join("marks/vivi_pool_base"),
