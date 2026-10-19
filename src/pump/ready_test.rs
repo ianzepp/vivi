@@ -7,7 +7,9 @@ use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::{DispatchConfig, Generated, Lane, MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::ready::{blocked_needs, dependency_holds, is_ready, pick_model, ranked, satisfied};
+use crate::pump::ready::{
+    blocked_needs, dependency_holds, is_ready, pick_model, ranked, satisfied,
+};
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 
 /// A `Ctx` over a fresh temp home with the given pump config.
