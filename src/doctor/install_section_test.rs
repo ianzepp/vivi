@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use super::Finding;
-use crate::doctor::install_section::findings;
 use crate::doctor::Status;
+use crate::doctor::install_section::findings;
 use crate::skills::SkillCopyStatus;
 use crate::update::CheckOutcome;
 
@@ -12,7 +12,12 @@ fn available_release_warns_with_update_fix() {
     assert_eq!(out[0], Finding::ok("install", "binary", "vivi 14.1.0"));
     assert_eq!(
         out[1],
-        Finding::warn("release", "release", "a newer public release exists", "vivi update")
+        Finding::warn(
+            "release",
+            "release",
+            "a newer public release exists",
+            "vivi update"
+        )
     );
 }
 
@@ -44,7 +49,10 @@ fn release_error_degrades_to_skipped() {
 #[test]
 fn stale_skills_warn_and_up_to_date_ok() {
     let targets = vec![
-        (PathBuf::from("/agents/skills"), SkillCopyStatus::Stale(vec!["tugboat".into(), "vivi".into()])),
+        (
+            PathBuf::from("/agents/skills"),
+            SkillCopyStatus::Stale(vec!["tugboat".into(), "vivi".into()]),
+        ),
         (PathBuf::from("/other/skills"), SkillCopyStatus::UpToDate),
         (PathBuf::from("/bare"), SkillCopyStatus::NotInstalled),
     ];

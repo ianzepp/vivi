@@ -138,10 +138,7 @@ fn clean_mailspace_leaves_a_foreign_mailspaces_slots_alone() {
     );
     let (_dir, space) = routing_space(&toml);
     let ours_rel = format!("{ID}/here/slot-1");
-    for (rel, pool) in [
-        (ours_rel.as_str(), "here"),
-        ("faberlang/glm/slot-2", "glm"),
-    ] {
+    for (rel, pool) in [(ours_rel.as_str(), "here"), ("faberlang/glm/slot-2", "glm")] {
         let slot = root.join(rel);
         fs::create_dir_all(slot.join("marks")).unwrap();
         fs::write(slot.join("marks/vivi_pool"), format!("{pool}\n")).unwrap();

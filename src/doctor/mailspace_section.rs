@@ -22,8 +22,7 @@ const UNREADABLE_FIX: &str = "run any vivi command once to create it";
 const UNREADABLE_DETAIL: &str = "store missing or unreadable";
 const NEWER_FIX: &str = "upgrade the vivi binary (vivi update)";
 const OLDER_FIX: &str = "run one write command (e.g. vivi board) to migrate";
-const DONE_WHEN_FIX: &str =
-    "add a done_when: clause to each need body (vivi need show <handle>)";
+const DONE_WHEN_FIX: &str = "add a done_when: clause to each need body (vivi need show <handle>)";
 
 /// Report the mailspace section of `vivi doctor`.
 #[must_use]
@@ -42,7 +41,10 @@ pub fn findings(project: Option<&Path>, _now: DateTime<Utc>) -> Vec<Finding> {
     let config = Finding::ok(
         SECTION,
         "config",
-        &format!("mailspace opened; store {}", mailspace.store_path().display()),
+        &format!(
+            "mailspace opened; store {}",
+            mailspace.store_path().display()
+        ),
     );
     vec![
         config,
@@ -83,12 +85,7 @@ fn schema_finding(mailspace: &Mailspace) -> Finding {
         );
     };
     if stored_number > current {
-        Finding::fail(
-            SECTION,
-            "store",
-            "store written by a newer vivi",
-            NEWER_FIX,
-        )
+        Finding::fail(SECTION, "store", "store written by a newer vivi", NEWER_FIX)
     } else if stored_number < current {
         Finding::warn(
             SECTION,
@@ -97,7 +94,11 @@ fn schema_finding(mailspace: &Mailspace) -> Finding {
             OLDER_FIX,
         )
     } else {
-        Finding::ok(SECTION, "store", &format!("schema {stored} matches this binary"))
+        Finding::ok(
+            SECTION,
+            "store",
+            &format!("schema {stored} matches this binary"),
+        )
     }
 }
 
