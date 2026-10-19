@@ -69,6 +69,7 @@ pub mod local_slots;
 pub mod pools;
 pub mod porcelain;
 pub mod progress;
+pub mod ramdisk;
 pub mod provider;
 pub mod record;
 pub mod requires;
