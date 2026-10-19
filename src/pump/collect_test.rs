@@ -697,6 +697,80 @@ fn a_dead_split_planner_is_reported_and_retried() {
     assert_eq!(u.split_retry_at, None);
 }
 
+/// The exact provider 429 line a rate-limited split planner leaves behind.
+const RATE_LIMITED_OUT: &str =
+    "429: {\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}";
+
+/// Write a rate-limited planner receipt: the 429 output plus a nonzero exit.
+fn rate_limited_receipt(ctx: &Ctx, uid: &str) {
+    let dir = ctx.home.join("resplit");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{uid}.out")), RATE_LIMITED_OUT).unwrap();
+    fs::write(dir.join(format!("{uid}.out.rc")), "1\n").unwrap();
+}
+
+#[test]
+fn a_rate_limited_split_planner_keeps_its_retry_budget() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    rate_limited_receipt(&ctx, "u-1");
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.split_fails, 0);
+    let at = u.split_retry_at.expect("a rate-limited planner is retried");
+    assert!(at >= T0 + 120, "retry at {at}");
+    assert!(!ctx.home.join("resplit/u-1.out.rc").exists());
+    assert!(
+        !exceptions(&ctx).contains("split-planner-failed"),
+        "{:?}",
+        exceptions(&ctx)
+    );
+    assert!(host.spawned().is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("split-rate-limited u-1 retry in")),
+        "{:?}",
+        host.logs()
+    );
+
+    host.advance(135);
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(st.units.get("u-1").unwrap().split_fails, 0);
+}
+
+#[test]
+fn repeated_rate_limits_back_off_without_parking() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    let mut last: Option<u64> = None;
+    for round in 0..3 {
+        rate_limited_receipt(&ctx, "u-1");
+        assert_eq!(collect(&ctx, &mut st), None);
+        let u = st.units.get("u-1").unwrap();
+        assert_eq!(u.status, Status::Splitting, "round {round}");
+        assert_eq!(u.split_fails, 0, "round {round}");
+        let at = u.split_retry_at.unwrap_or_default();
+        if let Some(previous) = last {
+            assert!(at > previous, "round {round}: {at} not after {previous}");
+        }
+        last = Some(at);
+        host.advance(600);
+    }
+    assert!(
+        !exceptions(&ctx).contains("split-planner-failed"),
+        "{:?}",
+        exceptions(&ctx)
+    );
+}
+
 #[test]
 fn the_third_split_planner_failure_makes_the_unit_stuck() {
     let (_dir, ctx, _host) = setup();
