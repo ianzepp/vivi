@@ -56,6 +56,7 @@ fn print_show(name: &str, file: Option<&str>) -> Result<(), VivariumError> {
 
 fn print_install(dir: &std::path::Path, force: bool) -> Result<(), VivariumError> {
     let report = skills::install(dir, force)?;
+    skills::record_target(&report.dir)?;
     println!(
         "installed {} skills, {} files -> {}",
         report.skills,

@@ -240,6 +240,25 @@ fn catalog_matches_json_detects_change() {
     assert_eq!(skills::catalog_matches_json("not json"), None);
 }
 
+#[test]
+fn record_target_appends_and_dedups() {
+    let config = tempdir().unwrap();
+    let first = tempdir().unwrap();
+    let second = tempdir().unwrap();
+    skills::record_target_in(config.path(), first.path()).unwrap();
+    skills::record_target_in(config.path(), second.path()).unwrap();
+    skills::record_target_in(config.path(), first.path()).unwrap();
+
+    let path = config.path().join("vivi").join("skills-targets.txt");
+    let text = fs::read_to_string(&path).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    for line in lines {
+        assert!(Path::new(line).is_absolute(), "{line}");
+        assert!(Path::new(line).is_dir(), "{line}");
+    }
+}
+
 /// Lay down every catalog skill, file for file, exactly as embedded.
 fn write_fresh_copy(dir: &Path) {
     for skill in catalog() {
