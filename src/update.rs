@@ -72,6 +72,11 @@ pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
     for line in reminders::stale_skills_reminders(&skill_dirs) {
         println!("{line}");
     }
+    let staged = bin_dir.join(format!("vivi-{target}"));
+    let changed = reminders::release_skills_changed(&staged);
+    for line in reminders::release_skills_reminders(&skill_dirs, changed) {
+        println!("{line}");
+    }
     Ok(())
 }
 
