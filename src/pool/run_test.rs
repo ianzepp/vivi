@@ -309,8 +309,15 @@ fn create_adopts_an_unseeded_slot_whose_seed_finished_cleanly() {
     // The listing trails the machine: only the single-machine read shows the
     // clean exit.
     fake.machine_exit_codes.borrow_mut().insert("m1".into(), 0);
-    let report =
-        create_slots(&fake, &config(1), &pid("p"), &fast(), &Progress::silent(), inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert_eq!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
     assert!(report.created.is_empty());
     assert!(fake.created.borrow().is_empty(), "no new machine minted");
@@ -328,8 +335,15 @@ fn a_slot_whose_seed_failed_is_not_adopted() {
     m.exit_code = None;
     fake.add(m);
     fake.machine_exit_codes.borrow_mut().insert("m1".into(), 3);
-    let report =
-        create_slots(&fake, &config(1), &pid("p"), &fast(), &Progress::silent(), inputs).unwrap();
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
     assert_ne!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
     assert!(fake.env_cleared.borrow().is_empty());
     assert!(report.created.is_empty());
