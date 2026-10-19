@@ -768,8 +768,7 @@ fn apply_start_on_dispatch_failure_closes_the_task_and_zeroes_the_pool() {
     let done = commands_with(&host, "task done");
     assert_eq!(done.len(), 1);
     assert!(
-        done[0]
-            .contains("task done 1a2b3c4d --for operator --note 'dispatch failed; superseded'"),
+        done[0].contains("task done 1a2b3c4d --for operator --note 'dispatch failed; superseded'"),
         "{:?}",
         done
     );
