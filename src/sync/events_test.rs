@@ -37,7 +37,7 @@ fn second_checkout(of: &Checkout) -> Checkout {
     copy
 }
 
-fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
+fn send_item(from: &Checkout, to: &str, subject: &str, role: &str, kind: &str) -> String {
     let result = from
         .mailspace
         .send(SendRequest {
@@ -47,8 +47,8 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
             bcc: Vec::new(),
             subject: subject.into(),
             body: BODY.into(),
-            role: "tasks".into(),
-            kind: Some("task".into()),
+            role: role.into(),
+            kind: Some(kind.into()),
             reply_to: None,
             depends_on: Vec::new(),
         })
@@ -57,6 +57,10 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
         .delivered
         .first()
         .map_or(result.sent, |delivered| delivered.handle.clone())
+}
+
+fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
+    send_item(from, to, subject, "tasks", "task")
 }
 
 fn node_state(mailspace: &Mailspace, handle: &str) -> String {
@@ -284,6 +288,77 @@ fn pulling_again_and_auditing_a_converged_store_change_nothing() {
     assert!(audit_b.findings.is_empty(), "{:?}", audit_b.findings);
     assert!(audit_a.findings.is_empty(), "{:?}", audit_a.findings);
     assert_eq!((rows_of(&p.a), rows_of(&p.b)), (rows_a, rows_b));
+}
+
+/// A want from alice's `mind` to bob's `hand`, pushed and pulled, so bob
+/// holds the want in `wants` with an open node and alice holds only `sent`.
+fn want_pair() -> (std::rc::Rc<FakeServer>, Checkout, Checkout, String) {
+    let server = FakeServer::new();
+    let (mut a, b) = (alice(), bob());
+    a.mailspace.config.absorb = Some(AbsorbConfig { quiet_hours: 0 });
+    let want = send_item(&a, &b.address("hand"), "would be nice", "wants", "want");
+    a.push(&a.client(&server));
+    b.pull(&b.client(&server));
+    assert_eq!(role_of(&b, &want), "wants");
+    assert_eq!(role_of(&a, &want), "sent", "the sender's only copy");
+    assert_eq!(node_state(&b.mailspace, &want), "open");
+    (server, a, b, want)
+}
+
+// The promoted letter crosses mailspaces: the receiver's want moves into
+// `needs` and its backlog node stays open, because a promotion is not a close.
+#[test]
+fn a_promoted_letter_moves_the_receivers_want_to_needs() {
+    let (server, a, b, want) = want_pair();
+
+    a.mailspace
+        .move_item("mind", &want, "needs", None, "want promote", None)
+        .unwrap();
+    assert_eq!(state(&a, &want).as_deref(), Some("promoted"));
+    a.push(&a.client(&server));
+    let pulled = b.pull(&b.client(&server));
+
+    assert_eq!(role_of(&b, &want), "needs", "the receiver's want promoted");
+    assert_eq!(node_state(&b.mailspace, &want), "open", "not a close");
+    assert_eq!(state(&b, &want).as_deref(), Some("promoted"));
+    assert!(
+        pulled.events_applied >= 1,
+        "the letter applied: {}",
+        pulled.summary()
+    );
+
+    // Converged: a second pull applies nothing and changes no row.
+    let snapshot = || (rows_of(&a), rows_of(&b));
+    let converged = snapshot();
+    a.push(&a.client(&server));
+    let again = b.pull(&b.client(&server));
+
+    assert_eq!(again.fetched, 0);
+    assert_eq!(again.events_applied, 0);
+    assert_eq!(role_of(&b, &want), "needs");
+    assert_eq!(node_state(&b.mailspace, &want), "open");
+    assert_eq!(snapshot(), converged);
+
+    // The audit's one finding is the node kind a promotion leaves behind:
+    // the folder says `need` while the node was minted a `want`. The repair
+    // settles it once, and a second audit finds no drift at all.
+    let first = b.mailspace.backlog_audit(true).unwrap();
+    assert!(
+        first
+            .findings
+            .iter()
+            .all(|finding| finding.class == "node_kind"
+                && finding.repaired
+                && finding.kind == "need"),
+        "{:?}",
+        first.findings
+    );
+    assert_eq!(snapshot(), converged);
+    let settled = b.mailspace.backlog_audit(true).unwrap();
+    assert!(settled.findings.is_empty(), "{:?}", settled.findings);
+    assert_eq!(role_of(&b, &want), "needs");
+    assert_eq!(node_state(&b.mailspace, &want), "open");
+    assert_eq!(snapshot(), converged);
 }
 
 // Reversed by the authority rule: any member's prefix domain speaks for an
