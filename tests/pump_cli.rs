@@ -294,7 +294,12 @@ fn a_pause_flag_still_writes_status_and_exits_zero() {
         "legacy pause file was not migrated"
     );
     let status = fs::read_to_string(home.join("status.txt")).unwrap();
-    assert_eq!(status.lines().count(), 8, "{status}");
+    assert!(
+        status
+            .lines()
+            .any(|line| line.starts_with("shared-check timeout counts unavailable")),
+        "{status}"
+    );
 }
 
 #[test]
