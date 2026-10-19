@@ -965,7 +965,9 @@ fn a_blocked_board_pass_does_not_block_dispatch_or_the_tick() {
     run_tick(&ctx, &mut st, &merger, &mut pass).unwrap();
 
     assert!(
-        host.commands().iter().any(|cmd| cmd.contains("pool dispatch")),
+        host.commands()
+            .iter()
+            .any(|cmd| cmd.contains("pool dispatch")),
         "no dispatch while the pass was parked: {:?}",
         host.commands()
     );
