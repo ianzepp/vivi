@@ -12,7 +12,8 @@ use super::publish::publish;
 use super::{
     GIT_TIMEOUT, already_integrated, check_with_drift_retry, failed, failure_text, fetch_failure,
     flat, format_style_commit, git_error, identity_args, integrated_text, merge_line, merge_work,
-    outside_files, reset_repo, resolve_generated, skips_proof, tail, undecided_result,
+    outside_files, reset_repo, resolve_generated, scoped_checks, skips_proof, tail,
+    undecided_result,
 };
 
 /// A cleanly merged job plus the files its merge touched outside its scope.
@@ -227,12 +228,19 @@ fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResul
     Some(failed(&job.uid, "merge-conflict", detail))
 }
 
-/// Run the shared checks once over the whole batch, each with a
+/// Run the shared checks, then the checks mapped to the union of the batch's
+/// write scopes, once over the whole batch, each with a
 /// `batch <n> shared rc=<n> <n>s: <cmd>` log line.
 fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
-    let total = ctx.cfg.merge.shared_checks.len();
+    let scopes: Vec<&[String]> = merged
+        .iter()
+        .map(|m| m.job.write_scope.as_slice())
+        .collect();
+    let mut checks = ctx.cfg.merge.shared_checks.clone();
+    checks.extend(scoped_checks(&ctx.cfg, &scopes));
+    let total = checks.len();
     let tag = format!("batch of {}", merged.len());
-    for (i, cmd) in ctx.cfg.merge.shared_checks.iter().enumerate() {
+    for (i, cmd) in checks.iter().enumerate() {
         ctx.step(&format!("check {}/{total} start: {cmd}", i + 1));
         let t1 = ctx.now();
         let out = check_with_drift_retry(ctx, &tag, cmd);

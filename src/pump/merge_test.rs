@@ -791,6 +791,76 @@ fn a_batch_of_clean_jobs_is_pushed_once_and_every_job_gets_the_same_tip() {
 }
 
 #[test]
+fn a_batch_touching_the_glob_runs_its_scoped_check_once() {
+    let (_dir, ctx, host) = setup_scoped();
+    host.reply(
+        "diff --name-only HEAD~1 HEAD",
+        0,
+        "src/pump/merge.rs\nREADME.md\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip9\n");
+    let mut touched = unit("u1", "work/u1");
+    touched.write_scope = vec![String::from("corpus/x.fab")];
+    let mut untouched = unit("u2", "work/u2");
+    untouched.write_scope = vec![String::from("src/a.rs")];
+    let results = batch_work(&ctx, &[touched, untouched]);
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok == Some(true)), "{results:?}");
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| r.tip.as_deref() == Some("tip9"))
+            .count(),
+        2
+    );
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "./corpus-check.sh"), 1, "{cmds:?}");
+    let scoped = index_of(&cmds, "./corpus-check.sh");
+    assert!(index_of(&cmds, "merge u1") < scoped, "{cmds:?}");
+    assert!(index_of(&cmds, "merge u2") < scoped, "{cmds:?}");
+    assert!(scoped < index_of(&cmds, "./proof-u1.sh"), "{cmds:?}");
+    assert!(
+        !cmds.iter().any(|c| c.contains("./locale-check.sh")),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn a_batch_not_touching_the_glob_skips_its_scoped_check() {
+    let (_dir, ctx, host) = setup_scoped();
+    host.reply("rev-parse HEAD", 0, "tip9\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok == Some(true)), "{results:?}");
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "./corpus-check.sh"), 0, "{cmds:?}");
+    assert!(
+        !cmds.iter().any(|c| c.contains("./locale-check.sh")),
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn a_failing_scoped_check_in_a_batch_fails_the_unit_back() {
+    let (_dir, ctx, host) = setup_scoped();
+    host.reply("./corpus-check.sh", 1, "error[E0308]: mismatched types\n");
+    let mut solo = unit("u1", "work/u1");
+    solo.write_scope = vec![String::from("corpus/x.fab")];
+    let results = batch_work(&ctx, &[solo]);
+    assert_eq!(results.len(), 1);
+    let result = for_uid(&results, "u1");
+    assert_eq!(result.ok, Some(false), "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("./corpus-check.sh"), "{detail:?}");
+    assert!(
+        !host.commands().iter().any(|c| c.contains("./proof-u1.sh")),
+        "{:?}",
+        host.commands()
+    );
+}
+
+#[test]
 fn main_is_merged_into_the_integration_branch_first_when_it_is_not_an_ancestor() {
     let (_dir, ctx, host) = setup("");
     host.reply("merge-base --is-ancestor origin/main HEAD", 1, "");
