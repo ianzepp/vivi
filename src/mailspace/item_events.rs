@@ -679,6 +679,10 @@ impl Mailspace {
         let Some(item) = held_item(storage, content_id)? else {
             return Ok(());
         };
+        // A close letter carries the close's verdict metadata: fold it
+        // into the rows' metadata before any seal, so an item already at
+        // its head still records the verdict its close letter names.
+        property::store_letter_verdicts(self, storage, &item)?;
         let chain = self.item_chain(storage, &item)?;
         tally.ignored += chain.unauthorized;
         // A counted absorbed event seals the item with the state it names, so

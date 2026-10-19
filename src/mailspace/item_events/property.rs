@@ -54,6 +54,8 @@ use crate::storage::{
 const EVENT_UNIT_HEADER: &str = "X-Vivi-Event-Unit";
 const EVENT_SLUG_HEADER: &str = "X-Vivi-Event-Slug";
 const EVENT_STATE_HEADER: &str = "X-Vivi-Event-State";
+const VERDICT_HEADER: &str = "X-Vivi-Verdict";
+const REPO_HEADER: &str = "X-Vivi-Repo";
 
 /// What a property event puts on an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +172,99 @@ pub(crate) fn parse_property_event(bytes: &[u8]) -> Option<PropertyEvent> {
         units,
         state,
     })
+}
+
+/// One verdict value a close letter carries: the metadata key it stores
+/// under (`verdict`, `repo:<name>`), the value, and the letter's `(at,
+/// Message-ID)` order — the order a newer letter must beat.
+struct LetterVerdict {
+    key: String,
+    value: String,
+    stamp: (i64, String),
+}
+
+/// Read the verdict metadata a letter carries: `X-Vivi-Verdict` (single)
+/// and repeatable `X-Vivi-Repo: <repo>=<tip>` — the same mapping
+/// [`Mailspace::verdict_headers`] writes — each stamped with the letter's
+/// instant (`X-Vivi-Event-At` RFC 3339, else `Date`) and normalized
+/// `Message-ID`. Empty for a letter that carries neither.
+fn parse_letter_verdicts(bytes: &[u8]) -> Option<Vec<LetterVerdict>> {
+    let parsed = MessageParser::default().parse(bytes)?;
+    let id = parsed.message_id().and_then(normalize_message_id)?;
+    let mut at = None;
+    let mut values = Vec::new();
+    for header in parsed.headers() {
+        let HeaderValue::Text(text) = header.value() else {
+            continue;
+        };
+        let name = header.name();
+        if name.eq_ignore_ascii_case(EVENT_AT_HEADER) {
+            at = rfc3339_micros(text);
+        } else if name.eq_ignore_ascii_case(VERDICT_HEADER) {
+            values.push(("verdict".into(), text.trim().to_string()));
+        } else if name.eq_ignore_ascii_case(REPO_HEADER)
+            && let Some((repo, tip)) = text.trim().split_once('=')
+        {
+            values.push((format!("repo:{repo}"), tip.trim().to_string()));
+        }
+    }
+    let stamp = (at.unwrap_or_else(|| date_micros(&parsed)), id);
+    Some(
+        values
+            .into_iter()
+            .map(|(key, value)| LetterVerdict {
+                key,
+                value,
+                stamp: stamp.clone(),
+            })
+            .collect(),
+    )
+}
+
+/// Store the verdict metadata the close letters held for `item` carry:
+/// `X-Vivi-Verdict` and `X-Vivi-Repo` are folded like every event —
+/// letters from a member that speaks for the item count, and the newest
+/// value per key by `(instant, Message-ID)` wins — and the winners land
+/// in each unabsorbed row's item metadata, the same keys a local
+/// [`Mailspace::move_task_outcome`] writes. Idempotent in value, so a
+/// re-settle writes nothing new.
+pub(super) fn store_letter_verdicts(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    item: &HeldItem,
+) -> Result<(), VivariumError> {
+    let mut newest: BTreeMap<String, LetterVerdict> = BTreeMap::new();
+    for child in storage.reply_child_contents(&item.content_id)? {
+        let Some(view) = storage.message_by_content_id(&child)? else {
+            continue;
+        };
+        let speaks = first_bare_address(&view.from_addr)
+            .is_some_and(|from| mailspace.event_may_speak(item, &from));
+        let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
+            continue;
+        };
+        if !speaks {
+            continue;
+        }
+        for value in parse_letter_verdicts(&bytes).unwrap_or_default() {
+            let newer = newest
+                .get(&value.key)
+                .is_none_or(|held| value.stamp > held.stamp);
+            if newer {
+                newest.insert(value.key.clone(), value);
+            }
+        }
+    }
+    let winners: BTreeMap<String, String> = newest
+        .into_iter()
+        .map(|(key, value)| (key, value.value))
+        .collect();
+    for row in &item.rows {
+        if row.absorbed_at.is_none() {
+            storage.set_item_metadata(&row.message_id, &winners)?;
+        }
+    }
+    Ok(())
 }
 
 /// The property events held for one item, and how many named it from a
