@@ -84,7 +84,9 @@ fn build_only_checks() {
              {cmd}\n\nWhat failed:\n[timeout after 480s]"
         )
     };
-    assert!(build_only_check(&killed("cargo test --workspace --no-run --quiet")));
+    assert!(build_only_check(&killed(
+        "cargo test --workspace --no-run --quiet"
+    )));
     assert!(build_only_check(&killed("cargo build --release")));
     assert!(build_only_check(&killed("cargo check --workspace")));
     assert!(build_only_check(&killed("cargo clippy --all-targets")));
