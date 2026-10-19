@@ -498,14 +498,39 @@ fn skips_proof(ctx: &Ctx, tools: &str) -> bool {
     ctx.cfg.kind_of(tools).is_some_and(|kind| kind.skip_proof)
 }
 
-/// Shared checks, then the unit's own proof (skipped for a `skip_proof` kind). The
-/// first failure resets the repo and decides the job.
+/// Commands from `[pump.merge.checks_for]` whose glob overlaps any unit
+/// scope, in key order and without repeats. An empty scope covers the whole
+/// tree, so it overlaps every glob.
+pub(crate) fn scoped_checks(
+    cfg: &crate::pump::config::PumpConfig,
+    scopes: &[&[String]],
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (glob, commands) in &cfg.merge.checks_for {
+        let globs = [glob.clone()];
+        if !scopes.iter().any(|unit| overlaps(&globs, unit)) {
+            continue;
+        }
+        for cmd in commands {
+            if !out.contains(cmd) {
+                out.push(cmd.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Shared checks, then the checks mapped to the unit's scope, then the unit's
+/// own proof (skipped for a `skip_proof` kind). The first failure resets the
+/// repo and decides the job.
 fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     let mut checks = ctx.cfg.merge.shared_checks.clone();
+    let scoped = scoped_checks(&ctx.cfg, &[&job.write_scope]);
+    checks.extend(scoped.iter().cloned());
     if !skips_proof(ctx, &job.tools) {
         checks.extend(job.proof.iter().cloned());
     }
-    let shared = ctx.cfg.merge.shared_checks.len();
+    let shared = ctx.cfg.merge.shared_checks.len() + scoped.len();
     for (i, cmd) in checks.iter().enumerate() {
         let head: String = cmd.chars().take(90).collect();
         if i < shared {
