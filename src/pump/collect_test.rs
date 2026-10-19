@@ -32,7 +32,7 @@ fn planner_cfg() -> PumpConfig {
         planner: PlannerConfig {
             run: String::from("plan-it {charter} --quiet"),
             charter: String::from("/charter/path.md"),
-            split_timeout: 1500,
+            split_hard_cap: 1500,
         },
         ..PumpConfig::default()
     }
@@ -554,7 +554,13 @@ fn an_unreported_unit_still_listed_by_pool_status_is_left_alone() {
 
 #[test]
 fn a_splitting_unit_with_no_answer_for_1500_seconds_is_stuck() {
-    let (_dir, ctx, host) = setup();
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            split_hard_cap: 1500,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
     let mut st = State::default();
     put(&mut st, "u-1", unit(Status::Splitting, None, None));
     host.advance(1501);

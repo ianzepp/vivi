@@ -292,8 +292,9 @@ pub struct PlannerConfig {
     pub run: String,
     /// Charter file substituted for `{charter}` in `run`.
     pub charter: String,
-    /// Seconds a split planner has to answer before the unit is stuck.
-    pub split_timeout: u64,
+    /// Seconds a receipt-less (alive or unreachable) split planner may run
+    /// before the unit is stuck; a planner that exits is retried instead.
+    pub split_hard_cap: u64,
 }
 
 impl Default for PlannerConfig {
@@ -301,7 +302,7 @@ impl Default for PlannerConfig {
         Self {
             run: String::new(),
             charter: String::new(),
-            split_timeout: 1500,
+            split_hard_cap: 5400,
         }
     }
 }

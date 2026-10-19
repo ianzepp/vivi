@@ -51,7 +51,7 @@ push_since   = "30m"
 [pump.planner]
 run     = "claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --append-system-prompt-file {charter}"
 charter = "/mnt/agents/pump/planner-charter.md"
-split_timeout = 1500
+split_hard_cap = 5400
 
 [pump.dispatch]
 lanes        = [{ model = "deepseek/deepseek-flash", cap = 30 }, { model = "zai/glm-5.3-flash", cap = 10 }]
@@ -147,7 +147,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.board.push_since, "30m");
     assert_eq!(cfg.planner.run, "");
     assert_eq!(cfg.planner.charter, "");
-    assert_eq!(cfg.planner.split_timeout, 1500);
+    assert_eq!(cfg.planner.split_hard_cap, 5400);
     assert!(cfg.dispatch.lanes.is_empty());
     assert_eq!(cfg.dispatch.last_resort, "");
     assert_eq!(cfg.dispatch.max_attempts, 3);

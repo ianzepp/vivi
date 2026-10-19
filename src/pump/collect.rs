@@ -481,7 +481,7 @@ fn fail_from_receipt(
 
 /// Park units whose split planner never answered.
 fn expire_splits(ctx: &Ctx, st: &mut State) {
-    let timeout = ctx.cfg.planner.split_timeout;
+    let timeout = ctx.cfg.planner.split_hard_cap;
     let now = ctx.now();
     let mut expired = Vec::new();
     for (uid, unit) in &mut st.units {
