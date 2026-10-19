@@ -67,8 +67,8 @@ pub fn check(ctx: &Ctx, st: &mut State) {
     }
 }
 
-/// The lines `status.txt` carries for the stall signals: last promotion,
-/// oldest waiting fix unit, and the delivered backlog.
+/// The lines `status.txt` carries for the stall signals: last promotion, last
+/// green gate, oldest waiting fix unit, and the delivered backlog.
 #[must_use]
 pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
     let now = ctx.now();
@@ -83,6 +83,22 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
                     "last promote {} ago ({})",
                     age(now.saturating_sub(promotion.at)),
                     tip10(&promotion.tip)
+                )
+            },
+        );
+    let green = scopes(ctx, st)
+        .iter()
+        .filter_map(|scope| {
+            crate::pump::gate::green::green_gate(scope.gates, scope.promotions, scope.baseline)
+        })
+        .max_by_key(|gate| gate.at)
+        .map_or_else(
+            || String::from("last green never"),
+            |gate| {
+                format!(
+                    "last green {} ago ({})",
+                    age(now.saturating_sub(gate.at)),
+                    tip10(&gate.tip)
                 )
             },
         );
@@ -106,7 +122,7 @@ pub fn status_lines(ctx: &Ctx, st: &State) -> Vec<String> {
             )
         },
     );
-    vec![promote, fix, delivered]
+    vec![promote, green, fix, delivered]
 }
 
 /// The mutable raised-time map, created or repaired on demand.

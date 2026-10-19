@@ -121,15 +121,16 @@ fn write_status_writes_counts_then_stall_lines() {
     write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 8);
+    assert_eq!(lines.len(), 9);
     assert_eq!(lines[0], "1970-01-12T13:46:40Z");
     assert_eq!(lines[1], "units merged=1 pending=2");
     assert_eq!(lines[2], "plans closed=2 units=1");
     assert_eq!(lines[3], "merges 3  needs-ready 2  gates 1  baseline none");
     assert_eq!(lines[4], "last promote never");
-    assert_eq!(lines[5], "oldest waiting fix none");
-    assert_eq!(lines[6], "delivered waiting 0, oldest none");
-    assert_eq!(lines[7], "lane default/0 idle merged 0 conflict 0");
+    assert_eq!(lines[5], "last green never");
+    assert_eq!(lines[6], "oldest waiting fix none");
+    assert_eq!(lines[7], "delivered waiting 0, oldest none");
+    assert_eq!(lines[8], "lane default/0 idle merged 0 conflict 0");
 }
 
 #[test]
@@ -188,8 +189,8 @@ fn write_status_lists_top_blockers_after_the_stall_lines() {
         "no blocker line in {text}"
     );
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 9, "one blocker line: {text}");
-    assert_eq!(lines[7], "blocker r stuck age 30m held 13");
+    assert_eq!(lines.len(), 10, "one blocker line: {text}");
+    assert_eq!(lines[8], "blocker r stuck age 30m held 13");
 }
 
 #[test]
@@ -231,7 +232,7 @@ fn write_status_adds_no_planner_lines_when_idle() {
     write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 8);
+    assert_eq!(lines.len(), 9);
     assert!(
         !text.contains("planner"),
         "idle board wrote planner lines in {text}"
@@ -442,7 +443,7 @@ fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     assert!(!commands.iter().any(|c| c.contains("pool status")));
     assert!(!commands.iter().any(|c| c.contains("task send")));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert_eq!(text.lines().count(), 8);
+    assert_eq!(text.lines().count(), 9);
 }
 
 #[test]
