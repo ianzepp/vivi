@@ -1,34 +1,26 @@
-//! The mailspace section of `vivi doctor`: config, storage schema, unabsorbed
-//! mail, and ready items that declare no `done_when`.
-//!
-//! Every check is read-only. The store is opened with
-//! [`rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY`] so doctor can never migrate
-//! or repair anything.
+//! The mailspace section of `vivi doctor`, using only read-only project and
+//! storage access.
 
+use std::collections::HashSet;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OpenFlags};
-
-use super::Finding;
-use crate::error::VivariumError;
-use crate::mailspace::{DumpFilters, MailAbsorbFilter, MailDumpRequest, Mailspace};
+use super::{Finding, Project};
 use crate::storage::schema::STORAGE_SCHEMA_VERSION;
 
 const SECTION: &str = "mailspace";
 const CONFIG_FIX: &str =
     "repair .vivi/mailspace.toml (vivi mailspace init --project <root> creates one)";
-const UNREADABLE_FIX: &str = "run any vivi command once to create it";
-const UNREADABLE_DETAIL: &str = "store missing or unreadable";
+const STORE_FIX: &str = "run any vivi command once to create it";
 const NEWER_FIX: &str = "upgrade the vivi binary (vivi update)";
 const OLDER_FIX: &str = "run one write command (e.g. vivi board) to migrate";
 const DONE_WHEN_FIX: &str = "add a done_when: clause to each need body (vivi need show <handle>)";
 
-/// Report the mailspace section of `vivi doctor`.
+/// Report project config, storage, unabsorbed inbox mail, and open needs with
+/// no `done_when:` clause. No check creates or migrates project data.
 #[must_use]
-pub fn findings(project: Option<&Path>, _now: DateTime<Utc>) -> Vec<Finding> {
-    let mailspace = match Mailspace::discover(project) {
-        Ok(mailspace) => mailspace,
+pub fn findings(project: Option<&Path>) -> Vec<Finding> {
+    let project = match Project::discover(project) {
+        Ok(project) => project,
         Err(error) => {
             return vec![Finding::fail(
                 SECTION,
@@ -42,31 +34,42 @@ pub fn findings(project: Option<&Path>, _now: DateTime<Utc>) -> Vec<Finding> {
         SECTION,
         "config",
         &format!(
-            "mailspace opened; store {}",
-            mailspace.store_path().display()
+            "mailspace config parsed; store {}",
+            project.dir.join("mail.sqlite").display()
         ),
     );
-    vec![
-        config,
-        schema_finding(&mailspace),
-        unabsorbed_finding(&mailspace),
-        done_when_finding(&mailspace),
-    ]
+    let store = store_finding(&project);
+    let mut out = vec![config, store];
+    match project.open_storage_read_only() {
+        Ok(storage) => {
+            out.push(unabsorbed_finding(&project, &storage));
+            out.push(done_when_finding(&project, &storage));
+        }
+        Err(error) => {
+            let detail = format!("mail store checks unavailable: {}", first_line(&error));
+            out.push(Finding::fail(SECTION, "unabsorbed", &detail, STORE_FIX));
+            out.push(Finding::fail(SECTION, "done_when", &detail, STORE_FIX));
+        }
+    }
+    out
 }
 
-/// Compare the store's recorded schema version with this binary's.
-fn schema_finding(mailspace: &Mailspace) -> Finding {
-    let path = mailspace.store_path();
-    let stored = match read_schema_version(&path) {
+fn store_finding(project: &Project) -> Finding {
+    let path = project.dir.join("mail.sqlite");
+    let connection = match rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(connection) => connection,
+        Err(_) => return Finding::fail(SECTION, "store", "store missing or unreadable", STORE_FIX),
+    };
+    let stored = match connection.query_row(
+        "SELECT value FROM storage_metadata WHERE key = 'schema_version'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
         Ok(version) => version,
-        Err(reason) => {
-            return Finding::fail(
-                SECTION,
-                "store",
-                &format!("{UNREADABLE_DETAIL}: {reason}"),
-                UNREADABLE_FIX,
-            );
-        }
+        Err(_) => return Finding::fail(SECTION, "store", "store missing or unreadable", STORE_FIX),
     };
     let Ok(current) = STORAGE_SCHEMA_VERSION.parse::<u32>() else {
         return Finding::fail(
@@ -90,7 +93,7 @@ fn schema_finding(mailspace: &Mailspace) -> Finding {
         Finding::warn(
             SECTION,
             "store",
-            "schema older than this binary; the next write command migrates it",
+            "schema older than this binary; a write command will migrate it",
             OLDER_FIX,
         )
     } else {
@@ -102,42 +105,25 @@ fn schema_finding(mailspace: &Mailspace) -> Finding {
     }
 }
 
-/// Read the recorded schema version without touching the writable store.
-fn read_schema_version(path: &Path) -> Result<String, String> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| error.to_string())?;
-    conn.query_row(
-        "SELECT value FROM storage_metadata WHERE key = 'schema_version'",
-        [],
-        |row| row.get::<_, String>(0),
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// Count the inbox records this mailspace holds and nobody has absorbed.
-fn unabsorbed_finding(mailspace: &Mailspace) -> Finding {
-    let request = MailDumpRequest {
-        folder: "inbox".into(),
-        kind: None,
-        filters: DumpFilters {
-            absorb_status: MailAbsorbFilter::Unabsorbed,
-            ..Default::default()
-        },
-    };
-    let records = match mailspace.dump_mail(request) {
-        Ok(records) => records,
+fn unabsorbed_finding(project: &Project, storage: &crate::storage::Storage) -> Finding {
+    let inbox = match storage.list_messages_by_role("inbox") {
+        Ok(messages) => messages,
         Err(error) => {
             return Finding::fail(
                 SECTION,
                 "unabsorbed",
-                &format!("unabsorbed mail check failed: {}", first_line(&error)),
+                &format!(
+                    "unabsorbed mail check failed: {}",
+                    first_line(&error.to_string())
+                ),
                 "vivi mail list --status unabsorbed",
             );
         }
     };
-    let count = records
+    let accounts = local_accounts(project);
+    let count = inbox
         .iter()
-        .filter(|record| mailspace.is_local_account(&record.account))
+        .filter(|message| accounts.contains(&message.account) && message.absorbed_at.is_none())
         .count();
     if count == 0 {
         Finding::ok(SECTION, "unabsorbed", "unabsorbed mail 0")
@@ -151,51 +137,75 @@ fn unabsorbed_finding(mailspace: &Mailspace) -> Finding {
     }
 }
 
-/// List the ready items whose body declares no `done_when:` clause.
-fn done_when_finding(mailspace: &Mailspace) -> Finding {
-    let manifest = match mailspace.step_shadow() {
-        Ok(manifest) => manifest,
+fn done_when_finding(project: &Project, storage: &crate::storage::Storage) -> Finding {
+    let needs = match storage.list_messages_by_role("needs") {
+        Ok(messages) => messages,
         Err(error) => {
             return Finding::fail(
                 SECTION,
                 "done_when",
-                &format!("done_when check failed: {}", first_line(&error)),
+                &format!("done_when check failed: {}", first_line(&error.to_string())),
                 DONE_WHEN_FIX,
             );
         }
     };
-    let handles: Vec<&str> = manifest
-        .exceptions
+    let accounts = local_accounts(project);
+    let mut missing = Vec::new();
+    for need in needs
         .iter()
-        .filter(|exception| exception.reason == "no_done_when")
-        .map(|exception| exception.item.as_str())
-        .collect();
-    if handles.is_empty() {
-        return Finding::ok(SECTION, "done_when", "every ready need declares done_when");
+        .filter(|message| accounts.contains(&message.account))
+    {
+        let body = match storage
+            .read_listed_blob(&need.blob_relpath)
+            .and_then(|bytes| crate::extract::extract_text(&bytes).map_err(Into::into))
+        {
+            Ok(body) => body,
+            Err(error) => {
+                return Finding::fail(
+                    SECTION,
+                    "done_when",
+                    &format!("need body check failed: {}", first_line(&error.to_string())),
+                    DONE_WHEN_FIX,
+                );
+            }
+        };
+        if !crate::mailspace::body_has_labeled_clause(&body, "done_when") {
+            missing.push(need.handle.as_str());
+        }
     }
-    let listed: Vec<&str> = handles.iter().take(5).copied().collect();
+    if missing.is_empty() {
+        return Finding::ok(SECTION, "done_when", "open needs declare done_when");
+    }
     Finding::warn(
         SECTION,
         "done_when",
         &format!(
-            "{} ready item(s) declare no done_when: {}",
-            handles.len(),
-            listed.join(", ")
+            "{} open need(s) declare no done_when: {}",
+            missing.len(),
+            missing
+                .iter()
+                .take(5)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         DONE_WHEN_FIX,
     )
 }
 
-/// The first line of an error. Parse errors echo the offending file line back,
-/// so only the headline (which may name a path) reaches a finding.
-fn first_line(error: &VivariumError) -> String {
-    error
-        .to_string()
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+fn local_accounts(project: &Project) -> HashSet<String> {
+    project
+        .config
+        .identities
+        .iter()
+        .flat_map(|identity| {
+            std::iter::once(identity.name.clone()).chain(identity.aliases.iter().cloned())
+        })
+        .collect()
+}
+
+fn first_line(error: &str) -> String {
+    error.lines().next().unwrap_or_default().trim().to_string()
 }
 
 #[cfg(test)]

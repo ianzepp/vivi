@@ -1,6 +1,6 @@
 use super::*;
 use crate::doctor::Status;
-use crate::mailspace::SendRequest;
+use crate::mailspace::{Mailspace, SendRequest};
 
 fn open_mailspace() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
@@ -25,7 +25,7 @@ fn status_of<'a>(findings: &'a [Finding], name: &str) -> &'a Finding {
 #[test]
 fn healthy_mailspace_is_all_ok() {
     let (_mailspace, tmp) = open_mailspace();
-    let findings = findings(Some(tmp.path()), Utc::now());
+    let findings = findings(Some(tmp.path()));
     let names: Vec<&str> = findings.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["config", "store", "unabsorbed", "done_when"]);
     for finding in &findings {
@@ -38,13 +38,31 @@ fn broken_config_fails() {
     let (_mailspace, tmp) = open_mailspace();
     let config = tmp.path().join(".vivi/mailspace.toml");
     std::fs::write(&config, "not = [valid").unwrap();
-    let findings = findings(Some(tmp.path()), Utc::now());
+    let findings = findings(Some(tmp.path()));
     assert_eq!(findings.len(), 1, "{findings:#?}");
     assert_eq!(findings[0].name, "config");
     assert_eq!(findings[0].status, Status::Fail, "{findings:#?}");
     assert!(findings[0].fix.is_some(), "{findings:#?}");
     // The broken config's contents never reach the finding.
     assert!(!findings[0].detail.contains("[valid"), "{findings:#?}");
+}
+
+#[test]
+fn legacy_mailspace_check_does_not_create_identity_store_or_gitignore() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join(".vivi");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("mailspace.toml"), "name = 'legacy'\n").unwrap();
+    let report = findings(Some(tmp.path()));
+    assert_eq!(report[0].status, Status::Ok, "{report:#?}");
+    assert!(!dir.join("mailspace.id").exists());
+    assert!(
+        !dir.join("mailspace.toml")
+            .with_extension("toml.lock")
+            .exists()
+    );
+    assert!(!dir.join(".gitignore").exists());
+    assert!(!dir.join("mail.sqlite").exists());
 }
 
 #[test]
@@ -57,7 +75,7 @@ fn older_schema_warns() {
     )
     .unwrap();
     drop(conn);
-    let findings = findings(Some(tmp.path()), Utc::now());
+    let findings = findings(Some(tmp.path()));
     let store = status_of(&findings, "store");
     assert_eq!(store.status, Status::Warn, "{store:#?}");
 }
@@ -82,7 +100,7 @@ fn need_without_done_when_warns() {
         .delivered
         .remove(0)
         .handle;
-    let findings = findings(Some(tmp.path()), Utc::now());
+    let findings = findings(Some(tmp.path()));
     let done_when = status_of(&findings, "done_when");
     assert_eq!(done_when.status, Status::Warn, "{done_when:#?}");
     assert!(done_when.detail.contains(&handle), "{done_when:#?}");

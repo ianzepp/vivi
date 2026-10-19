@@ -7,11 +7,11 @@
 
 use std::fs;
 use std::path::Path;
+use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, Utc};
 
-use crate::doctor::Finding;
-use crate::mailspace::Mailspace;
+use crate::doctor::{Finding, Project};
 use crate::sync::identity;
 use crate::sync::state::SyncState;
 use crate::sync::{SyncConfig, sync_dir};
@@ -29,12 +29,8 @@ const STATE_FILE: &str = "state.json";
 /// `reachable` is the injected server reachability: `None` when nobody
 /// probed, otherwise whether the probe succeeded.
 #[must_use]
-pub fn findings(
-    mailspace: &Mailspace,
-    now: DateTime<Utc>,
-    reachable: Option<bool>,
-) -> Vec<Finding> {
-    let Some(config) = mailspace.config.sync.as_ref() else {
+pub fn findings(project: &Project, now: DateTime<Utc>, reachable: Option<bool>) -> Vec<Finding> {
+    let Some(config) = project.config.sync.as_ref() else {
         return vec![not_configured()];
     };
     if unset(config) {
@@ -42,10 +38,26 @@ pub fn findings(
     }
     vec![
         config_finding(config),
-        key_finding(&mailspace.dir),
-        age_finding(&mailspace.dir, project_of(config), now),
+        key_finding(&project.dir),
+        age_finding(&project.dir, project_of(config), now),
         reachability_finding(reachable),
     ]
+}
+
+/// Probe the configured server root without credentials or a write request.
+/// Any HTTP response proves reachability; transport and timeout errors do not.
+#[must_use]
+pub fn probe_server(project: &Project) -> Option<bool> {
+    let server = project
+        .config
+        .sync
+        .as_ref()
+        .and_then(|config| field(config.server.as_deref()))?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(StdDuration::from_secs(2))
+        .no_proxy()
+        .build();
+    Some(client.is_ok_and(|client| client.get(server).send().is_ok()))
 }
 
 fn not_configured() -> Finding {
@@ -103,8 +115,19 @@ fn key_finding(vivi_dir: &Path) -> Finding {
 
 fn age_finding(vivi_dir: &Path, project: &str, now: DateTime<Utc>) -> Finding {
     let dir = sync_dir(vivi_dir);
-    if SyncState::load(&dir, project).is_err() {
-        return never_synced();
+    match SyncState::load(&dir, project) {
+        Ok(_) => {}
+        Err(error) => {
+            return Finding::fail(
+                SECTION,
+                "age",
+                &format!(
+                    "sync state unreadable: {}",
+                    error.to_string().lines().next().unwrap_or_default()
+                ),
+                "vivi sync resync",
+            );
+        }
     }
     let Ok(modified) = fs::metadata(dir.join(STATE_FILE)).and_then(|meta| meta.modified()) else {
         return never_synced();

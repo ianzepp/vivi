@@ -4,9 +4,9 @@ use crate::doctor::Status;
 fn facts(home_exists: bool, mode: PumpMode) -> PumpFacts {
     PumpFacts {
         home_exists,
-        mode,
-        shutdown_requested: false,
-        lock_held: true,
+        mode: Some(mode),
+        shutdown_requested: Some(false),
+        lock_held: Some(true),
         tick_age_secs: Some(60),
         service: ServicePresence::Installed,
     }
@@ -47,7 +47,7 @@ fn paused_and_stopped_warn_with_fix() {
     assert_eq!(running.status, Status::Ok);
 
     let mut shutdown = facts(true, PumpMode::Running);
-    shutdown.shutdown_requested = true;
+    shutdown.shutdown_requested = Some(true);
     let shutdown = finding(&findings_from(&shutdown), "control");
     assert_eq!(shutdown.detail, "shutdown requested");
     assert_eq!(shutdown.fix.as_deref(), Some(START_FIX));
@@ -80,7 +80,7 @@ fn stale_tick_warns_and_fresh_ok() {
 #[test]
 fn no_lock_warns() {
     let mut unlocked = facts(true, PumpMode::Running);
-    unlocked.lock_held = false;
+    unlocked.lock_held = Some(false);
     let lock = finding(&findings_from(&unlocked), "lock");
     assert_eq!(lock.status, Status::Warn);
     assert_eq!(lock.detail, "no pump process holds the lock");
@@ -123,4 +123,46 @@ fn service_probe_uses_injected_runner() {
     assert_eq!(presence, ServicePresence::Missing);
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     assert_eq!(presence, ServicePresence::Unavailable);
+}
+
+#[test]
+fn exceptions_and_quarantines_warn_without_echoing_exception_text() {
+    let facts = PumpStateFacts {
+        exceptions: vec!["merge-error (u-123)".into()],
+        quarantines: Some(2),
+        gates: Vec::new(),
+    };
+    let report = state_findings_from(&facts, 100_000);
+    let exceptions = finding(&report, "exceptions");
+    assert_eq!(exceptions.status, Status::Warn);
+    assert!(exceptions.detail.contains("merge-error (u-123)"));
+    assert_eq!(finding(&report, "quarantines").status, Status::Warn);
+    assert_eq!(finding(&report, "gate").status, Status::Skipped);
+}
+
+#[test]
+fn stale_running_gate_warns_and_failed_gate_names_tests() {
+    let stale = PumpStateFacts {
+        exceptions: Vec::new(),
+        quarantines: Some(0),
+        gates: vec![GateFact {
+            target: "app".into(),
+            outcome: GateOutcome::Running { started_at: 1 },
+        }],
+    };
+    let report = state_findings_from(&stale, 10_000);
+    assert_eq!(finding(&report, "gate app").status, Status::Warn);
+
+    let failed = PumpStateFacts {
+        exceptions: Vec::new(),
+        quarantines: Some(0),
+        gates: vec![GateFact {
+            target: "default".into(),
+            outcome: GateOutcome::Failed("check-a".into()),
+        }],
+    };
+    let report = state_findings_from(&failed, 10_000);
+    let gate = finding(&report, "gate default");
+    assert_eq!(gate.status, Status::Warn);
+    assert!(gate.detail.contains("check-a"));
 }

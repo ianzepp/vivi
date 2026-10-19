@@ -4,6 +4,7 @@ use std::fs;
 
 use chrono::{Duration, Utc};
 
+use crate::doctor::Project;
 use crate::doctor::Status;
 use crate::doctor::sync_section::findings;
 use crate::mailspace::Mailspace;
@@ -13,7 +14,7 @@ use crate::sync::sync_dir;
 
 /// Init a mailspace in a temp dir, then append a `[sync]` table to its config
 /// and reopen it so the section reads the real config path.
-fn configured(project: Option<&str>, name: Option<&str>) -> (tempfile::TempDir, Mailspace) {
+fn configured(project: Option<&str>, name: Option<&str>) -> (tempfile::TempDir, Project) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let space = Mailspace::init(Some(tmp.path())).expect("init");
     let path = space.config_path();
@@ -30,17 +31,18 @@ fn configured(project: Option<&str>, name: Option<&str>) -> (tempfile::TempDir, 
         text.push_str("\"\n");
     }
     fs::write(&path, text).expect("write config");
-    let space = Mailspace::open_root(tmp.path().to_path_buf()).expect("reopen");
+    let space = Project::discover(Some(tmp.path())).expect("read-only reopen");
     (tmp, space)
 }
 
-fn plain() -> (tempfile::TempDir, Mailspace) {
+fn plain() -> (tempfile::TempDir, Project) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let space = Mailspace::init(Some(tmp.path())).expect("init");
-    (tmp, space)
+    Mailspace::init(Some(tmp.path())).expect("init");
+    let project = Project::discover(Some(tmp.path())).expect("read-only reopen");
+    (tmp, project)
 }
 
-fn save_state(space: &Mailspace, project: &str) {
+fn save_state(space: &Project, project: &str) {
     let state = SyncState {
         project: project.to_string(),
         since: 7,

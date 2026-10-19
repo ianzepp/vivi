@@ -6,10 +6,11 @@
 use std::path::Path;
 use std::time::SystemTime;
 
-use super::Finding;
-use crate::mailspace::Mailspace;
+use super::{Finding, Project};
 use crate::pump::config::PumpConfig;
-use crate::pump::control::{PumpControl, PumpMode};
+use crate::pump::control::PumpMode;
+use crate::pump::state::{GateRecord, State};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 const SECTION: &str = "pump";
 const HOME: &str = "pump home";
@@ -30,9 +31,9 @@ const SERVICE_UNIT: &str = "vivi-pump-service.service";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PumpFacts {
     pub home_exists: bool,
-    pub mode: PumpMode,
-    pub shutdown_requested: bool,
-    pub lock_held: bool,
+    pub mode: Option<PumpMode>,
+    pub shutdown_requested: Option<bool>,
+    pub lock_held: Option<bool>,
     pub tick_age_secs: Option<u64>,
     pub service: ServicePresence,
 }
@@ -45,18 +46,54 @@ pub enum ServicePresence {
     Unavailable,
 }
 
-/// Gather and report pump facts for a project, mirroring `pump run status`.
+/// Store-backed diagnostics that are safe to pass through the pure renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PumpStateFacts {
+    pub exceptions: Vec<String>,
+    pub quarantines: Option<usize>,
+    pub gates: Vec<GateFact>,
+}
+
+/// The recorded gate state for one integration target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateFact {
+    pub target: String,
+    pub outcome: GateOutcome,
+}
+
+/// The latest gate outcome, with no raw logs or command output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateOutcome {
+    Never,
+    Running { started_at: u64 },
+    Passed,
+    Failed(String),
+    Unavailable,
+}
+
+/// Gather pump facts through the read-only project context.
 #[must_use]
-pub fn findings(project: &Path) -> Vec<Finding> {
-    let config = match Mailspace::discover(Some(project)) {
-        Ok(mailspace) => mailspace.config.pump.unwrap_or_default(),
-        Err(_) => PumpConfig::default(),
+pub fn findings(project: &Project) -> Vec<Finding> {
+    let Some(config) = project.config.pump.as_ref() else {
+        return vec![Finding::skipped(SECTION, HOME, "pump not configured")];
     };
-    let home = config.home_dir(project);
-    if !home.exists() {
+    let home = config.home_dir(&project.root);
+    let exists = match home.try_exists() {
+        Ok(exists) => exists,
+        Err(_) => {
+            return vec![Finding::skipped(
+                SECTION,
+                HOME,
+                "pump home cannot be inspected",
+            )];
+        }
+    };
+    if !exists {
         return findings_from(&missing_home_facts());
     }
-    findings_from(&gather_facts(&home, probe_service))
+    let mut findings = findings_from(&gather_facts(&home, probe_service));
+    findings.extend(pump_state_findings(config, &project.root, &home));
+    findings
 }
 
 /// The doctor findings for one set of pump facts. Pure; never probes.
@@ -70,20 +107,207 @@ pub fn findings_from(facts: &PumpFacts) -> Vec<Finding> {
         )];
     }
     let mut findings = vec![control_finding(facts)];
-    if let Some(lock) = lock_finding(facts) {
-        findings.push(lock);
-    }
+    findings.push(lock_finding(facts));
     findings.push(tick_finding(facts));
     findings.push(service_finding(facts));
     findings
 }
 
+/// Render store-backed exception, quarantine, and integration-gate findings.
+#[must_use]
+pub fn state_findings_from(facts: &PumpStateFacts, now_epoch: u64) -> Vec<Finding> {
+    let mut out = vec![exceptions_finding(&facts.exceptions)];
+    out.push(match facts.quarantines {
+        Some(0) => Finding::ok(SECTION, "quarantines", "no quarantines"),
+        Some(count) => Finding::warn(
+            SECTION,
+            "quarantines",
+            &format!("{count} quarantine branch(es) pending repair"),
+            "the pump mints repair units automatically; see vivi pump log --exceptions",
+        ),
+        None => Finding::skipped(SECTION, "quarantines", "integration clone unavailable"),
+    });
+    if facts.gates.is_empty() {
+        out.push(Finding::skipped(SECTION, "gate", "no gate has run"));
+    } else {
+        out.extend(facts.gates.iter().map(|gate| gate_finding(gate, now_epoch)));
+    }
+    out
+}
+
+fn pump_state_findings(config: &PumpConfig, project: &Path, home: &Path) -> Vec<Finding> {
+    let store = match PumpStore::open_read_only(&home.join(DB_FILENAME)) {
+        Ok(Some(store)) => store,
+        Ok(None) => return vec![Finding::skipped(SECTION, "state", "no pump state yet")],
+        Err(_) => {
+            return vec![Finding::fail(
+                SECTION,
+                "state",
+                "pump state unreadable",
+                "inspect .vivi/pump/pump.db",
+            )];
+        }
+    };
+    let exceptions = match store.exceptions() {
+        Ok(rows) => rows
+            .iter()
+            .map(|(_, kind, unit, _)| format!("{kind} ({unit})"))
+            .collect(),
+        Err(_) => {
+            return vec![Finding::fail(
+                SECTION,
+                "exceptions",
+                "pump exceptions unreadable",
+                "inspect .vivi/pump/pump.db",
+            )];
+        }
+    };
+    let state = match store.load() {
+        Ok(state) => state,
+        Err(_) => {
+            return vec![Finding::fail(
+                SECTION,
+                "gate",
+                "pump state unreadable",
+                "inspect .vivi/pump/pump.db",
+            )];
+        }
+    };
+    let gates = gate_facts(&state);
+    let quarantines = quarantine_count(config, project);
+    state_findings_from(
+        &PumpStateFacts {
+            exceptions,
+            quarantines,
+            gates,
+        },
+        epoch_now(),
+    )
+}
+
+fn exceptions_finding(exceptions: &[String]) -> Finding {
+    if exceptions.is_empty() {
+        Finding::ok(SECTION, "exceptions", "no open exceptions")
+    } else {
+        let shown = exceptions
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        Finding::warn(
+            SECTION,
+            "exceptions",
+            &format!("{} open exception(s): {shown}", exceptions.len()),
+            "vivi pump log --exceptions --project <root>, then requeue or repair",
+        )
+    }
+}
+
+fn gate_finding(gate: &GateFact, now_epoch: u64) -> Finding {
+    let name = format!("gate {}", gate.target);
+    match &gate.outcome {
+        GateOutcome::Never => Finding::skipped(SECTION, &name, "no gate has run"),
+        GateOutcome::Running { started_at } => {
+            let age = now_epoch.saturating_sub(*started_at);
+            if age > 3600 {
+                Finding::warn(
+                    SECTION,
+                    &name,
+                    &format!("gate running for {age}s"),
+                    "inspect .vivi/pump/gate-results and vivi pump log",
+                )
+            } else {
+                Finding::ok(SECTION, &name, &format!("gate running for {age}s"))
+            }
+        }
+        GateOutcome::Passed => Finding::ok(SECTION, &name, "last gate passed"),
+        GateOutcome::Failed(summary) => Finding::warn(
+            SECTION,
+            &name,
+            &format!("last gate failed: {summary}"),
+            "vivi pump once reruns the gate; gatefix repairs systemic failures",
+        ),
+        GateOutcome::Unavailable => Finding::skipped(SECTION, &name, "last gate result unreadable"),
+    }
+}
+
+fn gate_facts(state: &State) -> Vec<GateFact> {
+    let mut gates = vec![gate_fact("default", &state.last_gate, &state.gates)];
+    gates.extend(
+        state
+            .target_states
+            .iter()
+            .map(|(target, state)| gate_fact(target, &state.last_gate, &state.gates)),
+    );
+    gates.retain(|gate| !matches!(&gate.outcome, GateOutcome::Never));
+    gates
+}
+
+fn gate_fact(target: &str, run: &crate::pump::state::GateRun, history: &[GateRecord]) -> GateFact {
+    let outcome = if run.task.is_some() {
+        GateOutcome::Running { started_at: run.at }
+    } else if let Some(record) = history.last() {
+        match &record.names {
+            Some(names) if names.is_empty() => GateOutcome::Passed,
+            Some(names) => {
+                GateOutcome::Failed(names.iter().take(5).cloned().collect::<Vec<_>>().join(", "))
+            }
+            None => GateOutcome::Unavailable,
+        }
+    } else {
+        GateOutcome::Never
+    };
+    GateFact {
+        target: target.to_string(),
+        outcome,
+    }
+}
+
+fn quarantine_count(config: &PumpConfig, project: &Path) -> Option<usize> {
+    let targets = config.target_configs();
+    let mut total = 0_usize;
+    for target in targets.keys() {
+        let repo = config.target_repo_dir(project, target)?;
+        total = total.checked_add(count_quarantines(&repo)?)?;
+    }
+    Some(total)
+}
+
+fn count_quarantines(repo: &Path) -> Option<usize> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/pump/quarantine/",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count(),
+    )
+}
+
+fn epoch_now() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 fn missing_home_facts() -> PumpFacts {
     PumpFacts {
         home_exists: false,
-        mode: PumpMode::Running,
-        shutdown_requested: false,
-        lock_held: false,
+        mode: None,
+        shutdown_requested: None,
+        lock_held: None,
         tick_age_secs: None,
         service: ServicePresence::Unavailable,
     }
@@ -93,17 +317,17 @@ fn missing_home_facts() -> PumpFacts {
 /// tests can gather local facts without invoking a system command.
 fn gather_facts(home: &Path, service_probe: impl FnOnce() -> ServicePresence) -> PumpFacts {
     let control = match crate::pump::control::inspect(home) {
-        Ok(control) => control,
-        Err(_) => PumpControl {
-            mode: PumpMode::Running,
-            shutdown_requested: false,
-        },
+        Ok(control) => Some(control),
+        Err(_) => None,
     };
+    let (mode, shutdown_requested) = control.map_or((None, None), |control| {
+        (Some(control.mode), Some(control.shutdown_requested))
+    });
     PumpFacts {
         home_exists: true,
-        mode: control.mode,
-        shutdown_requested: control.shutdown_requested,
-        lock_held: crate::pump::run::lock_is_held(home).unwrap_or(false),
+        mode,
+        shutdown_requested,
+        lock_held: crate::pump::run::lock_is_held(home).ok(),
         tick_age_secs: tick_age_secs(home),
         service: service_probe(),
     }
@@ -112,34 +336,44 @@ fn gather_facts(home: &Path, service_probe: impl FnOnce() -> ServicePresence) ->
 /// Report the operator control mode and a requested shutdown.
 fn control_finding(facts: &PumpFacts) -> Finding {
     match (facts.mode, facts.shutdown_requested) {
-        (PumpMode::Paused, _) => Finding::warn(
+        (None, _) | (_, None) => {
+            Finding::skipped(SECTION, CONTROL, "pump control state unreadable")
+        }
+        (Some(PumpMode::Paused), _) => Finding::warn(
             SECTION,
             CONTROL,
             "pump is paused",
             "vivi pump resume --project <root>",
         ),
-        (PumpMode::Stopped, _) => Finding::warn(SECTION, CONTROL, "pump is stopped", START_FIX),
-        (PumpMode::Running, true) => {
+        (Some(PumpMode::Stopped), _) => {
+            Finding::warn(SECTION, CONTROL, "pump is stopped", START_FIX)
+        }
+        (Some(PumpMode::Running), Some(true)) => {
             Finding::warn(SECTION, CONTROL, "shutdown requested", START_FIX)
         }
-        (PumpMode::Running, false) => Finding::ok(SECTION, CONTROL, "control mode running"),
+        (Some(PumpMode::Running), Some(false)) => {
+            Finding::ok(SECTION, CONTROL, "control mode running")
+        }
     }
 }
 
 /// Report whether a pump process owns its lock.
-fn lock_finding(facts: &PumpFacts) -> Option<Finding> {
-    if !facts.lock_held {
-        return Some(Finding::warn(
+fn lock_finding(facts: &PumpFacts) -> Finding {
+    match facts.lock_held {
+        None => Finding::skipped(SECTION, LOCK, "pump lock status unavailable"),
+        Some(false) => Finding::warn(
             SECTION,
             LOCK,
             "no pump process holds the lock",
             "vivi pump run --project <root> (or vivi pump service install)",
-        ));
+        ),
+        Some(true) if facts.mode == Some(PumpMode::Running) => {
+            Finding::ok(SECTION, LOCK, "pump running")
+        }
+        Some(true) => {
+            Finding::skipped(SECTION, LOCK, "pump lock held while control is not running")
+        }
     }
-    if facts.mode == PumpMode::Running {
-        return Some(Finding::ok(SECTION, LOCK, "pump running"));
-    }
-    None
 }
 
 /// Report whether `status.txt` is missing, stale, or fresh.

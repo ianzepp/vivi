@@ -1,5 +1,7 @@
 //! The top-level, read-only `vivi doctor` report model.
 
+use std::path::{Path, PathBuf};
+
 use serde::Serialize;
 
 pub use crate::pool::doctor::Status;
@@ -12,6 +14,47 @@ pub mod proxy_section;
 pub mod pump_section;
 pub mod roles_section;
 pub mod sync_section;
+
+/// Parsed project data for doctor checks. This reader never creates the
+/// mailspace id, `.gitignore`, database, or any missing directory.
+#[derive(Debug, Clone)]
+pub struct Project {
+    pub root: PathBuf,
+    pub dir: PathBuf,
+    pub config: crate::mailspace::MailspaceConfig,
+}
+
+impl Project {
+    /// Find and parse the project mailspace without invoking write-capable
+    /// `Mailspace::discover`.
+    pub fn discover(explicit: Option<&Path>) -> Result<Self, String> {
+        let root = match explicit {
+            Some(path) => path.to_path_buf(),
+            None => std::env::current_dir()
+                .map_err(|error| format!("could not read current directory: {error}"))?
+                .ancestors()
+                .find(|path| path.join(".vivi/mailspace.toml").is_file())
+                .map(Path::to_path_buf)
+                .ok_or_else(|| {
+                    "no .vivi/mailspace.toml found in the current directory or its parents"
+                        .to_string()
+                })?,
+        };
+        let dir = root.join(".vivi");
+        let path = dir.join("mailspace.toml");
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read mailspace config: {error}"))?;
+        let config = toml::from_str(&raw)
+            .map_err(|error| format!("mailspace config is invalid: {error}"))?;
+        Ok(Self { root, dir, config })
+    }
+
+    /// Open the existing mail database read-only, without schema migration.
+    pub fn open_storage_read_only(&self) -> Result<crate::storage::Storage, String> {
+        crate::storage::Storage::open_mailspace_read_only(&self.dir)
+            .map_err(|error| format!("mail store cannot be opened read-only: {error}"))
+    }
+}
 
 /// The overall health of a doctor report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

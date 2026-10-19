@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::error::VivariumError;
@@ -168,6 +168,28 @@ impl Storage {
         secure_create_dir_all(mailspace_dir)
             .map_err(|e| VivariumError::Other(format!("failed to create mailspace dir: {e}")))?;
         Self::open_with_db(mailspace_dir, &mailspace_dir.join(MAILSPACE_DB_FILENAME))
+    }
+
+    /// Open an existing mailspace database without creating files or
+    /// migrating its schema. Read operations work as usual; any attempted
+    /// write is rejected by SQLite's read-only connection.
+    ///
+    /// # Errors
+    /// Returns an error when the database is missing, unreadable, or the
+    /// connection cannot be configured.
+    pub fn open_mailspace_read_only(mailspace_dir: &Path) -> Result<Self, VivariumError> {
+        let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
+        let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| {
+                VivariumError::Other(format!("failed to open storage database read-only: {e}"))
+            })?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(|e| VivariumError::Other(format!("failed to set SQLite timeout: {e}")))?;
+        Ok(Self {
+            mail_root: mailspace_dir.to_path_buf(),
+            conn: RefCell::new(conn),
+            handle_index: RefCell::new(None),
+        })
     }
 
     fn open_with_db(mail_root: &Path, db_path: &Path) -> Result<Self, VivariumError> {

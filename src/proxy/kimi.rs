@@ -163,6 +163,12 @@ fn credential_path(provider: &ProviderConfig) -> Result<PathBuf, VivariumError> 
     credentials::first_existing(&candidates)
 }
 
+/// Resolve an existing Kimi credential path without reading its contents.
+#[must_use]
+pub fn credential_path_if_present(provider: &ProviderConfig) -> Option<PathBuf> {
+    credential_path(provider).ok()
+}
+
 fn upstream_url(provider: &ProviderConfig, action: &Action, query: Option<&str>) -> String {
     let base = provider.upstream.as_deref().unwrap_or(DEFAULT_UPSTREAM);
     let path = match action {
