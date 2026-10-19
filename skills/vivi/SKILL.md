@@ -168,13 +168,25 @@ with the executable work graph.
 ## Roles and Goals
 
 Roles are durable seats with a mailbox, kind, status, charter, harness, model
-preferences, cadence, and labels. Read the charter before operating as a role:
+preferences, cadence, labels, and an assigned pool. Read the charter before
+operating as a role. Assign work to a pool with the role, not by editing TOML:
 
 ```sh
 vivi role show <role> --project <root>
 vivi role charter show <role> --project <root>
 vivi role status <role> --project <root>
+vivi role add <name> --kind hand --pool glm --model P2-S0
+vivi role set <role> --pool <pool> --read-only true
+vivi role pool <role> <pool>
+vivi config show [--resolved] [--json | --porcelain]
+vivi config validate [--json]
+vivi config migrate [--write]
 ```
+
+`vivi config show` is the role -> kind -> pool -> slots -> models ->
+read_only table plus the merge/gate flow. `validate` checks those together
+and also runs at `vivi pump run|once` start. `migrate` is a dry-run diff
+unless `--write` (a timestamped `.bak` is kept).
 
 Capacity and model fields are preferences. Use `role status` or
 `board --process` when process state matters. A host starting a role should
@@ -661,11 +673,19 @@ a Git worktree of a local repository; see "Local provider" below) and `runpod`
 `[pools.<name>.local]` and `[pools.<name>.runpod]` hold the host-specific
 settings. Everything else in this section works the same on all five, except
 that a `runpod` pool has no resting slots (`create` and scale-up do not apply). In-place reseed, other hosts,
-routing work to a pool by role, a default pool, and shared defaults between
-pools do not exist; do not invent them. Which work goes to which pool is the
-orchestrator's call; Vivi has no opinion.
+shared defaults between pools do not exist; do not invent them. Which work
+goes to which pool is the role's `pool` assignment (`vivi role pool` /
+`vivi config show`). The pump waits when that pool is full: no spillover.
 
 ```sh
+vivi pool list [--json | --porcelain]
+vivi pool show <name> [--resolved] [--json | --porcelain]
+vivi pool add <name> --provider local --slots N [--worktree-of PATH]
+vivi pool set <name> <key> <value>
+vivi pool unset <name> <key>
+vivi pool remove <name> --yes [--force]
+vivi pool bands set <pool> <band> <model> [reasoning]
+vivi pool bands unset <pool> <band>
 vivi pool create --pool <name> [--slots N] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool scale --pool <name> <N> [--yes] [--base <commit|branch>] [--timeout SECS] [--porcelain]
 vivi pool status [--pool <name>] [--json | --porcelain]
@@ -679,6 +699,72 @@ vivi pool reset [<slot>] [--pool <name>] [--base <branch>] [--porcelain]
 vivi pool doctor [--pool <name>] [--json | --porcelain]
 vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porcelain]
 ```
+
+#### Role → pool
+
+Each `[[identities]]` row may set `pool`, optional `read_only`, and
+`model` / `models` (a slug, a band, or a list). Pool capacity is `slots`;
+optional `[pools.<name>.caps]` is the per-model cap inside that pool.
+Dispatching a role uses that role's pool and waits when it is full.
+Merge lanes equal the merge role's pool slots. A `provider = "local"`
+host pool is a valid place to run merge on the pump machine.
+
+```toml
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+model = "P2-S0"
+
+[[identities]]
+name = "merge"
+kind = "merge"
+pool = "host"
+
+[pools.glm]
+provider = "local"
+slots = 10
+[pools.glm.caps]
+"deepseek/deepseek-v4-flash" = 10
+
+[pools.host]
+provider = "local"
+slots = 4
+```
+
+Legacy `[pump.dispatch.kinds]`, `[[pump.dispatch.lanes]]`,
+`[pump.merge] lanes`, and `[pump.gate] pools` still work when a role has
+no `pool` (deprecation warnings). Convert them with
+`vivi config migrate` (dry-run) or `vivi config migrate --write`.
+A role that names a band when its pool has no `[pools.X.bands]` table
+fails `vivi config validate` unless caps or legacy lanes still cover it.
+
+`vivi pool set <name> <key> <value>` writes one (possibly dotted) key on
+`[pools.<name>]`. `vivi pool unset <name> <key>` removes it. There is no
+allow-list: any path under that table is settable (`provider`, `slots`,
+`repo`, `image`, `local.worktree_of`, `local.root`, `caps.<model>`,
+`harness.models`, `harness.name`, `harness.run`, `committer.name`,
+`committer.email`, `bridge.enabled`, and the provider tables). Values:
+a decimal integer (`10`), `true` / `false`, a TOML array (`["a", "b"]`),
+or any other string. Comments and unrelated keys are left alone.
+
+```sh
+vivi pool set glm slots 10
+vivi pool set glm local.worktree_of /path/to/repo
+vivi pool set glm harness.models '["m1", "m2"]'
+vivi pool unset glm image
+```
+
+`vivi pool list` / `vivi pool show <name>` (`--json` or `--porcelain`):
+
+- Porcelain list: `pool <name> <provider> <slots>`
+- Porcelain show: `pool <name> <provider> <slots> <free>` — `free` is `-`
+  unless `--resolved` (then the live free-slot count)
+- JSON (list is an array; show is one object): `name`, `provider`,
+  `slots`, `free` (`null` unless `--resolved` on show)
+- Human list: `<name>  provider=<p>  slots=<n>`
+- Human show: the same line, then optional `free`, `worktree_of`,
+  `models`, `caps`, and `bands`
 
 #### Named pools and `--pool`
 
@@ -1303,9 +1389,11 @@ slots = 4
   dirty tree or commits not contained in the merge lane are reported, never
   deleted.
   `vivi pool clean` also sweeps source-repo worktrees that point at the pool
-  root whose units are done, and prunes gone entries. The merge lane's own
-  checkout is kept while it has unlanded work; the 2x rule still applies to
-  its build output.
+  root whose units are done, and prunes gone entries. Recycle covers the
+  unit's work pool and the merge role's pool (merge-lane count is that
+  pool's `slots`; `[pump.merge] lanes` is the legacy fallback). The merge
+  lane's own checkout is kept while it has unlanded work; the 2x rule still
+  applies to its build output.
 - **Free-disk guard.** A local dispatch first reclaims free slots when the
   volume has under 20 GiB free, then refuses if it is still under 10 GiB.
 - **State** is the marks (small files in the slot directory) and the claim (a
@@ -1493,9 +1581,9 @@ a `band:` line. From the role it takes:
   `[pools.<name>.bridge] enabled` the pool note instead tells the worker to
   read and settle its handle through the vivi tools. A role with no
   charter leaves the pool rules unchanged.
-- **Read-only mode from the kind.** A role whose kind is `auditor`, `triage`
-  or `cadence` (case-insensitive) is dispatched read-only whatever the flags
-  say; a `hand` role writes.
+- **Read-only mode from the role.** `--read-only` wins; else the role's
+  `read_only` flag; else the kind default. Auditor, triage, cadence/steward,
+  head, and gate default read-only; hand, merge, and lint write.
 - **The model and reasoning from the band.** The role's `model` field holds a
   band string such as `P2-S0` (set it with `vivi role set <role> --model P2`),
   not a model slug. The pool's `bands` table says which model-and-reasoning
@@ -1511,7 +1599,15 @@ remain the overrides: `--model` wins over any band and takes the band's
 reasoning only when the pool's choice for that band names the same model;
 `--read-only` forces read-only on any role.
 
-The bands table is per pool:
+The bands table is per pool. Prefer the commands:
+
+```sh
+vivi pool bands set local P1 provider/model-a xhigh
+vivi pool bands set local P2 provider/model-b low
+vivi pool bands unset local P2
+```
+
+That writes the same table:
 
 ```toml
 [pools.local.bands]
@@ -1987,16 +2083,19 @@ For whoever operates it. Reference tables follow in the sections below.
 
 **Bring-up.**
 
-1. Write the `[pump]` tables in `.vivi/mailspace.toml` (see "Config" below for
-   every key). The pump will not start without `branch`, `committer_name`,
-   `committer_email`, at least one `[pump.dispatch] lanes` entry, a
-   `[pump.gate] command`, `[pump.merge] shared_checks` while promotion is on,
-   and, to dispatch anything, at least one unit kind with a `default_kind`
-   (with no kinds defined every unit is an `unknown-kind` exception). Each
-   kind's `pool` and each gate pool must be a `[pools.<name>]` table;
-   `vivi pool doctor` checks the pools. A planner (`[pump.planner] run`) is
-   required while `[pump.board] from` or `mark` is set (`mark` defaults to
-   `pump`).
+1. Give each pump role a pool and create the pools (see "Role → pool" and
+   "Config" below). The usual bring-up is `vivi pool add`, then
+   `vivi role add` / `vivi role set --pool` / `vivi role pool`, then
+   `vivi config validate`. The pump will not start without `branch`,
+   `committer_name`, `committer_email`, a `[pump.gate] command`,
+   `[pump.merge] shared_checks` while promotion is on, and, to dispatch
+   anything, a hand role whose `pool` names a `[pools.<name>]` table
+   (`vivi pool doctor` checks the pools). A planner (`[pump.planner] run`)
+   is required while `[pump.board] from` or `mark` is set (`mark` defaults
+   to `pump`). Legacy `[pump.dispatch] lanes`,
+   `[pump.dispatch.kinds.<kind>] pools`, and `[pump.gate] pools` still
+   start the pump when a role has no `pool` (deprecation warnings;
+   `vivi config migrate`).
 2. Have the integration clone ready: `<home>/repo`, or `[pump] repo`. Either
    set `remote_url` and the pump clones it at start (`git clone --branch
    <branch>`, so the integration branch must already exist on the remote), or
@@ -2111,10 +2210,12 @@ blocks its dependents until a person unblocks it.
    are assumed to meet, and an empty scope overlaps everything.
 6. The unit's kind has a `max` and that many units of the kind are in flight,
    or the kind is not defined (`unknown-kind`).
-7. The kind's pool has no free slot: `vivi pool status --pool <pool>
+7. The role's pool (or the kind's pool) has no free slot: `vivi pool status --pool <pool>
    --porcelain`.
-8. Every lane in `[pump.dispatch] lanes` is at its `cap` (the dispatch loop
-   stops for the tick), or `per_tick` units already started.
+8. Every model cap on the role's pool (`[pools.<name>.caps]`, else the
+   pool's `slots`) is full (the dispatch loop waits), or `per_tick` units
+   already started. Legacy `[pump.dispatch] lanes` caps still stop the
+   tick when the hand role has no `pool`.
 9. `task send failed` or `dispatch failed` lines in `log.txt`.
 
 **External gate runners.** By default a gate is a read-only worker on a pool
@@ -2204,7 +2305,7 @@ branches cannot be handed from one repository to another.
   own mark for a rejected plan.
 - Each unit needs `id`, `brief`, `write_scope` and a `proof` list, and a fresh
   id; `after` lists prerequisite unit ids, `tools` names the unit's kind (a key of
-  `[pump.dispatch.kinds]`; absent means `default_kind`).
+  role `pool` when set, else `[pump.dispatch.kinds]`; absent means `default_kind`).
 
 #### Unit states
 
@@ -2214,6 +2315,9 @@ branches cannot be handed from one repository to another.
 - `delivered` — the worker's branch exists on the remote; waiting to merge.
 - `merging` — queued to or being handled by the merge thread.
 - `merged` — merged into the integration branch, proof passed, pushed.
+  Triggers a slot recycle on the unit's work pool and the merge role's
+  pool (`vivi pool clean` / work-lane recycle onto origin/`[pump] main`).
+  Merge-lane count is the merge role's pool `slots`.
 - `quarantined` — merged into a batch whose shared check failed; the batch is
   set aside on `pump/quarantine/<id>` and a repair unit
   `<fix_prefix>-<id>` works on it. When the repair merges, the unit merges with
@@ -2294,19 +2398,23 @@ charter       = "<path>"               # substituted for {charter} in `run`
 split_timeout = 1500                   # seconds before a splitting unit is stuck
 
 [pump.dispatch]
-lanes         = [{ model = "provider/model-a", cap = 30 }]  # required, at least one lane, cap >= 1
+# lanes is legacy: required only when no role has a pool. Role→pool
+# configs derive capacity from [pools.<name>] slots / caps.
+# lanes         = [{ model = "provider/model-a", cap = 30 }]
 last_resort   = "provider/model-b"     # used at attempts >= max_attempts - 1
 max_attempts  = 3                      # attempts before a unit is stuck
 budget        = 600                    # `--budget` of a unit dispatch
 overdue_grace = 900                    # running past budget plus this means split
 per_tick      = 6                      # units started per tick at most
 from          = "<branch>"             # absent: the `branch` value
-default_kind  = "<kind>"               # required when `kinds` is non-empty: the kind of a unit with no `tools`
+# default_kind and [pump.dispatch.kinds.<kind>] are legacy. A unit's
+# tools value used to name a kind; now the hand role's pool wins.
+# default_kind  = "<kind>"
 
-[pump.dispatch.kinds.<kind>]           # one table per unit kind; a unit's `tools` value names its kind
-pools         = ["<pool>"]             # required, non-empty: each must name a [pools.<name>] table; a unit goes to the pool with the most free slots
-max           = 2                      # optional: units of this kind in flight at once; absent = no cap
-skip_proof    = false                  # optional: units of this kind skip their own proof at merge
+# [pump.dispatch.kinds.<kind>]         # legacy: used only when the hand role has no pool
+# pools         = ["<pool>"]           # deprecated: each must name a [pools.<name>] table
+# max           = 2                    # optional: units of this kind in flight at once
+# skip_proof    = false                # optional: units of this kind skip their own proof at merge
 
 [pump.merge]
 batch         = 8                      # jobs merged together at most
@@ -2315,12 +2423,13 @@ shared_checks = ["<command>"]          # after every merge, before each unit's o
 proof_timeout = 300                    # seconds per check command
 remote_wait   = 90                     # seconds for a remote merger to claim a batch
 remote_limit  = 1800                   # seconds a claimed batch may take
+# lanes is legacy: unused when the merge role sets pool (slots win)
 
 [pump.gate]
 command       = "<command>"            # run by a read-only gate worker
 every_merges  = 8                      # merges since the last gate that make one due
 every_seconds = 1800                   # also due after this long with new merges
-pools         = ["<pool>"]             # first with a free slot wins
+# pools         = ["<pool>"]           # legacy: used only when the gate role has no pool
 model         = "provider/model-c"     # the gate worker's model
 budget        = 1800                   # the gate dispatch budget
 results_dir   = "<dir>"                # optional: an external runner drops <tip>.json gate results here
@@ -2329,32 +2438,53 @@ ignore_file   = "<file>"               # optional: test names dropped from every
 max_replans   = 2                      # times a name still failing after its owner's units all settled goes to a fresh gate-fix planner; 0 never re-plans
 ```
 
-Example with two kinds (names and pools are the project's own):
+Primary setup is identities with `pool` / `read_only`, not unit kinds.
+Example with two pools (names are the project's own):
 
 ```toml
-[pump.dispatch]
-default_kind = "plain"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "fly4"
+model = "P2-S0"
 
-[pump.dispatch.kinds.plain]
-pools = ["fly4"]            # small workers, no cap
+[[identities]]
+name = "merge"
+kind = "merge"
+pool = "flyfull"
 
-[pump.dispatch.kinds.full]
-pools = ["flyfull"]         # full-toolchain machines
-max = 2                    # keep one free for gates
-skip_proof = true          # the worker already proved the unit
+[[identities]]
+name = "gate"
+kind = "gate"
+pool = "fly4"
+read_only = true
 ```
 
-A plan unit with `"tools": "full"` goes to `flyfull`; one with no `tools` goes
-to `fly4`.
+```sh
+vivi pool add fly4 --provider local --slots 8
+vivi pool add flyfull --provider local --slots 2
+vivi role add hand --kind hand --pool fly4
+vivi role add merge --kind merge --pool flyfull
+vivi role add gate --kind gate --pool fly4 --read-only true
+vivi role set hand --model P2-S0
+vivi config validate
+```
+
+Hand units go to `fly4`; merge uses `flyfull`'s slots; the gate is
+read-only on `fly4`. `vivi config show` prints the resolved map.
+The old `[pump.dispatch.kinds.plain]` / `kinds.full` `pools` tables and
+a plan unit's `"tools"` value are the legacy path.
 
 Validation rejects an empty `branch`, an empty `committer_name` or
 `committer_email`, an empty `gate.command`, empty `merge.shared_checks` while
 promotion is enabled (`promote = true` and `main` set), a `hand_rules` file
-that cannot be read, a `tick` below 1, empty `lanes` or a
-lane cap below 1, a `max_attempts` below 1, a kind with no `pool` or a `max` of 0, a
-`default_kind` that is unset (with kinds defined) or not a defined kind,
-`results_dir` set with `results_wait_seconds` 0, and any pool name that is not a
-`[pools.<name>]` table. Rules that are not obvious from the keys:
+that cannot be read, a `tick` below 1, empty `lanes` when no role assigns a
+pool (or a lane cap below 1), a `max_attempts` below 1, a kind with no `pool`
+or a `max` of 0, a `default_kind` that is unset (with kinds defined) or not a
+defined kind, `results_dir` set with `results_wait_seconds` 0, and any pool
+name that is not a `[pools.<name>]` table. `vivi config validate` also
+rejects an unknown role pool, a missing hand/merge/gate pool without the
+legacy tables, and a writable gate. Rules that are not obvious from the keys:
 
 - An open need carrying the approval mark is plannable whatever its sender or
   date.

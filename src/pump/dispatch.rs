@@ -12,6 +12,7 @@ use crate::pump::brief::brief_for;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, ranked};
 use crate::pump::state::{State, Status};
+use crate::routing::{choose_model, lanes_for};
 
 /// One unit's dispatch plan decided before anything is sent.
 struct Plan {
@@ -116,6 +117,14 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
             continue;
         };
         let Some(model) = plan.model.clone() else {
+            if ctx
+                .routing
+                .hand(&ctx.cfg.to)
+                .and_then(|role| role.pool.as_deref())
+                .is_some()
+            {
+                continue;
+            }
             break;
         };
         let Some(task) = send_brief(ctx, st, &uid, plan.attempt) else {
@@ -204,14 +213,65 @@ fn plan_unit(
     {
         return None;
     }
-    let pool = pick_pool(&kind.pools, free)?;
+    let pool = assigned_pool(ctx, &kind.pools, free)?;
     let attempt = unit.attempts + 1;
     Some(Plan {
-        pool,
-        model: pick_model(ctx, st, unit),
+        pool: pool.clone(),
+        model: pick_unit_model(ctx, st, unit, &pool),
         attempt,
         branch: format!("unit/{uid}-a{attempt}"),
     })
+}
+
+/// The role's pool when the hand role sets one (wait if it is full); else
+/// the kind's pool with the most free slots.
+fn assigned_pool(ctx: &Ctx, kind_pools: &[String], free: &BTreeMap<String, u32>) -> Option<String> {
+    if let Some(pool) = ctx
+        .routing
+        .hand(&ctx.cfg.to)
+        .and_then(|role| role.pool.clone())
+    {
+        return (free.get(&pool).copied().unwrap_or(0) >= 1).then_some(pool);
+    }
+    pick_pool(kind_pools, free)
+}
+
+fn pick_unit_model(
+    ctx: &Ctx,
+    st: &State,
+    unit: &crate::pump::state::Unit,
+    pool: &str,
+) -> Option<String> {
+    let role = ctx.routing.hand(&ctx.cfg.to);
+    if role.and_then(|role| role.pool.as_deref()) == Some(pool) {
+        let lanes = lanes_for(&ctx.routing, &ctx.cfg, Some(pool));
+        return choose_model(
+            role,
+            &lanes,
+            &inflight_models(st, Some(pool)),
+            unit.attempts,
+            unit.history.last().and_then(|h| h.model.as_deref()),
+            ctx.cfg.dispatch.last_resort.as_str(),
+            ctx.cfg.dispatch.max_attempts,
+        );
+    }
+    pick_model(ctx, st, unit)
+}
+
+fn inflight_models(st: &State, pool: Option<&str>) -> BTreeMap<String, u32> {
+    let mut load = BTreeMap::new();
+    for other in st.units.values() {
+        if other.status != Status::Inflight {
+            continue;
+        }
+        if pool.is_some_and(|name| other.pool.as_deref() != Some(name)) {
+            continue;
+        }
+        if let Some(model) = other.model.as_deref() {
+            *load.entry(model.to_string()).or_insert(0) += 1;
+        }
+    }
+    load
 }
 
 /// The pool with the most free slots among `pools` (ties: first listed);

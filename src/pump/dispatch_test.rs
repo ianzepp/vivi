@@ -12,6 +12,7 @@ use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::dispatch::*;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{Attempt, State, Status, Unit};
+use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The fake clock's start; units are created "now".
 const T0: u64 = 1_000_000;
@@ -653,4 +654,61 @@ fn a_kinds_max_counts_inflight_units_across_all_its_pools() {
     assert_eq!(st.units["u1"].pool.as_deref(), Some("b"));
     assert_eq!(st.units["u2"].pool.as_deref(), Some("a"));
     assert_eq!(st.units["u3"].status, Status::Pending);
+}
+
+fn hand_on(pool: &str) -> RoleRouting {
+    RoleRouting {
+        roles: vec![RoutedRole {
+            name: "hand".into(),
+            kind: Some("hand".into()),
+            status: "active".into(),
+            pool: Some(pool.into()),
+            read_only: None,
+            model: None,
+            models: Vec::new(),
+        }],
+        pools: BTreeMap::from([("a".into(), routed_pool(2)), ("b".into(), routed_pool(2))]),
+    }
+}
+
+fn routed_pool(slots: u32) -> RoutedPool {
+    RoutedPool {
+        slots,
+        provider: "local".into(),
+        caps: BTreeMap::new(),
+        models: Vec::new(),
+        has_bands: false,
+    }
+}
+
+fn run_full_units_routed(status: &str, uids: &[&str], routing: RoleRouting) -> State {
+    let (_dir, ctx, host) = setup_with(two_pool_cfg(None));
+    let ctx = ctx.with_routing(routing);
+    host.reply("pool status", 0, status);
+    wire_sends(&host);
+    let mut st = State::default();
+    ordered(&mut st, uids);
+    for uid in uids {
+        st.units.get_mut(*uid).unwrap().tools = String::from("full");
+    }
+    dispatch(&ctx, &mut st);
+    st
+}
+
+#[test]
+fn a_hand_role_pool_is_used_even_when_another_pool_has_more_slots() {
+    let status =
+        "slot a bridge slot-1 free\nslot b bridge slot-1 free\nslot b bridge slot-2 free\n";
+    let st = run_full_units_routed(status, &["u1"], hand_on("a"));
+    assert_eq!(st.units["u1"].pool.as_deref(), Some("a"));
+}
+
+#[test]
+fn a_full_role_pool_waits_and_does_not_spill_to_another_pool() {
+    let status = "slot a bridge slot-1 busy\nslot b bridge slot-1 free\n";
+    let st = run_full_units_routed(status, &["u1", "u2"], hand_on("a"));
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["u1"].task, None);
+    assert_eq!(st.units["u1"].pool, None);
+    assert_eq!(st.units["u2"].status, Status::Pending);
 }

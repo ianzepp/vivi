@@ -1413,3 +1413,60 @@ fn parses_skills_list_show_and_install() {
         other => panic!("unexpected command: {other:?}"),
     }
 }
+
+#[test]
+fn parses_config_and_role_pool_helpers() {
+    use vivi::cli::{ConfigCommand, PoolSubcommand, RoleCommand};
+
+    let show = Cli::try_parse_from(["vivi", "config", "show", "--resolved", "--json"]).unwrap();
+    match show.command {
+        Command::Config {
+            command: ConfigCommand::Show { resolved, json, .. },
+        } => {
+            assert!(resolved);
+            assert!(json);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let migrate = Cli::try_parse_from(["vivi", "config", "migrate", "--write"]).unwrap();
+    match migrate.command {
+        Command::Config {
+            command: ConfigCommand::Migrate { write, .. },
+        } => assert!(write),
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let pool = Cli::try_parse_from(["vivi", "role", "pool", "hand", "glm"]).unwrap();
+    match pool.command {
+        Command::Role {
+            command: RoleCommand::Pool { name, pool, .. },
+        } => {
+            assert_eq!(name, "hand");
+            assert_eq!(pool, "glm");
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let add = Cli::try_parse_from([
+        "vivi",
+        "pool",
+        "add",
+        "host",
+        "--provider",
+        "local",
+        "--slots",
+        "4",
+    ])
+    .unwrap();
+    match add.command {
+        Command::Pool {
+            command: PoolSubcommand::Add(cmd),
+        } => {
+            assert_eq!(cmd.name, "host");
+            assert_eq!(cmd.provider, "local");
+            assert_eq!(cmd.slots, 4);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}

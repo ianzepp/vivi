@@ -22,6 +22,7 @@ mod archive;
 mod backlog;
 mod backlog_audit;
 mod body;
+pub mod config_edit;
 mod config_file;
 mod delivery;
 mod dependencies;
@@ -58,6 +59,7 @@ pub use archive::ArchiveExportReport;
 pub use backlog::BacklogBoundUnit;
 pub use backlog_audit::{BacklogAuditFinding, BacklogAuditReport, print_backlog_audit};
 pub use body::{read_body_arg, read_body_input};
+pub use config_edit::{IdentityPatch, PoolAdd};
 pub use dump::{
     DumpFilters, DumpRecord, MailDumpRequest, TaskDumpRequest, TaskDumpStatus, parse_time_bound,
 };
@@ -98,7 +100,7 @@ pub use trace::{print_trace, print_trace_json};
 pub use watch::{MailspaceWatchRequest, run_watch};
 
 const MAILSPACE_DIR: &str = ".vivi";
-const MAILSPACE_CONFIG: &str = "mailspace.toml";
+pub(crate) const MAILSPACE_CONFIG: &str = "mailspace.toml";
 
 pub struct Mailspace {
     pub root: PathBuf,
@@ -385,14 +387,27 @@ impl Mailspace {
             .map_err(|_| VivariumError::Other("storage is not available".into()))
     }
 
+    /// Path of `.vivi/mailspace.toml`.
+    #[must_use]
+    pub fn config_path(&self) -> PathBuf {
+        self.dir.join(MAILSPACE_CONFIG)
+    }
+
     /// Set the mailspace description.
     ///
     /// # Errors
     /// Returns an error if the config cannot be written.
     pub fn set_description(&mut self, description: Option<String>) -> Result<(), VivariumError> {
-        self.config.description = description;
-        let path = self.dir.join(MAILSPACE_CONFIG);
-        write_config(&path, &self.config)
+        self.config.description.clone_from(&description);
+        config_edit::apply(&self.config_path(), |doc| {
+            match &description {
+                Some(text) => doc["description"] = toml_edit::value(text.as_str()),
+                None => {
+                    doc.as_table_mut().remove("description");
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Set or clear the historical archive git repository path.
@@ -406,8 +421,16 @@ impl Mailspace {
         if let Some(raw) = archive.as_deref() {
             archive::validate_archive_repo(&archive::resolve_archive_path(&self.root, raw)?)?;
         }
-        self.config.archive = archive;
-        write_config(&self.dir.join(MAILSPACE_CONFIG), &self.config)
+        self.config.archive.clone_from(&archive);
+        config_edit::apply(&self.config_path(), |doc| {
+            match &archive {
+                Some(text) => doc["archive"] = toml_edit::value(text.as_str()),
+                None => {
+                    doc.as_table_mut().remove("archive");
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Write every absorbed record into the configured archive repo.

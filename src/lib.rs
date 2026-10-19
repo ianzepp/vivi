@@ -21,6 +21,7 @@ pub mod proxy;
 pub mod pump;
 pub mod role_schedule;
 pub mod role_status;
+pub mod routing;
 pub mod skills;
 pub mod stdout_budget;
 pub mod storage;

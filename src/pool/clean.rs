@@ -9,8 +9,9 @@
 //! success, not landing on main — a free slot that last served that unit has
 //! its worktree removed (`git worktree remove`, then prune), its
 //! `targets/<hash>` caches dropped, and a fresh detached worktree restored
-//! at origin/`[pump] main` (or `--base`). A dirty tree or commits not contained
-//! in the merge lane are
+//! at origin/`[pump] main` (or `--base`). Recycle covers the unit's work
+//! pool and the merge role's pool (merge-lane count is that pool's `slots`).
+//! A dirty tree or commits not contained in the merge lane are
 //! reported, never deleted.
 //!
 //! Never touches a slot that is claimed or whose boot process is alive.
@@ -148,10 +149,12 @@ pub fn clean_mailspace(
 }
 
 /// After pump marks `unit` merged into its merge lane: recycle matching
-/// free **local** work lanes onto origin/`[pump] main`. Remote (fly/docker/ssh)
-/// slots are left for the next dispatch-time reset — pump does not persist
-/// which remote slot last served the unit after unclaim. No mailspace or no
-/// local pool is a silent no-op.
+/// free **local** work lanes onto origin/`[pump] main`. Covers the unit's
+/// work pool and the merge role's pool (merge-lane count is that pool's
+/// `slots`). Remote (fly/docker/ssh) slots are left for the next
+/// dispatch-time reset — pump does not persist which remote slot last
+/// served the unit after unclaim. No mailspace or no local pool is a
+/// silent no-op.
 ///
 /// # Errors
 /// Returns an error if a matching free slot cannot be recycled safely.
@@ -159,26 +162,56 @@ pub fn after_merged(project: &Path, unit: &Unit) -> Result<CleanReport, Vivarium
     let Ok(space) = Mailspace::discover(Some(project)) else {
         return Ok(CleanReport::default());
     };
-    let Ok(handles) = pools::open(&space, unit.pool.as_deref(), Need::Any) else {
-        return Ok(CleanReport::default());
-    };
     let st = load_state(&space);
     let mut report = CleanReport::default();
+    for selector in recycle_selectors(&space, unit) {
+        take_local_pools(
+            &space,
+            selector.as_deref(),
+            st.as_ref(),
+            Some(unit),
+            &mut report,
+        )?;
+    }
+    report.take(clean_pump::reclaim_lanes(&space, st.as_ref(), false)?);
+    Ok(report)
+}
+
+/// The unit's work pool, plus the merge role's pool when that is a
+/// different assignment. `None` means every pool (legacy units with no
+/// `pool`).
+fn recycle_selectors(space: &Mailspace, unit: &Unit) -> Vec<Option<String>> {
+    let Some(hand) = unit.pool.as_deref() else {
+        return vec![None];
+    };
+    let mut names = vec![Some(hand.to_string())];
+    if let Some(merge) = crate::routing::from_mailspace(&space.config)
+        .merge()
+        .and_then(|role| role.pool.clone())
+        && merge != hand
+    {
+        names.push(Some(merge));
+    }
+    names
+}
+
+fn take_local_pools(
+    space: &Mailspace,
+    pool: Option<&str>,
+    st: Option<&State>,
+    hint: Option<&Unit>,
+    report: &mut CleanReport,
+) -> Result<(), VivariumError> {
+    let Ok(handles) = pools::open(space, pool, Need::Any) else {
+        return Ok(());
+    };
     for handle in &handles {
         if handle.config.provider != "local" {
             continue;
         }
-        report.take(clean_pool(
-            handle,
-            &space,
-            st.as_ref(),
-            Some(unit),
-            None,
-            false,
-        )?);
+        report.take(clean_pool(handle, space, st, hint, None, false)?);
     }
-    report.take(clean_pump::reclaim_lanes(&space, st.as_ref(), false)?);
-    Ok(report)
+    Ok(())
 }
 
 /// Between jobs: apply the 2x rule to this free slot. Errors are swallowed

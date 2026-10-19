@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use chrono::{DateTime, Utc};
 
-use super::{MAILSPACE_CONFIG, Mailspace, write_config};
+use super::Mailspace;
+use super::config_edit::{self, IdentityPatch};
 use crate::duration::parse_duration_secs;
 use crate::error::VivariumError;
 use crate::role_schedule::{self, LastSignal, ScheduleReport};
@@ -60,6 +61,15 @@ pub struct LocalIdentity {
     /// Desired maximum silence between outbound signals (`5m`, `30m`, `2h`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cadence: Option<String>,
+    /// Pool this role dispatches to (`[pools.<name>]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+    /// When set, overrides the kind's read-only default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    /// Preferred models (slugs or bands). `model` remains the single value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
 }
 
 fn default_role_status() -> String {
@@ -80,6 +90,9 @@ pub struct RoleUpdate {
     pub cadence: Option<Option<String>>,
     pub add_labels: Vec<String>,
     pub clear_labels: Vec<String>,
+    pub pool: Option<Option<String>>,
+    pub read_only: Option<Option<bool>>,
+    pub models: Option<Vec<String>>,
 }
 
 /// JSON/text view of a role, including derived address and charter body.
@@ -98,6 +111,9 @@ pub struct RoleView {
     pub pid: Option<u32>,
     pub host: Option<String>,
     pub cadence: Option<String>,
+    pub pool: Option<String>,
+    pub read_only: Option<bool>,
+    pub models: Vec<String>,
     pub charter: String,
     pub has_charter: bool,
 }
@@ -117,6 +133,9 @@ impl LocalIdentity {
             pid: None,
             host: None,
             cadence: None,
+            pool: None,
+            read_only: None,
+            models: Vec::new(),
         }
     }
 }
@@ -150,10 +169,12 @@ impl Mailspace {
             )));
         }
         let mut role = LocalIdentity::new(name.clone());
-        apply_role_update(&mut role, update)?;
+        apply_role_update(&mut role, update.clone())?;
+        config_edit::apply(&self.config_path(), |doc| {
+            config_edit::insert_identity(doc, &name, &identity_patch(&update, &role))
+        })?;
         self.config.identities.push(role);
         self.sort_roles();
-        self.persist_config()?;
         Ok(self.address_for(&name))
     }
 
@@ -165,9 +186,12 @@ impl Mailspace {
     pub fn set_role(&mut self, name: &str, update: RoleUpdate) -> Result<RoleView, VivariumError> {
         let name = sanitize_identity(name)?;
         let index = self.require_role_index(&name)?;
-        apply_role_update(&mut self.config.identities[index], update)?;
-        self.persist_config()?;
-        self.role_view(&self.config.identities[index].name.clone())
+        apply_role_update(&mut self.config.identities[index], update.clone())?;
+        let role = self.config.identities[index].clone();
+        config_edit::apply(&self.config_path(), |doc| {
+            config_edit::patch_identity(doc, &role.name, &identity_patch(&update, &role))
+        })?;
+        self.role_view(&role.name)
     }
 
     /// Rename an identity. The old name is preserved as an alias.
@@ -202,7 +226,9 @@ impl Mailspace {
                 .push(previous_name.clone());
         }
         self.sort_roles();
-        self.persist_config()?;
+        config_edit::apply(&self.config_path(), |doc| {
+            config_edit::rename_identity(doc, &previous_name, &new)
+        })?;
         rename_charter_file(&self.dir, &previous_name, &new)?;
         Ok(self.address_for(&new))
     }
@@ -329,6 +355,9 @@ impl Mailspace {
             pid: role.pid,
             host: role.host.clone(),
             cadence: role.cadence.clone(),
+            pool: role.pool.clone(),
+            read_only: role.read_only,
+            models: role.models.clone(),
             has_charter: !charter.is_empty(),
             charter,
         })
@@ -439,10 +468,6 @@ impl Mailspace {
         self.dir.join("charters").join(format!("{name}.md"))
     }
 
-    fn persist_config(&self) -> Result<(), VivariumError> {
-        write_config(&self.dir.join(MAILSPACE_CONFIG), &self.config)
-    }
-
     fn sort_roles(&mut self) {
         self.config
             .identities
@@ -511,17 +536,58 @@ fn apply_role_update(role: &mut LocalIdentity, update: RoleUpdate) -> Result<(),
     if let Some(cadence) = update.cadence {
         role.cadence = optional_cadence(cadence)?;
     }
-    for label in update.add_labels {
+    if let Some(pool) = update.pool {
+        role.pool = optional_field("pool", pool)?;
+    }
+    if let Some(read_only) = update.read_only {
+        role.read_only = read_only;
+    }
+    if let Some(models) = update.models {
+        role.models = models;
+    }
+    apply_labels(role, update.add_labels, update.clear_labels)?;
+    Ok(())
+}
+
+fn apply_labels(
+    role: &mut LocalIdentity,
+    add_labels: Vec<String>,
+    clear_labels: Vec<String>,
+) -> Result<(), VivariumError> {
+    for label in add_labels {
         let label = sanitize_label(&label)?;
         if !role.labels.iter().any(|known| known == &label) {
             role.labels.push(label);
         }
     }
-    for label in update.clear_labels {
+    for label in clear_labels {
         let label = sanitize_label(&label)?;
         role.labels.retain(|known| known != &label);
     }
     Ok(())
+}
+
+fn identity_patch(update: &RoleUpdate, role: &LocalIdentity) -> IdentityPatch {
+    IdentityPatch {
+        kind: update.kind.clone(),
+        status: update.status.clone(),
+        harness: update.harness.clone(),
+        provider: update.provider.clone(),
+        model: update.model.clone(),
+        models: update.models.clone(),
+        thinking: update.thinking.clone(),
+        pid: update.pid,
+        host: update.host.clone(),
+        cadence: update.cadence.clone(),
+        pool: update.pool.clone(),
+        read_only: update.read_only,
+        labels: update_has_labels(update).then(|| role.labels.clone()),
+        aliases: None,
+    }
+}
+
+fn update_has_labels(update: &RoleUpdate) -> bool {
+    !update.add_labels.is_empty() || !update.clear_labels.is_empty()
 }
 
 fn optional_field(field: &str, value: Option<String>) -> Result<Option<String>, VivariumError> {

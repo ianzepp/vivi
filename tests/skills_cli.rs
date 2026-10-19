@@ -186,7 +186,7 @@ fn embedded_skill_examples_match_the_clap_tree() {
     }
     assert!(
         failures.is_empty(),
-        "skill examples that are not on the 14.1.0 CLI:\n{}",
+        "skill examples that are not on the current CLI:\n{}",
         failures.join("\n")
     );
 }

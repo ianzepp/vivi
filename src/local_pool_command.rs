@@ -34,6 +34,13 @@ pub(crate) fn handle_pool_command(command: &PoolSubcommand) -> Result<(), Vivari
         PoolSubcommand::Doctor(c) => crate::local_pool_doctor_command::doctor(c),
         PoolSubcommand::Clean(c) => clean(c),
         PoolSubcommand::Reset(c) => reset(c),
+        PoolSubcommand::List(c) => crate::local_pool_config_command::list(c),
+        PoolSubcommand::Show(c) => crate::local_pool_config_command::show(c),
+        PoolSubcommand::Add(c) => crate::local_pool_config_command::add(c),
+        PoolSubcommand::Set(c) => crate::local_pool_config_command::set(c),
+        PoolSubcommand::Unset(c) => crate::local_pool_config_command::unset(c),
+        PoolSubcommand::Remove(c) => crate::local_pool_config_command::remove(c),
+        PoolSubcommand::Bands { command } => crate::local_pool_config_command::bands(command),
     }
 }
 

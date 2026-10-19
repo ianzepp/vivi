@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use rand_core::{OsRng, RngCore};
 
+use toml_edit::DocumentMut;
+
 use super::MailspaceConfig;
 use crate::error::VivariumError;
 
@@ -60,11 +62,58 @@ fn replace(config: &Path, raw: &str) -> Result<(), VivariumError> {
 }
 
 /// Write `config` to `path` under the config lock, atomically.
+///
+/// Used for a newly created file. Later edits go through [`edit_document`]
+/// so comments and unused keys stay as the user wrote them.
 pub(super) fn write_config(path: &Path, config: &MailspaceConfig) -> Result<(), VivariumError> {
     let raw = toml::to_string_pretty(config)
         .map_err(|e| VivariumError::Other(format!("failed to encode mailspace config: {e}")))?;
     let _lock = lock(path)?;
     replace(path, &raw)
+}
+
+/// Parse `path`, run `edit`, and write the document back under the config
+/// lock when the text changed. Comments and formatting of untouched keys
+/// stay as they were.
+pub(crate) fn edit_document(
+    path: &Path,
+    edit: impl FnOnce(&mut DocumentMut) -> Result<(), VivariumError>,
+) -> Result<(), VivariumError> {
+    let _lock = lock(path)?;
+    let raw = read_raw(path)?;
+    let mut doc = parse_document(path, &raw)?;
+    edit(&mut doc)?;
+    let next = doc.to_string();
+    if next != raw {
+        replace(path, &next)?;
+    }
+    Ok(())
+}
+
+/// The current file text of `path`.
+pub(crate) fn read_raw(path: &Path) -> Result<String, VivariumError> {
+    fs::read_to_string(path).map_err(|e| {
+        VivariumError::Message(format!(
+            "failed to read mailspace config at {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+/// Parse TOML that must stay editable (comments kept).
+pub(crate) fn parse_document(path: &Path, raw: &str) -> Result<DocumentMut, VivariumError> {
+    raw.parse::<DocumentMut>().map_err(|e| {
+        VivariumError::Message(format!(
+            "failed to parse mailspace config at {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+/// Replace `path` with `raw` under the config lock.
+pub(crate) fn write_raw(path: &Path, raw: &str) -> Result<(), VivariumError> {
+    let _lock = lock(path)?;
+    replace(path, raw)
 }
 
 /// Parse a config file's text, naming the file in the error.
