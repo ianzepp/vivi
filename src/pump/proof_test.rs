@@ -85,6 +85,8 @@ fn usage_failure_ignores_compile_errors_and_test_failures() {
                   failures:\n    pump::plan::tests::it_works\n\n\
                   test result: FAILED. 0 passed; 1 failed; 0 ignored\n";
     assert!(!usage_failure(failed));
-    assert!(!usage_failure("error: test failed, to rerun pass `--lib`\n"));
+    assert!(!usage_failure(
+        "error: test failed, to rerun pass `--lib`\n"
+    ));
     assert!(!usage_failure(""));
 }

@@ -12,9 +12,23 @@ const BINARIES: [&str; 26] = [
 
 /// `cargo test` flags that consume the next word as their value.
 const CARGO_VALUE_FLAGS: [&str; 17] = [
-    "--bench", "--bin", "--color", "--exclude", "--example", "--features", "--jobs",
-    "--manifest-path", "--message-format", "--package", "--profile", "--target", "--target-dir",
-    "--test", "-Z", "-j", "-p",
+    "--bench",
+    "--bin",
+    "--color",
+    "--exclude",
+    "--example",
+    "--features",
+    "--jobs",
+    "--manifest-path",
+    "--message-format",
+    "--package",
+    "--profile",
+    "--target",
+    "--target-dir",
+    "--test",
+    "-Z",
+    "-j",
+    "-p",
 ];
 
 /// How many wrapper levels (`env`, `sh -c`) validation may recurse into.
