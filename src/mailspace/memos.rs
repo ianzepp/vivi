@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::duration::parse_duration_secs;
 use crate::error::VivariumError;
+use crate::storage::StoredMessageView;
 
 /// Header that stores one memo tag; a memo carries one header per tag.
 const TAG_HEADER: &str = "X-Vivi-Tag";
@@ -160,6 +161,49 @@ pub struct MemoConfig {
     /// Per-tag retention windows, e.g. `retain = { digest = "90d" }`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub retain: BTreeMap<String, String>,
+}
+
+/// The retention window, in seconds, for one memo tag: the `[memo]` retain
+/// rule whose name matches `tag` case-insensitively, parsed once here.
+///
+/// `None` means the tag is kept forever: no rule names it, or its value is
+/// not a duration this build understands.
+#[must_use]
+pub fn retain_secs(config: &Option<MemoConfig>, tag: &str) -> Option<u64> {
+    let config = config.as_ref()?;
+    let tag = tag.trim();
+    config
+        .retain
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(tag))
+        .and_then(|(_, value)| parse_duration_secs(value).ok())
+}
+
+/// Handles of memos that a retention window has expired.
+///
+/// A memo is expired when it carries `tag` (case-insensitive) and its RFC3339
+/// date parses to a moment strictly before `now - retain_secs`. A memo whose
+/// date does not parse is kept, so a damaged record never disappears through
+/// retention.
+#[must_use]
+pub fn expired_handles(
+    memos: &[(StoredMessageView, Vec<String>)],
+    tag: &str,
+    retain_secs: u64,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    let cutoff = now
+        .timestamp()
+        .saturating_sub(i64::try_from(retain_secs).unwrap_or(i64::MAX));
+    memos
+        .iter()
+        .filter(|(_, tags)| tags.iter().any(|seen| seen.eq_ignore_ascii_case(tag)))
+        .filter(|(view, _)| {
+            DateTime::parse_from_rfc3339(view.date.trim())
+                .is_ok_and(|date| date.timestamp() < cutoff)
+        })
+        .map(|(view, _)| view.handle.clone())
+        .collect()
 }
 
 /// The hidden tag set for a mailspace: the built-in default plus every

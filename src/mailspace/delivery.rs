@@ -180,7 +180,50 @@ impl Mailspace {
             eml.as_bytes(),
         )?;
         let handle = storage.display_handle(&stored.message_id)?;
+        drop(storage);
+        self.prune_expired_memos(&identity, &tags);
         Ok(handle)
+    }
+
+    /// Delete this identity's memos whose tag has passed its `[memo]` retention
+    /// window. Best effort: a memo that cannot be read is skipped, and a failed
+    /// delete is ignored, so saving a memo never fails on pruning. No rule for
+    /// any of the new memo's tags means no listing and no deletes.
+    fn prune_expired_memos(&self, identity: &str, tags: &[String]) {
+        let mut windows: Vec<(String, u64)> = Vec::new();
+        for tag in tags {
+            let Some(secs) = super::memos::retain_secs(&self.config.memo, tag) else {
+                continue;
+            };
+            if windows.iter().any(|(seen, _)| seen.eq_ignore_ascii_case(tag)) {
+                continue;
+            }
+            windows.push((tag.trim().to_string(), secs));
+        }
+        if windows.is_empty() {
+            return;
+        }
+        let Ok(memos) = self.list_kind(Some(identity), "memos", "memo") else {
+            return;
+        };
+        let mut parsed: Vec<(StoredMessageView, Vec<String>)> = Vec::with_capacity(memos.len());
+        {
+            let Ok(storage) = self.storage() else {
+                return;
+            };
+            for memo in memos {
+                let Ok(data) = storage.read_message(&memo.message_id) else {
+                    continue;
+                };
+                parsed.push((memo, super::memos::parse_tags(&data)));
+            }
+        }
+        let now = Utc::now();
+        for (tag, secs) in windows {
+            for handle in super::memos::expired_handles(&parsed, &tag, secs, now) {
+                let _ = self.delete_memo(identity, &handle);
+            }
+        }
     }
 
     fn compose_message(

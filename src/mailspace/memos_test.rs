@@ -5,7 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use super::{MemoConfig, MemoFilter, hidden_tags, keep, parse_tags, since_cutoff, window_label};
+use super::{
+    MemoConfig, MemoFilter, expired_handles, hidden_tags, keep, parse_tags, retain_secs,
+    since_cutoff, window_label,
+};
+use crate::storage::StoredMessageView;
 
 fn eml(headers: &[(&str, &str)]) -> Vec<u8> {
     let mut raw = String::from("From: mind@local\r\nTo: memo@local\r\nSubject: t\r\n");
@@ -213,4 +217,75 @@ fn hidden_tags_always_includes_digest_plus_configured_entries() {
         retain: BTreeMap::new(),
     });
     assert_eq!(hidden_tags(&configured), hidden(&["digest", "noise"]));
+}
+
+fn view(handle: &str, date: DateTime<Utc>) -> StoredMessageView {
+    StoredMessageView {
+        handle: handle.to_string(),
+        message_id: format!("<{handle}@local>"),
+        account: "digest".to_string(),
+        content_id: format!("content-{handle}"),
+        blob_relpath: format!("memos/{handle}.eml"),
+        byte_size: 0,
+        local_role: "memos".to_string(),
+        read_state: false,
+        starred: false,
+        date: date.to_rfc3339(),
+        from_addr: "digest@local".to_string(),
+        to_addr: "digest@local".to_string(),
+        cc_addr: String::new(),
+        bcc_addr: String::new(),
+        subject: handle.to_string(),
+        normalized_message_id: None,
+        remote: None,
+        absorbed_at: None,
+        absorbed_by: None,
+    }
+}
+
+#[test]
+fn retention_expires_only_old_tagged() {
+    let now = date(1_792_425_600);
+    let ninety_days = 90 * 86_400;
+    let tagged = |handle: &str, at: DateTime<Utc>, tags: &[&str]| {
+        (
+            view(handle, at),
+            tags.iter().map(|tag| (*tag).to_string()).collect::<Vec<_>>(),
+        )
+    };
+    let mut unparseable = view("unparseable", now);
+    unparseable.date = "not a date".to_string();
+    let memos = vec![
+        tagged("old-tagged", date(now.timestamp() - 100 * 86_400), &["Digest"]),
+        tagged("fresh-tagged", date(now.timestamp() - 86_400), &["digest"]),
+        tagged("old-untagged", date(now.timestamp() - 200 * 86_400), &["other"]),
+        tagged("wrong-tag", date(now.timestamp() - 200 * 86_400), &["digest-old"]),
+        (unparseable, vec!["digest".to_string()]),
+    ];
+
+    assert_eq!(
+        expired_handles(&memos, "digest", ninety_days, now),
+        vec!["old-tagged".to_string()]
+    );
+    assert_eq!(
+        expired_handles(&memos, "digest", 60 * 86_400, now),
+        vec!["old-tagged".to_string()]
+    );
+    assert!(expired_handles(&memos, "digest", 100 * 86_400, now).is_empty());
+}
+
+#[test]
+fn retain_secs_needs_a_matching_parseable_rule() {
+    let config = Some(MemoConfig {
+        hidden_tags: Vec::new(),
+        retain: BTreeMap::from([
+            ("digest".to_string(), "2160h".to_string()),
+            ("weekly".to_string(), "90d".to_string()),
+        ]),
+    });
+    assert_eq!(retain_secs(&config, "digest"), Some(90 * 86_400));
+    assert_eq!(retain_secs(&config, "DIGEST"), Some(90 * 86_400));
+    assert_eq!(retain_secs(&config, "weekly"), None);
+    assert_eq!(retain_secs(&config, "other"), None);
+    assert_eq!(retain_secs(&None, "digest"), None);
 }

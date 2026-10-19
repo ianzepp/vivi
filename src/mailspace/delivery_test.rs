@@ -1,3 +1,8 @@
+use std::collections::BTreeMap;
+
+use chrono::Utc;
+
+use crate::mailspace::memos::{MemoConfig, expired_handles};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::SyncConfig;
@@ -425,4 +430,122 @@ fn memo_save_stores_tag_headers() {
         memo.contains("X-Vivi-Tag: ops"),
         "no ops tag header: {memo}"
     );
+}
+
+fn memo_view(handle: &str, date: &str) -> StoredMessageView {
+    StoredMessageView {
+        handle: handle.to_string(),
+        message_id: format!("<{handle}@local>"),
+        account: "digest".to_string(),
+        content_id: format!("content-{handle}"),
+        blob_relpath: format!("memos/{handle}.eml"),
+        byte_size: 0,
+        local_role: "memos".to_string(),
+        read_state: false,
+        starred: false,
+        date: date.to_string(),
+        from_addr: "digest@local".to_string(),
+        to_addr: "digest@local".to_string(),
+        cc_addr: String::new(),
+        bcc_addr: String::new(),
+        subject: handle.to_string(),
+        normalized_message_id: None,
+        remote: None,
+        absorbed_at: None,
+        absorbed_by: None,
+    }
+}
+
+#[test]
+fn retention_prunes_on_tagged_save() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("digest").unwrap();
+    mailspace.config.memo = Some(MemoConfig {
+        hidden_tags: Vec::new(),
+        retain: BTreeMap::from([("digest".to_string(), "2160h".to_string())]),
+    });
+
+    let handle = mailspace
+        .save_memo("digest", "digest run", "body", &["digest".to_string()])
+        .expect("a tagged save with a parseable retention rule succeeds");
+    let kept = mailspace
+        .list_kind(Some("digest"), "memos", "memo")
+        .unwrap();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].handle, handle);
+
+    // A window this build cannot parse keeps everything.
+    mailspace.config.memo = Some(MemoConfig {
+        hidden_tags: Vec::new(),
+        retain: BTreeMap::from([("digest".to_string(), "90d".to_string())]),
+    });
+    mailspace
+        .save_memo("digest", "digest run 2", "body", &["digest".to_string()])
+        .expect("an unparseable retention window does not fail the save");
+    assert_eq!(
+        mailspace
+            .list_kind(Some("digest"), "memos", "memo")
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // The cutoff math, on a fabricated 100-day-old view: 90 days expires it,
+    // 200 days does not.
+    let now = Utc::now();
+    let old = memo_view("old", &(now - chrono::Duration::days(100)).to_rfc3339());
+    let fresh = memo_view("fresh", &now.to_rfc3339());
+    let memos = vec![
+        (old, vec!["digest".to_string()]),
+        (fresh, vec!["digest".to_string()]),
+    ];
+    assert_eq!(
+        expired_handles(&memos, "digest", 90 * 86_400, now),
+        vec!["old".to_string()]
+    );
+    assert!(expired_handles(&memos, "digest", 200 * 86_400, now).is_empty());
+
+    // The save path itself deletes: an old memo ingested directly is pruned by
+    // the next tagged save, and the fresh memos stay.
+    mailspace.config.memo = Some(MemoConfig {
+        hidden_tags: Vec::new(),
+        retain: BTreeMap::from([("digest".to_string(), "2160h".to_string())]),
+    });
+    old_memo(&mailspace);
+    mailspace
+        .save_memo("digest", "digest run 3", "body", &["digest".to_string()])
+        .unwrap();
+    let left = mailspace
+        .list_kind(Some("digest"), "memos", "memo")
+        .unwrap();
+    assert_eq!(left.len(), 3, "{left:?}");
+    assert!(
+        left.iter().all(|memo| memo.subject != "stale digest"),
+        "the expired memo survived: {left:?}"
+    );
+}
+
+/// Ingest a memo dated 100 days ago directly, the only way to hold an old memo
+/// in a fresh temp mailspace. `save_memo` always stamps the current time.
+fn old_memo(mailspace: &Mailspace) {
+    let eml = "From: digest@local\r\nTo: digest@local\r\nSubject: stale digest\r\n\
+               Date: Mon, 01 Jan 2024 00:00:00 +0000\r\nX-Vivi-Kind: memo\r\n\
+               X-Vivi-Tag: digest\r\n\r\nold body\r\n";
+    let storage = mailspace.storage().unwrap();
+    storage
+        .ingest_message(
+            &crate::storage::MessageIngestRequest {
+                account: "digest".into(),
+                local_role: "memos".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: "stale-memo".into(),
+                remote: None,
+            },
+            eml.as_bytes(),
+        )
+        .unwrap();
 }
