@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use super::Finding;
 use crate::mailspace::MailspaceConfig;
 use crate::pool::config::PoolConfig;
-use crate::pool::slot::{PoolId, space_mark_matches};
+use crate::pool::slot::PoolId;
 
 const SECTION: &str = "pools";
 const CONFIG_FIX: &str = "check [pools.<name>] in .vivi/mailspace.toml";
@@ -220,7 +220,6 @@ fn prefix_findings(names: Vec<&str>) -> Vec<Finding> {
 struct Ownership {
     own: usize,
     foreign: usize,
-    legacy: usize,
     unknown: usize,
 }
 
@@ -242,10 +241,10 @@ fn ownership(id: &PoolId, root: &Path) -> Finding {
 
 fn ownership_finding(name: &str, facts: &Ownership) -> Finding {
     let detail = format!(
-        "local slots: {} owned, {} owned by another mailspace, {} legacy marks, {} unknown",
-        facts.own, facts.foreign, facts.legacy, facts.unknown
+        "local slots: {} owned, {} owned by another mailspace, {} unknown",
+        facts.own, facts.foreign, facts.unknown
     );
-    if facts.foreign > 0 || facts.legacy > 0 || facts.unknown > 0 {
+    if facts.foreign > 0 || facts.unknown > 0 {
         Finding::warn(SECTION, name, &detail, SCOPE_FIX)
     } else {
         Finding::ok(SECTION, name, &detail)
@@ -307,7 +306,6 @@ fn record_ownership(slot: &Path, id: &PoolId, facts: &mut Ownership) {
     }
     match read_mark(&slot.join("marks/vivi_pool_mailspace")) {
         Ok(mark) if mark == id.mailspace => facts.own += 1,
-        Ok(mark) if space_mark_matches(&id.mailspace, &mark) => facts.legacy += 1,
         Ok(mark) if !mark.is_empty() => facts.foreign += 1,
         _ => facts.unknown += 1,
     }

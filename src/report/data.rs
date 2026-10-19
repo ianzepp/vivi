@@ -127,3 +127,7 @@ impl From<&AttemptFields> for AttemptRecord {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "data_test.rs"]
+mod tests;

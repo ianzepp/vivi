@@ -36,6 +36,38 @@ fn schema_upgrade_creates_mid_version_tables_on_old_databases() {
 }
 
 #[test]
+fn read_only_wal_open_refuses_a_missing_shm_without_creating_it() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(Storage::open_mailspace(temp.path()).unwrap());
+    let db = temp.path().join("mail.sqlite");
+    let shm = db.with_extension("sqlite-shm");
+    let wal = db.with_extension("sqlite-wal");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(conn);
+    drop(fs::remove_file(&shm));
+    drop(fs::remove_file(&wal));
+    assert!(Storage::read_only_wal_index_missing(temp.path()));
+    let before = fs::read(&db).unwrap();
+
+    let error = Storage::open_mailspace_connection_read_only(temp.path())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("mail.sqlite-shm"), "{error}");
+    assert!(!shm.exists());
+
+    let error = Storage::open_mailspace_read_only(temp.path())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("mail.sqlite-shm"), "{error}");
+    assert!(!shm.exists());
+    assert_eq!(fs::read(&db).unwrap(), before);
+}
+
+#[test]
 fn schema_v7_adds_node_kind_and_edge_style_on_upgrade() {
     // Simulate a schema-7 mailspace whose graph tables predate node kinds
     // and edge styles: one node and one edge without the new columns.

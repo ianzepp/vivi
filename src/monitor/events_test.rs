@@ -1,5 +1,7 @@
 use super::*;
 use crate::mailspace::{Mailspace, SendRequest};
+use crate::storage::Storage;
+use std::fs;
 
 const DISPATCH: &str = r#"{"pool":"here","slot":"vivarium-here-slot-1","machine":"burgus","job":"3cc45261-3-a1","model":"zai/glm-5.3-flash","from":"mind","branch":"unit/3cc45261-3-a1","start":"1792421950abc","budget":1800,"at":1792421950,"read_only":false}"#;
 const COLLECT: &str = r#"{"job":"3cc45261-3-a1","pool":"here","slot":"vivarium-here-slot-1","outcome":"failed","agent_rc":"1"}"#;
@@ -77,4 +79,26 @@ fn read_missing_db_is_empty() {
     assert!(events.open.is_empty());
     assert!(events.task_info.is_empty());
     assert!(events.finished.is_empty());
+}
+
+#[test]
+fn read_only_wal_events_skip_when_shm_is_missing_without_creating_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _storage = Storage::open_mailspace(tmp.path()).unwrap();
+    drop(_storage);
+    let db = tmp.path().join("mail.sqlite");
+    let shm = tmp.path().join("mail.sqlite-shm");
+    let wal = tmp.path().join("mail.sqlite-wal");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(conn);
+    let _ = fs::remove_file(&shm);
+    let _ = fs::remove_file(&wal);
+    let before = fs::read(&db).unwrap();
+
+    let error = read(&db, 8).err().unwrap().to_string();
+    assert!(error.contains("mail.sqlite-shm"), "{error}");
+    assert!(!shm.exists(), "the monitor created the missing sidecar");
+    assert_eq!(fs::read(&db).unwrap(), before);
 }

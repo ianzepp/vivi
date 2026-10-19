@@ -181,22 +181,35 @@ impl Storage {
     /// Returns an error when the database is missing, unreadable, or the
     /// connection cannot be configured.
     pub fn open_mailspace_read_only(mailspace_dir: &Path) -> Result<Self, VivariumError> {
-        let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
-        if Self::read_only_wal_index_missing(mailspace_dir) {
-            return Err(VivariumError::Other(
-                "read-only inspection skipped: the WAL-mode mail store has no mail.sqlite-shm sidecar; doctor will not create it".into(),
-            ));
-        }
-        let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| {
-                VivariumError::Other(format!("failed to open storage database read-only: {e}"))
-            })?;
+        let conn = Self::open_mailspace_connection_read_only(mailspace_dir)?;
         conn.busy_timeout(Duration::from_secs(5))
             .map_err(|e| VivariumError::Other(format!("failed to set SQLite timeout: {e}")))?;
         Ok(Self {
             mail_root: mailspace_dir.to_path_buf(),
             conn: RefCell::new(conn),
             handle_index: RefCell::new(None),
+        })
+    }
+
+    /// Open the database connection read-only after checking that a WAL
+    /// shared-memory sidecar already exists when the database needs one.
+    /// Readers that need custom queries (such as the monitor) use this same
+    /// guard instead of opening SQLite directly.
+    ///
+    /// # Errors
+    /// Returns an error when the database is missing, unreadable, or would
+    /// require creating the WAL shared-memory sidecar.
+    pub(crate) fn open_mailspace_connection_read_only(
+        mailspace_dir: &Path,
+    ) -> Result<Connection, VivariumError> {
+        let db_path = mailspace_dir.join(MAILSPACE_DB_FILENAME);
+        if Self::read_only_wal_index_missing(mailspace_dir) {
+            return Err(VivariumError::Other(
+                "read-only inspection unavailable: the WAL-mode mail store has no mail.sqlite-shm sidecar; refusing to create it".into(),
+            ));
+        }
+        Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+            VivariumError::Other(format!("failed to open storage database read-only: {e}"))
         })
     }
 

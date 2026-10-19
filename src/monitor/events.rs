@@ -15,6 +15,7 @@ use rusqlite::params_from_iter;
 use crate::error::VivariumError;
 use crate::mailspace::{POOL_EVENT_TYPES, PoolEventRow};
 use crate::pool::record::{DispatchRecord, OpenDispatch, fold_open};
+use crate::storage::Storage;
 
 /// Subject and addressee role of a task seen in the pool event log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -84,11 +85,13 @@ fn display_of(handles: &HashMap<String, String>, message_id: &str) -> String {
 
 /// Open a mailspace database strictly for reading.
 fn open_read_only(db: &Path) -> Result<rusqlite::Connection, VivariumError> {
-    let conn =
-        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| {
-                VivariumError::Other(format!("failed to open {} read-only: {e}", db.display()))
-            })?;
+    let dir = db.parent().ok_or_else(|| {
+        VivariumError::Other(format!(
+            "mail database path has no parent: {}",
+            db.display()
+        ))
+    })?;
+    let conn = Storage::open_mailspace_connection_read_only(dir)?;
     conn.busy_timeout(Duration::from_secs(1))
         .map_err(|e| VivariumError::Other(format!("failed to set busy timeout: {e}")))?;
     conn.execute_batch("PRAGMA query_only = true")

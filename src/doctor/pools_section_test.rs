@@ -83,7 +83,7 @@ fn different_hosts_do_not_share_a_root() {
 }
 
 #[test]
-fn foreign_legacy_and_missing_marks_are_not_healthy() {
+fn foreign_and_missing_marks_are_not_healthy() {
     let tmp = tempfile::tempdir().unwrap();
     let id = PoolId::new("test", ID, "a");
     mark(tmp.path(), "current", "a", Some(&id.mailspace));
@@ -92,13 +92,11 @@ fn foreign_legacy_and_missing_marks_are_not_healthy() {
     mark(tmp.path(), "unknown", "a", None);
     mark(tmp.path(), "unrelated", "b", Some("elsewhere"));
     let facts = scan_root(tmp.path(), &id).unwrap();
-    assert_eq!(
-        (facts.own, facts.foreign, facts.legacy, facts.unknown),
-        (1, 1, 1, 1)
-    );
+    assert_eq!((facts.own, facts.foreign, facts.unknown), (1, 2, 1));
     let result = ownership_finding("a", &facts);
     assert_eq!(result.status, Status::Warn);
-    assert!(result.detail.contains("1 owned by another mailspace"));
+    assert!(result.detail.contains("2 owned by another mailspace"));
+    assert!(!result.detail.contains("legacy"));
     assert!(!result.detail.contains("elsewhere"));
 }
 
