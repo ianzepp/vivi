@@ -2135,9 +2135,9 @@ For whoever operates it. Reference tables follow in the sections below.
 3. Check with one paused tick: `vivi pump pause`, then `vivi pump once`.
    Config errors are printed and the exit is non-zero. Paused mode stops
    dispatch, the hold cycle and the gate only; the board pass
-   (sync pull, planners for plannable needs) and merging of delivered units
-   still run. Read `vivi pump status`, `<home>/log.txt` and
-   `<home>/exceptions.txt`.
+   (sync pull, planners for plannable needs), which runs on its own worker
+   thread, and merging of delivered units still run. Read `vivi pump status`,
+   `<home>/log.txt` and `<home>/exceptions.txt`.
 4. Run `vivi pump resume` when paused. Run `vivi pump run` (add
    `--project <root>` outside the project) under a supervisor, or register it with `vivi pump service add`
    and install the user service. The standalone pump runs in the foreground

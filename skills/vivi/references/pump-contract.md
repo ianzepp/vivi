@@ -369,36 +369,70 @@ each merge outcome does to the unit.
 
 ## 7. The tick
 
-`tick` runs these steps in order. Dispatch runs before the periodic board pass so
-a slow mailspace read does not keep ready worker slots idle:
+The board pass runs on its own worker thread (named `pump-board`), started with
+the merge lanes at pump start and alive for the whole run. It never runs inside
+the tick thread, so a slow mailspace read costs the tick nothing.
 
-1. `merge_apply`: drain finished merge results into state.
-2. `ingest`: read plan files already present in the pump home.
-3. `collect`: reconcile pool state against inflight units and the gate task.
-4. `merge_apply` again.
-5. `merge_feed`: queue delivered units for merging.
-6. `save` — save point one.
-7. Control check: if the mode is paused, run the board pass, ingest any new
-   plan files, save, write status and return. Dispatch and gate work are skipped;
-   already-fed merges continue on the independent merge thread.
-8. `dispatch`.
-9. `save` — save point two.
-10. `hold_cycle`.
-11. `external_gates`: take finished results from `gate.results_dir`, if set.
-12. `start_gate`.
-13. `merge_apply` — lets gate/merge results land in state.
-14. `merge_feed`.
-15. `board`: sync pull, re-plan answered parked needs, plan new needs and reply
-   on threads. A failure logs `BOARD ERROR` and the tick continues.
-16. `ingest`: read plan files written by the board pass.
-17. `save` — save point three.
+`tick` runs these steps in order:
+
+1. `write_status`.
+2. Board fold: if a pass finished on the board worker, merge it back into the
+   live state — need removals and re-plans, planning and reply keys, revision
+   planning, amendment fields (`thread_sha256`, `thread_seen_at`,
+   `amendment_pending`) and `board.at`. A pass still running changes nothing.
+3. `merge_apply`: drain finished merge results into state.
+4. `ingest`: read plan files already present in the pump home.
+5. Requeue requests: apply pending `vivi pump requeue` rows.
+6. `collect`: reconcile pool state against inflight units and the gate task.
+7. `merge_apply` again.
+8. `merge_feed`: queue delivered units for merging.
+9. `save` — save point one; `write_status`.
+10. Control check: if the mode is paused, request the periodic board pass,
+    ingest any new plan files, run the stall and blocker alarms, save, write
+    status and return. Dispatch and gate work are skipped; already-fed merges
+    continue on the independent merge thread.
+11. `dispatch`: plan and reserve the tick's starts, then run them concurrently.
+12. `save` — save point two; `write_status`.
+13. `hold_cycle`, `external_gates` (finished results from `gate.results_dir`,
+    if set) and `start_gate`, per configured target.
+14. `merge_apply` — lets gate/merge results land in state.
+15. `merge_feed`.
+16. `write_status`.
+17. Periodic board pass: request one on the worker, ingest plan files, run the
+    stall and blocker alarms and the blocking-stuck response, then `save` —
+    save point three.
 18. `write_status`.
+
+**The board pass is requested, never awaited.** The tick thread owns due-ness:
+when `board.every` seconds have passed since the previous pass *completed*
+(`board.at`) and the worker is idle, it sends a clone of the state. The worker
+runs one pass against that clone — sync pull, candidate listing, planner
+launches, thread replies and amendment detection — and stamps `board.at` on its
+own copy; the tick that finds the finished clone on the channel folds it back,
+and only then does the `board.every` interval restart. `merge_back` copies back
+only what the board pass itself owns, and only for the handles it touched, so
+verdict, units and revision changes the tick thread made during the pass stay
+live. A worker that disappeared logs `board worker is gone; the pass is lost`
+and the next due tick asks again.
+
+**Pool dispatches for different slots run concurrently.** `dispatch` reads free
+slots, offers ready units to the pools (fix units first, then priority needs)
+and plans at most `per_tick` starts; a slot is reserved when its start is
+planned, so same-tick planning sees it taken. The planned starts then run on
+one thread each, and the tick thread only joins them in ranked order and
+applies the outcomes to the state. Dispatch, collect and the control checks
+never wait on the board pass, so a slow pass leaves no dispatch gap: control is
+re-checked every second of the inter-tick sleep, so pause and stop land within
+about one tick.
 
 Error handling:
 
-- Board errors are caught inside `tick` (step 2, above).
-- Any other tick exception propagates to the `run`/`once` loop, which logs
-  `TICK ERROR` with the panic note and saves the state before continuing. The loop does not exit on tick errors.
+- A board pass failure stays inside its worker: the pass's own calls log their
+  errors and the tick continues.
+- A tick panic is caught by the `run`/`once` loop, which logs `TICK ERROR` with
+  the panic note and saves the state before continuing; the loop does not exit
+  on tick errors. A tick that returns an error (a failed state save, an
+  unreadable control state) ends the run with that error.
 - Merge thread errors are caught inside `merge_thread`: every job in the batch
   gets an `ok=null` `merge-error` result, and any job the results did not name
   gets `merge-undecided`. `merge_apply` turns both into
@@ -461,8 +495,11 @@ already inflight; same-tick starts count toward the cap, and the skipped unit
 is simply retried next tick. A unit naming a kind that is not defined is never
 dispatched; the pump files one `unknown-kind` exception for it (once per unit,
 remembered in `pump.db`) so an operator sees it. Free slot counts come from
-`pool status --porcelain`. At most `per_tick` units start per tick, and fix
-units are offered first.
+`pool status --porcelain`. At most `per_tick` starts are planned per tick, and
+fix units are offered first; the planned starts then run concurrently, one
+thread each. A slot is reserved when its start is planned, and a failed send is
+retried on the next tick rather than falling through to a later unit in the
+same tick.
 
 Brief composition (`brief_for`), in order:
 
@@ -487,10 +524,11 @@ vivi pool dispatch --pool <pool> <task> --model <model> --from <branch> \
 ```
 
 with `--from`/`--to`/budget from config (§9). The created handle is read with
-the regex `^(?:node|created)\s+(?:\S+\s+)?([0-9a-f]{8})\s*$` in multiline mode; no match logs `task send failed` and skips the unit. A failed
-pool dispatch logs `dispatch failed`, marks the task done with
-`dispatch failed; superseded`, and zeroes the pool's free count when the output
-says `no free slot`.
+the regex `^(?:node|created)\s+(?:\S+\s+)?([0-9a-f]{8})\s*$` in multiline mode; no match logs `task send failed` and skips the unit; its reserved slot goes back to the pool
+and the next tick retries it. A failed pool dispatch logs `dispatch failed`,
+marks the task done with `dispatch failed; superseded`, zeroes the pool's free
+count when the output says `no free slot` and otherwise gives the reserved slot
+back; the unit stays pending and is retried next tick.
 
 ## 9. Config reference
 
