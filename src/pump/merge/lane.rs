@@ -169,14 +169,24 @@ pub struct Merger {
     pub(crate) results: Receiver<MergeResult>,
 }
 
+/// The lane's RAM disk request: a fresh disk of `gib` GiB per batch, driven
+/// through `runner`. Admission (memory only — no SSD fallback) happens before
+/// the batch runs; mounting the disk is unit .2.
+pub(crate) struct LaneRam {
+    pub(crate) gib: u64,
+    pub(crate) runner: std::sync::Arc<dyn crate::pool::ramdisk::Runner>,
+}
+
 /// What a lane thread needs to do its work.
-struct LaneWorker {
+pub(crate) struct LaneWorker {
     /// The lane number within its target.
     n: u32,
     /// The target's own integration checkout, the source for lane clones.
     base: Ctx,
     /// This lane's context: its repository is the lane checkout.
     ctx: Ctx,
+    /// The target's `[pump.ramdisk]` request, when a lane disk is configured.
+    ram: Option<LaneRam>,
 }
 
 impl Merger {
@@ -527,6 +537,10 @@ fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
         n,
         base: target.clone(),
         ctx,
+        ram: target.cfg.ramdisk.lane_gib.map(|gib| LaneRam {
+            gib,
+            runner: std::sync::Arc::new(crate::pool::ramdisk::RealRunner),
+        }),
     };
     let out = out.clone();
     let spawned = thread::Builder::new()
@@ -567,15 +581,53 @@ fn lane_loop(lane: &LaneWorker, batches: &Receiver<Vec<MergeJob>>, out: &Sender<
 
 /// Make sure the lane checkout exists, then merge the batch in it. A checkout
 /// that cannot be made leaves every job undecided, to be re-fed later.
-fn lane_work(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
+pub(crate) fn lane_work(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
     if let Err(detail) = ensure_checkout(&lane.base, &lane.ctx) {
         lane.ctx.log(&format!("checkout failed: {detail}"));
-        return jobs
-            .iter()
-            .map(|j| undecided_result(&j.uid, "lane-checkout-failed", &detail))
-            .collect();
+        return undecided_all(jobs, "lane-checkout-failed", &detail);
     }
-    run_batch(lane, jobs)
+    match &lane.ram {
+        None => run_batch(lane, jobs),
+        Some(ram) => ramdisk_batch(lane, ram, jobs),
+    }
+}
+
+/// Admit the batch onto the lane's RAM disk: free memory (minus what attached
+/// disks hold and the margin) must cover the disk. A job that does not fit
+/// stays queued — every result undecided, so the units return to `Delivered`
+/// and are re-fed later; there is no SSD fallback. On admit the batch runs in
+/// the plain path for now: unit .2 replaces this pass-through with mounting
+/// the disk and running the worktree on it.
+fn ramdisk_batch(lane: &LaneWorker, ram: &LaneRam, jobs: &[MergeJob]) -> Vec<MergeResult> {
+    match crate::pool::ramdisk::admit_with(
+        &*ram.runner,
+        crate::pool::ramdisk::available_bytes(),
+        ram.gib,
+        lane.ctx.cfg.ramdisk.margin_gib,
+    ) {
+        Ok(()) => run_batch(lane, jobs),
+        Err(err) => undecided_all(jobs, "ramdisk-wait", &err),
+    }
+}
+
+/// One undecided result per job: `ok: None` keeps the unit `Delivered`, so
+/// the pump re-feeds it later.
+fn undecided_all(jobs: &[MergeJob], why: &str, detail: &str) -> Vec<MergeResult> {
+    jobs.iter()
+        .map(|j| undecided_result(&j.uid, why, detail))
+        .collect()
+}
+
+/// A lane worker for tests: no thread, no channel, the caller picks the RAM
+/// request.
+#[cfg(test)]
+pub(crate) fn detached_worker(base: &Ctx, n: u32, ram: Option<LaneRam>) -> LaneWorker {
+    LaneWorker {
+        n,
+        base: base.clone(),
+        ctx: base.clone(),
+        ram,
+    }
 }
 
 /// Create the lane's own clone when it does not exist yet: a separate
