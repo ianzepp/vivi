@@ -1,6 +1,7 @@
 //! Pump configuration (the `[pump]` table of `mailspace.toml`).
 
 use crate::VivariumError;
+use crate::pump::alarm::AlarmConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -532,38 +533,6 @@ impl Default for Generated {
             paths: Vec::new(),
             regenerate: String::new(),
             drift: Vec::new(),
-        }
-    }
-}
-
-/// Stall alarm thresholds (the `[pump.alarm]` table).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct AlarmConfig {
-    /// Minutes a fix unit may sit `delivered` or `merging` before a
-    /// `stall-fix-unit` exception.
-    pub fix_wait_minutes: u64,
-    /// Hours without a promotion, while merges are waiting on one, before a
-    /// `stall-promote` exception.
-    pub promote_hours: u64,
-    /// Minutes units may sit `delivered` with nothing merging before a
-    /// `stall-merge` exception.
-    pub merge_idle_minutes: u64,
-    /// Units a blocked root must hold, directly or transitively, before the
-    /// pump reports it as a blocker.
-    pub blocking_hold_units: usize,
-    /// Minutes a blocker may hold its units before it is re-planned.
-    pub blocking_replan_minutes: u64,
-}
-
-impl Default for AlarmConfig {
-    fn default() -> Self {
-        Self {
-            fix_wait_minutes: 30,
-            promote_hours: 3,
-            merge_idle_minutes: 45,
-            blocking_hold_units: 10,
-            blocking_replan_minutes: 120,
         }
     }
 }
