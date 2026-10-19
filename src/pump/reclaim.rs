@@ -52,7 +52,11 @@ pub fn enqueue_merged(ctx: &Ctx, st: &mut State, uid: &str, unit: &Unit) {
         }
     };
     let role = reclaim_role(ctx);
-    let id = format!("reclaim:{}:{uid}", unit.target_id());
+    let id = format!(
+        "reclaim-{}-{}",
+        job_id_component(unit.target_id()),
+        job_id_component(uid)
+    );
     let body = worker_brief(&request_value);
     let mut spec = JobSpec::new(
         id,
@@ -179,6 +183,21 @@ fn reclaim_role(ctx: &Ctx) -> String {
         .lookup("reclaim")
         .or_else(|| ctx.routing.hand(&ctx.cfg.to))
         .map_or_else(|| ctx.cfg.to.clone(), |role| role.name.clone())
+}
+
+/// Keep deterministic reclaim IDs inside the durable job ID alphabet while
+/// preserving distinct IDs for unit handles containing punctuation.
+fn job_id_component(value: &str) -> String {
+    let mut component = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            component.push(char::from(byte));
+        } else {
+            component.push('.');
+            component.push_str(&format!("{byte:02x}"));
+        }
+    }
+    component
 }
 
 /// Local providers are the only pools that can reach the shared slot roots.

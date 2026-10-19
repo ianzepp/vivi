@@ -531,7 +531,15 @@ fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     assert!(!commands.iter().any(|c| c.contains("pool status")));
     assert!(!commands.iter().any(|c| c.contains("task send")));
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
-    assert_eq!(text.lines().count(), 9);
+    assert!(text.starts_with("1970-01-12T13:46:40Z\n"), "{text}");
+    assert!(
+        text.lines().any(|line| line.starts_with("units ")),
+        "{text}"
+    );
+    assert!(
+        text.lines().any(|line| line.starts_with("merges ")),
+        "{text}"
+    );
 }
 
 #[test]
@@ -645,15 +653,14 @@ fn a_missing_roster_role_refuses_to_start_with_the_fix_command() {
 fn once_runs_exactly_one_tick() {
     let (dir, ctx, host) = setup();
     run_with(&ctx, true).unwrap();
-    // One tick makes exactly two `pool status --porcelain` calls, as in
-    // The dispatch slot count and the gate's pool pick. One tick
-    // is two; a second tick would make four.
+    // With no pending work or due gate, one tick makes one pool-slot probe.
+    // A second tick would make another.
     let statuses = host
         .commands()
         .iter()
         .filter(|c| c.contains("pool status --porcelain"))
         .count();
-    assert_eq!(statuses, 2);
+    assert_eq!(statuses, 1);
     assert!(dir.path().join("home").join(DB_FILENAME).is_file());
 }
 

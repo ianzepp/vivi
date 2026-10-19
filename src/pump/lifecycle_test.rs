@@ -136,6 +136,7 @@ fn world(host: &FakeHost) {
         0,
         "collected 1a2b3c4d p1 slot-1 finished \"pushed branch sha\"\n",
     );
+    host.reply("task show", 0, "agent exit 0 after 1s\n");
 }
 
 /// How many recorded command lines contain `fragment`.

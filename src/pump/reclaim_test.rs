@@ -56,7 +56,7 @@ fn merged_unit_enqueues_a_local_snapshot_without_cleaning_inline() {
 
     enqueue_merged(&ctx, &mut state, "u1", &unit);
 
-    let job = &state.jobs["reclaim:default:u1"];
+    let job = &state.jobs["reclaim-default-u1"];
     assert_eq!(job.status, JobStatus::Pending);
     assert!(job.local_only);
     assert_eq!(job.pool_candidates, [String::from("here")]);
@@ -89,7 +89,7 @@ fn reclaim_without_a_local_executor_stays_pending_and_can_recover() {
     enqueue_merged(&ctx, &mut state, "u1", &unit);
     refresh_pending(&ctx, &mut state);
 
-    let job = &state.jobs["reclaim:default:u1"];
+    let job = &state.jobs["reclaim-default-u1"];
     assert_eq!(job.status, JobStatus::Pending);
     assert!(job.local_only);
     assert!(job.pool_candidates.is_empty());
@@ -111,7 +111,7 @@ fn reclaim_without_a_local_executor_stays_pending_and_can_recover() {
     ctx.routing = Arc::new(routing::from_mailspace(&updated.config));
     refresh_pending(&ctx, &mut state);
 
-    let job = &state.jobs["reclaim:default:u1"];
+    let job = &state.jobs["reclaim-default-u1"];
     assert_eq!(job.pool_candidates, [String::from("remote")]);
     assert!(!job.payload["unavailable_reported"].as_bool().unwrap());
     assert!(

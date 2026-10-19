@@ -119,7 +119,7 @@ fn a_saved_state_round_trips() {
     let path = dir.path().join(DB_FILENAME);
     let mut state = sample();
     let mut spec = JobSpec::new(
-        String::from("reclaim:u1"),
+        String::from("reclaim-default-u1"),
         String::from("reclaim"),
         String::from("hand"),
         String::from("reclaim u1"),
@@ -129,7 +129,7 @@ fn a_saved_state_round_trips() {
     spec.pool_candidates = vec![String::from("here")];
     spec.payload = serde_json::json!({"request": {"version": 1}});
     crate::pump::jobs::enqueue(&mut state, spec).unwrap();
-    let job = state.jobs.get_mut("reclaim:u1").unwrap();
+    let job = state.jobs.get_mut("reclaim-default-u1").unwrap();
     job.status = JobStatus::Finished;
     job.applied_at = Some(43);
     job.outcome = Some(JobOutcome {
@@ -181,7 +181,7 @@ fn a_saved_state_round_trips() {
     assert_eq!(back.red_reported, vec![String::from("n1:x")]);
     assert_eq!(back.merges, 3);
     assert_eq!(back.rate_limited_at, Some(1_700_000_123));
-    let job = &back.jobs["reclaim:u1"];
+    let job = &back.jobs["reclaim-default-u1"];
     assert!(job.local_only);
     assert_eq!(job.status, JobStatus::Finished);
     assert_eq!(job.applied_at, Some(43));
