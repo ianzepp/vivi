@@ -1030,3 +1030,93 @@ fn thread_outline_stays_complete_where_the_capped_thread_stops() {
     assert_eq!(outline[0].handle, root);
     assert_eq!(mailspace.thread(&root, false, 50, 50).unwrap().len(), 50);
 }
+
+#[test]
+fn task_from_need_binds_the_unit_and_writes_a_parent_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("mind").unwrap();
+    mailspace.add_identity("hand").unwrap();
+    let item = |role: &str, kind: &str, subject: &str| {
+        mailspace
+            .send(SendRequest {
+                from: "mind".into(),
+                to: vec!["hand".into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: subject.into(),
+                body: "body".into(),
+                role: role.into(),
+                kind: Some(kind.into()),
+                reply_to: None,
+                depends_on: Vec::new(),
+            })
+            .unwrap()
+    };
+    // mind holds its own sent copy of the need; the node is minted for the
+    // delivered copy hand holds.
+    let need = item("needs", "need", "lower me");
+    let result = mailspace
+        .task_from_source(SourceTaskRequest {
+            source_handle: need.sent.clone(),
+            actor: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            subject: "unit 1".into(),
+            body: "do the first part".into(),
+        })
+        .unwrap();
+    assert_eq!(result.source_kind, "need");
+    let task = result.delivered[0].handle.clone();
+
+    let (need_rfc, task_bytes, source_kind) = {
+        let storage = mailspace.storage().unwrap();
+        let need_id = storage.resolve_message_token(&need.sent).unwrap();
+        let need_rfc = mail_parser::MessageParser::default()
+            .parse(&storage.read_message(&need_id).unwrap())
+            .unwrap()
+            .message_id()
+            .unwrap()
+            .to_string();
+        let task_id = storage.resolve_message_token(&task).unwrap();
+        let bytes = String::from_utf8(storage.read_message(&task_id).unwrap()).unwrap();
+        let metadata = storage.item_metadata(&task_id).unwrap();
+        (need_rfc, bytes, metadata.get("source_kind").cloned())
+    };
+    let parent = crate::message::normalize_message_id(&need_rfc).unwrap();
+    assert!(
+        task_bytes.contains(&format!("X-Vivi-Parent: <{parent}>")),
+        "{task_bytes}"
+    );
+    assert_eq!(source_kind.as_deref(), Some("need"));
+
+    let show = mailspace.graph_show("backlog").unwrap();
+    let need_node = show
+        .nodes
+        .iter()
+        .find(|n| n.source_id == need.delivered[0].handle)
+        .expect("need node");
+    let task_node = show
+        .nodes
+        .iter()
+        .find(|n| n.source_id == task)
+        .expect("task node");
+    assert_eq!(
+        task_node.subgraph.as_deref(),
+        Some(need_node.source_id.as_str())
+    );
+    assert_eq!(need_node.state, "open");
+
+    let want = item("wants", "want", "a want");
+    let want_task = mailspace
+        .task_from_source(SourceTaskRequest {
+            source_handle: want.sent,
+            actor: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            subject: "task from want".into(),
+            body: "still allowed".into(),
+        })
+        .unwrap();
+    assert_eq!(want_task.source_kind, "want");
+}
