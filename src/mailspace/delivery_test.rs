@@ -305,8 +305,8 @@ fn a_report_with_verdict_carries_it_as_a_letter() {
         .iter()
         .find(|message| message.message_id != storage.resolve_message_token(&handle).unwrap())
         .unwrap();
-    let letter = String::from_utf8_lossy(&storage.read_message(&reply.message_id).unwrap())
-        .into_owned();
+    let letter =
+        String::from_utf8_lossy(&storage.read_message(&reply.message_id).unwrap()).into_owned();
     assert!(
         letter.contains("X-Vivi-Verdict: fixed"),
         "no verdict header: {letter}"
