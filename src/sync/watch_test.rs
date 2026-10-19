@@ -1,6 +1,6 @@
 //! Letters a pull files wake `watch` exactly as locally delivered ones do.
 
-use crate::mailspace::{Mailspace, MailspaceWatchRequest, run_watch};
+use crate::mailspace::{Mailspace, MailspaceWatchRequest, SendRequest, run_watch};
 use crate::sync::fake_server::{Checkout, FakeServer, World, checkout, handle, wire_id};
 use crate::sync::fetch::fetch_handles;
 
@@ -27,6 +27,11 @@ fn request(role: &str, kinds: &str, events: &str) -> MailspaceWatchRequest {
 
 fn wakes(mailspace: &Mailspace, role: &str, kinds: &str) -> bool {
     run_watch(mailspace, request(role, kinds, "delivered,moved")).is_ok()
+}
+
+/// Only `moved` events: the delivery alone does not count.
+fn wakes_moved(mailspace: &Mailspace, role: &str, kinds: &str) -> bool {
+    run_watch(mailspace, request(role, kinds, "moved")).is_ok()
 }
 
 #[test]
@@ -129,4 +134,50 @@ fn a_restored_letter_does_not_wake_a_watcher_a_second_time() {
         .list_mailspace_events(&wire_id(1, 0))
         .unwrap();
     assert_eq!(events.len(), 1, "{events:?}");
+}
+
+/// An event a pull applies — the close letter moving the assignee's row — is
+/// a mailspace event like any other, so it wakes that role's watcher.
+#[test]
+fn an_event_applied_by_pull_wakes_the_assignees_watcher() {
+    let server = FakeServer::new();
+    let a = checkout("alice", &["mind"]);
+    let b = checkout("bob", &["mind", "hand"]);
+    let (ca, cb) = (a.client(&server), b.client(&server));
+    let sent = a
+        .mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec![b.address("hand")],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "ship it".into(),
+            body: "done_when: it works\n".into(),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let task = sent
+        .delivered
+        .first()
+        .map_or(sent.sent, |delivered| delivered.handle.clone());
+    a.push(&ca);
+    b.pull(&cb);
+    assert!(
+        !wakes_moved(&b.mailspace, "hand", "task"),
+        "the delivery alone is not the close"
+    );
+
+    // The owner's close is a letter; only the pull applies it here.
+    a.mailspace
+        .move_task("mind", &task, "done", None, None, &[], &[])
+        .unwrap();
+    a.push(&ca);
+    b.pull(&cb);
+    assert!(
+        wakes_moved(&b.mailspace, "hand", "task"),
+        "the moved event a pull applied wakes the assignee's watcher"
+    );
 }
