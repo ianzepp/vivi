@@ -321,8 +321,7 @@ impl Default for BoardConfig {
 }
 
 /// Planner settings (the `[pump.planner]` table).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PlannerConfig {
     /// Planner command; its stdin is the prompt file.
     pub run: String,
@@ -331,6 +330,10 @@ pub struct PlannerConfig {
     /// Seconds a receipt-less (alive or unreachable) split planner may run
     /// before the unit is stuck; a planner that exits is retried instead.
     pub split_hard_cap: u64,
+    /// The legacy `split_timeout` key was read; validate warns and migrate
+    /// rewrites it.
+    #[serde(skip)]
+    pub split_timeout_present: bool,
 }
 
 impl Default for PlannerConfig {
@@ -339,7 +342,32 @@ impl Default for PlannerConfig {
             run: String::new(),
             charter: String::new(),
             split_hard_cap: 5400,
+            split_timeout_present: false,
         }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PlannerConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Default, serde::Deserialize)]
+        #[serde(default)]
+        struct Raw {
+            run: String,
+            charter: String,
+            split_hard_cap: Option<u64>,
+            #[serde(rename = "split_timeout")]
+            split_timeout: Option<u64>,
+        }
+        let raw = <Raw as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self {
+            run: raw.run,
+            charter: raw.charter,
+            split_hard_cap: raw.split_hard_cap.or(raw.split_timeout).unwrap_or(5400),
+            split_timeout_present: raw.split_timeout.is_some(),
+        })
     }
 }
 
