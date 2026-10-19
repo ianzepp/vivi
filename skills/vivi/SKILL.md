@@ -2023,10 +2023,16 @@ vivi pump export --json <path>
 vivi pump priority set <need> <level>  # higher = dispatched and merged sooner; 0 removes
 vivi pump priority clear <need>
 vivi pump priority list                # `need level` lines, highest first
+vivi pump requeue <uid>... [--attempts N | --refund-host-failures | --fresh] [--reason TEXT] [--dry-run]
+vivi pump requeue --stuck-since <time> --why <class> [--dry-run]  # bulk-requeue stuck units after an incident
 ```
 
-`pause`, `resume`, `stop`, `start` and `priority` take `--project <root>` outside the
-project. They update the durable control mode in `pump.db`. `start` enables a
+`pause`, `resume`, `stop`, `start`, `priority` and `requeue` take
+`--project <root>` outside the project. Control commands update the durable
+control mode in `pump.db`. `requeue` instead queues request rows in `pump.db`
+that the running pump applies at its next tick: no restart and no stop, unlike
+editing `pump.db` by hand, which a running pump overwrites at each save.
+`start` enables a
 standalone pump; run `vivi pump run` to launch it when no pump service manages
 the project.
 
@@ -2179,7 +2185,8 @@ lines; shapes in the protocols reference, section 9.2).
 `bad-plan`, `split-no-answer`, `plan-no-answer`, `no-defect` receipts and gate
 news (`gate-new-failures`, `gate-unreadable`, `gate-build-failed`,
 `red-after-fix`). Read it after every unattended stretch. A `stuck` unit
-blocks its dependents until a person unblocks it.
+blocks its dependents until a person unblocks it with `vivi pump requeue` (one
+unit, or `--stuck-since` to recover every unit stuck since an incident).
 
 **Nothing is dispatching.** Check in this order:
 

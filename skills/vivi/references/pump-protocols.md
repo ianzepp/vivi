@@ -225,6 +225,29 @@ either returns the unit to `pending` or, at `attempts >= max_attempts`,
 marks it `stuck` with exception `stuck` carrying `why + ": " + detail[-300:]`.
 The last history record is quoted back into the next attempt's brief.
 
+Transient-class failures are retried first, without counting toward
+`max_attempts`:
+
+| class | how the `why`/`detail` pair classifies |
+| --- | --- |
+| `host` | `why` starts `lost/` or `error/` (host or harness failure), or is `fetch-failed` |
+| `timeout` | `why` is `proof-failed` and `detail` carries `(exit 124)`, `(exit 137)` or `[timeout after` — a shared check that was killed rather than one that failed |
+| `generated-conflict` | `why` is `merge-conflict` and every file after `Conflicting files:` is a lockfile (`Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `deno.lock`, `flake.lock`, `uv.lock`, `poetry.lock`, `composer.lock`, `Gemfile.lock`, `go.sum`), so a merge regenerates it |
+
+A transient failure returns the unit to `pending`, increments
+`transient_retries`, sets `retry_not_before = now + transient_backoff * 2^n`
+(`n` = the retries before this one, so the wait doubles: 120 s, 240 s, … with
+the defaults) and logs `transient-retry <uid> <class> <n>/<cap>`, where `<cap>`
+is `[pump.dispatch] transient_max` (default 2; 0 disables the retry). Past the
+cap the unit takes the ordinary path above and the retries stop counting, so it
+is `stuck` once `attempts - transient_retries >= max_attempts`; the exhaustion
+is then an ordinary failure, with the usual `stuck` exception and no separate
+transient one. The local merge path reports a fetch error as undecided rather
+than failed (section 5.1), so it returns to `delivered` and the merge feed
+retries it without touching the transient counter; the `fetch-failed` class
+above applies when a fail carries that `why` (a remote merger's `ok=false`
+result).
+
 ### 3.2 `failure_text` filtering
 
 `failure_text` compresses check output for result details: it
@@ -356,7 +379,7 @@ side is in pump-contract §6.
 | `ok` | Meaning | `why` values |
 | --- | --- | --- |
 | `true` | merged and pushed; carries `tip`, `outside`, `secs` | — |
-| `false` | decided failure; the unit is failed (retry or stuck) | `branch-missing`, `merge-conflict`, `proof-failed` |
+| `false` | decided failure; the unit is failed (retry or stuck). A transient-class one — a timed-out shared check (`proof-failed` exit 124/137 or `[timeout after`), a lockfile-only `merge-conflict`, or a `fetch-failed` — is retried with backoff first (section 3.1) | `branch-missing`, `merge-conflict`, `proof-failed` |
 | `null` | undecided; the unit returns to `delivered` and is retried later | `fetch-failed`, `push-failed`, `merge-error`, `merge-undecided`, `quarantine-push-failed` |
 | `null` + `quarantine` record | the unit is set aside with its batch; status `quarantined` | `quarantined` |
 
@@ -610,7 +633,7 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `bad-plan` | a plan file fails validation | `unit missing id, brief or write_scope` or `duplicate unit id <uid>`; unit field is the plan file basename |
 | `unknown-kind` | a pending unit names a kind (its `tools` value) that is not defined, or has none and no `default_kind` is set; raised once per unit | the kind name and that the unit is not dispatched |
 | `split-empty` | a split plan with `units: []` replaces a unit | the plan's `reason` (e.g. "Already delivered: commit …") |
-| `stuck` | `attempts >= max_attempts` on a fail | `<why>: <detail[-300:]>` |
+| `stuck` | `attempts - transient_retries >= max_attempts` on a fail, after any transient retry (`transient_max`) is spent | `<why>: <detail[-300:]>` |
 | `no-defect` | receipt contains `VERDICT: no-defect` | the last 400 chars of the receipt |
 | `quarantine` | a batch failed a shared check and was set aside; unit field is the quarantine id | `<n> units set aside on pump/quarantine/<id>: <cmd> rc=<code>; repair unit <fix_prefix>-<id>` |
 | `quarantine-stuck` | a quarantine repair unit went stuck; unit field is the quarantine id | `repair <uid> is stuck; <n> units return to delivered, one batch each: <uids>` |
@@ -631,6 +654,7 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `task send failed <uid>: <out[-200:]>` / `dispatch failed <uid>: <out[-300:]>` |
 | `delivered <uid> <branch> secs=<n> model=<model> pool=<pool>` |
 | `fail <uid> attempt=<n> <why>` |
+| `transient-retry <uid> <class> <n>/<cap>` |
 | `split-requested <uid>` / `split <uid> into <n> units` |
 | `plan <need> verdict=<v> units=<n>` |
 | `proof <uid> rc=<n> <n>s: <cmd[:90]>` |
@@ -653,3 +677,50 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `board: operator replied on parked need <h> (was <v>); re-planning` |
 | `sync pull rc=<n> …` / `sync push started (detached, drain)` |
 | `EXCEPTION <kind> <unit>` |
+
+### 9.3 Requeue (operator recovery)
+
+`vivi pump requeue` is the supported way to unblock a unit; nothing edits the
+state by hand. The CLI validates the uids against the pump state and writes one
+row per unit into the `requeue_requests` table of `pump.db`. The running pump
+reads the unapplied rows each tick after plan ingest and before the board pass,
+applies them, and marks them applied, so a requeued unit can dispatch in the
+same tick. No restart and no stop is needed, unlike editing `pump.db` by hand,
+which a running pump overwrites at each save.
+
+Allowed from-statuses: `stuck`, `quarantined`, `splitting` and `withdrawn`.
+A `quarantined` unit returns to `delivered` with `solo=true` and its
+`quarantine` cleared, so the merge feed gives it a batch of its own; every
+other allowed status returns to `pending`. Any other status is refused when the
+pump applies the request — a uid that has left the state since the request was
+queued is refused as `missing` — and the request is consumed anyway so a stale
+one cannot fire hours later:
+`requeue <uid> refused: status is <status>`.
+
+Attempt counter. The default policy keeps the unit's `attempts` but raises it
+past any attempt branch that already exists on the target's remote: the pump
+lists `refs/heads/unit/*` once per named target, and the next attempt never
+reuses `unit/<uid>-a<n>`. `--attempts N` sets the counter explicitly, `--fresh`
+resets it to 0, and `--refund-host-failures` subtracts the history entries
+whose `why`/`detail` classify transient (section 3.1) and clears
+`transient_retries`. At most one of the three may be given. A raise is logged
+as `requeue <uid> attempts raised to <n>: branch unit/<uid>-a<n> already
+exists`.
+
+Applying a request logs `requeue <uid> by operator: <reason>`; `--reason`
+defaults to `operator requeue`, and the bulk form carries its class there.
+
+Bulk recovery: `--stuck-since <time>` (a duration such as `1h`) with
+`--why <class>` selects every `stuck` unit whose last activity — its last
+history entry's `at`, else `since` — is inside the window and queues a
+default-policy request per unit with reason `bulk <class>`. It prints
+`selected <n> stuck unit(s): <uids>` first; an empty selection is a successful
+no-op. The bulk form takes no uids (`--stuck-since takes no unit uids`) and
+ignores the attempt flags (a conflicting combination of them is still
+refused).
+
+`--dry-run` prints `would requeue <uid>: status <status>, attempts <old> ->
+<new>, next branch unit/<uid>-a<new+1>` per unit and writes nothing; otherwise
+each queued request prints `requeue <uid> requested; the pump applies it at its
+next tick`. A mailspace with no `pump.db`, an unknown uid, conflicting attempt
+flags, or `--stuck-since` without `--why` is an error and writes nothing.

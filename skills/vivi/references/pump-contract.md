@@ -143,6 +143,7 @@ save point. The schema is `PRAGMA user_version = 4`.
 | `merges` | one row per merged unit: `commit_sha`, `at`, `outside_json` |
 | `gates`, `gate_failures` | every finished gate, unreadable ones included, plus one row per failing name |
 | `exceptions` | the same rows as `exceptions.txt`, queryable |
+| `requeue_requests` | operator requeue requests written by `vivi pump requeue`; the pump reads the unapplied rows each tick and marks them applied (§6) |
 | `closed_needs` | need handles whose every unit is satisfied |
 | `plans_seen` | plan file names already ingested (dedup) |
 | `promotions` | fast-forwards of main (`tip`, `at`) |
@@ -181,6 +182,8 @@ as marked):
 | `tools` | string | the unit's kind: a key of `[pump.dispatch.kinds]` (§9); empty means `default_kind`. Selects the pool, the in-flight cap, and whether the merger runs the unit's own proof |
 | `status` | string | the state machine state (§6) |
 | `attempts` | int | dispatches so far; incremented at dispatch |
+| `transient_retries` | int | runtime: transient-class failures retried without counting toward `max_attempts`; `vivi pump requeue --refund-host-failures` clears it |
+| `retry_not_before` | epoch seconds or null | runtime: earliest dispatch after a transient retry (`now + transient_backoff * 2^n`, doubling each retry) |
 | `history` | array of `{attempt, model, why, detail, at}` | one entry per failure or split request (fail, split); `detail` capped at 2500 chars |
 | `task` | 8-hex handle or null | the pool task while `inflight`, else null |
 | `branch` | `unit/<uid>-aN` or null | the worker branch |
@@ -194,7 +197,7 @@ as marked):
 | `replaced_by` | array of unit ids | runtime (replaced): the split's successor ids |
 | `verdict_text` | string | runtime (no-defect): tail of the no-defect receipt |
 | `held_on` | handle or null | runtime: the dependency currently holding the unit back; the first tick of each hold is logged |
-| `requeued` | bool, absent when false | runtime: the unit was requeued once by the blocking-stuck response, so a second stall parks it again instead of requeueing it again |
+| `requeued` | bool, absent when false | runtime: the unit was requeued once by the pump's own blocking-stuck response (not by `vivi pump requeue`), so a second stall parks it again instead of requeueing it again |
 | `quarantine` | quarantine id or null | runtime: set on every unit of a quarantined batch and on the repair unit that works on it. `pump.db` keeps it (like `base` and `solo`) as a key of `units.extra_json` |
 | `base` | ref or null | runtime: dispatch this unit `--from` this ref instead of `dispatch.from`; a repair unit carries `pump/quarantine/<id>` |
 | `solo` | bool, absent when false | runtime: merge this unit in a batch of its own; set when its quarantine repair went stuck |
@@ -286,7 +289,13 @@ States:
 `merged` and `no-defect` are directly satisfied; `replaced` delegates to its
 successors; everything else, `stuck` included, is not. A stuck unit therefore
 blocks its dependents and keeps its need open forever; only a person unblocks
-it. Record as-is.
+it. `vivi pump requeue <uid>` is that unblock: it queues a request in `pump.db`
+that the pump applies at its next tick, returning a `stuck`, `splitting` or
+`withdrawn` unit to `pending`, and a `quarantined` one to `delivered` with
+`solo=true` so it merges in a batch of its own. The request can raise, reset or
+refund the attempt counter without reusing an attempt branch that already
+exists on the target's remote (flags and the bulk form in
+[`pump-protocols.md`](pump-protocols.md) §9.3). Record as-is.
 
 Transitions (from, to, trigger, guard, action):
 
@@ -298,7 +307,8 @@ Transitions (from, to, trigger, guard, action):
 | `pending` | `inflight` | dispatch loop reaches it | `ready` (§8); a free pool slot; `pick_model` returns a model | task sent, pool dispatched, unit updated (`attempts+1`, `task`, `branch`, `model`, `since`, `since_dispatch`, `pool`) |
 | `inflight` | `delivered` | collect: the task is not running and not reported, or reported `finished`, and the worker branch exists on the remote | receipt does not contain `agent exit 124` / `agent_rc 124` | `since=now`, log `delivered` |
 | `inflight` | `no-defect` | collect: no remote branch, and the receipt contains `VERDICT: no-defect` | — | `verdict_text` kept, `no-defect` exception filed |
-| `inflight` | `pending` or `stuck` | collect: no branch, no verdict marker | — | `fail`: history entry `{attempt, model, why, detail≤2500, at}`; `task=null`; `stuck` when `attempts >= max_attempts` (plus a `stuck` exception), else back to `pending` |
+| `inflight` | `pending` or `stuck` | collect: no branch, no verdict marker | — | `fail`: history entry `{attempt, model, why, detail≤2500, at}`; `task=null`; `stuck` when `attempts - transient_retries >= max_attempts` (plus a `stuck` exception), else back to `pending` |
+| `inflight` | `pending` (transient) | collect: no branch, no verdict marker, and the failure classifies transient (`lost/`, `error/`, `fetch-failed`, a timed-out `proof-failed`, a lockfile-only `merge-conflict`) | `transient_retries < transient_max` | history entry as above; `transient_retries+=1`; `retry_not_before = now + transient_backoff * 2^n`; log `transient-retry <uid> <class> <n>/<cap>`; past the cap the ordinary fail row above applies |
 | `inflight` | `splitting` | timeout: reconcile state `timeout`, or still running past `budget + overdue_grace`, or the receipt shows agent exit 124 | — | `split`: `resplit/` files written, split planner spawned detached, `task=null`, history entry `why="timeout"`, `since=now` |
 | `splitting` | `stuck` | split planner wrote no plan in `split_timeout` | — | `split-no-answer` exception |
 | `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
@@ -538,7 +548,9 @@ configuration remains the implicit `default` target.
 | --- | --- | --- | --- |
 | `lanes` | list of `{model, cap}` | none — **required** | model lanes and per-model inflight caps (§8) |
 | `last_resort` | string | none | model used when `attempts >= max_attempts - 1`; empty means the final attempt uses the normal lanes |
-| `max_attempts` | int | `3` | attempts before `stuck` |
+| `max_attempts` | int | `3` | attempts before `stuck`; transient retries are subtracted from `attempts` in this test |
+| `transient_max` | int | `2` | transient-class failures retried over the unit's life without counting toward `max_attempts`; 0 disables |
+| `transient_backoff` | int seconds | `120` | seconds before the first transient retry; doubles on each further one |
 | `budget` | int seconds | `600` | `--budget` of a unit dispatch |
 | `overdue_grace` | int seconds | `900` | running longer than `budget + overdue_grace` means split |
 | `per_tick` | int | `6` | units started per tick at most |
