@@ -312,7 +312,8 @@ fn status_lines_report_none_for_an_idle_pump() {
 fn a_blocking_stuck_exception_names_the_transitive_hold_count() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
-    st.needs.insert(String::from("r"), record("units", &["r-1"]));
+    st.needs
+        .insert(String::from("r"), record("units", &["r-1"]));
     st.units.insert(
         String::from("r-1"),
         need_unit("r", Status::Stuck, T0 - 30 * 60),
@@ -325,7 +326,10 @@ fn a_blocking_stuck_exception_names_the_transitive_hold_count() {
     check(&ctx, &mut st);
 
     let text = exceptions(&ctx);
-    assert!(text.contains("blocking-stuck r-1"), "no exception in {text}");
+    assert!(
+        text.contains("blocking-stuck r-1"),
+        "no exception in {text}"
+    );
     assert!(
         text.contains("stuck for 30m; holds 13 units across 12 needs"),
         "hold count missing from {text}"
@@ -353,13 +357,20 @@ fn a_parked_root_raises_with_the_need_as_subject() {
             need_unit("q", Status::Pending, T0 - 100),
         );
     }
-    host.reply("graph blocked", 0, &rows(&[(String::from("q"), vec![String::from("p")])]));
+    host.reply(
+        "graph blocked",
+        0,
+        &rows(&[(String::from("q"), vec![String::from("p")])]),
+    );
     host.set_now(T0);
 
     check(&ctx, &mut st);
 
     let text = exceptions(&ctx);
-    assert!(text.contains("blocking-stuck p operator"), "no exception in {text}");
+    assert!(
+        text.contains("blocking-stuck p operator"),
+        "no exception in {text}"
+    );
     assert!(text.contains("holds 10 units across 1 need"), "{text}");
 }
 
@@ -367,7 +378,8 @@ fn a_parked_root_raises_with_the_need_as_subject() {
 fn a_small_hold_does_not_raise() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
-    st.needs.insert(String::from("r"), record("units", &["r-1"]));
+    st.needs
+        .insert(String::from("r"), record("units", &["r-1"]));
     st.units.insert(
         String::from("r-1"),
         need_unit("r", Status::Stuck, T0 - 30 * 60),

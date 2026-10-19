@@ -41,7 +41,11 @@ fn rebuilt_frame_has_no_interior_blank_line() {
     };
     let mapped = codex_sse::filter(completed, &mut rebuild).expect("kept");
     let trimmed = mapped.raw.trim_end_matches('\n');
-    assert!(!trimmed.contains("\n\n"), "interior blank line in {:?}", mapped.raw);
+    assert!(
+        !trimmed.contains("\n\n"),
+        "interior blank line in {:?}",
+        mapped.raw
+    );
     assert!(
         trimmed.starts_with("event: response.completed\ndata: "),
         "bad frame: {:?}",
