@@ -155,7 +155,9 @@ Before finishing code changes, run the narrowest useful check first, then widen
 as risk increases:
 
 - `cargo fmt --check`
-- `cargo test --test hygiene`
+- `cargo test --test hygiene` — mandatory before delivery for any change that
+  touches `src/**/*.rs`; it fails the build on inline `#[cfg(test)]` modules
+  and on `#[test]` attributes in production files
 - `cargo test`
 
 For documentation-only edits, at least inspect links or run a small local
