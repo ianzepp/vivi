@@ -493,11 +493,13 @@ fn reset_one_remote(
 }
 
 fn slot_dir_under(root: &Path, path: &Path) -> Option<std::path::PathBuf> {
-    let rel = match path.strip_prefix(root) {
+    let root = super::clean_work::real_path(root);
+    let path = super::clean_work::real_path(path);
+    let rel = match path.strip_prefix(&root) {
         Ok(rel) => rel,
         Err(_) => return None,
     };
-    let mut cur = root.to_path_buf();
+    let mut cur = root;
     for part in rel {
         cur.push(part);
         if part.to_string_lossy().starts_with("slot-") {

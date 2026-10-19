@@ -387,7 +387,7 @@ fn drop_scratch_branch(
 
 /// Best-effort canonicalization that survives a missing tail: fall back to
 /// the nearest existing ancestor and re-join the rest of the path.
-fn real_path(path: &Path) -> PathBuf {
+pub(super) fn real_path(path: &Path) -> PathBuf {
     if let Ok(resolved) = path.canonicalize() {
         return resolved;
     }
