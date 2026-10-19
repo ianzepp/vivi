@@ -412,6 +412,11 @@ pub struct AlarmConfig {
     /// Minutes units may sit `delivered` with nothing merging before a
     /// `stall-merge` exception.
     pub merge_idle_minutes: u64,
+    /// Units a blocked root must hold, directly or transitively, before the
+    /// pump reports it as a blocker.
+    pub blocking_hold_units: usize,
+    /// Minutes a blocker may hold its units before it is re-planned.
+    pub blocking_replan_minutes: u64,
 }
 
 impl Default for AlarmConfig {
@@ -420,6 +425,8 @@ impl Default for AlarmConfig {
             fix_wait_minutes: 30,
             promote_hours: 3,
             merge_idle_minutes: 45,
+            blocking_hold_units: 10,
+            blocking_replan_minutes: 120,
         }
     }
 }

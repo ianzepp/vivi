@@ -1,7 +1,9 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
+use crate::pump::config::{
+    AlarmConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -649,4 +651,19 @@ fn the_retired_priority_file_key_still_parses_and_is_not_written_back() {
     .unwrap();
     assert_eq!(cfg.retired_priority_file.as_deref(), Some("priority.txt"));
     assert!(!toml::to_string(&cfg).unwrap().contains("priority_file"));
+}
+
+#[test]
+fn the_alarm_table_carries_the_blocking_thresholds() {
+    let cfg: AlarmConfig =
+        toml::from_str("blocking_hold_units = 3\nblocking_replan_minutes = 30\n").unwrap();
+    assert_eq!(cfg.blocking_hold_units, 3);
+    assert_eq!(cfg.blocking_replan_minutes, 30);
+}
+
+#[test]
+fn the_blocking_thresholds_default_to_ten_units_and_two_hours() {
+    let cfg = AlarmConfig::default();
+    assert_eq!(cfg.blocking_hold_units, 10);
+    assert_eq!(cfg.blocking_replan_minutes, 120);
 }
