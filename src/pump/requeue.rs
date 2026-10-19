@@ -51,7 +51,7 @@ impl AttemptPolicy {
     /// The policy one queued request carries.
     fn from_request(request: &RequeueRequest) -> Self {
         AttemptPolicy {
-            attempts: request.attempts.and_then(|n| u32::try_from(n).ok()),
+            attempts: request.attempts.and_then(attempt_count),
             refund: request.refund,
             fresh: request.fresh,
         }
@@ -73,6 +73,14 @@ impl AttemptPolicy {
             refund: cmd.refund_host_failures,
             fresh: cmd.fresh,
         })
+    }
+}
+
+/// The `u32` form of a stored attempt count, `None` when it does not fit.
+fn attempt_count(value: i64) -> Option<u32> {
+    match u32::try_from(value) {
+        Ok(count) => Some(count),
+        Err(_) => None,
     }
 }
 
@@ -341,9 +349,7 @@ pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError
         planned.push((uid.clone(), unit.status, unit.attempts, attempts));
     }
     if cmd.dry_run {
-        for (uid, status, old, attempts) in &planned {
-            println!("{}", would_line(uid, *status, *old, *attempts));
-        }
+        print_planned(&planned);
         return Ok(());
     }
     let reason = cmd.reason.as_deref().unwrap_or(DEFAULT_REASON);
@@ -361,6 +367,13 @@ pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError
         println!("requeue {uid} requested; the pump applies it at its next tick");
     }
     Ok(())
+}
+
+/// The `--dry-run` lines for one planned requeue batch.
+fn print_planned(planned: &[(String, Status, u32, u32)]) {
+    for (uid, status, old, attempts) in planned {
+        println!("{}", would_line(uid, *status, *old, *attempts));
+    }
 }
 
 /// The `--dry-run` line for one unit: what the requeue would change, and the
