@@ -437,6 +437,14 @@ pub struct MergeConfig {
     /// Shared checks run after every merge, before the units' own proof.
     /// `validate` rejects an empty list while promotion is enabled.
     pub shared_checks: Vec<String>,
+    /// Scope-mapped extra merge checks: each key is a write-scope glob with
+    /// the same semantics as a unit's write scope (the `overlaps` matcher);
+    /// each value is a list of commands the merge lane runs after the shared
+    /// checks and before the units' own proof, only for a batch or solo merge
+    /// whose units' write scopes overlap the glob. A failure decides exactly
+    /// like a shared check.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub checks_for: BTreeMap<String, Vec<String>>,
     /// Seconds per check command.
     pub proof_timeout: u64,
     /// Seconds a remote merger has to claim a batch before this host merges.
@@ -454,6 +462,7 @@ impl Default for MergeConfig {
             lanes: 1,
             format: String::new(),
             shared_checks: Vec::new(),
+            checks_for: BTreeMap::new(),
             proof_timeout: 300,
             remote_wait: 90,
             remote_limit: 1800,
@@ -818,6 +827,13 @@ impl PumpConfig {
                 bad.push("[[pump.merge.generated]] regenerate must not be empty".into());
             }
         }
+        for (glob, cmds) in &self.merge.checks_for {
+            if cmds.is_empty() || cmds.iter().any(|cmd| cmd.trim().is_empty()) {
+                bad.push(format!(
+                    "[pump.merge.checks_for] '{glob}' must have non-empty commands"
+                ));
+            }
+        }
         if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
             bad.push(
                 "[pump.merge] shared_checks must not be empty while promotion is enabled \
@@ -882,6 +898,13 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Ve
         if entry.regenerate.trim().is_empty() {
             bad.push(format!(
                 "[pump.targets.{id}.merge] generated regenerate must not be empty"
+            ));
+        }
+    }
+    for (glob, cmds) in merge.map(|merge| &merge.checks_for).into_iter().flatten() {
+        if cmds.is_empty() || cmds.iter().any(|cmd| cmd.trim().is_empty()) {
+            bad.push(format!(
+                "[pump.targets.{id}.merge.checks_for] '{glob}' must have non-empty commands"
             ));
         }
     }

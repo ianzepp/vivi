@@ -834,6 +834,93 @@ fn validate_rejects_a_target_level_generated_entry_with_empty_regenerate() {
 }
 
 #[test]
+fn checks_for_parses_glob_keys_into_command_lists() {
+    let cfg = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.merge.checks_for]\n\
+         \"corpus/**/*.fab\" = [\"cargo test -p faber --lib explain_\"]\n\
+         \"locale/**\" = [\"./locale-check\", \"cargo test -p radix-module locale_pack\"]\n",
+    );
+    assert_eq!(
+        cfg.merge.checks_for.get("corpus/**/*.fab"),
+        Some(&vec![String::from("cargo test -p faber --lib explain_")])
+    );
+    assert_eq!(
+        cfg.merge.checks_for.get("locale/**"),
+        Some(&vec![
+            String::from("./locale-check"),
+            String::from("cargo test -p radix-module locale_pack"),
+        ])
+    );
+}
+
+#[test]
+fn checks_for_is_empty_by_default() {
+    let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert!(cfg.merge.checks_for.is_empty());
+}
+
+#[test]
+fn validate_rejects_checks_for_with_blank_commands() {
+    let mut cfg = PumpConfig {
+        branch: "next".into(),
+        committer_name: "Test".into(),
+        committer_email: "test@example.com".into(),
+        board: crate::pump::config::BoardConfig {
+            mark: String::new(),
+            ..Default::default()
+        },
+        dispatch: DispatchConfig {
+            lanes: vec![Lane {
+                model: "m".into(),
+                cap: 1,
+            }],
+            kinds: BTreeMap::from([("a".to_string(), kind("p"))]),
+            default_kind: "a".into(),
+            ..DispatchConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    cfg.gate.command = "./gate".into();
+    cfg.merge.shared_checks = vec!["./check".into()];
+    let all = pools(&["p"]);
+    assert!(cfg.validate(Path::new("."), &all).is_ok(), "control passes");
+    cfg.merge.checks_for = BTreeMap::from([(String::from("src/**"), vec![String::from(" ")])]);
+    let err = cfg
+        .validate(Path::new("."), &all)
+        .expect_err("blank command must fail");
+    assert!(err.to_string().contains("[pump.merge.checks_for]"), "{err}");
+    cfg.merge.checks_for = BTreeMap::from([(String::from("src/**"), Vec::new())]);
+    let err = cfg
+        .validate(Path::new("."), &all)
+        .expect_err("empty command list must fail");
+    assert!(err.to_string().contains("[pump.merge.checks_for]"), "{err}");
+    cfg.merge.checks_for = BTreeMap::new();
+    let target = PumpTarget {
+        path: String::from("tela"),
+        branch: String::from("main"),
+        merge: Some(crate::pump::config::MergeConfig {
+            checks_for: BTreeMap::from([(String::from("src/**"), vec![String::from(" ")])]),
+            ..crate::pump::config::MergeConfig::default()
+        }),
+        gate: Some(crate::pump::config::GateConfig {
+            command: String::from("./gate"),
+            ..crate::pump::config::GateConfig::default()
+        }),
+        ..PumpTarget::default()
+    };
+    let mut multi = cfg.clone();
+    multi.targets = BTreeMap::from([(String::from("tela"), target.clone())]);
+    let err = multi
+        .validate(Path::new("."), &all)
+        .expect_err("target blank command must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.targets.tela.merge.checks_for]"),
+        "{err}"
+    );
+}
+
+#[test]
 fn pool_sources_map_local_worktree_pools() {
     let config = mailspace(
         "name = \"t\"\n\n[pools.wtree]\nprovider = \"local\"\nslots = 2\n\n\
