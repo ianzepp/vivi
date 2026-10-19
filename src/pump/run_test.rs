@@ -283,6 +283,32 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
     assert!(reconcile < pool_status && pool_status < sync);
 }
 
+/// A tick logs how long its collect and dispatch phases took, so a slow
+/// main loop shows up in `<home>/log.txt`.
+#[test]
+fn a_tick_logs_dispatch_and_collect_durations() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected 1a2b3c4d bridge slot-1 running \"agent pid 7\"",
+    );
+    let mut st = State::default();
+    put(&mut st, "a-1", unit(Status::Inflight, Some("1a2b3c4d")));
+    let (merger, _results, _jobs) = Merger::detached();
+    tick(&ctx, &mut st, &merger);
+    assert!(
+        host.logs().iter().any(|l| l.starts_with("collect took ")),
+        "no collect duration in {:?}",
+        host.logs()
+    );
+    assert!(
+        host.logs().iter().any(|l| l.starts_with("dispatch took ")),
+        "no dispatch duration in {:?}",
+        host.logs()
+    );
+}
+
 /// The `graph blocked --kind need --json` answer: twenty needs waiting on
 /// the stuck root `r`.
 fn twenty_dependents_on_r() -> String {

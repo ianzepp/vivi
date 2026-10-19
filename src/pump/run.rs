@@ -47,11 +47,13 @@ pub fn tick(
         .active_gate_target()
         .unwrap_or_else(|| String::from("default"));
     let gate_ctx = ctx.for_target(&gate_target).unwrap_or_else(|| ctx.clone());
+    let t_collect = Instant::now();
     crate::pump::state::with_target_state(st, &gate_target, |st| {
         if let Some(text) = collect::collect(&gate_ctx, st) {
             gate::finish_gate(&gate_ctx, st, &text);
         }
     });
+    ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
     merger.apply(ctx, st);
     merger.feed(ctx, st);
     save(ctx, st)?;
@@ -71,7 +73,12 @@ pub fn tick(
         write_status(ctx, st, &merger.lane_lines(ctx.now()));
         return Ok(());
     }
+    let t_dispatch = Instant::now();
     dispatch::dispatch(ctx, st);
+    ctx.log(&format!(
+        "dispatch took {}s",
+        t_dispatch.elapsed().as_secs()
+    ));
     save(ctx, st)?;
     write_status(ctx, st, &merger.lane_lines(ctx.now()));
     gates_pass(ctx, st);
