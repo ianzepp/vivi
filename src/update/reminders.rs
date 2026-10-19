@@ -47,19 +47,45 @@ pub(crate) fn service_restart_reminders(dirs: &UnitDirs) -> Vec<String> {
     lines.into_iter().map(|(_, line)| line).collect()
 }
 
-/// Every directory an agent client may hold an installed skill copy in,
-/// most common first.
+/// Every directory an agent client may hold an installed skill copy in: the
+/// three known home directories first, then every install target recorded by
+/// `vivi skills install`.
 ///
-/// Without a home directory the list is empty, so no copy is reported.
-pub(crate) fn skills_candidate_dirs(home: Option<&Path>) -> Vec<PathBuf> {
-    match home {
-        Some(home) => vec![
-            home.join(".agents/skills"),
-            home.join(".claude/skills"),
-            home.join(".codex/skills"),
-        ],
-        None => Vec::new(),
+/// A `None` argument contributes nothing, so without a home directory and
+/// without a config root the list is empty and no copy is reported.
+pub(crate) fn skills_candidate_dirs(
+    home: Option<&Path>,
+    config_root: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(home) = home {
+        dirs.push(home.join(".agents/skills"));
+        dirs.push(home.join(".claude/skills"));
+        dirs.push(home.join(".codex/skills"));
     }
+    for dir in recorded_targets(config_root) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// Install target directories recorded by `vivi skills install`, in file
+/// order, ignoring blank lines.
+fn recorded_targets(config_root: Option<&Path>) -> Vec<PathBuf> {
+    let Some(root) = config_root else {
+        return Vec::new();
+    };
+    let path = root.join("vivi").join("skills-targets.txt");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
 }
 
 /// One reminder line per installed skill copy that no longer matches this
