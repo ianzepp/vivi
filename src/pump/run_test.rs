@@ -363,7 +363,11 @@ fn a_stuck_root_with_twenty_dependents_alarms_bumps_and_requeues_in_one_tick() {
     );
 
     let root = &st.units["r-1"];
-    assert_eq!(root.status, Status::Pending, "the stuck root was not requeued");
+    assert_eq!(
+        root.status,
+        Status::Pending,
+        "the stuck root was not requeued"
+    );
     assert!(root.requeued, "the requeue was not recorded on r-1");
 
     let levels = crate::pump::priority::list(&ctx.home).unwrap();
@@ -374,7 +378,10 @@ fn a_stuck_root_with_twenty_dependents_alarms_bumps_and_requeues_in_one_tick() {
         .lines()
         .find(|line| line.starts_with("blocker r "))
         .unwrap_or_default();
-    assert!(line.contains("held 21"), "no 21-unit blocker line in {status}");
+    assert!(
+        line.contains("held 21"),
+        "no 21-unit blocker line in {status}"
+    );
 
     assert!(
         !host
