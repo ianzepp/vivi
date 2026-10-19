@@ -16,6 +16,7 @@ pub mod judgment;
 pub mod mailspace;
 pub mod mcp;
 pub mod message;
+pub mod monitor;
 pub mod pool;
 pub mod proxy;
 pub mod pump;
