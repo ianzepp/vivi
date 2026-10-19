@@ -1,6 +1,6 @@
 //! Tests for [`super::transient`].
 
-use super::transient::classify;
+use super::transient::{classify, jitter, provider_rate_limited};
 
 /// A `merge-conflict` detail shaped exactly like `merge` writes it.
 fn conflict(files: &[&str]) -> String {
@@ -60,6 +60,27 @@ fn conflict_with_source_file_is_real() {
 #[test]
 fn empty_conflict_list_is_real() {
     assert_eq!(classify("merge-conflict", &conflict(&[])), None);
+}
+
+#[test]
+fn provider_rate_limit_markers_are_transient() {
+    assert!(provider_rate_limited(
+        "429: {\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}"
+    ));
+    assert!(provider_rate_limited("Connection error."));
+    assert!(provider_rate_limited("overloaded_error"));
+    assert!(provider_rate_limited("Rate limit reached for requests"));
+    assert!(!provider_rate_limited("planner exited 1: no plan written"));
+    assert!(!provider_rate_limited("cargo test finished ok"));
+    assert!(!provider_rate_limited(""));
+}
+
+#[test]
+fn jitter_is_deterministic_and_bounded() {
+    for seed in ["", "a", "unit-55cd9711", "planner-429", "xxxxxxxxxxxxxxxx"] {
+        assert_eq!(jitter(seed), jitter(seed), "same seed must give same value");
+        assert!(jitter(seed) < 15, "jitter must stay in 0-14");
+    }
 }
 
 #[test]
