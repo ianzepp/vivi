@@ -1,6 +1,6 @@
 //! Need intake: candidate rows, approval marks, planner expiry and launch.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -9,8 +9,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::pump::collect::spawn_planner;
-use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::ready::satisfied;
+use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
+use crate::pump::ready::{blocked_needs, satisfied};
 use crate::pump::state::State;
 
 /// One row of `vivi need list --json`.
@@ -150,9 +150,12 @@ pub fn read_skip(ctx: &Ctx) -> BTreeSet<String> {
     }
 }
 
-/// Drop planner entries whose plan file exists (done) or that ran longer
-/// than `plan_timeout`; a timed-out planner without a plan file raises
-/// `plan-no-answer`.
+/// Drop planner entries whose plan file exists (done), whose planner exited
+/// without a plan, or that ran longer than `plan_timeout`. A planner exit
+/// receipt (`.rc`, written by the spawn reaper) frees the slot at once and
+/// schedules a backoff relaunch; a timed-out planner without a receipt still
+/// raises `plan-no-answer`. A landed plan clears the handle's planner
+/// bookkeeping so a later re-plan starts clean.
 pub fn expire_planning(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.board.plan_timeout;
     let mins = timeout / 60;
@@ -162,12 +165,20 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
         .planning
         .iter()
         .filter(|(handle, at)| {
-            plan_path(ctx, handle).exists() || now.saturating_sub(**at) > timeout
+            plan_path(ctx, handle).exists()
+                || exit_receipt_path(&out_path(ctx, handle)).exists()
+                || now.saturating_sub(**at) > timeout
         })
         .map(|(handle, _)| handle.clone())
         .collect();
     for handle in expired {
-        if !plan_path(ctx, &handle).exists() {
+        if plan_path(ctx, &handle).exists() {
+            st.board.planner_pids.remove(&handle);
+            st.board.planner_fails.remove(&handle);
+            st.board.planner_retry_at.remove(&handle);
+        } else if exit_receipt_path(&out_path(ctx, &handle)).exists() {
+            fail_exited_planner(ctx, st, &handle);
+        } else {
             ctx.exception(
                 "plan-no-answer",
                 &handle,
@@ -178,11 +189,68 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
     }
 }
 
+/// Consecutive planner crashes tolerated before the need parks, and the base
+/// seconds of the exponential relaunch delay.
+const PLANNER_TRIES: u32 = 3;
+const PLANNER_BACKOFF: u64 = 60;
+
+/// `<home>/board/<handle>.out`, the planner's captured output.
+fn out_path(ctx: &Ctx, handle: &str) -> PathBuf {
+    ctx.home.join("board").join(format!("{handle}.out"))
+}
+
+/// Log, flag and free one planner that exited without writing its plan: the
+/// slot opens this pass, a relaunch waits [`PLANNER_BACKOFF`] doubled per
+/// prior failure, and after [`PLANNER_TRIES`] failures the need parks as
+/// `plan-failed`.
+fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
+    let code = match fs::read_to_string(exit_receipt_path(&out_path(ctx, handle))) {
+        Ok(text) => text.trim().parse::<i32>().unwrap_or(-1),
+        Err(_) => -1,
+    };
+    let text = fs::read_to_string(out_path(ctx, handle)).unwrap_or_default();
+    let tail = tail_note(&text, 200);
+    ctx.log(&format!("board: planner {handle} exited rc={code}: {tail}"));
+    ctx.exception(
+        "plan-crashed",
+        handle,
+        &format!("planner exited rc={code} without a plan: {tail}"),
+    );
+    st.board.planner_pids.remove(handle);
+    let fails = st.board.planner_fails.entry(handle.to_owned()).or_insert(0);
+    *fails += 1;
+    let fails = *fails;
+    if fails < PLANNER_TRIES {
+        let delay = PLANNER_BACKOFF.saturating_mul(1u64 << fails.saturating_sub(1).min(63));
+        st.board
+            .planner_retry_at
+            .insert(handle.to_owned(), ctx.now() + delay);
+        return;
+    }
+    st.board.planner_failed.push(handle.to_owned());
+    st.board.planner_retry_at.remove(handle);
+    ctx.exception(
+        "plan-failed",
+        handle,
+        "planner exited three times without writing a plan",
+    );
+}
+
 /// Plan the new needs among `rows`: skip old, skipped,
 /// known, already-planning or already-planned handles, respect the
 /// concurrent-planner cap, then write the need file, spawn the planner and
 /// record the planning entry. `replan` bypasses the date cutoff; launched
 /// handles leave it and the mirror `st.board.replan` is re-sorted.
+///
+/// A dependent whose prerequisite has no plan file yet is held back: the
+/// planner would buy nothing, because the dependent's units would sit held at
+/// dispatch until the prerequisite landed. A prerequisite merely being planned
+/// right now still gates, and gates lift as soon as its plan file exists. An
+/// unreadable dependency read gates nothing.
+///
+/// Within one pass, needs other open needs depend on are planned before their
+/// dependents and before independent needs, so an arrival batch cannot spend
+/// every planner slot on independent work while a shared prerequisite waits.
 pub fn launch_planners(
     ctx: &Ctx,
     st: &mut State,
@@ -191,14 +259,29 @@ pub fn launch_planners(
     replan: &mut BTreeSet<String>,
 ) {
     let skip = read_skip(ctx);
-    for row in rows {
+    let gates = planning_gates(ctx, rows);
+    for row in plan_order(rows, &gates) {
         let handle = row.handle.as_str();
         let old = row.date.as_str() < ctx.cfg.board.since.as_str();
+        let parked = st.board.planner_failed.iter().any(|seen| seen == handle);
+        let waiting = st
+            .board
+            .planner_retry_at
+            .get(handle)
+            .is_some_and(|at| *at > ctx.now());
         if (old && !replan.contains(handle) && !approved.contains(handle))
             || skip.contains(handle)
             || st.needs.contains_key(handle)
             || st.board.planning.contains_key(handle)
+            || parked
+            || waiting
         {
+            continue;
+        }
+        if let Some(dep) = unplanned_prerequisite(ctx, &gates, handle) {
+            ctx.log(&format!(
+                "board: {handle} waits on unplanned prerequisite {dep}"
+            ));
             continue;
         }
         if plan_path(ctx, handle).exists()
@@ -207,8 +290,66 @@ pub fn launch_planners(
         {
             continue;
         }
-        launch_one(ctx, st, row, replan);
+        launch_one(ctx, st, &row, replan);
+        if stop_requested(ctx) {
+            ctx.log(STOP_NOTE);
+            return;
+        }
     }
+}
+
+/// The rows of `launch_planners` reordered: needs some open need still waits
+/// on come first (they unblock everyone behind them), and the `need list`
+/// order is kept everywhere else. Handles that appear in any `blocked_by`
+/// list count as depended on, including dependents whose planner is already
+/// running.
+fn plan_order(rows: &[NeedRow], blocked: &BTreeMap<String, Vec<String>>) -> Vec<NeedRow> {
+    let mut depended_on = BTreeSet::new();
+    for deps in blocked.values() {
+        depended_on.extend(deps.iter().cloned());
+    }
+    let mut ordered = rows.to_vec();
+    ordered.sort_by_key(|row| !depended_on.contains(&row.handle));
+    ordered
+}
+
+/// Prerequisite handles per need, from the backlog graph. Empty rows mean no
+/// read at all; an unreadable graph already logs inside [`blocked_needs`] and
+/// the board degrades to no gating rather than stalling.
+fn planning_gates(ctx: &Ctx, rows: &[NeedRow]) -> BTreeMap<String, Vec<String>> {
+    if rows.is_empty() {
+        return BTreeMap::new();
+    }
+    blocked_needs(ctx).unwrap_or_default()
+}
+
+/// The first prerequisite of `handle` that has no plan file yet, so the
+/// dependent must wait. `None` when every prerequisite is at least planned.
+fn unplanned_prerequisite(
+    ctx: &Ctx,
+    gates: &BTreeMap<String, Vec<String>>,
+    handle: &str,
+) -> Option<String> {
+    gates
+        .get(handle)?
+        .iter()
+        .find(|dep| !plan_path(ctx, dep).exists())
+        .cloned()
+}
+
+/// The log line a pass writes when control stops it between two needs.
+const STOP_NOTE: &str = "board: control stop requested; finishing the pass early";
+
+/// True when the operator asked the pump to stop or shut down. A read error
+/// returns false: the run loop's `exit_requested` already handles hard
+/// failures between ticks.
+fn stop_requested(ctx: &Ctx) -> bool {
+    matches!(
+        crate::pump::control::read(&ctx.home),
+        Ok(control)
+            if control.mode == crate::pump::control::PumpMode::Stopped
+                || control.shutdown_requested
+    )
 }
 
 /// Write the need file, spawn the planner for one row, and record it.
@@ -238,7 +379,17 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<St
          Write {home}/plans/{handle}.json. Your final message is one line: handle, \
          verdict, number of units."
     );
-    spawn_planner(ctx, "board", handle, &prompt);
+    let out = out_path(ctx, handle);
+    drop(fs::remove_file(exit_receipt_path(&out)));
+    drop(fs::File::create(&out));
+    match spawn_planner(ctx, "board", handle, &prompt) {
+        Some(pid) => {
+            st.board.planner_pids.insert(handle.to_owned(), pid);
+        }
+        None => {
+            st.board.planner_pids.remove(handle);
+        }
+    }
     st.board.planning.insert(handle.to_owned(), ctx.now());
     if replan.remove(handle) {
         st.board.replan = replan.iter().cloned().collect();
@@ -291,7 +442,7 @@ fn tail_note(text: &str, max: usize) -> String {
 }
 
 /// Verdicts that wait for an operator ruling before anything moves.
-const PARKED: [&str; 3] = ["operator", "design", "hold"];
+pub(crate) const PARKED: [&str; 3] = ["operator", "design", "hold"];
 
 /// True when the need's thread holds an operator message newer than `since`
 /// (epoch seconds): `## <rfc3339> - <hex> [` header lines set the current
@@ -408,6 +559,10 @@ pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
         if reply_stages(ctx, st, &row.handle, &verdict, &reason, &units, revision) {
             said = true;
         }
+        if stop_requested(ctx) {
+            ctx.log(STOP_NOTE);
+            return said;
+        }
     }
     said
 }
@@ -433,15 +588,50 @@ fn reply_stages(
         if st.board.replied.iter().any(|sent| sent == &key) {
             continue;
         }
-        let Some(body) = reply_body(st, &stage, verdict, reason, units, revision) else {
+        let Some(mut body) = reply_body(st, &stage, verdict, reason, units, revision) else {
             continue;
         };
+        if stage == "merged"
+            && let Some(line) = merged_timing(ctx, handle)
+        {
+            body.push('\n');
+            body.push_str(&line);
+        }
         if send_reply(ctx, handle, &stage, &body) {
             st.board.replied.push(key);
             said = true;
         }
     }
     said
+}
+
+/// The timing summary for a need's `merged` reply, read back through the CLI
+/// so the pump consumes its own posted records like a synced second member.
+/// Any failure (nonzero exit, unreadable JSON, no `attempts` array) is `None`:
+/// the reply is never blocked or failed by this.
+fn merged_timing(ctx: &Ctx, handle: &str) -> Option<String> {
+    let out = ctx.vivi(&format!("need attempts {handle} --json"), 60);
+    if out.code != 0 {
+        return None;
+    }
+    let start = out.text.find('{')?;
+    let Ok(value) = serde_json::from_str::<Value>(&out.text[start..]) else {
+        return None;
+    };
+    let mut attempts: Vec<crate::pump::attempt_read::AttemptFields> = Vec::new();
+    for attempt in value.get("attempts")?.as_array()? {
+        if let Ok(fields) =
+            serde_json::from_value::<crate::pump::attempt_read::AttemptFields>(attempt.clone())
+        {
+            attempts.push(fields);
+        }
+    }
+    let opened = value.get("opened").and_then(Value::as_u64);
+    Some(crate::pump::attempt_read::timing_summary(
+        opened,
+        &attempts,
+        ctx.now(),
+    ))
 }
 
 /// The reply body for one stage, or `None` when the stage must wait:

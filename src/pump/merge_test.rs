@@ -1,13 +1,15 @@
 //! Tests for [`super::merge`] part 1: `failure_text`, `reset_repo` and
 //! `merge_work`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::{MergeConfig, PumpConfig, PumpTarget};
+use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::merge::{batch_work, failure_text, merge_work};
+use crate::pump::merge::{batch_work, clear_stale_lock, failure_text, merge_work};
 use crate::pump::state::{MergeJob, MergeResult};
 
 /// A context whose integration branch is `next`, with one shared check,
@@ -44,6 +46,7 @@ fn job() -> MergeJob {
             String::from("src/pump/merge.rs"),
             String::from("src/pump/merge_test.rs"),
         ],
+        source: None,
     }
 }
 
@@ -127,6 +130,28 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
             "publish: push attempt 1",
             "publish: pushed tip123",
         ]
+    );
+}
+
+#[test]
+fn a_job_with_a_pool_source_fetches_from_the_pool_repository() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let mut j = unit("u1", "work/u1");
+    j.source = Some(PathBuf::from("/wtree/repo"));
+    let result = merge_work(&ctx, &j);
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let commands = host.commands();
+    assert!(
+        commands.contains(
+            &"git fetch /wtree/repo +refs/heads/work/u1:refs/remotes/origin/work/u1".to_string()
+        ),
+        "{commands:?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|c| c.contains("fetch origin refs/heads/work/u1"))
     );
 }
 
@@ -294,6 +319,197 @@ fn a_merge_conflict_lists_the_conflicting_files_and_resets_the_repo() {
 }
 
 #[test]
+fn a_lock_error_during_merge_is_an_env_failure_not_a_conflict() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "merge --no-ff",
+        128,
+        "fatal: Unable to create '.git/index.lock': File exists.\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, None, "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("merge-env-failed"));
+    let detail = result.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("index.lock"), "{detail:?}");
+    assert!(
+        host.logs().iter().any(|l| l == "merge u1 1/1 env"),
+        "{:?}",
+        host.logs()
+    );
+}
+
+#[test]
+fn a_merge_failure_with_no_unmerged_files_is_an_env_failure() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "merge --no-ff",
+        1,
+        "fatal: refs/heads/work/u1 is not a commit\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, None, "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("merge-env-failed"));
+    let detail = result.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("is not a commit"), "{detail:?}");
+    assert!(
+        host.logs().iter().any(|l| l == "merge u1 1/1 env"),
+        "{:?}",
+        host.logs()
+    );
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
+/// A context whose merge config regenerates the e2e coverage ledger.
+fn setup_generated() -> (TempDir, Ctx, Arc<FakeHost>) {
+    let (_dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.merge.generated.push(Generated {
+        paths: vec![String::from("scripta/e2e-coverage-ledger.toml")],
+        regenerate: String::from("./regen-ledger.sh"),
+        drift: vec![],
+    });
+    ctx.cfg = Arc::new(cfg);
+    (_dir, ctx, host)
+}
+
+#[test]
+fn a_conflict_only_on_generated_files_is_resolved_and_merged() {
+    let (_dir, ctx, host) = setup_generated();
+    host.reply(
+        "merge --no-ff",
+        1,
+        "Auto-merging scripta/e2e-coverage-ledger.toml\nCONFLICT (content): merge conflict in scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply(
+        "diff --name-only --diff-filter=U",
+        0,
+        "scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    assert_eq!(result.tip.as_deref(), Some("tip123"));
+    let cmds = host.commands();
+    let merge = index_of(&cmds, "merge --no-ff");
+    let checkout = index_of(
+        &cmds,
+        "git checkout --ours -- scripta/e2e-coverage-ledger.toml",
+    );
+    let regen = index_of(&cmds, "./regen-ledger.sh");
+    let add = index_of(&cmds, "git add -- scripta/e2e-coverage-ledger.toml");
+    let commit = cmds
+        .iter()
+        .position(|c| c.contains("commit --no-edit"))
+        .unwrap();
+    assert!(merge < checkout, "{cmds:?}");
+    assert!(checkout < regen, "{cmds:?}");
+    assert!(regen < add, "{cmds:?}");
+    assert!(add < commit, "{cmds:?}");
+    assert!(
+        !cmds[commit + 1..]
+            .iter()
+            .any(|c| c.contains("reset -q --hard")),
+        "{cmds:?}"
+    );
+    assert!(
+        host.logs().iter().any(
+            |l| l.contains("resolved generated conflicts u1: scripta/e2e-coverage-ledger.toml")
+        )
+    );
+}
+
+#[test]
+fn a_conflict_on_generated_and_source_files_still_fails() {
+    let (_dir, ctx, host) = setup_generated();
+    host.reply(
+        "merge --no-ff",
+        1,
+        "Auto-merging src/a.rs\nCONFLICT (content): merge conflict in src/a.rs\n",
+    );
+    host.reply(
+        "diff --name-only --diff-filter=U",
+        0,
+        "src/a.rs\nscripta/e2e-coverage-ledger.toml\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("merge-conflict"));
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|c| c.contains("checkout --ours"))
+    );
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
+/// A context whose generated ledger carries a drift signature.
+fn setup_drift() -> (TempDir, Ctx, Arc<FakeHost>) {
+    let (dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.merge.generated.push(Generated {
+        paths: vec![String::from("scripta/e2e-coverage-ledger.toml")],
+        regenerate: String::from("./regen-ledger.sh"),
+        drift: vec![String::from("coverage_rows ")],
+    });
+    ctx.cfg = Arc::new(cfg);
+    (dir, ctx, host)
+}
+
+#[test]
+fn a_drift_signature_failure_regenerates_and_passes() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply_once("cargo test --lib", 1, "coverage_rows 810 != 811\n");
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let cmds = host.commands();
+    assert!(
+        cmds.iter().any(|c| c.contains("./regen-ledger.sh")),
+        "{cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| c.contains("commit -q -m 'regen: scripta/e2e-coverage-ledger.toml after u1'")),
+        "{cmds:?}"
+    );
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| c.contains("cargo test --lib"))
+            .count(),
+        2,
+        "{cmds:?}"
+    );
+    assert!(host.logs().iter().any(|l| {
+        l.contains("drift u1: regenerated scripta/e2e-coverage-ledger.toml; retrying once")
+    }));
+}
+
+#[test]
+fn a_drift_retry_that_fails_again_is_proof_failed() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply_once("cargo test --lib", 1, "coverage_rows 810 != 811");
+    host.reply("cargo test --lib", 1, "coverage_rows 810 != 811");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let cmds = host.commands();
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| c.contains("./regen-ledger.sh"))
+            .count(),
+        1,
+        "{cmds:?}"
+    );
+}
+
+#[test]
 fn files_changed_outside_the_write_scope_are_listed_in_outside() {
     let (_dir, ctx, host) = setup("");
     host.reply(
@@ -308,6 +524,27 @@ fn files_changed_outside_the_write_scope_are_listed_in_outside() {
         result.outside,
         vec![String::from("README.md"), String::from("Cargo.lock")]
     );
+}
+
+#[test]
+fn a_generated_path_does_not_count_as_outside() {
+    let (_dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.merge.generated.push(Generated {
+        paths: vec![String::from("Cargo.lock")],
+        regenerate: String::from("cargo generate-lockfile"),
+        drift: vec![],
+    });
+    ctx.cfg = Arc::new(cfg);
+    host.reply(
+        "diff --name-only HEAD~1 HEAD",
+        0,
+        "src/pump/merge.rs\nREADME.md\nCargo.lock\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}");
+    assert_eq!(result.outside, vec![String::from("README.md")]);
 }
 
 #[test]
@@ -331,6 +568,48 @@ fn a_failing_shared_check_is_proof_failed_and_names_the_command() {
 }
 
 #[test]
+fn a_proof_exit_127_leaves_the_unit_undecided() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "deno test x.test.ts",
+        127,
+        "bash: deno: command not found\n",
+    );
+    let mut unit = job();
+    unit.proof = vec![String::from("deno test x.test.ts")];
+    let result = merge_work(&ctx, &unit);
+    assert_eq!(result.ok, None, "{result:?}\n{:?}", host.commands());
+    assert_eq!(result.why.as_deref(), Some("proof-missing-tool"));
+    assert_ne!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(
+        detail.contains("could not run (exit 127):\ndeno test x.test.ts"),
+        "{detail}"
+    );
+    assert!(detail.contains("command not found"), "{detail}");
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
+#[test]
+fn proof_exit_127_contrast_exit_1_is_still_a_decided_proof_failure() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("deno test x.test.ts", 1, "1 test failed\n");
+    let mut unit = job();
+    unit.proof = vec![String::from("deno test x.test.ts")];
+    let result = merge_work(&ctx, &unit);
+    assert_eq!(result.ok, Some(false), "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(
+        detail.contains("this command failed (exit 1):\ndeno test x.test.ts"),
+        "{detail}"
+    );
+}
+
+#[test]
 fn a_failing_unit_proof_is_proof_failed() {
     let (_dir, ctx, host) = setup("");
     host.reply(
@@ -344,6 +623,42 @@ fn a_failing_unit_proof_is_proof_failed() {
     let detail = result.detail.unwrap_or_default();
     assert!(detail.contains("this command failed (exit 1):\n./proof-u1.sh"));
     assert!(detail.contains("Last output:\nthread 'main' panicked at 'boom'"));
+}
+
+#[test]
+fn a_unit_proof_that_fails_as_a_usage_error_is_proof_usage() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "./proof-u1.sh",
+        1,
+        "error: unexpected argument 'an_event_applied_by_pull' found\n\nUsage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-usage"));
+    let detail = result.detail.unwrap_or_default();
+    assert!(detail.contains("./proof-u1.sh"));
+    assert!(detail.contains("failed as a usage error before anything ran"));
+    assert!(detail.contains("Last output:\nerror: unexpected argument"));
+}
+
+#[test]
+fn a_shared_check_that_fails_as_a_usage_error_is_still_proof_failed() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "cargo test --lib",
+        1,
+        "error: unexpected argument 'an_event_applied_by_pull' found\n\nUsage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    assert!(
+        result
+            .detail
+            .unwrap_or_default()
+            .contains("this command failed")
+    );
 }
 
 #[test]
@@ -428,6 +743,7 @@ pub(super) fn unit(uid: &str, branch: &str) -> MergeJob {
             String::from("src/pump/merge.rs"),
             String::from("src/pump/merge_test.rs"),
         ],
+        source: None,
     }
 }
 
@@ -557,6 +873,74 @@ fn a_conflicting_job_is_a_merge_conflict_result_and_the_others_still_merge() {
 }
 
 #[test]
+fn a_batch_lock_error_returns_one_unit_undecided_and_the_rest_merge() {
+    let (_dir, ctx, host) = setup("");
+    host.reply_once(
+        "merge u1",
+        128,
+        "fatal: Unable to create '.git/index.lock': File exists.\n",
+    );
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "src/pump/merge.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip7\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2, "{results:?}");
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, None, "{u1:?}");
+    assert_eq!(u1.why.as_deref(), Some("merge-env-failed"));
+    let detail = u1.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("index.lock"), "{detail:?}");
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, Some(true), "{u2:?}");
+    assert_eq!(u2.tip.as_deref(), Some("tip7"));
+    assert!(
+        host.logs().iter().any(|l| l == "merge u1 1/2 env"),
+        "{:?}",
+        host.logs()
+    );
+}
+
+#[test]
+fn a_batch_conflict_only_on_generated_files_merges_both_units() {
+    let (_dir, ctx, host) = setup_generated();
+    host.reply("merge u1:", 0, "");
+    host.reply(
+        "merge u2:",
+        1,
+        "Auto-merging scripta/e2e-coverage-ledger.toml\nCONFLICT (content): merge conflict in scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply(
+        "diff --name-only --diff-filter=U",
+        0,
+        "scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip9\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|r| r.ok == Some(true) && r.tip.as_deref() == Some("tip9")),
+        "{results:?}\n{:?}",
+        host.commands()
+    );
+    assert!(
+        !results
+            .iter()
+            .any(|r| r.why.as_deref() == Some("merge-conflict"))
+    );
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "./regen-ledger.sh"), 1, "{cmds:?}");
+    let commit = cmds
+        .iter()
+        .position(|c| c.contains("commit --no-edit"))
+        .unwrap();
+    assert!(index_of(&cmds, "merge u2:") < commit, "{cmds:?}");
+    assert!(index_of(&cmds, "./regen-ledger.sh") < commit, "{cmds:?}");
+    // Each unit merged once: neither failed, so no attempt was consumed.
+    assert_eq!(count(&cmds, "merge --no-ff"), 2, "{cmds:?}");
+}
+
+#[test]
 fn a_job_whose_own_proof_fails_is_the_culprit_and_the_rest_are_retried_in_round_two() {
     let (_dir, ctx, host) = setup("");
     host.reply("./proof-u1.sh", 1, "panicked at 'boom'\n");
@@ -585,6 +969,31 @@ fn a_job_whose_own_proof_fails_is_the_culprit_and_the_rest_are_retried_in_round_
 }
 
 #[test]
+fn a_job_whose_own_proof_is_a_usage_error_is_the_culprit_with_proof_usage() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "./proof-u1.sh",
+        1,
+        "error: unexpected argument 'an_event_applied_by_pull' found\n\nUsage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]\n",
+    );
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "src/pump/merge.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip5\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, Some(false));
+    assert_eq!(u1.why.as_deref(), Some("proof-usage"));
+    let detail = u1.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("./proof-u1.sh"));
+    assert!(detail.contains("failed as a usage error before anything ran"));
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, Some(true));
+    assert_eq!(u2.tip.as_deref(), Some("tip5"));
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "merge u2"), 2);
+}
+
+#[test]
 fn a_shared_check_failure_with_several_jobs_quarantines_the_batch_not_one_at_a_time() {
     let (_dir, ctx, host) = setup("");
     host.reply("cargo test --lib", 1, "error[E0308]: mismatched types\n");
@@ -598,9 +1007,10 @@ fn a_shared_check_failure_with_several_jobs_quarantines_the_batch_not_one_at_a_t
     );
     let q = for_uid(&results, "u1").quarantine.as_ref().unwrap();
     assert!(q.text.contains("error[E0308]: mismatched types"));
-    // Each unit is merged once; the old fallback merged each a second time.
+    // The batch is bisected (2 solo merges) and then rebuilt before the
+    // quarantine push: 2 batch merges plus 2 bisect merges plus 2 rebuilds.
     let cmds = host.commands();
-    assert_eq!(count(&cmds, "merge --no-ff"), 2);
+    assert_eq!(count(&cmds, "merge --no-ff"), 6);
     assert!(
         host.logs()
             .iter()
@@ -634,6 +1044,66 @@ fn a_shared_check_failure_with_one_job_is_proof_failed() {
 }
 
 #[test]
+fn a_batch_drift_signature_failure_regenerates_and_passes() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply_once("cargo test --lib", 1, "coverage_rows 810 != 811\n");
+    host.reply("cargo test --lib", 0, "");
+    host.reply("rev-parse HEAD", 0, "tip9\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(
+        results.iter().all(|r| r.ok == Some(true)),
+        "{results:?}\n{:?}",
+        host.commands()
+    );
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "./regen-ledger.sh"), 1, "{cmds:?}");
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() != Some("quarantined"))
+    );
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() != Some("proof-failed"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("drift batch of 2: regenerated"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "batch 2 shared rc=0 0s: cargo test --lib")
+    );
+}
+
+#[test]
+fn a_batch_drift_retry_that_fails_again_still_fails() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply("cargo test --lib", 1, "coverage_rows 810 != 811\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok != Some(true)), "{results:?}");
+    let cmds = host.commands();
+    // The drift retry runs for the batch check and again for each member's
+    // solo bisect check; all three still fail, so the batch is set aside.
+    assert_eq!(count(&cmds, "./regen-ledger.sh"), 3, "{cmds:?}");
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() == Some("quarantined"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "batch 2 shared rc=1 0s: cargo test --lib")
+    );
+}
+
+#[test]
 fn a_refused_push_leaves_every_job_undecided_with_push_failed() {
     let (_dir, ctx, host) = setup("");
     host.reply(
@@ -660,6 +1130,39 @@ fn a_refused_push_leaves_every_job_undecided_with_push_failed() {
         host.commands().last().map(String::as_str),
         Some("git reset -q --hard origin/next")
     );
+}
+
+#[test]
+fn missing_tool_shared_check_leaves_the_batch_undecided() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("cargo test --lib", 127, "bash: cargo: command not found\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2, "{results:?}");
+    for result in &results {
+        assert_eq!(result.ok, None, "{result:?}");
+        assert_eq!(result.why.as_deref(), Some("proof-missing-tool"));
+        assert!(result.quarantine.is_none(), "{result:?}");
+    }
+    let pushed = host
+        .commands()
+        .iter()
+        .any(|c| c.contains("pump/quarantine"));
+    assert!(!pushed, "a missing tool must not quarantine");
+}
+
+#[test]
+fn a_batch_proof_exit_127_is_undecided() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("deno test", 127, "bash: deno: command not found\n");
+    let mut jobs = batch();
+    jobs[1].proof = vec![String::from("deno test x.test.ts")];
+    let results = batch_work(&ctx, &jobs);
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, None, "{u2:?}\n{:?}", host.commands());
+    assert_eq!(u2.why.as_deref(), Some("proof-missing-tool"));
+    assert!(u2.quarantine.is_none(), "{u2:?}");
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, Some(true), "{u1:?}\n{:?}", host.commands());
 }
 
 #[test]
@@ -694,4 +1197,62 @@ fn every_commit_making_command_carries_the_configured_identity() {
     }
     assert!(commits.iter().any(|c| c.contains(" commit -q")));
     assert!(commits.iter().any(|c| c.contains("merge main into next")));
+}
+
+/// Create `<repo>/.git/index.lock` with an mtime `age` seconds before now.
+fn lock_file(ctx: &Ctx, age: u64) -> PathBuf {
+    let git = ctx.repo.join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    let path = git.join("index.lock");
+    let file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    let at = SystemTime::now() - Duration::from_secs(age);
+    file.set_times(std::fs::FileTimes::new().set_modified(at))
+        .unwrap();
+    path
+}
+
+/// Bring the fake clock onto real time, so lock mtimes are comparable.
+fn set_real_clock(host: &FakeHost) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    host.set_now(now);
+    now
+}
+
+#[test]
+fn a_stale_index_lock_is_cleared_and_logged() {
+    let (_dir, ctx, host) = setup("");
+    set_real_clock(&host);
+    let path = lock_file(&ctx, 10 * 60);
+    assert_eq!(clear_stale_lock(&ctx), Ok(()));
+    assert!(!path.exists(), "the stale lock is gone");
+    let last = host.logs().last().cloned().unwrap_or_default();
+    assert!(last.contains("cleared stale index.lock"), "{last}");
+}
+
+#[test]
+fn a_young_index_lock_is_left_alone_and_fails_the_check() {
+    let (_dir, ctx, host) = setup("");
+    set_real_clock(&host);
+    let path = lock_file(&ctx, 0);
+    let err = clear_stale_lock(&ctx).unwrap_err();
+    assert!(err.contains("not cleared"), "{err}");
+    assert!(path.exists(), "the young lock is kept: {err}");
+    assert!(host.logs().is_empty(), "{:?}", host.logs());
+}
+
+#[test]
+fn an_absent_index_lock_is_ok_and_creates_nothing() {
+    let (_dir, ctx, host) = setup("");
+    set_real_clock(&host);
+    assert_eq!(clear_stale_lock(&ctx), Ok(()));
+    assert!(!ctx.repo.join(".git/index.lock").exists());
+    assert!(host.logs().is_empty(), "{:?}", host.logs());
 }

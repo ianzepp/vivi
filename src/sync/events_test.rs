@@ -37,7 +37,7 @@ fn second_checkout(of: &Checkout) -> Checkout {
     copy
 }
 
-fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
+fn send_item(from: &Checkout, to: &str, subject: &str, role: &str, kind: &str) -> String {
     let result = from
         .mailspace
         .send(SendRequest {
@@ -47,8 +47,8 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
             bcc: Vec::new(),
             subject: subject.into(),
             body: BODY.into(),
-            role: "tasks".into(),
-            kind: Some("task".into()),
+            role: role.into(),
+            kind: Some(kind.into()),
             reply_to: None,
             depends_on: Vec::new(),
         })
@@ -57,6 +57,10 @@ fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
         .delivered
         .first()
         .map_or(result.sent, |delivered| delivered.handle.clone())
+}
+
+fn send_task(from: &Checkout, to: &str, subject: &str) -> String {
+    send_item(from, to, subject, "tasks", "task")
 }
 
 fn node_state(mailspace: &Mailspace, handle: &str) -> String {
@@ -284,6 +288,92 @@ fn pulling_again_and_auditing_a_converged_store_change_nothing() {
     assert!(audit_b.findings.is_empty(), "{:?}", audit_b.findings);
     assert!(audit_a.findings.is_empty(), "{:?}", audit_a.findings);
     assert_eq!((rows_of(&p.a), rows_of(&p.b)), (rows_a, rows_b));
+}
+
+/// A want from alice's `mind` to bob's `hand`, pushed and pulled, so bob
+/// holds the want in `wants` with an open node and alice holds only `sent`.
+fn want_pair() -> (std::rc::Rc<FakeServer>, Checkout, Checkout, String) {
+    let server = FakeServer::new();
+    let (mut a, b) = (alice(), bob());
+    a.mailspace.config.absorb = Some(AbsorbConfig { quiet_hours: 0 });
+    let want = send_item(&a, &b.address("hand"), "would be nice", "wants", "want");
+    a.push(&a.client(&server));
+    b.pull(&b.client(&server));
+    assert_eq!(role_of(&b, &want), "wants");
+    assert_eq!(role_of(&a, &want), "sent", "the sender's only copy");
+    assert_eq!(node_state(&b.mailspace, &want), "open");
+    (server, a, b, want)
+}
+
+// The promoted letter crosses mailspaces: the receiver promotes its
+// delivered want into `needs`, so its backlog node stays open — a promotion is
+// not a close — and the author's `sent` copy follows the letter.
+#[test]
+fn a_promoted_letter_moves_the_receivers_want_to_needs() {
+    let (server, a, mut b, want) = want_pair();
+    // The receiver's mind acts for its mailspace: only an item's author or a
+    // mind-kind role may move its state for every copy.
+    b.mailspace
+        .set_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
+
+    b.mailspace
+        .move_item("mind", &want, "needs", None, "want promote", None)
+        .unwrap();
+    assert_eq!(state(&b, &want).as_deref(), Some("promoted"));
+    assert_eq!(role_of(&b, &want), "needs", "the receiver's want promoted");
+    assert_eq!(node_state(&b.mailspace, &want), "open", "not a close");
+
+    b.push(&b.client(&server));
+    let pulled = a.pull(&a.client(&server));
+
+    assert!(
+        pulled.events_applied >= 1,
+        "the letter applied: {}",
+        pulled.summary()
+    );
+    assert_eq!(role_of(&a, &want), "needs", "the author's copy follows");
+    assert_eq!(state(&a, &want).as_deref(), Some("promoted"));
+
+    // Converged: a second sync applies nothing and changes no row.
+    let snapshot = || (rows_of(&a), rows_of(&b));
+    let converged = snapshot();
+    b.push(&b.client(&server));
+    let again = a.pull(&a.client(&server));
+
+    assert_eq!(again.fetched, 0);
+    assert_eq!(again.events_applied, 0);
+    assert_eq!(role_of(&a, &want), "needs");
+    assert_eq!(role_of(&b, &want), "needs");
+    assert_eq!(node_state(&b.mailspace, &want), "open");
+    assert_eq!(snapshot(), converged);
+
+    // The audit's one finding is the node kind a promotion leaves behind:
+    // the folder says `need` while the node was minted a `want`. The repair
+    // settles it once, and a second audit finds no drift at all.
+    let first = b.mailspace.backlog_audit(true).unwrap();
+    assert!(
+        first
+            .findings
+            .iter()
+            .all(|finding| finding.class == "node_kind"
+                && finding.repaired
+                && finding.kind == "need"),
+        "{:?}",
+        first.findings
+    );
+    assert_eq!(snapshot(), converged);
+    let settled = b.mailspace.backlog_audit(true).unwrap();
+    assert!(settled.findings.is_empty(), "{:?}", settled.findings);
+    assert_eq!(role_of(&b, &want), "needs");
+    assert_eq!(node_state(&b.mailspace, &want), "open");
+    assert_eq!(snapshot(), converged);
 }
 
 // Reversed by the authority rule: any member's prefix domain speaks for an
@@ -698,7 +788,7 @@ fn an_event_at_stamp_beats_the_date_header() {
 }
 
 #[test]
-fn an_event_for_a_sealed_item_is_counted_and_not_applied() {
+fn an_event_for_a_sealed_item_is_not_counted_and_not_applied() {
     let w = World::new();
     let id = w.put(1, "item", "done_when: x\n");
     w.bob.pull(&w.bob_client);
@@ -712,8 +802,48 @@ fn an_event_for_a_sealed_item_is_counted_and_not_applied() {
 
     let pulled = w.bob.pull(&w.bob_client);
 
-    assert_eq!(pulled.events_ignored, 1);
+    // Ruling: a fully absorbed item adds nothing to `ignored` on every
+    // settle: its letters were counted when they arrived. A kindless `mind`
+    // does not close a foreign need, so no absorb letter sealed the item and
+    // no event was ignored here.
+    assert_eq!(pulled.events_ignored, 0);
     assert_eq!(need_state(&w, 1).0, "needs", "the sealed item did not move");
+}
+
+#[test]
+fn a_fully_absorbed_item_adds_nothing_to_ignored_across_settles() {
+    let w = World::new();
+    let id = w.put(1, "item", "done_when: x\n");
+    w.bob.pull(&w.bob_client);
+    let handle = crate::sync::fake_server::handle(1);
+    put_event(&w, 2, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
+    let first = w.bob.pull(&w.bob_client);
+    // The close lands while the row is still live.
+    assert_eq!(first.events_applied, 1, "{}", first.summary());
+    assert!(!id.is_empty());
+    // A kindless `mind` role may not close a foreign need, so the absorb
+    // writes no seal letter: the rows are absorbed, the item is not sealed.
+    w.bob
+        .mailspace
+        .absorb("mind", &handle, None, "need")
+        .unwrap();
+    let content_id = w.bob.row(&w.bob.id_of(&handle)).unwrap().content_id;
+    // Ruling: a fully absorbed item stops adding to `ignored` on every
+    // settle: its letters were counted when they arrived.
+    for settle in 0..2 {
+        let tally = w
+            .bob
+            .mailspace
+            .apply_arrived_events(&[content_id.clone()])
+            .unwrap();
+        assert_eq!(
+            tally.ignored, 0,
+            "settle {settle} reported an ignored event"
+        );
+    }
+    let row = w.bob.row(&w.bob.id_of(&handle)).unwrap();
+    assert_eq!(row.local_role, "done");
+    assert!(row.absorbed_at.is_some(), "the row stayed absorbed");
 }
 
 #[test]
@@ -831,6 +961,72 @@ fn a_mind_in_the_assignees_mailspace_closes_for_everyone_with_an_event_letter() 
     assert_eq!(role_of(&p.a, &p.task), "done", "the author's copy follows");
     assert_eq!(node_state(&p.a.mailspace, &p.task), "done");
     assert_eq!(state(&p.a, &p.task).as_deref(), Some("done"));
+}
+
+#[test]
+fn a_pulled_close_letter_stores_its_verdict_in_item_metadata() {
+    let p = pair();
+    p.a.mailspace
+        .move_task_outcome(
+            "mind",
+            &p.task,
+            "done",
+            Some("accepted"),
+            Some("clean_pass"),
+            &["vivi".into()],
+            &["deadbeef".into()],
+        )
+        .unwrap();
+    p.sync_a_to_b();
+
+    let metadata =
+        p.b.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.b.id_of(&p.task))
+            .unwrap();
+    assert_eq!(
+        metadata.get("verdict").map(String::as_str),
+        Some("clean_pass")
+    );
+    assert_eq!(
+        metadata.get("repo:vivi").map(String::as_str),
+        Some("deadbeef")
+    );
+}
+
+#[test]
+fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
+    let p = pair();
+    // hand is the assignee, so its close travels as a report letter
+    // carrying the verdict headers, not an event letter.
+    p.b.mailspace
+        .move_task_outcome(
+            "hand",
+            &p.task,
+            "done",
+            None,
+            Some("fixed"),
+            &["vivi".into()],
+            &["sha9".into()],
+        )
+        .unwrap();
+
+    p.sync_b_to_a();
+
+    let metadata =
+        p.a.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.a.id_of(&p.task))
+            .unwrap();
+    assert_eq!(metadata.get("verdict").map(String::as_str), Some("fixed"));
+    assert_eq!(metadata.get("repo:vivi").map(String::as_str), Some("sha9"));
+    assert_eq!(
+        role_of(&p.a, &p.task),
+        "sent",
+        "the report still does not move the owner's row"
+    );
 }
 
 #[test]

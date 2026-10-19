@@ -1,5 +1,6 @@
 use super::*;
 use crate::mailspace::{RoleUpdate, SendRequest};
+use crate::storage::MessageIngestRequest;
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
@@ -30,14 +31,30 @@ fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str) -> St
 }
 
 fn deliver_untracked_task(mailspace: &Mailspace, subject: &str) {
-    // An .eml delivered straight into the tasks folder never runs the send
-    // path — the shape an older vivi binary (no node minting) leaves behind.
+    // The letter is ingested straight into the store, never running a route
+    // that attaches a node — the shape an older vivi binary leaves behind.
     let eml = format!(
         "From: {}\r\nTo: {}\r\nSubject: {subject}\r\nX-Vivi-Kind: task\r\n\r\nplain body\r\n",
         mailspace.address_for("ceo"),
         mailspace.address_for("cto"),
     );
-    mailspace.deliver_raw(eml.as_bytes(), "tasks").unwrap();
+    mailspace
+        .storage()
+        .unwrap()
+        .ingest_message(
+            &MessageIngestRequest {
+                account: "cto".into(),
+                local_role: "tasks".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: format!("untracked\0{subject}"),
+                remote: None,
+            },
+            eml.as_bytes(),
+        )
+        .unwrap();
 }
 
 #[test]

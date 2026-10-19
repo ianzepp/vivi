@@ -150,6 +150,11 @@ Validation runs per unit before anything is created:
 On `bad`: exception kind `bad-plan` with the plan file basename as the unit
 field and the reason text above; if the plan has no `replaces`, the need is
 recorded as `verdict="invalid"` with that reason and no units.
+A `bad` **split** plan (`replaces` set) is re-asked once instead: the file moves
+to `plans/rejected/`, its `plans_seen` key is dropped, and the split planner
+respawns with the same prompt plus the validation error appended; the unit's
+status is unchanged, `split_reasks=1`, and its clock resets. A second rejection
+is final: `bad-plan` only.
 A plan whose JSON does not parse is skipped silently, no exception. A plan for a need already in `st["needs"]` without
 `replaces` is marked seen and ignored.
 
@@ -157,7 +162,8 @@ A plan whose JSON does not parse is skipped silently, no exception. A plan for a
 
 `st["plans_seen"]` is the list of plan file basenames already ingested. On first load of an old state it is seeded from the needs. Every ingested file — including rejected ones — is
 appended, so a bad plan is examined once. The parked-need re-plan path removes
-`<need>.json` from it after moving the file to `plans/superseded/`.
+`<need>.json` from it after moving the file to `plans/superseded/`, and the
+split re-ask removes `<uid>.split.json` so the replanned file is ingested.
 
 ### 2.5 Verdict values and what each does
 
@@ -210,8 +216,13 @@ unit strictly in this order:
 
 After the units, two more collectors:
 
-- every unit still `splitting` after `planner.split_timeout` (default 1500 s) becomes `stuck` with exception
-  `split-no-answer`;
+- a unit still `splitting` with no plan and no exit receipt is **alive**: it becomes
+  `stuck` with exception `split-no-answer` only once it is past
+  `planner.split_hard_cap` (default 5400 s) since the request;
+- a `splitting` unit whose planner wrote an exit receipt (`resplit/<uid>.out.rc`)
+  but no plan **failed**: it is retried with backoff (60 s, then 120 s) and
+  files a `split-planner-failed` exception each time, and the third failure
+  makes it `stuck` without another retry;
 - the gate task, when reconcile reports `finished`, `timeout`, `lost` or
   `error`, or when it is unknown for more than 2400 s, is finished via
   `finish_gate(receipt(task))`.
@@ -224,6 +235,29 @@ After the units, two more collectors:
 either returns the unit to `pending` or, at `attempts >= max_attempts`,
 marks it `stuck` with exception `stuck` carrying `why + ": " + detail[-300:]`.
 The last history record is quoted back into the next attempt's brief.
+
+Transient-class failures are retried first, without counting toward
+`max_attempts`:
+
+| class | how the `why`/`detail` pair classifies |
+| --- | --- |
+| `host` | `why` starts `lost/` or `error/` (host or harness failure), or is `fetch-failed` |
+| `timeout` | `why` is `proof-failed` and `detail` carries `(exit 124)`, `(exit 137)` or `[timeout after` — a shared check that was killed rather than one that failed |
+| `generated-conflict` | `why` is `merge-conflict` and every file after `Conflicting files:` is a lockfile (`Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `deno.lock`, `flake.lock`, `uv.lock`, `poetry.lock`, `composer.lock`, `Gemfile.lock`, `go.sum`), so a merge regenerates it |
+
+A transient failure returns the unit to `pending`, increments
+`transient_retries`, sets `retry_not_before = now + transient_backoff * 2^n`
+(`n` = the retries before this one, so the wait doubles: 120 s, 240 s, … with
+the defaults) and logs `transient-retry <uid> <class> <n>/<cap>`, where `<cap>`
+is `[pump.dispatch] transient_max` (default 2; 0 disables the retry). Past the
+cap the unit takes the ordinary path above and the retries stop counting, so it
+is `stuck` once `attempts - transient_retries >= max_attempts`; the exhaustion
+is then an ordinary failure, with the usual `stuck` exception and no separate
+transient one. The local merge path reports a fetch error as undecided rather
+than failed (section 5.1), so it returns to `delivered` and the merge feed
+retries it without touching the transient counter; the `fetch-failed` class
+above applies when a fail carries that `why` (a remote merger's `ok=false`
+result).
 
 ### 3.2 `failure_text` filtering
 
@@ -254,9 +288,21 @@ When a unit times out or overruns, `split`:
    now, appends a history record `{"attempt": …, "model": …, "why":
    "timeout", "detail": "", "at": …}`, and logs `split-requested <uid>`.
 
-The no-answer rule: a unit still `splitting` `planner.split_timeout` seconds after the request
-becomes `stuck` with exception `split-no-answer`, text
-`the split planner wrote no plan in 25 minutes` (with the default timeout).
+The no-answer rule: a unit still `splitting` is parked only when the planner is
+truly absent. **No receipt** (`resplit/<uid>.out.rc`) means the planner is
+alive — it may run for hours — so the unit becomes `stuck` with exception
+`split-no-answer`, text `the split planner is still unreachable after <n>
+minutes`, only once it is past `planner.split_hard_cap` (default 5400 s) since
+the request. **A receipt with no plan** means the planner exited: the pump
+retries it with backoff (60 s, then 120 s), filing a `split-planner-failed`
+exception with the exit code each time, and the third exit makes the unit
+`stuck` with exception `split-planner-failed`, text `the split planner exited
+without a plan 3 times (last exit <code>)`. A planner whose output classifies
+as a host failure is not parked at all: its unit returns to `pending` with an
+`environment` exception. A split plan that arrives late and replaces a parked
+unit appends `resolved split-no-answer <uid> a late split plan replaced the
+stuck unit` (or the `split-planner-failed` kind) to `exceptions.txt`, so the
+recovery reads in sequence with the failure.
 
 Replacement: the split plan is ingested like any other; with `replaces` set
 and the old unit present, the old unit becomes `status="replaced"` with
@@ -356,7 +402,7 @@ side is in pump-contract §6.
 | `ok` | Meaning | `why` values |
 | --- | --- | --- |
 | `true` | merged and pushed; carries `tip`, `outside`, `secs` | — |
-| `false` | decided failure; the unit is failed (retry or stuck) | `branch-missing`, `merge-conflict`, `proof-failed` |
+| `false` | decided failure; the unit is failed (retry or stuck). A transient-class one — a timed-out shared check (`proof-failed` exit 124/137 or `[timeout after`), a lockfile-only `merge-conflict`, or a `fetch-failed` — is retried with backoff first (section 3.1) | `branch-missing`, `merge-conflict`, `proof-failed` |
 | `null` | undecided; the unit returns to `delivered` and is retried later | `fetch-failed`, `push-failed`, `merge-error`, `merge-undecided`, `quarantine-push-failed` |
 | `null` + `quarantine` record | the unit is set aside with its batch; status `quarantined` | `quarantined` |
 
@@ -475,8 +521,15 @@ The first readable gate sets `st["baseline"] = names`. Later gates:
   units are settled (`merged`, `stuck`, `no-defect`, `replaced`) raises one
   exception `red-after-fix` per name, once (`st["red_reported"]`).
 
-When `new` is non-empty, each new name is owned by
-`<fix_prefix>-g<tip8>`; suspects are the merged-status units in
+When `new` is non-empty, the pump sends a real need (`need send --from
+<reply_from> --to the board reply_to`, subject `pump: gate fix for <tip8>
+(N new, M residual)`) and each new name is owned by that handle — that
+handle also names the plan file `plans/<handle>.json` and carries the
+attempt records, while unit ids stay on the `<fix_prefix>-g<tip8>` base so
+fix-unit dispatch, merging and alarms are unchanged; when the send fails
+the pump falls back to the synthesized `<fix_prefix>-g<tip8>` id
+(`-r<k>` when that plan already exists) and posts no attempt records for
+it. Suspects are the merged-status units in
 `st["order"][prev_merges:this_gate.merges]`; the gate-fix planner is started;
 and exception `gate-new-failures` is written with
 `<n> new: <names ; joined, 350-char cap> ; suspects: <uids, 200-char cap>`.
@@ -484,7 +537,12 @@ A red gate never stops merging (ruling 1).
 
 ### 7.4 The gate-fix planner
 
-`gatefix(tip, clean, new)` uses need id `<fix_prefix>-g<tip8>`: if
+`gatefix(tip, clean, new)` plans under the real need handle the pump
+sent: that handle owns the failing names and names the plan file
+`plans/<handle>.json`, unit ids stay on the `<fix_prefix>-g<tip8>` base,
+and a failed send falls back to the synthesized `<fix_prefix>-g<tip8>`
+id (`-r<k>` when that plan already exists) with no attempt records posted
+for it. If
 `plans/<need>.json` already exists it does nothing. Otherwise it writes
 `gatefix/<need>.prompt`: the failing
 names, the clean commit, `git log --oneline <clean>..<tip>` as the suspect
@@ -603,18 +661,21 @@ re-planning` (ruling 7).
 
 `exception` appends `HH:MM:SS kind unit text` to
 `exceptions.txt` (UTC), newlines in the text become ` | `, the text is capped
-at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
+at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written. A
+resolution appends `HH:MM:SS resolved <kind> <unit> <text>` and logs
+`RESOLVED <kind> <unit>`; the earlier row stays, so recovery reads in sequence.
 
 | Kind | Trigger | Text written |
 | --- | --- | --- |
 | `bad-plan` | a plan file fails validation | `unit missing id, brief or write_scope` or `duplicate unit id <uid>`; unit field is the plan file basename |
 | `unknown-kind` | a pending unit names a kind (its `tools` value) that is not defined, or has none and no `default_kind` is set; raised once per unit | the kind name and that the unit is not dispatched |
 | `split-empty` | a split plan with `units: []` replaces a unit | the plan's `reason` (e.g. "Already delivered: commit …") |
-| `stuck` | `attempts >= max_attempts` on a fail | `<why>: <detail[-300:]>` |
+| `stuck` | `attempts - transient_retries >= max_attempts` on a fail, after any transient retry (`transient_max`) is spent | `<why>: <detail[-300:]>` |
 | `no-defect` | receipt contains `VERDICT: no-defect` | the last 400 chars of the receipt |
 | `quarantine` | a batch failed a shared check and was set aside; unit field is the quarantine id | `<n> units set aside on pump/quarantine/<id>: <cmd> rc=<code>; repair unit <fix_prefix>-<id>` |
 | `quarantine-stuck` | a quarantine repair unit went stuck; unit field is the quarantine id | `repair <uid> is stuck; <n> units return to delivered, one batch each: <uids>` |
-| `split-no-answer` | unit `splitting` longer than `planner.split_timeout` | `the split planner wrote no plan in 25 minutes` |
+| `split-no-answer` | unit still `splitting` with no plan and no exit receipt past `planner.split_hard_cap` (default 5400 s) | `the split planner is still unreachable after <n> minutes` |
+| `split-planner-failed` | the split planner exited without a plan; raised on each retry, and finally with the unit `stuck` on the third | `planner exited <code> without a plan; retry <n>/3 in <n>s`, then `the split planner exited without a plan 3 times (last exit <code>)` |
 | `gate-unreadable` | gate reply yields no names | the last 500 chars of the gate receipt; unit field is the gated tip[:10] |
 | `gate-build-failed` | gate reply is exactly `BUILD-FAILED` | the last 500 chars of the gate receipt |
 | `red-after-fix` | an owned failing name fails again after its fix units settled | the failing test name; unit field is the owner need id |
@@ -631,7 +692,9 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `task send failed <uid>: <out[-200:]>` / `dispatch failed <uid>: <out[-300:]>` |
 | `delivered <uid> <branch> secs=<n> model=<model> pool=<pool>` |
 | `fail <uid> attempt=<n> <why>` |
+| `transient-retry <uid> <class> <n>/<cap>` |
 | `split-requested <uid>` / `split <uid> into <n> units` |
+| `split-reask <uid> <reason[:120]>` / `split-retry <uid>` / `split-planner-dead <uid>` |
 | `plan <need> verdict=<v> units=<n>` |
 | `proof <uid> rc=<n> <n>s: <cmd[:90]>` |
 | `batch <n> shared rc=<n> <n>s: <cmd>` / `batch of <n>: <n> merged` |
@@ -652,4 +715,51 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `board reply <h> <stage> rc=<n> …` |
 | `board: operator replied on parked need <h> (was <v>); re-planning` |
 | `sync pull rc=<n> …` / `sync push started (detached, drain)` |
-| `EXCEPTION <kind> <unit>` |
+| `EXCEPTION <kind> <unit>` / `RESOLVED <kind> <unit>` |
+
+### 9.3 Requeue (operator recovery)
+
+`vivi pump requeue` is the supported way to unblock a unit; nothing edits the
+state by hand. The CLI validates the uids against the pump state and writes one
+row per unit into the `requeue_requests` table of `pump.db`. The running pump
+reads the unapplied rows each tick after plan ingest and before the board pass,
+applies them, and marks them applied, so a requeued unit can dispatch in the
+same tick. No restart and no stop is needed, unlike editing `pump.db` by hand,
+which a running pump overwrites at each save.
+
+Allowed from-statuses: `stuck`, `quarantined`, `splitting` and `withdrawn`.
+A `quarantined` unit returns to `delivered` with `solo=true` and its
+`quarantine` cleared, so the merge feed gives it a batch of its own; every
+other allowed status returns to `pending`. Any other status is refused when the
+pump applies the request — a uid that has left the state since the request was
+queued is refused as `missing` — and the request is consumed anyway so a stale
+one cannot fire hours later:
+`requeue <uid> refused: status is <status>`.
+
+Attempt counter. The default policy keeps the unit's `attempts` but raises it
+past any attempt branch that already exists on the target's remote: the pump
+lists `refs/heads/unit/*` once per named target, and the next attempt never
+reuses `unit/<uid>-a<n>`. `--attempts N` sets the counter explicitly, `--fresh`
+resets it to 0, and `--refund-host-failures` subtracts the history entries
+whose `why`/`detail` classify transient (section 3.1) and clears
+`transient_retries`. At most one of the three may be given. A raise is logged
+as `requeue <uid> attempts raised to <n>: branch unit/<uid>-a<n> already
+exists`.
+
+Applying a request logs `requeue <uid> by operator: <reason>`; `--reason`
+defaults to `operator requeue`, and the bulk form carries its class there.
+
+Bulk recovery: `--stuck-since <time>` (a duration such as `1h`) with
+`--why <class>` selects every `stuck` unit whose last activity — its last
+history entry's `at`, else `since` — is inside the window and queues a
+default-policy request per unit with reason `bulk <class>`. It prints
+`selected <n> stuck unit(s): <uids>` first; an empty selection is a successful
+no-op. The bulk form takes no uids (`--stuck-since takes no unit uids`) and
+ignores the attempt flags (a conflicting combination of them is still
+refused).
+
+`--dry-run` prints `would requeue <uid>: status <status>, attempts <old> ->
+<new>, next branch unit/<uid>-a<new+1>` per unit and writes nothing; otherwise
+each queued request prints `requeue <uid> requested; the pump applies it at its
+next tick`. A mailspace with no `pump.db`, an unknown uid, conflicting attempt
+flags, or `--stuck-since` without `--why` is an error and writes nothing.

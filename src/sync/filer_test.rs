@@ -43,3 +43,33 @@ fn an_event_letter_sees_no_kind_whatever_the_envelope_carries() {
     let (work, headers) = event_record(Some("need"), false);
     assert_eq!(letter_kind(&work, &headers), Some("need"));
 }
+
+#[test]
+fn a_verdict_letter_is_marked_touched_for_the_settle() {
+    let c = crate::sync::fake_server::checkout("alice", &["mind"]);
+    let filer = Filer::new(&c.mailspace, &c.settings);
+    let storage = c.mailspace.storage().unwrap();
+    let to = c.address("mind");
+    let letter = format!(
+        "Message-ID: <r1@example.com>\r\nFrom: hand@example.com\r\nTo: {to}\r\n\
+         In-Reply-To: <task@example.com>\r\nX-Vivi-Verdict: fixed\r\n\r\n\
+         done: the unit landed\r\n"
+    );
+    let bytes = letter.into_bytes();
+    let record = Record {
+        sequence: 1,
+        message_id: "msg_000000010000000000000000".into(),
+        from: "hand@example.com".into(),
+        to: Some(to),
+        kind: None,
+        content_sha256: sha256_hex(&bytes),
+        from_prefix: None,
+        appended_at: None,
+        raw_eml: b64::encode(&bytes),
+    };
+    let mut report = PullReport::default();
+    filer
+        .file_record(&storage, &record, &mut report, &mut Vec::new())
+        .unwrap();
+    assert_eq!(report.touched, vec![sha256_hex(&bytes)]);
+}

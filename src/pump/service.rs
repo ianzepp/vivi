@@ -42,6 +42,10 @@ pub fn add(project: &Path) -> Result<(), VivariumError> {
         .iter()
         .any(|role| role.pool.is_some());
     pump.validate_for(&mailspace.root, &pools, role_pool)?;
+    let roster = crate::pump::run::identity_issues(&mailspace, pump);
+    if !roster.is_empty() {
+        return Err(VivariumError::Config(roster.join("; ")));
+    }
     crate::routing::require_ok(&crate::routing::validate(&mailspace.config))?;
     let _lock = take_registry_lock()?;
     let mut config = load_config()?;

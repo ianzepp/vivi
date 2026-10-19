@@ -3863,7 +3863,7 @@ fn graph_activate_accepts_bare_backlog_handles() {
 }
 
 #[test]
-fn graph_audit_detects_and_repairs_untracked_work() {
+fn delivered_work_is_tracked_without_repair() {
     let project = tempfile::tempdir().unwrap();
     init_roster(project.path());
     let project_s = project.path().to_str().unwrap();
@@ -3876,8 +3876,8 @@ fn graph_audit_detects_and_repairs_untracked_work() {
         "done_when: x",
     );
 
-    // An .eml delivered straight into tasks never mints a node — the state
-    // an older vivi binary leaves behind.
+    // An .eml delivered straight into tasks is tracked like any other work:
+    // the backlog node is minted at ingest.
     let identity_list = stdout(&vivi([
         "mailspace",
         "identity",
@@ -3933,37 +3933,9 @@ fn graph_audit_detects_and_repairs_untracked_work() {
     let audit = vivi(["graph", "audit", "--project", project_s]);
     assert_success(&audit);
     let audit_out = stdout(&audit);
-    assert!(audit_out.contains("missing_node"), "{audit_out}");
-    assert!(audit_out.contains(&untracked), "{audit_out}");
+    assert!(audit_out.contains("missing=0"), "{audit_out}");
+    assert!(!audit_out.contains("missing_node"), "{audit_out}");
 
-    // activate points at the repair path before repair runs.
-    let activate = vivi([
-        "graph",
-        "activate",
-        &untracked,
-        "--task",
-        &untracked,
-        "--project",
-        project_s,
-    ]);
-    assert!(!activate.status.success());
-    assert!(
-        stderr(&activate).contains("graph audit --repair"),
-        "{}",
-        stderr(&activate)
-    );
-
-    let repair = vivi(["graph", "audit", "--repair", "--project", project_s]);
-    assert_success(&repair);
-    assert!(stdout(&repair).contains("[repaired]"));
-
-    let after = vivi(["graph", "audit", "--project", project_s]);
-    assert_success(&after);
-    assert!(
-        !stdout(&after).contains("missing_node"),
-        "{}",
-        stdout(&after)
-    );
     assert_success(&vivi([
         "graph",
         "activate",
@@ -3973,6 +3945,10 @@ fn graph_audit_detects_and_repairs_untracked_work() {
         "--project",
         project_s,
     ]));
+
+    let after = vivi(["graph", "audit", "--project", project_s]);
+    assert_success(&after);
+    assert!(stdout(&after).contains("missing=0"), "{}", stdout(&after));
 }
 
 #[test]

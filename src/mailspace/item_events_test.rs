@@ -1,4 +1,4 @@
-use super::property::{PropertyKind, parse_property_event};
+use super::property::{PropertyKind, carries_verdict, parse_property_event, verdict_report_item};
 use super::*;
 use crate::mailspace::SendRequest;
 
@@ -106,6 +106,64 @@ fn a_property_event_without_its_payload_or_a_matching_reply_is_plain_mail() {
             "{headers}"
         );
     }
+}
+
+#[test]
+fn a_letter_carries_verdict_only_with_the_verdict_headers() {
+    assert!(carries_verdict(&letter("X-Vivi-Verdict: fixed\r\n")));
+    assert!(carries_verdict(&letter("X-Vivi-Repo: vivi=sha9\r\n")));
+    assert!(
+        !carries_verdict(&letter("X-Vivi-Repo: no-tip\r\n")),
+        "a repo header without '=' carries nothing"
+    );
+    assert!(!carries_verdict(&letter("X-Vivi-Note: hi\r\n")));
+}
+
+#[test]
+fn a_verdict_report_letter_names_the_live_item_it_replies_to() {
+    let (_tmp, mailspace) = space();
+    let (task, _) = send(&mailspace, "task", "hand");
+    let storage = mailspace.storage().unwrap();
+    let row = storage
+        .message_by_id(&storage.resolve_message_token(&task).unwrap())
+        .unwrap()
+        .unwrap();
+    // The row's `message_id` is a local handle; its RFC `Message-ID` is the
+    // normalized one the reply letter names.
+    let rfc_id = row
+        .normalized_message_id
+        .clone()
+        .expect("a held Message-ID");
+    let report = |headers: String| {
+        format!(
+            "From: hand@aaaaaaaa.local\r\nTo: mind@aaaaaaaa.local\r\nSubject: Re: x\r\n\
+             Message-ID: <rep-1@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n{headers}\r\n\r\nbody\r\n"
+        )
+        .into_bytes()
+    };
+    let held = verdict_report_item(
+        &storage,
+        &report(format!(
+            "In-Reply-To: <{}>\r\nX-Vivi-Verdict: fixed\r\n",
+            rfc_id
+        )),
+    )
+    .unwrap();
+    assert_eq!(held.as_deref(), Some(row.content_id.as_str()));
+    // Replies to a held row but carries no verdict headers.
+    assert_eq!(
+        verdict_report_item(&storage, &report(format!("In-Reply-To: <{rfc_id}>\r\n"))).unwrap(),
+        None
+    );
+    // Carries verdict headers but replies to a row nothing here holds.
+    assert_eq!(
+        verdict_report_item(
+            &storage,
+            &report("In-Reply-To: <nope@x.test>\r\nX-Vivi-Verdict: fixed\r\n".into()),
+        )
+        .unwrap(),
+        None
+    );
 }
 
 /// The event letters held for `item`, oldest first, as `(kind, prev count)`.
@@ -412,5 +470,151 @@ fn applying_the_same_head_again_changes_nothing() {
     assert_eq!(
         mailspace.storage().unwrap().list_messages().unwrap(),
         before
+    );
+}
+
+#[test]
+fn release_due_reads_only_the_named_item() {
+    let (_tmp, mailspace) = space();
+    let (a, _) = send(&mailspace, "need", "hand");
+    let (b, _) = send(&mailspace, "need", "hand");
+    let storage = mailspace.storage().unwrap();
+    let (row_a_id, content_a) = {
+        let id = storage.resolve_message_token(&a).unwrap();
+        let row = storage.message_by_id(&id).unwrap().unwrap();
+        (row.message_id, row.content_id)
+    };
+    let content_b = {
+        let id = storage.resolve_message_token(&b).unwrap();
+        storage.message_by_id(&id).unwrap().unwrap().content_id
+    };
+
+    storage
+        .set_event_deferral(&[row_a_id], Some(clock_micros() + 60_000_000))
+        .unwrap();
+    assert!(!event_release_due(&storage, &content_a).unwrap());
+    assert!(!event_release_due(&storage, &content_b).unwrap());
+
+    let (due_a, due_b) = with_clock_skew(61_000_000, || {
+        (
+            event_release_due(&storage, &content_a).unwrap(),
+            event_release_due(&storage, &content_b).unwrap(),
+        )
+    });
+    assert!(due_a, "the marked item's bound has passed");
+    assert!(!due_b, "the other item holds no deferral of its own");
+}
+
+#[test]
+fn failed_release_keeps_the_deferral_mark() {
+    let (_tmp, mailspace) = space();
+    let (delivered, _sent) = send(&mailspace, "need", "hand");
+    let storage = mailspace.storage().unwrap();
+    let row_id = storage.resolve_message_token(&delivered).unwrap();
+    let content_id = storage
+        .message_by_id(&row_id)
+        .unwrap()
+        .unwrap()
+        .content_id
+        .clone();
+    // A mark whose bound the clock has passed: the release is due.
+    let bound = clock_micros() - 1;
+    storage.set_event_deferral(&[row_id], Some(bound)).unwrap();
+
+    arm_fail_next_settle();
+    assert!(
+        mailspace.apply_released_events().is_err(),
+        "the armed settle fails"
+    );
+    assert!(
+        storage
+            .deferred_event_contents()
+            .unwrap()
+            .contains(&(content_id, bound)),
+        "a settle that errors must leave the mark, so the next pass retries"
+    );
+
+    assert!(mailspace.apply_released_events().is_ok());
+    assert!(
+        storage.deferred_event_contents().unwrap().is_empty(),
+        "a successful settle drops the mark"
+    );
+}
+
+/// The raw bytes of the event letters held for `handle`, oldest first.
+fn event_letters(mailspace: &Mailspace, handle: &str) -> Vec<String> {
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(handle).unwrap();
+    let view = storage.message_by_id(&id).unwrap().unwrap();
+    let mut found: Vec<(i64, String)> = Vec::new();
+    for child in storage.reply_child_contents(&view.content_id).unwrap() {
+        let row = storage.message_by_content_id(&child).unwrap().unwrap();
+        let bytes = storage.read_listed_blob(&row.blob_relpath).unwrap();
+        if let Some(event) = parse_event(&bytes) {
+            found.push((event.date, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+    found.sort();
+    found.into_iter().map(|(_, bytes)| bytes).collect()
+}
+
+#[test]
+fn want_promote_writes_a_promoted_event_letter() {
+    let (_tmp, mailspace) = space();
+    // A want of mind's own: mind holds the delivered copy in `wants`, so the
+    // promotion is the author's move and travels.
+    let (want, _sent) = send(&mailspace, "want", "mind");
+
+    let promoted = mailspace
+        .move_item("mind", &want, "needs", None, "want promote", None)
+        .unwrap();
+
+    assert!(
+        mailspace
+            .list("mind", "needs")
+            .unwrap()
+            .iter()
+            .any(|row| row.handle == promoted),
+        "the promoted row is in needs"
+    );
+    let state = mailspace.item_event_state(&want).unwrap().unwrap();
+    assert_eq!(state.state, "promoted");
+    assert_eq!(events_of(&mailspace, &want), [("promoted".to_string(), 0)]);
+    let letters = event_letters(&mailspace, &promoted);
+    assert_eq!(letters.len(), 1);
+    assert!(
+        letters[0].contains("X-Vivi-Event: promoted"),
+        "{}",
+        letters[0]
+    );
+    // A promotion is not a close: the backlog node stays open.
+    let node = mailspace
+        .graph_show("backlog")
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|node| node.source_id == promoted)
+        .expect("the promoted want has a backlog node");
+    assert_eq!(node.state, "open");
+}
+
+#[test]
+fn a_hand_promoting_another_roles_want_stays_a_local_move() {
+    let (_tmp, mailspace) = space();
+    let (want, _sent) = send(&mailspace, "want", "hand");
+
+    let moved = mailspace
+        .move_item("hand", &want, "needs", None, "want promote", None)
+        .unwrap();
+
+    assert_eq!(mailspace.item_event_state(&want).unwrap(), None);
+    assert!(events_of(&mailspace, &want).is_empty());
+    assert!(
+        mailspace
+            .list("hand", "needs")
+            .unwrap()
+            .iter()
+            .any(|row| row.handle == moved),
+        "the reporter's copy still moves"
     );
 }

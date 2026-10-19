@@ -177,6 +177,7 @@ fn started_lanes_each_merge_in_their_own_checkout_cloned_from_the_target_remote(
     let (_dir, ctx, host) = lane_setup(1, 2);
     host.reply("remote get-url", 0, "https://example.com/r.git\n");
     host.reply("rev-parse HEAD", 0, "tipreal123\n");
+    host.reply("rev-parse origin/next", 0, "tipreal123\n");
     let merger = Merger::start(&ctx);
     let mut st = delivered(2);
     merger.feed(&ctx, &mut st);
@@ -205,6 +206,33 @@ fn started_lanes_each_merge_in_their_own_checkout_cloned_from_the_target_remote(
     let logs = host.logs();
     assert!(logs.iter().any(|l| l == "lane default/0 takes 1: u1"));
     assert!(logs.iter().any(|l| l == "lane default/1 takes 1: u2"));
+}
+
+#[test]
+fn a_lane_whose_reset_does_not_reach_the_remote_tip_reports_lane_reset_failed() {
+    let (_dir, ctx, host) = lane_setup(1, 1);
+    host.reply("rev-parse HEAD", 0, "tipstale\n");
+    let merger = Merger::start(&ctx);
+    let mut st = delivered(1);
+    merger.feed(&ctx, &mut st);
+    let result = merger.results.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(result.ok, None, "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("lane-reset-failed"));
+    assert!(
+        result
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("after reset"),
+        "{result:?}"
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("EXCEPTION lane-reset-failed default/0")),
+        "{:?}",
+        host.logs()
+    );
 }
 
 #[test]
@@ -238,6 +266,7 @@ fn job() -> MergeJob {
         proof: Vec::new(),
         tools: String::from("plain"),
         write_scope: vec![String::from("src/pump/merge.rs")],
+        source: None,
     }
 }
 

@@ -2,14 +2,18 @@
 
 pub mod alarm;
 pub mod amend;
+pub mod attempt_read;
 pub mod attempt_record;
+pub mod blockers;
 pub mod board;
+pub mod boardpass;
 pub mod brief;
 pub mod closeout;
 pub mod collect;
 pub mod config;
 pub mod control;
 pub mod dispatch;
+pub mod envfail;
 pub mod gate;
 pub mod gatefix;
 pub mod host;
@@ -18,14 +22,17 @@ pub mod merge;
 pub mod plan;
 pub mod priority;
 pub mod progress;
+pub mod proof;
 pub mod quarantine;
 pub mod ready;
 pub mod remote;
 pub mod report;
+pub mod requeue;
 pub mod run;
 pub mod service;
 pub mod state;
 pub mod store;
+pub mod transient;
 
 #[cfg(test)]
 #[path = "pump/logview_test.rs"]
@@ -46,6 +53,10 @@ mod state_test;
 #[cfg(test)]
 #[path = "pump/store_test.rs"]
 mod store_test;
+
+#[cfg(test)]
+#[path = "pump/transient_test.rs"]
+mod transient_test;
 
 #[cfg(test)]
 #[path = "pump/report_test.rs"]
@@ -116,12 +127,20 @@ mod gate_promote_test;
 mod board_test;
 
 #[cfg(test)]
+#[path = "pump/boardpass_test.rs"]
+mod boardpass_test;
+
+#[cfg(test)]
 #[path = "pump/run_test.rs"]
 mod run_test;
 
 #[cfg(test)]
 #[path = "pump/lifecycle_test.rs"]
 mod lifecycle_test;
+
+#[cfg(test)]
+#[path = "pump/blockers_test.rs"]
+mod blockers_test;
 
 #[cfg(test)]
 #[path = "pump/alarm_test.rs"]
@@ -132,5 +151,21 @@ mod alarm_test;
 mod quarantine_test;
 
 #[cfg(test)]
+#[path = "pump/requeue_test.rs"]
+mod requeue_test;
+
+#[cfg(test)]
 #[path = "pump/attempt_record_test.rs"]
 mod attempt_record_test;
+
+#[cfg(test)]
+#[path = "pump/attempt_read_test.rs"]
+mod attempt_read_test;
+
+#[cfg(test)]
+#[path = "pump/envfail_test.rs"]
+mod envfail_test;
+
+#[cfg(test)]
+#[path = "pump/proof_test.rs"]
+mod proof_test;

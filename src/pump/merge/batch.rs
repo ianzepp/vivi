@@ -1,6 +1,7 @@
 //! The batch merge path: several unit branches merged together, checked
 //! once, published once. A failing unit proof isolates its unit; a failing
-//! shared check sets the whole batch aside (quarantine).
+//! shared check is bisected: the members that pass alone land in the same
+//! cycle and only the members that fail alone are set aside (quarantine).
 
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::quarantine;
@@ -9,9 +10,9 @@ use crate::pump::state::{MergeJob, MergeResult, Quarantine};
 use super::fetch::fetch_unit_branch;
 use super::publish::publish;
 use super::{
-    GIT_TIMEOUT, already_integrated, failed, failure_text, fetch_failure, flat,
-    format_style_commit, identity_args, integrated_text, merge_line, merge_work, outside_files,
-    reset_repo, skips_proof, tail, undecided_result,
+    GIT_TIMEOUT, already_integrated, check_with_drift_retry, failed, failure_text, fetch_failure,
+    flat, format_style_commit, git_error, identity_args, integrated_text, merge_line, merge_work,
+    outside_files, reset_repo, resolve_generated, skips_proof, tail, undecided_result,
 };
 
 /// A cleanly merged job plus the files its merge touched outside its scope.
@@ -28,12 +29,33 @@ enum SharedOutcome {
     /// for a single job, or quarantine results (and no pushed integration
     /// branch) for several.
     Failed(Vec<MergeResult>),
+    /// A shared check could not run on this host (a missing tool, exit
+    /// 126/127 or `command not found`): nothing is decided about the batch
+    /// and every job goes back to `delivered`.
+    Undecided(Vec<MergeResult>),
+    /// A shared check failed, the batch was bisected, and `clean` members
+    /// pass it alone: `decided` holds the results for the culprits, set
+    /// aside, and the clean members go back for a second round.
+    Bisected {
+        decided: Vec<MergeResult>,
+        clean: Vec<MergeJob>,
+    },
+}
+
+/// What bisecting a failed shared check found: the members that fail it
+/// alone, the members that pass it alone, and members whose solo merge
+/// failed (nothing is decided about those).
+struct Bisect {
+    culprits: Vec<MergeJob>,
+    clean: Vec<MergeJob>,
+    undecided: Vec<MergeResult>,
 }
 
 /// Merge a batch of unit branches together, check the result once and push
 /// once. Returns the results for the decided jobs and the jobs a second round
 /// should retry (empty when none remain). A failing shared check decides the
-/// whole batch, so it leaves nothing to retry.
+/// whole batch unless bisecting it finds members that pass alone: those come
+/// back as the retry list.
 #[must_use]
 pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<MergeJob>) {
     let t0 = ctx.now();
@@ -47,9 +69,13 @@ pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merge
     format_style_commit(ctx, &tag);
     match run_shared(ctx, &merged) {
         SharedOutcome::Pass => {}
-        SharedOutcome::Failed(decided) => {
+        SharedOutcome::Failed(decided) | SharedOutcome::Undecided(decided) => {
             results.extend(decided);
             return (results, Vec::new());
+        }
+        SharedOutcome::Bisected { decided, clean } => {
+            results.extend(decided);
+            return (results, clean);
         }
     }
     let culprits = run_proofs(ctx, &merged, &mut results);
@@ -144,7 +170,7 @@ fn merge_units(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>) 
 /// Fetch and merge job number `at.0` of `at.1`. `None` means it merged
 /// cleanly.
 fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResult> {
-    let out = fetch_unit_branch(ctx, &job.branch);
+    let out = fetch_unit_branch(ctx, job);
     if out.code != 0 {
         merge_line(
             ctx,
@@ -171,13 +197,32 @@ fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResul
         merge_line(ctx, &job.uid, at, "ok");
         return None;
     }
-    merge_line(ctx, &job.uid, at, "conflict");
-    let files = ctx
+    let raw = ctx
         .git("diff --name-only --diff-filter=U", GIT_TIMEOUT)
         .text;
+    let files: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !files.is_empty() && resolve_generated(ctx, &job.uid, &files) {
+        merge_line(ctx, &job.uid, at, "generated");
+        return None;
+    }
+    if git_error(&out.text) || files.is_empty() {
+        merge_line(ctx, &job.uid, at, "env");
+        drop(ctx.git("merge --abort", GIT_TIMEOUT));
+        return Some(undecided_result(
+            &job.uid,
+            "merge-env-failed",
+            &tail(&out.text, 300),
+        ));
+    }
+    merge_line(ctx, &job.uid, at, "conflict");
     drop(ctx.git("merge --abort", GIT_TIMEOUT));
     let detail = format!(
-        "The branch no longer merges into the integration branch. Conflicting files: {files}"
+        "The branch no longer merges into the integration branch. Conflicting files: {raw}"
     );
     Some(failed(&job.uid, "merge-conflict", detail))
 }
@@ -186,10 +231,11 @@ fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResul
 /// `batch <n> shared rc=<n> <n>s: <cmd>` log line.
 fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
     let total = ctx.cfg.merge.shared_checks.len();
+    let tag = format!("batch of {}", merged.len());
     for (i, cmd) in ctx.cfg.merge.shared_checks.iter().enumerate() {
         ctx.step(&format!("check {}/{total} start: {cmd}", i + 1));
         let t1 = ctx.now();
-        let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+        let out = check_with_drift_retry(ctx, &tag, cmd);
         ctx.log(&format!(
             "batch {} shared rc={} {}s: {cmd}",
             merged.len(),
@@ -197,6 +243,15 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
             ctx.now().saturating_sub(t1)
         ));
         if out.code != 0 {
+            if crate::pump::envfail::missing_tool(out.code, &out.text) {
+                log_failure(ctx, &out.text);
+                let detail = proof_detail(out.code, cmd, &out.text);
+                let undecided = merged
+                    .iter()
+                    .map(|m| undecided_result(&m.job.uid, "proof-missing-tool", &detail))
+                    .collect();
+                return SharedOutcome::Undecided(undecided);
+            }
             return shared_failure(ctx, merged, cmd, out.code, &out.text);
         }
     }
@@ -204,8 +259,9 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
 }
 
 /// Decide a failed shared check. The failure text is logged first: one
-/// merged job is the culprit and fails with `proof-failed`; several are set
-/// aside together (see [`quarantine_batch`]).
+/// merged job is the culprit and fails with `proof-failed`; several are
+/// bisected, so the members that fail alone are set aside together (see
+/// [`quarantine_members`]) and the clean members land right away.
 fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str) -> SharedOutcome {
     log_failure(ctx, text);
     if merged.len() == 1 {
@@ -214,7 +270,69 @@ fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str
         let result = failed(&merged[0].job.uid, "proof-failed", detail);
         return SharedOutcome::Failed(vec![result]);
     }
-    SharedOutcome::Failed(quarantine_batch(ctx, merged, cmd, code, text))
+    let split = bisect_shared(ctx, merged, cmd);
+    let quarantine_set = if split.culprits.is_empty() {
+        ctx.log("bisect: no member fails alone; whole batch aside");
+        merged.iter().map(|m| m.job.clone()).collect()
+    } else {
+        ctx.log(&format!(
+            "bisect: culprits {}; clean: {}",
+            uids_line(&split.culprits),
+            uids_line(&split.clean)
+        ));
+        split.culprits.clone()
+    };
+    let mut decided = split.undecided;
+    decided.extend(quarantine_members(ctx, &quarantine_set, cmd, code, text));
+    if split.clean.is_empty() {
+        return SharedOutcome::Failed(decided);
+    }
+    SharedOutcome::Bisected {
+        decided,
+        clean: split.clean,
+    }
+}
+
+/// The uids of `jobs`, comma-joined, for one log line.
+fn uids_line(jobs: &[MergeJob]) -> String {
+    let uids: Vec<&str> = jobs.iter().map(|j| j.uid.as_str()).collect();
+    uids.join(",")
+}
+
+/// Merge each member alone from a clean lane and run the failed shared check
+/// on that solo merge: a member that fails alone is a culprit, one that
+/// passes alone is clean. A member that no longer merges decides nothing.
+fn bisect_shared(ctx: &Ctx, merged: &[Merged], cmd: &str) -> Bisect {
+    let mut split = Bisect {
+        culprits: Vec::new(),
+        clean: Vec::new(),
+        undecided: Vec::new(),
+    };
+    for (i, m) in merged.iter().enumerate() {
+        reset_repo(ctx);
+        merge_main_in(ctx);
+        if let Some(result) = merge_one(ctx, &m.job, (i + 1, merged.len())) {
+            let detail = result.detail.as_deref().unwrap_or("");
+            split
+                .undecided
+                .push(undecided_result(&m.job.uid, "bisect-merge-failed", detail));
+            continue;
+        }
+        let t1 = ctx.now();
+        let out = check_with_drift_retry(ctx, &m.job.uid, cmd);
+        ctx.log(&format!(
+            "bisect {} rc={} {}s: {cmd}",
+            m.job.uid,
+            out.code,
+            ctx.now().saturating_sub(t1)
+        ));
+        if out.code == 0 {
+            split.clean.push(m.job.clone());
+        } else {
+            split.culprits.push(m.job.clone());
+        }
+    }
+    split
 }
 
 /// Log the last 40 lines of a failed shared check's distilled output, one
@@ -225,6 +343,52 @@ fn log_failure(ctx: &Ctx, text: &str) {
     for line in &lines[lines.len().saturating_sub(40)..] {
         ctx.log(&format!("  {line}"));
     }
+}
+
+/// Rebuild the batch on a clean lane and set it aside: every member is
+/// merged again, so the quarantine push does not depend on what the lane's
+/// `HEAD` still holds. A member that no longer merges is left undecided
+/// (`quarantine-merge-failed`) so it returns to `delivered`; the members
+/// that do merge are pushed aside together by [`quarantine_batch`].
+fn quarantine_members(
+    ctx: &Ctx,
+    jobs: &[MergeJob],
+    cmd: &str,
+    code: i32,
+    text: &str,
+) -> Vec<MergeResult> {
+    reset_repo(ctx);
+    merge_main_in(ctx);
+    let (undecided, merged) = rebuild_batch(ctx, jobs);
+    if merged.is_empty() {
+        return undecided;
+    }
+    format_style_commit(ctx, &style_tag(&merged));
+    let mut results = quarantine_batch(ctx, &merged, cmd, code, text);
+    results.extend(undecided);
+    results
+}
+
+/// Merge `jobs` again from a clean lane: clean merges collect (without the
+/// `outside` files the quarantine path does not use), and any merge failure
+/// becomes an undecided result instead of a failed one.
+fn rebuild_batch(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>) {
+    let mut undecided = Vec::new();
+    let mut merged = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        match merge_one(ctx, job, (i + 1, jobs.len())) {
+            Some(result) => undecided.push(undecided_result(
+                &job.uid,
+                "quarantine-merge-failed",
+                result.detail.as_deref().unwrap_or(""),
+            )),
+            None => merged.push(Merged {
+                job: job.clone(),
+                outside: Vec::new(),
+            }),
+        }
+    }
+    (undecided, merged)
 }
 
 /// Set a batch aside after a shared check failed: push the lane's `HEAD`
@@ -289,7 +453,7 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             let head: String = cmd.chars().take(90).collect();
             ctx.step(&format!("proof {} start: {head}", m.job.uid));
             let t1 = ctx.now();
-            let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+            let out = check_with_drift_retry(ctx, &m.job.uid, cmd);
             ctx.log(&format!(
                 "proof {} rc={} {}s: {head}",
                 m.job.uid,
@@ -298,13 +462,30 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             ));
             if out.code != 0 {
                 culprits.push(m.job.uid.clone());
-                let detail = proof_detail(out.code, cmd, &out.text);
-                results.push(failed(&m.job.uid, "proof-failed", detail));
+                let result = if crate::pump::envfail::missing_tool(out.code, &out.text) {
+                    let detail = proof_detail(out.code, cmd, &out.text);
+                    undecided_result(&m.job.uid, "proof-missing-tool", &detail)
+                } else if crate::pump::proof::usage_failure(&out.text) {
+                    let detail = usage_detail(out.code, cmd, &out.text);
+                    failed(&m.job.uid, "proof-usage", detail)
+                } else {
+                    let detail = proof_detail(out.code, cmd, &out.text);
+                    failed(&m.job.uid, "proof-failed", detail)
+                };
+                results.push(result);
                 break;
             }
         }
     }
     culprits
+}
+
+/// The batch usage-error detail: the proof command that could not parse.
+fn usage_detail(code: i32, cmd: &str, out: &str) -> String {
+    format!(
+        "The unit's proof command failed as a usage error before anything ran (exit {code}):\n{cmd}\n\nLast output:\n{}",
+        failure_text(out)
+    )
 }
 
 /// The batch proof-failure detail: the command and what it printed.

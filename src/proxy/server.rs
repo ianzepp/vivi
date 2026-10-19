@@ -47,7 +47,7 @@ async fn aggregate_health(State(state): State<Arc<AppState>>, headers: HeaderMap
     let names = provider_kinds(&state.config);
     refresh_upstream_health(&state).await;
     let rows = state.health.snapshot(&names);
-    let status = if rows.iter().all(|row| row.status == "ok") {
+    let status = if health::aggregate_ok(&rows) {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -306,7 +306,7 @@ async fn backend_health(state: &AppState, name: &str, provider: &ProviderConfig)
             state
                 .health
                 .record(name, kind_name(provider.kind), true, None);
-            forward::json_ok(serde_json::json!({ "ok": true, "provider": name }))
+            forward::json_ok(serde_json::json!({ "ok": true, "provider": name, "status": "ok" }))
         }
         Err(error) => {
             state
@@ -314,7 +314,7 @@ async fn backend_health(state: &AppState, name: &str, provider: &ProviderConfig)
                 .record(name, kind_name(provider.kind), false, Some(error));
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                axum::Json(serde_json::json!({ "ok": false, "provider": name })),
+                axum::Json(serde_json::json!({ "ok": false, "provider": name, "status": "down" })),
             )
                 .into_response()
         }

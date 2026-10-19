@@ -4,7 +4,9 @@
 //! single-instance lock.
 
 use std::fs::{self, File};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use vivi::pump::state::{NeedRecord, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
@@ -39,10 +41,12 @@ fn once_runs_one_tick_and_writes_db_status_and_log() {
     assert!(lines[1].starts_with("units"), "line 2: {status}");
     let shown = vivi(["pump", "status", "--project", root(&project)]);
     assert_success(&shown);
-    assert_eq!(
-        stdout(&shown),
-        format!("{status}control  running\n"),
-        "status must print status.txt plus the durable control mode"
+    assert!(
+        stdout(&shown).starts_with(&format!(
+            "{status}control  running\nwriter   not running\nage "
+        )),
+        "status must print status.txt plus the durable control mode, writer state, and snapshot age: {}",
+        stdout(&shown)
     );
 }
 
@@ -108,6 +112,11 @@ fn boot_and_board_show_the_pump_section() {
     assert_success(&boot);
     assert!(
         stdout(&boot).contains("pump: local execution state"),
+        "{}",
+        stdout(&boot)
+    );
+    assert!(
+        stdout(&boot).contains("  state   control running, writer not running, status age never"),
         "{}",
         stdout(&boot)
     );
@@ -274,6 +283,71 @@ fn a_second_instance_is_refused() {
     assert_success(&vivi(["pump", "once", "--project", root(&project)]));
 }
 
+#[test]
+fn a_service_child_pump_refreshes_status_every_tick() {
+    let project = temp_mailspace();
+    let status = pump_home(&project).join("status.txt");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vivi"))
+        .args([
+            "pump",
+            "run",
+            "--service-child",
+            "--project",
+            root(&project),
+        ])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    // The first tick writes status.txt; wait for it before taking its mtime.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !status.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the service child wrote no status.txt within 10s"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    let first = fs::metadata(&status).unwrap().modified().unwrap();
+    // Every tick rewrites the file, so the mtime must advance within a few
+    // one-second ticks.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut next = first;
+    while next <= first {
+        assert!(
+            Instant::now() < deadline,
+            "status.txt was not refreshed in 30s: first {first:?}, latest {next:?}"
+        );
+        thread::sleep(Duration::from_millis(200));
+        next = fs::metadata(&status).unwrap().modified().unwrap();
+    }
+    let refreshed = next > first;
+    // Stop the child: `pump stop`, then wait; kill it if either step stalls.
+    let stopped = vivi(["pump", "stop", "--project", root(&project)]);
+    let mut exited = stopped.status.success();
+    if exited {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                exited = false;
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+    if !exited {
+        child.kill().unwrap();
+    }
+    let _ = child.wait().unwrap();
+    assert!(
+        refreshed,
+        "status.txt mtime did not advance: first {first:?}, latest {next:?}"
+    );
+}
+
 /// A temp project mailspace with the minimal `[pump]` table appended.
 fn temp_mailspace() -> tempfile::TempDir {
     let project = tempfile::tempdir().unwrap();
@@ -286,9 +360,15 @@ fn temp_mailspace() -> tempfile::TempDir {
          [pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n\
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
          [pump.merge]\nshared_checks = [\"true\"]\n\n\
-         [pump.gate]\ncommand = \"true\"\n"
+         [pump.gate]\ncommand = \"true\"\n\n\
+         [[identities]]\nname = \"operator\"\n\n\
+         [[identities]]\nname = \"hand\"\n\n\
+         [[identities]]\nname = \"mind\"\n"
     );
+    // The init template writes an empty roster as `identities = []`; drop that
+    // line so the `[[identities]]` tables below can declare the pump's roles.
     let mut text = fs::read_to_string(&config).unwrap();
+    text = text.replace("identities = []\n", "");
     text.push_str(&table);
     fs::write(config, text).unwrap();
     // The pump refuses to start without its integration clone; an empty repository stands in.

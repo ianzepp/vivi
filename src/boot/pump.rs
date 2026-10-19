@@ -52,6 +52,16 @@ pub struct PumpBoot {
     pub amendments: usize,
     /// Exception rows in the pump database.
     pub exceptions: usize,
+    /// Planners the board currently has in flight.
+    pub planning: usize,
+    /// Handles parked after exhausting planner retries.
+    pub planner_parked: usize,
+    /// Durable operator control mode for this pump home.
+    pub control: String,
+    /// Whether a writer process currently holds the pump lock.
+    pub writer: String,
+    /// Whole seconds since `status.txt` was last written, when it exists.
+    pub status_age: Option<u64>,
     /// Depth of the snapshot that follows.
     pub view: PumpView,
     /// Role the snapshot was gated for, when known.
@@ -236,12 +246,39 @@ fn assemble(mut args: Assemble<'_>) -> PumpBoot {
         .unwrap_or_default();
     let complete_but_open = complete_needs.intersection(args.open_needs).count();
     let snapshot = (args.view != PumpView::None).then(|| snapshot_for(&mut args, complete_needs));
-    from_counts(
+    let mut boot = from_counts(
         counts.as_ref(),
         complete_but_open,
         args.view,
         args.role,
         snapshot,
+    );
+    let home = pump_home(args.mailspace);
+    boot.control = crate::pump::control::inspect(&home).map_or_else(
+        |_| String::from("unknown"),
+        |control| control.mode.to_string(),
+    );
+    boot.writer = match crate::pump::run::lock_is_held(&home) {
+        Ok(true) => String::from("running"),
+        Ok(false) => String::from("not running"),
+        Err(_) => String::from("unknown"),
+    };
+    boot.status_age = status_age_seconds(&home);
+    boot
+}
+
+/// Whole seconds since `<home>/status.txt` was last written, when the file
+/// exists and its modification time can be read.
+fn status_age_seconds(home: &std::path::Path) -> Option<u64> {
+    let modified = match std::fs::metadata(home.join("status.txt")).and_then(|meta| meta.modified())
+    {
+        Ok(modified) => modified,
+        Err(_) => return None,
+    };
+    Some(
+        std::time::SystemTime::now()
+            .duration_since(modified)
+            .map_or(0, |elapsed| elapsed.as_secs()),
     )
 }
 
@@ -283,6 +320,11 @@ fn from_counts(
         stuck: counts.map_or(0, |s| s.stuck),
         amendments: counts.map_or(0, |s| s.amendments),
         exceptions: counts.map_or(0, |s| s.exceptions),
+        planning: counts.map_or(0, |s| s.planning),
+        planner_parked: counts.map_or(0, |s| s.planner_parked),
+        control: String::from("unknown"),
+        writer: String::from("unknown"),
+        status_age: None,
         view,
         role: role.map(str::to_string),
         snapshot,

@@ -7,23 +7,64 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::thread;
 
 use crate::pump::brief::brief_for;
+use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, ranked};
-use crate::pump::state::{State, Status};
+use crate::pump::state::{State, Status, Unit};
 use crate::routing::{choose_model, lanes_for};
 
+/// The I/O outcome of trying to start one unit: pure command results with no
+/// state applied, so [`start_unit`] can run off-thread and [`apply_start`]
+/// can write the state later.
+pub(crate) enum UnitStart {
+    /// `pool dispatch` accepted the task.
+    Started {
+        /// The sent task's handle.
+        task: String,
+        /// The pool slot the porcelain reply named, when it named one.
+        slot: Option<String>,
+    },
+    /// `task send` produced no handle (or the brief could not be written).
+    SendFailed {
+        /// The failure output, truncated for the log.
+        text: String,
+    },
+    /// The task was sent, but `pool dispatch` failed.
+    DispatchFailed {
+        /// The sent task's handle.
+        task: String,
+        /// The full failure output.
+        text: String,
+    },
+}
+
 /// One unit's dispatch plan decided before anything is sent.
-struct Plan {
+pub(crate) struct Plan {
     /// Pool chosen from the unit's kind (`[pump.dispatch.kinds.<name>] pools`).
-    pool: String,
+    pub(crate) pool: String,
     /// Lane chosen by [`pick_model`]; `None` means every lane is full.
-    model: Option<String>,
+    pub(crate) model: Option<String>,
     /// One more than the unit's attempts so far.
-    attempt: u32,
+    pub(crate) attempt: u32,
     /// `unit/<uid>-a<attempt>`.
-    branch: String,
+    pub(crate) branch: String,
+}
+
+/// One unit reserved for a start: its id, a snapshot of the unit, the
+/// dispatch plan decided for it, and the model picked for it. Phase one plans
+/// and reserves; phase two starts the reservations one at a time.
+pub(crate) struct Planned {
+    /// The unit's handle.
+    uid: String,
+    /// The unit as it stood when it was planned.
+    unit: Unit,
+    /// The pool, lane, attempt and branch decided for the unit.
+    plan: Plan,
+    /// The model picked for the start.
+    model: String,
 }
 
 /// Free slot counts per pool: run `pool status --porcelain` and count the
@@ -86,16 +127,23 @@ fn tail(s: &str, n: usize) -> String {
 
 /// Offer ready units to the pools: priority units first, then fix units, at most `per_tick` starts
 /// per tick. A unit with no free pool slot waits; a full lane set breaks the
-/// loop for this tick. On success the unit goes inflight with its task,
-/// branch, model, pool and dispatch timestamp; a failed pool dispatch closes
-/// the task as superseded and leaves the unit pending.
+/// loop for this tick. Planning and slot reservation happen first and write no
+/// unit state, so the same-tick overlay of earlier starts comes from the
+/// planned slice; the starts themselves then run serially. On success the unit
+/// goes inflight with its task, branch, model, pool and dispatch timestamp; a
+/// failed pool dispatch closes the task as superseded and leaves the unit
+/// pending. The per-unit I/O runs in [`start_unit`]; its result is applied to
+/// the state by [`apply_start`]. The per-tick cap now counts planned starts,
+/// so a failed send no longer falls through to the next unit within the same
+/// tick; the next tick retries it.
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
+    apply_env_pauses(ctx, st, &mut free);
     let holds = dependency_holds(ctx, st);
-    let mut started: u32 = 0;
     let order = ranked(ctx, st, st.order.clone());
+    let mut planned: Vec<Planned> = Vec::new();
     for uid in order {
-        if started >= ctx.cfg.dispatch.per_tick {
+        if planned.len() as u32 >= ctx.cfg.dispatch.per_tick {
             break;
         }
         let dependency = st
@@ -113,25 +161,93 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         if report_unknown_kind(ctx, st, &uid) {
             continue;
         }
-        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds) else {
+        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned) else {
             continue;
         };
         let Some(model) = plan.model.clone() else {
-            if ctx
-                .routing
-                .hand(&ctx.cfg.to)
-                .and_then(|role| role.pool.as_deref())
-                .is_some()
-            {
+            if hand_pool_is_fixed(ctx) {
                 continue;
             }
             break;
         };
-        let Some(task) = send_brief(ctx, st, &uid, plan.attempt) else {
+        let Some(unit) = st.units.get(&uid) else {
             continue;
         };
-        if dispatch_one(ctx, st, &uid, &plan, &model, &task, &mut free) {
-            started += 1;
+        if let Some(count) = free.get_mut(&plan.pool) {
+            *count = count.saturating_sub(1);
+        }
+        planned.push(Planned {
+            uid: uid.clone(),
+            unit: unit.clone(),
+            plan,
+            model,
+        });
+    }
+    run_starts(ctx, st, &planned, &mut free);
+}
+
+/// `true` when the hand role names a pool, so a unit whose lanes are all full
+/// waits for that pool instead of ending the tick.
+fn hand_pool_is_fixed(ctx: &Ctx) -> bool {
+    ctx.routing
+        .hand(&ctx.cfg.to)
+        .and_then(|role| role.pool.as_deref())
+        .is_some()
+}
+
+/// Phase two of a dispatch tick: run the planned starts concurrently, then
+/// apply each outcome to the state. One thread per planned unit runs the
+/// per-unit I/O in [`start_unit`] (task send plus pool dispatch, roughly 40s
+/// each in production) while the tick thread only joins the handles in ranked
+/// order and applies the outcomes with [`apply_start`] — every state write
+/// stays on the tick thread. A worker that panics joins as
+/// [`UnitStart::SendFailed`], so the failure is log-only, the reserved slot
+/// is given back, and the tick survives.
+fn run_starts(ctx: &Ctx, st: &mut State, planned: &[Planned], free: &mut BTreeMap<String, u32>) {
+    let results: Vec<UnitStart> = thread::scope(|scope| {
+        let handles: Vec<_> = planned
+            .iter()
+            .map(|p| {
+                let ctx = ctx.clone();
+                let uid = p.uid.clone();
+                let unit = p.unit.clone();
+                let model = p.model.clone();
+                let plan = &p.plan;
+                scope.spawn(move || start_unit(&ctx, &uid, &unit, plan, &model))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| UnitStart::SendFailed {
+                    text: String::from("dispatch thread panicked"),
+                })
+            })
+            .collect()
+    });
+    for (p, start) in planned.iter().zip(results) {
+        apply_start(ctx, st, &p.uid, &p.plan, &p.model, start, free);
+    }
+}
+
+/// Apply the pool environment pauses at the top of a dispatch tick: a pool
+/// with a passing probe, or a probe-less pause older than
+/// [`envfail::HOST_FAIL_WINDOW`], resumes (entry removed, pool's free slots
+/// left in place); a still-paused pool keeps its entry and is dropped from
+/// `free`, so dispatch finds no slot there. Pools absent from `free` need no
+/// entry removal.
+fn apply_env_pauses(ctx: &Ctx, st: &mut State, free: &mut BTreeMap<String, u32>) {
+    for pool in st.env_pauses.keys().cloned().collect::<Vec<_>>() {
+        let pause = &st.env_pauses[&pool];
+        let paused = match &pause.probe {
+            Some(probe) => ctx.sh(probe, None, 30).code != 0,
+            None => ctx.now() - pause.fails.last().unwrap_or(&0) <= envfail::HOST_FAIL_WINDOW,
+        };
+        if paused {
+            free.remove(&pool);
+        } else {
+            st.env_pauses.remove(&pool);
+            ctx.log(&format!("environment cleared for pool {pool}"));
         }
     }
 }
@@ -201,15 +317,23 @@ fn plan_unit(
     uid: &str,
     free: &BTreeMap<String, u32>,
     holds: &BTreeMap<String, Vec<String>>,
+    planned: &[Planned],
 ) -> Option<Plan> {
     let unit = st.units.get(uid)?;
     if !is_ready(ctx, st, uid, holds) {
         return None;
     }
     let kind = ctx.cfg.kind_of(&unit.tools)?;
-    // While `max` units of this kind are inflight, a further one waits.
+    let kind_name = ctx.cfg.kind_name(&unit.tools);
+    // While `max` units of this kind are inflight or planned this tick, a
+    // further one waits.
     if let Some(max) = kind.max
-        && inflight_of_kind(ctx, st, ctx.cfg.kind_name(&unit.tools)) >= max as usize
+        && inflight_of_kind(ctx, st, &kind_name)
+            + planned
+                .iter()
+                .filter(|p| ctx.cfg.kind_name(&p.unit.tools) == kind_name)
+                .count()
+            >= max as usize
     {
         return None;
     }
@@ -217,7 +341,7 @@ fn plan_unit(
     let attempt = unit.attempts + 1;
     Some(Plan {
         pool: pool.clone(),
-        model: pick_unit_model(ctx, st, unit, &pool),
+        model: pick_unit_model(ctx, st, unit, &pool, planned),
         attempt,
         branch: format!("unit/{uid}-a{attempt}"),
     })
@@ -239,16 +363,21 @@ fn assigned_pool(ctx: &Ctx, kind_pools: &[String], free: &BTreeMap<String, u32>)
 fn pick_unit_model(
     ctx: &Ctx,
     st: &State,
-    unit: &crate::pump::state::Unit,
+    unit: &Unit,
     pool: &str,
+    planned: &[Planned],
 ) -> Option<String> {
     let role = ctx.routing.hand(&ctx.cfg.to);
     if role.and_then(|role| role.pool.as_deref()) == Some(pool) {
         let lanes = lanes_for(&ctx.routing, &ctx.cfg, Some(pool));
+        let mut load = inflight_models(st, Some(pool));
+        for p in planned.iter().filter(|p| p.plan.pool == pool) {
+            *load.entry(p.model.clone()).or_insert(0) += 1;
+        }
         return choose_model(
             role,
             &lanes,
-            &inflight_models(st, Some(pool)),
+            &load,
             unit.attempts,
             unit.history.last().and_then(|h| h.model.as_deref()),
             ctx.cfg.dispatch.last_resort.as_str(),
@@ -295,22 +424,26 @@ fn inflight_of_kind(ctx: &Ctx, st: &State, name: &str) -> usize {
         .count()
 }
 
-/// Write `<home>/briefs/<uid>.txt` and send the unit's task; returns the
-/// created task handle, or `None` when the brief could not be written or the
-/// output carries no handle (logged as `task send failed`).
-fn send_brief(ctx: &Ctx, st: &State, uid: &str, attempt: u32) -> Option<String> {
-    let unit = st.units.get(uid)?;
+/// Do the dispatch I/O for one planned unit without touching any state:
+/// write `<home>/briefs/<uid>.txt`, `task send` the unit's task, then hand
+/// the task to the pool with `pool dispatch`. The caller applies the outcome
+/// with [`apply_start`], which owns every state write.
+fn start_unit(ctx: &Ctx, uid: &str, unit: &Unit, plan: &Plan, model: &str) -> UnitStart {
     let dir = ctx.home.join("briefs");
     if let Err(err) = fs::create_dir_all(&dir) {
         ctx.log(&format!("brief dir failed {uid}: {err}"));
-        return None;
+        return UnitStart::SendFailed {
+            text: err.to_string(),
+        };
     }
     let path = dir.join(format!("{uid}.txt"));
     if let Err(err) = fs::write(&path, brief_for(ctx, uid, unit)) {
         ctx.log(&format!("brief write failed {uid}: {err}"));
-        return None;
+        return UnitStart::SendFailed {
+            text: err.to_string(),
+        };
     }
-    let subject: String = format!("[{uid} a{attempt}] {}", unit.title)
+    let subject: String = format!("[{uid} a{}] {}", plan.attempt, unit.title)
         .chars()
         .take(170)
         .collect();
@@ -323,19 +456,102 @@ fn send_brief(ctx: &Ctx, st: &State, uid: &str, attempt: u32) -> Option<String> 
     );
     let out = ctx.vivi(&cmd, 120);
     let Some(task) = parse_created_handle(&out.text) else {
-        ctx.log(&format!("task send failed {uid}: {}", tail(&out.text, 200)));
-        return None;
+        return UnitStart::SendFailed {
+            text: tail(&out.text, 200),
+        };
     };
-    Some(task)
+    dispatch_cmd(ctx, unit, plan, model, &task)
+}
+
+/// Build and run the `pool dispatch` command for one sent task; the outcome
+/// is returned for [`apply_start`] to act on.
+fn dispatch_cmd(
+    ctx: &Ctx,
+    unit: &crate::pump::state::Unit,
+    plan: &Plan,
+    model: &str,
+    task: &str,
+) -> UnitStart {
+    let cmd = format!(
+        "pool dispatch --pool {} {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
+        shell_quote(&plan.pool),
+        shell_quote(task),
+        shell_quote(unit.target_id()),
+        shell_quote(model),
+        shell_quote(&unit_base(ctx, unit)),
+        shell_quote(&plan.branch),
+        ctx.cfg.dispatch.budget,
+    );
+    let out = ctx.vivi(&cmd, 180);
+    if out.code != 0 || !out.text.contains("dispatched") {
+        return UnitStart::DispatchFailed {
+            task: task.to_owned(),
+            text: out.text,
+        };
+    }
+    UnitStart::Started {
+        task: task.to_owned(),
+        slot: parse_dispatched_slot(&out.text),
+    }
+}
+
+/// The slot from a `pool dispatch --porcelain` reply: the fourth token of the
+/// line whose first token is `dispatched`
+/// (`dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST`),
+/// with surrounding double quotes stripped. `-` (the porcelain's absent value)
+/// and short lines yield `None`.
+#[must_use]
+pub fn parse_dispatched_slot(text: &str) -> Option<String> {
+    let line = text
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some("dispatched"))?;
+    let slot = line.split_whitespace().nth(3)?;
+    let slot = slot
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(slot);
+    if slot.is_empty() || slot == "-" {
+        return None;
+    }
+    Some(slot.to_owned())
+}
+
+/// Raise the unit's one `unknown-role` exception when a task send failed for
+/// a config reason — the CLI refused a pump identity ("unknown local role
+/// ..."), so retrying cannot help. Transient failures stay log-only. The
+/// flag rides on the unit, so a restart does not repeat the exception; a
+/// later successful send clears it (see [`apply_start`]).
+fn report_send_failure(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
+    if !text.contains("unknown local role") {
+        return;
+    }
+    let Some(unit) = st.units.get_mut(uid) else {
+        return;
+    };
+    if unit.send_reported {
+        return;
+    }
+    unit.send_reported = true;
+    ctx.exception(
+        "unknown-role",
+        uid,
+        &format!("task send failed: {}", tail(text, 300)),
+    );
 }
 
 /// The ref a unit is dispatched from: its own `base` when it has one (a
 /// quarantine repair unit starts on its quarantine branch), else the target's
 /// `dispatch.from`.
 pub(crate) fn dispatch_base(ctx: &Ctx, st: &State, uid: &str) -> String {
-    let Some(unit) = st.units.get(uid) else {
-        return ctx.cfg.dispatch_from().to_string();
-    };
+    st.units.get(uid).map_or_else(
+        || ctx.cfg.dispatch_from().to_string(),
+        |unit| unit_base(ctx, unit),
+    )
+}
+
+/// The dispatch base for one unit in hand: its own `base` when it has one,
+/// else the target's `dispatch.from`.
+fn unit_base(ctx: &Ctx, unit: &Unit) -> String {
     if let Some(base) = &unit.base {
         return base.clone();
     }
@@ -345,39 +561,61 @@ pub(crate) fn dispatch_base(ctx: &Ctx, st: &State, uid: &str) -> String {
     )
 }
 
-/// Run `pool dispatch` for one planned unit. On success the unit goes
-/// inflight and a slot is consumed; on failure the task is closed as
-/// superseded and, when the output says `no free slot`, the pool's free count
-/// is zeroed. Returns `true` when the unit started.
-fn dispatch_one(
+/// Apply a [`UnitStart`] to the state — exactly the writes dispatching one
+/// unit has always made, kept out of the I/O so [`start_unit`] can run off
+/// thread. Returns `true` when the unit started.
+pub(crate) fn apply_start(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    plan: &Plan,
+    model: &str,
+    start: UnitStart,
+    free: &mut BTreeMap<String, u32>,
+) -> bool {
+    match start {
+        UnitStart::Started { task, slot } => apply_started(ctx, st, uid, plan, model, &task, slot),
+        UnitStart::SendFailed { text } => {
+            ctx.log(&format!("task send failed {uid}: {text}"));
+            report_send_failure(ctx, st, uid, &text);
+            // The slot was reserved at plan time and nothing started in it.
+            release_slot(free, &plan.pool);
+            false
+        }
+        UnitStart::DispatchFailed { task, text } => {
+            // The send succeeded, so a raised send exception is cleared even
+            // though the dispatch failed (send_brief always cleared it then).
+            if let Some(unit) = st.units.get_mut(uid) {
+                unit.send_reported = false;
+            }
+            dispatch_failed(ctx, uid, &task, &plan.pool, &text, free);
+            false
+        }
+    }
+}
+
+/// Give a slot reserved at plan time back to its pool.
+fn release_slot(free: &mut BTreeMap<String, u32>, pool: &str) {
+    free.entry(pool.to_owned())
+        .and_modify(|c| *c = c.saturating_add(1))
+        .or_insert(1);
+}
+
+/// The `Started` arm: the unit goes inflight with its task, branch, model,
+/// pool and timestamps. The pool's slot was already reserved at plan time.
+fn apply_started(
     ctx: &Ctx,
     st: &mut State,
     uid: &str,
     plan: &Plan,
     model: &str,
     task: &str,
-    free: &mut BTreeMap<String, u32>,
+    slot: Option<String>,
 ) -> bool {
-    let from = dispatch_base(ctx, st, uid);
-    let cmd = format!(
-        "pool dispatch --pool {} {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
-        shell_quote(&plan.pool),
-        shell_quote(task),
-        shell_quote(&st.units.get(uid).map_or("default", |unit| unit.target_id())),
-        shell_quote(model),
-        shell_quote(&from),
-        shell_quote(&plan.branch),
-        ctx.cfg.dispatch.budget,
-    );
-    let out = ctx.vivi(&cmd, 180);
-    if out.code != 0 || !out.text.contains("dispatched") {
-        dispatch_failed(ctx, uid, task, &plan.pool, &out.text, free);
-        return false;
-    }
-    let now = ctx.now();
     let Some(unit) = st.units.get_mut(uid) else {
         return false;
     };
+    let now = ctx.now();
     unit.status = Status::Inflight;
     unit.attempts = plan.attempt;
     unit.task = Some(task.to_owned());
@@ -386,9 +624,8 @@ fn dispatch_one(
     unit.since = now;
     unit.since_dispatch = Some(now);
     unit.pool = Some(plan.pool.clone());
-    if let Some(count) = free.get_mut(&plan.pool) {
-        *count = count.saturating_sub(1);
-    }
+    unit.slot = slot;
+    unit.send_reported = false;
     ctx.log(&format!(
         "dispatch {uid} a{} {} {model} task={task}",
         plan.attempt, plan.pool
@@ -397,7 +634,8 @@ fn dispatch_one(
 }
 
 /// Log a failed pool dispatch, close the task as superseded, and zero the
-/// pool's free count when the failure text says `no free slot`.
+/// pool's free count when the failure text says `no free slot`; any other
+/// failure gives the reserved slot back.
 fn dispatch_failed(
     ctx: &Ctx,
     uid: &str,
@@ -416,5 +654,7 @@ fn dispatch_failed(
     drop(ctx.vivi(&cmd, 120));
     if text.contains("no free slot") {
         free.insert(pool.to_owned(), 0);
+    } else {
+        release_slot(free, pool);
     }
 }

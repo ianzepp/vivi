@@ -2,10 +2,11 @@
 //! residual failures (owned names still failing after their owner settled).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 
 use crate::pump::collect::spawn_planner;
 use crate::pump::gate::is_settled;
-use crate::pump::host::Ctx;
+use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::{State, Status};
 
 /// The `state.json` key holding how many times each failing name has been
@@ -29,12 +30,11 @@ pub(crate) fn replans_left(ctx: &Ctx, st: &State, name: &str) -> bool {
 
 /// `true` when the owner has units and every one of them is settled.
 fn owner_settled(st: &State, owner: &str) -> bool {
-    let prefix = format!("{owner}-");
     let statuses: Vec<Status> = st
         .units
-        .iter()
-        .filter(|(uid, _)| uid.starts_with(&prefix))
-        .map(|(_, unit)| unit.status)
+        .values()
+        .filter(|unit| unit.need == owner)
+        .map(|unit| unit.status)
         .collect();
     !statuses.is_empty() && statuses.iter().all(|&s| is_settled(s))
 }
@@ -110,6 +110,84 @@ fn need_taken(ctx: &Ctx, need: &str) -> bool {
             .exists()
 }
 
+/// Send the real backing need for a gate fix and return its handle: the
+/// mailspace thread fix units' attempt records reply on. Returns `None`
+/// (with the reason logged) when the send fails or no handle can be parsed.
+pub(crate) fn send_fix_need(
+    ctx: &Ctx,
+    tip: &str,
+    new: &[String],
+    residual: &[(String, String)],
+) -> Option<String> {
+    let dir = ctx.home.join("gatefix");
+    drop(fs::create_dir_all(&dir));
+    let path = dir.join(format!("{}-need.txt", fix_need(ctx, tip)));
+    let mut body = format!("The integration branch went red at {tip}.\nNew failures:\n");
+    for name in new {
+        body.push_str(&format!("- {name}\n"));
+    }
+    body.push_str("Residual failures still failing after their owner settled:\n");
+    for (name, _) in residual {
+        body.push_str(&format!("- {name}\n"));
+    }
+    body.push_str(
+        "The pump starts a fix planner for these; attempt records for its units reply on this thread.\n",
+    );
+    drop(fs::write(&path, body));
+    let short: String = tip.chars().take(8).collect();
+    let subject = format!(
+        "pump: gate fix for g{short} ({} new, {} residual)",
+        new.len(),
+        residual.len()
+    );
+    let args = format!(
+        "need send --from {} --to {} --subject {} --body-file {}",
+        ctx.cfg.reply_from,
+        ctx.cfg.reply_to(),
+        shell_quote(&subject),
+        shell_quote(&path.display().to_string()),
+    );
+    let out = ctx.vivi(&args, 60);
+    let handle = if out.code == 0 {
+        parse_need_handle(&out.text)
+    } else {
+        None
+    };
+    match handle {
+        Some(handle) => Some(handle),
+        None => {
+            ctx.log(&format!(
+                "gatefix need send failed: {}",
+                last_line(&out.text)
+            ));
+            None
+        }
+    }
+}
+
+/// The need handle from `need send` output: the third whitespace token of
+/// the first `created ` line, else the second token of the first `sent ` line.
+fn parse_need_handle(text: &str) -> Option<String> {
+    let created = text
+        .lines()
+        .find(|line| line.starts_with("created "))
+        .and_then(|line| line.split_whitespace().nth(2));
+    let token = created.or_else(|| {
+        text.lines()
+            .find(|line| line.starts_with("sent "))
+            .and_then(|line| line.split_whitespace().nth(1))
+    });
+    token
+        .map(str::to_owned)
+        .filter(|handle| !handle.is_empty() && !handle.contains(char::is_whitespace))
+}
+
+/// The last non-blank line of `text`, cut to 80 chars.
+fn last_line(text: &str) -> String {
+    let line = text.trim().lines().last().unwrap_or("");
+    line.chars().take(80).collect()
+}
+
 /// Start the gate-fix planner for a red gate under `need`, skipped when its
 /// plan file already exists.
 pub(crate) fn gatefix(
@@ -167,10 +245,11 @@ The commits merged between the two are `git log --oneline {clean}..{tip}` in {re
         )
     };
     let sections = format!("{new_section}{}", residual_sections(ctx, tip, residual));
+    let fix = fix_need(ctx, tip);
     format!(
         "The integration branch went red. Plan the fix units, as your system prompt describes, with these rules.
 
-{sections}Write {home}/plans/{need}.json (write .tmp, then mv): {{\"need\": \"{need}\", \"verdict\": \"units\", \"reason\": \"...\", \"units\": [...]}}. Unit ids \"{need}-1\", \"{need}-2\", ... . Group failures with one likely cause into one unit; one cause per unit. Each brief names the failing tests, the suspected merge commit and why, and says: run the tests first; fix the CAUSE forward; change a test only if the suspected unit implemented a ruling that deliberately changed the pinned behaviour, and name the ruling; never delete, ignore or weaken a test; name the culprit commit in the reply. Proof: the failing tests by name (one `cargo test` filter per command). Keep write scopes as narrow as you can.
+{sections}Write {home}/plans/{need}.json (write .tmp, then mv): {{\"need\": \"{need}\", \"verdict\": \"units\", \"reason\": \"...\", \"units\": [...]}}. Unit ids \"{fix}-1\", \"{fix}-2\", ... . Group failures with one likely cause into one unit; one cause per unit. Each brief names the failing tests, the suspected merge commit and why, and says: run the tests first; fix the CAUSE forward; change a test only if the suspected unit implemented a ruling that deliberately changed the pinned behaviour, and name the ruling; never delete, ignore or weaken a test; name the culprit commit in the reply. Proof: the failing tests by name (one `cargo test` filter per command). Keep write scopes as narrow as you can.
 Your final message is one line.
 "
     )

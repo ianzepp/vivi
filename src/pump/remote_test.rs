@@ -40,6 +40,7 @@ fn job(uid: &str) -> MergeJob {
         proof: vec!["cargo test".to_string()],
         tools: "plain".to_string(),
         write_scope: vec![format!("src/{uid}.rs")],
+        source: None,
     }
 }
 

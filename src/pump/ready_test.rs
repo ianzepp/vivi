@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::{DispatchConfig, Lane, PumpConfig};
+use crate::pump::config::{DispatchConfig, Generated, Lane, MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::ready::{dependency_holds, is_ready, pick_model, ranked, satisfied};
+use crate::pump::ready::{
+    blocked_needs, dependency_holds, is_ready, pick_model, ranked, satisfied,
+};
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 
 /// A `Ctx` over a fresh temp home with the given pump config.
@@ -120,6 +122,39 @@ fn an_inflight_unit_with_an_overlapping_scope_blocks() {
     assert!(is_ready(&ctx, &st, "v", &BTreeMap::new()));
 }
 
+/// A config whose merge lane regenerates `scripta/ledger.toml`.
+fn generated_cfg() -> PumpConfig {
+    PumpConfig {
+        merge: MergeConfig {
+            generated: vec![Generated {
+                paths: vec![String::from("scripta/ledger.toml")],
+                regenerate: String::from("./regen-ledger.sh"),
+                drift: vec![],
+            }],
+            ..MergeConfig::default()
+        },
+        ..PumpConfig::default()
+    }
+}
+
+#[test]
+fn a_generated_path_overlap_does_not_block_dispatch() {
+    let (_dir, ctx, _host, mut st) = setup_cfg(generated_cfg());
+    let (bid, busy_u) = mk(
+        "busy",
+        Status::Inflight,
+        &["src/a.rs", "scripta/ledger.toml"],
+    );
+    let (uid, uu) = mk("u", Status::Pending, &["src/b.rs", "scripta/ledger.toml"]);
+    st.units.insert(bid, busy_u);
+    st.units.insert(uid, uu);
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
+    // Control: an overlap on a hand-written path still blocks.
+    let (vid, vu) = mk("v", Status::Pending, &["src/a.rs", "src/v.rs"]);
+    st.units.insert(vid, vu);
+    assert!(!is_ready(&ctx, &st, "v", &BTreeMap::new()));
+}
+
 #[test]
 fn delivered_and_merging_overlaps_do_not_block_new_units() {
     let (_dir, ctx, _host, mut st) = setup();
@@ -146,6 +181,43 @@ fn a_fix_unit_is_still_blocked_by_an_inflight_fix_unit_that_overlaps() {
     st.units.insert(cid, cu);
     assert!(!is_ready(&ctx, &st, "pumpfix-b", &BTreeMap::new()));
     assert!(is_ready(&ctx, &st, "pumpfix-c", &BTreeMap::new()));
+}
+
+#[test]
+fn a_quarantine_repair_is_ready_despite_an_inflight_ordinary_unit_sharing_its_scope() {
+    let (_dir, ctx, _host, mut st) = setup();
+    // An ordinary unit inflight on `src/runner.rs`.
+    let (bid, busy_u) = mk("corpus-9", Status::Inflight, &["src/runner.rs"]);
+    // A quarantine repair unit whose write scope covers `src/runner.rs` too.
+    let (rid, mut ru) = mk(
+        "pumpfix-q1-aaaaaa",
+        Status::Pending,
+        &["src/runner.rs", "outcomes.json"],
+    );
+    ru.repairs = Some(String::from("q1-aaaaaa"));
+    ru.base = Some(String::from("origin/pump/quarantine/q1-aaaaaa"));
+    st.units.insert(bid, busy_u);
+    st.units.insert(rid, ru);
+    // The repair is the path back to green: it ignores the ordinary inflight
+    // overlap and outranks the ordinary unit for dispatch.
+    assert!(is_ready(&ctx, &st, "pumpfix-q1-aaaaaa", &BTreeMap::new()));
+    assert_eq!(
+        ranked(
+            &ctx,
+            &st,
+            vec![String::from("corpus-9"), String::from("pumpfix-q1-aaaaaa")]
+        ),
+        ["pumpfix-q1-aaaaaa", "corpus-9"]
+    );
+    // Serialization still runs the other way: an ordinary unit waits behind
+    // an ordinary inflight overlap ...
+    let (oid, ou) = mk("corpus-10", Status::Pending, &["src/runner.rs"]);
+    st.units.insert(oid, ou);
+    assert!(!is_ready(&ctx, &st, "corpus-10", &BTreeMap::new()));
+    // ... and an ordinary unit waits for a busy repair too.
+    st.units.get_mut("pumpfix-q1-aaaaaa").unwrap().status = Status::Inflight;
+    st.units.remove("corpus-9");
+    assert!(!is_ready(&ctx, &st, "corpus-10", &BTreeMap::new()));
 }
 
 #[test]
@@ -179,6 +251,18 @@ fn a_unit_that_is_not_pending_is_not_ready() {
         assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
         st.units.remove("u");
     }
+}
+
+#[test]
+fn a_unit_inside_its_backoff_window_is_not_ready() {
+    let (_dir, ctx, _host, mut st) = setup();
+    let now = ctx.now();
+    let (uid, mut u) = mk("u", Status::Pending, &["src/a"]);
+    u.retry_not_before = Some(now + 300);
+    st.units.insert(uid, u);
+    assert!(!is_ready(&ctx, &st, "u", &BTreeMap::new()));
+    st.units.get_mut("u").unwrap().retry_not_before = Some(now - 1);
+    assert!(is_ready(&ctx, &st, "u", &BTreeMap::new()));
 }
 
 #[test]
@@ -380,7 +464,29 @@ fn an_unreadable_dependency_gate_holds_nothing_and_logs_it() {
     assert!(
         host.logs()
             .iter()
-            .any(|line| line.contains("dependency gate unreadable"))
+            .any(|line| line.contains("graph blocked unreadable"))
+    );
+}
+
+#[test]
+fn blocked_needs_maps_needs_to_raw_prerequisites() {
+    let (_dir, ctx, host, _st) = setup();
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"n","blocked_by":["a","b"]},{"source_id":"m","blocked_by":[]},{"source_id":"","blocked_by":["x"]}]"#,
+    );
+    let raw = blocked_needs(&ctx).expect("readable graph blocked output");
+    let mut want = BTreeMap::new();
+    want.insert("n".to_string(), vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(raw, want);
+
+    host.reply("graph blocked", 1, "error: locked");
+    assert!(blocked_needs(&ctx).is_none());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("graph blocked unreadable"))
     );
 }
 

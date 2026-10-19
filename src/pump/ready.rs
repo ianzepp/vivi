@@ -34,6 +34,7 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
         | Status::Merging
         | Status::Quarantined
         | Status::Stuck
+        | Status::NeedsReplan
         | Status::Splitting
         | Status::Withdrawn
         | Status::Other(_) => false,
@@ -80,9 +81,22 @@ pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
     uids
 }
 
-/// A unit is ready to dispatch when it is pending, its need has no
-/// unlanded dependency, its write scope overlaps no reserved path, every
-/// `after` dependency is satisfied, and no other unit with an overlapping write scope is busy.
+/// The scope entries that are not generated paths for `target`: the files
+/// the agent actually writes, with machine-regenerated paths excluded so
+/// two units rebuilding the same generated file never block each other.
+fn generated_free(ctx: &Ctx, target: &str, scope: &[String]) -> Vec<String> {
+    let generated = ctx.cfg.generated_paths_for(target);
+    scope
+        .iter()
+        .filter(|path| !overlaps(&[(*path).clone()], &generated))
+        .cloned()
+        .collect()
+}
+
+/// A unit is ready to dispatch when it is pending, outside its transient
+/// backoff window, its need has no unlanded dependency, its write scope
+/// overlaps no reserved path, every `after` dependency is satisfied, and no
+/// other unit with an overlapping write scope is busy.
 /// Busy means another agent is inflight; delivered and merging work does not
 /// hold worker capacity. Fix and priority units only clash with fix units.
 #[must_use]
@@ -93,11 +107,16 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<S
     if u.status != Status::Pending {
         return false;
     }
+    if u.retry_not_before
+        .is_some_and(|not_before| ctx.now() < not_before)
+    {
+        return false;
+    }
     if holds.contains_key(&u.need) {
         return false;
     }
     let held = reserved_paths(ctx);
-    if !held.is_empty() && overlaps(&u.write_scope, &held) {
+    if !held.is_empty() && overlaps(&generated_free(ctx, u.target_id(), &u.write_scope), &held) {
         return false;
     }
     if u.after.iter().any(|dep| !satisfied(st, dep, 0)) {
@@ -115,14 +134,41 @@ struct BlockedRow {
     blocked_by: Vec<String>,
 }
 
-/// Needs held by an unlanded dependency, read once from the backlog graph:
-/// `need -> prerequisite handles still unfinished`. A prerequisite the pump
-/// already delivered — every unit of its need is satisfied — counts as
+/// Raw dependency read from the backlog graph: `need -> prerequisite
+/// handles`, exactly as Vivi reports them. Rows with no need handle or no
+/// prerequisites are dropped; nothing is filtered by whether the pump
+/// already delivered a prerequisite.
+///
+/// An unreadable answer logs and gives `None`: callers hold nothing and the
+/// pump keeps dispatching rather than stalling on a broken read.
+#[must_use]
+pub fn blocked_needs(ctx: &Ctx) -> Option<BTreeMap<String, Vec<String>>> {
+    let out = ctx.vivi(
+        "graph blocked backlog --kind need --json --confirm-large",
+        60,
+    );
+    let Some(rows) = parse_blocked(&out.text) else {
+        let detail: String = out.text.trim().chars().take(150).collect();
+        ctx.log(&format!("graph blocked unreadable: {detail}"));
+        return None;
+    };
+    let mut needs = BTreeMap::new();
+    for row in rows {
+        if !row.source_id.is_empty() && !row.blocked_by.is_empty() {
+            needs.insert(row.source_id, row.blocked_by);
+        }
+    }
+    Some(needs)
+}
+
+/// Needs held by an unlanded dependency: `need -> prerequisite handles still
+/// unfinished`, from the raw read in [`blocked_needs`]. A prerequisite the
+/// pump already delivered — every unit of its need is satisfied — counts as
 /// landed even while its Vivi node is still open, so a merged dependency
 /// that nobody has closed does not hold its dependents.
 ///
-/// An unreadable answer logs and holds nothing: the pump keeps dispatching
-/// rather than stalling on a broken read.
+/// An unreadable answer holds nothing: the pump keeps dispatching rather
+/// than stalling on a broken read.
 #[must_use]
 pub fn dependency_holds(ctx: &Ctx, st: &State) -> BTreeMap<String, Vec<String>> {
     let waiting = st
@@ -132,24 +178,17 @@ pub fn dependency_holds(ctx: &Ctx, st: &State) -> BTreeMap<String, Vec<String>> 
     if !waiting {
         return BTreeMap::new();
     }
-    let out = ctx.vivi(
-        "graph blocked backlog --kind need --json --confirm-large",
-        60,
-    );
-    let Some(rows) = parse_blocked(&out.text) else {
-        let detail: String = out.text.trim().chars().take(150).collect();
-        ctx.log(&format!("dependency gate unreadable: {detail}"));
+    let Some(raw) = blocked_needs(ctx) else {
         return BTreeMap::new();
     };
     let mut holds = BTreeMap::new();
-    for row in rows {
-        let unmet: Vec<String> = row
-            .blocked_by
+    for (need, blocked_by) in raw {
+        let unmet: Vec<String> = blocked_by
             .into_iter()
             .filter(|dependency| !need_landed(st, dependency))
             .collect();
-        if !row.source_id.is_empty() && !unmet.is_empty() {
-            holds.insert(row.source_id, unmet);
+        if !unmet.is_empty() {
+            holds.insert(need, unmet);
         }
     }
     holds
@@ -227,7 +266,12 @@ fn overlap_busy(ctx: &Ctx, st: &State, uid: &str, u: &Unit) -> bool {
             continue;
         }
         let busy = o.status == Status::Inflight;
-        if busy && overlaps(&u.write_scope, &o.write_scope) {
+        if busy
+            && overlaps(
+                &generated_free(ctx, u.target_id(), &u.write_scope),
+                &generated_free(ctx, o.target_id(), &o.write_scope),
+            )
+        {
             if fix && !oid.starts_with(ctx.cfg.fix_prefix.as_str()) {
                 continue;
             }

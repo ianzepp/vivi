@@ -66,6 +66,11 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             newest,
             project,
         } => show_need(handle, *json, *latest, *newest, project.as_deref())?,
+        NeedCommand::Attempts {
+            handle,
+            json,
+            project,
+        } => print_need_attempts(handle, *json, project.as_deref())?,
         NeedCommand::Dump(command) => dump_work_items(command, "needs", "need", "Vivi Need Dump")?,
         NeedCommand::Absorb(command) => {
             crate::local_mailspace_command::absorb_record("need", command)?;
@@ -75,15 +80,18 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             for_identity,
             note,
             project,
-        } => move_item(
-            handle,
-            for_identity,
-            note.as_ref(),
-            project.as_deref(),
-            "done",
-            "need done",
-            "done",
-        )?,
+        } => {
+            move_item(
+                handle,
+                for_identity,
+                note.as_ref(),
+                project.as_deref(),
+                "done",
+                "need done",
+                "done",
+            )?;
+            print_close_timing(project.as_deref(), handle, false);
+        }
         NeedCommand::Reopen {
             handle,
             for_identity,
@@ -448,6 +456,51 @@ fn move_item(
     Ok(())
 }
 
+/// The `timing:` close line `need done` and `task done` print: open-to-done,
+/// attempts, summed agent time and the slowest attempt, read from the
+/// closed item's thread. A missing or unreadable thread prints nothing, so
+/// the close itself never fails.
+pub(crate) fn print_close_timing(project: Option<&std::path::Path>, handle: &str, receipts: bool) {
+    if let Some((opened, attempts)) = read_close_thread(project, handle, receipts) {
+        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
+        println!(
+            "{}",
+            vivi::pump::attempt_read::timing_summary(opened, &attempts, now)
+        );
+    }
+}
+
+/// The thread's open epoch and attempt fields for [`print_close_timing`],
+/// or `None` when the mailspace or the thread cannot be read.
+fn read_close_thread(
+    project: Option<&std::path::Path>,
+    handle: &str,
+    receipts: bool,
+) -> Option<(Option<u64>, Vec<vivi::pump::attempt_read::AttemptFields>)> {
+    let Ok(mailspace) = Mailspace::discover(project) else {
+        return None;
+    };
+    let Ok(messages) = mailspace.thread(handle, false, usize::MAX, usize::MAX) else {
+        return None;
+    };
+    let attempts = messages
+        .iter()
+        .filter_map(|message| {
+            if receipts {
+                let mut attempt = vivi::pump::attempt_read::parse_receipt(&message.body)?;
+                attempt.end = vivi::pump::attempt_read::opened_epoch(&message.date);
+                Some(attempt)
+            } else {
+                vivi::pump::attempt_read::parse_record(&message.body)
+            }
+        })
+        .collect();
+    let opened = messages
+        .first()
+        .and_then(|message| vivi::pump::attempt_read::opened_epoch(&message.date));
+    Some((opened, attempts))
+}
+
 /// Print a move's one-line receipt, then one line per bound need the move
 /// completed through its join, so the acceptor sees the need close.
 pub(crate) fn print_move_receipt(moved: &vivi::mailspace::MoveOutcome, verb: &str) {
@@ -507,6 +560,68 @@ fn show_need(
         println!("  units    {rendered}");
     }
     print_pump_need(&mailspace, handle, registry_open);
+    Ok(())
+}
+
+/// `need attempts`: every pump attempt record on a need thread plus the
+/// anchor's open epoch, in one read for a synced second member.
+fn print_need_attempts(
+    handle: &str,
+    json: bool,
+    project: Option<&std::path::Path>,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(project)?;
+    // The anchor is the message the caller named, not whichever copy of the
+    // need the thread happens to place first: a sent and a delivered copy
+    // share the same date, so thread order between them is a tie-break, not
+    // an identity.
+    let anchor = {
+        let storage = mailspace.storage()?;
+        let anchor_id = storage.resolve_message_token(handle)?;
+        storage
+            .message_by_id(&anchor_id)?
+            .ok_or_else(|| VivariumError::Message(format!("message not found: {handle}")))?
+    };
+    let messages = mailspace.thread(handle, false, usize::MAX, usize::MAX)?;
+    let attempts: Vec<_> = messages
+        .iter()
+        .filter_map(|message| vivi::pump::attempt_read::parse_record(&message.body))
+        .collect();
+    let opened = vivi::pump::attempt_read::opened_epoch(&anchor.date);
+    if json {
+        print_attempts_json(&anchor.handle, &attempts, opened)?;
+        return Ok(());
+    }
+    for attempt in &attempts {
+        let seconds = attempt
+            .agent_seconds
+            .map_or_else(|| String::from("-"), |secs| secs.to_string());
+        println!(
+            "{}  {}  {}s  {}  {}/{}",
+            attempt.attempt,
+            attempt.outcome,
+            seconds,
+            attempt.model.as_deref().unwrap_or("-"),
+            attempt.pool.as_deref().unwrap_or("-"),
+            attempt.slot.as_deref().unwrap_or("-"),
+        );
+    }
+    Ok(())
+}
+
+/// The `--json` shape: one object with the anchor handle, the open epoch and
+/// every attempt record.
+fn print_attempts_json(
+    need: &str,
+    attempts: &[vivi::pump::attempt_read::AttemptFields],
+    opened: Option<u64>,
+) -> Result<(), VivariumError> {
+    let out = serde_json::json!({ "need": need, "opened": opened, "attempts": attempts });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&out)
+            .map_err(|error| VivariumError::Other(format!("failed to encode JSON: {error}")))?
+    );
     Ok(())
 }
 

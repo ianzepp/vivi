@@ -2,16 +2,19 @@
 //! and the dispatch state machine driven through [`FakeHost`] replies.
 
 use std::fs;
-use std::sync::Arc;
 
 use tempfile::tempdir;
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use crate::pump::dispatch::*;
-use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{Attempt, State, Status, Unit};
+use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
+use crate::pump::state::{Attempt, EnvPause, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The fake clock's start; units are created "now".
@@ -195,6 +198,70 @@ fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     );
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
     assert!(brief.contains("UNIT u1: Do u1"));
+}
+
+/// A state with `fly4` paused since `T0` under `probe`.
+fn paused_fly4(probe: Option<String>) -> State {
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    st.env_pauses.insert(
+        String::from("fly4"),
+        EnvPause {
+            fails: vec![T0, T0],
+            paused_at: Some(T0),
+            probe,
+            ..EnvPause::default()
+        },
+    );
+    st
+}
+
+#[test]
+fn a_paused_pool_is_not_dispatched_to() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    host.reply("command -v pi", 1, "");
+    let mut st = paused_fly4(Some(String::from("command -v pi")));
+    dispatch(&ctx, &mut st);
+    assert!(commands_with(&host, "pool dispatch --pool fly4").is_empty());
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    let pause = st.env_pauses.get("fly4").expect("pause survives");
+    assert_eq!(pause.probe.as_deref(), Some("command -v pi"));
+    assert_eq!(pause.paused_at, Some(T0));
+}
+
+#[test]
+fn a_paused_pool_resumes_when_the_probe_passes() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    host.reply("command -v pi", 0, "/opt/homebrew/bin/pi");
+    let mut st = paused_fly4(Some(String::from("command -v pi")));
+    dispatch(&ctx, &mut st);
+    assert_eq!(commands_with(&host, "pool dispatch --pool fly4").len(), 1);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert!(st.env_pauses.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("environment cleared for pool fly4"))
+    );
+}
+
+#[test]
+fn a_paused_pool_without_probe_resumes_once_the_fail_window_passes() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = paused_fly4(None);
+    host.advance(301);
+    dispatch(&ctx, &mut st);
+    assert_eq!(commands_with(&host, "pool dispatch --pool fly4").len(), 1);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert!(st.env_pauses.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("environment cleared for pool fly4"))
+    );
 }
 
 #[test]
@@ -418,6 +485,93 @@ fn per_tick_caps_the_number_of_started_units() {
     );
 }
 
+/// A [`FakeHost`] gate proving concurrency: the first `pool dispatch` parks
+/// until a second one arrives, or a 3-second deadline passes so a serial
+/// regression fails the test instead of hanging the suite. Every other
+/// call delegates straight to the inner host.
+struct GateHost {
+    inner: Arc<FakeHost>,
+    arrived: AtomicUsize,
+    open: Mutex<bool>,
+    signal: Condvar,
+}
+
+impl Host for GateHost {
+    fn now(&self) -> u64 {
+        self.inner.now()
+    }
+
+    fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput {
+        if !cmd.contains("pool dispatch") {
+            return self.inner.run(cmd, cwd, timeout_secs);
+        }
+        let n = self.arrived.fetch_add(1, Ordering::SeqCst);
+        let mut open = self.open.lock().unwrap();
+        if n == 0 {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !*open {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                let (guard, _) = self.signal.wait_timeout(open, remaining).unwrap();
+                open = guard;
+            }
+        } else {
+            *open = true;
+            self.signal.notify_all();
+        }
+        self.inner.run(cmd, cwd, timeout_secs)
+    }
+
+    fn spawn(
+        &self,
+        cmd: &str,
+        cwd: Option<&Path>,
+        stdin: Option<&Path>,
+        out: &Path,
+    ) -> Option<u32> {
+        self.inner.spawn(cmd, cwd, stdin, out)
+    }
+
+    fn log(&self, line: &str) {
+        self.inner.log(line)
+    }
+}
+
+#[test]
+fn dispatches_for_different_slots_run_concurrently() {
+    let (_dir, ctx, host) = setup_with(cfg_with(2));
+    wire(&host);
+    let gate = Arc::new(GateHost {
+        inner: host.clone(),
+        arrived: AtomicUsize::new(0),
+        open: Mutex::new(false),
+        signal: Condvar::new(),
+    });
+    let ctx = Ctx { host: gate, ..ctx };
+    let mut st = State::default();
+    ordered(&mut st, &["u1", "u2"]);
+    let began = Instant::now();
+    dispatch(&ctx, &mut st);
+    let elapsed = began.elapsed();
+    // The task sends are instant through the fake, so a concurrent tick has
+    // the second pool dispatch open the gate almost immediately; a serial
+    // regression parks the first pool dispatch the full 3 seconds.
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "dispatch took {elapsed:?}; the pool dispatches did not run concurrently"
+    );
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert_eq!(st.units["u2"].status, Status::Inflight);
+    assert_eq!(commands_with(&host, "pool dispatch").len(), 2);
+    let started = host
+        .logs()
+        .into_iter()
+        .filter(|line| line.starts_with("dispatch "))
+        .collect::<Vec<_>>();
+    assert_eq!(started.len(), 2, "{started:?}");
+}
+
 #[test]
 fn fix_units_are_dispatched_before_ordinary_units() {
     let (_dir, ctx, host) = setup_with(cfg_with(1));
@@ -470,6 +624,31 @@ fn a_task_send_without_a_handle_leaves_the_unit_pending() {
             .iter()
             .any(|line| line == "task send failed u1: queued with no receipt")
     );
+}
+
+#[test]
+fn a_config_class_task_send_failure_raises_one_exception_and_recovers() {
+    let (dir, ctx, host) = setup();
+    wire(&host);
+    host.reply(
+        "task send",
+        1,
+        "error: message error: unknown local role 'hand'; add it with `vivi role add hand`",
+    );
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    dispatch(&ctx, &mut st);
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    let text = fs::read_to_string(dir.path().join("home/exceptions.txt")).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("unknown-role u1"), "{text}");
+    assert!(text.contains("vivi role add hand"), "{text}");
+    assert!(st.units["u1"].send_reported);
+    host.reply("task send", 0, "created hand 1a2b3c4d\nnode 1a2b3c4d");
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert!(!st.units["u1"].send_reported);
 }
 
 #[test]
@@ -711,4 +890,70 @@ fn a_full_role_pool_waits_and_does_not_spill_to_another_pool() {
     assert_eq!(st.units["u1"].task, None);
     assert_eq!(st.units["u1"].pool, None);
     assert_eq!(st.units["u2"].status, Status::Pending);
+}
+
+#[test]
+fn apply_start_on_dispatch_failure_closes_the_task_and_zeroes_the_pool() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    let mut free = BTreeMap::from([(String::from("fly4"), 2)]);
+    let started = apply_start(
+        &ctx,
+        &mut st,
+        "u1",
+        &Plan {
+            pool: String::from("fly4"),
+            model: Some(String::from("m/a")),
+            attempt: 1,
+            branch: String::from("unit/u1-a1"),
+        },
+        "m/a",
+        UnitStart::DispatchFailed {
+            task: String::from("1a2b3c4d"),
+            text: String::from("error: no free slot on fly4"),
+        },
+        &mut free,
+    );
+    assert!(!started);
+    assert_eq!(free.get("fly4"), Some(&0));
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    assert_eq!(st.units["u1"].task, None);
+    let done = commands_with(&host, "task done");
+    assert_eq!(done.len(), 1);
+    assert!(
+        done[0].contains("task done 1a2b3c4d --for operator --note 'dispatch failed; superseded'"),
+        "{:?}",
+        done
+    );
+}
+
+#[test]
+fn dispatch_records_the_slot_on_the_unit() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].slot.as_deref(), Some("slot-1"));
+}
+
+#[test]
+fn parse_dispatched_slot_reads_the_real_porcelain_line() {
+    let line = "dispatched 1a2b3c4d fly4 slot-2 job001 m/a next unit/u1-a1 1800 write 0 -";
+    assert_eq!(parse_dispatched_slot(line).as_deref(), Some("slot-2"));
+}
+
+#[test]
+fn parse_dispatched_slot_treats_a_dash_as_absent() {
+    assert_eq!(
+        parse_dispatched_slot("dispatched 1a2b3c4d fly4 - job001"),
+        None
+    );
+}
+
+#[test]
+fn parse_dispatched_slot_needs_a_slot_token() {
+    assert_eq!(parse_dispatched_slot("dispatched 1a2b3c4d fly4"), None);
+    assert_eq!(parse_dispatched_slot("nothing to see here"), None);
 }

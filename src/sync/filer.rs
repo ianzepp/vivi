@@ -132,9 +132,10 @@ impl<'a> Filer<'a> {
             report.existing += 1;
             self.bind_held(storage, record, &held, report);
         }
-        // Event letters and work items are settled against each other once
-        // the page is filed and its reply links are made.
-        if headers.is_event || work_kind(record.kind.as_deref()).is_some() {
+        // Event letters, work items, and verdict-carrying report letters are
+        // settled against the item they report on once the page is filed and
+        // its reply links are made.
+        if headers.is_event || work_kind(record.kind.as_deref()).is_some() || headers.has_verdict {
             report.touched.push(content_id.clone());
         }
         if let Some(parent) = headers.parent {

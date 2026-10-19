@@ -72,6 +72,24 @@ fn feed_moves_delivered_units_to_merging_and_sends_a_job() {
 }
 
 #[test]
+fn feed_sends_a_local_pool_job_with_its_worktree_source() {
+    let (_dir, ctx, _host) = setup("");
+    let ctx = ctx.with_pool_sources(BTreeMap::from([(
+        String::from("glm"),
+        PathBuf::from("/wtree/repo"),
+    )]));
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Delivered)]);
+    st.units.get_mut("u1").unwrap().pool = Some(String::from("glm"));
+    merger.feed(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Merging);
+    assert_eq!(
+        take(&jobs).remove(0).source,
+        Some(PathBuf::from("/wtree/repo"))
+    );
+}
+
+#[test]
 fn feed_under_hold_merge_sends_only_fix_units() {
     let (_dir, ctx, _host) = setup("");
     std::fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
@@ -224,6 +242,41 @@ fn apply_ok_false_fails_the_unit_through_collect_fail() {
 }
 
 #[test]
+fn apply_proof_usage_parks_the_unit_needs_replan() {
+    let (_dir, ctx, host) = setup("");
+    let (merger, out, _jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Merging)]);
+    out.send(MergeResult {
+        uid: String::from("u1"),
+        ok: Some(false),
+        why: Some(String::from("proof-usage")),
+        detail: Some(String::from(
+            "The unit's proof command failed as a usage error, not as a test failure.\n\
+             command: cargo test --lib a b\n\
+             excerpt: error: unexpected argument 'b' found",
+        )),
+        ..MergeResult::default()
+    })
+    .unwrap();
+    merger.apply(&ctx, &mut st);
+    let u = &st.units["u1"];
+    assert_eq!(u.status, Status::NeedsReplan);
+    assert_eq!(u.attempts, 1);
+    assert!(u.history.is_empty());
+    assert_eq!(u.task, None);
+    assert!(!host.logs().iter().any(|l| l.starts_with("fail u1")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "needs-replan u1: proof usage error")
+    );
+    assert!(st.needs["n1"].amendment_pending);
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("needs-replan u1"));
+    assert!(exceptions.contains("cargo test --lib a b"));
+}
+
+#[test]
 fn apply_ok_null_returns_the_unit_to_delivered() {
     let (_dir, ctx, host) = setup("");
     let (merger, out, _jobs) = Merger::detached();
@@ -282,6 +335,7 @@ fn an_out_of_scope_merge_logs_scope_warn() {
 fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
     let (_dir, ctx, host) = setup("");
     host.reply("rev-parse HEAD", 0, "tipreal123\n");
+    host.reply("rev-parse origin/next", 0, "tipreal123\n");
     let merger = Merger::start(&ctx);
     let mut st = state_with(&[("u1", Status::Delivered)]);
     merger.feed(&ctx, &mut st);
@@ -318,13 +372,14 @@ fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
 // ------------------------------------------------ unit branches in the base repo
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
 use crate::pump::config::{GateConfig, MergeConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{FakeHost, RealHost, test_ctx};
 use crate::pump::merge::{batch_work, fetch_unit_branch, merge_work};
+use crate::pump::merge_test::unit;
 
 /// A config with one local-worktree target `tela` (integration branch `main`).
 fn tela_config() -> PumpConfig {
@@ -507,7 +562,7 @@ fn with_real_git_a_lane_clone_gets_a_branch_that_only_the_base_repository_has() 
 
     // The lane clone has no such branch; the base does, locally only.
     assert!(!git_in(&lane, &["branch", "-a"]).contains("unit/x"));
-    let out = fetch_unit_branch(&lane1, "unit/x");
+    let out = fetch_unit_branch(&lane1, &unit("u1", "unit/x"));
     assert_eq!(out.code, 0, "{}", out.text);
     assert_eq!(
         git_in(&lane, &["rev-parse", "refs/remotes/origin/unit/x"]),
@@ -516,7 +571,7 @@ fn with_real_git_a_lane_clone_gets_a_branch_that_only_the_base_repository_has() 
     assert!(git_in(&lane, &["remote"]).contains("pump-base"));
 
     // Lane 0 is the base: the branch is local there.
-    let out = fetch_unit_branch(&lane0, "unit/x");
+    let out = fetch_unit_branch(&lane0, &unit("u1", "unit/x"));
     assert_eq!(out.code, 0, "{}", out.text);
     assert_eq!(
         git_in(&base, &["rev-parse", "refs/remotes/origin/unit/x"]),
@@ -538,6 +593,7 @@ fn a_new_lane_clone_of_a_local_worktree_target_gets_the_pump_base_remote() {
     host.reply("remote get-url origin", 0, "https://example.com/tela.git\n");
     host.reply("remote get-url pump-base", 2, "error: No such remote\n");
     host.reply("rev-parse HEAD", 0, "tipreal123\n");
+    host.reply("rev-parse origin/main", 0, "tipreal123\n");
     host.reply("merge-base --is-ancestor origin/work/", 1, "");
     let merger = Merger::start(&ctx);
     let mut st = state_with(&[("u1", Status::Delivered), ("u2", Status::Delivered)]);
@@ -557,4 +613,31 @@ fn a_new_lane_clone_of_a_local_worktree_target_gets_the_pump_base_remote() {
         .position(|c| c.starts_with("git clone"))
         .expect("lane 1 is cloned");
     assert!(commands[clone + 1..].contains(&add), "{commands:?}");
+}
+
+#[test]
+fn lane_lines_count_merged_and_conflicted_results_per_lane() {
+    let (_dir, ctx, _host) = setup("");
+    let (merger, out, jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Delivered), ("u2", Status::Delivered)]);
+    merger.feed(&ctx, &mut st);
+    assert_eq!(take(&jobs).len(), 2);
+    out.send(MergeResult {
+        uid: String::from("u1"),
+        ok: Some(true),
+        ..MergeResult::default()
+    })
+    .unwrap();
+    out.send(MergeResult {
+        uid: String::from("u2"),
+        ok: Some(false),
+        why: Some(String::from("merge-conflict")),
+        ..MergeResult::default()
+    })
+    .unwrap();
+    merger.apply(&ctx, &mut st);
+    assert_eq!(
+        merger.lane_lines(ctx.now()),
+        ["lane default/0 idle merged 1 conflict 1"]
+    );
 }

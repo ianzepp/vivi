@@ -299,6 +299,56 @@ fn an_interrupted_create_is_finished_by_the_next_one() {
     assert_eq!(fake.env_cleared.borrow().len(), 1);
 }
 
+#[test]
+fn create_adopts_an_unseeded_slot_whose_seed_finished_cleanly() {
+    let fake = Fake::default();
+    let mut m = existing("ms-p-slot-1", "m1", "stopped", "p", 1);
+    m.metadata.insert(META_STATE.into(), "seeding".into());
+    m.exit_code = None;
+    fake.add(m);
+    // The listing trails the machine: only the single-machine read shows the
+    // clean exit.
+    fake.machine_exit_codes.borrow_mut().insert("m1".into(), 0);
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
+    assert_eq!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
+    assert!(report.created.is_empty());
+    assert!(fake.created.borrow().is_empty(), "no new machine minted");
+    assert_eq!(
+        fake.env_cleared.borrow().as_slice(),
+        [("m1".to_string(), vec!["GH_TOKEN".to_string()])]
+    );
+}
+
+#[test]
+fn a_slot_whose_seed_failed_is_not_adopted() {
+    let fake = Fake::default();
+    let mut m = existing("ms-p-slot-1", "m1", "stopped", "p", 1);
+    m.metadata.insert(META_STATE.into(), "seeding".into());
+    m.exit_code = None;
+    fake.add(m);
+    fake.machine_exit_codes.borrow_mut().insert("m1".into(), 3);
+    let report = create_slots(
+        &fake,
+        &config(1),
+        &pid("p"),
+        &fast(),
+        &Progress::silent(),
+        inputs,
+    )
+    .unwrap();
+    assert_ne!(fake.meta("m1", META_STATE).as_deref(), Some(STATE_READY));
+    assert!(fake.env_cleared.borrow().is_empty());
+    assert!(report.created.is_empty());
+}
+
 fn with_env(names: &[&str]) -> PoolConfig {
     let mut config = config(1);
     config.harness = Some(PoolHarness {

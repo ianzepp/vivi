@@ -12,16 +12,17 @@ use super::{
 use crate::error::VivariumError;
 use crate::message::{ComposeDraft, build_compose_draft, validate_message_headers};
 use crate::storage::{
-    MailspaceEventInput, MailspaceMoveWithReply, MessageIngestRequest, Storage, StoredMessage,
-    StoredMessageView,
+    MailspaceEventInput, MailspaceMoveWithReply, MessageIngestRequest, Storage, StoredMessageView,
 };
 use crate::sync::{MAX_LETTER_BYTES, SyncSettings};
 
-pub(super) struct DeliveredMessageId {
-    pub(super) identity: String,
-    pub(super) message_id: String,
-    pub(super) content_id: String,
-}
+mod ingest;
+
+pub(in crate::mailspace) use ingest::DeliveredMessageId;
+use ingest::{
+    collect_addresses, delivered_with_handles, ingest_for_recipients, ingest_sent_copy,
+    raw_delivery_requests, warn_duplicate_work_subjects,
+};
 
 impl Mailspace {
     /// Send a message to identities in the mailspace and to remote addresses.
@@ -39,6 +40,21 @@ impl Mailspace {
     /// resolved, if message composition fails, or if a storage operation fails.
     #[allow(clippy::needless_pass_by_value)]
     pub fn send(&self, request: SendRequest) -> Result<DeliveryResult, VivariumError> {
+        self.send_with_extras(request, &[])
+    }
+
+    /// [`Mailspace::send`] with extra headers written on the letter, in order,
+    /// after the kind and dependency headers. Used by a caller that must mark
+    /// the letter with where it came from (`task from` names its parent).
+    ///
+    /// # Errors
+    /// Returns the errors [`Mailspace::send`] returns.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(super) fn send_with_extras(
+        &self,
+        request: SendRequest,
+        extras: &[(String, String)],
+    ) -> Result<DeliveryResult, VivariumError> {
         if !request.bcc.is_empty() {
             return Err(VivariumError::Message(
                 "Bcc is not supported for local mailspace delivery in v1".into(),
@@ -65,6 +81,7 @@ impl Mailspace {
             &from,
             &request,
             reply_parent.as_ref().map(|(_, data)| data.as_slice()),
+            extras,
         )?;
         self.check_letter_size(eml.len())?;
         if work_kind.is_some() {
@@ -165,6 +182,7 @@ impl Mailspace {
         from: &str,
         request: &SendRequest,
         parent: Option<&[u8]>,
+        extras: &[(String, String)],
     ) -> Result<String, VivariumError> {
         let to = self.addresses_for(&request.to)?;
         let cc = self.addresses_for(&request.cc)?;
@@ -182,6 +200,9 @@ impl Mailspace {
         }
         for dependency in &request.depends_on {
             eml = add_header(&eml, "X-Vivi-Depends-On", dependency)?;
+        }
+        for (name, value) in extras {
+            eml = add_header(&eml, name, value)?;
         }
         if let Some(parent) = parent {
             eml = add_reply_headers(&eml, parent)?;
@@ -301,6 +322,8 @@ impl Mailspace {
             &role,
             &subject,
         )?;
+        let kind = super::kind::raw_work_kind(data, &role);
+        self.backlog_attach_raw_delivery(&stored, kind, &subject, data)?;
         let mut delivered = stored
             .into_iter()
             .zip(requests.iter())
@@ -513,9 +536,10 @@ impl Mailspace {
 
     /// List open tasks with their dependency handles, optionally filtered.
     ///
-    /// - `blocked` keeps only tasks with at least one unfinished dependency
-    ///   that names held backlog work (the rule the graph's edges follow: a
-    ///   reference that is not held, or never can be, blocks nothing).
+    /// - `blocked` keeps only tasks with at least one unmet dependency: a
+    ///   dependency is met only when it is present in this mailspace and done,
+    ///   so a reference that is not held yet, or can never name held work,
+    ///   still blocks the task.
     /// - `blocking` keeps only tasks that depend on the given handle.
     ///
     /// # Errors
@@ -690,6 +714,7 @@ impl Mailspace {
         // A role that may close the work (its author, or a mind) writes an
         // event letter, which carries the move to every mailspace holding
         // the item; any other move is local, and a close is a report.
+        let extras = metadata.map(Self::verdict_headers).unwrap_or_default();
         let event = self.try_emit_for_move(
             &storage,
             &identity,
@@ -697,11 +722,13 @@ impl Mailspace {
             &role,
             note,
             command,
+            &extras,
             &mut joined_needs,
         )?;
         if event.is_none() {
             self.refuse_sent_copy_reopen(handle, &before, &role)?;
-            self.move_row_locally(&storage, &identity, &before, &role, note, command)?;
+            let note = report_note(note, &extras);
+            self.move_row_locally(&storage, &identity, &before, &role, note, command, &extras)?;
         }
         if let Some(metadata) = metadata {
             storage.set_item_metadata(&before.message_id, metadata)?;
@@ -763,6 +790,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
+        extras: &[(String, String)],
     ) -> Result<(), VivariumError> {
         // Stored messages keep the account name they were ingested under
         // even after a rename, so the storage-layer mutation must target
@@ -772,7 +800,7 @@ impl Mailspace {
             storage.move_message_to_role(&account, &before.message_id, role)?;
             return log_move_event(storage, identity, role, before, command, None);
         };
-        let reply = self.note_reply(storage, identity, before, note)?;
+        let reply = self.note_reply(storage, identity, before, note, extras)?;
         let event = Self::move_event(command, identity, &account, before, role, note);
         storage.move_message_with_reply(&MailspaceMoveWithReply {
             account: &account,
@@ -804,6 +832,11 @@ impl Mailspace {
             None => VivariumError::Message(format!("message not found: {token}")),
         }
     }
+}
+
+/// A verdict-only report still sends a letter, so the owner sees the verdict.
+fn report_note<'a>(note: Option<&'a str>, extras: &[(String, String)]) -> Option<&'a str> {
+    note.or((!extras.is_empty()).then_some("done"))
 }
 
 fn role_implies_kind(role: &str, kind: &str) -> bool {
@@ -849,137 +882,6 @@ pub(super) fn add_header(eml: &str, name: &str, value: &str) -> Result<String, V
     Ok(format!(
         "{headers}{newline}{name}: {value}{separator}{body}"
     ))
-}
-
-/// One local-only request per resolved recipient for a raw delivery.
-fn raw_delivery_requests(
-    recipients: &[String],
-    role: &str,
-    data_len: usize,
-) -> Vec<MessageIngestRequest> {
-    recipients
-        .iter()
-        .map(|recipient| MessageIngestRequest {
-            account: recipient.clone(),
-            local_role: role.to_string(),
-            read_state: false,
-            starred: false,
-            message_id_hint: None,
-            presented_id: None,
-            seed_hint: format!("raw-delivery\0{recipient}\0{data_len}"),
-            remote: None,
-        })
-        .collect()
-}
-
-fn ingest_for_recipients(
-    storage: &Storage,
-    recipients: BTreeSet<String>,
-    role: &str,
-    eml: &str,
-    seed: i64,
-) -> Result<Vec<DeliveredMessageId>, VivariumError> {
-    let mut delivered = Vec::new();
-    for recipient in recipients {
-        let stored = storage.ingest_message(
-            &MessageIngestRequest {
-                account: recipient.clone(),
-                local_role: role.to_string(),
-                read_state: false,
-                starred: false,
-                message_id_hint: None,
-                presented_id: None,
-                seed_hint: format!("local-delivery\0{seed}\0{recipient}"),
-                remote: None,
-            },
-            eml.as_bytes(),
-        )?;
-        delivered.push(DeliveredMessageId {
-            identity: recipient,
-            message_id: stored.message_id,
-            content_id: stored.content_id,
-        });
-    }
-    Ok(delivered)
-}
-
-fn delivered_with_handles(
-    storage: &Storage,
-    delivered: Vec<DeliveredMessageId>,
-) -> Result<Vec<DeliveredMessage>, VivariumError> {
-    delivered
-        .into_iter()
-        .map(|message| {
-            Ok(DeliveredMessage {
-                identity: message.identity,
-                handle: storage.display_handle(&message.message_id)?,
-            })
-        })
-        .collect()
-}
-
-fn ingest_sent_copy(
-    storage: &Storage,
-    from: &str,
-    eml: &str,
-    seed: i64,
-) -> Result<StoredMessage, VivariumError> {
-    storage.ingest_message(
-        &MessageIngestRequest {
-            account: from.to_string(),
-            local_role: "sent".into(),
-            read_state: true,
-            starred: false,
-            message_id_hint: None,
-            presented_id: None,
-            seed_hint: format!("local-sent\0{seed}"),
-            remote: None,
-        },
-        eml.as_bytes(),
-    )
-}
-
-fn collect_addresses<'a>(
-    addresses: Option<&'a mail_parser::Address<'a>>,
-    out: &mut BTreeSet<String>,
-) {
-    let Some(addresses) = addresses else {
-        return;
-    };
-    for addr in addresses.iter() {
-        if let Some(address) = addr.address.as_deref() {
-            out.insert(address.to_string());
-        }
-    }
-}
-
-/// Warn (stderr, never blocking) when the same sender already has an open
-/// item with the same subject in a recipient's work folder — the signature
-/// of a re-run filing loop minting duplicates. Still-open items only:
-/// resending a subject whose earlier copy settled is a normal follow-up.
-fn warn_duplicate_work_subjects(
-    storage: &Storage,
-    role: &str,
-    subject: &str,
-    from_addr: &str,
-    recipients: &BTreeSet<String>,
-) {
-    for recipient in recipients {
-        let Ok(existing) = storage.list_messages_by_account_role(recipient, role) else {
-            continue;
-        };
-        let Some(duplicate) = existing
-            .iter()
-            .find(|view| view.subject == subject && view.from_addr == from_addr)
-        else {
-            continue;
-        };
-        eprintln!(
-            "warning: an open {role} with subject '{subject}' from {from_addr} already exists \
-             for {recipient} as {}; this send may be a duplicate",
-            duplicate.handle
-        );
-    }
 }
 
 #[cfg(test)]

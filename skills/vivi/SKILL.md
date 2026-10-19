@@ -232,9 +232,12 @@ creates a graph edge; handles are validated before anything is created, so
 an unknown dependency fails the send. `X-Vivi-Depends-On` headers remain on
 the message and travel with it: whatever files a work letter (local send, pull,
 fetch, resync, `pull --refs`, audit repair) builds the edges its headers name
-for every dependency this mailspace holds as work, with or without `[sync]`. A
-dependency not held yet waits and its edge is made when that letter arrives; a
-reference that can never name work here blocks nothing. There is one dependency
+for every dependency this mailspace holds as work, with or without `[sync]`.
+A listed dependency always blocks: a reference this mailspace does not hold
+yet (not yet synced, or unknown) leaves the dependent blocked and reported as
+an exception until the dependency is present and done, and the edge is made
+when the letter arrives by any route — `pull --refs` fetches named
+dependencies. There is one dependency
 substrate — the graph — for small and multi-unit relationships alike.
 
 Closing a task, need, or want records its current disposition, as a letter on
@@ -260,7 +263,11 @@ quiet: its folded state is `done`, and the newest event of any kind held
 for it (a state letter, a mark, a bind, another seal; a `done` move when
 no event letter exists) is at least the quiet period old — 24 hours by
 default, `[absorb] quiet_hours = N` in `mailspace.toml` (`0` turns the
-wait off). An absorb of a not-done item is refused (`close it before
+wait off, and reopens the absorb/reopen race: with no quiet period, a
+reopen letter already in flight when the seal is written is ignored once
+the seal lands, and every member keeps the item sealed in the state the
+seal named — the wait is what lets in-flight letters land before the
+state is frozen). An absorb of a not-done item is refused (`close it before
 absorbing`), and one inside the quiet period is refused with the time
 left. Such an absorb writes an `absorbed` event letter naming the item's
 folded state (`X-Vivi-Event-State: done|open`: what its newest event
@@ -360,7 +367,9 @@ unlocks dependents and fires a bound need's join (see Work Graphs). Naming a
 copy another role holds is refused, and the error names the holder, the report
 command to retry with `--for <holder>`, and who may close. A reporter may
 reopen its own report; it cannot reopen what an acceptor closed (`only the
-owner can reopen it`; ask a role that may close in a reply).
+owner can reopen it`; ask a role that may close in a reply). `need done` and
+`task done` print a `timing:` summary line (open-to-done, attempts, agent
+time, slowest attempt) built from the thread's attempt records.
 
 The state is the newest event, and the order is a total one: the newest
 instant wins, then the deeper `X-Vivi-Event-Prev` chain (an event that
@@ -414,7 +423,9 @@ only, so it lists every reply in the thread even when the message blocks
 below stop at the 50-message thread cap; `--json` and `--latest` skip it.
 `need show --newest N` prints the newest N messages of the whole thread,
 oldest first (text or `--json`). `--latest` is the single-message form
-and exists on `need`, `want`, and `task` show.
+and exists on `need`, `want`, and `task` show. `need attempts <handle>
+[--json]` reads the pump's structured attempt records off a need thread (one
+JSON object with `opened` and `attempts`).
 
 This is local-first. It works with no `[sync]`; the server only carries
 letters. `pull`, `fetch`, `resync` and `pull --refs` apply every event they
@@ -559,7 +570,8 @@ configured and records `via=step-apply` only when the node was still open.
 Use `graph show`, `graph ready`, `graph blocked`, and `board --graph` for
 inspection. `graph blocked [GRAPH] [--kind …]` lists each blocked node with
 the prerequisites it is still waiting on, and `--json` gives the same rows as
-`{source_id, kind, label, blocked_by}`. `graph
+`{source_id, kind, label, blocked_by}`; a blocked node whose prerequisite is
+an unheld reference lists the raw reference in `blocked_by`. `graph
 ready` prints a `counts` line first (`ready`, `blocked`, `active`, `awaiting`,
 `reported`, `gates`; `--json` has the same lists as fields) — use it (or
 `--kind task|need|want|decision|stub|parked`) instead of reading long id
@@ -581,7 +593,8 @@ shows it. Use `vivi step [--json]` for a mechanical adjudication of the
 backlog into `dispatches` (ready, verifiable work with clause counts) and
 `exceptions` (reason vocabulary: `want_requires_promotion`,
 `lowered_awaiting_units`, `no_done_when`, `item_missing`, `not_settled`,
-`untracked_item`, `awaiting_remote`, `awaiting_acceptance`). Wants render as
+`untracked_item`, `awaiting_remote`, `awaiting_acceptance`,
+`awaiting_dependency`). Wants render as
 parked in their exception detail. A clauseless task/need body warns at send
 time, and a duplicate work send (same sender, same subject, still open in the
 recipient's folder) warns on stderr without blocking. `vivi step --apply
@@ -1202,6 +1215,17 @@ facts    = ["gpu-query --name --driver --memory --csv", "uname -srm"]
   `slots` in config), seeds them in parallel, waits until each is stopped, and
   prints one line per slot with its id, state, and seed seconds. Existing slots
   are left alone. It exits nonzero if a slot timed out or exited nonzero.
+- Pin the Fly image by digest, not by tag:
+  `image = "registry.fly.io/<app>@sha256:..."`. Starting by tag twice returned
+  `MANIFEST_UNKNOWN` (404) for the digest the tag resolved to, immediately after
+  `fly deploy --build-only --push`; the digest itself worked. Fly also refuses
+  an image over 8 GiB unpacked ("Not enough space to unpack image ... possibly
+  exceeds maximum of 8GiB uncompressed"), and `rootfs_gb` does not lift that
+  cap: the image has to be made smaller. A large image takes minutes to unpack
+  and `fly machine run` gives up waiting after about a minute (flyctl has no
+  wait-timeout flag), so `create` recognizes that error, keeps watching the
+  machine, and adopts a slot left unseeded by an interrupted `create` whose
+  boot finished cleanly.
 - Slot state comes from Fly, never from local files: machine metadata
   `vivi_pool`, `vivi_pool_slot`, `vivi_pool_base`, `vivi_pool_state`
   (`seeding`|`ready`), and, while a task holds the slot, `vivi_pool_task` and
@@ -1811,7 +1835,9 @@ app = "my-fly-app"            # REQUIRED, no default; created by `pool create` i
 # size = "performance-8x"     # default
 # memory = 32768              # MB; default 32768
 # tmpfs = "16g"               # memory disk over build_dir; default 16g
-# rootfs_gb = 24             # optional root disk size in GB, for an image too large for the provider default (Fly: "Not enough space to unpack image")
+# rootfs_gb = 24             # optional: GB of the machine's writable root disk
+#                            # for the slot's own files; it does NOT lift Fly's
+#                            # cap on the image itself (max 8 GiB unpacked)
 
 # [pools.lanes.docker]        # only with provider = "docker"; every key optional
 # host = "ssh://user@server"  # a remote daemon; omit for the local one
@@ -2040,10 +2066,16 @@ vivi pump export --json <path>
 vivi pump priority set <need> <level>  # higher = dispatched and merged sooner; 0 removes
 vivi pump priority clear <need>
 vivi pump priority list                # `need level` lines, highest first
+vivi pump requeue <uid>... [--attempts N | --refund-host-failures | --fresh] [--reason TEXT] [--dry-run]
+vivi pump requeue --stuck-since <time> --why <class> [--dry-run]  # bulk-requeue stuck units after an incident
 ```
 
-`pause`, `resume`, `stop`, `start` and `priority` take `--project <root>` outside the
-project. They update the durable control mode in `pump.db`. `start` enables a
+`pause`, `resume`, `stop`, `start`, `priority` and `requeue` take
+`--project <root>` outside the project. Control commands update the durable
+control mode in `pump.db`. `requeue` instead queues request rows in `pump.db`
+that the running pump applies at its next tick: no restart and no stop, unlike
+editing `pump.db` by hand, which a running pump overwrites at each save.
+`start` enables a
 standalone pump; run `vivi pump run` to launch it when no pump service manages
 the project.
 
@@ -2120,9 +2152,9 @@ For whoever operates it. Reference tables follow in the sections below.
 3. Check with one paused tick: `vivi pump pause`, then `vivi pump once`.
    Config errors are printed and the exit is non-zero. Paused mode stops
    dispatch, the hold cycle and the gate only; the board pass
-   (sync pull, planners for plannable needs) and merging of delivered units
-   still run. Read `vivi pump status`, `<home>/log.txt` and
-   `<home>/exceptions.txt`.
+   (sync pull, planners for plannable needs), which runs on its own worker
+   thread, and merging of delivered units still run. Read `vivi pump status`,
+   `<home>/log.txt` and `<home>/exceptions.txt`.
 4. Run `vivi pump resume` when paused. Run `vivi pump run` (add
    `--project <root>` outside the project) under a supervisor, or register it with `vivi pump service add`
    and install the user service. The standalone pump runs in the foreground
@@ -2195,10 +2227,12 @@ and exits 1.
 stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`
 lines; shapes in the protocols reference, section 9.2).
 `exceptions.txt` is what needs a person: `stuck` units, `unknown-kind`,
-`bad-plan`, `split-no-answer`, `plan-no-answer`, `no-defect` receipts and gate
+`bad-plan`, `split-no-answer`, `split-planner-failed`, `plan-no-answer`,
+`no-defect` receipts and gate
 news (`gate-new-failures`, `gate-unreadable`, `gate-build-failed`,
 `red-after-fix`). Read it after every unattended stretch. A `stuck` unit
-blocks its dependents until a person unblocks it.
+blocks its dependents until a person unblocks it with `vivi pump requeue` (one
+unit, or `--stuck-since` to recover every unit stuck since an incident).
 
 **Nothing is dispatching.** Check in this order:
 
@@ -2372,7 +2406,7 @@ branch       = "<branch>"             # required: the integration branch
 main         = "main"                  # "" disables merging main in and promotion
 promote      = true                    # a clean gate fast-forwards main to the gated tip
 tick         = 20                      # seconds between ticks
-shell_prefix = ""                      # prepended to every command line
+shell_prefix = ""                      # prepended to every command line; runs before every command, many per tick — keep it near-free
 hand_rules   = "<path>"                # absent: the embedded generic hand-rules text; relative paths join the project root; must be readable
 reserved_file = "reserved.txt"         # paths held by another session; units overlapping them are not dispatched; relative paths join `home`
 # priority_file is retired: still parsed, ignored; use `vivi pump priority set <need> <level>`
@@ -2414,7 +2448,7 @@ push_since   = "30m"                   # `vivi sync push --since` after replying
 [pump.planner]
 run           = "<command>"            # required while board from or mark is set; stdin is the prompt file
 charter       = "<path>"               # substituted for {charter} in `run`
-split_timeout = 1500                   # seconds before a splitting unit is stuck
+split_hard_cap = 5400                 # hard cap on a receipt-less split planner; an exited planner is retried
 
 [pump.dispatch]
 # lanes is legacy: required only when no role has a pool. Role→pool
@@ -2514,9 +2548,16 @@ legacy tables, and a writable gate. Rules that are not obvious from the keys:
 - Residual failures are re-planned: when every unit of an owning plan has
   settled and a gate still shows some of its names failing, the names are
   released, counted per name in `state.extra["replans"]`, and handed to a new
-  gate-fix planner at that tip together with any new failures (need
-  `<fix_prefix>-g<tip8>`, or `-r<k>` with the first free `k` when that plan
-  already exists). They stay owned, so promotion stays held. After
+  gate-fix planner at that tip together with any new failures. When a gate
+  goes red the pump sends a real need (`need send --from <reply_from> --to
+  the board reply_to`, subject `pump: gate fix for <tip8> (N new, M
+  residual)`): that handle owns the failing names, names the plan file
+  `plans/<handle>.json`, and carries the attempt records, while unit ids stay
+  on the `<fix_prefix>-g<tip8>` base so fix-unit dispatch, merging and alarms
+  are unchanged. When the send fails the pump falls back to the synthesized
+  `<fix_prefix>-g<tip8>` id (`-r<k>` with the first free `k` when that plan
+  already exists) and posts no attempt records for it. The re-planned names
+  stay owned, so promotion stays held. After
   `max_replans` re-plans a name is left owned and raises `red-after-fix`.
 - Main moves by fast-forward only: a gate with no new failure and no owned
   failure still red pushes the gated tip to main (otherwise it logs `promote
@@ -2566,8 +2607,10 @@ paths without `/v1`, supervises `kind = child` processes, and prints
 `VIVI_PROXY_READY <addr>` when the socket is open. A second instance takes
 the lock next to the config file and exits. `install` writes a macOS
 LaunchAgent (`com.vivi.proxy`) or a Linux systemd `--user` unit
-(`vivi-proxy.service`). The unit starts the stable `vivi` symlink when the
-running binary is a versioned `vivi-<semver>` next to that link. systemd
+(`vivi-proxy.service`), then (re)starts an already-running unit and prints
+the new PID (`pid unknown` when it cannot be read). The unit starts the
+stable `vivi` symlink when the running binary is a versioned
+`vivi-<semver>` next to that link. systemd
 uses `Restart=on-failure` and a start limit (5 in 60s); launchd keeps
 `KeepAlive` and sets `ThrottleInterval` 10. `providers` prints the base URL
 to paste into a client, the backend kind, and credential expiry (never
@@ -2586,8 +2629,10 @@ be refreshed) marks that credential file dead in memory. Later requests
 to that provider return 502 `credential_error` with zero upstream or
 token-endpoint calls until the file changes or the proxy restarts.
 Transient token-endpoint failures do not mark the credential dead.
-`/health` and `/<provider>/health` report `status: credential_dead` with
-HTTP 503. There is no background token refresh. When `models` is omitted,
+`/<provider>/health` reports that provider alone (HTTP 503 on
+`credential_dead` or `down`). The aggregate `/health` returns HTTP 200
+whenever the listener is up and at least one provider is healthy, 503
+otherwise, with per-provider status rows in the `providers` body array. There is no background token refresh. When `models` is omitted,
 native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
 
 ## Self-update
@@ -2599,10 +2644,10 @@ defaults to a user-local bin directory, never a project mailspace).
 ```sh
 vivi update --check              # exit 1 when a newer public v* exists; 2 on fetch failure
 vivi update                      # install that release and flip the symlink
-vivi update --version 14.0.0     # pin or roll back
+vivi update --version 14.1.1     # pin or roll back
 vivi update --adopt              # also --force: move a plain-file vivi to vivi.unmanaged
 vivi versions                    # list versioned installs; * is active
-vivi uninstall --version 14.0.0  # only vivi-<semver> and the vivi symlink
+vivi uninstall --version 14.1.1  # only vivi-<semver> and the vivi symlink
 vivi uninstall --all
 ```
 

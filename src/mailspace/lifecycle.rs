@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use mail_parser::MessageParser;
 use serde::{Deserialize, Serialize};
 
 use super::item_events::{
@@ -10,6 +11,7 @@ use super::item_events::{
 use super::kind::effective_kind;
 use super::{DeliveryResult, Mailspace, SendRequest, prefix_of_domain};
 use crate::error::VivariumError;
+use crate::message::normalize_message_id;
 use crate::storage::{MailspaceEvent, MailspaceEventInput, Storage, StoredMessageView};
 
 /// Absorb ruling settings (the `[absorb]` table in `mailspace.toml`).
@@ -176,7 +178,7 @@ impl Mailspace {
         }
         let state = match self.folded_item_state(storage, &item)? {
             ItemEventKind::Done => "done",
-            ItemEventKind::Reopened => "open",
+            ItemEventKind::Reopened | ItemEventKind::Promoted => "open",
         };
         let extras = [("X-Vivi-Event-State", state.to_string())];
         self.emit_property_event(
@@ -283,36 +285,47 @@ impl Mailspace {
         self.absorb(identity, handle, note, "mail")
     }
 
-    /// Create a task from a source message (currently only wants).
+    /// Create a task from a source message: a want, or a need lowered into
+    /// unit tasks. The task letter names its source in an `X-Vivi-Parent`
+    /// header, and a need's task nodes bind to the need's node here.
     ///
     /// # Errors
-    /// Returns an error if the source message is not a want, if sending the
-    /// task message fails, or if a storage operation fails.
+    /// Returns an error if the source message is neither a need nor a want, if
+    /// sending the task message fails, if the need cannot take the bind, or if
+    /// a storage operation fails.
     pub fn task_from_source(
         &self,
         request: SourceTaskRequest,
     ) -> Result<SourceTaskResult, VivariumError> {
         let (actor, source) = self.resolve_owned_message(&request.actor, &request.source_handle)?;
         let source_kind = self.source_kind(&*self.storage()?, &source)?;
-        if source_kind != "want" {
+        if !matches!(source_kind.as_str(), "need" | "want") {
             return Err(VivariumError::Message(format!(
-                "task from currently supports wants only; {} is {source_kind}",
+                "task from supports needs and wants; {} is {source_kind}",
                 request.source_handle
             )));
         }
-        let result = self.send(SendRequest {
-            from: actor.clone(),
-            to: request.to,
-            cc: request.cc,
-            bcc: Vec::new(),
-            subject: request.subject,
-            body: request.body,
-            role: "tasks".into(),
-            kind: Some("task".into()),
-            reply_to: Some(request.source_handle),
-            depends_on: Vec::new(),
-        })?;
-        self.record_tasked_source(&actor, &source, &result)?;
+        let extras = parent_extras(&*self.storage()?, &source.message_id)?;
+        let result = self.send_with_extras(
+            SendRequest {
+                from: actor.clone(),
+                to: request.to,
+                cc: request.cc,
+                bcc: Vec::new(),
+                subject: request.subject,
+                body: request.body,
+                role: "tasks".into(),
+                kind: Some("task".into()),
+                reply_to: Some(request.source_handle.clone()),
+                depends_on: Vec::new(),
+            },
+            &extras,
+        )?;
+        self.record_tasked_source(&actor, &source, &result, &source_kind)?;
+        if source_kind == "need" {
+            let units = tasked_unit_handles(&result);
+            self.bind_units_without_letter(&request.source_handle, &units)?;
+        }
         Ok(SourceTaskResult {
             source_handle: self.storage()?.display_handle(&source.message_id)?,
             source_kind,
@@ -513,22 +526,19 @@ impl Mailspace {
         actor: &str,
         source: &StoredMessageView,
         result: &DeliveryResult,
+        source_kind: &str,
     ) -> Result<(), VivariumError> {
         let storage = self.storage()?;
         let source_handle = storage.display_handle(&source.message_id)?;
         // With no local delivery the sent copy is the task here.
-        let handles: Vec<&str> = if result.delivered.is_empty() {
-            vec![result.sent.as_str()]
-        } else {
-            result.delivered.iter().map(|d| d.handle.as_str()).collect()
-        };
+        let handles = tasked_unit_handles(result);
         let task_handles = handles.join(",");
-        for handle in handles {
+        for handle in &handles {
             let task_id = storage.resolve_message_token(handle)?;
             let mut metadata = BTreeMap::new();
             metadata.insert("source_handle".into(), source_handle.clone());
             metadata.insert("source_content_id".into(), source.content_id.clone());
-            metadata.insert("source_kind".into(), "want".into());
+            metadata.insert("source_kind".into(), source_kind.to_string());
             storage.set_item_metadata(&task_id, &metadata)?;
         }
         storage.append_mailspace_event(&MailspaceEventInput {
@@ -547,6 +557,34 @@ impl Mailspace {
         })?;
         Ok(())
     }
+}
+
+/// The handle of each task letter a `task from` sent: the delivered copies,
+/// or the sent copy when nothing was delivered locally (the same set
+/// `record_tasked_source` stamps and the need bind lowers onto).
+fn tasked_unit_handles(result: &DeliveryResult) -> Vec<String> {
+    if result.delivered.is_empty() {
+        vec![result.sent.clone()]
+    } else {
+        result.delivered.iter().map(|d| d.handle.clone()).collect()
+    }
+}
+
+/// The `X-Vivi-Parent` header naming the source message of a `task from`: its
+/// normalized RFC `Message-ID`, so the recipient can see which letter the task
+/// came from. Empty when the stored bytes carry no `Message-ID`.
+fn parent_extras(
+    storage: &Storage,
+    message_id: &str,
+) -> Result<Vec<(String, String)>, VivariumError> {
+    let bytes = storage.read_message(message_id)?;
+    let Some(id) = MessageParser::default()
+        .parse(&bytes)
+        .and_then(|parsed| parsed.message_id().and_then(normalize_message_id))
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![("X-Vivi-Parent".into(), format!("<{id}>"))])
 }
 
 fn insert_optional(map: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {

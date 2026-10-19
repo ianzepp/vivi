@@ -152,6 +152,9 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
             );
         }
         ctx.exception("bad-plan", key, &bad);
+        if let Some(uid) = replaces {
+            crate::pump::collect::resplit_bad_plan(ctx, st, uid, &bad);
+        }
         return;
     }
     let revision = revision.unwrap_or(1);
@@ -303,7 +306,7 @@ fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str)
         return Apply::Conflict;
     }
     match unit.status {
-        Status::Pending | Status::Held => {
+        Status::Pending | Status::Held | Status::NeedsReplan => {
             unit.status = Status::Pending;
             set_fields(unit, plan, revision);
             Apply::Amended
@@ -338,9 +341,10 @@ fn apply_one(ctx: &Ctx, unit: &mut Unit, plan: &Value, revision: u64, uid: &str)
 }
 
 /// Check every unit of a plan before anything is minted: `id`, `brief` and a
-/// non-empty `write_scope` must be present, `proof` must be a list, and ids
-/// must not collide with existing units. Returns the valid `(id, unit)`
-/// pairs, or the reason the plan was rejected.
+/// non-empty `write_scope` must be present, `proof` must be a list of commands
+/// this toolchain can parse (see [`crate::pump::proof`]), and ids must not
+/// collide with existing units. Returns the valid `(id, unit)` pairs, or the
+/// reason the plan was rejected.
 fn validate_units<'a>(
     ctx: &Ctx,
     st: &State,
@@ -361,6 +365,11 @@ fn validate_units<'a>(
         let ok_proof = u.get("proof").is_none_or(Value::is_array);
         if !ok_brief || !ok_scope || !ok_proof {
             return (minted, Some(BAD_UNIT.to_string()));
+        }
+        for cmd in str_list(u.get("proof")) {
+            if let Err(reason) = crate::pump::proof::check(&cmd) {
+                return (minted, Some(format!("unit {uid}: {reason}")));
+            }
         }
         if let Err(reason) = target_for_plan(ctx, u) {
             return (minted, Some(reason));
@@ -508,6 +517,8 @@ fn record(
     if let Some(replaces) = replaces
         && let Some(old) = st.units.get_mut(replaces)
     {
+        let was_stuck = old.status == Status::Stuck;
+        let fails = old.split_fails;
         old.status = Status::Replaced;
         old.replaced_by.clone_from(&ids);
         let rec = st
@@ -528,6 +539,9 @@ fn record(
             );
         }
         ctx.log(&format!("split {replaces} into {count} units"));
+        if was_stuck {
+            resolve_stuck(ctx, replaces, fails);
+        }
         return;
     }
     let verdict = str_field(plan, "verdict").unwrap_or("units").to_string();
@@ -547,6 +561,17 @@ fn record(
         },
     );
     ctx.log(&format!("plan {need} verdict={verdict} units={count}"));
+}
+
+/// Resolve the exception a late split plan recovers: a unit parked by the
+/// planner's repeated failures names that kind, a silent one names its own.
+fn resolve_stuck(ctx: &Ctx, uid: &str, fails: u32) {
+    let kind = if fails >= crate::pump::collect::SPLIT_RETRY_MAX {
+        "split-planner-failed"
+    } else {
+        "split-no-answer"
+    };
+    ctx.resolve(kind, uid, "a late split plan replaced the stuck unit");
 }
 
 /// A string field of a JSON object.

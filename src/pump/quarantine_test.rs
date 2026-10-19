@@ -68,6 +68,7 @@ fn job(uid: &str) -> MergeJob {
         proof: vec![format!("./proof-{uid}.sh")],
         tools: String::from("plain"),
         write_scope: vec![format!("src/{uid}.rs")],
+        source: None,
     }
 }
 
@@ -118,8 +119,9 @@ fn a_two_unit_batch_failing_a_shared_check_is_pushed_aside_and_quarantined() {
         assert_eq!(q.units, ["u1", "u2"]);
     }
     let cmds = host.commands();
-    // The two merges ran once each: no one-at-a-time retry.
-    assert_eq!(count(&cmds, "merge --no-ff"), 2);
+    // The batch is bisected (2 solo merges) and then rebuilt before the
+    // quarantine push: 2 batch merges plus 2 bisect merges plus 2 rebuilds.
+    assert_eq!(count(&cmds, "merge --no-ff"), 6);
     assert_eq!(count(&cmds, "./proof-u1.sh"), 0);
     let push = format!("git push origin HEAD:refs/heads/{}", branch(&id));
     assert_eq!(count(&cmds, &push), 1);
@@ -132,6 +134,59 @@ fn a_two_unit_batch_failing_a_shared_check_is_pushed_aside_and_quarantined() {
     let logs = host.logs();
     assert!(logs.contains(&format!("quarantine {id}: 2 units, cargo test --lib rc=1")));
     assert!(logs.iter().any(|l| l.contains("error[E0308]")));
+}
+
+#[test]
+fn a_failed_shared_check_lands_clean_members_and_quarantines_only_the_culprit() {
+    let (_dir, ctx, host) = setup("");
+    // The batch check fails; then the first solo check (u1) fails while u2's
+    // solo check has no one-shot left and falls through to the passing rule.
+    host.reply("cargo test --lib", 0, "");
+    host.reply_once("cargo test --lib", 1, "error: boom\n");
+    host.reply_once("cargo test --lib", 1, "error: boom\n");
+    let results = batch_work(&ctx, &[job("u1"), job("u2")]);
+    assert_eq!(results.len(), 2);
+    let u1 = results.iter().find(|r| r.uid == "u1").unwrap();
+    let u2 = results.iter().find(|r| r.uid == "u2").unwrap();
+    assert_eq!(u1.why.as_deref(), Some("quarantined"));
+    let q = u1.quarantine.as_ref().unwrap();
+    assert_eq!(q.units, ["u1"]);
+    let id = q.id.clone();
+    // The clean member published in the same cycle; only the culprit was
+    // pushed aside.
+    assert_eq!(u2.ok, Some(true), "{u2:?}");
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "push origin HEAD:refs/heads/next"), 1);
+    assert_eq!(
+        count(
+            &cmds,
+            &format!("push origin HEAD:refs/heads/{}", branch(&id))
+        ),
+        1
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| c.contains("pump/quarantine") && c.contains("u2"))
+    );
+    let st = applied_state(&ctx, results);
+    let repair = repair_uid(&ctx, &id);
+    assert_eq!(
+        st.units.keys().filter(|u| u.starts_with("pumpfix")).count(),
+        1
+    );
+    assert!(st.units.contains_key(&repair));
+    let brief = &st.units[&repair].brief;
+    assert!(brief.contains("- u1 (need n1): Unit u1"), "{brief}");
+    assert!(!brief.contains("- u2"));
+    assert_eq!(st.units["u1"].status, Status::Quarantined);
+    assert_eq!(st.units["u2"].status, Status::Merged);
+    let logs = host.logs();
+    assert!(
+        logs.iter().any(|l| l.starts_with("bisect u1 rc=1")),
+        "{logs:?}"
+    );
+    assert!(logs.iter().any(|l| l.contains("culprits")), "{logs:?}");
 }
 
 #[test]

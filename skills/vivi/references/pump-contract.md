@@ -74,7 +74,11 @@ with `shell_prefix` the configured prefix (for example
 `. /srv/pump/env.sh`; empty means none), an optional cwd, and a timeout (default
 120 s). It returns the exit code and combined stdout+stderr. On timeout it
 returns exit code 124 plus the text `[timeout after Ns]` appended to whatever
-partial output was captured. This seam is also the test seam:
+partial output was captured. The prefix runs before EVERY command — each git
+and vivi call, several per tick — so its cost multiplies across the whole pump:
+keep it near-free. Fetch/push housekeeping does not belong in it: a `local`
+pool with `worktree_of` needs no push hook because the pump reads that pool's
+unit branches from its repository directly. This seam is also the test seam:
 tests script a fake host that answers command lines. Detached processes
 (planner, split, gatefix, sync push) run detached with redirected output
 files instead.
@@ -95,7 +99,7 @@ directory:
 | `pump.db-wal`, `pump.db-shm` | SQLite | SQLite | WAL sidecars |
 | `pump_control` in `pump.db` | pump control commands and service | pump and service | durable mode and transient service shutdown request |
 | `log.txt` | pump `log` | operator | one line per event: `HH:MM:SS msg`, UTC; a merge lane thread's lines start `lane <target>/<n>: ` (see below) |
-| `exceptions.txt` | pump `exception` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars |
+| `exceptions.txt` | pump `exception` and `resolve` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars; a resolution is a row with kind `resolved` |
 | `needs-ready.txt` | pump on need completion (merge_apply) | operator | `need tip10 unit,unit` per line |
 | `status.txt` | pump `write_status` | `pump status` | timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …`, the three stall lines below, then one line per merge lane |
 | `lock` | pump opens for flock | none (lock only) | empty |
@@ -103,14 +107,20 @@ directory:
 | `plans/` | planner writes `<need>.json`, `<need>.r<N>.json` (a revision) and `<uid>.split.json` | pump ingest | plan JSON; see [`pump-protocols.md`](pump-protocols.md) |
 | `plans/superseded/` | re-plan moves old plans here | operator | `<need>.<epoch>.json` |
 | `needs/` | board dumps the need thread | planner (the plan prompt) | JSON `{need, subject, triage, thread}` |
-| `board/` | pump writes `<need>.prompt`; planner shell writes `<need>.out` | operator | prompt text; planner stdout+stderr |
-| `resplit/` | pump writes `<unit>.json` and `<unit>.prompt`; planner writes `<unit>.out` | split planner | JSON + prompt text |
+| `board/` | pump writes `<need>.prompt`; planner shell writes `<need>.out`; the spawn reaper writes `<need>.out.rc` | operator | prompt text; planner stdout+stderr; the exit receipt the board reads to notice a dead planner |
+| `resplit/` | pump writes `<unit>.json` and `<unit>.prompt`; planner writes `<unit>.out`; the spawn reaper writes `<unit>.out.rc` with the planner's exit code | split planner | JSON + prompt text; an exit receipt without a plan means the planner died |
 | `gatefix/` | pump writes `<need>.prompt`; planner writes `<need>.out` | gatefix planner | prompt text |
 | `merge-jobs/` | pump writes `<bid>.job.json`; remote merger writes `.claimed.json`/`.result.json` | pump reads the result | batch protocol; see [`pump-protocols.md`](pump-protocols.md) |
 | `repo/` | git operations (reset_repo and all merge work) | pump | legacy single-target integration clone; named targets use `targets/<id>/repo` |
 | `planner-charter.md` | operator | planner command lines (`{charter}`) | the planner's system prompt |
 | `sync-push.log` | detached `vivi sync push` | operator | shell redirect |
 | operator scripts, notes and their logs | operator | operator | not engine state |
+
+**The planner charter still demands one TESTNAME filter per proof command.**
+The engine enforces it at ingest (§5), rejecting a plan that breaks it; the
+charter entry in `planner-charter.md` keeps planners from writing plans that
+are rejected in the first place. A full path such as
+`sync::watch::tests::name` is one filter; two filters need two commands.
 
 ## 4. Flag files
 
@@ -143,16 +153,26 @@ save point. The schema is `PRAGMA user_version = 4`.
 | `merges` | one row per merged unit: `commit_sha`, `at`, `outside_json` |
 | `gates`, `gate_failures` | every finished gate, unreadable ones included, plus one row per failing name |
 | `exceptions` | the same rows as `exceptions.txt`, queryable |
+| `requeue_requests` | operator requeue requests written by `vivi pump requeue`; the pump reads the unapplied rows each tick and marks them applied (§6) |
 | `closed_needs` | need handles whose every unit is satisfied |
 | `plans_seen` | plan file names already ingested (dedup) |
 | `promotions` | fast-forwards of main (`tip`, `at`) |
 | `red`, `red_reported` | failures owned by a gate-fix plan, and the ones already reported once |
-| `meta` | `merges` counter, `baseline`, `last_gate`, `board`, and unknown top-level keys (`extra`) |
+| `meta` | `merges` counter, `baseline`, `last_gate`, `board`, `env_pauses` (pool environment-failure bookkeeping and dispatch pauses), and unknown top-level keys (`extra`) |
 
 Each unit stores a `target` ID. Existing rows migrate to `default`. Named
 target gate state (baseline, last gate, gate history, promotions, and owned
 failures) is stored per target in `meta.target_states`; need and unit lifecycle
 remain workspace-wide.
+
+The `meta.board` key holds the board state: `at` (last pass), `planning`
+(handle → planner start), `replied`, `replan`, `revision_planning`, and the
+planner supervision keys — `planner_pids` (handle → pid of the running
+planner), `planner_fails` (consecutive planner exits without a plan),
+`planner_retry_at` (earliest epoch seconds a handle may relaunch), and
+`planner_failed` (handles parked after the retries ran out). A handle never
+relaunches while it is before its `planner_retry_at` deadline, and a parked
+handle never relaunches at all.
 
 Per-unit fields are the columns of `units` (all units carry the ingest-time
 fields; runtime fields appear as marked):
@@ -168,10 +188,12 @@ as marked):
 | `brief` | string | the unit's work description |
 | `write_scope` | array of path strings | files the unit may touch |
 | `after` | array of unit ids | prerequisites; must be satisfied before dispatch |
-| `proof` | array of command strings | commands that must exit 0 on the merged tree |
+| `proof` | array of command strings | commands that must exit 0 on the merged tree. Validated at ingest: the first word must be a known binary, and a `cargo test` proof takes one TESTNAME filter (use a full path such as `sync::watch::tests::name`, or two separate commands); an invalid proof rejects the plan with a `bad-plan` exception carrying the exact error |
 | `tools` | string | the unit's kind: a key of `[pump.dispatch.kinds]` (§9); empty means `default_kind`. Selects the pool, the in-flight cap, and whether the merger runs the unit's own proof |
 | `status` | string | the state machine state (§6) |
 | `attempts` | int | dispatches so far; incremented at dispatch |
+| `transient_retries` | int | runtime: transient-class failures retried without counting toward `max_attempts`; `vivi pump requeue --refund-host-failures` clears it |
+| `retry_not_before` | epoch seconds or null | runtime: earliest dispatch after a transient retry (`now + transient_backoff * 2^n`, doubling each retry) |
 | `history` | array of `{attempt, model, why, detail, at}` | one entry per failure or split request (fail, split); `detail` capped at 2500 chars |
 | `task` | 8-hex handle or null | the pool task while `inflight`, else null |
 | `branch` | `unit/<uid>-aN` or null | the worker branch |
@@ -185,6 +207,7 @@ as marked):
 | `replaced_by` | array of unit ids | runtime (replaced): the split's successor ids |
 | `verdict_text` | string | runtime (no-defect): tail of the no-defect receipt |
 | `held_on` | handle or null | runtime: the dependency currently holding the unit back; the first tick of each hold is logged |
+| `requeued` | bool, absent when false | runtime: the unit was requeued once by the pump's own blocking-stuck response (not by `vivi pump requeue`), so a second stall parks it again instead of requeueing it again |
 | `quarantine` | quarantine id or null | runtime: set on every unit of a quarantined batch and on the repair unit that works on it. `pump.db` keeps it (like `base` and `solo`) as a key of `units.extra_json` |
 | `base` | ref or null | runtime: dispatch this unit `--from` this ref instead of `dispatch.from`; a repair unit carries `pump/quarantine/<id>` |
 | `solo` | bool, absent when false | runtime: merge this unit in a batch of its own; set when its quarantine repair went stuck |
@@ -243,7 +266,7 @@ rules:
   `revision-conflict` and the current unit stays;
 - an inflight, delivered, merging or splitting unit is immutable; the addendum
   becomes a new unit;
-- a pending unit is amended from the plan;
+- a `pending`, `held` or `needs-replan` unit is amended from the plan (and returns to `pending`);
 - a unit absent from the plan is kept; `withdraw` names the pending units to
   withdraw;
 - a new id is minted `pending` at the new revision;
@@ -261,6 +284,7 @@ States:
 | --- | --- | --- | --- |
 | `pending` | waiting to dispatch | no | no |
 | `held` | configured repository target is missing; returns to `pending` when it is restored | no | no |
+| `needs-replan` | the unit's proof failed as a usage error: a plan defect, parked; a revision plan amends it back to `pending` | no | no |
 | `inflight` | dispatched to a pool slot; a task handle exists | no | no |
 | `delivered` | the worker's branch exists on the remote; waiting to merge | no | no |
 | `merging` | queued to or being handled by the merge thread | no | no |
@@ -276,7 +300,13 @@ States:
 `merged` and `no-defect` are directly satisfied; `replaced` delegates to its
 successors; everything else, `stuck` included, is not. A stuck unit therefore
 blocks its dependents and keeps its need open forever; only a person unblocks
-it. Record as-is.
+it. `vivi pump requeue <uid>` is that unblock: it queues a request in `pump.db`
+that the pump applies at its next tick, returning a `stuck`, `splitting` or
+`withdrawn` unit to `pending`, and a `quarantined` one to `delivered` with
+`solo=true` so it merges in a batch of its own. The request can raise, reset or
+refund the attempt counter without reusing an attempt branch that already
+exists on the target's remote (flags and the bulk form in
+[`pump-protocols.md`](pump-protocols.md) §9.3). Record as-is.
 
 Transitions (from, to, trigger, guard, action):
 
@@ -288,14 +318,17 @@ Transitions (from, to, trigger, guard, action):
 | `pending` | `inflight` | dispatch loop reaches it | `ready` (§8); a free pool slot; `pick_model` returns a model | task sent, pool dispatched, unit updated (`attempts+1`, `task`, `branch`, `model`, `since`, `since_dispatch`, `pool`) |
 | `inflight` | `delivered` | collect: the task is not running and not reported, or reported `finished`, and the worker branch exists on the remote | receipt does not contain `agent exit 124` / `agent_rc 124` | `since=now`, log `delivered` |
 | `inflight` | `no-defect` | collect: no remote branch, and the receipt contains `VERDICT: no-defect` | — | `verdict_text` kept, `no-defect` exception filed |
-| `inflight` | `pending` or `stuck` | collect: no branch, no verdict marker | — | `fail`: history entry `{attempt, model, why, detail≤2500, at}`; `task=null`; `stuck` when `attempts >= max_attempts` (plus a `stuck` exception), else back to `pending` |
+| `inflight` | `pending` or `stuck` | collect: no branch, no verdict marker | — | `fail`: history entry `{attempt, model, why, detail≤2500, at}`; `task=null`; `stuck` when `attempts - transient_retries >= max_attempts` (plus a `stuck` exception), else back to `pending` |
+| `inflight` | `pending` (transient) | collect: no branch, no verdict marker, and the failure classifies transient (`lost/`, `error/`, `fetch-failed`, a timed-out `proof-failed`, a lockfile-only `merge-conflict`) | `transient_retries < transient_max` | history entry as above; `transient_retries+=1`; `retry_not_before = now + transient_backoff * 2^n`; log `transient-retry <uid> <class> <n>/<cap>`; past the cap the ordinary fail row above applies |
 | `inflight` | `splitting` | timeout: reconcile state `timeout`, or still running past `budget + overdue_grace`, or the receipt shows agent exit 124 | — | `split`: `resplit/` files written, split planner spawned detached, `task=null`, history entry `why="timeout"`, `since=now` |
-| `splitting` | `stuck` | split planner wrote no plan in `split_timeout` | — | `split-no-answer` exception |
+| `splitting` | `stuck` | no receipt and the planner is past `split_hard_cap` | — | `split-no-answer` exception |
+| `splitting` | `stuck` | the planner exited without a plan 3 times | — | `split-planner-failed` exception; each earlier exit is a `split-planner-failed` exception with a retry, backed off 60 s then 120 s |
 | `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
 | `delivered` | `merging` | merge feed after collect | not held by an unlanded need dependency; not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `merged_at`, `outside`, `merges+=1`; a `merges` row; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
+| `merging` | `needs-replan` | merge result `ok=false, why="proof-usage"` | — | no history entry and no attempt charged; a `needs-replan` exception naming the unit and the command; a revision is requested from the planner through the amendment path (§5.3) |
 | `merging` | `quarantined` | merge result `ok=null, why="quarantined"` carrying a `quarantine` record | a shared check failed on a batch of several units | `quarantine=<id>`, `since=now`; the first result of the batch also opens the repair unit (below) |
 | `quarantined` | `merged` | the repair unit `<fix_prefix>-<id>` merges | — | every unit still `quarantined` under that id merges with the repair's tip: `commit`, `merged_at`, `merges+=1`, need closing, exactly as a merge result `ok=true` |
 | `quarantined` | `delivered` (solo) | the repair unit goes `stuck` (including `split-no-answer`) | — | `solo=true`, `quarantine=null`; `quarantine-stuck` exception; the next feed puts each solo unit in a batch of its own, and a solo unit that fails a shared check fails normally (`proof-failed`, back to a hand) |
@@ -336,36 +369,70 @@ each merge outcome does to the unit.
 
 ## 7. The tick
 
-`tick` runs these steps in order. Dispatch runs before the periodic board pass so
-a slow mailspace read does not keep ready worker slots idle:
+The board pass runs on its own worker thread (named `pump-board`), started with
+the merge lanes at pump start and alive for the whole run. It never runs inside
+the tick thread, so a slow mailspace read costs the tick nothing.
 
-1. `merge_apply`: drain finished merge results into state.
-2. `ingest`: read plan files already present in the pump home.
-3. `collect`: reconcile pool state against inflight units and the gate task.
-4. `merge_apply` again.
-5. `merge_feed`: queue delivered units for merging.
-6. `save` — save point one.
-7. Control check: if the mode is paused, run the board pass, ingest any new
-   plan files, save, write status and return. Dispatch and gate work are skipped;
-   already-fed merges continue on the independent merge thread.
-8. `dispatch`.
-9. `save` — save point two.
-10. `hold_cycle`.
-11. `external_gates`: take finished results from `gate.results_dir`, if set.
-12. `start_gate`.
-13. `merge_apply` — lets gate/merge results land in state.
-14. `merge_feed`.
-15. `board`: sync pull, re-plan answered parked needs, plan new needs and reply
-   on threads. A failure logs `BOARD ERROR` and the tick continues.
-16. `ingest`: read plan files written by the board pass.
-17. `save` — save point three.
+`tick` runs these steps in order:
+
+1. `write_status`.
+2. Board fold: if a pass finished on the board worker, merge it back into the
+   live state — need removals and re-plans, planning and reply keys, revision
+   planning, amendment fields (`thread_sha256`, `thread_seen_at`,
+   `amendment_pending`) and `board.at`. A pass still running changes nothing.
+3. `merge_apply`: drain finished merge results into state.
+4. `ingest`: read plan files already present in the pump home.
+5. Requeue requests: apply pending `vivi pump requeue` rows.
+6. `collect`: reconcile pool state against inflight units and the gate task.
+7. `merge_apply` again.
+8. `merge_feed`: queue delivered units for merging.
+9. `save` — save point one; `write_status`.
+10. Control check: if the mode is paused, request the periodic board pass,
+    ingest any new plan files, run the stall and blocker alarms, save, write
+    status and return. Dispatch and gate work are skipped; already-fed merges
+    continue on the independent merge thread.
+11. `dispatch`: plan and reserve the tick's starts, then run them concurrently.
+12. `save` — save point two; `write_status`.
+13. `hold_cycle`, `external_gates` (finished results from `gate.results_dir`,
+    if set) and `start_gate`, per configured target.
+14. `merge_apply` — lets gate/merge results land in state.
+15. `merge_feed`.
+16. `write_status`.
+17. Periodic board pass: request one on the worker, ingest plan files, run the
+    stall and blocker alarms and the blocking-stuck response, then `save` —
+    save point three.
 18. `write_status`.
+
+**The board pass is requested, never awaited.** The tick thread owns due-ness:
+when `board.every` seconds have passed since the previous pass *completed*
+(`board.at`) and the worker is idle, it sends a clone of the state. The worker
+runs one pass against that clone — sync pull, candidate listing, planner
+launches, thread replies and amendment detection — and stamps `board.at` on its
+own copy; the tick that finds the finished clone on the channel folds it back,
+and only then does the `board.every` interval restart. `merge_back` copies back
+only what the board pass itself owns, and only for the handles it touched, so
+verdict, units and revision changes the tick thread made during the pass stay
+live. A worker that disappeared logs `board worker is gone; the pass is lost`
+and the next due tick asks again.
+
+**Pool dispatches for different slots run concurrently.** `dispatch` reads free
+slots, offers ready units to the pools (fix units first, then priority needs)
+and plans at most `per_tick` starts; a slot is reserved when its start is
+planned, so same-tick planning sees it taken. The planned starts then run on
+one thread each, and the tick thread only joins them in ranked order and
+applies the outcomes to the state. Dispatch, collect and the control checks
+never wait on the board pass, so a slow pass leaves no dispatch gap: control is
+re-checked every second of the inter-tick sleep, so pause and stop land within
+about one tick.
 
 Error handling:
 
-- Board errors are caught inside `tick` (step 2, above).
-- Any other tick exception propagates to the `run`/`once` loop, which logs
-  `TICK ERROR` with the panic note and saves the state before continuing. The loop does not exit on tick errors.
+- A board pass failure stays inside its worker: the pass's own calls log their
+  errors and the tick continues.
+- A tick panic is caught by the `run`/`once` loop, which logs `TICK ERROR` with
+  the panic note and saves the state before continuing; the loop does not exit
+  on tick errors. A tick that returns an error (a failed state save, an
+  unreadable control state) ends the run with that error.
 - Merge thread errors are caught inside `merge_thread`: every job in the batch
   gets an `ok=null` `merge-error` result, and any job the results did not name
   gets `merge-undecided`. `merge_apply` turns both into
@@ -428,8 +495,11 @@ already inflight; same-tick starts count toward the cap, and the skipped unit
 is simply retried next tick. A unit naming a kind that is not defined is never
 dispatched; the pump files one `unknown-kind` exception for it (once per unit,
 remembered in `pump.db`) so an operator sees it. Free slot counts come from
-`pool status --porcelain`. At most `per_tick` units start per tick, and fix
-units are offered first.
+`pool status --porcelain`. At most `per_tick` starts are planned per tick, and
+fix units are offered first; the planned starts then run concurrently, one
+thread each. A slot is reserved when its start is planned, and a failed send is
+retried on the next tick rather than falling through to a later unit in the
+same tick.
 
 Brief composition (`brief_for`), in order:
 
@@ -454,10 +524,11 @@ vivi pool dispatch --pool <pool> <task> --model <model> --from <branch> \
 ```
 
 with `--from`/`--to`/budget from config (§9). The created handle is read with
-the regex `^(?:node|created)\s+(?:\S+\s+)?([0-9a-f]{8})\s*$` in multiline mode; no match logs `task send failed` and skips the unit. A failed
-pool dispatch logs `dispatch failed`, marks the task done with
-`dispatch failed; superseded`, and zeroes the pool's free count when the output
-says `no free slot`.
+the regex `^(?:node|created)\s+(?:\S+\s+)?([0-9a-f]{8})\s*$` in multiline mode; no match logs `task send failed` and skips the unit; its reserved slot goes back to the pool
+and the next tick retries it. A failed pool dispatch logs `dispatch failed`,
+marks the task done with `dispatch failed; superseded`, zeroes the pool's free
+count when the output says `no free slot` and otherwise gives the reserved slot
+back; the unit stays pending and is retried next tick.
 
 ## 9. Config reference
 
@@ -478,7 +549,7 @@ unless marked.
 | `main` | string | `main` | main branch merged into the integration branch each batch; `""` disables both merging main in and promotion |
 | `promote` | bool | `true` | a gate with no new failure and no owned failure still red fast-forwards main to the gated tip |
 | `tick` | int seconds | `20` | sleep between ticks |
-| `shell_prefix` | string | `""` | prepended to every command line (§2) |
+| `shell_prefix` | string | `""` | prepended to every command line (§2); runs many times per tick — keep it near-free |
 | `hand_rules` | path | embedded generic text | file whose text opens every unit brief; a relative path joins the project root like `home`; `validate` rejects a file that cannot be read |
 | `reserved_file` | path | `reserved.txt` | paths held by another session; units overlapping them are not dispatched; a relative value joins `home` |
 | `priority_file` | retired | | accepted and ignored so an old `mailspace.toml` still parses. Need priority is set per need in `pump.db`: `vivi pump priority set <need> <level>` (integer, higher is more urgent, 0 removes), `clear <need>`, `list`. The running pump reads the levels every tick. Dispatch and merge-feed order is fix units first, then units by their need's level (highest first), then the rest (stable); a need with a level above zero is also fed under `HOLD-MERGE` and gets the fix-unit scope bypass. A leftover `priority.txt` is imported once at startup as level 1 and renamed to `priority.txt.imported` |
@@ -520,7 +591,7 @@ configuration remains the implicit `default` target.
 | --- | --- | --- | --- |
 | `run` | command template | none — **required** while `board.from` or `board.mark` is set | the planner command; prompt file on stdin, stdout+stderr to the `.out` file, cwd `home`; `{charter}` is replaced by `charter` |
 | `charter` | path | none | the file substituted for `{charter}` in `run` |
-| `split_timeout` | int seconds | `1500` | seconds a split planner has to answer before the unit is `stuck` |
+| `split_hard_cap` | int seconds | `5400` | hard cap while the split planner is alive or unreachable; an exited planner is retried with backoff |
 
 `[pump.dispatch]`:
 
@@ -528,7 +599,9 @@ configuration remains the implicit `default` target.
 | --- | --- | --- | --- |
 | `lanes` | list of `{model, cap}` | none — **required** | model lanes and per-model inflight caps (§8) |
 | `last_resort` | string | none | model used when `attempts >= max_attempts - 1`; empty means the final attempt uses the normal lanes |
-| `max_attempts` | int | `3` | attempts before `stuck` |
+| `max_attempts` | int | `3` | attempts before `stuck`; transient retries are subtracted from `attempts` in this test |
+| `transient_max` | int | `2` | transient-class failures retried over the unit's life without counting toward `max_attempts`; 0 disables |
+| `transient_backoff` | int seconds | `120` | seconds before the first transient retry; doubles on each further one |
 | `budget` | int seconds | `600` | `--budget` of a unit dispatch |
 | `overdue_grace` | int seconds | `900` | running longer than `budget + overdue_grace` means split |
 | `per_tick` | int | `6` | units started per tick at most |
@@ -577,18 +650,35 @@ A plan unit with `"tools": "full"` goes to the `flyfull` pool; one with no
 | `fix_wait_minutes` | int minutes | `30` | minutes a fix unit may sit `delivered` or `merging` before a `stall-fix-unit` exception |
 | `promote_hours` | int hours | `3` | hours without a promotion, while at least one unit has merged since the last one, before a `stall-promote` exception |
 | `merge_idle_minutes` | int minutes | `45` | minutes units may sit `delivered` with nothing merged before a `stall-merge` exception |
+| `blocking_hold_units` | int units | `10` | transitive held units at which a stuck or parked root raises `blocking-stuck` |
+| `blocking_replan_minutes` | int minutes | `120` | minutes a blocking stuck root waits before the pump re-plans it |
 
 Each tick the pump checks the stall signals and files `stall-fix-unit <uid>`
 (a `<fix_prefix>` unit waiting past `fix_wait_minutes`), `stall-promote
 <target>` (text: time since the last promotion, merges awaiting promotion, the
 last gate's failing count; measured from the first unpromoted merge when the
-target never promoted; only for targets with promotion enabled) and
-`stall-merge pump` (delivered units, oldest wait, last merge). A subject
-(`<kind> <unit>`) is filed at most once per hour; the raised times are kept in
-`state.json` under `alarm_raised`. `status.txt` carries three more lines:
-`last promote <age> ago (<tip10>)` or `last promote never`, `oldest waiting fix
-<uid> <age>` or `oldest waiting fix none`, and `delivered waiting <n>, oldest
-<age>`; ages read `2h05m` or `14m`.
+target never promoted; only for targets with promotion enabled),
+`stall-merge pump` (delivered units, oldest wait, last merge) and
+`blocking-stuck <uid|need>` (a stuck unit, or a need parked on a verdict, whose
+dependency closure holds at least `blocking_hold_units` units; text: the state,
+the age, the transitive held count, the number of dependent needs, and the top
+held needs as `handle (n)`). A subject (`<kind> <unit>`) is filed at most once
+per hour, so a persisting block repeats on that cadence; the raised times are
+kept in `state.json` under `alarm_raised`. The automatic response runs right
+after the alarms: for each `stuck` root holding at least
+`blocking_hold_units` units the pump raises the blocking need to priority 1
+(unless it already has a level), requeues each of its stuck units whose last
+attempt failed transiently (`timeout` or an agent exit 124 — a plain exit 1
+flake stays on the re-plan path) exactly once, back to `pending` with attempts
+unchanged and `requeued` set, and hands a stuck unit that is still stuck
+`blocking_replan_minutes` in to a fresh split planner (`resplit/<uid>.json`,
+status `splitting`); a repair unit is never split. Parked-verdict roots are
+only alerted here, never re-planned, and a starved `pending` root surfaces in
+`status.txt` only. `status.txt` carries three stall
+lines, `last promote <age> ago (<tip10>)` or `last promote never`, `oldest
+waiting fix <uid> <age>` or `oldest waiting fix none`, `delivered waiting <n>,
+oldest <age>`, and then up to three `blocker <need> <state> age <age> held <n>`
+lines, largest hold first; ages read `2h05m` or `14m`.
 
 Merge lane visibility. Every `log.txt` line written from a lane thread starts
 with `lane <target>/<n>: `, so parallel lanes can be told apart; lines from the
@@ -603,7 +693,10 @@ moved <branch> tip <sha10>`, `publish: push attempt <k>`, `publish: pushed
 lines, `status.txt` carries one line per lane, in lane order:
 `lane <target>/<n> busy <units> units <batch age>: <current step> (<step age>)`,
 `lane <target>/<n> idle`, `lane <target>/<n> backoff <time> left` or
-`lane <target>/<n> gone`; durations read `45s`, `2m10s`, `1h05m00s`.
+`lane <target>/<n> gone`; durations read `45s`, `2m10s`, `1h05m00s`. Every
+line but `gone` ends with `merged <m> conflict <c>`, the lane's merged and
+`merge-conflict` results so far in this pump run, so a lane at 0% stands out
+beside its siblings.
 
 `[pump.merge]`:
 
@@ -712,8 +805,6 @@ Not built, as decided in this contract:
   file stays private to the pump's directory and is never written by those
   commands.
 - Units and plans are plan files, not Vivi graph nodes.
-- Project-specific proof rewriting: the planner charter should demand one
-  filter per proof command.
 
 The first decision-hook event (the one config cannot express): `gate_result` —
 classifying a gate worker's reply into failing test names when it carries no
@@ -731,9 +822,16 @@ Behaviours the decisions above do not list:
 - Residual re-plan: after the owned-red release, each owner whose units (ids
   `<owner>-*`) all settled and whose names still fail at this gate has those
   names released, counted in `state.extra["replans"]`, and re-owned by a new
-  gate-fix need planned at this tip together with any new failures. The need
-  is `<fix_prefix>-g<tip8>`, or `<fix_prefix>-g<tip8>-r<k>` (first free `k`)
-  when a plan or planner prompt for the base id exists. The prompt gives
+  gate-fix need planned at this tip together with any new failures. The pump
+  sends a real need for it (`need send --from <reply_from> --to
+  the board reply_to`, subject `pump: gate fix for <tip8> (N new, M
+  residual)`): its handle owns the names, names the plan file
+  `plans/<handle>.json`, and carries the attempt records, while unit ids
+  stay on the `<fix_prefix>-g<tip8>` base so fix-unit dispatch, merging
+  and alarms are unchanged. When the send fails the pump falls back to
+  the synthesized `<fix_prefix>-g<tip8>` id, or `<fix_prefix>-g<tip8>-r<k>`
+  (first free `k`) when a plan or planner prompt for the base id exists,
+  and posts no attempt records for it. The prompt gives
   residual names their own section naming the old owner. One log line per
   owner: `replan: N residual failures of <owner> -> <need>`. A name past
   `max_replans` is not re-planned.

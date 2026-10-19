@@ -1,7 +1,7 @@
 //! Tests for [`crate::pump::config`].
 
 use crate::mailspace::MailspaceConfig;
-use crate::pump::config::{DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
+use crate::pump::config::{AlarmConfig, DispatchConfig, Kind, Lane, PumpConfig, PumpTarget};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -51,7 +51,7 @@ push_since   = "30m"
 [pump.planner]
 run     = "claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --append-system-prompt-file {charter}"
 charter = "/mnt/agents/pump/planner-charter.md"
-split_timeout = 1500
+split_hard_cap = 5400
 
 [pump.dispatch]
 lanes        = [{ model = "deepseek/deepseek-flash", cap = 30 }, { model = "zai/glm-5.3-flash", cap = 10 }]
@@ -147,13 +147,19 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.board.push_since, "30m");
     assert_eq!(cfg.planner.run, "");
     assert_eq!(cfg.planner.charter, "");
-    assert_eq!(cfg.planner.split_timeout, 1500);
+    assert_eq!(cfg.planner.split_hard_cap, 5400);
+    assert!(!cfg.planner.split_timeout_present);
     assert!(cfg.dispatch.lanes.is_empty());
     assert_eq!(cfg.dispatch.last_resort, "");
     assert_eq!(cfg.dispatch.max_attempts, 3);
     assert_eq!(cfg.dispatch.budget, 600);
     assert_eq!(cfg.dispatch.overdue_grace, 900);
     assert_eq!(cfg.dispatch.per_tick, 6);
+    assert_eq!(cfg.dispatch.transient_max, 2, "default transient retry cap");
+    assert_eq!(
+        cfg.dispatch.transient_backoff, 120,
+        "default transient backoff seconds"
+    );
     assert_eq!(cfg.dispatch.from, None);
     assert!(cfg.dispatch.kinds.is_empty());
     assert_eq!(cfg.dispatch.default_kind, "");
@@ -172,6 +178,46 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.gate.budget, 1800);
     assert_eq!(cfg.dispatch_from(), "next");
     assert_eq!(cfg.reply_to(), "");
+}
+
+#[test]
+fn legacy_split_timeout_loads_as_split_hard_cap() {
+    let cfg =
+        pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_timeout = 1800\n");
+    assert_eq!(cfg.planner.split_hard_cap, 1800);
+    assert!(
+        cfg.planner.split_timeout_present,
+        "the legacy key's presence must survive parsing"
+    );
+}
+
+#[test]
+fn split_hard_cap_wins_when_both_planner_keys_are_set() {
+    let cap_first = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_hard_cap = 2700\n\
+         split_timeout = 1800\n",
+    );
+    assert_eq!(cap_first.planner.split_hard_cap, 2700);
+    assert!(cap_first.planner.split_timeout_present);
+    let timeout_first = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_timeout = 1800\n\
+         split_hard_cap = 2700\n",
+    );
+    assert_eq!(timeout_first.planner.split_hard_cap, 2700);
+    assert!(timeout_first.planner.split_timeout_present);
+}
+
+#[test]
+fn transient_retry_knobs_parse_and_take_defaults() {
+    let set = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.dispatch]\n\
+         transient_max = 5\ntransient_backoff = 30\n",
+    );
+    assert_eq!(set.dispatch.transient_max, 5);
+    assert_eq!(set.dispatch.transient_backoff, 30);
+    let none = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(none.dispatch.transient_max, 2);
+    assert_eq!(none.dispatch.transient_backoff, 120);
 }
 
 #[test]
@@ -649,4 +695,201 @@ fn the_retired_priority_file_key_still_parses_and_is_not_written_back() {
     .unwrap();
     assert_eq!(cfg.retired_priority_file.as_deref(), Some("priority.txt"));
     assert!(!toml::to_string(&cfg).unwrap().contains("priority_file"));
+}
+
+#[test]
+fn the_alarm_table_carries_the_blocking_thresholds() {
+    let cfg: AlarmConfig =
+        toml::from_str("blocking_hold_units = 3\nblocking_replan_minutes = 30\n").unwrap();
+    assert_eq!(cfg.blocking_hold_units, 3);
+    assert_eq!(cfg.blocking_replan_minutes, 30);
+}
+
+#[test]
+fn the_blocking_thresholds_default_to_ten_units_and_two_hours() {
+    let cfg = AlarmConfig::default();
+    assert_eq!(cfg.blocking_hold_units, 10);
+    assert_eq!(cfg.blocking_replan_minutes, 120);
+}
+
+#[test]
+fn a_generated_table_entry_parses_paths_regenerate_and_drift() {
+    let cfg = pump(concat!(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n",
+        "[[pump.merge.generated]]\n",
+        "paths = [\"out/one.json\", \"out/two.json\"]\n",
+        "regenerate = \"./scripta/gen --all\"\n",
+        "drift = [\"generated files are stale\"]\n",
+    ));
+    let entry = &cfg.merge.generated[0];
+    assert_eq!(entry.paths, ["out/one.json", "out/two.json"]);
+    assert_eq!(entry.regenerate, "./scripta/gen --all");
+    assert_eq!(entry.drift, ["generated files are stale"]);
+    assert_eq!(cfg.merge.generated_paths(), entry.paths);
+}
+
+#[test]
+fn an_inline_generated_array_parses_like_the_table_form() {
+    let cfg = pump(concat!(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n",
+        "[pump.merge]\n",
+        "generated = [{ paths = [\"out/a.json\"], regenerate = \"./gen\" }]\n",
+    ));
+    assert_eq!(cfg.merge.generated_paths(), ["out/a.json"]);
+    assert_eq!(cfg.merge.generated[0].regenerate, "./gen");
+    assert!(cfg.merge.generated[0].drift.is_empty());
+}
+
+#[test]
+fn generated_defaults_to_no_declarations() {
+    let cfg = PumpConfig::default();
+    assert!(cfg.merge.generated.is_empty());
+    assert!(cfg.merge.generated_paths().is_empty());
+}
+
+#[test]
+fn generated_paths_concatenates_every_entry() {
+    let cfg = pump(concat!(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n",
+        "[[pump.merge.generated]]\npaths = [\"a.json\"]\nregenerate = \"./a\"\n",
+        "[[pump.merge.generated]]\npaths = [\"b.json\", \"c.json\"]\nregenerate = \"./b\"\n",
+    ));
+    assert_eq!(
+        cfg.merge.generated_paths(),
+        ["a.json", "b.json", "c.json"],
+        "declaration order, every entry"
+    );
+}
+
+#[test]
+fn generated_paths_for_reads_the_workspace_table_for_the_legacy_default_target() {
+    let cfg = pump(concat!(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n",
+        "[[pump.merge.generated]]\npaths = [\"ledger.json\"]\nregenerate = \"./gen\"\n",
+    ));
+    assert!(cfg.targets.is_empty());
+    assert_eq!(cfg.generated_paths_for("default"), ["ledger.json"]);
+    assert_eq!(cfg.generated_paths_for("tela"), ["ledger.json"]);
+}
+
+#[test]
+fn generated_paths_for_reads_a_named_targets_own_table() {
+    let cfg = pump(concat!(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n",
+        "committer_name = \"n\"\ncommitter_email = \"e\"\n",
+        "[[pump.merge.generated]]\npaths = [\"shared.json\"]\nregenerate = \"./gen\"\n",
+        "[pump.targets.tela]\npath = \"tela\"\nbranch = \"main\"\n",
+        "[[pump.targets.tela.merge.generated]]\npaths = [\"tela-out.json\"]\nregenerate = \"./tela-gen\"\n",
+        "[pump.targets.radix]\npath = \"radix\"\nbranch = \"main\"\n",
+    ));
+    assert_eq!(cfg.generated_paths_for("tela"), ["tela-out.json"]);
+    assert_eq!(
+        cfg.generated_paths_for("radix"),
+        ["shared.json"],
+        "a target without its own table inherits the workspace table"
+    );
+    assert!(
+        cfg.generated_paths_for("nope").is_empty(),
+        "unknown target has no generated paths"
+    );
+}
+
+#[test]
+fn validate_rejects_a_generated_entry_with_empty_paths() {
+    let mut cfg = valid();
+    cfg.merge.generated = vec![crate::pump::config::Generated {
+        regenerate: "./gen".into(),
+        ..crate::pump::config::Generated::default()
+    }];
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("empty paths must fail");
+    assert!(
+        err.to_string().contains("[[pump.merge.generated]]"),
+        "{err}"
+    );
+}
+
+#[test]
+fn validate_rejects_a_generated_entry_with_empty_regenerate() {
+    let mut cfg = valid();
+    cfg.merge.generated = vec![crate::pump::config::Generated {
+        paths: vec!["out/a.json".into()],
+        regenerate: " ".into(),
+        ..crate::pump::config::Generated::default()
+    }];
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("empty regenerate must fail");
+    assert!(
+        err.to_string()
+            .contains("[[pump.merge.generated]] regenerate"),
+        "{err}"
+    );
+}
+
+#[test]
+fn validate_rejects_a_target_level_generated_entry_with_empty_regenerate() {
+    let mut cfg = valid();
+    cfg.targets = BTreeMap::from([(
+        String::from("tela"),
+        PumpTarget {
+            path: String::from("tela"),
+            branch: String::from("main"),
+            promote: false,
+            merge: Some(crate::pump::config::MergeConfig {
+                generated: vec![crate::pump::config::Generated {
+                    paths: vec!["out/a.json".into()],
+                    ..crate::pump::config::Generated::default()
+                }],
+                ..crate::pump::config::MergeConfig::default()
+            }),
+            gate: Some(crate::pump::config::GateConfig {
+                command: String::from("./gate"),
+                ..crate::pump::config::GateConfig::default()
+            }),
+            ..PumpTarget::default()
+        },
+    )]);
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("empty regenerate must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.targets.tela.merge] generated"),
+        "{err}"
+    );
+}
+
+#[test]
+fn pool_sources_map_local_worktree_pools() {
+    let config = mailspace(
+        "name = \"t\"\n\n[pools.wtree]\nprovider = \"local\"\nslots = 2\n\n\
+         [pools.wtree.local]\nworktree_of = \"/wtree/repo\"\n\n\
+         [pools.bare]\nprovider = \"local\"\nslots = 1\n\n\
+         [pools.flyone]\nprovider = \"fly\"\nslots = 1\n",
+    );
+    let sources = PumpConfig::default().pool_sources(&config, Path::new("/proj"));
+    assert_eq!(
+        sources.get("wtree"),
+        Some(&std::path::PathBuf::from("/wtree/repo")),
+        "a local worktree pool commits into its worktree repository"
+    );
+    assert_eq!(
+        sources.get("bare"),
+        Some(&std::path::PathBuf::from("/proj")),
+        "a local pool without a worktree repository commits into the project"
+    );
+    assert!(!sources.contains_key("flyone"), "a remote pool has no path");
+
+    let mut targets = BTreeMap::new();
+    targets.insert(String::from("tela"), PumpTarget::default());
+    let multi = PumpConfig {
+        targets,
+        ..PumpConfig::default()
+    };
+    assert!(
+        multi.pool_sources(&config, Path::new("/proj")).is_empty(),
+        "a multi-target pump reads from per-target integration clones"
+    );
 }

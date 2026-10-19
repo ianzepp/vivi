@@ -482,6 +482,63 @@ fn first_plan() -> Value {
 }
 
 #[test]
+fn ingest_rejects_a_unit_with_an_invalid_proof_command() {
+    let (_dir, ctx, host, mut st) = setup();
+    write_plan(
+        &ctx,
+        "bad.json",
+        &json!({
+            "need": "n1",
+            "revision": 1,
+            "verdict": "units",
+            "units": [{
+                "id": "n1-1",
+                "brief": "first pass",
+                "write_scope": ["src/a.rs"],
+                "proof": ["cargo test --lib a b"]
+            }]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert!(st.units.is_empty());
+    assert!(st.order.is_empty());
+    assert_eq!(st.needs["n1"].verdict, "invalid");
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "EXCEPTION bad-plan bad.json")
+    );
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc.contains("bad-plan bad.json unit n1-1: cargo test takes one TESTNAME filter"),
+        "{exc}"
+    );
+}
+
+#[test]
+fn a_revision_with_an_invalid_proof_command_is_rejected_and_keeps_the_unit() {
+    let (_dir, ctx, host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    let mut bad = plan_unit("n1-1", "first pass");
+    bad["proof"] = json!(["cargo test --lib a b"]);
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({"need": "n1", "revision": 2, "units": [bad]}),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 1);
+    assert!(st.units["n1-1"].proof.is_empty());
+    assert!(host.logs().iter().any(|l| l == "EXCEPTION bad-plan n1"));
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc.contains("bad-plan n1 unit n1-1: cargo test takes one TESTNAME filter"),
+        "{exc}"
+    );
+}
+
+#[test]
 fn a_revision_amends_pending_and_keeps_merged_units() {
     let (_dir, ctx, _host, mut st) = setup();
     write_plan(&ctx, "n1.json", &first_plan());
@@ -506,6 +563,32 @@ fn a_revision_amends_pending_and_keeps_merged_units() {
     assert_eq!(st.units["n1-2"].status, Status::Pending);
     assert_eq!(st.units["n1-2"].revision, 2);
     assert_eq!(st.needs["n1"].units, vec!["n1-1", "n1-2"]);
+}
+
+#[test]
+fn a_revision_amends_a_needs_replan_unit_back_to_pending() {
+    let (_dir, ctx, _host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    st.units.get_mut("n1-1").unwrap().status = Status::NeedsReplan;
+
+    let mut fixed = plan_unit("n1-1", "first pass");
+    fixed["proof"] = json!(["cargo test --lib pump::state"]);
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({
+            "need": "n1",
+            "revision": 2,
+            "verdict": "units",
+            "reason": "fix the proof command",
+            "units": [fixed]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["n1-1"].status, Status::Pending);
+    assert_eq!(st.units["n1-1"].proof, vec!["cargo test --lib pump::state"]);
+    assert_eq!(st.units["n1-1"].revision, 2);
 }
 
 #[test]
@@ -578,4 +661,146 @@ fn a_stale_or_duplicate_revision_is_ignored() {
     ingest(&ctx, &mut st);
     assert!(!st.units.contains_key("n1-3"));
     assert_eq!(st.needs["n1"].revision, 2);
+}
+
+/// A rejected split plan is not final: the planner is re-asked once with the
+/// validation error, and a second bad plan is not re-asked again.
+#[test]
+fn a_bad_split_plan_is_re_asked_once() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.units.insert(
+        "u1".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Splitting,
+            since: ctx.now(),
+            ..Unit::default()
+        },
+    );
+    let bad_plan = || {
+        json!({
+            "need": "n1",
+            "replaces": "u1",
+            "verdict": "units",
+            "reason": "too big for one budget",
+            "units": [
+                {"id": "u1.1", "brief": "half one", "write_scope": ["src/a.rs"]},
+                {"id": "u1.2", "brief": "half two"}
+            ]
+        })
+    };
+    write_plan(&ctx, "u1.split.json", &bad_plan());
+    ingest(&ctx, &mut st);
+    assert_eq!(host.spawned().len(), 1);
+    let prompt = fs::read_to_string(ctx.home.join("resplit/u1.prompt")).unwrap();
+    assert!(prompt.contains("unit missing id, brief or write_scope"));
+    let unit = &st.units["u1"];
+    assert_eq!(unit.status, Status::Splitting);
+    assert_eq!(unit.split_reasks, 1);
+    assert!(!st.plans_seen.iter().any(|key| key == "u1.split.json"));
+    let rejected: Vec<String> = fs::read_dir(ctx.home.join("plans/rejected"))
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(ToOwned::to_owned))
+        .collect();
+    assert!(
+        rejected
+            .iter()
+            .any(|name| name.starts_with("u1.split.json.")),
+        "{rejected:?}"
+    );
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exc.contains("bad-plan u1.split.json unit missing id, brief or write_scope"));
+
+    // The one re-ask is spent: a second bad plan stays in plans_seen and
+    // never spawns the planner again.
+    write_plan(&ctx, "u1.split.json", &bad_plan());
+    ingest(&ctx, &mut st);
+    assert_eq!(host.spawned().len(), 1);
+    assert!(st.plans_seen.iter().any(|key| key == "u1.split.json"));
+}
+
+/// A late split plan recovers a stuck unit, so the exception it was parked
+/// under is resolved and logged as resolved.
+#[test]
+fn a_late_split_plan_resolves_the_stuck_exception() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.units.insert(
+        "u1".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Stuck,
+            split_fails: 0,
+            ..Unit::default()
+        },
+    );
+    write_plan(
+        &ctx,
+        "u1.split.json",
+        &json!({
+            "need": "n1",
+            "replaces": "u1",
+            "verdict": "units",
+            "reason": "the planner answered late",
+            "units": [
+                {"id": "u1.1", "brief": "half one", "write_scope": ["src/a.rs"]},
+                {"id": "u1.2", "brief": "half two", "write_scope": ["src/b.rs"]}
+            ]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Replaced);
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc.contains("resolved split-no-answer u1"),
+        "exceptions were: {exc}"
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line == "RESOLVED split-no-answer u1"),
+        "logs were: {:?}",
+        host.logs()
+    );
+
+    // A unit parked by repeated planner failures names that exception instead.
+    let (_dir2, ctx2, host2, mut st2) = setup();
+    st2.units.insert(
+        "u2".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Stuck,
+            split_fails: 3,
+            ..Unit::default()
+        },
+    );
+    write_plan(
+        &ctx2,
+        "u2.split.json",
+        &json!({
+            "need": "n1",
+            "replaces": "u2",
+            "verdict": "units",
+            "reason": "the planner answered late",
+            "units": [
+                {"id": "u2.1", "brief": "half one", "write_scope": ["src/a.rs"]},
+                {"id": "u2.2", "brief": "half two", "write_scope": ["src/b.rs"]}
+            ]
+        }),
+    );
+    ingest(&ctx2, &mut st2);
+    assert_eq!(st2.units["u2"].status, Status::Replaced);
+    let exc2 = fs::read_to_string(ctx2.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc2.contains("resolved split-planner-failed u2"),
+        "exceptions were: {exc2}"
+    );
+    assert!(
+        host2
+            .logs()
+            .iter()
+            .any(|line| line == "RESOLVED split-planner-failed u2"),
+        "logs were: {:?}",
+        host2.logs()
+    );
 }

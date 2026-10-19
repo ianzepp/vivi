@@ -14,8 +14,10 @@ use serde::Serialize;
 
 use crate::VivariumError;
 use crate::pump::attempt_record::{self, Ending};
-use crate::pump::host::{Ctx, shell_quote, shell_split};
-use crate::pump::state::{Attempt, State, Status};
+use crate::pump::envfail;
+use crate::pump::host::{Ctx, exit_receipt_path, shell_quote, shell_split};
+use crate::pump::state::{Attempt, State, Status, Unit};
+use crate::pump::transient;
 
 /// Seconds a unit may stay unreported by reconcile before the pool-status
 /// fallback decides.
@@ -25,6 +27,8 @@ const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
 /// Seconds a gate task may stay unreported before it is finished from its
 /// receipt.
 const GATE_GRACE: u64 = 2400;
+/// Split-planner exits without a plan before the unit is parked stuck.
+pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
 
 /// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
@@ -96,8 +100,9 @@ pub fn receipt_full(ctx: &Ctx, task: &str) -> String {
 /// Write the planner prompt to `<home>/<dir>/<id>.prompt` and start the
 /// configured planner detached: stdin is the prompt file, output lands in
 /// `<home>/<dir>/<id>.out`, the working directory is the pump home
-/// Used by `split`, the board and gate fixes.
-pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) {
+/// Used by `split`, the board and gate fixes. Returns the detached child's
+/// pid, or `None` when it could not be started.
+pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) -> Option<u32> {
     let dir_path = ctx.home.join(dir);
     drop(fs::create_dir_all(&dir_path));
     let prompt_path = dir_path.join(format!("{id}.prompt"));
@@ -113,14 +118,19 @@ pub fn spawn_planner(ctx: &Ctx, dir: &str, id: &str, prompt: &str) {
         format!("{}; {command}", ctx.shell_prefix)
     };
     let out = dir_path.join(format!("{id}.out"));
+    drop(fs::remove_file(exit_receipt_path(&out)));
     ctx.host
-        .spawn(&command, Some(&ctx.home), Some(&prompt_path), &out);
+        .spawn(&command, Some(&ctx.home), Some(&prompt_path), &out)
 }
 
 /// Record a failed attempt: append the history entry, clear the task, and
 /// either return the unit to `pending` or park it as `stuck` with an
 /// exception once `max_attempts` is reached. The attempt record is posted on
 /// the need thread (see [`attempt_record`]), fetching the task receipt.
+///
+/// A transient-class failure (see [`transient::classify`]) backs off and
+/// retries instead of counting toward `max_attempts`, up to
+/// `transient_max` retries; past that cap the unit takes the normal path.
 pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
     fail_with(ctx, st, uid, why, detail, None);
 }
@@ -129,6 +139,8 @@ pub fn fail(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str) {
 fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, receipt: Option<&str>) {
     let now = ctx.now();
     let max = ctx.cfg.dispatch.max_attempts;
+    let cap = ctx.cfg.dispatch.transient_max;
+    let backoff = ctx.cfg.dispatch.transient_backoff;
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
@@ -142,22 +154,138 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         task: unit.task.clone(),
     });
     let attempts = unit.attempts;
-    let stuck = attempts >= max;
     attempt_record::post(ctx, st, uid, &Ending::failed(why, detail, receipt));
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
     unit.task = None;
-    unit.status = if stuck {
-        Status::Stuck
-    } else {
-        Status::Pending
-    };
-    if stuck {
-        ctx.exception("stuck", uid, &format!("{why}: {}", tail(detail, 300)));
-        crate::pump::quarantine::repair_stuck(ctx, st, uid);
+    let mut transient = false;
+    if let Some(class) = transient::classify(why, detail) {
+        transient = transient_retry(unit, now, cap, backoff);
+        if transient {
+            ctx.log(&format!(
+                "transient-retry {uid} {class} {}/{cap}",
+                unit.transient_retries
+            ));
+        }
+    }
+    if !transient {
+        // Operator ruling (need a9571e50): a repair that times out or finds no
+        // changes dissolves its quarantine at once instead of burning attempts.
+        // Key on `Unit.repairs` (not the pumpfix uid prefix) so gate-fix units
+        // (`repairs = None`) and ordinary units keep the retry budget.
+        let dissolve = unit.repairs.is_some() && (why == "timeout" || why.contains("no_changes"));
+        let stuck = dissolve || attempts.saturating_sub(unit.transient_retries) >= max;
+        unit.status = if stuck {
+            Status::Stuck
+        } else {
+            Status::Pending
+        };
+        if stuck {
+            ctx.exception("stuck", uid, &format!("{why}: {}", tail(detail, 300)));
+            crate::pump::quarantine::repair_stuck(ctx, st, uid);
+        }
     }
     ctx.log(&format!("fail {uid} attempt={attempts} {why}"));
+}
+
+/// Back off and retry a transient-class failure: return the unit to
+/// `pending`, count the retry, and set the clock it may be redispatched at
+/// (`backoff * 2^retries_before`). Returns `false` at the retry cap, leaving
+/// the unit for the normal stuck/pending decision; the caller logs the class.
+fn transient_retry(unit: &mut Unit, now: u64, cap: u32, backoff: u64) -> bool {
+    if unit.transient_retries >= cap {
+        return false;
+    }
+    let retries_before = unit.transient_retries;
+    unit.transient_retries = retries_before.saturating_add(1);
+    let wait = backoff.saturating_mul(2u64.saturating_pow(retries_before));
+    unit.retry_not_before = Some(now.saturating_add(wait));
+    unit.status = Status::Pending;
+    true
+}
+
+/// A host-class failure (see [`envfail`]): the attempt never measured the
+/// unit, so undo the dispatch instead of failing it — drop the attempt
+/// branch, restore the attempt (no history entry, no record posted, no
+/// quarantine repair), count the failure toward pausing the unit's pool,
+/// and log.
+fn host_fail(ctx: &Ctx, st: &mut State, uid: &str, host: &envfail::HostFailure, receipt: &str) {
+    drop_attempt_branch(ctx, st, uid);
+    let now = ctx.now();
+    let pool = {
+        let Some(unit) = st.units.get_mut(uid) else {
+            return;
+        };
+        unit.attempts = unit.attempts.saturating_sub(1);
+        unit.status = Status::Pending;
+        unit.task = None;
+        unit.branch = None;
+        unit.since = now;
+        unit.since_dispatch = None;
+        unit.pool.clone()
+    };
+    let evidence = format!(
+        "{}: {}: {}",
+        host.class,
+        host.command.as_deref().unwrap_or("?"),
+        tail(&attempt_record::sections_tail(receipt), 300)
+    );
+    if let Some(pool) = pool {
+        let entry = st.env_pauses.entry(pool.clone()).or_default();
+        entry.fails.push(now);
+        entry
+            .fails
+            .retain(|at| now.saturating_sub(*at) <= envfail::HOST_FAIL_WINDOW);
+        entry.evidence = evidence.clone();
+        entry.probe = host
+            .command
+            .as_ref()
+            .map(|tool| format!("command -v {tool}"));
+        if entry.fails.len() >= envfail::HOST_PAUSE_AFTER && entry.paused_at.is_none() {
+            entry.paused_at = Some(now);
+            ctx.exception("environment", &pool, &evidence);
+        }
+    }
+    ctx.log(&format!("host-fail {uid} {}; attempt restored", host.class));
+}
+
+/// Delete the unit's attempt branch, locally and on the remote, when either
+/// has it: the branch only holds a `WIP (attempt failed)` marker, and the
+/// restored attempt must not be mistaken for a delivered one. Failures are
+/// logged and never fatal.
+fn drop_attempt_branch(ctx: &Ctx, st: &State, uid: &str) {
+    let Some(unit) = st.units.get(uid) else {
+        return;
+    };
+    let Some(branch) = unit.branch.clone() else {
+        return;
+    };
+    let target = unit.target_id().to_string();
+    let tctx = ctx.for_target(&target).unwrap_or_else(|| ctx.clone());
+    if local_branch_exists(&tctx, &branch) {
+        let out = tctx.git(&format!("branch -D {}", shell_quote(&branch)), 60);
+        ctx.log(&format!(
+            "host-fail {uid} drop local branch {}: {}",
+            branch,
+            out.text.trim()
+        ));
+    }
+    if remote_has(&tctx, &branch) {
+        let out = tctx.git(
+            &format!(
+                "push {} --delete {}",
+                shell_quote(&tctx.cfg.remote),
+                shell_quote(&branch)
+            ),
+            60,
+        );
+        ctx.log(&format!(
+            "host-fail {uid} drop remote branch {}: {}",
+            branch,
+            out.text.trim()
+        ));
+    }
 }
 
 /// Send a unit to the split planner: write the resplit record,
@@ -209,6 +337,42 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
         unit.task = None;
     }
     ctx.log(&format!("split-requested {uid}"));
+}
+
+/// Re-ask the split planner once after it wrote a bad split plan: the plan
+/// file moves to `plans/rejected/`, its `plans_seen` key is forgotten, and
+/// the planner respawns with the validation error appended to the prompt.
+/// False when no re-ask applies — an unknown unit, a unit that is no longer
+/// splitting or stuck, or a unit whose one re-ask is already spent.
+pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &str) -> bool {
+    let applies = st.units.get(uid).is_some_and(|unit| {
+        matches!(unit.status, Status::Splitting | Status::Stuck) && unit.split_reasks == 0
+    });
+    if !applies {
+        return false;
+    }
+    let now = ctx.now();
+    let key = format!("{uid}.split.json");
+    let rejected = ctx.home.join("plans/rejected");
+    drop(fs::create_dir_all(&rejected));
+    drop(fs::rename(
+        ctx.home.join("plans").join(&key),
+        rejected.join(format!("{key}.{now}")),
+    ));
+    st.plans_seen.retain(|seen| seen != &key);
+    let prompt = format!(
+        "{}\nYour previous plan was rejected: {reason}. Fix that and write the complete plan again.\n",
+        split_prompt(ctx, uid)
+    );
+    spawn_planner(ctx, "resplit", uid, &prompt);
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.split_reasks = 1;
+        unit.split_retry_at = None;
+        unit.split_fails = 0;
+        unit.since = now;
+    }
+    ctx.log(&format!("split-reask {uid} {}", tail(reason, 120)));
+    true
 }
 
 /// Reconcile the pool against in-flight units and the gate task.
@@ -335,7 +499,7 @@ fn collect_one(
     let (state, detail) = seen
         .get(task)
         .map_or((None, None), |(s, d)| (Some(s.as_str()), Some(d.as_str())));
-    let (since, branch, target) = {
+    let (since, branch, target, pool) = {
         let Some(unit) = st.units.get(uid) else {
             return;
         };
@@ -343,6 +507,7 @@ fn collect_one(
             unit.since,
             unit.branch.clone().unwrap_or_default(),
             unit.target_id().to_string(),
+            unit.pool.clone(),
         )
     };
     if state == Some("running") {
@@ -364,7 +529,15 @@ fn collect_one(
         return;
     }
     let target_ctx = ctx.for_target(&target).unwrap_or_else(|| ctx.clone());
-    if local_branch_exists(&target_ctx, &branch) || remote_has(&target_ctx, &branch) {
+    // A local worktree pool commits its unit branch into the pool's own
+    // repository and never pushes to the target remote, so only that
+    // repository can answer for it.
+    let source = pool.as_deref().and_then(|name| ctx.pool_sources.get(name));
+    let reachable = source.map_or_else(
+        || local_branch_exists(&target_ctx, &branch) || remote_has(&target_ctx, &branch),
+        |source| pool_source_has(ctx, source, &branch),
+    );
+    if reachable {
         deliver(ctx, st, task, uid, &branch, state);
         return;
     }
@@ -387,6 +560,10 @@ fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state
     }
     if let Some(code) = attempt_record::agent_exit(&full).filter(|code| *code != 0) {
         let why = format!("finished/agent exit {code}");
+        if let Some(failure) = envfail::classify(&why, "", &full) {
+            host_fail(ctx, st, uid, &failure, &full);
+            return;
+        }
         fail_with(ctx, st, uid, &why, &tail(&full, 3000), Some(&full));
         return;
     }
@@ -439,29 +616,136 @@ fn fail_from_receipt(
         crate::pump::quarantine::repair_no_defect(ctx, st, uid);
         return;
     }
-    let why = format!("{}/{}", state.unwrap_or("None"), detail.unwrap_or("None"));
+    let why = [state, detail]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("/");
+    if let Some(failure) = envfail::classify(&why, detail.unwrap_or(""), &full) {
+        host_fail(ctx, st, uid, &failure, &full);
+        return;
+    }
     fail_with(ctx, st, uid, &why, &text, Some(&full));
 }
 
-/// Park units whose split planner never answered.
+/// The dead split planner's raw output (`resplit/<uid>.out`) when the host
+/// or harness killed the planner before it could plan — for example a
+/// 28-byte `bash: pi: command not found`. The output has no receipt sections,
+/// so the whole text is scanned as detail. `None` means the planner is
+/// silent or answered: today's timeout path still decides.
+fn dead_planner_output(ctx: &Ctx, uid: &str) -> Option<String> {
+    let path = ctx.home.join("resplit").join(format!("{uid}.out"));
+    let Ok(text) = fs::read_to_string(path) else {
+        return None;
+    };
+    envfail::classify("planner", &text, "").map(|_| text)
+}
+
+/// Expire splitting units: a planner that died is retried with backoff,
+/// a silent one past the hard cap is parked.
 fn expire_splits(ctx: &Ctx, st: &mut State) {
-    let timeout = ctx.cfg.planner.split_timeout;
     let now = ctx.now();
-    let mut expired = Vec::new();
-    for (uid, unit) in &mut st.units {
-        if unit.status == Status::Splitting && now.saturating_sub(unit.since) > timeout {
-            unit.status = Status::Stuck;
-            ctx.exception(
-                "split-no-answer",
-                uid,
-                "the split planner wrote no plan in 25 minutes",
-            );
-            expired.push(uid.clone());
+    let splitting: Vec<String> = st
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.status == Status::Splitting)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for uid in splitting {
+        if expire_one_split(ctx, st, &uid, now) {
+            crate::pump::quarantine::repair_stuck(ctx, st, &uid);
         }
     }
-    for uid in expired {
-        crate::pump::quarantine::repair_stuck(ctx, st, &uid);
+}
+
+/// Decide one splitting unit: a written plan belongs to ingest, an exit
+/// receipt without a plan is a dead planner retried with backoff, a due
+/// retry respawns the planner, a planner that died host-class returns its
+/// unit to `pending`, and a silent one past the hard cap is parked. True
+/// when the unit became `Stuck`.
+fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
+    if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
+        return false;
     }
+    let receipt = exit_receipt_path(&ctx.home.join(format!("resplit/{uid}.out")));
+    let Some(unit) = st.units.get_mut(uid) else {
+        return false;
+    };
+    if receipt.exists() {
+        let raw = fs::read_to_string(&receipt).unwrap_or_default();
+        let code = raw.trim().parse::<i32>().unwrap_or(-1);
+        drop(fs::remove_file(&receipt));
+        let fails = unit.split_fails + 1;
+        unit.split_fails = fails;
+        if fails >= SPLIT_RETRY_MAX {
+            let text = format!(
+                "the split planner exited without a plan {SPLIT_RETRY_MAX} times \
+                 (last exit {code})"
+            );
+            unit.status = Status::Stuck;
+            ctx.exception("split-planner-failed", uid, &text);
+            return true;
+        }
+        let backoff = (60u64 << (fails - 1)).min(900);
+        unit.split_retry_at = Some(now + backoff);
+        ctx.exception(
+            "split-planner-failed",
+            uid,
+            &format!("planner exited {code} without a plan; retry {fails}/3 in {backoff}s"),
+        );
+        return false;
+    }
+    if retry_split(ctx, unit, uid, now) {
+        return false;
+    }
+    if let Some(text) = dead_planner_output(ctx, uid) {
+        return split_planner_died(ctx, unit, uid, now, &text);
+    }
+    if now.saturating_sub(unit.since) > ctx.cfg.planner.split_hard_cap {
+        unit.status = Status::Stuck;
+        let text = format!(
+            "the split planner is still unreachable after {} minutes",
+            ctx.cfg.planner.split_hard_cap / 60
+        );
+        ctx.exception("split-no-answer", uid, &text);
+        return true;
+    }
+    false
+}
+
+/// A recorded split retry: wait out the backoff, then respawn the planner
+/// (which drops the stale receipt) with a fresh clock. Returns true when the
+/// caller should stop here — waiting units are never parked, even past the
+/// hard cap.
+fn retry_split(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64) -> bool {
+    let Some(at) = unit.split_retry_at else {
+        return false;
+    };
+    if now < at {
+        return true;
+    }
+    unit.split_retry_at = None;
+    unit.since = now;
+    spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    ctx.log(&format!("split-retry {uid}"));
+    true
+}
+
+/// The split planner died host-class: return its unit to `pending` so it is
+/// redispatched, and report the evidence. Never stuck.
+fn split_planner_died(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64, text: &str) -> bool {
+    let evidence: String = text.trim().chars().take(200).collect();
+    unit.status = Status::Pending;
+    unit.task = None;
+    unit.since = now;
+    unit.since_dispatch = None;
+    ctx.exception(
+        "environment",
+        uid,
+        &format!("split planner died: {evidence}"),
+    );
+    ctx.log(&format!("split-planner-dead {uid}"));
+    false
 }
 
 /// The gate task's receipt when the gate finished; `None`
@@ -494,6 +778,20 @@ pub(crate) fn remote_has(ctx: &Ctx, branch: &str) -> bool {
         &format!(
             "ls-remote {} refs/heads/{}",
             ctx.cfg.remote,
+            shell_quote(branch)
+        ),
+        60,
+    );
+    out.code == 0 && !out.text.trim().is_empty()
+}
+
+/// True when `git ls-remote` lists the branch in a local worktree pool's
+/// repository, where that pool commits unit branches instead of pushing.
+fn pool_source_has(ctx: &Ctx, source: &Path, branch: &str) -> bool {
+    let out = ctx.git(
+        &format!(
+            "ls-remote {} refs/heads/{}",
+            shell_quote(&source.to_string_lossy()),
             shell_quote(branch)
         ),
         60,

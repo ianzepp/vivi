@@ -54,7 +54,22 @@ impl Rig {
 
     /// Like [`Rig::run`], with `facts` as the pool's fact commands.
     fn run_with_facts(&self, harness: &str, build_dir: &str, facts: &[&str]) -> JobResult {
-        self.run_in_context(harness, build_dir, facts, &self.f.repo, None)
+        self.run_with_facts_logged(harness, build_dir, facts).0
+    }
+
+    /// Like [`Rig::run`], with the runner's own stdout as well, for a test
+    /// that asserts on the runner's log.
+    fn run_logged(&self, harness: &str, build_dir: &str) -> (JobResult, String) {
+        self.run_with_facts_logged(harness, build_dir, &[])
+    }
+
+    fn run_with_facts_logged(
+        &self,
+        harness: &str,
+        build_dir: &str,
+        facts: &[&str],
+    ) -> (JobResult, String) {
+        self.run_in_context_logged(harness, build_dir, facts, &self.f.repo, None)
     }
 
     fn run_in_context(
@@ -65,6 +80,18 @@ impl Rig {
         source: &Path,
         target: Option<(&str, &str)>,
     ) -> JobResult {
+        self.run_in_context_logged(harness, build_dir, facts, source, target)
+            .0
+    }
+
+    fn run_in_context_logged(
+        &self,
+        harness: &str,
+        build_dir: &str,
+        facts: &[&str],
+        source: &Path,
+        target: Option<(&str, &str)>,
+    ) -> (JobResult, String) {
         let job = self.work.path().join("job");
         if job.exists() {
             std::fs::remove_dir_all(&job).unwrap();
@@ -111,7 +138,7 @@ impl Rig {
         let log = String::from_utf8_lossy(&out.stdout).into_owned();
         let text = std::fs::read_to_string(job.join("result"))
             .unwrap_or_else(|e| panic!("no result ({e}): {log}"));
-        JobResult::parse(&text)
+        (JobResult::parse(&text), log)
     }
 
     fn assert_clean_and_detached(&self) {
@@ -153,6 +180,21 @@ fn a_tree_the_agent_only_read_is_reported_unchanged() {
     assert_eq!(result.get("discarded_count"), "");
     assert!(result.discarded_paths().is_empty());
     assert_eq!(result.get("start"), rig.start);
+    assert_eq!(rig.branches(), branches, "no branch made or moved");
+    assert_eq!(rig.origin_refs(), refs, "nothing was published");
+    rig.assert_clean_and_detached();
+}
+
+#[test]
+fn a_stale_index_lock_is_removed_before_checkout() {
+    let rig = Rig::new();
+    let (branches, refs) = (rig.branches(), rig.origin_refs());
+    let lock = rig.repo().join(".git/index.lock");
+    std::fs::write(&lock, "junk\n").unwrap();
+    let (result, log) = rig.run_logged("cat a.txt", "build");
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    assert!(!lock.exists(), "the stale lock is gone: {log}");
+    assert!(log.contains("removed stale lock"), "{log}");
     assert_eq!(rig.branches(), branches, "no branch made or moved");
     assert_eq!(rig.origin_refs(), refs, "nothing was published");
     rig.assert_clean_and_detached();

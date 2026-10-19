@@ -19,8 +19,10 @@ use crate::error::VivariumError;
 
 mod priority;
 mod promotions;
+mod requeue;
 mod schema;
 mod unit_extra;
+pub use requeue::RequeueRequest;
 use schema::{newer_schema, schema_version, take_migration_lock};
 
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
@@ -478,7 +480,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     if version > SCHEMA_VERSION {
         return Err(newer_schema(version));
     }
-    conn.execute_batch(SCHEMA_DDL)
+    conn.execute_batch(&format!("{SCHEMA_DDL}\n{}", requeue::SCHEMA_DDL))
         .map_err(db_err("create schema"))?;
     promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
@@ -544,6 +546,7 @@ fn write_meta(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
     put(tx, "board", &json_or_null(&st.board)?)?;
     put(tx, "extra", &json_or_null(&st.extra)?)?;
     put(tx, "target_states", &json_or_null(&st.target_states)?)?;
+    put(tx, "env_pauses", &json_or_null(&st.env_pauses)?)?;
     Ok(())
 }
 
@@ -749,6 +752,7 @@ fn load_meta(conn: &Connection, st: &mut State) -> Result<(), VivariumError> {
     st.board = get_json(conn, "board")?;
     st.extra = get_json(conn, "extra")?;
     st.target_states = get_json(conn, "target_states")?;
+    st.env_pauses = get_json(conn, "env_pauses")?;
     Ok(())
 }
 

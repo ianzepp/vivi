@@ -31,6 +31,8 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpPriorityCommand,
     },
+    /// Queue a requeue for one or more units; the pump applies it at its next tick
+    Requeue(PumpRequeueCommand),
     /// Supervise the pumps registered in the user's Vivi service config
     Service {
         #[command(subcommand)]
@@ -70,6 +72,37 @@ pub struct PumpPrioritySetCommand {
 pub struct PumpPriorityClearCommand {
     /// Need handle
     pub need: String,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpRequeueCommand {
+    /// Unit handles to requeue
+    #[arg(value_name = "UID")]
+    pub units: Vec<String>,
+    /// Set the attempt counter to N instead of keeping it
+    #[arg(long, value_name = "N")]
+    pub attempts: Option<u32>,
+    /// Refund the attempts that failed for a transient reason
+    #[arg(long)]
+    pub refund_host_failures: bool,
+    /// Reset the attempt counter to zero
+    #[arg(long)]
+    pub fresh: bool,
+    /// Reason recorded in the pump log (default `operator requeue`)
+    #[arg(long, value_name = "TEXT")]
+    pub reason: Option<String>,
+    /// Print what would change without writing a request
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Requeue every unit stuck since this time (bulk form)
+    #[arg(long, value_name = "TIME")]
+    pub stuck_since: Option<String>,
+    /// Restrict the requeue to this failure class (bulk form)
+    #[arg(long, value_name = "CLASS")]
+    pub why: Option<String>,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

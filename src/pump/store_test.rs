@@ -6,7 +6,7 @@ use std::fs::File;
 use tempfile::tempdir;
 
 use crate::pump::state::{
-    Attempt, GateRecord, NeedRecord, Promotion, State, Status, TargetState, Unit,
+    Attempt, EnvPause, GateRecord, NeedRecord, Promotion, State, Status, TargetState, Unit,
 };
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
@@ -38,6 +38,10 @@ fn sample() -> State {
         replaced_by: vec![String::from("u1.1")],
         verdict_text: Some(String::from("ok")),
         kind_reported: true,
+        send_reported: true,
+        split_fails: 2,
+        split_retry_at: Some(99),
+        split_reasks: 1,
         history: vec![Attempt {
             attempt: 1,
             model: Some(String::from("m")),
@@ -125,6 +129,13 @@ fn a_saved_state_round_trips() {
     assert_eq!(unit.status, Status::Merged);
     assert_eq!(unit.commit.as_deref(), Some("abc123"));
     assert_eq!(unit.merged_at, Some(12));
+    assert!(unit.send_reported);
+    assert_eq!(unit.split_fails, 2);
+    assert_eq!(unit.split_retry_at, Some(99));
+    assert_eq!(unit.split_reasks, 1);
+    assert!(!unit.extra.contains_key("split_fails"));
+    assert!(!unit.extra.contains_key("split_retry_at"));
+    assert!(!unit.extra.contains_key("split_reasks"));
     assert_eq!(unit.history.len(), 1);
     assert_eq!(unit.history[0].why, "timeout");
     assert_eq!(unit.history[0].branch.as_deref(), Some("unit/u1-a1"));
@@ -420,4 +431,64 @@ fn save_replaces_rows_rather_than_accumulating_them() {
     assert!(back.units.is_empty());
     assert!(back.needs.is_empty());
     assert_eq!(back.merges, 0);
+}
+
+#[test]
+fn requeue_requests_survive_a_state_save() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    store
+        .add_requeue_request("u1", Some(0), true, true, "operator asked", 5)
+        .unwrap();
+    store.save(&State::default()).unwrap();
+    let pending = store.pending_requeue_requests().unwrap();
+    assert_eq!(pending.len(), 1);
+    let request = &pending[0];
+    assert_eq!(request.unit, "u1");
+    assert_eq!(request.attempts, Some(0));
+    assert!(request.fresh);
+    assert!(request.refund);
+    assert_eq!(request.reason, "operator asked");
+    store.mark_requeue_applied(request.request_id, 6).unwrap();
+    assert!(store.pending_requeue_requests().unwrap().is_empty());
+}
+
+#[test]
+fn env_pauses_round_trip_through_pump_db() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let empty = PumpStore::open(&path).unwrap();
+    assert!(empty.load().unwrap().env_pauses.is_empty());
+    drop(empty);
+
+    let mut state = State::default();
+    state.env_pauses.insert(
+        String::from("here"),
+        EnvPause {
+            fails: vec![1_700_000_000, 1_700_000_060],
+            evidence: String::from("`pi` not found: bash: line 1: pi: command not found"),
+            probe: Some(String::from("command -v pi")),
+            paused_at: Some(1_700_000_120),
+        },
+    );
+    state.env_pauses.insert(
+        String::from("glm"),
+        EnvPause {
+            fails: vec![1_700_000_000],
+            evidence: String::from("git index.lock held"),
+            ..EnvPause::default()
+        },
+    );
+
+    let mut store = PumpStore::open(&path).unwrap();
+    store.save(&state).unwrap();
+    let back = store.load().unwrap();
+    assert_eq!(back.env_pauses, state.env_pauses);
+    let here = &back.env_pauses["here"];
+    assert_eq!(here.fails, vec![1_700_000_000, 1_700_000_060]);
+    assert_eq!(here.probe.as_deref(), Some("command -v pi"));
+    assert_eq!(here.paused_at, Some(1_700_000_120));
+    assert_eq!(back.env_pauses["glm"].probe, None);
+    assert_eq!(back.env_pauses["glm"].paused_at, None);
 }

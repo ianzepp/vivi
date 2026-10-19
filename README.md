@@ -36,8 +36,8 @@ verifies the archive SHA-256, writes a versioned binary, and points a
 relative `vivi` symlink at it:
 
 ```text
-~/.local/bin/vivi-14.1.0
-~/.local/bin/vivi -> vivi-14.1.0
+~/.local/bin/vivi-15.0.0
+~/.local/bin/vivi -> vivi-15.0.0
 ```
 
 The prefix is `~/.local`, so binaries live in `~/.local/bin` (usually
@@ -47,11 +47,11 @@ already on `PATH`). That is not `~/.vivi`, which is a mailspace
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
 # or pin a release / prefix:
-curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 14.1.0 --prefix "$HOME/.local"
+curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh -s -- --version 15.0.0 --prefix "$HOME/.local"
 ```
 
 The script defaults to the release it shipped with (`VIVI_VERSION`, currently
-14.1.0) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
+15.0.0) and `~/.local` (`VIVI_PREFIX`). `VIVI_BASE_URL` or `--base-url`
 can point at a local mirror. Optional `GITHUB_TOKEN` / `GH_TOKEN` raises
 the GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`.
@@ -59,9 +59,9 @@ the GitHub rate limit. Archives are built for `aarch64-apple-darwin`,
 ```sh
 vivi update --check            # compare this binary to the newest public release
 vivi update                    # install that release and flip the symlink
-vivi update --version 14.0.0   # pin / roll back (when that release has a .sha256)
+vivi update --version 14.1.1   # pin / roll back (when that release has a .sha256)
 vivi versions                  # list versioned installs; * is active
-vivi uninstall --version 14.0.0
+vivi uninstall --version 14.1.1
 ```
 
 `~/.local/bin` is shared with other tools. `vivi uninstall` only deletes
@@ -283,7 +283,10 @@ A pool table is complete on its own: nothing is inherited. Keys: `provider`
 (`enabled`) and one table per provider (`fly`, `docker`, `ssh`, `local`,
 `runpod`). A `local` pool with `[pools.<name>.local] worktree_of = "<repo>"`
 makes each slot a Git worktree of a repository already on the machine, with no
-network. Credentials are not kept in the config: the Fly token comes from
+network. With a single-target pump, the pump reads a local worktree pool's
+unit branches straight from that repository (collect checks it there, merge
+fetches from it), so no `shell_prefix` push hook is needed. Credentials are
+not kept in the config: the Fly token comes from
 `FLY_API_TOKEN` or `FLY_ACCESS_TOKEN` (or `fly auth token`), and a harness
 receives only the environment variables its `env` list names.
 
@@ -453,9 +456,9 @@ A second pump on the same home refuses to start. Defaults:
 
 | Table | Keys (default) |
 | --- | --- |
-| `[pump]` | `branch` (required), `committer_name` and `committer_email` (required; every pump commit uses them), `remote_url` (clone source when `repo` is missing), `reserved_file` (`reserved.txt` in home), `remote` (`origin`), `main` (`main`; empty turns off merging main in and promotion), `promote` (`true`), `tick` (20 s), `home` (`<project>/.vivi/pump`), `repo` (`<home>/repo`), `shell_prefix`, `hand_rules` (a file; default is an embedded generic text), `fix_prefix` (`pumpfix`), `from` (`operator`), `to` (`hand`), `reply_from` (`mind`) |
+| `[pump]` | `branch` (required), `committer_name` and `committer_email` (required; every pump commit uses them), `remote_url` (clone source when `repo` is missing), `reserved_file` (`reserved.txt` in home), `remote` (`origin`), `main` (`main`; empty turns off merging main in and promotion), `promote` (`true`), `tick` (20 s), `home` (`<project>/.vivi/pump`), `repo` (`<home>/repo`), `shell_prefix` (runs before every command, many per tick — keep it near-free), `hand_rules` (a file; default is an embedded generic text), `fix_prefix` (`pumpfix`), `from` (`operator`), `to` (`hand`), `reply_from` (`mind`) |
 | `[pump.board]` | `from` (list), `since`, `mark` (`pump`), `every` (300 s), `planners_max` (3), `plan_timeout` (1800 s), `reply_to`, `pull` (`true`: run `vivi sync pull` first), `push_since` (`30m`) |
-| `[pump.planner]` | `run` (command; `{charter}` becomes `charter`), `charter` (file), `split_timeout` (1500 s) |
+| `[pump.planner]` | `run` (command; `{charter}` becomes `charter`), `charter` (file), `split_hard_cap` (5400 s) |
 | `[pump.dispatch]` | `lanes` (legacy list of `{ model, cap }`; omit when a role assigns a pool), `last_resort` (model), `max_attempts` (3), `budget` (600 s), `overdue_grace` (900 s), `per_tick` (6), `from`, `default_kind` (legacy, with `kinds`) |
 | `[pump.dispatch.kinds.<name>]` | legacy: `pools` (non-empty list; used only when the hand role has no `pool`), `max` (cap on that kind in flight), `skip_proof` (`false`) |
 | `[pump.merge]` | `batch` (8), `lanes` (1; unused when the merge role sets `pool`), `format`, `shared_checks` (list), `proof_timeout` (300 s), `remote_wait` (90 s), `remote_limit` (1800 s) |

@@ -14,6 +14,7 @@ use crate::pump::board::*;
 use crate::pump::config::{BoardConfig, PlannerConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// A context with an operator sender and the `since` cutoff set; default
 /// mark `pump`, three planners, 1800 s plan timeout.
@@ -642,6 +643,47 @@ fn the_merged_reply_waits_until_every_unit_is_satisfied() {
 }
 
 #[test]
+fn the_merged_reply_carries_the_timing_summary() {
+    let (_dir, ctx, host) = setup();
+    host.reply("mail reply n2", 0, "queued");
+    host.reply(
+        "need attempts n2",
+        0,
+        concat!(
+            "{\"need\":\"n2\",\"opened\":910000,\"attempts\":[",
+            "{\"attempt\":\"n2-1-a1\",\"outcome\":\"delivered\",\"agent_seconds\":60},",
+            "{\"attempt\":\"n2-1-a2\",\"outcome\":\"delivered\",\"agent_seconds\":3600}]}",
+        ),
+    );
+    let mut st = State::default();
+    st.needs.insert(
+        String::from("n2"),
+        NeedRecord {
+            verdict: String::from("units"),
+            reason: String::from("one unit"),
+            units: vec![String::from("u1")],
+            revision: 1,
+            ..NeedRecord::default()
+        },
+    );
+    st.units
+        .insert(String::from("u1"), merged_unit("One", "1111111111aaaa"));
+    let rows = vec![need_row("n2", "2026-10-15", "One unit")];
+    assert!(post_replies(&ctx, &mut st, &rows));
+    let merged = fs::read_to_string(ctx.home.join("board/reply-n2-merged.txt")).unwrap();
+    assert!(
+        merged.contains(
+            "timing: open-to-done 1d1h; attempts 2; agent time 1h1m; slowest n2-1-a2 (1h)"
+        ),
+        "merged reply was {merged:?}"
+    );
+    assert_eq!(
+        st.board.replied,
+        vec![String::from("n2:planned"), String::from("n2:merged")]
+    );
+}
+
+#[test]
 fn a_failed_reply_is_retried_on_the_next_pass() {
     let (_dir, ctx, host) = setup();
     host.reply("mail reply f1", 1, "relay down\ncome back later");
@@ -742,6 +784,42 @@ fn a_board_stamp_in_the_future_skips_the_pass_and_does_not_underflow() {
 }
 
 #[test]
+fn a_stop_request_ends_the_board_pass_between_needs() {
+    let (_dir, ctx, host) = setup();
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.initialize_control("running").unwrap();
+    store.set_control_mode("stopped").unwrap();
+    host.reply(
+        "need list",
+        0,
+        &list(&[
+            row("n1", "2026-10-15", "One", &[]),
+            row("n2", "2026-10-15", "Two", &[]),
+        ]),
+    );
+    let mut st = State::default();
+    st.board.at = 0;
+
+    board(&ctx, &mut st);
+
+    let shown = host
+        .commands()
+        .iter()
+        .filter(|cmd| cmd.contains("need show"))
+        .count();
+    assert_eq!(shown, 1, "commands: {:?}", host.commands());
+    assert!(planner_spawns(&host) <= 1, "the second need is skipped");
+    assert!(!st.board.planning.contains_key("n2"));
+    assert!(
+        host.logs().contains(&String::from(
+            "board: control stop requested; finishing the pass early"
+        )),
+        "logs: {:?}",
+        host.logs()
+    );
+}
+
+#[test]
 fn post_replies_sends_one_revised_stage_per_revision() {
     let (_dir, ctx, host) = setup();
     host.reply("mail reply n3", 0, "queued");
@@ -765,4 +843,316 @@ fn post_replies_sends_one_revised_stage_per_revision() {
     let revised = fs::read_to_string(ctx.home.join("board/reply-n3-revised-2.txt")).unwrap();
     assert!(revised.contains("pump: revised to r2."), "{revised}");
     assert!(st.board.replied.contains(&String::from("n3:revised-2")));
+}
+
+/// An exited-planner fixture: planner output and its `.rc` receipt, no plan.
+fn exited_planner(ctx: &Ctx, handle: &str) {
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    fs::write(
+        ctx.home.join("board/n1.out"),
+        "bash: pi: command not found\n",
+    )
+    .unwrap();
+    fs::write(ctx.home.join(format!("board/{handle}.out.rc")), "127").unwrap();
+}
+
+#[test]
+fn an_exited_planner_frees_its_slot_and_is_logged() {
+    let (_dir, ctx, host) = setup();
+    exited_planner(&ctx, "n1");
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now());
+    expire_planning(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert_eq!(st.board.planner_fails.get("n1"), Some(&1));
+    assert_eq!(st.board.planner_retry_at.get("n1"), Some(&(ctx.now() + 60)));
+    let logs = host.logs().join("\n");
+    assert!(
+        logs.contains("board: planner n1 exited rc=127: bash: pi: command not found"),
+        "logs: {logs}"
+    );
+    let exc = exceptions(&ctx);
+    assert!(exc.contains("plan-crashed n1"), "exceptions: {exc}");
+}
+
+#[test]
+fn a_third_planner_failure_parks_the_need() {
+    let (_dir, ctx, _host) = setup();
+    exited_planner(&ctx, "n1");
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now());
+    st.board.planner_fails.insert(String::from("n1"), 2);
+    expire_planning(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert!(st.board.planner_failed.contains(&String::from("n1")));
+    assert!(!st.board.planner_retry_at.contains_key("n1"));
+    let exc = exceptions(&ctx);
+    assert!(exc.contains("plan-failed n1"), "exceptions: {exc}");
+}
+
+#[test]
+fn a_landed_plan_resets_planner_bookkeeping() {
+    let (_dir, ctx, _host) = setup();
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/n1.json"), "{}").unwrap();
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now());
+    st.board.planner_pids.insert(String::from("n1"), 123);
+    st.board.planner_fails.insert(String::from("n1"), 1);
+    st.board
+        .planner_retry_at
+        .insert(String::from("n1"), ctx.now() + 60);
+    expire_planning(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert!(!st.board.planner_pids.contains_key("n1"));
+    assert!(!st.board.planner_fails.contains_key("n1"));
+    assert!(!st.board.planner_retry_at.contains_key("n1"));
+    assert!(!exceptions(&ctx).contains("n1"));
+}
+
+/// How many `planner-run` command lines the fake host has been asked to spawn.
+fn planner_spawns(host: &FakeHost) -> usize {
+    host.spawned()
+        .iter()
+        .filter(|cmd| cmd.contains("planner-run"))
+        .count()
+}
+
+#[test]
+fn a_need_in_backoff_waits_before_relaunch() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.board.planner_fails.insert(String::from("n1"), 1);
+    st.board
+        .planner_retry_at
+        .insert(String::from("n1"), ctx.now() + 60);
+    let rows = vec![need_row("n1", "2026-10-15", "Backing off")];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert_eq!(planner_spawns(&host), 0);
+    assert!(!st.board.planning.contains_key("n1"));
+    host.advance(61);
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert_eq!(planner_spawns(&host), 1);
+    assert!(st.board.planning.contains_key("n1"));
+}
+
+#[test]
+fn a_parked_need_is_never_relaunched() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.board.planner_failed.push(String::from("n1"));
+    let rows = vec![need_row("n1", "2026-10-15", "Parked")];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert_eq!(planner_spawns(&host), 0);
+    assert!(!st.board.planning.contains_key("n1"));
+}
+
+#[test]
+fn launch_records_the_planner_pid_and_clears_the_stale_receipt() {
+    let (_dir, ctx, host) = setup();
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    fs::write(ctx.home.join("board/n1.out"), "stale run\n").unwrap();
+    fs::write(ctx.home.join("board/n1.out.rc"), "127").unwrap();
+    let mut st = State::default();
+    let rows = vec![need_row("n1", "2026-10-15", "Relaunch")];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(
+        st.board
+            .planner_pids
+            .get("n1")
+            .is_some_and(|pid| *pid >= 1000),
+        "pids: {:?}",
+        st.board.planner_pids
+    );
+    assert!(!ctx.home.join("board/n1.out.rc").exists());
+    assert_eq!(
+        fs::read_to_string(ctx.home.join("board/n1.out")).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn a_planner_that_exits_127_is_freed_and_retried_once_then_parked() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        from: vec![String::from("operator@bd371d96.local")],
+        since: String::from("2026-10-14T00:10"),
+        every: 60,
+        pull: false,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "need list",
+        0,
+        &list(&[row("n1", "2026-10-15", "Crashy", &[])]),
+    );
+    host.reply("--held", 0, "[]");
+    host.reply("--json --to mind", 0, "[]");
+    let mut st = State::default();
+
+    board(&ctx, &mut st);
+    assert!(st.board.planning.contains_key("n1"));
+    assert_eq!(planner_spawns(&host), 1);
+
+    exited_planner(&ctx, "n1");
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert_eq!(planner_spawns(&host), 1);
+    assert!(host.logs().join("\n").contains("rc=127"));
+    assert!(exceptions(&ctx).contains("plan-crashed n1"));
+    assert!(
+        st.board
+            .planner_retry_at
+            .get("n1")
+            .is_some_and(|at| *at > ctx.now())
+    );
+
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), 2);
+    assert!(st.board.planning.contains_key("n1"));
+
+    exited_planner(&ctx, "n1");
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), 2);
+    assert_eq!(st.board.planner_fails.get("n1"), Some(&2));
+
+    host.advance(121);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), 3);
+
+    exited_planner(&ctx, "n1");
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert!(st.board.planner_failed.contains(&String::from("n1")));
+    assert!(exceptions(&ctx).contains("plan-failed n1"));
+    let after_park = planner_spawns(&host);
+
+    host.advance(601);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), after_park);
+    assert!(!st.board.planning.contains_key("n1"));
+}
+
+#[test]
+fn a_dependent_is_not_planned_before_its_prerequisite() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"b","blocked_by":["a"]}]"#,
+    );
+    let mut st = State::default();
+    let rows = vec![
+        need_row("b", "2026-10-15", "Dependent"),
+        need_row("a", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("a"));
+    assert!(!st.board.planning.contains_key("b"));
+    assert_eq!(planner_spawns(&host), 1);
+    assert!(
+        host.logs()
+            .join("\n")
+            .contains("board: b waits on unplanned prerequisite a")
+    );
+}
+
+#[test]
+fn a_dependent_is_planned_once_its_prerequisite_has_a_plan() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"b","blocked_by":["a"]}]"#,
+    );
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans").join("a.json"), "{}").unwrap();
+    let mut st = State::default();
+    let rows = vec![
+        need_row("b", "2026-10-15", "Dependent"),
+        need_row("a", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("b"));
+    assert!(!st.board.planning.contains_key("a"));
+    assert_eq!(planner_spawns(&host), 1);
+}
+
+#[test]
+fn an_unreadable_dependency_read_does_not_gate_planning() {
+    let (_dir, ctx, host) = setup();
+    host.reply("graph blocked", 1, "error: locked");
+    let mut st = State::default();
+    let rows = vec![
+        need_row("b", "2026-10-15", "Dependent"),
+        need_row("a", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("a"));
+    assert!(st.board.planning.contains_key("b"));
+    assert_eq!(planner_spawns(&host), 2);
+    assert!(host.logs().join("\n").contains("graph blocked unreadable"));
+}
+
+#[test]
+fn a_need_depended_on_by_others_is_planned_before_an_independent_same_date_need() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"dep","blocked_by":["root"]}]"#,
+    );
+    let mut st = State::default();
+    let rows = vec![
+        need_row("indep", "2026-10-15", "Independent"),
+        need_row("root", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("root"));
+    assert!(!st.board.planning.contains_key("indep"));
+    assert_eq!(planner_spawns(&host), 1);
+}
+
+#[test]
+fn the_need_list_order_is_kept_among_needs_nobody_depends_on() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    let mut st = State::default();
+    let rows = vec![
+        need_row("x", "2026-10-15", "X"),
+        need_row("y", "2026-10-15", "Y"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("x"));
+    assert!(!st.board.planning.contains_key("y"));
+    assert_eq!(planner_spawns(&host), 1);
 }

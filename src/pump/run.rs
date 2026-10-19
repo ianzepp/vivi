@@ -7,11 +7,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::VivariumError;
 use crate::mailspace::Mailspace;
-use crate::pump::board;
+use crate::pump::boardpass::BoardPass;
 use crate::pump::collect;
 use crate::pump::config::PumpConfig;
 use crate::pump::dispatch;
@@ -22,23 +22,42 @@ use crate::pump::plan;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
-/// One pump tick: ingest and collect, feed merges, dispatch ready work, run
-/// gates, then perform the periodic board pass and write status.
-pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumError> {
+/// One pump tick: fold in a finished board pass, ingest and collect, feed
+/// merges, dispatch ready work, run gates, request the periodic board pass,
+/// and write status. Pending operator requeue requests apply right after the
+/// first ingest, so a requeued unit can dispatch in the same tick and the
+/// change lands at the next save point. The board pass itself runs on
+/// [`BoardPass`]'s worker thread, so a slow pass never holds the tick.
+///
+/// Status is written at tick start and after each phase (merge feed,
+/// dispatch, gates/merge), so `status.txt` never goes stale for a whole
+/// long tick.
+pub fn tick(
+    ctx: &Ctx,
+    st: &mut State,
+    merger: &Merger,
+    boardpass: &mut BoardPass,
+) -> Result<(), VivariumError> {
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    boardpass.apply(ctx, st);
     merger.apply(ctx, st);
     plan::ingest(ctx, st);
+    crate::pump::requeue::apply_pending(ctx, st);
     let gate_target = st
         .active_gate_target()
         .unwrap_or_else(|| String::from("default"));
     let gate_ctx = ctx.for_target(&gate_target).unwrap_or_else(|| ctx.clone());
+    let t_collect = Instant::now();
     crate::pump::state::with_target_state(st, &gate_target, |st| {
         if let Some(text) = collect::collect(&gate_ctx, st) {
             gate::finish_gate(&gate_ctx, st, &text);
         }
     });
+    ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
     merger.apply(ctx, st);
     merger.feed(ctx, st);
     save(ctx, st)?;
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
         Err(error) => {
@@ -50,15 +69,30 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
         }
     };
     if control.mode == crate::pump::control::PumpMode::Paused {
-        board::board(ctx, st);
-        plan::ingest(ctx, st);
-        crate::pump::alarm::check(ctx, st);
-        save(ctx, st)?;
+        periodic(ctx, st, boardpass)?;
         write_status(ctx, st, &merger.lane_lines(ctx.now()));
         return Ok(());
     }
+    let t_dispatch = Instant::now();
     dispatch::dispatch(ctx, st);
+    ctx.log(&format!(
+        "dispatch took {}s",
+        t_dispatch.elapsed().as_secs()
+    ));
     save(ctx, st)?;
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    gates_pass(ctx, st);
+    merger.apply(ctx, st);
+    merger.feed(ctx, st);
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    periodic(ctx, st, boardpass)?;
+    write_status(ctx, st, &merger.lane_lines(ctx.now()));
+    Ok(())
+}
+
+/// Run the per-target gate passes: hold cycle, external gates, then start
+/// gate, each against that target's own state.
+fn gates_pass(ctx: &Ctx, st: &mut State) {
     for target in ctx.cfg.target_configs().keys() {
         let Some(target_ctx) = ctx.for_target(target) else {
             ctx.exception(
@@ -74,21 +108,32 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
             gate::start_gate(&target_ctx, st);
         });
     }
-    merger.apply(ctx, st);
-    merger.feed(ctx, st);
-    board::board(ctx, st);
+}
+
+/// The periodic board pass, shared by the paused branch and the normal path:
+/// request a board pass on the worker thread, ingest plans, raise the stall
+/// and blocking alarms, then run the blocking-stuck automatic response before
+/// the state is saved. The pass's results land on the tick that follows it.
+fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
+    boardpass.request(ctx, st);
     plan::ingest(ctx, st);
     crate::pump::alarm::check(ctx, st);
-    save(ctx, st)?;
-    write_status(ctx, st, &merger.lane_lines(ctx.now()));
-    Ok(())
+    crate::pump::blockers::check(ctx, st);
+    save(ctx, st)
 }
 
 /// Write the status lines to `<home>/status.txt`: a UTC timestamp, unit
 /// counts, plan verdict counts, the merge/gate counters, the stall lines
-/// from [`crate::pump::alarm::status_lines`], then one line per merge lane
-/// (`lanes`, from [`Merger::lane_lines`]). A write failure is logged, never
-/// fatal.
+/// from [`crate::pump::alarm::status_lines`], a `send-failed` line naming
+/// every unit whose task send was refused for a config reason, the blocker
+/// lines from [`crate::pump::blockers::status_lines`], the in-flight planner
+/// lines, then one line per merge lane (`lanes`, from
+/// [`Merger::lane_lines`]); each alive lane line ends with `merged <m>
+/// conflict <c>`, its counts of merged and conflicted results so far in this
+/// pump run, so a lane that never lands anything stands out. A `send-failed`
+/// line appears only while at least one unit carries the one-shot
+/// send-failure report, so a broken pump cannot look idle. An idle board adds
+/// no planner lines. A write failure is logged, never fatal.
 pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for need in st.needs.values() {
@@ -123,11 +168,59 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
         ),
     ];
     lines.extend(crate::pump::alarm::status_lines(ctx, st));
+    let send_failed: Vec<&str> = st
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.send_reported)
+        .map(|(uid, _)| uid.as_str())
+        .collect();
+    if !send_failed.is_empty() {
+        lines.push(format!("send-failed {}", send_failed.join(" ")));
+    }
+    lines.extend(crate::pump::blockers::status_lines(ctx, st));
+    lines.extend(planner_lines(ctx, st));
     lines.extend(lanes.iter().cloned());
     let path = ctx.home.join("status.txt");
     if let Err(err) = fs::write(&path, lines.join("\n") + "\n") {
         ctx.log(&format!("status write failed at {}: {err}", path.display()));
     }
+}
+
+/// The lines `status.txt` carries for the planner board: one line per
+/// in-flight planner with its pid and age, the consecutive-failure counts,
+/// and the parked handles. Empty when the board has nothing to report.
+fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
+    let now = ctx.now();
+    let mut lines: Vec<String> = st
+        .board
+        .planning
+        .iter()
+        .map(|(handle, at)| {
+            let pid = st
+                .board
+                .planner_pids
+                .get(handle)
+                .map_or_else(|| String::from("-"), u32::to_string);
+            let age = now.saturating_sub(*at);
+            format!("planner {handle} pid {pid} age {age}s")
+        })
+        .collect();
+    if !st.board.planner_fails.is_empty() {
+        let counts: Vec<String> = st
+            .board
+            .planner_fails
+            .iter()
+            .map(|(handle, count)| format!("{handle}={count}"))
+            .collect();
+        lines.push(format!("planner-failures {}", counts.join(" ")));
+    }
+    if !st.board.planner_failed.is_empty() {
+        lines.push(format!(
+            "planner-parked {}",
+            st.board.planner_failed.join(" ")
+        ));
+    }
+    lines
 }
 
 /// Run the pump over `project`: load the mailspace's `[pump]` table, take
@@ -136,7 +229,8 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when the mailspace has no `[pump]`
-/// table or the table fails `validate`, an error when the lock is already
+/// table, the table fails `validate`, or a pump identity names no roster
+/// role, an error when the lock is already
 /// held, and whatever loading the state fails with.
 pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
     run_inner(project, once, false)
@@ -145,6 +239,25 @@ pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
 /// Run as a service-owned child and announce readiness after taking the pump lock.
 pub fn run_service_child(project: &Path) -> Result<(), VivariumError> {
     run_inner(project, false, true)
+}
+
+/// The pump's actor identity: `<address-prefix>/<sync-name>`, the prefix
+/// alone without a sync name, `unknown` without a mailspace id.
+#[must_use]
+pub fn actor_string(mailspace: &Mailspace) -> String {
+    let prefix = mailspace.address_prefix();
+    if prefix.is_empty() {
+        return String::from("unknown");
+    }
+    match mailspace
+        .config
+        .sync
+        .as_ref()
+        .and_then(|s| s.name.as_deref())
+    {
+        Some(name) => format!("{prefix}/{name}"),
+        None => prefix.to_owned(),
+    }
 }
 
 fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), VivariumError> {
@@ -157,6 +270,10 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
         .iter()
         .any(|role| role.pool.is_some());
     cfg.validate_for(project, &pools, role_pool)?;
+    let roster = identity_issues(&mailspace, &cfg);
+    if !roster.is_empty() {
+        return Err(VivariumError::Config(roster.join("; ")));
+    }
     let issues = crate::routing::validate(&mailspace.config);
     for issue in &issues {
         eprintln!(
@@ -180,8 +297,11 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let host = Arc::new(RealHost::new(&home));
     let vivi = std::env::current_exe()
         .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
+    let sources = cfg.pool_sources(&mailspace.config, project);
     let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi)
-        .with_routing(crate::routing::from_mailspace(&mailspace.config));
+        .with_routing(crate::routing::from_mailspace(&mailspace.config))
+        .with_actor(actor_string(&mailspace))
+        .with_pool_sources(sources);
     crate::pump::priority::import_legacy(&ctx);
     if announce_ready {
         println!("VIVI_PUMP_SERVICE_READY");
@@ -196,7 +316,9 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     Ok(())
 }
 
-/// The pump's status text plus its durable control mode. No pump lock is taken.
+/// The pump's status text plus its durable control mode, whether a writer
+/// process holds the pump lock, and how old the snapshot is. No pump lock is
+/// taken.
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when a mailspace is found but carries
@@ -212,7 +334,28 @@ pub fn status(project: &Path) -> Result<String, VivariumError> {
     let path = home.join("status.txt");
     let text = fs::read_to_string(&path).unwrap_or_else(|_| String::from("no status yet\n"));
     let control = crate::pump::control::inspect(&home)?;
-    Ok(format!("{text}control  {}\n", control.mode))
+    let writer = match lock_is_held(&home) {
+        Ok(true) => "running",
+        Ok(false) => "not running",
+        Err(_) => "unknown",
+    };
+    Ok(format!(
+        "{text}control  {}\nwriter   {writer}\nage      {}\n",
+        control.mode,
+        status_age(&path)
+    ))
+}
+
+/// How old `status.txt` is, in whole seconds, or `never` when it is missing
+/// or its modification time cannot be read.
+fn status_age(path: &Path) -> String {
+    let Ok(modified) = fs::metadata(path).and_then(|meta| meta.modified()) else {
+        return String::from("never");
+    };
+    let age = SystemTime::now()
+        .duration_since(modified)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    format!("{age}s")
 }
 
 /// Load the state, start the merge thread, and drive the tick loop over an
@@ -262,7 +405,8 @@ fn run_with_lock_policy(
     collect::recover_pushed_pending(ctx, &mut st)?;
     store.save(&st)?;
     let merger = Merger::start(ctx);
-    drive(ctx, &mut st, &merger, once)
+    let mut boardpass = BoardPass::start(ctx);
+    drive(ctx, &mut st, &merger, &mut boardpass, once)
 }
 
 /// Startup check: the integration clone must exist. A missing `repo` is
@@ -376,16 +520,24 @@ fn clone_command(ctx: &Ctx, url: &str) -> String {
     )
 }
 
-/// The run/once loop: tick, then return when control state is stopped,
-/// save and return, else sleep `tick` seconds. A panic
-/// inside a tick is caught, logged as `TICK ERROR`, and the state saved.
-fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) -> Result<(), VivariumError> {
+/// The run/once loop: tick, then return when control state is stopped, save
+/// and return, else wait for the next tick in one-second slices. A finished
+/// board pass always lands before a return. A panic inside a tick is caught,
+/// logged as `TICK ERROR`, and the state saved.
+fn drive(
+    ctx: &Ctx,
+    st: &mut State,
+    merger: &Merger,
+    boardpass: &mut BoardPass,
+    once: bool,
+) -> Result<(), VivariumError> {
     loop {
         if exit_requested(ctx) {
+            boardpass.apply(ctx, st);
             save(ctx, st)?;
             return Ok(());
         }
-        let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger));
+        let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger, boardpass));
         match catch_unwind(tick_once) {
             Ok(result) => result?,
             Err(err) => {
@@ -394,14 +546,33 @@ fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) -> Result<(), V
             }
         }
         if once {
-            return Ok(());
-        }
-        if exit_requested(ctx) {
-            ctx.log("pump control state requests exit");
+            boardpass.apply(ctx, st);
             save(ctx, st)?;
             return Ok(());
         }
-        thread::sleep(Duration::from_secs(ctx.cfg.tick));
+        if wait_for_next_tick(ctx) {
+            ctx.log("pump control state requests exit");
+            boardpass.apply(ctx, st);
+            save(ctx, st)?;
+            return Ok(());
+        }
+    }
+}
+
+/// Sleep until the next tick is due in one-second slices, re-reading control
+/// state after each slice so stop and pause take effect within about a
+/// second. `true` means control asked the pump to exit.
+fn wait_for_next_tick(ctx: &Ctx) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(ctx.cfg.tick);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep((deadline - now).min(Duration::from_secs(1)));
+        if exit_requested(ctx) {
+            return true;
+        }
     }
 }
 
@@ -424,6 +595,30 @@ fn pump_config(mailspace: &Mailspace) -> Result<PumpConfig, VivariumError> {
     mailspace.config.pump.clone().ok_or_else(|| {
         VivariumError::Config(String::from("no [pump] table in .vivi/mailspace.toml"))
     })
+}
+
+/// Roster complaints for the identities the pump speaks as: `[pump] from`,
+/// `to` and `reply_from`, plus `[pump.board] reply_to` when set. Each value
+/// must resolve to a role or alias this mailspace knows, or the pump would
+/// start and then fail every send it makes.
+pub fn identity_issues(mailspace: &Mailspace, cfg: &PumpConfig) -> Vec<String> {
+    let mut pairs: Vec<(&str, &str)> = vec![
+        ("[pump] from", cfg.from.as_str()),
+        ("[pump] to", cfg.to.as_str()),
+        ("[pump] reply_from", cfg.reply_from.as_str()),
+    ];
+    if let Some(reply_to) = cfg.board.reply_to.as_deref() {
+        pairs.push(("[pump.board] reply_to", reply_to));
+    }
+    pairs
+        .into_iter()
+        .filter_map(|(key, value)| {
+            mailspace
+                .resolve_identity(value)
+                .err()
+                .map(|err| format!("{key} = \"{value}\": {err}"))
+        })
+        .collect()
 }
 
 /// Create `<home>/lock` and take the exclusive non-blocking flock.

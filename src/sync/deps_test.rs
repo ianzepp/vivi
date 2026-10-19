@@ -2,7 +2,7 @@
 //! route files a letter, the receiver's graph, `step` and
 //! `task list --blocked` agree.
 
-use crate::mailspace::{GraphNodeView, RoleUpdate};
+use crate::mailspace::{GraphNodeView, RoleUpdate, SourceTaskRequest};
 use crate::sync::fake_server::{LETTER_DATE, World, wire_id};
 use crate::sync::fetch::fetch_handles;
 use crate::sync::pull::{PullPlan, pull_with};
@@ -93,20 +93,37 @@ fn a_dependency_that_arrives_in_a_later_pull_makes_the_edge_then() {
     let hand = w.bob.address("hand");
     put(&w, 0xb2, "task", &hand, "second", &[0xa1]);
     w.bob.pull(&w.bob_client);
+    let waiting = node(&w, "second");
     assert_eq!(
-        node(&w, "second").readiness,
-        "ready",
-        "nothing held to wait on"
+        waiting.readiness, "blocked",
+        "the unheld dependency blocks it"
     );
-    assert!(blocked_subjects(&w, "hand").is_empty());
-    assert_eq!(dispatched(&w), ["second"], "until its dependency arrives");
+    assert!(
+        waiting.blocked_by.contains(&"000000a1".to_string()),
+        "{waiting:?}"
+    );
+    assert_eq!(blocked_subjects(&w, "hand"), ["second"]);
+    assert!(
+        dispatched(&w).is_empty(),
+        "it waits until its dependency arrives"
+    );
 
     put(&w, 0xa1, "need", &hand, "first", &[]);
     w.bob.pull(&w.bob_client);
 
     assert_eq!(node(&w, "second").readiness, "blocked");
     assert_eq!(blocked_subjects(&w, "hand"), ["second"]);
-    assert_eq!(dispatched(&w), ["first"]);
+    assert_eq!(
+        dispatched(&w),
+        ["first"],
+        "the dependency, not the dependent"
+    );
+
+    // Once the dependency arrives and is done, the dependent becomes ready.
+    let first = node(&w, "first").source_id;
+    w.bob.mailspace.backlog_complete_item(&first).unwrap();
+    assert_eq!(node(&w, "second").readiness, "ready");
+    assert_eq!(dispatched(&w), ["second"]);
 }
 
 #[test]
@@ -118,6 +135,11 @@ fn a_dependency_that_arrives_by_fetch_makes_the_edge() {
     // The dependency is on the server but behind bob's cursor: fetched, not
     // pulled.
     put(&w, 0xa1, "need", &hand, "first", &[]);
+    assert_eq!(
+        node(&w, "second").readiness,
+        "blocked",
+        "the fetch has nothing to unblock until the dependency lands"
+    );
 
     let report = fetch_handles(
         &w.bob.mailspace,
@@ -155,7 +177,20 @@ fn a_dependency_that_arrives_by_reference_follow_makes_the_edge() {
     .unwrap();
     assert!(has_node(&w, "second"));
     assert!(!has_node(&w, "first"), "outside the window");
-    assert_eq!(node(&w, "second").readiness, "ready");
+    assert_eq!(
+        node(&w, "second").readiness,
+        "blocked",
+        "the dependency is outside the window, not satisfied"
+    );
+    assert!(dispatched(&w).is_empty());
+    let manifest = w.bob.mailspace.step_shadow().unwrap();
+    let waiting: Vec<_> = manifest
+        .exceptions
+        .iter()
+        .filter(|exc| exc.reason == "awaiting_dependency")
+        .collect();
+    assert_eq!(waiting.len(), 1, "{:?}", manifest.exceptions);
+    assert_eq!(waiting[0].item, node(&w, "second").source_id);
 
     follow_refs(
         &w.bob.mailspace,
@@ -215,6 +250,55 @@ fn a_replay_of_held_letters_changes_nothing() {
         w.bob
             .mailspace
             .backlog_audit(false)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+}
+
+#[test]
+fn filing_rebuilds_the_need_bind_from_the_parent_header() {
+    let w = World::new();
+    let hand = w.bob.address("hand");
+    // Alice sends the need to bob's hand and pushes it; bob pulls it.
+    let need = w.alice.send_need("mind", &hand, "the need");
+    w.alice.push(&w.alice.client(&w.server));
+    w.bob.pull(&w.bob_client);
+    assert_eq!(node(&w, "the need").state, "open", "the need is held work");
+
+    // Alice lowers the need into a unit task addressed to bob's hand. The
+    // bind is local to alice: the letter carries only the parent header.
+    w.alice
+        .mailspace
+        .task_from_source(SourceTaskRequest {
+            source_handle: need,
+            actor: "mind".into(),
+            to: vec![hand.clone()],
+            cc: Vec::new(),
+            subject: "the unit".into(),
+            body: "do the first part\r\n".into(),
+        })
+        .unwrap();
+    w.alice.push(&w.alice.client(&w.server));
+    w.bob.pull(&w.bob_client);
+
+    let need_node = node(&w, "the need");
+    assert_eq!(need_node.state, "open");
+    let unit = node(&w, "the unit");
+    assert_eq!(
+        unit.subgraph.as_deref(),
+        Some(need_node.source_id.as_str()),
+        "filing derives the bind from X-Vivi-Parent"
+    );
+
+    // Pulling the same letters again writes no second bind.
+    let before = w.bob.mailspace.graph_show("backlog").unwrap().nodes;
+    w.bob.pull(&w.bob_client);
+    assert_eq!(w.bob.mailspace.graph_show("backlog").unwrap().nodes, before);
+    assert!(
+        w.bob
+            .mailspace
+            .backlog_audit(true)
             .unwrap()
             .findings
             .is_empty()

@@ -7,7 +7,7 @@ use serde_json::json;
 use tempfile::tempdir;
 
 use crate::pump::state::{
-    MergeResult, NeedRecord, Promotion, State, Status, Unit, with_target_state,
+    Board, MergeResult, NeedRecord, Promotion, State, Status, Unit, with_target_state,
 };
 
 /// A `state.json` as the pump writes it: one-space indent, `null`s
@@ -196,6 +196,31 @@ fn a_state_written_by_pump_py_loads() {
 }
 
 #[test]
+fn board_loads_old_shape_and_round_trips_new_fields() {
+    let old: Board = serde_json::from_str(r#"{"planning":{"n1":123}}"#).unwrap();
+    assert_eq!(old.planning.get("n1"), Some(&123));
+    assert!(old.planner_pids.is_empty());
+    assert!(old.planner_fails.is_empty());
+    assert!(old.planner_retry_at.is_empty());
+    assert!(old.planner_failed.is_empty());
+
+    let board = Board {
+        planner_pids: BTreeMap::from([("n1".to_string(), 4242)]),
+        planner_fails: BTreeMap::from([("n1".to_string(), 2)]),
+        planner_retry_at: BTreeMap::from([("n1".to_string(), 1_800_000_000)]),
+        planner_failed: vec!["n2".to_string()],
+        ..Board::default()
+    };
+
+    let text = serde_json::to_string(&board).unwrap();
+    let back: Board = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.planner_pids.get("n1"), Some(&4242));
+    assert_eq!(back.planner_fails.get("n1"), Some(&2));
+    assert_eq!(back.planner_retry_at.get("n1"), Some(&1_800_000_000));
+    assert_eq!(back.planner_failed, vec!["n2"]);
+}
+
+#[test]
 fn a_missing_file_loads_as_the_empty_state() {
     let dir = tempdir().unwrap();
     let st = State::load(&dir.path().join("state.json")).unwrap();
@@ -377,6 +402,21 @@ fn status_names_are_kebab_case_including_no_defect() {
 }
 
 #[test]
+fn a_needs_replan_unit_round_trips_through_serde() {
+    let st: State = serde_json::from_value(json!({
+        "units": {"u1": {"status": "needs-replan"}}
+    }))
+    .unwrap();
+    assert_eq!(st.units["u1"].status, Status::NeedsReplan);
+    assert_eq!(st.units["u1"].status.as_str(), "needs-replan");
+
+    let text = serde_json::to_string(&st).unwrap();
+    let back: State = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.units["u1"].status, Status::NeedsReplan);
+    assert_eq!(back.units["u1"].status.as_str(), "needs-replan");
+}
+
+#[test]
 fn counts_groups_units_by_status_name() {
     let st: State = serde_json::from_value(json!({
         "units": {
@@ -486,6 +526,10 @@ fn the_live_snapshot_round_trips_through_load_and_save() {
             .unwrap()
             .entry("target")
             .or_insert(json!("default"));
+        unit.as_object_mut()
+            .unwrap()
+            .entry("transient_retries")
+            .or_insert(json!(0));
     }
     let got: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
@@ -547,6 +591,39 @@ fn absent_optional_unit_fields_stay_absent_on_save() {
     for key in ["task", "branch", "model"] {
         assert!(unit[key].is_null(), "{key} must stay null");
     }
+}
+
+#[test]
+fn transient_retry_fields_round_trip_and_default() {
+    let mut unit = Unit::default();
+    unit.transient_retries = 2;
+    unit.retry_not_before = Some(99);
+    let back: Unit = serde_json::from_str(&serde_json::to_string(&unit).unwrap()).unwrap();
+    assert_eq!(back.transient_retries, 2);
+    assert_eq!(back.retry_not_before, Some(99));
+
+    // A unit from an older pump has neither key; both load as defaults.
+    let old: Unit = serde_json::from_str(r#"{"need": "n", "status": "pending"}"#).unwrap();
+    assert_eq!(old.transient_retries, 0);
+    assert_eq!(old.retry_not_before, None);
+}
+
+#[test]
+fn split_planner_fields_round_trip_and_default() {
+    let mut unit = Unit::default();
+    unit.split_fails = 2;
+    unit.split_retry_at = Some(99);
+    unit.split_reasks = 1;
+    let back: Unit = serde_json::from_str(&serde_json::to_string(&unit).unwrap()).unwrap();
+    assert_eq!(back.split_fails, 2);
+    assert_eq!(back.split_retry_at, Some(99));
+    assert_eq!(back.split_reasks, 1);
+
+    // A unit from an older pump has none of the keys; all load as defaults.
+    let old: Unit = serde_json::from_str(r#"{"need": "n", "status": "pending"}"#).unwrap();
+    assert_eq!(old.split_fails, 0);
+    assert_eq!(old.split_retry_at, None);
+    assert_eq!(old.split_reasks, 0);
 }
 
 #[test]

@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use super::{launch_agent_plist, prefer_stable_link, systemd_unit};
+use super::{
+    launch_agent_plist, parse_launchd_pid, parse_systemd_mainpid, prefer_stable_link,
+    systemd_apply_steps, systemd_unit,
+};
 
 #[test]
 fn systemd_unit_limits_crash_loops() {
@@ -13,11 +16,39 @@ fn systemd_unit_limits_crash_loops() {
 }
 
 #[test]
+fn systemd_apply_steps_restarts_active_unit() {
+    let steps = systemd_apply_steps();
+    assert_eq!(steps.first(), Some(&vec!["--user", "daemon-reload"]));
+    assert!(steps.contains(&vec!["--user", "enable", "vivi-proxy.service"]));
+    assert_eq!(
+        steps.last(),
+        Some(&vec!["--user", "restart", "vivi-proxy.service"])
+    );
+    assert!(steps.iter().all(|step| !step.contains(&"--now")));
+}
+
+#[test]
 fn launchd_plist_throttles_restarts() {
     let plist = launch_agent_plist(Path::new("/opt/vivi"), Path::new("/tmp/logs"), "/bin", None);
     assert!(plist.contains("com.vivi.proxy"));
     assert!(plist.contains("<key>KeepAlive</key><true/>"));
     assert!(plist.contains("<key>ThrottleInterval</key><integer>10</integer>"));
+}
+
+#[test]
+fn launchd_print_pid_is_parsed() {
+    let running =
+        "gui/501/com.vivi.proxy = {\n\tactive count = 1\n\tpid = 85306\n\tstate = running\n}";
+    assert_eq!(parse_launchd_pid(running), Some(85306));
+    let stopped = "gui/501/com.vivi.proxy = {\n\tactive count = 0\n\tstate = not running\n}";
+    assert_eq!(parse_launchd_pid(stopped), None);
+}
+
+#[test]
+fn systemd_mainpid_is_parsed() {
+    assert_eq!(parse_systemd_mainpid("85306\n"), Some(85306));
+    assert_eq!(parse_systemd_mainpid("0\n"), None);
+    assert_eq!(parse_systemd_mainpid("\n"), None);
 }
 
 #[cfg(unix)]

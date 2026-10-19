@@ -9,9 +9,13 @@ use std::path::{Path, PathBuf};
 
 use crate::pump::brief::gate_brief;
 use crate::pump::dispatch::{parse_created_handle, slots};
-use crate::pump::gatefix::{gatefix, plan_need, replans_left, residual_failures, take_residuals};
+use crate::pump::gatefix::{
+    gatefix, plan_need, replans_left, residual_failures, send_fix_need, take_residuals,
+};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
+
+pub(crate) mod green;
 
 /// The `FAILING-BEGIN` reply marker.
 const BEGIN: &str = "FAILING-BEGIN";
@@ -588,12 +592,11 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
         .map(|(name, owner)| (name.clone(), owner.clone()))
         .collect();
     for (name, owner) in owned {
-        let prefix = format!("{owner}-");
         let statuses: Vec<Status> = st
             .units
-            .iter()
-            .filter(|(uid, _)| uid.starts_with(&prefix))
-            .map(|(_, unit)| unit.status)
+            .values()
+            .filter(|unit| unit.need == owner)
+            .map(|unit| unit.status)
             .collect();
         let mark = format!("{owner}:{name}");
         let failing = names.iter().any(|n| n == &name);
@@ -619,8 +622,9 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     let new = new_failures(st, names);
     rec.new = Some(new.clone());
     let residual = residual_failures(ctx, st, names);
-    let owner = plan_need(ctx, &rec.tip, !residual.is_empty());
     if !new.is_empty() || !residual.is_empty() {
+        let owner = send_fix_need(ctx, &rec.tip, &new, &residual)
+            .unwrap_or_else(|| plan_need(ctx, &rec.tip, !residual.is_empty()));
         for name in &new {
             st.red.insert(name.clone(), owner.clone());
         }
@@ -648,28 +652,6 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     ctx.log(&gate_summary(rec, names, new.len()));
 }
 
-/// The failing names recorded for the newest promotion: those stored with it,
-/// else the failing set of the gate that tested that tip (a promotion made
-/// before the names were recorded). `None` with no promotion or no record.
-fn promoted_set(st: &State) -> Option<&[String]> {
-    let promotion = st.promotions.last()?;
-    promotion.failing.as_deref().or_else(|| {
-        st.gates
-            .iter()
-            .rev()
-            .find(|gate| gate.tip == promotion.tip)
-            .and_then(|gate| gate.names.as_deref())
-    })
-}
-
-/// The failing names main carries: the newest promotion's recorded set, else
-/// the baseline.
-fn main_failing(st: &State) -> &[String] {
-    promoted_set(st)
-        .or(st.baseline.as_deref())
-        .unwrap_or_default()
-}
-
 /// Log once per tip when the newest promotion has no recorded failing set
 /// (a legacy promotion), so main's set falls back to the baseline visibly.
 fn note_unknown_main_set(ctx: &Ctx, st: &mut State) {
@@ -678,7 +660,7 @@ fn note_unknown_main_set(ctx: &Ctx, st: &mut State) {
     };
     let tip = promotion.tip.clone();
     let logged = st.extra.get(UNKNOWN_KEY).and_then(|v| v.as_str());
-    if promoted_set(st).is_some() || logged == Some(tip.as_str()) {
+    if green::promoted_set(&st.promotions, &st.gates).is_some() || logged == Some(tip.as_str()) {
         return;
     }
     ctx.log(&format!(
@@ -692,7 +674,7 @@ fn note_unknown_main_set(ctx: &Ctx, st: &mut State) {
 /// The gate's failing names that main does not carry, sorted. Main is
 /// promoted only when there are none: main never gets redder.
 fn not_on_main(st: &State, names: &[String]) -> Vec<String> {
-    let main = main_failing(st);
+    let main = green::main_set(&st.promotions, &st.gates, st.baseline.as_deref());
     names
         .iter()
         .filter(|name| !main.contains(*name))

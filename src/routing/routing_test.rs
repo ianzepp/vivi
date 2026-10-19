@@ -195,6 +195,39 @@ slots = 1
 }
 
 #[test]
+fn validate_warns_on_legacy_planner_split_timeout() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+[pools.glm]
+provider = "local"
+slots = 2
+[pump]
+branch = "next"
+to = "hand"
+[pump.planner]
+split_timeout = 1800
+"#);
+    assert_eq!(
+        config.pump.as_ref().expect("pump").planner.split_hard_cap,
+        1800
+    );
+    let issues = validate(&config);
+    assert!(
+        issues.iter().any(|issue| {
+            issue.severity == Severity::Warning
+                && issue.message.contains("split_timeout")
+                && issue.message.contains("split_hard_cap")
+        }),
+        "{issues:?}"
+    );
+    assert!(require_ok(&issues).is_ok(), "{issues:?}");
+}
+
+#[test]
 fn from_mailspace_reads_role_pool_and_models() {
     let config = cfg(r#"
 name = "t"
@@ -315,6 +348,52 @@ lanes = 2
     assert!(after.contains("# keep-me"), "{after}");
     assert!(after.contains("pool = \"glm\""), "{after}");
     assert!(after.contains("[pools.host]"), "{after}");
+}
+
+#[test]
+fn migrate_rewrites_the_legacy_planner_split_timeout_key() {
+    let raw = r#"
+# keep-me
+name = "t"
+
+[pump]
+branch = "next"
+
+[pump.planner]
+run = "planner-run"
+split_timeout = 1800
+"#;
+    let config: MailspaceConfig = toml::from_str(raw).expect("mailspace toml");
+    let plan = plan_migrate(&config);
+    assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
+    assert_eq!(plan.renames[0].from, "split_timeout");
+    assert_eq!(plan.renames[0].to, "split_hard_cap");
+    let mut doc = raw.parse::<toml_edit::DocumentMut>().unwrap();
+    apply_plan_to_document(&mut doc, &plan).unwrap();
+    let after = doc.to_string();
+    assert!(after.contains("split_hard_cap = 1800"), "{after}");
+    assert!(!after.contains("split_timeout"), "{after}");
+    assert!(after.contains("# keep-me"), "{after}");
+
+    let both = r#"
+name = "t"
+
+[pump]
+branch = "next"
+
+[pump.planner]
+run = "planner-run"
+split_hard_cap = 2700
+split_timeout = 1800
+"#;
+    let config: MailspaceConfig = toml::from_str(both).expect("mailspace toml");
+    let plan = plan_migrate(&config);
+    assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
+    let mut doc = both.parse::<toml_edit::DocumentMut>().unwrap();
+    apply_plan_to_document(&mut doc, &plan).unwrap();
+    let after = doc.to_string();
+    assert!(after.contains("split_hard_cap = 2700"), "{after}");
+    assert!(!after.contains("split_timeout"), "{after}");
 }
 
 #[test]

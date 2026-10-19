@@ -1,5 +1,6 @@
 use super::*;
 use crate::mailspace::SendRequest;
+use crate::storage::MessageIngestRequest;
 
 fn roster() -> (Mailspace, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
@@ -27,6 +28,52 @@ fn send_item(mailspace: &Mailspace, role: &str, kind: &str, subject: &str, body:
         .delivered
         .remove(0)
         .handle
+}
+
+/// File an inbound work letter the way a pull does, honouring the dependency
+/// headers another mailspace's sender wrote, and attach it to the backlog.
+fn file_letter(
+    mailspace: &Mailspace,
+    account: &str,
+    kind: &str,
+    subject: &str,
+    deps: &[&str],
+) -> String {
+    let domain = mailspace.address_domain();
+    let mut headers = format!(
+        "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: {subject}\r\n\
+         Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         X-Vivi-Kind: {kind}\r\n"
+    );
+    for dep in deps {
+        headers.push_str(&format!("X-Vivi-Depends-On: {dep}\r\n"));
+    }
+    let bytes = format!("{headers}\r\ndone_when: {subject}\r\n").into_bytes();
+    let storage = mailspace.storage().unwrap();
+    let stored = storage
+        .ingest_message(
+            &MessageIngestRequest {
+                account: account.into(),
+                local_role: format!("{kind}s"),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: format!("{account}\0{subject}"),
+                remote: None,
+            },
+            &bytes,
+        )
+        .unwrap();
+    let handle = storage.display_handle(&stored.message_id).unwrap();
+    drop(storage);
+    mailspace
+        .backlog_attach_letter(kind, &stored.message_id, subject, &bytes)
+        .unwrap();
+    mailspace
+        .backlog_settle_pending_dependencies(&[(stored.message_id.clone(), stored.content_id)])
+        .unwrap();
+    handle
 }
 
 fn manifest_for(mailspace: &Mailspace, item: &str) -> Option<StepDispatch> {
@@ -194,6 +241,51 @@ fn blocked_nodes_do_not_appear() {
     assert!(
         !manifest.exceptions.iter().any(|e| e.item == *blocked_item),
         "{manifest:?}"
+    );
+}
+
+#[test]
+fn blocked_dependent_awaiting_unheld_dependency_is_exception() {
+    let (mailspace, _tmp) = roster();
+    // A task whose letter names a dependency this mailspace does not hold.
+    let waiting = file_letter(
+        &mailspace,
+        "cto",
+        "task",
+        "waits on a stranger",
+        &["deadbeef"],
+    );
+    let control = send_item(
+        &mailspace,
+        "tasks",
+        "task",
+        "free to go",
+        "done_when: lands",
+    );
+
+    let manifest = mailspace.step_shadow().unwrap();
+    assert!(
+        !manifest.dispatches.iter().any(|d| d.item == waiting),
+        "a blocked dependent must not dispatch: {manifest:?}"
+    );
+    let reported: Vec<&StepException> = manifest
+        .exceptions
+        .iter()
+        .filter(|e| e.item == waiting)
+        .collect();
+    assert_eq!(reported.len(), 1, "exactly one exception: {manifest:?}");
+    assert_eq!(reported[0].reason, "awaiting_dependency");
+    assert_eq!(reported[0].kind, "task");
+    assert!(
+        reported[0].detail.contains("deadbeef"),
+        "detail names the unheld reference: {:?}",
+        reported[0]
+    );
+
+    // A control task with no dependencies still dispatches.
+    assert!(
+        manifest.dispatches.iter().any(|d| d.item == control),
+        "control task dispatches: {manifest:?}"
     );
 }
 

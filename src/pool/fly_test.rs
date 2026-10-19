@@ -163,6 +163,43 @@ fn a_taken_app_name_is_said_plainly_with_the_line_to_set() {
 }
 
 #[test]
+fn a_start_wait_failure_is_recognized() {
+    let operator = "Error: machine failed to reach desired start state, and restart policy was set to no restart";
+    assert!(is_start_wait_failure(operator));
+    assert!(!is_start_wait_failure("Error: failed to fetch image"));
+    assert!(!is_start_wait_failure(""));
+}
+
+fn listing(id: &str, name: &str) -> MachineRecord {
+    MachineRecord {
+        id: id.into(),
+        name: name.into(),
+        state: "created".into(),
+        region: "iad".into(),
+        created_at: "2026-10-19T03:00:00Z".into(),
+        metadata: BTreeMap::new(),
+        exit_code: None,
+    }
+}
+
+#[test]
+fn salvaged_id_reads_the_machine_id_or_falls_back_to_the_name() {
+    let wait = "Error: machine failed to reach desired start state, and restart policy was set to no restart";
+    let said = format!("Some preamble\nMachine ID: 9187f2c1\n{wait}\n");
+    assert_eq!(
+        salvaged_id("ms-p-slot-1", &said, &[]).as_deref(),
+        Some("9187f2c1")
+    );
+    let machines = [listing("e73f11", "ms-p-slot-1")];
+    assert_eq!(
+        salvaged_id("ms-p-slot-1", "", &machines).as_deref(),
+        Some("e73f11")
+    );
+    let unrelated = [listing("ff00aa", "ms-p-slot-9")];
+    assert_eq!(salvaged_id("ms-p-slot-1", "", &unrelated), None);
+}
+
+#[test]
 fn a_root_disk_size_is_passed_only_when_the_pool_sets_one() {
     let spec = CreateSpec {
         name: "faber-slot-1".into(),

@@ -49,6 +49,9 @@ pub enum Status {
     NoDefect,
     /// Failed too many times; parked.
     Stuck,
+    /// Parked because its plan is defective (proof usage error); waits for a
+    /// revision, never dispatched.
+    NeedsReplan,
     /// Being split into sub-units.
     Splitting,
     /// Superseded by a replacement unit.
@@ -74,6 +77,7 @@ impl Status {
             Self::Quarantined => "quarantined",
             Self::NoDefect => "no-defect",
             Self::Stuck => "stuck",
+            Self::NeedsReplan => "needs-replan",
             Self::Splitting => "splitting",
             Self::Replaced => "replaced",
             Self::Withdrawn => "withdrawn",
@@ -94,6 +98,7 @@ impl Status {
             "quarantined" => Self::Quarantined,
             "no-defect" => Self::NoDefect,
             "stuck" => Self::Stuck,
+            "needs-replan" => Self::NeedsReplan,
             "splitting" => Self::Splitting,
             "replaced" => Self::Replaced,
             "withdrawn" => Self::Withdrawn,
@@ -104,6 +109,11 @@ impl Status {
 
 /// Serde skip predicate: an absent revision is the old shape.
 fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Serde skip predicate: an absent counter is zero.
+fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
@@ -221,6 +231,9 @@ pub struct Unit {
     /// Pool the task was dispatched to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
+    /// Pool slot the current/last attempt ran on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
     /// Commit produced by the last merge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
@@ -239,9 +252,37 @@ pub struct Unit {
     /// The unit's unknown-kind exception was raised already.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kind_reported: bool,
+    /// The unit's config-class task-send exception was raised already; a
+    /// later successful send clears it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub send_reported: bool,
+    /// Consecutive split-planner exits that produced no plan. `pump.db`
+    /// keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub split_fails: u32,
+    /// Earliest epoch seconds the split planner may respawn for this unit.
+    /// `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_retry_at: Option<u64>,
+    /// Bad split plans already re-asked; one maximum. `pump.db` keeps it in
+    /// the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub split_reasks: u32,
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_on: Option<String>,
+    /// The unit was requeued once by the blocking-stuck response, so a second
+    /// stall parks it stuck again instead of being requeued a second time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requeued: bool,
+    /// Transient-class failures already retried without counting toward
+    /// max_attempts. `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default)]
+    pub transient_retries: u32,
+    /// Epoch seconds before which the unit is not redispatched (transient
+    /// backoff). `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_not_before: Option<u64>,
     /// The quarantine id this unit is a member of: set on every unit set
     /// aside in a quarantined batch. A repair unit is never a member (see
     /// `repairs`). `pump.db` keeps it in the unit's `extra_json` column.
@@ -351,6 +392,22 @@ pub struct GateRecord {
     pub new: Option<Vec<String>>,
 }
 
+/// One pool's environment-failure bookkeeping (`env_pauses` entry).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnvPause {
+    /// Epoch seconds of recent host-class failures, kept within the window.
+    pub fails: Vec<u64>,
+    /// The failing fact or command and its stderr, for the exception.
+    pub evidence: String,
+    /// Shell command re-run each tick, e.g. `command -v pi`; `None` resumes
+    /// on the window passing.
+    pub probe: Option<String>,
+    /// Epoch second dispatch to this pool paused; `None` while failures are
+    /// only counted.
+    pub paused_at: Option<u64>,
+}
+
 /// The planner board state (`board`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Board {
@@ -369,6 +426,18 @@ pub struct Board {
     /// Need handle -> epoch seconds a revision planner started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub revision_planning: BTreeMap<String, u64>,
+    /// Handle -> pid of the board planner currently running.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub planner_pids: BTreeMap<String, u32>,
+    /// Handle -> consecutive planner exits without a plan.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub planner_fails: BTreeMap<String, u32>,
+    /// Handle -> earliest epoch seconds the planner may relaunch.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub planner_retry_at: BTreeMap<String, u64>,
+    /// Handles parked after exhausting planner retries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planner_failed: Vec<String>,
     /// An attempt record was posted since the last sync push: the next board
     /// pass ships it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -436,6 +505,9 @@ pub struct State {
     /// Promoted tips, oldest first.
     #[serde(default)]
     pub promotions: Vec<Promotion>,
+    /// Pool -> host-class failure bookkeeping and dispatch pause.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_pauses: BTreeMap<String, EnvPause>,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,
@@ -560,6 +632,10 @@ pub struct MergeJob {
     /// Files this unit may write.
     #[serde(default)]
     pub write_scope: Vec<String>,
+    /// The local repository the branch lives in for a `local` worktree pool
+    /// (single-target pumps); `None` means the target's remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PathBuf>,
 }
 
 /// What the merge thread reports back for one job.

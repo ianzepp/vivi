@@ -7,7 +7,7 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
-use crate::pump::amend::detect;
+use crate::pump::amend::{detect, request};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
@@ -78,6 +78,17 @@ fn a_changed_thread_starts_a_revision() {
             .iter()
             .any(|line| line.contains("amendment: n1 changed after r1"))
     );
+}
+
+#[test]
+fn a_requested_revision_names_the_reason_in_the_prompt() {
+    let (_dir, ctx, host, mut st) = setup();
+    request(&ctx, &mut st, "n1", "unit n1-1 failed its proof");
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(ctx.home.join("needs/n1.json").exists());
+    let prompt = fs::read_to_string(ctx.home.join("board/n1.revision.prompt")).unwrap();
+    assert!(prompt.contains("Reason for this revision: unit n1-1 failed its proof"));
+    assert!(!host.spawned().is_empty());
 }
 
 #[test]

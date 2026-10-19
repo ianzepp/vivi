@@ -99,7 +99,7 @@ fn replace_data(event: &Event, value: &Value) -> Event {
     let mut lines: Vec<String> = event
         .raw
         .lines()
-        .filter(|line| !line.starts_with("data:"))
+        .filter(|line| !line.starts_with("data:") && !line.trim().is_empty())
         .map(str::to_owned)
         .collect();
     lines.push(format!("data: {data}"));

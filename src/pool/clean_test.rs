@@ -106,3 +106,18 @@ fn a_claimed_slot_is_skipped_after_free_hook() {
     assert!(report.actions.is_empty());
     assert!(dir.join("repo/target/blob").is_file());
 }
+
+#[test]
+fn slot_dirs_resolve_through_symlinked_roots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let real = tmp.path().join("real");
+    let slot = real.join("proj/lanes/slot-9");
+    fs::create_dir_all(slot.join("repo")).unwrap();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let got = slot_dir_under(&link, &slot.join("repo"));
+    assert_eq!(
+        got,
+        Some(real.canonicalize().unwrap().join("proj/lanes/slot-9"))
+    );
+}

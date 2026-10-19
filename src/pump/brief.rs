@@ -75,6 +75,17 @@ pub fn hand_rules(ctx: &Ctx) -> String {
 /// last failure's detail on a retry, and the closing `done_when` line.
 #[must_use]
 pub fn brief_for(ctx: &Ctx, uid: &str, unit: &Unit) -> String {
+    // A fix or repair unit may regenerate the declared generated files even
+    // though they are not the unit's own scope, so name them writable here;
+    // plain units keep their exact scope.
+    let mut scope = unit.write_scope.clone();
+    if uid.starts_with(ctx.cfg.fix_prefix.as_str()) || unit.repairs.is_some() {
+        for path in ctx.cfg.generated_paths_for(unit.target_id()) {
+            if !scope.contains(&path) {
+                scope.push(path);
+            }
+        }
+    }
     let mut parts: Vec<String> = vec![
         hand_rules(ctx),
         format!("UNIT {uid}: {}", unit.title),
@@ -92,7 +103,7 @@ pub fn brief_for(ctx: &Ctx, uid: &str, unit: &Unit) -> String {
         unit.brief.clone(),
         String::new(),
         "WRITE SCOPE:".to_owned(),
-        bulleted(&unit.write_scope, |s| format!("- {s}")),
+        bulleted(&scope, |s| format!("- {s}")),
         String::new(),
         "PROOF (each must exit 0):".to_owned(),
         proof_block(&unit.proof),

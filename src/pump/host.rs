@@ -1,6 +1,6 @@
 //! The command-line seam: the Host trait, its real and fake implementations.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -35,8 +35,12 @@ pub trait Host: Send + Sync {
     /// the text is the output so far plus `"\n[timeout after Ns]"`.
     fn run(&self, cmd: &str, cwd: Option<&Path>, timeout_secs: u64) -> CmdOutput;
     /// Start `cmd` detached in its own process group, stdin from `stdin` when
-    /// given, stdout and stderr appended to `out`. Never waits.
-    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path);
+    /// given, stdout and stderr appended to `out`. Never waits. Returns the
+    /// spawned child's pid, or `None` when the command could not be started;
+    /// a reaper thread writes the exit code to [`exit_receipt_path`] once the
+    /// child exits.
+    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path)
+    -> Option<u32>;
     /// Append one log line.
     fn log(&self, line: &str);
 }
@@ -65,8 +69,14 @@ impl Host for RealHost {
         run_command(cmd, cwd, timeout_secs)
     }
 
-    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) {
-        spawn_detached(cmd, cwd, stdin, out);
+    fn spawn(
+        &self,
+        cmd: &str,
+        cwd: Option<&Path>,
+        stdin: Option<&Path>,
+        out: &Path,
+    ) -> Option<u32> {
+        spawn_detached(cmd, cwd, stdin, out)
     }
 
     fn log(&self, line: &str) {
@@ -98,6 +108,11 @@ pub struct Ctx {
     pub lane: Option<Arc<LaneProgress>>,
     /// Role → pool map. Empty means the pump uses only the legacy tables.
     pub routing: Arc<RoleRouting>,
+    /// Pool name -> the local repository a `local` worktree pool commits unit
+    /// branches into (single-target pumps); empty when none.
+    pub pool_sources: Arc<BTreeMap<String, PathBuf>>,
+    /// Who runs this pump: mailspace address prefix plus sync name.
+    pub actor: String,
 }
 
 impl Ctx {
@@ -125,6 +140,8 @@ impl Ctx {
             shell_prefix,
             lane: None,
             routing: Arc::new(RoleRouting::default()),
+            pool_sources: Arc::new(BTreeMap::new()),
+            actor: String::new(),
         }
     }
 
@@ -132,6 +149,20 @@ impl Ctx {
     #[must_use]
     pub fn with_routing(mut self, routing: RoleRouting) -> Self {
         self.routing = Arc::new(routing);
+        self
+    }
+
+    /// Attach a pool name → local repository map for `local` worktree pools.
+    #[must_use]
+    pub fn with_pool_sources(mut self, sources: BTreeMap<String, PathBuf>) -> Self {
+        self.pool_sources = Arc::new(sources);
+        self
+    }
+
+    /// Set who runs this pump: mailspace address prefix plus sync name.
+    #[must_use]
+    pub fn with_actor(mut self, actor: String) -> Self {
+        self.actor = actor;
         self
     }
 
@@ -163,6 +194,7 @@ impl Ctx {
         );
         target.target_id = id.to_string();
         target.routing = self.routing.clone();
+        target.pool_sources = self.pool_sources.clone();
         Some(target)
     }
 
@@ -250,6 +282,26 @@ impl Ctx {
         append_line(&self.home.join("exceptions.txt"), &stamped);
         crate::pump::store::append_exception(&self.home, now, kind, unit, &cut);
         self.log(&format!("EXCEPTION {kind} {unit}"));
+    }
+
+    /// Resolve an earlier exception: append `HH:MM:SS resolved kind unit text`
+    /// (newlines folded to `" | "`, text cut at 600 chars) to
+    /// `<home>/exceptions.txt`, record the resolution in the store's exception
+    /// table and log `RESOLVED kind unit`.
+    pub fn resolve(&self, kind: &str, unit: &str, text: &str) {
+        let folded = text.replace('\n', " | ");
+        let cut: String = folded.chars().take(600).collect();
+        let now = self.host.now();
+        let stamped = format!("{} resolved {kind} {unit} {cut}", hhmmss(now));
+        append_line(&self.home.join("exceptions.txt"), &stamped);
+        crate::pump::store::append_exception(
+            &self.home,
+            now,
+            "resolved",
+            unit,
+            &format!("{kind}: {cut}"),
+        );
+        self.log(&format!("RESOLVED {kind} {unit}"));
     }
 
     /// True when the flag file `<home>/<name>` exists.
@@ -374,6 +426,8 @@ struct FakeState {
 pub struct FakeHost {
     clock: AtomicU64,
     advance_on_run: AtomicU64,
+    /// The pid the next fake `spawn` hands back, starting at 1000.
+    next_pid: AtomicU64,
     state: Mutex<FakeState>,
 }
 
@@ -384,6 +438,7 @@ impl FakeHost {
         Arc::new(FakeHost {
             clock: AtomicU64::new(1_000_000),
             advance_on_run: AtomicU64::new(0),
+            next_pid: AtomicU64::new(1000),
             state: Mutex::new(FakeState::default()),
         })
     }
@@ -498,10 +553,18 @@ impl Host for FakeHost {
         }
     }
 
-    fn spawn(&self, cmd: &str, _cwd: Option<&Path>, _stdin: Option<&Path>, _out: &Path) {
+    fn spawn(
+        &self,
+        cmd: &str,
+        _cwd: Option<&Path>,
+        _stdin: Option<&Path>,
+        _out: &Path,
+    ) -> Option<u32> {
         if let Ok(mut state) = self.state.lock() {
             state.spawned.push(cmd.to_string());
         }
+        let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
+        Some(u32::try_from(pid).unwrap_or(0))
     }
 
     fn log(&self, line: &str) {
@@ -665,10 +728,20 @@ fn joined_output(out_buf: &SharedBuf, err_buf: &SharedBuf) -> String {
     text
 }
 
+/// The exit-receipt path for a detached command: `board/n1.out` becomes
+/// `board/n1.out.rc`.
+#[must_use]
+pub fn exit_receipt_path(out: &Path) -> PathBuf {
+    let mut path = out.to_path_buf();
+    path.as_mut_os_string().push(".rc");
+    path
+}
+
 /// Start `cmd` detached: own process group, stdin from `stdin` when given,
-/// stdout and stderr appended to `out`. Returns without waiting; a reaper
-/// thread collects the child so no zombie is left behind.
-fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) {
+/// stdout and stderr appended to `out`. Returns the child's pid without
+/// waiting; a reaper thread collects the child so no zombie is left behind,
+/// then writes its exit code to [`exit_receipt_path`].
+fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) -> Option<u32> {
     let mut command = bash_command(cmd, cwd);
     command.stdin(match stdin {
         Some(path) => match File::open(path) {
@@ -690,9 +763,26 @@ fn spawn_detached(cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Pat
     }
     // Safety: only sets the child's own process group; no invariants involved.
     command.process_group(0);
-    if let Ok(mut child) = command.spawn() {
-        thread::spawn(move || drop(child.wait()));
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => return None,
+    };
+    let pid = child.id();
+    let receipt = exit_receipt_path(out);
+    thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            write_exit_receipt(&receipt, status.code().unwrap_or(-1));
+        }
+    });
+    Some(pid)
+}
+
+/// Write `code` as decimal text to the exit receipt at `path`.
+fn write_exit_receipt(path: &Path, code: i32) {
+    if let Some(parent) = path.parent() {
+        drop(fs::create_dir_all(parent));
     }
+    drop(fs::write(path, format!("{code}\n")));
 }
 
 /// Append one `line` (plus newline) to `path`, creating parent directories.

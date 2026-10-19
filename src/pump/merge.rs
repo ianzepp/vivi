@@ -18,6 +18,10 @@ pub use lane::Merger;
 #[cfg(test)]
 pub(crate) use lane::dispatch_results;
 
+use std::time::UNIX_EPOCH;
+use std::{fs, io};
+
+use crate::pump::config::Generated;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::plan::overlaps;
 use crate::pump::state::{MergeJob, MergeResult};
@@ -67,6 +71,14 @@ fn explains(line: &str) -> bool {
         || line.contains("FAILED")
 }
 
+/// True when a failed git command failed for an environment reason (a lock
+/// held by another process) rather than for its content. Mirror of the
+/// shell markers in [`crate::pump::envfail`].
+pub(crate) fn git_error(text: &str) -> bool {
+    (text.contains("index.lock") && text.contains("File exists"))
+        || text.contains("Another git process seems to be running")
+}
+
 /// The last `n` characters of `out`, cut on character boundaries.
 fn tail(out: &str, n: usize) -> String {
     let len = out.chars().count();
@@ -85,15 +97,83 @@ pub fn identity_args(ctx: &Ctx) -> String {
     )
 }
 
+/// Seconds a `.git/index.lock` must go untouched before a lane treats it as
+/// stale. The age threshold is the practical proxy for the "no live git
+/// process" probe: a live git process would have written the lock recently.
+pub(crate) const STALE_LOCK_SECS: u64 = 120;
+
+/// Clear a stale `.git/index.lock` in the checkout before a batch.
+///
+/// git refuses to touch the index while the lock exists, so a lane killed
+/// mid-checkout wedges every later merge as a phantom conflict. There is no
+/// process probing: the lock's mtime age stands in for "no live git process",
+/// because a live git process would have written the lock recently. A lock
+/// younger than [`STALE_LOCK_SECS`] may be held by a live git process (lane
+/// 0's checkout is also used by the gate pass on the main thread), so it is
+/// reported, never removed. An absent lock is `Ok(())`.
+pub(crate) fn clear_stale_lock(ctx: &Ctx) -> Result<(), String> {
+    let path = ctx.repo.join(".git/index.lock");
+    let meta = match fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("index.lock: {err}")),
+    };
+    let modified = meta
+        .modified()
+        .map_err(|err| format!("index.lock mtime: {err}"))?;
+    let written = modified
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let age = ctx.now().saturating_sub(written);
+    if age < STALE_LOCK_SECS {
+        return Err(format!(
+            "index.lock exists and is only {age}s old; not cleared"
+        ));
+    }
+    fs::remove_file(&path).map_err(|err| format!("remove index.lock: {err}"))?;
+    ctx.log(&format!("cleared stale index.lock (age {age}s)"));
+    Ok(())
+}
+
 /// Abort any merge in progress and hard-reset the integration clone to
 /// `remote/branch`.
 pub fn reset_repo(ctx: &Ctx) {
+    if let Err(err) = clear_stale_lock(ctx) {
+        ctx.log(&format!("lane reset: {err}"));
+    }
     let branch = ctx.cfg.branch.as_str();
     let remote = ctx.cfg.remote.as_str();
     drop(ctx.git("merge --abort", GIT_TIMEOUT));
     drop(ctx.git(&format!("fetch {remote} {branch}"), 120));
     drop(ctx.git(&format!("checkout -q {branch}"), GIT_TIMEOUT));
     drop(ctx.git(&format!("reset -q --hard {remote}/{branch}"), GIT_TIMEOUT));
+}
+
+/// Clear a stale lock, reset the checkout to `remote/branch`, and prove the
+/// reset actually reached the remote tip: `HEAD` must equal
+/// `<remote>/<branch>`. A lane whose reset failed must not be handed units,
+/// because every merge would then replay against a stale base and burn
+/// attempts.
+pub(crate) fn prepare_lane(ctx: &Ctx) -> Result<(), String> {
+    clear_stale_lock(ctx)?;
+    reset_repo(ctx);
+    let head = ctx.git("rev-parse HEAD", GIT_TIMEOUT);
+    if head.code != 0 {
+        return Err(tail(&head.text, 300));
+    }
+    let remote_ref = format!("{}/{}", ctx.cfg.remote, ctx.cfg.branch);
+    let tip = ctx.git(&format!("rev-parse {remote_ref}"), GIT_TIMEOUT);
+    if tip.code != 0 {
+        return Err(tail(&tip.text, 300));
+    }
+    let head = head.text.trim();
+    let tip = tip.text.trim();
+    if head != tip {
+        return Err(format!(
+            "HEAD is {head} but {remote_ref} is {tip} after reset"
+        ));
+    }
+    Ok(())
 }
 
 /// Merge one unit branch into the integration branch, run the checks and
@@ -103,7 +183,7 @@ pub fn reset_repo(ctx: &Ctx) {
 pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     let t0 = ctx.now();
     reset_repo(ctx);
-    let out = fetch_unit_branch(ctx, &job.branch);
+    let out = fetch_unit_branch(ctx, job);
     if out.code != 0 {
         merge_line(
             ctx,
@@ -118,7 +198,12 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
         return result;
     }
     if let Some(result) = merge_branch(ctx, job) {
-        merge_line(ctx, &job.uid, (1, 1), "conflict");
+        let what = if result.why.as_deref() == Some("merge-env-failed") {
+            "env"
+        } else {
+            "conflict"
+        };
+        merge_line(ctx, &job.uid, (1, 1), what);
         return result;
     }
     merge_line(ctx, &job.uid, (1, 1), "ok");
@@ -214,7 +299,124 @@ fn failed(uid: &str, why: &str, detail: String) -> MergeResult {
     }
 }
 
-/// Merge the unit branch; on conflict, reset and report the conflicting
+/// The declared generated-file entries covering every file in `files`,
+/// deduplicated by entry; `None` when any file has no covering entry.
+pub(crate) fn generated_entries<'a>(ctx: &'a Ctx, files: &[String]) -> Option<Vec<&'a Generated>> {
+    let mut entries: Vec<&Generated> = Vec::new();
+    'files: for file in files {
+        for entry in &ctx.cfg.merge.generated {
+            if overlaps(&[file.clone()], &entry.paths) {
+                if !entries.iter().any(|e| std::ptr::eq(*e, entry)) {
+                    entries.push(entry);
+                }
+                continue 'files;
+            }
+        }
+        return None;
+    }
+    Some(entries)
+}
+
+/// Regenerate the generated files from source of truth and stage them. No
+/// reset inside: the caller owns recovery.
+pub(crate) fn regenerate_generated(ctx: &Ctx, entries: &[&Generated]) -> Result<(), String> {
+    for entry in entries {
+        let out = ctx.sh(
+            &entry.regenerate,
+            Some(&ctx.repo),
+            ctx.cfg.merge.proof_timeout,
+        );
+        if out.code != 0 {
+            return Err(tail(&out.text, 300));
+        }
+        let paths = entry
+            .paths
+            .iter()
+            .map(|p| shell_quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let out = ctx.git(&format!("add -- {paths}"), GIT_TIMEOUT);
+        if out.code != 0 {
+            return Err(tail(&out.text, 300));
+        }
+    }
+    Ok(())
+}
+
+/// Run a check, and when it fails with a declared drift signature, regenerate
+/// the named generated entry and run the check once more. Returns the
+/// decisive output: the rerun's when a retry happened, otherwise the first.
+pub(crate) fn check_with_drift_retry(
+    ctx: &Ctx,
+    uid: &str,
+    cmd: &str,
+) -> crate::pump::host::CmdOutput {
+    let first = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+    if first.code == 0 {
+        return first;
+    }
+    let drifted = ctx.cfg.merge.generated.iter().find(|entry| {
+        entry
+            .drift
+            .iter()
+            .any(|sig| first.text.contains(sig.as_str()))
+    });
+    let Some(entry) = drifted else {
+        return first;
+    };
+    let Some(head) = entry.paths.first() else {
+        return first;
+    };
+    if let Err(text) = regenerate_generated(ctx, &[entry]) {
+        ctx.log(&format!("generated regenerate failed {uid}: {text}"));
+        return first;
+    }
+    let msg = shell_quote(&format!("regen: {head} after {uid}"));
+    let commit = format!("{} commit -q -m {msg}", identity_args(ctx));
+    if ctx.git(&commit, GIT_TIMEOUT).code != 0 {
+        return first;
+    }
+    ctx.log(&format!(
+        "drift {uid}: regenerated {}; retrying once",
+        entry.paths.join(" ")
+    ));
+    ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout)
+}
+
+/// Resolve a merge conflict touching only generated files: take the
+/// integration side, regenerate the files, and conclude the merge commit.
+/// Any failing step resets the repo; success logs the resolution.
+pub(crate) fn resolve_generated(ctx: &Ctx, uid: &str, files: &[String]) -> bool {
+    let Some(entries) = generated_entries(ctx, files) else {
+        return false;
+    };
+    for file in files {
+        let out = ctx.git(&format!("checkout --ours -- {file}"), GIT_TIMEOUT);
+        if out.code != 0 {
+            reset_repo(ctx);
+            return false;
+        }
+    }
+    if let Err(text) = regenerate_generated(ctx, &entries) {
+        reset_repo(ctx);
+        ctx.log(&format!("generated regenerate failed {uid}: {text}"));
+        return false;
+    }
+    let commit = format!("{} commit --no-edit", identity_args(ctx));
+    let out = ctx.git(&commit, GIT_TIMEOUT);
+    if out.code != 0 {
+        reset_repo(ctx);
+        return false;
+    }
+    ctx.log(&format!(
+        "resolved generated conflicts {uid}: {}",
+        files.join(" ")
+    ));
+    true
+}
+
+/// Merge the unit branch; on conflict, resolve conflicts on generated files
+/// by regenerating them, and otherwise reset and report the conflicting
 /// files. `None` means the merge landed.
 fn merge_branch(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     let title: String = job.title.chars().take(80).collect();
@@ -229,22 +431,42 @@ fn merge_branch(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     if out.code == 0 {
         return None;
     }
-    let files = ctx
+    let raw = ctx
         .git("diff --name-only --diff-filter=U", GIT_TIMEOUT)
         .text;
+    let files: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !files.is_empty() && resolve_generated(ctx, &job.uid, &files) {
+        return None;
+    }
     reset_repo(ctx);
+    if git_error(&out.text) || files.is_empty() {
+        return Some(undecided_result(
+            &job.uid,
+            "merge-env-failed",
+            &tail(&out.text, 300),
+        ));
+    }
     let detail = format!(
-        "The branch no longer merges into the integration branch. Conflicting files: {files}"
+        "The branch no longer merges into the integration branch. Conflicting files: {raw}"
     );
     Some(failed(&job.uid, "merge-conflict", detail))
 }
 
-/// Files the merge touched outside the unit's write scope.
+/// Files the merge touched outside the unit's write scope. Generated
+/// paths never count: a regenerated file committed by the merge lane is
+/// rebuilt from source of truth, not written by hand.
 fn outside_files(ctx: &Ctx, job: &MergeJob) -> Vec<String> {
+    let generated = ctx.cfg.merge.generated_paths();
     let changed = ctx.git("diff --name-only HEAD~1 HEAD", GIT_TIMEOUT).text;
     changed
         .split_whitespace()
         .filter(|f| !overlaps(&[f.to_string()], &job.write_scope))
+        .filter(|f| !overlaps(&[f.to_string()], &generated))
         .map(str::to_string)
         .collect()
 }
@@ -292,7 +514,7 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
             ctx.step(&format!("proof {} start: {head}", job.uid));
         }
         let t1 = ctx.now();
-        let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+        let out = check_with_drift_retry(ctx, &job.uid, cmd);
         ctx.log(&format!(
             "proof {} rc={} {}s: {head}",
             job.uid,
@@ -301,10 +523,24 @@ fn run_checks(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
         ));
         if out.code != 0 {
             reset_repo(ctx);
+            let last = failure_text(&out.text);
+            if crate::pump::envfail::missing_tool(out.code, &out.text) {
+                let detail = format!(
+                    "After merging into the integration branch, this command could not run (exit {}):\n{cmd}\n\nLast output:\n{last}",
+                    out.code
+                );
+                return Some(undecided_result(&job.uid, "proof-missing-tool", &detail));
+            }
+            if i >= shared && crate::pump::proof::usage_failure(&out.text) {
+                let detail = format!(
+                    "The unit's proof command failed as a usage error before anything ran (exit {}):\n{cmd}\n\nLast output:\n{last}",
+                    out.code
+                );
+                return Some(failed(&job.uid, "proof-usage", detail));
+            }
             let detail = format!(
-                "After merging into the integration branch, this command failed (exit {}):\n{cmd}\n\nLast output:\n{}",
-                out.code,
-                failure_text(&out.text)
+                "After merging into the integration branch, this command failed (exit {}):\n{cmd}\n\nLast output:\n{last}",
+                out.code
             );
             return Some(failed(&job.uid, "proof-failed", detail));
         }

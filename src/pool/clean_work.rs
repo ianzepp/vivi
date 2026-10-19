@@ -385,6 +385,22 @@ fn drop_scratch_branch(
     }
 }
 
+/// Best-effort canonicalization that survives a missing tail: fall back to
+/// the nearest existing ancestor and re-join the rest of the path.
+pub(super) fn real_path(path: &Path) -> PathBuf {
+    if let Ok(resolved) = path.canonicalize() {
+        return resolved;
+    }
+    for ancestor in path.ancestors().skip(1) {
+        if let Ok(resolved) = ancestor.canonicalize() {
+            if let Ok(tail) = path.strip_prefix(ancestor) {
+                return resolved.join(tail);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
 /// Sweep source-repo worktrees that point at `root` and whose slot is gone
 /// or whose unit is done (`done` is true for that path).
 ///
@@ -399,10 +415,13 @@ pub fn sweep_orphans(
     dry_run: bool,
 ) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     let repo = Repo::new(source);
+    let root = real_path(root);
+    let source = real_path(source);
     let mut actions = Vec::new();
     let mut skips = Vec::new();
     for tree in repo.worktrees()? {
-        if tree.bare || !tree.path.starts_with(root) || tree.path == source {
+        let resolved = real_path(&tree.path);
+        if tree.bare || resolved == source || !resolved.starts_with(&root) {
             continue;
         }
         sweep_one(

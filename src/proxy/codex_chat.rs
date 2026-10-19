@@ -6,6 +6,10 @@ use super::codex_sse;
 
 /// Fields dropped from a Responses body before it is sent upstream.
 /// `store` is not dropped: the Codex backend requires `store=false`.
+/// Includes the Chat Completions sampling knobs: the backend rejects them
+/// with 400 (e.g. `Unsupported parameter: temperature`), and none has a
+/// Responses-API meaning, so dropping is behavior-preserving for accepted
+/// requests.
 const DROP_FIELDS: &[&str] = &[
     "prompt_cache_key",
     "safety_identifier",
@@ -16,6 +20,17 @@ const DROP_FIELDS: &[&str] = &[
     "truncation",
     "include",
     "background",
+    "temperature",
+    "top_p",
+    "top_k",
+    "frequency_penalty",
+    "presence_penalty",
+    "logit_bias",
+    "logprobs",
+    "top_logprobs",
+    "seed",
+    "n",
+    "stop",
 ];
 
 /// Sanitize a Responses body: drop rejected fields, strip system/developer,

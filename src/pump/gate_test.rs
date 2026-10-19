@@ -455,6 +455,50 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
 }
 
 #[test]
+fn a_red_gate_sends_a_real_backing_need_and_plans_under_it() {
+    let dir = tempdir().unwrap();
+    let mut cfg = planner_cfg();
+    cfg.board.from = vec![String::from("operator")];
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("need send", 0, "created operator ab12cd34\nsent ab12cd34\n");
+    let mut st = gate_state(3);
+    st.gates.push(GateRecord {
+        tip: String::from(CLEAN),
+        at: T0,
+        merges: 1,
+        names: Some(vec![]),
+        new: None,
+    });
+    add_merged_units(&mut st);
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nvivi pump::gate::gone\nFAILING-END\n",
+    );
+    assert_eq!(
+        st.red.get("vivi pump::gate::gone"),
+        Some(&String::from("ab12cd34"))
+    );
+    let need_send = host
+        .commands()
+        .into_iter()
+        .find(|c| c.contains("need send"))
+        .unwrap();
+    assert!(need_send.contains("--from mind"));
+    assert!(need_send.contains("--to operator"));
+    assert!(need_send.contains("gate fix for g01234567"));
+    let prompt = fs::read_to_string(ctx.home.join("gatefix/ab12cd34.prompt")).unwrap();
+    assert!(prompt.contains("plans/ab12cd34.json"));
+    assert!(prompt.contains("Unit ids \"pumpfix-g01234567-"));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("gatefix planner started for ab12cd34 (1 new)"))
+    );
+    drop(dir);
+}
+
+#[test]
 fn an_owned_name_that_passes_again_is_released() {
     let (dir, ctx, host) = setup();
     let mut st = gate_state(4);
@@ -559,6 +603,7 @@ fn red_after_fix_is_reported_once_when_the_fix_units_are_settled_and_the_name_st
     st.units.insert(
         String::from("pumpfix-settled-1"),
         Unit {
+            need: String::from("pumpfix-settled"),
             status: Status::Merged,
             ..Unit::default()
         },
@@ -866,6 +911,7 @@ fn residual_state(unit: Status) -> State {
     st.units.insert(
         format!("{OLD_OWNER}-1"),
         Unit {
+            need: String::from(OLD_OWNER),
             status: unit,
             ..Unit::default()
         },
@@ -908,6 +954,28 @@ fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
     assert!(st.promotions.is_empty());
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default();
     assert!(!exceptions.contains("red-after-fix"));
+    drop(dir);
+}
+
+#[test]
+fn units_of_a_real_handle_need_settle_their_owner_even_when_uids_differ() {
+    let (dir, ctx, host) = residual_setup(2);
+    host.reply("need send", 0, "created operator ef012345\nsent ef012345\n");
+    let mut st = gate_state(4);
+    st.red
+        .insert(String::from(RESIDUAL), String::from("ab12cd34"));
+    st.units.insert(
+        String::from("pumpfix-g01234567-1"),
+        Unit {
+            need: String::from("ab12cd34"),
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert_eq!(st.red.get(RESIDUAL), Some(&String::from("ef012345")));
+    assert_eq!(st.extra["replans"][RESIDUAL], 1);
+    assert_eq!(host.spawned().len(), 1);
     drop(dir);
 }
 

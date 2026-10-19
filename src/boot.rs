@@ -268,6 +268,17 @@ impl BootReport {
     }
 }
 
+/// The pump state line: durable control mode, writer process, and how old
+/// the status snapshot is.
+#[must_use]
+pub fn pump_state_line(control: &str, writer: &str, age: Option<u64>) -> String {
+    let age = match age {
+        Some(seconds) => format!("{seconds}s"),
+        None => String::from("never"),
+    };
+    format!("  state   control {control}, writer {writer}, status age {age}")
+}
+
 fn probe_verdicts(runs: &[ProbeRun]) -> Vec<probe::ProbeVerdict> {
     outputs(runs)
         .flat_map(|output| output.verdicts.clone())

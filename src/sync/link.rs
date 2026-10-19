@@ -24,6 +24,9 @@ pub struct LetterHeaders {
     /// The letter carries an `X-Vivi-Event` header: it is an item-state
     /// event, which files read.
     pub is_event: bool,
+    /// The letter carries an `X-Vivi-Verdict` or `X-Vivi-Repo` header: a
+    /// close or report letter carrying verdict metadata.
+    pub has_verdict: bool,
 }
 
 impl LetterHeaders {
@@ -77,12 +80,17 @@ pub fn parse_headers(data: &[u8]) -> LetterHeaders {
         .headers()
         .iter()
         .any(|header| header.name().eq_ignore_ascii_case(EVENT_HEADER));
+    let has_verdict = parsed.headers().iter().any(|header| {
+        let name = header.name();
+        name.eq_ignore_ascii_case("X-Vivi-Verdict") || name.eq_ignore_ascii_case("X-Vivi-Repo")
+    });
     LetterHeaders {
         subject: parsed.subject().unwrap_or_default().to_string(),
         parent: cited.and_then(normalize_message_id),
         from,
         recipients,
         is_event,
+        has_verdict,
     }
 }
 
@@ -111,3 +119,7 @@ pub fn link_reply(
     storage.link_mailspace_content(child_content_id, &parent.content_id, "captured")?;
     Ok(LinkOutcome::Linked)
 }
+
+#[cfg(test)]
+#[path = "link_test.rs"]
+mod link_test;

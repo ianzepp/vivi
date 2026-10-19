@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! In-Reply-To: <item Message-ID>
-//! X-Vivi-Event: done | reopened
+//! X-Vivi-Event: done | reopened | promoted
 //! X-Vivi-Event-Of: <item Message-ID>
 //! X-Vivi-Event-Prev: <Message-ID of the event this one follows>   (repeatable)
 //! ```
@@ -15,12 +15,12 @@
 //! `X-Vivi-Event-At` (RFC 3339), else its `Date` — and the newest event is
 //! the state. On equal instants the deeper chain wins (a direct successor
 //! names the other as its `Prev`, so it carries strictly more history),
-//! else the larger normalized `Message-ID`, so every checkout that holds
-//! the same letters agrees whatever order they arrived in. A chain no
-//! longer beats a later clock: a later instant wins even over an event that
-//! names it as `Prev`, and a fork is settled the same way on every checkout
-//! alike. An instant more than ten minutes past the receiver's clock counts
-//! for nothing at all: no letter can lock an item from the future.
+//! else the larger normalized `Message-ID`, so every checkout agrees
+//! whatever order the letters arrived in. A chain no longer beats a later
+//! clock: a later instant wins even over an event that names it as `Prev`,
+//! and a fork is settled the same way everywhere. An instant more than ten
+//! minutes past the receiver's clock counts for nothing: no letter can lock
+//! an item from the future.
 //!
 //! An event counts when the From address names a role that may write it.
 //! From this mailspace's own domain (`<prefix>.local`, or the legacy
@@ -35,15 +35,14 @@
 //! name domain that is not this mailspace's own is a claim anyone can make:
 //! it is filed as plain mail and never counts.
 //!
-//! One function projects a head onto the rows and the backlog node. The owner
-//! calls it when it writes an event; every other route (pull, fetch, resync,
-//! reference follow, `graph audit --repair`) calls it for the letters it
-//! sees, so a store with stale rows converges. Replies are found through the
-//! reply links, so an event that arrives before its item is applied when the
-//! item arrives and the link is made.
+//! One function projects a head onto the rows and the backlog node; every
+//! route that sees a letter (the owner's write, pull, fetch, resync,
+//! reference follow, `graph audit --repair`) calls it, so a store with stale
+//! rows converges. Replies are found through the reply links, so an event
+//! that arrives before its item is applied when the item arrives.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use mail_parser::{HeaderValue, MessageParser};
 use serde::Serialize;
@@ -71,6 +70,7 @@ const EVENT_AT_HEADER: &str = "X-Vivi-Event-At";
 pub enum ItemEventKind {
     Done,
     Reopened,
+    Promoted,
 }
 
 impl ItemEventKind {
@@ -80,6 +80,7 @@ impl ItemEventKind {
         match self {
             Self::Done => "done",
             Self::Reopened => "reopened",
+            Self::Promoted => "promoted",
         }
     }
 
@@ -87,6 +88,7 @@ impl ItemEventKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "done" => Some(Self::Done),
             "reopened" => Some(Self::Reopened),
+            "promoted" => Some(Self::Promoted),
             _ => None,
         }
     }
@@ -96,6 +98,7 @@ impl ItemEventKind {
         match self {
             Self::Done => format!("{kind} done"),
             Self::Reopened => format!("{kind} reopen"),
+            Self::Promoted => format!("{kind} promote"),
         }
     }
 }
@@ -187,7 +190,7 @@ fn from_domain_of(parsed: &mail_parser::Message<'_>) -> Option<String> {
 /// The current state of an item and the event that says so.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ItemEventState {
-    /// `done` or `reopened`.
+    /// `done`, `reopened` or `promoted`.
     pub state: String,
     /// The head event's `Message-ID`.
     pub event: String,
@@ -202,7 +205,8 @@ pub struct EventTally {
     pub applied: usize,
     /// Events that were not applied: from a sender that speaks for no role
     /// here (a foreign domain, or an own-domain role that may not close the
-    /// item), dated past the clock, or for an item sealed by absorb.
+    /// item), dated past the clock, or held by an item sealed by a counted
+    /// absorb letter.
     pub ignored: usize,
 }
 
@@ -210,7 +214,6 @@ pub struct EventTally {
 pub(super) struct HeldItem {
     pub(super) content_id: String,
     pub(super) rfc_id: String,
-    pub(super) from_domain: String,
     pub(super) from_addr: String,
     /// `need`, `task`, or `want`.
     pub(super) kind: &'static str,
@@ -236,17 +239,13 @@ pub(super) fn held_item(
     let Some(parsed) = MessageParser::default().parse(&bytes) else {
         return Ok(None);
     };
-    let (Some(rfc_id), Some(from_domain)) = (
-        parsed.message_id().and_then(normalize_message_id),
-        from_domain_of(&parsed),
-    ) else {
+    let Some(rfc_id) = parsed.message_id().and_then(normalize_message_id) else {
         return Ok(None);
     };
     let from_addr = first_bare_address(&first.from_addr).unwrap_or_default();
     Ok(Some(HeldItem {
         content_id: content_id.to_string(),
         rfc_id,
-        from_domain,
         from_addr,
         kind,
         rows,
@@ -426,6 +425,31 @@ pub(crate) fn with_clock_skew<T>(micros: i64, body: impl FnOnce() -> T) -> T {
     body()
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_SETTLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test seam: arm one injected failure for the next `settle_item` call on
+/// this thread, so a settle that errors can be proven to keep the
+/// deferral mark it was reached from.
+#[cfg(test)]
+pub(crate) fn arm_fail_next_settle() {
+    FAIL_NEXT_SETTLE.with(|flag| flag.set(true));
+}
+
+/// The seam's gate, consumed by one call: `Err` only on the armed settle.
+#[cfg(test)]
+fn fail_next_settle() -> Result<(), VivariumError> {
+    if FAIL_NEXT_SETTLE.with(std::cell::Cell::take) {
+        Err(VivariumError::Other(
+            "injected settle failure (test)".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Mark the unabsorbed rows of `item` with the clock reading at which a
 /// skipped letter begins to count, or clear the mark when none is skipped.
 fn record_deferral(
@@ -448,11 +472,9 @@ pub(super) fn event_release_due(
     storage: &Storage,
     content_id: &str,
 ) -> Result<bool, VivariumError> {
-    let now = clock_micros();
     Ok(storage
-        .deferred_event_contents()?
-        .iter()
-        .any(|(held, until)| held == content_id && *until <= now))
+        .event_deferral_until(content_id)?
+        .is_some_and(|until| until <= clock_micros()))
 }
 
 /// One folder change the head asks for.
@@ -592,6 +614,10 @@ impl Mailspace {
                 (ItemEventKind::Done, "sent") if self.all_recipients_remote(row) => {
                     "done".to_string()
                 }
+                (ItemEventKind::Promoted, "wants") => "needs".to_string(),
+                (ItemEventKind::Promoted, "sent") if self.all_recipients_remote(row) => {
+                    "needs".to_string()
+                }
                 (ItemEventKind::Reopened, "done")
                     if keep_reports && self.is_report_row(item, row) =>
                 {
@@ -657,6 +683,7 @@ impl Mailspace {
             let moved = match kind {
                 ItemEventKind::Done => self.backlog_complete_item_collect(&handle, via, joined)?,
                 ItemEventKind::Reopened => self.backlog_reopen_item_changed(&handle)?,
+                ItemEventKind::Promoted => false,
             };
             changed += usize::from(moved);
         }
@@ -672,6 +699,13 @@ impl Mailspace {
         tally: &mut EventTally,
         keep_reports: bool,
     ) -> Result<(), VivariumError> {
+        // Test seam: fail exactly the armed settle, before any state moves.
+        #[cfg(test)]
+        fail_next_settle()?;
+        // A `task from` a need lowers the unit by letter, not by bind
+        // letter: rebuild the bind from the parent header first, so a letter
+        // with no replies yet is still bound however it arrived.
+        self.rebuild_parent_binds(storage, content_id)?;
         // Most work has no replies at all: skip the parse for it.
         if storage.reply_child_contents(content_id)?.is_empty() {
             return Ok(());
@@ -679,6 +713,10 @@ impl Mailspace {
         let Some(item) = held_item(storage, content_id)? else {
             return Ok(());
         };
+        // A close letter carries the close's verdict metadata: fold it
+        // into the rows before the seal check, so an item already at its
+        // head still records the verdict its close letter names.
+        property::store_letter_verdicts(self, storage, &item)?;
         let chain = self.item_chain(storage, &item)?;
         tally.ignored += chain.unauthorized;
         // A counted absorbed event seals the item with the state it names, so
@@ -698,15 +736,30 @@ impl Mailspace {
         };
         // Sealed work stays sealed only when every row of it is absorbed:
         // an item held only as foreign rows settles too, and its unabsorbed
-        // rows move.
+        // rows move. A fully absorbed item adds nothing to the tally: its
+        // letters were counted when they arrived, so re-settling it never
+        // inflates `ignored`.
         if !item.rows.is_empty() && item.rows.iter().all(|row| row.absorbed_at.is_some()) {
-            tally.ignored += 1;
             return Ok(());
         }
+        self.apply_item_moves(storage, &item, kind, keep_reports, tally)
+    }
+
+    /// Move the rows the settled head `kind` names and sync the nodes it
+    /// completes or reopens: the acting tail of a settle whose head is a
+    /// real event.
+    fn apply_item_moves(
+        &self,
+        storage: &Storage,
+        item: &HeldItem,
+        kind: ItemEventKind,
+        keep_reports: bool,
+        tally: &mut EventTally,
+    ) -> Result<(), VivariumError> {
         let moves: Vec<RoleMove> = self
-            .plan_item_moves(storage, &item, kind, keep_reports)?
+            .plan_item_moves(storage, item, kind, keep_reports)?
             .iter()
-            .map(|planned| role_move(&item, planned, kind, None))
+            .map(|planned| role_move(item, planned, kind, None))
             .collect();
         if !moves.is_empty() {
             storage.apply_item_event(&ItemEventWrite {
@@ -716,14 +769,15 @@ impl Mailspace {
                 moves: &moves,
             })?;
         }
-        let nodes = self.sync_item_nodes(storage, &item, kind, "via=event", &mut Vec::new())?;
+        let nodes = self.sync_item_nodes(storage, item, kind, "via=event", &mut Vec::new())?;
         tally.applied += usize::from(!moves.is_empty() || nodes > 0);
         Ok(())
     }
 
     /// Settle the items the letters named by `content_ids` belong to: an event
     /// letter settles its item, a work item settles itself against the events
-    /// held for it. Idempotent: an item already at its head changes nothing.
+    /// held for it, and a verdict-carrying report letter settles the item it
+    /// replies to. Idempotent: an item already at its head changes nothing.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
@@ -763,9 +817,17 @@ impl Mailspace {
                             by_event.insert(item.content_id);
                         }
                     }
-                    None => {
-                        by_item.insert(content_id.clone());
-                    }
+                    None => match property::verdict_report_item(&storage, &bytes)? {
+                        // A report letter carrying a close's verdict
+                        // headers settles the item it replies to, so the
+                        // verdict metadata lands on that item's rows.
+                        Some(content) => {
+                            by_event.insert(content);
+                        }
+                        None => {
+                            by_item.insert(content_id.clone());
+                        }
+                    },
                 },
             }
         }
@@ -781,13 +843,13 @@ impl Mailspace {
 
     /// Settle the items that hold an event letter this mailspace skipped
     /// as dated more than ten minutes past its clock, once the clock has
-    /// passed the bound. The letter counts now, and nothing else would
-    /// bring it back: the bound is judged when a letter is folded, and an
-    /// arrival-driven settle only reaches the items a pull touched. Each
-    /// such item is settled as if the letter had just arrived, so its head
-    /// moves every row it names. Idempotent: a settled item drops its mark
-    /// and is not visited again. Events ignored here were counted when
-    /// they arrived and are not counted twice.
+    /// passed the bound. The letter counts now, and nothing else would bring
+    /// it back: the bound is judged when a letter is folded, and an
+    /// arrival-driven settle only reaches the items a pull touched. Each such
+    /// item is settled as if the letter had just arrived. Idempotent: the mark
+    /// is dropped only after a successful settle, so a settle that errors
+    /// leaves it and the next pass retries the item. Events ignored here were
+    /// counted when they arrived and are not counted twice.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
@@ -795,19 +857,25 @@ impl Mailspace {
         let mut tally = EventTally::default();
         let storage = self.storage()?;
         let now = clock_micros();
-        let due: BTreeSet<String> = storage
+        // The earliest bound each due item carried when the pass began.
+        let due: BTreeMap<String, i64> = storage
             .deferred_event_contents()?
             .into_iter()
             .filter(|(_, until)| *until <= now)
-            .map(|(content_id, _)| content_id)
             .collect();
-        for content_id in &due {
-            // Settled again below with the clock's verdict: a letter still
-            // dated past the bound writes its mark anew.
-            storage.clear_event_deferral(content_id)?;
+        for (content_id, before) in &due {
+            // Settle first, with the clock's verdict: on an error the `?`
+            // returns before any clear, so the mark survives and the next
+            // pass retries the item.
             let mut settled = EventTally::default();
             self.settle_item(&storage, content_id, &mut settled, false)?;
             tally.applied += settled.applied;
+            // A letter still dated past the bound writes its mark anew with
+            // a later release; keep that fresh mark, and drop every other.
+            let after = storage.event_deferral_until(content_id)?;
+            if !after.is_some_and(|until| until > *before) {
+                storage.clear_event_deferral(content_id)?;
+            }
         }
         Ok(tally)
     }
@@ -815,7 +883,6 @@ impl Mailspace {
     /// The current state of the item `handle` names, from its events: the
     /// newest one, and how many chain heads (a fork) are held. `None` when
     /// the item has no authorized event or is not work.
-    ///
     /// # Errors
     /// Returns a [`VivariumError`] when the handle does not resolve or on
     /// storage failure.

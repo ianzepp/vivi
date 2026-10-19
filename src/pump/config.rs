@@ -142,6 +142,20 @@ impl PumpConfig {
             .collect()
     }
 
+    /// Generated paths declared for a named target: the workspace-level
+    /// `[pump.merge]` table when no targets are configured, else the named
+    /// target's effective merge table. Unknown targets have none.
+    #[must_use]
+    pub fn generated_paths_for(&self, target: &str) -> Vec<String> {
+        if self.targets.is_empty() {
+            return self.merge.generated_paths();
+        }
+        self.target_configs()
+            .get(target)
+            .and_then(|target| target.merge.as_ref())
+            .map_or_else(Vec::new, MergeConfig::generated_paths)
+    }
+
     /// The workspace-relative source repository path for a named target.
     #[must_use]
     pub fn target_path(&self, project: &Path, id: &str) -> Option<PathBuf> {
@@ -181,6 +195,42 @@ impl PumpConfig {
         config.merge = target.merge.unwrap_or_default();
         config.gate = target.gate.unwrap_or_default();
         Some(config)
+    }
+
+    /// Pool name → the local repository its units commit into, for the `local`
+    /// pools a single-target pump dispatches into.
+    ///
+    /// A pool is included exactly when [`crate::pool::target::resolve`] would
+    /// treat it as local: its provider is `local`, and it either names a
+    /// `worktree_of` repository or names no GitHub source. Its value is the
+    /// worktree repository, else the project checkout the pool falls back to.
+    ///
+    /// Multi-target pumps get an empty map: each target reads delivered
+    /// branches from its own integration clone, so a flat pool-to-path map
+    /// would name the wrong repository.
+    #[must_use]
+    pub fn pool_sources(
+        &self,
+        config: &crate::mailspace::MailspaceConfig,
+        project: &Path,
+    ) -> BTreeMap<String, PathBuf> {
+        if !self.targets.is_empty() {
+            return BTreeMap::new();
+        }
+        config
+            .pools
+            .iter()
+            .filter(|(_, pool)| {
+                pool.provider == "local"
+                    && (pool.local.worktree_of.is_some() || pool.github.is_none())
+            })
+            .map(|(name, pool)| {
+                let source = pool
+                    .worktree_source()
+                    .unwrap_or_else(|| project.to_path_buf());
+                (name.clone(), source)
+            })
+            .collect()
     }
 }
 
@@ -271,15 +321,19 @@ impl Default for BoardConfig {
 }
 
 /// Planner settings (the `[pump.planner]` table).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PlannerConfig {
     /// Planner command; its stdin is the prompt file.
     pub run: String,
     /// Charter file substituted for `{charter}` in `run`.
     pub charter: String,
-    /// Seconds a split planner has to answer before the unit is stuck.
-    pub split_timeout: u64,
+    /// Seconds a receipt-less (alive or unreachable) split planner may run
+    /// before the unit is stuck; a planner that exits is retried instead.
+    pub split_hard_cap: u64,
+    /// The legacy `split_timeout` key was read; validate warns and migrate
+    /// rewrites it.
+    #[serde(skip)]
+    pub split_timeout_present: bool,
 }
 
 impl Default for PlannerConfig {
@@ -287,8 +341,33 @@ impl Default for PlannerConfig {
         Self {
             run: String::new(),
             charter: String::new(),
-            split_timeout: 1500,
+            split_hard_cap: 5400,
+            split_timeout_present: false,
         }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PlannerConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Default, serde::Deserialize)]
+        #[serde(default)]
+        struct Raw {
+            run: String,
+            charter: String,
+            split_hard_cap: Option<u64>,
+            #[serde(rename = "split_timeout")]
+            split_timeout: Option<u64>,
+        }
+        let raw = <Raw as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self {
+            run: raw.run,
+            charter: raw.charter,
+            split_hard_cap: raw.split_hard_cap.or(raw.split_timeout).unwrap_or(5400),
+            split_timeout_present: raw.split_timeout.is_some(),
+        })
     }
 }
 
@@ -315,6 +394,13 @@ pub struct DispatchConfig {
     pub max_attempts: u32,
     /// `--budget` of a unit dispatch, in seconds.
     pub budget: u64,
+    /// Transient-class failures (host/harness, shared-check timeout,
+    /// generated-file conflict) are retried without counting toward
+    /// `max_attempts`, at most this many times; 0 disables.
+    pub transient_max: u32,
+    /// Seconds before the first transient retry; doubles on each further
+    /// transient retry.
+    pub transient_backoff: u64,
     /// Running longer than `budget` plus this means split.
     pub overdue_grace: u64,
     /// Units started per tick at most.
@@ -353,6 +439,8 @@ impl Default for DispatchConfig {
             last_resort: String::new(),
             max_attempts: 3,
             budget: 600,
+            transient_max: 2,
+            transient_backoff: 120,
             overdue_grace: 900,
             per_tick: 6,
             from: None,
@@ -383,6 +471,8 @@ pub struct MergeConfig {
     pub remote_wait: u64,
     /// Seconds a claimed batch may take.
     pub remote_limit: u64,
+    /// Files the merge lane regenerates instead of resolving by hand.
+    pub generated: Vec<Generated>,
 }
 
 impl Default for MergeConfig {
@@ -395,6 +485,45 @@ impl Default for MergeConfig {
             proof_timeout: 300,
             remote_wait: 90,
             remote_limit: 1800,
+            generated: Vec::new(),
+        }
+    }
+}
+
+impl MergeConfig {
+    /// Every declared generated path, in declaration order, across all
+    /// entries.
+    #[must_use]
+    pub fn generated_paths(&self) -> Vec<String> {
+        self.generated
+            .iter()
+            .flat_map(|entry| entry.paths.iter().cloned())
+            .collect()
+    }
+}
+
+/// One set of generated files the merge lane rebuilds from source of truth
+/// instead of resolving by hand (a `[[pump.merge.generated]]` array entry).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Generated {
+    /// Repository-relative paths of the generated files; globs are allowed
+    /// and match like a unit's write scope.
+    pub paths: Vec<String>,
+    /// Shell command that rebuilds the files from source of truth; the merge
+    /// lane runs it in the repository root.
+    pub regenerate: String,
+    /// Substrings of a failing check's output meaning the generated files are
+    /// stale rather than the code broken.
+    pub drift: Vec<String>,
+}
+
+impl Default for Generated {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            regenerate: String::new(),
+            drift: Vec::new(),
         }
     }
 }
@@ -412,6 +541,11 @@ pub struct AlarmConfig {
     /// Minutes units may sit `delivered` with nothing merging before a
     /// `stall-merge` exception.
     pub merge_idle_minutes: u64,
+    /// Units a blocked root must hold, directly or transitively, before the
+    /// pump reports it as a blocker.
+    pub blocking_hold_units: usize,
+    /// Minutes a blocker may hold its units before it is re-planned.
+    pub blocking_replan_minutes: u64,
 }
 
 impl Default for AlarmConfig {
@@ -420,6 +554,8 @@ impl Default for AlarmConfig {
             fix_wait_minutes: 30,
             promote_hours: 3,
             merge_idle_minutes: 45,
+            blocking_hold_units: 10,
+            blocking_replan_minutes: 120,
         }
     }
 }
@@ -702,6 +838,14 @@ impl PumpConfig {
         if self.merge.lanes == 0 {
             bad.push("[pump.merge] lanes must be >= 1".into());
         }
+        for entry in &self.merge.generated {
+            if entry.paths.is_empty() {
+                bad.push("[[pump.merge.generated]] paths must not be empty".into());
+            }
+            if entry.regenerate.trim().is_empty() {
+                bad.push("[[pump.merge.generated]] regenerate must not be empty".into());
+            }
+        }
         if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
             bad.push(
                 "[pump.merge] shared_checks must not be empty while promotion is enabled \
@@ -756,6 +900,18 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Ve
     }
     if merge.is_some_and(|merge| merge.lanes == 0) {
         bad.push(format!("{prefix}.merge lanes must be >= 1"));
+    }
+    for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
+        if entry.paths.is_empty() {
+            bad.push(format!(
+                "[pump.targets.{id}.merge] generated paths must not be empty"
+            ));
+        }
+        if entry.regenerate.trim().is_empty() {
+            bad.push(format!(
+                "[pump.targets.{id}.merge] generated regenerate must not be empty"
+            ));
+        }
     }
     if target.promote
         && !target.main.is_empty()

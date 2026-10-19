@@ -173,6 +173,20 @@ case "$REMOTE" in
   https://*) [ -n "$TOKEN" ] && URL="https://x-access-token:${TOKEN}@${REMOTE#https://}" ;;
 esac
 
+# A stale index.lock in the checkout (a slot killed mid-checkout) makes every
+# later job die checkout_failed. Remove it, but never next to a live Git
+# process working on this checkout: `git -C <checkout>` in some command line
+# means a checkout may still be in flight, and the lock is left alone (the job
+# then still ends checkout_failed, which the pump counts host-class).
+# `git rev-parse --git-path index.lock` answers the worktree's own gitdir lock
+# for a worktree slot and .git/index.lock for a clone slot, so one block covers
+# both. pgrep excludes itself.
+GD=$(as_hand git -C "$RD" rev-parse --git-path index.lock 2>/dev/null) || GD=
+case "$GD" in /*) ;; *) GD="$RD/${GD:-.git/index.lock}" ;; esac
+if [ -n "${GD:-}" ] && [ -e "$GD" ] && ! pgrep -f -- "$RD" >/dev/null 2>&1; then
+  rm -f -- "$GD" && echo "removed stale lock $GD"
+fi
+
 # A reused slot holds the last task's branch and stray files: return to a
 # clean tree at FROM before anything runs.
 CLEAN=(-fdq)

@@ -175,7 +175,7 @@ fn boot_renders_every_section_in_one_read() {
 
     assert!(out.contains("boot    "), "{out}");
     assert!(out.contains("totals  "), "{out}");
-    assert!(out.contains("3 roles"), "{out}");
+    assert!(out.contains("4 roles"), "{out}");
 
     // Seats: the role holding open work is shown with its binding verdict.
     assert!(out.contains("-- seats:"), "{out}");
@@ -362,7 +362,7 @@ fn boot_renders_a_bare_mailspace_without_failing() {
 
     let out = boot(root);
     assert!(out.contains("boot    "), "{out}");
-    assert!(out.contains("0 roles"), "{out}");
+    assert!(out.contains("1 roles"), "{out}");
     // Absent sections stay absent rather than printing empty headings.
     assert!(!out.contains("-- handles:"), "{out}");
     assert!(!out.contains("-- goals:"), "{out}");

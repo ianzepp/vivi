@@ -110,24 +110,22 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
     deliver(p, "tasks", "second", "task", &[&first]);
     deliver(p, "tasks", "orphan", "task", &["deadbeef"]);
 
-    // The letters are held; the audit names what drifted and repair fixes it.
+    // The nodes were minted at ingest, so the audit is clean with no repair run.
     let audit = ok(p, &["graph", "audit"]);
-    assert!(audit.contains("missing_node"), "{audit}");
-    let repair = ok(p, &["graph", "audit", "--repair"]);
-    assert!(repair.contains("[repaired]"), "{repair}");
-    let clean = ok(p, &["graph", "audit"]);
-    assert!(clean.contains("missing=0"), "{clean}");
-    assert!(clean.contains("edge=0"), "{clean}");
+    assert!(audit.contains("missing=0"), "{audit}");
+    assert!(audit.contains("edge=0"), "{audit}");
+    assert!(!audit.contains("missing_node"), "{audit}");
+    assert!(!audit.contains("[repaired]"), "{audit}");
 
+    // A reference that never resolves blocks its dependent: the gap stays
+    // visible in every projection instead of silently dispatching.
     let blocked = ok(p, &["task", "list", "--for", "hand", "--blocked"]);
     assert!(blocked.contains("second"), "{blocked}");
-    assert!(
-        !blocked.contains("orphan"),
-        "a reference that never resolves blocks nothing:\n{blocked}"
-    );
+    assert!(blocked.contains("orphan"), "{blocked}");
     let ready = ok(p, &["graph", "ready"]);
-    assert!(ready.contains("blocked=1"), "{ready}");
+    assert!(ready.contains("blocked=2"), "{ready}");
     let second = handle_of(p, "task", "second");
+    let orphan = handle_of(p, "task", "orphan");
     let rows: Vec<serde_json::Value> = serde_json::from_str(&ok(
         p,
         &["graph", "blocked", "backlog", "--kind", "task", "--json"],
@@ -138,10 +136,64 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
         .find(|row| row["source_id"] == second.as_str())
         .expect("the dependent task is listed as blocked");
     assert_eq!(row["blocked_by"], serde_json::json!([first]));
+    let row = rows
+        .iter()
+        .find(|row| row["source_id"] == orphan.as_str())
+        .expect("the orphan task is listed as blocked");
+    assert_eq!(row["blocked_by"], serde_json::json!(["deadbeef"]));
     let step = ok(p, &["step"]);
-    assert!(step.contains("first"), "{step}");
-    assert!(step.contains("orphan"), "{step}");
+    let (dispatches, exceptions) = step
+        .split_once("  node  item  kind  reason  detail")
+        .expect("the manifest prints an exception table");
+    assert!(dispatches.contains("first"), "{step}");
+    assert!(
+        !dispatches.contains(&orphan),
+        "the orphan must not dispatch:\n{step}"
+    );
     assert!(!step.contains("second"), "{step}");
+    let line = exceptions
+        .lines()
+        .find(|line| line.contains("awaiting_dependency"))
+        .expect("the unheld dependency is reported as an exception");
+    assert!(line.contains(&orphan), "{step}");
+    assert!(line.contains("deadbeef"), "{step}");
+}
+
+#[test]
+fn imported_letters_keep_their_backlog_nodes_and_edges() {
+    let src = project();
+    deliver(src.path(), "needs", "first", "need", &[]);
+    let first = handle_of(src.path(), "need", "first");
+    deliver(src.path(), "tasks", "second", "task", &[&first]);
+
+    // Same roles in the target: the imported account rows are locally held.
+    let target = project();
+    ok(
+        target.path(),
+        &[
+            "mailspace",
+            "import",
+            "--from",
+            src.path().to_str().unwrap(),
+        ],
+    );
+
+    // Import carries the minted nodes and edges, so no repair is ever needed.
+    let audit = ok(target.path(), &["graph", "audit"]);
+    assert!(audit.contains("missing=0"), "{audit}");
+    assert!(!audit.contains("missing_node"), "{audit}");
+    assert!(!audit.contains("[repaired]"), "{audit}");
+    // The letters really landed in the target, so the block below is theirs.
+    assert!(
+        ok(target.path(), &["need", "list", "--for", "hand"]).contains("first"),
+        "the imported need is held in the target"
+    );
+    assert!(
+        ok(target.path(), &["task", "list", "--for", "hand"]).contains("second"),
+        "the imported task is held in the target"
+    );
+    let ready = ok(target.path(), &["graph", "ready"]);
+    assert!(ready.contains("blocked=1"), "{ready}");
 }
 
 fn ingest_held(mailspace: &Mailspace, account: &str, role: &str, subject: &str, kind: &str) {
