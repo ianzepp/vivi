@@ -80,9 +80,10 @@ pub fn ranked(ctx: &Ctx, st: &State, mut uids: Vec<String>) -> Vec<String> {
     uids
 }
 
-/// A unit is ready to dispatch when it is pending, its need has no
-/// unlanded dependency, its write scope overlaps no reserved path, every
-/// `after` dependency is satisfied, and no other unit with an overlapping write scope is busy.
+/// A unit is ready to dispatch when it is pending, outside its transient
+/// backoff window, its need has no unlanded dependency, its write scope
+/// overlaps no reserved path, every `after` dependency is satisfied, and no
+/// other unit with an overlapping write scope is busy.
 /// Busy means another agent is inflight; delivered and merging work does not
 /// hold worker capacity. Fix and priority units only clash with fix units.
 #[must_use]
@@ -91,6 +92,11 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<S
         return false;
     };
     if u.status != Status::Pending {
+        return false;
+    }
+    if u.retry_not_before
+        .is_some_and(|not_before| ctx.now() < not_before)
+    {
         return false;
     }
     if holds.contains_key(&u.need) {
