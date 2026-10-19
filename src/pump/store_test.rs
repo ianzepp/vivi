@@ -6,7 +6,7 @@ use std::fs::File;
 use tempfile::tempdir;
 
 use crate::pump::state::{
-    Attempt, GateRecord, NeedRecord, Promotion, State, Status, TargetState, Unit,
+    Attempt, EnvPause, GateRecord, NeedRecord, Promotion, State, Status, TargetState, Unit,
 };
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
@@ -452,4 +452,43 @@ fn requeue_requests_survive_a_state_save() {
     assert_eq!(request.reason, "operator asked");
     store.mark_requeue_applied(request.request_id, 6).unwrap();
     assert!(store.pending_requeue_requests().unwrap().is_empty());
+}
+
+#[test]
+fn env_pauses_round_trip_through_pump_db() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let empty = PumpStore::open(&path).unwrap();
+    assert!(empty.load().unwrap().env_pauses.is_empty());
+    drop(empty);
+
+    let mut state = State::default();
+    state.env_pauses.insert(
+        String::from("here"),
+        EnvPause {
+            fails: vec![1_700_000_000, 1_700_000_060],
+            evidence: String::from("`pi` not found: bash: line 1: pi: command not found"),
+            probe: Some(String::from("command -v pi")),
+            paused_at: Some(1_700_000_120),
+        },
+    );
+    state.env_pauses.insert(
+        String::from("glm"),
+        EnvPause {
+            fails: vec![1_700_000_000],
+            evidence: String::from("git index.lock held"),
+            ..EnvPause::default()
+        },
+    );
+
+    let mut store = PumpStore::open(&path).unwrap();
+    store.save(&state).unwrap();
+    let back = store.load().unwrap();
+    assert_eq!(back.env_pauses, state.env_pauses);
+    let here = &back.env_pauses["here"];
+    assert_eq!(here.fails, vec![1_700_000_000, 1_700_000_060]);
+    assert_eq!(here.probe.as_deref(), Some("command -v pi"));
+    assert_eq!(here.paused_at, Some(1_700_000_120));
+    assert_eq!(back.env_pauses["glm"].probe, None);
+    assert_eq!(back.env_pauses["glm"].paused_at, None);
 }
