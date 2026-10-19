@@ -420,6 +420,99 @@ fn validate_rejects_zero_merge_lanes() {
 }
 
 #[test]
+fn checks_for_parses_glob_keys_into_command_lists() {
+    let cfg = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.merge.checks_for]\n\
+         \"corpus/**/*.fab\" = [\"cargo test -p faber --lib explain_\"]\n\
+         \"locale/**\" = [\"./locale-check\", \"cargo test -p radix-module locale_pack\"]\n",
+    );
+    assert_eq!(
+        cfg.merge.checks_for,
+        BTreeMap::from([
+            (
+                "corpus/**/*.fab".to_string(),
+                vec!["cargo test -p faber --lib explain_".to_string()]
+            ),
+            (
+                "locale/**".to_string(),
+                vec![
+                    "./locale-check".to_string(),
+                    "cargo test -p radix-module locale_pack".to_string()
+                ]
+            ),
+        ])
+    );
+}
+
+#[test]
+fn checks_for_is_empty_by_default() {
+    let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert!(cfg.merge.checks_for.is_empty());
+}
+
+#[test]
+fn validate_rejects_checks_for_with_blank_commands() {
+    let blank = PumpConfig {
+        merge: crate::pump::config::MergeConfig {
+            shared_checks: vec!["./check".into()],
+            checks_for: BTreeMap::from([("src/**".to_string(), vec![" ".into()])]),
+            ..crate::pump::config::MergeConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = blank
+        .validate(Path::new("."), &pools(&["p"]))
+        .expect_err("a blank checks_for command must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.merge.checks_for] 'src/**' must have non-empty commands"),
+        "{err}"
+    );
+    let no_commands = PumpConfig {
+        merge: crate::pump::config::MergeConfig {
+            shared_checks: vec!["./check".into()],
+            checks_for: BTreeMap::from([("src/**".to_string(), Vec::new())]),
+            ..crate::pump::config::MergeConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let err = no_commands
+        .validate(Path::new("."), &pools(&["p"]))
+        .expect_err("an empty checks_for list must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.merge.checks_for] 'src/**' must have non-empty commands"),
+        "{err}"
+    );
+    let mut target_cfg = valid();
+    target_cfg.targets = BTreeMap::from([(
+        String::from("tela"),
+        PumpTarget {
+            path: String::from("tela"),
+            branch: String::from("main"),
+            promote: false,
+            merge: Some(crate::pump::config::MergeConfig {
+                checks_for: BTreeMap::from([("src/**".to_string(), vec![" ".into()])]),
+                ..crate::pump::config::MergeConfig::default()
+            }),
+            gate: Some(crate::pump::config::GateConfig {
+                command: String::from("./gate"),
+                ..crate::pump::config::GateConfig::default()
+            }),
+            ..PumpTarget::default()
+        },
+    )]);
+    let err = target_cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("a target-level blank checks_for command must fail");
+    assert!(
+        err.to_string()
+            .contains("[pump.targets.tela.merge.checks_for] 'src/**' must have non-empty commands"),
+        "{err}"
+    );
+}
+
+#[test]
 fn validate_checks_default_kind_and_kind_pools() {
     let mut cfg = PumpConfig {
         branch: "next".into(),
