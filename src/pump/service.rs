@@ -16,6 +16,7 @@ use crate::VivariumError;
 
 const CONFIG_DIRECTORY: &str = "vivi";
 const CONFIG_FILENAME: &str = "pump-service.toml";
+const ENV_CONFIG_DIR: &str = "VIVI_CONFIG_DIR";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const RESTART_DELAY: Duration = Duration::from_secs(15);
 
@@ -90,6 +91,11 @@ pub fn list() -> Result<(), VivariumError> {
         }
     }
     Ok(())
+}
+
+/// Read the machine-wide project registry without touching the supervisor.
+pub fn registered_projects() -> Result<BTreeSet<PathBuf>, VivariumError> {
+    Ok(load_config()?.projects)
 }
 
 /// Install and start the current binary as a macOS user LaunchAgent.
@@ -564,8 +570,11 @@ async fn force_stop(child: &mut Child, project: &Path) {
 }
 
 fn load_config() -> Result<ServiceConfig, VivariumError> {
-    let path = config_path()?;
-    let content = match fs::read_to_string(&path) {
+    load_config_at(&config_path()?)
+}
+
+fn load_config_at(path: &Path) -> Result<ServiceConfig, VivariumError> {
+    let content = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(ServiceConfig::default());
@@ -592,9 +601,12 @@ fn save_config(config: &ServiceConfig) -> Result<(), VivariumError> {
 }
 
 fn config_path() -> Result<PathBuf, VivariumError> {
-    let root = dirs::config_dir().ok_or_else(|| {
-        VivariumError::Config("could not find the user's config directory".into())
-    })?;
+    let root = match std::env::var(ENV_CONFIG_DIR) {
+        Ok(value) if !value.is_empty() => PathBuf::from(value),
+        Ok(_) | Err(_) => dirs::config_dir().ok_or_else(|| {
+            VivariumError::Config("could not find the user's config directory".into())
+        })?,
+    };
     Ok(root.join(CONFIG_DIRECTORY).join(CONFIG_FILENAME))
 }
 
@@ -626,3 +638,7 @@ fn take_file_lock(path: PathBuf, message: &str) -> Result<fs::File, VivariumErro
         .map_err(|_| VivariumError::Message(message.to_string()))?;
     Ok(file)
 }
+
+#[cfg(test)]
+#[path = "service_test.rs"]
+mod tests;
