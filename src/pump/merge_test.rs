@@ -972,6 +972,39 @@ fn a_refused_push_leaves_every_job_undecided_with_push_failed() {
 }
 
 #[test]
+fn missing_tool_shared_check_leaves_the_batch_undecided() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("cargo test --lib", 127, "bash: cargo: command not found\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2, "{results:?}");
+    for result in &results {
+        assert_eq!(result.ok, None, "{result:?}");
+        assert_eq!(result.why.as_deref(), Some("proof-missing-tool"));
+        assert!(result.quarantine.is_none(), "{result:?}");
+    }
+    let pushed = host
+        .commands()
+        .iter()
+        .any(|c| c.contains("pump/quarantine"));
+    assert!(!pushed, "a missing tool must not quarantine");
+}
+
+#[test]
+fn a_batch_proof_exit_127_is_undecided() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("deno test", 127, "bash: deno: command not found\n");
+    let mut jobs = batch();
+    jobs[1].proof = vec![String::from("deno test x.test.ts")];
+    let results = batch_work(&ctx, &jobs);
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, None, "{u2:?}\n{:?}", host.commands());
+    assert_eq!(u2.why.as_deref(), Some("proof-missing-tool"));
+    assert!(u2.quarantine.is_none(), "{u2:?}");
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, Some(true), "{u1:?}\n{:?}", host.commands());
+}
+
+#[test]
 fn a_batch_fetch_failure_is_undecided_and_does_not_fail_the_unit() {
     let (_dir, ctx, host) = setup("");
     host.reply("refs/heads/work/u1", 1, "fatal: could not fetch\n");

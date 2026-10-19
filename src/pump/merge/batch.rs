@@ -28,6 +28,10 @@ enum SharedOutcome {
     /// for a single job, or quarantine results (and no pushed integration
     /// branch) for several.
     Failed(Vec<MergeResult>),
+    /// A shared check could not run on this host (a missing tool, exit
+    /// 126/127 or `command not found`): nothing is decided about the batch
+    /// and every job goes back to `delivered`.
+    Undecided(Vec<MergeResult>),
 }
 
 /// Merge a batch of unit branches together, check the result once and push
@@ -47,7 +51,7 @@ pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merge
     format_style_commit(ctx, &tag);
     match run_shared(ctx, &merged) {
         SharedOutcome::Pass => {}
-        SharedOutcome::Failed(decided) => {
+        SharedOutcome::Failed(decided) | SharedOutcome::Undecided(decided) => {
             results.extend(decided);
             return (results, Vec::new());
         }
@@ -208,6 +212,15 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
             ctx.now().saturating_sub(t1)
         ));
         if out.code != 0 {
+            if crate::pump::envfail::missing_tool(out.code, &out.text) {
+                log_failure(ctx, &out.text);
+                let detail = proof_detail(out.code, cmd, &out.text);
+                let undecided = merged
+                    .iter()
+                    .map(|m| undecided_result(&m.job.uid, "proof-missing-tool", &detail))
+                    .collect();
+                return SharedOutcome::Undecided(undecided);
+            }
             return shared_failure(ctx, merged, cmd, out.code, &out.text);
         }
     }
@@ -310,7 +323,11 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             if out.code != 0 {
                 culprits.push(m.job.uid.clone());
                 let detail = proof_detail(out.code, cmd, &out.text);
-                results.push(failed(&m.job.uid, "proof-failed", detail));
+                if crate::pump::envfail::missing_tool(out.code, &out.text) {
+                    results.push(undecided_result(&m.job.uid, "proof-missing-tool", &detail));
+                } else {
+                    results.push(failed(&m.job.uid, "proof-failed", detail));
+                }
                 break;
             }
         }
