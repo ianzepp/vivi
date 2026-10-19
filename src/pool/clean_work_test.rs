@@ -117,7 +117,9 @@ fn a_clean_merged_worktree_is_removed_and_restored_detached() {
     assert!(!dir.join(CHECKOUT).join("build/out").exists());
     let trees = Repo::new(&f.repo).worktrees().unwrap();
     assert!(
-        trees.iter().any(|t| t.path == dir.join(CHECKOUT)),
+        trees
+            .iter()
+            .any(|t| t.path == dir.join(CHECKOUT).canonicalize().unwrap()),
         "{trees:?}"
     );
 }
@@ -209,7 +211,37 @@ fn a_gone_worktree_entry_is_reported_as_an_orphan() {
     assert!(acts.iter().any(|a| a.kind == ActionKind::Orphan));
     let trees = Repo::new(&f.repo).worktrees().unwrap();
     assert!(
-        trees.iter().all(|t| t.path != dest),
+        trees.iter().all(|t| t.path != real_path(&dest)),
         "pruned entry still listed: {trees:?}"
     );
+}
+
+#[test]
+fn real_path_falls_back_to_the_nearest_existing_ancestor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let real = tmp.path().join("real");
+    fs::create_dir_all(real.join("slot-9")).unwrap();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert_eq!(
+        real_path(&link.join("slot-9/repo")),
+        real.join("slot-9").canonicalize().unwrap().join("repo")
+    );
+}
+
+#[test]
+fn a_symlinked_root_still_sweeps_its_worktrees() {
+    let f = fixture();
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("real/proj/lanes/slot-9/repo");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    let base = git(&f.repo, &["rev-parse", "HEAD"]);
+    Repo::new(&f.repo).add_worktree(&dest, &base).unwrap();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&tmp.path().join("real"), &link).unwrap();
+    fs::remove_dir_all(&dest).unwrap();
+    let (acts, skips) =
+        sweep_orphans("lanes", &f.repo, &link, Some("main"), |_| true, false).unwrap();
+    assert!(skips.is_empty(), "{skips:?}");
+    assert!(acts.iter().any(|a| a.kind == ActionKind::Orphan));
 }
