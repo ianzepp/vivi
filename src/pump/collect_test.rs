@@ -992,6 +992,64 @@ fn two_host_failures_pause_the_pool_with_one_environment_exception() {
     assert!(lines[0].contains("pi"), "exceptions: {recorded}");
 }
 
+#[test]
+fn connection_error_receipts_restore_the_attempt_and_pause_the_pool_once() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool reconcile",
+        0,
+        "collected task-1 here slot-1 finished \"pushed unit/x-a1 abc\"\n\
+         collected task-2 here slot-2 finished \"pushed unit/x-b1 abc\"",
+    );
+    host.reply(
+        "ls-remote",
+        0,
+        "abc\trefs/heads/unit/x-a1\nabc\trefs/heads/unit/x-b1\n",
+    );
+    host.reply(
+        "task show",
+        0,
+        "agent exit 1 in 5s, job 12s\n\
+         \n\
+         --- stderr tail\n\
+         Connection error.",
+    );
+    let mut st = State::default();
+    let mut u1 = unit(Status::Inflight, Some("task-1"), Some("unit/x-a1"));
+    u1.attempts = 1;
+    u1.model = Some(String::from("deepseek/v4.1"));
+    u1.pool = Some(String::from("here"));
+    let mut u2 = unit(Status::Inflight, Some("task-2"), Some("unit/x-b1"));
+    u2.attempts = 1;
+    u2.model = Some(String::from("deepseek/v4.1"));
+    u2.pool = Some(String::from("here"));
+    put(&mut st, "u-1", u1);
+    put(&mut st, "u-2", u2);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    assert!(st.units.values().all(|u| u.status == Status::Pending));
+    for (uid, u) in &st.units {
+        assert_eq!(u.attempts, 0, "{uid} attempts");
+        assert_eq!(u.model.as_deref(), Some("deepseek/v4.1"), "{uid} model");
+        assert_eq!(u.retry_not_before, Some(T0 + 120), "{uid} backoff");
+    }
+    let pause = &st.env_pauses["here"];
+    assert_eq!(pause.fails.len(), 2);
+    assert_eq!(pause.paused_at, Some(T0));
+    assert_eq!(pause.probe, None);
+    let recorded = exceptions(&ctx);
+    let outages: Vec<&str> = recorded
+        .lines()
+        .filter(|line| line.contains("provider-outage here"))
+        .collect();
+    assert_eq!(outages.len(), 1, "exceptions: {recorded}");
+    assert!(
+        !recorded.contains("environment here"),
+        "exceptions: {recorded}"
+    );
+}
+
 /// The state `quarantine::open_repair` leaves: member `u1` parked under
 /// quarantine `q1-aaaaaa`, plus its repair unit mid-flight.
 fn quarantine_repair_state() -> State {
