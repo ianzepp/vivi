@@ -590,15 +590,16 @@ pub struct GateConfig {
     /// Directory an external runner drops `<tip>.json` gate results in;
     /// relative paths join the project root. Absent means pool gates only.
     pub results_dir: Option<String>,
-    /// With `results_dir` set, seconds a due gate waits for an external
-    /// result before a pool gate is dispatched instead. Must be >= 1 then.
+    /// Seconds a due gate waits for an external result; >= 1 with results_dir.
     pub results_wait_seconds: u64,
-    /// File of test names dropped from every gate's failing set, one per
-    /// line, `#` comments; relative paths join the project root.
+    /// Gate-ignored test names, one per line; `#` comments; relative paths resolve from project.
     pub ignore_file: Option<String>,
-    /// How many times a name that still fails after every unit of its owner
-    /// settled is handed to a fresh gate-fix planner. 0 never re-plans.
+    /// Replans per name after owner units settle but the name still fails; 0 disables.
     pub max_replans: u32,
+    /// Write HOLD-MERGE while owned reds remain unfixed.
+    pub hold_on_red: bool,
+    /// Need priority floor for bypassing HOLD-MERGE.
+    pub hold_priority_floor: i64,
 }
 
 impl Default for GateConfig {
@@ -614,6 +615,8 @@ impl Default for GateConfig {
             results_wait_seconds: 0,
             ignore_file: None,
             max_replans: 2,
+            hold_on_red: false,
+            hold_priority_floor: 0,
         }
     }
 }
