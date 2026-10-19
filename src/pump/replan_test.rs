@@ -1,7 +1,7 @@
 //! Tests for operator replans, from queued request through board re-planning.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rusqlite::Connection;
