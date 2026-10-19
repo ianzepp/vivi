@@ -22,6 +22,25 @@ fn drops_system_roles_and_forces_stream() {
 }
 
 #[test]
+fn drops_sampling_parameters() {
+    let body = json!({
+        "model": "gpt-6-luna",
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "seed": 7,
+        "input": [{"role": "user", "content": "hi"}]
+    });
+    let sanitized = codex_chat::sanitize_responses(body);
+    assert!(sanitized.get("temperature").is_none());
+    assert!(sanitized.get("top_p").is_none());
+    assert!(sanitized.get("seed").is_none());
+    assert_eq!(sanitized["model"], "gpt-6-luna");
+    assert_eq!(sanitized["input"].as_array().unwrap().len(), 1);
+    assert_eq!(sanitized["stream"], true);
+    assert_eq!(sanitized["store"], false);
+}
+
+#[test]
 fn chat_shim_drops_tools_and_reports_zero_usage() {
     let chat = json!({
         "model": "gpt-6.1-sol",
