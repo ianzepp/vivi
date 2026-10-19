@@ -7,6 +7,8 @@
 //! subject per hour; [`status_lines`] adds the same facts to `status.txt`. See
 //! skills/vivi/references/pump-contract.md, section "Stall alarms".
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value, json};
 
 use crate::pump::host::Ctx;
@@ -31,6 +33,8 @@ struct Scope<'a> {
     id: String,
     promotions: &'a [Promotion],
     gates: &'a [GateRecord],
+    baseline: Option<&'a [String]>,
+    red: &'a BTreeMap<String, String>,
 }
 
 /// Raise every due stall exception. Each subject (`<kind> <unit>`) is filed
@@ -179,6 +183,8 @@ fn scopes<'a>(ctx: &Ctx, st: &'a State) -> Vec<Scope<'a>> {
                     id,
                     promotions: &st.promotions,
                     gates: &st.gates,
+                    baseline: st.baseline.as_deref(),
+                    red: &st.red,
                 });
             }
             let target = st.target_states.get(&id)?;
@@ -186,6 +192,8 @@ fn scopes<'a>(ctx: &Ctx, st: &'a State) -> Vec<Scope<'a>> {
                 id,
                 promotions: &target.promotions,
                 gates: &target.gates,
+                baseline: target.baseline.as_deref(),
+                red: &target.red,
             })
         })
         .collect()
@@ -218,17 +226,55 @@ fn promote_findings(ctx: &Ctx, st: &State, now: u64) -> Vec<Finding> {
         if now.saturating_sub(since) <= limit {
             continue;
         }
+        let blockers = scope.gates.last().and_then(|gate| blockers_text(&scope, gate));
         out.push(Finding {
             kind: "stall-promote",
-            text: promote_text(now, last, merged.len(), scope.gates),
+            text: promote_text(now, last, merged.len(), scope.gates, blockers),
             unit: id,
         });
     }
     out
 }
 
+/// The last gate's failing names that main does not carry, with the fix unit
+/// owning each. `None` when the gate is unreadable or nothing blocks it.
+fn blockers_text(scope: &Scope, gate: &GateRecord) -> Option<String> {
+    let names = gate.names.as_ref()?;
+    let main = crate::pump::gate::green::main_set(scope.promotions, scope.gates, scope.baseline);
+    let mut off_main: Vec<&String> = names.iter().filter(|name| !main.contains(name)).collect();
+    off_main.sort();
+    off_main.dedup();
+    if off_main.is_empty() {
+        return None;
+    }
+    let shown = off_main.iter().take(5).map(|name| {
+        scope.red.get(*name).map_or_else(
+            || format!("{name} (no fix)"),
+            |owner| format!("{name} (fix {owner})"),
+        )
+    });
+    let shown: Vec<String> = shown.collect();
+    let more = off_main.len().saturating_sub(shown.len());
+    let tail = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "{} reds not on main: {}{tail}",
+        off_main.len(),
+        shown.join(", ")
+    ))
+}
+
 /// The `stall-promote` text: hours since promotion, merges waiting, last gate.
-fn promote_text(now: u64, last: Option<&Promotion>, merged: usize, gates: &[GateRecord]) -> String {
+fn promote_text(
+    now: u64,
+    last: Option<&Promotion>,
+    merged: usize,
+    gates: &[GateRecord],
+    blockers: Option<String>,
+) -> String {
     let since = last.map_or_else(
         || String::from("no promotion yet"),
         |promotion| {
@@ -248,7 +294,8 @@ fn promote_text(now: u64, last: Option<&Promotion>, merged: usize, gates: &[Gate
             format!("last gate {} failing {failing}", tip10(&gate.tip))
         },
     );
-    format!("{since}; {merged} merged awaiting promotion; {gate}")
+    let base = format!("{since}; {merged} merged awaiting promotion; {gate}");
+    blockers.map_or(base.clone(), |blockers| format!("{base}; {blockers}"))
 }
 
 /// Units delivered while nothing has merged for `alarm.merge_idle_minutes`.

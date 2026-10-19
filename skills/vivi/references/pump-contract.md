@@ -656,7 +656,9 @@ A plan unit with `"tools": "full"` goes to the `flyfull` pool; one with no
 Each tick the pump checks the stall signals and files `stall-fix-unit <uid>`
 (a `<fix_prefix>` unit waiting past `fix_wait_minutes`), `stall-promote
 <target>` (text: time since the last promotion, merges awaiting promotion, the
-last gate's failing count; measured from the first unpromoted merge when the
+last gate's failing count, and the reds blocking promotion with their fix
+ownership as `name (fix <need>)` or `name (no fix)`, capped at five entries
+followed by `and <k> more`; measured from the first unpromoted merge when the
 target never promoted; only for targets with promotion enabled),
 `stall-merge pump` (delivered units, oldest wait, last merge) and
 `blocking-stuck <uid|need>` (a stuck unit, or a need parked on a verdict, whose
