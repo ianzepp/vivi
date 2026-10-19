@@ -115,9 +115,7 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<S
         return false;
     }
     let held = reserved_paths(ctx);
-    if !held.is_empty()
-        && overlaps(&generated_free(ctx, u.target_id(), &u.write_scope), &held)
-    {
+    if !held.is_empty() && overlaps(&generated_free(ctx, u.target_id(), &u.write_scope), &held) {
         return false;
     }
     if u.after.iter().any(|dep| !satisfied(st, dep, 0)) {
