@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::pump::brief::gate_brief;
 use crate::pump::dispatch::{parse_created_handle, slots};
-use crate::pump::gatefix::{gatefix, plan_need, replans_left, residual_failures, take_residuals};
+use crate::pump::gatefix::{
+    gatefix, plan_need, replans_left, residual_failures, send_fix_need, take_residuals,
+};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
 
@@ -619,8 +621,9 @@ fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[S
     let new = new_failures(st, names);
     rec.new = Some(new.clone());
     let residual = residual_failures(ctx, st, names);
-    let owner = plan_need(ctx, &rec.tip, !residual.is_empty());
     if !new.is_empty() || !residual.is_empty() {
+        let owner = send_fix_need(ctx, &rec.tip, &new, &residual)
+            .unwrap_or_else(|| plan_need(ctx, &rec.tip, !residual.is_empty()));
         for name in &new {
             st.red.insert(name.clone(), owner.clone());
         }

@@ -824,6 +824,7 @@ fn merge_export_with_extra_node(
         kind: kind.into(),
         readiness: "ready".into(),
         blocked_by: Vec::new(),
+        awaiting_dependencies: Vec::new(),
         successors: Vec::new(),
     });
     let synthetic = GraphShow {

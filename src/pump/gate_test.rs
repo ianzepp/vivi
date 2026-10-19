@@ -455,6 +455,50 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
 }
 
 #[test]
+fn a_red_gate_sends_a_real_backing_need_and_plans_under_it() {
+    let dir = tempdir().unwrap();
+    let mut cfg = planner_cfg();
+    cfg.board.from = vec![String::from("operator")];
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("need send", 0, "created operator ab12cd34\nsent ab12cd34\n");
+    let mut st = gate_state(3);
+    st.gates.push(GateRecord {
+        tip: String::from(CLEAN),
+        at: T0,
+        merges: 1,
+        names: Some(vec![]),
+        new: None,
+    });
+    add_merged_units(&mut st);
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nvivi pump::gate::gone\nFAILING-END\n",
+    );
+    assert_eq!(
+        st.red.get("vivi pump::gate::gone"),
+        Some(&String::from("ab12cd34"))
+    );
+    let need_send = host
+        .commands()
+        .into_iter()
+        .find(|c| c.contains("need send"))
+        .unwrap();
+    assert!(need_send.contains("--from mind"));
+    assert!(need_send.contains("--to operator"));
+    assert!(need_send.contains("gate fix for g01234567"));
+    let prompt = fs::read_to_string(ctx.home.join("gatefix/ab12cd34.prompt")).unwrap();
+    assert!(prompt.contains("plans/ab12cd34.json"));
+    assert!(prompt.contains("Unit ids \"pumpfix-g01234567-"));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("gatefix planner started for ab12cd34 (1 new)"))
+    );
+    drop(dir);
+}
+
+#[test]
 fn an_owned_name_that_passes_again_is_released() {
     let (dir, ctx, host) = setup();
     let mut st = gate_state(4);
