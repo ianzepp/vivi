@@ -305,36 +305,51 @@ fn want_pair() -> (std::rc::Rc<FakeServer>, Checkout, Checkout, String) {
     (server, a, b, want)
 }
 
-// The promoted letter crosses mailspaces: the receiver's want moves into
-// `needs` and its backlog node stays open, because a promotion is not a close.
+// The promoted letter crosses mailspaces: the receiver promotes its
+// delivered want into `needs`, so its backlog node stays open — a promotion is
+// not a close — and the author's `sent` copy follows the letter.
 #[test]
 fn a_promoted_letter_moves_the_receivers_want_to_needs() {
-    let (server, a, b, want) = want_pair();
+    let (server, a, mut b, want) = want_pair();
+    // The receiver's mind acts for its mailspace: only an item's author or a
+    // mind-kind role may move its state for every copy.
+    b.mailspace
+        .set_role(
+            "mind",
+            RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..RoleUpdate::default()
+            },
+        )
+        .unwrap();
 
-    a.mailspace
+    b.mailspace
         .move_item("mind", &want, "needs", None, "want promote", None)
         .unwrap();
-    assert_eq!(state(&a, &want).as_deref(), Some("promoted"));
-    a.push(&a.client(&server));
-    let pulled = b.pull(&b.client(&server));
-
+    assert_eq!(state(&b, &want).as_deref(), Some("promoted"));
     assert_eq!(role_of(&b, &want), "needs", "the receiver's want promoted");
     assert_eq!(node_state(&b.mailspace, &want), "open", "not a close");
-    assert_eq!(state(&b, &want).as_deref(), Some("promoted"));
+
+    b.push(&b.client(&server));
+    let pulled = a.pull(&a.client(&server));
+
     assert!(
         pulled.events_applied >= 1,
         "the letter applied: {}",
         pulled.summary()
     );
+    assert_eq!(role_of(&a, &want), "needs", "the author's copy follows");
+    assert_eq!(state(&a, &want).as_deref(), Some("promoted"));
 
-    // Converged: a second pull applies nothing and changes no row.
+    // Converged: a second sync applies nothing and changes no row.
     let snapshot = || (rows_of(&a), rows_of(&b));
     let converged = snapshot();
-    a.push(&a.client(&server));
-    let again = b.pull(&b.client(&server));
+    b.push(&b.client(&server));
+    let again = a.pull(&a.client(&server));
 
     assert_eq!(again.fetched, 0);
     assert_eq!(again.events_applied, 0);
+    assert_eq!(role_of(&a, &want), "needs");
     assert_eq!(role_of(&b, &want), "needs");
     assert_eq!(node_state(&b.mailspace, &want), "open");
     assert_eq!(snapshot(), converged);
