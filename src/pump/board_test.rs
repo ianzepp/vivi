@@ -876,6 +876,33 @@ fn an_exited_planner_frees_its_slot_and_is_logged() {
 }
 
 #[test]
+fn a_rate_limited_board_planner_retries_without_counting_failures() {
+    let (_dir, ctx, host) = setup();
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    fs::write(
+        ctx.home.join("board/n1.out"),
+        "429: {\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}\n",
+    )
+    .unwrap();
+    fs::write(ctx.home.join("board/n1.out.rc"), "1").unwrap();
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now());
+    expire_planning(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert_eq!(st.board.planner_fails.get("n1"), None);
+    let retry = st.board.planner_retry_at.get("n1").copied();
+    assert!(
+        retry.is_some_and(|at| at > ctx.now() + 100),
+        "retry_at: {retry:?}"
+    );
+    let logs = host.logs().join("\n");
+    assert!(logs.contains("rate-limited"), "logs: {logs}");
+    let exc = exceptions(&ctx);
+    assert!(!exc.contains("plan-crashed"), "exceptions: {exc}");
+    assert!(!exc.contains("plan-failed"), "exceptions: {exc}");
+}
+
+#[test]
 fn a_third_planner_failure_parks_the_need() {
     let (_dir, ctx, _host) = setup();
     exited_planner(&ctx, "n1");
