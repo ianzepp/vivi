@@ -9,9 +9,9 @@ use crate::pump::state::{MergeJob, MergeResult, Quarantine};
 use super::fetch::fetch_unit_branch;
 use super::publish::publish;
 use super::{
-    GIT_TIMEOUT, already_integrated, failed, failure_text, fetch_failure, flat,
-    format_style_commit, identity_args, integrated_text, merge_line, merge_work, outside_files,
-    reset_repo, resolve_generated, skips_proof, tail, undecided_result,
+    GIT_TIMEOUT, already_integrated, check_with_drift_retry, failed, failure_text, fetch_failure,
+    flat, format_style_commit, identity_args, integrated_text, merge_line, merge_work,
+    outside_files, reset_repo, resolve_generated, skips_proof, tail, undecided_result,
 };
 
 /// A cleanly merged job plus the files its merge touched outside its scope.
@@ -196,10 +196,11 @@ fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResul
 /// `batch <n> shared rc=<n> <n>s: <cmd>` log line.
 fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
     let total = ctx.cfg.merge.shared_checks.len();
+    let tag = format!("batch of {}", merged.len());
     for (i, cmd) in ctx.cfg.merge.shared_checks.iter().enumerate() {
         ctx.step(&format!("check {}/{total} start: {cmd}", i + 1));
         let t1 = ctx.now();
-        let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+        let out = check_with_drift_retry(ctx, &tag, cmd);
         ctx.log(&format!(
             "batch {} shared rc={} {}s: {cmd}",
             merged.len(),
@@ -299,7 +300,7 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             let head: String = cmd.chars().take(90).collect();
             ctx.step(&format!("proof {} start: {head}", m.job.uid));
             let t1 = ctx.now();
-            let out = ctx.sh(cmd, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+            let out = check_with_drift_retry(ctx, &m.job.uid, cmd);
             ctx.log(&format!(
                 "proof {} rc={} {}s: {head}",
                 m.job.uid,
