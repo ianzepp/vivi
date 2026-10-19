@@ -832,3 +832,36 @@ fn validate_rejects_a_target_level_generated_entry_with_empty_regenerate() {
         "{err}"
     );
 }
+
+#[test]
+fn pool_sources_map_local_worktree_pools() {
+    let config = mailspace(
+        "name = \"t\"\n\n[pools.wtree]\nprovider = \"local\"\nslots = 2\n\n\
+         [pools.wtree.local]\nworktree_of = \"/wtree/repo\"\n\n\
+         [pools.bare]\nprovider = \"local\"\nslots = 1\n\n\
+         [pools.flyone]\nprovider = \"fly\"\nslots = 1\n",
+    );
+    let sources = PumpConfig::default().pool_sources(&config, Path::new("/proj"));
+    assert_eq!(
+        sources.get("wtree"),
+        Some(&std::path::PathBuf::from("/wtree/repo")),
+        "a local worktree pool commits into its worktree repository"
+    );
+    assert_eq!(
+        sources.get("bare"),
+        Some(&std::path::PathBuf::from("/proj")),
+        "a local pool without a worktree repository commits into the project"
+    );
+    assert!(!sources.contains_key("flyone"), "a remote pool has no path");
+
+    let mut targets = BTreeMap::new();
+    targets.insert(String::from("tela"), PumpTarget::default());
+    let multi = PumpConfig {
+        targets,
+        ..PumpConfig::default()
+    };
+    assert!(
+        multi.pool_sources(&config, Path::new("/proj")).is_empty(),
+        "a multi-target pump reads from per-target integration clones"
+    );
+}

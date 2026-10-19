@@ -27,6 +27,8 @@ const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
 /// Seconds a gate task may stay unreported before it is finished from its
 /// receipt.
 const GATE_GRACE: u64 = 2400;
+/// Split-planner exits without a plan before the unit is parked stuck.
+const SPLIT_RETRY_MAX: u32 = 3;
 
 /// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
@@ -589,47 +591,84 @@ fn dead_planner_output(ctx: &Ctx, uid: &str) -> Option<String> {
     envfail::classify("planner", &text, "").map(|_| text)
 }
 
-/// Park units whose split planner never answered; a planner that died
-/// host-class returns its unit to `pending` instead of parking it, so the
-/// next feed re-dispatches it.
+/// Expire splitting units: a planner that died is retried with backoff,
+/// a silent one past the hard cap is parked.
 fn expire_splits(ctx: &Ctx, st: &mut State) {
-    let timeout = ctx.cfg.planner.split_hard_cap;
     let now = ctx.now();
-    let mut expired = Vec::new();
-    for (uid, unit) in &mut st.units {
-        if unit.status != Status::Splitting {
-            continue;
+    let splitting: Vec<String> = st
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.status == Status::Splitting)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for uid in splitting {
+        if expire_one_split(ctx, st, &uid, now) {
+            crate::pump::quarantine::repair_stuck(ctx, st, &uid);
         }
-        if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
-            continue;
-        }
-        if let Some(text) = dead_planner_output(ctx, uid) {
-            let evidence: String = text.trim().chars().take(200).collect();
-            unit.status = Status::Pending;
-            unit.task = None;
-            unit.since = now;
-            unit.since_dispatch = None;
-            ctx.exception(
-                "environment",
-                uid,
-                &format!("split planner died: {evidence}"),
+    }
+}
+
+/// Decide one splitting unit: a written plan belongs to ingest, an exit
+/// receipt without a plan is a dead planner retried with backoff, a planner
+/// that died host-class returns its unit to `pending`, and a silent one past
+/// the hard cap is parked. True when the unit became `Stuck`.
+fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
+    if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
+        return false;
+    }
+    let receipt = exit_receipt_path(&ctx.home.join(format!("resplit/{uid}.out")));
+    let Some(unit) = st.units.get_mut(uid) else {
+        return false;
+    };
+    if receipt.exists() {
+        let raw = fs::read_to_string(&receipt).unwrap_or_default();
+        let code = raw.trim().parse::<i32>().unwrap_or(-1);
+        drop(fs::remove_file(&receipt));
+        let fails = unit.split_fails + 1;
+        unit.split_fails = fails;
+        if fails >= SPLIT_RETRY_MAX {
+            let text = format!(
+                "the split planner exited without a plan {SPLIT_RETRY_MAX} times \
+                 (last exit {code})"
             );
-            ctx.log(&format!("split-planner-dead {uid}"));
-            continue;
-        }
-        if now.saturating_sub(unit.since) > timeout {
             unit.status = Status::Stuck;
-            ctx.exception(
-                "split-no-answer",
-                uid,
-                "the split planner wrote no plan in 25 minutes",
-            );
-            expired.push(uid.clone());
+            ctx.exception("split-planner-failed", uid, &text);
+            return true;
         }
+        let backoff = (60u64 << (fails - 1)).min(900);
+        unit.split_retry_at = Some(now + backoff);
+        ctx.exception(
+            "split-planner-failed",
+            uid,
+            &format!("planner exited {code} without a plan; retry {fails}/3 in {backoff}s"),
+        );
+        return false;
     }
-    for uid in expired {
-        crate::pump::quarantine::repair_stuck(ctx, st, &uid);
+    if let Some(text) = dead_planner_output(ctx, uid) {
+        let evidence: String = text.trim().chars().take(200).collect();
+        unit.status = Status::Pending;
+        unit.task = None;
+        unit.since = now;
+        unit.since_dispatch = None;
+        ctx.exception(
+            "environment",
+            uid,
+            &format!("split planner died: {evidence}"),
+        );
+        ctx.log(&format!("split-planner-dead {uid}"));
+        return false;
     }
+    let timed_out = now.saturating_sub(unit.since) > ctx.cfg.planner.split_hard_cap;
+    if unit.split_retry_at.is_none() && timed_out {
+        unit.status = Status::Stuck;
+        ctx.exception(
+            "split-no-answer",
+            uid,
+            "the split planner wrote no plan in 25 minutes",
+        );
+        return true;
+    }
+    false
 }
 
 /// The gate task's receipt when the gate finished; `None`
