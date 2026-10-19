@@ -2578,8 +2578,10 @@ be refreshed) marks that credential file dead in memory. Later requests
 to that provider return 502 `credential_error` with zero upstream or
 token-endpoint calls until the file changes or the proxy restarts.
 Transient token-endpoint failures do not mark the credential dead.
-`/health` and `/<provider>/health` report `status: credential_dead` with
-HTTP 503. There is no background token refresh. When `models` is omitted,
+`/<provider>/health` reports that provider alone (HTTP 503 on
+`credential_dead` or `down`). The aggregate `/health` returns HTTP 200
+whenever the listener is up and at least one provider is healthy, 503
+otherwise, with per-provider status rows in the `providers` body array. There is no background token refresh. When `models` is omitted,
 native Codex `/v1/models` serves `gpt-6-luna` and `gpt-6.1-sol`.
 
 ## Self-update

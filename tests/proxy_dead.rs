@@ -325,6 +325,39 @@ fn kimi_dead_leaves_other_providers_alone() {
 }
 
 #[test]
+fn aggregate_health_ok_with_one_dead_provider() {
+    let kimi_mock = Mock::new();
+    push_401(&kimi_mock);
+    kimi_mock.set_token(400, r#"{"error":"invalid_grant"}"#);
+    let llama_mock = Mock::new();
+    let kimi_addr = proxy_upstream::serve(kimi_mock.clone());
+    let llama_addr = proxy_upstream::serve(llama_mock.clone());
+    let dir = TempDir::new().unwrap();
+    let creds = write_kimi(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, kimi_llama_config(&dir, &creds, kimi_addr, llama_addr));
+    assert_dead_body(post_chat(&base, "kimi"));
+    let (status, health) = get_json(&base, "/health");
+    assert_eq!(status, 200);
+    assert_eq!(health["ok"], true);
+    let providers = health["providers"].as_array().expect("providers array");
+    let kimi_row = providers
+        .iter()
+        .find(|row| row["name"] == "kimi")
+        .expect("kimi row");
+    assert_eq!(kimi_row["status"], "credential_dead");
+    let llama_row = providers
+        .iter()
+        .find(|row| row["name"] == "llama")
+        .expect("llama row");
+    assert_eq!(llama_row["status"], "ok");
+    let (kimi_status, kimi_health) = get_json(&base, "/kimi/health");
+    assert_eq!(kimi_status, 503);
+    assert_eq!(kimi_health["status"], "credential_dead");
+    server.stop();
+}
+
+#[test]
 fn kimi_check_and_providers_show_credential_dead() {
     let mock = Mock::new();
     push_401(&mock);
