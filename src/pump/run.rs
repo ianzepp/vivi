@@ -174,7 +174,8 @@ fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
 ///
 /// # Errors
 /// Returns [`VivariumError::Config`] when the mailspace has no `[pump]`
-/// table or the table fails `validate`, an error when the lock is already
+/// table, the table fails `validate`, or a pump identity names no roster
+/// role, an error when the lock is already
 /// held, and whatever loading the state fails with.
 pub fn run(project: &Path, once: bool) -> Result<(), VivariumError> {
     run_inner(project, once, false)
@@ -195,6 +196,10 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
         .iter()
         .any(|role| role.pool.is_some());
     cfg.validate_for(project, &pools, role_pool)?;
+    let roster = identity_issues(&mailspace, &cfg);
+    if !roster.is_empty() {
+        return Err(VivariumError::Config(roster.join("; ")));
+    }
     let issues = crate::routing::validate(&mailspace.config);
     for issue in &issues {
         eprintln!(
@@ -462,6 +467,30 @@ fn pump_config(mailspace: &Mailspace) -> Result<PumpConfig, VivariumError> {
     mailspace.config.pump.clone().ok_or_else(|| {
         VivariumError::Config(String::from("no [pump] table in .vivi/mailspace.toml"))
     })
+}
+
+/// Roster complaints for the identities the pump speaks as: `[pump] from`,
+/// `to` and `reply_from`, plus `[pump.board] reply_to` when set. Each value
+/// must resolve to a role or alias this mailspace knows, or the pump would
+/// start and then fail every send it makes.
+pub fn identity_issues(mailspace: &Mailspace, cfg: &PumpConfig) -> Vec<String> {
+    let mut pairs: Vec<(&str, &str)> = vec![
+        ("[pump] from", cfg.from.as_str()),
+        ("[pump] to", cfg.to.as_str()),
+        ("[pump] reply_from", cfg.reply_from.as_str()),
+    ];
+    if let Some(reply_to) = cfg.board.reply_to.as_deref() {
+        pairs.push(("[pump.board] reply_to", reply_to));
+    }
+    pairs
+        .into_iter()
+        .filter_map(|(key, value)| {
+            mailspace
+                .resolve_identity(value)
+                .err()
+                .map(|err| format!("{key} = \"{value}\": {err}"))
+        })
+        .collect()
 }
 
 /// Create `<home>/lock` and take the exclusive non-blocking flock.

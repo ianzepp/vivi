@@ -31,6 +31,14 @@ const PUMP_TOML: &str = concat!(
     "[pump.planner]\nrun = \"planner-model\"\n",
 );
 
+/// The roster roles the default `[pump]` identities name, so a project
+/// carrying them starts cleanly.
+const PUMP_TOML_IDENTITIES: &str = concat!(
+    "[[identities]]\nname = \"operator\"\n\n",
+    "[[identities]]\nname = \"hand\"\n\n",
+    "[[identities]]\nname = \"mind\"\n",
+);
+
 /// A context with the default config, home at `dir/home`.
 fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
@@ -258,13 +266,24 @@ fn a_finished_gate_task_reaches_finish_gate_through_collect() {
 
 #[test]
 fn a_second_instance_is_refused_by_the_lock() {
-    let dir = mailspace_project(PUMP_TOML);
+    let dir = mailspace_project(&format!("{PUMP_TOML}{PUMP_TOML_IDENTITIES}"));
     let home = dir.path().join(".vivi").join("pump");
     fs::create_dir_all(&home).unwrap();
     let first = File::create(home.join("lock")).unwrap();
     first.try_lock().unwrap();
     let err = run(dir.path(), true).unwrap_err();
     assert!(err.to_string().contains("another vivi pump is running"));
+}
+
+#[test]
+fn a_missing_roster_role_refuses_to_start_with_the_fix_command() {
+    let missing_hand = PUMP_TOML_IDENTITIES.replace("[[identities]]\nname = \"hand\"\n\n", "");
+    let dir = mailspace_project(&format!("{PUMP_TOML}{missing_hand}"));
+    let err = run(dir.path(), true).unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("[pump] to"), "{text}");
+    assert!(text.contains("unknown local role 'hand'"), "{text}");
+    assert!(text.contains("vivi role add hand"), "{text}");
 }
 
 #[test]

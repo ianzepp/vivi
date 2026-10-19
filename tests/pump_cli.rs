@@ -286,9 +286,15 @@ fn temp_mailspace() -> tempfile::TempDir {
          [pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n\
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
          [pump.merge]\nshared_checks = [\"true\"]\n\n\
-         [pump.gate]\ncommand = \"true\"\n"
+         [pump.gate]\ncommand = \"true\"\n\n\
+         [[identities]]\nname = \"operator\"\n\n\
+         [[identities]]\nname = \"hand\"\n\n\
+         [[identities]]\nname = \"mind\"\n"
     );
+    // The init template writes an empty roster as `identities = []`; drop that
+    // line so the `[[identities]]` tables below can declare the pump's roles.
     let mut text = fs::read_to_string(&config).unwrap();
+    text = text.replace("identities = []\n", "");
     text.push_str(&table);
     fs::write(config, text).unwrap();
     // The pump refuses to start without its integration clone; an empty repository stands in.
