@@ -16,6 +16,7 @@
 mod layout;
 mod package;
 mod release;
+mod reminders;
 
 use semver::Version;
 
@@ -63,7 +64,10 @@ pub fn run_update(args: &UpdateCommand) -> Result<(), VivariumError> {
     activate(&bin_dir, &target, args.adopt)?;
     warn_if_path_shadowed(&bin_dir);
     warn_if_bin_dir_off_path(&bin_dir);
-    remind_proxy_restart();
+    let unit_dirs = reminders::unit_dirs_from_home(dirs::home_dir().as_deref());
+    for line in reminders::service_restart_reminders(&unit_dirs) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -233,19 +237,6 @@ fn bin_dir_on_path(bin_dir: &std::path::Path, path_var: &str) -> bool {
         let entry = std::path::Path::new(entry);
         entry == bin_dir || same_entry(entry, bin_dir)
     })
-}
-
-fn remind_proxy_restart() {
-    let Ok(path) = crate::proxy::install::unit_path() else {
-        return;
-    };
-    if !path.is_file() {
-        return;
-    }
-    println!(
-        "note: an installed proxy unit exists at {}; restart it to pick up the new binary (vivi proxy install)",
-        path.display()
-    );
 }
 
 fn path_exists(path: &std::path::Path) -> bool {
