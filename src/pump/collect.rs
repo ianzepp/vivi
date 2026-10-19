@@ -609,9 +609,10 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
 }
 
 /// Decide one splitting unit: a written plan belongs to ingest, an exit
-/// receipt without a plan is a dead planner retried with backoff, a planner
-/// that died host-class returns its unit to `pending`, and a silent one past
-/// the hard cap is parked. True when the unit became `Stuck`.
+/// receipt without a plan is a dead planner retried with backoff, a due
+/// retry respawns the planner, a planner that died host-class returns its
+/// unit to `pending`, and a silent one past the hard cap is parked. True
+/// when the unit became `Stuck`.
 fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
     if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
         return false;
@@ -644,22 +645,13 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         );
         return false;
     }
-    if let Some(text) = dead_planner_output(ctx, uid) {
-        let evidence: String = text.trim().chars().take(200).collect();
-        unit.status = Status::Pending;
-        unit.task = None;
-        unit.since = now;
-        unit.since_dispatch = None;
-        ctx.exception(
-            "environment",
-            uid,
-            &format!("split planner died: {evidence}"),
-        );
-        ctx.log(&format!("split-planner-dead {uid}"));
+    if retry_split(ctx, unit, uid, now) {
         return false;
     }
-    let timed_out = now.saturating_sub(unit.since) > ctx.cfg.planner.split_hard_cap;
-    if unit.split_retry_at.is_none() && timed_out {
+    if let Some(text) = dead_planner_output(ctx, uid) {
+        return split_planner_died(ctx, unit, uid, now, &text);
+    }
+    if now.saturating_sub(unit.since) > ctx.cfg.planner.split_hard_cap {
         unit.status = Status::Stuck;
         ctx.exception(
             "split-no-answer",
@@ -668,6 +660,41 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         );
         return true;
     }
+    false
+}
+
+/// A recorded split retry: wait out the backoff, then respawn the planner
+/// (which drops the stale receipt) with a fresh clock. Returns true when the
+/// caller should stop here — waiting units are never parked, even past the
+/// hard cap.
+fn retry_split(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64) -> bool {
+    let Some(at) = unit.split_retry_at else {
+        return false;
+    };
+    if now < at {
+        return true;
+    }
+    unit.split_retry_at = None;
+    unit.since = now;
+    spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    ctx.log(&format!("split-retry {uid}"));
+    true
+}
+
+/// The split planner died host-class: return its unit to `pending` so it is
+/// redispatched, and report the evidence. Never stuck.
+fn split_planner_died(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64, text: &str) -> bool {
+    let evidence: String = text.trim().chars().take(200).collect();
+    unit.status = Status::Pending;
+    unit.task = None;
+    unit.since = now;
+    unit.since_dispatch = None;
+    ctx.exception(
+        "environment",
+        uid,
+        &format!("split planner died: {evidence}"),
+    );
+    ctx.log(&format!("split-planner-dead {uid}"));
     false
 }
 
