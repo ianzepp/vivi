@@ -501,7 +501,11 @@ fn a_failing_shared_check_is_proof_failed_and_names_the_command() {
 #[test]
 fn a_proof_exit_127_leaves_the_unit_undecided() {
     let (_dir, ctx, host) = setup("");
-    host.reply("deno test x.test.ts", 127, "bash: deno: command not found\n");
+    host.reply(
+        "deno test x.test.ts",
+        127,
+        "bash: deno: command not found\n",
+    );
     let mut unit = job();
     unit.proof = vec![String::from("deno test x.test.ts")];
     let result = merge_work(&ctx, &unit);
