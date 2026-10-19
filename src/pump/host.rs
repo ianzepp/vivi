@@ -39,7 +39,8 @@ pub trait Host: Send + Sync {
     /// spawned child's pid, or `None` when the command could not be started;
     /// a reaper thread writes the exit code to [`exit_receipt_path`] once the
     /// child exits.
-    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) -> Option<u32>;
+    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path)
+    -> Option<u32>;
     /// Append one log line.
     fn log(&self, line: &str);
 }
@@ -68,7 +69,13 @@ impl Host for RealHost {
         run_command(cmd, cwd, timeout_secs)
     }
 
-    fn spawn(&self, cmd: &str, cwd: Option<&Path>, stdin: Option<&Path>, out: &Path) -> Option<u32> {
+    fn spawn(
+        &self,
+        cmd: &str,
+        cwd: Option<&Path>,
+        stdin: Option<&Path>,
+        out: &Path,
+    ) -> Option<u32> {
         spawn_detached(cmd, cwd, stdin, out)
     }
 
@@ -504,7 +511,13 @@ impl Host for FakeHost {
         }
     }
 
-    fn spawn(&self, cmd: &str, _cwd: Option<&Path>, _stdin: Option<&Path>, _out: &Path) -> Option<u32> {
+    fn spawn(
+        &self,
+        cmd: &str,
+        _cwd: Option<&Path>,
+        _stdin: Option<&Path>,
+        _out: &Path,
+    ) -> Option<u32> {
         if let Ok(mut state) = self.state.lock() {
             state.spawned.push(cmd.to_string());
         }
