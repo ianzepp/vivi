@@ -119,8 +119,9 @@ fn a_two_unit_batch_failing_a_shared_check_is_pushed_aside_and_quarantined() {
         assert_eq!(q.units, ["u1", "u2"]);
     }
     let cmds = host.commands();
-    // The two merges ran once each: no one-at-a-time retry.
-    assert_eq!(count(&cmds, "merge --no-ff"), 2);
+    // The batch is rebuilt before the quarantine push: 2 batch merges plus
+    // 2 rebuild merges.
+    assert_eq!(count(&cmds, "merge --no-ff"), 4);
     assert_eq!(count(&cmds, "./proof-u1.sh"), 0);
     let push = format!("git push origin HEAD:refs/heads/{}", branch(&id));
     assert_eq!(count(&cmds, &push), 1);
