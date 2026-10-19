@@ -100,7 +100,10 @@ fn parse_report_reads_the_last_marker_block() {
 
     let causes = parse_report(&text).unwrap();
     assert_eq!(causes.len(), 2);
-    assert_eq!(causes[0].root_cause, "gate counts merges, not landed batches");
+    assert_eq!(
+        causes[0].root_cause,
+        "gate counts merges, not landed batches"
+    );
     assert_eq!(
         causes[0].brief,
         "Replace the counter check with a merge-batch check in start_gate."
@@ -127,9 +130,7 @@ fn parse_report_rejects_missing_markers_bad_json_and_empty_scopes() {
     assert!(parse_report("AUDIT-BEGIN\n[]\nAUDIT-END\n").is_none());
     // A cause with an empty write scope.
     let empty_scope = r#"[{"root_cause": "x", "brief": "y", "write_scope": []}]"#;
-    assert!(
-        parse_report(&format!("AUDIT-BEGIN\n{empty_scope}\nAUDIT-END\n")).is_none()
-    );
+    assert!(parse_report(&format!("AUDIT-BEGIN\n{empty_scope}\nAUDIT-END\n")).is_none());
 }
 
 #[test]
@@ -172,7 +173,10 @@ fn apply_report_mints_one_unit_per_cause() {
     assert_eq!(first.write_scope, ["src/pump/gate.rs"]);
     let second = &st.units["pumpfix-g1-2"];
     assert_eq!(second.status, Status::Pending);
-    assert_eq!(second.title, long_root_cause.chars().take(90).collect::<String>());
+    assert_eq!(
+        second.title,
+        long_root_cause.chars().take(90).collect::<String>()
+    );
     assert_eq!(second.write_scope, ["src/pump/audit.rs"]);
 
     let record = &st.needs["pumpfix-g1"];
@@ -186,8 +190,9 @@ fn apply_report_mints_one_unit_per_cause() {
 
     let report = fs::read_to_string(ctx.home.join("audit").join("pumpfix-g1.report")).unwrap();
     assert_eq!(report, raw);
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("audit report for pumpfix-g1: 2 fix units")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("audit report for pumpfix-g1: 2 fix units"))
+    );
 }
