@@ -110,14 +110,12 @@ fn delivered_letters_with_dependency_headers_agree_across_graph_step_and_list() 
     deliver(p, "tasks", "second", "task", &[&first]);
     deliver(p, "tasks", "orphan", "task", &["deadbeef"]);
 
-    // The letters are held; the audit names what drifted and repair fixes it.
+    // The nodes were minted at ingest, so the audit is clean with no repair run.
     let audit = ok(p, &["graph", "audit"]);
-    assert!(audit.contains("missing_node"), "{audit}");
-    let repair = ok(p, &["graph", "audit", "--repair"]);
-    assert!(repair.contains("[repaired]"), "{repair}");
-    let clean = ok(p, &["graph", "audit"]);
-    assert!(clean.contains("missing=0"), "{clean}");
-    assert!(clean.contains("edge=0"), "{clean}");
+    assert!(audit.contains("missing=0"), "{audit}");
+    assert!(audit.contains("edge=0"), "{audit}");
+    assert!(!audit.contains("missing_node"), "{audit}");
+    assert!(!audit.contains("[repaired]"), "{audit}");
 
     let blocked = ok(p, &["task", "list", "--for", "hand", "--blocked"]);
     assert!(blocked.contains("second"), "{blocked}");
