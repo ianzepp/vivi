@@ -35,7 +35,7 @@ pub enum RoleCommand {
         /// Role name (local-part), e.g. hand-1 or head-ceo
         name: String,
 
-        /// Process class (hand, head, mind, operator, steward, or freeform)
+        /// Process class (hand, head, mind, operator, steward, digest, or freeform)
         #[arg(long)]
         kind: Option<String>,
 
