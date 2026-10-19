@@ -487,7 +487,7 @@ fn recovered_branch_setup(receipt: Option<&str>) -> (tempfile::TempDir, Ctx, Arc
     let mut running = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
     running.attempts = 1;
     put(&mut st, "u-1", running);
-    host.advance(RECONCILE_GRACE + 1);
+    host.advance(ctx.cfg.dispatch.budget + ctx.cfg.dispatch.overdue_grace + 1);
     (dir, ctx, host, st)
 }
 
