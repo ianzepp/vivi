@@ -113,6 +113,10 @@ pub struct Ctx {
     pub pool_sources: Arc<BTreeMap<String, PathBuf>>,
     /// Who runs this pump: mailspace address prefix plus sync name.
     pub actor: String,
+    /// The mailspace id this pump runs in: the component a pool identity
+    /// carries, and the name lane resources are scoped to. Empty when the
+    /// context was built without one.
+    pub mailspace: String,
 }
 
 impl Ctx {
@@ -142,6 +146,7 @@ impl Ctx {
             routing: Arc::new(RoleRouting::default()),
             pool_sources: Arc::new(BTreeMap::new()),
             actor: String::new(),
+            mailspace: String::new(),
         }
     }
 
@@ -163,6 +168,13 @@ impl Ctx {
     #[must_use]
     pub fn with_actor(mut self, actor: String) -> Self {
         self.actor = actor;
+        self
+    }
+
+    /// Set the mailspace id this pump runs in.
+    #[must_use]
+    pub fn with_mailspace(mut self, mailspace: String) -> Self {
+        self.mailspace = mailspace;
         self
     }
 
@@ -195,6 +207,7 @@ impl Ctx {
         target.target_id = id.to_string();
         target.routing = self.routing.clone();
         target.pool_sources = self.pool_sources.clone();
+        target.mailspace = self.mailspace.clone();
         Some(target)
     }
 

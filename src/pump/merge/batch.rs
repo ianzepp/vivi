@@ -12,8 +12,8 @@ use super::publish::publish;
 use super::{
     GIT_TIMEOUT, already_integrated, check_with_drift_retry, failed, failure_text, fetch_failure,
     flat, format_style_commit, git_error, identity_args, integrated_text, merge_line, merge_work,
-    outside_files, reset_repo, resolve_generated, scoped_checks, skips_proof, tail,
-    undecided_result,
+    outside_files, ramdisk_env_prefix, reset_repo, resolve_generated, scoped_checks, skips_proof,
+    tail, undecided_result,
 };
 
 /// A cleanly merged job plus the files its merge touched outside its scope.
@@ -240,10 +240,11 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
     checks.extend(scoped_checks(&ctx.cfg, &scopes));
     let total = checks.len();
     let tag = format!("batch of {}", merged.len());
+    let env = ramdisk_env_prefix(&ctx.cfg);
     for (i, cmd) in checks.iter().enumerate() {
         ctx.step(&format!("check {}/{total} start: {cmd}", i + 1));
         let t1 = ctx.now();
-        let out = check_with_drift_retry(ctx, &tag, cmd);
+        let out = check_with_drift_retry(ctx, &tag, &format!("{env}{cmd}"));
         ctx.log(&format!(
             "batch {} shared rc={} {}s: {cmd}",
             merged.len(),
@@ -327,7 +328,8 @@ fn bisect_shared(ctx: &Ctx, merged: &[Merged], cmd: &str) -> Bisect {
             continue;
         }
         let t1 = ctx.now();
-        let out = check_with_drift_retry(ctx, &m.job.uid, cmd);
+        let env = ramdisk_env_prefix(&ctx.cfg);
+        let out = check_with_drift_retry(ctx, &m.job.uid, &format!("{env}{cmd}"));
         ctx.log(&format!(
             "bisect {} rc={} {}s: {cmd}",
             m.job.uid,
@@ -461,7 +463,8 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             let head: String = cmd.chars().take(90).collect();
             ctx.step(&format!("proof {} start: {head}", m.job.uid));
             let t1 = ctx.now();
-            let out = check_with_drift_retry(ctx, &m.job.uid, cmd);
+            let env = ramdisk_env_prefix(&ctx.cfg);
+            let out = check_with_drift_retry(ctx, &m.job.uid, &format!("{env}{cmd}"));
             ctx.log(&format!(
                 "proof {} rc={} {}s: {head}",
                 m.job.uid,

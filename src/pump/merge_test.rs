@@ -7,9 +7,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpTarget};
+use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpRamDisk, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::merge::{batch_work, clear_stale_lock, failure_text, merge_work};
+use crate::pump::merge::{batch_work, clear_stale_lock, failure_text, merge_work, ramdisk_env_prefix};
 use crate::pump::state::{MergeJob, MergeResult};
 
 /// A context whose integration branch is `next`, with one shared check,
@@ -1420,4 +1420,85 @@ fn a_failing_scoped_check_is_proof_failed() {
         "{:?}",
         host.commands()
     );
+}
+
+/// The exact prefix a lane configured with an 8 GiB RAM disk exports.
+const LANE_ENV: &str = "env CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+CARGO_PROFILE_DEV_STRIP=symbols CARGO_PROFILE_TEST_DEBUG=0 \
+CARGO_PROFILE_TEST_STRIP=symbols ";
+
+/// A context with one shared check and a lane RAM disk of `lane_gib`.
+fn setup_ramdisk(lane_gib: u64) -> (TempDir, Ctx, Arc<FakeHost>) {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        committer_name: String::from("Pump Tester"),
+        committer_email: String::from("pump@example.com"),
+        merge: MergeConfig {
+            shared_checks: vec![String::from("cargo test --lib")],
+            ..MergeConfig::default()
+        },
+        ramdisk: PumpRamDisk {
+            lane_gib: Some(lane_gib),
+            ..PumpRamDisk::default()
+        },
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.reply("merge-base --is-ancestor origin/work/", 1, "");
+    (dir, ctx, host)
+}
+
+#[test]
+fn ramdisk_env_prefix_is_empty_when_lanes_have_no_ram_disk() {
+    let (_dir, ctx, _host) = setup("");
+    assert_eq!(ramdisk_env_prefix(&ctx.cfg), "");
+}
+
+#[test]
+fn ramdisk_env_prefix_exports_every_pair_in_key_order() {
+    let (_dir, ctx, _host) = setup_ramdisk(8);
+    assert_eq!(ramdisk_env_prefix(&ctx.cfg), LANE_ENV);
+}
+
+#[test]
+fn ramdisk_env_prefix_wraps_a_single_units_checks_and_leaves_git_bare() {
+    let (_dir, ctx, host) = setup_ramdisk(8);
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let cmds = host.commands();
+    assert!(
+        cmds.contains(&format!("{LANE_ENV}cargo test --lib")),
+        "{cmds:?}"
+    );
+    assert!(
+        cmds.contains(&format!("{LANE_ENV}./proof-u1.sh")),
+        "{cmds:?}"
+    );
+    assert!(
+        cmds.contains(&String::from("git rev-parse HEAD")),
+        "git stays unprefixed: {cmds:?}"
+    );
+}
+
+#[test]
+fn ramdisk_env_prefix_wraps_a_batch_shared_check() {
+    let (_dir, ctx, host) = setup_ramdisk(8);
+    host.reply("rev-parse origin/next", 0, "tip-batch\n");
+    let results = batch_work(&ctx, &batch());
+    assert!(results.iter().all(|r| r.ok == Some(true)), "{results:?}");
+    let cmds = host.commands();
+    assert!(
+        cmds.contains(&format!("{LANE_ENV}cargo test --lib")),
+        "{cmds:?}"
+    );
+    assert!(
+        cmds.contains(&format!("{LANE_ENV}./proof-u1.sh")),
+        "{cmds:?}"
+    );
+    for cmd in cmds.iter().filter(|cmd| cmd.starts_with("env ")) {
+        assert!(cmd.starts_with(LANE_ENV), "{cmd}");
+        assert!(!cmd.contains("git "), "only checks carry it: {cmd}");
+    }
 }

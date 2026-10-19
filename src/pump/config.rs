@@ -70,6 +70,8 @@ pub struct PumpConfig {
     pub dispatch: DispatchConfig,
     /// Merge settings (the `[pump.merge]` table).
     pub merge: MergeConfig,
+    /// Lane RAM disk settings (the `[pump.ramdisk]` table).
+    pub ramdisk: PumpRamDisk,
     /// Gate settings (the `[pump.gate]` table).
     pub gate: GateConfig,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
@@ -102,6 +104,7 @@ impl Default for PumpConfig {
             planner: PlannerConfig::default(),
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
+            ramdisk: PumpRamDisk::default(),
             gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
         }
@@ -450,6 +453,50 @@ impl Default for DispatchConfig {
     }
 }
 
+/// Lane RAM disk settings (the `[pump.ramdisk]` table). Sessions without a
+/// merge-lane RAM disk (the default) leave the repository's own build
+/// directories in place; a configured one gives every lane check a fresh,
+/// discardable one.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PumpRamDisk {
+    /// Size in GiB of the fresh RAM disk a merge lane runs its checks on;
+    /// `None` leaves lanes on disk.
+    pub lane_gib: Option<u64>,
+    /// GiB kept free for the host when a lane disk is admitted.
+    pub margin_gib: u64,
+    /// Environment pairs prefixed onto every lane check and proof command.
+    /// They apply to that command alone: the repository's own `Cargo.toml`
+    /// is never touched.
+    #[serde(default = "lane_env", skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+impl Default for PumpRamDisk {
+    fn default() -> Self {
+        Self {
+            lane_gib: None,
+            margin_gib: 6,
+            env: lane_env(),
+        }
+    }
+}
+
+/// The Cargo environment a RAM-disk lane exports: no incremental artifacts
+/// and no debug info or symbols, so a lane's build fits the disk it runs on.
+fn lane_env() -> BTreeMap<String, String> {
+    [
+        ("CARGO_INCREMENTAL", "0"),
+        ("CARGO_PROFILE_DEV_DEBUG", "0"),
+        ("CARGO_PROFILE_DEV_STRIP", "symbols"),
+        ("CARGO_PROFILE_TEST_DEBUG", "0"),
+        ("CARGO_PROFILE_TEST_STRIP", "symbols"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect()
+}
+
 /// Merge settings (the `[pump.merge]` table).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -665,6 +712,13 @@ impl PumpConfig {
         }
         if self.tick == 0 {
             bad.push("[pump] tick must be >= 1".into());
+        }
+        if let Some(gib) = self.ramdisk.lane_gib
+            && !(1..=1024).contains(&gib)
+        {
+            bad.push(format!(
+                "[pump.ramdisk] lane_gib must be between 1 and 1024, got {gib}"
+            ));
         }
         self.validate_dispatch(pools, role_pool, &mut bad);
         if self.targets.is_empty() {
@@ -997,3 +1051,7 @@ fn resolve(project: &Path, value: &str) -> PathBuf {
 fn known(pools: &[String], name: &str) -> bool {
     pools.iter().any(|pool| pool == name)
 }
+
+#[cfg(test)]
+#[path = "config_ramdisk_test.rs"]
+mod ramdisk;

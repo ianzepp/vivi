@@ -331,6 +331,7 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi)
         .with_routing(crate::routing::from_mailspace(&mailspace.config))
         .with_actor(actor_string(&mailspace))
+        .with_mailspace(mailspace.mailspace_id().to_string())
         .with_pool_sources(sources);
     crate::pump::priority::import_legacy(&ctx);
     if announce_ready {
