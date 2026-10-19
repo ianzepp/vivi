@@ -14,6 +14,7 @@ use crate::pump::board::*;
 use crate::pump::config::{BoardConfig, PlannerConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// A context with an operator sender and the `since` cutoff set; default
 /// mark `pump`, three planners, 1800 s plan timeout.
@@ -658,6 +659,60 @@ fn a_failed_reply_is_retried_on_the_next_pass() {
     host.reply("mail reply f1", 0, "queued");
     assert!(post_replies(&ctx, &mut st, &rows));
     assert_eq!(st.board.replied, vec![String::from("f1:planned")]);
+}
+
+#[test]
+fn a_stop_request_ends_the_board_pass_between_needs() {
+    let (_dir, ctx, host) = setup();
+    let path = ctx.home.join(DB_FILENAME);
+    fs::create_dir_all(&ctx.home).unwrap();
+    let mut store = PumpStore::open(&path).unwrap();
+    store.initialize_control("running").unwrap();
+    store.set_control_mode("stopped").unwrap();
+    drop(store);
+    host.reply("sync pull", 0, "pulled 0 messages");
+    host.reply(
+        "need list --from operator@bd371d96.local",
+        0,
+        &list(&[
+            row("s1", "2026-10-15T00:00", "First", &[]),
+            row("s2", "2026-10-15T00:00", "Second", &[]),
+        ]),
+    );
+    host.reply("--held", 0, "[]");
+    host.reply("--json --to mind", 0, "[]");
+    host.reply("need show s1", 0, "thread one");
+    host.reply("need show s2", 0, "thread two");
+    let mut st = State::default();
+    st.board.at = 0;
+
+    board(&ctx, &mut st);
+
+    let shows = host
+        .commands()
+        .iter()
+        .filter(|cmd| cmd.contains("need show"))
+        .count();
+    assert_eq!(shows, 1, "commands: {:?}", host.commands());
+    assert!(
+        host.commands().iter().any(|cmd| cmd.contains("need show s1")),
+        "the first need still runs: {:?}",
+        host.commands()
+    );
+    let planners = host
+        .spawned()
+        .iter()
+        .filter(|cmd| cmd.contains("planner-run"))
+        .count();
+    assert!(planners <= 1, "spawned: {:?}", host.spawned());
+    assert!(st.board.planning.contains_key("s1"));
+    assert!(!st.board.planning.contains_key("s2"));
+    assert!(
+        host.logs()
+            .contains(&String::from("board: control stop requested; finishing the pass early")),
+        "logs: {:?}",
+        host.logs()
+    );
 }
 
 #[test]

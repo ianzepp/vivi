@@ -250,23 +250,52 @@ pub fn launch_planners(
 ) {
     let skip = read_skip(ctx);
     for row in rows {
-        let handle = row.handle.as_str();
-        let old = row.date.as_str() < ctx.cfg.board.since.as_str();
-        if (old && !replan.contains(handle) && !approved.contains(handle))
-            || skip.contains(handle)
-            || st.needs.contains_key(handle)
-            || st.board.planning.contains_key(handle)
-        {
-            continue;
+        launch_row(ctx, st, row, &skip, approved, replan);
+        if stop_requested(ctx) {
+            ctx.log(STOP_NOTE);
+            return;
         }
-        if plan_path(ctx, handle).exists()
-            || st.board.planning.len()
-                >= usize::try_from(ctx.cfg.board.planners_max).unwrap_or(usize::MAX)
-        {
-            continue;
-        }
-        launch_one(ctx, st, row, replan);
     }
+}
+
+/// Plan one candidate row unless it is old, skipped, known, already
+/// planning or planned, or the concurrent-planner cap is reached.
+fn launch_row(
+    ctx: &Ctx,
+    st: &mut State,
+    row: &NeedRow,
+    skip: &BTreeSet<String>,
+    approved: &BTreeSet<String>,
+    replan: &mut BTreeSet<String>,
+) {
+    let handle = row.handle.as_str();
+    let old = row.date.as_str() < ctx.cfg.board.since.as_str();
+    if (old && !replan.contains(handle) && !approved.contains(handle))
+        || skip.contains(handle)
+        || st.needs.contains_key(handle)
+        || st.board.planning.contains_key(handle)
+        || plan_path(ctx, handle).exists()
+        || st.board.planning.len()
+            >= usize::try_from(ctx.cfg.board.planners_max).unwrap_or(usize::MAX)
+    {
+        return;
+    }
+    launch_one(ctx, st, row, replan);
+}
+
+/// The log line a pass writes when control stops it between two needs.
+const STOP_NOTE: &str = "board: control stop requested; finishing the pass early";
+
+/// True when the operator asked the pump to stop or to shut down. A read
+/// failure returns false: the run loop's own exit check handles hard
+/// failures.
+fn stop_requested(ctx: &Ctx) -> bool {
+    matches!(
+        crate::pump::control::read(&ctx.home),
+        Ok(control)
+            if control.mode == crate::pump::control::PumpMode::Stopped
+                || control.shutdown_requested
+    )
 }
 
 /// Write the need file, spawn the planner for one row, and record it.
@@ -453,21 +482,30 @@ fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
 pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
     let mut said = false;
     for row in rows {
-        let Some((verdict, reason, units, revision)) = st.needs.get(&row.handle).map(|record| {
-            (
-                record.verdict.clone(),
-                record.reason.clone(),
-                record.units.clone(),
-                record.revision,
-            )
-        }) else {
-            continue;
-        };
-        if reply_stages(ctx, st, &row.handle, &verdict, &reason, &units, revision) {
+        if reply_row(ctx, st, row) {
             said = true;
+        }
+        if stop_requested(ctx) {
+            ctx.log(STOP_NOTE);
+            return said;
         }
     }
     said
+}
+
+/// Send the pending reply stages of one row; true when any reply succeeded.
+fn reply_row(ctx: &Ctx, st: &mut State, row: &NeedRow) -> bool {
+    let Some((verdict, reason, units, revision)) = st.needs.get(&row.handle).map(|record| {
+        (
+            record.verdict.clone(),
+            record.reason.clone(),
+            record.units.clone(),
+            record.revision,
+        )
+    }) else {
+        return false;
+    };
+    reply_stages(ctx, st, &row.handle, &verdict, &reason, &units, revision)
 }
 
 /// Send the pending stages of one need; true when any reply succeeded.
