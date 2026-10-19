@@ -170,7 +170,10 @@ fn same_name_mailspaces_keep_their_slots_apart() {
     ready(&dir_a);
     ready(&dir_b);
     assert!(claim(&dir_a, "task1", 100).unwrap().is_some());
-    assert!(!dir_b.join("claim").exists(), "b keeps no claim of a's task");
+    assert!(
+        !dir_b.join("claim").exists(),
+        "b keeps no claim of a's task"
+    );
     let theirs = pool_slots(&b, &list(&root).unwrap());
     assert_eq!(theirs.len(), 1);
     assert_eq!(theirs[0].task, None, "b's slot is still unclaimed");
