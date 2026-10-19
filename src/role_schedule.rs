@@ -13,6 +13,25 @@ use crate::duration::parse_duration_secs;
 const DUE_GRACE_NUM: u64 = 1;
 const DUE_GRACE_DEN: u64 = 10;
 
+/// Role kinds the pump auto-runs on their configured cadence.
+///
+/// Shared here so the mailspace layer (`step`), the CLI glue (`role`, pool
+/// doctor) and the pump all read one predicate without a mailspace → pump
+/// import.
+pub const AUTO_RUN_KINDS: [&str; 2] = ["head", "scoper"];
+
+/// True when a role kind is one the pump auto-runs (case-insensitive,
+/// trimmed). Missing or empty kinds are never auto-run.
+#[must_use]
+pub fn auto_run_kind(kind: Option<&str>) -> bool {
+    let Some(value) = kind.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    AUTO_RUN_KINDS
+        .iter()
+        .any(|known| value.eq_ignore_ascii_case(known))
+}
+
 /// Latest durable outbound signal used for schedule math.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastSignal {
