@@ -639,6 +639,17 @@ fn the_ssh_root_must_be_a_directory_of_its_own() {
 }
 
 #[test]
+fn ssh_root_stays_absolute() {
+    let mut config = ssh();
+    config.ssh.root = Some("rel/x".into());
+    assert!(
+        err(&config).contains("ssh.root must be"),
+        "{}",
+        err(&config)
+    );
+}
+
+#[test]
 fn ssh_tables_are_checked_for_unknown_keys_and_only_for_ssh() {
     let config: PoolConfig = toml::from_str(&SSH.replace("root = ", "port = 22\nroot = ")).unwrap();
     assert!(err(&config).contains("unknown field \"port\" in [pools.main.ssh]"));
