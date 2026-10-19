@@ -298,16 +298,12 @@ fn a_tick_logs_dispatch_and_collect_durations() {
     let (merger, _results, _jobs) = Merger::detached();
     tick(&ctx, &mut st, &merger);
     assert!(
-        host.logs()
-            .iter()
-            .any(|l| l.starts_with("collect took ")),
+        host.logs().iter().any(|l| l.starts_with("collect took ")),
         "no collect duration in {:?}",
         host.logs()
     );
     assert!(
-        host.logs()
-            .iter()
-            .any(|l| l.starts_with("dispatch took ")),
+        host.logs().iter().any(|l| l.starts_with("dispatch took ")),
         "no dispatch duration in {:?}",
         host.logs()
     );

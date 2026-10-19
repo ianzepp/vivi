@@ -75,7 +75,10 @@ pub fn tick(
     }
     let t_dispatch = Instant::now();
     dispatch::dispatch(ctx, st);
-    ctx.log(&format!("dispatch took {}s", t_dispatch.elapsed().as_secs()));
+    ctx.log(&format!(
+        "dispatch took {}s",
+        t_dispatch.elapsed().as_secs()
+    ));
     save(ctx, st)?;
     write_status(ctx, st, &merger.lane_lines(ctx.now()));
     gates_pass(ctx, st);
