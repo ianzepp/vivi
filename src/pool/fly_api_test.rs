@@ -243,13 +243,13 @@ mod refresh {
             requests[7]
         );
         assert!(requests[8].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
-        let nonce = |request: &str| {
+        fn nonce(request: &str) -> Option<&str> {
             request.lines().find_map(|line| {
                 let (name, value) = line.split_once(':')?;
                 name.eq_ignore_ascii_case("fly-machine-lease-nonce")
                     .then_some(value.trim())
             })
-        };
+        }
         assert_eq!(nonce(&requests[0]), Some("lease-123"));
         assert_eq!(nonce(&requests[1]), Some("lease-123"));
         assert_eq!(nonce(&requests[2]), None);
