@@ -82,15 +82,22 @@ fn branch_on_remote(host: &FakeHost) {
     host.reply("ls-remote", 0, "abc\trefs/heads/unit/u-1-a1\n");
 }
 
-fn mails(host: &FakeHost) -> Vec<String> {
+/// The `mail reply` commands sent to need `need`.
+fn mails_to(host: &FakeHost, need: &str) -> Vec<String> {
+    let needle = format!("mail reply {need} ");
     host.commands()
         .into_iter()
-        .filter(|cmd| cmd.contains("mail reply n1"))
+        .filter(|cmd| cmd.contains(&needle))
         .collect()
 }
 
-/// The attempt records written for need `n1`: file name and text.
-fn records(ctx: &Ctx) -> Vec<(String, String)> {
+fn mails(host: &FakeHost) -> Vec<String> {
+    mails_to(host, "n1")
+}
+
+/// The attempt records written for need `need`: file name and text.
+fn records_for(ctx: &Ctx, need: &str) -> Vec<(String, String)> {
+    let prefix = format!("reply-{need}-attempt-");
     let Ok(dir) = fs::read_dir(ctx.home.join("board")) else {
         return Vec::new();
     };
@@ -99,12 +106,16 @@ fn records(ctx: &Ctx) -> Vec<(String, String)> {
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let text = fs::read_to_string(entry.path()).ok()?;
-            name.starts_with("reply-n1-attempt-")
-                .then_some((name, text))
+            name.starts_with(&prefix).then_some((name, text))
         })
         .collect();
     found.sort();
     found
+}
+
+/// The attempt records written for need `n1`: file name and text.
+fn records(ctx: &Ctx) -> Vec<(String, String)> {
+    records_for(ctx, "n1")
 }
 
 /// The one record; panics unless there is exactly one.
@@ -193,6 +204,89 @@ fn a_nonzero_agent_exit_with_a_pushed_branch_is_a_failed_attempt_not_a_delivery(
     assert!(text.contains("failing command:\n  agent exit 3\nexcerpt:\n  thread panicked: boom\n"));
     assert!(text.contains("hand's final message:\n  I could not finish."));
     assert_eq!(mails(&host).len(), 1);
+}
+
+const FIX_NEED: &str = "pumpfix-g01234567";
+const FIX_UID: &str = "pumpfix-g01234567-1";
+
+/// A gate-fix unit: uid `pumpfix-g01234567-1`, on need `need`.
+fn fix_state(need: &str) -> State {
+    let mut st = State::default();
+    st.units.insert(
+        String::from(FIX_UID),
+        Unit {
+            need: String::from(need),
+            ..inflight()
+        },
+    );
+    st
+}
+
+/// The wiring of a failed attempt that pushed its branch, on a fix unit.
+fn a_failed_fix_attempt(host: &FakeHost) {
+    host.reply("pool reconcile", 0, RECONCILE);
+    branch_on_remote(host);
+    host.reply("log --oneline", 0, "w1 WIP (attempt failed): fix it\n");
+    host.reply(
+        "task show",
+        0,
+        &receipt(3, "I could not finish.", "thread panicked: boom"),
+    );
+}
+
+#[test]
+fn a_fix_unit_with_a_pump_synthesized_need_posts_no_reply() {
+    let (_dir, ctx, host) = setup();
+    a_failed_fix_attempt(&host);
+    host.reply("mail reply", 1, "message not found");
+    let mut st = fix_state(FIX_NEED);
+    collect(&ctx, &mut st);
+    // The attempt itself is still collected.
+    assert_eq!(st.units[FIX_UID].status, Status::Pending);
+    assert_eq!(st.units[FIX_UID].history.len(), 1);
+    let replies: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains("mail reply"))
+        .collect();
+    assert!(replies.is_empty(), "{replies:?}");
+    let names: Vec<String> = fs::read_dir(ctx.home.join("board"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("reply-pumpfix-"))
+        .collect();
+    assert!(names.is_empty(), "{names:?}");
+    let logs = host.logs();
+    assert!(
+        !logs
+            .iter()
+            .any(|line| line.contains("attempt record send failed")),
+        "{logs:?}"
+    );
+    assert!(!st.board.sync_pending);
+}
+
+#[test]
+fn a_fix_unit_of_a_real_gatefix_need_posts_its_record_on_that_thread() {
+    let (_dir, ctx, host) = setup();
+    a_failed_fix_attempt(&host);
+    let mut st = fix_state("ab12cd34");
+    collect(&ctx, &mut st);
+    let sent = mails_to(&host, "ab12cd34");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let found = records_for(&ctx, "ab12cd34");
+    assert_eq!(found.len(), 1, "{found:?}");
+    // The stage is `attempt-{uid}-a{attempt}-{slug}`, and `slug` is the
+    // ending label (`agent failed: finished/agent exit 3`) made file-safe and
+    // cut to 24 characters.
+    assert_eq!(
+        found[0].0,
+        "reply-ab12cd34-attempt-pumpfix-g01234567-1-a1-agent-failed--finished-a.txt"
+    );
+    assert!(found[0].1.contains("pump: attempt record\n"));
+    assert!(st.board.sync_pending);
 }
 
 #[test]
