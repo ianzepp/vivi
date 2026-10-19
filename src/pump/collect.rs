@@ -28,7 +28,7 @@ const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
 /// receipt.
 const GATE_GRACE: u64 = 2400;
 /// Split-planner exits without a plan before the unit is parked stuck.
-const SPLIT_RETRY_MAX: u32 = 3;
+pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
 
 /// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.

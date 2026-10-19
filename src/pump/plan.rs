@@ -517,6 +517,8 @@ fn record(
     if let Some(replaces) = replaces
         && let Some(old) = st.units.get_mut(replaces)
     {
+        let was_stuck = old.status == Status::Stuck;
+        let fails = old.split_fails;
         old.status = Status::Replaced;
         old.replaced_by.clone_from(&ids);
         let rec = st
@@ -537,6 +539,9 @@ fn record(
             );
         }
         ctx.log(&format!("split {replaces} into {count} units"));
+        if was_stuck {
+            resolve_stuck(ctx, replaces, fails);
+        }
         return;
     }
     let verdict = str_field(plan, "verdict").unwrap_or("units").to_string();
@@ -556,6 +561,17 @@ fn record(
         },
     );
     ctx.log(&format!("plan {need} verdict={verdict} units={count}"));
+}
+
+/// Resolve the exception a late split plan recovers: a unit parked by the
+/// planner's repeated failures names that kind, a silent one names its own.
+fn resolve_stuck(ctx: &Ctx, uid: &str, fails: u32) {
+    let kind = if fails >= crate::pump::collect::SPLIT_RETRY_MAX {
+        "split-planner-failed"
+    } else {
+        "split-no-answer"
+    };
+    ctx.resolve(kind, uid, "a late split plan replaced the stuck unit");
 }
 
 /// A string field of a JSON object.
