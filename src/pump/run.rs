@@ -23,10 +23,14 @@ use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// One pump tick: ingest and collect, feed merges, dispatch ready work, run
-/// gates, then perform the periodic board pass and write status.
+/// gates, then perform the periodic board pass and write status. Pending
+/// operator requeue requests apply right after the first ingest, so a
+/// requeued unit can dispatch in the same tick and the change lands at the
+/// next save point.
 pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumError> {
     merger.apply(ctx, st);
     plan::ingest(ctx, st);
+    crate::pump::requeue::apply_pending(ctx, st);
     let gate_target = st
         .active_gate_target()
         .unwrap_or_else(|| String::from("default"));
