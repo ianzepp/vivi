@@ -246,6 +246,62 @@ fn native_codex_filters_and_rebuilds_output() {
 }
 
 #[test]
+fn codex_responses_stream_parses_with_temperature() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{}}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"text\":\"ok\"}]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[]}}\n\n".to_vec(),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock.clone());
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let rt = runtime();
+    let (server, base) = wait(&rt, load_codex(&dir, &creds, addr));
+    let inbound = json!({
+        "model": "gpt-6-luna",
+        "input": [{"role":"user","content":"Reply with exactly: ok"}],
+        "stream": true,
+        "temperature": 0.3
+    });
+    let response = get(&base)
+        .post(format!("{base}/codex/v1/responses"))
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json")
+        .body(inbound.to_string())
+        .send()
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let seen = mock.seen();
+    let last = seen.last().expect("upstream saw the sanitized body");
+    let forwarded: Value = serde_json::from_slice(&last.body).unwrap();
+    assert!(
+        forwarded.get("temperature").is_none(),
+        "temperature leaked upstream: {forwarded}"
+    );
+    let text = response.text().unwrap();
+    let mut buffer = text.clone().into_bytes();
+    let events = vivi::proxy::sse::take_events(&mut buffer);
+    assert!(events.len() >= 3, "only {} event(s): {text:?}", events.len());
+    for event in &events {
+        let data = event
+            .data()
+            .unwrap_or_else(|| panic!("named frame without data: {:?}", event.raw));
+        assert!(
+            data == "[DONE]" || serde_json::from_str::<Value>(&data).is_ok(),
+            "data is neither [DONE] nor JSON: {data:?}"
+        );
+        assert!(
+            !event.raw.trim_end_matches('\n').contains("\n\n"),
+            "blank line inside one frame: {:?}",
+            event.raw
+        );
+    }
+    server.stop();
+}
+
+#[test]
 fn native_codex_chat_shim_usage_zero() {
     let mock = Mock::new();
     mock.push(Script {
