@@ -389,3 +389,47 @@ fn slot_detect_matches_cwd_under_the_slot_dir() {
     let found = pump_slots::detect_here(&marks, Some(&checkout));
     assert_eq!(found.map(|s| s.id.as_str()), Some("demo/lanes/slot-1"));
 }
+
+/// A minimal local slot directory in the layout `vivi pool` writes.
+fn write_slot(root: &std::path::Path, space: &str, index: u32) {
+    let dir = root.join(space).join("here").join(format!("slot-{index}"));
+    fs::create_dir_all(dir.join("marks")).unwrap();
+    fs::create_dir_all(dir.join("repo")).unwrap();
+    fs::write(dir.join("marks/vivi_pool"), "here\n").unwrap();
+    fs::write(dir.join("marks/vivi_pool_mailspace"), format!("{space}\n")).unwrap();
+    fs::write(dir.join("marks/vivi_pool_slot"), format!("{index}\n")).unwrap();
+}
+
+#[test]
+fn scan_takes_this_mailspace_s_slots_and_legacy_but_not_a_foreign_id() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    write_slot(root, "app-12345678", 1);
+    write_slot(root, "app", 1);
+    write_slot(root, "app-99999999", 1);
+    let text = format!(
+        "name = \"app\"\n\
+         id = \"12345678-1234-5678-1234-567812345678\"\n\
+         \n\
+         [pools.here]\n\
+         provider = \"local\"\n\
+         slots = 1\n\
+         \n\
+         [pools.here.local]\n\
+         root = {root:?}\n",
+        root = root.to_string_lossy()
+    );
+    let config: crate::mailspace::MailspaceConfig = toml::from_str(&text).expect("mailspace toml");
+    let mut ids: Vec<String> = pump_slots::scan(&config)
+        .into_iter()
+        .map(|mark| mark.id)
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![
+            String::from("app-12345678/here/slot-1"),
+            String::from("app/here/slot-1"),
+        ]
+    );
+}
