@@ -246,6 +246,14 @@ pub struct Unit {
     /// Dependency handle holding this unit back, when one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_on: Option<String>,
+    /// Transient-class failures already retried without counting toward
+    /// max_attempts. `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default)]
+    pub transient_retries: u32,
+    /// Epoch seconds before which the unit is not redispatched (transient
+    /// backoff). `pump.db` keeps it in the unit's `extra_json` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_not_before: Option<u64>,
     /// The quarantine id this unit is a member of: set on every unit set
     /// aside in a quarantined batch. A repair unit is never a member (see
     /// `repairs`). `pump.db` keeps it in the unit's `extra_json` column.
