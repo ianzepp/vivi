@@ -208,7 +208,7 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     }
     force_after_fix(ctx, st);
     let force = ctx.flag(&force_flag(ctx));
-    if !gate_due(ctx, st, force) || waiting_for_external(ctx, st) {
+    if !gate_due(st, force) || waiting_for_external(ctx, st) {
         return;
     }
     let Some(pool) = crate::routing::RoleRouting::first_free(
@@ -245,10 +245,10 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
 }
 
 /// Force the next gate when a fix unit of this target merged after the last
-/// gate started: a merged fix is the path back to green and should not wait
-/// for the merge-count or clock rules. Writes `FORCE-GATE` once per merged
-/// fix (starting the gate moves `last_gate.at` past the merge); does nothing
-/// while a gate runs or the flag is already set.
+/// gate started: a merged fix is the path back to green and gates on the next
+/// tick. Writes `FORCE-GATE` once per merged fix (starting the gate moves
+/// `last_gate.at` past the merge); does nothing while a gate runs or the flag
+/// is already set.
 fn force_after_fix(ctx: &Ctx, st: &State) {
     if st.has_active_gate() || ctx.flag(&force_flag(ctx)) {
         return;
@@ -271,14 +271,11 @@ fn force_after_fix(ctx: &Ctx, st: &State) {
     }
 }
 
-/// The due rules: a `FORCE-GATE` flag, no baseline yet, enough merges since
-/// the last gate, or new merges with the last gate old enough.
-fn gate_due(ctx: &Ctx, st: &State, force: bool) -> bool {
-    let count_due =
-        st.merges.saturating_sub(st.last_gate.merges) >= u64::from(ctx.cfg.gate.every_merges);
-    let clock_due = st.merges > st.last_gate.merges
-        && ctx.now().saturating_sub(st.last_gate.at) > ctx.cfg.gate.every_seconds;
-    force || st.baseline.is_none() || count_due || clock_due
+/// The due rules: a `FORCE-GATE` flag, no baseline yet, or any merge that
+/// landed since the last gate started. The `every_merges` / `every_seconds`
+/// thresholds are retired.
+fn gate_due(st: &State, force: bool) -> bool {
+    force || st.baseline.is_none() || st.merges > st.last_gate.merges
 }
 
 /// The remote integration tip: first token of

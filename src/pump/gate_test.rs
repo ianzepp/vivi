@@ -20,7 +20,8 @@ const TIP: &str = "0123456789abcdef0123456789abcdef01234567";
 /// The gate task handle the fake `task send` reports.
 const TASK: &str = "1a2b3c4d";
 
-/// A gate config with two pools, the count at 8 and the clock at 1800 s.
+/// A gate config with two pools; the retired `every_merges` / `every_seconds`
+/// stay at their defaults (8 / 1800 s) to prove they no longer matter.
 fn gate_cfg() -> PumpConfig {
     PumpConfig {
         branch: String::from("next"),
@@ -163,13 +164,10 @@ fn parse_failing_returns_none_for_prose() {
 }
 
 #[test]
-fn start_gate_is_not_due_before_the_merge_count_or_the_clock() {
+fn start_gate_is_not_due_when_no_merge_landed_since_the_last_gate() {
     let (dir, ctx, host) = setup();
     let mut st = fresh_state();
     host.advance(1000);
-    start_gate(&ctx, &mut st);
-    assert!(host.commands().is_empty());
-    st.merges = 5;
     start_gate(&ctx, &mut st);
     assert!(host.commands().is_empty());
     assert!(st.last_gate.task.is_none());
