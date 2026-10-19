@@ -208,6 +208,29 @@ fn start_gate_is_not_due_when_no_merge_landed_since_the_last_gate() {
 }
 
 #[test]
+fn a_gate_is_due_after_every_landed_batch() {
+    let (dir, ctx, host) = setup();
+    let mut st = fresh_state();
+    st.last_gate.at = ctx.now();
+    start_gate(&ctx, &mut st);
+    assert!(host.commands().is_empty());
+    assert!(st.last_gate.task.is_none());
+    st.merges = 3;
+    st.last_gate.merges = 2;
+    wire(&host);
+    start_gate(&ctx, &mut st);
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert_eq!(st.last_gate.tip.as_deref(), Some(TIP));
+    let dispatched: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains("pool dispatch"))
+        .collect();
+    assert_eq!(dispatched.len(), 1, "one dispatch for one merge batch");
+    drop(dir);
+}
+
+#[test]
 fn start_gate_is_due_with_no_baseline_and_dispatches_read_only_to_the_first_pool_with_a_slot() {
     let (dir, ctx, host) = setup();
     wire(&host);
