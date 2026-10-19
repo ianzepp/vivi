@@ -437,3 +437,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
     let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
     left == right
 }
+
+#[cfg(test)]
+#[path = "merge_test.rs"]
+mod tests;
