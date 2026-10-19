@@ -182,9 +182,10 @@ pub fn hidden_tags(config: &Option<MemoConfig>) -> BTreeSet<String> {
 /// Parse a stored message date (RFC3339) into UTC, or `None` when it does
 /// not parse.
 fn memo_date(raw: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .ok()
-        .map(|date| date.with_timezone(&Utc))
+    match DateTime::parse_from_rfc3339(raw) {
+        Ok(date) => Some(date.with_timezone(&Utc)),
+        Err(_) => None,
+    }
 }
 
 /// Sort newest-first (undated last, stable) and apply the filter's result cap.
