@@ -960,11 +960,7 @@ fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
 #[test]
 fn units_of_a_real_handle_need_settle_their_owner_even_when_uids_differ() {
     let (dir, ctx, host) = residual_setup(2);
-    host.reply(
-        "need send",
-        0,
-        "created operator ef012345\nsent ef012345\n",
-    );
+    host.reply("need send", 0, "created operator ef012345\nsent ef012345\n");
     let mut st = gate_state(4);
     st.red
         .insert(String::from(RESIDUAL), String::from("ab12cd34"));
