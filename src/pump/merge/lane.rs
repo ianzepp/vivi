@@ -69,6 +69,10 @@ struct Lane {
     /// Uids inside the lane whose results are not applied yet; empty means
     /// the lane is idle.
     busy: Vec<String>,
+    /// Results of this pump run that merged, for the status line.
+    merged: u32,
+    /// Results of this pump run that failed as `merge-conflict`.
+    conflicts: u32,
     /// False once the lane thread could not start or has gone away.
     alive: bool,
     /// Consecutive batches lost entirely to lane-level failures.
@@ -98,6 +102,8 @@ impl Lane {
             n,
             send,
             busy: Vec::new(),
+            merged: 0,
+            conflicts: 0,
             alive,
             fails: 0,
             down_until: 0,
@@ -107,20 +113,23 @@ impl Lane {
         }
     }
 
-    /// The status line of this lane at `now`.
+    /// The status line of this lane at `now`: its state, then the `merged
+    /// <m> conflict <c>` counts of this pump run, so a lane at 0% stands out
+    /// beside its siblings. A lane whose thread is gone reports only `gone`.
     fn status_line(&self, now: u64) -> String {
         let name = format!("lane {}/{}", self.target, self.n);
         if !self.alive {
             return format!("{name} gone");
         }
+        let counts = format!("merged {} conflict {}", self.merged, self.conflicts);
         if !self.busy.is_empty() {
-            return format!("{name} busy {}", self.progress.busy_text(now));
+            return format!("{name} busy {} {counts}", self.progress.busy_text(now));
         }
         if self.down_until > now {
             let left = duration_text(self.down_until - now);
-            return format!("{name} backoff {left} left");
+            return format!("{name} backoff {left} left {counts}");
         }
-        format!("{name} idle")
+        format!("{name} idle {counts}")
     }
 
     /// The last result of a batch is in: count the batch as lost when every
@@ -226,8 +235,10 @@ impl Merger {
     }
 
     /// One status line per lane, in lane order: `lane default/0 busy 8
-    /// units 12m03s: check 1/4 stage 1 (2m10s)`, `lane default/1 idle`,
-    /// `lane default/2 backoff 7m00s left` or `lane default/3 gone`.
+    /// units 12m03s: check 1/4 stage 1 (2m10s) merged 12 conflict 36`,
+    /// `lane default/1 idle merged 12 conflict 36`, `lane default/2 backoff
+    /// 7m00s left merged 12 conflict 36` or `lane default/3 gone`. The
+    /// `merged`/`conflict` counts are per pump run, not persisted.
     #[must_use]
     pub fn lane_lines(&self, now: u64) -> Vec<String> {
         self.lock()
@@ -300,6 +311,12 @@ impl Merger {
                 continue;
             }
             lane.busy.retain(|busy| busy != &result.uid);
+            if result.ok == Some(true) {
+                lane.merged += 1;
+            }
+            if result.ok == Some(false) && result.why.as_deref() == Some("merge-conflict") {
+                lane.conflicts += 1;
+            }
             let lane_level = lane_level_failure(result);
             if lane_level {
                 lane.last_failure = format!(

@@ -614,3 +614,30 @@ fn a_new_lane_clone_of_a_local_worktree_target_gets_the_pump_base_remote() {
         .expect("lane 1 is cloned");
     assert!(commands[clone + 1..].contains(&add), "{commands:?}");
 }
+
+#[test]
+fn lane_lines_count_merged_and_conflicted_results_per_lane() {
+    let (_dir, ctx, _host) = setup("");
+    let (merger, out, jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Delivered), ("u2", Status::Delivered)]);
+    merger.feed(&ctx, &mut st);
+    assert_eq!(take(&jobs).len(), 2);
+    out.send(MergeResult {
+        uid: String::from("u1"),
+        ok: Some(true),
+        ..MergeResult::default()
+    })
+    .unwrap();
+    out.send(MergeResult {
+        uid: String::from("u2"),
+        ok: Some(false),
+        why: Some(String::from("merge-conflict")),
+        ..MergeResult::default()
+    })
+    .unwrap();
+    merger.apply(&ctx, &mut st);
+    assert_eq!(
+        merger.lane_lines(ctx.now()),
+        ["lane default/0 idle merged 1 conflict 1"]
+    );
+}
