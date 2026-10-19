@@ -1040,3 +1040,76 @@ fn a_planner_that_exits_127_is_freed_and_retried_once_then_parked() {
     assert_eq!(planner_spawns(&host), after_park);
     assert!(!st.board.planning.contains_key("n1"));
 }
+
+#[test]
+fn a_dependent_is_not_planned_before_its_prerequisite() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"b","blocked_by":["a"]}]"#,
+    );
+    let mut st = State::default();
+    let rows = vec![
+        need_row("b", "2026-10-15", "Dependent"),
+        need_row("a", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("a"));
+    assert!(!st.board.planning.contains_key("b"));
+    assert_eq!(planner_spawns(&host), 1);
+    assert!(
+        host.logs()
+            .join("\n")
+            .contains("board: b waits on unplanned prerequisite a")
+    );
+}
+
+#[test]
+fn a_dependent_is_planned_once_its_prerequisite_has_a_plan() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        planners_max: 1,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"b","blocked_by":["a"]}]"#,
+    );
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans").join("a.json"), "{}").unwrap();
+    let mut st = State::default();
+    let rows = vec![
+        need_row("b", "2026-10-15", "Dependent"),
+        need_row("a", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("b"));
+    assert!(!st.board.planning.contains_key("a"));
+    assert_eq!(planner_spawns(&host), 1);
+}
+
+#[test]
+fn an_unreadable_dependency_read_does_not_gate_planning() {
+    let (_dir, ctx, host) = setup();
+    host.reply("graph blocked", 1, "error: locked");
+    let mut st = State::default();
+    let rows = vec![
+        need_row("b", "2026-10-15", "Dependent"),
+        need_row("a", "2026-10-15", "Root"),
+    ];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(st.board.planning.contains_key("a"));
+    assert!(st.board.planning.contains_key("b"));
+    assert_eq!(planner_spawns(&host), 2);
+    assert!(host.logs().join("\n").contains("graph blocked unreadable"));
+}
