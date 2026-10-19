@@ -681,3 +681,120 @@ fn lane_lines_count_merged_and_conflicted_results_per_lane() {
         ["lane default/0 idle merged 1 conflict 1"]
     );
 }
+
+// ------------------------------------------------------------- the lane RAM disk
+
+use crate::pool::ramdisk::Runner;
+use crate::pump::merge::{detached_worker, lane_work, LaneRam};
+use std::sync::Mutex;
+
+/// An attached fake RAM disk: whole-disk device and mount point.
+type Attached = Vec<(String, String)>;
+
+/// A `Runner` serving `mount` / `df -g` from an attach list that `diskutil
+/// eject` shrinks; every other command fails, so a test notices an unexpected
+/// call. Each attached disk reports 9999 GiB, more than any machine's free
+/// memory.
+struct LaneFakeRunner {
+    attached: Mutex<Attached>,
+    calls: Mutex<Vec<String>>,
+}
+
+impl LaneFakeRunner {
+    fn new(attached: &[(&str, &str)]) -> Self {
+        Self {
+            attached: Mutex::new(
+                attached
+                    .iter()
+                    .map(|(device, mount)| ((*device).to_string(), (*mount).to_string()))
+                    .collect(),
+            ),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn attached(&self) -> Attached {
+        self.attached.lock().expect("attach list").clone()
+    }
+
+    fn eject(&self, device: &str) {
+        self.attached
+            .lock()
+            .expect("attach list")
+            .retain(|(whole, _)| whole != device && !whole.starts_with(&format!("{device}s")));
+    }
+
+    /// Every command line the fake was asked to run, in order.
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().expect("call log").clone()
+    }
+}
+
+impl Runner for LaneFakeRunner {
+    fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
+        let line = argv.join(" ");
+        self.calls.lock().expect("call log").push(line.clone());
+        match line.as_str() {
+            "mount" => Ok(self
+                .attached()
+                .iter()
+                .map(|(device, mount)| format!("{device} on {mount} (apfs, local, nodev)"))
+                .collect::<Vec<_>>()
+                .join("\n")),
+            "df -g" => Ok(self
+                .attached()
+                .iter()
+                .map(|(device, mount)| format!("{device} 9999 9999 0 0 100% {mount}"))
+                .collect::<Vec<_>>()
+                .join("\n")),
+            _ => match line.strip_prefix("diskutil eject ") {
+                Some(device) => {
+                    self.eject(device);
+                    Ok(String::new())
+                }
+                None => Err(format!("fake: unexpected `{line}`")),
+            },
+        }
+    }
+}
+
+#[test]
+fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = tela_config();
+    cfg.ramdisk = crate::pump::config::config_ramdisk::PumpRamDisk {
+        lane_gib: Some(8),
+        margin_gib: 6,
+        ..Default::default()
+    };
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let tela = ctx.for_target("tela").unwrap();
+    // One attached `vivi-` disk holding 9999 GiB, so held plus the 8 GiB disk
+    // plus the 6 GiB margin exceeds any machine's free memory.
+    let fake = Arc::new(LaneFakeRunner::new(&[("/dev/disk7s1", "/Volumes/vivi-huge")]));
+    let worker = detached_worker(
+        &tela,
+        1,
+        Some(LaneRam {
+            gib: 8,
+            runner: fake.clone(),
+        }),
+    );
+
+    let results = lane_work(&worker, &[tela_job("u1")]);
+
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert_eq!(result.ok, None, "undecided: the unit is re-fed");
+    assert_eq!(result.why.as_deref(), Some("ramdisk-wait"));
+    let detail = result.detail.as_deref().unwrap_or_default();
+    assert!(detail.starts_with("ramdisk-wait:"), "{detail}");
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("hdiutil attach")),
+        "the job waits queued; no disk is mounted: {:?}",
+        fake.calls()
+    );
+}

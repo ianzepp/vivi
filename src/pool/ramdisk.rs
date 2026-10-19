@@ -125,11 +125,11 @@ pub fn admit_with(
 /// # Errors
 /// Same as [`admit_with`]: a `ramdisk-wait:` error means the job waits queued.
 pub fn admit(runner: &dyn Runner, want_gib: u64, margin_gib: u64) -> Result<(), String> {
-    admit_with(runner, available_memory(), want_gib, margin_gib)
+    admit_with(runner, available_bytes(), want_gib, margin_gib)
 }
 
 /// Available memory in bytes, as `sysinfo` reports it right now.
-fn available_memory() -> u64 {
+pub(crate) fn available_bytes() -> u64 {
     let system = System::new_with_specifics(
         RefreshKind::new().with_memory(MemoryRefreshKind::new().with_ram()),
     );
