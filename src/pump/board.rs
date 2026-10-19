@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::pump::collect::spawn_planner;
-use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
 use crate::pump::ready::satisfied;
 use crate::pump::state::State;
 
@@ -150,32 +150,83 @@ pub fn read_skip(ctx: &Ctx) -> BTreeSet<String> {
     }
 }
 
-/// Drop planner entries whose plan file exists (done) or that ran longer
-/// than `plan_timeout`; a timed-out planner without a plan file raises
+/// Consecutive planner exits without a plan before the need is parked.
+const PLANNER_TRIES: u32 = 3;
+
+/// Seconds a failed planner waits before relaunch, doubled per failure.
+const PLANNER_BACKOFF: u64 = 60;
+
+/// Drop planner entries whose plan file exists (done), whose planner exited
+/// without a plan (see [`fail_exited_planner`]), or that ran longer than
+/// `plan_timeout`; a timed-out planner without a plan file raises
 /// `plan-no-answer`.
 pub fn expire_planning(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.board.plan_timeout;
-    let mins = timeout / 60;
     let now = ctx.now();
-    let expired: Vec<String> = st
-        .board
-        .planning
-        .iter()
-        .filter(|(handle, at)| {
-            plan_path(ctx, handle).exists() || now.saturating_sub(**at) > timeout
-        })
-        .map(|(handle, _)| handle.clone())
-        .collect();
-    for handle in expired {
-        if !plan_path(ctx, &handle).exists() {
+    let handles: Vec<String> = st.board.planning.keys().cloned().collect();
+    for handle in handles {
+        let started = st.board.planning.get(&handle).copied().unwrap_or(now);
+        if plan_path(ctx, &handle).exists() {
+            st.board.planning.remove(&handle);
+            st.board.planner_pids.remove(&handle);
+            st.board.planner_fails.remove(&handle);
+            st.board.planner_retry_at.remove(&handle);
+        } else if exit_receipt_path(&out_path(ctx, &handle)).exists() {
+            fail_exited_planner(ctx, st, &handle);
+        } else if now.saturating_sub(started) > timeout {
+            st.board.planning.remove(&handle);
             ctx.exception(
                 "plan-no-answer",
                 &handle,
-                &format!("the planner wrote no plan in {mins} minutes"),
+                &format!("the planner wrote no plan in {} minutes", timeout / 60),
             );
         }
-        st.board.planning.remove(&handle);
     }
+}
+
+/// Free the slot of a planner that exited without a plan: log its exit code
+/// and output tail, raise `plan-crashed`, count the failure, and either
+/// schedule a backed-off retry or park the need after [`PLANNER_TRIES`].
+fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
+    let out = out_path(ctx, handle);
+    let code = fs::read_to_string(exit_receipt_path(&out))
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .unwrap_or(-1);
+    let text = fs::read_to_string(&out).unwrap_or_default();
+    let tail = tail_note(&text, 200);
+    ctx.log(&format!("board: planner {handle} exited rc={code}: {tail}"));
+    ctx.exception(
+        "plan-crashed",
+        handle,
+        &format!("planner exited rc={code} without a plan: {tail}"),
+    );
+    st.board.planning.remove(handle);
+    st.board.planner_pids.remove(handle);
+    let fails = {
+        let count = st.board.planner_fails.entry(handle.to_owned()).or_insert(0);
+        *count += 1;
+        *count
+    };
+    if fails < PLANNER_TRIES {
+        let backoff = PLANNER_BACKOFF * 2_u64.pow(fails.saturating_sub(1));
+        st.board
+            .planner_retry_at
+            .insert(handle.to_owned(), ctx.now().saturating_add(backoff));
+    } else {
+        st.board.planner_retry_at.remove(handle);
+        st.board.planner_failed.push(handle.to_owned());
+        ctx.exception(
+            "plan-failed",
+            handle,
+            "planner exited three times without writing a plan",
+        );
+    }
+}
+
+/// The detached output file of the board planner for one handle.
+fn out_path(ctx: &Ctx, handle: &str) -> PathBuf {
+    ctx.home.join("board").join(format!("{handle}.out"))
 }
 
 /// Plan the new needs among `rows`: skip old, skipped,

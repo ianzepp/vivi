@@ -717,6 +717,75 @@ fn a_slow_board_pass_waits_the_interval_from_completion() {
 }
 
 #[test]
+fn an_exited_planner_frees_its_slot_and_is_logged() {
+    let (_dir, ctx, host) = setup();
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    fs::write(ctx.home.join("board/n1.out"), "bash: pi: command not found\n").unwrap();
+    fs::write(ctx.home.join("board/n1.out.rc"), "127").unwrap();
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now() - 5);
+    st.board.planner_pids.insert(String::from("n1"), 4242);
+
+    expire_planning(&ctx, &mut st);
+
+    assert!(!st.board.planning.contains_key("n1"));
+    assert!(!st.board.planner_pids.contains_key("n1"));
+    assert_eq!(st.board.planner_fails.get("n1"), Some(&1));
+    assert_eq!(st.board.planner_retry_at.get("n1"), Some(&(ctx.now() + 60)));
+    let wanted = "board: planner n1 exited rc=127: bash: pi: command not found";
+    assert!(
+        host.logs().iter().any(|line| line.contains(wanted)),
+        "logs: {:?}",
+        host.logs()
+    );
+    let exc = exceptions(&ctx);
+    assert!(exc.contains("plan-crashed n1 "), "exceptions: {exc}");
+}
+
+#[test]
+fn a_third_planner_failure_parks_the_need() {
+    let (_dir, ctx, _host) = setup();
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    fs::write(ctx.home.join("board/n1.out.rc"), "1").unwrap();
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now() - 5);
+    st.board.planner_fails.insert(String::from("n1"), 2);
+
+    expire_planning(&ctx, &mut st);
+
+    assert!(!st.board.planning.contains_key("n1"));
+    assert_eq!(st.board.planner_failed, vec![String::from("n1")]);
+    assert!(!st.board.planner_retry_at.contains_key("n1"));
+    let exc = exceptions(&ctx);
+    assert!(
+        exc.contains("plan-failed n1 planner exited three times without writing a plan"),
+        "exceptions: {exc}"
+    );
+}
+
+#[test]
+fn a_landed_plan_resets_planner_bookkeeping() {
+    let (_dir, ctx, _host) = setup();
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/n1.json"), "{}").unwrap();
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now() - 5);
+    st.board.planner_pids.insert(String::from("n1"), 4242);
+    st.board.planner_fails.insert(String::from("n1"), 2);
+    st.board
+        .planner_retry_at
+        .insert(String::from("n1"), ctx.now() + 60);
+
+    expire_planning(&ctx, &mut st);
+
+    assert!(!st.board.planning.contains_key("n1"));
+    assert!(!st.board.planner_pids.contains_key("n1"));
+    assert!(!st.board.planner_fails.contains_key("n1"));
+    assert!(!st.board.planner_retry_at.contains_key("n1"));
+    assert!(st.board.planner_failed.is_empty());
+}
+
+#[test]
 fn a_planner_started_in_the_future_is_kept_and_does_not_underflow() {
     let (_dir, ctx, _host) = setup();
     let mut st = State::default();
