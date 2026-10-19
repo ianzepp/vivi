@@ -342,6 +342,9 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
         ctx.log("pump is stopped; run vivi pump start to enable it");
         return Ok(());
     }
+    for line in crate::pump::ramsweep::sweep_ramdisks(&ctx, &crate::pool::ramdisk::RealRunner) {
+        ctx.log(&line);
+    }
     run_with_locked(&ctx, once)?;
     drop(lock);
     Ok(())
