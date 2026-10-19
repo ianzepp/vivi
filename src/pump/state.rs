@@ -632,6 +632,10 @@ pub struct MergeJob {
     /// Files this unit may write.
     #[serde(default)]
     pub write_scope: Vec<String>,
+    /// The local repository the branch lives in for a `local` worktree pool
+    /// (single-target pumps); `None` means the target's remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PathBuf>,
 }
 
 /// What the merge thread reports back for one job.

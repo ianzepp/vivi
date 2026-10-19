@@ -424,6 +424,10 @@ fn send_batch(ctx: &Ctx, st: &mut State, lane: &mut Lane, uids: Vec<String>) {
             proof: unit.proof.clone(),
             tools: unit.tools.clone(),
             write_scope: unit.write_scope.clone(),
+            source: unit
+                .pool
+                .as_deref()
+                .and_then(|pool| ctx.pool_sources.get(pool).cloned()),
         });
     }
     ctx.log(&format!(
