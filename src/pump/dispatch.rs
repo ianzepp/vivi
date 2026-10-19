@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::thread;
 
 use crate::pump::brief::brief_for;
 use crate::pump::envfail;
@@ -194,12 +195,37 @@ fn hand_pool_is_fixed(ctx: &Ctx) -> bool {
         .is_some()
 }
 
-/// Phase two of a dispatch tick: start the planned units one at a time and
-/// apply each outcome to the state. Serial by design; [`start_unit`] owns the
-/// I/O and [`apply_start`] owns every state write.
+/// Phase two of a dispatch tick: run the planned starts concurrently, then
+/// apply each outcome to the state. One thread per planned unit runs the
+/// per-unit I/O in [`start_unit`] (task send plus pool dispatch, roughly 40s
+/// each in production) while the tick thread only joins the handles in ranked
+/// order and applies the outcomes with [`apply_start`] — every state write
+/// stays on the tick thread. A worker that panics joins as
+/// [`UnitStart::SendFailed`], so the failure is log-only, the reserved slot
+/// is given back, and the tick survives.
 fn run_starts(ctx: &Ctx, st: &mut State, planned: &[Planned], free: &mut BTreeMap<String, u32>) {
-    for p in planned {
-        let start = start_unit(ctx, &p.uid, &p.unit, &p.plan, &p.model);
+    let results: Vec<UnitStart> = thread::scope(|scope| {
+        let handles: Vec<_> = planned
+            .iter()
+            .map(|p| {
+                let ctx = ctx.clone();
+                let uid = p.uid.clone();
+                let unit = p.unit.clone();
+                let model = p.model.clone();
+                let plan = &p.plan;
+                scope.spawn(move || start_unit(&ctx, &uid, &unit, plan, &model))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| UnitStart::SendFailed {
+                    text: String::from("dispatch thread panicked"),
+                })
+            })
+            .collect()
+    });
+    for (p, start) in planned.iter().zip(results) {
         apply_start(ctx, st, &p.uid, &p.plan, &p.model, start, free);
     }
 }
