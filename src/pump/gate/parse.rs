@@ -11,13 +11,19 @@ pub(crate) const BEGIN: &str = "FAILING-BEGIN";
 pub(crate) const END: &str = "FAILING-END";
 /// The single line a gate worker replies with when the build itself broke.
 pub(crate) const BUILD_FAILED: &str = "BUILD-FAILED";
+/// The prefix of the line naming a test target whose run died without a
+/// libtest summary.
+pub(crate) const TARGET_DIED: &str = "TARGET-DIED";
 
 /// Read the failing-test names from a gate reply.
 ///
 /// The last `FAILING-BEGIN ... FAILING-END` block that is usable supplies the
-/// names: an entirely empty block means zero failures, and `<`-prefixed
-/// template lines are skipped. With no usable block and no `BUILD-FAILED` in
-/// the text, the fallback reads `<crate> <path>` pairs (crate at least two
+/// names: an entirely empty block means zero failures, `<`-prefixed template
+/// lines are skipped, and a `TARGET-DIED <target>` line names no test. A block
+/// holding only `TARGET-DIED` lines is usable and yields the empty list, so the
+/// fallback never re-reads the names out of the rest of the text. With no
+/// usable block and no `BUILD-FAILED` in the text, the fallback reads
+/// `<crate> <path>` pairs (crate at least two
 /// `[a-z0-9_-]` characters, path two or more `::`-joined segments), ignoring
 /// surrounding punctuation, deduplicated and sorted. `Some(["BUILD-FAILED"])`
 /// comes from a block holding exactly that line; `None` means unreadable.
@@ -31,6 +37,24 @@ pub fn parse_failing(text: &str) -> Option<Vec<String>> {
     }
     let pairs = crate_path_pairs(text);
     if pairs.is_empty() { None } else { Some(pairs) }
+}
+
+/// The test targets the gate worker reported dead, deduplicated and sorted.
+///
+/// A target killed at a deadline or crashed prints no `test result:` line, so
+/// none of its failures can be named; every `TARGET-DIED <target>` line in
+/// every marker block contributes the token after the keyword.
+#[must_use]
+pub fn target_deaths(text: &str) -> Vec<String> {
+    let mut died = BTreeSet::new();
+    for block in marker_blocks(text) {
+        for line in block.lines().map(str::trim) {
+            if let Some(target) = death_target(line) {
+                died.insert(target.to_owned());
+            }
+        }
+    }
+    died.into_iter().collect()
 }
 
 /// Every `FAILING-BEGIN ... FAILING-END` block body, in order: the port of
@@ -59,19 +83,42 @@ pub(crate) fn marker_blocks(text: &str) -> Vec<String> {
 
 /// The last block with a usable line — non-empty and not a `<template>` — or
 /// an entirely empty block, which yields the empty name list.
+///
+/// A `TARGET-DIED <target>` line is a usable line that is not a name: it keeps
+/// the block usable while contributing nothing to the list, so a block naming
+/// only dead targets yields the empty list instead of falling through to the
+/// `<crate> <path>` scan.
 pub(crate) fn last_usable_block(text: &str) -> Option<Vec<String>> {
     for block in marker_blocks(text).iter().rev() {
-        let lines: Vec<String> = block
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('<'))
-            .map(String::from)
-            .collect();
-        if !lines.is_empty() || block.trim().is_empty() {
+        let mut deaths = false;
+        let mut lines = Vec::new();
+        for line in block.lines().map(str::trim) {
+            if is_death_line(line) {
+                deaths = true;
+            } else if !line.is_empty() && !line.starts_with('<') {
+                lines.push(line.to_owned());
+            }
+        }
+        if deaths || !lines.is_empty() || block.trim().is_empty() {
             return Some(lines);
         }
     }
     None
+}
+
+/// `true` for a `TARGET-DIED` line, with or without a target after it.
+fn is_death_line(line: &str) -> bool {
+    line.strip_prefix(TARGET_DIED)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+}
+
+/// The target named by a `TARGET-DIED <target>` line, if the line is one and
+/// carries a target.
+fn death_target(line: &str) -> Option<&str> {
+    if !is_death_line(line) {
+        return None;
+    }
+    line[TARGET_DIED.len()..].split_whitespace().next()
 }
 
 /// `true` for path characters: `[A-Za-z0-9_]`.
