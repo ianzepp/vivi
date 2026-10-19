@@ -106,6 +106,24 @@ fn an_unchanged_thread_does_not_amend() {
 }
 
 #[test]
+fn an_unchanged_thread_keeps_the_need_closed() {
+    let (_dir, ctx, host, mut st) = setup();
+    let mut hasher = Sha256::new();
+    hasher.update(b"m1\n");
+    hasher.update(b"same body\n");
+    st.needs.get_mut("n1").unwrap().thread_sha256 =
+        Some(format!("v2:{}", hex::encode(hasher.finalize())));
+    st.closed_needs.push(String::from("n1"));
+    script_thread(&host, "same body");
+    detect(&ctx, &mut st);
+    assert!(st.closed_needs.iter().any(|closed| closed == "n1"));
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.is_empty());
+    assert!(host.spawned().is_empty());
+    assert!(st.needs["n1"].thread_seen_at.unwrap() > 1_000);
+}
+
+#[test]
 fn a_pump_attempt_record_reply_does_not_amend() {
     for reply_from in ["mind", "mind@12345678.local"] {
         let (_dir, mut ctx, host, mut st) = setup();
