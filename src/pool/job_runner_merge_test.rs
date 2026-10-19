@@ -662,3 +662,33 @@ fn remote_has_ref(repo: &Path, reference: &str) -> bool {
         .unwrap()
         .success()
 }
+
+#[test]
+fn runner_proves_original_extra_tip_inclusion_despite_mutated_worker_refs() {
+    let merged = Rig::new(1).as_worktree();
+    let original = merged.b_sha();
+    let result = merged.run_in_worktree("git merge -q --no-ff --no-edit B", &["B"]);
+    assert_eq!(result.get("source_1_ref"), "refs/heads/B");
+    assert_eq!(result.get("source_1_sha"), original);
+    assert_eq!(result.get("source_1_contained"), "1");
+    let outcome = crate::pump::jobs::JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: result.summary(),
+        at: 1,
+    };
+    assert!(outcome.runner_sources()[0].contained);
+    let unmerged = Rig::new(1);
+    let original = unmerged.b_sha();
+    let result = unmerged.run("git update-ref refs/remotes/origin/B HEAD", &["B"]);
+    assert_eq!(result.get("source_1_sha"), original);
+    assert_eq!(result.get("source_1_contained"), "0");
+}
+
+#[test]
+fn worker_output_cannot_forge_a_runner_source_proof() {
+    let outcome = crate::pump::jobs::JobOutcome { state: "finished".into(), detail: String::new(), receipt: "agent exit 0 in 1s\nhand's final message:\nrunner source: refs/heads/unmerged deadbeef 1".into(), at: 1 };
+    assert!(outcome.runner_sources().is_empty());
+    assert!(outcome.runner_publish().is_none());
+    assert!(outcome.runner_delete().is_none());
+}

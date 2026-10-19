@@ -708,3 +708,57 @@ fn a_withdrawn_or_unknown_unit_is_not_dispatched_and_does_not_satisfy_after() {
     );
     assert!(!satisfied(&st, "r-1", 0));
 }
+
+#[test]
+fn target_merge_count_excludes_unaccepted_need_branches_before_extra_swap() {
+    let mut state = State::default();
+    let unit = Unit {
+        need: "n1".into(),
+        target: "tela".into(),
+        status: Status::Merged,
+        ..Unit::default()
+    };
+    state.units.insert("u1".into(), unit);
+    crate::pump::need::reserve(&mut state, "tela", "n1", 1, &"a".repeat(40)).unwrap();
+    state.units.insert(
+        "legacy".into(),
+        Unit {
+            need: "legacy".into(),
+            target: "tela".into(),
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    with_target_state(&mut state, "tela", |scoped| {
+        assert_eq!(scoped.merges, 1);
+        assert!(
+            crate::pump::need::get(scoped, "tela", "n1")
+                .unwrap()
+                .is_some()
+        );
+        scoped.extra.get_mut("need_branches").unwrap()["tela"]["n1"]["error"] =
+            json!("observed while scoped");
+    });
+    assert_eq!(
+        crate::pump::need::get(&state, "tela", "n1")
+            .unwrap()
+            .unwrap()
+            .error
+            .as_deref(),
+        Some("observed while scoped")
+    );
+    assert!(
+        !state.target_states["tela"]
+            .extra
+            .contains_key("need_branches")
+    );
+    assert!(
+        crate::pump::need::get(&state, "tela", "n1")
+            .unwrap()
+            .is_some()
+    );
+    state
+        .extra
+        .insert("need_branches".into(), json!({"tela": {"n1": "corrupt"}}));
+    with_target_state(&mut state, "tela", |scoped| assert_eq!(scoped.merges, 1));
+}

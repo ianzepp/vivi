@@ -460,7 +460,7 @@ fn rebuild_batch(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>
 }
 
 /// Set a batch aside after a shared check failed: push the lane's `HEAD`
-/// (the merged batch and its style commit) to a new `pump/quarantine/<id>`
+/// (the merged batch and its style commit) to a new `vivi/quarantine/<id>`
 /// branch, reset the lane, and report every merged job as quarantined. A push
 /// that did not land leaves every job undecided, to be fed again later.
 fn quarantine_batch(

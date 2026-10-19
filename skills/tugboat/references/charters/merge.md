@@ -73,7 +73,9 @@ assignment in the task body. Do not list the class board.
   decides whether a collision actually occurred.
 - For `pump-job-kind: need-merge`, merge exactly one supplied accepted
   `vivi/need/<need>` source at the full accepted tip into the current configured
-  integration target. The assignment binds `target`, `need`, `revision`,
+  integration target. Fetch that exact target ref and fast-forward the scratch
+  checkout to its published tip before merging; preserve work already landed
+  by other accepted needs. Do not refresh the need branch. The assignment binds `target`, `need`, `revision`,
   `base`, `tip`, and `source_job_id`, and supplies the exact
   `required_checks` list. Keep `PUMP_MERGE_RESULT=` and return one source entry
   `{kind:"job",id:<source_job_id>,status:"merged|undecided|dropped",why,detail}`.

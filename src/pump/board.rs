@@ -641,7 +641,7 @@ fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
 }
 
 /// Reply once on every candidate need's thread that has a verdict: stage
-/// `planned` always, stage `merged` when every unit is satisfied.
+/// `planned` always, then implementation or landing when units are settled.
 /// Returns whether any reply was sent.
 pub fn post_replies(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> bool {
     let mut said = false;
@@ -678,17 +678,35 @@ fn reply_stages(
     revision: u64,
 ) -> bool {
     let mut said = false;
+    let (managed, fully_landed) = managed_landing_state(ctx, st, handle);
     let mut stages = vec![String::from("planned")];
     if revision > 1 {
         stages.push(format!("revised-{revision}"));
     }
-    stages.push(String::from("merged"));
+    if !units.is_empty() && units.iter().all(|uid| satisfied(st, uid, 0)) {
+        let stage = match (managed, fully_landed) {
+            (Some(true), true) | (Some(false), _) => "merged",
+            (Some(true), false) => "implemented",
+            (None, _) => "unverified",
+        };
+        stages.push(String::from(stage));
+    }
     for stage in stages {
-        let key = format!("{handle}:{stage}");
+        let key = reply_dedup_key(handle, &stage, revision, managed);
         if st.board.replied.iter().any(|sent| sent == &key) {
             continue;
         }
-        let Some(mut body) = reply_body(st, &stage, verdict, reason, units, revision) else {
+        let Some(mut body) = reply_body(
+            st,
+            handle,
+            &stage,
+            verdict,
+            reason,
+            units,
+            revision,
+            managed,
+            fully_landed,
+        ) else {
             continue;
         };
         if stage == "merged"
@@ -703,6 +721,37 @@ fn reply_stages(
         }
     }
     said
+}
+
+fn reply_dedup_key(handle: &str, stage: &str, revision: u64, managed: Option<bool>) -> String {
+    match (managed, stage) {
+        (Some(true), "implemented") => format!("{handle}:implemented-r{revision}"),
+        (Some(true), "merged") => format!("{handle}:managed-merged-r{revision}"),
+        (None, "unverified") => format!("{handle}:unverified-r{revision}"),
+        _ => format!("{handle}:{stage}"),
+    }
+}
+
+/// Fail closed when managed lifecycle metadata cannot be read.
+fn managed_landing_state(ctx: &Ctx, st: &State, handle: &str) -> (Option<bool>, bool) {
+    match crate::pump::need::managed(st, handle) {
+        Ok(false) => (Some(false), false),
+        Ok(true) => match crate::pump::need::fully_landed(st, handle) {
+            Ok(landed) => (Some(true), landed),
+            Err(error) => {
+                ctx.log(&format!(
+                    "board: landing state unreadable for {handle}: {error}"
+                ));
+                (Some(true), false)
+            }
+        },
+        Err(error) => {
+            ctx.log(&format!(
+                "board: managed state unreadable for {handle}: {error}"
+            ));
+            (None, false)
+        }
+    }
 }
 
 /// The timing summary for a need's `merged` reply, read back through the CLI
@@ -734,15 +783,18 @@ fn merged_timing(ctx: &Ctx, handle: &str) -> Option<String> {
     ))
 }
 
-/// The reply body for one stage, or `None` when the stage must wait:
-/// `merged` waits until the need has units and every one is satisfied.
+/// The reply body for one stage, or `None` when the stage must wait for units
+/// to settle or for managed landing and cleanup to verify.
 fn reply_body(
     st: &State,
+    handle: &str,
     stage: &str,
     verdict: &str,
     reason: &str,
     units: &[String],
     revision: u64,
+    managed: Option<bool>,
+    fully_landed: bool,
 ) -> Option<String> {
     if stage == "planned" {
         let list = unit_list(st, units, false);
@@ -760,11 +812,57 @@ fn reply_body(
     }
     if !units.is_empty() && units.iter().all(|uid| satisfied(st, uid, 0)) {
         let list = unit_list(st, units, true);
+        if stage == "implemented" && managed == Some(true) && !fully_landed {
+            return Some(format!(
+                "pump: unit work is settled on this managed need's isolated branch (r{revision}). Its landing and branch-cleanup lifecycle is not yet fully verified.\n{list}"
+            ));
+        }
+        if stage == "unverified" && managed.is_none() {
+            return Some(format!(
+                "pump: unit work is settled for this need (r{revision}), but its managed branch and landing state are unreadable. Target inclusion and cleanup are unverified.\n{list}"
+            ));
+        }
+        if stage == "merged" && managed == Some(true) && fully_landed {
+            let landings = managed_landing_details(st, handle);
+            return Some(format!(
+                "pump: this managed need was accepted and verified on its target integration ref(s) (r{revision}). Need-branch cleanup is verified. Promotion to main is separate.\n{landings}\n{list}"
+            ));
+        }
+        if stage != "merged" || managed != Some(false) {
+            return None;
+        }
         return Some(format!(
             "pump: every unit of this need is merged into its target integration branch (r{revision}).\n{list}\nNot reviewed. Not on main."
         ));
     }
     None
+}
+
+/// Acceptance and verified target refs for a fully landed managed need.
+fn managed_landing_details(st: &State, handle: &str) -> String {
+    let details: Vec<String> = crate::pump::need::all(st)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|branch| branch.need == handle)
+        .filter_map(|branch| {
+            let landing = branch.landing_receipt?;
+            let cleanup = branch.cleanup_receipt?;
+            Some(format!(
+                "- {}: accepted {} ({}); {} observed at {}; {} verified absent",
+                branch.target,
+                landing.verdict,
+                landing.acceptance_receipt_key,
+                landing.target_ref,
+                landing.observed_target_sha,
+                cleanup.branch_ref
+            ))
+        })
+        .collect();
+    if details.is_empty() {
+        String::from("- acceptance, target inclusion, and branch cleanup receipts verified")
+    } else {
+        details.join("\n")
+    }
 }
 
 /// `- <uid> <title>` or, with `commits`, `- <uid> <status> <commit>`.
@@ -807,12 +905,19 @@ pub(crate) fn send_reply(ctx: &Ctx, handle: &str, stage: &str, body: &str) -> bo
         ));
         return false;
     }
-    let args = format!(
-        "mail reply {handle} --from {} --to {} --body-file {}",
-        ctx.cfg.reply_from,
-        ctx.cfg.reply_to(),
-        shell_quote(&path.to_string_lossy())
+    let mut args = format!(
+        "mail reply {} --from {}",
+        shell_quote(handle),
+        shell_quote(&ctx.cfg.reply_from)
     );
+    let reply_to = ctx.cfg.reply_to();
+    if !reply_to.is_empty() {
+        args.push_str(&format!(" --to {}", shell_quote(&reply_to)));
+    }
+    args.push_str(&format!(
+        " --body-file {}",
+        shell_quote(&path.to_string_lossy())
+    ));
     let out = ctx.vivi(&args, 60);
     ctx.log(&format!(
         "board reply {handle} {stage} rc={} {}",

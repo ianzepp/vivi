@@ -105,8 +105,10 @@ pub(crate) struct Plan {
     /// Next unused branch suffix. This can exceed `attempt` after a stale
     /// branch refusal without charging a hand attempt.
     pub(crate) branch_suffix: u32,
-    /// `unit/<uid>-a<branch_suffix>`.
+    /// `vivi/unit/<uid>-a<branch_suffix>`.
     pub(crate) branch: String,
+    /// Branch or commit the pool should use as the unit's starting point.
+    pub(crate) from_ref: String,
 }
 
 /// One unit reserved for a start: its id, a snapshot of the unit, the
@@ -218,6 +220,9 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         if !prepare_ready_unit(ctx, st, &uid, &holds, &done_needs) {
             continue;
         }
+        if !ensure_need_branch(ctx, st, &uid) {
+            continue;
+        }
         let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned, &gate) else {
             continue;
         };
@@ -241,6 +246,32 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         });
     }
     run_starts(ctx, st, &planned, &mut free);
+}
+
+fn ensure_need_branch(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
+    if ctx.mailspace.is_empty() {
+        return true;
+    }
+    let branch_owner = st.units.get(uid).and_then(|unit| {
+        unit.repairs.is_none().then(|| {
+            let revision = st
+                .needs
+                .get(&unit.need)
+                .map_or(unit.revision.max(1), |need| need.revision.max(1));
+            (unit.target_id().to_owned(), unit.need.clone(), revision)
+        })
+    });
+    let Some((target, need, revision)) = branch_owner else {
+        return true;
+    };
+    match crate::pump::need::ensure_creation(ctx, st, &target, &need, revision) {
+        Ok(ready) => ready,
+        Err(error) => {
+            ctx.exception("need-branch-state", &need, &error.to_string());
+            ctx.log(&format!("need branch holds {need}: {error}"));
+            false
+        }
+    }
 }
 
 fn dispatch_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
@@ -550,8 +581,33 @@ fn plan_unit(
         model: pick_unit_model(ctx, st, unit, &pool, planned),
         attempt,
         branch_suffix,
-        branch: format!("unit/{uid}-a{branch_suffix}"),
+        branch: crate::pump::need::unit_branch(uid, branch_suffix),
+        from_ref: unit_start_ref(ctx, st, unit),
     })
+}
+
+/// The unit's explicit base wins; otherwise managed units start at their
+/// active need ref and legacy units use the configured dispatch base.
+fn unit_start_ref(ctx: &Ctx, st: &State, unit: &Unit) -> String {
+    if unit.repairs.is_some()
+        && let Some(base) = &unit.base
+    {
+        return base.clone();
+    }
+    if let Ok(Some(branch)) = crate::pump::need::get(st, unit.target_id(), &unit.need)
+        && branch.status == crate::pump::need::NeedBranchStatus::Active
+    {
+        return branch
+            .branch_tip_sha
+            .unwrap_or_else(|| branch.base_sha.clone());
+    }
+    if let Some(base) = &unit.base {
+        return base.clone();
+    }
+    ctx.cfg.for_target(unit.target_id()).map_or_else(
+        || ctx.cfg.dispatch_from().to_string(),
+        |cfg| cfg.dispatch_from().to_string(),
+    )
 }
 
 /// Choose a branch after both charged attempts and the last known branch. A
@@ -560,7 +616,7 @@ fn next_branch_suffix(uid: &str, unit: &Unit, attempt: u32) -> u32 {
     let last = unit
         .branch
         .as_deref()
-        .and_then(|branch| branch.strip_prefix(&format!("unit/{uid}-a")))
+        .and_then(|branch| branch.strip_prefix(&crate::pump::need::unit_branch_prefix(uid)))
         .and_then(|suffix| match suffix.parse::<u32>() {
             Ok(suffix) => Some(suffix),
             Err(_) => None,
@@ -733,7 +789,7 @@ fn dispatch_cmd(
         shell_quote(ctx.cfg.kind_name(&unit.tools)),
         shell_quote(unit.target_id()),
         shell_quote(model),
-        shell_quote(&unit_base(ctx, unit)),
+        shell_quote(&plan.from_ref),
         shell_quote(&plan.branch),
         budget,
     );
@@ -800,19 +856,7 @@ fn report_send_failure(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
 pub(crate) fn dispatch_base(ctx: &Ctx, st: &State, uid: &str) -> String {
     st.units.get(uid).map_or_else(
         || ctx.cfg.dispatch_from().to_string(),
-        |unit| unit_base(ctx, unit),
-    )
-}
-
-/// The dispatch base for one unit in hand: its own `base` when it has one,
-/// else the target's `dispatch.from`.
-fn unit_base(ctx: &Ctx, unit: &Unit) -> String {
-    if let Some(base) = &unit.base {
-        return base.clone();
-    }
-    ctx.cfg.for_target(unit.target_id()).map_or_else(
-        || ctx.cfg.dispatch_from().to_string(),
-        |cfg| cfg.dispatch_from().to_string(),
+        |unit| unit_start_ref(ctx, st, unit),
     )
 }
 

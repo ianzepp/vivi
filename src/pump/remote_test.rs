@@ -34,7 +34,7 @@ fn job(uid: &str) -> MergeJob {
     MergeJob {
         uid: uid.to_string(),
         target: String::from("default"),
-        branch: format!("unit/{uid}-a1"),
+        branch: crate::pump::need::unit_branch(uid, 1),
         title: format!("unit {uid}"),
         need: "56f1d749".to_string(),
         proof: vec!["cargo test".to_string()],
@@ -218,7 +218,7 @@ fn the_job_file_is_a_json_array_of_merge_jobs_with_the_documented_keys() {
     let back: Vec<MergeJob> = serde_json::from_str(&claimed).unwrap();
     assert_eq!(back.len(), 1);
     assert_eq!(back[0].uid, "u1");
-    assert_eq!(back[0].branch, "unit/u1-a1");
+    assert_eq!(back[0].branch, "vivi/unit/u1-a1");
     assert_eq!(back[0].need, "56f1d749");
     assert_eq!(back[0].tools, "plain");
     assert_eq!(back[0].proof, vec!["cargo test"]);

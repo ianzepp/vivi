@@ -32,6 +32,58 @@ The receipt ends with one minified JSON line prefixed **PUMP_MERGE_RESULT=**. Th
 
 A failed shared check gets exactly one retry on the same tree before bisect or quarantine. A timeout (exit 124 or timeout-wrapper kill) is infrastructure uncertainty, not a source defect. A timed-out check whose retry passes is recovered and recorded. If a timeout is not followed by a passing retry, report every source as **undecided** with **why: "shared-check-timeout"** and detail naming the command and timeout. Do not bisect, quarantine, or create a repair unit. A non-timeout failure still present after its retry may proceed to bisect. Any solo check that times out during bisect is **undecided** with **why: "bisect-check-timeout"**, never a clean result or culprit. Timeout alone never opens quarantine repair work.
 
+## Need acceptance receipts
+
+Managed need audits are ordinary durable jobs sent to the active Auditor role
+and its pool fallback chain. Their brief names the durable job ID, the full
+frozen binding (**need**, **target**, **revision**, **base**, and **tip**), the
+review start **audit_base**, and the round. The first review uses the original
+base; a repair-only review starts at the previous frozen tip while retaining
+the original binding base.
+
+The worker ends with one minified JSON line prefixed
+**PUMP_NEED_AUDIT_RESULT=**. Its fields are **version: 1**, **receipt_key**,
+**job_id**, **binding**, **source_hash**, **audit_base**, **round**, **verdict**,
+**requirements**, **findings**, **diagnoses**, **blind_spots**, and **report**.
+Each requirement names its original **id** and **text**, a status
+(**SATISFIED**, **PARTIAL**, **MISSING**, **UNVERIFIED**, or
+**NOT_APPLICABLE**), and evidence. Each finding names an **id**, **content**,
+affected **paths**, and a **recheck_trigger**. Report provenance contains a
+stable **id** and **reference**; the controller adds task, pool, and collection
+time from the durable job. The controller validates every identity field and
+the complete requirement set against the saved job and current frozen range.
+An invalid, stale, contradictory, or incomplete receipt cannot accept the
+need. The **source_hash** is the v3 canonical hash of the root need and its
+source amendments, excluding only authenticated pump-generated replies. It is
+part of the durable job identity and is recomputed when the receipt is
+collected. A later source amendment makes the old receipt stale even when the
+plan revision, need branch, and frozen code tip are unchanged.
+
+The supported verdicts are **clean_pass**, **residual**, **block_range**, and
+**block_ship**. Clean and residual receipts can accept only the exact current
+range. Residual findings become deduplicated ordinary needs with their report,
+path, and recheck-trigger provenance. A block-range receipt creates repair
+units on the same need branch and queues a new audit over only the repair diff.
+A block-ship receipt records a persistent hold and escalation. The Auditor
+charter remains the authority for verification width and repair-round policy.
+Receipt replay is a no-op; changed revision, branch tip, or frozen membership
+invalidates prior acceptance.
+
+Need landing uses a durable **need-merge** job with a need-specific
+**PUMP_MERGE_RESULT=** receipt shape. The predefined Merge role reports
+**version**, **target**, **need**, **revision**, **base**, accepted **tip**,
+**candidate**, **status**,
+each required check, and the acceptance source. The worker does not publish.
+The privileged pool runner publishes only to the configured integration ref;
+the controller requires the worker receipt, runner publication receipt, exact
+ref and candidate, and independent proofs that the accepted tip is an ancestor
+of the candidate and that the candidate is an ancestor of the observed target.
+Only then does it record landing and queue a separate durable cleanup job.
+Cleanup can delete only the recorded need branch at the accepted tip; the
+runner's compare-and-delete receipt and an independent ref-absence check must
+both succeed. A cleanup failure preserves the branch for retry. The integration
+gate and main promotion path remain independent of need acceptance.
+
 ## Privileged publication and verification
 
 For an integration merge, the pool dispatcher passes a publish ref to the pool runner. The runner-only **PUBLISH_REF**, **PUBLISH_EXPECT**, and **PUBLISH_REMOTE** settings are not exposed to the agent. After a clean agent exit, the privileged runner reads the candidate commit, checks the requested ref and optional exact expected SHA, performs a plain push, fetches the ref back, and verifies the remote commit and ancestry. The collected pool summary records **runner publish: &lt;state&gt; &lt;ref&gt; &lt;candidate-sha&gt; &lt;remote-sha&gt;**.

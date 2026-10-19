@@ -22,6 +22,14 @@ use crate::pump::run::tick as run_tick;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
+/// A second plan file, ingested mid-test to mint a fresh unit.
+const SECOND_PLAN: &str = concat!(
+    "{\"need\": \"ny\", \"verdict\": \"units\", \"reason\": \"a second need\", ",
+    "\"units\": [{\"id\": \"y-b1\", \"title\": \"second unit\", ",
+    "\"brief\": \"do b\", \"write_scope\": [\"vivi/src/b.rs\"], ",
+    "\"proof\": [], \"tools\": \"plain\"}]}"
+);
+
 /// The fake clock's start.
 const T0: u64 = 1_000_000;
 /// Seconds a test waits for the asynchronous merge thread.
@@ -43,14 +51,6 @@ fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     pass.serve(ctx, st, &requests, &results);
     crate::pump::run::write_status(ctx, st, &[]);
 }
-/// A second plan file, ingested mid-test to mint a fresh unit.
-const SECOND_PLAN: &str = concat!(
-    "{\"need\": \"ny\", \"verdict\": \"units\", \"reason\": \"a second need\", ",
-    "\"units\": [{\"id\": \"y-b1\", \"title\": \"second unit\", ",
-    "\"brief\": \"do b\", \"write_scope\": [\"vivi/src/b.rs\"], ",
-    "\"proof\": [], \"tools\": \"plain\"}]}"
-);
-
 /// The brief's config: integration branch `next`, one `m1` lane of five,
 /// three attempts, pool `p1` for units and gates, no shared checks, and a
 /// board with no senders, no mark and no pull, so ticks stay on the units.
@@ -127,13 +127,13 @@ fn record_need(st: &mut State, handle: &str, uids: &[&str]) {
 /// The scripted pool world: one free `p1` slot, a minted task handle, a
 /// successful dispatch, and a finished reconcile line for that handle.
 fn world(host: &FakeHost) {
-    host.reply("merge-base --is-ancestor origin/unit/", 1, "");
+    host.reply("merge-base --is-ancestor origin/vivi/unit/", 1, "");
     host.reply("pool status", 0, "slot p1 slot-1 id free x y z\n");
     host.reply("task send", 0, "created hand 1a2b3c4d\n");
     host.reply(
         "pool dispatch",
         0,
-        "dispatched 1a2b3c4d p1 slot-1 job m1 x y next unit/x-a1 600 write 0 -\n",
+        "dispatched 1a2b3c4d p1 slot-1 job m1 x y next vivi/unit/x-a1-a1 600 write 0 -\n",
     );
     host.reply(
         "pool reconcile",
@@ -179,7 +179,7 @@ fn a_unit_travels_pending_inflight_delivered_merged_and_closes_its_need() {
     world(&host);
     // The worker's branch reaches the remote once the task finishes.
     host.reply(
-        "refs/heads/unit/",
+        "refs/heads/vivi/unit/",
         0,
         "1111111111111111111111111111111111111111\n",
     );
@@ -192,7 +192,7 @@ fn a_unit_travels_pending_inflight_delivered_merged_and_closes_its_need() {
     let x = st.units.get("x-a1").unwrap();
     assert_eq!(x.status, Status::Inflight);
     assert_eq!(x.task.as_deref(), Some("1a2b3c4d"));
-    assert_eq!(x.branch.as_deref(), Some("unit/x-a1-a1"));
+    assert_eq!(x.branch.as_deref(), Some("vivi/unit/x-a1-a1"));
     assert_eq!((x.attempts, x.pool.as_deref()), (1, Some("p1")));
     assert_eq!(count(&host, "task send"), 1);
 
@@ -242,7 +242,7 @@ fn a_failing_unit_is_retried_on_a_new_branch_and_is_stuck_after_max_attempts() {
         let x = st.units.get("x-a1").unwrap();
         assert_eq!(x.status, Status::Inflight);
         assert_eq!(x.attempts, attempt);
-        assert_eq!(x.branch, Some(format!("unit/x-a1-a{attempt}")));
+        assert_eq!(x.branch, Some(format!("vivi/unit/x-a1-a{attempt}")));
     }
     tick(&ctx, &mut st, &merger); // the third failure exhausts max_attempts
     let x = st.units.get("x-a1").unwrap();
@@ -252,7 +252,7 @@ fn a_failing_unit_is_retried_on_a_new_branch_and_is_stuck_after_max_attempts() {
     assert!(x.history.iter().all(|h| h.why == "failed/agent gave up"));
     assert_eq!(x.task, None);
     for attempt in 1..=3 {
-        let branch = format!("--branch unit/x-a1-a{attempt}");
+        let branch = format!("--branch vivi/unit/x-a1-a{attempt}");
         assert!(
             host.commands().iter().any(|c| c.contains(&branch)),
             "no dispatch on {branch}"
@@ -273,7 +273,7 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     cfg.gate.model = String::from("m1");
     let (ctx, host) = test_ctx(dir.path(), cfg);
     world(&host);
-    host.reply("refs/heads/unit/", 0, &format!("{TIP}\n"));
+    host.reply("refs/heads/vivi/unit/", 0, &format!("{TIP}\n"));
     let mut st = State::default();
     put(&mut st, "x-a1", unit("n1", "src/a.rs"));
     record_need(&mut st, "n1", &["x-a1"]);
@@ -461,7 +461,7 @@ fn paused_control_stops_dispatch_but_a_delivered_unit_still_merges() {
     put(&mut st, "x-a1", unit("n1", "src/a.rs"));
     let mut y = unit("n2", "src/b.rs");
     y.status = Status::Delivered;
-    y.branch = Some(String::from("unit/y-b1-a1"));
+    y.branch = Some(String::from("vivi/unit/y-b1-a1"));
     put(&mut st, "y-b1", y);
     record_need(&mut st, "n1", &["x-a1"]);
     record_need(&mut st, "n2", &["y-b1"]);
@@ -502,7 +502,7 @@ fn a_dependent_waits_for_merge_but_overlap_does_not_hold_a_delivered_unit() {
     host.reply_once("task send", 0, "created hand bbbbbbbb\n");
     host.reply("task send", 0, "created hand cccccccc\n");
     host.reply(
-        "refs/heads/unit/",
+        "refs/heads/vivi/unit/",
         0,
         "3333333333333333333333333333333333333333\n",
     );
@@ -553,11 +553,11 @@ fn a_dependent_waits_for_merge_but_overlap_does_not_hold_a_delivered_unit() {
     let branches: Vec<String> = host
         .commands()
         .iter()
-        .filter(|c| c.contains("--branch unit/"))
+        .filter(|c| c.contains("--branch vivi/unit/"))
         .cloned()
         .collect();
     assert_eq!(branches.len(), 3, "{branches:?}");
-    assert!(branches[0].contains("unit/x-a1-a1"), "{branches:?}");
-    assert!(branches[1].contains("unit/z-c1-a1"), "{branches:?}");
-    assert!(branches[2].contains("unit/y-b1-a1"), "{branches:?}");
+    assert!(branches[0].contains("vivi/unit/x-a1-a1"), "{branches:?}");
+    assert!(branches[1].contains("vivi/unit/z-c1-a1"), "{branches:?}");
+    assert!(branches[2].contains("vivi/unit/y-b1-a1"), "{branches:?}");
 }

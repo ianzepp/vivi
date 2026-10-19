@@ -23,6 +23,11 @@ pub mod host;
 pub mod jobs;
 pub mod logview;
 pub mod merge;
+pub mod need;
+pub mod need_audit;
+pub mod need_landing;
+pub(crate) mod need_pipeline;
+pub mod need_verdict;
 pub mod plan;
 pub mod planner_jobs;
 pub mod priority;
@@ -197,3 +202,11 @@ mod audit_test;
 #[cfg(test)]
 #[path = "pump/ramsweep_test.rs"]
 mod ramsweep_test;
+
+#[cfg(test)]
+#[path = "pump/need_audit_test.rs"]
+mod need_audit_test;
+
+#[cfg(test)]
+#[path = "pump/need_verdict_test.rs"]
+mod need_verdict_test;

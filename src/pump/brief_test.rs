@@ -239,10 +239,11 @@ fn history_lists_every_attempt_in_order_with_branch_and_excerpt() {
     let section = text
         .find("EARLIER ATTEMPTS AT THIS UNIT (3 so far")
         .unwrap();
-    let one = text.find("- attempt 1 (model-a) ended: proof-failed; branch unit/56f1d749-2-a1");
-    let two =
-        text.find("- attempt 2 (unknown model) ended: agent-replied; branch unit/56f1d749-2-a2");
-    let three = text.find("- attempt 3 (model-c) ended: timeout; branch unit/56f1d749-2-a3");
+    let one =
+        text.find("- attempt 1 (model-a) ended: proof-failed; branch vivi/unit/56f1d749-2-a1");
+    let two = text
+        .find("- attempt 2 (unknown model) ended: agent-replied; branch vivi/unit/56f1d749-2-a2");
+    let three = text.find("- attempt 3 (model-c) ended: timeout; branch vivi/unit/56f1d749-2-a3");
     let (one, two, three) = (one.unwrap(), two.unwrap(), three.unwrap());
     assert!(section < one && one < two && two < three);
     assert!(text.contains("git fetch origin <branch>"));
@@ -292,7 +293,7 @@ fn history_names_the_targets_configured_remote() {
     };
     let text = brief_for(&ctx, UID, &unit);
     assert!(text.contains("git fetch upstream <branch>"));
-    assert!(text.contains("- attempt 1 (unknown model) ended: proof-failed; branch unit/"));
+    assert!(text.contains("- attempt 1 (unknown model) ended: proof-failed; branch vivi/unit/"));
 }
 
 #[test]
@@ -301,7 +302,7 @@ fn no_history_means_no_history_section() {
     let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
     let text = brief_for(&ctx, UID, &sample_unit());
     assert!(!text.contains("EARLIER ATTEMPTS"));
-    assert!(!text.contains("branch unit/"));
+    assert!(!text.contains("branch vivi/unit/"));
 }
 
 #[test]
@@ -413,7 +414,7 @@ fn a_large_brief_shrinks_history_and_thread_but_never_the_unit() {
     assert!(text.contains("\n- `cargo test --lib a`\n- `cargo test --lib b`\n"));
     assert!(text.contains("FINAL REPORT:"));
     // Every attempt is still listed, but the excerpts are gone or cut down.
-    assert_eq!(text.matches("; branch unit/56f1d749-2-a").count(), 6);
+    assert_eq!(text.matches("; branch vivi/unit/56f1d749-2-a").count(), 6);
     assert!(text.matches('#').count() < 6 * 500);
     assert!(!text.contains("reply-00"));
 }

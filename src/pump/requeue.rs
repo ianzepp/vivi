@@ -9,7 +9,7 @@
 //!   `splitting` or `withdrawn`. Anything else is refused and the request is
 //!   consumed, so a stale request cannot fire hours later.
 //! - The attempt counter never collides with a branch that already exists:
-//!   every attempt branch (`unit/<uid>-a<n>`) is listed on the target's
+//!   every attempt branch (`vivi/unit/<uid>-a<n>`) is listed on the target's
 //!   remote first, and the next attempt is the highest suffix + 1.
 //!
 //! A split plan file landing after a requeue still replaces the unit
@@ -140,7 +140,10 @@ fn scan_targets(ctx: &Ctx, st: &State, uids: &[String]) -> BTreeMap<String, Targ
         let command = format!(
             "ls-remote --heads {} {}",
             shell_quote(&target_ctx.cfg.remote),
-            shell_quote("refs/heads/unit/*")
+            shell_quote(&format!(
+                "refs/heads/{}*",
+                crate::pump::need::unit_namespace_prefix()
+            ))
         );
         let output = target_ctx.git(&command, SCAN_TIMEOUT_SECS);
         if output.code != 0 {
@@ -155,16 +158,19 @@ fn scan_targets(ctx: &Ctx, st: &State, uids: &[String]) -> BTreeMap<String, Targ
     scanned
 }
 
-/// The highest attempt suffix per uid in one `ls-remote` reply: `unit/<uid>-a<n>`.
+/// The highest attempt suffix per uid in one `ls-remote` reply: `vivi/unit/<uid>-a<n>`.
 fn remote_suffixes(output: &str) -> TargetBranches {
     let mut suffixes = TargetBranches::new();
     for branch in output
         .lines()
         .filter_map(|line| line.split_whitespace().nth(1))
         .filter_map(|reference| reference.strip_prefix("refs/heads/"))
-        .filter(|branch| branch.starts_with("unit/"))
+        .filter(|branch| branch.starts_with(crate::pump::need::unit_namespace_prefix()))
     {
-        let Some((uid, n)) = branch.trim_start_matches("unit/").rsplit_once("-a") else {
+        let Some((uid, n)) = branch
+            .strip_prefix(crate::pump::need::unit_namespace_prefix())
+            .and_then(|branch| branch.rsplit_once("-a"))
+        else {
             continue;
         };
         let Ok(suffix) = n.parse::<u32>() else {
@@ -209,7 +215,8 @@ fn apply_one(
     let attempts = planned_attempts(unit, policy, existing);
     if attempts > base {
         ctx.log(&format!(
-            "requeue {uid} attempts raised to {attempts}: branch unit/{uid}-a{existing} already exists"
+            "requeue {uid} attempts raised to {attempts}: branch {} already exists",
+            crate::pump::need::unit_branch(uid, existing)
         ));
     }
     let now = ctx.now();
@@ -481,9 +488,9 @@ fn print_planned(planned: &[Planned]) {
 #[must_use]
 pub fn would_line(uid: &str, status: Status, old: u32, attempts: u32) -> String {
     format!(
-        "would requeue {uid}: status {}, attempts {old} -> {attempts}, next branch unit/{uid}-a{}",
+        "would requeue {uid}: status {}, attempts {old} -> {attempts}, next branch {}",
         status.as_str(),
-        attempts + 1
+        crate::pump::need::unit_branch(uid, attempts + 1)
     )
 }
 

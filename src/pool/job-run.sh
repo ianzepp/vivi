@@ -101,6 +101,7 @@ PUBLISH_CONTAINS_VERIFIED=0
 DELETE_STATE=
 DELETE_BEFORE=
 DELETE_AFTER=
+SOURCE_PROOFS=
 PUBLISH_DIR=
 PUBLISH_REPO=
 PUBLISH_HOME=
@@ -255,6 +256,7 @@ finish() { # finish <push-outcome> [sha]
     AGENT_RC=${AGENT_RC:-1}
     RESULT_EXTRA="ramdisk_size_gib=$RAMDISK_SIZE_GIB"
   fi
+  record_source_ancestry
   detach_local
   {
     echo "job=$JOB"
@@ -285,6 +287,7 @@ finish() { # finish <push-outcome> [sha]
       echo "delete_before=${DELETE_BEFORE:--}"
       echo "delete_after=${DELETE_AFTER:--}"
     fi
+    [ -z "$SOURCE_PROOFS" ] || printf '%s\n' "$SOURCE_PROOFS"
     [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
     [ -z "${RESTORE_EXTRA:-}" ] || printf '%s\n' "$RESTORE_EXTRA"
     [ -z "${FACTS_EXTRA:-}" ] || printf '%s\n' "$FACTS_EXTRA"
@@ -391,6 +394,26 @@ guarded_need_create() {
   fi
   PUBLISH_STATE=ref_mismatch
   return 1
+}
+
+# Prove inclusion against the source SHAs captured before the agent ran.
+# Mutable hand refs or its claimed merge status are never ancestry evidence.
+record_source_ancestry() {
+  [ -z "${READ_ONLY:-}" ] && [ "${AGENT_RC:-1}" = 0 ] && [ -n "${WITH_SOURCES:-}" ] || return 0
+  local candidate source_ref source_sha contained i=0 ready=0
+  candidate=$(hand_git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || candidate=
+  if valid_git_oid "$candidate" && init_publisher; then ready=1; fi
+  while read -r source_ref source_sha; do
+    [ -n "$source_ref" ] || continue
+    contained=0
+    if [ "$ready" = 1 ] && valid_git_oid "$source_sha" && publisher_git merge-base --is-ancestor "$source_sha" "$candidate"; then
+      contained=1
+    fi
+    case "$source_ref" in refs/*) ;; *) valid_git_oid "$source_ref" || source_ref=refs/heads/$source_ref ;; esac
+    i=$((i + 1))
+    SOURCE_PROOFS+="source_${i}_ref=$source_ref"$'\n'"source_${i}_sha=$source_sha"$'\n'"source_${i}_contained=$contained"$'\n'
+  done <<< "$WITH_SOURCES"
+  SOURCE_PROOFS+="source_count=$i"
 }
 
 # Publish a verified candidate with the runner's credentials, never from the
@@ -564,6 +587,7 @@ fi
 WITH_N=0
 WITH_EXTRA=
 WITH_PAIRS=
+WITH_SOURCES=
 if [ -f "$J/with.list" ]; then
   while IFS=' ' read -r wref wsha || [ -n "$wref" ]; do
     [ -n "$wref" ] || continue
@@ -583,6 +607,8 @@ if [ -f "$J/with.list" ]; then
     fi
     [ -z "$WITH_PAIRS" ] || WITH_PAIRS+=$'\n'
     WITH_PAIRS+="$wref $wlocal"
+    [ -z "$WITH_SOURCES" ] || WITH_SOURCES+=$'\n'
+    WITH_SOURCES+="$wref $wsha_now"
     [ -z "$WITH_EXTRA" ] || WITH_EXTRA+=$'\n'
     WITH_EXTRA+="with_${WITH_N}_ref=$wref"$'\n'"with_${WITH_N}_local=$wlocal"$'\n'"with_${WITH_N}_sha=$wsha_now"
   done < "$J/with.list"

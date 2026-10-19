@@ -799,12 +799,10 @@ fn ramdisk_admission_lock_is_shared_across_project_roots() {
         "a second project must contend on the same host lock"
     );
     drop(held);
-    assert!(
-        crate::pool::ramdisk::try_lock_admission()
-            .expect("retry host RAM admission lock")
-            .is_some(),
-        "the lock is released when its owner drops the file"
-    );
+    // Other concurrent pool tests can acquire this host-wide lock after the drop.
+    // A blocking reacquire proves release without assuming exclusive test execution.
+    let _reacquired = crate::pool::ramdisk::lock_admission()
+        .expect("the lock is released when its owner drops the file");
 }
 
 fn ramdisk_marker(slot: &Path, mount: &Path, source: &Path) {

@@ -275,14 +275,15 @@ fn quarantine_count(config: &PumpConfig, project: &Path) -> Option<usize> {
 }
 
 fn count_quarantines(repo: &Path) -> Option<usize> {
+    let prefix = format!(
+        "refs/heads/{}",
+        crate::pump::need::quarantine_namespace_prefix()
+    );
     let output = match std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args([
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/heads/pump/quarantine/",
-        ])
+        .args(["for-each-ref", "--format=%(refname)"])
+        .arg(prefix)
         .output()
     {
         Ok(output) => output,

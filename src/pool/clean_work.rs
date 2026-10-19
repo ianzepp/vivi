@@ -346,7 +346,7 @@ fn drop_scratch_branch(
     let Some(branch) = read_mark(dir, MARK_LAST_BRANCH) else {
         return;
     };
-    if !branch.starts_with("unit/") {
+    if !branch.starts_with(crate::pump::need::unit_namespace_prefix()) {
         return;
     }
     let Some(repo) = source_of(dir, &dir.join(CHECKOUT)) else {

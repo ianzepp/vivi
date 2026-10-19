@@ -184,7 +184,7 @@ fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     assert_eq!(unit.status, Status::Inflight);
     assert_eq!(unit.attempts, 1);
     assert_eq!(unit.task.as_deref(), Some("1a2b3c4d"));
-    assert_eq!(unit.branch.as_deref(), Some("unit/u1-a1"));
+    assert_eq!(unit.branch.as_deref(), Some("vivi/unit/u1-a1"));
     assert_eq!(unit.model.as_deref(), Some("m/a"));
     assert_eq!(unit.pool.as_deref(), Some("fly4"));
     assert_eq!(unit.since, T0);
@@ -196,7 +196,7 @@ fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     let disp = commands_with(&host, "pool dispatch --pool fly4 1a2b3c4d");
     assert_eq!(disp.len(), 1);
     assert!(
-        disp[0].contains("--need n1 --kind plain --target default --model m/a --from next --branch unit/u1-a1 --budget 600 --porcelain")
+        disp[0].contains("--need n1 --kind plain --target default --model m/a --from next --branch vivi/unit/u1-a1 --budget 600 --porcelain")
     );
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
     assert!(brief.contains("UNIT u1: Do u1"));
@@ -790,12 +790,12 @@ fn existing_attempt_branches_advance_until_dispatch_succeeds_without_extra_charg
     host.reply_once(
         "pool dispatch --pool fly4",
         1,
-        "error: message error: branch \"unit/u1-a2\" already exists and --from is \"origin/next\": refusing to move or reset it",
+        "error: message error: branch \"vivi/unit/u1-a2\" already exists and --from is \"origin/next\": refusing to move or reset it",
     );
     host.reply_once(
         "pool dispatch --pool fly4",
         1,
-        "error: message error: branch \"unit/u1-a3\" already exists and --from is \"origin/next\": refusing to move or reset it",
+        "error: message error: branch \"vivi/unit/u1-a3\" already exists and --from is \"origin/next\": refusing to move or reset it",
     );
     let mut st = State::default();
     let mut unit = pending_unit("u1");
@@ -815,14 +815,14 @@ fn existing_attempt_branches_advance_until_dispatch_succeeds_without_extra_charg
         "only the successful start charged a hand attempt"
     );
     assert!(unit.history.is_empty());
-    assert_eq!(unit.branch.as_deref(), Some("unit/u1-a4"));
+    assert_eq!(unit.branch.as_deref(), Some("vivi/unit/u1-a4"));
     assert_eq!(unit.next_branch_suffix, None);
     assert_eq!(commands_with(&host, "task send").len(), 3);
     let dispatches = commands_with(&host, "pool dispatch --pool fly4");
     assert_eq!(dispatches.len(), 3);
     for (dispatch, suffix) in dispatches.iter().zip(["a2", "a3", "a4"]) {
         assert!(
-            dispatch.contains(&format!("unit/u1-{suffix}")),
+            dispatch.contains(&format!("vivi/unit/u1-{suffix}")),
             "{dispatch}"
         );
     }
@@ -870,9 +870,9 @@ fn the_second_attempt_uses_a_new_branch_name_and_carries_the_failure_in_the_brie
     dispatch(&ctx, &mut st);
     let unit = &st.units["u1"];
     assert_eq!(unit.attempts, 2);
-    assert_eq!(unit.branch.as_deref(), Some("unit/u1-a2"));
+    assert_eq!(unit.branch.as_deref(), Some("vivi/unit/u1-a2"));
     let brief = fs::read_to_string(dir.path().join("home/briefs/u1.txt")).unwrap();
-    assert!(brief.contains("- attempt 1 (m/b) ended: proof-failed; branch unit/u1-a1"));
+    assert!(brief.contains("- attempt 1 (m/b) ended: proof-failed; branch vivi/unit/u1-a1"));
     assert!(brief.contains("cargo test exploded"));
 }
 
@@ -1136,7 +1136,8 @@ fn apply_start_on_dispatch_failure_closes_the_task_and_zeroes_the_pool() {
             model: Some(String::from("m/a")),
             attempt: 1,
             branch_suffix: 1,
-            branch: String::from("unit/u1-a1"),
+            branch: String::from("vivi/unit/u1-a1"),
+            from_ref: String::from("next"),
         },
         "m/a",
         UnitStart::DispatchFailed {

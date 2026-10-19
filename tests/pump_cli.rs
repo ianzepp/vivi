@@ -407,17 +407,19 @@ fn temp_mailspace() -> tempfile::TempDir {
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\n\
          [pump.merge]\nshared_checks = [\"true\"]\n\n\
          [pump.gate]\ncommand = \"true\"\n\n\
-         [[identities]]\nname = \"operator\"\n\n\
-         [[identities]]\nname = \"hand\"\n\n\
-         [[identities]]\nname = \"mind\"\n\
-         [[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"test\"\n\n\
-         [[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"test\"\n\n\
-         [pools.test]\nprovider = \"local\"\nslots = 1\n"
+         [pools.test]\nprovider = \"local\"\nslots = 1\n\n\
+         [pools.test.bands]\nP2 = [{{ model = \"test/model\", reasoning = \"low\" }}]\n"
     );
-    // The init template writes an empty roster as `identities = []`; drop that
-    // line so the `[[identities]]` tables below can declare the pump's roles.
-    let mut text = fs::read_to_string(&config).unwrap();
-    text = text.replace("identities = []\n", "");
+    let mut parsed: toml::Value = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    for (name, kind) in [
+        ("hand", "hand"),
+        ("mind", "mind"),
+        ("planner", "planner"),
+        ("merge", "merge"),
+    ] {
+        ensure_role(&mut parsed, name, kind, "test", "P2");
+    }
+    let mut text = toml::to_string(&parsed).unwrap();
     text.push_str(&table);
     fs::write(config, text).unwrap();
     // The pump refuses to start without its integration clone; an empty repository stands in.
@@ -430,6 +432,29 @@ fn temp_mailspace() -> tempfile::TempDir {
         .unwrap();
     assert_success(&init);
     project
+}
+
+fn ensure_role(config: &mut toml::Value, name: &str, kind: &str, pool: &str, model: &str) {
+    let identities = config
+        .get_mut("identities")
+        .and_then(toml::Value::as_array_mut)
+        .expect("mailspace init omitted identities array");
+    let index = identities
+        .iter()
+        .position(|identity| identity.get("name").and_then(toml::Value::as_str) == Some(name));
+    let index = if let Some(index) = index {
+        index
+    } else {
+        identities.push(toml::Value::Table(toml::map::Map::new()));
+        identities.len() - 1
+    };
+    let row = identities[index]
+        .as_table_mut()
+        .expect("identity row is not a table");
+    row.insert("name".to_owned(), toml::Value::String(name.to_owned()));
+    row.insert("kind".to_owned(), toml::Value::String(kind.to_owned()));
+    row.insert("pool".to_owned(), toml::Value::String(pool.to_owned()));
+    row.insert("model".to_owned(), toml::Value::String(model.to_owned()));
 }
 
 fn pump_home(project: &tempfile::TempDir) -> std::path::PathBuf {

@@ -89,9 +89,39 @@ fn script_thread(host: &FakeHost, body: &str) {
     );
 }
 
+fn source_hash(ctx: &Ctx, body: &str) -> String {
+    let messages = [serde_json::json!({
+        "message_id": "m1",
+        "from": "operator@12345678.local",
+        "body": body,
+    })];
+    super::amend::source_thread_hash(ctx, "n1", &messages).unwrap()
+}
+
+fn legacy_hash(ctx: &Ctx, messages: &[serde_json::Value]) -> String {
+    let mut hasher = Sha256::new();
+    for message in messages {
+        let from = message["from"].as_str().unwrap_or("");
+        let sender = if ctx.cfg.reply_from.contains('@') {
+            from
+        } else {
+            from.split('@').next().unwrap_or(from)
+        };
+        if sender.eq_ignore_ascii_case(&ctx.cfg.reply_from) {
+            continue;
+        }
+        hasher.update(message["message_id"].as_str().unwrap_or("").as_bytes());
+        hasher.update(b"\n");
+        hasher.update(message["body"].as_str().unwrap_or("").as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("v2:{}", hex::encode(hasher.finalize()))
+}
+
 #[test]
 fn a_changed_thread_starts_a_revision() {
     let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
     script_thread(&host, "add the second half");
     detect(&ctx, &mut st);
     assert!(st.needs["n1"].amendment_pending);
@@ -149,11 +179,7 @@ fn an_immediate_revision_exit_is_reported_without_waiting_for_plan_timeout() {
 #[test]
 fn an_unchanged_thread_does_not_amend() {
     let (_dir, ctx, host, mut st) = setup();
-    let mut hasher = Sha256::new();
-    hasher.update(b"m1\n");
-    hasher.update(b"same body\n");
-    st.needs.get_mut("n1").unwrap().thread_sha256 =
-        Some(format!("v2:{}", hex::encode(hasher.finalize())));
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "same body"));
     script_thread(&host, "same body");
     detect(&ctx, &mut st);
     assert!(!st.needs["n1"].amendment_pending);
@@ -163,11 +189,7 @@ fn an_unchanged_thread_does_not_amend() {
 #[test]
 fn an_unchanged_thread_keeps_the_need_closed() {
     let (_dir, ctx, host, mut st) = setup();
-    let mut hasher = Sha256::new();
-    hasher.update(b"m1\n");
-    hasher.update(b"same body\n");
-    st.needs.get_mut("n1").unwrap().thread_sha256 =
-        Some(format!("v2:{}", hex::encode(hasher.finalize())));
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "same body"));
     st.closed_needs.push(String::from("n1"));
     script_thread(&host, "same body");
     detect(&ctx, &mut st);
@@ -181,6 +203,7 @@ fn an_unchanged_thread_keeps_the_need_closed() {
 #[test]
 fn a_closed_need_with_a_changed_thread_reopens_and_plans_a_revision() {
     let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
     st.closed_needs.push(String::from("n1"));
     script_thread(&host, "add the second half");
     detect(&ctx, &mut st);
@@ -205,7 +228,12 @@ fn a_pump_attempt_record_reply_does_not_amend() {
     for reply_from in ["mind", "mind@12345678.local"] {
         let (_dir, mut ctx, host, mut st) = setup();
         Arc::make_mut(&mut ctx.cfg).reply_from = reply_from.to_owned();
-        st.needs.get_mut("n1").unwrap().thread_sha256 = None;
+        let prior = [serde_json::json!({
+            "message_id": "m1",
+            "from": "operator@12345678.local",
+            "body": "original need",
+        })];
+        st.needs.get_mut("n1").unwrap().thread_sha256 = Some(legacy_hash(&ctx, &prior));
         script_thread(&host, "original need");
         detect(&ctx, &mut st);
         let hash = st.needs["n1"].thread_sha256.clone();
@@ -215,7 +243,7 @@ fn a_pump_attempt_record_reply_does_not_amend() {
             0,
             r#"[
                 {"message_id":"m1","from":"operator@12345678.local","body":"original need"},
-                {"message_id":"m2","from":"mind@12345678.local","body":"Attempt record: delivered"}
+                {"message_id":"m2","from":"mind@12345678.local","body":"pump: attempt record\noutcome: delivered"}
             ]"#,
         );
         detect(&ctx, &mut st);
@@ -238,7 +266,7 @@ fn an_operator_reply_still_amends_after_a_pump_reply() {
         0,
         r#"[
             {"message_id":"m1","from":"operator@12345678.local","body":"original need"},
-            {"message_id":"m2","from":"mind@12345678.local","body":"Attempt record: delivered"},
+            {"message_id":"m2","from":"mind@12345678.local","body":"pump: attempt record\noutcome: delivered"},
             {"message_id":"m3","from":"operator@12345678.local","body":"also handle the edge case"}
         ]"#,
     );
@@ -246,6 +274,28 @@ fn an_operator_reply_still_amends_after_a_pump_reply() {
     assert!(st.needs["n1"].amendment_pending);
     assert!(st.board.revision_planning.contains_key("n1"));
     assert_eq!(st.jobs.len(), 1);
+}
+
+#[test]
+fn an_operator_reply_quoting_the_pump_marker_still_amends() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = None;
+    script_thread(&host, "original need");
+    detect(&ctx, &mut st);
+    st.needs.get_mut("n1").unwrap().thread_seen_at = Some(1_000);
+    host.reply(
+        "need show n1 --json",
+        0,
+        r#"[
+            {"message_id":"m1","from":"operator@12345678.local","body":"original need"},
+            {"message_id":"m2","from":"operator@12345678.local","body":"pump: this is an operator quote"}
+        ]"#,
+    );
+
+    detect(&ctx, &mut st);
+
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
 }
 
 #[test]
@@ -266,6 +316,7 @@ fn a_thread_seen_after_the_event_is_not_fetched() {
 #[test]
 fn an_amendment_is_not_detected_twice() {
     let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
     script_thread(&host, "add the second half");
     detect(&ctx, &mut st);
     assert!(st.needs["n1"].amendment_pending);
@@ -275,14 +326,137 @@ fn an_amendment_is_not_detected_twice() {
 }
 
 #[test]
-fn a_hash_from_the_older_scheme_is_adopted_not_read_as_an_amendment() {
+fn an_unknown_hash_is_used_as_a_new_baseline_not_read_as_an_amendment() {
     let (_dir, ctx, host, mut st) = setup();
-    // Stored before the pump's own replies were left out of the hash.
+    // This value is neither valid v2 nor v3 and cannot prove a prior snapshot.
     st.needs.get_mut("n1").unwrap().thread_sha256 = Some(String::from("0123abcd"));
     script_thread(&host, "a body the old hash never saw");
     detect(&ctx, &mut st);
     assert!(!st.needs["n1"].amendment_pending);
     assert!(!st.board.revision_planning.contains_key("n1"));
     let adopted = st.needs["n1"].thread_sha256.clone().unwrap();
-    assert!(adopted.starts_with("v2:"), "{adopted}");
+    assert!(adopted.starts_with("v3:"), "{adopted}");
+}
+
+#[test]
+fn a_changed_operator_thread_with_a_valid_v2_hash_starts_a_revision() {
+    let (_dir, ctx, host, mut st) = setup();
+    let prior = [serde_json::json!({
+        "message_id": "m1",
+        "from": "operator@12345678.local",
+        "body": "original need",
+    })];
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(legacy_hash(&ctx, &prior));
+    script_thread(&host, "add the second half");
+
+    detect(&ctx, &mut st);
+
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
+    assert!(
+        st.needs["n1"]
+            .thread_sha256
+            .as_deref()
+            .unwrap()
+            .starts_with("v3:")
+    );
+}
+
+#[test]
+fn a_matching_v2_thread_hash_upgrades_to_v3_without_replanning() {
+    let (_dir, ctx, host, mut st) = setup();
+    let prior = [serde_json::json!({
+        "message_id": "m1",
+        "from": "operator@12345678.local",
+        "body": "same body",
+    })];
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(legacy_hash(&ctx, &prior));
+    script_thread(&host, "same body");
+
+    detect(&ctx, &mut st);
+
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.is_empty());
+    assert!(
+        st.needs["n1"]
+            .thread_sha256
+            .as_deref()
+            .unwrap()
+            .starts_with("v3:")
+    );
+}
+
+#[test]
+fn a_mind_authored_reply_missing_from_v2_still_starts_a_revision() {
+    let (_dir, ctx, host, mut st) = setup();
+    let prior = [serde_json::json!({
+        "handle": "n1",
+        "message_id": "root",
+        "from": "operator@12345678.local",
+        "body": "original need",
+    })];
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(legacy_hash(&ctx, &prior));
+    host.reply(
+        "board --json",
+        0,
+        r#"{"identities":[{"needs":[{"handle":"n1","last_event":{"occurred_at":"2026-10-17T13:00:00+00:00"}}]}]}"#,
+    );
+    host.reply("need show n1", 0, "## thread\n");
+    host.reply(
+        "need show n1 --json",
+        0,
+        r#"[
+            {"handle":"n1","message_id":"root","from":"operator@12345678.local","body":"original need"},
+            {"handle":"n1-reply","message_id":"mind-reply","from":"mind@12345678.local","body":"done_when: add the missing behavior"}
+        ]"#,
+    );
+
+    detect(&ctx, &mut st);
+
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
+}
+
+#[test]
+fn mind_authored_need_root_is_hashed_and_a_mind_amendment_reopens_the_plan() {
+    let (_dir, ctx, host, mut st) = setup();
+    host.reply(
+        "board --json",
+        0,
+        r#"{"identities":[{"needs":[{"handle":"n1","last_event":{"occurred_at":"2026-10-17T13:00:00+00:00"}}]}]}"#,
+    );
+    host.reply("need show n1", 0, "## thread\n");
+    host.reply(
+        "need show n1 --json",
+        0,
+        r#"[{"handle":"n1","message_id":"root","from":"mind@12345678.local","body":"Need\ndone_when: original requirement"}]"#,
+    );
+    detect(&ctx, &mut st);
+    assert!(
+        st.needs["n1"]
+            .thread_sha256
+            .as_deref()
+            .unwrap()
+            .starts_with("v3:")
+    );
+    assert!(!st.needs["n1"].amendment_pending);
+
+    host.reply(
+        "board --json",
+        0,
+        r#"{"identities":[{"needs":[{"handle":"n1","last_event":{"occurred_at":"2026-10-17T13:01:00+00:00"}}]}]}"#,
+    );
+    host.reply(
+        "need show n1 --json",
+        0,
+        r#"[
+            {"handle":"n1","message_id":"root","from":"mind@12345678.local","body":"Need\ndone_when: original requirement"},
+            {"handle":"n1-r","message_id":"pump-reply","from":"mind@12345678.local","body":"pump: planned. verdict: units; revision 1; 1 unit(s)."},
+            {"handle":"n1-a","message_id":"mind-amendment","from":"mind@12345678.local","body":"done_when: added requirement"}
+        ]"#,
+    );
+    detect(&ctx, &mut st);
+
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
 }

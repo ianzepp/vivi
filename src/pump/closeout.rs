@@ -88,12 +88,25 @@ fn row(snapshot: &Snapshot, message: &crate::storage::StoredMessageView) -> Clos
 /// holder, or an item that is no longer open).
 pub fn close(
     mailspace: &Mailspace,
+    snapshot: &Snapshot,
     row: &CloseoutRow,
     for_identity: Option<&str>,
 ) -> Result<String, VivariumError> {
+    if super::report::landing_required(snapshot.state(), &row.handle)
+        && !crate::pump::need::fully_landed(snapshot.state(), &row.handle)?
+    {
+        return Err(VivariumError::Message(format!(
+            "{}: managed need has no verified landing and cleanup receipt",
+            row.handle
+        )));
+    }
     let holder = for_identity.unwrap_or_else(|| identity(&row.to));
     let tip = row.tip.as_deref().unwrap_or("unknown");
-    let note = format!("pump closeout: every unit satisfied; integration tip {tip}");
+    let note = if super::report::landing_required(snapshot.state(), &row.handle) {
+        format!("pump closeout: accepted need branch landed and cleaned; integration tip {tip}")
+    } else {
+        format!("pump closeout: every unit satisfied; integration tip {tip}")
+    };
     let moved =
         mailspace.move_item_outcome(holder, &row.handle, "done", Some(&note), "need done", None)?;
     let mut receipt = moved.receipt("done");

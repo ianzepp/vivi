@@ -657,6 +657,9 @@ node and mailbox item together (`via=join` in the event log); the accepting
 `done` prints `need <handle> completed (all bound units accepted)` when it
 closes the need, and a `done` that fires no join prints no such line.
 Reopening a bound unit restores the need to open the same way.
+For a need managed by the pump, this mailbox join does not substitute for
+need acceptance: the managed branch must also be accepted and landed on its
+integration target before the need can close.
 `vivi need show <handle>` prints the bound units with their states. Imported
 Mermaid graphs are for non-item topology (pipelines, environment flows);
 delivery lowering uses `need bind` in the backlog, so work is never
@@ -2190,9 +2193,11 @@ is not a million-line build.
 
 ## Pump
 
-The pump plans a Vivi backlog, dispatches unit tasks, integrates returned work,
-and gates the integration branch. Planning, merging, gate runs, audits,
-promotions, cadence runs, investigations, and reclaim use persisted pool jobs.
+The pump coordinates the backlog lifecycle and routes work to durable pool
+jobs. Planner workers plan and revise needs; Merge workers integrate branches
+and run configured checks; Gate, Auditor, and release workers handle their own
+jobs. The pump records jobs before dispatch and reattaches pool-owned work after
+a restart.
 See [the pump contract](references/pump-contract.md) and
 [the job protocols](references/pump-protocols.md) for the live routing and
 receipt contracts.
@@ -2244,9 +2249,10 @@ targets must exist, and cycles are configuration errors.
 | --- | --- | --- |
 | Unit task | **[pump].to** | Hand role pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but its pool list is ignored. If no hand pool is assigned, configured kinds and **default_kind** route the unit. |
 | Board, revision, and split planners | Active **planner** role | Planner role pool and fallback chain. Required with a pool when **[pump]** is configured. |
-| Merge | **merge** role | Merge role pool and fallback chain. The live merge path needs a merge role and pool. |
+| Merge | **merge** role | Merge role pool and fallback chain. `mailspace init` and `sync join` provision the role and shipped charter when absent; pool and model remain operator-configured. |
 | Gate | **gate** role | Gate role pool and fallback chain, then **[pump.gate].pools** candidates. Read-only. |
 | Gate audit | **auditor** role | Auditor role pool and fallback chain, followed by gate-pool candidates; without an auditor role, a built-in read-only auditor uses gate pools. |
+| Need acceptance audit | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
 | Investigation | Configured **auditor** role | Auditor pool and fallback chain. Read-only. |
 | Promotion | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. |
 | Cadence and digest | The scheduled role | That role's pool and fallback chain. |
@@ -2265,14 +2271,26 @@ The pump writes it under **plans/** and applies the existing validator. The
 old **[pump.planner].run** and **charter** keys are not executed. Keep
 **split_hard_cap** and **planners_max** for split job limits.
 
-A merge job names each unit or completed role branch it owns. Its merge-role
-worker integrates those branches, runs the formatter, shared checks,
-scope-mapped checks, and unit proofs, then commits a candidate without
-pushing. The privileged pool runner publishes the candidate. The pump checks
+A shared integration merge job names each unit or completed role branch it
+owns. Its Merge-role worker integrates those branches, runs the formatter,
+shared checks, scope-mapped checks, and unit proofs, then commits a candidate
+without pushing. The privileged pool runner publishes the candidate. The pump checks
 the clean worker exit, exact source list, runner publication receipt, remote
 ref, and candidate ancestry before marking units merged. Promotion jobs use
 the same privileged runner boundary for the exact gated commit. A worker's
 receipt alone does not prove that a remote branch changed.
+
+Managed needs keep work isolated on **vivi/need/&lt;need&gt;** branches. Unit
+completion does not accept a need or publish its partial work to the shared
+integration branch. When every unit in the current plan revision is settled,
+the pump freezes that branch's target, revision, base SHA, and tip SHA for an
+Auditor review. A later plan revision or branch-tip change invalidates the old
+acceptance. An accepted current range is published by a durable Merge-role
+job, then independently checked against the configured integration ref before
+the owned need branch can be cleaned up. Gate and promotion remain separate:
+only a passing gate on the landed integration tip can authorize promotion to
+main. See the [need acceptance contract](references/pump-contract.md#need-level-acceptance-and-landing)
+and [need receipt formats](references/pump-protocols.md#need-acceptance-receipts).
 
 Every failed shared check gets exactly one retry on the same tree before
 bisect or quarantine. Exit 124 or the timeout wrapper's kill is infrastructure
@@ -2346,11 +2364,13 @@ a hand attempt. Every hand brief ends with a **done_when:** line: all listed
 PROOF commands exit 0 and the configured rules pass, or the reply ends with
 **VERDICT: no-defect** and evidence.
 
-The pump does not close Vivi needs on its own. When every unit is satisfied,
-it writes a **needs-ready.txt** receipt and replies on the need thread.
-**vivi pump closeout** lists complete-but-open needs; **--close &lt;handle&gt;**
-performs the lifecycle close as holder and accepts it as author. Needs with a
-pending amendment are left open until the revision is planned.
+The pump does not close Vivi needs on its own. For a managed need, settled
+units are not enough: a current acceptance receipt must be verified on the
+integration branch before closeout can close it. **vivi pump closeout** lists
+eligible complete-but-open needs; **--close &lt;handle&gt;** performs the
+lifecycle close as holder and accepts it as author. Needs with a pending
+amendment remain open until the revision is planned and accepted. Legacy needs
+without managed branches retain their existing closeout behavior.
 
 **vivi pump replan &lt;need&gt;** queues planning for the next tick, moves the
 existing plan into **plans/superseded/**, withdraws pending, held, stuck, and

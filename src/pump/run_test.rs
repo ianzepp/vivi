@@ -865,7 +865,7 @@ fn startup_adopts_a_pushed_branch_for_a_plan_missing_from_the_saved_state() {
     host.reply(
         "ls-remote --heads",
         0,
-        "abc123\trefs/heads/unit/orphan-unit-a1\n",
+        "abc123\trefs/heads/vivi/unit/orphan-unit-a1\n",
     );
     let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
     store.initialize_control("paused").unwrap();
@@ -880,7 +880,7 @@ fn startup_adopts_a_pushed_branch_for_a_plan_missing_from_the_saved_state() {
     let unit = &recovered.units["orphan-unit"];
     assert_eq!(unit.status, Status::Delivered);
     assert_eq!(unit.attempts, 1);
-    assert_eq!(unit.branch.as_deref(), Some("unit/orphan-unit-a1"));
+    assert_eq!(unit.branch.as_deref(), Some("vivi/unit/orphan-unit-a1"));
     assert!(
         !host
             .commands()
@@ -1178,7 +1178,7 @@ fn a_blocked_board_pass_does_not_block_dispatch_or_the_tick() {
     host.reply(
         "pool dispatch",
         0,
-        "dispatched 1a2b3c4d p1 slot-1 job m1 x y next unit/x-a1 600 write 0 -\n",
+        "dispatched 1a2b3c4d p1 slot-1 job m1 x y next vivi/unit/x-a1-a1 600 write 0 -\n",
     );
     let mut st = ready_state();
     let mut pass = BoardPass::start(&ctx);

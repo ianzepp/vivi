@@ -93,7 +93,11 @@ fn enqueue_snapshot_job(
     spec.pool_candidates.clone_from(&local_pools);
     spec.local_only = true;
     spec.target = Some(unit.target_id().to_string());
-    spec.branch.clone_from(&unit.branch);
+    spec.from_ref = unit
+        .commit
+        .clone()
+        .or_else(|| Some(ctx.cfg.dispatch_from().to_owned()));
+    spec.branch = Some(format!("vivi/reclaim/{}", job_id_component(uid)));
     spec.units.push(uid.to_string());
     spec.payload = json!({
         "request": request_value,

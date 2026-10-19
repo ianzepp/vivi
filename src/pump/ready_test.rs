@@ -7,8 +7,9 @@ use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::{DispatchConfig, Generated, Lane, MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
+use crate::pump::need;
 use crate::pump::ready::{
-    blocked_needs, dependency_holds, is_ready, pick_model, ranked, satisfied,
+    blocked_needs, dependency_holds, dependency_satisfied, is_ready, pick_model, ranked, satisfied,
 };
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 
@@ -22,6 +23,125 @@ fn setup_cfg(cfg: PumpConfig) -> (TempDir, Ctx, Arc<FakeHost>, State) {
 /// The default test setup: default pump config, empty state.
 fn setup() -> (TempDir, Ctx, Arc<FakeHost>, State) {
     setup_cfg(PumpConfig::default())
+}
+
+#[test]
+fn same_need_merged_unit_satisfies_after_before_branch_landing() {
+    let (_dir, ctx, _host, mut st) = setup();
+    st.needs.insert(
+        String::from("n1"),
+        NeedRecord {
+            verdict: String::from("units"),
+            revision: 1,
+            units: vec![String::from("n1-dep"), String::from("n1-child")],
+            ..NeedRecord::default()
+        },
+    );
+    st.units.insert(
+        String::from("n1-dep"),
+        Unit {
+            need: String::from("n1"),
+            revision: 1,
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    let mut child = Unit {
+        need: String::from("n1"),
+        revision: 1,
+        status: Status::Pending,
+        ..Unit::default()
+    };
+    child.after = vec![String::from("n1-dep")];
+    st.units.insert(String::from("n1-child"), child);
+    active_need_branch(&mut st, "n1");
+
+    assert!(dependency_satisfied(&st, "default", "n1", "n1-dep", 0));
+    assert!(is_ready(&ctx, &st, "n1-child", &BTreeMap::new()));
+    st.units.insert(
+        String::from("n1-other-target"),
+        Unit {
+            need: String::from("n1"),
+            target: String::from("other"),
+            revision: 1,
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    assert!(!dependency_satisfied(
+        &st,
+        "default",
+        "n1",
+        "n1-other-target",
+        0
+    ));
+}
+
+#[test]
+fn external_managed_after_and_need_graph_edges_wait_for_verified_landing() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.insert(
+        String::from("prereq"),
+        NeedRecord {
+            verdict: String::from("units"),
+            revision: 1,
+            units: vec![String::from("prereq-u1")],
+            ..NeedRecord::default()
+        },
+    );
+    st.units.insert(
+        String::from("prereq-u1"),
+        Unit {
+            need: String::from("prereq"),
+            revision: 1,
+            status: Status::Merged,
+            ..Unit::default()
+        },
+    );
+    active_need_branch(&mut st, "prereq");
+    st.needs.insert(
+        String::from("consumer"),
+        NeedRecord {
+            verdict: String::from("units"),
+            revision: 1,
+            units: vec![String::from("consumer-u1")],
+            ..NeedRecord::default()
+        },
+    );
+    let mut consumer = Unit {
+        need: String::from("consumer"),
+        revision: 1,
+        status: Status::Pending,
+        ..Unit::default()
+    };
+    consumer.after = vec![String::from("prereq-u1")];
+    st.units.insert(String::from("consumer-u1"), consumer);
+    host.reply(
+        "graph blocked backlog --kind need --json --confirm-large",
+        0,
+        r#"[{"source_id":"consumer","blocked_by":["prereq"]}]"#,
+    );
+
+    assert!(!dependency_satisfied(
+        &st,
+        "default",
+        "consumer",
+        "prereq-u1",
+        0
+    ));
+    assert!(!is_ready(&ctx, &st, "consumer-u1", &BTreeMap::new()));
+    assert_eq!(
+        dependency_holds(&ctx, &st)["consumer"],
+        vec![String::from("prereq")]
+    );
+}
+
+fn active_need_branch(st: &mut State, need_id: &str) {
+    let base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    need::reserve(st, "default", need_id, 1, base).unwrap();
+    let job_id = format!("init-{need_id}");
+    need::record_create_job(st, "default", need_id, &job_id).unwrap();
+    need::record_created(st, "default", need_id, &job_id, base, base).unwrap();
 }
 
 /// A `(handle, unit)` pair with the given status and write scope.

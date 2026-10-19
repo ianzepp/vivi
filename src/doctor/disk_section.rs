@@ -78,13 +78,15 @@ pub fn size_finding(section: &str, name: &str, path: &Path, warn_bytes: u64) -> 
     }
 }
 
-/// Count local `unit/*` branches without fetching or changing repository state.
+/// Count local `vivi/unit/*` branches without fetching or changing repository state.
 #[must_use]
 pub fn branch_count(repo: &Path) -> Option<usize> {
+    let prefix = format!("refs/heads/{}", crate::pump::need::unit_namespace_prefix());
     let output = match Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["for-each-ref", "--format=%(refname)", "refs/heads/unit/"])
+        .args(["for-each-ref", "--format=%(refname)"])
+        .arg(prefix)
         .output()
     {
         Ok(output) => output,

@@ -39,7 +39,7 @@ pub enum Status {
     /// Merged into the integration branch.
     Merged,
     /// Merged into a batch whose shared check failed. The batch is set aside
-    /// on a `pump/quarantine/<id>` branch and one repair unit works on it
+    /// on a `vivi/quarantine/<id>` branch and one repair unit works on it
     /// (`Unit::quarantine` names the id). Not fed to a lane, not dispatched,
     /// not satisfied; it becomes `Merged` when the repair unit merges, or
     /// returns to `Delivered` (solo) when the repair unit goes `Stuck`.
@@ -161,7 +161,7 @@ pub struct Attempt {
     /// Epoch seconds.
     #[serde(default)]
     pub at: u64,
-    /// The attempt branch (`unit/<uid>-a<n>`) the hand worked on, kept on the
+    /// The attempt branch (`vivi/unit/<uid>-a<n>`) the hand worked on, kept on the
     /// remote after the attempt ends. `pump.db` keeps it in `unit_events`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -209,7 +209,7 @@ pub struct Unit {
     /// Attempts so far.
     #[serde(default)]
     pub attempts: u32,
-    /// Next branch suffix to try after a refused `unit/<id>-a<n>` branch.
+    /// Next branch suffix to try after a refused `vivi/unit/<id>-a<n>` branch.
     /// This stays separate from `attempts`: branch collisions do not charge a
     /// hand attempt, and the value is persisted in `units.extra_json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,7 +307,7 @@ pub struct Unit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repairs: Option<String>,
     /// Branch to dispatch this unit from instead of `dispatch.from`; a repair
-    /// unit starts on its `pump/quarantine/<id>` branch.
+    /// unit starts on its `vivi/quarantine/<id>` branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     /// Merge this unit in a batch of its own: set on a repair unit, and on
@@ -576,8 +576,11 @@ pub fn with_target_state<T>(st: &mut State, target: &str, run: impl FnOnce(&mut 
     if target == "default" {
         return run(st);
     }
+    // Read need ownership before swapping global lifecycle metadata for the
+    // target's gate-only extra fields.
+    let integrated = integrated_unit_count(st, target);
     let previous = st.target_states.remove(target).unwrap_or_default();
-    let saved = TargetState {
+    let mut saved = TargetState {
         merges: st.merges,
         baseline: std::mem::replace(&mut st.baseline, previous.baseline),
         last_gate: std::mem::replace(&mut st.last_gate, previous.last_gate),
@@ -587,13 +590,10 @@ pub fn with_target_state<T>(st: &mut State, target: &str, run: impl FnOnce(&mut 
         red_reported: std::mem::replace(&mut st.red_reported, previous.red_reported),
         extra: std::mem::replace(&mut st.extra, previous.extra),
     };
-    st.merges = st
-        .units
-        .values()
-        .filter(|unit| unit.target_id() == target && unit.status == Status::Merged)
-        .count() as u64;
+    move_need_metadata(&mut saved.extra, &mut st.extra);
+    st.merges = integrated.max(previous.merges);
     let result = run(st);
-    let updated = TargetState {
+    let mut updated = TargetState {
         merges: st.merges,
         baseline: st.baseline.take(),
         last_gate: std::mem::take(&mut st.last_gate),
@@ -603,6 +603,7 @@ pub fn with_target_state<T>(st: &mut State, target: &str, run: impl FnOnce(&mut 
         red_reported: std::mem::take(&mut st.red_reported),
         extra: std::mem::take(&mut st.extra),
     };
+    move_need_metadata(&mut updated.extra, &mut saved.extra);
     st.merges = saved.merges;
     st.baseline = saved.baseline;
     st.last_gate = saved.last_gate;
@@ -613,6 +614,33 @@ pub fn with_target_state<T>(st: &mut State, target: &str, run: impl FnOnce(&mut 
     st.extra = saved.extra;
     st.target_states.insert(target.to_string(), updated);
     result
+}
+
+/// Need lifecycle and acceptance belong to the workspace even inside gate context.
+fn move_need_metadata(
+    from: &mut BTreeMap<String, serde_json::Value>,
+    into: &mut BTreeMap<String, serde_json::Value>,
+) {
+    for key in ["need_branches", "need_verdicts"] {
+        if let Some(value) = from.remove(key) {
+            into.insert(key.to_owned(), value);
+        }
+    }
+}
+
+/// Count published units, excluding work that only reached a need branch.
+fn integrated_unit_count(st: &State, target: &str) -> u64 {
+    st.units
+        .values()
+        .filter(|unit| unit.target_id() == target && unit.status == Status::Merged)
+        .filter(
+            |unit| match crate::pump::need::get(st, target, &unit.need) {
+                Ok(None) => true,
+                Ok(Some(record)) => record.landing_receipt.is_some(),
+                Err(_) => false,
+            },
+        )
+        .count() as u64
 }
 
 impl State {
@@ -710,7 +738,7 @@ pub struct MergeResult {
 /// batch gets the same value in its result.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Quarantine {
-    /// The quarantine id; the batch sits on `pump/quarantine/<id>`.
+    /// The quarantine id; the batch sits on `vivi/quarantine/<id>`.
     #[serde(default)]
     pub id: String,
     /// The shared check that failed.

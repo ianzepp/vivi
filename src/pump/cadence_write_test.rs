@@ -161,7 +161,7 @@ fn insert_delivered_unit(st: &mut State) {
     st.units.insert(
         String::from("unit-1"),
         Unit {
-            need: String::from("need-1"),
+            need: String::new(),
             status: Status::Delivered,
             branch: Some(String::from("unit/unit-1-a1")),
             ..Unit::default()

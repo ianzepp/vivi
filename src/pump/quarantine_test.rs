@@ -167,7 +167,7 @@ fn a_failed_shared_check_lands_clean_members_and_quarantines_only_the_culprit() 
     assert!(
         !cmds
             .iter()
-            .any(|c| c.contains("pump/quarantine") && c.contains("u2"))
+            .any(|c| c.contains("vivi/quarantine") && c.contains("u2"))
     );
     let st = applied_state(&ctx, results);
     let repair = repair_uid(&ctx, &id);
@@ -215,14 +215,14 @@ fn a_one_unit_batch_still_fails_the_unit_and_logs_the_failure() {
     assert_eq!(results[0].ok, Some(false));
     assert_eq!(results[0].why.as_deref(), Some("proof-failed"));
     assert!(results[0].quarantine.is_none());
-    assert_eq!(count(&host.commands(), "pump/quarantine"), 0);
+    assert_eq!(count(&host.commands(), "vivi/quarantine"), 0);
     assert!(host.logs().iter().any(|l| l.contains("error: boom")));
 }
 
 #[test]
 fn a_refused_quarantine_push_leaves_every_unit_undecided() {
     let (_dir, ctx, host) = setup("");
-    host.reply("push origin HEAD:refs/heads/pump/quarantine", 1, "denied\n");
+    host.reply("push origin HEAD:refs/heads/vivi/quarantine", 1, "denied\n");
     let results = quarantined_pair(&ctx, &host);
     assert_eq!(results.len(), 2);
     for result in &results {

@@ -26,7 +26,9 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
     }
     match u.status {
         Status::Merged | Status::NoDefect => true,
-        Status::Replaced => u.replaced_by.iter().all(|x| satisfied(st, x, depth + 1)),
+        Status::Replaced => {
+            !u.replaced_by.is_empty() && u.replaced_by.iter().all(|x| satisfied(st, x, depth + 1))
+        }
         Status::Pending
         | Status::Held
         | Status::Inflight
@@ -38,6 +40,41 @@ pub fn satisfied(st: &State, uid: &str, depth: u32) -> bool {
         | Status::Splitting
         | Status::Withdrawn
         | Status::Other(_) => false,
+    }
+}
+
+/// Whether `uid` can satisfy an `after` edge for `consumer_need`.
+/// Same-need work shares one isolated branch; an external managed need must
+/// have a verified landing on the configured integration target first.
+#[must_use]
+pub fn dependency_satisfied(
+    st: &State,
+    consumer_target: &str,
+    consumer_need: &str,
+    uid: &str,
+    depth: u32,
+) -> bool {
+    let Some(unit) = st.units.get(uid) else {
+        return false;
+    };
+    if depth > 6 {
+        return false;
+    }
+    if (unit.need != consumer_need || unit.target_id() != consumer_target)
+        && crate::pump::report::landing_required(st, &unit.need)
+        && !crate::pump::need::fully_landed(st, &unit.need).unwrap_or(false)
+    {
+        return false;
+    }
+    match unit.status {
+        Status::Merged | Status::NoDefect => true,
+        Status::Replaced => {
+            !unit.replaced_by.is_empty()
+                && unit.replaced_by.iter().all(|next| {
+                    dependency_satisfied(st, consumer_target, consumer_need, next, depth + 1)
+                })
+        }
+        _ => false,
     }
 }
 
@@ -119,7 +156,10 @@ pub fn is_ready(ctx: &Ctx, st: &State, uid: &str, holds: &BTreeMap<String, Vec<S
     if !held.is_empty() && overlaps(&generated_free(ctx, u.target_id(), &u.write_scope), &held) {
         return false;
     }
-    if u.after.iter().any(|dep| !satisfied(st, dep, 0)) {
+    if u.after
+        .iter()
+        .any(|dep| !dependency_satisfied(st, u.target_id(), &u.need, dep, 0))
+    {
         return false;
     }
     !overlap_busy(ctx, st, uid, u)
@@ -162,10 +202,9 @@ pub fn blocked_needs(ctx: &Ctx) -> Option<BTreeMap<String, Vec<String>>> {
 }
 
 /// Needs held by an unlanded dependency: `need -> prerequisite handles still
-/// unfinished`, from the raw read in [`blocked_needs`]. A prerequisite the
-/// pump already delivered — every unit of its need is satisfied — counts as
-/// landed even while its Vivi node is still open, so a merged dependency
-/// that nobody has closed does not hold its dependents.
+/// unfinished`, from the raw read in [`blocked_needs`]. Legacy dependencies
+/// count as landed when all units are satisfied; managed need branches require
+/// verified acceptance, target inclusion, and cleanup.
 ///
 /// An unreadable answer holds nothing: the pump keeps dispatching rather
 /// than stalling on a broken read.
@@ -209,9 +248,12 @@ fn parse_blocked(text: &str) -> Option<Vec<BlockedRow>> {
     }
 }
 
-/// True when the pump itself has delivered every unit of `need`. A need
-/// with no plan record here defers to Vivi's node state.
-fn need_landed(st: &State, need: &str) -> bool {
+/// Whether a graph prerequisite can unblock dependents. Managed branches
+/// require verified landing and cleanup; legacy needs retain unit completion.
+pub(crate) fn need_landed(st: &State, need: &str) -> bool {
+    if crate::pump::report::landing_required(st, need) {
+        return crate::pump::need::fully_landed(st, need).unwrap_or(false);
+    }
     if st.closed_needs.iter().any(|closed| closed == need) {
         return true;
     }

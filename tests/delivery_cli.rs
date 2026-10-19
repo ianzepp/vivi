@@ -42,7 +42,6 @@ fn delivery_pushes_under_mind_prefix_and_merge_role_closes_with_commit() {
     std::fs::create_dir(&project).unwrap();
     ok(&project, &["mailspace", "init"]);
     ok(&project, &["role", "add", "mind", "--kind", "mind"]);
-    ok(&project, &["role", "add", "merge", "--kind", "merge"]);
     git(&project, &["init", "-b", "main"]);
     git(&project, &["config", "user.name", "Delivery Test"]);
     git(&project, &["config", "user.email", "delivery@example.test"]);

@@ -1149,7 +1149,7 @@ fn a_shared_timeout_retry_that_times_out_returns_the_batch_undecided() {
     assert!(results.iter().all(|result| result.quarantine.is_none()));
     let commands = host.commands();
     assert_eq!(count(&commands, "cargo test --lib"), 2);
-    assert!(!commands.iter().any(|cmd| cmd.contains("pump/quarantine")));
+    assert!(!commands.iter().any(|cmd| cmd.contains("vivi/quarantine")));
     let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(
         exceptions.contains("shared-check-timeout batch of 2"),
@@ -1181,7 +1181,7 @@ fn a_bisect_timeout_is_undecided_and_never_quarantined() {
     assert!(
         host.commands()
             .iter()
-            .all(|cmd| !cmd.contains("pump/quarantine")),
+            .all(|cmd| !cmd.contains("vivi/quarantine")),
         "{:?}",
         host.commands()
     );
@@ -1202,7 +1202,7 @@ fn a_unit_proof_timeout_is_undecided_and_never_quarantined() {
     assert_eq!(for_uid(&results, "u2").ok, Some(true), "{results:?}");
     let commands = host.commands();
     assert_eq!(count(&commands, "./proof-u1.sh"), 1);
-    assert!(!commands.iter().any(|cmd| cmd.contains("pump/quarantine")));
+    assert!(!commands.iter().any(|cmd| cmd.contains("vivi/quarantine")));
 }
 
 #[test]
@@ -1333,7 +1333,7 @@ fn missing_tool_shared_check_leaves_the_batch_undecided() {
     let pushed = host
         .commands()
         .iter()
-        .any(|c| c.contains("pump/quarantine"));
+        .any(|c| c.contains("vivi/quarantine"));
     assert!(!pushed, "a missing tool must not quarantine");
 }
 

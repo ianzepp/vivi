@@ -11,6 +11,9 @@ mod batch;
 mod fetch;
 mod flaky;
 mod lane;
+mod need_branch_init;
+mod need_dispatch;
+mod need_receipts;
 mod pool_dispatch;
 mod publish;
 
@@ -21,6 +24,7 @@ pub use lane::Merger;
 pub(crate) use lane::dispatch_results;
 #[cfg(test)]
 pub(crate) use lane::{LaneRam, detached_worker, lane_work, ramdisk_batch_after_admit};
+pub(crate) use need_dispatch::{is_need_merge_job, refresh_freezes as refresh_need_freezes};
 pub(crate) use pool_dispatch::{apply_dispatched, dispatch_pool, timeout_status_line};
 
 use std::time::UNIX_EPOCH;

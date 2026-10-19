@@ -167,7 +167,7 @@ fn render_history(uid: &str, unit: &Unit, remote: &str, latest: usize, older: us
         let branch = attempt
             .branch
             .clone()
-            .unwrap_or_else(|| format!("unit/{uid}-a{}", attempt.attempt));
+            .unwrap_or_else(|| crate::pump::need::unit_branch(uid, attempt.attempt));
         lines.push(format!(
             "- attempt {} ({model}) ended: {}; branch {branch}",
             attempt.attempt, attempt.why

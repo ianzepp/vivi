@@ -32,6 +32,7 @@ fn merged_unit() -> Unit {
         status: Status::Merged,
         task: Some(String::from("task-1")),
         branch: Some(String::from("unit/u1-a1")),
+        commit: Some(String::from("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
         pool: Some(String::from("here")),
         ..Unit::default()
     }
@@ -58,6 +59,11 @@ fn merged_unit_enqueues_a_local_snapshot_without_cleaning_inline() {
     enqueue_merged(&ctx, &mut state, "u1", &unit);
 
     let job = &state.jobs["reclaim-default-u1"];
+    assert_eq!(
+        job.from_ref.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(job.branch.as_deref(), Some("vivi/reclaim/u1"));
     assert_eq!(job.status, JobStatus::Pending);
     assert!(job.local_only);
     assert_eq!(job.pool_candidates, [String::from("here")]);

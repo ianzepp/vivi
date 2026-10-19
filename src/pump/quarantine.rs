@@ -2,7 +2,7 @@
 //!
 //! When a shared check fails on a batch of several units, nobody knows which
 //! unit broke it, and finding out costs a full check run per unit. The lane
-//! instead pushes the merged batch to `pump/quarantine/<id>` and reports every
+//! instead pushes the merged batch to `vivi/quarantine/<id>` and reports every
 //! merged unit as quarantined (`merge::batch`). This module is the state side:
 //! [`set_aside`] parks each unit and opens ONE repair unit that starts from the
 //! quarantine branch; [`repair_of`], [`members`] and [`repair_stuck`] close the
@@ -21,11 +21,11 @@ use crate::pump::state::{MergeResult, NeedRecord, Quarantine, State, Status, Uni
 /// The branch a quarantined batch is pushed to.
 #[must_use]
 pub fn branch(id: &str) -> String {
-    format!("pump/quarantine/{id}")
+    crate::pump::need::quarantine_branch(id)
 }
 
 /// The ref a repair unit starts from: the quarantine branch as a remote-tracking
-/// ref (`<remote>/pump/quarantine/<id>`), the same shape as `dispatch.from`, so a
+/// ref (`<remote>/vivi/quarantine/<id>`), the same shape as `dispatch.from`, so a
 /// pool resolves it the way it resolves `origin/next`.
 #[must_use]
 pub fn base(remote: &str, id: &str) -> String {

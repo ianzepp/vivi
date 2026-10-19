@@ -268,9 +268,9 @@ fn scaffold() -> Rig {
 
     let config_path = project.join(".vivi/mailspace.toml");
     let old = fs::read_to_string(&config_path).unwrap();
-    let base_config = old.replace("identities = []\n", "");
+    let mut parsed: toml::Value = toml::from_str(&old).unwrap();
     let additions = format!(
-        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 6\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_UNIT_ID\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
+        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 6\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_UNIT_ID\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
         toml_string(&project.join(".vivi/pump-home")),
         toml_string(&repo),
         toml_string(&bare),
@@ -278,7 +278,6 @@ fn scaffold() -> Rig {
         toml_string(&repo),
         script.display(),
     );
-    let mut config = base_config;
     for (role, kind) in [
         ("mind", "mind"),
         ("hand", "hand"),
@@ -288,10 +287,9 @@ fn scaffold() -> Rig {
         ("auditor", "auditor"),
         ("release", "merge"),
     ] {
-        config.push_str(&format!(
-            "\n[[identities]]\nname = \"{role}\"\nkind = \"{kind}\"\npool = \"p\"\n"
-        ));
+        ensure_role(&mut parsed, role, kind, "p", "P2");
     }
+    let mut config = toml::to_string(&parsed).unwrap();
     config.push_str(&additions);
     fs::write(config_path, config).unwrap();
     let created = vivi(["pool", "create", "--pool", "p", "--project", path(&project)]);
@@ -304,6 +302,29 @@ fn scaffold() -> Rig {
         child_log,
         tip,
     }
+}
+
+fn ensure_role(config: &mut toml::Value, name: &str, kind: &str, pool: &str, model: &str) {
+    let identities = config
+        .get_mut("identities")
+        .and_then(toml::Value::as_array_mut)
+        .expect("mailspace init omitted identities array");
+    let index = identities
+        .iter()
+        .position(|identity| identity.get("name").and_then(toml::Value::as_str) == Some(name));
+    let index = if let Some(index) = index {
+        index
+    } else {
+        identities.push(toml::Value::Table(toml::map::Map::new()));
+        identities.len() - 1
+    };
+    let row = identities[index]
+        .as_table_mut()
+        .expect("identity row is not a table");
+    row.insert("name".to_owned(), toml::Value::String(name.to_owned()));
+    row.insert("kind".to_owned(), toml::Value::String(kind.to_owned()));
+    row.insert("pool".to_owned(), toml::Value::String(pool.to_owned()));
+    row.insert("model".to_owned(), toml::Value::String(model.to_owned()));
 }
 
 fn seed_state(rig: &Rig) {

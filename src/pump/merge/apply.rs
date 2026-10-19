@@ -141,6 +141,52 @@ pub(super) fn apply_merged_dispatched(ctx: &Ctx, st: &mut State, result: &MergeR
     apply_merged(ctx, st, result);
 }
 
+/// Record a unit merged into its owning need branch without treating it as
+/// landed on the shared integration target or closing the need.
+pub(super) fn apply_merged_need(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    let now = ctx.now();
+    let landed = if let Some(unit) = st.units.get_mut(&result.uid) {
+        unit.status = Status::Merged;
+        unit.commit.clone_from(&result.tip);
+        unit.merged_at = Some(now);
+        unit.since = now;
+        unit.outside.clone_from(&result.outside);
+        true
+    } else {
+        false
+    };
+    if landed {
+        crate::pump::attempt_record::post_status(ctx, st, &result.uid, "merged", now);
+        if let Some(unit) = st.units.get(&result.uid).cloned() {
+            crate::pump::reclaim::enqueue_merged(ctx, st, &result.uid, &unit);
+        }
+    }
+    if !result.outside.is_empty() {
+        ctx.log(&format!(
+            "scope-warn {} touched outside need scope: {}",
+            result.uid,
+            result
+                .outside
+                .join(" ")
+                .chars()
+                .take(300)
+                .collect::<String>()
+        ));
+    }
+    ctx.log(&format!(
+        "merged {} to need branch tip={} in {}s",
+        result.uid,
+        result
+            .tip
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .take(10)
+            .collect::<String>(),
+        result.secs.unwrap_or(0)
+    ));
+}
+
 /// Recycle the unit's pool work lane now that it is on the merge lane.
 ///
 /// Pump did not do this before: [`apply_merged`] only set [`Status::Merged`]

@@ -23,6 +23,7 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 | **merge** | **merge** role | Merge role pool and fallback chain. The live pipeline requires a merge role with a usable pool. |
 | **gate** | **gate** role | Gate role pool and fallback chain, followed by configured **[pump.gate].pools** candidates. The gate job is read-only. |
 | **audit** | **auditor** role | Auditor role pool and fallback chain, followed by configured gate-pool candidates. If no auditor role exists, the built-in read-only audit fallback uses gate pools. |
+| **need-audit** | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
 | **investigation** | Configured **auditor** role | Auditor role pool and fallback chain. Investigation work is read-only and is not eligible without an auditor role. |
 | **promote** | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. Publication is restricted to the exact configured main ref and candidate. |
 | **cadence**, **digest** | The scheduled role itself | That role's pool and fallback chain. |
@@ -55,7 +56,65 @@ The principal unit states are:
 - **quarantined**: legacy state retained from the old local merge path; current durable merge receipts use merged, dropped, or undecided.
 - **stuck**, **needs-replan**, **splitting**, **replaced**, and **withdrawn**: parked, replacement, or operator-managed states; they are not satisfied unless their successors are.
 
-The merge scheduler queues at most one active merge job per repository target. It includes eligible delivered unit branches and eligible completed write-role branches, and records the source IDs before dispatch. A worker starts from the integration tip, integrates the listed sources, runs configured formatting, shared checks, scope-mapped checks, and unit proofs, then commits a candidate. It returns a structured result receipt and does not push the integration ref. The privileged pool runner publishes the candidate; the controller accepts a merge only after checking the worker's clean exit, exact source list, runner publication receipt, current remote ref, and candidate ancestry. The full protocol is in [pump protocols](pump-protocols.md).
+The shared integration merge scheduler queues at most one target-level job at a time. It includes eligible delivered units from unmanaged needs and eligible completed write-role branches, and records the source IDs before dispatch. Managed needs use the separate per-need merge path below. A shared merge worker starts from the integration tip, integrates its listed sources, runs configured formatting, shared checks, scope-mapped checks, and unit proofs, then commits a candidate. It returns a structured result receipt and does not push the integration ref. The privileged pool runner publishes the candidate; the controller accepts a merge only after checking the worker's clean exit, exact source list, runner publication receipt, current remote ref, and candidate ancestry. The full protocol is in [pump protocols](pump-protocols.md).
+
+## Need-level acceptance and landing
+
+The first unit dispatch reserves one managed branch for that need from the
+target's observed integration tip. New need branches use
+**vivi/need/&lt;need&gt;**; unit attempts use **vivi/unit/&lt;unit-id&gt;-a&lt;attempt&gt;**.
+Unit merge jobs are serialized within a need and publish only to that need's
+branch. Separate needs may progress concurrently. A unit reaching **merged**
+or **no-defect** does not accept the need and does not publish its work to the
+shared integration branch. Already-recorded in-flight branch names remain in
+use as stored, with no prefix migration.
+
+When every unit in the current plan revision is settled, the pump records the
+need branch's exact target, revision, base SHA, and frozen tip SHA. It sends a
+durable, read-only audit job to the Auditor role using the regular pool routing
+and fallback rules. The audit brief identifies the exact **git diff
+&lt;audit_base&gt;..&lt;tip&gt;** review range and includes the original need, current
+plan, requirements, settled units, and changed paths. The first review starts
+at the need branch base. A repair review keeps the original binding but starts
+at the previous frozen tip, so its range contains only repair work. A plan
+revision, unit membership, or branch-tip change invalidates the old acceptance
+identity.
+
+The audit receipt supports four verdicts:
+
+- **clean_pass** accepts the exact frozen range when every declared
+  requirement is satisfied or not applicable and there are no findings.
+- **residual** accepts the reviewed range and files deduplicated ordinary
+  follow-up needs for each finding or unmet requirement, retaining report,
+  path, and recheck-trigger provenance.
+- **block_range** keeps acceptance pending, creates repair units on the same
+  need branch, then reviews only the repair diff under the Auditor policy.
+- **block_ship** keeps a persistent hold on the need branch and records an
+  operator and CTO escalation. It does not authorize landing.
+
+Audit receipts bind the durable job ID, source-thread hash, need, target, plan
+revision, original base SHA, frozen tip SHA, review-range base, and report
+identity. The source-thread hash includes the need and its amendments while
+excluding only authenticated pump-generated replies. A later source amendment
+invalidates an earlier receipt even if the plan revision and branch tip have
+not changed. Replaying a receipt is idempotent. A receipt for an old revision,
+source snapshot, or tip is stale and cannot authorize landing.
+
+Only a current **clean_pass** or **residual** receipt can enqueue the
+predefined **merge** role for need landing. The Merge worker integrates the
+accepted branch into the current configured integration ref, runs the checks
+assigned by the merge contract, and returns a candidate receipt. The
+privileged pool runner publishes the candidate. Before recording landing, the
+pump verifies the exact ref and candidate and independently checks the
+published target's ancestry against the accepted tip. It stores that verified
+inclusion receipt before queueing a separate cleanup job. Cleanup is limited to
+the recorded owned branch and expected SHA, and completes only after the
+runner confirms the ref is absent. A failed cleanup leaves the branch and its
+retry evidence intact.
+
+Landing to the integration branch does not promote to **main**. The existing
+gate pins and checks the landed integration tip; only a passing gate can make
+that exact tip eligible for the configured release or promotion path.
 
 ## Planning and gate behavior
 

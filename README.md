@@ -435,7 +435,14 @@ A job stays pending when none has capacity. A live merge pipeline needs a
 local merges. Gate jobs use the gate role and its fallback, with
 **[pump.gate].pools** available as additional candidates. If no auditor role is
 configured, gate audits have a built-in read-only fallback using gate pools;
-investigations require an auditor role.
+investigations require an auditor role. Managed need acceptance audits require
+an active auditor role with a configured pool; the gate-audit fallback does
+not replace it.
+
+**vivi mailspace init** and **vivi sync join** provision the active **merge**
+role and its shipped verification charter when either is absent. They preserve
+existing role settings and charter files. Pool and model routing remain
+operator-configured.
 
 Concurrency comes from a pool's **slots**. Optional **[pools.&lt;name&gt;.caps]**
 holds per-model caps inside that pool. A role may name a model slug, a band
@@ -477,19 +484,21 @@ all of its configured fallback candidates leave the work pending.
 
 ## The pump
 
-The pump plans a Vivi backlog, dispatches unit tasks, integrates returned work,
-and gates the integration branch. Planning, merging, gate runs, audits,
-promotions, cadence runs, investigations, and reclaim use persisted pool jobs.
-The pump records each job before choosing a slot; jobs without capacity stay
-pending, and dispatched work remains owned by its pool across pump restarts.
+The pump coordinates the backlog lifecycle and routes work to durable pool
+jobs. Planner workers plan and revise needs; Merge workers integrate branches
+and run the configured checks; Gate, Auditor, and release workers handle their
+own jobs. The pump records each job before choosing a slot. Jobs without
+capacity stay pending, and dispatched work remains owned by its pool across
+pump restarts.
 
 | Work | Role and pool |
 | --- | --- |
 | Unit tasks | The role named by **[pump].to**. Its pool and fallback chain are primary; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but kind pool lists are ignored. Without a hand pool, configured kind pools route the unit. |
 | Whole-need, revision, and split planning | The active **planner** role and its pool. This role with a pool is required when **[pump]** is configured. |
-| Integration merges | The **merge** role and its pool. This role runs the merge checks and returns a candidate commit; the privileged pool runner publishes it. |
+| Integration merges and need branches | The **merge** role and its pool. This role integrates sources, runs the assigned checks, and returns a candidate commit; the privileged pool runner publishes it. |
 | Gates | The read-only **gate** role's pool and fallback chain, then configured **[pump.gate].pools** candidates. |
 | Audits and investigations | The **auditor** role and its pool, followed by gate-pool candidates for audits. Without an auditor role, gate audits use a built-in read-only fallback; investigations require an auditor role. |
+| Need acceptance audits | An active **auditor** role with a configured pool and fallback chain. Gate-pool fallback does not satisfy this route. |
 | Promotion | The active **release** role with a pool, or an active **merge** role with a pool as fallback. |
 | Cadence and digest | The role whose schedule is due. |
 | Reclaim | The **reclaim** role, or the hand role, using local pools only. |
@@ -511,9 +520,10 @@ bookkeeping, but starts no new dispatch, merge, or gate work. Valid routing,
 pool, dispatch, merge, gate, budget, and check changes are loaded between
 ticks; changing the pump home or repository target paths requires a restart.
 
-A merge worker integrates the listed unit and completed role branches, runs
-the configured formatter, shared checks, matching scope checks, and unit
-proofs, then commits a candidate without pushing. The privileged pool runner
+For a shared integration merge, its worker integrates the listed unmanaged
+unit and completed role branches, runs the configured formatter, shared
+checks, matching scope checks, and unit proofs, then commits a candidate
+without pushing. The privileged pool runner
 publishes the candidate to the configured integration ref. The pump checks
 the runner publication receipt, exact ref and candidate, and remote ancestry
 before marking units merged. Promotion is also a role job and is recorded
@@ -521,6 +531,15 @@ only after the configured main ref is verified to contain the gated commit.
 See [the pump contract](skills/vivi/references/pump-contract.md) and
 [the receipt protocols](skills/vivi/references/pump-protocols.md) for exact
 state and result contracts.
+
+Managed needs keep unit work on a per-need branch until the current plan
+revision is complete and its frozen range passes acceptance. The auditor
+reviews the exact need, target, revision, base, and tip; only an accepted range
+is sent to the Merge role for publication to the integration branch. Residual
+findings become ordinary follow-up needs, while blocking findings keep the
+range held for repair or operator review. Landing does not promote to main:
+the independent integration gate must pass before the release path can
+promote its pinned tip.
 
 A gate is due when there is no baseline, when a merge has landed since the
 previous gate, or when **FORCE-GATE** requests one. The legacy

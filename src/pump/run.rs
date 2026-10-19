@@ -52,6 +52,8 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
     }
     gates_pass(ctx, st);
     if !ctx.mailspace.is_empty() {
+        crate::pump::need_pipeline::dispatch_audits(ctx, st)?;
+        crate::pump::need_landing::dispatch(ctx, st)?;
         crate::pump::merge::dispatch_pool(ctx, st)?;
     }
     if !ctx.mailspace.is_empty() {
@@ -87,6 +89,12 @@ fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
     });
     crate::pump::gate::collect_completed(ctx, st);
     crate::pump::merge::apply_dispatched(ctx, st);
+    if !ctx.mailspace.is_empty() {
+        crate::pump::merge::refresh_need_freezes(ctx, st)?;
+        crate::pump::need_pipeline::collect_audits(ctx, st)?;
+        crate::pump::need_landing::collect_completed(ctx, st)?;
+        crate::pump::need_pipeline::refresh_default_merges(st)?;
+    }
     crate::pump::audit::collect_completed(ctx, st);
     crate::pump::reclaim::collect_completed(ctx, st);
     ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
@@ -870,27 +878,19 @@ pub fn closeout(
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
     let home = cfg.home_dir(project);
-    let snapshot = match crate::pump::report::read(&home)? {
-        crate::pump::report::PumpRead::Ready(snapshot) => snapshot,
-        crate::pump::report::PumpRead::Missing => {
-            return Err(VivariumError::Message(format!(
-                "no pump.db at {}",
-                home.join(DB_FILENAME).display()
-            )));
-        }
-        crate::pump::report::PumpRead::Unreadable(why) => {
-            return Err(VivariumError::Message(format!("pump.db unreadable: {why}")));
-        }
-    };
+    let snapshot = read_closeout_snapshot(&home)?;
     let rows = crate::pump::closeout::complete_open(&mailspace, &snapshot)?;
     if let Some(handle) = close {
-        let row = rows
+        let current_snapshot = read_closeout_snapshot(&home)?;
+        let current_rows = crate::pump::closeout::complete_open(&mailspace, &current_snapshot)?;
+        let row = current_rows
             .iter()
             .find(|row| row.handle == handle || row.handle.starts_with(handle))
             .ok_or_else(|| {
                 VivariumError::Message(format!("{handle}: not a complete-but-open need"))
             })?;
-        let receipt = crate::pump::closeout::close(&mailspace, row, for_identity)?;
+        let receipt =
+            crate::pump::closeout::close(&mailspace, &current_snapshot, row, for_identity)?;
         println!("{receipt}");
         return Ok(());
     }
@@ -913,6 +913,19 @@ pub fn closeout(
         );
     }
     Ok(())
+}
+
+fn read_closeout_snapshot(home: &Path) -> Result<crate::pump::report::Snapshot, VivariumError> {
+    match crate::pump::report::read(home)? {
+        crate::pump::report::PumpRead::Ready(snapshot) => Ok(snapshot),
+        crate::pump::report::PumpRead::Missing => Err(VivariumError::Message(format!(
+            "no pump.db at {}",
+            home.join(DB_FILENAME).display()
+        ))),
+        crate::pump::report::PumpRead::Unreadable(why) => {
+            Err(VivariumError::Message(format!("pump.db unreadable: {why}")))
+        }
+    }
 }
 
 /// Write the live `pump.db` as the `state.json` shape at `out`.

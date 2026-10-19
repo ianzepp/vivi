@@ -144,17 +144,41 @@ fn a_local_unit_branch_in_the_merge_lane_is_deleted() {
     let f = fixture();
     let tmp = tempfile::tempdir().unwrap();
     let base = git(&f.repo, &["rev-parse", "HEAD"]);
-    git(&f.repo, &["branch", "unit/done-a1"]);
+    git(&f.repo, &["branch", "vivi/unit/done-a1"]);
     let dir = marked_slot(tmp.path(), &f.repo, &base);
-    write_mark(&dir, "last_branch", "unit/done-a1").unwrap();
+    write_mark(&dir, "last_branch", "vivi/unit/done-a1").unwrap();
     Repo::new(&f.repo)
         .add_worktree(&dir.join(CHECKOUT), &base)
         .unwrap();
     let (acts, skips) = recycle_lane("lanes", "slot-1", &dir, "main", None, "main", false).unwrap();
     assert!(skips.is_empty(), "{skips:?}");
     assert!(acts.iter().any(|a| a.kind == ActionKind::Branch));
-    assert!(Repo::new(&f.repo).branch_tip("unit/done-a1").is_none());
+    assert!(Repo::new(&f.repo).branch_tip("vivi/unit/done-a1").is_none());
     assert!(read_mark(&dir, "last_task").is_none());
+}
+
+#[test]
+fn a_branch_in_the_legacy_unit_namespace_is_left_alone() {
+    let f = fixture();
+    let tmp = tempfile::tempdir().unwrap();
+    let base = git(&f.repo, &["rev-parse", "HEAD"]);
+    git(&f.repo, &["branch", "unit/legacy-a1"]);
+    let dir = marked_slot(tmp.path(), &f.repo, &base);
+    write_mark(&dir, "last_branch", "unit/legacy-a1").unwrap();
+    Repo::new(&f.repo)
+        .add_worktree(&dir.join(CHECKOUT), &base)
+        .unwrap();
+
+    let (actions, skips) =
+        recycle_lane("lanes", "slot-1", &dir, "main", None, "main", false).unwrap();
+
+    assert!(skips.is_empty(), "{skips:?}");
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.kind == ActionKind::Branch)
+    );
+    assert!(Repo::new(&f.repo).branch_tip("unit/legacy-a1").is_some());
 }
 
 #[test]
@@ -163,13 +187,13 @@ fn an_unmerged_unit_branch_is_reported_not_deleted() {
     let tmp = tempfile::tempdir().unwrap();
     let base = git(&f.repo, &["rev-parse", "HEAD"]);
     let dir = marked_slot(tmp.path(), &f.repo, &base);
-    write_mark(&dir, "last_branch", "unit/open-a1").unwrap();
+    write_mark(&dir, "last_branch", "vivi/unit/open-a1").unwrap();
     Repo::new(&f.repo)
         .add_worktree(&dir.join(CHECKOUT), &base)
         .unwrap();
     git(
         &dir.join(CHECKOUT),
-        &["checkout", "-q", "-b", "unit/open-a1"],
+        &["checkout", "-q", "-b", "vivi/unit/open-a1"],
     );
     fs::write(dir.join(CHECKOUT).join("a.txt"), "ahead\n").unwrap();
     git(&dir.join(CHECKOUT), &["commit", "-q", "-am", "ahead"]);
@@ -177,7 +201,7 @@ fn an_unmerged_unit_branch_is_reported_not_deleted() {
     let (acts, skips) = recycle_lane("lanes", "slot-1", &dir, "main", None, "main", false).unwrap();
     assert!(acts.is_empty(), "{acts:?}");
     assert!(skips.iter().any(|s| s.reason.contains("not in main")));
-    assert!(Repo::new(&f.repo).branch_tip("unit/open-a1").is_some());
+    assert!(Repo::new(&f.repo).branch_tip("vivi/unit/open-a1").is_some());
     assert!(dir.join(CHECKOUT).join("a.txt").is_file());
 }
 

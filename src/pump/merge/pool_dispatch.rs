@@ -13,30 +13,30 @@ use crate::pump::state::{MergeResult, State, Status};
 use super::apply::{apply_failure, apply_undecided};
 use super::lane::{eligible, recheck_held, take_batch};
 
-const MERGE_BRIEF: &str = r#"You are the configured Vivi merge role. The pump selected these source branches and this target. Integrate the sources in the listed order in this checkout. The checkout starts on a unique scratch branch at the current integration tip. Keep the scratch branch; do not switch branches.
+pub(super) const MERGE_BRIEF: &str = r#"You are the configured Vivi merge role. The pump selected these source branches and this target. Integrate the sources in the listed order in this checkout. Start at the exact assigned base or current tip. Keep the scratch branch; do not switch branches.
 
 Fetch and merge each source branch. Resolve ordinary conflicts within the branch write scopes. For configured generated paths, take the target side on conflict, run its configured regeneration command, and continue. Run the configured formatter, every shared check, and each unit proof. When a failing proof matches a configured generated-file drift signature, regenerate and retry that proof once.
 
-Classify the result honestly. If the source branch merges cleanly against the refreshed target but conflicts only because another integration job moved the target, return `undecided` with `why=lane-race`. A timeout, index lock, provider problem, or conflict during runner publication is also `undecided`; it is not a unit defect and must not consume a hand attempt. A conflict or failing proof that is isolated to a source is `dropped` only after you have diagnosed it. If a publish or re-merge conflict is only in a configured generated/counter path after green checks, refresh the target, regenerate or re-ask, and retry without charging the source. After all checks pass, commit the final integration tree yourself and record its full candidate SHA. Do not push. After your clean exit, the privileged pool runner publishes the exact candidate to the configured integration ref. The controller accepts `merged` only when the runner receipt names this candidate and the host independently verifies it on the remote integration ref. Never force, reset, or claim remote publication. The JSON `tip` is the candidate commit, not a claim about the later runner result.
+Classify the result honestly. If the source branch merges cleanly against the refreshed target but conflicts only because another integration job moved the target, return `undecided` with `why=lane-race`. A timeout, index lock, provider problem, or conflict during runner publication is also `undecided`; it is not a unit defect and must not consume a hand attempt. A conflict or failing proof that is isolated to a source is `dropped` only after you have diagnosed it. If a publish or re-merge conflict is only in a configured generated/counter path after green checks, refresh the target, regenerate or re-ask, and retry without charging the source. After all checks pass, commit the final assigned tree yourself and record its full candidate SHA. Do not push. After your clean exit, the privileged pool runner publishes the exact candidate only to the assigned `publish_ref`. A need-owned job must publish only to its assigned need branch; it must never publish its units to the shared integration ref. The controller accepts `merged` only when the runner receipt names this candidate and the host independently verifies the assigned remote ref. Never force, reset, or claim remote publication. The JSON `tip` is the candidate commit, not a claim about the later runner result.
 
 End your receipt with one minified JSON line prefixed exactly `PUMP_MERGE_RESULT=`. Use this shape: `{"version":1,"target":"<target>","tip":"<full candidate SHA>","sources":[{"kind":"unit","id":"<unit id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0},{"kind":"job","id":"<origin job id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0}]}`. Include every requested source exactly once. `outside` is the repository paths changed outside a unit's write scope; use an empty list for role branches. The result tip is the full SHA you committed for runner publication."#;
 
-const MERGE_TIMEOUT_RULES: &str = r#"These retry rules refine the timeout sentence above: retry every failing shared/scoped check exactly once on the same tree before bisect or quarantine. If one run fails and its immediate retry passes, continue as passing and include one `shared_check_recoveries` record with the check's stable name (or an empty name when none exists), command and first failure detail. A timeout (rc=124 or the timeout wrapper's kill) is infrastructure, not a source defect. If either attempt timed out and the retry did not pass, report every source as undecided with `why=shared-check-timeout` and a `detail` naming the command and timeout; do not bisect, quarantine, or open a repair unit. Bisect only after a non-timeout check failure remains after its one retry. A solo check timeout during bisect is undecided (`why=bisect-check-timeout`), never clean or a culprit. Never open a quarantine repair for a timeout.
+pub(super) const MERGE_TIMEOUT_RULES: &str = r#"These retry rules refine the timeout sentence above: retry every failing shared/scoped check exactly once on the same tree before bisect or quarantine. If one run fails and its immediate retry passes, continue as passing and include one `shared_check_recoveries` record with the check's stable name (or an empty name when none exists), command and first failure detail. A timeout (rc=124 or the timeout wrapper's kill) is infrastructure, not a source defect. If either attempt timed out and the retry did not pass, report every source as undecided with `why=shared-check-timeout` and a `detail` naming the command and timeout; do not bisect, quarantine, or open a repair unit. Bisect only after a non-timeout check failure remains after its one retry. A solo check timeout during bisect is undecided (`why=bisect-check-timeout`), never clean or a culprit. Never open a quarantine repair for a timeout.
 
 Add `shared_check_timeouts` and `shared_check_timeout_retries` integer fields to the result JSON above. Count every shared/scoped check execution that timed out in `shared_check_timeouts`, including retry and solo-bisect executions; count additional attempts made after an initial timeout in `shared_check_timeout_retries`. Include both fields even when zero. Also include `shared_check_recoveries` as an array of `{name,command,detail}` objects, empty when no failed check recovered; `detail` is the first failure diagnostic. A timeout followed by a pass is a recovered check and belongs in this array. A retry that times out is never a recovery."#;
 
 #[derive(Debug, Clone, Deserialize)]
-struct MergeReceipt {
-    version: u32,
-    target: String,
-    tip: String,
+pub(super) struct MergeReceipt {
+    pub(super) version: u32,
+    pub(super) target: String,
+    pub(super) tip: String,
     #[serde(default)]
     shared_check_timeouts: Option<u64>,
     #[serde(default)]
     shared_check_timeout_retries: Option<u64>,
     #[serde(default)]
     shared_check_recoveries: Option<Vec<SharedCheckRecovery>>,
-    sources: Vec<SourceResult>,
+    pub(super) sources: Vec<SourceResult>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,18 +47,18 @@ struct SharedCheckRecovery {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct SourceResult {
-    kind: String,
-    id: String,
-    status: String,
+pub(super) struct SourceResult {
+    pub(super) kind: String,
+    pub(super) id: String,
+    pub(super) status: String,
     #[serde(default)]
-    why: String,
+    pub(super) why: String,
     #[serde(default)]
-    detail: String,
+    pub(super) detail: String,
     #[serde(default)]
-    outside: Vec<String>,
+    pub(super) outside: Vec<String>,
     #[serde(default)]
-    secs: Option<u64>,
+    pub(super) secs: Option<u64>,
 }
 
 /// Enqueue at most one serialized merge job per repository target.
@@ -94,9 +94,16 @@ pub(crate) fn dispatch_pool(ctx: &Ctx, st: &mut State) -> Result<Vec<String>, Vi
     recheck_held(st, &batches);
     let known: BTreeSet<String> = batches.keys().cloned().collect();
     let mut waiting = eligible(ctx, st, &known);
-    let mut started = Vec::new();
+    let mut started = super::need_dispatch::dispatch_units(
+        ctx,
+        st,
+        &role.name,
+        &targets,
+        &batches,
+        &mut waiting,
+    )?;
     for target_id in targets.keys() {
-        if merge_blocked(ctx, st, target_id) {
+        if merge_blocked(st, target_id) {
             continue;
         }
         let Some(target_ctx) = ctx.for_target(target_id) else {
@@ -139,7 +146,11 @@ pub(crate) fn apply_dispatched(ctx: &Ctx, st: &mut State) {
     let jobs: Vec<PoolJob> = st
         .jobs
         .values()
-        .filter(|job| job.kind == "merge" && job.status.is_terminal() && job.applied_at.is_none())
+        .filter(|job| {
+            matches!(job.kind.as_str(), "merge" | "need-branch-init")
+                && job.status.is_terminal()
+                && job.applied_at.is_none()
+        })
         .cloned()
         .collect();
     for job in jobs {
@@ -147,8 +158,13 @@ pub(crate) fn apply_dispatched(ctx: &Ctx, st: &mut State) {
     }
 }
 
-fn merge_blocked(ctx: &Ctx, st: &mut State, target: &str) -> bool {
-    let active_job = jobs::has_unsettled_kind_for_target(st, "merge", target);
+fn merge_blocked(st: &mut State, target: &str) -> bool {
+    let active_job = st.jobs.values().any(|job| {
+        matches!(job.kind.as_str(), "merge" | "need-merge")
+            && job.target.as_deref() == Some(target)
+            && !super::need_dispatch::is_need_merge_job(job)
+            && (!job.status.is_terminal() || job.applied_at.is_none())
+    });
     let waiting_gate = !jobs::sources_waiting_for_gate(st, target).is_empty();
     let waiting_unit_gate = crate::pump::state::with_target_state(st, target, |state| {
         state.last_gate.task.is_some() || state.last_gate.merges < state.merges
@@ -298,6 +314,14 @@ fn safe_target(target: &str) -> String {
 }
 
 fn apply_job(ctx: &Ctx, st: &mut State, job: &PoolJob) {
+    if job.kind == "need-branch-init" {
+        super::need_dispatch::apply_branch_init(ctx, st, job);
+        return;
+    }
+    if super::need_dispatch::is_need_merge_job(job) {
+        super::need_dispatch::apply_need_merge(ctx, st, job);
+        return;
+    }
     let expected_units: BTreeSet<String> = job.units.iter().cloned().collect();
     let expected_jobs: BTreeSet<String> = job.source_jobs.iter().cloned().collect();
     let Some(outcome) = job.outcome.as_ref().filter(|outcome| {
@@ -370,7 +394,7 @@ fn apply_verified_receipt(
     }
 }
 
-fn valid_result(
+pub(super) fn valid_result(
     receipt: &MergeReceipt,
     job: &PoolJob,
     outcome: &jobs::JobOutcome,
@@ -425,7 +449,7 @@ fn apply_source(ctx: &Ctx, st: &mut State, job: &PoolJob, source: &SourceResult,
     }
 }
 
-fn mark_solo_retry(st: &mut State, uid: &str, why: &str) {
+pub(super) fn mark_solo_retry(st: &mut State, uid: &str, why: &str) {
     if matches!(
         why,
         "lane-race" | "generated-publish-conflict" | "publish-conflict"
@@ -448,7 +472,7 @@ fn undecided_job(ctx: &Ctx, st: &mut State, job: &PoolJob, why: &str, detail: &s
     ctx.exception("merge-job-undecided", &job.id, detail);
 }
 
-fn parse_receipt(receipt: &str) -> Option<MergeReceipt> {
+pub(super) fn parse_receipt(receipt: &str) -> Option<MergeReceipt> {
     let line = receipt
         .lines()
         .find_map(|line| line.trim().strip_prefix("PUMP_MERGE_RESULT="))?;
@@ -526,7 +550,7 @@ fn timeout_metrics(receipt: &MergeReceipt) -> Option<(u64, u64, u64)> {
     (retries <= timeouts).then_some((timeouts, retries, recoveries))
 }
 
-fn valid_sources(
+pub(super) fn valid_sources(
     sources: &[SourceResult],
     units: &BTreeSet<String>,
     jobs: &BTreeSet<String>,
@@ -567,7 +591,7 @@ fn valid_sources(
     &seen_units == units && &seen_jobs == jobs
 }
 
-fn published_integration_tip(
+pub(super) fn published_integration_tip(
     ctx: &Ctx,
     job: &PoolJob,
     outcome: &jobs::JobOutcome,
@@ -612,7 +636,7 @@ fn published_integration_tip(
         .then(|| integration_tip.to_owned())
 }
 
-fn valid_sha(sha: &str) -> bool {
+pub(super) fn valid_sha(sha: &str) -> bool {
     matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 

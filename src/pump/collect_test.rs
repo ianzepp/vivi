@@ -97,13 +97,15 @@ fn startup_recovery_adopts_a_pushed_branch_for_the_next_attempt() {
         "ls-remote --heads",
         0,
         concat!(
-            "abc123\trefs/heads/unit/orphan-a1\n",
+            "abc123\trefs/heads/vivi/unit/orphan-a1\n",
             "def456\trefs/heads/unit/retry-a1\n",
-            "ghi789\trefs/heads/unit/retry-next-a2\n",
+            "ghi789\trefs/heads/vivi/unit/retry-next-a2\n",
+            "jkl012\trefs/heads/unit/legacy-a1\n",
         ),
     );
     let mut st = State::default();
     put(&mut st, "orphan", unit(Status::Pending, None, None));
+    put(&mut st, "legacy", unit(Status::Pending, None, None));
     let mut retried = unit(Status::Pending, None, Some("unit/retry-a1"));
     retried.attempts = 1;
     put(&mut st, "retry", retried);
@@ -116,12 +118,16 @@ fn startup_recovery_adopts_a_pushed_branch_for_the_next_attempt() {
     let orphan = &st.units["orphan"];
     assert_eq!(orphan.status, Status::Delivered);
     assert_eq!(orphan.attempts, 1);
-    assert_eq!(orphan.branch.as_deref(), Some("unit/orphan-a1"));
+    assert_eq!(orphan.branch.as_deref(), Some("vivi/unit/orphan-a1"));
+    assert_eq!(st.units["legacy"].status, Status::Pending);
     assert_eq!(st.units["retry"].status, Status::Pending);
     let retry_next = &st.units["retry-next"];
     assert_eq!(retry_next.status, Status::Delivered);
     assert_eq!(retry_next.attempts, 2);
-    assert_eq!(retry_next.branch.as_deref(), Some("unit/retry-next-a2"));
+    assert_eq!(
+        retry_next.branch.as_deref(),
+        Some("vivi/unit/retry-next-a2")
+    );
     assert_eq!(
         host.commands()
             .iter()

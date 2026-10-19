@@ -51,7 +51,7 @@ impl JobOutcome {
     #[must_use]
     pub fn runner_publish(&self) -> Option<RunnerPublishReceipt> {
         let line = self
-            .receipt
+            .runner_section()
             .lines()
             .find_map(|line| line.trim().strip_prefix("runner publish: "))?;
         let mut words = line.split_whitespace();
@@ -86,7 +86,7 @@ impl RunnerDeleteReceipt {
 impl JobOutcome {
     fn contains_proof(&self) -> Option<(&str, bool)> {
         let line = self
-            .receipt
+            .runner_section()
             .lines()
             .find_map(|line| line.trim().strip_prefix("runner contains: "))?;
         let mut words = line.split_whitespace();
@@ -97,7 +97,7 @@ impl JobOutcome {
     #[must_use]
     pub fn runner_delete(&self) -> Option<RunnerDeleteReceipt> {
         let line = self
-            .receipt
+            .runner_section()
             .lines()
             .find_map(|line| line.trim().strip_prefix("runner delete: "))?;
         let mut words = line.split_whitespace();
@@ -108,5 +108,37 @@ impl JobOutcome {
             before: words.next()?.to_owned(),
             after: words.next()?.to_owned(),
         })
+    }
+}
+
+/// Source-tip inclusion independently measured by the privileged runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerSourceReceipt {
+    pub reference: String,
+    pub sha: String,
+    pub contained: bool,
+}
+
+impl JobOutcome {
+    fn runner_section(&self) -> &str {
+        self.receipt
+            .split_once("hand's final message:")
+            .map_or(self.receipt.as_str(), |(summary, _)| summary)
+    }
+
+    #[must_use]
+    pub fn runner_sources(&self) -> Vec<RunnerSourceReceipt> {
+        self.runner_section()
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim().strip_prefix("runner source: ")?;
+                let mut words = line.split_whitespace();
+                Some(RunnerSourceReceipt {
+                    reference: words.next()?.to_owned(),
+                    sha: words.next()?.to_owned(),
+                    contained: words.next()? == "1",
+                })
+            })
+            .collect()
     }
 }

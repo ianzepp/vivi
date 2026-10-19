@@ -56,28 +56,21 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
     if seen.is_some_and(|seen| last <= seen) {
         return;
     }
-    let Some(hash) = thread_hash(ctx, handle) else {
+    let Some(messages) = thread_messages(ctx, handle) else {
         return;
     };
-    // A hash from an older scheme (it counted the pump's own replies) is
-    // adopted like a first check, never read as an amendment.
-    let old_hash = old_hash.filter(|old| old.starts_with(HASH_SCHEME));
-    let pending = match old_hash {
-        None => {
-            // First check after the upgrade: adopt the current thread.
-            if let Some(record) = st.needs.get_mut(handle) {
-                record.thread_sha256 = Some(hash.clone());
-                record.thread_seen_at = Some(last);
-            }
-            false
+    let Some(hash) = source_thread_hash(ctx, handle, &messages) else {
+        return;
+    };
+    let pending = match old_hash.as_deref() {
+        Some(old) if is_versioned_hash(old, HASH_SCHEME) => old != hash,
+        Some(old) if is_versioned_hash(old, LEGACY_HASH_SCHEME) => {
+            legacy_operator_thread_hash(ctx, &messages) != old
+                || has_untracked_pump_sender_reply(ctx, handle, &messages)
         }
-        Some(old) if old == hash => {
-            if let Some(record) = st.needs.get_mut(handle) {
-                record.thread_seen_at = Some(last);
-            }
-            false
-        }
-        Some(_) => true,
+        // No trustworthy prior snapshot exists. Establish today's source
+        // hash as the baseline; only later changes can trigger a revision.
+        _ => false,
     };
     if pending {
         reopen_closed(ctx, st, handle);
@@ -87,6 +80,10 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
             record.thread_seen_at = Some(last);
         }
         launch_revision(ctx, st, handle, None);
+    } else if let Some(record) = st.needs.get_mut(handle) {
+        // This also upgrades a matching, proven-v2 snapshot to v3.
+        record.thread_sha256 = Some(hash);
+        record.thread_seen_at = Some(last);
     }
 }
 
@@ -146,26 +143,64 @@ fn last_events(ctx: &Ctx) -> BTreeMap<String, u64> {
     events
 }
 
-/// Prefix of the current thread-hash scheme: operator messages only.
-const HASH_SCHEME: &str = "v2:";
+/// Prefix for the source-aware thread hash.
+const HASH_SCHEME: &str = "v3:";
+const LEGACY_HASH_SCHEME: &str = "v2:";
 
-/// SHA-256 of non-pump messages' ids and bodies, in order, as `v2:<hex>`.
-fn thread_hash(ctx: &Ctx, handle: &str) -> Option<String> {
+fn thread_messages(ctx: &Ctx, handle: &str) -> Option<Vec<Value>> {
     let text = ctx.vivi(&format!("need show {handle} --json"), 60).text;
     let start = text.find('[')?;
-    let messages = match serde_json::from_str::<Vec<Value>>(&text[start..]) {
-        Ok(messages) => messages,
-        Err(_) => return None,
-    };
+    serde_json::from_str::<Vec<Value>>(&text[start..]).ok()
+}
+
+/// Source snapshot shared by amendment detection, audit jobs and audit
+/// freshness checks. Only source messages participate; pump replies require
+/// both the configured sender and the durable body marker.
+pub(super) fn source_thread_hash(ctx: &Ctx, root: &str, messages: &[Value]) -> Option<String> {
+    let mut hasher = Sha256::new();
+    for (index, message) in messages.iter().enumerate() {
+        if is_generated_pump_reply(ctx, root, index, message) {
+            continue;
+        }
+        let message_id = message["message_id"].as_str()?;
+        if message_id.is_empty() {
+            return None;
+        }
+        for field in [
+            message["handle"].as_str().unwrap_or(""),
+            message_id,
+            message["from"].as_str().unwrap_or(""),
+            message["subject"].as_str().unwrap_or(""),
+            message["body"].as_str().unwrap_or(""),
+        ] {
+            hasher.update((field.len() as u64).to_be_bytes());
+            hasher.update(field.as_bytes());
+        }
+    }
+    Some(format!("{HASH_SCHEME}{}", hex::encode(hasher.finalize())))
+}
+
+/// A reply is pump-generated only when the configured pump identity authored
+/// the message and its body carries the durable pump marker.
+pub(super) fn is_generated_pump_reply(
+    ctx: &Ctx,
+    root: &str,
+    index: usize,
+    message: &Value,
+) -> bool {
+    if is_root_message(root, index, message) {
+        return false;
+    }
+    configured_pump_sender(ctx, message)
+        && message["body"]
+            .as_str()
+            .is_some_and(|body| body.starts_with("pump: "))
+}
+
+fn legacy_operator_thread_hash(ctx: &Ctx, messages: &[Value]) -> String {
     let mut hasher = Sha256::new();
     for message in messages {
-        let from = message["from"].as_str().unwrap_or("");
-        let sender = if ctx.cfg.reply_from.contains('@') {
-            from
-        } else {
-            from.split('@').next().unwrap_or(from)
-        };
-        if sender.eq_ignore_ascii_case(&ctx.cfg.reply_from) {
+        if configured_pump_sender(ctx, message) {
             continue;
         }
         hasher.update(message["message_id"].as_str().unwrap_or("").as_bytes());
@@ -173,7 +208,39 @@ fn thread_hash(ctx: &Ctx, handle: &str) -> Option<String> {
         hasher.update(message["body"].as_str().unwrap_or("").as_bytes());
         hasher.update(b"\n");
     }
-    Some(format!("{HASH_SCHEME}{}", hex::encode(hasher.finalize())))
+    format!("{LEGACY_HASH_SCHEME}{}", hex::encode(hasher.finalize()))
+}
+
+fn has_untracked_pump_sender_reply(ctx: &Ctx, root: &str, messages: &[Value]) -> bool {
+    messages.iter().enumerate().any(|(index, message)| {
+        !is_root_message(root, index, message)
+            && configured_pump_sender(ctx, message)
+            && !is_generated_pump_reply(ctx, root, index, message)
+    })
+}
+
+fn configured_pump_sender(ctx: &Ctx, message: &Value) -> bool {
+    let from = message["from"].as_str().unwrap_or("");
+    let sender = if ctx.cfg.reply_from.contains('@') {
+        from
+    } else {
+        from.split('@').next().unwrap_or(from)
+    };
+    sender.eq_ignore_ascii_case(&ctx.cfg.reply_from)
+}
+
+fn is_root_message(root: &str, index: usize, message: &Value) -> bool {
+    let handle = message["handle"].as_str().unwrap_or("");
+    handle == root || (handle.is_empty() && index == 0)
+}
+
+fn is_versioned_hash(value: &str, scheme: &str) -> bool {
+    value.strip_prefix(scheme).is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 /// Write the revision prompt and spawn the planner for one need, naming

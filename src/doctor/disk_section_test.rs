@@ -52,7 +52,7 @@ fn branch_count_counts_only_unit_refs() {
             "--quiet",
         ],
     );
-    git(temp.path(), &["branch", "unit/one"]);
+    git(temp.path(), &["branch", "vivi/unit/one"]);
     git(temp.path(), &["branch", "feature/other"]);
     assert_eq!(branch_count(temp.path()), Some(1));
 }

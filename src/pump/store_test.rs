@@ -238,6 +238,44 @@ fn a_version_one_database_gains_the_revision_columns() {
 }
 
 #[test]
+fn loading_a_legacy_current_plan_backfills_only_listed_zero_revision_units() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    let mut state = State::default();
+    state.needs.insert(
+        String::from("n1"),
+        NeedRecord {
+            revision: 4,
+            units: vec![String::from("current")],
+            ..NeedRecord::default()
+        },
+    );
+    state.units.insert(
+        String::from("current"),
+        Unit {
+            need: String::from("n1"),
+            revision: 0,
+            ..Unit::default()
+        },
+    );
+    state.units.insert(
+        String::from("historical"),
+        Unit {
+            need: String::from("n1"),
+            revision: 0,
+            ..Unit::default()
+        },
+    );
+    store.save(&state).unwrap();
+    drop(store);
+
+    let loaded = PumpStore::open(&path).unwrap().load().unwrap();
+    assert_eq!(loaded.units["current"].revision, 4);
+    assert_eq!(loaded.units["historical"].revision, 0);
+}
+
+#[test]
 fn a_version_three_database_migrates_units_to_named_targets() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);

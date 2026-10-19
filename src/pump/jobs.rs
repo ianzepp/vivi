@@ -22,7 +22,7 @@ pub use gate_sources::{
     mark_gate_attempted, mark_gated, mark_integration_failed, mark_merged,
     sources_need_gate_attempt, sources_waiting_for_gate,
 };
-pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt};
+pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt, RunnerSourceReceipt};
 pub use recovery::recover_dispatched;
 
 /// A request to make one durable role-addressed pool task.

@@ -599,7 +599,10 @@ fn recover_target_branches(
     let command = format!(
         "ls-remote --heads {} {}",
         shell_quote(&target_ctx.cfg.remote),
-        shell_quote("refs/heads/unit/*")
+        shell_quote(&format!(
+            "refs/heads/{}*",
+            crate::pump::need::unit_namespace_prefix()
+        ))
     );
     let output = target_ctx.git(&command, 60);
     if output.code != 0 {
@@ -620,7 +623,7 @@ fn remote_unit_branches(output: &str) -> BTreeSet<String> {
         .lines()
         .filter_map(|line| line.split_whitespace().nth(1))
         .filter_map(|reference| reference.strip_prefix("refs/heads/"))
-        .filter(|branch| branch.starts_with("unit/"))
+        .filter(|branch| branch.starts_with(crate::pump::need::unit_namespace_prefix()))
         .map(str::to_owned)
         .collect()
 }
@@ -632,7 +635,7 @@ fn recover_one_pushed_branch(
     attempt: u32,
     branches: &BTreeSet<String>,
 ) {
-    let branch = format!("unit/{uid}-a{attempt}");
+    let branch = crate::pump::need::unit_branch(uid, attempt);
     if !branches.contains(&branch) {
         return;
     }

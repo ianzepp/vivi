@@ -211,6 +211,19 @@ impl JobResult {
 }
 
 fn append_runner_guards(summary: &mut String, result: &JobResult) {
+    let sources = result
+        .get("source_count")
+        .parse::<usize>()
+        .unwrap_or(0)
+        .min(super::job::WITH_LIMIT);
+    for index in 1..=sources {
+        summary.push_str(&format!(
+            "\nrunner source: {} {} {}",
+            result.get(&format!("source_{index}_ref")),
+            result.get(&format!("source_{index}_sha")),
+            result.get(&format!("source_{index}_contained"))
+        ));
+    }
     if !result.get("publish_contains").is_empty() {
         summary.push_str(&format!(
             "\nrunner contains: {} {}",

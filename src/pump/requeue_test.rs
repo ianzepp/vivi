@@ -47,7 +47,7 @@ fn requeue_applies_a_stuck_unit() {
     host.reply(
         "ls-remote",
         0,
-        "aaa\trefs/heads/unit/u1-a1\nbbb\trefs/heads/unit/u1-a2\n",
+        "aaa\trefs/heads/vivi/unit/u1-a1\nbbb\trefs/heads/vivi/unit/u1-a2\n",
     );
     let mut st = State::default();
     put(
@@ -88,9 +88,9 @@ fn requeue_never_collides_with_an_existing_branch() {
         "ls-remote",
         0,
         concat!(
-            "aaa\trefs/heads/unit/u1-a1\n",
-            "bbb\trefs/heads/unit/u1-a2\n",
-            "ccc\trefs/heads/unit/u1-a3\n",
+            "aaa\trefs/heads/vivi/unit/u1-a1\n",
+            "bbb\trefs/heads/vivi/unit/u1-a2\n",
+            "ccc\trefs/heads/vivi/unit/u1-a3\n",
         ),
     );
     let mut st = State::default();
@@ -113,7 +113,7 @@ fn requeue_never_collides_with_an_existing_branch() {
     assert_eq!(unit.attempts + 1, 4, "the next attempt branch is a4");
     assert!(logged(
         &host,
-        "requeue u1 attempts raised to 3: branch unit/u1-a3 already exists"
+        "requeue u1 attempts raised to 3: branch vivi/unit/u1-a3 already exists"
     ));
 }
 
@@ -400,7 +400,7 @@ fn run_requeue_dry_run_writes_no_rows() {
     assert!(pending(&dir).is_empty());
     assert_eq!(
         would_line("u1", Status::Stuck, 1, 3),
-        "would requeue u1: status stuck, attempts 1 -> 3, next branch unit/u1-a4"
+        "would requeue u1: status stuck, attempts 1 -> 3, next branch vivi/unit/u1-a4"
     );
 }
 

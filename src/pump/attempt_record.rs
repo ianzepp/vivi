@@ -3,7 +3,7 @@
 //!
 //! Every end of a hand attempt (delivered, proof-failed, merge-conflict, agent
 //! failed, timeout then split, no-defect, quarantined) leaves two things: the
-//! attempt branch `unit/<uid>-a<n>`, pushed to the target remote and kept, and
+//! attempt branch `vivi/unit/<uid>-a<n>`, pushed to the target remote and kept, and
 //! one reply on the need thread naming the unit, attempt, model, pool, how it
 //! ended, the branch, the task, the commits and files on the branch, the
 //! failing command with a short excerpt, and the hand's own final message.
@@ -83,7 +83,7 @@ impl Ending {
     }
 
     /// The unit merged into a batch whose shared check failed; the batch was
-    /// set aside on `pump/quarantine/<id>` and `repair` opened.
+    /// set aside on `vivi/quarantine/<id>` and `repair` opened.
     #[must_use]
     pub fn quarantined(id: &str, repair: &str) -> Self {
         let label = format!("quarantined (batch {id}, repair unit {repair})");
