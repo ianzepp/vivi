@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::tempdir;
 
-use crate::skills::{self, catalog};
+use crate::skills::{self, SkillCopyStatus, catalog};
 
 #[test]
 fn catalog_has_the_three_shipped_skills_at_crate_version() {
@@ -196,4 +196,44 @@ fn normalize(path: &Path) -> String {
         }
     }
     parts.join("/")
+}
+
+#[test]
+fn copy_status_flags_a_modified_skill() {
+    let dir = tempdir().unwrap();
+    write_fresh_copy(dir.path());
+    fs::write(dir.path().join("tugboat/SKILL.md"), "different bytes\n").unwrap();
+
+    match skills::copy_status(dir.path()) {
+        SkillCopyStatus::Stale(names) => {
+            assert!(names.contains(&"tugboat".to_string()), "{names:?}");
+            assert_eq!(names, ["tugboat"], "{names:?}");
+        }
+        other => panic!("expected stale, got {other:?}"),
+    }
+}
+
+#[test]
+fn copy_status_up_to_date_and_absent() {
+    let dir = tempdir().unwrap();
+    write_fresh_copy(dir.path());
+    assert_eq!(skills::copy_status(dir.path()), SkillCopyStatus::UpToDate);
+
+    let empty = tempdir().unwrap();
+    assert_eq!(
+        skills::copy_status(empty.path()),
+        SkillCopyStatus::NotInstalled
+    );
+}
+
+/// Lay down every catalog skill, file for file, exactly as embedded.
+fn write_fresh_copy(dir: &Path) {
+    for skill in catalog() {
+        for file in &skill.file_names() {
+            let shown = skills::show(skill.name, Some(file)).unwrap();
+            let dest = dir.join(skill.name).join(file);
+            fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            fs::write(&dest, shown.contents).unwrap();
+        }
+    }
 }

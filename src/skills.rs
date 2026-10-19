@@ -71,6 +71,17 @@ pub struct InstallReport {
     pub files: usize,
 }
 
+/// Whether an on-disk copy still matches the embedded catalog.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SkillCopyStatus {
+    /// No catalog skill was found in the directory.
+    NotInstalled,
+    /// Every present skill matches the embedded bytes.
+    UpToDate,
+    /// Names of present skills with a missing or modified file.
+    Stale(Vec<String>),
+}
+
 /// Embedded skills, `vivi` first, then the rest in repository order.
 #[must_use]
 pub fn catalog() -> &'static [Skill] {
@@ -137,6 +148,42 @@ pub fn install(dir: &Path, force: bool) -> Result<InstallReport, VivariumError> 
         skills: skills.len(),
         files,
     })
+}
+
+/// Compare an installed skill directory against the embedded catalog.
+///
+/// A skill counts as present when its `SKILL.md` exists; skills absent from
+/// `dir` are skipped, and extra files on disk are ignored. Only bytes matter,
+/// not file modes.
+#[must_use]
+pub fn copy_status(dir: &Path) -> SkillCopyStatus {
+    let mut present = 0;
+    let mut stale = Vec::new();
+    for skill in catalog() {
+        let root = dir.join(skill.name);
+        if !root.join(SKILL_MD).is_file() {
+            continue;
+        }
+        present += 1;
+        if skill.files.iter().any(|file| differs(&root, file)) {
+            stale.push(skill.name.to_string());
+        }
+    }
+    if present == 0 {
+        return SkillCopyStatus::NotInstalled;
+    }
+    if stale.is_empty() {
+        SkillCopyStatus::UpToDate
+    } else {
+        SkillCopyStatus::Stale(stale)
+    }
+}
+
+fn differs(root: &Path, file: &SkillFile) -> bool {
+    match fs::read(root.join(file.path)) {
+        Ok(bytes) => bytes != file.contents.as_bytes(),
+        Err(_) => true,
+    }
 }
 
 impl Skill {
