@@ -105,8 +105,9 @@ pub fn parse_df_gib(text: &str) -> Vec<(String, u64)> {
     let mut rows = Vec::new();
     for line in text.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
-        let Some(size) = cols.get(1).and_then(|col| col.parse::<u64>().ok()) else {
-            continue;
+        let size: u64 = match cols.get(1).map(|col| col.parse::<u64>()) {
+            Some(Ok(size)) => size,
+            _ => continue,
         };
         let Some(mount) = cols.last() else {
             continue;

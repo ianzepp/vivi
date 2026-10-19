@@ -106,10 +106,7 @@ fn age_finding(vivi_dir: &Path, project: &str, now: DateTime<Utc>) -> Finding {
     if SyncState::load(&dir, project).is_err() {
         return never_synced();
     }
-    let Some(modified) = fs::metadata(dir.join(STATE_FILE))
-        .and_then(|meta| meta.modified())
-        .ok()
-    else {
+    let Ok(modified) = fs::metadata(dir.join(STATE_FILE)).and_then(|meta| meta.modified()) else {
         return never_synced();
     };
     let age = now.signed_duration_since(DateTime::<Utc>::from(modified));
