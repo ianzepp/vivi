@@ -309,13 +309,27 @@ fn run_proofs(ctx: &Ctx, merged: &[Merged], results: &mut Vec<MergeResult>) -> V
             ));
             if out.code != 0 {
                 culprits.push(m.job.uid.clone());
-                let detail = proof_detail(out.code, cmd, &out.text);
-                results.push(failed(&m.job.uid, "proof-failed", detail));
+                let result = if crate::pump::proof::usage_failure(&out.text) {
+                    let detail = usage_detail(out.code, cmd, &out.text);
+                    failed(&m.job.uid, "proof-usage", detail)
+                } else {
+                    let detail = proof_detail(out.code, cmd, &out.text);
+                    failed(&m.job.uid, "proof-failed", detail)
+                };
+                results.push(result);
                 break;
             }
         }
     }
     culprits
+}
+
+/// The batch usage-error detail: the proof command and its last output.
+fn usage_detail(code: i32, cmd: &str, out: &str) -> String {
+    format!(
+        "The unit's proof command failed as a usage error before anything ran (exit {code}):\n{cmd}\n\nLast output:\n{}",
+        failure_text(out)
+    )
 }
 
 /// The batch proof-failure detail: the command and what it printed.
