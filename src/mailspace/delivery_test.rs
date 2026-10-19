@@ -246,7 +246,9 @@ fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     let nodes = || mailspace.graph_show("backlog").unwrap().nodes.len();
 
     let first_bytes = work("first", "need", &[]);
-    mailspace.deliver_raw(first_bytes.as_bytes(), "needs").unwrap();
+    mailspace
+        .deliver_raw(first_bytes.as_bytes(), "needs")
+        .unwrap();
     let first = mailspace
         .list_kind(Some("hand"), "needs", "need")
         .unwrap()
