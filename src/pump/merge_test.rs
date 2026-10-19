@@ -134,6 +134,24 @@ fn a_clean_merge_with_passing_checks_is_pushed_and_returns_the_tip() {
 }
 
 #[test]
+fn a_job_with_a_pool_source_fetches_from_the_pool_repository() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let mut j = unit("u1", "work/u1");
+    j.source = Some(PathBuf::from("/wtree/repo"));
+    let result = merge_work(&ctx, &j);
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let commands = host.commands();
+    assert!(
+        commands.contains(
+            &"git fetch /wtree/repo +refs/heads/work/u1:refs/remotes/origin/work/u1".to_string()
+        ),
+        "{commands:?}"
+    );
+    assert!(!commands.iter().any(|c| c.contains("fetch origin refs/heads/work/u1")));
+}
+
+#[test]
 fn a_named_local_target_merges_its_local_unit_branch() {
     let dir = tempdir().unwrap();
     let cfg = PumpConfig {

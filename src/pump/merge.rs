@@ -175,7 +175,7 @@ pub(crate) fn prepare_lane(ctx: &Ctx) -> Result<(), String> {
 pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
     let t0 = ctx.now();
     reset_repo(ctx);
-    let out = fetch_unit_branch(ctx, &job.branch);
+    let out = fetch_unit_branch(ctx, job);
     if out.code != 0 {
         merge_line(
             ctx,

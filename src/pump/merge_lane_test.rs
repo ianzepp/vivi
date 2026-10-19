@@ -379,6 +379,7 @@ use std::sync::Arc;
 use crate::pump::config::{GateConfig, MergeConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{FakeHost, RealHost, test_ctx};
 use crate::pump::merge::{batch_work, fetch_unit_branch, merge_work};
+use crate::pump::merge_test::unit;
 
 /// A config with one local-worktree target `tela` (integration branch `main`).
 fn tela_config() -> PumpConfig {
@@ -561,7 +562,7 @@ fn with_real_git_a_lane_clone_gets_a_branch_that_only_the_base_repository_has() 
 
     // The lane clone has no such branch; the base does, locally only.
     assert!(!git_in(&lane, &["branch", "-a"]).contains("unit/x"));
-    let out = fetch_unit_branch(&lane1, "unit/x");
+    let out = fetch_unit_branch(&lane1, &unit("u1", "unit/x"));
     assert_eq!(out.code, 0, "{}", out.text);
     assert_eq!(
         git_in(&lane, &["rev-parse", "refs/remotes/origin/unit/x"]),
@@ -570,7 +571,7 @@ fn with_real_git_a_lane_clone_gets_a_branch_that_only_the_base_repository_has() 
     assert!(git_in(&lane, &["remote"]).contains("pump-base"));
 
     // Lane 0 is the base: the branch is local there.
-    let out = fetch_unit_branch(&lane0, "unit/x");
+    let out = fetch_unit_branch(&lane0, &unit("u1", "unit/x"));
     assert_eq!(out.code, 0, "{}", out.text);
     assert_eq!(
         git_in(&base, &["rev-parse", "refs/remotes/origin/unit/x"]),
