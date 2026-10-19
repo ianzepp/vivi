@@ -148,6 +148,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.planner.run, "");
     assert_eq!(cfg.planner.charter, "");
     assert_eq!(cfg.planner.split_hard_cap, 5400);
+    assert!(!cfg.planner.split_timeout_present);
     assert!(cfg.dispatch.lanes.is_empty());
     assert_eq!(cfg.dispatch.last_resort, "");
     assert_eq!(cfg.dispatch.max_attempts, 3);
@@ -177,6 +178,33 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.gate.budget, 1800);
     assert_eq!(cfg.dispatch_from(), "next");
     assert_eq!(cfg.reply_to(), "");
+}
+
+#[test]
+fn legacy_split_timeout_loads_as_split_hard_cap() {
+    let cfg =
+        pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_timeout = 1800\n");
+    assert_eq!(cfg.planner.split_hard_cap, 1800);
+    assert!(
+        cfg.planner.split_timeout_present,
+        "the legacy key's presence must survive parsing"
+    );
+}
+
+#[test]
+fn split_hard_cap_wins_when_both_planner_keys_are_set() {
+    let cap_first = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_hard_cap = 2700\n\
+         split_timeout = 1800\n",
+    );
+    assert_eq!(cap_first.planner.split_hard_cap, 2700);
+    assert!(cap_first.planner.split_timeout_present);
+    let timeout_first = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_timeout = 1800\n\
+         split_hard_cap = 2700\n",
+    );
+    assert_eq!(timeout_first.planner.split_hard_cap, 2700);
+    assert!(timeout_first.planner.split_timeout_present);
 }
 
 #[test]
