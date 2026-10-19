@@ -153,7 +153,12 @@ fn imported_letters_keep_their_backlog_nodes_and_edges() {
     let target = project();
     ok(
         target.path(),
-        &["mailspace", "import", "--from", src.path().to_str().unwrap()],
+        &[
+            "mailspace",
+            "import",
+            "--from",
+            src.path().to_str().unwrap(),
+        ],
     );
 
     // Import carries the minted nodes and edges, so no repair is ever needed.
