@@ -17,7 +17,21 @@ pub struct MigratePlan {
     pub new_roles: Vec<NewRole>,
     pub new_pools: Vec<NewPool>,
     pub caps: Vec<CapWrite>,
+    pub renames: Vec<KeyRename>,
     pub notes: Vec<String>,
+}
+
+/// One renamed config key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRename {
+    /// The dotted or bracketed table that holds the key.
+    pub table: String,
+    /// The deprecated key name.
+    pub from: String,
+    /// The key name that replaces it.
+    pub to: String,
+    /// Why the rename happens.
+    pub note: String,
 }
 
 /// `role.pool = name`.
@@ -78,6 +92,14 @@ pub fn plan_migrate(config: &MailspaceConfig) -> MigratePlan {
     assign_gate(config, pump, dispatch.as_deref(), &mut plan);
     assign_slug_roles(config, &mut plan);
     fold_caps(config, pump, dispatch.as_deref(), &mut plan);
+    if pump.planner.split_timeout_present {
+        plan.renames.push(KeyRename {
+            table: "pump.planner".into(),
+            from: "split_timeout".into(),
+            to: "split_hard_cap".into(),
+            note: "split_timeout is deprecated; split_hard_cap wins when both are set".into(),
+        });
+    }
     if plan_is_empty(&plan) {
         plan.notes
             .push("already using role.pool assignments".into());
@@ -91,6 +113,7 @@ fn empty_plan() -> MigratePlan {
         new_roles: Vec::new(),
         new_pools: Vec::new(),
         caps: Vec::new(),
+        renames: Vec::new(),
         notes: Vec::new(),
     }
 }
@@ -100,6 +123,7 @@ fn plan_is_empty(plan: &MigratePlan) -> bool {
         && plan.new_roles.is_empty()
         && plan.new_pools.is_empty()
         && plan.caps.is_empty()
+        && plan.renames.is_empty()
 }
 
 fn dispatch_pool(pump: &PumpConfig) -> Option<String> {
@@ -314,6 +338,12 @@ pub fn render_plan(plan: &MigratePlan) -> String {
             cap.pool, cap.model, cap.cap
         ));
     }
+    for rename in &plan.renames {
+        lines.push(format!(
+            "rename [{}] {} -> {}  ({})",
+            rename.table, rename.from, rename.to, rename.note
+        ));
+    }
     lines.extend(plan.notes.iter().cloned());
     if lines.is_empty() {
         lines.push("no changes".into());
@@ -330,7 +360,27 @@ pub fn apply_plan_to_document(
     add_roles(doc, plan)?;
     assign_roles(doc, plan)?;
     write_caps(doc, plan);
+    rename_keys(doc, plan);
     Ok(())
+}
+
+fn rename_keys(doc: &mut DocumentMut, plan: &MigratePlan) {
+    for rename in &plan.renames {
+        let Some(table) = doc
+            .get_mut("pump")
+            .and_then(Item::as_table_mut)
+            .and_then(|pump| pump.get_mut("planner"))
+            .and_then(Item::as_table_mut)
+        else {
+            continue;
+        };
+        let Some(item) = table.remove(&rename.from) else {
+            continue;
+        };
+        if table.get(&rename.to).is_none() {
+            table.insert(&rename.to, item);
+        }
+    }
 }
 
 fn add_pools(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::error::VivariumError> {

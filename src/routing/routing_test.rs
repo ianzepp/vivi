@@ -351,6 +351,52 @@ lanes = 2
 }
 
 #[test]
+fn migrate_rewrites_the_legacy_planner_split_timeout_key() {
+    let raw = r#"
+# keep-me
+name = "t"
+
+[pump]
+branch = "next"
+
+[pump.planner]
+run = "planner-run"
+split_timeout = 1800
+"#;
+    let config: MailspaceConfig = toml::from_str(raw).expect("mailspace toml");
+    let plan = plan_migrate(&config);
+    assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
+    assert_eq!(plan.renames[0].from, "split_timeout");
+    assert_eq!(plan.renames[0].to, "split_hard_cap");
+    let mut doc = raw.parse::<toml_edit::DocumentMut>().unwrap();
+    apply_plan_to_document(&mut doc, &plan).unwrap();
+    let after = doc.to_string();
+    assert!(after.contains("split_hard_cap = 1800"), "{after}");
+    assert!(!after.contains("split_timeout"), "{after}");
+    assert!(after.contains("# keep-me"), "{after}");
+
+    let both = r#"
+name = "t"
+
+[pump]
+branch = "next"
+
+[pump.planner]
+run = "planner-run"
+split_hard_cap = 2700
+split_timeout = 1800
+"#;
+    let config: MailspaceConfig = toml::from_str(both).expect("mailspace toml");
+    let plan = plan_migrate(&config);
+    assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
+    let mut doc = both.parse::<toml_edit::DocumentMut>().unwrap();
+    apply_plan_to_document(&mut doc, &plan).unwrap();
+    let after = doc.to_string();
+    assert!(after.contains("split_hard_cap = 2700"), "{after}");
+    assert!(!after.contains("split_timeout"), "{after}");
+}
+
+#[test]
 fn unified_diff_names_the_file() {
     let diff = unified_diff("a\n", "b\n", "mailspace.toml");
     assert!(diff.contains("--- mailspace.toml"));
