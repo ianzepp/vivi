@@ -463,7 +463,7 @@ fn unavailable_remote_ancestry_keeps_the_receipt_pending_for_retry() {
 
 #[test]
 fn worker_push_marker_alone_does_not_count_without_remote_or_runner_proof() {
-    let (dir, ctx, _host) = setup();
+    let (dir, ctx, host) = setup();
     let mut st = state(&["a"]);
     finish_gate(&ctx, &mut st, &reply(&["a"]));
     let id = promotion_job(&st).unwrap().id.clone();
@@ -479,7 +479,12 @@ fn worker_push_marker_alone_does_not_count_without_remote_or_runner_proof() {
     });
     collect_completed(&ctx, &mut st);
     assert!(st.promotions.is_empty());
-    assert!(st.jobs.get(&id).unwrap().applied_at.is_some());
+    assert!(st.jobs.get(&id).unwrap().applied_at.is_none());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("promote verification unavailable"))
+    );
     drop(dir);
 }
 
