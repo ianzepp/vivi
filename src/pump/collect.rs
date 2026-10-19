@@ -599,7 +599,11 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
             unit.task = None;
             unit.since = now;
             unit.since_dispatch = None;
-            ctx.exception("environment", uid, &format!("split planner died: {evidence}"));
+            ctx.exception(
+                "environment",
+                uid,
+                &format!("split planner died: {evidence}"),
+            );
             ctx.log(&format!("split-planner-dead {uid}"));
             continue;
         }
