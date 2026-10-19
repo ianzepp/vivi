@@ -123,14 +123,17 @@ pub fn candidate_rows(ctx: &Ctx) -> (Vec<NeedRow>, BTreeSet<String>) {
             60,
         );
         match parse_rows(&out.text) {
-            Some(found) => rows.extend(found),
+            Some(found) => rows.extend(found.into_iter().filter(|row| !is_investigation_need(row))),
             None => ctx.log(&format!(
                 "board list unreadable: {}",
                 tail_note(&out.text, 150)
             )),
         }
     }
-    let marked = marked_rows(ctx);
+    let marked: Vec<NeedRow> = marked_rows(ctx)
+        .into_iter()
+        .filter(|row| !is_investigation_need(row))
+        .collect();
     let approved: BTreeSet<String> = marked.iter().map(|row| row.handle.clone()).collect();
     for row in marked {
         if !rows.iter().any(|seen| seen.handle == row.handle) {
@@ -138,6 +141,12 @@ pub fn candidate_rows(ctx: &Ctx) -> (Vec<NeedRow>, BTreeSet<String>) {
         }
     }
     (rows, approved)
+}
+
+fn is_investigation_need(row: &NeedRow) -> bool {
+    row.marks
+        .iter()
+        .any(|mark| mark.eq_ignore_ascii_case("investigate"))
 }
 
 /// Whitespace-separated handles of `<home>/skip.txt`; missing file means

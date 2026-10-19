@@ -1,5 +1,10 @@
+use std::collections::BTreeMap;
+
+use chrono::Utc;
+
+use crate::mailspace::memos::MemoConfig;
 use crate::mailspace::{Mailspace, SendRequest};
-use crate::storage::StoredMessageView;
+use crate::storage::{MessageIngestRequest, StoredMessageView};
 use crate::sync::SyncConfig;
 
 const REMOTE: &str = "hand@3f9a1c7e.local";
@@ -393,6 +398,55 @@ fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     );
     mailspace.deliver_raw(event.as_bytes(), "tasks").unwrap();
     assert_eq!(nodes(), before, "an event letter mints no node");
+}
+
+#[test]
+fn retention_prunes_expired_memos_when_a_tagged_memo_is_saved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("digest").unwrap();
+    mailspace.config.memo = Some(MemoConfig {
+        hidden_tags: Vec::new(),
+        retain: BTreeMap::from([("digest".to_string(), "90d".to_string())]),
+    });
+
+    let address = mailspace.address_for("digest");
+    let old_date = (Utc::now() - chrono::Duration::days(100)).to_rfc2822();
+    let raw = format!(
+        "From: {address}\r\nTo: {address}\r\nDate: {old_date}\r\n\
+         Subject: old digest\r\nX-Vivi-Kind: memo\r\nX-Vivi-Tag: digest\r\n\r\nold body\r\n"
+    );
+    mailspace
+        .storage()
+        .unwrap()
+        .ingest_message(
+            &MessageIngestRequest {
+                account: "digest".into(),
+                local_role: "memos".into(),
+                read_state: false,
+                starred: false,
+                message_id_hint: None,
+                presented_id: None,
+                seed_hint: "old-digest".into(),
+                remote: None,
+            },
+            raw.as_bytes(),
+        )
+        .unwrap();
+
+    let handle = mailspace
+        .save_memo(
+            "digest",
+            "new digest",
+            "fresh body",
+            &["digest".to_string()],
+        )
+        .unwrap();
+    let remaining = mailspace
+        .list_kind(Some("digest"), "memos", "memo")
+        .unwrap();
+    assert_eq!(remaining.len(), 1, "expired tagged memo should be pruned");
+    assert_eq!(remaining[0].handle, handle);
 }
 
 #[test]

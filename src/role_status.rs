@@ -276,6 +276,9 @@ impl RoleStatusOutcome {
         if let Some(cadence) = &schedule.cadence {
             print!("  cadence {cadence}");
         }
+        if let Some(next_due) = &schedule.next_due_at {
+            print!("  next due {next_due}");
+        }
         if let Some(age) = schedule.age_seconds {
             print!("  last signal {}", format_duration(age));
             print!(" ago");

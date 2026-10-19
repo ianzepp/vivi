@@ -3,6 +3,7 @@
 
 use tempfile::tempdir;
 
+use crate::pump::cadence::{CadenceState, RoleRun, set_state};
 use crate::pump::report::{PumpRead, read, render_need, render_state};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore};
@@ -143,6 +144,32 @@ fn state_summary_counts_planners() {
     let quiet = ready(State::default()).summary();
     assert_eq!(quiet.planning, 0);
     assert_eq!(quiet.planner_parked, 0);
+}
+
+#[test]
+fn cadence_run_receipts_are_available_to_the_board() {
+    let mut st = State::default();
+    let mut cadence = CadenceState::default();
+    cadence.runs.insert(
+        String::from("digest"),
+        RoleRun {
+            job: String::from("cadence-digest-1"),
+            task: String::from("abcd1234"),
+            branch: None,
+            read_only: true,
+            started_at: 100,
+            ended_at: Some(200),
+            outcome: Some(String::from("success")),
+            attempt: 0,
+            retry_at: None,
+        },
+    );
+    set_state(&mut st, &cadence);
+
+    let runs = ready(st).cadence_runs();
+    assert_eq!(runs["digest"].started_at, 100);
+    assert_eq!(runs["digest"].ended_at, Some(200));
+    assert_eq!(runs["digest"].outcome.as_deref(), Some("success"));
 }
 
 #[test]

@@ -2,6 +2,9 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
+use vivi::pump::cadence::{CadenceState, RoleRun, set_state};
+use vivi::pump::state::State as PumpState;
+use vivi::pump::store::{DB_FILENAME, PumpStore};
 use vivi::storage::Storage;
 
 #[test]
@@ -2746,9 +2749,10 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
     assert_eq!(v["schedule"]["state"], "never");
     assert_eq!(v["schedule"]["cadence"], "15m");
     assert_eq!(v["schedule"]["cadence_seconds"], 900);
+    assert!(v["schedule"]["next_due_at"].as_str().is_some(), "{v}");
 
     // Reject invalid cadence units.
-    let bad = vivi(["role", "set", "head-ceo", "--cadence", "1d", "--project", p]);
+    let bad = vivi(["role", "set", "head-ceo", "--cadence", "1w", "--project", p]);
     assert!(!bad.status.success(), "{}", stderr(&bad));
 
     // Outbound mail establishes a signal → ok (just now).
@@ -2766,6 +2770,37 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
         "--body",
         "done",
     ]));
+    let config_path = project.path().join(".vivi/mailspace.toml");
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&config_path)
+            .unwrap(),
+        "\n[pump]"
+    )
+    .unwrap();
+    let pump_home = project.path().join(".vivi/pump");
+    std::fs::create_dir_all(&pump_home).unwrap();
+    let mut pump_state = PumpState::default();
+    let mut cadence = CadenceState::default();
+    cadence.runs.insert(
+        String::from("head-ceo"),
+        RoleRun {
+            job: String::from("cadence-head-ceo-1"),
+            task: String::from("abcd1234"),
+            branch: None,
+            read_only: true,
+            started_at: 1_792_425_600,
+            ended_at: Some(1_792_425_700),
+            outcome: Some(String::from("success")),
+            attempt: 0,
+            retry_at: None,
+        },
+    );
+    set_state(&mut pump_state, &cadence);
+    let mut pump_store = PumpStore::open(&pump_home.join(DB_FILENAME)).unwrap();
+    pump_store.save(&pump_state).unwrap();
+
     let status = vivi(["role", "status", "head-ceo", "--json", "--project", p]);
     assert_success(&status);
     let v: Value = serde_json::from_str(&stdout(&status)).unwrap();
@@ -2788,6 +2823,18 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
     .unwrap();
     assert_eq!(board["identities"][0]["schedule"]["state"], "ok");
     assert_eq!(board["identities"][0]["schedule"]["cadence"], "15m");
+    assert!(
+        board["identities"][0]["schedule"]["next_due_at"]
+            .as_str()
+            .is_some(),
+        "{board}"
+    );
+    assert!(
+        board["identities"][0]["last_auto_run"]
+            .as_str()
+            .is_some_and(|run| run.contains("success")),
+        "{board}"
+    );
     assert_eq!(board["identities"][0]["model"], "glm-5.2");
     assert_eq!(board["identities"][0]["thinking"], "high");
 
@@ -2796,6 +2843,8 @@ fn role_cadence_and_schedule_status_from_outbound_mail() {
     assert!(text.contains("thinking: high"), "{text}");
     assert!(text.contains("schedule: ok"), "{text}");
     assert!(text.contains("cadence 15m"), "{text}");
+    assert!(text.contains("next due"), "{text}");
+    assert!(text.contains("last auto-run success"), "{text}");
 
     // Clear cadence → none.
     assert_success(&vivi([

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -92,6 +92,9 @@ struct IdentityBoard {
     process: Option<ProcessReport>,
     /// Schedule health from role cadence and latest outbound signal.
     schedule: ScheduleReport,
+    /// Latest pump-dispatched run for this role, when one exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_auto_run: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,39 +145,28 @@ fn build_board(
     with_pump: bool,
 ) -> Result<Board, VivariumError> {
     let identities = board_identities(mailspace, for_identity)?;
-    let storage = mailspace.storage()?;
-    let scopes = board_identity_scopes(mailspace, &identities);
-    let account_identity = account_identity_map(&scopes);
-    let accounts = unique_scope_accounts(&scopes);
-    let roles = board_roles();
-    let mut messages = storage.list_messages_by_account_roles_raw(&accounts, &roles)?;
-    apply_scoped_handles(&storage, &scopes, &account_identity, &mut messages)?;
-    let message_ids = messages
-        .iter()
-        .map(|message| message.message_id.clone())
-        .collect::<Vec<_>>();
-    let events_by_message = storage.list_mailspace_events_for_messages(&message_ids)?;
-    let mut messages_by_identity = group_board_messages(messages, &account_identity);
-    let mut boards = Vec::new();
-    for identity in identities {
-        boards.push(build_identity_board(
-            mailspace,
-            &storage,
-            &identity,
-            messages_by_identity.remove(&identity).unwrap_or_default(),
-            &events_by_message,
-            wants_cap,
-            since,
-            with_process,
-        ));
-    }
+    let pump_snapshot = read_pump_snapshot(mailspace);
+    let cadence_runs = pump_snapshot
+        .as_ref()
+        .map(vivi::pump::report::Snapshot::cadence_runs)
+        .unwrap_or_default();
+    let boards = build_identity_boards(
+        mailspace,
+        identities,
+        &cadence_runs,
+        wants_cap,
+        since,
+        with_process,
+    )?;
     let graphs = if with_graph {
         Some(board_graphs(mailspace)?)
     } else {
         None
     };
     let pump = if with_pump {
-        board_pump(mailspace, &boards)
+        pump_snapshot
+            .as_ref()
+            .and_then(|snapshot| board_pump(snapshot, &boards))
     } else {
         None
     };
@@ -189,18 +181,62 @@ fn build_board(
     })
 }
 
+fn build_identity_boards(
+    mailspace: &Mailspace,
+    identities: Vec<String>,
+    cadence_runs: &BTreeMap<String, vivi::pump::report::CadenceRunSummary>,
+    wants_cap: usize,
+    since: Option<DateTime<Utc>>,
+    with_process: bool,
+) -> Result<Vec<IdentityBoard>, VivariumError> {
+    let storage = mailspace.storage()?;
+    let scopes = board_identity_scopes(mailspace, &identities);
+    let account_identity = account_identity_map(&scopes);
+    let accounts = unique_scope_accounts(&scopes);
+    let mut messages = storage.list_messages_by_account_roles_raw(&accounts, &board_roles())?;
+    apply_scoped_handles(&storage, &scopes, &account_identity, &mut messages)?;
+    let ids: Vec<String> = messages
+        .iter()
+        .map(|message| message.message_id.clone())
+        .collect();
+    let events = storage.list_mailspace_events_for_messages(&ids)?;
+    let mut grouped = group_board_messages(messages, &account_identity);
+    Ok(identities
+        .into_iter()
+        .map(|identity| {
+            build_identity_board(
+                mailspace,
+                &storage,
+                &identity,
+                grouped.remove(&identity).unwrap_or_default(),
+                &events,
+                cadence_runs,
+                wants_cap,
+                since,
+                with_process,
+            )
+        })
+        .collect())
+}
+
 /// The pump block: counts from `pump.db`, plus complete needs still open in
 /// the board. Missing or unreadable state leaves the block absent.
-fn board_pump(mailspace: &Mailspace, boards: &[IdentityBoard]) -> Option<BoardPump> {
+fn read_pump_snapshot(mailspace: &Mailspace) -> Option<vivi::pump::report::Snapshot> {
     let home = mailspace
         .config
         .pump
         .as_ref()
         .map(|config| config.home_dir(&mailspace.root))?;
-    let snapshot = match vivi::pump::report::read(&home) {
-        Ok(vivi::pump::report::PumpRead::Ready(snapshot)) => snapshot,
-        _ => return None,
-    };
+    match vivi::pump::report::read(&home) {
+        Ok(vivi::pump::report::PumpRead::Ready(snapshot)) => Some(snapshot),
+        _ => None,
+    }
+}
+
+fn board_pump(
+    snapshot: &vivi::pump::report::Snapshot,
+    boards: &[IdentityBoard],
+) -> Option<BoardPump> {
     let open: std::collections::BTreeSet<String> = boards
         .iter()
         .flat_map(|board| board.needs.iter().map(|need| need.handle.clone()))
@@ -398,6 +434,7 @@ fn build_identity_board(
     identity: &str,
     messages: Vec<StoredMessageView>,
     events_by_message: &HashMap<String, Vec<MailspaceEvent>>,
+    cadence_runs: &BTreeMap<String, vivi::pump::report::CadenceRunSummary>,
     wants_cap: usize,
     since: Option<DateTime<Utc>>,
     with_process: bool,
@@ -408,6 +445,14 @@ fn build_identity_board(
     let (wants, wants_count) =
         board_items_with_count(wants_open, events_by_message, Some(wants_cap), since);
     let (model, thinking) = role_capacity(mailspace, identity);
+    let schedule = mailspace
+        .schedule_report_with(storage, identity)
+        .unwrap_or_else(|_| vivi::role_schedule::evaluate(None, None, Utc::now()));
+    let last_auto_run = if matches!(schedule.state, ScheduleState::None) {
+        None
+    } else {
+        cadence_runs.get(identity).map(cadence_run_label)
+    };
     IdentityBoard {
         identity: identity.into(),
         address: mailspace.address_for(identity),
@@ -416,9 +461,8 @@ fn build_identity_board(
         actionable_open: tasks.len() + needs.len(),
         wants_hidden: wants_count.saturating_sub(wants.len()),
         process: role_process_status(mailspace, identity, with_process),
-        schedule: mailspace
-            .schedule_report_with(storage, identity)
-            .unwrap_or_else(|_| vivi::role_schedule::evaluate(None, None, Utc::now())),
+        schedule,
+        last_auto_run,
         tasks,
         needs,
         wants,
@@ -724,7 +768,7 @@ fn print_identity(identity: &IdentityBoard) {
             running
         );
     }
-    print_schedule_line(&identity.schedule);
+    print_schedule_line(&identity.schedule, identity.last_auto_run.as_deref());
     print_items("tasks", &identity.tasks);
     print_items("needs", &identity.needs);
     print_items("wants", &identity.wants);
@@ -760,13 +804,16 @@ fn role_status_state_label(state: &vivi::role_status::ProcessState) -> &'static 
     }
 }
 
-fn print_schedule_line(schedule: &ScheduleReport) {
+fn print_schedule_line(schedule: &ScheduleReport, last_auto_run: Option<&str>) {
     if matches!(schedule.state, ScheduleState::None) {
         return;
     }
     print!("  schedule: {}", schedule_state_label(schedule.state));
     if let Some(cadence) = &schedule.cadence {
         print!("  cadence {cadence}");
+    }
+    if let Some(next_due) = &schedule.next_due_at {
+        print!("  next due {next_due}");
     }
     match schedule.state {
         ScheduleState::Never => print!("  (no outbound signal)"),
@@ -779,10 +826,24 @@ fn print_schedule_line(schedule: &ScheduleReport) {
     if let Some(handle) = &schedule.last_signal_handle {
         print!("  {handle}");
     }
+    if let Some(last_auto_run) = last_auto_run {
+        print!("  last auto-run {last_auto_run}");
+    }
     if schedule.action_required {
         print!("  ACTION REQUIRED");
     }
     println!();
+}
+
+fn cadence_run_label(run: &vivi::pump::report::CadenceRunSummary) -> String {
+    let state = run.outcome.as_deref().unwrap_or("in-flight");
+    let at = run.ended_at.unwrap_or(run.started_at);
+    let at = match i64::try_from(at) {
+        Ok(seconds) => DateTime::from_timestamp(seconds, 0).map(|date| date.to_rfc3339()),
+        Err(_) => None,
+    }
+    .unwrap_or_else(|| at.to_string());
+    format!("{state} at {at}")
 }
 
 fn print_items(label: &str, items: &[BoardItem]) {

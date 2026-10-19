@@ -17,6 +17,7 @@ use crate::storage::{
 use crate::sync::{MAX_LETTER_BYTES, SyncSettings};
 
 mod ingest;
+mod retention;
 
 pub(in crate::mailspace) use ingest::DeliveredMessageId;
 use ingest::{
@@ -180,6 +181,8 @@ impl Mailspace {
             eml.as_bytes(),
         )?;
         let handle = storage.display_handle(&stored.message_id)?;
+        drop(storage);
+        retention::prune_retained_memos(self, &identity, &tags)?;
         Ok(handle)
     }
 
@@ -401,6 +404,31 @@ impl Mailspace {
         role: &str,
         kind: &str,
     ) -> Result<Vec<StoredMessageView>, VivariumError> {
+        self.list_kind_inner(identity, role, kind, true)
+    }
+
+    /// List every message for an identity, role, and kind, including replies
+    /// to another work item. Use when the reply itself is a separate work
+    /// item; ordinary work boards should use [`Mailspace::list_kind`].
+    ///
+    /// # Errors
+    /// Returns an error if the identity or role is invalid, or storage fails.
+    pub fn list_kind_all(
+        &self,
+        identity: Option<&str>,
+        role: &str,
+        kind: &str,
+    ) -> Result<Vec<StoredMessageView>, VivariumError> {
+        self.list_kind_inner(identity, role, kind, false)
+    }
+
+    fn list_kind_inner(
+        &self,
+        identity: Option<&str>,
+        role: &str,
+        kind: &str,
+        collapse_replies: bool,
+    ) -> Result<Vec<StoredMessageView>, VivariumError> {
         let role = canonical_local_role(role)?;
         let storage = self.storage()?;
         let role_messages = if let Some(identity) = identity {
@@ -422,7 +450,11 @@ impl Mailspace {
                 }
             }
         }
-        roots_only(&storage, messages)
+        if collapse_replies {
+            roots_only(&storage, messages)
+        } else {
+            Ok(messages)
+        }
     }
 
     /// The sender's own open copies of `kind` work addressed to another

@@ -294,6 +294,26 @@ impl Storage {
         &self,
         addresses: &[String],
     ) -> Result<Option<StoredMessageView>, VivariumError> {
+        self.latest_from_addresses(addresses, false)
+    }
+
+    /// Latest durable signal whose `from_addr` matches any of `addresses`,
+    /// including self-addressed memos.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the query or handle decoration fails.
+    pub fn latest_signal_from_addresses(
+        &self,
+        addresses: &[String],
+    ) -> Result<Option<StoredMessageView>, VivariumError> {
+        self.latest_from_addresses(addresses, true)
+    }
+
+    fn latest_from_addresses(
+        &self,
+        addresses: &[String],
+        include_memos: bool,
+    ) -> Result<Option<StoredMessageView>, VivariumError> {
         if addresses.is_empty() {
             return Ok(None);
         }
@@ -308,9 +328,14 @@ impl Storage {
             .iter()
             .map(|a| a as &dyn rusqlite::types::ToSql)
             .collect();
+        let memo_filter = if include_memos {
+            ""
+        } else {
+            "AND m.local_role != 'memos' "
+        };
         for predicate in [format!("md.from_addr IN ({})", numbered.join(",")), like] {
             let sql = format!(
-                "{} WHERE m.deleted_at IS NULL AND m.local_role != 'memos' AND ({predicate}) \
+                "{} WHERE m.deleted_at IS NULL {memo_filter}AND ({predicate}) \
                  ORDER BY md.date DESC, m.message_id LIMIT 1",
                 message_query(""),
             );

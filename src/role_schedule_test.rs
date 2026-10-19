@@ -1,21 +1,6 @@
 use super::*;
 use chrono::TimeZone;
 
-#[test]
-fn auto_run_kind_flags_head_and_scoper_only() {
-    assert!(auto_run_kind(Some("head")));
-    assert!(auto_run_kind(Some("Head")));
-    assert!(auto_run_kind(Some("HEAD")));
-    assert!(auto_run_kind(Some(" scoper ")));
-
-    assert!(!auto_run_kind(None));
-    assert!(!auto_run_kind(Some("hand")));
-    assert!(!auto_run_kind(Some("auditor")));
-    assert!(!auto_run_kind(Some("mind")));
-    assert!(!auto_run_kind(Some("headed")));
-    assert!(!auto_run_kind(Some("")));
-}
-
 fn at(secs: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(secs, 0).unwrap()
 }
@@ -49,12 +34,16 @@ fn ok_due_overdue_bands_with_ten_percent_grace() {
     // cadence 100s → due after 110s, overdue at 200s
     let ok = evaluate(Some("100s"), Some(&signal(100, now)), now);
     assert_eq!(ok.state, ScheduleState::Ok);
+    let next_due = at(1_000_010).to_rfc3339();
+    assert_eq!(ok.next_due_at.as_deref(), Some(next_due.as_str()));
 
     let still_ok = evaluate(Some("100s"), Some(&signal(109, now)), now);
     assert_eq!(still_ok.state, ScheduleState::Ok);
 
     let due = evaluate(Some("100s"), Some(&signal(110, now)), now);
     assert_eq!(due.state, ScheduleState::Due);
+    let due_at = now.to_rfc3339();
+    assert_eq!(due.next_due_at.as_deref(), Some(due_at.as_str()));
     assert!(!due.action_required);
 
     let still_due = evaluate(Some("100s"), Some(&signal(199, now)), now);

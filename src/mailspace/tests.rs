@@ -899,7 +899,7 @@ fn schedule_report_skips_outbound_query_without_cadence() {
 }
 
 #[test]
-fn schedule_report_uses_latest_non_memo_when_cadence_set() {
+fn schedule_report_counts_a_saved_memo_as_a_signal() {
     let tmp = tempfile::tempdir().unwrap();
     let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
     mailspace.add_identity("mind").unwrap();
@@ -913,26 +913,64 @@ fn schedule_report_uses_latest_non_memo_when_cadence_set() {
         )
         .unwrap();
     mailspace
-        .send(SendRequest {
-            from: "hand".into(),
-            to: vec!["mind".into()],
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: "cycle".into(),
-            body: "done".into(),
-            role: "inbox".into(),
-            kind: None,
-            reply_to: None,
-            depends_on: Vec::new(),
-        })
-        .unwrap();
-    mailspace
-        .save_memo("hand", "private note", "not a signal", &[])
+        .save_memo("hand", "private note", "memo is the signal", &[])
         .unwrap();
     let report = mailspace.schedule_report("hand").unwrap();
     assert_eq!(report.state, crate::role_schedule::ScheduleState::Ok);
-    assert_ne!(report.last_signal_kind.as_deref(), Some("memos"));
+    assert_eq!(report.last_signal_kind.as_deref(), Some("memos"));
     assert!(report.last_signal_handle.is_some());
+}
+
+#[test]
+fn list_kind_all_keeps_a_need_reply_linked_to_a_want() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    for role in ["head-cto", "head-ceo", "auditor"] {
+        mailspace.add_identity(role).unwrap();
+    }
+    let want = mailspace
+        .send(SendRequest {
+            from: String::from("head-cto"),
+            to: vec![String::from("head-ceo")],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::from("investigate this want"),
+            body: String::from("review the issue"),
+            role: String::from("wants"),
+            kind: Some(String::from("want")),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered[0]
+        .handle
+        .clone();
+    mailspace
+        .send(SendRequest {
+            from: String::from("head-ceo"),
+            to: vec![String::from("auditor")],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::from("triage want"),
+            body: format!("investigate\nfor: {want}\ntriage and report"),
+            role: String::from("needs"),
+            kind: Some(String::from("need")),
+            reply_to: Some(want),
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+
+    assert!(
+        mailspace
+            .list_kind(Some("head-ceo"), "sent", "need")
+            .unwrap()
+            .is_empty()
+    );
+    let all = mailspace
+        .list_kind_all(Some("head-ceo"), "sent", "need")
+        .unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].subject, "triage want");
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! Shared human interval parsing (`30s`, `5m`, `1h`, bare seconds).
+//! Shared human interval parsing (`30s`, `5m`, `1h`, `1d`, bare seconds).
 
 use std::time::Duration;
 
@@ -7,7 +7,7 @@ use crate::error::VivariumError;
 /// Parse a positive duration from a human interval string.
 ///
 /// Accepted forms: bare seconds (`30`), or a number with unit `s` / `m` / `h`
-/// (`30s`, `5m`, `1h`). Zero and unknown units are rejected.
+/// / `d` (`30s`, `5m`, `1h`, `7d`). Zero and unknown units are rejected.
 ///
 /// # Errors
 /// Returns a config error when the value cannot be parsed as a positive interval.
@@ -26,6 +26,7 @@ pub fn parse_duration(value: &str) -> Result<Duration, VivariumError> {
         "" | "s" => amount,
         "m" => amount.saturating_mul(60),
         "h" => amount.saturating_mul(60 * 60),
+        "d" => amount.saturating_mul(60 * 60 * 24),
         _ => {
             return Err(VivariumError::Config(format!(
                 "invalid duration unit '{unit}'; use s, m, or h"

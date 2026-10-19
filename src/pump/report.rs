@@ -55,6 +55,14 @@ pub struct StateSummary {
     pub planner_parked: usize,
 }
 
+/// One role's latest cadence run, for read-only board and status views.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CadenceRunSummary {
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+    pub outcome: Option<String>,
+}
+
 /// Read the pump database at `home`.
 ///
 /// # Errors
@@ -85,6 +93,25 @@ impl Snapshot {
     #[must_use]
     pub(crate) fn state(&self) -> &State {
         &self.state
+    }
+
+    /// Latest cadence-run receipts keyed by role name.
+    #[must_use]
+    pub fn cadence_runs(&self) -> BTreeMap<String, CadenceRunSummary> {
+        crate::pump::cadence::state(&self.state)
+            .runs
+            .into_iter()
+            .map(|(role, run)| {
+                (
+                    role,
+                    CadenceRunSummary {
+                        started_at: run.started_at,
+                        ended_at: run.ended_at,
+                        outcome: run.outcome,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Exception rows, oldest first: `(at, kind, unit, text)`.

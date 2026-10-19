@@ -437,8 +437,8 @@ impl Mailspace {
         if cadence.is_none() {
             return Ok(role_schedule::evaluate(None, None, Utc::now()));
         }
-        // Messages sent before the mailspace had an id carry the legacy
-        // domain; both forms are this role's signal.
+        // Messages and self-addressed memos sent before the mailspace had an
+        // id carry the legacy domain; both forms are this role's signal.
         let mut addresses: Vec<_> = self
             .identity_names(&canonical)
             .into_iter()
@@ -452,7 +452,7 @@ impl Mailspace {
         addresses.sort();
         addresses.dedup();
         let signal = storage
-            .latest_message_from_addresses(&addresses)?
+            .latest_signal_from_addresses(&addresses)?
             .map(|m| LastSignal {
                 at: DateTime::parse_from_rfc3339(&m.date).map_or_else(
                     |_| DateTime::from_timestamp(0, 0).unwrap_or_else(Utc::now),

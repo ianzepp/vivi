@@ -165,6 +165,49 @@ pub struct MemoConfig {
     pub retain: BTreeMap<String, String>,
 }
 
+/// The configured retention window for `tag`, in seconds. A missing rule or
+/// an invalid duration means that matching memos are retained indefinitely.
+#[must_use]
+pub fn retain_secs(config: &Option<MemoConfig>, tag: &str) -> Option<u64> {
+    let config = config.as_ref()?;
+    config
+        .retain
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(tag.trim()))
+        .and_then(|(_, value)| match parse_duration_secs(value) {
+            Ok(secs) => Some(secs),
+            Err(_) => None,
+        })
+}
+
+/// Return handles of memos tagged `tag` whose RFC3339 dates are strictly
+/// older than the retention cutoff. Tags match case-insensitively; bad dates
+/// are retained.
+#[must_use]
+pub fn expired_handles(
+    memos: &[(StoredMessageView, Vec<String>)],
+    tag: &str,
+    retain_secs: u64,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    let seconds = i64::try_from(retain_secs).unwrap_or(i64::MAX);
+    let cutoff = now
+        .checked_sub_signed(chrono::Duration::seconds(seconds))
+        .unwrap_or(DateTime::<Utc>::MIN_UTC);
+    memos
+        .iter()
+        .filter(|(_, tags)| {
+            tags.iter()
+                .any(|seen| seen.eq_ignore_ascii_case(tag.trim()))
+        })
+        .filter(|(view, _)| {
+            DateTime::parse_from_rfc3339(view.date.trim())
+                .is_ok_and(|date| date.with_timezone(&Utc) < cutoff)
+        })
+        .map(|(view, _)| view.handle.clone())
+        .collect()
+}
+
 /// The hidden tag set for a mailspace: the built-in default plus every
 /// configured `hidden_tags` entry.
 #[must_use]

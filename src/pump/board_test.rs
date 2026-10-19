@@ -226,6 +226,31 @@ fn candidate_rows_unions_senders_and_marked_rows_and_reports_the_approved_set() 
 }
 
 #[test]
+fn investigation_marked_needs_are_routed_out_of_normal_planning() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        from: vec![String::from("operator@bd371d96.local")],
+        mark: String::from("investigate"),
+        since: String::from("2026-10-14T00:10"),
+        ..BoardConfig::default()
+    });
+    let investigation = row("i1", "2026-10-15", "Investigate want w1", &["investigate"]);
+    host.reply(
+        "need list --from operator@bd371d96.local",
+        0,
+        &list(&[investigation.clone()]),
+    );
+    host.reply("--held", 0, &list(&[investigation]));
+    host.reply("--json --to mind", 0, "[]");
+
+    let (rows, approved) = candidate_rows(&ctx);
+    assert!(rows.is_empty(), "investigation needs use the auditor route");
+    assert!(
+        approved.is_empty(),
+        "the ordinary approval mark does not own them"
+    );
+}
+
+#[test]
 fn candidate_rows_plans_only_needs_addressed_to_the_reply_identity() {
     let (_dir, ctx, host) = setup();
     host.reply(

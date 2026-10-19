@@ -1,8 +1,9 @@
 //! Cadence / schedule health for a role seat.
 //!
 //! Cadence is an optional configured maximum silence interval. Health is derived
-//! from the age of the role's latest outbound mailspace message (not process
-//! liveness, not lifecycle events). Due is advisory; overdue requires action.
+//! from the age of the role's latest durable outbound signal (mail, filed work,
+//! or a saved memo), not process liveness. Due is advisory; overdue requires
+//! action.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -48,6 +49,8 @@ pub struct ScheduleReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cadence_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_due_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_signal_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_signal_handle: Option<String>,
@@ -79,6 +82,7 @@ pub fn evaluate(
             action_required: false,
             cadence: Some(raw.to_string()),
             cadence_seconds: Some(cadence_seconds),
+            next_due_at: Some(now.to_rfc3339()),
             last_signal_at: None,
             last_signal_handle: None,
             last_signal_kind: None,
@@ -92,6 +96,7 @@ pub fn evaluate(
         action_required: matches!(state, ScheduleState::Overdue),
         cadence: Some(raw.to_string()),
         cadence_seconds: Some(cadence_seconds),
+        next_due_at: next_due_time(signal.at, cadence_seconds).map(|due| due.to_rfc3339()),
         last_signal_at: Some(signal.at.to_rfc3339()),
         last_signal_handle: Some(signal.handle.clone()),
         last_signal_kind: Some(signal.local_role.clone()),
@@ -111,26 +116,13 @@ pub fn state_label(state: ScheduleState) -> &'static str {
     }
 }
 
-/// Role kinds the pump may auto-run on cadence: heads plus exactly one
-/// reviewer role (`scoper`), per operator ruling.
-pub const AUTO_RUN_KINDS: [&str; 2] = ["head", "scoper"];
-
-/// True when `kind` names a role kind the pump may auto-run on cadence.
-#[must_use]
-pub fn auto_run_kind(kind: Option<&str>) -> bool {
-    let Some(value) = kind else {
-        return false;
-    };
-    let value = value.trim().to_lowercase();
-    AUTO_RUN_KINDS.iter().any(|allowed| *allowed == value)
-}
-
 fn none_report() -> ScheduleReport {
     ScheduleReport {
         state: ScheduleState::None,
         action_required: false,
         cadence: None,
         cadence_seconds: None,
+        next_due_at: None,
         last_signal_at: None,
         last_signal_handle: None,
         last_signal_kind: None,
@@ -155,6 +147,14 @@ fn age_secs(signal_at: DateTime<Utc>, now: DateTime<Utc>) -> u64 {
         .num_seconds()
         .max(0)
         .cast_unsigned()
+}
+
+fn next_due_time(signal_at: DateTime<Utc>, cadence_seconds: u64) -> Option<DateTime<Utc>> {
+    let due_after = cadence_seconds.saturating_add(cadence_seconds / DUE_GRACE_DEN * DUE_GRACE_NUM);
+    let Ok(seconds) = i64::try_from(due_after) else {
+        return None;
+    };
+    signal_at.checked_add_signed(chrono::Duration::seconds(seconds))
 }
 
 #[cfg(test)]
