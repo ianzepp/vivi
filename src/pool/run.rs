@@ -114,7 +114,7 @@ pub fn create_slots(
     }
     progress.say("checking the pool's existing slots");
     let mut machines = provider.list()?;
-    if adopt_finished_seeds(provider, id, &machines) {
+    if adopt_finished_seeds(provider, id, &machines, progress) {
         machines = provider.list()?;
     }
     let existing = slot::pool_slots(id, &machines);
@@ -191,22 +191,32 @@ fn confirm_free(
 }
 
 /// Finish slots a previous, interrupted `create` seeded cleanly but never
-/// marked: stopped, exit code 0, no seed mark. A failure here only leaves the
-/// slot unmarked, so it shows as `unseeded`. True when any slot was touched.
+/// marked: stopped, exit code 0, no seed mark. The listing can carry no exit
+/// event, so each candidate is re-read as one machine (the machine read has
+/// the full exit event); on a read error the listing record stands in. A
+/// failure here only leaves the slot unmarked, so it shows as `unseeded`.
+/// True when any slot was touched.
 fn adopt_finished_seeds(
     provider: &dyn PoolProvider,
     id: &PoolId,
     machines: &[MachineRecord],
+    progress: &Progress,
 ) -> bool {
     let mut touched = false;
     for machine in machines {
         let ours = id.owns(machine);
         let marked = machine.metadata.get(META_STATE).map(String::as_str) == Some(STATE_READY);
-        if ours && !marked && machine.state == "stopped" && machine.exit_code == Some(0) {
-            if let Err(e) = finalize_slot(provider, &machine.id) {
-                eprintln!("warning: could not finish seeding {}: {e}", machine.name);
+        if ours && !marked && machine.state == "stopped" {
+            let fresh = provider
+                .machine(&machine.id)
+                .unwrap_or_else(|_| machine.clone());
+            if fresh.state == "stopped" && fresh.exit_code == Some(0) {
+                progress.say(&format!("adopting a finished seed on {}", machine.name));
+                if let Err(e) = finalize_slot(provider, &machine.id) {
+                    eprintln!("warning: could not finish seeding {}: {e}", machine.name);
+                }
+                touched = true;
             }
-            touched = true;
         }
     }
     touched

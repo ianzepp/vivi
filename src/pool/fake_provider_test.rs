@@ -51,6 +51,9 @@ pub struct Fake {
     pub exec_fails: Cell<u32>,
     /// The next this-many `machine` reads fail.
     pub machine_fails: Cell<u32>,
+    /// The exit code only the single-machine read shows, by machine id: it
+    /// models a listing that carries no exit event (the machine read has it).
+    pub machine_exit_codes: RefCell<HashMap<String, i64>>,
     /// The next this-many `stop` calls are accepted but do not take.
     pub stops_ignored: Cell<u32>,
     /// Runs before every `machine` read (machines that change on their own).
@@ -262,7 +265,15 @@ impl PoolProvider for Fake {
             return Err(VivariumError::Message("Fly unreachable".into()));
         }
         let found = self.machines.borrow().iter().find(|m| m.id == id).cloned();
-        Ok(found.unwrap_or_else(|| MachineRecord::gone(id)))
+        match found {
+            Some(mut record) => {
+                if let Some(code) = self.machine_exit_codes.borrow().get(id) {
+                    record.exit_code = Some(*code);
+                }
+                Ok(record)
+            }
+            None => Ok(MachineRecord::gone(id)),
+        }
     }
 
     fn destroy_command(&self, id: &str) -> String {
