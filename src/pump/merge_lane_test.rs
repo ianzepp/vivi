@@ -335,6 +335,7 @@ fn an_out_of_scope_merge_logs_scope_warn() {
 fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
     let (_dir, ctx, host) = setup("");
     host.reply("rev-parse HEAD", 0, "tipreal123\n");
+    host.reply("rev-parse origin/next", 0, "tipreal123\n");
     let merger = Merger::start(&ctx);
     let mut st = state_with(&[("u1", Status::Delivered)]);
     merger.feed(&ctx, &mut st);
@@ -591,6 +592,7 @@ fn a_new_lane_clone_of_a_local_worktree_target_gets_the_pump_base_remote() {
     host.reply("remote get-url origin", 0, "https://example.com/tela.git\n");
     host.reply("remote get-url pump-base", 2, "error: No such remote\n");
     host.reply("rev-parse HEAD", 0, "tipreal123\n");
+    host.reply("rev-parse origin/main", 0, "tipreal123\n");
     host.reply("merge-base --is-ancestor origin/work/", 1, "");
     let merger = Merger::start(&ctx);
     let mut st = state_with(&[("u1", Status::Delivered), ("u2", Status::Delivered)]);

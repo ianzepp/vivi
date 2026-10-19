@@ -141,6 +141,33 @@ pub fn reset_repo(ctx: &Ctx) {
     drop(ctx.git(&format!("reset -q --hard {remote}/{branch}"), GIT_TIMEOUT));
 }
 
+/// Clear a stale lock, reset the checkout to `remote/branch`, and prove the
+/// reset actually reached the remote tip: `HEAD` must equal
+/// `<remote>/<branch>`. A lane whose reset failed must not be handed units,
+/// because every merge would then replay against a stale base and burn
+/// attempts.
+pub(crate) fn prepare_lane(ctx: &Ctx) -> Result<(), String> {
+    clear_stale_lock(ctx)?;
+    reset_repo(ctx);
+    let head = ctx.git("rev-parse HEAD", GIT_TIMEOUT);
+    if head.code != 0 {
+        return Err(tail(&head.text, 300));
+    }
+    let remote_ref = format!("{}/{}", ctx.cfg.remote, ctx.cfg.branch);
+    let tip = ctx.git(&format!("rev-parse {remote_ref}"), GIT_TIMEOUT);
+    if tip.code != 0 {
+        return Err(tail(&tip.text, 300));
+    }
+    let head = head.text.trim();
+    let tip = tip.text.trim();
+    if head != tip {
+        return Err(format!(
+            "HEAD is {head} but {remote_ref} is {tip} after reset"
+        ));
+    }
+    Ok(())
+}
+
 /// Merge one unit branch into the integration branch, run the checks and
 /// push. Runs on the merge thread and touches only
 /// the repository, never the pump state.
