@@ -3,13 +3,15 @@ use std::sync::{Arc, Barrier};
 
 use super::*;
 use crate::pool::local_fixture::{fixture, git};
-use crate::pool::slot::{PoolId, slot_metadata};
+use crate::pool::slot::{PoolId, pool_slots, slot_metadata};
+use crate::pool::ssh_state::slot_id;
 
-fn spec(pool: &str, index: u32) -> CreateSpec {
+fn spec(mailspace: &str, space_id: &str, pool: &str, index: u32) -> CreateSpec {
+    let id = PoolId::new(mailspace, space_id, pool);
     CreateSpec {
-        name: format!("ms-{pool}-slot-{index}"),
+        name: id.slot_name(index),
         image: String::new(),
-        metadata: slot_metadata(&PoolId::new("ms", "", pool), index, "main"),
+        metadata: slot_metadata(&id, index, "main"),
         env: BTreeMap::from([("BASE".to_string(), "it's main".to_string())]),
         once_env: BTreeMap::from([("GH_TOKEN".to_string(), "sekrit".to_string())]),
         passthrough_env: Vec::new(),
@@ -31,7 +33,7 @@ fn root() -> (tempfile::TempDir, PathBuf) {
 
 fn make(root: &Path, pool: &str, index: u32) -> (String, PathBuf) {
     let id = format!("ms/{pool}/slot-{index}");
-    create(root, &id, &spec(pool, index)).unwrap();
+    create(root, &id, &spec("ms", "", pool, index)).unwrap();
     let dir = root.join(&id);
     (id, dir)
 }
@@ -76,7 +78,7 @@ fn creating_over_an_existing_slot_is_refused_and_leaves_it_alone() {
     let (_tmp, root) = root();
     let (id, dir) = make(&root, "lanes-a", 1);
     std::fs::write(dir.join("keep"), "x").unwrap();
-    let said = create(&root, &id, &spec("lanes-a", 1))
+    let said = create(&root, &id, &spec("ms", "", "lanes-a", 1))
         .unwrap_err()
         .to_string();
     assert!(said.contains("slot directory exists"), "{said}");
@@ -86,7 +88,7 @@ fn creating_over_an_existing_slot_is_refused_and_leaves_it_alone() {
 #[test]
 fn a_slot_value_with_a_line_break_is_refused_and_leaves_nothing_behind() {
     let (_tmp, root) = root();
-    let mut bad = spec("lanes-a", 1);
+    let mut bad = spec("ms", "", "lanes-a", 1);
     bad.metadata.insert("vivi_pool_base".into(), "a\nb".into());
     assert!(create(&root, "ms/lanes-a/slot-1", &bad).is_err());
     assert!(list(&root).unwrap().is_empty());
@@ -123,7 +125,7 @@ fn slots_are_listed_from_their_directories_alone() {
 fn two_mailspaces_with_one_pool_name_keep_separate_directories_and_marks() {
     let (_tmp, root) = root();
     make(&root, "lanes-a", 1);
-    let mut other = spec("lanes-a", 1);
+    let mut other = spec("ms", "", "lanes-a", 1);
     other.metadata = slot_metadata(&PoolId::new("other", "", "lanes-a"), 1, "main");
     create(&root, "other/lanes-a/slot-1", &other).unwrap();
     let found = list(&root).unwrap();
@@ -133,6 +135,50 @@ fn two_mailspaces_with_one_pool_name_keep_separate_directories_and_marks() {
         .map(|m| m.metadata["vivi_pool_mailspace"].clone())
         .collect();
     assert!(spaces.contains(&"ms".to_string()) && spaces.contains(&"other".to_string()));
+}
+
+#[test]
+fn same_name_mailspaces_keep_their_slots_apart() {
+    const ID_A: &str = "11111111-1111-1111-1111-111111111111";
+    const ID_B: &str = "22222222-2222-2222-2222-222222222222";
+    let (_tmp, root) = root();
+    let a = PoolId::new("app", ID_A, "here");
+    let b = PoolId::new("app", ID_B, "here");
+    let id_a = slot_id(&a.mailspace, "here", "1");
+    let id_b = slot_id(&b.mailspace, "here", "1");
+    assert_eq!(id_a, "app-11111111/here/slot-1");
+    assert_eq!(id_b, "app-22222222/here/slot-1");
+    create(&root, &id_a, &spec("app", ID_A, "here", 1)).unwrap();
+    create(&root, &id_b, &spec("app", ID_B, "here", 1)).unwrap();
+    let dir_a = root.join(&id_a);
+    let dir_b = root.join(&id_b);
+    assert!(dir_a.is_dir() && dir_b.is_dir(), "one root, two slots");
+
+    let found = list(&root).unwrap();
+    assert_eq!(found.len(), 2);
+    let mine = pool_slots(&a, &found);
+    assert_eq!(mine.len(), 1, "a sees only its own slot");
+    assert_eq!(mine[0].name, "app-11111111-here-slot-1");
+    assert_eq!(mine[0].name, a.slot_name(1));
+    assert_eq!(mine[0].id, id_a);
+    let theirs = pool_slots(&b, &found);
+    assert_eq!(theirs.len(), 1, "b sees only its own slot");
+    assert_eq!(theirs[0].name, "app-22222222-here-slot-1");
+    assert_eq!(theirs[0].name, b.slot_name(1));
+    assert_eq!(theirs[0].id, id_b);
+
+    ready(&dir_a);
+    ready(&dir_b);
+    assert!(claim(&dir_a, "task1", 100).unwrap().is_some());
+    assert!(!dir_b.join("claim").exists(), "b keeps no claim of a's task");
+    let theirs = pool_slots(&b, &list(&root).unwrap());
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(theirs[0].task, None, "b's slot is still unclaimed");
+
+    destroy(&root, &id_b).unwrap();
+    assert!(!dir_b.exists(), "b's slot is gone");
+    assert!(dir_a.is_dir(), "a's slot is untouched");
+    assert!(dir_a.join("claim").is_file(), "a's claim is untouched");
 }
 
 #[test]
@@ -348,7 +394,7 @@ fn destroy_refuses_the_filesystem_root_however_the_slot_looks() {
 
 /// A worktree slot: the spec names the repository and the base commit.
 fn worktree_spec(repo: &Path, base: &str) -> CreateSpec {
-    let mut spec = spec("wt", 1);
+    let mut spec = spec("ms", "", "wt", 1);
     spec.env = BTreeMap::from([
         ("WORKTREE_OF".to_string(), repo.display().to_string()),
         ("BASE".to_string(), base.to_string()),
