@@ -7,14 +7,15 @@ use super::clean_rule::{
     build_paths, dir_bytes, effective_baseline, empty_dir, over_cap, read_baseline, write_baseline,
 };
 use super::local_proc;
-use super::local_slots::{CHECKOUT, is_known};
+use super::local_slots::{CHECKOUT, RECLAIM_FILE, hold_reclaim, is_known, release_reclaim};
 use super::slot::STATE_READY;
 use crate::error::VivariumError;
 
-/// True when the slot is claimed or its boot process is still alive.
+/// True when the slot is claimed, its boot process is still alive, or a
+/// build-tree reclaim is emptying it.
 #[must_use]
 pub fn slot_is_busy(dir: &Path) -> bool {
-    dir.join("claim").is_file() || local_proc::is_alive(dir)
+    dir.join("claim").is_file() || dir.join(RECLAIM_FILE).is_file() || local_proc::is_alive(dir)
 }
 
 /// True when the slot is seeded, stopped, and unclaimed.
@@ -59,6 +60,37 @@ pub fn reclaim_builds(
         return Ok((
             Vec::new(),
             vec![skip(pool, slot, ActionKind::Build, "slot is mid-dispatch")],
+        ));
+    }
+    if !hold_reclaim(dir)? {
+        return Ok((
+            Vec::new(),
+            vec![skip(
+                pool,
+                slot,
+                ActionKind::Build,
+                "a reclaim is already emptying this slot",
+            )],
+        ));
+    }
+    let held = reclaim_builds_held(pool, slot, dir, configured, dry_run);
+    release_reclaim(dir)?;
+    held
+}
+
+/// The per-checkout loop under an already-planted reclaim hold. A claim that
+/// landed between the free check and the hold still stops everything.
+fn reclaim_builds_held(
+    pool: &str,
+    slot: &str,
+    dir: &Path,
+    configured: Option<&str>,
+    dry_run: bool,
+) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
+    if dir.join("claim").is_file() {
+        return Ok((
+            Vec::new(),
+            vec![skip(pool, slot, ActionKind::Build, "claimed while reclaiming")],
         ));
     }
     let mut actions = Vec::new();

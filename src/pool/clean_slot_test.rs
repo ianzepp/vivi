@@ -32,6 +32,33 @@ fn a_busy_slot_is_not_touched() {
 }
 
 #[test]
+fn reclaim_builds_holds_the_slot_and_releases() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = slot(tmp.path(), "held");
+    fat_target(&dir, 80);
+    write_baseline(&dir, 10).unwrap();
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), false).unwrap();
+    assert!(skips.is_empty(), "{skips:?}");
+    assert_eq!(acts.len(), 1);
+    assert!(!dir.join("repo/target/blob").exists());
+    assert!(!dir.join("reclaim").exists(), "the hold must be released");
+}
+
+#[test]
+fn reclaim_builds_skips_while_another_reclaim_holds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = slot(tmp.path(), "held-elsewhere");
+    fat_target(&dir, 80);
+    write_baseline(&dir, 10).unwrap();
+    fs::write(dir.join("reclaim"), "nonce=other\n").unwrap();
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), false).unwrap();
+    assert!(acts.is_empty());
+    assert_eq!(skips.len(), 1, "{skips:?}");
+    assert!(dir.join("repo/target/blob").is_file());
+    assert!(dir.join("reclaim").is_file(), "the planted hold must survive");
+}
+
+#[test]
 fn an_over_cap_build_dir_is_emptied_and_source_is_left() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = slot(tmp.path(), "fat");

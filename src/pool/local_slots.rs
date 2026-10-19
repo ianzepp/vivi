@@ -7,6 +7,8 @@
 //! - `created`: the time the slot was made, UTC
 //! - `claim`: exists while a task holds the slot; written whole, then hard-linked into place,
 //!   so it appears complete or not at all, and of two claimants exactly one wins
+//! - `reclaim`: exists while a build-tree reclaim empties the slot; made the same way as the
+//!   claim, and both a dispatch claim and another reclaim back off while it is there
 //! - `boot.pid`, `boot.start`, `exit_code`: the boot process (see [`super::local_proc`])
 //! - `slot.env`, `boot.sh`, ...: the environment and the files delivered with the slot
 //! - `repo/`: the checkout. In a worktree slot it is a Git worktree of the
@@ -37,6 +39,8 @@ const ROOT_MARK: &str = ".vivi-root";
 pub const WORKTREE_OF_FILE: &str = "worktree_of";
 /// The checkout inside a slot.
 pub const CHECKOUT: &str = "repo";
+/// The file that holds the slot while a build-tree reclaim empties it.
+pub const RECLAIM_FILE: &str = "reclaim";
 /// Stand-ins for GNU tools a host may lack, put in the slot's `bin`.
 const TOOLS: [(&str, &str); 3] = [
     ("timeout", include_str!("local-bin/timeout")),
@@ -284,9 +288,11 @@ fn nonce() -> String {
     hex::encode(bytes)
 }
 
-/// Whether the slot may be claimed: seeded and not running.
+/// Whether the slot may be claimed: seeded, not running, and not held by a
+/// build-tree reclaim.
 fn free_now(dir: &Path) -> bool {
     first_line(&dir.join("marks").join(META_STATE)).as_deref() == Some(STATE_READY)
+        && !dir.join(RECLAIM_FILE).is_file()
         && !proc::is_alive(dir)
 }
 
@@ -337,6 +343,52 @@ pub fn unclaim(dir: &Path) -> Result<(), VivariumError> {
     match std::fs::remove_file(dir.join("claim")) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
             Err(failed("cannot remove the claim in", dir, &e))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Hold the slot while a build-tree reclaim empties it. The hold is one file,
+/// written whole and then hard-linked to its name, like the claim: of two
+/// reclaimers, in any processes, exactly one wins. `Ok(false)` means the slot
+/// is already held — by another reclaim or by a dispatch claim — and the
+/// caller must not empty it. The holder must call [`release_reclaim`].
+///
+/// # Errors
+/// Returns an error if the slot is gone or the files cannot be written.
+pub fn hold_reclaim(dir: &Path) -> Result<bool, VivariumError> {
+    if !is_known(dir) {
+        return Err(VivariumError::Message(format!(
+            "slot {} is gone",
+            dir.display()
+        )));
+    }
+    let nonce = nonce();
+    let tmp = dir.join(format!("reclaim.{}.{nonce}.tmp", std::process::id()));
+    write_file(&tmp, format!("nonce={nonce}\n").as_bytes(), 0o600)?;
+    let linked = std::fs::hard_link(&tmp, dir.join(RECLAIM_FILE));
+    std::fs::remove_file(&tmp).map(drop).unwrap_or_default();
+    match linked {
+        Ok(()) if !dir.join("claim").is_file() => Ok(true),
+        Ok(()) => {
+            std::fs::remove_file(dir.join(RECLAIM_FILE))
+                .map(drop)
+                .unwrap_or_default();
+            Ok(false)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(failed("cannot create the reclaim hold in", dir, &e)),
+    }
+}
+
+/// Drop the reclaim hold. Absent is not an error.
+///
+/// # Errors
+/// Returns an error if the file cannot be removed.
+pub fn release_reclaim(dir: &Path) -> Result<(), VivariumError> {
+    match std::fs::remove_file(dir.join(RECLAIM_FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(failed("cannot remove the reclaim hold in", dir, &e))
         }
         _ => Ok(()),
     }

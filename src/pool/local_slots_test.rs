@@ -169,6 +169,32 @@ fn claiming_a_slot_that_is_gone_is_an_error() {
     assert!(said.contains("is gone"), "{said}");
 }
 
+fn free_slot(root: &Path, name: &str) -> PathBuf {
+    let dir = root.join(name);
+    std::fs::create_dir_all(dir.join("marks")).unwrap();
+    std::fs::write(dir.join("marks/vivi_pool"), "lanes-a\n").unwrap();
+    seal(&dir, META_STATE, STATE_READY).unwrap();
+    dir
+}
+
+#[test]
+fn hold_reclaim_blocks_a_dispatch_claim() {
+    let (_tmp, root) = root();
+    let dir = free_slot(&root, "ms/lanes-a/slot-1");
+    assert!(hold_reclaim(&dir).unwrap(), "the hold wins on a free slot");
+    assert!(
+        claim(&dir, "task-x", 1234).unwrap().is_none(),
+        "a dispatch backs off while a reclaim holds the slot"
+    );
+    release_reclaim(&dir).unwrap();
+    let dir = free_slot(&root, "ms/lanes-a/slot-2");
+    assert!(claim(&dir, "task-x", 1234).unwrap().is_some());
+    assert!(
+        !hold_reclaim(&dir).unwrap(),
+        "a reclaim backs off a claimed slot"
+    );
+}
+
 #[test]
 fn many_claimants_at_once_yield_exactly_one_winner() {
     let (_tmp, root) = root();
