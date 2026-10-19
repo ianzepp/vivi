@@ -32,6 +32,7 @@ const EXIT_MARKER: &str = "agent exit ";
 /// The receipt section titles the pool writes after its summary lines.
 const SECTION_RECEIPT: &str = "receipt";
 const SECTION_STDERR: &str = "stderr tail";
+const SECTION_RUNNER_LOG: &str = "runner log tail";
 /// Seconds allowed for every git call the record path makes: a bad network
 /// must not stall a tick for minutes.
 const RECORD_TIMEOUT: u64 = 30;
@@ -161,6 +162,26 @@ pub fn agent_exit(receipt: &str) -> Option<i32> {
         Ok(code) => Some(code),
         Err(_) => None,
     }
+}
+
+/// The joined text of the stderr and runner-log tail sections of a task
+/// receipt: evidence scans that must not read the agent's own message
+/// section read this instead of the whole receipt.
+#[must_use]
+pub(crate) fn sections_tail(text: &str) -> String {
+    let mut tail = String::new();
+    let mut sections = text.split("\n\n--- ");
+    sections.next();
+    for section in sections {
+        let (title, body) = section.split_once('\n').unwrap_or((section, ""));
+        if matches!(title.trim(), SECTION_STDERR | SECTION_RUNNER_LOG) {
+            if !tail.is_empty() {
+                tail.push('\n');
+            }
+            tail.push_str(body.trim());
+        }
+    }
+    tail
 }
 
 /// Split a task receipt: the pool's summary lines come first, then sections
