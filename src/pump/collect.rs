@@ -334,6 +334,39 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     ctx.log(&format!("split-requested {uid}"));
 }
 
+/// Re-ask the split planner once after it wrote a bad split plan: the plan
+/// file moves to `plans/rejected/`, its `plans_seen` key is forgotten, and
+/// the planner respawns with the validation error appended to the prompt.
+/// False when no re-ask applies — an unknown unit, a unit that is no longer
+/// splitting or stuck, or a unit whose one re-ask is already spent.
+pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &str) -> bool {
+    let applies = st.units.get(uid).is_some_and(|unit| {
+        matches!(unit.status, Status::Splitting | Status::Stuck) && unit.split_reasks == 0
+    });
+    if !applies {
+        return false;
+    }
+    let now = ctx.now();
+    let key = format!("{uid}.split.json");
+    let rejected = ctx.home.join("plans/rejected");
+    drop(fs::create_dir_all(&rejected));
+    drop(fs::rename(ctx.home.join("plans").join(&key), rejected.join(format!("{key}.{now}"))));
+    st.plans_seen.retain(|seen| seen != &key);
+    let prompt = format!(
+        "{}\nYour previous plan was rejected: {reason}. Fix that and write the complete plan again.\n",
+        split_prompt(ctx, uid)
+    );
+    spawn_planner(ctx, "resplit", uid, &prompt);
+    if let Some(unit) = st.units.get_mut(uid) {
+        unit.split_reasks = 1;
+        unit.split_retry_at = None;
+        unit.split_fails = 0;
+        unit.since = now;
+    }
+    ctx.log(&format!("split-reask {uid} {}", tail(reason, 120)));
+    true
+}
+
 /// Reconcile the pool against in-flight units and the gate task.
 /// Returns the gate task's receipt when the gate finished
 /// (reported so, or unreported for more than 2400 s since it started); the

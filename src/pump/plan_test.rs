@@ -662,3 +662,55 @@ fn a_stale_or_duplicate_revision_is_ignored() {
     assert!(!st.units.contains_key("n1-3"));
     assert_eq!(st.needs["n1"].revision, 2);
 }
+
+/// A rejected split plan is not final: the planner is re-asked once with the
+/// validation error, and a second bad plan is not re-asked again.
+#[test]
+fn a_bad_split_plan_is_re_asked_once() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.units.insert(
+        "u1".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Splitting,
+            since: ctx.now(),
+            ..Unit::default()
+        },
+    );
+    let bad_plan = || {
+        json!({
+            "need": "n1",
+            "replaces": "u1",
+            "verdict": "units",
+            "reason": "too big for one budget",
+            "units": [
+                {"id": "u1.1", "brief": "half one", "write_scope": ["src/a.rs"]},
+                {"id": "u1.2", "brief": "half two"}
+            ]
+        })
+    };
+    write_plan(&ctx, "u1.split.json", &bad_plan());
+    ingest(&ctx, &mut st);
+    assert_eq!(host.spawned().len(), 1);
+    let prompt = fs::read_to_string(ctx.home.join("resplit/u1.prompt")).unwrap();
+    assert!(prompt.contains("unit missing id, brief or write_scope"));
+    let unit = &st.units["u1"];
+    assert_eq!(unit.status, Status::Splitting);
+    assert_eq!(unit.split_reasks, 1);
+    assert!(!st.plans_seen.iter().any(|key| key == "u1.split.json"));
+    let rejected: Vec<String> = fs::read_dir(ctx.home.join("plans/rejected"))
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(ToOwned::to_owned))
+        .collect();
+    assert!(rejected.iter().any(|name| name.starts_with("u1.split.json.")), "{rejected:?}");
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exc.contains("bad-plan u1.split.json unit missing id, brief or write_scope"));
+
+    // The one re-ask is spent: a second bad plan stays in plans_seen and
+    // never spawns the planner again.
+    write_plan(&ctx, "u1.split.json", &bad_plan());
+    ingest(&ctx, &mut st);
+    assert_eq!(host.spawned().len(), 1);
+    assert!(st.plans_seen.iter().any(|key| key == "u1.split.json"));
+}

@@ -152,6 +152,9 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
             );
         }
         ctx.exception("bad-plan", key, &bad);
+        if let Some(uid) = replaces {
+            crate::pump::collect::resplit_bad_plan(ctx, st, uid, &bad);
+        }
         return;
     }
     let revision = revision.unwrap_or(1);
