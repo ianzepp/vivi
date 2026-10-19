@@ -42,7 +42,9 @@ impl Reclaimer {
             .spawn(move || {
                 while let Ok(unit) = requests.recv() {
                     reclaim_one(&worker, &unit);
-                    let _ = done_tx.send(());
+                    if !post_completion(&done_tx) {
+                        break;
+                    }
                 }
             });
         if let Err(error) = spawned {
@@ -114,8 +116,14 @@ impl Reclaimer {
             return;
         };
         reclaim_one(ctx, &unit);
-        let _ = done_tx.send(());
+        post_completion(done_tx);
     }
+}
+
+/// Post one completion to the tick thread. `false` means the owning
+/// [`Reclaimer`] is gone, so there is nothing left to signal.
+fn post_completion(done: &Sender<()>) -> bool {
+    done.send(()).is_ok()
 }
 
 /// Recycle the unit's pool work lane now that it is on the merge lane.
