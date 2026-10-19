@@ -313,11 +313,9 @@ fn bisect_shared(ctx: &Ctx, merged: &[Merged], cmd: &str) -> Bisect {
         merge_main_in(ctx);
         if let Some(result) = merge_one(ctx, &m.job, (i + 1, merged.len())) {
             let detail = result.detail.as_deref().unwrap_or("");
-            split.undecided.push(undecided_result(
-                &m.job.uid,
-                "bisect-merge-failed",
-                detail,
-            ));
+            split
+                .undecided
+                .push(undecided_result(&m.job.uid, "bisect-merge-failed", detail));
             continue;
         }
         let t1 = ctx.now();

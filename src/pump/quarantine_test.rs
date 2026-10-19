@@ -158,10 +158,17 @@ fn a_failed_shared_check_lands_clean_members_and_quarantines_only_the_culprit() 
     let cmds = host.commands();
     assert_eq!(count(&cmds, "push origin HEAD:refs/heads/next"), 1);
     assert_eq!(
-        count(&cmds, &format!("push origin HEAD:refs/heads/{}", branch(&id))),
+        count(
+            &cmds,
+            &format!("push origin HEAD:refs/heads/{}", branch(&id))
+        ),
         1
     );
-    assert!(!cmds.iter().any(|c| c.contains("pump/quarantine") && c.contains("u2")));
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| c.contains("pump/quarantine") && c.contains("u2"))
+    );
     let st = applied_state(&ctx, results);
     let repair = repair_uid(&ctx, &id);
     assert_eq!(
