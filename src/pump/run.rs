@@ -235,8 +235,7 @@ fn planner_lines(ctx: &Ctx, st: &State) -> Vec<String> {
 /// red owner has a plan.
 fn red_plan_lines(ctx: &Ctx, st: &State) -> Vec<String> {
     let mut owned: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    let reds = std::iter::once(&st.red)
-        .chain(st.target_states.values().map(|target| &target.red));
+    let reds = std::iter::once(&st.red).chain(st.target_states.values().map(|target| &target.red));
     for red in reds {
         for owner in red.values() {
             *owned.entry(owner.as_str()).or_default() += 1;
