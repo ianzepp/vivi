@@ -86,10 +86,14 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
 
 /// Write the status lines to `<home>/status.txt`: a UTC timestamp, unit
 /// counts, plan verdict counts, the merge/gate counters, the stall lines
-/// from [`crate::pump::alarm::status_lines`], the blocker lines from
-/// [`crate::pump::blockers::status_lines`], the in-flight planner lines,
-/// then one line per merge lane (`lanes`, from [`Merger::lane_lines`]). An
-/// idle board adds no planner lines. A write failure is logged, never fatal.
+/// from [`crate::pump::alarm::status_lines`], a `send-failed` line naming
+/// every unit whose task send was refused for a config reason, the blocker
+/// lines from [`crate::pump::blockers::status_lines`], the in-flight planner
+/// lines, then one line per merge lane (`lanes`, from
+/// [`Merger::lane_lines`]). A `send-failed` line appears only while at least
+/// one unit carries the one-shot send-failure report, so a broken pump cannot
+/// look idle. An idle board adds no planner lines. A write failure is logged,
+/// never fatal.
 pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
     let mut verdicts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for need in st.needs.values() {
@@ -124,6 +128,15 @@ pub fn write_status(ctx: &Ctx, st: &State, lanes: &[String]) {
         ),
     ];
     lines.extend(crate::pump::alarm::status_lines(ctx, st));
+    let send_failed: Vec<&str> = st
+        .units
+        .iter()
+        .filter(|(_, unit)| unit.send_reported)
+        .map(|(uid, _)| uid.as_str())
+        .collect();
+    if !send_failed.is_empty() {
+        lines.push(format!("send-failed {}", send_failed.join(" ")));
+    }
     lines.extend(crate::pump::blockers::status_lines(ctx, st));
     lines.extend(planner_lines(ctx, st));
     lines.extend(lanes.iter().cloned());

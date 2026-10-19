@@ -228,6 +228,29 @@ fn write_status_adds_no_planner_lines_when_idle() {
 }
 
 #[test]
+fn write_status_lists_units_with_reported_send_failures() {
+    let (dir, ctx, _host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u1", unit(Status::Pending, None));
+    st.units.get_mut("u1").unwrap().send_reported = true;
+    write_status(&ctx, &st, &[]);
+    let path = dir.path().join("home/status.txt");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        text.lines().any(|line| line == "send-failed u1"),
+        "no send-failed line in {text}"
+    );
+
+    let clean = State::default();
+    write_status(&ctx, &clean, &[]);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        !text.contains("send-failed"),
+        "a clean state still wrote a send-failed line in {text}"
+    );
+}
+
+#[test]
 fn a_tick_runs_the_steps_in_pump_py_order() {
     let (_dir, ctx, host) = setup();
     host.reply(
