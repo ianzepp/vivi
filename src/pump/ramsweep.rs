@@ -112,7 +112,9 @@ fn owner_repo(ctx: &Ctx, dir: &Path) -> Option<String> {
 fn owner_of(common: &Path) -> String {
     let dot_git = common.file_name().is_some_and(|name| name == ".git");
     let owner: PathBuf = if dot_git {
-        common.parent().map_or_else(|| common.to_path_buf(), Path::to_path_buf)
+        common
+            .parent()
+            .map_or_else(|| common.to_path_buf(), Path::to_path_buf)
     } else {
         common.to_path_buf()
     };

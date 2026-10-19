@@ -106,8 +106,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir()
-            .join(format!("vivi-ramsweep-{tag}-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("vivi-ramsweep-{tag}-{}", std::process::id()));
         drop(std::fs::remove_dir_all(&path));
         std::fs::create_dir_all(&path).expect("scratch dir");
         Self { path }
@@ -170,7 +169,10 @@ fn sweep_detaches_only_this_mailspace_disk() {
     let scratch = Scratch::new("scope");
     let here = scratch.mount_point("vivi-here-slot1-job1", &["repo"]);
     let foreign = scratch.mount_point("vivi-other-slot2-job2", &["repo"]);
-    let runner = FakeRunner::new(&[("/dev/disk7s1", here.as_str()), ("/dev/disk9s1", foreign.as_str())]);
+    let runner = FakeRunner::new(&[
+        ("/dev/disk7s1", here.as_str()),
+        ("/dev/disk9s1", foreign.as_str()),
+    ]);
     let (ctx, host) = ctx_with("here", &scratch);
 
     let lines = sweep_ramdisks(&ctx, &runner);
@@ -196,8 +198,14 @@ fn sweep_removes_the_exact_worktree_paths_and_never_prunes() {
     assert_eq!(
         removals(&host),
         vec![
-            format!("git -C {} worktree remove --force {mount}/repo", owner.display()),
-            format!("git -C {} worktree remove --force {mount}/w", owner.display()),
+            format!(
+                "git -C {} worktree remove --force {mount}/repo",
+                owner.display()
+            ),
+            format!(
+                "git -C {} worktree remove --force {mount}/w",
+                owner.display()
+            ),
         ]
     );
     assert!(!ran(&host, "worktree prune"), "no repository-wide prune");
@@ -229,8 +237,7 @@ fn sweep_skips_a_mount_without_worktrees() {
 fn sweep_warns_when_the_disk_survives_teardown() {
     let scratch = Scratch::new("survivor");
     let mount = scratch.mount_point("vivi-here-slot1-job1", &["repo"]);
-    let runner =
-        FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]).keep_attached();
+    let runner = FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]).keep_attached();
     let (ctx, host) = ctx_with("here", &scratch);
 
     let lines = sweep_ramdisks(&ctx, &runner);
@@ -247,13 +254,20 @@ fn sweep_without_a_mailspace_sweeps_every_vivi_disk_and_says_so() {
     let scratch = Scratch::new("unscoped");
     let one = scratch.mount_point("vivi-a-slot1-job1", &[]);
     let two = scratch.mount_point("vivi-b-slot2-job2", &[]);
-    let runner = FakeRunner::new(&[("/dev/disk7s1", one.as_str()), ("/dev/disk9s1", two.as_str())]);
+    let runner = FakeRunner::new(&[
+        ("/dev/disk7s1", one.as_str()),
+        ("/dev/disk9s1", two.as_str()),
+    ]);
     let (ctx, _host) = ctx_with("", &scratch);
 
     let lines = sweep_ramdisks(&ctx, &runner);
 
     assert_eq!(runner.ejections().len(), 2);
-    assert_eq!(lines.len(), 4, "a warning plus a detach line per disk: {lines:?}");
+    assert_eq!(
+        lines.len(),
+        4,
+        "a warning plus a detach line per disk: {lines:?}"
+    );
     for volume in ["vivi-a-slot1-job1", "vivi-b-slot2-job2"] {
         assert!(
             lines
