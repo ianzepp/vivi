@@ -929,9 +929,17 @@ fn residual_setup(max_replans: u32) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     (dir, ctx, host)
 }
 
+/// Record an existing owner plan in the pump home.
+fn write_owner_plan(ctx: &Ctx, owner: &str) {
+    let plans = ctx.home.join("plans");
+    fs::create_dir_all(&plans).unwrap();
+    fs::write(plans.join(format!("{owner}.json")), "{}").unwrap();
+}
+
 #[test]
 fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
     let (dir, ctx, host) = residual_setup(2);
+    write_owner_plan(&ctx, OLD_OWNER);
     let mut st = residual_state(Status::Merged);
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
     assert_eq!(
@@ -960,6 +968,7 @@ fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
 #[test]
 fn units_of_a_real_handle_need_settle_their_owner_even_when_uids_differ() {
     let (dir, ctx, host) = residual_setup(2);
+    write_owner_plan(&ctx, "ab12cd34");
     host.reply("need send", 0, "created operator ef012345\nsent ef012345\n");
     let mut st = gate_state(4);
     st.red
@@ -982,6 +991,7 @@ fn units_of_a_real_handle_need_settle_their_owner_even_when_uids_differ() {
 #[test]
 fn residual_planning_takes_the_next_free_id_when_the_tip_plan_exists() {
     let (dir, ctx, host) = residual_setup(2);
+    write_owner_plan(&ctx, OLD_OWNER);
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans/pumpfix-g01234567.json"), "{}").unwrap();
     let mut st = residual_state(Status::Stuck);
@@ -1002,6 +1012,7 @@ fn residual_planning_takes_the_next_free_id_when_the_tip_plan_exists() {
 #[test]
 fn new_and_residual_failures_are_planned_together() {
     let (dir, ctx, host) = residual_setup(2);
+    write_owner_plan(&ctx, OLD_OWNER);
     let mut st = residual_state(Status::Merged);
     finish_gate(
         &ctx,
@@ -1043,6 +1054,26 @@ fn zero_max_replans_never_replans() {
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
     assert!(host.spawned().is_empty());
     assert_eq!(st.red.get(RESIDUAL), Some(&String::from(OLD_OWNER)));
+    drop(dir);
+}
+
+#[test]
+fn residual_failures_replan_orphaned_red_owners() {
+    let (dir, ctx, host) = residual_setup(2);
+    let mut st = gate_state(4);
+    st.red
+        .insert(String::from(RESIDUAL), String::from(OLD_OWNER));
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert_eq!(host.spawned().len(), 1, "a fresh gate-fix planner starts");
+    assert_eq!(
+        st.red.get(RESIDUAL),
+        Some(&String::from("pumpfix-g01234567")),
+        "the new gate-fix need re-owns the name"
+    );
+    assert_eq!(st.extra["replans"][RESIDUAL], 1);
+    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
+    assert!(prompt.contains("- crate::residual"));
+    assert!(prompt.contains("never wrote a plan"));
     drop(dir);
 }
 
