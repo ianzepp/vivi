@@ -698,7 +698,7 @@ fn an_event_at_stamp_beats_the_date_header() {
 }
 
 #[test]
-fn an_event_for_a_sealed_item_is_counted_and_not_applied() {
+fn an_event_for_a_sealed_item_is_not_counted_and_not_applied() {
     let w = World::new();
     let id = w.put(1, "item", "done_when: x\n");
     w.bob.pull(&w.bob_client);
@@ -712,8 +712,45 @@ fn an_event_for_a_sealed_item_is_counted_and_not_applied() {
 
     let pulled = w.bob.pull(&w.bob_client);
 
-    assert_eq!(pulled.events_ignored, 1);
+    // Ruling: a fully absorbed item adds nothing to `ignored` on every
+    // settle: its letters were counted when they arrived. A kindless `mind`
+    // does not close a foreign need, so no absorb letter sealed the item and
+    // no event was ignored here.
+    assert_eq!(pulled.events_ignored, 0);
     assert_eq!(need_state(&w, 1).0, "needs", "the sealed item did not move");
+}
+
+#[test]
+fn a_fully_absorbed_item_adds_nothing_to_ignored_across_settles() {
+    let w = World::new();
+    let id = w.put(1, "item", "done_when: x\n");
+    w.bob.pull(&w.bob_client);
+    let handle = crate::sync::fake_server::handle(1);
+    put_event(&w, 2, 1, "done", &[], "Sun, 11 Oct 2026 12:00:00 +0000");
+    let first = w.bob.pull(&w.bob_client);
+    // The close lands while the row is still live.
+    assert_eq!(first.events_applied, 1, "{}", first.summary());
+    assert!(!id.is_empty());
+    // A kindless `mind` role may not close a foreign need, so the absorb
+    // writes no seal letter: the rows are absorbed, the item is not sealed.
+    w.bob
+        .mailspace
+        .absorb("mind", &handle, None, "need")
+        .unwrap();
+    let content_id = w.bob.row(&w.bob.id_of(&handle)).unwrap().content_id;
+    // Ruling: a fully absorbed item stops adding to `ignored` on every
+    // settle: its letters were counted when they arrived.
+    for settle in 0..2 {
+        let tally = w
+            .bob
+            .mailspace
+            .apply_arrived_events(&[content_id.clone()])
+            .unwrap();
+        assert_eq!(tally.ignored, 0, "settle {settle} reported an ignored event");
+    }
+    let row = w.bob.row(&w.bob.id_of(&handle)).unwrap();
+    assert_eq!(row.local_role, "done");
+    assert!(row.absorbed_at.is_some(), "the row stayed absorbed");
 }
 
 #[test]
