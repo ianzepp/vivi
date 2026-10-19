@@ -690,6 +690,8 @@ impl Mailspace {
         }
         let work_close = self.is_work_close(&storage, &before, &role)?;
         let mut joined_needs = Vec::new();
+        let empty = std::collections::BTreeMap::new();
+        let extras = verdict_headers(metadata.unwrap_or(&empty));
         // A role that may close the work (its author, or a mind) writes an
         // event letter, which carries the move to every mailspace holding
         // the item; any other move is local, and a close is a report.
@@ -700,6 +702,7 @@ impl Mailspace {
             &role,
             note,
             command,
+            &extras,
             &mut joined_needs,
         )?;
         if event.is_none() {
@@ -841,6 +844,23 @@ fn move_command(kind: &str, role: &str) -> &'static str {
         ("task", _) => "task reopen",
         _ => "item move",
     }
+}
+
+/// The headers a close carries on its event letter: its verdict, and each
+/// repo at the tip the close recorded. The same facts stay in the item's
+/// local metadata; the headers carry them to every other mailspace.
+pub(super) fn verdict_headers(
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    metadata
+        .iter()
+        .filter_map(|(key, value)| {
+            if let Some(repo) = key.strip_prefix("repo:") {
+                return Some(("X-Vivi-Repo".to_string(), format!("{repo}={value}")));
+            }
+            (key == "verdict").then(|| ("X-Vivi-Verdict".to_string(), value.clone()))
+        })
+        .collect()
 }
 
 pub(super) fn add_header(eml: &str, name: &str, value: &str) -> Result<String, VivariumError> {
