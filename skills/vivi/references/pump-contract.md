@@ -592,6 +592,7 @@ configuration remains the implicit `default` target.
 | `run` | command template | none — **required** while `board.from` or `board.mark` is set | the planner command; prompt file on stdin, stdout+stderr to the `.out` file, cwd `home`; `{charter}` is replaced by `charter` |
 | `charter` | path | none | the file substituted for `{charter}` in `run` |
 | `split_hard_cap` | int seconds | `5400` | hard cap while the split planner is alive or unreachable; an exited planner is retried with backoff |
+| `planners_max` | int | `3` | concurrent split planners; further split launches stagger by 60s |
 
 `[pump.dispatch]`:
 
@@ -726,6 +727,7 @@ beside its siblings.
 | `budget` | int seconds | `1800` | the gate dispatch budget |
 | `results_dir` | path, optional | unset | directory an external runner drops `<tip>.json` gate results in; relative paths join the project root like `home`. Unset: pool gates only |
 | `results_wait_seconds` | int seconds | `0`; must be >= 1 when `results_dir` is set | how long a due gate waits for an external result before a pool gate is dispatched instead |
+| `results_idle_seconds` | int seconds | `0` | when > 0, a due gate skips the `results_wait_seconds` wait once no external result has arrived for this many seconds (counted from `last_external_result_at` in `state.extra`): a runner that has produced nothing in that time is not running. `0` disables the rule |
 | `max_replans` | int | `2` | how many times a name that still fails after every unit of its owner settled is handed to a fresh gate-fix planner (counted per name in `state.extra["replans"]`); `0` never re-plans |
 | `hold_on_red` | bool | `false` | while any owned red is unfixed the pump writes `HOLD-MERGE` itself (payload `red`), holding the merge queue; only written when the flag is absent, so an existing flag's modification time is never refreshed |
 | `hold_priority_floor` | int | `0` | under `HOLD-MERGE`, a need's priority level bypasses the hold only at or above this floor |

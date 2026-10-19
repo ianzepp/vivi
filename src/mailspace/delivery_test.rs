@@ -394,3 +394,35 @@ fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     mailspace.deliver_raw(event.as_bytes(), "tasks").unwrap();
     assert_eq!(nodes(), before, "an event letter mints no node");
 }
+
+#[test]
+fn memo_save_stores_tag_headers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("hand").unwrap();
+
+    let error = mailspace
+        .save_memo(
+            "hand",
+            "s",
+            "b",
+            &["digest".to_string(), "ops note".to_string()],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("ops note"), "{error}");
+
+    let handle = mailspace
+        .save_memo("hand", "s", "b", &["digest".to_string(), "ops".to_string()])
+        .unwrap();
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&handle).unwrap();
+    let memo = String::from_utf8_lossy(&storage.read_message(&id).unwrap()).into_owned();
+    assert!(
+        memo.contains("X-Vivi-Tag: digest"),
+        "no digest tag header: {memo}"
+    );
+    assert!(
+        memo.contains("X-Vivi-Tag: ops"),
+        "no ops tag header: {memo}"
+    );
+}

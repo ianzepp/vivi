@@ -927,7 +927,7 @@ fn schedule_report_uses_latest_non_memo_when_cadence_set() {
         })
         .unwrap();
     mailspace
-        .save_memo("hand", "private note", "not a signal")
+        .save_memo("hand", "private note", "not a signal", &[])
         .unwrap();
     let report = mailspace.schedule_report("hand").unwrap();
     assert_eq!(report.state, crate::role_schedule::ScheduleState::Ok);

@@ -38,6 +38,7 @@ mod item_events;
 mod kind;
 mod lifecycle;
 mod marks;
+pub mod memos;
 mod merge;
 mod mermaid;
 #[cfg(test)]
@@ -167,6 +168,10 @@ pub struct MailspaceConfig {
     /// defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub absorb: Option<AbsorbConfig>,
+    /// Memo listing settings (the `[memo]` table): hidden tags and per-tag
+    /// retention. Absent means the defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<memos::MemoConfig>,
     /// `[pump]`: settings of `vivi pump`. Absent means the pump is not
     /// configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -295,6 +300,7 @@ impl Mailspace {
             judgment: None,
             sync: None,
             absorb: None,
+            memo: None,
             pump: None,
             pools: BTreeMap::new(),
             retired_pool: None,
