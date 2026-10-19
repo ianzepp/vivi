@@ -2,8 +2,11 @@
 //!
 //! The board pass compares the newest event timestamp with the need's
 //! `thread_seen_at`, hashes the thread only when it moved, and asks the
-//! planner for a revision when the hash differs. The plan itself stays
-//! immutable on disk; the revision lands in `plans/<need>.r<N>.json`.
+//! planner for a revision when the hash differs. A closed need whose thread
+//! changed after close is reopened first, so the reply is planned as a new
+//! revision (and the need closes again when the revision's units merge).
+//! The plan itself stays immutable on disk; the revision lands in
+//! `plans/<need>.r<N>.json`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -34,9 +37,7 @@ pub fn detect(ctx: &Ctx, st: &mut State) {
 
 /// Check one planned need and start a revision when its thread moved.
 fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u64>) {
-    if st.closed_needs.iter().any(|closed| closed == handle)
-        || st.board.revision_planning.contains_key(handle)
-    {
+    if st.board.revision_planning.contains_key(handle) {
         return;
     }
     let Some((seen, old_hash)) = st
@@ -82,6 +83,9 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
         Some(_) => true,
     };
     if pending {
+        // A reply sent after the need closed is an addendum, not noise:
+        // reopen so the revision is planned and the merge re-closes later.
+        reopen_closed(ctx, st, handle);
         if let Some(record) = st.needs.get_mut(handle) {
             record.amendment_pending = true;
             record.thread_sha256 = Some(hash);
@@ -89,6 +93,23 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
         }
         launch_revision(ctx, st, handle, None);
     }
+}
+
+/// Reopen a closed need whose thread moved after close: drop it from
+/// `closed_needs` and log, so the revision plan lands and the merge's
+/// `close_need` closes the need again when the revision's units merge.
+fn reopen_closed(ctx: &Ctx, st: &mut State, handle: &str) {
+    let Some(index) = st
+        .closed_needs
+        .iter()
+        .position(|closed| closed == handle)
+    else {
+        return;
+    };
+    st.closed_needs.remove(index);
+    ctx.log(&format!(
+        "amendment: {handle} reopened: thread changed after close"
+    ));
 }
 
 /// Ask for a revision of `handle`'s plan with a reason for the planner, ahead

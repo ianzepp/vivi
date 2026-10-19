@@ -1,5 +1,6 @@
 //! Tests for [`crate::pump::amend`]: detecting a thread change and asking
-//! for a revision, and doing nothing when the thread is unchanged.
+//! for a revision (reopening a closed need when its thread changed after
+//! close), and doing nothing when the thread is unchanged.
 
 use std::fs;
 use std::sync::Arc;
@@ -78,6 +79,43 @@ fn a_changed_thread_starts_a_revision() {
             .iter()
             .any(|line| line.contains("amendment: n1 changed after r1"))
     );
+}
+
+#[test]
+fn a_closed_need_with_a_changed_thread_reopens_and_plans_a_revision() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.closed_needs.push(String::from("n1"));
+    script_thread(&host, "add the second half");
+    detect(&ctx, &mut st);
+    assert!(!st.closed_needs.contains(&"n1".to_string()));
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
+    assert!(
+        fs::read_to_string(ctx.home.join("needs/n1.json"))
+            .unwrap()
+            .contains("\"revision\": 2")
+    );
+    assert!(
+        host.spawned()
+            .iter()
+            .any(|cmd| cmd.contains("planner-model"))
+    );
+}
+
+#[test]
+fn an_unchanged_thread_keeps_the_need_closed() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.closed_needs.push(String::from("n1"));
+    let mut hasher = Sha256::new();
+    hasher.update(b"m1\n");
+    hasher.update(b"same body\n");
+    st.needs.get_mut("n1").unwrap().thread_sha256 =
+        Some(format!("v2:{}", hex::encode(hasher.finalize())));
+    script_thread(&host, "same body");
+    detect(&ctx, &mut st);
+    assert!(st.closed_needs.contains(&"n1".to_string()));
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(!st.board.revision_planning.contains_key("n1"));
 }
 
 #[test]
