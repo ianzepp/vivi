@@ -770,7 +770,11 @@ fn post_replies_sends_one_revised_stage_per_revision() {
 /// An exited-planner fixture: planner output and its `.rc` receipt, no plan.
 fn exited_planner(ctx: &Ctx, handle: &str) {
     fs::create_dir_all(ctx.home.join("board")).unwrap();
-    fs::write(ctx.home.join("board/n1.out"), "bash: pi: command not found\n").unwrap();
+    fs::write(
+        ctx.home.join("board/n1.out"),
+        "bash: pi: command not found\n",
+    )
+    .unwrap();
     fs::write(ctx.home.join(format!("board/{handle}.out.rc")), "127").unwrap();
 }
 

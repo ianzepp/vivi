@@ -229,7 +229,11 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
     }
     st.board.planner_failed.push(handle.to_owned());
     st.board.planner_retry_at.remove(handle);
-    ctx.exception("plan-failed", handle, "planner exited three times without writing a plan");
+    ctx.exception(
+        "plan-failed",
+        handle,
+        "planner exited three times without writing a plan",
+    );
 }
 
 /// Plan the new needs among `rows`: skip old, skipped,
