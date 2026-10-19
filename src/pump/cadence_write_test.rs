@@ -232,7 +232,7 @@ fn accept_clean_gate(ctx: &Ctx, st: &mut State, host: &FakeHost, cadence_id: &st
         "agent exit 0 in 1s\nFAILING-BEGIN\n\nFAILING-END\n",
     );
     host.reply(
-        "ls-remote 'origin' 'refs/heads/next'",
+        "ls-remote origin refs/heads/next",
         1,
         "remote unavailable\n",
     );
@@ -242,7 +242,7 @@ fn accept_clean_gate(ctx: &Ctx, st: &mut State, host: &FakeHost, cadence_id: &st
         gate.tip == DESCENDANT_TIP && gate.names.as_ref().is_some_and(Vec::is_empty)
     }));
     host.reply(
-        "ls-remote 'origin' 'refs/heads/next'",
+        "ls-remote origin refs/heads/next",
         0,
         &format!("{DESCENDANT_TIP}\trefs/heads/next\n"),
     );
