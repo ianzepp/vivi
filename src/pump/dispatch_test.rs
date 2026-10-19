@@ -473,6 +473,31 @@ fn a_task_send_without_a_handle_leaves_the_unit_pending() {
 }
 
 #[test]
+fn a_config_class_task_send_failure_raises_one_exception_and_recovers() {
+    let (dir, ctx, host) = setup();
+    wire(&host);
+    host.reply(
+        "task send",
+        1,
+        "error: message error: unknown local role 'hand'; add it with `vivi role add hand`",
+    );
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    dispatch(&ctx, &mut st);
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Pending);
+    let text = fs::read_to_string(dir.path().join("home/exceptions.txt")).unwrap();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("unknown-role u1"), "{text}");
+    assert!(text.contains("vivi role add hand"), "{text}");
+    assert!(st.units["u1"].send_reported);
+    host.reply("task send", 0, "created hand 1a2b3c4d\nnode 1a2b3c4d");
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Inflight);
+    assert!(!st.units["u1"].send_reported);
+}
+
+#[test]
 fn a_failed_pool_dispatch_marks_the_task_done_and_leaves_the_unit_pending() {
     let (_dir, ctx, host) = setup();
     wire(&host);
