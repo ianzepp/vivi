@@ -231,6 +231,9 @@ pub struct Unit {
     /// Pool the task was dispatched to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
+    /// Pool slot the current/last attempt ran on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
     /// Commit produced by the last merge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,

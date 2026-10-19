@@ -23,6 +23,8 @@ pub(crate) enum UnitStart {
     Started {
         /// The sent task's handle.
         task: String,
+        /// The pool slot the porcelain reply named, when it named one.
+        slot: Option<String>,
     },
     /// `task send` produced no handle (or the brief could not be written).
     SendFailed {
@@ -417,7 +419,29 @@ fn dispatch_cmd(
     }
     UnitStart::Started {
         task: task.to_owned(),
+        slot: parse_dispatched_slot(&out.text),
     }
+}
+
+/// The slot from a `pool dispatch --porcelain` reply: the fourth token of the
+/// line whose first token is `dispatched`
+/// (`dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST`),
+/// with surrounding double quotes stripped. `-` (the porcelain's absent value)
+/// and short lines yield `None`.
+#[must_use]
+pub fn parse_dispatched_slot(text: &str) -> Option<String> {
+    let line = text
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some("dispatched"))?;
+    let slot = line.split_whitespace().nth(3)?;
+    let slot = slot
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(slot);
+    if slot.is_empty() || slot == "-" {
+        return None;
+    }
+    Some(slot.to_owned())
 }
 
 /// Raise the unit's one `unknown-role` exception when a task send failed for
@@ -478,7 +502,9 @@ pub(crate) fn apply_start(
     free: &mut BTreeMap<String, u32>,
 ) -> bool {
     match start {
-        UnitStart::Started { task } => apply_started(ctx, st, uid, plan, model, &task, free),
+        UnitStart::Started { task, slot } => {
+            apply_started(ctx, st, uid, plan, model, &task, slot, free)
+        }
         UnitStart::SendFailed { text } => {
             ctx.log(&format!("task send failed {uid}: {text}"));
             report_send_failure(ctx, st, uid, &text);
@@ -505,6 +531,7 @@ fn apply_started(
     plan: &Plan,
     model: &str,
     task: &str,
+    slot: Option<String>,
     free: &mut BTreeMap<String, u32>,
 ) -> bool {
     let Some(unit) = st.units.get_mut(uid) else {
@@ -519,6 +546,7 @@ fn apply_started(
     unit.since = now;
     unit.since_dispatch = Some(now);
     unit.pool = Some(plan.pool.clone());
+    unit.slot = slot;
     unit.send_reported = false;
     if let Some(count) = free.get_mut(&plan.pool) {
         *count = count.saturating_sub(1);
