@@ -114,6 +114,52 @@ fn write_status_writes_counts_then_stall_lines() {
 }
 
 #[test]
+fn write_status_lists_in_flight_planners_with_pid_and_age() {
+    let (dir, ctx, _host) = setup();
+    let mut st = State::default();
+    let now = ctx.now();
+    st.board.planning.insert(String::from("n1"), now - 310);
+    st.board.planning.insert(String::from("n2"), now);
+    st.board.planner_pids.insert(String::from("n1"), 1042);
+    st.board.planner_fails.insert(String::from("n7"), 2);
+    st.board.planner_failed.push(String::from("n8"));
+    let (merger, _results, _jobs) = Merger::detached();
+    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
+    assert!(
+        text.contains("planner n1 pid 1042 age 310s"),
+        "no n1 planner line in {text}"
+    );
+    assert!(
+        text.contains("planner n2 pid - age 0s"),
+        "no n2 planner line in {text}"
+    );
+    assert!(
+        text.contains("planner-failures n7=2"),
+        "no failure line in {text}"
+    );
+    assert!(
+        text.contains("planner-parked n8"),
+        "no parked line in {text}"
+    );
+}
+
+#[test]
+fn write_status_adds_no_planner_lines_when_idle() {
+    let (dir, ctx, _host) = setup();
+    let st = State::default();
+    let (merger, _results, _jobs) = Merger::detached();
+    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 8);
+    assert!(
+        !text.contains("planner"),
+        "idle board wrote planner lines in {text}"
+    );
+}
+
+#[test]
 fn a_tick_runs_the_steps_in_pump_py_order() {
     let (_dir, ctx, host) = setup();
     host.reply(
