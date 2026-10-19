@@ -29,7 +29,7 @@ mod metadata;
 mod mutate;
 mod pending_deps;
 mod query;
-mod schema;
+pub(crate) mod schema;
 mod sync;
 #[cfg(test)]
 mod tests;
