@@ -25,6 +25,7 @@ pub mod priority;
 pub mod progress;
 pub mod proof;
 pub mod quarantine;
+pub mod reclaim;
 pub mod ready;
 pub mod remote;
 pub mod report;
@@ -134,6 +135,10 @@ mod board_test;
 #[cfg(test)]
 #[path = "pump/boardpass_test.rs"]
 mod boardpass_test;
+
+#[cfg(test)]
+#[path = "pump/reclaim_test.rs"]
+mod reclaim_test;
 
 #[cfg(test)]
 #[path = "pump/run_test.rs"]
