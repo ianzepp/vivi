@@ -111,6 +111,20 @@ pub fn state_label(state: ScheduleState) -> &'static str {
     }
 }
 
+/// Role kinds the pump may auto-run on cadence: heads plus exactly one
+/// reviewer role (`scoper`), per operator ruling.
+pub const AUTO_RUN_KINDS: [&str; 2] = ["head", "scoper"];
+
+/// True when `kind` names a role kind the pump may auto-run on cadence.
+#[must_use]
+pub fn auto_run_kind(kind: Option<&str>) -> bool {
+    let Some(value) = kind else {
+        return false;
+    };
+    let value = value.trim().to_lowercase();
+    AUTO_RUN_KINDS.iter().any(|allowed| *allowed == value)
+}
+
 fn none_report() -> ScheduleReport {
     ScheduleReport {
         state: ScheduleState::None,

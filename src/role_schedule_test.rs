@@ -1,6 +1,21 @@
 use super::*;
 use chrono::TimeZone;
 
+#[test]
+fn auto_run_kind_flags_head_and_scoper_only() {
+    assert!(auto_run_kind(Some("head")));
+    assert!(auto_run_kind(Some("Head")));
+    assert!(auto_run_kind(Some("HEAD")));
+    assert!(auto_run_kind(Some(" scoper ")));
+
+    assert!(!auto_run_kind(None));
+    assert!(!auto_run_kind(Some("hand")));
+    assert!(!auto_run_kind(Some("auditor")));
+    assert!(!auto_run_kind(Some("mind")));
+    assert!(!auto_run_kind(Some("headed")));
+    assert!(!auto_run_kind(Some("")));
+}
+
 fn at(secs: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(secs, 0).unwrap()
 }
