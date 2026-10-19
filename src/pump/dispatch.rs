@@ -596,8 +596,7 @@ pub(crate) fn apply_start(
 
 /// Give a slot reserved at plan time back to its pool.
 fn release_slot(free: &mut BTreeMap<String, u32>, pool: &str) {
-    *free
-        .entry(pool.to_owned())
+    free.entry(pool.to_owned())
         .and_modify(|c| *c = c.saturating_add(1))
         .or_insert(1);
 }

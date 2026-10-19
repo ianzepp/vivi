@@ -621,11 +621,8 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         return false;
     };
     if receipt.exists() {
-        let code = fs::read_to_string(&receipt)
-            .unwrap_or_default()
-            .trim()
-            .parse::<i32>()
-            .unwrap_or(-1);
+        let raw = fs::read_to_string(&receipt).unwrap_or_default();
+        let code = raw.trim().parse::<i32>().unwrap_or(-1);
         drop(fs::remove_file(&receipt));
         let fails = unit.split_fails + 1;
         unit.split_fails = fails;
