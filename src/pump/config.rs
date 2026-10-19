@@ -142,6 +142,20 @@ impl PumpConfig {
             .collect()
     }
 
+    /// Generated paths declared for a named target: the workspace-level
+    /// `[pump.merge]` table when no targets are configured, else the named
+    /// target's effective merge table. Unknown targets have none.
+    #[must_use]
+    pub fn generated_paths_for(&self, target: &str) -> Vec<String> {
+        if self.targets.is_empty() {
+            return self.merge.generated_paths();
+        }
+        self.target_configs()
+            .get(target)
+            .and_then(|target| target.merge.as_ref())
+            .map_or_else(Vec::new, MergeConfig::generated_paths)
+    }
+
     /// The workspace-relative source repository path for a named target.
     #[must_use]
     pub fn target_path(&self, project: &Path, id: &str) -> Option<PathBuf> {
@@ -392,6 +406,8 @@ pub struct MergeConfig {
     pub remote_wait: u64,
     /// Seconds a claimed batch may take.
     pub remote_limit: u64,
+    /// Files the merge lane regenerates instead of resolving by hand.
+    pub generated: Vec<Generated>,
 }
 
 impl Default for MergeConfig {
@@ -404,6 +420,45 @@ impl Default for MergeConfig {
             proof_timeout: 300,
             remote_wait: 90,
             remote_limit: 1800,
+            generated: Vec::new(),
+        }
+    }
+}
+
+impl MergeConfig {
+    /// Every declared generated path, in declaration order, across all
+    /// entries.
+    #[must_use]
+    pub fn generated_paths(&self) -> Vec<String> {
+        self.generated
+            .iter()
+            .flat_map(|entry| entry.paths.iter().cloned())
+            .collect()
+    }
+}
+
+/// One set of generated files the merge lane rebuilds from source of truth
+/// instead of resolving by hand (a `[[pump.merge.generated]]` array entry).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Generated {
+    /// Repository-relative paths of the generated files; globs are allowed
+    /// and match like a unit's write scope.
+    pub paths: Vec<String>,
+    /// Shell command that rebuilds the files from source of truth; the merge
+    /// lane runs it in the repository root.
+    pub regenerate: String,
+    /// Substrings of a failing check's output meaning the generated files are
+    /// stale rather than the code broken.
+    pub drift: Vec<String>,
+}
+
+impl Default for Generated {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            regenerate: String::new(),
+            drift: Vec::new(),
         }
     }
 }
@@ -718,6 +773,14 @@ impl PumpConfig {
         if self.merge.lanes == 0 {
             bad.push("[pump.merge] lanes must be >= 1".into());
         }
+        for entry in &self.merge.generated {
+            if entry.paths.is_empty() {
+                bad.push("[[pump.merge.generated]] paths must not be empty".into());
+            }
+            if entry.regenerate.trim().is_empty() {
+                bad.push("[[pump.merge.generated]] regenerate must not be empty".into());
+            }
+        }
         if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
             bad.push(
                 "[pump.merge] shared_checks must not be empty while promotion is enabled \
@@ -772,6 +835,18 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Ve
     }
     if merge.is_some_and(|merge| merge.lanes == 0) {
         bad.push(format!("{prefix}.merge lanes must be >= 1"));
+    }
+    for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
+        if entry.paths.is_empty() {
+            bad.push(format!(
+                "[pump.targets.{id}.merge] generated paths must not be empty"
+            ));
+        }
+        if entry.regenerate.trim().is_empty() {
+            bad.push(format!(
+                "[pump.targets.{id}.merge] generated regenerate must not be empty"
+            ));
+        }
     }
     if target.promote
         && !target.main.is_empty()
