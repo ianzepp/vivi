@@ -374,5 +374,7 @@ fn resolve_leaves_the_pool_config_alone() {
         &input(Some(&worker), "build it", None, false),
     )
     .unwrap();
-    config.validate(&PoolId::new("space", "", "bridge")).unwrap();
+    config
+        .validate(&PoolId::new("space", "", "bridge"))
+        .unwrap();
 }
