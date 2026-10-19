@@ -67,3 +67,55 @@ fn import_mints_backlog_nodes_and_dependency_edges() {
         audit.findings
     );
 }
+
+#[test]
+fn import_mints_settled_work_as_done() {
+    let (source, src_tmp) = roster();
+    let (mut target, _tgt_tmp) = roster();
+    // An imported item's From address is not this mailspace's own, so only a
+    // role of kind mind or operator accepts it: cto's settled row is an
+    // acceptance, not a report awaiting one.
+    target
+        .set_role(
+            "cto",
+            crate::mailspace::RoleUpdate {
+                kind: Some(Some("mind".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let settled = send_work(&source, "task", "settled", &[]);
+    // Settle it behind the graph's back: no event letter, no node completion,
+    // only the storage move into the done folder.
+    source
+        .storage()
+        .unwrap()
+        .move_message_to_role("cto", &settled, "done")
+        .unwrap();
+
+    import_mailspace(
+        &target,
+        src_tmp.path(),
+        MailspaceImportOptions { dry_run: false },
+    )
+    .unwrap();
+
+    let show = target.graph_show("backlog").unwrap();
+    let node = show
+        .nodes
+        .iter()
+        .find(|node| node.label == "settled")
+        .unwrap_or_else(|| panic!("no backlog node labelled settled: {show:?}"));
+    assert_eq!(
+        node.state, "done",
+        "the done folder mints and completes the node: {node:?}"
+    );
+
+    let audit = target.backlog_audit(false).unwrap();
+    assert!(
+        audit.findings.is_empty(),
+        "audit findings after import: {:?}",
+        audit.findings
+    );
+}
