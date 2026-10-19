@@ -54,6 +54,7 @@ pub fn reclaim_builds(
     slot: &str,
     dir: &Path,
     configured: Option<&str>,
+    pool_default: Option<u64>,
     dry_run: bool,
 ) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     if !slot_is_free(dir) {
@@ -73,7 +74,7 @@ pub fn reclaim_builds(
             )],
         ));
     }
-    let held = reclaim_builds_held(pool, slot, dir, configured, dry_run);
+    let held = reclaim_builds_held(pool, slot, dir, configured, pool_default, dry_run);
     release_reclaim(dir)?;
     held
 }
@@ -85,6 +86,7 @@ fn reclaim_builds_held(
     slot: &str,
     dir: &Path,
     configured: Option<&str>,
+    pool_default: Option<u64>,
     dry_run: bool,
 ) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     if dir.join("claim").is_file() {
@@ -100,7 +102,7 @@ fn reclaim_builds_held(
     }
     let mut actions = Vec::new();
     let mut skips = Vec::new();
-    let baseline = effective_baseline(read_baseline(dir));
+    let baseline = effective_baseline(read_baseline(dir), pool_default);
     for checkout in checkouts(dir) {
         for path in build_paths(&checkout, configured) {
             push_build(

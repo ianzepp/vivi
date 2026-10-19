@@ -45,6 +45,9 @@ pub struct LocalProvider {
     /// doctor looks at it. The slots themselves carry what they need.
     source: Option<PathBuf>,
     build_dir: Option<String>,
+    /// The pool's configured baseline for slots with no
+    /// `marks/build_baseline` mark; `None` keeps the built-in default.
+    build_baseline: Option<u64>,
 }
 
 impl LocalProvider {
@@ -54,6 +57,7 @@ impl LocalProvider {
             root: slots::expand_root(config.local.root_or_default()),
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
+            build_baseline: config.build_baseline_bytes(),
         }
     }
 
@@ -238,7 +242,11 @@ impl PoolProvider for LocalProvider {
         let dir = self.dir(id)?;
         slots::unclaim(&dir)?;
         slots::detach_if_idle(&dir);
-        let _ignored = super::clean::after_slot_freed(&dir, self.build_dir.as_deref());
+        let _ignored = super::clean::after_slot_freed(
+            &dir,
+            self.build_dir.as_deref(),
+            self.build_baseline,
+        );
         Ok(())
     }
 

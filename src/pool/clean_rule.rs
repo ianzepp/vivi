@@ -38,10 +38,11 @@ pub fn over_cap(bytes: u64, baseline: u64) -> bool {
     baseline > 0 && bytes > BUILD_CAP_MUL.saturating_mul(baseline)
 }
 
-/// The stored baseline, or [`DEFAULT_BASELINE_BYTES`] when none was written.
+/// The stored baseline, else the pool's configured default, else
+/// [`DEFAULT_BASELINE_BYTES`].
 #[must_use]
-pub fn effective_baseline(stored: Option<u64>) -> u64 {
-    stored.unwrap_or(DEFAULT_BASELINE_BYTES)
+pub fn effective_baseline(stored: Option<u64>, pool_default: Option<u64>) -> u64 {
+    stored.or(pool_default).unwrap_or(DEFAULT_BASELINE_BYTES)
 }
 
 /// Byte size of `path` (files only). Symlinks are not followed or counted.

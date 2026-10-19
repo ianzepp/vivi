@@ -154,7 +154,7 @@ fn push_checkout(
         });
         return Ok(());
     }
-    let baseline = effective_baseline(read_baseline(checkout));
+    let baseline = effective_baseline(read_baseline(checkout), None);
     for path in build_paths(checkout, None) {
         reclaim_lane_build(
             pool, slot, checkout, &path, baseline, dry_run, actions, skips,

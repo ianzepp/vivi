@@ -222,8 +222,10 @@ fn take_local_pools(
 pub fn after_slot_freed(
     dir: &Path,
     configured: Option<&str>,
+    pool_default: Option<u64>,
 ) -> Result<CleanReport, VivariumError> {
-    let (actions, skips) = clean_slot::reclaim_builds("-", "-", dir, configured, false)?;
+    let (actions, skips) =
+        clean_slot::reclaim_builds("-", "-", dir, configured, pool_default, false)?;
     Ok(CleanReport {
         actions,
         skips,
@@ -300,6 +302,7 @@ fn clean_pool(
     // match pool `here2`).
     let prefix = format!("{}/{}/", handle.id.mailspace, handle.id.pool);
     let configured = handle.config.build_dir.as_deref();
+    let pool_default = handle.config.build_baseline_bytes();
     let mut actions = Vec::new();
     let mut skips = Vec::new();
     for machine in handle.provider.list()? {
@@ -307,7 +310,14 @@ fn clean_pool(
             continue;
         }
         let dir = root.join(&machine.id);
-        let (a, s) = clean_slot::reclaim_builds(pool, &machine.name, &dir, configured, dry_run)?;
+        let (a, s) = clean_slot::reclaim_builds(
+            pool,
+            &machine.name,
+            &dir,
+            configured,
+            pool_default,
+            dry_run,
+        )?;
         actions.extend(a);
         skips.extend(s);
         if lane_is_done(st, hint, &dir) {

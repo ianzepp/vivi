@@ -81,7 +81,7 @@ fn after_slot_freed_reclaims_an_over_cap_target() {
     fs::write(dir.join("repo/src/lib.rs"), "ok\n").unwrap();
     fs::create_dir_all(dir.join("repo/target")).unwrap();
     fs::write(dir.join("repo/target/blob"), vec![0_u8; 50]).unwrap();
-    let report = after_slot_freed(&dir, Some("target")).unwrap();
+    let report = after_slot_freed(&dir, Some("target"), None).unwrap();
     assert_eq!(report.actions.len(), 1);
     assert_eq!(report.actions[0].kind, ActionKind::Build);
     assert!(!dir.join("repo/target/blob").exists());
@@ -102,7 +102,7 @@ fn a_claimed_slot_is_skipped_after_free_hook() {
     fs::create_dir_all(dir.join("repo/target")).unwrap();
     fs::write(dir.join("repo/target/blob"), vec![0_u8; 50]).unwrap();
     write_baseline(&dir, 10).unwrap();
-    let report = after_slot_freed(&dir, Some("target")).unwrap();
+    let report = after_slot_freed(&dir, Some("target"), None).unwrap();
     assert!(report.actions.is_empty());
     assert!(dir.join("repo/target/blob").is_file());
 }

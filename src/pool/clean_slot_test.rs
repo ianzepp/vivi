@@ -25,7 +25,7 @@ fn a_busy_slot_is_not_touched() {
     fat_target(&dir, 100);
     fs::write(dir.join("claim"), "task=abcd\n").unwrap();
     write_baseline(&dir, 10).unwrap();
-    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), false).unwrap();
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), None, false).unwrap();
     assert!(acts.is_empty());
     assert_eq!(skips[0].reason, "slot is mid-dispatch");
     assert!(dir.join("repo/target/blob").is_file());
@@ -37,7 +37,7 @@ fn reclaim_builds_holds_the_slot_and_releases() {
     let dir = slot(tmp.path(), "held");
     fat_target(&dir, 80);
     write_baseline(&dir, 10).unwrap();
-    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), false).unwrap();
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), None, false).unwrap();
     assert!(skips.is_empty(), "{skips:?}");
     assert_eq!(acts.len(), 1);
     assert!(!dir.join("repo/target/blob").exists());
@@ -51,7 +51,7 @@ fn reclaim_builds_skips_while_another_reclaim_holds() {
     fat_target(&dir, 80);
     write_baseline(&dir, 10).unwrap();
     fs::write(dir.join("reclaim"), "nonce=other\n").unwrap();
-    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), false).unwrap();
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), None, false).unwrap();
     assert!(acts.is_empty());
     assert_eq!(skips.len(), 1, "{skips:?}");
     assert!(dir.join("repo/target/blob").is_file());
@@ -69,7 +69,7 @@ fn an_over_cap_build_dir_is_emptied_and_source_is_left() {
     fs::write(dir.join("repo/src/lib.rs"), "fn x() {}\n").unwrap();
     fat_target(&dir, 250);
     write_baseline(&dir, 100).unwrap();
-    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), false).unwrap();
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), None, false).unwrap();
     assert!(skips.is_empty(), "{skips:?}");
     assert_eq!(acts.len(), 1);
     assert_eq!(acts[0].bytes, 250);
@@ -86,7 +86,7 @@ fn dry_run_reports_bytes_and_deletes_nothing() {
     let dir = slot(tmp.path(), "dry");
     fat_target(&dir, 250);
     write_baseline(&dir, 100).unwrap();
-    let (acts, _) = reclaim_builds("p", "s", &dir, Some("target"), true).unwrap();
+    let (acts, _) = reclaim_builds("p", "s", &dir, Some("target"), None, true).unwrap();
     assert_eq!(acts[0].bytes, 250);
     assert!(dir.join("repo/target/blob").is_file());
 }
@@ -98,12 +98,37 @@ fn a_missing_baseline_uses_the_default_hint() {
     // Just under 2x the 4 GiB hint: keep. The default exists so a first job
     // of a few hundred megabytes is not wiped.
     fat_target(&dir, 100);
-    let (acts, _) = reclaim_builds("p", "s", &dir, Some("target"), false).unwrap();
+    let (acts, _) = reclaim_builds("p", "s", &dir, Some("target"), None, false).unwrap();
     assert!(acts.is_empty());
     assert!(dir.join("repo/target/blob").is_file());
     assert_eq!(read_baseline(&dir), Some(100));
     assert!(DEFAULT_BASELINE_BYTES > 100);
     let _ = GIB;
+}
+
+#[test]
+fn reclaim_builds_uses_the_pool_default_for_unmarked_slots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = slot(tmp.path(), "knob");
+    fat_target(&dir, 80);
+    // 80 bytes is over twice a 10-byte pool baseline: wiped, and the knob
+    // value is recorded as the mark, like a hand-written 24 GiB baseline.
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), Some(10), false).unwrap();
+    assert!(skips.is_empty(), "{skips:?}");
+    assert_eq!(acts.len(), 1);
+    assert!(!dir.join("repo/target/blob").exists());
+    assert_eq!(read_baseline(&dir), Some(10));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = slot(tmp.path(), "no-knob");
+    fat_target(&dir, 80);
+    // Without the knob the 4 GiB default keeps the blob, and the measured
+    // size becomes the mark as before.
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), None, false).unwrap();
+    assert!(skips.is_empty(), "{skips:?}");
+    assert!(acts.is_empty());
+    assert!(dir.join("repo/target/blob").is_file());
+    assert_eq!(read_baseline(&dir), Some(80));
 }
 
 #[test]
