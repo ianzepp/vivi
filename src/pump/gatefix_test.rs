@@ -115,8 +115,10 @@ fn a_due_gatefix_retry_respawns_the_planner() {
     let mut st = red_state();
     let mut fails = serde_json::Map::new();
     fails.insert(String::from(NEED), serde_json::json!(1_u64));
-    st.extra
-        .insert(String::from("gatefix_fails"), serde_json::Value::Object(fails));
+    st.extra.insert(
+        String::from("gatefix_fails"),
+        serde_json::Value::Object(fails),
+    );
     let mut retries = serde_json::Map::new();
     retries.insert(String::from(NEED), serde_json::json!(T0 + 60));
     st.extra.insert(
@@ -141,9 +143,10 @@ fn a_due_gatefix_retry_respawns_the_planner() {
             .and_then(|map| map.get(NEED))
             .is_none()
     );
-    assert!(host
-        .logs()
-        .iter()
-        .any(|line| line.contains("gatefix retry pumpfix-g01234567")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("gatefix retry pumpfix-g01234567"))
+    );
     drop(dir);
 }
