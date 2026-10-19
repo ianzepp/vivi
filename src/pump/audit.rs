@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::pump::dispatch::{parse_created_handle, slots};
 use crate::pump::gatefix::{fix_need, send_fix_need, take_residuals};
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::state::State;
+use crate::pump::state::{NeedRecord, State, Status, Unit};
 use crate::routing::RoleRouting;
 
 /// Seconds before an audit that could not start is retried.
@@ -324,4 +324,111 @@ fn append_bullets<'a>(brief: &mut String, names: impl Iterator<Item = &'a str>) 
         brief.push_str(name);
         brief.push('\n');
     }
+}
+
+const REPORT_BEGIN: &str = "AUDIT-BEGIN";
+const REPORT_END: &str = "AUDIT-END";
+
+/// One root cause from an auditor report, which becomes one fix unit.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct Cause {
+    /// What is broken and why.
+    pub(crate) root_cause: String,
+    /// The complete fix-unit brief naming failing tests and a concrete fix.
+    pub(crate) brief: String,
+    /// Failing test names covered by this cause.
+    #[serde(default)]
+    pub(crate) tests: Vec<String>,
+    /// Files the fix unit may write.
+    pub(crate) write_scope: Vec<String>,
+    /// Commands that must exit successfully.
+    #[serde(default)]
+    pub(crate) proof: Vec<String>,
+}
+
+/// Return the body of the last complete `AUDIT-BEGIN ... AUDIT-END` block.
+fn last_report_block(text: &str) -> Option<&str> {
+    let mut last = None;
+    let mut rest = text;
+    while let Some(at) = rest.find(REPORT_BEGIN) {
+        let after = &rest[at + REPORT_BEGIN.len()..];
+        let ws = after.len() - after.trim_start().len();
+        if !after[..ws].contains('\n') {
+            rest = after;
+            continue;
+        }
+        let body = &after[ws..];
+        let Some(end) = body.find(REPORT_END) else {
+            break;
+        };
+        last = Some(&body[..end]);
+        rest = &body[end + REPORT_END.len()..];
+    }
+    last
+}
+
+/// Parse the last complete audit report block as one cause per fix unit.
+///
+/// Returns `None` for missing markers, malformed or empty JSON, or a cause
+/// without a root cause, brief, or at least one write-scope path.
+pub(crate) fn parse_report(text: &str) -> Option<Vec<Cause>> {
+    let body = last_report_block(text)?;
+    let causes = serde_json::from_str::<Vec<Cause>>(body.trim()).ok()?;
+    if causes.is_empty()
+        || causes.iter().any(|cause| {
+            cause.root_cause.trim().is_empty()
+                || cause.brief.trim().is_empty()
+                || cause.write_scope.is_empty()
+        })
+    {
+        return None;
+    }
+    Some(causes)
+}
+
+/// Save an auditor reply and mint one pending fix unit for each root cause.
+pub(crate) fn apply_report(
+    ctx: &Ctx,
+    st: &mut State,
+    need: &str,
+    raw: &str,
+    causes: &[Cause],
+) -> usize {
+    let dir = ctx.home.join("audit");
+    drop(fs::create_dir_all(&dir));
+    drop(fs::write(dir.join(format!("{need}.report")), raw));
+
+    let mut uids = Vec::new();
+    for (k, cause) in causes.iter().enumerate() {
+        let uid = format!("{need}-{}", k + 1);
+        let unit = Unit {
+            need: need.to_owned(),
+            title: cause.root_cause.chars().take(90).collect(),
+            brief: cause.brief.clone(),
+            write_scope: cause.write_scope.clone(),
+            proof: cause.proof.clone(),
+            tools: String::new(),
+            status: Status::Pending,
+            since: ctx.now(),
+            ..Unit::default()
+        };
+        st.units.insert(uid.clone(), unit);
+        st.order.push(uid.clone());
+        uids.push(uid);
+    }
+    st.needs.insert(
+        need.to_owned(),
+        NeedRecord {
+            verdict: String::from("units"),
+            reason: String::from("audit report"),
+            units: uids,
+            revision: 1,
+            ..NeedRecord::default()
+        },
+    );
+    ctx.log(&format!(
+        "audit report for {need}: {} fix units",
+        causes.len()
+    ));
+    causes.len()
 }
