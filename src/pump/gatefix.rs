@@ -44,7 +44,11 @@ fn owner_settled(st: &State, owner: &str) -> bool {
 /// `true` when the owner has no units or plan and no live planner remains.
 fn orphaned(ctx: &Ctx, st: &State, owner: &str) -> bool {
     if st.units.values().any(|unit| unit.need == owner)
-        || ctx.home.join("plans").join(format!("{owner}.json")).exists()
+        || ctx
+            .home
+            .join("plans")
+            .join(format!("{owner}.json"))
+            .exists()
     {
         return false;
     }
@@ -420,7 +424,12 @@ fn residual_section(ctx: &Ctx, tip: &str, owner: &str, names: &[&str]) -> String
         .map(|name| format!("- {name}"))
         .collect::<Vec<_>>()
         .join("\n");
-    if !ctx.home.join("plans").join(format!("{owner}.json")).exists() {
+    if !ctx
+        .home
+        .join("plans")
+        .join(format!("{owner}.json"))
+        .exists()
+    {
         return format!(
             "These tests were owned by gate-fix planner {owner}, but it never wrote a plan (it died before planning), so no unit ran and they still fail at commit {tip}:
 {list}
