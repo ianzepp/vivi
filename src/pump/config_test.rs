@@ -893,3 +893,34 @@ fn pool_sources_map_local_worktree_pools() {
         "a multi-target pump reads from per-target integration clones"
     );
 }
+
+#[test]
+fn checks_for_parses_glob_keys_into_command_lists() {
+    let cfg = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.merge.checks_for]\n\
+         \"corpus/**/*.fab\" = [\"cargo test -p faber --lib explain_\"]\n\
+         \"locale/**\" = [\"./locale-check\", \"cargo test -p radix-module locale_pack\"]\n",
+    );
+    assert_eq!(
+        cfg.merge.checks_for,
+        BTreeMap::from([
+            (
+                String::from("corpus/**/*.fab"),
+                vec![String::from("cargo test -p faber --lib explain_")],
+            ),
+            (
+                String::from("locale/**"),
+                vec![
+                    String::from("./locale-check"),
+                    String::from("cargo test -p radix-module locale_pack"),
+                ],
+            ),
+        ])
+    );
+}
+
+#[test]
+fn checks_for_is_empty_by_default() {
+    let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert!(cfg.merge.checks_for.is_empty());
+}
