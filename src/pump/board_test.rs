@@ -885,7 +885,10 @@ fn launch_records_the_planner_pid_and_clears_the_stale_receipt() {
     let mut replan = BTreeSet::new();
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
     assert!(
-        st.board.planner_pids.get("n1").is_some_and(|pid| *pid >= 1000),
+        st.board
+            .planner_pids
+            .get("n1")
+            .is_some_and(|pid| *pid >= 1000),
         "pids: {:?}",
         st.board.planner_pids
     );
