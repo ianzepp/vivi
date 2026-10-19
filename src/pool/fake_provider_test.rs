@@ -36,6 +36,8 @@ pub struct Fake {
     /// Starts and stops that arrived with the active claim hold.
     pub claimed_starts: RefCell<Vec<String>>,
     pub claimed_stops: RefCell<Vec<String>>,
+    /// Exec calls that arrived with the active claim hold.
+    pub claimed_execs: RefCell<Vec<String>>,
     /// Runs right after a lease is granted (race simulation).
     pub after_lease: RefCell<Option<Hook>>,
     /// Starting a machine fails.
@@ -413,5 +415,19 @@ impl PoolProvider for Fake {
             stderr: String::new(),
             exit_code: 0,
         })
+    }
+
+    fn exec_claimed(
+        &self,
+        id: &str,
+        hold: &Hold,
+        script: &str,
+        timeout_secs: u32,
+    ) -> Result<ExecOutput, VivariumError> {
+        if self.leases.borrow().get(id) != Some(&hold.nonce) {
+            return Err(VivariumError::Message("not the lease holder".into()));
+        }
+        self.claimed_execs.borrow_mut().push(id.to_string());
+        self.exec(id, script, timeout_secs)
     }
 }

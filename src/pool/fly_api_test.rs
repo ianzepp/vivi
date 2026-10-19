@@ -159,12 +159,15 @@ mod refresh {
     }
 
     #[test]
-    fn config_replacement_settles_its_new_version_before_claimed_start() {
+    fn claimed_reset_and_job_actions_keep_the_lease_through_startup() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/v1/apps", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             for body in [
+                r#"{"previous_state":"stopped"}"#,
+                r#"{"stdout":"abc1234","stderr":"","exit_code":0}"#,
+                r#"{"ok":true}"#,
                 r#"{"config":{"env":{},"files":[]}}"#,
                 r#"{"id":"machine-1","state":"replacing","instance_id":"new-instance","version":"new-version"}"#,
                 r#"{"ok":true}"#,
@@ -212,23 +215,35 @@ mod refresh {
             nonce: "lease-123".into(),
         };
 
+        api.start_claimed("machine-1", &hold).unwrap();
+        api.exec_claimed("machine-1", &hold, "reset", 2).unwrap();
+        api.stop_claimed("machine-1", &hold).unwrap();
         api.put_file("machine-1", &hold, "/work/job.tgz", b"archive")
             .unwrap();
         api.start_claimed("machine-1", &hold).unwrap();
 
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 4);
-        assert!(requests[0].starts_with("GET /v1/apps/app/machines/machine-1 HTTP/1.1"));
-        assert!(requests[1].starts_with("POST /v1/apps/app/machines/machine-1 HTTP/1.1"));
+        assert_eq!(requests.len(), 7);
+        assert!(requests[0].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /v1/apps/app/machines/machine-1/exec HTTP/1.1"));
+        assert!(requests[2].starts_with("POST /v1/apps/app/machines/machine-1/stop HTTP/1.1"));
+        assert!(requests[3].starts_with("GET /v1/apps/app/machines/machine-1 HTTP/1.1"));
+        assert!(requests[4].starts_with("POST /v1/apps/app/machines/machine-1 HTTP/1.1"));
         assert!(
-            requests[2].starts_with(
+            requests[5].starts_with(
                 "GET /v1/apps/app/machines/machine-1/wait?state=settled&instance_id=new-instance&timeout=30 HTTP/1.1"
             ),
             "{}",
-            requests[2]
+            requests[5]
         );
-        assert!(requests[3].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
-        for request in [&requests[1], &requests[3]] {
+        assert!(requests[6].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
+        for request in [
+            &requests[0],
+            &requests[1],
+            &requests[2],
+            &requests[4],
+            &requests[6],
+        ] {
             let nonce = request.lines().find_map(|line| {
                 let (name, value) = line.split_once(':')?;
                 name.eq_ignore_ascii_case("fly-machine-lease-nonce")
@@ -236,7 +251,10 @@ mod refresh {
             });
             assert_eq!(nonce, Some("lease-123"), "{request}");
         }
-        let update_body = requests[1].split_once("\r\n\r\n").unwrap().1;
+        let exec_body = requests[1].split_once("\r\n\r\n").unwrap().1;
+        let exec_body = serde_json::from_str::<Value>(exec_body).unwrap();
+        assert_eq!(exec_body["command"], json!(["bash", "-c", "reset"]));
+        let update_body = requests[4].split_once("\r\n\r\n").unwrap().1;
         assert_eq!(
             serde_json::from_str::<Value>(update_body).unwrap()["skip_launch"],
             true

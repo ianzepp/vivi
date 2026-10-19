@@ -305,15 +305,38 @@ fn reset_remote_with_hold(
             provider.start(id)?;
         }
     }
-    let out = provider.exec(id, &remote_script(base), 90)?;
-    if !started {
-        let _ignored = if let Some(hold) = hold {
-            provider.stop_claimed(id, hold)
-        } else {
-            provider.stop(id)
-        };
+    let script = remote_script(base);
+    let execution = if let Some(hold) = hold {
+        provider.exec_claimed(id, hold, &script, 90)
+    } else {
+        provider.exec(id, &script, 90)
+    };
+    if started {
+        return parse_remote(execution?, base, why);
     }
-    parse_remote(out, base, why)
+    let stopped = if let Some(hold) = hold {
+        provider.stop_claimed(id, hold)
+    } else {
+        provider.stop(id)
+    };
+    finish_remote_reset(execution, stopped, base, why)
+}
+
+fn finish_remote_reset(
+    execution: Result<ExecOutput, VivariumError>,
+    stopped: Result<(), VivariumError>,
+    base: &str,
+    why: &'static str,
+) -> Result<ResetOutcome, VivariumError> {
+    let reset = execution.and_then(|out| parse_remote(out, base, why));
+    match (reset, stopped) {
+        (Ok(out), Ok(())) => Ok(out),
+        (Err(reset_error), Ok(())) => Err(reset_error),
+        (Ok(_), Err(stop_error)) => Err(stop_error),
+        (Err(reset_error), Err(stop_error)) => Err(VivariumError::Message(format!(
+            "reset failed ({reset_error}); also failed to stop machine ({stop_error})"
+        ))),
+    }
 }
 
 /// Shell that fetch-checks-out `origin/$BASE` inside a remote slot.

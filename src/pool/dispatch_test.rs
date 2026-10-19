@@ -414,12 +414,45 @@ fn dispatch_reset_starts_and_stops_the_machine_under_its_claim() {
 
     assert_eq!(record.machine, "m1");
     assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1", "m1"]);
+    assert_eq!(fake.claimed_execs.borrow().as_slice(), ["m1"]);
     assert_eq!(fake.claimed_stops.borrow().as_slice(), ["m1"]);
     assert!(
         fake.leases.borrow().is_empty(),
         "claim released after start"
     );
     assert_eq!(fake.state_of("m1"), "started");
+}
+
+#[test]
+fn a_failed_claimed_reset_exec_stops_before_dispatch_releases_the_claim() {
+    let fake = Fake::default();
+    fake.add(slot("m1", "p-slot-1", "stopped", "p", 1));
+    fake.exec_fails.set(1);
+    let mut config = config();
+    config.provider = "fly".into();
+    let progress = crate::pool::progress::Progress::silent();
+    let token = Secret::new("tok-secret-value".into());
+    let plan = plan(&flags("m/ok")).unwrap();
+    let start = "c".repeat(40);
+    let launch = Launch {
+        config: &config,
+        plan: &plan,
+        token: &token,
+        start: &start,
+        progress: &progress,
+        ready_timeout: None,
+        reset_base: Some("main".into()),
+    };
+
+    let error = dispatch(&fake, &pid("p"), &launch, 5000, &pacing()).unwrap_err();
+
+    assert!(error.to_string().contains("Fly exec failed (HTTP 401)"));
+    assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1"]);
+    assert_eq!(fake.claimed_execs.borrow().as_slice(), ["m1"]);
+    assert_eq!(fake.claimed_stops.borrow().as_slice(), ["m1"]);
+    assert_eq!(fake.state_of("m1"), "stopped");
+    assert!(fake.meta("m1", META_TASK).is_none());
+    assert!(fake.leases.borrow().is_empty());
 }
 
 #[test]

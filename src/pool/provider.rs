@@ -437,6 +437,21 @@ pub trait PoolProvider {
     /// Returns an error if the machine is not running or the call fails.
     fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError>;
 
+    /// Run `script` while retaining the claim that protects the operation.
+    /// Providers with machine leases can attach the hold to the exec request.
+    ///
+    /// # Errors
+    /// Returns an error if the machine is not running or the call fails.
+    fn exec_claimed(
+        &self,
+        id: &str,
+        _hold: &Hold,
+        script: &str,
+        timeout_secs: u32,
+    ) -> Result<ExecOutput, VivariumError> {
+        self.exec(id, script, timeout_secs)
+    }
+
     /// Read files out of a stopped machine without starting it: the files at
     /// `paths` that exist, keyed by path. `Ok(None)` means this host cannot,
     /// and the caller starts the machine and uses [`PoolProvider::exec`].

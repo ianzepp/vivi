@@ -322,10 +322,34 @@ impl FlyApi {
         script: &str,
         timeout_secs: u32,
     ) -> Result<ExecOutput, VivariumError> {
+        self.exec_with_nonce(id, None, script, timeout_secs)
+    }
+
+    /// Run a script on a claimed machine using the lease that protects the operation.
+    ///
+    /// # Errors
+    /// Returns an error if the machine is not running or the call fails.
+    pub fn exec_claimed(
+        &self,
+        id: &str,
+        hold: &Hold,
+        script: &str,
+        timeout_secs: u32,
+    ) -> Result<ExecOutput, VivariumError> {
+        self.exec_with_nonce(id, Some(&hold.nonce), script, timeout_secs)
+    }
+
+    fn exec_with_nonce(
+        &self,
+        id: &str,
+        nonce: Option<&str>,
+        script: &str,
+        timeout_secs: u32,
+    ) -> Result<ExecOutput, VivariumError> {
         let body = json!({"command": ["bash", "-c", script], "timeout": timeout_secs});
         let path = format!("/machines/{id}/exec");
         let wait = Duration::from_secs(u64::from(timeout_secs) + 15);
-        let reply = self.call("POST", &path, None, Some(&body), wait)?;
+        let reply = self.call("POST", &path, nonce, Some(&body), wait)?;
         if reply.status != 200 {
             return Err(VivariumError::Message(format!(
                 "Fly POST {path} failed (HTTP {}): {}",

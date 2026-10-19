@@ -285,6 +285,16 @@ impl PoolProvider for FlyctlProvider {
     fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError> {
         self.api.exec(id, script, timeout_secs)
     }
+
+    fn exec_claimed(
+        &self,
+        id: &str,
+        hold: &Hold,
+        script: &str,
+        timeout_secs: u32,
+    ) -> Result<ExecOutput, VivariumError> {
+        self.api.exec_claimed(id, hold, script, timeout_secs)
+    }
 }
 
 /// The error for a failed `fly apps create`, in plain words when the cause is
