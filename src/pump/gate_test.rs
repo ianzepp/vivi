@@ -155,7 +155,7 @@ fn target_deaths_reads_the_marker_block_and_parse_failing_skips_them() {
 #[test]
 fn missing_tool_failures_are_environment_not_new_reds() {
     let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), planner_cfg());
+    let (ctx, host) = test_ctx(dir.path(), gate_cfg());
     let mut st = fresh_state();
     finish_gate(
         &ctx,
@@ -179,9 +179,7 @@ fn missing_tool_failures_are_environment_not_new_reds() {
         .unwrap();
     assert!(new_line.contains("1 new: vivi pump::real"));
     assert!(!new_line.contains("radix-hir-ts"));
-    for prompt in host.spawned() {
-        assert!(!prompt.contains("radix-hir-ts"));
-    }
+    assert!(host.spawned().is_empty(), "no planner process starts");
     drop(dir);
 }
 
@@ -384,16 +382,27 @@ const CLEAN: &str = "fedcba9876543210fedcba9876543210fedcba98";
 /// A newer 40-hex tip that lands while a gate is running.
 const NEW_TIP: &str = "9876543210987654321098765432109876543210";
 
-/// A planner command so gatefix spawns are visible.
-fn planner_cfg() -> PumpConfig {
-    PumpConfig {
-        planner: crate::pump::config::PlannerConfig {
-            run: String::from("claude -p --model claude-sonnet-5-5 {charter}"),
-            charter: String::from("planner-charter.md"),
-            ..crate::pump::config::PlannerConfig::default()
-        },
-        ..gate_cfg()
-    }
+/// The `task send` and `pool dispatch` lines of the one audit a gate
+/// started; panics unless exactly one of each ran.
+fn one_audit(host: &Arc<FakeHost>) -> (String, String) {
+    let commands = host.commands();
+    let sends: Vec<&String> = commands
+        .iter()
+        .filter(|cmd| cmd.contains("task send") && cmd.contains("[pump audit]"))
+        .collect();
+    assert_eq!(sends.len(), 1, "audit task sends: {sends:?}");
+    let dispatches: Vec<&String> = commands
+        .iter()
+        .filter(|cmd| cmd.contains("pool dispatch") && cmd.contains("--read-only"))
+        .collect();
+    assert_eq!(dispatches.len(), 1, "audit dispatches: {dispatches:?}");
+    assert!(dispatches[0].contains(&format!("--from {TIP}")));
+    assert!(
+        dispatches[0].contains("--pool flygate"),
+        "the audit must go to the free pool: {}",
+        dispatches[0]
+    );
+    (sends[0].clone(), dispatches[0].clone())
 }
 
 /// A state with a baseline, a merge count and an open gate task at `TIP`.
@@ -508,9 +517,10 @@ fn names_in_the_baseline_the_ignore_file_or_owned_are_not_new() {
 }
 
 #[test]
-fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
+fn a_new_failure_is_owned_by_the_fix_need_and_starts_an_auditor() {
     let dir = tempdir().unwrap();
-    let (ctx, host) = test_ctx(dir.path(), planner_cfg());
+    let (ctx, host) = test_ctx(dir.path(), gate_cfg());
+    wire(&host);
     let mut st = gate_state(3);
     st.gates.push(GateRecord {
         tip: String::from(CLEAN),
@@ -529,23 +539,26 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
         st.red.get("vivi pump::gate::gone"),
         Some(&String::from("pumpfix-g01234567"))
     );
-    let spawned = host.spawned();
-    assert_eq!(spawned.len(), 1);
-    assert!(spawned[0].contains("claude -p --model claude-sonnet-5-5 planner-charter.md"));
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains(&format!("commit {TIP} shows these failing tests")));
-    assert!(prompt.contains(&format!("(commit {CLEAN}):")));
-    assert!(prompt.contains("- vivi pump::gate::gone"));
-    assert!(prompt.contains(&format!("git log --oneline {CLEAN}..{TIP}")));
-    assert!(prompt.contains(&format!("` in {} ", ctx.repo.display())));
-    assert!(prompt.contains(&format!(
-        "Write {}/plans/pumpfix-g01234567.json",
-        ctx.home.display()
-    )));
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    let (send, dispatch) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 1 failures at 0123456789"),
+        "audit subject: {send}"
+    );
+    assert!(dispatch.contains("--pool flygate"), "{dispatch}");
     assert!(
         host.logs()
             .iter()
-            .any(|l| l.contains("gatefix planner started for pumpfix-g01234567 (1 new)"))
+            .any(|l| l.contains("audit started for pumpfix-g01234567 (1 new"))
+    );
+    assert!(
+        ctx.home.join("HOLD-MERGE").is_file(),
+        "a red gate holds the merge queue automatically"
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("hold set automatically: gate red at 0123456789"))
     );
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(
@@ -557,12 +570,13 @@ fn a_new_failure_is_owned_by_the_fix_need_and_starts_a_gatefix_planner() {
 }
 
 #[test]
-fn a_red_gate_sends_a_real_backing_need_and_plans_under_it() {
+fn a_red_gate_sends_a_real_backing_need_and_audits_under_it() {
     let dir = tempdir().unwrap();
-    let mut cfg = planner_cfg();
+    let mut cfg = gate_cfg();
     cfg.board.from = vec![String::from("operator")];
     let (ctx, host) = test_ctx(dir.path(), cfg);
     host.reply("need send", 0, "created operator ab12cd34\nsent ab12cd34\n");
+    wire(&host);
     let mut st = gate_state(3);
     st.gates.push(GateRecord {
         tip: String::from(CLEAN),
@@ -589,14 +603,14 @@ fn a_red_gate_sends_a_real_backing_need_and_plans_under_it() {
     assert!(need_send.contains("--from mind"));
     assert!(need_send.contains("--to operator"));
     assert!(need_send.contains("gate fix for g01234567"));
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/ab12cd34.prompt")).unwrap();
-    assert!(prompt.contains("plans/ab12cd34.json"));
-    assert!(prompt.contains("Unit ids \"pumpfix-g01234567-"));
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    one_audit(&host);
     assert!(
         host.logs()
             .iter()
-            .any(|l| l.contains("gatefix planner started for ab12cd34 (1 new)"))
+            .any(|l| l.contains("audit started for ab12cd34 (1 new"))
     );
+    assert!(ctx.home.join("HOLD-MERGE").is_file());
     drop(dir);
 }
 
@@ -1176,12 +1190,13 @@ fn residual_state(unit: Status) -> State {
     st
 }
 
-/// A context with a planner and promotion wired.
+/// A context with the gate pools, an audit start and promotion wired.
 fn residual_setup(max_replans: u32) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
     let dir = tempdir().unwrap();
-    let mut cfg = planner_cfg();
+    let mut cfg = gate_cfg();
     cfg.gate.max_replans = max_replans;
     let (ctx, host) = test_ctx(dir.path(), cfg);
+    wire(&host);
     wire_promote(&host);
     (dir, ctx, host)
 }
@@ -1194,7 +1209,7 @@ fn write_owner_plan(ctx: &Ctx, owner: &str) {
 }
 
 #[test]
-fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
+fn residual_failures_of_a_settled_owner_are_handed_to_the_audit_need() {
     let (dir, ctx, host) = residual_setup(2);
     write_owner_plan(&ctx, OLD_OWNER);
     let mut st = residual_state(Status::Merged);
@@ -1204,12 +1219,13 @@ fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
         Some(&String::from("pumpfix-g01234567"))
     );
     assert_eq!(st.extra["replans"][RESIDUAL], 1);
-    assert_eq!(host.spawned().len(), 1);
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains(&format!("owned by fix plan {OLD_OWNER}")));
-    assert!(prompt.contains(&format!("still fail at commit {TIP}")));
-    assert!(prompt.contains("- crate::residual"));
-    assert!(prompt.contains(&format!("log --grep {OLD_OWNER}")));
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    one_audit(&host);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("audit started for pumpfix-g01234567 (0 new, 1 residual)"))
+    );
     assert!(
         host.logs()
             .iter()
@@ -1241,12 +1257,18 @@ fn units_of_a_real_handle_need_settle_their_owner_even_when_uids_differ() {
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
     assert_eq!(st.red.get(RESIDUAL), Some(&String::from("ef012345")));
     assert_eq!(st.extra["replans"][RESIDUAL], 1);
-    assert_eq!(host.spawned().len(), 1);
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    one_audit(&host);
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("audit started for ef012345 (0 new, 1 residual)"))
+    );
     drop(dir);
 }
 
 #[test]
-fn residual_planning_takes_the_next_free_id_when_the_tip_plan_exists() {
+fn residual_failures_are_taken_by_the_audit_need_even_with_an_old_tip_plan() {
     let (dir, ctx, host) = residual_setup(2);
     write_owner_plan(&ctx, OLD_OWNER);
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
@@ -1255,19 +1277,23 @@ fn residual_planning_takes_the_next_free_id_when_the_tip_plan_exists() {
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
     assert_eq!(
         st.red.get(RESIDUAL),
-        Some(&String::from("pumpfix-g01234567-r1"))
+        Some(&String::from("pumpfix-g01234567")),
+        "the audit need re-owns the name, with no suffix"
     );
-    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(st.extra["replans"][RESIDUAL], 1);
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    one_audit(&host);
     assert!(
-        ctx.home
+        !ctx.home
             .join("gatefix/pumpfix-g01234567-r1.prompt")
-            .exists()
+            .exists(),
+        "no suffixed planner prompt is written"
     );
     drop(dir);
 }
 
 #[test]
-fn new_and_residual_failures_are_planned_together() {
+fn new_and_residual_failures_are_audited_together() {
     let (dir, ctx, host) = residual_setup(2);
     write_owner_plan(&ctx, OLD_OWNER);
     let mut st = residual_state(Status::Merged);
@@ -1276,15 +1302,26 @@ fn new_and_residual_failures_are_planned_together() {
         &mut st,
         "FAILING-BEGIN\nold crate::base\ncrate::residual\ncrate::fresh\nFAILING-END\n",
     );
-    assert_eq!(host.spawned().len(), 1);
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    let (send, _dispatch) = one_audit(&host);
+    assert!(
+        send.contains("[pump audit] 2 failures at 0123456789"),
+        "one audit covers new and residual: {send}"
+    );
     assert_eq!(
         st.red.get("crate::fresh"),
         st.red.get(RESIDUAL),
         "one need owns both"
     );
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains("- crate::fresh"));
-    assert!(prompt.contains(&format!("owned by fix plan {OLD_OWNER}")));
+    assert_eq!(
+        st.red.get("crate::fresh"),
+        Some(&String::from("pumpfix-g01234567"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("audit started for pumpfix-g01234567 (1 new, 1 residual)"))
+    );
     drop(dir);
 }
 
@@ -1321,16 +1358,14 @@ fn residual_failures_replan_orphaned_red_owners() {
     st.red
         .insert(String::from(RESIDUAL), String::from(OLD_OWNER));
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
-    assert_eq!(host.spawned().len(), 1, "a fresh gate-fix planner starts");
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    one_audit(&host);
     assert_eq!(
         st.red.get(RESIDUAL),
         Some(&String::from("pumpfix-g01234567")),
         "the new gate-fix need re-owns the name"
     );
     assert_eq!(st.extra["replans"][RESIDUAL], 1);
-    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
-    assert!(prompt.contains("- crate::residual"));
-    assert!(prompt.contains("never wrote a plan"));
     drop(dir);
 }
 

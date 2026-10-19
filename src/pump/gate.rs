@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::pump::brief::gate_brief;
 use crate::pump::dispatch::{parse_created_handle, slots};
-use crate::pump::gatefix::{
-    gatefix, plan_need, replans_left, residual_failures, send_fix_need, take_residuals,
-};
+use crate::pump::gatefix::{fix_need, replans_left, residual_failures, send_fix_need, take_residuals};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
 
@@ -41,6 +39,8 @@ const HEARTBEAT: &str = "heartbeat";
 const FORCE_TEXT: &str = "after fixes\n";
 /// The payload written to `HOLD-MERGE` while owned reds remain.
 const HOLD_RED_TEXT: &str = "red\n";
+/// The payload written to `HOLD-MERGE` by a red gate, without an operator.
+const HOLD_AUTO_TEXT: &str = "gate red\n";
 /// The characters `ctx.exception` keeps of a text.
 const EXCEPTION_LIMIT: usize = 600;
 
@@ -459,7 +459,7 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
         st.gates.push(rec);
         return;
     }
-    finish_known_gate(ctx, st, &mut rec, &names, &deaths);
+    finish_known_gate(ctx, st, &tail_chars(text, 4000), &mut rec, &names, &deaths);
     st.gates.push(rec);
 }
 
@@ -541,10 +541,13 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
 /// A readable gate against an existing baseline: release
 /// owned names that pass again, compute the new failures and the residual
 /// ones (owned names whose owner settled but that still fail), then either
-/// plan them (owning each name and starting a gate-fix planner) or promote.
+/// own them and start an auditor (holding merges of non-fix units) or
+/// promote. `output_tail` is the gate reply's last characters, which the
+/// auditor brief quotes as evidence.
 fn finish_known_gate(
     ctx: &Ctx,
     st: &mut State,
+    output_tail: &str,
     rec: &mut GateRecord,
     names: &[String],
     deaths: &[String],
@@ -555,13 +558,13 @@ fn finish_known_gate(
     let residual = residual_failures(ctx, st, names);
     if !new.is_empty() || !residual.is_empty() {
         let owner = send_fix_need(ctx, &rec.tip, &new, &residual)
-            .unwrap_or_else(|| plan_need(ctx, &rec.tip, !residual.is_empty()));
+            .unwrap_or_else(|| fix_need(ctx, &rec.tip));
         for name in &new {
             st.red.insert(name.clone(), owner.clone());
         }
-        let clean = last_clean_tip(st, &rec.tip);
         take_residuals(ctx, st, &owner, &residual);
-        gatefix(ctx, &rec.tip, &clean, &owner, &new, &residual);
+        crate::pump::audit::start_audit(ctx, st, &rec.tip, output_tail, &new, &residual, None);
+        write_hold_flag(ctx, &rec.tip);
     }
     if new.is_empty() {
         ctx.log(&gate_summary(rec, names, 0));
@@ -752,19 +755,6 @@ fn report_new_failures(ctx: &Ctx, rec: &GateRecord, new: &[String], suspects: &[
     );
 }
 
-/// The tip of the last gate with readable names and no new failure, else the
-/// first gate's tip, else the current one.
-fn last_clean_tip(st: &State, current: &str) -> String {
-    for gate in st.gates.iter().rev() {
-        if gate.names.is_some() && gate.new.as_ref().is_none_or(Vec::is_empty) {
-            return gate.tip.clone();
-        }
-    }
-    st.gates
-        .first()
-        .map_or_else(|| current.to_owned(), |gate| gate.tip.clone())
-}
-
 /// Fast-forward main to a gated tip of the integration branch.
 /// Never forces: a main that moved elsewhere waits for the next batch.
 fn promote(ctx: &Ctx, st: &mut State, tip: &str, failing: &[String]) {
@@ -912,6 +902,20 @@ fn file_mtime(path: &Path) -> u64 {
             Err(_) => 0,
         },
         Err(_) => 0,
+    }
+}
+
+/// Write the `HOLD-MERGE` flag that stops non-fix units merging while the
+/// gate is red, logging the automatic hold and a write failure. The operator
+/// never sets it by hand; [`hold_cycle`] lifts it once the fixes settle and a
+/// clean gate lands.
+fn write_hold_flag(ctx: &Ctx, tip: &str) {
+    match fs::write(ctx.home.join(HOLD_FLAG), HOLD_AUTO_TEXT) {
+        Ok(()) => ctx.log(&format!(
+            "hold set automatically: gate red at {}",
+            tip_short(tip)
+        )),
+        Err(err) => ctx.log(&format!("hold flag write failed: {err}")),
     }
 }
 

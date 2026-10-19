@@ -258,7 +258,7 @@ fn a_failing_unit_is_retried_on_a_new_branch_and_is_stuck_after_max_attempts() {
 }
 
 #[test]
-fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_merging() {
+fn a_red_gate_starts_an_auditor_and_never_stops_a_delivered_unit_from_merging() {
     let dir = tempdir().unwrap();
     let mut cfg = config();
     cfg.gate.command = String::from("./gate-run");
@@ -330,13 +330,34 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
     assert_eq!(st.gates.len(), 3);
     let owner = "pumpfix-g01234567";
     assert_eq!(st.red.get("crate::a::t1").map(String::as_str), Some(owner));
-    let prompt = ctx.home.join("gatefix").join(format!("{owner}.prompt"));
+    let audit_sends: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains("task send") && cmd.contains("[pump audit]"))
+        .collect();
+    assert_eq!(audit_sends.len(), 1, "one audit task: {audit_sends:?}");
     assert!(
-        prompt.is_file(),
-        "no gatefix prompt at {}",
-        prompt.display()
+        audit_sends[0].contains("[pump audit] 1 failures at 0123456789"),
+        "{}",
+        audit_sends[0]
     );
-    assert_eq!(host.spawned().len(), 1); // the gatefix planner, detached
+    let audit_dispatches: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains("pool dispatch") && cmd.contains("--read-only --model"))
+        .collect();
+    assert_eq!(
+        audit_dispatches.len(),
+        1,
+        "the auditor is dispatched: {audit_dispatches:?}"
+    );
+    assert!(
+        audit_dispatches[0].contains("--from 0123456789"),
+        "{}",
+        audit_dispatches[0]
+    );
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    assert!(ctx.home.join("HOLD-MERGE").is_file());
     let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exc.contains("gate-new-failures"), "{exc}");
 
@@ -358,7 +379,7 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
     assert_eq!(st.merges, 2);
     // A merge through red still re-gates under the batch rule, but the red map
     // and the fix queue are untouched: the name is already owned, so the gate
-    // starts no new gatefix planner and adds no new failure line.
+    // starts no further audit and adds no new failure line.
     assert!(
         drive_until(&ctx, &mut st, &merger, |st| st.gates.len() == 4
             && st.last_gate.task.is_none()),
@@ -367,7 +388,15 @@ fn a_red_gate_starts_a_gatefix_plan_and_never_stops_a_delivered_unit_from_mergin
     );
     assert_eq!(st.gates.len(), 4);
     assert_eq!(st.merges, 2);
-    assert_eq!(host.spawned().len(), 1); // still only the first gatefix planner
+    assert!(host.spawned().is_empty(), "no planner process starts");
+    assert_eq!(
+        host.commands()
+            .iter()
+            .filter(|cmd| cmd.contains("task send") && cmd.contains("[pump audit]"))
+            .count(),
+        1,
+        "red stays on one audit"
+    );
     let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert_eq!(exc.matches("gate-new-failures").count(), 1, "{exc}");
     assert!(st.closed_needs.iter().any(|n| n == "ny"));
