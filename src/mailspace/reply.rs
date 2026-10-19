@@ -58,6 +58,7 @@ impl Mailspace {
         identity: &str,
         parent: &StoredMessageView,
         note: &str,
+        extras: &[(String, String)],
     ) -> Result<NoteReply, VivariumError> {
         let original = storage.read_message(&parent.message_id)?;
         let parsed = mail_parser::MessageParser::default()
@@ -84,6 +85,9 @@ impl Mailspace {
             html_body: None,
         })?;
         data = add_header(&data, "X-Vivi-Kind", "mail")?;
+        for (name, value) in extras {
+            data = add_header(&data, name, value)?;
+        }
         data = add_reply_headers(&data, &original)?;
         let mut requests = recipients
             .into_iter()
