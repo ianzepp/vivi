@@ -5,6 +5,7 @@ pub mod amend;
 pub mod attempt_record;
 pub mod blockers;
 pub mod board;
+pub mod boardpass;
 pub mod brief;
 pub mod closeout;
 pub mod collect;
@@ -123,6 +124,10 @@ mod gate_promote_test;
 #[cfg(test)]
 #[path = "pump/board_test.rs"]
 mod board_test;
+
+#[cfg(test)]
+#[path = "pump/boardpass_test.rs"]
+mod boardpass_test;
 
 #[cfg(test)]
 #[path = "pump/run_test.rs"]
