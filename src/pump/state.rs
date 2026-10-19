@@ -367,6 +367,22 @@ pub struct GateRecord {
     pub new: Option<Vec<String>>,
 }
 
+/// One pool's environment-failure bookkeeping (`env_pauses` entry).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnvPause {
+    /// Epoch seconds of recent host-class failures, kept within the window.
+    pub fails: Vec<u64>,
+    /// The failing fact or command and its stderr, for the exception.
+    pub evidence: String,
+    /// Shell command re-run each tick, e.g. `command -v pi`; `None` resumes
+    /// on the window passing.
+    pub probe: Option<String>,
+    /// Epoch second dispatch to this pool paused; `None` while failures are
+    /// only counted.
+    pub paused_at: Option<u64>,
+}
+
 /// The planner board state (`board`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Board {
@@ -464,6 +480,9 @@ pub struct State {
     /// Promoted tips, oldest first.
     #[serde(default)]
     pub promotions: Vec<Promotion>,
+    /// Pool -> host-class failure bookkeeping and dispatch pause.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_pauses: BTreeMap<String, EnvPause>,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,

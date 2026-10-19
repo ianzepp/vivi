@@ -147,7 +147,7 @@ save point. The schema is `PRAGMA user_version = 4`.
 | `plans_seen` | plan file names already ingested (dedup) |
 | `promotions` | fast-forwards of main (`tip`, `at`) |
 | `red`, `red_reported` | failures owned by a gate-fix plan, and the ones already reported once |
-| `meta` | `merges` counter, `baseline`, `last_gate`, `board`, and unknown top-level keys (`extra`) |
+| `meta` | `merges` counter, `baseline`, `last_gate`, `board`, `env_pauses` (pool environment-failure bookkeeping and dispatch pauses), and unknown top-level keys (`extra`) |
 
 Each unit stores a `target` ID. Existing rows migrate to `default`. Named
 target gate state (baseline, last gate, gate history, promotions, and owned
