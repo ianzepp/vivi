@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
+use crate::pump::boardpass::BoardPass;
 use crate::pump::config::{BoardConfig, DispatchConfig, GateConfig, Lane, MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::Merger;
@@ -31,7 +32,9 @@ const TIP: &str = "0123456789abcdef0123456789abcdef01234567";
 const GATE_TASK: &str = "99887766";
 
 fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
-    run_tick(ctx, st, merger).unwrap();
+    let (mut pass, requests, results) = BoardPass::detached();
+    run_tick(ctx, st, merger, &mut pass).unwrap();
+    pass.serve(ctx, st, &requests, &results);
 }
 /// A second plan file, ingested mid-test to mint a fresh unit.
 const SECOND_PLAN: &str = concat!(

@@ -67,6 +67,28 @@ impl BoardPass {
         (pass, requests, out)
     }
 
+    /// Test seam: serve one requested pass on the calling thread, exactly as
+    /// the worker would, so a test tick stays deterministic. When a state
+    /// clone arrived on `requests`, run the board pass on it, hand it back
+    /// through `out`, and fold the result into the live state.
+    #[cfg(test)]
+    pub(crate) fn serve(
+        &mut self,
+        ctx: &Ctx,
+        st: &mut State,
+        requests: &Receiver<State>,
+        out: &Sender<State>,
+    ) {
+        let Ok(mut clone) = requests.try_recv() else {
+            return;
+        };
+        board::board(ctx, &mut clone);
+        if out.send(clone).is_err() {
+            return;
+        }
+        self.apply(ctx, st);
+    }
+
     /// Ask the worker for a board pass when the interval is due and no pass
     /// is running. The live `board.at` stays put: the worker sets the
     /// completion time on its own clone ([`merge_back`] copies it back).

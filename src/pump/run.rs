@@ -7,11 +7,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::VivariumError;
 use crate::mailspace::Mailspace;
-use crate::pump::board;
+use crate::pump::boardpass::BoardPass;
 use crate::pump::collect;
 use crate::pump::config::PumpConfig;
 use crate::pump::dispatch;
@@ -22,12 +22,19 @@ use crate::pump::plan;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
 
-/// One pump tick: ingest and collect, feed merges, dispatch ready work, run
-/// gates, then perform the periodic board pass and write status. Pending
-/// operator requeue requests apply right after the first ingest, so a
-/// requeued unit can dispatch in the same tick and the change lands at the
-/// next save point.
-pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumError> {
+/// One pump tick: fold in a finished board pass, ingest and collect, feed
+/// merges, dispatch ready work, run gates, request the periodic board pass,
+/// and write status. Pending operator requeue requests apply right after the
+/// first ingest, so a requeued unit can dispatch in the same tick and the
+/// change lands at the next save point. The board pass itself runs on
+/// [`BoardPass`]'s worker thread, so a slow pass never holds the tick.
+pub fn tick(
+    ctx: &Ctx,
+    st: &mut State,
+    merger: &Merger,
+    boardpass: &mut BoardPass,
+) -> Result<(), VivariumError> {
+    boardpass.apply(ctx, st);
     merger.apply(ctx, st);
     plan::ingest(ctx, st);
     crate::pump::requeue::apply_pending(ctx, st);
@@ -54,7 +61,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
         }
     };
     if control.mode == crate::pump::control::PumpMode::Paused {
-        periodic(ctx, st)?;
+        periodic(ctx, st, boardpass)?;
         write_status(ctx, st, &merger.lane_lines(ctx.now()));
         return Ok(());
     }
@@ -77,16 +84,17 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
     }
     merger.apply(ctx, st);
     merger.feed(ctx, st);
-    periodic(ctx, st)?;
+    periodic(ctx, st, boardpass)?;
     write_status(ctx, st, &merger.lane_lines(ctx.now()));
     Ok(())
 }
 
 /// The periodic board pass, shared by the paused branch and the normal path:
-/// refresh the board, ingest plans, raise the stall and blocking alarms, then
-/// run the blocking-stuck automatic response before the state is saved.
-fn periodic(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
-    board::board(ctx, st);
+/// request a board pass on the worker thread, ingest plans, raise the stall
+/// and blocking alarms, then run the blocking-stuck automatic response before
+/// the state is saved. The pass's results land on the tick that follows it.
+fn periodic(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
+    boardpass.request(ctx, st);
     plan::ingest(ctx, st);
     crate::pump::alarm::check(ctx, st);
     crate::pump::blockers::check(ctx, st);
@@ -329,7 +337,8 @@ fn run_with_lock_policy(
     collect::recover_pushed_pending(ctx, &mut st)?;
     store.save(&st)?;
     let merger = Merger::start(ctx);
-    drive(ctx, &mut st, &merger, once)
+    let mut boardpass = BoardPass::start(ctx);
+    drive(ctx, &mut st, &merger, &mut boardpass, once)
 }
 
 /// Startup check: the integration clone must exist. A missing `repo` is
@@ -443,16 +452,24 @@ fn clone_command(ctx: &Ctx, url: &str) -> String {
     )
 }
 
-/// The run/once loop: tick, then return when control state is stopped,
-/// save and return, else sleep `tick` seconds. A panic
-/// inside a tick is caught, logged as `TICK ERROR`, and the state saved.
-fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) -> Result<(), VivariumError> {
+/// The run/once loop: tick, then return when control state is stopped, save
+/// and return, else wait for the next tick in one-second slices. A finished
+/// board pass always lands before a return. A panic inside a tick is caught,
+/// logged as `TICK ERROR`, and the state saved.
+fn drive(
+    ctx: &Ctx,
+    st: &mut State,
+    merger: &Merger,
+    boardpass: &mut BoardPass,
+    once: bool,
+) -> Result<(), VivariumError> {
     loop {
         if exit_requested(ctx) {
+            boardpass.apply(ctx, st);
             save(ctx, st)?;
             return Ok(());
         }
-        let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger));
+        let tick_once = AssertUnwindSafe(|| tick(ctx, st, merger, boardpass));
         match catch_unwind(tick_once) {
             Ok(result) => result?,
             Err(err) => {
@@ -461,14 +478,33 @@ fn drive(ctx: &Ctx, st: &mut State, merger: &Merger, once: bool) -> Result<(), V
             }
         }
         if once {
-            return Ok(());
-        }
-        if exit_requested(ctx) {
-            ctx.log("pump control state requests exit");
+            boardpass.apply(ctx, st);
             save(ctx, st)?;
             return Ok(());
         }
-        thread::sleep(Duration::from_secs(ctx.cfg.tick));
+        if wait_for_next_tick(ctx) {
+            ctx.log("pump control state requests exit");
+            boardpass.apply(ctx, st);
+            save(ctx, st)?;
+            return Ok(());
+        }
+    }
+}
+
+/// Sleep until the next tick is due in one-second slices, re-reading control
+/// state after each slice so stop and pause take effect within about a
+/// second. `true` means control asked the pump to exit.
+fn wait_for_next_tick(ctx: &Ctx) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(ctx.cfg.tick);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        thread::sleep((deadline - now).min(Duration::from_secs(1)));
+        if exit_requested(ctx) {
+            return true;
+        }
     }
 }
 
