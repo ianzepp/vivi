@@ -13,11 +13,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use self::config_ramdisk::PoolRamDisk;
 use super::config_bands::PoolBands;
 use super::config_bridge::PoolBridge;
 use super::runpod_config::PoolRunpod;
 use super::slot::{DOCTOR_SUFFIX, PoolId};
 use crate::error::VivariumError;
+
+#[path = "config_ramdisk.rs"]
+pub mod config_ramdisk;
 
 /// Machine hosts the pool can run on.
 pub const PROVIDERS: [&str; 5] = ["fly", "docker", "ssh", "local", "runpod"];
@@ -134,6 +138,10 @@ pub struct PoolConfig {
     /// dispatch on the pool then mints one project API key for the job.
     #[serde(default)]
     pub bridge: PoolBridge,
+    /// RAM disk settings (`[pools.<name>.ramdisk]`); off when absent, and
+    /// only a `local` pool may turn it on.
+    #[serde(default)]
+    pub ramdisk: PoolRamDisk,
     /// Source delivered with each slot instead of fetched from `repo`. Never
     /// read from TOML: only the live self-test of `vivi pool doctor --test`
     /// sets it.
@@ -478,6 +486,7 @@ impl PoolConfig {
     fn validate_fields(&self, id: &PoolId) -> Result<(), VivariumError> {
         self.validate_identity(id)?;
         self.validate_machine(&id.pool)?;
+        self.ramdisk.validate(&id.pool, &self.provider)?;
         if self.provider == "runpod" {
             super::runpod_name::check_fits(id)?;
         }

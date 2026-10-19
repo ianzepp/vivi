@@ -776,3 +776,103 @@ fn build_baseline_gib_parses_and_validates() {
         assert!(said.contains("1..=1024"), "{bad}: {said}");
     }
 }
+
+const RAMDISK_POOL: &str = r#"
+provider = "local"
+slots = 1
+build_dir = "target"
+
+[ramdisk]
+enabled = true
+"#;
+
+#[test]
+fn a_ramdisk_table_defaults_to_a_small_disk_with_the_cargo_settings() {
+    let config: PoolConfig = toml::from_str(RAMDISK_POOL).unwrap();
+    config.validate(&id()).unwrap();
+    assert!(config.ramdisk.enabled);
+    assert_eq!(config.ramdisk.size_gib, 8);
+    assert_eq!(config.ramdisk.margin_gib, 6);
+    let env = config.ramdisk.job_env();
+    assert_eq!(
+        env,
+        vec![
+            ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
+            ("CARGO_PROFILE_DEV_DEBUG".to_string(), "0".to_string()),
+            ("CARGO_PROFILE_DEV_STRIP".to_string(), "symbols".to_string()),
+            ("CARGO_PROFILE_TEST_DEBUG".to_string(), "0".to_string()),
+            ("CARGO_PROFILE_TEST_STRIP".to_string(), "symbols".to_string()),
+        ]
+    );
+    let mut sorted = env.clone();
+    sorted.sort();
+    assert_eq!(env, sorted, "job_env is sorted by name");
+}
+
+#[test]
+fn an_absent_or_disabled_ramdisk_table_has_no_job_env() {
+    let plain: PoolConfig =
+        toml::from_str(&RAMDISK_POOL.replace("enabled = true", "")).unwrap();
+    plain.validate(&id()).unwrap();
+    assert!(!plain.ramdisk.enabled);
+    assert!(plain.ramdisk.job_env().is_empty());
+    let disabled: PoolConfig =
+        toml::from_str(&RAMDISK_POOL.replace("enabled = true", "enabled = false")).unwrap();
+    disabled.validate(&id()).unwrap();
+    assert!(disabled.ramdisk.job_env().is_empty());
+}
+
+#[test]
+fn a_ramdisk_table_sets_its_own_size_margin_and_env() {
+    let text = RAMDISK_POOL.replace(
+        "enabled = true",
+        "enabled = true\nsize_gib = 32\nmargin_gib = 0\n[ramdisk.env]\nRUST_BACKTRACE = \"1\"",
+    );
+    let config: PoolConfig = toml::from_str(&text).unwrap();
+    config.validate(&id()).unwrap();
+    assert_eq!(config.ramdisk.size_gib, 32);
+    assert_eq!(config.ramdisk.margin_gib, 0);
+    assert_eq!(
+        config.ramdisk.job_env(),
+        vec![("RUST_BACKTRACE".to_string(), "1".to_string())]
+    );
+}
+
+#[test]
+fn a_ramdisk_needs_the_local_provider_and_named_sizes() {
+    let fly = r#"
+provider = "fly"
+slots = 1
+image = "rust:1.97-bookworm"
+build_dir = "target"
+
+[fly]
+app = "lane-pool"
+
+[ramdisk]
+enabled = true
+"#;
+    let config: PoolConfig = toml::from_str(fly).unwrap();
+    let said = err(&config);
+    assert!(said.contains("[pools.main]"), "{said}");
+    assert!(said.contains("ramdisk"), "{said}");
+    assert!(said.contains("local"), "{said}");
+    for (setting, value) in [
+        ("size_gib", "0"),
+        ("size_gib", "2000"),
+        ("margin_gib", "65"),
+    ] {
+        let text = RAMDISK_POOL.replace(
+            "enabled = true",
+            &format!("enabled = true\n{setting} = {value}"),
+        );
+        let config: PoolConfig = toml::from_str(&text).unwrap();
+        let said = err(&config);
+        assert!(said.contains(setting), "{value}: {said}");
+    }
+    let text = RAMDISK_POOL.replace("enabled = true", "enabled = true\nsize_gip = 4");
+    let config: PoolConfig = toml::from_str(&text).unwrap();
+    let said = err(&config);
+    assert!(said.contains("size_gip"), "{said}");
+    assert!(said.contains(".ramdisk"), "{said}");
+}
