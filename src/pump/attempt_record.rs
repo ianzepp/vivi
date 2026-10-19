@@ -174,7 +174,9 @@ pub fn agent_secs(text: &str) -> Option<u64> {
     let rest = rest
         .trim_start()
         .trim_start_matches(|c: char| c.is_ascii_digit() || c == '-');
-    let after = [" in ", " after "].into_iter().find_map(|m| rest.strip_prefix(m))?;
+    let after = [" in ", " after "]
+        .into_iter()
+        .find_map(|m| rest.strip_prefix(m))?;
     let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     match digits.parse() {
         Ok(secs) => Some(secs),
