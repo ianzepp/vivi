@@ -203,7 +203,7 @@ fn exact_runner_target_and_need_ancestry_receipt_lands_once_and_queues_cleanup()
 fn runner_ref_mismatch_preserves_the_landed_need_branch() {
     let mut fixture = fixture();
     let landing_id = queue_landing(&mut fixture);
-    let outcome = successful_merge_outcome(&fixture.state, &landing_id);
+    let outcome = successful_merge_outcome(&fixture.state, &landing_id, CANDIDATE);
     finish_job(&mut fixture.state, &landing_id, outcome);
     fixture
         .host
@@ -254,7 +254,7 @@ fn runner_ref_mismatch_preserves_the_landed_need_branch() {
 fn exact_runner_delete_and_remote_absence_finish_owned_branch_cleanup() {
     let mut fixture = fixture();
     let landing_id = queue_landing(&mut fixture);
-    let outcome = successful_merge_outcome(&fixture.state, &landing_id);
+    let outcome = successful_merge_outcome(&fixture.state, &landing_id, CANDIDATE);
     finish_job(&mut fixture.state, &landing_id, outcome);
     fixture
         .host
@@ -315,6 +315,28 @@ fn stale_need_thread_acceptance_cannot_queue_a_landing_job() {
             .values()
             .all(|job| job.kind != "need-merge")
     );
+}
+
+#[test]
+fn fast_forward_landing_cleanup_does_not_repeat_the_start_as_a_with_ref() {
+    let mut fixture = fixture();
+    let id = queue_landing(&mut fixture);
+    let outcome = successful_merge_outcome(&fixture.state, &id, NEED_TIP);
+    finish_job(&mut fixture.state, &id, outcome);
+    fixture
+        .host
+        .reply("ls-remote", 0, &format!("{NEED_TIP}\trefs/heads/next\n"));
+    reply_frozen_need_ref(&fixture.host);
+    collect_completed(&fixture.ctx, &mut fixture.state).unwrap();
+    let cleanup_id = dispatch(&fixture.ctx, &mut fixture.state)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let cleanup = &fixture.state.jobs[&cleanup_id];
+    assert_eq!(cleanup.kind, "need-cleanup");
+    assert_eq!(cleanup.from_ref.as_deref(), Some(NEED_TIP));
+    assert!(cleanup.with.is_empty());
+    assert_eq!(cleanup.delete_expect.as_deref(), Some(NEED_TIP));
 }
 
 fn fixture() -> Fixture {
@@ -541,13 +563,13 @@ fn merge_result(state: &State, job_id: &str, candidate: &str) -> String {
     .to_string()
 }
 
-fn successful_merge_outcome(state: &State, job_id: &str) -> JobOutcome {
-    let receipt = merge_result(state, job_id, CANDIDATE);
+fn successful_merge_outcome(state: &State, job_id: &str, candidate: &str) -> JobOutcome {
+    let receipt = merge_result(state, job_id, candidate);
     JobOutcome {
         state: String::from("finished"),
         detail: String::from("agent exit 0"),
         receipt: format!(
-            "agent exit 0 in 1s\nPUMP_MERGE_RESULT={receipt}\nrunner publish: pushed refs/heads/next {CANDIDATE} {CANDIDATE}\nrunner contains: {NEED_TIP} 1"
+            "agent exit 0 in 1s\nPUMP_MERGE_RESULT={receipt}\nrunner publish: pushed refs/heads/next {candidate} {candidate}\nrunner contains: {NEED_TIP} 1"
         ),
         at: 1_002,
     }

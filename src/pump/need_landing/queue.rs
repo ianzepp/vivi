@@ -383,7 +383,10 @@ fn cleanup_spec(
     spec.target = Some(branch.target.clone());
     spec.builtin_role = Some(String::from("merge"));
     spec.from_ref = Some(landing.observed_target_sha.clone());
-    spec.with = vec![landing.binding.tip.clone()];
+    spec.with = (landing.binding.tip != landing.observed_target_sha)
+        .then(|| landing.binding.tip.clone())
+        .into_iter()
+        .collect();
     spec.branch = Some(format!("vivi/need-cleanup/{}", spec.id));
     spec.delete_ref = Some(branch_ref);
     spec.delete_expect = Some(landing.binding.tip.clone());
