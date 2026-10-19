@@ -31,12 +31,9 @@ fn ok(project: &Path, args: &[&str]) -> String {
 fn project() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     ok(tmp.path(), &["mailspace", "init"]);
-    for (role, kind) in [
-        ("mind", "mind"),
-        ("hand", "hand"),
-        ("auditor", "auditor"),
-        ("operator", "operator"),
-    ] {
+    // `mailspace init` already ensures the `operator` role of kind
+    // `operator` (6e010c7e), so adding it again would be refused.
+    for (role, kind) in [("mind", "mind"), ("hand", "hand"), ("auditor", "auditor")] {
         ok(tmp.path(), &["role", "add", role, "--kind", kind]);
     }
     tmp

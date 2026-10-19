@@ -906,6 +906,40 @@ fn a_pulled_close_letter_stores_its_verdict_in_item_metadata() {
 }
 
 #[test]
+fn a_pulled_report_letter_stores_its_verdict_in_item_metadata() {
+    let p = pair();
+    // hand is the assignee, so its close travels as a report letter
+    // carrying the verdict headers, not an event letter.
+    p.b.mailspace
+        .move_task_outcome(
+            "hand",
+            &p.task,
+            "done",
+            None,
+            Some("fixed"),
+            &["vivi".into()],
+            &["sha9".into()],
+        )
+        .unwrap();
+
+    p.sync_b_to_a();
+
+    let metadata =
+        p.a.mailspace
+            .storage()
+            .unwrap()
+            .item_metadata(&p.a.id_of(&p.task))
+            .unwrap();
+    assert_eq!(metadata.get("verdict").map(String::as_str), Some("fixed"));
+    assert_eq!(metadata.get("repo:vivi").map(String::as_str), Some("sha9"));
+    assert_eq!(
+        role_of(&p.a, &p.task),
+        "sent",
+        "the report still does not move the owner's row"
+    );
+}
+
+#[test]
 fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
     let mut w = World::new();
     minds(&mut w.bob, "lead");
