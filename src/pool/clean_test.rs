@@ -121,3 +121,50 @@ fn slot_dirs_resolve_through_symlinked_roots() {
         Some(real.canonicalize().unwrap().join("proj/lanes/slot-9"))
     );
 }
+
+/// Two mailspaces share one local root: cleaning `alpha`'s pool must reclaim
+/// only `alpha/here` slots and never touch `faberlang/glm` slots.
+#[test]
+fn clean_mailspace_leaves_a_foreign_mailspaces_slots_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("pool-root");
+    let toml = format!(
+        "\nname = \"alpha\"\n[pools.here]\nprovider = \"local\"\nslots = 1\nbuild_dir = \"target\"\n[pools.here.local]\nroot = \"{}\"\n",
+        root.display()
+    );
+    let (_dir, space) = routing_space(&toml);
+    for (rel, pool) in [
+        ("alpha/here/slot-1", "here"),
+        ("faberlang/glm/slot-2", "glm"),
+    ] {
+        let slot = root.join(rel);
+        fs::create_dir_all(slot.join("marks")).unwrap();
+        fs::write(slot.join("marks/vivi_pool"), format!("{pool}\n")).unwrap();
+        write_mark(&slot, "vivi_pool_state", "ready").unwrap();
+        write_baseline(&slot, 10).unwrap();
+        fs::create_dir_all(slot.join("repo/src")).unwrap();
+        fs::write(slot.join("repo/src/lib.rs"), "ok\n").unwrap();
+        fs::create_dir_all(slot.join("repo/target")).unwrap();
+        fs::write(slot.join("repo/target/blob"), vec![0_u8; 80]).unwrap();
+    }
+
+    clean_mailspace(&space, &CleanOptions::default()).unwrap();
+
+    let ours = root.join("alpha/here/slot-1");
+    let foreign = root.join("faberlang/glm/slot-2");
+    assert!(
+        !ours.join("repo/target/blob").exists(),
+        "our own over-cap slot should be reclaimed"
+    );
+    assert!(
+        foreign.join("repo/target/blob").exists(),
+        "a foreign mailspace's slot build dir must be left alone"
+    );
+    assert_eq!(
+        fs::read_to_string(foreign.join("marks/build_baseline"))
+            .unwrap()
+            .trim(),
+        "10",
+        "a foreign mailspace's slot marks must be left alone"
+    );
+}

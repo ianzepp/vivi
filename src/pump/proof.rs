@@ -52,12 +52,11 @@ fn validate_words(words: &[String], depth: usize, cmd: &str) -> Result<(), Strin
         return Ok(());
     }
     let base = basename(&words[0]);
-    if base == "env" {
-        let tail: Vec<String> = words[1..]
-            .iter()
-            .skip_while(|w| w.starts_with('-') || w.contains('='))
-            .cloned()
-            .collect();
+    // `env` and a leading `NAME=value` assignment are both wrappers: the
+    // real command is whatever follows the flags and assignments.
+    let assignment_prefix = words[0].contains('=') && !words[0].starts_with('-');
+    if base == "env" || assignment_prefix {
+        let tail = wrapped_tail(&words[1..]);
         return if tail.is_empty() {
             Ok(())
         } else {
@@ -82,6 +81,16 @@ fn validate_words(words: &[String], depth: usize, cmd: &str) -> Result<(), Strin
         return cargo_positionals(words, cmd);
     }
     Ok(())
+}
+
+/// The words after a wrapper prefix: leading flags and `NAME=value`
+/// assignments are skipped, and what remains is the wrapped command.
+fn wrapped_tail(words: &[String]) -> Vec<String> {
+    words
+        .iter()
+        .skip_while(|w| w.starts_with('-') || w.contains('='))
+        .cloned()
+        .collect()
 }
 
 /// Count `cargo test` positional TESTNAME filters: cargo accepts one, and

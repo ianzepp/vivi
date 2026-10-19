@@ -294,10 +294,18 @@ fn clean_pool(
     }
     let root = expand_root(handle.config.local.root_or_default());
     let pool = handle.id.pool.as_str();
+    // The local provider lists every slot under the shared root, across all
+    // mailspaces and pools; touch only this pool's own
+    // `<mailspace>/<pool>/` slots (trailing slash, so pool `here` cannot
+    // match pool `here2`).
+    let prefix = format!("{}/{}/", handle.id.mailspace, handle.id.pool);
     let configured = handle.config.build_dir.as_deref();
     let mut actions = Vec::new();
     let mut skips = Vec::new();
     for machine in handle.provider.list()? {
+        if !machine.id.starts_with(&prefix) {
+            continue;
+        }
         let dir = root.join(&machine.id);
         let (a, s) = clean_slot::reclaim_builds(pool, &machine.name, &dir, configured, dry_run)?;
         actions.extend(a);
@@ -395,12 +403,18 @@ fn sweep(
     };
     let lane = merge_lane_ref(space, "default");
     let prefix = root.to_path_buf();
+    let pool_root = clean_work::real_path(&root.join(&handle.id.mailspace).join(&handle.id.pool));
     let (a, s) = clean_work::sweep_orphans(
         &handle.id.pool,
         &source,
         root,
         lane.as_deref(),
-        |path| orphan_is_done(st, &prefix, path),
+        |path| {
+            // A worktree outside this pool's own `<mailspace>/<pool>`
+            // prefix belongs to another mailspace sharing the root; leave
+            // it alone.
+            clean_work::real_path(path).starts_with(&pool_root) && orphan_is_done(st, &prefix, path)
+        },
         dry_run,
     )?;
     actions.extend(a);
