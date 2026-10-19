@@ -5,6 +5,11 @@ use crate::pump::alarm::AlarmConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use self::config_ramdisk::PumpRamDisk;
+
+#[path = "config_ramdisk.rs"]
+pub mod config_ramdisk;
+
 /// Pump settings (the `[pump]` table in `mailspace.toml`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -71,6 +76,8 @@ pub struct PumpConfig {
     pub dispatch: DispatchConfig,
     /// Merge settings (the `[pump.merge]` table).
     pub merge: MergeConfig,
+    /// Lane RAM disk settings (the `[pump.ramdisk]` table).
+    pub ramdisk: PumpRamDisk,
     /// Gate settings (the `[pump.gate]` table).
     pub gate: GateConfig,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
@@ -103,6 +110,7 @@ impl Default for PumpConfig {
             planner: PlannerConfig::default(),
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
+            ramdisk: PumpRamDisk::default(),
             gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
         }
@@ -635,6 +643,7 @@ impl PumpConfig {
         if self.tick == 0 {
             bad.push("[pump] tick must be >= 1".into());
         }
+        self.validate_ramdisk(&mut bad);
         self.validate_dispatch(pools, role_pool, &mut bad);
         if self.targets.is_empty() {
             if self.branch.is_empty() {
@@ -811,6 +820,17 @@ impl PumpConfig {
     #[must_use]
     pub fn kind_of(&self, tools: &str) -> Option<&Kind> {
         self.dispatch.kinds.get(self.kind_name(tools))
+    }
+
+    /// `[pump.ramdisk] lane_gib`, when set, must be a plausible lane disk.
+    fn validate_ramdisk(&self, bad: &mut Vec<String>) {
+        if let Some(gib) = self.ramdisk.lane_gib
+            && !(1..=1024).contains(&gib)
+        {
+            bad.push(format!(
+                "[pump.ramdisk] lane_gib must be between 1 and 1024, got {gib}"
+            ));
+        }
     }
 
     fn validate_merge_and_gate(&self, pools: &[String], bad: &mut Vec<String>) {

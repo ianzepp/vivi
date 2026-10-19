@@ -44,6 +44,10 @@ mod logview_test;
 mod config_test;
 
 #[cfg(test)]
+#[path = "pump/config_ramdisk_test.rs"]
+mod config_ramdisk_test;
+
+#[cfg(test)]
 #[path = "pump/control_test.rs"]
 mod control_test;
 
