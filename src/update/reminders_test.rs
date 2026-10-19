@@ -84,7 +84,11 @@ fn stale_skills_reminder_names_dir_and_command() {
     );
 
     let lines = stale_skills_reminders(&candidates);
-    assert_eq!(lines.len(), 1, "exactly one stale copy is reported: {lines:?}");
+    assert_eq!(
+        lines.len(),
+        1,
+        "exactly one stale copy is reported: {lines:?}"
+    );
     let line = &lines[0];
     assert!(
         line.contains(".agents/skills"),
