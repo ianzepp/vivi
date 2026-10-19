@@ -901,18 +901,7 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Ve
     if merge.is_some_and(|merge| merge.lanes == 0) {
         bad.push(format!("{prefix}.merge lanes must be >= 1"));
     }
-    for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
-        if entry.paths.is_empty() {
-            bad.push(format!(
-                "[pump.targets.{id}.merge] generated paths must not be empty"
-            ));
-        }
-        if entry.regenerate.trim().is_empty() {
-            bad.push(format!(
-                "[pump.targets.{id}.merge] generated regenerate must not be empty"
-            ));
-        }
-    }
+    validate_target_generated(id, merge, bad);
     if target.promote
         && !target.main.is_empty()
         && merge.is_some_and(|merge| merge.shared_checks.is_empty())
@@ -925,6 +914,21 @@ fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Ve
         validate_target_gate(id, gate, pools, bad);
     } else {
         bad.push(format!("{prefix}.gate command must not be empty"));
+    }
+}
+
+fn validate_target_generated(id: &str, merge: Option<&MergeConfig>, bad: &mut Vec<String>) {
+    for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
+        if entry.paths.is_empty() {
+            bad.push(format!(
+                "[pump.targets.{id}.merge] generated paths must not be empty"
+            ));
+        }
+        if entry.regenerate.trim().is_empty() {
+            bad.push(format!(
+                "[pump.targets.{id}.merge] generated regenerate must not be empty"
+            ));
+        }
     }
 }
 
