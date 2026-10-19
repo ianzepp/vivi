@@ -75,6 +75,7 @@ Every command line runs through one funnel:
 | --- | --- | --- |
 | `<merge.format>` | ,  (180 s) | Format after merging (skipped when empty); a dirty tree afterwards becomes the style commit. |
 | each `merge.shared_checks` command | single and batch merges | The shared checks after every merge, before the unit's own proof. `merge.proof_timeout` seconds each. |
+| each `merge.checks_for` command whose glob overlaps a merged unit's write scope | single and batch merges | Scope-mapped checks in the same position as the shared checks, after them and before the units' own proof. One run per command per merge, however many units touch the glob. `merge.proof_timeout` seconds each. |
 | the unit's `proof` commands | ,  (300 s each) | The unit's own proof (skipped for a kind with `skip_proof`). |
 | `<gate.command>` | The gate worker runs it, not the pump (the gate brief) | The gate's measurement command; the pump only reads the worker's reply. |
 
@@ -345,8 +346,9 @@ the log line `MERGE ERROR …`; every job that produced no result at all gets
    `write_scope` via `overlaps`.
 5. `merge.format` (skipped when empty); a dirty `git status --porcelain` is
    committed as `style: format after <uid>`.
-6. checks: each `merge.shared_checks` command, then the unit's own `proof`
-   (skipped when the unit's kind has `skip_proof`). Each with
+6. checks: each `merge.shared_checks` command, then each `merge.checks_for`
+   command whose glob overlaps the unit's `write_scope`, then the unit's own
+   `proof` (skipped when the unit's kind has `skip_proof`). Each with
    `merge.proof_timeout` (default 300 s) and a `proof <uid> rc=<n> <n>s: <cmd>` log line.
    A failure resets the repo and returns `ok=false, why="proof-failed"`,
    detail `After merging into the integration branch, this command failed
@@ -369,7 +371,9 @@ the log line `MERGE ERROR …`; every job that produced no result at all gets
    collect into `merged`.
 3. `merge.format`; dirty → one style commit
    `style: format after <uid>,<uid>,…` (150-char cap).
-4. shared checks (`merge.shared_checks`), each `merge.proof_timeout` seconds with a
+4. shared checks (`merge.shared_checks`) plus every `merge.checks_for` command
+   whose glob overlaps any merged unit's `write_scope` (once each, deduplicated),
+   each `merge.proof_timeout` seconds with a
    `batch <n> shared rc=<n> <n>s: <cmd>` log line. Failure with one job in
    the batch → that job gets `proof-failed` and the round ends; failure with
    several jobs → the batch is quarantined (see below) and the round ends. Either
