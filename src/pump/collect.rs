@@ -350,7 +350,10 @@ pub(crate) fn resplit_bad_plan(ctx: &Ctx, st: &mut State, uid: &str, reason: &st
     let key = format!("{uid}.split.json");
     let rejected = ctx.home.join("plans/rejected");
     drop(fs::create_dir_all(&rejected));
-    drop(fs::rename(ctx.home.join("plans").join(&key), rejected.join(format!("{key}.{now}"))));
+    drop(fs::rename(
+        ctx.home.join("plans").join(&key),
+        rejected.join(format!("{key}.{now}")),
+    ));
     st.plans_seen.retain(|seen| seen != &key);
     let prompt = format!(
         "{}\nYour previous plan was rejected: {reason}. Fix that and write the complete plan again.\n",

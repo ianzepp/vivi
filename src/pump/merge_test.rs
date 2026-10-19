@@ -341,7 +341,11 @@ fn a_lock_error_during_merge_is_an_env_failure_not_a_conflict() {
 #[test]
 fn a_merge_failure_with_no_unmerged_files_is_an_env_failure() {
     let (_dir, ctx, host) = setup("");
-    host.reply("merge --no-ff", 1, "fatal: refs/heads/work/u1 is not a commit\n");
+    host.reply(
+        "merge --no-ff",
+        1,
+        "fatal: refs/heads/work/u1 is not a commit\n",
+    );
     let result = merge_work(&ctx, &job());
     assert_eq!(result.ok, None, "{result:?}");
     assert_eq!(result.why.as_deref(), Some("merge-env-failed"));

@@ -703,7 +703,12 @@ fn a_bad_split_plan_is_re_asked_once() {
         .flatten()
         .filter_map(|entry| entry.file_name().to_str().map(ToOwned::to_owned))
         .collect();
-    assert!(rejected.iter().any(|name| name.starts_with("u1.split.json.")), "{rejected:?}");
+    assert!(
+        rejected
+            .iter()
+            .any(|name| name.starts_with("u1.split.json.")),
+        "{rejected:?}"
+    );
     let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exc.contains("bad-plan u1.split.json unit missing id, brief or write_scope"));
 
