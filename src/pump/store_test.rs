@@ -441,8 +441,6 @@ fn requeue_requests_survive_a_state_save() {
     assert!(request.fresh);
     assert!(request.refund);
     assert_eq!(request.reason, "operator asked");
-    store
-        .mark_requeue_applied(request.request_id, 6)
-        .unwrap();
+    store.mark_requeue_applied(request.request_id, 6).unwrap();
     assert!(store.pending_requeue_requests().unwrap().is_empty());
 }

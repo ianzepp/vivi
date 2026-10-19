@@ -101,11 +101,7 @@ impl PumpStore {
     ///
     /// # Errors
     /// Returns [`VivariumError`] when the row cannot be updated.
-    pub fn mark_requeue_applied(
-        &mut self,
-        request_id: i64,
-        at: u64,
-    ) -> Result<(), VivariumError> {
+    pub fn mark_requeue_applied(&mut self, request_id: i64, at: u64) -> Result<(), VivariumError> {
         self.conn
             .execute(
                 "UPDATE requeue_requests SET applied_at = ?2
