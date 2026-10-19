@@ -1,7 +1,8 @@
 //! The unit fields `pump.db` keeps inside the `units.extra_json` column.
 //!
-//! The quarantine id, the dispatch base, the solo flag and the task-send
-//! exception flag are real fields on [`Unit`], but they are rare, so they
+//! The quarantine id, the dispatch base, the solo flag, the task-send
+//! exception flag and the transient-retry bookkeeping are real fields on
+//! [`Unit`], but they are rare, so they
 //! ride in the same JSON object that holds a unit's unknown keys instead of
 //! getting columns (and a schema bump). [`pack`] writes them next to the unknown keys; [`lift`] takes them
 //! back out, so `Unit::extra` never carries them.
@@ -21,6 +22,10 @@ const BASE_KEY: &str = "base";
 const SOLO_KEY: &str = "solo";
 /// The `extra_json` key of [`Unit::send_reported`].
 const SEND_REPORTED_KEY: &str = "send_reported";
+/// The `extra_json` key of [`Unit::transient_retries`].
+const TRANSIENT_RETRIES_KEY: &str = "transient_retries";
+/// The `extra_json` key of [`Unit::retry_not_before`].
+const RETRY_NOT_BEFORE_KEY: &str = "retry_not_before";
 
 /// The `extra_json` text for `unit`: its unknown keys plus the set fields.
 pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
@@ -39,6 +44,15 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
     }
     if unit.send_reported {
         extra.insert(SEND_REPORTED_KEY.to_string(), Value::Bool(true));
+    }
+    if unit.transient_retries > 0 {
+        extra.insert(
+            TRANSIENT_RETRIES_KEY.to_string(),
+            Value::from(unit.transient_retries),
+        );
+    }
+    if let Some(secs) = unit.retry_not_before {
+        extra.insert(RETRY_NOT_BEFORE_KEY.to_string(), Value::from(secs));
     }
     serde_json::to_string(&extra)
         .map_err(|err| VivariumError::Other(format!("pump.db encode unit extra: {err}")))
@@ -60,5 +74,19 @@ pub(super) fn lift(unit: &mut Unit) {
     }
     if let Some(Value::Bool(flag)) = unit.extra.remove(SEND_REPORTED_KEY) {
         unit.send_reported = flag;
+    }
+    if let Some(retries) = unit
+        .extra
+        .remove(TRANSIENT_RETRIES_KEY)
+        .and_then(|value| value.as_u64())
+    {
+        unit.transient_retries = u32::try_from(retries).unwrap_or(u32::MAX);
+    }
+    if let Some(secs) = unit
+        .extra
+        .remove(RETRY_NOT_BEFORE_KEY)
+        .and_then(|value| value.as_u64())
+    {
+        unit.retry_not_before = Some(secs);
     }
 }
