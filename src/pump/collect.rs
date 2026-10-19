@@ -491,9 +491,7 @@ fn collect_one(
     // A local worktree pool commits its unit branch into the pool's own
     // repository and never pushes to the target remote, so only that
     // repository can answer for it.
-    let source = pool
-        .as_deref()
-        .and_then(|name| ctx.pool_sources.get(name));
+    let source = pool.as_deref().and_then(|name| ctx.pool_sources.get(name));
     let reachable = source.map_or_else(
         || local_branch_exists(&target_ctx, &branch) || remote_has(&target_ctx, &branch),
         |source| pool_source_has(ctx, source, &branch),

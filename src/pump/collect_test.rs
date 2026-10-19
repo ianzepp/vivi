@@ -246,7 +246,11 @@ fn a_local_pool_branch_is_delivered_from_its_worktree_repository() {
         0,
         "collected 1a2b3c4d glm slot-1 finished \"committed unit/x-a1 abc\"",
     );
-    host.reply("/wtree/repo refs/heads/unit/x-a1", 0, "abc123\trefs/heads/unit/x-a1\n");
+    host.reply(
+        "/wtree/repo refs/heads/unit/x-a1",
+        0,
+        "abc123\trefs/heads/unit/x-a1\n",
+    );
     host.reply("task show", 0, "done, committed");
     let mut st = State::default();
     let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
