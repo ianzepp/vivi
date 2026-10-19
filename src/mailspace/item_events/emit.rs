@@ -1,6 +1,6 @@
 //! Writing an item-state event: the owner's `done` and `reopen`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mail_parser::{Address, Message, MessageParser};
 
@@ -31,6 +31,8 @@ pub(super) struct EmitRequest<'a> {
     pub(super) command: &'a str,
     /// Why, when no person acted (`join`): the lifecycle row's note.
     pub(super) via: Option<&'a str>,
+    /// Extra letter headers: the verdict and repo tips a close carries.
+    pub(super) headers: Vec<(String, String)>,
 }
 
 impl EmitRequest<'_> {
@@ -76,6 +78,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
+        extras: &[(String, String)],
         joined: &mut Vec<String>,
     ) -> Result<Option<String>, VivariumError> {
         let Some(kind) = event_kind_for_move(&before.local_role, role) else {
@@ -113,6 +116,7 @@ impl Mailspace {
             note,
             command,
             via: None,
+            headers: extras.to_vec(),
         };
         self.emit_item_event(storage, &item, &request, joined)
             .map(Some)
@@ -155,6 +159,7 @@ impl Mailspace {
             note: None,
             command,
             via: Some(via),
+            headers: Vec::new(),
         };
         self.emit_item_event(storage, &item, &request, joined)?;
         Ok(true)
@@ -210,6 +215,23 @@ impl Mailspace {
             return Ok(false);
         }
         Ok(held_item(storage, &before.content_id)?.is_some())
+    }
+
+    /// The letter headers a close's metadata carries beyond this mailspace:
+    /// its verdict, and each repo at the tip the close recorded. The same
+    /// facts also stay in the item's local metadata.
+    pub(in crate::mailspace) fn verdict_headers(
+        metadata: &BTreeMap<String, String>,
+    ) -> Vec<(String, String)> {
+        metadata
+            .iter()
+            .filter_map(|(key, value)| {
+                if let Some(repo) = key.strip_prefix("repo:") {
+                    return Some(("X-Vivi-Repo".to_string(), format!("{repo}={value}")));
+                }
+                (key == "verdict").then(|| ("X-Vivi-Verdict".to_string(), value.clone()))
+            })
+            .collect()
     }
 
     /// The refusal for naming work another role holds when the actor may not
@@ -367,6 +389,9 @@ impl Mailspace {
         data = add_header(&data, EVENT_AT_HEADER, at)?;
         for prev in prevs {
             data = add_header(&data, EVENT_PREV_HEADER, &format!("<{prev}>"))?;
+        }
+        for (name, value) in &request.headers {
+            data = add_header(&data, name, value)?;
         }
         data = add_reply_headers(&data, &item.bytes)?;
         Ok(EventLetterDraft {

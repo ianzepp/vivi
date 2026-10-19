@@ -95,6 +95,46 @@ fn a_reply_over_the_cap_is_refused_too() {
 }
 
 #[test]
+fn a_close_with_verdict_carries_it_as_letter_headers() {
+    let (_tmp, mailspace) = space(false);
+    let sent = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "unit".into(),
+            body: "done_when: ok\n".into(),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let handle = sent.delivered[0].handle.clone();
+
+    let outcome = mailspace
+        .move_task_outcome(
+            "mind",
+            &handle,
+            "done",
+            None,
+            Some("accepted"),
+            &["vivi".into()],
+            &["abc123".into()],
+        )
+        .unwrap();
+    let event = outcome.event.expect("the close wrote an event letter");
+
+    let storage = mailspace.storage().unwrap();
+    let id = storage.resolve_message_token(&event).unwrap();
+    let bytes = storage.read_message(&id).unwrap();
+    let letter = String::from_utf8_lossy(&bytes);
+    assert!(letter.contains("X-Vivi-Verdict: accepted"), "{letter}");
+    assert!(letter.contains("X-Vivi-Repo: vivi=abc123"), "{letter}");
+}
+
+#[test]
 fn the_queued_line_needs_sync_and_the_note_says_the_letter_stays() {
     let remote = [REMOTE.to_string()];
     let (_tmp, synced) = space(true);
