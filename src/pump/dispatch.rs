@@ -402,13 +402,7 @@ fn inflight_of_kind(ctx: &Ctx, st: &State, name: &str) -> usize {
 /// write `<home>/briefs/<uid>.txt`, `task send` the unit's task, then hand
 /// the task to the pool with `pool dispatch`. The caller applies the outcome
 /// with [`apply_start`], which owns every state write.
-fn start_unit(
-    ctx: &Ctx,
-    uid: &str,
-    unit: &Unit,
-    plan: &Plan,
-    model: &str,
-) -> UnitStart {
+fn start_unit(ctx: &Ctx, uid: &str, unit: &Unit, plan: &Plan, model: &str) -> UnitStart {
     let dir = ctx.home.join("briefs");
     if let Err(err) = fs::create_dir_all(&dir) {
         ctx.log(&format!("brief dir failed {uid}: {err}"));
