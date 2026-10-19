@@ -164,7 +164,10 @@ fn missing_tool_failures_are_environment_not_new_reds() {
     let rec = st.gates.last().unwrap();
     assert_eq!(rec.names, Some(vec![String::from("vivi pump::real")]));
     assert!(!st.red.contains_key("radix-hir-ts a::b"));
-    assert_eq!(st.red.get("vivi pump::real"), Some(&String::from("pumpfix-g")));
+    assert_eq!(
+        st.red.get("vivi pump::real"),
+        Some(&String::from("pumpfix-g"))
+    );
     let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exceptions.contains("gate-environment"));
     assert!(exceptions.contains("node not found"));
