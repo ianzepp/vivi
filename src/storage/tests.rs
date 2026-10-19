@@ -103,7 +103,6 @@ fn schema_v7_adds_node_kind_and_edge_style_on_upgrade() {
     assert_eq!(version, "9");
 }
 
-#[test]
 /// A deferral mark written by the receiver never lands in the table user
 /// item metadata lives in: user surfaces read every row there, so the
 /// internal key would leak into their metadata maps.
@@ -159,6 +158,66 @@ fn deferral_marks_leave_the_user_metadata_table() {
         .set_event_deferral(&["m1".to_string()], None)
         .unwrap();
     assert!(storage.deferred_event_contents().unwrap().is_empty());
+}
+
+/// The deferral query reads one item's rows, not every deferral row: a
+/// candidate audit asks per item, so the whole-table load would pay for
+/// every deferral on the board once per candidate.
+#[test]
+fn event_deferral_until_reads_one_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open_mailspace(tmp.path()).unwrap();
+    let db_path = tmp.path().join("mail.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        for (content, rows) in [("c1", &["m1", "m2"][..]), ("c2", &["m3"][..])] {
+            conn.execute(
+                "INSERT INTO blobs (content_id, blob_relpath, byte_size, rfc_message_id, parsed_at)
+                 VALUES (?1, ?2, 4, NULL, 't')",
+                rusqlite::params![content, format!("blobs/{content}")],
+            )
+            .unwrap();
+            for message in rows {
+                conn.execute(
+                    "INSERT INTO messages (message_id, account, content_id, local_role,
+                                           discovered_at, updated_at)
+                     VALUES (?1, 'mind', ?2, 'needs', 't', 't')",
+                    rusqlite::params![message, content],
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    storage
+        .set_event_deferral(&["m1".to_string()], Some(200))
+        .unwrap();
+    storage
+        .set_event_deferral(&["m2".to_string()], Some(100))
+        .unwrap();
+    storage
+        .set_event_deferral(&["m3".to_string()], Some(300))
+        .unwrap();
+
+    assert_eq!(
+        storage.event_deferral_until("c1").unwrap(),
+        Some(100),
+        "the earliest live bound"
+    );
+    assert_eq!(storage.event_deferral_until("c2").unwrap(), Some(300));
+    assert_eq!(storage.event_deferral_until("missing").unwrap(), None);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE messages SET absorbed_at = 't' WHERE message_id = 'm2'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        storage.event_deferral_until("c1").unwrap(),
+        Some(200),
+        "an absorbed row takes no events"
+    );
 }
 
 /// A schema-8 database keeps its deferral marks across the upgrade: they
