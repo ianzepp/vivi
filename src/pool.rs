@@ -70,6 +70,7 @@ pub mod pools;
 pub mod porcelain;
 pub mod progress;
 pub mod provider;
+pub mod ramdisk;
 pub mod record;
 pub mod requires;
 pub mod reset;
