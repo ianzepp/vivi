@@ -384,6 +384,7 @@ fn tip_short(tip: &str) -> String {
 /// whatever the reply said.
 pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
     let names = parse_failing(text);
+    let deaths = target_deaths(text);
     log_markerless(ctx, text, names.as_deref());
     record_red_after_fix(ctx, st, names.as_deref());
     let run = st.last_gate.clone();
@@ -418,7 +419,7 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
         st.gates.push(rec);
         return;
     }
-    finish_known_gate(ctx, st, &mut rec, &names);
+    finish_known_gate(ctx, st, &mut rec, &names, &deaths);
     st.gates.push(rec);
 }
 
@@ -483,8 +484,14 @@ fn record_red_after_fix(ctx: &Ctx, st: &mut State, names: Option<&[String]>) {
 /// owned names that pass again, compute the new failures and the residual
 /// ones (owned names whose owner settled but that still fail), then either
 /// plan them (owning each name and starting a gate-fix planner) or promote.
-fn finish_known_gate(ctx: &Ctx, st: &mut State, rec: &mut GateRecord, names: &[String]) {
-    drop_fixed_names(ctx, st, names);
+fn finish_known_gate(
+    ctx: &Ctx,
+    st: &mut State,
+    rec: &mut GateRecord,
+    names: &[String],
+    deaths: &[String],
+) {
+    drop_fixed_names(ctx, st, names, deaths, &rec.tip);
     let new = new_failures(st, names);
     rec.new = Some(new.clone());
     let residual = residual_failures(ctx, st, names);
@@ -578,19 +585,44 @@ fn gate_summary(rec: &GateRecord, names: &[String], new: usize) -> String {
     )
 }
 
-/// Owned names that no longer fail are released.
-fn drop_fixed_names(ctx: &Ctx, st: &mut State, names: &[String]) {
-    let fixed: Vec<String> = st
+/// Owned names that no longer fail are released. A name whose crate target
+/// died without a libtest summary is not fixed: it stays owned, and the gate
+/// reports the death instead.
+fn drop_fixed_names(ctx: &Ctx, st: &mut State, names: &[String], deaths: &[String], tip: &str) {
+    let (kept, fixed): (Vec<String>, Vec<String>) = st
         .red
         .keys()
         .filter(|name| !names.iter().any(|n| n == *name))
         .cloned()
-        .collect();
+        .partition(|name| target_died(name, deaths));
+    if !kept.is_empty() {
+        let targets = deaths.join(", ");
+        ctx.log(&format!(
+            "gate-target-died: {targets} kept {} owned reds (target died, not fixed)",
+            kept.len()
+        ));
+        ctx.exception(
+            "gate-target-died",
+            &tip_short(tip),
+            &format!(
+                "{targets} died without a libtest summary; {} owned names stay red",
+                kept.len()
+            ),
+        );
+    }
     for name in fixed {
         if let Some(owner) = st.red.remove(&name) {
             ctx.log(&format!("red fixed: {name} (owner {owner})"));
         }
     }
+}
+
+/// `true` when the name's first whitespace token, its crate, is one of the
+/// targets that died without a libtest summary.
+fn target_died(name: &str, deaths: &[String]) -> bool {
+    name.split_whitespace()
+        .next()
+        .is_some_and(|krate| deaths.iter().any(|death| death == krate))
 }
 
 /// The names in neither the baseline nor the owned map,
