@@ -244,6 +244,42 @@ fn a_new_split_defers_when_the_planner_cap_is_full() {
     assert!(ctx.home.join("resplit/u-2.json").exists());
 }
 
+/// A due split retry at the planner cap staggers instead of spawning: the
+/// unit stays `Splitting` with a moved-out retry stamp and the launch is
+/// logged; the live planner is untouched.
+#[test]
+fn a_due_split_retry_defers_when_the_planner_cap_is_full() {
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            run: String::from("plan-it {charter} --quiet"),
+            charter: String::from("/charter/path.md"),
+            split_hard_cap: 1500,
+            planners_max: 1,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    let mut u2 = unit(Status::Splitting, None, None);
+    u2.split_retry_at = Some(T0);
+    put(&mut st, "u-2", u2);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    assert!(host.spawned().is_empty());
+    let u = st.units.get("u-2").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.split_retry_at, Some(T0 + 60));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("split-launch-deferred u-2")),
+        "{:?}",
+        host.logs()
+    );
+}
+
 #[test]
 fn a_finished_unit_whose_branch_is_on_the_remote_is_delivered() {
     let (_dir, ctx, host) = setup();
