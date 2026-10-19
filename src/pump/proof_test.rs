@@ -37,7 +37,7 @@ fn fixture_repo() -> tempfile::TempDir {
 
 /// An error result whose message contains `needle`.
 fn err_containing(cmd: &str, repo: &Path, needle: &str) {
-    let err = check(cmd, repo).expect_err(cmd);
+    let err = check(cmd, repo, &[]).expect_err(cmd);
     assert!(
         err.contains(needle),
         "check({cmd:?}) = {err:?}, want it to mention {needle:?}"
@@ -76,7 +76,11 @@ fn single_filter_and_flags_are_accepted() {
         "cargo +nightly test --profile dev one_filter",
         "cargo build",
     ] {
-        assert_eq!(check(cmd, repo.path()), Ok(()), "want {cmd:?} accepted");
+        assert_eq!(
+            check(cmd, repo.path(), &[]),
+            Ok(()),
+            "want {cmd:?} accepted"
+        );
     }
 }
 
@@ -85,8 +89,8 @@ fn unknown_binaries_are_rejected() {
     let repo = fixture_repo();
     err_containing("pytest -x", repo.path(), "unknown binary");
     err_containing("/usr/bin/pytest -x", repo.path(), "unknown binary");
-    assert_eq!(check("true", repo.path()), Ok(()));
-    assert_eq!(check("rg 'def parse' src/", repo.path()), Ok(()));
+    assert_eq!(check("true", repo.path(), &[]), Ok(()));
+    assert_eq!(check("rg 'def parse' src/", repo.path(), &[]), Ok(()));
 }
 
 #[test]
@@ -105,9 +109,9 @@ fn wrappers_are_validated_too() {
         "one TESTNAME filter",
     );
     err_containing("zsh -c 'pytest -x'", repo.path(), "unknown binary");
-    assert_eq!(check("env cargo test one_filter", repo.path()), Ok(()));
+    assert_eq!(check("env cargo test one_filter", repo.path(), &[]), Ok(()));
     assert_eq!(
-        check("bash -c 'cargo test --lib sync::watch'", repo.path()),
+        check("bash -c 'cargo test --lib sync::watch'", repo.path(), &[]),
         Ok(())
     );
 }
@@ -119,7 +123,11 @@ fn env_assignment_prefixes_are_skipped_like_env() {
         "PATH=/opt/homebrew/bin:$PATH cargo test -p x --lib y",
         "A=1 B=2 cargo test one",
     ] {
-        assert_eq!(check(cmd, repo.path()), Ok(()), "want {cmd:?} accepted");
+        assert_eq!(
+            check(cmd, repo.path(), &[]),
+            Ok(()),
+            "want {cmd:?} accepted"
+        );
     }
     err_containing("FOO=1 cargo test a b", repo.path(), "one TESTNAME filter");
     err_containing("FOO=1 pytest -x", repo.path(), "unknown binary");
@@ -134,8 +142,92 @@ fn repo_relative_scripts_are_accepted_when_executable() {
         "scripta/check-grammar-tags",
         "target/debug/faber --help",
     ] {
-        assert_eq!(check(cmd, repo.path()), Ok(()), "want {cmd:?} accepted");
+        assert_eq!(
+            check(cmd, repo.path(), &[]),
+            Ok(()),
+            "want {cmd:?} accepted"
+        );
     }
+}
+
+#[test]
+fn chained_proofs_validate_each_simple_command() {
+    let repo = fixture_repo();
+    for cmd in [
+        "cargo test -p exempla --lib pinned_runner_goldens_are_sorted && rg -n \"genus/linked-list-optional\" a.txt b.rs",
+        "cargo test --lib t; true",
+        "cargo test --lib t | rg -n pattern file",
+        "true && ls",
+        "rg 'a|b' file",
+    ] {
+        assert_eq!(
+            check(cmd, repo.path(), &[]),
+            Ok(()),
+            "want {cmd:?} accepted"
+        );
+    }
+    err_containing("cargo test a b && true", repo.path(), "one TESTNAME filter");
+    err_containing("cargo test a b | rg x", repo.path(), "one TESTNAME filter");
+    err_containing("true && pytest -x", repo.path(), "unknown binary");
+}
+
+#[test]
+fn wrapper_scripts_validate_chains_and_builtins() {
+    let repo = fixture_repo();
+    for cmd in [
+        "bash -c 'test ! -e a && test ! -e b'",
+        "sh -c 'cargo test one_filter | rg -n x file'",
+        "! test -e out.txt",
+        "! mkdir -p d",
+    ] {
+        assert_eq!(
+            check(cmd, repo.path(), &[]),
+            Ok(()),
+            "want {cmd:?} accepted"
+        );
+    }
+    err_containing(
+        "bash -c 'cargo test a b; true'",
+        repo.path(),
+        "one TESTNAME filter",
+    );
+    err_containing(
+        "sh -c 'for f in *.txt; do true; done'",
+        repo.path(),
+        "unknown binary",
+    );
+    err_containing("! pytest -x", repo.path(), "unknown binary");
+}
+
+#[test]
+fn target_build_outputs_are_accepted_when_missing() {
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(
+        check("target/debug/faber check --grammar", empty.path(), &[]),
+        Ok(())
+    );
+    let repo = fixture_repo();
+    err_containing(
+        "scripta/missing-tool x",
+        repo.path(),
+        "missing or not executable",
+    );
+    assert_eq!(check("target/debug/faber check", repo.path(), &[]), Ok(()));
+}
+
+#[test]
+fn allowed_binaries_extend_the_list_by_basename() {
+    let repo = fixture_repo();
+    let allow = ["python3.11".to_string(), "faber".to_string()];
+    assert_eq!(
+        check("python3.11 -c 'print(1)'", repo.path(), &allow),
+        Ok(())
+    );
+    assert_eq!(
+        check("/opt/pyenv/bin/faber --check", repo.path(), &allow),
+        Ok(())
+    );
+    err_containing("pytest -x", repo.path(), "unknown binary");
 }
 
 #[test]

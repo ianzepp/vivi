@@ -843,6 +843,50 @@ fn repeated_rate_limits_back_off_without_parking() {
 }
 
 #[test]
+fn a_split_rate_limit_burst_raises_one_exception_per_window() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    put(&mut st, "u-2", unit(Status::Splitting, None, None));
+    for uid in ["u-1", "u-2"] {
+        rate_limited_receipt(&ctx, uid);
+    }
+
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(
+        exceptions(&ctx)
+            .lines()
+            .filter(|line| line.contains("provider-rate-limit"))
+            .count(),
+        1
+    );
+    for uid in ["u-1", "u-2"] {
+        rate_limited_receipt(&ctx, uid);
+    }
+    host.advance(100);
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(
+        exceptions(&ctx)
+            .lines()
+            .filter(|line| line.contains("provider-rate-limit"))
+            .count(),
+        1
+    );
+    for uid in ["u-1", "u-2"] {
+        rate_limited_receipt(&ctx, uid);
+    }
+    host.advance(RATE_LIMIT_EXCEPTION_WINDOW - 100 + 1);
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(
+        exceptions(&ctx)
+            .lines()
+            .filter(|line| line.contains("provider-rate-limit"))
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn the_third_split_planner_failure_makes_the_unit_stuck() {
     let (_dir, ctx, _host) = setup();
     let mut st = State::default();

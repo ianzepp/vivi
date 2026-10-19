@@ -209,6 +209,16 @@ fn planner_planners_max_reads_toml_and_defaults_to_3() {
 }
 
 #[test]
+fn pump_proof_allow_key_parses_and_defaults_empty() {
+    let configured = pump(
+        "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.proof]\nallow = [\"faber\", \"python3.11\"]\n",
+    );
+    assert_eq!(configured.proof.allow, ["faber", "python3.11"]);
+    let defaulted = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert!(defaulted.proof.allow.is_empty());
+}
+
+#[test]
 fn split_hard_cap_wins_when_both_planner_keys_are_set() {
     let cap_first = pump(
         "name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nsplit_hard_cap = 2700\n\

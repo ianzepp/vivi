@@ -8,10 +8,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Binaries a proof command may start with.
-const BINARIES: [&str; 26] = [
-    "awk", "bash", "cargo", "cmake", "diff", "env", "find", "git", "go", "grep", "ls", "make",
-    "mkdir", "node", "npm", "npx", "pnpm", "python", "python3", "rg", "sed", "sh", "true", "vivi",
-    "yarn", "zsh",
+const BINARIES: [&str; 28] = [
+    "[", "awk", "bash", "cargo", "cmake", "diff", "env", "find", "git", "go", "grep", "ls", "make",
+    "mkdir", "node", "npm", "npx", "pnpm", "python", "python3", "rg", "sed", "sh", "test", "true",
+    "vivi", "yarn", "zsh",
 ];
 
 /// `cargo test` flags that consume the next word as their value.
@@ -45,18 +45,83 @@ const MAX_DEPTH: usize = 2;
 /// existing executable file under `repo`; absolute paths still go through
 /// the binary allowlist.
 #[must_use]
-pub fn check(cmd: &str, repo: &Path) -> Result<(), String> {
-    let words = crate::pump::host::shell_split(cmd);
-    if words.is_empty() {
+pub fn check(cmd: &str, repo: &Path, allow: &[String]) -> Result<(), String> {
+    let commands = split_chain(cmd);
+    if commands.is_empty() {
         return Err("empty proof command".to_string());
     }
-    validate_words(&words, 0, cmd, repo)
+    for command in commands {
+        let words = crate::pump::host::shell_split(&command);
+        if !words.is_empty() {
+            validate_words(&words, 0, cmd, repo, allow)?;
+        }
+    }
+    Ok(())
+}
+
+/// Split shell chains without treating separators inside quotes as commands.
+fn split_chain(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut commands = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if quote == Some('"') && ch == '\\' {
+            current.push(ch);
+            i += 1;
+            if i < chars.len() {
+                current.push(chars[i]);
+            }
+        } else if quote.is_some() {
+            current.push(ch);
+            if quote == Some(ch) {
+                quote = None;
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            current.push(ch);
+        } else if ch == ';' || ch == '|' || (ch == '&' && chars.get(i + 1) == Some(&'&')) {
+            push_command(&mut commands, &mut current);
+            if ch != ';' && chars.get(i + 1) == Some(&ch) {
+                i += 1;
+            }
+        } else {
+            current.push(ch);
+        }
+        i += 1;
+    }
+    push_command(&mut commands, &mut current);
+    commands
+}
+
+fn push_command(commands: &mut Vec<String>, current: &mut String) {
+    let command = current.trim();
+    if !command.is_empty() {
+        commands.push(command.to_owned());
+    }
+    current.clear();
 }
 
 /// Validate `words` as one command, recursing through wrapper binaries up
 /// to `MAX_DEPTH` levels deep.
-fn validate_words(words: &[String], depth: usize, cmd: &str, repo: &Path) -> Result<(), String> {
+fn validate_words(
+    words: &[String],
+    depth: usize,
+    cmd: &str,
+    repo: &Path,
+    allow: &[String],
+) -> Result<(), String> {
     if depth > MAX_DEPTH {
+        return Ok(());
+    }
+    let words = words
+        .iter()
+        .skip_while(|word| word.as_str() == "!")
+        .cloned()
+        .collect::<Vec<_>>();
+    if words.is_empty() {
         return Ok(());
     }
     let base = basename(&words[0]);
@@ -68,16 +133,17 @@ fn validate_words(words: &[String], depth: usize, cmd: &str, repo: &Path) -> Res
         return if tail.is_empty() {
             Ok(())
         } else {
-            validate_words(&tail, depth + 1, cmd, repo)
+            validate_words(&tail, depth + 1, cmd, repo, allow)
         };
     }
     if matches!(base, "sh" | "bash" | "zsh") && words.len() > 2 && words[1] == "-c" {
-        let inner = crate::pump::host::shell_split(&words[2]);
-        return if inner.is_empty() {
-            Ok(())
-        } else {
-            validate_words(&inner, depth + 1, cmd, repo)
-        };
+        for command in split_chain(&words[2]) {
+            let inner = crate::pump::host::shell_split(&command);
+            if !inner.is_empty() {
+                validate_words(&inner, depth + 1, cmd, repo, allow)?;
+            }
+        }
+        return Ok(());
     }
     // A repo-relative path must name an executable file in the target
     // repository; it never goes through the bare-name allowlist.
@@ -85,22 +151,30 @@ fn validate_words(words: &[String], depth: usize, cmd: &str, repo: &Path) -> Res
         let path = repo.join(&words[0]);
         return match fs::metadata(&path) {
             Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => Ok(()),
+            _ if is_target_build_path(&words[0]) => Ok(()),
             _ => Err(format!(
                 "proof command repo path `{}` is missing or not executable in the target repository",
                 words[0]
             )),
         };
     }
-    if !BINARIES.contains(&base) {
+    if !BINARIES.contains(&base) && !allow.iter().any(|allowed| allowed == base) {
         return Err(format!(
             "proof command starts with unknown binary `{}`",
             words[0]
         ));
     }
     if base == "cargo" {
-        return cargo_positionals(words, cmd);
+        return cargo_positionals(&words, cmd);
     }
     Ok(())
+}
+
+/// A missing project-local build output may be created by the proof itself.
+fn is_target_build_path(word: &str) -> bool {
+    let mut components = Path::new(word).components();
+    matches!(components.next(), Some(std::path::Component::Normal(name)) if name == "target")
+        && components.all(|component| !matches!(component, std::path::Component::ParentDir))
 }
 
 /// The words after a wrapper prefix: leading flags and `NAME=value`

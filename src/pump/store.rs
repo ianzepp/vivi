@@ -553,6 +553,7 @@ fn write_meta(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
     put(tx, "extra", &json_or_null(&st.extra)?)?;
     put(tx, "target_states", &json_or_null(&st.target_states)?)?;
     put(tx, "env_pauses", &json_or_null(&st.env_pauses)?)?;
+    put(tx, "rate_limited_at", &json_or_null(&st.rate_limited_at)?)?;
     Ok(())
 }
 
@@ -759,6 +760,7 @@ fn load_meta(conn: &Connection, st: &mut State) -> Result<(), VivariumError> {
     st.extra = get_json(conn, "extra")?;
     st.target_states = get_json(conn, "target_states")?;
     st.env_pauses = get_json(conn, "env_pauses")?;
+    st.rate_limited_at = get_json(conn, "rate_limited_at")?;
     Ok(())
 }
 

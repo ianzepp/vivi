@@ -373,6 +373,62 @@ fn ingest_rejects_a_unit_without_a_brief_and_raises_bad_plan() {
 }
 
 #[test]
+fn second_bad_split_plan_archives_and_marks_the_unit_stuck() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.units.insert(
+        "u-8".to_string(),
+        Unit {
+            need: "d107efc1-8".to_string(),
+            status: Status::Splitting,
+            split_reasks: 1,
+            ..Unit::default()
+        },
+    );
+    write_plan(
+        &ctx,
+        "u-8.split.json",
+        &json!({
+            "need": "d107efc1-8",
+            "replaces": "u-8",
+            "units": [{"id": "u-8.4", "brief": "b", "write_scope": []}]
+        }),
+    );
+
+    ingest(&ctx, &mut st);
+
+    assert_eq!(st.units["u-8"].status, Status::Stuck);
+    assert_eq!(st.units["u-8"].split_retry_at, None);
+    assert!(!ctx.home.join("plans/u-8.split.json").exists());
+    assert!(
+        fs::read_dir(ctx.home.join("plans/rejected"))
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("u-8.split.json."))
+    );
+    assert!(!st.plans_seen.contains(&"u-8.split.json".to_string()));
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exc.contains("split-plan-rejected u-8"), "exceptions: {exc}");
+    assert!(
+        exc.contains("unit missing id, brief or write_scope"),
+        "exceptions: {exc}"
+    );
+    assert!(
+        exc.contains("vivi pump replan d107efc1-8"),
+        "exceptions: {exc}"
+    );
+    assert!(!ctx.home.join("resplit/u-8.prompt").exists());
+    assert!(
+        !host
+            .logs()
+            .iter()
+            .any(|line| line.contains("split-reask u-8"))
+    );
+}
+
+#[test]
 fn ingest_rejects_a_duplicate_unit_id() {
     let (_dir, ctx, host, mut st) = setup();
     st.units.insert("56f1d749-1".to_string(), Unit::default());
@@ -398,6 +454,85 @@ fn ingest_rejects_a_duplicate_unit_id() {
             .iter()
             .any(|l| l == "EXCEPTION bad-plan dup.json")
     );
+}
+
+#[test]
+fn a_fresh_plan_rebinds_withdrawn_ids_without_duplicating_order() {
+    let (_dir, ctx, _host, mut st) = setup();
+    st.units.insert(
+        "n1-1".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Withdrawn,
+            attempts: 2,
+            brief: "old brief".to_string(),
+            ..Unit::default()
+        },
+    );
+    st.order.push("n1-1".to_string());
+    write_plan(
+        &ctx,
+        "n1.json",
+        &json!({
+            "need": "n1",
+            "units": [
+                {"id": "n1-1", "brief": "fresh brief", "write_scope": ["src/a.rs"]},
+                {"id": "n1-2", "brief": "new work", "write_scope": ["src/b.rs"]}
+            ]
+        }),
+    );
+
+    ingest(&ctx, &mut st);
+
+    assert_eq!(st.units["n1-1"].status, Status::Pending);
+    assert_eq!(st.units["n1-1"].attempts, 0);
+    assert_eq!(st.units["n1-1"].brief, "fresh brief");
+    assert_eq!(st.order, vec!["n1-1", "n1-2"]);
+    assert_eq!(st.needs["n1"].units, vec!["n1-1", "n1-2"]);
+}
+
+#[test]
+fn a_fresh_plan_keeps_merged_and_live_id_collisions() {
+    let (_dir, ctx, _host, mut st) = setup();
+    st.units.insert(
+        "n1-1".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Merged,
+            brief: "landed work".to_string(),
+            ..Unit::default()
+        },
+    );
+    st.units.insert(
+        "n1-2".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Inflight,
+            brief: "running work".to_string(),
+            ..Unit::default()
+        },
+    );
+    st.order = vec!["n1-1".to_string(), "n1-2".to_string()];
+    write_plan(
+        &ctx,
+        "n1.json",
+        &json!({
+            "need": "n1",
+            "units": [
+                {"id": "n1-1", "brief": "replacement", "write_scope": ["src/a.rs"]},
+                {"id": "n1-2", "brief": "replacement", "write_scope": ["src/b.rs"]}
+            ]
+        }),
+    );
+
+    ingest(&ctx, &mut st);
+
+    assert_eq!(st.units["n1-1"].status, Status::Merged);
+    assert_eq!(st.units["n1-1"].brief, "landed work");
+    assert_eq!(st.units["n1-2"].status, Status::Inflight);
+    assert_eq!(st.units["n1-2"].brief, "running work");
+    assert_eq!(st.needs["n1"].verdict, "invalid");
+    assert!(st.needs["n1"].reason.contains("duplicate unit id n1-1"));
 }
 
 #[test]

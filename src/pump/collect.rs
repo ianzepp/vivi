@@ -19,6 +19,11 @@ use crate::pump::host::{Ctx, exit_receipt_path, shell_quote, shell_split};
 use crate::pump::state::{Attempt, State, Status, Unit};
 use crate::pump::transient;
 
+#[path = "collect/burst.rs"]
+mod burst;
+
+pub(crate) use burst::{RATE_LIMIT_EXCEPTION_WINDOW, rate_limit_burst};
+
 /// Seconds a unit may stay unreported by reconcile before the pool-status
 /// fallback decides.
 const RECONCILE_GRACE: u64 = 90;
@@ -717,6 +722,7 @@ fn dead_planner_output(ctx: &Ctx, uid: &str) -> Option<String> {
 /// a silent one past the hard cap is parked.
 fn expire_splits(ctx: &Ctx, st: &mut State) {
     let now = ctx.now();
+    let mut rate_limited = Vec::new();
     let splitting: Vec<String> = st
         .units
         .iter()
@@ -724,10 +730,11 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
         .map(|(id, _)| id.clone())
         .collect();
     for uid in splitting {
-        if expire_one_split(ctx, st, &uid, now) {
+        if expire_one_split(ctx, st, &uid, now, &mut rate_limited) {
             crate::pump::quarantine::repair_stuck(ctx, st, &uid);
         }
     }
+    rate_limit_burst(ctx, st, &rate_limited);
 }
 
 /// Decide one splitting unit: a written plan belongs to ingest, an exit
@@ -735,7 +742,13 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
 /// retry respawns the planner, a planner that died host-class returns its
 /// unit to `pending`, and a silent one past the hard cap is parked. True
 /// when the unit became `Stuck`.
-fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
+fn expire_one_split(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    now: u64,
+    rate_limited: &mut Vec<String>,
+) -> bool {
     if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
         return false;
     }
@@ -751,6 +764,7 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         drop(fs::remove_file(&receipt));
         if let Some(wait) = rate_limited_retry(ctx, unit, uid) {
             unit.split_retry_at = Some(now + wait);
+            rate_limited.push(uid.to_owned());
             ctx.log(&format!(
                 "split-rate-limited {uid} retry in {wait}s; retry budget untouched"
             ));

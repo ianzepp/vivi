@@ -97,6 +97,7 @@ fn sample() -> State {
         .insert(String::from("crate test"), String::from("u1"));
     st.red_reported = vec![String::from("n1:x")];
     st.merges = 3;
+    st.rate_limited_at = Some(1_700_000_123);
     st.extra
         .insert(String::from("future"), serde_json::json!("kept"));
     st
@@ -156,6 +157,7 @@ fn a_saved_state_round_trips() {
     assert_eq!(back.red["crate test"], "u1");
     assert_eq!(back.red_reported, vec![String::from("n1:x")]);
     assert_eq!(back.merges, 3);
+    assert_eq!(back.rate_limited_at, Some(1_700_000_123));
     assert_eq!(
         back.extra.get("future").unwrap(),
         &serde_json::json!("kept")

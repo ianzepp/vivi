@@ -15,6 +15,13 @@ use crate::pump::state::{NeedRecord, State, Status, Unit};
 /// Message filed when a plan unit fails validation.
 const BAD_UNIT: &str = "unit missing id, brief or write_scope";
 
+#[derive(Clone, Copy)]
+enum ExistingUnitPolicy {
+    Reject,
+    SameNeed,
+    WithdrawnSameNeed,
+}
+
 /// The path segments of a scope: leading `.` and `/` characters and a
 /// trailing slash are stripped. A glob with no `/` matches at any depth, the
 /// way `.gitignore` reads it, so it gets a leading `**`. An empty scope has no
@@ -134,7 +141,12 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
     }
     st.plans_seen.push(key.to_string());
     let units = plan.get("units").and_then(Value::as_array);
-    let (minted, bad) = validate_units(ctx, st, units.map_or(&[], Vec::as_slice), false, need);
+    let policy = if replaces.is_some() {
+        ExistingUnitPolicy::Reject
+    } else {
+        ExistingUnitPolicy::WithdrawnSameNeed
+    };
+    let (minted, bad) = validate_units(ctx, st, units.map_or(&[], Vec::as_slice), policy, need);
     if let Some(bad) = bad {
         if replaces.is_none() {
             st.needs.insert(
@@ -152,8 +164,10 @@ fn ingest_one(ctx: &Ctx, st: &mut State, path: &Path, key: &str) {
             );
         }
         ctx.exception("bad-plan", key, &bad);
-        if let Some(uid) = replaces {
-            crate::pump::collect::resplit_bad_plan(ctx, st, uid, &bad);
+        if let Some(uid) = replaces
+            && !crate::pump::collect::resplit_bad_plan(ctx, st, uid, &bad)
+        {
+            consume_bad_split(ctx, st, uid, key, &bad);
         }
         return;
     }
@@ -166,10 +180,49 @@ fn is_hold_reason(reason: &str) -> bool {
     reason.contains("repository target") || reason.contains("cross-target dependency")
 }
 
+/// Archive a second invalid split result and park its unit instead of leaving
+/// the `plans/<uid>.split.json` guard active forever.
+fn consume_bad_split(ctx: &Ctx, st: &mut State, uid: &str, key: &str, reason: &str) {
+    let rejected = ctx.home.join("plans/rejected");
+    drop(fs::create_dir_all(&rejected));
+    let archive = rejected.join(format!("{key}.{}", ctx.now()));
+    if fs::rename(ctx.home.join("plans").join(key), archive).is_ok() {
+        st.plans_seen.retain(|seen| seen != key);
+    } else {
+        ctx.log(&format!("split-plan-archive-failed {uid} {key}"));
+    }
+    let Some(unit) = st.units.get_mut(uid) else {
+        ctx.log(&format!("split-plan-discarded {uid}"));
+        return;
+    };
+    if unit.status != Status::Splitting {
+        ctx.log(&format!("split-plan-discarded {uid}"));
+        return;
+    }
+    let need = unit.need.clone();
+    unit.status = Status::Stuck;
+    unit.split_retry_at = None;
+    unit.since = ctx.now();
+    ctx.exception(
+        "split-plan-rejected",
+        uid,
+        &format!(
+            "split re-ask spent; the second plan was rejected: {reason}; replan with `vivi pump replan {need}`"
+        ),
+    );
+    crate::pump::quarantine::repair_stuck(ctx, st, uid);
+}
+
 /// Apply a revision to a known need.
 fn apply_revision(ctx: &Ctx, st: &mut State, need: &str, revision: u64, plan: &Value, text: &str) {
     let units = plan.get("units").and_then(Value::as_array);
-    let (planned, bad) = validate_units(ctx, st, units.map_or(&[], Vec::as_slice), true, need);
+    let (planned, bad) = validate_units(
+        ctx,
+        st,
+        units.map_or(&[], Vec::as_slice),
+        ExistingUnitPolicy::SameNeed,
+        need,
+    );
     if let Some(bad) = bad {
         ctx.exception("bad-plan", need, &bad);
         return;
@@ -349,7 +402,7 @@ fn validate_units<'a>(
     ctx: &Ctx,
     st: &State,
     units: &'a [Value],
-    allow_existing: bool,
+    existing_policy: ExistingUnitPolicy,
     need: &str,
 ) -> (Vec<(&'a str, &'a Value)>, Option<String>) {
     let mut minted: Vec<(&str, &Value)> = Vec::new();
@@ -375,16 +428,18 @@ fn validate_units<'a>(
             .target_path(&ctx.project, &target)
             .unwrap_or_else(|| ctx.project.clone());
         for cmd in str_list(u.get("proof")) {
-            if let Err(reason) = crate::pump::proof::check(&cmd, &repo) {
+            if let Err(reason) = crate::pump::proof::check(&cmd, &repo, &ctx.cfg.proof.allow) {
                 return (minted, Some(format!("unit {uid}: {reason}")));
             }
         }
         if let Some(existing) = st.units.get(uid) {
-            if !allow_existing {
-                return (minted, Some(format!("duplicate unit id {uid}")));
-            }
             if existing.need != need {
                 return (minted, Some(format!("unit {uid} belongs to another need")));
+            }
+            match (existing_policy, existing.status) {
+                (ExistingUnitPolicy::SameNeed, _) => {}
+                (ExistingUnitPolicy::WithdrawnSameNeed, Status::Withdrawn) => {}
+                _ => return (minted, Some(format!("duplicate unit id {uid}"))),
             }
         }
         minted.push((uid, u));
@@ -471,7 +526,9 @@ fn mint_one(ctx: &Ctx, st: &mut State, need: &str, uid: &str, plan: &Value, revi
         ..Unit::default()
     };
     st.units.insert(uid.to_string(), unit);
-    st.order.push(uid.to_string());
+    if !st.order.iter().any(|ordered| ordered == uid) {
+        st.order.push(uid.to_string());
+    }
 }
 
 /// True when the planned fields match the existing unit exactly.

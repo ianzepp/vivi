@@ -512,6 +512,10 @@ pub struct State {
     /// Pool -> host-class failure bookkeeping and dispatch pause.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env_pauses: BTreeMap<String, EnvPause>,
+    /// Epoch seconds when the shared provider-rate-limit burst exception was
+    /// last raised; board and split planners share the ten-minute window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limited_at: Option<u64>,
     /// Unknown keys from other pump versions, written back untouched.
     #[serde(flatten, default)]
     pub extra: BTreeMap<String, serde_json::Value>,

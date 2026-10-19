@@ -171,13 +171,16 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
         })
         .map(|(handle, _)| handle.clone())
         .collect();
+    let mut rate_limited = Vec::new();
     for handle in expired {
         if plan_path(ctx, &handle).exists() {
             st.board.planner_pids.remove(&handle);
             st.board.planner_fails.remove(&handle);
             st.board.planner_retry_at.remove(&handle);
         } else if exit_receipt_path(&out_path(ctx, &handle)).exists() {
-            fail_exited_planner(ctx, st, &handle);
+            if fail_exited_planner(ctx, st, &handle) {
+                rate_limited.push(handle.clone());
+            }
         } else {
             ctx.exception(
                 "plan-no-answer",
@@ -187,6 +190,7 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
         }
         st.board.planning.remove(&handle);
     }
+    crate::pump::collect::rate_limit_burst(ctx, st, &rate_limited);
 }
 
 /// Consecutive planner crashes tolerated before the need parks, and the base
@@ -209,7 +213,7 @@ fn out_path(ctx: &Ctx, handle: &str) -> PathBuf {
 /// `plan-failed`. A provider 429 / rate-limit / overload in the planner's
 /// output is transient instead: it relaunches after [`RATE_LIMIT_RETRY`]
 /// plus jitter and leaves the failure budget untouched.
-fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
+fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) -> bool {
     let code = match fs::read_to_string(exit_receipt_path(&out_path(ctx, handle))) {
         Ok(text) => text.trim().parse::<i32>().unwrap_or(-1),
         Err(_) => -1,
@@ -224,7 +228,7 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
         ctx.log(&format!(
             "board: planner {handle} rate-limited; retry in {delay}s; failure budget untouched"
         ));
-        return;
+        return true;
     }
     let tail = tail_note(&text, 200);
     ctx.log(&format!("board: planner {handle} exited rc={code}: {tail}"));
@@ -242,7 +246,7 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
         st.board
             .planner_retry_at
             .insert(handle.to_owned(), ctx.now() + delay);
-        return;
+        return false;
     }
     st.board.planner_failed.push(handle.to_owned());
     st.board.planner_retry_at.remove(handle);
@@ -251,6 +255,7 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
         handle,
         "planner exited three times without writing a plan",
     );
+    false
 }
 
 /// Plan the new needs among `rows`: skip old, skipped,
