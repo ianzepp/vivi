@@ -150,6 +150,11 @@ Validation runs per unit before anything is created:
 On `bad`: exception kind `bad-plan` with the plan file basename as the unit
 field and the reason text above; if the plan has no `replaces`, the need is
 recorded as `verdict="invalid"` with that reason and no units.
+A `bad` **split** plan (`replaces` set) is re-asked once instead: the file moves
+to `plans/rejected/`, its `plans_seen` key is dropped, and the split planner
+respawns with the same prompt plus the validation error appended; the unit's
+status is unchanged, `split_reasks=1`, and its clock resets. A second rejection
+is final: `bad-plan` only.
 A plan whose JSON does not parse is skipped silently, no exception. A plan for a need already in `st["needs"]` without
 `replaces` is marked seen and ignored.
 
@@ -157,7 +162,8 @@ A plan whose JSON does not parse is skipped silently, no exception. A plan for a
 
 `st["plans_seen"]` is the list of plan file basenames already ingested. On first load of an old state it is seeded from the needs. Every ingested file — including rejected ones — is
 appended, so a bad plan is examined once. The parked-need re-plan path removes
-`<need>.json` from it after moving the file to `plans/superseded/`.
+`<need>.json` from it after moving the file to `plans/superseded/`, and the
+split re-ask removes `<uid>.split.json` so the replanned file is ingested.
 
 ### 2.5 Verdict values and what each does
 
@@ -210,8 +216,13 @@ unit strictly in this order:
 
 After the units, two more collectors:
 
-- every unit still `splitting` after `planner.split_timeout` (default 1500 s) becomes `stuck` with exception
-  `split-no-answer`;
+- a unit still `splitting` with no plan and no exit receipt is **alive**: it becomes
+  `stuck` with exception `split-no-answer` only once it is past
+  `planner.split_hard_cap` (default 5400 s) since the request;
+- a `splitting` unit whose planner wrote an exit receipt (`resplit/<uid>.out.rc`)
+  but no plan **failed**: it is retried with backoff (60 s, then 120 s) and
+  files a `split-planner-failed` exception each time, and the third failure
+  makes it `stuck` without another retry;
 - the gate task, when reconcile reports `finished`, `timeout`, `lost` or
   `error`, or when it is unknown for more than 2400 s, is finished via
   `finish_gate(receipt(task))`.
@@ -277,9 +288,21 @@ When a unit times out or overruns, `split`:
    now, appends a history record `{"attempt": …, "model": …, "why":
    "timeout", "detail": "", "at": …}`, and logs `split-requested <uid>`.
 
-The no-answer rule: a unit still `splitting` `planner.split_timeout` seconds after the request
-becomes `stuck` with exception `split-no-answer`, text
-`the split planner wrote no plan in 25 minutes` (with the default timeout).
+The no-answer rule: a unit still `splitting` is parked only when the planner is
+truly absent. **No receipt** (`resplit/<uid>.out.rc`) means the planner is
+alive — it may run for hours — so the unit becomes `stuck` with exception
+`split-no-answer`, text `the split planner is still unreachable after <n>
+minutes`, only once it is past `planner.split_hard_cap` (default 5400 s) since
+the request. **A receipt with no plan** means the planner exited: the pump
+retries it with backoff (60 s, then 120 s), filing a `split-planner-failed`
+exception with the exit code each time, and the third exit makes the unit
+`stuck` with exception `split-planner-failed`, text `the split planner exited
+without a plan 3 times (last exit <code>)`. A planner whose output classifies
+as a host failure is not parked at all: its unit returns to `pending` with an
+`environment` exception. A split plan that arrives late and replaces a parked
+unit appends `resolved split-no-answer <uid> a late split plan replaced the
+stuck unit` (or the `split-planner-failed` kind) to `exceptions.txt`, so the
+recovery reads in sequence with the failure.
 
 Replacement: the split plan is ingested like any other; with `replaces` set
 and the old unit present, the old unit becomes `status="replaced"` with
@@ -638,7 +661,9 @@ re-planning` (ruling 7).
 
 `exception` appends `HH:MM:SS kind unit text` to
 `exceptions.txt` (UTC), newlines in the text become ` | `, the text is capped
-at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
+at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written. A
+resolution appends `HH:MM:SS resolved <kind> <unit> <text>` and logs
+`RESOLVED <kind> <unit>`; the earlier row stays, so recovery reads in sequence.
 
 | Kind | Trigger | Text written |
 | --- | --- | --- |
@@ -649,7 +674,8 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `no-defect` | receipt contains `VERDICT: no-defect` | the last 400 chars of the receipt |
 | `quarantine` | a batch failed a shared check and was set aside; unit field is the quarantine id | `<n> units set aside on pump/quarantine/<id>: <cmd> rc=<code>; repair unit <fix_prefix>-<id>` |
 | `quarantine-stuck` | a quarantine repair unit went stuck; unit field is the quarantine id | `repair <uid> is stuck; <n> units return to delivered, one batch each: <uids>` |
-| `split-no-answer` | unit `splitting` longer than `planner.split_timeout` | `the split planner wrote no plan in 25 minutes` |
+| `split-no-answer` | unit still `splitting` with no plan and no exit receipt past `planner.split_hard_cap` (default 5400 s) | `the split planner is still unreachable after <n> minutes` |
+| `split-planner-failed` | the split planner exited without a plan; raised on each retry, and finally with the unit `stuck` on the third | `planner exited <code> without a plan; retry <n>/3 in <n>s`, then `the split planner exited without a plan 3 times (last exit <code>)` |
 | `gate-unreadable` | gate reply yields no names | the last 500 chars of the gate receipt; unit field is the gated tip[:10] |
 | `gate-build-failed` | gate reply is exactly `BUILD-FAILED` | the last 500 chars of the gate receipt |
 | `red-after-fix` | an owned failing name fails again after its fix units settled | the failing test name; unit field is the owner need id |
@@ -668,6 +694,7 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `fail <uid> attempt=<n> <why>` |
 | `transient-retry <uid> <class> <n>/<cap>` |
 | `split-requested <uid>` / `split <uid> into <n> units` |
+| `split-reask <uid> <reason[:120]>` / `split-retry <uid>` / `split-planner-dead <uid>` |
 | `plan <need> verdict=<v> units=<n>` |
 | `proof <uid> rc=<n> <n>s: <cmd[:90]>` |
 | `batch <n> shared rc=<n> <n>s: <cmd>` / `batch of <n>: <n> merged` |
@@ -688,7 +715,7 @@ at 600 characters, and a log line `EXCEPTION <kind> <unit>` is written.
 | `board reply <h> <stage> rc=<n> …` |
 | `board: operator replied on parked need <h> (was <v>); re-planning` |
 | `sync pull rc=<n> …` / `sync push started (detached, drain)` |
-| `EXCEPTION <kind> <unit>` |
+| `EXCEPTION <kind> <unit>` / `RESOLVED <kind> <unit>` |
 
 ### 9.3 Requeue (operator recovery)
 

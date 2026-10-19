@@ -2208,7 +2208,8 @@ and exits 1.
 stream (`dispatch`, `delivered`, `merged`, `fail`, `gate started`, `promote`
 lines; shapes in the protocols reference, section 9.2).
 `exceptions.txt` is what needs a person: `stuck` units, `unknown-kind`,
-`bad-plan`, `split-no-answer`, `plan-no-answer`, `no-defect` receipts and gate
+`bad-plan`, `split-no-answer`, `split-planner-failed`, `plan-no-answer`,
+`no-defect` receipts and gate
 news (`gate-new-failures`, `gate-unreadable`, `gate-build-failed`,
 `red-after-fix`). Read it after every unattended stretch. A `stuck` unit
 blocks its dependents until a person unblocks it with `vivi pump requeue` (one
@@ -2428,7 +2429,7 @@ push_since   = "30m"                   # `vivi sync push --since` after replying
 [pump.planner]
 run           = "<command>"            # required while board from or mark is set; stdin is the prompt file
 charter       = "<path>"               # substituted for {charter} in `run`
-split_timeout = 1500                   # seconds before a splitting unit is stuck
+split_hard_cap = 5400                 # hard cap on a receipt-less split planner; an exited planner is retried
 
 [pump.dispatch]
 # lanes is legacy: required only when no role has a pool. Role→pool
