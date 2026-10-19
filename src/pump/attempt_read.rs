@@ -210,6 +210,7 @@ pub fn parse_status_event(body: &str) -> Option<AttemptStatusEvent> {
         if !STATUS_KEYS.contains(&key) {
             break;
         }
+        let value = value.trim();
         match key {
             "attempt" => event.attempt = required(value),
             "need" => event.need = optional(value),

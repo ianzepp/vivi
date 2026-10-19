@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::attempt_record::{agent_exit, agent_secs, clear_ready, hand_message, mark_ready, post_status};
+use crate::pump::attempt_record::{
+    agent_exit, agent_secs, clear_ready, hand_message, mark_ready, post_status,
+};
 use crate::pump::board::board;
 use crate::pump::collect::{collect, fail};
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig, PumpTarget};
