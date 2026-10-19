@@ -44,11 +44,13 @@ const LANE_FAILS: u32 = 3;
 const LANE_BACKOFF_SECS: u64 = 600;
 
 /// `why` codes of an undecided result that say the lane itself cannot work
-/// (no checkout, no way to publish), as opposed to a batch whose content is
-/// at fault (`publish-conflict`, a fetch of one unit branch, ...).
-const LANE_LEVEL: [&str; 7] = [
+/// (no checkout, a wedged git, no way to publish), as opposed to a batch
+/// whose content is at fault (`publish-conflict`, a fetch of one unit
+/// branch, ...).
+const LANE_LEVEL: [&str; 8] = [
     "lane-checkout-failed",
     "lane-reset-failed",
+    "merge-env-failed",
     "publish-fetch-failed",
     "publish-check-failed",
     "push-failed",

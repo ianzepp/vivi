@@ -10,7 +10,7 @@ use super::fetch::fetch_unit_branch;
 use super::publish::publish;
 use super::{
     GIT_TIMEOUT, already_integrated, check_with_drift_retry, failed, failure_text, fetch_failure,
-    flat, format_style_commit, identity_args, integrated_text, merge_line, merge_work,
+    flat, format_style_commit, git_error, identity_args, integrated_text, merge_line, merge_work,
     outside_files, reset_repo, resolve_generated, skips_proof, tail, undecided_result,
 };
 
@@ -187,6 +187,15 @@ fn merge_one(ctx: &Ctx, job: &MergeJob, at: (usize, usize)) -> Option<MergeResul
     if !files.is_empty() && resolve_generated(ctx, &job.uid, &files) {
         merge_line(ctx, &job.uid, at, "generated");
         return None;
+    }
+    if git_error(&out.text) || files.is_empty() {
+        merge_line(ctx, &job.uid, at, "env");
+        drop(ctx.git("merge --abort", GIT_TIMEOUT));
+        return Some(undecided_result(
+            &job.uid,
+            "merge-env-failed",
+            &tail(&out.text, 300),
+        ));
     }
     merge_line(ctx, &job.uid, at, "conflict");
     drop(ctx.git("merge --abort", GIT_TIMEOUT));

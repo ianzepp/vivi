@@ -71,6 +71,14 @@ fn explains(line: &str) -> bool {
         || line.contains("FAILED")
 }
 
+/// True when a failed git command failed for an environment reason (a lock
+/// held by another process) rather than for its content. Mirror of the
+/// shell markers in [`crate::pump::envfail`].
+pub(crate) fn git_error(text: &str) -> bool {
+    (text.contains("index.lock") && text.contains("File exists"))
+        || text.contains("Another git process seems to be running")
+}
+
 /// The last `n` characters of `out`, cut on character boundaries.
 fn tail(out: &str, n: usize) -> String {
     let len = out.chars().count();
@@ -190,7 +198,12 @@ pub fn merge_work(ctx: &Ctx, job: &MergeJob) -> MergeResult {
         return result;
     }
     if let Some(result) = merge_branch(ctx, job) {
-        merge_line(ctx, &job.uid, (1, 1), "conflict");
+        let what = if result.why.as_deref() == Some("merge-env-failed") {
+            "env"
+        } else {
+            "conflict"
+        };
+        merge_line(ctx, &job.uid, (1, 1), what);
         return result;
     }
     merge_line(ctx, &job.uid, (1, 1), "ok");
@@ -431,6 +444,13 @@ fn merge_branch(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
         return None;
     }
     reset_repo(ctx);
+    if git_error(&out.text) || files.is_empty() {
+        return Some(undecided_result(
+            &job.uid,
+            "merge-env-failed",
+            &tail(&out.text, 300),
+        ));
+    }
     let detail = format!(
         "The branch no longer merges into the integration branch. Conflicting files: {raw}"
     );
