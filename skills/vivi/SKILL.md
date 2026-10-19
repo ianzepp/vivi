@@ -825,14 +825,17 @@ vivi pool unset glm image
   again once they are free; the exit code is still 0). N above the pool's
   configured `slots` is refused. `scale 0` empties the pool of free slots.
 - **Slot identity belongs to the mailspace and the pool.** Marks and labels
-  carry both the mailspace's slug and the pool name, and discovery, claim,
+  carry both the mailspace's space key and the pool name, and discovery, claim,
   status, destroy and the self-test filter on both: two mailspaces may each have
   a pool called `local` on one Docker daemon, SSH host or Fly app without seeing
   each other's slots. Names: `<mailspace>-<pool>-slot-<n>` (Fly machine,
   Docker container) and `<root>/<mailspace>/<pool>/slot-<n>/` (SSH and local; the slot id
-  is `<mailspace>/<pool>/slot-<n>`). The mailspace slug is the name lowercased
-  with every other character turned into a dash. The SSH and local destroy
-  guards check the pool mark and the mailspace mark.
+  is `<mailspace>/<pool>/slot-<n>`). The mailspace part is the name lowercased
+  with every other character turned into a dash, plus a dash and the first 8
+  characters of the mailspace id (`app-3f9a1c7e`), so two same-named projects
+  never share slots; slots made before mailspaces had ids carry the plain name
+  slug and still count. The SSH and local destroy guards check the pool mark and
+  the mailspace mark.
 - **`build_dir` is optional and has no default.** A pool without one has no
   memory disk, no pack or restore, and the runner's clean names no directory.
   The clean is `git clean -fd` (no `-x`) on every provider: it deletes
@@ -1294,7 +1297,8 @@ a remote host, set `[pools.<name>.docker].host`.)
   headroom: a full tmpfs fails the build, and resizing means re-creating
   the slots.
 - Labels cannot change after creation, so they hold only fixed facts:
-  `vivi_pool` (pool name), `vivi_pool_mailspace` (mailspace slug), `vivi_pool_slot`, `vivi_pool_base`,
+  `vivi_pool` (pool name), `vivi_pool_mailspace` (the space key: the name slug
+  plus `-<first 8 of the mailspace id>`, or the plain slug before ids), `vivi_pool_slot`, `vivi_pool_base`,
   `vivi_pool_role=slot`. The architecture and the seed mark (`vivi_pool_state`)
   are small files under `/work/vivi-marks/` on the slot's disk, written and
   read with `docker cp` (which works on stopped containers).
@@ -1360,6 +1364,7 @@ slots = 4
 
 [pools.here.local]
 # root = "~/vivi-pool"      # default; each slot is <root>/<mailspace>/<pool>/slot-<n>/
+#                            # <mailspace> is the name slug plus -<first 8 of the mailspace id>
 # worktree_of = "~/src/repo"   # slots are Git worktrees of this local repository
 ```
 
