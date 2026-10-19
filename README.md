@@ -136,7 +136,7 @@ are the domain of every address it mints, for example `hand-1@65d72e54.local`.
 | --- | --- | --- |
 | `mail` | Plain local message | send, reply, list, show, thread, absorb |
 | `task` | A unit of work for one role | send, from, done, reopen |
-| `need` | A prioritised requirement, usually the parent of tasks | send, bind, done, reopen, mark |
+| `need` | A prioritised requirement, usually the parent of tasks | send, bind, assign, withdraw, done, reopen, mark |
 | `want` | A later idea; never dispatched until promoted | send, set-priority, promote, done/drop, mark |
 | `memo` | Durable per-role memory | save, list, search, show, delete |
 | `rule` | A project rule every seat can read | save, list, supersede, retire |
@@ -144,10 +144,27 @@ are the domain of every address it mints, for example `hand-1@65d72e54.local`.
 Tasks, needs and wants accept `--depends-on <handle>` (repeatable). `absorb`
 seals a record so it can no longer change.
 
-**Who may finish work.** A worker's `done` is a report. The item's author, or a
-role of kind `mind` or `operator`, accepts it; acceptance completes the work,
-unlocks dependents and is recorded as an event letter that other checkouts apply
-when they sync. `vivi step` lists reported work as `awaiting_acceptance`.
+**Who may finish work.** A worker's `done` is a report. For tasks and ordinary
+work, the item's author or sent-copy holder, or a role of kind `mind` or
+`operator`, accepts it; acceptance completes the work, unlocks dependents and
+is recorded as an event letter that other checkouts apply when they sync. An
+active delegate can also close an assigned need; that closes the need for
+everyone and lapses the assignment. `vivi step` lists reported work as
+`awaiting_acceptance`.
+
+`task done` and `need done` can record `--branch` and `--commit` together on
+the close event; the flags must be paired. An authorized reopen or a close with
+no location clears an older pair. `need show` displays the pair when known. A
+joined need inherits provenance only when every bound unit has both values and
+all use the same branch; it records the commit from the latest unit close.
+Otherwise each unit keeps its own provenance and the need-level pair is omitted.
+
+An author, the current assigning role, or an operator can assign a need to a
+local role or another member mailspace. Each assignment is a reply letter; the
+newest assignment wins. Active assignments appear in the delegate's work list
+and create a local backlog node for binding tasks. Closing as the delegate
+lapses that assignment; if the need is reopened, assign it again before the
+former delegate can act.
 
 **Roles.** A role is a named seat with a mailbox and metadata: `kind` (`hand`,
 `head`, `mind`, `operator`, `steward`, or freeform), `status`, `labels`,
@@ -182,18 +199,16 @@ their To and Cc addresses name. Identity is an Ed25519 key in
 done, reopen, absorb, marks and binds travel as event letters, an item ends in
 the same state on every checkout.
 
-**Pools.** `vivi pool` manages preseeded machines ("slots") that each run one
-task and push a branch. Providers: `fly` (the default), `docker`, `ssh`, `local`
-and `runpod`. `pool dispatch <task>` uses the task body as the brief, claims a
-free slot, starts the configured agent harness and returns at once; `pool wait`
-and `pool reconcile` collect results. `pool clean [--dry-run]` reclaims a free
-slot's build output when it exceeds twice its post-fresh-build baseline, and
-recycles worktrees once pump marks the unit merged into its merge lane (not
-main), resetting each slot onto a freshly fetched origin/`[pump] main` (or
-`--base`). `pool reset` does that reset alone. A local dispatch refuses when
-the volume stays under 10 GiB free. A role's band (`P0` to `P5`, from its
-`model` field or a `band:` line in the task body) selects the model from the
-pool's `bands` table.
+**Pools.** **vivi pool** manages preseeded machines ("slots") that each run
+one task and publish a branch. Providers are **fly**, **docker**, **ssh**,
+**local** and **runpod**. **pool dispatch <task>** claims a free slot and
+starts the configured harness; **pool wait** and **pool reconcile** collect
+results. **pool clean** and **pool reset** reclaim eligible local worktrees and
+build output. After a pump unit merges into the configured integration branch,
+the pump can queue a local-only reclaim job for the unit's work pool and merge
+role pool; promotion to main is separate. A local dispatch refuses when the
+volume stays under 10 GiB free. A role's band (**P0** to **P5**) selects a
+model from the pool's bands table.
 
 **Pump.** `vivi pump` is an unattended Mind written as a state machine; see
 [The pump](#the-pump).
@@ -206,12 +221,13 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | Command | What it does |
 | --- | --- |
 | `board` | Actionable tasks, needs and wants per role. `--for`, `--since`, `--process`, `--graph`, `--json` |
+| `doctor` | Read-only health verdict and ranked findings for the install and selected project. `--project`, `--json`, `--fix-hints` |
 | `boot` | The whole project frame in one read-only read: seats, loops, unabsorbed mail, handles with verdicts, goals, the backlog sliced for dispatch, and a role-gated pump/pool snapshot. `--role`, `--pump` (`full`, `own`, or `none`), `--json` |
 | `mailspace` | `init`, `status`, `description`, `archive` and `archive export`, `watch`, `import`, `identity add\|list\|rename` |
 | `role` | `list`, `show`, `add`, `set`, `rename`, `pool`, `status`, `charter show\|set` |
 | `mail` | `send`, `reply`, `deliver` (an `.eml` file), `list`, `show`, `thread`, `watch`, `absorb`, `dump` |
 | `task` | `send`, `from` (derive from a handle), `list`, `show`, `done`, `reopen`, `watch`, `absorb`, `dump` |
-| `need` | `send`, `list`, `show`, `done`, `reopen`, `bind`, `mark`, `unmark`, `watch`, `absorb`, `dump` |
+| `need` | `send`, `list`, `show`, `done`, `reopen`, `assign`, `withdraw`, `bind`, `mark`, `unmark`, `watch`, `absorb`, `dump` |
 | `want` | `send`, `list`, `show`, `set-priority`, `promote`, `done`, `drop`, `mark`, `unmark`, `watch`, `absorb`, `dump` |
 | `memo` | `save`, `list`, `search`, `show`, `delete`, `absorb`, `dump` |
 | `rule` | `save`, `list`, `show`, `search`, `supersede`, `retire`, `absorb` |
@@ -224,7 +240,10 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `mcp` | Needs a server: a stdio bridge to the project server's MCP endpoint |
 | `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor` |
 | `config` | `show [--resolved]`, `validate`, `migrate [--write]` |
-| `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`) |
+| `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`), `replan <need> [--force]` |
+| `delivery` | `send` a structured branch handoff to a merge role; `close` after merge |
+| `monitor` | Read-only live pump and pool-slot view; `--project` adds roots, `--once [--json]` prints a snapshot |
+| `report` | Read-only attempt and need summaries: `records`, `throughput`, `durations`, `needs`, `failures` |
 | `proxy` | Local loopback front door for model providers: `run`, `install`, `uninstall`, `status`, `log`, `providers`, `check` |
 | `skills` | `list`, `show <name> [--file <path>]`, `install <dir> [--force]` for the skills embedded in the binary; needs no mailspace |
 
@@ -233,10 +252,39 @@ Commands that list, show or dump take `--json`. A large dump to stdout needs
 `need`, `want` and `mailspace watch`) block until a matching local event
 arrives; they take `--timeout`, `--once` and a caller-owned `--cursor-file`.
 
+`vivi doctor` prints one `ok`, `warn` or `fail` verdict and its findings; its
+process exit code is 0, 1 or 2 respectively. Text output can include suggested
+commands with `--fix-hints`; JSON returns the same verdict and structured
+findings. The checks are read-only. If a WAL-mode mailspace has no
+`mail.sqlite-shm`, doctor skips the store, inbox and `done_when` checks instead
+of opening SQLite in a way that could create the sidecar. Proxy credential
+checks inspect file presence and permissions without reading credential
+contents or running `key_cmd`.
+
 An address with a different eight-hex prefix (`mind@9f8e7d6c.local`) names a
 role in another mailspace. The letter is stored as sent, locally, and
 `vivi sync` carries it; without `[sync]` Vivi prints a note that it will not
 leave this checkout.
+
+## Monitoring and reports
+
+`vivi monitor` is a read-only live view of registered pump projects and pool
+slots. Add one or more `--project <root>` values for extra projects; use
+`--once` for a table snapshot or `--once --json` for JSON. `vivi report` reads
+attempt records and need lifecycle events in the selected project mailspace,
+without starting work:
+
+```sh
+vivi report records --format csv|jsonl
+vivi report throughput [--since <age|date|RFC3339>] [--until <age|date|RFC3339>] [--by <dimension>]
+vivi report durations [filters] [--format table|json|csv|md]
+vivi report needs [filters] [--format table|json|csv|md]
+vivi report failures [filters] [--format table|json|csv|md]
+```
+
+The fixed report views preserve missing historical values as unavailable rather
+than treating them as zero. The [Vivi skill](skills/vivi/references/monitoring-and-reports.md)
+documents the row fields, filters, time windows and measures.
 
 ## Configuration and files
 
@@ -265,6 +313,7 @@ mailspaces with one id collide at `vivi sync join`.
 | `id`, `name`, `description` | Identity of the mailspace. `id` is minted for you |
 | `archive` | Path of a Git repository that receives absorbed records (`vivi mailspace archive --set <path>`) |
 | `[[identities]]` | The role roster: `name`, `kind`, `status`, `labels`, `harness`, `provider`, `model`, `models`, `thinking`, `pid`, `host`, `cadence`, `aliases`, `pool`, `read_only`. `vivi role add` writes it |
+| `[memo]` | `hidden_tags` and per-tag `retain` durations; the built-in `digest` tag is hidden by default |
 | `[[probes]]` | Boot probes: `name` and `command`. `command` is an executable path (relative to the mailspace root), run directly with no arguments and no shell, that prints one JSON object with `facts`, `sections` and `verdicts` on stdout. A missing, failing or non-JSON probe is reported as skipped and never fails `boot` |
 | `[absorb]` | `quiet_hours` (default 24, `0` turns the wait off): how long an item's newest event must stand before a role that may close it can absorb it |
 | `[judgment]` | Optional shadow screens on `vivi step --apply`: `provider` (only `typesafe`), `endpoint`, `model`, `timeout_ms` (default 4000) and `key_cmd` (a shell command whose stdout is the API key; required when `provider` is set). Provider answers never gate a completion |
@@ -272,15 +321,26 @@ mailspaces with one id collide at `vivi sync join`.
 | `[pump]`, `[pump.*]` | The pump; see below |
 | `[pools.<name>]` | One table per remote lane pool; see below |
 
+Memo retention can be set per tag. On a tagged memo save, Vivi checks only that
+identity's memos carrying each newly saved tag and deletes records dated
+strictly before the configured cutoff. Missing or invalid rules, and malformed
+memo dates, retain the memo. Durations accept bare seconds or `s`, `m`, `h`,
+and `d` units.
+
+```toml
+[memo.retain]
+digest = "90d"
+```
+
 ### Pools
 
 A pool table is complete on its own: nothing is inherited. Keys: `provider`
 (`fly` by default, `docker`, `ssh`, `local`, `runpod`), `repo` (`owner/name`),
-`slots`, `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `depth`,
+`slots`, `fallback` (next pool in the durable-job routing chain), `image`, `setup`, `seed`, `requires`, `facts`, `build_dir`, `depth`,
 `restore`, and the sub-tables `bands` (`P0` to `P5`, each a list of
 `{ model, reasoning }`), `github` (`app_id`, `private_key`), `harness` (`name`,
 `run`, `models`, `env`, `rules`), `committer` (`name`, `email`), `bridge`
-(`enabled`) and one table per provider (`fly`, `docker`, `ssh`, `local`,
+(`enabled`), `ramdisk` (local provider only), and one table per provider (`fly`, `docker`, `ssh`, `local`,
 `runpod`). A `local` pool with `[pools.<name>.local] worktree_of = "<repo>"`
 makes each slot a Git worktree of a repository already on the machine, with no
 network. With a single-target pump, the pump reads a local worktree pool's
@@ -293,6 +353,39 @@ receives only the environment variables its `env` list names.
 `vivi pool doctor` checks pools, providers and repositories and names the fix
 for each finding. `doctor --test` creates throwaway slots (billable on Fly; on
 RunPod it rents a GPU pod and also needs `--allow-spend`).
+
+Pool identity uses the exact mailspace UUID plus the pool name; the name slug
+is used only when the mailspace has no id. Shared-root slots use that key in
+their machine names or directory paths. Project-relative local roots are
+scoped by the project path. Slots made under older slug or short-prefix keys
+are not migrated or adopted under the UUID key; check provider inventory if
+old resources need cleanup.
+
+Only a `local` pool can enable a per-job RAM disk, and it requires macOS.
+`[pools.<name>.ramdisk] enabled = true` gives each job a fresh disk for its
+temporary checkout and build output. The default size is 8 GiB, with 6 GiB
+reserved for the host; a gate pool may need 32 GiB. The default environment
+turns off Cargo incremental output and debug symbols for those jobs. A custom
+`env` table replaces those defaults. Before mounting, Vivi checks free memory,
+already-held RAM disks and the configured margin. If a manual dispatch does
+not fit, it returns `ramdisk-wait`; a durable pump job remains pending if no
+configured fallback pool can accept it. There is no SSD fallback on that
+local slot. The disk is removed when the job finishes or is stopped.
+Teardown verifies that the attached device matches the job's ownership record;
+unknown or mismatched records are preserved with a warning. On pump startup,
+orphaned disks for that mailspace are swept while disks owned by live jobs are
+left attached.
+
+```toml
+[pools.workers]
+provider = "local"
+slots = 2
+
+[pools.workers.ramdisk]
+enabled = true
+size_gib = 8
+margin_gib = 6
+```
 
 A pool that needs no network, and that `vivi pool doctor` accepts:
 
@@ -319,176 +412,161 @@ dispatch and the MCP bridge are in the `vivi` skill (`vivi skills show vivi`).
 
 ## Role → pool routing
 
-Roles (`[[identities]]`) and pools (`[pools.<name>]`) are configured
-separately. Each role may name the pool it dispatches to. The pump routes
-every kind of work through that map: a Hand unit uses the hand role's pool,
-merge lanes equal the merge role's pool `slots`, and the gate, lint,
-auditor, head/CTO, triage, and cadence seats use their own role's pool.
+Roles (**[[identities]]**) and pools (**[pools.&lt;name&gt;]**) are configured
+separately. Unit tasks are sent to the role named by **[pump].to**; they still
+need a configured unit kind (**tools** or **default_kind**). When the hand role
+has a pool, that pool and its fallback chain are the unit's primary route. If
+the hand role has no pool, the kind's pool list supplies the route.
 
-```toml
-[[identities]]
-name = "hand"
-kind = "hand"
-pool = "glm"
-model = "P2-S0"
+Durable pool jobs are addressed to their work role: planner jobs use
+**planner**, integration jobs use **merge**, gates use **gate**, audits and
+investigations use **auditor**, promotions use **release** or **merge**, cadence
+jobs use the scheduled role, and reclaim uses **reclaim** or the hand role.
+Each role's assigned pool and configured fallback chain provide candidates.
+A job stays pending when none has capacity. A live merge pipeline needs a
+**merge** role with a pool; the old **[pump.merge].lanes** value does not run
+local merges. Gate jobs use the gate role and its fallback, with
+**[pump.gate].pools** available as additional candidates. If no auditor role is
+configured, gate audits have a built-in read-only fallback using gate pools;
+investigations require an auditor role.
 
-[[identities]]
-name = "merge"
-kind = "merge"
-pool = "host"
+Concurrency comes from a pool's **slots**. Optional **[pools.&lt;name&gt;.caps]**
+holds per-model caps inside that pool. A role may name a model slug, a band
+(**P0** to **P5**, optionally **-S0** to **-S3**), or a list of models. The
+pool's **harness.models** is the allow-list.
 
-[[identities]]
-name = "gate"
-kind = "gate"
-pool = "glm"
-read_only = true
-
-[pools.glm]
-provider = "local"
-slots = 10
-[pools.glm.harness]
-models = ["deepseek/deepseek-v4-flash", "zai/glm-5.3-flash"]
-[pools.glm.caps]
-"deepseek/deepseek-v4-flash" = 10
-
-[pools.host]
-provider = "local"
-slots = 4
-```
-
-Concurrency is the pool's `slots`. Optional `[pools.<name>.caps]` holds
-per-model caps inside that pool (the successor of `[[pump.dispatch.lanes]]`).
-A role may name a model slug, a band (`P0`–`P5`, optionally `-S0`–`-S3`), or
-`models = [...]`. The pool's `harness.models` is the allow-list.
-
-`read_only` is optional. Kinds default read-only for auditor, triage,
+**read_only** is optional. Kinds default read-only for auditor, triage,
 cadence/steward, head, and gate; hand, merge, and lint write. Existing
-`--read-only` flags still force read-only.
+**--read-only** flags still force read-only.
 
-When a role has no `pool`, the older `[pump.dispatch.kinds]`,
-`[[pump.dispatch.lanes]]`, `[pump.merge] lanes`, and `[pump.gate] pools`
-tables still work, with deprecation warnings. `vivi config migrate` (dry-run
-by default; `--write` applies and keeps a timestamped `.bak`) converts that
-legacy routing into `role.pool` assignments.
+A pool's **fallback = "&lt;pool&gt;"** points to the next candidate. The target
+must exist and cycles fail validation. Durable role jobs follow the role pool
+and then its fallback chain; unit tasks use the same fallback chain when the
+hand role has a pool. With no free candidate, the work waits. When the hand
+role has no pool, **[pump.dispatch.kinds]** routes unit tasks; the unit kind
+remains required even when the role has a pool. **[pump.dispatch.lanes]**
+supplies legacy model caps when a pool has no **[pools.&lt;name&gt;.caps]**.
 
-```sh
-vivi config show [--resolved] [--json | --porcelain]
-vivi config validate [--json]
-vivi config migrate [--write]
-vivi role pool <role> <pool>
-vivi role set <role> --pool <pool> --read-only true
-vivi pool list [--json | --porcelain]
-vivi pool show <name> [--resolved]
-vivi pool add <name> --provider local --slots N [--worktree-of PATH]
-vivi pool set <name> <key> <value>
-vivi pool unset <name> <key>
-vivi pool remove <name> --yes [--force]
-vivi pool bands set <pool> <band> <model> [reasoning]
-vivi pool bands unset <pool> <band>
-vivi pool clean [--pool <name>] [--dry-run]
-vivi pool reset [<slot>] [--pool <name>] [--base <branch>]
-```
+**vivi config migrate** (dry-run by default; **--write** applies and keeps a
+timestamped **.bak**) converts supported legacy dispatch and gate routing into
+role pool assignments. **[pump.merge].lanes** is not a live merge route.
 
-Writers preserve comments and only write keys that were set. `vivi config
-validate` checks roles, pools, and pump together (unknown pools, missing
-hand/merge/gate pools, bands without a bands table, models outside
-`harness.models`, read-only mismatches) and also runs at `vivi pump run|once`
-start. A full role pool waits: the assignment stays pending, with no
-spillover to another pool.
+When **[pump]** is configured, **vivi config validate** requires an active
+planner role with a pool. It validates roles and pool references, fallback
+targets and cycles, model bands, read-only settings, and configured pump
+requirements. Run it before starting the pump; it also runs at **vivi pump
+run|once** startup.
+
+**vivi config show**, **vivi config validate**, and **vivi config migrate**
+inspect, validate, and migrate routing. **vivi role pool** and **vivi role
+set** assign role settings. **vivi pool list**, **show**, **add**, **set**,
+**unset**, and **remove** manage pools; **vivi pool bands set|unset** sets
+model bands. **vivi pool clean** and **reset** manage slot checkouts.
+
+Writers preserve comments and only write keys that were set. A full pool and
+all of its configured fallback candidates leave the work pending.
 
 ## The pump
 
-`vivi pump` works through a backlog without an operator in the loop. It is
-project-neutral: the project supplies its commands and names in the `[pump]`
-tables of `mailspace.toml`, and the engine holds no project rules.
+The pump plans a Vivi backlog, dispatches unit tasks, integrates returned work,
+and gates the integration branch. Planning, merging, gate runs, audits,
+promotions, cadence runs, investigations, and reclaim use persisted pool jobs.
+The pump records each job before choosing a slot; jobs without capacity stay
+pending, and dispatched work remains owned by its pool across pump restarts.
 
-Each tick the pump:
-
-1. **Plans.** Finds open needs addressed to its `reply_from` role (or held for
-   it): those from the senders in `[pump.board] from`, or any such need
-   carrying the approval mark, `pump` by default. A need addressed to another
-   recipient is not its work, and a reply on an existing thread is never
-   planned. It writes the need thread and a prompt under its home, and starts a
-   planner (`[pump.planner] run`, prompt on stdin, at most `planners_max` at a
-   time). The planner writes `plans/<need>.json`: a verdict and a list of units,
-   each with `id`, `brief` and `write_scope`, and optionally `title`, `after`
-   (units it waits for), `proof` (commands) and `tools` (the unit's kind).
-2. **Dispatches.** Sends each ready unit as a task and hands it to a pool with
-   `vivi pool dispatch`. The hand role's `pool` wins when set; otherwise the
-   unit's kind (`[pump.dispatch.kinds]`; `default_kind` when `tools` is empty)
-   picks the listed pool with the most free slots. A full role pool waits
-   (no spillover). The model comes from the role, then `[pools.<name>.caps]`,
-   then legacy `lanes`. The branch is `unit/<id>-a<attempt>`. Units whose
-   write scopes overlap do not run at the same time, nor do units touching a
-   path listed in the reserved file (paths another session holds). A unit
-   naming an unknown kind is held and reported. A failed attempt is retried
-   up to `max_attempts`, then the unit is marked stuck and written to
-   `exceptions.txt`.
-3. **Merges.** Merges returned unit branches into an integration branch
-   (`branch`, on `remote`) in batches of at most `merge.batch`. Merge lane
-   count is the merge role's pool `slots` when that role sets `pool`, else
-   `[pump.merge] lanes`. A `provider = "local"` host pool is a valid choice
-   for today's pump-host merge. Then it runs the format
-   command and shared checks and then each unit's own proof. A failing unit
-   proof isolates that unit; a failing shared check on a batch of several units
-   sets the whole batch aside on `pump/quarantine/<id>` (the units become
-   `quarantined`) and opens one repair unit, ranked first, that starts from
-   that branch.
-4. **Gates.** After `every_merges` merges, or after `every_seconds` with new
-   merges, a read-only gate worker (`[pump.gate] command`, on the gate
-   role's pool when set, else one of `gate.pools`) measures the tree and
-   reports failing test names between
-   `FAILING-BEGIN` and `FAILING-END` markers. With `results_dir` set, an
-   external runner on any machine can supply the result instead by writing
-   `<tip>.json` there; the pool gate is the fallback after
-   `results_wait_seconds`. Names in `ignore_file` never count. The first
-   readable gate becomes the baseline; failures that are new against it are
-   owned by a gate-fix planner, and merging never stops for a red gate.
-5. **Promotes.** A gate with no new failure and no owned failure still red
-   fast-forwards `main` to the gated tip, so `main` never gets redder. It never
-   forces, and skips the push when `main` has moved. `promote = false` turns it
-   off.
-
-`vivi pump run` loops until a `STOP` file appears in the home, `vivi pump once`
-runs one tick, `vivi pump status` prints `status.txt` (or `no status yet`), and
-`vivi pump log` tails and filters `log.txt` (`-f` follows it).
-A second pump on the same home refuses to start. Defaults:
-
-| Table | Keys (default) |
+| Work | Role and pool |
 | --- | --- |
-| `[pump]` | `branch` (required), `committer_name` and `committer_email` (required; every pump commit uses them), `remote_url` (clone source when `repo` is missing), `reserved_file` (`reserved.txt` in home), `remote` (`origin`), `main` (`main`; empty turns off merging main in and promotion), `promote` (`true`), `tick` (20 s), `home` (`<project>/.vivi/pump`), `repo` (`<home>/repo`), `shell_prefix` (runs before every command, many per tick — keep it near-free), `hand_rules` (a file; default is an embedded generic text), `fix_prefix` (`pumpfix`), `from` (`operator`), `to` (`hand`), `reply_from` (`mind`) |
-| `[pump.board]` | `from` (list), `since`, `mark` (`pump`), `every` (300 s), `planners_max` (3), `plan_timeout` (1800 s), `reply_to`, `pull` (`true`: run `vivi sync pull` first), `push_since` (`30m`) |
-| `[pump.planner]` | `run` (command; `{charter}` becomes `charter`), `charter` (file), `split_hard_cap` (5400 s) |
-| `[pump.dispatch]` | `lanes` (legacy list of `{ model, cap }`; omit when a role assigns a pool), `last_resort` (model), `max_attempts` (3), `budget` (600 s), `overdue_grace` (900 s), `per_tick` (6), `from`, `default_kind` (legacy, with `kinds`) |
-| `[pump.dispatch.kinds.<name>]` | legacy: `pools` (non-empty list; used only when the hand role has no `pool`), `max` (cap on that kind in flight), `skip_proof` (`false`) |
-| `[pump.merge]` | `batch` (8), `lanes` (1; unused when the merge role sets `pool`), `format`, `shared_checks` (list), `proof_timeout` (300 s), `remote_wait` (90 s), `remote_limit` (1800 s) |
-| `[pump.gate]` | `command` (required), `every_merges` (8), `every_seconds` (1800), `pools` (legacy list; unused when the gate role sets `pool`), `model`, `budget` (1800 s), `results_dir`, `results_wait_seconds`, `ignore_file`, `max_replans` (2) |
+| Unit tasks | The role named by **[pump].to**, using its pool and fallback chain. Unit plans still need a configured **tools** kind or **default_kind**; when the hand role has no pool, the kind's pool list is used. |
+| Whole-need, revision, and split planning | The active **planner** role and its pool. This role with a pool is required when **[pump]** is configured. |
+| Integration merges | The **merge** role and its pool. This role runs the merge checks and returns a candidate commit; the privileged pool runner publishes it. |
+| Gates | The read-only **gate** role and its pool, or legacy **[pump.gate].pools** routing. |
+| Audits and investigations | The **auditor** role and its pool, followed by gate-pool candidates for audits. Without an auditor role, gate audits use a built-in read-only fallback; investigations require an auditor role. |
+| Promotion | The **release** role, or **merge** when no release role exists. |
+| Cadence and digest | The role whose schedule is due. |
+| Reclaim | The **reclaim** role, or the hand role, using local pools only. |
 
-The config is validated at start and every violation is named: an empty
-`branch`, no `lanes` when no role assigns a pool, a zero `tick`, `per_tick`,
-`batch`, `max_attempts` or `every_merges`, a missing committer or gate
-command, no `shared_checks` while promotion is on, an unreadable
-`hand_rules` file, an undefined `default_kind`, or a pool name that is not
-a `[pools.*]` table. A missing integration clone is
-cloned from `remote_url`, or the pump refuses to start. The pump needs
-those pools to dispatch to and a Git remote it can reach.
+A pool can name a **fallback** pool. Durable jobs try the role's assigned pool
+and then its fallback chain; they remain pending when no candidate has a free
+slot. **vivi config validate** checks pool references and rejects fallback
+cycles. The legacy **[pump.dispatch.kinds]** tables can still route unit tasks
+when the hand role has no pool. **[pump.planner].run** and **charter** are not
+executed.
 
-The home holds `state.json` (the pump's whole memory, saved atomically),
-`status.txt`, `log.txt`, `exceptions.txt` (what needs a person),
-`needs-ready.txt`, `lock`, and the working directories `plans/`, `needs/`,
-`board/`, `resplit/`, `gatefix/`, `merge-jobs/`, `briefs/` and `repo/` (the
-integration clone). Operators steer it with files in the home: `STOP` (exit
-after the tick), `PAUSE` (merge and collect but dispatch nothing), `HOLD-MERGE`
-(feed only fix units to the merger until a clean gate), `FORCE-GATE` (start a
-gate now), `REMOTE-MERGE` (offer merge batches to a remote merger first),
-`skip.txt` (need handles never to plan) and the reserved file (paths whose
-units wait).
+The pump saves its live state, including the durable jobs map, in
+**&lt;project&gt;/.vivi/pump/pump.db**. A restart reattaches jobs by their stable task
+markers, reads pool receipts, and applies results through the ordinary tick
+path. **vivi pump stop** finishes the current tick and exits; it does not cancel
+or drain pool jobs. Those jobs continue in their pools and are recovered by
+the next pump start. A paused pump collects completed work and performs board
+bookkeeping, but starts no new dispatch, merge, or gate work. Valid routing,
+pool, dispatch, merge, gate, budget, and check changes are loaded between
+ticks; changing the pump home or repository target paths requires a restart.
 
-The design record is
-[`skills/vivi/references/pump-contract.md`](skills/vivi/references/pump-contract.md) and
-[`skills/vivi/references/pump-protocols.md`](skills/vivi/references/pump-protocols.md).
-It ships inside the binary: `vivi skills show vivi --file references/pump-contract.md`. As with any design record,
-check a detail against the code before relying on it.
+A merge worker integrates the listed unit and completed role branches, runs
+the configured formatter, shared checks, matching scope checks, and unit
+proofs, then commits a candidate without pushing. The privileged pool runner
+publishes the candidate to the configured integration ref. The pump checks
+the runner publication receipt, exact ref and candidate, and remote ancestry
+before marking units merged. Promotion is also a role job and is recorded
+only after the configured main ref is verified to contain the gated commit.
+See [the pump contract](skills/vivi/references/pump-contract.md) and
+[the receipt protocols](skills/vivi/references/pump-protocols.md) for exact
+state and result contracts.
+
+A gate is due when there is no baseline, when a merge has landed since the
+previous gate, or when **FORCE-GATE** requests one. The legacy
+**every_merges** and **every_seconds** values are ignored. The gate pins one
+integration tip and runs read-only. New or residual failures go to a durable
+auditor job; its valid report creates fix units. An optional external runner
+can supply a gate result while its configured heartbeat is fresh.
+
+**vivi pump replan &lt;need&gt;** queues a fresh plan for the next tick. It supersedes
+the existing plan file, withdraws pending, held, stuck, and **needs-replan**
+units, keeps merged units, and plans from the current thread. It refuses
+while live unit work or a planner is running for that need unless **--force**
+is supplied; forced replanning leaves live work running.
+
+Role cadence uses each role's latest durable outbound signal. Due runs appear
+in the board and pump status. Head-ceo investigations use a need marked
+**investigate** with a body line **for: &lt;want-handle&gt;**; the need closes only
+when a recent auditor report reply lands on that want addressed to head-ceo. The
+default cap is two rounds per want, configurable with
+**investigation-rounds: N** in the head-ceo charter.
+
+The pump home defaults to **&lt;project&gt;/.vivi/pump**. It stores **pump.db**,
+**status.txt**, **log.txt**, **exceptions.txt**, plan/job briefs, and bounded tick
+receipts for **vivi monitor**. **HOLD-MERGE**, **FORCE-GATE**, **skip.txt**, and the
+reserved-path file are operator controls. Use **vivi pump pause**, **vivi pump resume**, **vivi pump stop**, and **vivi pump start**;
+there are no live STOP or PAUSE marker files. The old **REMOTE-MERGE** flag,
+**merge-jobs/** protocol, detached planner reapers, and local merge thread are
+not the live execution path.
+
+Use **vivi monitor** for persisted task, pool, pump, and tick snapshots.
+Selecting a monitor row tails its raw log; log contents are not redacted. Use
+**vivi report** for records and grouped throughput, duration, need, and failure
+views. Missing historical timing fields remain unavailable rather than zero.
+Filters, formats, and measures are in
+[monitoring and reports](skills/vivi/references/monitoring-and-reports.md).
+
+## Delivery
+
+```sh
+vivi delivery send --from <mind> --to <merge-role> --branch <branch> --tip <sha> --base <sha> --gate "<command>" --gate-result "<result>"
+vivi delivery close <handle> --for <merge-role> --merge-commit <sha>
+```
+
+`vivi delivery send` pushes the Mind's local integration branch to
+`refs/heads/mind/<branch>` and files a structured need assigned to the merge
+role. It records the local and remote branch names, base and tip, push status,
+gate command and result, completed needs, blocked needs with reasons, and newly
+filed work. The command records the supplied gate result; it does not run the
+gate. If the push fails, the need is still filed with `push.status =
+not_pushed` and a safe failure detail.
+
+After the merge role lands the branch on `main`, close the delivery need with
+`vivi delivery close <handle> --for <merge-role> --merge-commit <sha>`. The
+close event records the main commit as provenance, which appears in `need
+show` and travels with the need.
 
 ## The proxy
 
