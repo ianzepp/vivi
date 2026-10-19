@@ -34,6 +34,9 @@ const EXTERNAL_POOL: &str = "external";
 /// The `state.json` key holding the epoch seconds a due gate began waiting
 /// for an external result.
 const WAIT_KEY: &str = "external_wait_since";
+/// The file an external gate runner touches in `results_dir` to prove it is
+/// alive; its age decides whether a due gate waits at all.
+const HEARTBEAT: &str = "heartbeat";
 /// The payload the hold cycle writes into `FORCE-GATE`.
 const FORCE_TEXT: &str = "after fixes\n";
 /// The payload written to `HOLD-MERGE` while owned reds remain.
@@ -176,14 +179,25 @@ fn set_aside(ctx: &Ctx, dir: &Path, path: &Path, why: &str) {
 }
 
 /// `true` while a due gate should keep waiting for an external result:
-/// `results_dir` is set and the wait, started the first time a gate was due,
+/// `results_dir` is set, its `heartbeat` file is younger than twice
+/// `results_wait_seconds`, and the wait, started the first time a gate was due,
 /// is younger than `results_wait_seconds`. Starts the wait when it is not
-/// running yet; an elapsed wait is cleared so the pool gate goes out.
+/// running yet; an elapsed wait is cleared so the pool gate goes out. A missing
+/// or stale heartbeat means no external runner is alive: the marker is cleared
+/// and the pool gate goes out at once, because a dead runner must never delay
+/// a gate.
 fn waiting_for_external(ctx: &Ctx, st: &mut State) -> bool {
-    if ctx.cfg.gate.results_dir.is_none() {
+    let Some(dir) = ctx.cfg.results_dir(&ctx.project) else {
+        return false;
+    };
+    let now = ctx.now();
+    if let Some(reason) = stalled_runner(ctx, &dir, now) {
+        st.extra.remove(WAIT_KEY);
+        ctx.log(&format!(
+            "external gate runner heartbeat {reason}; not waiting for results_dir"
+        ));
         return false;
     }
-    let now = ctx.now();
     let since = st
         .extra
         .get(WAIT_KEY)
@@ -198,12 +212,29 @@ fn waiting_for_external(ctx: &Ctx, st: &mut State) -> bool {
     false
 }
 
+/// Why `results_dir` holds no proof of a live external runner at `now`:
+/// `Some("missing")` when there is no `heartbeat` file, `Some("stale")` when
+/// its modification time is older than twice `results_wait_seconds`.
+fn stalled_runner(ctx: &Ctx, dir: &Path, now: u64) -> Option<&'static str> {
+    let path = dir.join(HEARTBEAT);
+    if !path.is_file() {
+        return Some("missing");
+    }
+    let window = ctx.cfg.gate.results_wait_seconds.saturating_mul(2);
+    if now.saturating_sub(file_mtime(&path)) > window {
+        return Some("stale");
+    }
+    None
+}
+
 /// Start a gate when one is due: send the gate brief as a task
 /// and dispatch it read-only on the first gate pool with a free slot. Does
 /// nothing while a gate task is open, when no pool is free, when the remote
 /// tip is not a 40-hex commit, or while a due gate is still inside its
 /// `results_wait_seconds` wait for an external result (a pool gate is only
-/// the fallback). A failed dispatch closes the task and
+/// the fallback). The wait only happens while `results_dir` holds a fresh
+/// `heartbeat` file; a missing or stale one dispatches the pool gate at once.
+/// A failed dispatch closes the task and
 /// records nothing; a successful one clears `FORCE-GATE` (when it forced the
 /// gate) and stores the run in `last_gate`.
 pub fn start_gate(ctx: &Ctx, st: &mut State) {
