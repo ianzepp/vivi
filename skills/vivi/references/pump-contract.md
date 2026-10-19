@@ -112,6 +112,12 @@ directory:
 | `sync-push.log` | detached `vivi sync push` | operator | shell redirect |
 | operator scripts, notes and their logs | operator | operator | not engine state |
 
+**The planner charter still demands one TESTNAME filter per proof command.**
+The engine enforces it at ingest (§5), rejecting a plan that breaks it; the
+charter entry in `planner-charter.md` keeps planners from writing plans that
+are rejected in the first place. A full path such as
+`sync::watch::tests::name` is one filter; two filters need two commands.
+
 ## 4. Flag files
 
 Operator and pump flags live in `home`:
@@ -178,7 +184,7 @@ as marked):
 | `brief` | string | the unit's work description |
 | `write_scope` | array of path strings | files the unit may touch |
 | `after` | array of unit ids | prerequisites; must be satisfied before dispatch |
-| `proof` | array of command strings | commands that must exit 0 on the merged tree |
+| `proof` | array of command strings | commands that must exit 0 on the merged tree. Validated at ingest: the first word must be a known binary, and a `cargo test` proof takes one TESTNAME filter (use a full path such as `sync::watch::tests::name`, or two separate commands); an invalid proof rejects the plan with a `bad-plan` exception carrying the exact error |
 | `tools` | string | the unit's kind: a key of `[pump.dispatch.kinds]` (§9); empty means `default_kind`. Selects the pool, the in-flight cap, and whether the merger runs the unit's own proof |
 | `status` | string | the state machine state (§6) |
 | `attempts` | int | dispatches so far; incremented at dispatch |
@@ -256,7 +262,7 @@ rules:
   `revision-conflict` and the current unit stays;
 - an inflight, delivered, merging or splitting unit is immutable; the addendum
   becomes a new unit;
-- a pending unit is amended from the plan;
+- a `pending`, `held` or `needs-replan` unit is amended from the plan (and returns to `pending`);
 - a unit absent from the plan is kept; `withdraw` names the pending units to
   withdraw;
 - a new id is minted `pending` at the new revision;
@@ -274,6 +280,7 @@ States:
 | --- | --- | --- | --- |
 | `pending` | waiting to dispatch | no | no |
 | `held` | configured repository target is missing; returns to `pending` when it is restored | no | no |
+| `needs-replan` | the unit's proof failed as a usage error: a plan defect, parked; a revision plan amends it back to `pending` | no | no |
 | `inflight` | dispatched to a pool slot; a task handle exists | no | no |
 | `delivered` | the worker's branch exists on the remote; waiting to merge | no | no |
 | `merging` | queued to or being handled by the merge thread | no | no |
@@ -316,6 +323,7 @@ Transitions (from, to, trigger, guard, action):
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `merged_at`, `outside`, `merges+=1`; a `merges` row; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
 | `merging` | `delivered` | merge result `ok=null` (`push-failed`, `merge-error`, `merge-undecided`) | — | back to `delivered`; the next feed retries |
 | `merging` | `pending` or `stuck` | merge result `ok=false` (`fetch-failed`, `merge-conflict`, `proof-failed`) | — | `fail` as above, with the merge's `why`/`detail` |
+| `merging` | `needs-replan` | merge result `ok=false, why="proof-usage"` | — | no history entry and no attempt charged; a `needs-replan` exception naming the unit and the command; a revision is requested from the planner through the amendment path (§5.3) |
 | `merging` | `quarantined` | merge result `ok=null, why="quarantined"` carrying a `quarantine` record | a shared check failed on a batch of several units | `quarantine=<id>`, `since=now`; the first result of the batch also opens the repair unit (below) |
 | `quarantined` | `merged` | the repair unit `<fix_prefix>-<id>` merges | — | every unit still `quarantined` under that id merges with the repair's tip: `commit`, `merged_at`, `merges+=1`, need closing, exactly as a merge result `ok=true` |
 | `quarantined` | `delivered` (solo) | the repair unit goes `stuck` (including `split-no-answer`) | — | `solo=true`, `quarantine=null`; `quarantine-stuck` exception; the next feed puts each solo unit in a batch of its own, and a solo unit that fails a shared check fails normally (`proof-failed`, back to a hand) |
@@ -751,8 +759,6 @@ Not built, as decided in this contract:
   file stays private to the pump's directory and is never written by those
   commands.
 - Units and plans are plan files, not Vivi graph nodes.
-- Project-specific proof rewriting: the planner charter should demand one
-  filter per proof command.
 
 The first decision-hook event (the one config cannot express): `gate_result` —
 classifying a gate worker's reply into failing test names when it carries no
