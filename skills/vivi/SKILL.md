@@ -347,7 +347,9 @@ unlocks dependents and fires a bound need's join (see Work Graphs). Naming a
 copy another role holds is refused, and the error names the holder, the report
 command to retry with `--for <holder>`, and who may close. A reporter may
 reopen its own report; it cannot reopen what an acceptor closed (`only the
-owner can reopen it`; ask a role that may close in a reply).
+owner can reopen it`; ask a role that may close in a reply). `need done` and
+`task done` print a `timing:` summary line (open-to-done, attempts, agent
+time, slowest attempt) built from the thread's attempt records.
 
 The state is the newest event, and the order is a total one: the newest
 instant wins, then the deeper `X-Vivi-Event-Prev` chain (an event that

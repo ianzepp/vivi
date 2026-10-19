@@ -80,15 +80,18 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             for_identity,
             note,
             project,
-        } => move_item(
-            handle,
-            for_identity,
-            note.as_ref(),
-            project.as_deref(),
-            "done",
-            "need done",
-            "done",
-        )?,
+        } => {
+            move_item(
+                handle,
+                for_identity,
+                note.as_ref(),
+                project.as_deref(),
+                "done",
+                "need done",
+                "done",
+            )?;
+            print_close_timing(project.as_deref(), handle, false);
+        }
         NeedCommand::Reopen {
             handle,
             for_identity,
@@ -451,6 +454,55 @@ fn move_item(
     )?;
     print_move_receipt(&moved, verb);
     Ok(())
+}
+
+/// The `timing:` close line `need done` and `task done` print: open-to-done,
+/// attempts, summed agent time and the slowest attempt, read from the
+/// closed item's thread. A missing or unreadable thread prints nothing, so
+/// the close itself never fails.
+pub(crate) fn print_close_timing(
+    project: Option<&std::path::Path>,
+    handle: &str,
+    receipts: bool,
+) {
+    if let Some((opened, attempts)) = read_close_thread(project, handle, receipts) {
+        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
+        println!(
+            "{}",
+            vivi::pump::attempt_read::timing_summary(opened, &attempts, now)
+        );
+    }
+}
+
+/// The thread's open epoch and attempt fields for [`print_close_timing`],
+/// or `None` when the mailspace or the thread cannot be read.
+fn read_close_thread(
+    project: Option<&std::path::Path>,
+    handle: &str,
+    receipts: bool,
+) -> Option<(Option<u64>, Vec<vivi::pump::attempt_read::AttemptFields>)> {
+    let Ok(mailspace) = Mailspace::discover(project) else {
+        return None;
+    };
+    let Ok(messages) = mailspace.thread(handle, false, usize::MAX, usize::MAX) else {
+        return None;
+    };
+    let attempts = messages
+        .iter()
+        .filter_map(|message| {
+            if receipts {
+                let mut attempt = vivi::pump::attempt_read::parse_receipt(&message.body)?;
+                attempt.end = vivi::pump::attempt_read::opened_epoch(&message.date);
+                Some(attempt)
+            } else {
+                vivi::pump::attempt_read::parse_record(&message.body)
+            }
+        })
+        .collect();
+    let opened = messages
+        .first()
+        .and_then(|message| vivi::pump::attempt_read::opened_epoch(&message.date));
+    Some((opened, attempts))
 }
 
 /// Print a move's one-line receipt, then one line per bound need the move

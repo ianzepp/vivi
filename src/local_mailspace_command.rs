@@ -544,7 +544,10 @@ fn done_task(
         verdict,
         repo,
         tip,
-    )
+    )?;
+    // Task threads carry the pool's result replies, not attempt records.
+    crate::local_work_command::print_close_timing(project, handle, true);
+    Ok(())
 }
 
 fn reopen_task(
