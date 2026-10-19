@@ -194,6 +194,10 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
 const PLANNER_TRIES: u32 = 3;
 const PLANNER_BACKOFF: u64 = 60;
 
+/// Seconds of relaunch delay for a planner a provider rate-limited, before
+/// the per-handle [`crate::pump::transient::jitter`] spread is added.
+const RATE_LIMIT_RETRY: u64 = 120;
+
 /// `<home>/board/<handle>.out`, the planner's captured output.
 fn out_path(ctx: &Ctx, handle: &str) -> PathBuf {
     ctx.home.join("board").join(format!("{handle}.out"))
@@ -202,13 +206,26 @@ fn out_path(ctx: &Ctx, handle: &str) -> PathBuf {
 /// Log, flag and free one planner that exited without writing its plan: the
 /// slot opens this pass, a relaunch waits [`PLANNER_BACKOFF`] doubled per
 /// prior failure, and after [`PLANNER_TRIES`] failures the need parks as
-/// `plan-failed`.
+/// `plan-failed`. A provider 429 / rate-limit / overload in the planner's
+/// output is transient instead: it relaunches after [`RATE_LIMIT_RETRY`]
+/// plus jitter and leaves the failure budget untouched.
 fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
     let code = match fs::read_to_string(exit_receipt_path(&out_path(ctx, handle))) {
         Ok(text) => text.trim().parse::<i32>().unwrap_or(-1),
         Err(_) => -1,
     };
     let text = fs::read_to_string(out_path(ctx, handle)).unwrap_or_default();
+    if crate::pump::transient::provider_rate_limited(&text) {
+        st.board.planner_pids.remove(handle);
+        let delay = RATE_LIMIT_RETRY + crate::pump::transient::jitter(handle);
+        st.board
+            .planner_retry_at
+            .insert(handle.to_owned(), ctx.now() + delay);
+        ctx.log(&format!(
+            "board: planner {handle} rate-limited; retry in {delay}s; failure budget untouched"
+        ));
+        return;
+    }
     let tail = tail_note(&text, 200);
     ctx.log(&format!("board: planner {handle} exited rc={code}: {tail}"));
     ctx.exception(
