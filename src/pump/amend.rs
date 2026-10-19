@@ -34,9 +34,7 @@ pub fn detect(ctx: &Ctx, st: &mut State) {
 
 /// Check one planned need and start a revision when its thread moved.
 fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u64>) {
-    if st.closed_needs.iter().any(|closed| closed == handle)
-        || st.board.revision_planning.contains_key(handle)
-    {
+    if st.board.revision_planning.contains_key(handle) {
         return;
     }
     let Some((seen, old_hash)) = st
