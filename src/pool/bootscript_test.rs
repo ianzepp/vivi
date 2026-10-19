@@ -146,11 +146,12 @@ fn job_runner_is_generic_and_keeps_privileged_publish_outside_the_agent() {
     assert!(job::RUNNER.contains("runuser -u hand"));
     assert!(job::RUNNER.contains("env -i"));
     assert!(job::RUNNER.contains(r#"timeout -k 15 "$BUDGET""#));
-    assert!(job::RUNNER.contains("HEAD:refs/heads/$BRANCH"));
-    assert!(
-        job::RUNNER
-            .contains(r#"git -C "$RD" push -q "$PUBLISH_URL" "$PUBLISH_CANDIDATE:$PUBLISH_REF""#)
-    );
+    assert!(job::RUNNER.contains("\"refs/heads/$BRANCH\" \"$RUNNER_SHA\" no"));
+    assert!(job::RUNNER.contains(
+        r#"publish_candidate_to "$PUBLISH_URL" "$PUBLISH_REF" "$PUBLISH_CANDIDATE" yes"#
+    ));
+    assert!(job::RUNNER.contains(r#"publisher_git push --no-verify -q "$url" "$candidate:$ref""#));
+    assert!(job::RUNNER.contains(r#"as_hand bash < "$J/target-seed.sh""#));
     assert!(!job::RUNNER.contains("--force"));
     assert!(!job::RUNNER.contains("push -f"));
     // The Git token is read into the runner only, not into the agent's env.
@@ -246,7 +247,7 @@ fn the_runner_takes_a_full_remote_and_adds_the_token_only_to_https() {
         r#"URL=$REMOTE"#,
         r#"https://*) [ -n "$TOKEN" ] && URL="https://x-access-token:${TOKEN}@${REMOTE#https://}""#,
         r#"git fetch -q --depth "${DEPTH:-50}" "$URL" "$FROM""#,
-        r#"git push -q "$URL" "HEAD:refs/heads/$BRANCH""#,
+        r#"publish_candidate_to "$(clean_publish_url "$REMOTE")" "refs/heads/$BRANCH" "$RUNNER_SHA" no"#,
     ] {
         assert!(job::RUNNER.contains(needed), "runner lacks {needed}");
     }

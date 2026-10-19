@@ -439,7 +439,9 @@ if [ -n "${CHECKOUT_KEY:-}" ] && [ ! -f "$CACHE/prepared" ]; then
       [ -z "$requirement" ] || as_hand bash -c "$requirement" || finish target_requirement_failed
     done < "$J/target-requires.txt"
   fi
-  [ ! -f "$J/target-seed.sh" ] || as_hand bash "$J/target-seed.sh" || finish target_seed_failed
+  # The job directory holds root-only credentials; pass the script through
+  # stdin rather than giving hand a path it cannot open.
+  [ ! -f "$J/target-seed.sh" ] || as_hand bash < "$J/target-seed.sh" || finish target_seed_failed
   as_hand git reset -q --hard "$START" && as_hand git clean "${CLEAN[@]}" || finish checkout_failed
   touch "$CACHE/prepared"
 fi

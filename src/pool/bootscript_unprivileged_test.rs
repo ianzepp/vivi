@@ -20,10 +20,10 @@ use crate::pool::selftest_source as source;
 use crate::pool::{job, ssh_script};
 
 /// Tools the scripts may use, linked into the private PATH.
-const ALLOWED: [&str; 33] = [
+const ALLOWED: [&str; 34] = [
     "bash", "sh", "git", "date", "awk", "cat", "tar", "rm", "mkdir", "sed", "head", "tr", "cut",
     "du", "mv", "touch", "sleep", "printf", "env", "sync", "chmod", "cp", "dirname", "basename",
-    "ls", "grep", "uname", "id", "pwd", "wc", "sort", "gzip", "tail",
+    "ls", "grep", "uname", "id", "pwd", "wc", "sort", "gzip", "tail", "mktemp",
 ];
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
