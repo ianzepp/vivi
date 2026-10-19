@@ -61,3 +61,39 @@ fn core_backoff_secs_doubles_and_caps() {
     assert_eq!(backoff_secs(6), 1_920);
     assert_eq!(backoff_secs(99), 1_920);
 }
+
+#[test]
+fn core_parse_role_rows_skips_prefix_noise() {
+    let out = concat!(
+        "pump log noise\n",
+        r#"[{"name":"head-1","kind":"head","status":"active","#,
+        r#""cadence":"4h","pool":"fast"},{"name":"mind","status":"active"}]"#,
+    );
+    let rows = parse_role_rows(out);
+    assert_eq!(rows.len(), 2);
+    let mut expected = scan("head-1", Some("head"), "active", Some("4h"));
+    expected.pool = Some(String::from("fast"));
+    assert_eq!(rows[0], expected);
+    assert_eq!(rows[0].pool.as_deref(), Some("fast"));
+    assert_eq!(rows[1], scan("mind", None, "active", None));
+    assert!(parse_role_rows("no json").is_empty());
+}
+
+#[test]
+fn core_parse_schedule_reads_state_and_age() {
+    let prefix = "pump log noise\n";
+    let with_age = r#"{"name":"head-1","schedule":{"state":"due","cadence_seconds":14400,"age_seconds":15000}}"#;
+    assert_eq!(
+        parse_schedule(&format!("{prefix}{with_age}")),
+        Some((String::from("due"), Some(15_000)))
+    );
+
+    let no_age = r#"{"name":"head-1","schedule":{"state":"due","cadence_seconds":14400}}"#;
+    assert_eq!(
+        parse_schedule(&format!("{prefix}{no_age}")),
+        Some((String::from("due"), None))
+    );
+
+    assert_eq!(parse_schedule("garbage"), None);
+    assert_eq!(parse_schedule(r#"{"name":"head-1"}"#), None);
+}

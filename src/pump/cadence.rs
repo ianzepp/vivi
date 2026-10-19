@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::pump::state::State;
 
@@ -83,6 +84,55 @@ pub fn set_state(st: &mut State, cadence: &CadenceState) {
 #[must_use]
 pub fn backoff_secs(attempt: u32) -> u64 {
     BACKOFF_BASE << attempt.saturating_sub(1).min(5)
+}
+
+/// Parse the JSON array of `role list --json`, skipping any text before the
+/// first `[`. Invalid output gives an empty vector.
+#[must_use]
+pub fn parse_role_rows(out: &str) -> Vec<RoleScan> {
+    let Some(start) = out.find('[') else {
+        return Vec::new();
+    };
+    let Ok(values) = serde_json::from_str::<Vec<Value>>(&out[start..]) else {
+        return Vec::new();
+    };
+    values.iter().map(role_scan_from).collect()
+}
+
+/// Build a scan from one JSON object; missing keys fall back to defaults.
+fn role_scan_from(value: &Value) -> RoleScan {
+    RoleScan {
+        name: value
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        kind: value.get("kind").and_then(Value::as_str).map(String::from),
+        status: value
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        cadence: value
+            .get("cadence")
+            .and_then(Value::as_str)
+            .map(String::from),
+        pool: value.get("pool").and_then(Value::as_str).map(String::from),
+    }
+}
+
+/// Parse `role status <name> --json` into its schedule state and age seconds.
+/// Returns `None` without a JSON object, `schedule`, or `state`.
+#[must_use]
+pub fn parse_schedule(out: &str) -> Option<(String, Option<u64>)> {
+    let start = out.find('{')?;
+    let Ok(value) = serde_json::from_str::<Value>(&out[start..]) else {
+        return None;
+    };
+    let schedule = value.get("schedule")?;
+    let state = schedule.get("state")?.as_str()?.to_string();
+    let age = schedule.get("age_seconds").and_then(Value::as_u64);
+    Some((state, age))
 }
 
 #[cfg(test)]
