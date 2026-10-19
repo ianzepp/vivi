@@ -769,7 +769,8 @@ impl Mailspace {
 
     /// Settle the items the letters named by `content_ids` belong to: an event
     /// letter settles its item, a work item settles itself against the events
-    /// held for it. Idempotent: an item already at its head changes nothing.
+    /// held for it, and a verdict-carrying report letter settles the item it
+    /// replies to. Idempotent: an item already at its head changes nothing.
     ///
     /// # Errors
     /// Returns a [`VivariumError`] on storage failure.
@@ -809,9 +810,17 @@ impl Mailspace {
                             by_event.insert(item.content_id);
                         }
                     }
-                    None => {
-                        by_item.insert(content_id.clone());
-                    }
+                    None => match property::verdict_report_item(&storage, &bytes)? {
+                        // A report letter carrying a close's verdict
+                        // headers settles the item it replies to, so the
+                        // verdict metadata lands on that item's rows.
+                        Some(content) => {
+                            by_event.insert(content);
+                        }
+                        None => {
+                            by_item.insert(content_id.clone());
+                        }
+                    },
                 },
             }
         }
