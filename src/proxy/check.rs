@@ -80,10 +80,7 @@ async fn stream_probe(
     provider: &ProviderConfig,
 ) -> Result<(), String> {
     let url = stream_url(config, name);
-    let model = provider
-        .models
-        .first()
-        .map_or("gpt-6-luna", String::as_str);
+    let model = provider.models.first().map_or("gpt-6-luna", String::as_str);
     let body = json!({
         "model": model,
         "input": [{
