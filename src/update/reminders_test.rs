@@ -72,7 +72,7 @@ fn stale_skills_reminder_names_dir_and_command() {
 
     skills::install(&fresh_dir, false).expect("install fresh copy");
 
-    let candidates = skills_candidate_dirs(Some(home.path()));
+    let candidates = skills_candidate_dirs(Some(home.path()), None);
     assert_eq!(
         candidates,
         vec![
@@ -106,8 +106,45 @@ fn stale_skills_reminder_names_dir_and_command() {
 
 #[test]
 fn skills_candidate_dirs_without_home_are_empty() {
-    assert!(skills_candidate_dirs(None).is_empty());
-    assert!(stale_skills_reminders(&skills_candidate_dirs(None)).is_empty());
+    assert!(skills_candidate_dirs(None, None).is_empty());
+    assert!(stale_skills_reminders(&skills_candidate_dirs(None, None)).is_empty());
+}
+
+#[test]
+fn skills_candidate_dirs_merge_recorded_targets() {
+    let home = tempfile::tempdir().expect("tmp");
+    let config = tempfile::tempdir().expect("tmp");
+    let extra = tempfile::tempdir().expect("tmp");
+    let known = home.path().join(".agents/skills");
+    let record = config.path().join("vivi/skills-targets.txt");
+    std::fs::create_dir_all(record.parent().expect("parent")).expect("config dir");
+    std::fs::write(
+        &record,
+        format!(
+            "{}\n\n{}\n{}\n",
+            extra.path().display(),
+            extra.path().display(),
+            known.display()
+        ),
+    )
+    .expect("record file");
+
+    let dirs = skills_candidate_dirs(Some(home.path()), Some(config.path()));
+    assert_eq!(
+        dirs,
+        vec![
+            known.clone(),
+            home.path().join(".claude/skills"),
+            home.path().join(".codex/skills"),
+            extra.path().to_path_buf(),
+        ],
+        "known dirs stay first and the recorded extra dir follows once"
+    );
+
+    let mut unique = dirs.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), dirs.len(), "no duplicate entries: {dirs:?}");
 }
 
 #[test]
