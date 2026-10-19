@@ -678,6 +678,15 @@ fn a_dead_split_planner_is_reported_and_retried() {
         exceptions(&ctx)
     );
     assert!(host.spawned().is_empty());
+
+    host.advance(61);
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    assert_eq!(host.spawned().len(), 1);
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.since, T0 + 61);
+    assert_eq!(u.split_retry_at, None);
 }
 
 #[test]
