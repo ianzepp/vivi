@@ -168,3 +168,43 @@ fn clean_mailspace_leaves_a_foreign_mailspaces_slots_alone() {
         "a foreign mailspace's slot marks must be left alone"
     );
 }
+
+/// Two pools share one local root: recording baselines for pool `here` must
+/// leave the prefix sibling `here-fetch` (whose id also starts with
+/// `<mailspace>/here`) untouched.
+#[test]
+fn record_pool_baselines_leaves_prefix_sibling_pools_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("pool-root");
+    let toml = format!(
+        "\nname = \"alpha\"\n[pools.here]\nprovider = \"local\"\nslots = 1\nbuild_dir = \"target\"\n[pools.here.local]\nroot = \"{root}\"\n[pools.here-fetch]\nprovider = \"local\"\nslots = 1\nbuild_dir = \"target\"\n[pools.here-fetch.local]\nroot = \"{root}\"\n",
+        root = root.display()
+    );
+    let (_dir, space) = routing_space(&toml);
+    let handle = pools::open_one(&space, Some("here")).unwrap();
+    for (pool, index) in [("here", 1_u32), ("here-fetch", 1)] {
+        let slot = root.join(handle.id.mailspace.as_str()).join(pool).join(format!("slot-{index}"));
+        fs::create_dir_all(slot.join("marks")).unwrap();
+        write_mark(&slot, "vivi_pool", pool).unwrap();
+        write_mark(&slot, "vivi_pool_mailspace", handle.id.mailspace.as_str())
+            .unwrap();
+        write_mark(&slot, "vivi_pool_state", "ready").unwrap();
+        fs::create_dir_all(slot.join("repo/target")).unwrap();
+        fs::write(slot.join("repo/target/blob"), vec![0_u8; 80]).unwrap();
+    }
+    let base = root.join(handle.id.mailspace.as_str());
+
+    record_pool_baselines(&handle).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(base.join("here/slot-1/marks/build_baseline"))
+            .unwrap()
+            .trim(),
+        "80",
+        "our own free slot gets the seed baseline"
+    );
+    assert!(
+        !base.join("here-fetch/slot-1/marks/build_baseline").exists(),
+        "a prefix sibling pool's free slot must not get our baseline"
+    );
+}
