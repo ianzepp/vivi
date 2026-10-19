@@ -924,3 +924,24 @@ fn checks_for_is_empty_by_default() {
     let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
     assert!(cfg.merge.checks_for.is_empty());
 }
+
+#[test]
+fn validate_rejects_checks_for_with_blank_commands() {
+    for commands in [vec![String::from(" ")], Vec::new()] {
+        let cfg = PumpConfig {
+            merge: crate::pump::config::MergeConfig {
+                checks_for: BTreeMap::from([(String::from("src/**"), commands)]),
+                ..crate::pump::config::MergeConfig::default()
+            },
+            ..PumpConfig::default()
+        };
+        let err = cfg
+            .validate(Path::new("."), &pools(&["p"]))
+            .expect_err("blank checks_for commands must fail");
+        assert!(
+            err.to_string()
+                .contains("[pump.merge.checks_for] 'src/**' must have non-empty commands"),
+            "{err}"
+        );
+    }
+}

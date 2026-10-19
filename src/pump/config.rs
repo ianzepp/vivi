@@ -854,6 +854,7 @@ impl PumpConfig {
                 bad.push("[[pump.merge.generated]] regenerate must not be empty".into());
             }
         }
+        validate_checks_for("[pump.merge.checks_for]", &self.merge.checks_for, bad);
         if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
             bad.push(
                 "[pump.merge] shared_checks must not be empty while promotion is enabled \
@@ -956,6 +957,14 @@ fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], bad: &mut
     for name in &gate.pools {
         if !known(pools, name) {
             bad.push(format!("{prefix} pools names unknown pool `{name}`"));
+        }
+    }
+}
+
+fn validate_checks_for(scope: &str, table: &BTreeMap<String, Vec<String>>, bad: &mut Vec<String>) {
+    for (glob, cmds) in table {
+        if cmds.is_empty() || cmds.iter().any(|cmd| cmd.trim().is_empty()) {
+            bad.push(format!("{scope} '{glob}' must have non-empty commands"));
         }
     }
 }
