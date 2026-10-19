@@ -34,7 +34,7 @@ use crate::pump::state::{MergeJob, MergeResult, State, Status};
 
 use super::apply::{apply_failure, apply_merged, apply_undecided};
 use super::fetch::{BASE_REMOTE, ensure_base_remote};
-use super::{batch_work, merge_work, tail, undecided_result};
+use super::{batch_work, merge_work, prepare_lane, tail, undecided_result};
 
 /// Consecutive batches a lane may lose to lane-level failures before it is
 /// put in backoff.
@@ -46,8 +46,9 @@ const LANE_BACKOFF_SECS: u64 = 600;
 /// `why` codes of an undecided result that say the lane itself cannot work
 /// (no checkout, no way to publish), as opposed to a batch whose content is
 /// at fault (`publish-conflict`, a fetch of one unit branch, ...).
-const LANE_LEVEL: [&str; 6] = [
+const LANE_LEVEL: [&str; 7] = [
     "lane-checkout-failed",
+    "lane-reset-failed",
     "publish-fetch-failed",
     "publish-check-failed",
     "push-failed",
@@ -574,8 +575,17 @@ fn run_batch(lane: &LaneWorker, jobs: &[MergeJob]) -> Vec<MergeResult> {
     let ctx = &lane.ctx;
     let done = match remote::offer(ctx, lane.n, jobs) {
         Some(results) => results,
-        None if jobs.len() > 1 => batch_work(ctx, jobs),
-        None => vec![merge_work(ctx, &jobs[0])],
+        None => match prepare_lane(ctx) {
+            Err(failure) => {
+                let name = format!("{}/{}", ctx.target_id, lane.n);
+                ctx.exception("lane-reset-failed", &name, &failure);
+                jobs.iter()
+                    .map(|job| undecided_result(&job.uid, "lane-reset-failed", &failure))
+                    .collect()
+            }
+            Ok(()) if jobs.len() > 1 => batch_work(ctx, jobs),
+            Ok(()) => vec![merge_work(ctx, &jobs[0])],
+        },
     };
     let merged = done.iter().filter(|r| r.ok == Some(true)).count();
     ctx.log(&format!("batch of {}: {merged} merged", jobs.len()));
