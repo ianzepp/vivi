@@ -2,14 +2,17 @@
 //! and the auditor brief carries failures, rules, and any prior report.
 
 use std::collections::BTreeMap;
+use std::fs;
 
 use tempfile::tempdir;
 
-use crate::pump::audit::{AuditRun, audit_brief, current, start_audit, store};
+use crate::pump::audit::{
+    AuditRun, Cause, apply_report, audit_brief, current, parse_report, start_audit, store,
+};
 use crate::pump::config::{GateConfig, PumpConfig};
 use crate::pump::gatefix::fix_need;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::state::{State, Unit};
+use crate::pump::state::{State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedRole};
 
 /// A 40-hex integration tip; its first eight characters name the fix need.
@@ -134,6 +137,94 @@ fn audit_brief_carries_failings_rules_and_prior() {
     assert!(!plain.contains("Prior audit report"));
     assert!(plain.contains("gate::a_fails"));
     assert!(plain.contains("AUDIT-BEGIN"));
+}
+
+#[test]
+fn parse_report_reads_the_last_marker_block() {
+    let earlier = r#"[{"root_cause":"old cause","brief":"old brief","write_scope":["old.rs"]}]"#;
+    let latest = r#"[
+        {
+            "root_cause": "root cause two",
+            "brief": "concrete fix for the failing behavior",
+            "tests": ["pump::audit_test::first", "pump::audit_test::second"],
+            "write_scope": ["src/pump/audit.rs"],
+            "proof": ["cargo test --lib pump::audit"]
+        }
+    ]"#;
+    let text = format!(
+        "preamble\nAUDIT-BEGIN\n{earlier}\nAUDIT-END\nextra prose\n\
+         AUDIT-BEGIN\n{latest}\nAUDIT-END\ntrailer"
+    );
+
+    let causes = parse_report(&text).expect("the final report block should parse");
+    assert_eq!(causes.len(), 1);
+    assert_eq!(causes[0].root_cause, "root cause two");
+    assert_eq!(causes[0].brief, "concrete fix for the failing behavior");
+    assert_eq!(
+        causes[0].tests,
+        ["pump::audit_test::first", "pump::audit_test::second"]
+    );
+    assert_eq!(causes[0].write_scope, ["src/pump/audit.rs"]);
+    assert_eq!(causes[0].proof, ["cargo test --lib pump::audit"]);
+}
+
+#[test]
+fn parse_report_rejects_missing_markers_bad_json_and_empty_scopes() {
+    assert!(parse_report("plain reply without markers").is_none());
+    assert!(parse_report("AUDIT-BEGIN\nnot json\nAUDIT-END").is_none());
+    assert!(parse_report("AUDIT-BEGIN\n[]\nAUDIT-END").is_none());
+    let empty_scope = r#"[{"root_cause":"broken","brief":"fix it","write_scope":[]}]"#;
+    let empty_scope_report = format!("AUDIT-BEGIN\n{empty_scope}\nAUDIT-END");
+    assert!(parse_report(&empty_scope_report).is_none());
+}
+
+#[test]
+fn apply_report_mints_one_unit_per_cause() {
+    let (_dir, ctx, host) = setup(None);
+    let mut st = State::default();
+    let causes = vec![
+        Cause {
+            root_cause: String::from("first root cause"),
+            brief: String::from("fix the first cause"),
+            tests: vec![String::from("pump::first")],
+            write_scope: vec![String::from("src/first.rs")],
+            proof: vec![String::from("cargo test --lib pump::first")],
+        },
+        Cause {
+            root_cause: String::from("second root cause"),
+            brief: String::from("fix the second cause"),
+            tests: vec![String::from("pump::second")],
+            write_scope: vec![String::from("src/second.rs")],
+            proof: vec![String::from("cargo test --lib pump::second")],
+        },
+    ];
+    let raw = "AUDIT-BEGIN\nraw report\nAUDIT-END\n";
+
+    assert_eq!(apply_report(&ctx, &mut st, "need-audit", raw, &causes), 2);
+    assert_eq!(st.order, ["need-audit-1", "need-audit-2"]);
+    for uid in &st.order {
+        assert_eq!(st.units[uid].status, Status::Pending);
+        assert_eq!(st.units[uid].need, "need-audit");
+    }
+    assert_eq!(st.units["need-audit-1"].title, "first root cause");
+    assert_eq!(st.units["need-audit-1"].brief, "fix the first cause");
+    assert_eq!(st.units["need-audit-1"].write_scope, ["src/first.rs"]);
+    assert_eq!(st.units["need-audit-1"].proof, ["cargo test --lib pump::first"]);
+    assert_eq!(st.units["need-audit-1"].tools, "");
+
+    let record = &st.needs["need-audit"];
+    assert_eq!(record.verdict, "units");
+    assert_eq!(record.reason, "audit report");
+    assert_eq!(record.units, ["need-audit-1", "need-audit-2"]);
+    assert_eq!(record.revision, 1);
+    assert_eq!(
+        fs::read_to_string(ctx.home.join("audit/need-audit.report")).unwrap(),
+        raw
+    );
+    assert!(host
+        .logs()
+        .iter()
+        .any(|line| line.contains("audit report for need-audit: 2 fix units")));
 }
 
 #[test]
