@@ -318,6 +318,46 @@ fn a_merge_conflict_lists_the_conflicting_files_and_resets_the_repo() {
     assert_eq!(index_of(&host.commands(), "merge --no-ff"), 6);
 }
 
+#[test]
+fn a_lock_error_during_merge_is_an_env_failure_not_a_conflict() {
+    let (_dir, ctx, host) = setup("");
+    host.reply(
+        "merge --no-ff",
+        128,
+        "fatal: Unable to create '.git/index.lock': File exists.\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, None, "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("merge-env-failed"));
+    let detail = result.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("index.lock"), "{detail:?}");
+    assert!(
+        host.logs().iter().any(|l| l == "merge u1 1/1 env"),
+        "{:?}",
+        host.logs()
+    );
+}
+
+#[test]
+fn a_merge_failure_with_no_unmerged_files_is_an_env_failure() {
+    let (_dir, ctx, host) = setup("");
+    host.reply("merge --no-ff", 1, "fatal: refs/heads/work/u1 is not a commit\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, None, "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("merge-env-failed"));
+    let detail = result.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("is not a commit"), "{detail:?}");
+    assert!(
+        host.logs().iter().any(|l| l == "merge u1 1/1 env"),
+        "{:?}",
+        host.logs()
+    );
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
+}
+
 /// A context whose merge config regenerates the e2e coverage ledger.
 fn setup_generated() -> (TempDir, Ctx, Arc<FakeHost>) {
     let (_dir, mut ctx, host) = setup("");
@@ -826,6 +866,33 @@ fn a_conflicting_job_is_a_merge_conflict_result_and_the_others_still_merge() {
     assert_eq!(cmds[bad + 1], "git diff --name-only --diff-filter=U");
     assert_eq!(cmds[bad + 2], "git merge --abort");
     assert!(index_of(&cmds, "merge --no-ff --no-edit -m 'merge u2:") > bad);
+}
+
+#[test]
+fn a_batch_lock_error_returns_one_unit_undecided_and_the_rest_merge() {
+    let (_dir, ctx, host) = setup("");
+    host.reply_once(
+        "merge u1",
+        128,
+        "fatal: Unable to create '.git/index.lock': File exists.\n",
+    );
+    host.reply("diff --name-only HEAD~1 HEAD", 0, "src/pump/merge.rs\n");
+    host.reply("rev-parse HEAD", 0, "tip7\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2, "{results:?}");
+    let u1 = for_uid(&results, "u1");
+    assert_eq!(u1.ok, None, "{u1:?}");
+    assert_eq!(u1.why.as_deref(), Some("merge-env-failed"));
+    let detail = u1.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("index.lock"), "{detail:?}");
+    let u2 = for_uid(&results, "u2");
+    assert_eq!(u2.ok, Some(true), "{u2:?}");
+    assert_eq!(u2.tip.as_deref(), Some("tip7"));
+    assert!(
+        host.logs().iter().any(|l| l == "merge u1 1/2 env"),
+        "{:?}",
+        host.logs()
+    );
 }
 
 #[test]

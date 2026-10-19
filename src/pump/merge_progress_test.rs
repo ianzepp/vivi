@@ -70,6 +70,7 @@ fn a_conflicting_unit_and_an_integrated_unit_say_so() {
     host.reply("merge-base --is-ancestor origin/work/u2 origin/next", 0, "");
     host.reply("rev-parse origin/next", 0, "feedface00\n");
     host.reply("--no-edit -m 'merge u1", 1, "CONFLICT");
+    host.reply("diff --name-only --diff-filter=U", 0, "src/lib.rs\n");
     let lane = lane_ctx(&ctx);
     let jobs = vec![unit("u1", "work/u1"), unit("u2", "work/u2")];
     let results = batch_work(&lane, &jobs);
