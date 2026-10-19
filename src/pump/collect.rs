@@ -740,6 +740,8 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         return false;
     }
     let receipt = exit_receipt_path(&ctx.home.join(format!("resplit/{uid}.out")));
+    let cap = split_planner_cap(ctx);
+    let live = live_split_planners(st);
     let Some(unit) = st.units.get_mut(uid) else {
         return false;
     };
@@ -774,7 +776,7 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         );
         return false;
     }
-    if retry_split(ctx, unit, uid, now) {
+    if retry_split(ctx, unit, uid, now, live, cap) {
         return false;
     }
     if let Some(text) = dead_planner_output(ctx, uid) {
@@ -806,14 +808,23 @@ fn rate_limited_retry(ctx: &Ctx, unit: &mut Unit, uid: &str) -> Option<u64> {
 }
 
 /// A recorded split retry: wait out the backoff, then respawn the planner
-/// (which drops the stale receipt) with a fresh clock. Returns true when the
+/// (which drops the stale receipt) with a fresh clock. A due retry at the
+/// planner cap staggers instead: the retry stamp moves out by
+/// [`SPLIT_LAUNCH_STAGGER`] and no planner spawns. Returns true when the
 /// caller should stop here — waiting units are never parked, even past the
 /// hard cap.
-fn retry_split(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64) -> bool {
+fn retry_split(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64, live: usize, cap: usize) -> bool {
     let Some(at) = unit.split_retry_at else {
         return false;
     };
     if now < at {
+        return true;
+    }
+    if live >= cap {
+        unit.split_retry_at = Some(now + SPLIT_LAUNCH_STAGGER);
+        ctx.log(&format!(
+            "split-launch-deferred {uid}: {cap} split planners already running"
+        ));
         return true;
     }
     unit.split_retry_at = None;
