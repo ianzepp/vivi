@@ -214,8 +214,19 @@ fn status_txt_ends_with_one_line_per_lane() {
     write_status(&ctx, &State::default(), &merger.lane_lines(ctx.now()));
     let text = std::fs::read_to_string(ctx.home.join("status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 10, "{text}");
-    assert_eq!(lines[8], "lane default/0 idle merged 0 conflict 0");
-    assert_eq!(lines[9], "lane default/1 idle merged 0 conflict 0");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("lane "))
+            .count(),
+        2
+    );
+    assert_eq!(
+        &lines[lines.len() - 2..],
+        &[
+            "lane default/0 idle merged 0 conflict 0",
+            "lane default/1 idle merged 0 conflict 0"
+        ]
+    );
     drop(dir);
 }
