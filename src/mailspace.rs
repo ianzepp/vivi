@@ -38,8 +38,8 @@ mod item_events;
 mod kind;
 mod lifecycle;
 mod marks;
-mod merge;
 pub mod memos;
+mod merge;
 mod mermaid;
 #[cfg(test)]
 #[path = "mailspace/message_id_test.rs"]

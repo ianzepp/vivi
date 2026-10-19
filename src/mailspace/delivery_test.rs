@@ -412,12 +412,7 @@ fn memo_save_stores_tag_headers() {
     assert!(error.to_string().contains("ops note"), "{error}");
 
     let handle = mailspace
-        .save_memo(
-            "hand",
-            "s",
-            "b",
-            &["digest".to_string(), "ops".to_string()],
-        )
+        .save_memo("hand", "s", "b", &["digest".to_string(), "ops".to_string()])
         .unwrap();
     let storage = mailspace.storage().unwrap();
     let id = storage.resolve_message_token(&handle).unwrap();

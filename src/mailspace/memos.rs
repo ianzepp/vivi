@@ -71,8 +71,7 @@ pub fn keep(
     filter: &MemoFilter,
     hidden: &BTreeSet<String>,
 ) -> bool {
-    let matches =
-        |tag: &String, wanted: &String| tag.eq_ignore_ascii_case(wanted);
+    let matches = |tag: &String, wanted: &String| tag.eq_ignore_ascii_case(wanted);
     if filter
         .exclude_tags
         .iter()
@@ -93,9 +92,7 @@ pub fn keep(
             _ => return false,
         }
     }
-    if !filter.include_hidden
-        && tags.iter().any(|tag| hidden_member(hidden, tag))
-    {
+    if !filter.include_hidden && tags.iter().any(|tag| hidden_member(hidden, tag)) {
         return false;
     }
     true

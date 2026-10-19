@@ -17,7 +17,9 @@ fn eml(headers: &[(&str, &str)]) -> Vec<u8> {
 }
 
 fn date(secs: i64) -> DateTime<Utc> {
-    Utc.timestamp_opt(secs, 0).single().expect("valid timestamp")
+    Utc.timestamp_opt(secs, 0)
+        .single()
+        .expect("valid timestamp")
 }
 
 fn hidden(items: &[&str]) -> BTreeSet<String> {
@@ -36,7 +38,11 @@ fn parse_tags_round_trips_repeated_headers() {
     ]);
     assert_eq!(
         parse_tags(&raw),
-        vec!["alpha".to_string(), "beta".to_string(), "spaced".to_string()]
+        vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "spaced".to_string()
+        ]
     );
 }
 
@@ -97,7 +103,12 @@ fn keep_requires_every_wanted_tag() {
         tags: vec!["a".to_string(), "b".to_string()],
         ..MemoFilter::default()
     };
-    assert!(!keep(Some(date(100)), &["a".to_string()], &filter, &hidden(&[])));
+    assert!(!keep(
+        Some(date(100)),
+        &["a".to_string()],
+        &filter,
+        &hidden(&[])
+    ));
     assert!(keep(
         Some(date(100)),
         &["b".to_string(), "a".to_string()],
@@ -143,11 +154,15 @@ fn since_cutoff_accepts_duration_date_and_rfc3339() {
     );
     assert_eq!(
         since_cutoff("2026-10-01", now).expect("date"),
-        Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).single().expect("midnight")
+        Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0)
+            .single()
+            .expect("midnight")
     );
     assert_eq!(
         since_cutoff("2026-09-01T08:30:00+02:00", now).expect("rfc3339"),
-        Utc.with_ymd_and_hms(2026, 9, 1, 6, 30, 0).single().expect("utc")
+        Utc.with_ymd_and_hms(2026, 9, 1, 6, 30, 0)
+            .single()
+            .expect("utc")
     );
 }
 
@@ -169,7 +184,8 @@ fn window_label_prefers_largest_clean_unit() {
 
 #[test]
 fn memo_config_round_trips_through_mailspace_config() {
-    let raw = "name = \"demo\"\n\n[memo]\nhidden_tags = [\"noise\"]\n\n[memo.retain]\ndigest = \"90d\"\n";
+    let raw =
+        "name = \"demo\"\n\n[memo]\nhidden_tags = [\"noise\"]\n\n[memo.retain]\ndigest = \"90d\"\n";
     let config: crate::mailspace::MailspaceConfig = toml::from_str(raw).expect("parse");
     let memo = config.memo.clone().expect("memo table");
     assert_eq!(memo.hidden_tags, vec!["noise".to_string()]);
