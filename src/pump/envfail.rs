@@ -30,7 +30,7 @@ const AGENT_EXIT: &str = "agent exit ";
 #[derive(Debug, PartialEq, Eq)]
 pub struct HostFailure {
     /// Which rule classified it: `push_outcome`, `agent_exit`,
-    /// `facts_exit`, `shell_marker`, or `endpoint`.
+    /// `facts_exit`, `shell_marker`, `endpoint`, or `provider`.
     pub class: String,
     /// The command the host could not run, when a rule found one.
     pub command: Option<String>,
@@ -40,8 +40,9 @@ pub struct HostFailure {
 
 /// Classify dispatch evidence as a host failure; first rule hit wins: the
 /// push outcome, the agent's exit code, the receipt facts, shell markers
-/// in the detail or the receipt's tail sections, or endpoint trouble in
-/// that same scope. `None` means the evidence looks like a unit failure.
+/// in the detail or the receipt's tail sections, endpoint trouble or
+/// provider/transport failure in that same scope. `None` means the
+/// evidence looks like a unit failure.
 #[must_use]
 pub fn classify(why: &str, detail: &str, receipt: &str) -> Option<HostFailure> {
     push_outcome(why, detail)
@@ -49,6 +50,7 @@ pub fn classify(why: &str, detail: &str, receipt: &str) -> Option<HostFailure> {
         .or_else(|| fact_exit(receipt))
         .or_else(|| shell_markers(detail, receipt))
         .or_else(|| endpoint(detail, receipt))
+        .or_else(|| provider(detail, receipt))
 }
 
 /// Whether an exit code or a text line shows a tool the host lacks.
@@ -130,6 +132,24 @@ fn endpoint(detail: &str, receipt: &str) -> Option<HostFailure> {
             || MARKERS.iter().any(|marker| line.contains(marker));
         if hit {
             return Some(failure("endpoint", None, line));
+        }
+    }
+    None
+}
+
+/// Provider/transport trouble: the agent ended against a dead or dropped
+/// upstream connection, not a unit bug.
+fn provider(detail: &str, receipt: &str) -> Option<HostFailure> {
+    const MARKERS: [&str; 5] = [
+        "Connection error",
+        "Connection refused",
+        "Connection timed out",
+        "connection reset by peer",
+        "Connection closed",
+    ];
+    for line in scan_scope(detail, receipt).lines() {
+        if MARKERS.iter().any(|marker| line.contains(marker)) {
+            return Some(failure("provider", None, line));
         }
     }
     None

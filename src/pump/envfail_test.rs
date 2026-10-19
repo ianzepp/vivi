@@ -83,6 +83,27 @@ fn cases() -> Vec<Case> {
             want: Some(("endpoint", None)),
         },
         Case {
+            name: "stderr section line Connection error.",
+            why: "failed",
+            detail: "",
+            receipt: receipt(1, "", "Connection error."),
+            want: Some(("provider", None)),
+        },
+        Case {
+            name: "stderr section line curl: connection reset by peer",
+            why: "failed",
+            detail: "",
+            receipt: receipt(1, "", "curl: connection reset by peer"),
+            want: Some(("provider", None)),
+        },
+        Case {
+            name: "negative: agent message mentions Connection error",
+            why: "failed",
+            detail: "unit ended",
+            receipt: receipt(0, "now handles Connection error.", ""),
+            want: None,
+        },
+        Case {
             name: "negative: agent exit 1",
             why: "failed",
             detail: "",
