@@ -105,6 +105,7 @@ fn wire(host: &Arc<FakeHost>) {
 /// A pending plain-tools unit titled `Do <uid>` with its own write scope.
 fn pending_unit(uid: &str) -> Unit {
     Unit {
+        need: String::from("n1"),
         title: format!("Do {uid}"),
         brief: String::from("the body"),
         write_scope: vec![format!("src/{uid}/")],

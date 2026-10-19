@@ -665,18 +665,22 @@ fn collect_one(
 fn deliver(ctx: &Ctx, st: &mut State, task: &str, uid: &str, branch: &str, state: Option<&str>) {
     let output = ctx.vivi(&format!("task show {task} --latest"), 60);
     let full = output.text;
-    if output.code != 0 || attempt_record::agent_exit(&full).is_none() {
+    let Some(agent_exit) = (output.code == 0)
+        .then(|| receipt_agent_exit(&full))
+        .flatten()
+    else {
         ctx.log(&format!(
             "delivered branch {uid} has no readable task receipt (state={:?}, rc={}); leaving inflight",
             state, output.code
         ));
         return;
-    }
-    if is_timeout(&full) {
+    };
+    if matches!(agent_exit, 124 | 137) {
         split(ctx, st, uid, &full);
         return;
     }
-    if let Some(code) = attempt_record::agent_exit(&full).filter(|code| *code != 0) {
+    if agent_exit != 0 {
+        let code = agent_exit;
         let why = format!("finished/agent exit {code}");
         if let Some(failure) = envfail::classify(&why, "", &full) {
             host_fail(ctx, st, uid, &failure, &full);
@@ -816,12 +820,21 @@ pub(crate) fn local_branch_exists(ctx: &Ctx, branch: &str) -> bool {
 /// True when the text marks the agent as killed by its budget timeout.
 #[must_use]
 fn is_timeout(text: &str) -> bool {
-    matches!(attempt_record::agent_exit(text), Some(124 | 137))
-        || text.lines().any(|line| {
-            line.strip_prefix("agent_rc ")
-                .and_then(|rest| rest.split_whitespace().next())
-                .is_some_and(|code| matches!(code, "124" | "137"))
+    matches!(receipt_agent_exit(text), Some(124 | 137))
+}
+
+/// Read the agent exit marker from the task summary or its structured runner
+/// log tail. The latter is how local pool runners report timeout statuses.
+fn receipt_agent_exit(text: &str) -> Option<i32> {
+    attempt_record::agent_exit(text).or_else(|| {
+        text.lines().find_map(|line| {
+            line.strip_prefix("agent_rc ")?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
         })
+    })
 }
 
 /// `SPLIT_PROMPT` with the stored resplit record and unit handle substituted.

@@ -177,7 +177,15 @@ fn a_running_unit_past_budget_plus_grace_is_split() {
         worker_said(&ctx, "u-1"),
         "overdue: still running long past its budget"
     );
-    assert!(dir.path().join("home/resplit/u-1.prompt").exists());
+    let queued_at = ctx.now();
+    let job_id = crate::pump::planner_jobs::job_id("split", "u-1", queued_at);
+    let job = &st.jobs[&job_id];
+    assert_eq!(job.kind, "planner:split");
+    assert_eq!(job.status, crate::pump::jobs::JobStatus::Pending);
+    assert!(job.body.contains("PUMP-RESPLIT-INPUT-BEGIN"));
+    assert!(job.body.contains("PUMP-PLAN-BEGIN"));
+    assert!(!dir.path().join("home/resplit/u-1.prompt").exists());
+    assert!(host.spawned().is_empty());
 }
 
 #[test]
@@ -202,16 +210,17 @@ fn a_timeout_state_requests_a_split_and_writes_the_resplit_files() {
     assert_eq!(u.since, T0);
     assert_eq!(u.history.last().unwrap().why, "timeout");
     assert_eq!(worker_said(&ctx, "u-1"), "the worker ran out of time");
-    let prompt = fs::read_to_string(dir.path().join("home/resplit/u-1.prompt")).unwrap();
-    assert!(prompt.contains("home/resplit/u-1.json"));
-    assert!(prompt.contains("home/plans/u-1.split.json"));
-    assert!(prompt.contains("\"replaces\": \"u-1\""));
-    assert_eq!(host.spawned().len(), 1);
+    let job_id = crate::pump::planner_jobs::job_id("split", "u-1", T0);
+    let job = &st.jobs[&job_id];
+    assert!(job.body.contains("PUMP-RESPLIT-INPUT-BEGIN"));
+    assert!(job.body.contains("\"replaces\": \"u-1\""));
+    assert!(job.body.contains("PUMP-PLAN-BEGIN"));
+    assert!(ctx.home.join("resplit/u-1.json").exists());
+    assert!(host.spawned().is_empty());
 }
 
-/// With `planners_max` split planners already live, a new split still
-/// records and parks the unit in `splitting`, but defers the launch: no
-/// planner spawns now and the unit retries via the due-retry path.
+/// At `planners_max`, a new split still records and parks the unit in
+/// `splitting`, but defers its durable job until the stagger expires.
 #[test]
 fn a_new_split_defers_when_the_planner_cap_is_full() {
     let (_dir, ctx, host) = setup_with(PumpConfig {
@@ -244,9 +253,8 @@ fn a_new_split_defers_when_the_planner_cap_is_full() {
     assert!(ctx.home.join("resplit/u-2.json").exists());
 }
 
-/// A due split retry at the planner cap staggers instead of spawning: the
-/// unit stays `Splitting` with a moved-out retry stamp and the launch is
-/// logged; the live planner is untouched.
+/// A due split retry at the planner cap staggers instead of enqueueing: the
+/// unit stays `Splitting` with a moved-out retry stamp; existing jobs remain.
 #[test]
 fn a_due_split_retry_defers_when_the_planner_cap_is_full() {
     let (_dir, ctx, host) = setup_with(PumpConfig {
@@ -289,7 +297,11 @@ fn a_finished_unit_whose_branch_is_on_the_remote_is_delivered() {
         "collected 1a2b3c4d bridge slot-1 finished \"pushed unit/x-a1 abc\"",
     );
     host.reply("ls-remote", 0, "abc123\trefs/heads/unit/x-a1\n");
-    host.reply("task show", 0, "all good, pushed");
+    host.reply(
+        "task show",
+        0,
+        "agent exit 0 after 500s\n\n--- receipt\nall good, pushed",
+    );
     let mut st = State::default();
     let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
     u.model = Some(String::from("zai/glm-5.3-flash"));
@@ -323,7 +335,11 @@ fn a_local_pool_branch_is_delivered_from_its_worktree_repository() {
         0,
         "abc123\trefs/heads/unit/x-a1\n",
     );
-    host.reply("task show", 0, "done, committed");
+    host.reply(
+        "task show",
+        0,
+        "agent exit 0 after 500s\n\n--- receipt\ndone, committed",
+    );
     let mut st = State::default();
     let mut u = unit(Status::Inflight, Some("1a2b3c4d"), Some("unit/x-a1"));
     u.pool = Some(String::from("glm"));
@@ -355,6 +371,11 @@ fn a_local_target_branch_is_collected_from_its_integration_clone() {
         "pool reconcile",
         0,
         "collected task-1 bridge slot-1 finished \"committed unit/n-1-a1 abc\"\n",
+    );
+    host.reply(
+        "task show",
+        0,
+        "agent exit 0 after 10s\n\n--- receipt\ncommitted",
     );
     host.reply("show-ref --verify --quiet refs/heads/unit/n-1-a1", 0, "");
     let mut unit = unit(Status::Inflight, Some("task-1"), Some("unit/n-1-a1"));
@@ -833,11 +854,16 @@ fn a_dead_split_planner_is_reported_and_retried() {
     host.advance(61);
     assert_eq!(collect(&ctx, &mut st), None);
 
-    assert_eq!(host.spawned().len(), 1);
     let u = st.units.get("u-1").unwrap();
     assert_eq!(u.status, Status::Splitting);
     assert_eq!(u.since, T0 + 61);
     assert_eq!(u.split_retry_at, None);
+    let retry_id = crate::pump::planner_jobs::job_id("split", "u-1", T0 + 61);
+    assert_eq!(
+        st.jobs[&retry_id].status,
+        crate::pump::jobs::JobStatus::Pending
+    );
+    assert!(host.spawned().is_empty());
 }
 
 /// The exact provider 429 line a rate-limited split planner leaves behind.
@@ -884,7 +910,12 @@ fn a_rate_limited_split_planner_keeps_its_retry_budget() {
     host.advance(135);
     assert_eq!(collect(&ctx, &mut st), None);
 
-    assert_eq!(host.spawned().len(), 1);
+    let retry_id = crate::pump::planner_jobs::job_id("split", "u-1", ctx.now());
+    assert_eq!(
+        st.jobs[&retry_id].status,
+        crate::pump::jobs::JobStatus::Pending
+    );
+    assert!(host.spawned().is_empty());
     assert_eq!(st.units.get("u-1").unwrap().split_fails, 0);
 }
 
