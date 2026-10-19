@@ -766,3 +766,64 @@ fn post_replies_sends_one_revised_stage_per_revision() {
     assert!(revised.contains("pump: revised to r2."), "{revised}");
     assert!(st.board.replied.contains(&String::from("n3:revised-2")));
 }
+
+/// An exited-planner fixture: planner output and its `.rc` receipt, no plan.
+fn exited_planner(ctx: &Ctx, handle: &str) {
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    fs::write(ctx.home.join("board/n1.out"), "bash: pi: command not found\n").unwrap();
+    fs::write(ctx.home.join(format!("board/{handle}.out.rc")), "127").unwrap();
+}
+
+#[test]
+fn an_exited_planner_frees_its_slot_and_is_logged() {
+    let (_dir, ctx, host) = setup();
+    exited_planner(&ctx, "n1");
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now());
+    expire_planning(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert_eq!(st.board.planner_fails.get("n1"), Some(&1));
+    assert_eq!(st.board.planner_retry_at.get("n1"), Some(&(ctx.now() + 60)));
+    let logs = host.logs().join("\n");
+    assert!(
+        logs.contains("board: planner n1 exited rc=127: bash: pi: command not found"),
+        "logs: {logs}"
+    );
+    let exc = exceptions(&ctx);
+    assert!(exc.contains("plan-crashed n1"), "exceptions: {exc}");
+}
+
+#[test]
+fn a_third_planner_failure_parks_the_need() {
+    let (_dir, ctx, _host) = setup();
+    exited_planner(&ctx, "n1");
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now());
+    st.board.planner_fails.insert(String::from("n1"), 2);
+    expire_planning(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert!(st.board.planner_failed.contains(&String::from("n1")));
+    assert!(!st.board.planner_retry_at.contains_key("n1"));
+    let exc = exceptions(&ctx);
+    assert!(exc.contains("plan-failed n1"), "exceptions: {exc}");
+}
+
+#[test]
+fn a_landed_plan_resets_planner_bookkeeping() {
+    let (_dir, ctx, _host) = setup();
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/n1.json"), "{}").unwrap();
+    let mut st = State::default();
+    st.board.planning.insert(String::from("n1"), ctx.now());
+    st.board.planner_pids.insert(String::from("n1"), 123);
+    st.board.planner_fails.insert(String::from("n1"), 1);
+    st.board
+        .planner_retry_at
+        .insert(String::from("n1"), ctx.now() + 60);
+    expire_planning(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert!(!st.board.planner_pids.contains_key("n1"));
+    assert!(!st.board.planner_fails.contains_key("n1"));
+    assert!(!st.board.planner_retry_at.contains_key("n1"));
+    assert!(!exceptions(&ctx).contains("n1"));
+}
