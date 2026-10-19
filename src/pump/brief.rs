@@ -276,10 +276,10 @@ fn is_content_hash(line: &str) -> bool {
 /// other's log.
 #[must_use]
 pub fn gate_brief(ctx: &Ctx, tip: &str) -> String {
-    let project = ctx
-        .project
-        .file_name()
-        .map_or_else(|| String::from("pump"), |name| name.to_string_lossy().into_owned());
+    let project = ctx.project.file_name().map_or_else(
+        || String::from("pump"),
+        |name| name.to_string_lossy().into_owned(),
+    );
     let tip8: String = tip.chars().take(8).collect();
     let log = format!("/tmp/pump-gate-{project}-{}-{tip8}.log", ctx.target_id);
     let command = format!(

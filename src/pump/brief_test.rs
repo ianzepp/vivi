@@ -426,7 +426,12 @@ fn gate_brief_names_the_gate_command_and_the_marker_block() {
         "Measurement only. Change nothing in the repository; scratch files \
                           go under /tmp."
     ));
-    let project = ctx.project.file_name().unwrap().to_string_lossy().into_owned();
+    let project = ctx
+        .project
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let log = format!("/tmp/pump-gate-{project}-{}-01234567.log", ctx.target_id);
     assert!(text.contains(&format!(
         "    make gate > {} 2>&1; echo \"rc=$?\"",
