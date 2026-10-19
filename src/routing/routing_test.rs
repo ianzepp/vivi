@@ -70,6 +70,38 @@ fn merge_lanes_fall_back_to_pump_merge_when_unassigned() {
 }
 
 #[test]
+fn auditor_lookup_finds_named_role() {
+    let routing = RoleRouting {
+        roles: vec![role("auditor", "auditor", Some("glm"))],
+        pools: BTreeMap::new(),
+    };
+    let found = routing.auditor().expect("auditor role");
+    assert_eq!(found.name, "auditor");
+}
+
+#[test]
+fn auditor_lookup_finds_kind_role() {
+    let routing = RoleRouting {
+        roles: vec![
+            role("auditor-1", "hand", None),
+            role("auditor-2", "auditor", None),
+        ],
+        pools: BTreeMap::new(),
+    };
+    let found = routing.auditor().expect("kind auditor role");
+    assert_eq!(found.name, "auditor-2");
+}
+
+#[test]
+fn auditor_lookup_missing_returns_none() {
+    let routing = RoleRouting {
+        roles: vec![role("hand", "hand", None), role("merge", "merge", None)],
+        pools: BTreeMap::new(),
+    };
+    assert!(routing.auditor().is_none());
+}
+
+#[test]
 fn choose_model_waits_when_every_cap_is_full() {
     let lanes = vec![Lane {
         model: "m/a".into(),
