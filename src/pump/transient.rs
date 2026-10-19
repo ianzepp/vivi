@@ -36,6 +36,19 @@ pub fn provider_rate_limited(text: &str) -> bool {
     RATE_LIMIT_MARKERS.iter().any(|m| lower.contains(m))
 }
 
+/// Whether a proof-failed detail names a build/no-run check rather than a test
+/// run: `merge` embeds the failed command in the detail, and a command that
+/// only compiles (`--no-run`, `cargo build`, `cargo check`, `cargo clippy`)
+/// has no flaky test to blame, so a timeout on it is a machine-speed problem.
+#[must_use]
+pub fn build_only_check(detail: &str) -> bool {
+    BUILD_ONLY_MARKERS.iter().any(|m| detail.contains(m))
+}
+
+/// Substrings that mark an embedded proof command as compile-only. Matched
+/// against the detail as written.
+const BUILD_ONLY_MARKERS: &[&str] = &["--no-run", "cargo build", "cargo check", "cargo clippy"];
+
 /// A deterministic 0-14 second spread (no rand dependency) so retry storms
 /// from many units do not all land on the same second.
 #[must_use]
