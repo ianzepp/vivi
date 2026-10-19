@@ -180,6 +180,35 @@ fn promotion_stall_names_hours_and_the_last_gate() {
 }
 
 #[test]
+fn stall_promote_names_the_blocking_reds_and_fix_owners() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.promotions.push(Promotion {
+        tip: String::from(TIP),
+        at: T0 - 4 * 3600,
+        failing: Some(vec![String::from("a")]),
+    });
+    st.gates.push(GateRecord {
+        tip: String::from("bbbb0000bbbb0000bbbb0000bbbb0000bbbb0000"),
+        names: Some(vec![
+            String::from("a"),
+            String::from("x"),
+            String::from("y"),
+        ]),
+        ..GateRecord::default()
+    });
+    st.red.insert(String::from("x"), String::from("pumpfix-g1"));
+    st.units.insert(String::from("u1"), merged(T0 - 3600));
+    host.set_now(T0);
+    check(&ctx, &mut st);
+    let text = exceptions(&ctx);
+    assert!(
+        text.contains("2 reds not on main: x (fix pumpfix-g1), y (no fix)"),
+        "{text}"
+    );
+}
+
+#[test]
 fn promotion_stall_is_quiet_without_merges_since_or_under_the_limit() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
