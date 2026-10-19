@@ -564,7 +564,9 @@ fn status_reads_the_status_file_or_says_no_status_yet() {
     fs::write(home.join("status.txt"), "1970-01-12T13:46:40Z\nunits \n").unwrap();
     let shown = status(with_file.path()).unwrap();
     assert!(
-        shown.starts_with("1970-01-12T13:46:40Z\nunits \ncontrol  running\nwriter   not running\nage "),
+        shown.starts_with(
+            "1970-01-12T13:46:40Z\nunits \ncontrol  running\nwriter   not running\nage "
+        ),
         "{shown}"
     );
     let without_file = mailspace_project("name = \"s\"\n\n[pump]\nhome = \"pump-home\"\n");

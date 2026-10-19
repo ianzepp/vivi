@@ -40,7 +40,9 @@ fn once_runs_one_tick_and_writes_db_status_and_log() {
     let shown = vivi(["pump", "status", "--project", root(&project)]);
     assert_success(&shown);
     assert!(
-        stdout(&shown).starts_with(&format!("{status}control  running\nwriter   not running\nage ")),
+        stdout(&shown).starts_with(&format!(
+            "{status}control  running\nwriter   not running\nage "
+        )),
         "status must print status.txt plus the durable control mode, writer state, and snapshot age: {}",
         stdout(&shown)
     );
