@@ -226,7 +226,10 @@ fn promote_findings(ctx: &Ctx, st: &State, now: u64) -> Vec<Finding> {
         if now.saturating_sub(since) <= limit {
             continue;
         }
-        let blockers = scope.gates.last().and_then(|gate| blockers_text(&scope, gate));
+        let blockers = scope
+            .gates
+            .last()
+            .and_then(|gate| blockers_text(&scope, gate));
         out.push(Finding {
             kind: "stall-promote",
             text: promote_text(now, last, merged.len(), scope.gates, blockers),
