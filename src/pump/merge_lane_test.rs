@@ -224,6 +224,41 @@ fn apply_ok_false_fails_the_unit_through_collect_fail() {
 }
 
 #[test]
+fn apply_proof_usage_parks_the_unit_needs_replan() {
+    let (_dir, ctx, host) = setup("");
+    let (merger, out, _jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Merging)]);
+    out.send(MergeResult {
+        uid: String::from("u1"),
+        ok: Some(false),
+        why: Some(String::from("proof-usage")),
+        detail: Some(String::from(
+            "The unit's proof command failed as a usage error, not as a test failure.\n\
+             command: cargo test --lib a b\n\
+             excerpt: error: unexpected argument 'b' found",
+        )),
+        ..MergeResult::default()
+    })
+    .unwrap();
+    merger.apply(&ctx, &mut st);
+    let u = &st.units["u1"];
+    assert_eq!(u.status, Status::NeedsReplan);
+    assert_eq!(u.attempts, 1);
+    assert!(u.history.is_empty());
+    assert_eq!(u.task, None);
+    assert!(!host.logs().iter().any(|l| l.starts_with("fail u1")));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "needs-replan u1: proof usage error")
+    );
+    assert!(st.needs["n1"].amendment_pending);
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(exceptions.contains("needs-replan u1"));
+    assert!(exceptions.contains("cargo test --lib a b"));
+}
+
+#[test]
 fn apply_ok_null_returns_the_unit_to_delivered() {
     let (_dir, ctx, host) = setup("");
     let (merger, out, _jobs) = Merger::detached();
