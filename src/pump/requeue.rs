@@ -1,9 +1,9 @@
-//! Operator requeue: the half of `vivi pump requeue` the running pump runs.
+//! Operator requeue: `vivi pump requeue`, both halves.
 //!
-//! The CLI only queues a request in `pump.db` (`store::requeue`); this module
-//! is the state side, applied once per tick before the board pass. A request
-//! names a unit and how its attempt counter should move, and the pump decides
-//! the rest:
+//! The CLI validates the uids against the loaded state and queues a request in
+//! `pump.db` (`store::requeue`); the pump applies it once per tick before the
+//! board pass. A request names a unit and how its attempt counter should
+//! move, and the pump decides the rest:
 //!
 //! - Only a unit nobody owns is requeueable: `stuck`, `quarantined`,
 //!   `splitting` or `withdrawn`. Anything else is refused and the request is
@@ -17,14 +17,64 @@
 //! requeue is an operator prompt, not a plan revision.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::pump::host::{Ctx, shell_quote};
+use crate::VivariumError;
+use crate::cli::PumpRequeueCommand;
+use crate::mailspace::Mailspace;
+use crate::pump::control::project_home;
+use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::state::{State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, RequeueRequest};
 use crate::pump::transient;
 
 /// Timeout for one `ls-remote` of a target's unit branches.
 const SCAN_TIMEOUT_SECS: u64 = 60;
+
+/// The reason a request carries when the operator gave none.
+const DEFAULT_REASON: &str = "operator requeue";
+
+/// How a requeue moves a unit's attempt counter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AttemptPolicy {
+    /// Set the counter to this value.
+    attempts: Option<u32>,
+    /// Subtract the attempts that failed for a transient reason.
+    refund: bool,
+    /// Reset the counter to zero.
+    fresh: bool,
+}
+
+impl AttemptPolicy {
+    /// The policy one queued request carries.
+    fn from_request(request: &RequeueRequest) -> Self {
+        AttemptPolicy {
+            attempts: request.attempts.and_then(|n| u32::try_from(n).ok()),
+            refund: request.refund,
+            fresh: request.fresh,
+        }
+    }
+
+    /// The policy the operator's command line asks for; at most one of
+    /// `--attempts`, `--refund-host-failures` and `--fresh` may be given.
+    fn from_command(cmd: &PumpRequeueCommand) -> Result<Self, VivariumError> {
+        let chosen = usize::from(cmd.attempts.is_some())
+            + usize::from(cmd.refund_host_failures)
+            + usize::from(cmd.fresh);
+        if chosen > 1 {
+            return Err(VivariumError::Message(String::from(
+                "use only one of --attempts, --refund-host-failures, --fresh",
+            )));
+        }
+        Ok(AttemptPolicy {
+            attempts: cmd.attempts,
+            refund: cmd.refund_host_failures,
+            fresh: cmd.fresh,
+        })
+    }
+}
 
 /// Highest attempt suffix per uid, for one target: `uid -> max n`.
 type TargetBranches = BTreeMap<String, u32>;
@@ -51,7 +101,14 @@ pub fn apply_pending(ctx: &Ctx, st: &mut State) {
     if requests.is_empty() {
         return;
     }
-    let branches = scan_targets(ctx, st, &requests);
+    let branches = scan_targets(
+        ctx,
+        st,
+        &requests
+            .iter()
+            .map(|request| request.unit.clone())
+            .collect::<Vec<String>>(),
+    );
     let mut processed: Vec<i64> = Vec::new();
     for request in &requests {
         apply_one(ctx, st, request, &branches);
@@ -60,18 +117,14 @@ pub fn apply_pending(ctx: &Ctx, st: &mut State) {
     mark_applied(ctx, &path, &processed);
 }
 
-/// One branch scan per distinct target of the requested units, keyed by
-/// target id. A target whose scan fails has no recorded branches, so its
-/// units are treated as having none on the remote.
-fn scan_targets(
-    ctx: &Ctx,
-    st: &State,
-    requests: &[RequeueRequest],
-) -> BTreeMap<String, TargetBranches> {
-    let targets: BTreeSet<&str> = requests
+/// One branch scan per distinct target of `uids`, keyed by target id. A
+/// target whose scan fails has no recorded branches, so its units are treated
+/// as having none on the remote.
+fn scan_targets(ctx: &Ctx, st: &State, uids: &[String]) -> BTreeMap<String, TargetBranches> {
+    let targets: BTreeSet<&str> = uids
         .iter()
-        .filter_map(|request| st.units.get(&request.unit))
-        .map(|unit| unit.target_id())
+        .filter_map(|uid| st.units.get(uid))
+        .map(Unit::target_id)
         .collect();
     let mut scanned: BTreeMap<String, TargetBranches> = BTreeMap::new();
     for target in targets {
@@ -139,9 +192,13 @@ fn apply_one(
         ctx.log(&format!("requeue {uid} refused: status is {status}"));
         return;
     }
-    let base = base_attempts(st, uid, request);
+    let policy = AttemptPolicy::from_request(request);
     let existing = highest_branch(branches, st, uid);
-    let attempts = base.max(existing);
+    let Some(unit) = st.units.get(uid) else {
+        return;
+    };
+    let base = base_attempts(unit, policy);
+    let attempts = planned_attempts(unit, policy, existing);
     if attempts > base {
         ctx.log(&format!(
             "requeue {uid} attempts raised to {attempts}: branch unit/{uid}-a{existing} already exists"
@@ -168,23 +225,25 @@ fn apply_one(
     ctx.log(&format!("requeue {uid} by operator: {}", request.reason));
 }
 
-/// The attempt count the request itself asks for, before branch collisions
-/// are resolved: `attempts=N`, `fresh` (0), `refund` (real failures only,
+/// The attempt count a requeue plans for one unit: what the policy asks for
+/// ([`base_attempts`]) unless a branch for a later attempt already exists on
+/// the remote, in which case that suffix wins.
+fn planned_attempts(unit: &Unit, policy: AttemptPolicy, remote_max: u32) -> u32 {
+    base_attempts(unit, policy).max(remote_max)
+}
+
+/// The attempt count the policy itself asks for, before branch collisions are
+/// resolved: `attempts=N`, `fresh` (0), `refund` (real failures only,
 /// transient ones subtracted), or the unit's current count.
-fn base_attempts(st: &State, uid: &str, request: &RequeueRequest) -> u32 {
-    let unit = match st.units.get(uid) {
-        Some(unit) => unit,
-        None => return 0,
-    };
-    if let Some(attempts) = request.attempts {
-        return u32::try_from(attempts).unwrap_or(u32::MAX);
+fn base_attempts(unit: &Unit, policy: AttemptPolicy) -> u32 {
+    if let Some(attempts) = policy.attempts {
+        return attempts;
     }
-    if request.fresh {
+    if policy.fresh {
         return 0;
     }
-    if request.refund {
-        let transient = transient_count(unit);
-        return unit.attempts.saturating_sub(transient);
+    if policy.refund {
+        return unit.attempts.saturating_sub(transient_count(unit));
     }
     unit.attempts
 }
@@ -231,4 +290,111 @@ fn mark_applied(ctx: &Ctx, path: &std::path::Path, processed: &[i64]) {
             ctx.log(&format!("requeue: cannot mark request applied: {err}"));
         }
     }
+}
+
+/// `vivi pump requeue <uid>...`: queue one request per named unit for the
+/// running pump to apply at its next tick. `--dry-run` prints what each uid
+/// would become and writes nothing.
+///
+/// # Errors
+/// Returns [`VivariumError::Message`] for conflicting attempt flags, a bulk
+/// `--stuck-since` request (not implemented yet), no uid, an unknown uid, or
+/// a mailspace without a pump database; and whatever opening or writing the
+/// database fails with.
+pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError> {
+    let home = project_home(project)?;
+    let policy = AttemptPolicy::from_command(cmd)?;
+    if cmd.stuck_since.is_some() {
+        // Temporary: the bulk form arrives in the next unit.
+        return Err(VivariumError::Message(String::from(
+            "bulk requeue (--stuck-since) arrives in the next unit",
+        )));
+    }
+    if cmd.units.is_empty() {
+        return Err(VivariumError::Message(String::from(
+            "requeue needs at least one unit uid",
+        )));
+    }
+    let path = home.join(DB_FILENAME);
+    let Some(store) = PumpStore::open_read_only(&path)? else {
+        return Err(VivariumError::Message(format!(
+            "no pump.db at {}",
+            path.display()
+        )));
+    };
+    let st = store.load()?;
+    drop(store);
+    for uid in &cmd.units {
+        if !st.units.contains_key(uid.as_str()) {
+            return Err(VivariumError::Message(format!("unknown unit: {uid}")));
+        }
+    }
+    let ctx = cli_ctx(project, &home)?;
+    let branches = scan_targets(&ctx, &st, &cmd.units);
+    let mut planned: Vec<(String, Status, u32, u32)> = Vec::new();
+    for uid in &cmd.units {
+        let Some(unit) = st.units.get(uid.as_str()) else {
+            continue;
+        };
+        let remote_max = highest_branch(&branches, &st, uid);
+        let attempts = planned_attempts(unit, policy, remote_max);
+        planned.push((uid.clone(), unit.status, unit.attempts, attempts));
+    }
+    if cmd.dry_run {
+        for (uid, status, old, attempts) in &planned {
+            println!("{}", would_line(uid, *status, *old, *attempts));
+        }
+        return Ok(());
+    }
+    let reason = cmd.reason.as_deref().unwrap_or(DEFAULT_REASON);
+    let at = now();
+    let mut store = PumpStore::open(&path)?;
+    for (uid, ..) in &planned {
+        store.add_requeue_request(
+            uid,
+            policy.attempts.map(i64::from),
+            policy.fresh,
+            policy.refund,
+            reason,
+            at,
+        )?;
+        println!("requeue {uid} requested; the pump applies it at its next tick");
+    }
+    Ok(())
+}
+
+/// The `--dry-run` line for one unit: what the requeue would change, and the
+/// branch the next attempt would take.
+#[must_use]
+pub fn would_line(uid: &str, status: Status, old: u32, attempts: u32) -> String {
+    format!(
+        "would requeue {uid}: status {}, attempts {old} -> {attempts}, next branch unit/{uid}-a{}",
+        status.as_str(),
+        attempts + 1
+    )
+}
+
+/// A context for the remote branch scan, with a real host and the pump home
+/// resolved from the mailspace's `[pump]` table.
+fn cli_ctx(project: &Path, home: &Path) -> Result<Ctx, VivariumError> {
+    let mailspace = Mailspace::discover(Some(project))?;
+    let cfg = mailspace.config.pump.clone().ok_or_else(|| {
+        VivariumError::Config(String::from("no [pump] table in .vivi/mailspace.toml"))
+    })?;
+    let vivi = std::env::current_exe()
+        .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
+    let mut ctx = Ctx::new(
+        cfg,
+        Arc::new(RealHost::new(home)),
+        mailspace.root.clone(),
+        vivi,
+    );
+    ctx.home = home.to_path_buf();
+    Ok(ctx)
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
