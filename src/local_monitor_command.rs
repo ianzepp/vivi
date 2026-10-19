@@ -2,7 +2,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use vivi::VivariumError;
 use vivi::cli::MonitorCommand;
-use vivi::monitor::{MonitorRow, RowState, merge_roots, snapshot};
+use vivi::monitor::model::{MonitorRow, RowState};
+use vivi::monitor::{merge_roots, snapshot};
 
 pub(crate) fn run(command: &MonitorCommand) -> Result<(), VivariumError> {
     if command.json && !command.once {
