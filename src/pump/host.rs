@@ -284,6 +284,26 @@ impl Ctx {
         self.log(&format!("EXCEPTION {kind} {unit}"));
     }
 
+    /// Resolve an earlier exception: append `HH:MM:SS resolved kind unit text`
+    /// (newlines folded to `" | "`, text cut at 600 chars) to
+    /// `<home>/exceptions.txt`, record the resolution in the store's exception
+    /// table and log `RESOLVED kind unit`.
+    pub fn resolve(&self, kind: &str, unit: &str, text: &str) {
+        let folded = text.replace('\n', " | ");
+        let cut: String = folded.chars().take(600).collect();
+        let now = self.host.now();
+        let stamped = format!("{} resolved {kind} {unit} {cut}", hhmmss(now));
+        append_line(&self.home.join("exceptions.txt"), &stamped);
+        crate::pump::store::append_exception(
+            &self.home,
+            now,
+            "resolved",
+            unit,
+            &format!("{kind}: {cut}"),
+        );
+        self.log(&format!("RESOLVED {kind} {unit}"));
+    }
+
     /// True when the flag file `<home>/<name>` exists.
     #[must_use]
     pub fn flag(&self, name: &str) -> bool {

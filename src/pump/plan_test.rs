@@ -719,3 +719,88 @@ fn a_bad_split_plan_is_re_asked_once() {
     assert_eq!(host.spawned().len(), 1);
     assert!(st.plans_seen.iter().any(|key| key == "u1.split.json"));
 }
+
+/// A late split plan recovers a stuck unit, so the exception it was parked
+/// under is resolved and logged as resolved.
+#[test]
+fn a_late_split_plan_resolves_the_stuck_exception() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.units.insert(
+        "u1".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Stuck,
+            split_fails: 0,
+            ..Unit::default()
+        },
+    );
+    write_plan(
+        &ctx,
+        "u1.split.json",
+        &json!({
+            "need": "n1",
+            "replaces": "u1",
+            "verdict": "units",
+            "reason": "the planner answered late",
+            "units": [
+                {"id": "u1.1", "brief": "half one", "write_scope": ["src/a.rs"]},
+                {"id": "u1.2", "brief": "half two", "write_scope": ["src/b.rs"]}
+            ]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Replaced);
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc.contains("resolved split-no-answer u1"),
+        "exceptions were: {exc}"
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line == "RESOLVED split-no-answer u1"),
+        "logs were: {:?}",
+        host.logs()
+    );
+
+    // A unit parked by repeated planner failures names that exception instead.
+    let (_dir2, ctx2, host2, mut st2) = setup();
+    st2.units.insert(
+        "u2".to_string(),
+        Unit {
+            need: "n1".to_string(),
+            status: Status::Stuck,
+            split_fails: 3,
+            ..Unit::default()
+        },
+    );
+    write_plan(
+        &ctx2,
+        "u2.split.json",
+        &json!({
+            "need": "n1",
+            "replaces": "u2",
+            "verdict": "units",
+            "reason": "the planner answered late",
+            "units": [
+                {"id": "u2.1", "brief": "half one", "write_scope": ["src/a.rs"]},
+                {"id": "u2.2", "brief": "half two", "write_scope": ["src/b.rs"]}
+            ]
+        }),
+    );
+    ingest(&ctx2, &mut st2);
+    assert_eq!(st2.units["u2"].status, Status::Replaced);
+    let exc2 = fs::read_to_string(ctx2.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc2.contains("resolved split-planner-failed u2"),
+        "exceptions were: {exc2}"
+    );
+    assert!(
+        host2
+            .logs()
+            .iter()
+            .any(|line| line == "RESOLVED split-planner-failed u2"),
+        "logs were: {:?}",
+        host2.logs()
+    );
+}
