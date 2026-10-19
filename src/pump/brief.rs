@@ -304,6 +304,8 @@ pub fn gate_brief(ctx: &Ctx, tip: &str) -> String {
         "",
         "If an entire test target died without a libtest summary (killed at a deadline, crashed, no `test result:` line), its failures must not look fixed: add one line `TARGET-DIED <target>` for it between the markers, and list only the names of the targets that finished.",
         "",
+        "A test that failed only because an executable or tool is missing (`No such file or directory`, `NotFound`, exit 126 or 127, `command not found`) is an environment failure, not a code failure: list it as one line `ENV <crate> <test name> :: <what was missing>` instead of a plain name line.",
+        "",
         GATE_DONE_WHEN,
         "",
     ]

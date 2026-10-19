@@ -19,7 +19,7 @@ pub(crate) mod green;
 mod parse;
 
 use parse::{BEGIN, BUILD_FAILED, END, last_usable_block};
-pub use parse::{parse_failing, target_deaths};
+pub use parse::{env_failed, parse_failing, target_deaths};
 
 /// Flag file that makes the next tick start a gate whatever the due rules;
 /// the default target uses this name, other targets suffix `-<target>`.
@@ -36,6 +36,8 @@ const EXTERNAL_POOL: &str = "external";
 const WAIT_KEY: &str = "external_wait_since";
 /// The payload the hold cycle writes into `FORCE-GATE`.
 const FORCE_TEXT: &str = "after fixes\n";
+/// The characters `ctx.exception` keeps of a text.
+const EXCEPTION_LIMIT: usize = 600;
 
 /// Take the gate results an external runner wrote, oldest
 /// first, as ordinary gates.
@@ -386,6 +388,14 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
     record_red_after_fix(ctx, st, names.as_deref());
     let run = st.last_gate.clone();
     let tip = run.tip.clone().unwrap_or_default();
+    let env = env_failed(text);
+    if !env.is_empty() {
+        ctx.exception(
+            "gate-environment",
+            &tip_short(&tip),
+            &environment_text(&env),
+        );
+    }
     let mut rec = GateRecord {
         tip: tip.clone(),
         at: ctx.now(),
@@ -418,6 +428,24 @@ pub fn finish_gate(ctx: &Ctx, st: &mut State, text: &str) {
     }
     finish_known_gate(ctx, st, &mut rec, &names, &deaths);
     st.gates.push(rec);
+}
+
+/// One line naming the names that failed only on missing tools: they are
+/// already out of the failing set, so they are never owned, never new, and no
+/// gate-fix planner runs for them.
+fn environment_text(env: &[(String, String)]) -> String {
+    let listed = env
+        .iter()
+        .map(|(name, evidence)| format!("{name} ({evidence})"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    cut_chars(
+        &format!(
+            "{} names failed on missing tools, not owned: {listed}",
+            env.len()
+        ),
+        EXCEPTION_LIMIT,
+    )
 }
 
 /// `Some(kind)` when the reply cannot be trusted: no names at all is
