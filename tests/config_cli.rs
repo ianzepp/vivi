@@ -58,6 +58,12 @@ model = "P2-S0"
 [[identities]]
 name = "merge"
 kind = "merge"
+pool = "glm"
+
+[[identities]]
+name = "planner"
+kind = "planner"
+pool = "glm"
 
 [pools.glm]
 provider = "local"

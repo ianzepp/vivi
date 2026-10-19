@@ -404,7 +404,10 @@ fn temp_mailspace() -> tempfile::TempDir {
          [pump.gate]\ncommand = \"true\"\n\n\
          [[identities]]\nname = \"operator\"\n\n\
          [[identities]]\nname = \"hand\"\n\n\
-         [[identities]]\nname = \"mind\"\n"
+         [[identities]]\nname = \"mind\"\n\
+         [[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"test\"\n\n\
+         [[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"test\"\n\n\
+         [pools.test]\nprovider = \"local\"\nslots = 1\n"
     );
     // The init template writes an empty roster as `identities = []`; drop that
     // line so the `[[identities]]` tables below can declare the pump's roles.
