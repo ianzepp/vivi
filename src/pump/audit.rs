@@ -128,13 +128,7 @@ pub fn start_audit(
 /// Write the brief (when one is given), send the audit task and dispatch it.
 /// An attempt that leaves no audit running arms the run for a retry. A retry
 /// passes no brief and reuses the one already on disk.
-fn dispatch_audit(
-    ctx: &Ctx,
-    run: &mut AuditRun,
-    brief: Option<&str>,
-    new: usize,
-    residual: usize,
-) {
+fn dispatch_audit(ctx: &Ctx, run: &mut AuditRun, brief: Option<&str>, new: usize, residual: usize) {
     let role = ctx.routing.auditor();
     let to = role.map_or_else(|| ctx.cfg.to.clone(), |role| role.name.clone());
     let Some(pool) = run.pool.clone() else {
