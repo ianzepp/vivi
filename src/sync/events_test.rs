@@ -746,7 +746,10 @@ fn a_fully_absorbed_item_adds_nothing_to_ignored_across_settles() {
             .mailspace
             .apply_arrived_events(&[content_id.clone()])
             .unwrap();
-        assert_eq!(tally.ignored, 0, "settle {settle} reported an ignored event");
+        assert_eq!(
+            tally.ignored, 0,
+            "settle {settle} reported an ignored event"
+        );
     }
     let row = w.bob.row(&w.bob.id_of(&handle)).unwrap();
     assert_eq!(row.local_role, "done");
