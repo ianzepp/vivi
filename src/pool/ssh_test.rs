@@ -64,7 +64,7 @@ fn spec(pool: &str, index: u32) -> CreateSpec {
     CreateSpec {
         name: format!("ms-{pool}-slot-{index}"),
         image: String::new(),
-        metadata: slot_metadata(&PoolId::new("ms", pool), index, "main"),
+        metadata: slot_metadata(&PoolId::new("ms", "", pool), index, "main"),
         env: BTreeMap::from([("BASE".to_string(), "it's main".to_string())]),
         once_env: BTreeMap::from([("GH_TOKEN".to_string(), "sekrit".to_string())]),
         passthrough_env: vec!["IGNORED".into()],
@@ -611,7 +611,7 @@ fn a_new_slot_records_when_it_was_made() {
 fn make_in(p: &SshProvider, space: &str, pool: &str, index: u32) -> String {
     let mut spec = spec(pool, index);
     spec.name = format!("{space}-{pool}-slot-{index}");
-    spec.metadata = slot_metadata(&PoolId::new(space, pool), index, "main");
+    spec.metadata = slot_metadata(&PoolId::new(space, "", pool), index, "main");
     let id = new_slot_id(&spec).unwrap();
     let archive = SshProvider::new_slot_archive(&spec).unwrap();
     p.require("create", &[&id], Some(&archive)).unwrap();
@@ -630,7 +630,7 @@ fn two_mailspaces_with_one_pool_name_keep_separate_directories_and_marks() {
     );
     let listed = p.list().unwrap();
     assert_eq!(listed.len(), 2);
-    let pool = |space: &str| PoolId::new(space, "local");
+    let pool = |space: &str| PoolId::new(space, "", "local");
     let ours = crate::pool::slot::pool_slots(&pool("ms"), &listed);
     let others = crate::pool::slot::pool_slots(&pool("other"), &listed);
     assert_eq!((ours.len(), others.len()), (1, 1));

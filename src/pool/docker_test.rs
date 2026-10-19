@@ -442,7 +442,7 @@ fn list_and_machine_fold_marks_and_the_claim_into_one_record() {
     assert_eq!(rec.metadata["vivi_pool_arch"], "arm64");
     assert_eq!(crate::pool::slot::slot_state(rec), "free");
     let slots =
-        crate::pool::slot::pool_slots(&crate::pool::slot::PoolId::new("ms", "lane"), &listed);
+        crate::pool::slot::pool_slots(&crate::pool::slot::PoolId::new("ms", "", "lane"), &listed);
     assert_eq!(slots[0].arch.as_deref(), Some("arm64"));
     assert_eq!(provider.machine(&id).unwrap(), *rec);
     assert_eq!(provider.machine("deadbeef0000").unwrap().state, "destroyed");

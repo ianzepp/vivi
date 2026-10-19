@@ -16,7 +16,7 @@ fn parse(extra: &str) -> PoolConfig {
 }
 
 fn id() -> PoolId {
-    PoolId::new("space", "gpu")
+    PoolId::new("space", "", "gpu")
 }
 
 fn refused(text: &str) -> String {
@@ -161,7 +161,7 @@ fn a_pool_name_that_would_not_fit_in_a_pod_name_is_refused() {
     let long = "m".repeat(80);
     let config = parse("");
     let said = config
-        .validate(&PoolId::new(&long, &"p".repeat(120)))
+        .validate(&PoolId::new(&long, "", &"p".repeat(120)))
         .unwrap_err()
         .to_string();
     assert!(
