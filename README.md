@@ -458,7 +458,7 @@ A second pump on the same home refuses to start. Defaults:
 | --- | --- |
 | `[pump]` | `branch` (required), `committer_name` and `committer_email` (required; every pump commit uses them), `remote_url` (clone source when `repo` is missing), `reserved_file` (`reserved.txt` in home), `remote` (`origin`), `main` (`main`; empty turns off merging main in and promotion), `promote` (`true`), `tick` (20 s), `home` (`<project>/.vivi/pump`), `repo` (`<home>/repo`), `shell_prefix` (runs before every command, many per tick — keep it near-free), `hand_rules` (a file; default is an embedded generic text), `fix_prefix` (`pumpfix`), `from` (`operator`), `to` (`hand`), `reply_from` (`mind`) |
 | `[pump.board]` | `from` (list), `since`, `mark` (`pump`), `every` (300 s), `planners_max` (3), `plan_timeout` (1800 s), `reply_to`, `pull` (`true`: run `vivi sync pull` first), `push_since` (`30m`) |
-| `[pump.planner]` | `run` (command; `{charter}` becomes `charter`), `charter` (file), `split_timeout` (1500 s) |
+| `[pump.planner]` | `run` (command; `{charter}` becomes `charter`), `charter` (file), `split_hard_cap` (5400 s) |
 | `[pump.dispatch]` | `lanes` (legacy list of `{ model, cap }`; omit when a role assigns a pool), `last_resort` (model), `max_attempts` (3), `budget` (600 s), `overdue_grace` (900 s), `per_tick` (6), `from`, `default_kind` (legacy, with `kinds`) |
 | `[pump.dispatch.kinds.<name>]` | legacy: `pools` (non-empty list; used only when the hand role has no `pool`), `max` (cap on that kind in flight), `skip_proof` (`false`) |
 | `[pump.merge]` | `batch` (8), `lanes` (1; unused when the merge role sets `pool`), `format`, `shared_checks` (list), `proof_timeout` (300 s), `remote_wait` (90 s), `remote_limit` (1800 s) |

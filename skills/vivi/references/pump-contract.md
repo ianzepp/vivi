@@ -99,7 +99,7 @@ directory:
 | `pump.db-wal`, `pump.db-shm` | SQLite | SQLite | WAL sidecars |
 | `pump_control` in `pump.db` | pump control commands and service | pump and service | durable mode and transient service shutdown request |
 | `log.txt` | pump `log` | operator | one line per event: `HH:MM:SS msg`, UTC; a merge lane thread's lines start `lane <target>/<n>: ` (see below) |
-| `exceptions.txt` | pump `exception` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars |
+| `exceptions.txt` | pump `exception` and `resolve` | operator | `HH:MM:SS kind unit text`; newlines in text become ` \| `; text capped at 600 chars; a resolution is a row with kind `resolved` |
 | `needs-ready.txt` | pump on need completion (merge_apply) | operator | `need tip10 unit,unit` per line |
 | `status.txt` | pump `write_status` | `pump status` | timestamp, `units k=v …`, `plans k=v …`, `merges N needs-ready N gates N baseline …`, the three stall lines below, then one line per merge lane |
 | `lock` | pump opens for flock | none (lock only) | empty |
@@ -108,7 +108,7 @@ directory:
 | `plans/superseded/` | re-plan moves old plans here | operator | `<need>.<epoch>.json` |
 | `needs/` | board dumps the need thread | planner (the plan prompt) | JSON `{need, subject, triage, thread}` |
 | `board/` | pump writes `<need>.prompt`; planner shell writes `<need>.out`; the spawn reaper writes `<need>.out.rc` | operator | prompt text; planner stdout+stderr; the exit receipt the board reads to notice a dead planner |
-| `resplit/` | pump writes `<unit>.json` and `<unit>.prompt`; planner writes `<unit>.out` | split planner | JSON + prompt text |
+| `resplit/` | pump writes `<unit>.json` and `<unit>.prompt`; planner writes `<unit>.out`; the spawn reaper writes `<unit>.out.rc` with the planner's exit code | split planner | JSON + prompt text; an exit receipt without a plan means the planner died |
 | `gatefix/` | pump writes `<need>.prompt`; planner writes `<need>.out` | gatefix planner | prompt text |
 | `merge-jobs/` | pump writes `<bid>.job.json`; remote merger writes `.claimed.json`/`.result.json` | pump reads the result | batch protocol; see [`pump-protocols.md`](pump-protocols.md) |
 | `repo/` | git operations (reset_repo and all merge work) | pump | legacy single-target integration clone; named targets use `targets/<id>/repo` |
@@ -321,7 +321,8 @@ Transitions (from, to, trigger, guard, action):
 | `inflight` | `pending` or `stuck` | collect: no branch, no verdict marker | — | `fail`: history entry `{attempt, model, why, detail≤2500, at}`; `task=null`; `stuck` when `attempts - transient_retries >= max_attempts` (plus a `stuck` exception), else back to `pending` |
 | `inflight` | `pending` (transient) | collect: no branch, no verdict marker, and the failure classifies transient (`lost/`, `error/`, `fetch-failed`, a timed-out `proof-failed`, a lockfile-only `merge-conflict`) | `transient_retries < transient_max` | history entry as above; `transient_retries+=1`; `retry_not_before = now + transient_backoff * 2^n`; log `transient-retry <uid> <class> <n>/<cap>`; past the cap the ordinary fail row above applies |
 | `inflight` | `splitting` | timeout: reconcile state `timeout`, or still running past `budget + overdue_grace`, or the receipt shows agent exit 124 | — | `split`: `resplit/` files written, split planner spawned detached, `task=null`, history entry `why="timeout"`, `since=now` |
-| `splitting` | `stuck` | split planner wrote no plan in `split_timeout` | — | `split-no-answer` exception |
+| `splitting` | `stuck` | no receipt and the planner is past `split_hard_cap` | — | `split-no-answer` exception |
+| `splitting` | `stuck` | the planner exited without a plan 3 times | — | `split-planner-failed` exception; each earlier exit is a `split-planner-failed` exception with a retry, backed off 60 s then 120 s |
 | `splitting`/`pending` | `replaced` | a plan with `replaces: <uid>` is ingested | the plan passes the same unit checks | old unit `status="replaced"`, `replaced_by=<ids>`; empty `units` files a `split-empty` exception; successors minted as `pending` |
 | `delivered` | `merging` | merge feed after collect | not held by an unlanded need dependency; not `HOLD-MERGE`, or the id starts with the fix prefix, or the unit's need is in the priority file | job put on the merge queue (state change only; the merge thread touches the repo, never the state) |
 | `merging` | `merged` | merge result `ok=true` | — | `commit`, `merged_at`, `outside`, `merges+=1`; a `merges` row; `scope-warn` logged when `outside` is non-empty; need closed and a `needs-ready.txt` line appended when every unit of the need is satisfied |
@@ -552,7 +553,7 @@ configuration remains the implicit `default` target.
 | --- | --- | --- | --- |
 | `run` | command template | none — **required** while `board.from` or `board.mark` is set | the planner command; prompt file on stdin, stdout+stderr to the `.out` file, cwd `home`; `{charter}` is replaced by `charter` |
 | `charter` | path | none | the file substituted for `{charter}` in `run` |
-| `split_timeout` | int seconds | `1500` | seconds a split planner has to answer before the unit is `stuck` |
+| `split_hard_cap` | int seconds | `5400` | hard cap while the split planner is alive or unreachable; an exited planner is retried with backoff |
 
 `[pump.dispatch]`:
 
