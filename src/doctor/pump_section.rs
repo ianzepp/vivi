@@ -230,7 +230,7 @@ fn probe_service_with(
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = run;
+        drop(run);
         ServicePresence::Unavailable
     }
 }
