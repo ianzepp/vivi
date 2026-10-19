@@ -2644,10 +2644,10 @@ defaults to a user-local bin directory, never a project mailspace).
 ```sh
 vivi update --check              # exit 1 when a newer public v* exists; 2 on fetch failure
 vivi update                      # install that release and flip the symlink
-vivi update --version 14.0.0     # pin or roll back
+vivi update --version 14.1.1     # pin or roll back
 vivi update --adopt              # also --force: move a plain-file vivi to vivi.unmanaged
 vivi versions                    # list versioned installs; * is active
-vivi uninstall --version 14.0.0  # only vivi-<semver> and the vivi symlink
+vivi uninstall --version 14.1.1  # only vivi-<semver> and the vivi symlink
 vivi uninstall --all
 ```
 
