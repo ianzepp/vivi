@@ -345,10 +345,11 @@ fn a_conflict_only_on_generated_files_is_resolved_and_merged() {
             .any(|c| c.contains("reset -q --hard")),
         "{cmds:?}"
     );
-    assert!(host
-        .logs()
-        .iter()
-        .any(|l| l.contains("resolved generated conflicts u1: scripta/e2e-coverage-ledger.toml")));
+    assert!(
+        host.logs().iter().any(
+            |l| l.contains("resolved generated conflicts u1: scripta/e2e-coverage-ledger.toml")
+        )
+    );
 }
 
 #[test]
@@ -367,10 +368,12 @@ fn a_conflict_on_generated_and_source_files_still_fails() {
     let result = merge_work(&ctx, &job());
     assert_eq!(result.ok, Some(false));
     assert_eq!(result.why.as_deref(), Some("merge-conflict"));
-    assert!(!host
-        .commands()
-        .iter()
-        .any(|c| c.contains("checkout --ours")));
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|c| c.contains("checkout --ours"))
+    );
     assert_eq!(
         host.commands().last().map(String::as_str),
         Some("git reset -q --hard origin/next")

@@ -2,7 +2,9 @@
 //! real dispatch evidence.
 
 use super::attempt_record::sections_tail;
-use super::envfail::{HOST_FAIL_WINDOW, HOST_PAUSE_AFTER, HOST_PUSH_OUTCOMES, classify, missing_tool};
+use super::envfail::{
+    HOST_FAIL_WINDOW, HOST_PAUSE_AFTER, HOST_PUSH_OUTCOMES, classify, missing_tool,
+};
 
 /// A task receipt as the pool writes it: summary lines, then sections.
 fn receipt(exit: i32, message: &str, stderr: &str) -> String {
@@ -73,7 +75,11 @@ fn cases() -> Vec<Case> {
             name: "stderr section line HTTP 503 Service Unavailable",
             why: "failed",
             detail: "",
-            receipt: receipt(1, "the hand gave up", "HTTP 503 Service Unavailable\nretrying"),
+            receipt: receipt(
+                1,
+                "the hand gave up",
+                "HTTP 503 Service Unavailable\nretrying",
+            ),
             want: Some(("endpoint", None)),
         },
         Case {
@@ -132,10 +138,7 @@ fn classify_table_over_incident_evidence() {
                     failure.detail
                 );
             }
-            (got, want) => panic!(
-                "case {}: classify gave {got:?}, wanted {want:?}",
-                case.name
-            ),
+            (got, want) => panic!("case {}: classify gave {got:?}, wanted {want:?}", case.name),
         }
     }
 }
@@ -143,8 +146,12 @@ fn classify_table_over_incident_evidence() {
 #[test]
 fn failure_detail_truncates_evidence_to_200_chars() {
     let long = "x".repeat(500);
-    let failure = classify("failed", &format!("bash: {long}: command not found"), "").expect("classified");
-    let evidence = failure.detail.strip_prefix("shell_marker: ").expect("prefix");
+    let failure =
+        classify("failed", &format!("bash: {long}: command not found"), "").expect("classified");
+    let evidence = failure
+        .detail
+        .strip_prefix("shell_marker: ")
+        .expect("prefix");
     assert_eq!(evidence.chars().count(), 201);
 }
 

@@ -217,10 +217,7 @@ fn failed(uid: &str, why: &str, detail: String) -> MergeResult {
 
 /// The declared generated-file entries covering every file in `files`,
 /// deduplicated by entry; `None` when any file has no covering entry.
-pub(crate) fn generated_entries<'a>(
-    ctx: &'a Ctx,
-    files: &[String],
-) -> Option<Vec<&'a Generated>> {
+pub(crate) fn generated_entries<'a>(ctx: &'a Ctx, files: &[String]) -> Option<Vec<&'a Generated>> {
     let mut entries: Vec<&Generated> = Vec::new();
     'files: for file in files {
         for entry in &ctx.cfg.merge.generated {
@@ -238,12 +235,13 @@ pub(crate) fn generated_entries<'a>(
 
 /// Regenerate the generated files from source of truth and stage them. No
 /// reset inside: the caller owns recovery.
-pub(crate) fn regenerate_generated(
-    ctx: &Ctx,
-    entries: &[&Generated],
-) -> Result<(), String> {
+pub(crate) fn regenerate_generated(ctx: &Ctx, entries: &[&Generated]) -> Result<(), String> {
     for entry in entries {
-        let out = ctx.sh(&entry.regenerate, Some(&ctx.repo), ctx.cfg.merge.proof_timeout);
+        let out = ctx.sh(
+            &entry.regenerate,
+            Some(&ctx.repo),
+            ctx.cfg.merge.proof_timeout,
+        );
         if out.code != 0 {
             return Err(tail(&out.text, 300));
         }
@@ -277,9 +275,7 @@ pub(crate) fn resolve_generated(ctx: &Ctx, uid: &str, files: &[String]) -> bool 
     }
     if let Err(text) = regenerate_generated(ctx, &entries) {
         reset_repo(ctx);
-        ctx.log(&format!(
-            "generated regenerate failed {uid}: {text}"
-        ));
+        ctx.log(&format!("generated regenerate failed {uid}: {text}"));
         return false;
     }
     let commit = format!("{} commit --no-edit", identity_args(ctx));
