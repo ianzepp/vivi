@@ -238,7 +238,7 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
 
 /// Decide a failed shared check. The failure text is logged first: one
 /// merged job is the culprit and fails with `proof-failed`; several are set
-/// aside together (see [`quarantine_batch`]).
+/// aside together (see [`quarantine_members`]).
 fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str) -> SharedOutcome {
     log_failure(ctx, text);
     if merged.len() == 1 {
@@ -247,7 +247,8 @@ fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str
         let result = failed(&merged[0].job.uid, "proof-failed", detail);
         return SharedOutcome::Failed(vec![result]);
     }
-    SharedOutcome::Failed(quarantine_batch(ctx, merged, cmd, code, text))
+    let jobs: Vec<MergeJob> = merged.iter().map(|m| m.job.clone()).collect();
+    SharedOutcome::Failed(quarantine_members(ctx, &jobs, cmd, code, text))
 }
 
 /// Log the last 40 lines of a failed shared check's distilled output, one
@@ -258,6 +259,52 @@ fn log_failure(ctx: &Ctx, text: &str) {
     for line in &lines[lines.len().saturating_sub(40)..] {
         ctx.log(&format!("  {line}"));
     }
+}
+
+/// Rebuild the batch on a clean lane and set it aside: every member is merged
+/// again, so the quarantine push does not depend on what the lane's `HEAD`
+/// still holds. A member that no longer merges is left undecided
+/// (`quarantine-merge-failed`) so it returns to `delivered`; the members that
+/// do merge are pushed aside together by [`quarantine_batch`].
+fn quarantine_members(
+    ctx: &Ctx,
+    jobs: &[MergeJob],
+    cmd: &str,
+    code: i32,
+    text: &str,
+) -> Vec<MergeResult> {
+    reset_repo(ctx);
+    merge_main_in(ctx);
+    let (undecided, merged) = rebuild_batch(ctx, jobs);
+    if merged.is_empty() {
+        return undecided;
+    }
+    format_style_commit(ctx, &style_tag(&merged));
+    let mut results = quarantine_batch(ctx, &merged, cmd, code, text);
+    results.extend(undecided);
+    results
+}
+
+/// Merge `jobs` again from a clean lane: clean merges collect (without the
+/// `outside` files the quarantine path does not use), and any merge failure
+/// becomes an undecided result instead of a failed one.
+fn rebuild_batch(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merged>) {
+    let mut undecided = Vec::new();
+    let mut merged = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        match merge_one(ctx, job, (i + 1, jobs.len())) {
+            Some(result) => undecided.push(undecided_result(
+                &job.uid,
+                "quarantine-merge-failed",
+                result.detail.as_deref().unwrap_or(""),
+            )),
+            None => merged.push(Merged {
+                job: job.clone(),
+                outside: Vec::new(),
+            }),
+        }
+    }
+    (undecided, merged)
 }
 
 /// Set a batch aside after a shared check failed: push the lane's `HEAD`
