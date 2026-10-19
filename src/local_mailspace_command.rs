@@ -414,11 +414,15 @@ fn handle_memo_command(command: &MemoCommand) -> Result<(), VivariumError> {
             let handle = mailspace.delete_memo(for_identity, handle)?;
             println!("deleted {handle}");
         }
-        MemoCommand::List { for_identity, json, project } => {
-            print_memo_list(&Mailspace::discover(project.as_deref())?, for_identity, *json)?;
+        MemoCommand::List { for_identity, tags, exclude_tags, since, limit, all, json, project } => {
+            let mailspace = Mailspace::discover(project.as_deref())?;
+            let filter = memo_filter(&mailspace, tags, exclude_tags, since, *limit, *all)?;
+            print_memo_list(&mailspace, for_identity, &filter, *json)?;
         }
-        MemoCommand::Search { query, for_identity, subject, json, project } => {
-            let memos = Mailspace::discover(project.as_deref())?.search_memos(for_identity, query, *subject)?;
+        MemoCommand::Search { query, for_identity, subject, tags, exclude_tags, since, limit, all, json, project } => {
+            let mailspace = Mailspace::discover(project.as_deref())?;
+            let filter = memo_filter(&mailspace, tags, exclude_tags, since, *limit, *all)?;
+            let memos = mailspace.search_memos_filtered(for_identity, query, *subject, &filter)?;
             print_memo_list_items(&memos, *json)?;
         }
         MemoCommand::Show { handle, json, project } => {
@@ -439,20 +443,53 @@ fn handle_memo_command(command: &MemoCommand) -> Result<(), VivariumError> {
     Ok(())
 }
 
-fn print_memo_list(mailspace: &Mailspace, identity: &str, json: bool) -> Result<(), VivariumError> {
-    let memos = mailspace.list_kind(Some(identity), "memos", "memo")?;
+/// Build a memo filter from the CLI flags. Hidden tags stay visible only when
+/// the caller asked for them: `--all`, or `--tag` naming a hidden tag.
+fn memo_filter(
+    mailspace: &Mailspace,
+    tags: &[String],
+    exclude_tags: &[String],
+    since: &Option<String>,
+    limit: Option<usize>,
+    all: bool,
+) -> Result<vivi::mailspace::memos::MemoFilter, VivariumError> {
+    let hidden = vivi::mailspace::memos::hidden_tags(&mailspace.config.memo);
+    let since = since
+        .as_deref()
+        .map(|raw| vivi::mailspace::memos::since_cutoff(raw, chrono::Utc::now()))
+        .transpose()?;
+    Ok(vivi::mailspace::memos::MemoFilter {
+        tags: tags.to_vec(),
+        exclude_tags: exclude_tags.to_vec(),
+        since,
+        limit,
+        include_hidden: all || tags.iter().any(|tag| hidden.contains(tag)),
+    })
+}
+
+fn print_memo_list(
+    mailspace: &Mailspace,
+    identity: &str,
+    filter: &vivi::mailspace::memos::MemoFilter,
+    json: bool,
+) -> Result<(), VivariumError> {
+    let memos = mailspace.list_memos_filtered(identity, filter)?;
     print_memo_list_items(&memos, json)
 }
 
-fn print_memo_list_items(memos: &[StoredMessageView], json: bool) -> Result<(), VivariumError> {
+fn print_memo_list_items(
+    memos: &[(StoredMessageView, Vec<String>)],
+    json: bool,
+) -> Result<(), VivariumError> {
     if json {
         let items: Vec<serde_json::Value> = memos
             .iter()
-            .map(|m| {
+            .map(|(memo, tags)| {
                 serde_json::json!({
-                    "handle": m.handle,
-                    "date": m.date,
-                    "subject": m.subject,
+                    "handle": memo.handle,
+                    "date": memo.date,
+                    "tags": tags,
+                    "subject": memo.subject,
                 })
             })
             .collect();
@@ -467,9 +504,14 @@ fn print_memo_list_items(memos: &[StoredMessageView], json: bool) -> Result<(), 
         println!("  no memos");
         return Ok(());
     }
-    println!("  handle  date  subject");
-    for memo in memos {
-        println!("  {}  {}  {}", memo.handle, memo.date, memo.subject);
+    println!("  handle  date  tags  subject");
+    for (memo, tags) in memos {
+        let tags = if tags.is_empty() {
+            "-".to_string()
+        } else {
+            tags.join(",")
+        };
+        println!("  {}  {}  {}  {}", memo.handle, memo.date, tags, memo.subject);
     }
     Ok(())
 }
