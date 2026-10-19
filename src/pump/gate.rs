@@ -221,7 +221,7 @@ pub fn start_gate(ctx: &Ctx, st: &mut State) {
     let Some(tip) = remote_tip(ctx) else {
         return;
     };
-    let Some(path) = write_gate_brief(ctx) else {
+    let Some(path) = write_gate_brief(ctx, &tip) else {
         return;
     };
     let Some(task) = send_gate_task(ctx, &path, &tip) else {
@@ -297,7 +297,7 @@ fn remote_tip(ctx: &Ctx) -> Option<String> {
 }
 
 /// Write the rendered gate brief to `<home>/briefs/gate.txt`.
-fn write_gate_brief(ctx: &Ctx) -> Option<PathBuf> {
+fn write_gate_brief(ctx: &Ctx, tip: &str) -> Option<PathBuf> {
     let path = ctx.home.join("briefs").join("gate.txt");
     if let Some(dir) = path.parent()
         && let Err(err) = fs::create_dir_all(dir)
@@ -305,7 +305,7 @@ fn write_gate_brief(ctx: &Ctx) -> Option<PathBuf> {
         ctx.log(&format!("gate brief dir failed: {err}"));
         return None;
     }
-    if let Err(err) = fs::write(&path, gate_brief(ctx)) {
+    if let Err(err) = fs::write(&path, gate_brief(ctx, tip)) {
         ctx.log(&format!("gate brief write failed: {err}"));
         return None;
     }
