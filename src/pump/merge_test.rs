@@ -822,6 +822,64 @@ fn a_shared_check_failure_with_one_job_is_proof_failed() {
 }
 
 #[test]
+fn a_batch_drift_signature_failure_regenerates_and_passes() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply_once("cargo test --lib", 1, "coverage_rows 810 != 811\n");
+    host.reply("cargo test --lib", 0, "");
+    host.reply("rev-parse HEAD", 0, "tip9\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(
+        results.iter().all(|r| r.ok == Some(true)),
+        "{results:?}\n{:?}",
+        host.commands()
+    );
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "./regen-ledger.sh"), 1, "{cmds:?}");
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() != Some("quarantined"))
+    );
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() != Some("proof-failed"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("drift batch of 2: regenerated"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "batch 2 shared rc=0 0s: cargo test --lib")
+    );
+}
+
+#[test]
+fn a_batch_drift_retry_that_fails_again_still_fails() {
+    let (_dir, ctx, host) = setup_drift();
+    host.reply("cargo test --lib", 1, "coverage_rows 810 != 811\n");
+    let results = batch_work(&ctx, &batch());
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|r| r.ok != Some(true)), "{results:?}");
+    let cmds = host.commands();
+    assert_eq!(count(&cmds, "./regen-ledger.sh"), 1, "{cmds:?}");
+    assert!(
+        results
+            .iter()
+            .all(|r| r.why.as_deref() == Some("quarantined"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "batch 2 shared rc=1 0s: cargo test --lib")
+    );
+}
+
+#[test]
 fn a_refused_push_leaves_every_job_undecided_with_push_failed() {
     let (_dir, ctx, host) = setup("");
     host.reply(
