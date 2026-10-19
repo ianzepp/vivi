@@ -392,8 +392,12 @@ fn the_runner_has_no_commit_or_push_on_the_read_only_path() {
         .find("[ -z \"${READ_ONLY:-}\" ] || finish_read_only")
         .unwrap();
     assert!(
-        call < RUNNER.find("git push").unwrap(),
+        call < RUNNER.find("\nelif publish_candidate_to ").unwrap(),
         "it ends before any push"
+    );
+    assert!(
+        call < RUNNER.find("\n  publish_target\n").unwrap(),
+        "and before target publication"
     );
     assert!(
         call < RUNNER.find("commit -q -m").unwrap(),

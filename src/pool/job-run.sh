@@ -97,22 +97,124 @@ AGENT_S=
 PUBLISH_STATE=
 PUBLISH_CANDIDATE=
 PUBLISH_SHA=
+PUBLISH_DIR=
+PUBLISH_REPO=
+PUBLISH_HOME=
+PUBLISH_GIT=
+PUBLISH_PATH=
+PUBLISH_ASKPASS=
 if [ -n "${UNPRIVILEGED:-}" ]; then
   as_hand() { "$@"; }
   AGENT_HOME=$W/home
   AGENT_USER_HOME=${HOME:-$AGENT_HOME}
+  agent_job_pids() {
+    grep -lzxF "VIVI_AGENT_JOB=$JOB" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#'
+  }
+  no_agent_running() { [ -z "$(agent_job_pids)" ]; }
   kill_agent() {
     local pids
-    pids=$(grep -lzxF "VIVI_AGENT_JOB=$JOB" /proc/[0-9]*/environ 2>/dev/null | sed 's#/proc/\([0-9]*\)/environ#\1#')
+    pids=$(agent_job_pids)
     [ -z "$pids" ] || kill -KILL $pids 2>/dev/null
-    return 0
+    wait_for_agent_exit
   }
 else
   as_hand() { runuser -u hand -- "$@"; }
   AGENT_HOME=/home/hand
   AGENT_USER_HOME=/home/hand
-  kill_agent() { pkill -KILL -u hand 2>/dev/null; }
+  no_agent_running() { ! pgrep -u hand >/dev/null 2>&1; }
+  kill_agent() {
+    pkill -KILL -u hand 2>/dev/null || true
+    wait_for_agent_exit
+  }
 fi
+
+wait_for_agent_exit() {
+  local attempt
+  for ((attempt = 0; attempt < 20; attempt++)); do
+    no_agent_running && return 0
+    sleep 0.05
+  done
+  no_agent_running
+}
+
+clean_publish_url() {
+  local url=$1 scheme remainder authority suffix=
+  case "$url" in
+    https://*|http://*)
+      scheme=${url%%://*}
+      remainder=${url#*://}
+      authority=${remainder%%/*}
+      [ "$authority" = "$remainder" ] || suffix=/${remainder#*/}
+      authority=${authority##*@}
+      printf '%s://%s%s' "$scheme" "$authority" "$suffix"
+      ;;
+    *) printf '%s' "$url" ;;
+  esac
+}
+
+valid_git_oid() {
+  case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
+}
+
+hand_git() {
+  as_hand env -i "HOME=$AGENT_USER_HOME" "PATH=$PATH" \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -C "$RD" "$@"
+}
+
+publisher_env_git() {
+  no_agent_running || return 90
+  env -i "HOME=$PUBLISH_HOME" "PATH=$PUBLISH_PATH" \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_COUNT=0 GIT_TERMINAL_PROMPT=0 \
+    GIT_ASKPASS="$PUBLISH_ASKPASS" "VIVI_PUBLISH_TOKEN=${TOKEN:-}" \
+    "$PUBLISH_GIT" -c core.hooksPath=/dev/null "$@"
+}
+
+publisher_git() {
+  publisher_env_git --git-dir="$PUBLISH_REPO" "$@"
+}
+
+init_publisher() {
+  [ -n "$PUBLISH_REPO" ] && return 0
+  no_agent_running || return 1
+  PUBLISH_GIT=/usr/bin/git
+  [ -x "$PUBLISH_GIT" ] || return 1
+  PUBLISH_PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/lib/git-core:/usr/libexec/git-core
+  PUBLISH_DIR=$(mktemp -d "$W/publisher.XXXXXXXX") || return 1
+  chmod 700 "$PUBLISH_DIR" || return 1
+  PUBLISH_HOME=$PUBLISH_DIR/home
+  PUBLISH_REPO=$PUBLISH_DIR/repo.git
+  PUBLISH_ASKPASS=$PUBLISH_DIR/askpass
+  mkdir -m 700 "$PUBLISH_HOME" "$PUBLISH_DIR/template" || return 1
+  cat > "$PUBLISH_ASKPASS" <<'ASKPASS'
+#!/bin/bash
+case "$1" in
+  *Username*) printf '%s\n' x-access-token ;;
+  *Password*) printf '%s\n' "${VIVI_PUBLISH_TOKEN:-}" ;;
+  *) exit 1 ;;
+esac
+ASKPASS
+  chmod 700 "$PUBLISH_ASKPASS" || return 1
+  PUBLISH_OBJECTS=$(hand_git rev-parse --path-format=absolute --git-path objects) || return 1
+  PUBLISH_SHALLOW=$(hand_git rev-parse --path-format=absolute --git-path shallow) || return 1
+  case "$PUBLISH_OBJECTS$PUBLISH_SHALLOW" in *$'\n'*|*$'\r'*) return 1 ;; esac
+  case "$PUBLISH_OBJECTS" in /*) ;; *) return 1 ;; esac
+  [ -d "$PUBLISH_OBJECTS" ] || return 1
+  publisher_env_git init --bare --template="$PUBLISH_DIR/template" "$PUBLISH_REPO" || return 1
+  mkdir -p "$PUBLISH_REPO/objects/info" || return 1
+  printf '%s\n' "$PUBLISH_OBJECTS" > "$PUBLISH_REPO/objects/info/alternates" || return 1
+  if [ -e "$PUBLISH_SHALLOW" ]; then
+    [ -f "$PUBLISH_SHALLOW" ] && [ ! -L "$PUBLISH_SHALLOW" ] || return 1
+    : > "$PUBLISH_REPO/shallow" || return 1
+    while IFS= read -r shallow || [ -n "$shallow" ]; do
+      [ -n "$shallow" ] || continue
+      valid_git_oid "$shallow" || return 1
+      printf '%s\n' "$shallow" >> "$PUBLISH_REPO/shallow" || return 1
+    done < "$PUBLISH_SHALLOW"
+  fi
+}
 
 # A worktree slot at rest is detached, so the branch it worked on is free to
 # be checked out or merged elsewhere. Never touches the working tree.
@@ -175,7 +277,59 @@ finish() { # finish <push-outcome> [sha]
     [ -z "${FACTS_EXTRA:-}" ] || printf '%s\n' "$FACTS_EXTRA"
   } > "$J/result.partial"
   mv "$J/result.partial" "$J/result"
+  [ -z "$PUBLISH_DIR" ] || rm -rf -- "$PUBLISH_DIR"
   exit 0
+}
+
+# Import a hand-verified object into the isolated runner repo, then push its
+# exact id. Git never reads the hand checkout's config or hooks here.
+publish_candidate_to() {
+  local url=$1 ref=$2 candidate=$3 allow_existing=$4 push_state remote_line remote_sha remote_ref
+  PUBLISH_CANDIDATE=$candidate
+  valid_git_oid "$candidate" || { PUBLISH_STATE=candidate_missing; return 1; }
+  case "$ref" in refs/heads/*) ;; *) PUBLISH_STATE=invalid_ref; return 1 ;; esac
+  init_publisher || { PUBLISH_STATE=publisher_unavailable; return 1; }
+  publisher_git check-ref-format "$ref" >/dev/null 2>&1 || {
+    PUBLISH_STATE=invalid_ref
+    return 1
+  }
+  publisher_git cat-file -e "$candidate^{commit}" 2>/dev/null || {
+    PUBLISH_STATE=candidate_missing
+    return 1
+  }
+  if publisher_git push --no-verify -q "$url" "$candidate:$ref"; then
+    push_state=pushed
+  elif [ "$allow_existing" = yes ]; then
+    push_state=already-on-remote
+  else
+    PUBLISH_STATE=push_refused
+    return 1
+  fi
+  publisher_git fetch -q --no-tags "$url" "$ref" 2>/dev/null || {
+    PUBLISH_STATE=verify_failed
+    return 1
+  }
+  PUBLISH_SHA=$(publisher_git rev-parse --verify --quiet 'FETCH_HEAD^{commit}' 2>/dev/null) || {
+    PUBLISH_STATE=verify_failed
+    return 1
+  }
+  remote_line=$(publisher_git ls-remote --heads "$url" "$ref" 2>/dev/null) || {
+    PUBLISH_STATE=verify_failed
+    return 1
+  }
+  read -r remote_sha remote_ref <<< "$remote_line"
+  if [ "$remote_ref" != "$ref" ] || [ "$remote_sha" != "$PUBLISH_SHA" ] || ! valid_git_oid "$remote_sha"; then
+    PUBLISH_STATE=verify_failed
+    PUBLISH_SHA=
+    return 1
+  fi
+  if publisher_git merge-base --is-ancestor "$candidate" "$PUBLISH_SHA"; then
+    PUBLISH_STATE=$push_state
+    return 0
+  fi
+  PUBLISH_STATE=not_ancestor
+  PUBLISH_SHA=
+  return 1
 }
 
 # Publish a verified candidate with the runner's credentials, never from the
@@ -188,52 +342,21 @@ publish_target() {
     return 0
   fi
   case "$PUBLISH_REF" in refs/heads/*) ;; *) PUBLISH_STATE=invalid_ref; return 0 ;; esac
-  git -C "$RD" check-ref-format "$PUBLISH_REF" >/dev/null 2>&1 || {
-    PUBLISH_STATE=invalid_ref
-    return 0
-  }
-  PUBLISH_CANDIDATE=$(git -C "$RD" rev-parse --verify HEAD 2>/dev/null) || {
+  PUBLISH_CANDIDATE=$(hand_git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || {
     PUBLISH_STATE=candidate_missing
     return 0
   }
+  valid_git_oid "$PUBLISH_CANDIDATE" || { PUBLISH_STATE=candidate_missing; return 0; }
   if [ -n "${PUBLISH_EXPECT:-}" ] && [ "$PUBLISH_CANDIDATE" != "$PUBLISH_EXPECT" ]; then
     PUBLISH_STATE=candidate_mismatch
     return 0
   fi
-  PUBLISH_URL=${PUBLISH_REMOTE:-$URL}
+  PUBLISH_URL=$(clean_publish_url "${PUBLISH_REMOTE:-$REMOTE}")
   if [ -z "$PUBLISH_URL" ]; then
     PUBLISH_STATE=remote_missing
     return 0
   fi
-  if git -C "$RD" push -q "$PUBLISH_URL" "$PUBLISH_CANDIDATE:$PUBLISH_REF"; then
-    PUSH_STATE=pushed
-  else
-    PUSH_STATE=already-on-remote
-  fi
-  git -C "$RD" fetch -q "$PUBLISH_URL" "$PUBLISH_REF" 2>/dev/null || {
-    PUBLISH_STATE=verify_failed
-    return 0
-  }
-  PUBLISH_SHA=$(git -C "$RD" rev-parse --verify --quiet 'FETCH_HEAD^{commit}' 2>/dev/null) || {
-    PUBLISH_STATE=verify_failed
-    return 0
-  }
-  REMOTE_LINE=$(git -C "$RD" ls-remote --heads "$PUBLISH_URL" "$PUBLISH_REF" 2>/dev/null) || {
-    PUBLISH_STATE=verify_failed
-    return 0
-  }
-  read -r REMOTE_SHA REMOTE_REF <<< "$REMOTE_LINE"
-  if [ "$REMOTE_REF" != "$PUBLISH_REF" ] || [ "$REMOTE_SHA" != "$PUBLISH_SHA" ]; then
-    PUBLISH_STATE=verify_failed
-    PUBLISH_SHA=
-    return 0
-  fi
-  if git -C "$RD" merge-base --is-ancestor "$PUBLISH_CANDIDATE" "$PUBLISH_SHA"; then
-    PUBLISH_STATE=$PUSH_STATE
-  else
-    PUBLISH_STATE=not_ancestor
-    PUBLISH_SHA=
-  fi
+  publish_candidate_to "$PUBLISH_URL" "$PUBLISH_REF" "$PUBLISH_CANDIDATE" yes || true
 }
 
 # A shared slot keeps repository caches isolated; never recycle another
@@ -572,10 +695,11 @@ if [ -n "$CHANGED" ] || [ "${AGENT_RC:-0}" != 0 ]; then
     && as_hand git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
          commit -q -m "$COMMIT_SUBJECT" -m "$TRAILER" "${COMMIT_ALLOW[@]}" || finish commit_failed
 fi
-RUNNER_SHA=$(as_hand git rev-parse HEAD)
+RUNNER_SHA=$(hand_git rev-parse --verify 'HEAD^{commit}') || finish commit_failed
+valid_git_oid "$RUNNER_SHA" || finish commit_failed
 if [ -n "${LOCAL_ACTION:-}" ]; then
   RUNNER_PUSH=committed
-elif as_hand git push -q "$URL" "HEAD:refs/heads/$BRANCH"; then
+elif publish_candidate_to "$(clean_publish_url "$REMOTE")" "refs/heads/$BRANCH" "$RUNNER_SHA" no; then
   RUNNER_PUSH=pushed
 else
   RUNNER_PUSH=push_refused

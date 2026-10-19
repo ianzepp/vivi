@@ -4,6 +4,7 @@
 //! Run for real under bash against a throwaway origin repository: no slot,
 //! no provider, a stand-in shell harness.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -438,5 +439,61 @@ fn local_worktree_publication_does_not_move_the_checked_out_main_ref() {
     assert_eq!(
         git(&rig.f.repo, &["rev-parse", "refs/heads/main"]),
         main_before
+    );
+}
+
+#[test]
+fn publisher_ignores_hand_hooks_and_url_rewrites() {
+    let rig = Rig::new(1).as_worktree();
+    let hooks = rig.work.path().join("hand-hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let marker = rig.work.path().join("pre-push-ran");
+    let hook = hooks.join("pre-push");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nprintf 'ran\\n' > '{}'\nexit 1\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let hook_path = hooks.to_str().unwrap();
+    git(
+        &rig.repo(),
+        &["config", "--local", "core.hooksPath", hook_path],
+    );
+
+    let evil_remote = rig.work.path().join("evil.git");
+    let evil_path = evil_remote.to_str().unwrap();
+    git(rig.work.path(), &["init", "-q", "--bare", evil_path]);
+    let actual_url = format!("file://{}", rig.f.repo.display());
+    let redirect_url = format!("file://{}", evil_remote.display());
+    let rewrite_key = format!("url.{redirect_url}.insteadOf");
+    git(
+        &rig.repo(),
+        &["config", "--local", &rewrite_key, &actual_url],
+    );
+
+    let result = rig.run_published(
+        "git commit -q --allow-empty -m isolated-publish",
+        true,
+        "refs/heads/integration",
+        None,
+    );
+    let candidate = result.get("publish_candidate");
+
+    assert_eq!(result.get("publish_state"), "pushed", "{:?}", result.fields);
+    assert_eq!(git(&rig.f.repo, &["rev-parse", "integration"]), candidate);
+    assert!(!marker.exists(), "the hand-controlled pre-push hook ran");
+    assert!(
+        !Command::new("git")
+            .arg("--git-dir")
+            .arg(&evil_remote)
+            .args(["show-ref", "--verify", "--quiet", "refs/heads/integration"])
+            .status()
+            .unwrap()
+            .success(),
+        "hand-controlled URL rewrite redirected publication"
     );
 }
