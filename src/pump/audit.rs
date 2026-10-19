@@ -191,7 +191,10 @@ fn last_report_block(text: &str) -> Option<String> {
 /// root cause, brief, or write scope.
 pub(crate) fn parse_report(text: &str) -> Option<Vec<Cause>> {
     let body = last_report_block(text)?;
-    let causes = serde_json::from_str::<Vec<Cause>>(body.trim()).ok()?;
+    let causes = match serde_json::from_str::<Vec<Cause>>(body.trim()) {
+        Ok(causes) => causes,
+        Err(_) => return None,
+    };
     if causes.is_empty() {
         return None;
     }
