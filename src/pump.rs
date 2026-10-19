@@ -2,6 +2,7 @@
 
 pub mod alarm;
 pub mod amend;
+pub mod audit;
 pub mod attempt_read;
 pub mod attempt_record;
 pub mod blockers;
@@ -173,3 +174,7 @@ mod envfail_test;
 #[cfg(test)]
 #[path = "pump/proof_test.rs"]
 mod proof_test;
+
+#[cfg(test)]
+#[path = "pump/audit_test.rs"]
+mod audit_test;
