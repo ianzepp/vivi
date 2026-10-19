@@ -252,6 +252,27 @@ fn a_tree_the_agent_only_read_is_reported_unchanged() {
 }
 
 #[test]
+fn remote_job_bootstrap_fetches_from_and_cleans_a_reused_checkout_before_harness() {
+    let rig = Rig::new();
+    std::fs::write(rig.f.repo.join("a.txt"), "fresh\n").unwrap();
+    git(&rig.f.repo, &["add", "a.txt"]);
+    git(&rig.f.repo, &["commit", "-q", "-m", "advance main"]);
+    let fresh = git(&rig.f.repo, &["rev-parse", "main"]);
+
+    std::fs::write(rig.repo().join("a.txt"), "stale\n").unwrap();
+    std::fs::write(rig.repo().join("stale.txt"), "left by the prior job\n").unwrap();
+    let result = rig.run(
+        "test \"$(cat a.txt)\" = fresh && test ! -e stale.txt && test -z \"$(git status --porcelain)\"",
+        "build",
+    );
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    assert_eq!(result.get("start"), fresh);
+    assert_eq!(git(&rig.repo(), &["rev-parse", "HEAD"]), fresh);
+    assert_eq!(git(&rig.repo(), &["status", "--porcelain"]), "");
+}
+
+#[test]
 fn a_stale_index_lock_is_removed_before_checkout() {
     let rig = Rig::new();
     let (branches, refs) = (rig.branches(), rig.origin_refs());

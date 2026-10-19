@@ -388,12 +388,9 @@ fn dispatch_claims_delivers_one_archive_and_starts() {
 }
 
 #[test]
-fn dispatch_reset_starts_and_stops_the_machine_under_its_claim() {
+fn remote_dispatch_leaves_base_checkout_to_the_authenticated_job_bootstrap() {
     let fake = Fake::default();
     fake.add(slot("m1", "p-slot-1", "stopped", "p", 1));
-    fake.exec_out
-        .borrow_mut()
-        .insert("m1".into(), format!("{}\n", "a".repeat(40)));
     let mut config = config();
     config.provider = "fly".into();
     let progress = crate::pool::progress::Progress::silent();
@@ -413,60 +410,18 @@ fn dispatch_reset_starts_and_stops_the_machine_under_its_claim() {
     let record = dispatch(&fake, &pid("p"), &launch, 5000, &pacing()).unwrap();
 
     assert_eq!(record.machine, "m1");
-    assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1", "m1"]);
-    assert_eq!(fake.claimed_execs.borrow().as_slice(), ["m1"]);
-    assert_eq!(fake.claimed_stops.borrow().as_slice(), ["m1"]);
+    assert_eq!(fake.calls_to("start"), 1, "only the final job start occurs");
     assert_eq!(
-        fake.released_holds.borrow().as_slice(),
-        [
-            ("m1".into(), "nonce-m1".into()),
-            ("m1".into(), "renewed-m1".into())
-        ]
+        fake.calls_to("exec"),
+        0,
+        "dispatch does not pre-reset remotely"
     );
+    assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1"]);
     assert!(
         fake.leases.borrow().is_empty(),
         "claim released after start"
     );
     assert_eq!(fake.state_of("m1"), "started");
-}
-
-#[test]
-fn a_failed_claimed_reset_exec_stops_before_dispatch_releases_the_claim() {
-    let fake = Fake::default();
-    fake.add(slot("m1", "p-slot-1", "stopped", "p", 1));
-    fake.exec_fails.set(1);
-    let mut config = config();
-    config.provider = "fly".into();
-    let progress = crate::pool::progress::Progress::silent();
-    let token = Secret::new("tok-secret-value".into());
-    let plan = plan(&flags("m/ok")).unwrap();
-    let start = "c".repeat(40);
-    let launch = Launch {
-        config: &config,
-        plan: &plan,
-        token: &token,
-        start: &start,
-        progress: &progress,
-        ready_timeout: None,
-        reset_base: Some("main".into()),
-    };
-
-    let error = dispatch(&fake, &pid("p"), &launch, 5000, &pacing()).unwrap_err();
-
-    assert!(error.to_string().contains("Fly exec failed (HTTP 401)"));
-    assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1"]);
-    assert_eq!(fake.claimed_execs.borrow().as_slice(), ["m1"]);
-    assert_eq!(fake.claimed_stops.borrow().as_slice(), ["m1"]);
-    assert_eq!(
-        fake.released_holds.borrow().as_slice(),
-        [
-            ("m1".into(), "nonce-m1".into()),
-            ("m1".into(), "renewed-m1".into())
-        ]
-    );
-    assert_eq!(fake.state_of("m1"), "stopped");
-    assert!(fake.meta("m1", META_TASK).is_none());
-    assert!(fake.leases.borrow().is_empty());
 }
 
 #[test]

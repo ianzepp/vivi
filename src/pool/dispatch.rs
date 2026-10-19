@@ -401,8 +401,8 @@ pub fn dispatch(
     pacing: &Pacing,
 ) -> Result<DispatchRecord, VivariumError> {
     let plan = launch.plan;
-    let mut claim = take_slot(provider, id, launch, now)?;
-    if let Err(e) = deliver(provider, &mut claim, launch, pacing) {
+    let claim = take_slot(provider, id, launch, now)?;
+    if let Err(e) = deliver(provider, &claim, launch, pacing) {
         if let Err(undo) = unclaim(provider, &claim) {
             eprintln!("warning: could not fully undo the claim: {undo}");
         }
@@ -474,21 +474,16 @@ fn take_slot(
 
 fn deliver(
     provider: &dyn PoolProvider,
-    claim: &mut Claim,
+    claim: &Claim,
     launch: &Launch,
     pacing: &Pacing,
 ) -> Result<(), VivariumError> {
     let id = &claim.slot.id;
     let plan = launch.plan;
-    if let Some(base) = launch.reset_base.as_deref() {
-        super::reset::reset_claimed_slot(
-            launch.config,
-            provider,
-            id,
-            &mut claim.hold,
-            base,
-            "dispatch",
-        )?;
+    if launch.config.provider == "local"
+        && let Some(base) = launch.reset_base.as_deref()
+    {
+        super::reset::reset_slot(launch.config, provider, id, base, "dispatch")?;
     }
     let start = plan
         .checkout

@@ -278,22 +278,8 @@ impl PoolProvider for FlyctlProvider {
         self.api.stop(id)
     }
 
-    fn stop_claimed(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
-        self.api.stop_claimed(id, hold)
-    }
-
     fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError> {
         self.api.exec(id, script, timeout_secs)
-    }
-
-    fn exec_claimed(
-        &self,
-        id: &str,
-        hold: &mut Hold,
-        script: &str,
-        timeout_secs: u32,
-    ) -> Result<ExecOutput, VivariumError> {
-        self.api.exec_claimed(id, hold, script, timeout_secs)
     }
 }
 

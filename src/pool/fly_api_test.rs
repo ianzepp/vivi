@@ -159,17 +159,12 @@ mod refresh {
     }
 
     #[test]
-    fn claimed_reset_and_job_actions_keep_the_lease_through_startup() {
+    fn job_delivery_waits_for_the_updated_instance_before_starting_under_claim() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/v1/apps", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             for body in [
-                r#"{"previous_state":"stopped"}"#,
-                r#"{"status":"success","data":{"ok":true}}"#,
-                r#"{"stdout":"abc1234","stderr":"","exit_code":0}"#,
-                r#"{"status":"success","data":{"nonce":"lease-456"}}"#,
-                r#"{"ok":true}"#,
                 r#"{"config":{"env":{},"files":[]}}"#,
                 r#"{"id":"machine-1","state":"replacing","instance_id":"new-instance","version":"new-version"}"#,
                 r#"{"ok":true}"#,
@@ -213,36 +208,26 @@ mod refresh {
             requests
         });
         let api = FlyApi::with_parts("app", &base, fixed_token);
-        let mut hold = Hold {
+        let hold = Hold {
             nonce: "lease-123".into(),
         };
 
-        api.start_claimed("machine-1", &hold).unwrap();
-        api.exec_claimed("machine-1", &mut hold, "reset", 2)
-            .unwrap();
-        assert_eq!(hold.nonce, "lease-456");
-        api.stop_claimed("machine-1", &hold).unwrap();
         api.put_file("machine-1", &hold, "/work/job.tgz", b"archive")
             .unwrap();
         api.start_claimed("machine-1", &hold).unwrap();
 
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 9);
-        assert!(requests[0].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
-        assert!(requests[1].starts_with("DELETE /v1/apps/app/machines/machine-1/lease HTTP/1.1"));
-        assert!(requests[2].starts_with("POST /v1/apps/app/machines/machine-1/exec HTTP/1.1"));
-        assert!(requests[3].starts_with("POST /v1/apps/app/machines/machine-1/lease HTTP/1.1"));
-        assert!(requests[4].starts_with("POST /v1/apps/app/machines/machine-1/stop HTTP/1.1"));
-        assert!(requests[5].starts_with("GET /v1/apps/app/machines/machine-1 HTTP/1.1"));
-        assert!(requests[6].starts_with("POST /v1/apps/app/machines/machine-1 HTTP/1.1"));
+        assert_eq!(requests.len(), 4);
+        assert!(requests[0].starts_with("GET /v1/apps/app/machines/machine-1 HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /v1/apps/app/machines/machine-1 HTTP/1.1"));
         assert!(
-            requests[7].starts_with(
+            requests[2].starts_with(
                 "GET /v1/apps/app/machines/machine-1/wait?state=settled&instance_id=new-instance&timeout=30 HTTP/1.1"
             ),
             "{}",
-            requests[7]
+            requests[2]
         );
-        assert!(requests[8].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
+        assert!(requests[3].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
         fn nonce(request: &str) -> Option<&str> {
             request.lines().find_map(|line| {
                 let (name, value) = line.split_once(':')?;
@@ -250,22 +235,11 @@ mod refresh {
                     .then_some(value.trim())
             })
         }
-        assert_eq!(nonce(&requests[0]), Some("lease-123"));
+        assert_eq!(nonce(&requests[0]), None);
         assert_eq!(nonce(&requests[1]), Some("lease-123"));
         assert_eq!(nonce(&requests[2]), None);
-        assert_eq!(nonce(&requests[3]), None);
-        for index in [4, 6, 8] {
-            assert_eq!(nonce(&requests[index]), Some("lease-456"));
-        }
-        let exec_body = requests[2].split_once("\r\n\r\n").unwrap().1;
-        let exec_body = serde_json::from_str::<Value>(exec_body).unwrap();
-        assert_eq!(exec_body["command"], json!(["bash", "-c", "reset"]));
-        let lease_body = requests[3].split_once("\r\n\r\n").unwrap().1;
-        assert_eq!(
-            serde_json::from_str::<Value>(lease_body).unwrap()["ttl"],
-            CLAIM_TTL_SECS
-        );
-        let update_body = requests[6].split_once("\r\n\r\n").unwrap().1;
+        assert_eq!(nonce(&requests[3]), Some("lease-123"));
+        let update_body = requests[1].split_once("\r\n\r\n").unwrap().1;
         assert_eq!(
             serde_json::from_str::<Value>(update_body).unwrap()["skip_launch"],
             true

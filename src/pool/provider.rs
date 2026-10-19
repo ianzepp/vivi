@@ -416,15 +416,6 @@ pub trait PoolProvider {
         self.start(id)
     }
 
-    /// Stop a machine while retaining the claim that protects the operation.
-    /// Providers with machine leases can attach the hold to the stop request.
-    ///
-    /// # Errors
-    /// Returns an error if the machine cannot be stopped.
-    fn stop_claimed(&self, id: &str, _hold: &Hold) -> Result<(), VivariumError> {
-        self.stop(id)
-    }
-
     /// Stop a machine; returns once the host accepted it.
     ///
     /// # Errors
@@ -436,22 +427,6 @@ pub trait PoolProvider {
     /// # Errors
     /// Returns an error if the machine is not running or the call fails.
     fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError>;
-
-    /// Run `script` within the durable claim held by the caller.
-    /// A provider may briefly release its API lease if exec requires an
-    /// unleased request, but must restore `hold` before returning.
-    ///
-    /// # Errors
-    /// Returns an error if the machine is not running or the call fails.
-    fn exec_claimed(
-        &self,
-        id: &str,
-        _hold: &mut Hold,
-        script: &str,
-        timeout_secs: u32,
-    ) -> Result<ExecOutput, VivariumError> {
-        self.exec(id, script, timeout_secs)
-    }
 
     /// Read files out of a stopped machine without starting it: the files at
     /// `paths` that exist, keyed by path. `Ok(None)` means this host cannot,

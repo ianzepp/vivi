@@ -162,13 +162,16 @@ fn submit_job(
         start,
         progress,
         ready_timeout,
-        reset_base: dispatch_reset_base(space, &plan.task),
+        reset_base: dispatch_reset_base(config, space, &plan.task),
     };
     work::submit(space, provider, id, &launch, &pacing)
         .inspect_err(|_| undo_bridge_grant(space, plan.bridge.as_ref()))
 }
 
-fn dispatch_reset_base(space: &Mailspace, task: &str) -> Option<String> {
+fn dispatch_reset_base(config: &PoolConfig, space: &Mailspace, task: &str) -> Option<String> {
+    if config.provider != "local" {
+        return None;
+    }
     let st = vivi::pool::clean_pump::load_state(space);
     let unit = st
         .as_ref()

@@ -1743,6 +1743,10 @@ from it; units that need another unit's code start `--from` that unit's branch
   archive in the machine's config (Fly) or copied into the container (Docker);
   start it; record a `pool_dispatched` event
   and a reply on the task. A failure after the claim undoes it.
+- A local provider may reset its slot to the dispatch base before launch.
+  Remote jobs fetch the job's `FROM` with their job-scoped credential, then
+  check out and clean that revision before the harness starts; remote dispatch
+  does not pre-reset the machine.
 - The push target must not be the repository's default branch (resolved through
   GitHub); `--allow-default-branch` overrides that. (A worktree pool applies
   the table of "Local provider" instead, before claiming a slot.)

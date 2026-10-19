@@ -145,6 +145,15 @@ fn extra_refs_resolve_in_the_source_repository_before_any_slot_is_claimed() {
 }
 
 #[test]
+fn remote_dispatch_does_not_load_a_pump_reset_base() {
+    let tmp = tempfile::tempdir().unwrap();
+    let space = Mailspace::init(Some(tmp.path())).unwrap();
+    let config: PoolConfig = toml::from_str("provider = 'fly'\nslots = 1\n").unwrap();
+
+    assert_eq!(dispatch_reset_base(&config, &space, "missing-task"), None);
+}
+
+#[test]
 fn an_unknown_ref_is_an_error_naming_the_ref_and_the_repository() {
     let (_dir, repo) = repo_with_branch();
     let mut plan = plan_with(&["nope/ref"]);

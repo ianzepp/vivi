@@ -13,6 +13,11 @@ Optional parts build on it: `vivi sync` replicates letters through a project
 server, `vivi pool` runs tasks on remote machines, and `vivi pump` is an
 unattended dispatcher built on pools.
 
+The local pool provider can reset its slot to the dispatch base before launch.
+Remote jobs fetch the job's `FROM` with their job-scoped credential, then check
+out and clean that revision before the harness starts; remote dispatch does
+not pre-reset the machine.
+
 Vivi does not run your agents. The agents (a "Mind" that routes work, "Hands"
 that do it) are yours; Vivi is their shared memory and record. The exceptions
 are `vivi pool dispatch` and `vivi pump`, which start work on machines you

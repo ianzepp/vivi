@@ -14,7 +14,7 @@ use super::clean_slot::slot_is_free;
 use super::config::PoolConfig;
 use super::local_git::Repo;
 use super::local_slots::{CHECKOUT, WORKTREE_OF_FILE};
-use super::provider::{ExecOutput, Hold, PoolProvider};
+use super::provider::{ExecOutput, PoolProvider};
 use super::slot::META_BASE;
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -263,62 +263,22 @@ pub fn reset_slot(
     reset_remote(provider, machine_id, base, why)
 }
 
-/// Reset a slot while retaining the claim held by its dispatch.
-///
-/// # Errors
-/// Returns an error when the origin branch is missing or the checkout fails.
-pub fn reset_claimed_slot(
-    config: &PoolConfig,
-    provider: &dyn PoolProvider,
-    machine_id: &str,
-    hold: &mut Hold,
-    base: &str,
-    why: &'static str,
-) -> Result<ResetOutcome, VivariumError> {
-    if config.provider == "local" {
-        return reset_slot(config, provider, machine_id, base, why);
-    }
-    reset_remote_with_hold(provider, machine_id, base, why, Some(hold))
-}
-
 fn reset_remote(
     provider: &dyn PoolProvider,
     id: &str,
     base: &str,
     why: &'static str,
 ) -> Result<ResetOutcome, VivariumError> {
-    reset_remote_with_hold(provider, id, base, why, None)
-}
-
-fn reset_remote_with_hold(
-    provider: &dyn PoolProvider,
-    id: &str,
-    base: &str,
-    why: &'static str,
-    mut hold: Option<&mut Hold>,
-) -> Result<ResetOutcome, VivariumError> {
     let started = provider.machine(id)?.state == "started";
     if !started {
-        if let Some(hold) = hold.as_deref() {
-            provider.start_claimed(id, hold)?;
-        } else {
-            provider.start(id)?;
-        }
+        provider.start(id)?;
     }
     let script = remote_script(base);
-    let execution = if let Some(hold) = hold.as_deref_mut() {
-        provider.exec_claimed(id, hold, &script, 90)
-    } else {
-        provider.exec(id, &script, 90)
-    };
+    let execution = provider.exec(id, &script, 90);
     if started {
         return parse_remote(execution?, base, why);
     }
-    let stopped = if let Some(hold) = hold.as_deref() {
-        provider.stop_claimed(id, hold)
-    } else {
-        provider.stop(id)
-    };
+    let stopped = provider.stop(id);
     finish_remote_reset(execution, stopped, base, why)
 }
 
