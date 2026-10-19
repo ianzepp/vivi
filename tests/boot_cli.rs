@@ -445,8 +445,15 @@ fn write_boot_pump(root: &Path) {
     .unwrap();
 }
 
-fn mailspace_slug(root: &Path) -> String {
+fn mailspace_key(root: &Path) -> String {
     let text = fs::read_to_string(root.join(".vivi/mailspace.toml")).unwrap();
+    if let Some(id) = text
+        .lines()
+        .find_map(|line| line.strip_prefix("id = "))
+        .map(|value| value.trim().trim_matches('"').to_string())
+    {
+        return id;
+    }
     let name = text
         .lines()
         .find_map(|line| line.strip_prefix("name = "))
@@ -498,7 +505,7 @@ fn boot_pump_full_and_own_and_none() {
     ]));
     append_pump_and_pool(root, pool.path());
     write_boot_pump(root);
-    write_claimed_slot(pool.path(), &mailspace_slug(root));
+    write_claimed_slot(pool.path(), &mailspace_key(root));
 
     let full = stdout(&vivi([
         "boot",

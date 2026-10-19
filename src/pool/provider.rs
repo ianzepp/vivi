@@ -170,6 +170,18 @@ pub struct OpenedSlot {
 /// A machine host. Implementations must keep secrets out of errors.
 /// Methods after `destroy` act on one machine by id.
 pub trait PoolProvider {
+    /// Resolved root a local slot id is joined to. Directory providers use
+    /// this so commands act on the same site the provider opened.
+    fn local_root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// Resolved directory containing this provider's slots. A clean sweep
+    /// uses it as the boundary for orphan worktrees.
+    fn local_pool_dir(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Prepare a target-specific local worktree after the shared slot is claimed.
     fn prepare_target_checkout(
         &self,

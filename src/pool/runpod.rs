@@ -88,7 +88,7 @@ pub const SEED_LIMIT: Duration = Duration::from_mins(30);
 pub struct HostContext {
     /// The mailspace's `.vivi` directory.
     pub dir: PathBuf,
-    /// The mailspace slug.
+    /// The mailspace id, or its name slug when no id exists.
     pub mailspace: String,
     /// The pool this provider serves.
     pub pool: String,
@@ -254,6 +254,8 @@ impl RunpodProvider {
         let ssh = Rc::new(SshProvider::for_machine(
             &format!("pod {id}"),
             POD_ROOT,
+            &name.mailspace,
+            &name.pool,
             runner,
         ));
         let session = (ssh, slot_id_of(name));

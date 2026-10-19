@@ -385,22 +385,6 @@ fn drop_scratch_branch(
     }
 }
 
-/// Best-effort canonicalization that survives a missing tail: fall back to
-/// the nearest existing ancestor and re-join the rest of the path.
-pub(super) fn real_path(path: &Path) -> PathBuf {
-    if let Ok(resolved) = path.canonicalize() {
-        return resolved;
-    }
-    for ancestor in path.ancestors().skip(1) {
-        if let Ok(resolved) = ancestor.canonicalize() {
-            if let Ok(tail) = path.strip_prefix(ancestor) {
-                return resolved.join(tail);
-            }
-        }
-    }
-    path.to_path_buf()
-}
-
 /// Sweep source-repo worktrees that point at `root` and whose slot is gone
 /// or whose unit is done (`done` is true for that path).
 ///
@@ -415,12 +399,12 @@ pub fn sweep_orphans(
     dry_run: bool,
 ) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
     let repo = Repo::new(source);
-    let root = real_path(root);
-    let source = real_path(source);
+    let root = super::local_git::real_path(root);
+    let source = super::local_git::real_path(source);
     let mut actions = Vec::new();
     let mut skips = Vec::new();
     for tree in repo.worktrees()? {
-        let resolved = real_path(&tree.path);
+        let resolved = super::local_git::real_path(&tree.path);
         if tree.bare || resolved == source || !resolved.starts_with(&root) {
             continue;
         }
@@ -428,15 +412,13 @@ pub fn sweep_orphans(
             pool,
             &repo,
             &tree.path,
+            &root,
             merge_lane,
             done(&tree.path),
             dry_run,
             &mut actions,
             &mut skips,
         );
-    }
-    if !dry_run {
-        let _ignored = repo.prune();
     }
     Ok((actions, skips))
 }
@@ -446,6 +428,7 @@ fn sweep_one(
     pool: &str,
     repo: &Repo,
     path: &Path,
+    pool_root: &Path,
     merge_lane: Option<&str>,
     done: bool,
     dry_run: bool,
@@ -453,14 +436,28 @@ fn sweep_one(
     skips: &mut Vec<CleanSkip>,
 ) {
     if !path.exists() {
-        actions.push(act(
-            pool,
-            "-",
-            ActionKind::Orphan,
-            0,
-            path,
-            "prunable entry",
-        ));
+        if dry_run {
+            actions.push(act(
+                pool,
+                "-",
+                ActionKind::Orphan,
+                0,
+                path,
+                "prunable entry",
+            ));
+        } else {
+            match repo.remove_gone_worktree_under(path, pool_root) {
+                Ok(()) => actions.push(act(
+                    pool,
+                    "-",
+                    ActionKind::Orphan,
+                    0,
+                    path,
+                    "removed stale entry",
+                )),
+                Err(error) => skips.push(skip(pool, "-", ActionKind::Orphan, &error.to_string())),
+            }
+        }
         return;
     }
     if !done {

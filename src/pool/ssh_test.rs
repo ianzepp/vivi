@@ -54,10 +54,14 @@ fn config(root: &str) -> PoolConfig {
 }
 
 fn provider(home: &Path) -> SshProvider {
+    provider_for(home, "ms", "lanes-a")
+}
+
+fn provider_for(home: &Path, mailspace: &str, pool: &str) -> SshProvider {
     let shell = Shell {
         home: home.to_path_buf(),
     };
-    SshProvider::with_runner(&config("~/lanes"), Box::new(shell))
+    SshProvider::with_runner_for_pool(&config("~/lanes"), mailspace, pool, Box::new(shell))
 }
 
 fn spec(pool: &str, index: u32) -> CreateSpec {
@@ -150,10 +154,34 @@ fn the_slot_is_listed_from_the_host_with_state_marks_and_no_local_record() {
 }
 
 #[test]
+fn listing_is_scoped_to_the_pools_own_directory() {
+    let home = tempfile::tempdir().unwrap();
+    let p = provider(home.path());
+    let own = make(&p, "lanes-a", 1);
+    make(&p, "lanes-b", 1);
+    let mut foreign = spec("lanes-a", 2);
+    foreign.metadata = slot_metadata(&PoolId::new("other", "", "lanes-a"), 2, "main");
+    let foreign_id = new_slot_id(&foreign).unwrap();
+    let archive = SshProvider::new_slot_archive(&foreign).unwrap();
+    p.require("create", &[&foreign_id], Some(&archive)).unwrap();
+    let found = p.list().unwrap();
+    assert_eq!(
+        found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        [own]
+    );
+}
+
+#[test]
 fn a_slot_that_is_not_there_reads_as_gone_and_a_bad_id_never_reaches_the_host() {
     let home = tempfile::tempdir().unwrap();
     let p = provider(home.path());
     assert_eq!(p.machine("ms/lanes-a/slot-9").unwrap().state, "destroyed");
+    assert!(
+        p.machine("ms/lanes-b/slot-1")
+            .unwrap_err()
+            .to_string()
+            .contains("not a slot of this pool")
+    );
     for bad in ["../x/slot-1", "a/slot-1/..", "slot-1", "a b/slot-1", "/etc"] {
         let said = p.machine(bad).unwrap_err().to_string();
         assert!(said.contains("not a slot id"), "{said}");
@@ -456,12 +484,17 @@ fn destroy_leaves_a_root_it_did_not_make_and_other_pools_and_files_alone() {
     std::fs::write(lanes.join("keep-me/file.txt"), "mine").unwrap();
     let p = provider(home.path());
     let a = make(&p, "lanes-a", 1);
-    let other = make(&p, "lanes-b", 1);
+    let other_provider = provider_for(home.path(), "ms", "lanes-b");
+    let other = make(&other_provider, "lanes-b", 1);
     p.destroy(&a).unwrap();
     assert!(!lanes.join("ms/lanes-a").exists());
     assert!(lanes.join("ms/lanes-b/slot-1").exists(), "{other}");
     assert!(lanes.join("keep-me/file.txt").exists());
-    p.destroy(&other).unwrap();
+    assert!(
+        p.destroy(&other).is_err(),
+        "this provider cannot destroy a sibling pool"
+    );
+    other_provider.destroy(&other).unwrap();
     assert!(lanes.join("keep-me/file.txt").exists());
     assert!(lanes.exists(), "a root that was already there stays");
 }
@@ -621,18 +654,16 @@ fn make_in(p: &SshProvider, space: &str, pool: &str, index: u32) -> String {
 #[test]
 fn two_mailspaces_with_one_pool_name_keep_separate_directories_and_marks() {
     let home = tempfile::tempdir().unwrap();
-    let p = provider(home.path());
+    let p = provider_for(home.path(), "ms", "local");
+    let theirs_provider = provider_for(home.path(), "other", "local");
     let mine = make_in(&p, "ms", "local", 1);
-    let theirs = make_in(&p, "other", "local", 1);
+    let theirs = make_in(&theirs_provider, "other", "local", 1);
     assert_eq!(
         (mine.as_str(), theirs.as_str()),
         ("ms/local/slot-1", "other/local/slot-1")
     );
-    let listed = p.list().unwrap();
-    assert_eq!(listed.len(), 2);
-    let pool = |space: &str| PoolId::new(space, "", "local");
-    let ours = crate::pool::slot::pool_slots(&pool("ms"), &listed);
-    let others = crate::pool::slot::pool_slots(&pool("other"), &listed);
+    let ours = p.list().unwrap();
+    let others = theirs_provider.list().unwrap();
     assert_eq!((ours.len(), others.len()), (1, 1));
     assert_eq!(ours[0].id, mine);
     assert_eq!(others[0].id, theirs);

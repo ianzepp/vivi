@@ -198,14 +198,11 @@ fn an_unknown_pool_lists_the_known_ones() {
 fn pool_identity_uses_the_mailspace_id() {
     let (_tmp, mut space) = space_with(&two());
     space.config.id = Some("aeff60b0-a1c4-4eaa-b688-7afcff51c659".into());
-    let key = format!(
-        "{}-aeff60b0",
-        crate::pool::slot::space_slug(&space.config.name)
-    );
+    let key = "aeff60b0-a1c4-4eaa-b688-7afcff51c659";
     for handle in open_unvalidated(&space, None, Need::Any).unwrap() {
         assert_eq!(
             handle.id.mailspace, key,
-            "the pool of a mailspace is keyed by its name slug plus the id prefix"
+            "the pool of a mailspace is keyed by its exact id"
         );
     }
 }
@@ -235,8 +232,7 @@ fn open_one_and_open_apply_the_same_rules_to_a_real_mailspace() {
     assert_eq!(open_one(&space, Some("local")).unwrap().id.pool, "local");
     assert_eq!(open(&space, Some("local"), Need::Any).unwrap().len(), 1);
     assert_eq!(open(&space, None, Need::Any).unwrap().len(), 2);
-    // Identity: the mailspace's name slug plus its id prefix is part of
-    // every pool's id.
+    // Identity: the exact mailspace id is part of every pool's id.
     let id = open_one(&space, Some("local")).unwrap().id;
     assert_eq!(
         id.mailspace,
@@ -272,10 +268,7 @@ fn same_name_mailspaces_open_distinct_pool_ids() {
         "two mailspaces named alike must not open the same pool"
     );
     for (space, handle) in spaces.iter().zip(&handles) {
-        let key = &handle.id.mailspace;
-        assert!(key.starts_with("app-"), "{key}");
-        let prefix = &space.mailspace_id()[..8];
-        assert!(key.ends_with(prefix), "{key} does not end with {prefix}");
+        assert_eq!(handle.id.mailspace, space.mailspace_id());
     }
 }
 

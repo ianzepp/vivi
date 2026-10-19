@@ -7,7 +7,7 @@
 //!
 //! **Work-lane recycle.** When pump marks a unit `merged` — that is merge-lane
 //! success, not landing on main — a free slot that last served that unit has
-//! its worktree removed (`git worktree remove`, then prune), its
+//! its worktree removed (`git worktree remove`), its
 //! `targets/<hash>` caches dropped, and a fresh detached worktree restored
 //! at origin/`[pump] main` (or `--base`). Recycle covers the unit's work
 //! pool and the merge role's pool (merge-lane count is that pool's `slots`).
@@ -25,7 +25,6 @@ use super::clean_rule::{
 };
 use super::clean_slot::{self, slot_is_free};
 use super::clean_work;
-use super::local_slots::expand_root;
 use super::pools::{self, Need, PoolHandle};
 use crate::error::VivariumError;
 use crate::mailspace::Mailspace;
@@ -144,7 +143,8 @@ pub fn clean_mailspace(
     report.free_bytes = handles
         .iter()
         .find(|h| h.config.provider == "local")
-        .and_then(|h| volume_free_bytes(&expand_root(h.config.local.root_or_default())));
+        .and_then(|h| h.provider.local_root())
+        .and_then(|root| volume_free_bytes(&root));
     Ok(report)
 }
 
@@ -246,7 +246,9 @@ pub fn guard_before_dispatch(space: &Mailspace, pool: &str) -> Result<(), Vivari
     if handle.config.provider != "local" {
         return Ok(());
     }
-    let root = expand_root(handle.config.local.root_or_default());
+    let root = handle.provider.local_root().ok_or_else(|| {
+        VivariumError::Message(format!("pool {} has no local root", handle.id.pool))
+    })?;
     let Some(free) = volume_free_bytes(&root) else {
         return Ok(());
     };
@@ -275,11 +277,12 @@ pub fn record_pool_baselines(handle: &PoolHandle) -> Result<(), VivariumError> {
     if handle.config.provider != "local" {
         return Ok(());
     }
-    let root = expand_root(handle.config.local.root_or_default());
-    let prefix = format!("{}/{}", handle.id.mailspace, handle.id.pool);
+    let root = handle.provider.local_root().ok_or_else(|| {
+        VivariumError::Message(format!("pool {} has no local root", handle.id.pool))
+    })?;
     for machine in handle.provider.list()? {
         let dir = root.join(&machine.id);
-        if machine.id.starts_with(&prefix) && slot_is_free(&dir) {
+        if handle.id.owns(&machine) && slot_is_free(&dir) {
             clean_slot::record_seed_baseline(&dir, handle.config.build_dir.as_deref())?;
         }
     }
@@ -297,18 +300,21 @@ fn clean_pool(
     if handle.config.provider != "local" {
         return Ok(reset_remote_requested(handle, space, base, dry_run));
     }
-    let root = expand_root(handle.config.local.root_or_default());
+    let root = handle.provider.local_root().ok_or_else(|| {
+        VivariumError::Message(format!("pool {} has no local root", handle.id.pool))
+    })?;
+    let pool_dir = handle.provider.local_pool_dir().ok_or_else(|| {
+        VivariumError::Message(format!(
+            "pool {} has no local pool directory",
+            handle.id.pool
+        ))
+    })?;
     let pool = handle.id.pool.as_str();
-    // The local provider lists every slot under the shared root, across all
-    // mailspaces and pools; touch only this pool's own
-    // `<mailspace>/<pool>/` slots (trailing slash, so pool `here` cannot
-    // match pool `here2`).
-    let prefix = format!("{}/{}/", handle.id.mailspace, handle.id.pool);
     let configured = handle.config.build_dir.as_deref();
     let mut actions = Vec::new();
     let mut skips = Vec::new();
     for machine in handle.provider.list()? {
-        if !machine.id.starts_with(&prefix) {
+        if !handle.id.owns(&machine) {
             continue;
         }
         let dir = root.join(&machine.id);
@@ -337,7 +343,15 @@ fn clean_pool(
             )?;
         }
     }
-    sweep(handle, space, st, &root, dry_run, &mut actions, &mut skips)?;
+    sweep(
+        handle,
+        space,
+        st,
+        &pool_dir,
+        dry_run,
+        &mut actions,
+        &mut skips,
+    )?;
     Ok((actions, skips))
 }
 
@@ -414,8 +428,7 @@ fn sweep(
         return Ok(());
     };
     let lane = merge_lane_ref(space, "default");
-    let prefix = root.to_path_buf();
-    let pool_root = clean_work::real_path(&root.join(&handle.id.mailspace).join(&handle.id.pool));
+    let pool_root = super::local_git::real_path(root);
     let (a, s) = clean_work::sweep_orphans(
         &handle.id.pool,
         &source,
@@ -425,7 +438,8 @@ fn sweep(
             // A worktree outside this pool's own `<mailspace>/<pool>`
             // prefix belongs to another mailspace sharing the root; leave
             // it alone.
-            clean_work::real_path(path).starts_with(&pool_root) && orphan_is_done(st, &prefix, path)
+            super::local_git::real_path(path).starts_with(&pool_root)
+                && orphan_is_done(st, root, path)
         },
         dry_run,
     )?;
@@ -519,8 +533,8 @@ fn reset_one_remote(
 }
 
 fn slot_dir_under(root: &Path, path: &Path) -> Option<std::path::PathBuf> {
-    let root = super::clean_work::real_path(root);
-    let path = super::clean_work::real_path(path);
+    let root = super::local_git::real_path(root);
+    let path = super::local_git::real_path(path);
     let rel = match path.strip_prefix(&root) {
         Ok(rel) => rel,
         Err(_) => return None,

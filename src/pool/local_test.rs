@@ -7,19 +7,44 @@ use super::*;
 use crate::pool::slot::{META_STATE, PoolId, STATE_READY, slot_metadata, slot_state};
 
 fn provider(root: &std::path::Path) -> LocalProvider {
+    provider_for(
+        root.parent().unwrap(),
+        root.to_str().unwrap(),
+        "ms",
+        "lanes-a",
+    )
+}
+
+fn provider_for(
+    project: &std::path::Path,
+    root: &str,
+    mailspace: &str,
+    pool: &str,
+) -> LocalProvider {
     let config: PoolConfig = toml::from_str(&format!(
-        "provider = \"local\"\nslots = 2\n[local]\nroot = \"{}\"\n",
-        root.display()
+        "provider = \"local\"\nslots = 2\n[local]\nroot = \"{root}\"\n"
     ))
     .unwrap();
-    LocalProvider::new(&config)
+    LocalProvider::new(
+        &config,
+        &super::super::runpod::HostContext {
+            dir: project.join(".vivi"),
+            mailspace: mailspace.into(),
+            pool: pool.into(),
+            pools: vec![pool.into()],
+        },
+    )
 }
 
 fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
+    spec_for("ms", pool, index, boot)
+}
+
+fn spec_for(mailspace: &str, pool: &str, index: u32, boot: &str) -> CreateSpec {
     CreateSpec {
-        name: format!("ms-{pool}-slot-{index}"),
+        name: format!("{mailspace}-{pool}-slot-{index}"),
         image: String::new(),
-        metadata: slot_metadata(&PoolId::new("ms", "", pool), index, "main"),
+        metadata: slot_metadata(&PoolId::new(mailspace, "", pool), index, "main"),
         env: BTreeMap::new(),
         once_env: BTreeMap::new(),
         passthrough_env: vec!["IGNORED".into()],
@@ -45,6 +70,45 @@ fn root() -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
+fn refuse_foreign_worktree_names_both_repositories_and_the_fix() {
+    let configured = tempfile::tempdir().unwrap();
+    let recorded = tempfile::tempdir().unwrap();
+    let slot = tempfile::tempdir().unwrap();
+    let marker = slot.path().join(slots::WORKTREE_OF_FILE);
+    std::fs::write(&marker, format!("{}\n", recorded.path().display())).unwrap();
+    let error = refuse_foreign_worktree("e2e/wt/slot-1", slot.path(), configured.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("worktree of"), "{error}");
+    assert!(
+        error.contains(&configured.path().display().to_string()),
+        "{error}"
+    );
+    assert!(
+        error.contains(&recorded.path().display().to_string()),
+        "{error}"
+    );
+    assert!(error.contains("vivi pool destroy e2e/wt/slot-1"), "{error}");
+
+    std::fs::write(&marker, format!("{}\n", configured.path().display())).unwrap();
+    assert!(refuse_foreign_worktree("e2e/wt/slot-1", slot.path(), configured.path()).is_ok());
+    std::fs::remove_file(marker).unwrap();
+    assert!(refuse_foreign_worktree("e2e/wt/slot-1", slot.path(), configured.path()).is_ok());
+}
+
+fn plant_slot(root: &std::path::Path, id: &str, mailspace: &str, pool: &str) {
+    let dir = root.join(id);
+    std::fs::create_dir_all(dir.join("marks")).unwrap();
+    std::fs::write(dir.join("marks/vivi_pool"), format!("{pool}\n")).unwrap();
+    std::fs::write(
+        dir.join("marks/vivi_pool_mailspace"),
+        format!("{mailspace}\n"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("marks/vivi_pool_state"), "ready\n").unwrap();
+}
+
+#[test]
 fn the_provider_says_what_a_directory_on_this_machine_is() {
     let (_tmp, root) = root();
     let p = provider(&root);
@@ -54,6 +118,67 @@ fn the_provider_says_what_a_directory_on_this_machine_is() {
     assert_eq!(p.ensure_home().unwrap(), None);
     assert!(p.live_test_notice().contains(&root.display().to_string()));
     assert!(p.destroy_command("ms/p/slot-1").contains("rm -rf"));
+}
+
+#[test]
+fn project_relative_root_lays_out_a_two_part_slot_id() {
+    let project = tempfile::tempdir().unwrap();
+    let provider = provider_for(project.path(), "pool", "space", "here");
+    let id = provider
+        .create(&spec_for("space", "here", 1, "exit 0\n"))
+        .unwrap();
+    assert_eq!(id, "here/slot-1");
+    assert!(project.path().join("pool/here/slot-1").is_dir());
+    assert_eq!(provider.list().unwrap()[0].id, id);
+}
+
+#[test]
+fn absolute_root_keeps_the_mailspace_id_segment() {
+    let project = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let provider = provider_for(
+        project.path(),
+        root.path().to_str().unwrap(),
+        "space",
+        "here",
+    );
+    let id = provider
+        .create(&spec_for("space", "here", 1, "exit 0\n"))
+        .unwrap();
+    assert_eq!(id, "space/here/slot-1");
+    assert!(root.path().join(&id).is_dir());
+    assert_eq!(provider.list().unwrap()[0].id, id);
+}
+
+#[test]
+fn listing_never_leaves_the_selected_pool_directory() {
+    let project = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let provider = provider_for(
+        project.path(),
+        root.path().to_str().unwrap(),
+        "space-id",
+        "here",
+    );
+    provider
+        .create(&spec_for("space-id", "here", 1, "exit 0\n"))
+        .unwrap();
+    plant_slot(
+        root.path(),
+        "space-id/here-fetch/slot-1",
+        "space-id",
+        "here-fetch",
+    );
+    plant_slot(root.path(), "other-id/here/slot-1", "other-id", "here");
+    assert_eq!(
+        provider
+            .list()
+            .unwrap()
+            .iter()
+            .map(|machine| machine.id.as_str())
+            .collect::<Vec<_>>(),
+        ["space-id/here/slot-1"]
+    );
 }
 
 #[test]

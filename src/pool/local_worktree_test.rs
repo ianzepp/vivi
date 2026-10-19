@@ -28,6 +28,74 @@ use crate::pool::work::{self, WaitOptions, Waited};
 const WRITE: &str = "echo work >> standin.txt; echo receipt";
 const NOTHING: &str = "echo receipt";
 
+fn bare_provider(root: &std::path::Path, source: &std::path::Path) -> LocalProvider {
+    let config: PoolConfig = toml::from_str(&format!(
+        "provider = \"local\"\nslots = 2\n[local]\nroot = \"{}\"\nworktree_of = \"{}\"\n[harness]\nname = \"standin\"\nrun = \"true\"\nmodels = [\"standin\"]\n[committer]\nname = \"Pool Test\"\nemail = \"pool-test@localhost\"\n",
+        root.display(),
+        source.display()
+    ))
+    .unwrap();
+    LocalProvider::new(
+        &config,
+        &super::super::runpod::HostContext {
+            dir: root.parent().unwrap_or(root).join(".vivi"),
+            mailspace: "e2e".into(),
+            pool: "wt".into(),
+            pools: vec!["wt".into()],
+        },
+    )
+}
+
+fn ready_worktree_slot(root: &std::path::Path, id: &str, repo: &std::path::Path) {
+    use crate::pool::slot::{META_STATE, STATE_READY, slot_metadata};
+
+    let index = id.rsplit("slot-").next().unwrap().parse().unwrap();
+    let metadata = slot_metadata(&PoolId::new("e2e", "", "wt"), index, "main");
+    let spec = CreateSpec {
+        name: id.replace('/', "-"),
+        image: String::new(),
+        metadata,
+        env: BTreeMap::from([
+            ("WORKTREE_OF".to_string(), repo.display().to_string()),
+            ("BASE".to_string(), git(repo, &["rev-parse", "HEAD"])),
+        ]),
+        once_env: BTreeMap::new(),
+        passthrough_env: Vec::new(),
+        files: Vec::new(),
+        command: vec!["true".into()],
+        build_dir: None,
+        tmpfs: String::new(),
+    };
+    slots::create(root, id, &spec).unwrap();
+    slots::seal(&root.join(id), META_STATE, STATE_READY).unwrap();
+}
+
+#[test]
+fn claim_refuses_a_slot_that_is_a_worktree_of_another_repository() {
+    let own = fixture();
+    let other = fixture();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("lanes");
+    let provider = bare_provider(&root, &own.repo);
+    let foreign_id = "e2e/wt/slot-1";
+    ready_worktree_slot(&root, foreign_id, &other.repo);
+    let list_error = provider.list().unwrap_err().to_string();
+    assert!(list_error.contains("worktree of"), "{list_error}");
+    let error = provider
+        .claim(foreign_id, "task1", 100)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("worktree of"), "{error}");
+    assert!(error.contains(&own.repo.display().to_string()), "{error}");
+    assert!(error.contains(&other.repo.display().to_string()), "{error}");
+    assert!(error.contains("vivi pool destroy e2e/wt/slot-1"), "{error}");
+    assert!(!root.join(foreign_id).join("claim").exists());
+
+    let own_id = "e2e/wt/slot-2";
+    ready_worktree_slot(&root, own_id, &own.repo);
+    assert!(provider.claim(own_id, "task2", 100).unwrap().is_some());
+}
+
 struct Rig {
     f: Fixture,
     _root_dir: tempfile::TempDir,
@@ -60,7 +128,15 @@ impl Rig {
             f.repo.display()
         ))
         .unwrap();
-        let provider = LocalProvider::new(&config);
+        let provider = LocalProvider::new(
+            &config,
+            &super::super::runpod::HostContext {
+                dir: root_dir.path().join(".vivi"),
+                mailspace: "e2e".into(),
+                pool: "wt".into(),
+                pools: vec!["wt".into()],
+            },
+        );
         let id = PoolId::new("e2e", "", "wt");
         let base = local_branch::base_commit(&Repo::new(&f.repo), None).unwrap();
         let options = CreateOptions {

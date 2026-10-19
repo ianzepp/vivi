@@ -98,7 +98,7 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
         &progress,
         ready_timeout,
     )?;
-    note_last_branch(config, &made.machine, &plan.refs.branch);
+    note_last_branch(provider, &made.machine, &plan.refs.branch);
     note_uncollected(provider, config, ready_timeout, &made, &progress);
     if command.porcelain {
         println!("{}", porcelain::dispatched(&task.handle, &made));
@@ -198,11 +198,14 @@ fn note_uncollected(
 }
 
 /// Record the job branch on a local slot so later clean can recycle it.
-fn note_last_branch(config: &vivi::pool::PoolConfig, machine: &str, branch: &str) {
-    if config.provider != "local" || branch.is_empty() {
+fn note_last_branch(provider: &dyn vivi::pool::PoolProvider, machine: &str, branch: &str) {
+    if branch.is_empty() {
         return;
     }
-    let dir = vivi::pool::local_slots::expand_root(config.local.root_or_default()).join(machine);
+    let Some(root) = provider.local_root() else {
+        return;
+    };
+    let dir = root.join(machine);
     let _ignored =
         vivi::pool::clean_rule::write_mark(&dir, vivi::pool::clean_rule::MARK_LAST_BRANCH, branch);
 }

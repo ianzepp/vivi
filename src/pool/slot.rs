@@ -9,11 +9,10 @@ use super::provider::MachineRecord;
 
 /// Metadata key marking a machine as a member of a pool (value: pool name).
 pub const META_POOL: &str = "vivi_pool";
-/// Metadata key naming the mailspace the pool belongs to (value: the
-/// mailspace's space key, see [`space_key`]: the name slug qualified by the
-/// first 8 characters of the id in `.vivi/mailspace.id`, or the bare slug
-/// when the config has no id). A slot belongs to a mailspace AND a pool: two
-/// mailspaces may each have a pool of the same name on one host.
+/// Metadata key naming the mailspace the pool belongs to (value: its exact id
+/// from `.vivi/mailspace.id`, or the name slug when the config has no id). A
+/// slot belongs to a mailspace AND a pool: two mailspaces may each have a pool
+/// of the same name on one host.
 pub const META_MAILSPACE: &str = "vivi_pool_mailspace";
 /// Metadata key holding the slot's 1-based index.
 pub const META_SLOT: &str = "vivi_pool_slot";
@@ -38,10 +37,9 @@ pub const STATE_READY: &str = "ready";
 /// Suffix of the self-test pool that belongs to a pool (`<pool>-doctor`).
 pub const DOCTOR_SUFFIX: &str = "-doctor";
 
-/// The identity of a pool: the mailspace it belongs to (identified by its
-/// space key, [`space_key`] over the name and the id in
-/// `.vivi/mailspace.id`; the bare name slug when the config has no id) and
-/// its own name (the key of its `[pools.<name>]` table). Every mark, machine
+/// The identity of a pool: the mailspace id in `.vivi/mailspace.id` (the
+/// name slug when the config has no id) and its own name (the key of its
+/// `[pools.<name>]` table). Every mark, machine
 /// name and directory a pool makes derives from both.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PoolId {
@@ -52,8 +50,8 @@ pub struct PoolId {
 impl PoolId {
     /// The pool `pool` of the mailspace named `mailspace_name` and identified
     /// by `mailspace_id` (the contents of `.vivi/mailspace.id`, empty when the
-    /// config has none). The mailspace part is [`space_key`] over the two, so
-    /// two mailspaces named alike stay distinct.
+    /// config has none). A present id is used unchanged; the name slug is
+    /// used only when the config has no id.
     #[must_use]
     pub fn new(mailspace_name: &str, mailspace_id: &str, pool: &str) -> Self {
         Self {
@@ -63,10 +61,8 @@ impl PoolId {
     }
 
     /// The pool `pool` of the mailspace identified by `mailspace_key`, stored
-    /// unchanged (unlike [`PoolId::new`], no slug mapping). Callers pass the
-    /// mailspace id — the canonical lowercase hyphenated uuid, which is
-    /// already slug-charset safe — or, when the config has no id, a pre-sluged
-    /// name.
+    /// unchanged. Callers pass the mailspace id or the name slug when the
+    /// config has no id.
     #[must_use]
     pub fn keyed(mailspace_key: &str, pool: &str) -> Self {
         Self {
@@ -105,9 +101,9 @@ impl std::fmt::Display for PoolId {
     }
 }
 
-/// A mailspace name as it appears in marks and names: lowercase letters,
-/// digits and dashes, no leading or trailing dash. Empty when the name has
-/// no letter or digit (the pool config check rejects that).
+/// The fallback key for a mailspace with no id: lowercase letters, digits and
+/// dashes, with no leading or trailing dash. Empty when the name has no
+/// letter or digit (the pool config check rejects that).
 #[must_use]
 pub fn space_slug(name: &str) -> String {
     let mapped: String = name
@@ -118,40 +114,21 @@ pub fn space_slug(name: &str) -> String {
     mapped.trim_matches('-').to_string()
 }
 
-/// The pool identity key of a mailspace: its name slug, qualified by the
-/// first 8 characters of its id when it has one.
-///
-/// The id prefix keeps two mailspaces named alike on distinct directories,
-/// marks and names. An empty `id` (a config with no id) yields the bare slug.
+/// The storage identity key of a mailspace: its exact id when present, or
+/// the name slug for a config with no id.
 #[must_use]
 pub fn space_key(name: &str, id: &str) -> String {
-    let slug = space_slug(name);
     if id.is_empty() {
-        return slug;
+        space_slug(name)
+    } else {
+        id.to_string()
     }
-    let prefix = id.get(..8).unwrap_or(id);
-    format!("{slug}-{prefix}")
 }
 
-/// True when the mailspace mark `actual` belongs to the space whose identity
-/// key is `key`.
-///
-/// A slot made by vivi <=15.0.0 carries the bare slug as its mark; an
-/// id-qualified key still matches it so those slots keep working. A bare slug
-/// key never matches an id-qualified mark.
+/// True when the mailspace mark exactly names this identity key.
 #[must_use]
 pub fn space_mark_matches(key: &str, actual: &str) -> bool {
-    if actual == key {
-        return true;
-    }
-    if key.len() < 9 || !key.is_char_boundary(key.len() - 9) {
-        return false;
-    }
-    let (slug, tail) = key.split_at(key.len() - 9);
-    let Some(hex) = tail.strip_prefix('-') else {
-        return false;
-    };
-    hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && actual == slug
+    key == actual
 }
 
 /// Metadata written onto a new slot.

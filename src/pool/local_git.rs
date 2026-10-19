@@ -2,7 +2,8 @@
 //! is made from.
 //!
 //! Commands that change that repository: `git worktree add`, `git
-//! worktree remove`, `git worktree prune`, `git branch -d` of a merged scratch
+//! worktree remove`, scoped removal of a vanished Vivi worktree entry,
+//! `git branch -d` of a merged scratch
 //! branch, and the single-branch `git fetch` of [`Repo::fetch_remote_branch`].
 //! Everything else here is a read-only query. The three run under a lock (see [`Repo::lock`]) so that
 //! two of them, in this process or in another `vivi`, never run at once.
@@ -15,6 +16,23 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::error::VivariumError;
+
+/// Canonicalize a path, including a missing tail, through its nearest
+/// existing ancestor.
+#[must_use]
+pub fn real_path(path: &Path) -> PathBuf {
+    if let Ok(resolved) = path.canonicalize() {
+        return resolved;
+    }
+    for ancestor in path.ancestors().skip(1) {
+        if let Ok(resolved) = ancestor.canonicalize() {
+            if let Ok(tail) = path.strip_prefix(ancestor) {
+                return resolved.join(tail);
+            }
+        }
+    }
+    path.to_path_buf()
+}
 
 /// Environment that would point Git somewhere other than the repository
 /// named on the command line (for example when `vivi` runs from a hook).
@@ -279,7 +297,7 @@ impl Repo {
             .find(|name| self.branch_tip(name).is_some())
     }
 
-    /// The lock that serializes `worktree add`, `remove` and `prune` on this
+    /// The lock that serializes `worktree add` and `remove` on this
     /// repository, across processes: a `flock` on the repository's common
     /// Git directory itself, so nothing is added to the repository.
     ///
@@ -308,9 +326,8 @@ impl Repo {
         self.run(&["checkout", "-q", "--detach", rev]).map(drop)
     }
 
-    /// Remove the worktree at `dest` through Git, whatever it holds, and then
-    /// prune the entries of worktrees whose directory is gone. Never touches
-    /// a branch.
+    /// Remove the exact worktree at `dest` through Git. Never prunes other
+    /// entries or touches a branch.
     ///
     /// # Errors
     /// Returns an error if Git refuses to remove it.
@@ -320,11 +337,11 @@ impl Repo {
             let dest = dest.to_string_lossy();
             self.run(&["worktree", "remove", "--force", &dest])?;
         }
-        self.run(&["worktree", "prune"]).map(drop)
+        Ok(())
     }
 
     /// Remove a worktree only if Git considers it clean enough to drop
-    /// without `--force`, then prune gone entries.
+    /// without `--force`.
     ///
     /// # Errors
     /// Returns an error if Git refuses (dirty tree, locked, ...).
@@ -334,7 +351,31 @@ impl Repo {
             let dest = dest.to_string_lossy();
             self.run(&["worktree", "remove", &dest])?;
         }
-        self.run(&["worktree", "prune"]).map(drop)
+        Ok(())
+    }
+
+    /// Remove only the Git admin entry for a vanished worktree under
+    /// `pool_root`. Other prunable entries in the source repository are left
+    /// in place.
+    ///
+    /// # Errors
+    /// Returns an error if the path is outside the pool, Git cannot inspect
+    /// the repository, or its exact admin entry cannot safely be removed.
+    pub fn remove_gone_worktree_under(
+        &self,
+        dest: &Path,
+        pool_root: &Path,
+    ) -> Result<(), VivariumError> {
+        let _held = self.lock()?;
+        let wanted = gone_worktree_path(dest, pool_root)?;
+        if !self
+            .worktrees()?
+            .iter()
+            .any(|tree| !tree.bare && real_path(&tree.path) == wanted)
+        {
+            return Ok(());
+        }
+        remove_worktree_admin_entry(&self.common_dir()?.join("worktrees"), &wanted)
     }
 
     /// Paths `git status --porcelain` names in this checkout.
@@ -383,15 +424,63 @@ impl Repo {
         let _held = self.lock()?;
         self.run(&["branch", "-d", name]).map(drop)
     }
+}
 
-    /// Prune the entries of worktrees whose directory is gone.
-    ///
-    /// # Errors
-    /// Returns an error if Git refuses.
-    pub fn prune(&self) -> Result<(), VivariumError> {
-        let _held = self.lock()?;
-        self.run(&["worktree", "prune"]).map(drop)
+fn gone_worktree_path(dest: &Path, pool_root: &Path) -> Result<PathBuf, VivariumError> {
+    if dest.exists() {
+        return Err(VivariumError::Message(format!(
+            "refusing to remove a live worktree entry: {}",
+            dest.display()
+        )));
     }
+    let root = real_path(pool_root);
+    let wanted = real_path(dest);
+    if wanted == root || !wanted.starts_with(&root) {
+        return Err(VivariumError::Message(format!(
+            "refusing to remove worktree outside pool directory {}: {}",
+            root.display(),
+            wanted.display()
+        )));
+    }
+    Ok(wanted)
+}
+
+fn remove_worktree_admin_entry(admin_root: &Path, wanted: &Path) -> Result<(), VivariumError> {
+    let entries = match std::fs::read_dir(admin_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let admin = entry.path();
+        let file_type = entry.file_type()?;
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+        let gitdir = match std::fs::read_to_string(admin.join("gitdir")) {
+            Ok(path) => PathBuf::from(path.trim()),
+            Err(_) => continue,
+        };
+        let Some(worktree) = gitdir.parent() else {
+            continue;
+        };
+        if real_path(worktree) != wanted {
+            continue;
+        }
+        if admin.join("locked").exists() {
+            return Err(VivariumError::Message(format!(
+                "refusing to remove locked worktree entry for {}",
+                wanted.display()
+            )));
+        }
+        std::fs::remove_dir_all(&admin)?;
+        return Ok(());
+    }
+    Err(VivariumError::Message(format!(
+        "cannot find the exact Git worktree entry for {}",
+        wanted.display()
+    )))
 }
 
 /// The last few lines of what Git said, on one line.

@@ -1,6 +1,7 @@
-//! A slot of the `local` provider is a directory under the pool's root:
-//! `<root>/<mailspace>/<pool>/slot-<n>/`. Everything about the slot is a file
-//! in that directory, and nothing is kept anywhere else:
+//! A slot of the `local` provider is a directory under its pool directory:
+//! `<root>/<pool>/slot-<n>/` for project-relative roots and
+//! `<root>/<mailspace-id>/<pool>/slot-<n>/` for shared roots. Everything about
+//! the slot is a file in that directory, and nothing is kept anywhere else:
 //!
 //! - `marks/<name>`: one small file per mark (mailspace, pool, slot, base,
 //!   state, arch)
@@ -83,7 +84,7 @@ fn write_file(path: &Path, content: &[u8], mode: u32) -> Result<(), VivariumErro
 }
 
 /// Write a file whole and move it into place.
-fn replace_file(path: &Path, content: &[u8]) -> Result<(), VivariumError> {
+pub(crate) fn replace_file(path: &Path, content: &[u8]) -> Result<(), VivariumError> {
     let partial = path.with_extension("partial");
     write_file(&partial, content, 0o600)?;
     std::fs::rename(&partial, path).map_err(|e| failed("cannot place", path, &e))
@@ -150,20 +151,47 @@ pub fn record_of(dir: &Path, id: &str) -> MachineRecord {
     }
 }
 
-/// Every slot under `root`, from the directories alone.
+/// True for the current three-part shared-root id and the two-part
+/// project-local id.
+#[must_use]
+pub fn slot_id_ok(id: &str) -> bool {
+    if is_slot_id(id) {
+        return true;
+    }
+    let parts: Vec<&str> = id.split('/').collect();
+    let [pool, slot] = parts.as_slice() else {
+        return false;
+    };
+    !pool.is_empty()
+        && !pool.starts_with('-')
+        && pool
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && slot
+            .strip_prefix("slot-")
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// List only the direct slot directories of one resolved pool site.
 ///
 /// # Errors
-/// Returns an error if a directory of the root cannot be read.
-pub fn list(root: &Path) -> Result<Vec<MachineRecord>, VivariumError> {
+/// Returns an error if the pool directory cannot be read.
+pub fn list(site: &super::local_site::LocalSite) -> Result<Vec<MachineRecord>, VivariumError> {
     let mut found = Vec::new();
-    for space in subdirs(root)? {
-        for pool in subdirs(&space)? {
-            for slot in subdirs(&pool)? {
-                let id = id_below(root, &slot);
-                if is_known(&slot) && is_slot_id(&id) {
-                    found.push(record_of(&slot, &id));
-                }
-            }
+    for slot in subdirs(&site.pool_dir)? {
+        let Some(name) = slot.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("slot-") || !is_known(&slot) {
+            continue;
+        }
+        let id = if site.relative {
+            format!("{}/{name}", site.pool)
+        } else {
+            format!("{}/{}/{name}", site.mailspace, site.pool)
+        };
+        if slot_id_ok(&id) {
+            found.push(record_of(&slot, &id));
         }
     }
     Ok(found)
@@ -275,8 +303,18 @@ fn add_worktree(dest: &Path, repo: &str, base: Option<&String>) -> Result<(), Vi
         repo.add_worktree(&dest.join(CHECKOUT), base)
     });
     if let Err(e) = made {
+        let checkout = dest.join(CHECKOUT);
+        let pool_root = dest.parent().unwrap_or(dest);
         std::fs::remove_dir_all(dest).map(drop).unwrap_or_default();
-        repo.prune().map(drop).unwrap_or_default();
+        if checkout.exists() {
+            repo.remove_worktree(&checkout)
+                .map(drop)
+                .unwrap_or_default();
+        } else {
+            repo.remove_gone_worktree_under(&checkout, pool_root)
+                .map(drop)
+                .unwrap_or_default();
+        }
         return Err(e);
     }
     Ok(())
@@ -478,7 +516,7 @@ fn mark_is(dir: &Path, name: &str, want: &str) -> bool {
 /// Vivi's own marks naming this pool and this mailspace. `Ok(None)` when
 /// there is nothing to delete.
 fn checked_slot(root: &Path, id: &str) -> Result<Option<(PathBuf, PathBuf)>, VivariumError> {
-    if !is_slot_id(id) {
+    if !slot_id_ok(id) {
         return Err(refuse(&format!("not a slot id: {id}")));
     }
     let Ok(real_root) = root.canonicalize() else {
@@ -498,14 +536,15 @@ fn checked_slot(root: &Path, id: &str) -> Result<Option<(PathBuf, PathBuf)>, Viv
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(refuse(&format!("{id} is not a plain directory")));
     }
-    let (space, rest) = id.split_once('/').unwrap_or_default();
-    let pool = rest.split('/').next().unwrap_or_default();
+    let parts: Vec<&str> = id.split('/').collect();
+    let pool = parts[parts.len() - 2];
     if !mark_is(&dir, "vivi_pool", pool) {
         return Err(refuse(&format!(
             "{id} carries no Vivi mark for pool {pool}"
         )));
     }
-    if !mark_is(&dir, "vivi_pool_mailspace", space) {
+    if parts.len() == 3 && !mark_is(&dir, "vivi_pool_mailspace", parts[0]) {
+        let space = parts[0];
         return Err(refuse(&format!(
             "{id} carries no Vivi mark for mailspace {space}"
         )));
@@ -535,23 +574,26 @@ pub fn destroy(root: &Path, id: &str) -> Result<(), VivariumError> {
         return Ok(());
     };
     proc::stop(&real)?;
+    let pool_root = pool_root(&real_root, id);
     let repo = std::fs::read_to_string(real.join(WORKTREE_OF_FILE))
         .map_or(None, |text| Some(Repo::new(Path::new(text.trim()))))
         .filter(|repo| repo.path().is_dir());
     if let Some(repo) = &repo {
-        repo.remove_worktree(&real.join(CHECKOUT))?;
+        let checkout = real.join(CHECKOUT);
+        if checkout.exists() {
+            repo.remove_worktree(&checkout)?;
+        } else {
+            repo.remove_gone_worktree_under(&checkout, &pool_root)?;
+        }
     }
-    remove_target_worktrees(&real)?;
+    remove_target_worktrees(&real, &pool_root)?;
     std::fs::remove_dir_all(&real).map_err(|e| failed("cannot delete", &real, &e))?;
-    if let Some(repo) = &repo {
-        repo.prune()?;
-    }
     tidy(&real_root, id);
     Ok(())
 }
 
 /// Remove only worktrees registered beneath this already validated slot.
-fn remove_target_worktrees(slot: &Path) -> Result<(), VivariumError> {
+fn remove_target_worktrees(slot: &Path, pool_root: &Path) -> Result<(), VivariumError> {
     let targets = slot.join("targets");
     let entries = match std::fs::read_dir(&targets) {
         Ok(entries) => entries,
@@ -565,22 +607,41 @@ fn remove_target_worktrees(slot: &Path) -> Result<(), VivariumError> {
         }
         if let Ok(source) = std::fs::read_to_string(cache.join(WORKTREE_OF_FILE)) {
             let repo = Repo::new(Path::new(source.trim()));
-            repo.remove_worktree(&cache.join(CHECKOUT))?;
-            repo.prune()?;
+            let checkout = cache.join(CHECKOUT);
+            if checkout.exists() {
+                repo.remove_worktree(&checkout)?;
+            } else {
+                repo.remove_gone_worktree_under(&checkout, pool_root)?;
+            }
         }
     }
     Ok(())
 }
 
+fn pool_root(root: &Path, id: &str) -> PathBuf {
+    let parts: Vec<&str> = id.split('/').collect();
+    if parts.len() == 2 {
+        root.join(parts[0])
+    } else {
+        root.join(parts[0]).join(parts[1])
+    }
+}
+
 /// Remove the pool directory, the mailspace directory and, if Vivi made it,
 /// the root, as each becomes empty.
 fn tidy(root: &Path, id: &str) {
-    let mut parts = id.split('/');
-    let (space, pool) = (
-        parts.next().unwrap_or_default(),
-        parts.next().unwrap_or_default(),
-    );
-    for dir in [root.join(space).join(pool), root.join(space)] {
+    let parts: Vec<&str> = id.split('/').collect();
+    let pool_dir = if parts.len() == 2 {
+        root.join(parts[0])
+    } else {
+        root.join(parts[0]).join(parts[1])
+    };
+    let dirs = if parts.len() == 2 {
+        vec![pool_dir]
+    } else {
+        vec![pool_dir, root.join(parts[0])]
+    };
+    for dir in dirs {
         std::fs::remove_dir(&dir).map(drop).unwrap_or_default();
     }
     let only_mark = std::fs::read_dir(root).is_ok_and(|entries| {

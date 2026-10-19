@@ -48,6 +48,8 @@ pub struct SshProvider {
     runner: Box<dyn Runner>,
     host: String,
     root: String,
+    mailspace: String,
+    pool: String,
     /// The umask the remote script writes under.
     umask: &'static str,
 }
@@ -69,20 +71,33 @@ pub fn client_version() -> Result<String, String> {
 
 impl SshProvider {
     #[must_use]
-    pub fn new(config: &PoolConfig) -> Self {
+    pub fn new(config: &PoolConfig, ctx: &super::runpod::HostContext) -> Self {
         let host = config.ssh.host.clone().unwrap_or_default();
         let runner = SshCli::new(&host);
-        Self::with_runner(config, Box::new(runner))
+        Self::with_runner_for_pool(config, &ctx.mailspace, &ctx.pool, Box::new(runner))
     }
 
     /// A provider that talks through `runner` (tests). The runner gets one
     /// argument: the remote command line.
     #[must_use]
     pub fn with_runner(config: &PoolConfig, runner: Box<dyn Runner>) -> Self {
+        Self::with_runner_for_pool(config, "", "", runner)
+    }
+
+    /// A provider bound to one pool's path prefix (also used by tests).
+    #[must_use]
+    pub fn with_runner_for_pool(
+        config: &PoolConfig,
+        mailspace: &str,
+        pool: &str,
+        runner: Box<dyn Runner>,
+    ) -> Self {
         Self {
             runner,
             host: config.ssh.host.clone().unwrap_or_default(),
             root: config.ssh.root_or_default().to_string(),
+            mailspace: mailspace.to_string(),
+            pool: pool.to_string(),
             umask: PRIVATE_UMASK,
         }
     }
@@ -92,11 +107,19 @@ impl SshProvider {
     /// in messages. The slot's scripts run as root there and its agent as
     /// another user, so the slot directory is traversable (umask `022`).
     #[must_use]
-    pub(super) fn for_machine(host: &str, root: &str, runner: Box<dyn Runner>) -> Self {
+    pub(super) fn for_machine(
+        host: &str,
+        root: &str,
+        mailspace: &str,
+        pool: &str,
+        runner: Box<dyn Runner>,
+    ) -> Self {
         Self {
             runner,
             host: host.to_string(),
             root: root.to_string(),
+            mailspace: mailspace.to_string(),
+            pool: pool.to_string(),
             umask: "022",
         }
     }
@@ -144,6 +167,23 @@ impl SshProvider {
         } else {
             VivariumError::Message(format!("`{verb}` failed on {}: {said}", self.host))
         }
+    }
+
+    fn slot_id<'a>(&self, id: &'a str) -> Result<&'a str, VivariumError> {
+        let id = slot_id_of(id)?;
+        let mut parts = id.split('/');
+        let (mailspace, pool) = (
+            parts.next().unwrap_or_default(),
+            parts.next().unwrap_or_default(),
+        );
+        if (!self.mailspace.is_empty() && mailspace != self.mailspace)
+            || (!self.pool.is_empty() && pool != self.pool)
+        {
+            return Err(VivariumError::Message(format!(
+                "not a slot of this pool: {id}"
+            )));
+        }
+        Ok(id)
     }
 
     /// The probe of the doctor: one login-shell call.
@@ -290,12 +330,13 @@ impl PoolProvider for SshProvider {
     }
 
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
-        let out = self.require("list", &[], None)?;
+        let out = self.require("list", &[&self.mailspace, &self.pool], None)?;
         parse_listing(&String::from_utf8_lossy(&out.stdout), &self.host)
     }
 
     fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
         let id = new_slot_id(spec)?;
+        self.slot_id(&id)?;
         let archive = Self::new_slot_archive(spec)?;
         self.require("create", &[&id], Some(&archive))?;
         if let Err(e) = self.start(&id) {
@@ -308,7 +349,8 @@ impl PoolProvider for SshProvider {
     }
 
     fn destroy(&self, id: &str) -> Result<(), VivariumError> {
-        self.require("destroy", &[slot_id_of(id)?], None).map(drop)
+        self.require("destroy", &[self.slot_id(id)?], None)
+            .map(drop)
     }
 
     fn destroy_command(&self, id: &str) -> String {
@@ -320,7 +362,7 @@ impl PoolProvider for SshProvider {
     }
 
     fn machine(&self, id: &str) -> Result<MachineRecord, VivariumError> {
-        let out = self.require("machine", &[slot_id_of(id)?], None)?;
+        let out = self.require("machine", &[self.slot_id(id)?], None)?;
         let found = parse_listing(&String::from_utf8_lossy(&out.stdout), &self.host)?;
         Ok(found
             .into_iter()
@@ -331,7 +373,7 @@ impl PoolProvider for SshProvider {
     /// The claim is a hard link of a complete file, made on the host.
     fn claim(&self, id: &str, task: &str, now: u64) -> Result<Option<Hold>, VivariumError> {
         one_line(task)?;
-        let out = self.require("claim", &[slot_id_of(id)?, task, &now.to_string()], None)?;
+        let out = self.require("claim", &[self.slot_id(id)?, task, &now.to_string()], None)?;
         let said = out.stdout_text();
         match said.split_whitespace().collect::<Vec<_>>().as_slice() {
             ["claimed", nonce] => Ok(Some(Hold {
@@ -346,7 +388,8 @@ impl PoolProvider for SshProvider {
     }
 
     fn unclaim(&self, id: &str) -> Result<(), VivariumError> {
-        self.require("unclaim", &[slot_id_of(id)?], None).map(drop)
+        self.require("unclaim", &[self.slot_id(id)?], None)
+            .map(drop)
     }
 
     /// The claim file stays: it is the mark, and it ends only with
@@ -363,8 +406,12 @@ impl PoolProvider for SshProvider {
         content: &[u8],
     ) -> Result<(), VivariumError> {
         let rel = relative(path)?;
-        self.require("put", &[slot_id_of(id)?, &rel, &hold.nonce], Some(content))
-            .map(drop)
+        self.require(
+            "put",
+            &[self.slot_id(id)?, &rel, &hold.nonce],
+            Some(content),
+        )
+        .map(drop)
     }
 
     /// Nothing is dropped from an environment (a one-time secret lived in a
@@ -377,21 +424,21 @@ impl PoolProvider for SshProvider {
         value: &str,
     ) -> Result<(), VivariumError> {
         one_line(value)?;
-        self.require("seal", &[slot_id_of(id)?, key, value], None)
+        self.require("seal", &[self.slot_id(id)?, key, value], None)
             .map(drop)
     }
 
     fn start(&self, id: &str) -> Result<(), VivariumError> {
-        self.require("start", &[slot_id_of(id)?], None).map(drop)
+        self.require("start", &[self.slot_id(id)?], None).map(drop)
     }
 
     fn stop(&self, id: &str) -> Result<(), VivariumError> {
-        self.require("stop", &[slot_id_of(id)?], None).map(drop)
+        self.require("stop", &[self.slot_id(id)?], None).map(drop)
     }
 
     fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError> {
         let wait = Duration::from_secs(u64::from(timeout_secs) + 15);
-        let out = self.call(("exec", &[slot_id_of(id)?, script], false), None, wait)?;
+        let out = self.call(("exec", &[self.slot_id(id)?, script], false), None, wait)?;
         if out.code == SSH_FAILED {
             return Err(self.failure("exec", &out));
         }
@@ -412,7 +459,7 @@ impl PoolProvider for SshProvider {
             .iter()
             .map(|p| relative(p))
             .collect::<Result<_, _>>()?;
-        let out = self.require("read", &[slot_id_of(id)?, &rels.join(" ")], None)?;
+        let out = self.require("read", &[self.slot_id(id)?, &rels.join(" ")], None)?;
         let mut files = BTreeMap::new();
         for file in tar::read(&out.stdout)? {
             let name = file.path.trim_start_matches("./");

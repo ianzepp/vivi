@@ -119,7 +119,15 @@ fn unset_harness_names_warn_and_are_named_without_values() {
 
 fn provider_for(toml: &str) -> LocalProvider {
     let config: PoolConfig = toml::from_str(toml).unwrap();
-    LocalProvider::new(&config)
+    LocalProvider::new(
+        &config,
+        &super::super::runpod::HostContext {
+            dir: std::path::PathBuf::from("/tmp/vivi-test-project/.vivi"),
+            mailspace: "space".into(),
+            pool: "lanes".into(),
+            pools: vec!["lanes".into()],
+        },
+    )
 }
 
 #[test]

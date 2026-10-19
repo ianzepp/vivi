@@ -104,18 +104,30 @@ pub fn open_unvalidated(
         pool: pool.to_string(),
         pools: names.iter().map(|n| (*n).to_string()).collect(),
     };
-    Ok(chosen
+    chosen
         .into_iter()
-        .filter_map(|name| {
-            let config = all.get(&name)?.clone();
+        .map(|name| {
+            let config = all
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| VivariumError::Config(format!("unknown pool {name}")))?;
+            if config.provider.eq_ignore_ascii_case("local") {
+                super::local_site::resolve(
+                    config.local.root_or_default(),
+                    &space.root,
+                    &key,
+                    &name,
+                )
+                .map_err(|error| VivariumError::Config(format!("pool {name}: {error}")))?;
+            }
             let ctx = host(&name);
-            Some(PoolHandle {
+            Ok(PoolHandle {
                 id: PoolId::new(&space.config.name, space.mailspace_id(), &name),
                 provider: open_provider(&config, &ctx),
                 config,
             })
         })
-        .collect())
+        .collect()
 }
 
 /// The selected pools, open and validated.

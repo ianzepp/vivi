@@ -26,7 +26,7 @@
 # Secrets are made private by their own chmod, not by the umask.
 #
 # Verbs and their arguments:
-#   list                       the facts of every slot under $R
+#   list A1 A2                 the facts of A2's slots under mailspace A1
 #   machine A1                 the facts of slot A1 (nothing when it is gone)
 #   probe                      what `vivi pool doctor` wants to know of the host
 #   envgaps A1                 the names in A1 that the login environment lacks
@@ -98,7 +98,7 @@ emit() {
 list_slots() {
   local m id
   [ -d "$R" ] || return 0
-  for m in "$R"/*/*/slot-*/marks/vivi_pool; do
+  for m in "$R"/"$A1"/"$A2"/slot-*/marks/vivi_pool; do
     [ -f "$m" ] || continue
     id=${m#"$R"/}; id=${id%/marks/vivi_pool}
     slot_ok "$id" && emit "$id"

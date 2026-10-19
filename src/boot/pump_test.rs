@@ -402,15 +402,17 @@ fn write_slot(root: &std::path::Path, space: &str, index: u32) {
 }
 
 #[test]
-fn scan_takes_this_mailspace_s_slots_and_legacy_but_not_a_foreign_id() {
+fn scan_uses_the_id_qualified_shared_root() {
+    const ID_A: &str = "12345678-1234-5678-1234-567812345678";
+    const ID_B: &str = "99999999-9999-9999-9999-999999999999";
     let dir = tempdir().unwrap();
     let root = dir.path();
-    write_slot(root, "app-12345678", 1);
+    write_slot(root, ID_A, 1);
+    write_slot(root, ID_B, 1);
     write_slot(root, "app", 1);
-    write_slot(root, "app-99999999", 1);
     let text = format!(
         "name = \"app\"\n\
-         id = \"12345678-1234-5678-1234-567812345678\"\n\
+         id = \"{ID_A}\"\n\
          \n\
          [pools.here]\n\
          provider = \"local\"\n\
@@ -421,16 +423,10 @@ fn scan_takes_this_mailspace_s_slots_and_legacy_but_not_a_foreign_id() {
         root = root.to_string_lossy()
     );
     let config: crate::mailspace::MailspaceConfig = toml::from_str(&text).expect("mailspace toml");
-    let mut ids: Vec<String> = pump_slots::scan(&config)
+    let mut ids: Vec<String> = pump_slots::scan(&config, root)
         .into_iter()
         .map(|mark| mark.id)
         .collect();
     ids.sort();
-    assert_eq!(
-        ids,
-        vec![
-            String::from("app-12345678/here/slot-1"),
-            String::from("app/here/slot-1"),
-        ]
-    );
+    assert_eq!(ids, vec![format!("{ID_A}/here/slot-1")]);
 }

@@ -101,15 +101,20 @@ fn a_worktree_is_added_detached_and_removed_through_git_with_branches_intact() {
 }
 
 #[test]
-fn removing_a_worktree_whose_directory_is_gone_prunes_its_entry() {
+fn removing_a_worktree_does_not_prune_an_unrelated_missing_entry() {
     let f = fixture();
     let repo = Repo::new(&f.repo);
-    let dest = f.dir.path().join("slot/repo");
-    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-    repo.add_worktree(&dest, "main").unwrap();
-    std::fs::remove_dir_all(&dest).unwrap();
-    repo.remove_worktree(&dest).unwrap();
-    assert_eq!(repo.worktrees().unwrap().len(), 1);
+    let owned = f.dir.path().join("pool/slot-1/repo");
+    let foreign = f.dir.path().join("user-worktree/repo");
+    std::fs::create_dir_all(owned.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+    repo.add_worktree(&owned, "main").unwrap();
+    repo.add_worktree(&foreign, "main").unwrap();
+    std::fs::remove_dir_all(&foreign).unwrap();
+    repo.remove_worktree(&owned).unwrap();
+    let trees = repo.worktrees().unwrap();
+    assert_eq!(trees.len(), 2, "source and foreign entry remain");
+    assert!(trees.iter().any(|tree| tree.path == real_path(&foreign)));
 }
 
 #[test]

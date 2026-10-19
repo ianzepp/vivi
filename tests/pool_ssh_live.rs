@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use vivi::pool::PoolConfig;
 use vivi::pool::provider::{CreateSpec, PoolProvider};
+use vivi::pool::runpod::HostContext;
 use vivi::pool::slot::{self, META_STATE, PoolId, STATE_READY};
 use vivi::pool::ssh::SshProvider;
 
@@ -38,6 +39,18 @@ fn config() -> PoolConfig {
         root()
     ))
     .unwrap()
+}
+
+fn ssh_provider(pool: &str) -> SshProvider {
+    SshProvider::new(
+        &config(),
+        &HostContext {
+            dir: std::path::PathBuf::new(),
+            mailspace: "livetest".into(),
+            pool: pool.into(),
+            pools: vec![pool.into()],
+        },
+    )
 }
 
 /// A slot whose boot script is `boot`, not the real one.
@@ -92,7 +105,7 @@ fn count(p: &SshProvider, id: &str, pattern: &str) -> usize {
 #[test]
 #[ignore = "needs an SSH host"]
 fn stopping_a_slot_ends_everything_it_started_and_only_that() {
-    let mut made = Cleanup(SshProvider::new(&config()), Vec::new());
+    let mut made = Cleanup(ssh_provider(POOL_STOP), Vec::new());
     let boot = "sleep 311 &\nsetsid sleep 312 < /dev/null > /dev/null 2>&1 &\nsleep 313\n";
     let id = made.0.create(&spec(POOL_STOP, 1, boot)).unwrap();
     made.1.push(id.clone());
@@ -141,7 +154,7 @@ fn stopping_a_slot_ends_everything_it_started_and_only_that() {
 #[test]
 #[ignore = "needs an SSH host"]
 fn a_boot_that_ends_reads_stopped_with_its_exit_code_and_start_is_idempotent() {
-    let mut made = Cleanup(SshProvider::new(&config()), Vec::new());
+    let mut made = Cleanup(ssh_provider(POOL_EXIT), Vec::new());
     let id = made
         .0
         .create(&spec(POOL_EXIT, 1, "sleep 2\nexit 7\n"))
@@ -166,10 +179,10 @@ fn a_boot_that_ends_reads_stopped_with_its_exit_code_and_start_is_idempotent() {
 #[test]
 #[ignore = "needs an SSH host"]
 fn the_claim_is_atomic_across_separate_ssh_connections_and_calls_are_timed() {
-    let mut made = Cleanup(SshProvider::new(&config()), Vec::new());
+    let mut made = Cleanup(ssh_provider(POOL_CLAIM), Vec::new());
     let id = made.0.create(&spec(POOL_CLAIM, 1, "true\n")).unwrap();
     made.1.push(id.clone());
-    let provider = Arc::new(SshProvider::new(&config()));
+    let provider = Arc::new(ssh_provider(POOL_CLAIM));
     wait_for("the boot to end", || {
         provider.machine(&id).unwrap().state == "stopped"
     });
@@ -193,7 +206,7 @@ fn the_claim_is_atomic_across_separate_ssh_connections_and_calls_are_timed() {
             .map(|n| {
                 let (id, gate) = (id.clone(), &gate);
                 scope.spawn(move || {
-                    let p = SshProvider::new(&config());
+                    let p = ssh_provider(POOL_CLAIM);
                     std::thread::sleep(Duration::from_millis(250 * n as u64));
                     p.machine(&id).unwrap();
                     gate.wait();
@@ -215,7 +228,7 @@ fn the_claim_is_atomic_across_separate_ssh_connections_and_calls_are_timed() {
 #[test]
 #[ignore = "needs an SSH host"]
 fn destroy_leaves_nothing_behind_and_a_foreign_directory_is_refused() {
-    let p = SshProvider::new(&config());
+    let p = ssh_provider(POOL_DESTROY);
     let id = p.create(&spec(POOL_DESTROY, 1, "sleep 300\n")).unwrap();
     p.destroy(&id).unwrap();
     assert_eq!(p.machine(&id).unwrap().state, "destroyed");

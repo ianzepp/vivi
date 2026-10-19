@@ -2,6 +2,7 @@ use super::*;
 use crate::pool::clean::ActionKind;
 use crate::pool::clean_rule::{read_mark, write_mark};
 use crate::pool::local_fixture::{fixture, git};
+use crate::pool::local_git::real_path;
 use crate::pool::local_slots::{CHECKOUT, WORKTREE_OF_FILE};
 use crate::pool::slot::META_BASE;
 use std::fs;
@@ -201,18 +202,33 @@ fn a_gone_worktree_entry_is_reported_as_an_orphan() {
     let f = fixture();
     let tmp = tempfile::tempdir().unwrap();
     let dest = tmp.path().join("proj/lanes/slot-9/repo");
+    let foreign = tmp.path().join("user-worktree/repo");
     fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    fs::create_dir_all(foreign.parent().unwrap()).unwrap();
     let base = git(&f.repo, &["rev-parse", "HEAD"]);
     Repo::new(&f.repo).add_worktree(&dest, &base).unwrap();
+    Repo::new(&f.repo).add_worktree(&foreign, &base).unwrap();
     fs::remove_dir_all(&dest).unwrap();
-    let (acts, skips) =
-        sweep_orphans("lanes", &f.repo, tmp.path(), Some("main"), |_| true, false).unwrap();
+    fs::remove_dir_all(&foreign).unwrap();
+    let (acts, skips) = sweep_orphans(
+        "lanes",
+        &f.repo,
+        &tmp.path().join("proj/lanes"),
+        Some("main"),
+        |_| true,
+        false,
+    )
+    .unwrap();
     assert!(skips.is_empty(), "{skips:?}");
     assert!(acts.iter().any(|a| a.kind == ActionKind::Orphan));
     let trees = Repo::new(&f.repo).worktrees().unwrap();
     assert!(
         trees.iter().all(|t| t.path != real_path(&dest)),
-        "pruned entry still listed: {trees:?}"
+        "Vivi-owned entry still listed: {trees:?}"
+    );
+    assert!(
+        trees.iter().any(|t| t.path == real_path(&foreign)),
+        "an outside prunable worktree is preserved: {trees:?}"
     );
 }
 

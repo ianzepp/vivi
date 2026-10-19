@@ -13,7 +13,7 @@ use super::clean_rule::write_mark;
 use super::clean_slot::slot_is_free;
 use super::config::PoolConfig;
 use super::local_git::Repo;
-use super::local_slots::{CHECKOUT, WORKTREE_OF_FILE, expand_root};
+use super::local_slots::{CHECKOUT, WORKTREE_OF_FILE};
 use super::provider::{ExecOutput, PoolProvider};
 use super::slot::META_BASE;
 use crate::error::VivariumError;
@@ -245,7 +245,14 @@ pub fn reset_slot(
     why: &'static str,
 ) -> Result<ResetOutcome, VivariumError> {
     if config.provider == "local" {
-        let dir = expand_root(config.local.root_or_default()).join(machine_id);
+        provider.machine(machine_id)?;
+        let root = provider
+            .local_root()
+            .ok_or_else(|| VivariumError::Message("local provider has no resolved root".into()))?;
+        let dir = root.join(machine_id);
+        if let Some(source) = config.local.worktree_path() {
+            super::local::refuse_foreign_worktree(machine_id, &dir, &source)?;
+        }
         if !slot_is_free(&dir) && !dir.join("claim").is_file() {
             return Err(VivariumError::Message(
                 "slot is not free or claimed for this reset".into(),

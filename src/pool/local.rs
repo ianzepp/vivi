@@ -23,7 +23,7 @@
 //!   detached HEAD so no branch is held (see [`super::local_branch`]).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -35,11 +35,12 @@ use super::local_proc as proc;
 use super::local_slots as slots;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
-use super::ssh_state::{self as state, is_slot_id};
+use super::ssh_state as state;
 use crate::error::VivariumError;
 
 /// Pool provider for this machine.
 pub struct LocalProvider {
+    site: Result<super::local_site::LocalSite, String>,
     root: PathBuf,
     /// The repository the pool's slots are worktrees of, as configured; the
     /// doctor looks at it. The slots themselves carry what they need.
@@ -52,13 +53,30 @@ pub struct LocalProvider {
 
 impl LocalProvider {
     #[must_use]
-    pub fn new(config: &PoolConfig) -> Self {
+    pub fn new(config: &PoolConfig, ctx: &super::runpod::HostContext) -> Self {
+        let raw = config.local.root_or_default();
+        let site = super::local_site::resolve(
+            raw,
+            ctx.dir.parent().unwrap_or(ctx.dir.as_path()),
+            &ctx.mailspace,
+            &ctx.pool,
+        )
+        .map_err(|error| error.to_string());
         Self {
-            root: slots::expand_root(config.local.root_or_default()),
+            root: site
+                .as_ref()
+                .map_or_else(|_| slots::expand_root(raw), |site| site.root.clone()),
+            site,
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
             build_baseline: config.build_baseline_bytes(),
         }
+    }
+
+    fn site(&self) -> Result<&super::local_site::LocalSite, VivariumError> {
+        self.site
+            .as_ref()
+            .map_err(|message| VivariumError::Config(message.clone()))
     }
 
     pub(super) fn root(&self) -> &std::path::Path {
@@ -71,10 +89,22 @@ impl LocalProvider {
 
     /// The directory of slot `id`, which must be a slot id.
     fn dir(&self, id: &str) -> Result<PathBuf, VivariumError> {
-        if is_slot_id(id) {
-            Ok(self.root.join(id))
+        let site = self.site()?;
+        let prefix = if site.relative {
+            format!("{}/", site.pool)
         } else {
-            Err(VivariumError::Message(format!("not a slot id: {id}")))
+            format!("{}/{}/", site.mailspace, site.pool)
+        };
+        if slots::slot_id_ok(id)
+            && id
+                .strip_prefix(&prefix)
+                .is_some_and(|slot| slot.starts_with("slot-"))
+        {
+            Ok(site.root.join(id))
+        } else {
+            Err(VivariumError::Message(format!(
+                "not a slot of this pool: {id}"
+            )))
         }
     }
 
@@ -89,22 +119,66 @@ impl LocalProvider {
     }
 }
 
-/// The id a new slot gets from its spec: `<mailspace>/<pool>/slot-<index>`.
-fn new_slot_id(spec: &CreateSpec) -> Result<String, VivariumError> {
+/// The id a new slot gets from its spec and resolved storage site.
+fn new_slot_id(
+    site: &super::local_site::LocalSite,
+    spec: &CreateSpec,
+) -> Result<String, VivariumError> {
     let field = |key: &str| {
         spec.metadata
             .get(key)
             .ok_or_else(|| VivariumError::Message(format!("slot spec lacks {key}")))
     };
-    let id = state::slot_id(field(META_MAILSPACE)?, field(META_POOL)?, field(META_SLOT)?);
-    if is_slot_id(&id) {
+    let mailspace = field(META_MAILSPACE)?;
+    let pool = field(META_POOL)?;
+    if mailspace.as_str() != site.mailspace || pool.as_str() != site.pool {
+        return Err(VivariumError::Message(
+            "slot spec does not belong to this local pool".into(),
+        ));
+    }
+    let id = if site.relative {
+        format!("{pool}/slot-{}", field(META_SLOT)?)
+    } else {
+        state::slot_id(mailspace, pool, field(META_SLOT)?)
+    };
+    if slots::slot_id_ok(&id) {
         Ok(id)
     } else {
         Err(VivariumError::Message(format!("not a slot id: {id}")))
     }
 }
 
+pub(super) fn refuse_foreign_worktree(
+    id: &str,
+    dir: &Path,
+    configured: &Path,
+) -> Result<(), VivariumError> {
+    let Ok(recorded) = std::fs::read_to_string(dir.join(slots::WORKTREE_OF_FILE)) else {
+        return Ok(());
+    };
+    let recorded = PathBuf::from(recorded.trim());
+    let recorded_real = std::fs::canonicalize(&recorded).unwrap_or_else(|_| recorded.clone());
+    let configured_real =
+        std::fs::canonicalize(configured).unwrap_or_else(|_| configured.to_path_buf());
+    if recorded_real == configured_real {
+        return Ok(());
+    }
+    Err(VivariumError::Message(format!(
+        "slot {id} is a worktree of {}, not of this pool's repository {}; remake it from this pool's repository with `vivi pool destroy {id}` then `vivi pool create`",
+        recorded.display(),
+        configured.display()
+    )))
+}
+
 impl PoolProvider for LocalProvider {
+    fn local_root(&self) -> Option<PathBuf> {
+        self.site.as_ref().ok().map(|site| site.root.clone())
+    }
+
+    fn local_pool_dir(&self) -> Option<PathBuf> {
+        self.site.as_ref().ok().map(|site| site.pool_dir.clone())
+    }
+
     fn prepare_target_checkout(
         &self,
         id: &str,
@@ -195,12 +269,20 @@ impl PoolProvider for LocalProvider {
 
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
         proc::reap();
-        slots::list(&self.root)
+        let records = slots::list(self.site()?)?;
+        if let Some(configured) = self.source.as_deref() {
+            for record in &records {
+                let dir = self.dir(&record.id)?;
+                refuse_foreign_worktree(&record.id, &dir, configured)?;
+            }
+        }
+        Ok(records)
     }
 
     fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
-        let id = new_slot_id(spec)?;
-        slots::create(&self.root, &id, spec)?;
+        let site = self.site()?;
+        let id = new_slot_id(site, spec)?;
+        slots::create(&site.root, &id, spec)?;
         if let Err(e) = self.start(&id) {
             if let Err(undo) = self.destroy(&id) {
                 eprintln!("warning: could not remove {}: {undo}", spec.name);
@@ -211,13 +293,16 @@ impl PoolProvider for LocalProvider {
     }
 
     fn destroy(&self, id: &str) -> Result<(), VivariumError> {
-        self.dir(id)?;
-        slots::destroy(&self.root, id)
+        let dir = self.dir(id)?;
+        if let Some(configured) = self.source.as_deref() {
+            refuse_foreign_worktree(id, &dir, configured)?;
+        }
+        slots::destroy(&self.site()?.root, id)
     }
 
     fn destroy_command(&self, id: &str) -> String {
         format!(
-            "rm -rf {}/{id} (and, for a worktree slot, `git worktree prune` in its repository)",
+            "rm -rf {}/{id} (removes the slot directory only)",
             self.root.display()
         )
     }
@@ -234,7 +319,11 @@ impl PoolProvider for LocalProvider {
 
     fn claim(&self, id: &str, task: &str, now: u64) -> Result<Option<Hold>, VivariumError> {
         super::ssh::one_line(task)?;
-        slots::claim(&self.dir(id)?, task, now)
+        let dir = self.dir(id)?;
+        if let Some(configured) = self.source.as_deref() {
+            refuse_foreign_worktree(id, &dir, configured)?;
+        }
+        slots::claim(&dir, task, now)
     }
 
     /// The slot is free again: back on a detached HEAD, so its branch is free.
