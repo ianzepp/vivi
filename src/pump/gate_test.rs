@@ -244,11 +244,7 @@ fn a_second_batch_while_a_gate_runs_coalesces_to_one_followup() {
 
     st.last_gate.task = None;
     wire(&host);
-    host.reply(
-        "git ls-remote",
-        0,
-        &format!("{NEW_TIP}\trefs/heads/next\n"),
-    );
+    host.reply("git ls-remote", 0, &format!("{NEW_TIP}\trefs/heads/next\n"));
     start_gate(&ctx, &mut st);
     let dispatched: Vec<String> = host
         .commands()
