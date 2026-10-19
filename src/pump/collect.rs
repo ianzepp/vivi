@@ -662,11 +662,11 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
     }
     if now.saturating_sub(unit.since) > ctx.cfg.planner.split_hard_cap {
         unit.status = Status::Stuck;
-        ctx.exception(
-            "split-no-answer",
-            uid,
-            "the split planner wrote no plan in 25 minutes",
+        let text = format!(
+            "the split planner is still unreachable after {} minutes",
+            ctx.cfg.planner.split_hard_cap / 60
         );
+        ctx.exception("split-no-answer", uid, &text);
         return true;
     }
     false

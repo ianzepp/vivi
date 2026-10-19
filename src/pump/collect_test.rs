@@ -616,24 +616,31 @@ fn a_silent_failure_past_grace_renders_an_empty_reason_not_none() {
 }
 
 #[test]
-fn a_splitting_unit_with_no_answer_for_1500_seconds_is_stuck() {
-    let (_dir, ctx, host) = setup_with(PumpConfig {
-        planner: PlannerConfig {
-            split_hard_cap: 1500,
-            ..PlannerConfig::default()
-        },
-        ..PumpConfig::default()
-    });
+fn a_receipt_less_splitting_unit_is_stuck_at_the_hard_cap() {
+    let (_dir, ctx, host) = setup();
     let mut st = State::default();
     put(&mut st, "u-1", unit(Status::Splitting, None, None));
-    host.advance(1501);
+    host.advance(5401);
     assert_eq!(collect(&ctx, &mut st), None);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(host.commands().is_empty());
     assert!(
-        exceptions(&ctx)
-            .contains("split-no-answer u-1 the split planner wrote no plan in 25 minutes")
+        exceptions(&ctx).contains(
+            "split-no-answer u-1 the split planner is still unreachable after 90 minutes"
+        )
     );
+}
+
+#[test]
+fn a_live_split_planner_past_split_timeout_is_not_stuck() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    host.advance(2250);
+    assert_eq!(collect(&ctx, &mut st), None);
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Splitting);
+    assert!(!exceptions(&ctx).contains("split-no-answer"));
+    assert!(!exceptions(&ctx).contains("split-planner-failed"));
 }
 
 #[test]
@@ -793,7 +800,7 @@ fn a_silent_split_planner_still_goes_stuck() {
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
     assert!(
         exceptions(&ctx)
-            .contains("split-no-answer u-1 the split planner wrote no plan in 25 minutes"),
+            .contains("split-no-answer u-1 the split planner is still unreachable after 25 minutes"),
         "{:?}",
         exceptions(&ctx)
     );
