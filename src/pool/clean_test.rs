@@ -122,19 +122,24 @@ fn slot_dirs_resolve_through_symlinked_roots() {
     );
 }
 
-/// Two mailspaces share one local root: cleaning `alpha`'s pool must reclaim
-/// only `alpha/here` slots and never touch `faberlang/glm` slots.
+/// Two mailspaces share one local root: cleaning our mailspace's pool must
+/// reclaim only our `<mailspace id>/here` slots and never touch
+/// `faberlang/glm` slots. A slot lives under the mailspace **id** directory,
+/// not the name slug, so the fixture pins the id in the config and plants our
+/// over-cap slot under it.
 #[test]
 fn clean_mailspace_leaves_a_foreign_mailspaces_slots_alone() {
+    const ID: &str = "11111111-1111-1111-1111-111111111111";
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("pool-root");
     let toml = format!(
-        "\nname = \"alpha\"\n[pools.here]\nprovider = \"local\"\nslots = 1\nbuild_dir = \"target\"\n[pools.here.local]\nroot = \"{}\"\n",
+        "\nname = \"alpha\"\nid = \"{ID}\"\n[pools.here]\nprovider = \"local\"\nslots = 1\nbuild_dir = \"target\"\n[pools.here.local]\nroot = \"{}\"\n",
         root.display()
     );
     let (_dir, space) = routing_space(&toml);
+    let ours_rel = format!("{ID}/here/slot-1");
     for (rel, pool) in [
-        ("alpha/here/slot-1", "here"),
+        (ours_rel.as_str(), "here"),
         ("faberlang/glm/slot-2", "glm"),
     ] {
         let slot = root.join(rel);
@@ -150,7 +155,7 @@ fn clean_mailspace_leaves_a_foreign_mailspaces_slots_alone() {
 
     clean_mailspace(&space, &CleanOptions::default()).unwrap();
 
-    let ours = root.join("alpha/here/slot-1");
+    let ours = root.join(&ours_rel);
     let foreign = root.join("faberlang/glm/slot-2");
     assert!(
         !ours.join("repo/target/blob").exists(),
