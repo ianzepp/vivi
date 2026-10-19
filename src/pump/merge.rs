@@ -326,12 +326,16 @@ fn merge_branch(ctx: &Ctx, job: &MergeJob) -> Option<MergeResult> {
     Some(failed(&job.uid, "merge-conflict", detail))
 }
 
-/// Files the merge touched outside the unit's write scope.
+/// Files the merge touched outside the unit's write scope. Generated
+/// paths never count: a regenerated file committed by the merge lane is
+/// rebuilt from source of truth, not written by hand.
 fn outside_files(ctx: &Ctx, job: &MergeJob) -> Vec<String> {
+    let generated = ctx.cfg.merge.generated_paths();
     let changed = ctx.git("diff --name-only HEAD~1 HEAD", GIT_TIMEOUT).text;
     changed
         .split_whitespace()
         .filter(|f| !overlaps(&[f.to_string()], &job.write_scope))
+        .filter(|f| !overlaps(&[f.to_string()], &generated))
         .map(str::to_string)
         .collect()
 }
