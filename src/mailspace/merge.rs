@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use super::Mailspace;
+use super::holding::is_foreign_account;
 use crate::error::VivariumError;
 use crate::storage::{MailspaceEventInput, Storage, StoredMessageView};
 
@@ -107,8 +108,9 @@ pub fn import_mailspace(
     let outcome = run_import(&source_storage, &target_storage, false, &mut report)
         .and_then(|map| report.binding_conflict_error().map_or(Ok(map), Err));
     match outcome {
-        Ok(_) => {
+        Ok(message_map) => {
             target_storage.commit_batch()?;
+            attach_imported_work(target, &message_map)?;
             Ok(report)
         }
         Err(error) => {
@@ -120,6 +122,62 @@ pub fn import_mailspace(
             Err(error)
         }
     }
+}
+
+/// Mint the backlog nodes and dependency edges of the work letters this import
+/// landed, exactly as a pull mints them.
+///
+/// `Storage::mint_backlog` opens its own transaction, so this pass cannot nest
+/// inside the import's `BEGIN IMMEDIATE` batch and must run after
+/// `commit_batch()`; it is idempotent (`mint_backlog` skips existing nodes and
+/// edges), so a mid-pass failure is recovered by re-running the import or
+/// `vivi graph audit --repair`.
+fn attach_imported_work(
+    target: &Mailspace,
+    message_map: &HashMap<String, String>,
+) -> Result<(), VivariumError> {
+    let storage = target.storage()?;
+    let mut arrived: Vec<(String, String)> = Vec::new();
+    for message_id in message_map.values() {
+        let Some(view) = storage.message_by_id(message_id)? else {
+            continue;
+        };
+        attach_imported_letter(target, &storage, &view, &mut arrived)?;
+    }
+    drop(storage);
+    target.backlog_settle_pending_dependencies(&arrived)?;
+    Ok(())
+}
+
+/// Folders whose row is a work letter's holder row: the sent copy and plain
+/// folders are not.
+const HOLDER_ROLES: [&str; 4] = ["tasks", "needs", "wants", "done"];
+
+/// Attach one imported letter's node, completing it when only its folder says
+/// done.
+fn attach_imported_letter(
+    target: &Mailspace,
+    storage: &Storage,
+    view: &StoredMessageView,
+    arrived: &mut Vec<(String, String)>,
+) -> Result<(), VivariumError> {
+    if view.absorbed_at.is_some() || !HOLDER_ROLES.contains(&view.local_role.as_str()) {
+        return Ok(());
+    }
+    if is_foreign_account(&view.account) || target.is_unowned_account(&view.account) {
+        return Ok(());
+    }
+    let bytes = storage.read_message(&view.message_id)?;
+    let Some(kind) = super::kind::raw_work_kind(&bytes, &view.local_role) else {
+        return Ok(());
+    };
+    target.backlog_attach_letter(kind, &view.message_id, &view.subject, &bytes)?;
+    if view.local_role == "done" && !target.audit_sees_report(storage, &view.content_id)? {
+        let handle = storage.display_handle(&view.message_id)?;
+        target.backlog_complete_item_via(&handle, "via=repair")?;
+    }
+    arrived.push((view.message_id.clone(), view.content_id.clone()));
+    Ok(())
 }
 
 fn run_import(
