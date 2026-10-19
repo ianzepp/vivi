@@ -30,6 +30,9 @@ const GATE_GRACE: u64 = 2400;
 /// Split-planner exits without a plan before the unit is parked stuck.
 pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
 
+/// Seconds a deferred split launch waits before it retries.
+const SPLIT_LAUNCH_STAGGER: u64 = 60;
+
 /// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
 
@@ -327,6 +330,20 @@ fn drop_attempt_branch(ctx: &Ctx, st: &State, uid: &str) {
     }
 }
 
+/// Split planners currently launched and not waiting on a retry: a
+/// receipt-less unit still counts (only deferring launches, the safe side).
+fn live_split_planners(st: &State) -> usize {
+    st.units
+        .values()
+        .filter(|unit| unit.status == Status::Splitting && unit.split_retry_at.is_none())
+        .count()
+}
+
+/// The split-planner launch cap as a `usize`, never below one.
+fn split_planner_cap(ctx: &Ctx) -> usize {
+    usize::try_from(ctx.cfg.planner.planners_max.max(1)).unwrap_or(usize::MAX)
+}
+
 /// Send a unit to the split planner: write the resplit record,
 /// spawn the planner, and move the unit to `splitting` with a fresh clock.
 /// A quarantine repair unit (one with a `base`) is never split: its work is
@@ -337,6 +354,8 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
         return;
     }
     let now = ctx.now();
+    let cap = split_planner_cap(ctx);
+    let deferred = live_split_planners(st) >= cap;
     let record = {
         let Some(unit) = st.units.get(uid) else {
             return;
@@ -356,12 +375,21 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     let dir = ctx.home.join("resplit");
     drop(fs::create_dir_all(&dir));
     drop(write_json(&dir.join(format!("{uid}.json")), &record));
-    spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    if deferred {
+        ctx.log(&format!(
+            "split-launch-deferred {uid}: {cap} split planners already running"
+        ));
+    } else {
+        spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    }
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
     unit.status = Status::Splitting;
     unit.since = now;
+    if deferred {
+        unit.split_retry_at = Some(now + SPLIT_LAUNCH_STAGGER);
+    }
     unit.split_rate_retries = 0;
     unit.history.push(Attempt {
         attempt: unit.attempts,
@@ -708,6 +736,8 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
     if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
         return false;
     }
+    let cap = split_planner_cap(ctx);
+    let live = live_split_planners(st);
     let receipt = exit_receipt_path(&ctx.home.join(format!("resplit/{uid}.out")));
     let Some(unit) = st.units.get_mut(uid) else {
         return false;
@@ -743,7 +773,7 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         );
         return false;
     }
-    if retry_split(ctx, unit, uid, now) {
+    if retry_split(ctx, unit, uid, now, live, cap) {
         return false;
     }
     if let Some(text) = dead_planner_output(ctx, uid) {
@@ -777,12 +807,20 @@ fn rate_limited_retry(ctx: &Ctx, unit: &mut Unit, uid: &str) -> Option<u64> {
 /// A recorded split retry: wait out the backoff, then respawn the planner
 /// (which drops the stale receipt) with a fresh clock. Returns true when the
 /// caller should stop here — waiting units are never parked, even past the
-/// hard cap.
-fn retry_split(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64) -> bool {
+/// hard cap. A due retry at the planner cap staggers its launch instead:
+/// `split_retry_at` moves forward and the unit keeps reporting true.
+fn retry_split(ctx: &Ctx, unit: &mut Unit, uid: &str, now: u64, live: usize, cap: usize) -> bool {
     let Some(at) = unit.split_retry_at else {
         return false;
     };
     if now < at {
+        return true;
+    }
+    if live >= cap {
+        unit.split_retry_at = Some(now + SPLIT_LAUNCH_STAGGER);
+        ctx.log(&format!(
+            "split-launch-deferred {uid}: {cap} split planners already running"
+        ));
         return true;
     }
     unit.split_retry_at = None;

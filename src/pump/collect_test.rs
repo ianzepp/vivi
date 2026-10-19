@@ -35,6 +35,7 @@ fn planner_cfg() -> PumpConfig {
             run: String::from("plan-it {charter} --quiet"),
             charter: String::from("/charter/path.md"),
             split_hard_cap: 1500,
+            planners_max: 3,
             split_timeout_present: false,
         },
         ..PumpConfig::default()
@@ -661,6 +662,41 @@ fn a_splitting_unit_with_a_written_plan_is_left_to_ingest() {
     assert_eq!(collect(&ctx, &mut st), None);
     assert_eq!(st.units.get("u-1").unwrap().status, Status::Splitting);
     assert!(!exceptions(&ctx).contains("split-no-answer"));
+}
+
+#[test]
+fn a_due_split_retry_defers_when_the_planner_cap_is_full() {
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            planners_max: 1,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    let mut waiting = unit(Status::Splitting, None, None);
+    waiting.split_retry_at = Some(T0);
+    put(&mut st, "u-2", waiting);
+    host.advance(1);
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    let u = st.units.get("u-2").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.split_retry_at, Some(T0 + 61));
+    assert!(
+        host.spawned().is_empty(),
+        "a full planner cap starts no planner: {:?}",
+        host.spawned()
+    );
+    assert!(
+        host.logs().iter().any(|line| line.contains(
+            "split-launch-deferred u-2: 1 split planners already running"
+        )),
+        "{:?}",
+        host.logs()
+    );
 }
 
 #[test]

@@ -331,6 +331,49 @@ fn a_persistent_old_blocking_root_goes_to_the_resplit_planner() {
 }
 
 #[test]
+fn a_burst_blocker_pass_starts_no_more_than_the_planner_cap() {
+    let dir = tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: String::from("next"),
+        planner: PlannerConfig {
+            run: String::from("plan-resplit {charter} --quiet"),
+            planners_max: 2,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    host.set_now(T0);
+    let mut st = State::default();
+    let uids: Vec<String> = (1..=15).map(|index| format!("r-{index}")).collect();
+    let handles: Vec<&str> = uids.iter().map(String::as_str).collect();
+    st.needs
+        .insert(String::from("r"), record("units", &handles));
+    for uid in &uids {
+        let mut u = unit("r", Status::Stuck, T0 - 3 * 3600);
+        u.history
+            .push(last_attempt("finished/agent exit 1", "agent exited 1"));
+        st.units.insert(uid.clone(), u);
+    }
+
+    check(&ctx, &mut st);
+
+    assert_eq!(host.spawned().len(), 2, "cap 2: {:?}", host.spawned());
+    let deferred = st
+        .units
+        .values()
+        .filter(|u| u.split_retry_at == Some(T0 + 60))
+        .count();
+    assert_eq!(deferred, 13, "13 units stagger their launch");
+    assert!(
+        st.units
+            .values()
+            .all(|u| u.status == Status::Splitting),
+        "every unit went to the split path"
+    );
+}
+
+#[test]
 fn a_young_persistent_root_waits() {
     let (_dir, ctx, host) = response_setup();
     host.set_now(T0);

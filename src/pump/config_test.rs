@@ -52,6 +52,7 @@ push_since   = "30m"
 run     = "claude -p --model claude-sonnet-5-5 --permission-mode bypassPermissions --append-system-prompt-file {charter}"
 charter = "/mnt/agents/pump/planner-charter.md"
 split_hard_cap = 5400
+planners_max = 5
 
 [pump.dispatch]
 lanes        = [{ model = "deepseek/deepseek-flash", cap = 30 }, { model = "zai/glm-5.3-flash", cap = 10 }]
@@ -148,6 +149,7 @@ fn a_minimal_pump_table_takes_every_default() {
     assert_eq!(cfg.planner.run, "");
     assert_eq!(cfg.planner.charter, "");
     assert_eq!(cfg.planner.split_hard_cap, 5400);
+    assert_eq!(cfg.planner.planners_max, 3);
     assert!(!cfg.planner.split_timeout_present);
     assert!(cfg.dispatch.lanes.is_empty());
     assert_eq!(cfg.dispatch.last_resort, "");
@@ -228,6 +230,12 @@ fn transient_retry_knobs_parse_and_take_defaults() {
 }
 
 #[test]
+fn planners_max_defaults_to_three() {
+    let cfg = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n\n[pump.planner]\nrun = \"p\"\n");
+    assert_eq!(cfg.planner.planners_max, 3, "absent planners_max is 3");
+}
+
+#[test]
 fn the_full_design_file_block_parses() {
     let mut cfg = pump(&format!("name = \"t\"\n{FULL}"));
     assert_eq!(cfg.branch, "next");
@@ -235,6 +243,8 @@ fn the_full_design_file_block_parses() {
     assert_eq!(cfg.tick, 20);
     assert_eq!(cfg.board.mark, "pump");
     assert_eq!(cfg.board.planners_max, 3);
+    assert_eq!(cfg.planner.split_hard_cap, 5400);
+    assert_eq!(cfg.planner.planners_max, 5, "an explicit planners_max survives parsing");
     assert_eq!(cfg.dispatch.from, Some("next".to_string()));
     assert_eq!(cfg.dispatch_from(), "next");
     assert_eq!(cfg.dispatch.lanes.len(), 2);
