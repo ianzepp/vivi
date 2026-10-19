@@ -61,7 +61,7 @@ impl Rig {
         ))
         .unwrap();
         let provider = LocalProvider::new(&config);
-        let id = PoolId::new("e2e", "wt");
+        let id = PoolId::new("e2e", "", "wt");
         let base = local_branch::base_commit(&Repo::new(&f.repo), None).unwrap();
         let options = CreateOptions {
             slots: Some(2),

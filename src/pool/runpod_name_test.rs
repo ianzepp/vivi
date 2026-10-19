@@ -40,9 +40,9 @@ fn the_mailspace_length_is_what_splits_the_slugs() {
 #[test]
 fn ownership_needs_both_the_mailspace_and_the_pool() {
     let name = sample();
-    assert!(name.is_of(&PoolId::new("My Space", "gpu-big")));
-    assert!(!name.is_of(&PoolId::new("my-space", "gpu")));
-    assert!(!name.is_of(&PoolId::new("my", "space-gpu-big")));
+    assert!(name.is_of(&PoolId::new("My Space", "", "gpu-big")));
+    assert!(!name.is_of(&PoolId::new("my-space", "", "gpu")));
+    assert!(!name.is_of(&PoolId::new("my", "", "space-gpu-big")));
 }
 
 #[test]
@@ -106,8 +106,8 @@ fn a_name_over_the_provider_limit_is_refused() {
     name.pool = "p".repeat(190);
     let err = name.encode().unwrap_err().to_string();
     assert!(err.contains("at most 191"), "{err}");
-    assert!(check_fits(&PoolId::new("ms", &"p".repeat(150))).is_err());
-    assert!(check_fits(&PoolId::new("my-space", "gpu-big")).is_ok());
+    assert!(check_fits(&PoolId::new("ms", "", &"p".repeat(150))).is_err());
+    assert!(check_fits(&PoolId::new("my-space", "", "gpu-big")).is_ok());
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn nonces_are_twelve_hex_digits_and_differ() {
 
 #[test]
 fn the_longest_name_still_fits() {
-    let id = PoolId::new(&"m".repeat(40), &"p".repeat(40));
+    let id = PoolId::new(&"m".repeat(40), "", &"p".repeat(40));
     assert!(check_fits(&id).is_ok());
 }
 

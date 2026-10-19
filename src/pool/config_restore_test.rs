@@ -22,7 +22,7 @@ fn config(restore: &[&str]) -> PoolConfig {
 }
 
 fn id() -> PoolId {
-    PoolId::new("space", "main")
+    PoolId::new("space", "", "main")
 }
 
 #[test]

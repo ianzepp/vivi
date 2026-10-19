@@ -7,7 +7,7 @@ fn pool(toml_text: &str) -> PoolConfig {
 }
 
 fn id() -> PoolId {
-    PoolId::new("space", "main")
+    PoolId::new("space", "", "main")
 }
 
 const HARNESS: &str = "\

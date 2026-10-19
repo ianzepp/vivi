@@ -609,7 +609,7 @@ impl Runner for Version {
 pub fn rig_keyed(slots: u32, runpod: &str, key: &str) -> Rig {
     let config: PoolConfig = toml::from_str(&pool_toml(slots, runpod, key)).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let id = PoolId::new("ms", "gpu");
+    let id = PoolId::new("ms", "", "gpu");
     config.validate(&id).unwrap();
     let account = Ctl(Arc::new(Mutex::new(World::new())));
     let pod = PodShell(Arc::new(Mutex::new(PodState::default())));

@@ -19,7 +19,7 @@ fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
     CreateSpec {
         name: format!("ms-{pool}-slot-{index}"),
         image: String::new(),
-        metadata: slot_metadata(&PoolId::new("ms", pool), index, "main"),
+        metadata: slot_metadata(&PoolId::new("ms", "", pool), index, "main"),
         env: BTreeMap::new(),
         once_env: BTreeMap::new(),
         passthrough_env: vec!["IGNORED".into()],

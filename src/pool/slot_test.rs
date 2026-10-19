@@ -28,12 +28,12 @@ fn machine(
 }
 
 fn pid(pool: &str) -> PoolId {
-    PoolId::new("ms", pool)
+    PoolId::new("ms", "", pool)
 }
 
 #[test]
 fn names_and_metadata() {
-    let id = PoolId::new("My Project", "faber");
+    let id = PoolId::new("My Project", "", "faber");
     assert_eq!(id.mailspace, "my-project");
     assert_eq!(id.slot_name(3), "my-project-faber-slot-3");
     let meta = slot_metadata(&id, 3, "abc");
@@ -155,7 +155,7 @@ fn a_pool_of_the_same_name_in_another_mailspace_is_not_a_member() {
     assert_eq!(ours.len(), 1);
     assert_eq!(ours[0].id, "m1");
     assert_eq!(ours[0].pool, "p");
-    let other = pool_slots(&PoolId::new("other", "p"), &machines);
+    let other = pool_slots(&PoolId::new("other", "", "p"), &machines);
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].id, "m2");
 }

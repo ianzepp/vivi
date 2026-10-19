@@ -600,8 +600,8 @@ fn a_pool_with_no_slots_still_shows_in_status() {
 #[test]
 fn two_mailspaces_with_one_pool_name_on_one_host_never_see_each_other() {
     let host = Fake::default();
-    let mine = PoolId::new("ms", "local");
-    let theirs = PoolId::new("other", "local");
+    let mine = PoolId::new("ms", "", "local");
+    let theirs = PoolId::new("other", "", "local");
     let seed = || Ok((Secret::new("t".into()), "c".repeat(40)));
     create_slots(&host, &config(2), &mine, &fast(), &Progress::silent(), seed).unwrap();
     create_slots(

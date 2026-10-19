@@ -9,7 +9,7 @@ fn spec(pool: &str, index: u32) -> CreateSpec {
     CreateSpec {
         name: format!("ms-{pool}-slot-{index}"),
         image: String::new(),
-        metadata: slot_metadata(&PoolId::new("ms", pool), index, "main"),
+        metadata: slot_metadata(&PoolId::new("ms", "", pool), index, "main"),
         env: BTreeMap::from([("BASE".to_string(), "it's main".to_string())]),
         once_env: BTreeMap::from([("GH_TOKEN".to_string(), "sekrit".to_string())]),
         passthrough_env: Vec::new(),
@@ -124,7 +124,7 @@ fn two_mailspaces_with_one_pool_name_keep_separate_directories_and_marks() {
     let (_tmp, root) = root();
     make(&root, "lanes-a", 1);
     let mut other = spec("lanes-a", 1);
-    other.metadata = slot_metadata(&PoolId::new("other", "lanes-a"), 1, "main");
+    other.metadata = slot_metadata(&PoolId::new("other", "", "lanes-a"), 1, "main");
     create(&root, "other/lanes-a/slot-1", &other).unwrap();
     let found = list(&root).unwrap();
     assert_eq!(found.len(), 2);
