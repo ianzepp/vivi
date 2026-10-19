@@ -962,9 +962,9 @@ fn no_heartbeat_means_no_external_wait() {
     start_gate(&ctx, &mut st);
     assert!(!st.extra.contains_key("external_wait_since"));
     assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
-    assert!(host.logs().iter().any(|line| line.contains(
-        "external gate runner heartbeat missing; not waiting for results_dir"
-    )));
+    assert!(host.logs().iter().any(|line| {
+        line.contains("external gate runner heartbeat missing; not waiting for results_dir")
+    }));
     drop(dir);
 }
 
@@ -1008,9 +1008,9 @@ fn a_stale_heartbeat_does_not_wait() {
     start_gate(&ctx, &mut st);
     assert!(!st.extra.contains_key("external_wait_since"));
     assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
-    assert!(host.logs().iter().any(|line| line.contains(
-        "external gate runner heartbeat stale; not waiting for results_dir"
-    )));
+    assert!(host.logs().iter().any(|line| {
+        line.contains("external gate runner heartbeat stale; not waiting for results_dir")
+    }));
     drop(dir);
 }
 
