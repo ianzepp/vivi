@@ -164,6 +164,30 @@ pub fn agent_exit(receipt: &str) -> Option<i32> {
     }
 }
 
+/// The agent's wall-clock seconds from the pool's summary line: the number
+/// after `agent exit <n> in <m>s` or `agent exit <n> after <m>s`.
+#[must_use]
+pub fn agent_secs(text: &str) -> Option<u64> {
+    let (_, rest) = text.split_once(EXIT_MARKER)?;
+    let rest = rest
+        .trim_start()
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '-');
+    for marker in [" in ", " after "] {
+        if let Some(after) = rest.strip_prefix(marker) {
+            let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+            return digits.parse().ok();
+        }
+    }
+    None
+}
+
+/// The dispatch time in the pool's summary line: `started from <digits>`.
+fn started_from(text: &str) -> Option<u64> {
+    let (_, rest) = text.split_once("started from ")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// The joined text of the stderr and runner-log tail sections of a task
 /// receipt: evidence scans that must not read the agent's own message
 /// section read this instead of the whole receipt.
@@ -235,10 +259,17 @@ enum Branch {
 struct Facts {
     uid: String,
     attempt: u32,
-    model: String,
-    pool: String,
-    target: String,
+    need: String,
     task: Option<String>,
+    actor: String,
+    role: String,
+    pool: String,
+    slot: Option<String>,
+    model: String,
+    start: Option<u64>,
+    end: u64,
+    agent_secs: Option<u64>,
+    target: String,
     branch: Option<String>,
     base: String,
     shape: Branch,
@@ -284,13 +315,24 @@ fn gather(ctx: &Ctx, tctx: &Ctx, st: &State, uid: &str, base: &str, ending: &End
         let task = unit.task.as_deref()?;
         Some(receipt_full(ctx, task))
     });
+    let agent_secs = receipt.as_deref().and_then(agent_secs);
+    let start = unit
+        .since_dispatch
+        .or_else(|| receipt.as_deref().and_then(started_from));
     Facts {
         uid: uid.to_owned(),
         attempt: unit.attempts,
-        model: unit.model.clone().unwrap_or_else(|| "None".to_owned()),
-        pool: unit.pool.clone().unwrap_or_else(|| "?".to_owned()),
-        target: unit.target_id().to_owned(),
+        need: unit.need.clone(),
         task: unit.task.clone(),
+        actor: ctx.actor.clone(),
+        role: ctx.cfg.to.clone(),
+        pool: unit.pool.clone().unwrap_or_else(|| "?".to_owned()),
+        slot: unit.slot.clone(),
+        model: unit.model.clone().unwrap_or_else(|| "None".to_owned()),
+        start,
+        end: ctx.now(),
+        agent_secs,
+        target: unit.target_id().to_owned(),
         branch: unit.branch.clone(),
         base: base.to_owned(),
         shape,
@@ -450,10 +492,12 @@ fn slug(label: &str) -> String {
 
 /// The text of the record.
 fn compose(facts: &Facts) -> String {
-    let mut out = format!(
-        "pump: attempt record\nunit: {}  attempt: {}  model: {}  pool: {}  target: {}\noutcome: {}\n",
-        facts.uid, facts.attempt, facts.model, facts.pool, facts.target, facts.label
-    );
+    let mut out = String::from("pump: attempt record\n");
+    out.push_str(&header_block(facts));
+    out.push_str(&format!(
+        "unit: {}  attempt: {}  model: {}  pool: {}  target: {}\n",
+        facts.uid, facts.attempt, facts.model, facts.pool, facts.target
+    ));
     out.push_str(&format!(
         "branch: {}\n",
         branch_line(facts.branch.as_deref(), &facts.shape)
@@ -473,6 +517,50 @@ fn compose(facts: &Facts) -> String {
     out.push_str("hand's final message:\n");
     out.push_str(&indent(&facts.message, "(none)"));
     out
+}
+
+/// The machine-readable `key: value` block that opens every record.
+fn header_block(facts: &Facts) -> String {
+    format!(
+        "attempt: {}-a{}\n\
+         need: {}\n\
+         task: {}\n\
+         actor: {}\n\
+         role: {}\n\
+         pool: {}\n\
+         slot: {}\n\
+         model: {}\n\
+         start: {}\n\
+         end: {}\n\
+         agent-seconds: {}\n\
+         outcome: {}\n",
+        facts.uid,
+        facts.attempt,
+        or_none(Some(&facts.need)),
+        or_none(facts.task.as_deref()),
+        or_none(Some(&facts.actor)),
+        or_none(Some(&facts.role)),
+        or_none(Some(&facts.pool)),
+        or_none(facts.slot.as_deref()),
+        or_none(Some(&facts.model)),
+        secs(facts.start),
+        facts.end,
+        secs(facts.agent_secs),
+        facts.label,
+    )
+}
+
+/// A header value: `none` when it is absent or empty.
+fn or_none(value: Option<&str>) -> &str {
+    match value {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => "none",
+    }
+}
+
+/// A header epoch or second count: decimal, or `none` when absent.
+fn secs(value: Option<u64>) -> String {
+    value.map_or_else(|| String::from("none"), |n| n.to_string())
 }
 
 /// The `branch:` line.

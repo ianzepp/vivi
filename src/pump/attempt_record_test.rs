@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::attempt_record::agent_exit;
+use crate::pump::attempt_record::{agent_exit, agent_secs};
 use crate::pump::board::board;
 use crate::pump::collect::{collect, fail};
 use crate::pump::config::{BoardConfig, DispatchConfig, Kind, PumpConfig, PumpTarget};
@@ -126,12 +126,25 @@ fn a_delivered_attempt_posts_the_full_record_once_and_marks_the_sync() {
         0,
         " src/a.rs | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
     );
-    let mut st = state_with(inflight());
+    let mut unit = inflight();
+    unit.slot = Some(String::from("s1"));
+    let mut st = state_with(unit);
     collect(&ctx, &mut st);
     assert_eq!(st.units["u-1"].status, Status::Delivered);
     let expected = "pump: attempt record\n\
-        unit: u-1  attempt: 1  model: zai/glm  pool: fly4  target: default\n\
+        attempt: u-1-a1\n\
+        need: n1\n\
+        task: 1a2b3c4d\n\
+        actor: none\n\
+        role: hand\n\
+        pool: fly4\n\
+        slot: s1\n\
+        model: zai/glm\n\
+        start: 999940\n\
+        end: 1000000\n\
+        agent-seconds: 12\n\
         outcome: delivered\n\
+        unit: u-1  attempt: 1  model: zai/glm  pool: fly4  target: default\n\
         branch: unit/u-1-a1 (pushed to the target remote, kept)\n\
         task: 1a2b3c4d\n\
         base: next\n\
@@ -641,4 +654,11 @@ fn the_agent_exit_comes_from_the_pool_summary_line() {
     assert_eq!(agent_exit(&receipt(0, "m", "")), Some(0));
     assert_eq!(agent_exit("agent exit 124 after 600s"), Some(124));
     assert_eq!(agent_exit("no summary here"), None);
+}
+
+#[test]
+fn the_agent_seconds_come_from_the_pool_summary_line() {
+    assert_eq!(agent_secs(&receipt(0, "m", "")), Some(12));
+    assert_eq!(agent_secs("agent exit 124 after 600s"), Some(600));
+    assert_eq!(agent_secs("no summary here"), None);
 }
