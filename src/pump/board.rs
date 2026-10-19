@@ -247,6 +247,10 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
 /// dispatch until the prerequisite landed. A prerequisite merely being planned
 /// right now still gates, and gates lift as soon as its plan file exists. An
 /// unreadable dependency read gates nothing.
+///
+/// Within one pass, needs other open needs depend on are planned before their
+/// dependents and before independent needs, so an arrival batch cannot spend
+/// every planner slot on independent work while a shared prerequisite waits.
 pub fn launch_planners(
     ctx: &Ctx,
     st: &mut State,
@@ -256,7 +260,7 @@ pub fn launch_planners(
 ) {
     let skip = read_skip(ctx);
     let gates = planning_gates(ctx, rows);
-    for row in rows {
+    for row in plan_order(rows, &gates) {
         let handle = row.handle.as_str();
         let old = row.date.as_str() < ctx.cfg.board.since.as_str();
         let parked = st.board.planner_failed.iter().any(|seen| seen == handle);
@@ -286,12 +290,27 @@ pub fn launch_planners(
         {
             continue;
         }
-        launch_one(ctx, st, row, replan);
+        launch_one(ctx, st, &row, replan);
         if stop_requested(ctx) {
             ctx.log(STOP_NOTE);
             return;
         }
     }
+}
+
+/// The rows of `launch_planners` reordered: needs some open need still waits
+/// on come first (they unblock everyone behind them), and the `need list`
+/// order is kept everywhere else. Handles that appear in any `blocked_by`
+/// list count as depended on, including dependents whose planner is already
+/// running.
+fn plan_order(rows: &[NeedRow], blocked: &BTreeMap<String, Vec<String>>) -> Vec<NeedRow> {
+    let mut depended_on = BTreeSet::new();
+    for deps in blocked.values() {
+        depended_on.extend(deps.iter().cloned());
+    }
+    let mut ordered = rows.to_vec();
+    ordered.sort_by_key(|row| !depended_on.contains(&row.handle));
+    ordered
 }
 
 /// Prerequisite handles per need, from the backlog graph. Empty rows mean no
