@@ -164,6 +164,7 @@ fn status_lines() {
         created_at: "2026-10-11T10:00:00Z".into(),
         region: "iad".into(),
         arch: Some("arm64".into()),
+        space_mark: None,
     };
     assert_eq!(
         slot(&busy),
@@ -292,6 +293,7 @@ fn scale_lines() {
         created_at: String::new(),
         region: String::new(),
         arch: None,
+        space_mark: None,
     };
     assert_eq!(skipped(&s), "skipped p ms-p-slot-4 m4 busy 3f2a");
     s.task = None;
@@ -396,6 +398,7 @@ fn reset_lines_name_the_origin_base() {
         created_at: "2026-10-11T10:00:00Z".into(),
         region: "iad".into(),
         arch: None,
+        space_mark: None,
     };
     assert_eq!(
         slot(&named),

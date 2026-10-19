@@ -80,6 +80,7 @@ pub fn open_slot(
             created_at: opened.created_at,
             region: String::new(),
             arch: None,
+            space_mark: None,
         },
         hold: opened.hold,
         hardware: opened.hardware,

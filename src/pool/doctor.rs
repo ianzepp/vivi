@@ -284,6 +284,7 @@ pub fn run(inputs: &Inputs) -> Report {
     };
     checks.extend(doctor_pool::checks(&PoolFacts {
         pool: &inputs.id.pool,
+        space: &inputs.id.mailspace,
         config: config.validate(inputs.id).map_err(|e| e.to_string()),
         max: config.slots,
         slots,
