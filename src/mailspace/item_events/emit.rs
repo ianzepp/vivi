@@ -109,18 +109,6 @@ impl Mailspace {
         let Some(item) = held_item(storage, &before.content_id)? else {
             return Ok(None);
         };
-        // A want's own `sent` record moving into `needs` is `want promote`,
-        // never a reopen: a want reopens into `wants`, so the folder alone
-        // cannot tell the two apart by role.
-        let kind = if kind == ItemEventKind::Reopened
-            && before.local_role == "sent"
-            && item.kind == "want"
-            && role == "needs"
-        {
-            ItemEventKind::Promoted
-        } else {
-            kind
-        };
         let head = self.item_head(storage, &item)?;
         if !self.may_close(&item, identity) {
             return refuse_assignee_reopen(before, kind, head, &item);
