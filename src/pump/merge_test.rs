@@ -1256,3 +1256,98 @@ fn an_absent_index_lock_is_ok_and_creates_nothing() {
     assert!(!ctx.repo.join(".git/index.lock").exists());
     assert!(host.logs().is_empty(), "{:?}", host.logs());
 }
+
+/// A context whose merge config maps two scopes to check commands, on top of
+/// the usual shared check.
+fn setup_scoped() -> (TempDir, Ctx, Arc<FakeHost>) {
+    let (dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.merge.checks_for.insert(
+        String::from("corpus/**"),
+        vec![String::from("./corpus-check.sh")],
+    );
+    cfg.merge.checks_for.insert(
+        String::from("locale/**"),
+        vec![String::from("./locale-check.sh")],
+    );
+    ctx.cfg = Arc::new(cfg);
+    (dir, ctx, host)
+}
+
+#[test]
+fn scoped_checks_run_only_for_units_whose_scope_matches() {
+    let (_dir, ctx, host) = setup_scoped();
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let mut unit = job();
+    unit.write_scope = vec![String::from("corpus/x.fab")];
+    let result = merge_work(&ctx, &unit);
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let cmds = host.commands();
+    let shared = index_of(&cmds, "cargo test --lib");
+    let scoped = index_of(&cmds, "./corpus-check.sh");
+    let proof = index_of(&cmds, "./proof-u1.sh");
+    assert!(shared < scoped && scoped < proof, "{cmds:?}");
+    assert!(
+        !cmds.iter().any(|c| c.contains("./locale-check.sh")),
+        "{cmds:?}"
+    );
+
+    let (_dir, ctx, host) = setup_scoped();
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let mut wide = job();
+    wide.write_scope = vec![String::new()];
+    let result = merge_work(&ctx, &wide);
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    let cmds = host.commands();
+    let proof = index_of(&cmds, "./proof-u1.sh");
+    assert!(index_of(&cmds, "./corpus-check.sh") < proof, "{cmds:?}");
+    assert!(index_of(&cmds, "./locale-check.sh") < proof, "{cmds:?}");
+}
+
+#[test]
+fn no_scoped_check_runs_when_no_scope_matches() {
+    let (_dir, ctx, host) = setup_scoped();
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    assert_eq!(
+        host.commands(),
+        vec![
+            "git merge --abort",
+            "git fetch origin next",
+            "git checkout -q next",
+            "git reset -q --hard origin/next",
+            "git fetch origin refs/heads/work/u1:refs/remotes/origin/work/u1",
+            "git merge-base --is-ancestor origin/work/u1 origin/next",
+            &format!(
+                "git {IDENTITY} merge --no-ff --no-edit -m 'merge u1: A unit (need n1)' origin/work/u1"
+            )[..],
+            "git diff --name-only HEAD~1 HEAD",
+            "cargo test --lib",
+            "./proof-u1.sh",
+            "git status --porcelain",
+            "git fetch -q origin next",
+            "git merge-base --is-ancestor origin/next HEAD",
+            "git push origin HEAD:refs/heads/next",
+            "git rev-parse HEAD",
+        ]
+    );
+}
+
+#[test]
+fn a_failing_scoped_check_is_proof_failed() {
+    let (_dir, ctx, host) = setup_scoped();
+    host.reply("./corpus-check.sh", 1, "error[E0308]: mismatched types\n");
+    let mut unit = job();
+    unit.write_scope = vec![String::from("corpus/x.fab")];
+    let result = merge_work(&ctx, &unit);
+    assert_eq!(result.ok, Some(false), "{result:?}");
+    assert_eq!(result.why.as_deref(), Some("proof-failed"));
+    let detail = result.detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("./corpus-check.sh"), "{detail:?}");
+    assert!(
+        !host.commands().iter().any(|c| c.contains("./proof-u1.sh")),
+        "{:?}",
+        host.commands()
+    );
+}
