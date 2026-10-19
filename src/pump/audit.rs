@@ -121,27 +121,28 @@ pub fn start_audit(
     };
     run.pool = Some(pool);
     let brief = audit_brief(ctx, tip, output_tail, new, residual, prior);
-    let _ = dispatch_audit(ctx, &mut run, Some(&brief), new.len(), residual.len());
+    dispatch_audit(ctx, &mut run, Some(&brief), new.len(), residual.len());
     store(st, Some(run));
 }
 
-/// Write the brief (when one is given), send the audit task and dispatch it;
-/// `false` means no audit is running and the run is armed for a retry. A
-/// retry passes no brief and reuses the one already on disk.
+/// Write the brief (when one is given), send the audit task and dispatch it.
+/// An attempt that leaves no audit running arms the run for a retry. A retry
+/// passes no brief and reuses the one already on disk.
 fn dispatch_audit(
     ctx: &Ctx,
     run: &mut AuditRun,
     brief: Option<&str>,
     new: usize,
     residual: usize,
-) -> bool {
+) {
     let role = ctx.routing.auditor();
     let to = role.map_or_else(|| ctx.cfg.to.clone(), |role| role.name.clone());
     let Some(pool) = run.pool.clone() else {
-        return retry_later(ctx, run);
+        retry_later(ctx, run);
+        return;
     };
     let Some(path) = audit_brief_file(ctx, brief) else {
-        return false;
+        return;
     };
     let failures = new + residual;
     let subject = format!(
@@ -160,7 +161,8 @@ fn dispatch_audit(
     );
     let Some(task) = parse_created_handle(&out.text) else {
         ctx.log(&format!("audit task send failed: {}", last_line(&out.text)));
-        return retry_later(ctx, run);
+        retry_later(ctx, run);
+        return;
     };
     let args = audit_dispatch_args(ctx, run, &pool, &task, role.is_none());
     let out = ctx.vivi(&args, 180);
@@ -173,7 +175,8 @@ fn dispatch_audit(
             ),
             120,
         ));
-        return retry_later(ctx, run);
+        retry_later(ctx, run);
+        return;
     }
     run.task = Some(task.clone());
     run.at = ctx.now();
@@ -183,7 +186,6 @@ fn dispatch_audit(
         "audit started for {} ({new} new, {residual} residual) task={task}",
         run.need
     ));
-    true
 }
 
 /// The `pool dispatch` line for the audit task. A real auditor role supplies
@@ -225,7 +227,7 @@ fn audit_brief_file(ctx: &Ctx, brief: Option<&str>) -> Option<PathBuf> {
 }
 
 /// Count one attempt that produced no running audit and arm the retry.
-fn retry_later(ctx: &Ctx, run: &mut AuditRun) -> bool {
+fn retry_later(ctx: &Ctx, run: &mut AuditRun) {
     run.task = None;
     run.fails = run.fails.saturating_add(1);
     run.retry_at = Some(ctx.now().saturating_add(RETRY_SECONDS));
@@ -233,7 +235,6 @@ fn retry_later(ctx: &Ctx, run: &mut AuditRun) -> bool {
         "audit retry {}/{}s for {}",
         run.fails, RETRY_SECONDS, run.need
     ));
-    false
 }
 
 /// Log the last 200 characters of a command reply as one line.
