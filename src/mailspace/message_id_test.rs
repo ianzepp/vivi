@@ -141,7 +141,7 @@ fn every_compose_path_mints_message_ids_on_the_mailspace_domain() {
         .save_rule("mind", "keep everything", "keep all mail", false)
         .unwrap();
     mailspace
-        .save_memo("mind", "memo subject", "memo body")
+        .save_memo("mind", "memo subject", "memo body", &[])
         .unwrap();
 
     assert_path_wrote_letters(&mailspace, "mind", "sent", 2); // send + note

@@ -400,7 +400,12 @@ fn handle_memo_command(command: &MemoCommand) -> Result<(), VivariumError> {
                 command.body.as_deref(),
                 command.body_file.as_deref(),
             )?;
-            let handle = mailspace.save_memo(&command.for_identity, &command.subject, &body)?;
+            let handle = mailspace.save_memo(
+                &command.for_identity,
+                &command.subject,
+                &body,
+                &command.tags,
+            )?;
             println!("saved {handle}");
         }
         MemoCommand::Absorb(command) => absorb_record("memo", command)?,

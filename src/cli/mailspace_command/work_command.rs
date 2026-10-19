@@ -66,6 +66,10 @@ pub struct MemoSaveCommand {
     #[arg(long)]
     pub body_file: Option<PathBuf>,
 
+    /// Tag slug (repeatable)
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
+
     /// Project root to use
     #[arg(long)]
     pub project: Option<PathBuf>,

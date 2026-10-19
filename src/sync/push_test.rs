@@ -52,7 +52,7 @@ fn memos_drafts_trash_oversize_and_foreign_ids_stay_home_and_are_reported() {
     let a = alice();
     let client = a.client(&server);
     a.mailspace
-        .save_memo("mind", "a memo", "memo body")
+        .save_memo("mind", "a memo", "memo body", &[])
         .unwrap();
     put(&a, "mind", "drafts", None, &eml("a-draft", None));
     put(&a, "mind", "trash", None, &eml("in-the-trash", None));
