@@ -121,13 +121,7 @@ pub fn start_audit(
     };
     run.pool = Some(pool);
     let brief = audit_brief(ctx, tip, output_tail, new, residual, prior);
-    let _ = dispatch_audit(
-        ctx,
-        &mut run,
-        Some(&brief),
-        new.len(),
-        residual.len(),
-    );
+    let _ = dispatch_audit(ctx, &mut run, Some(&brief), new.len(), residual.len());
     store(st, Some(run));
 }
 

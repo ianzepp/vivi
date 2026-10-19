@@ -47,7 +47,11 @@ fn auditor_routing() -> RoleRouting {
 /// The vivi replies an audit start needs: a free slot, a task handle and a
 /// dispatch receipt.
 fn ready(host: &FakeHost) {
-    host.reply("pool status --porcelain", 0, "slot apool bridge slot-1 free");
+    host.reply(
+        "pool status --porcelain",
+        0,
+        "slot apool bridge slot-1 free",
+    );
     host.reply("task send", 0, "created 1234abcd");
     host.reply("pool dispatch", 0, "dispatched 1234abcd to apool");
 }
@@ -162,7 +166,15 @@ fn start_audit_falls_back_to_the_gate_style_worker() {
     let (_dir, ctx, host) = setup(None);
     ready(&host);
     let mut st = State::default();
-    start_audit(&ctx, &mut st, TIP, "tail", &[String::from("gate::a_fails")], &[], None);
+    start_audit(
+        &ctx,
+        &mut st,
+        TIP,
+        "tail",
+        &[String::from("gate::a_fails")],
+        &[],
+        None,
+    );
 
     let dispatch = dispatch_command(&host);
     assert!(dispatch.contains("--read-only"), "{dispatch}");
