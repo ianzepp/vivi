@@ -7,7 +7,9 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 use crate::pump::config::{GateConfig, PumpConfig, PumpTarget};
-use crate::pump::gate::{external_gates, finish_gate, hold_cycle, parse_failing, start_gate};
+use crate::pump::gate::{
+    external_gates, finish_gate, hold_cycle, parse_failing, start_gate, target_deaths,
+};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{GateRecord, GateRun, State, Status, Unit};
 
@@ -130,6 +132,22 @@ fn parse_failing_falls_back_to_crate_and_path_pairs_sorted_and_deduplicated() {
             String::from("zed tests::x"),
         ])
     );
+}
+
+#[test]
+fn target_deaths_reads_the_marker_block_and_parse_failing_skips_them() {
+    let mixed = "rc=101\nFAILING-BEGIN\nvivi pump::a\nTARGET-DIED radix-cli\nFAILING-END\n\
+                 error: test failed\n";
+    assert_eq!(
+        parse_failing(mixed),
+        Some(vec![String::from("vivi pump::a")])
+    );
+    assert_eq!(target_deaths(mixed), vec![String::from("radix-cli")]);
+
+    let only_dead = "rc=101\nFAILING-BEGIN\n  TARGET-DIED radix-cli  \nFAILING-END\n\
+                     120 passed; failures: (vivi pump::ghost)\n";
+    assert_eq!(parse_failing(only_dead), Some(vec![]));
+    assert_eq!(target_deaths(only_dead), vec![String::from("radix-cli")]);
 }
 
 #[test]
