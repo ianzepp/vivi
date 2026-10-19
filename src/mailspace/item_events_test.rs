@@ -1,4 +1,4 @@
-use super::property::{PropertyKind, carries_verdict, parse_property_event};
+use super::property::{PropertyKind, carries_verdict, parse_property_event, verdict_report_item};
 use super::*;
 use crate::mailspace::SendRequest;
 
@@ -117,6 +117,53 @@ fn a_letter_carries_verdict_only_with_the_verdict_headers() {
         "a repo header without '=' carries nothing"
     );
     assert!(!carries_verdict(&letter("X-Vivi-Note: hi\r\n")));
+}
+
+#[test]
+fn a_verdict_report_letter_names_the_live_item_it_replies_to() {
+    let (_tmp, mailspace) = space();
+    let (task, _) = send(&mailspace, "task", "hand");
+    let storage = mailspace.storage().unwrap();
+    let row = storage
+        .message_by_id(&storage.resolve_message_token(&task).unwrap())
+        .unwrap()
+        .unwrap();
+    // The row's `message_id` is a local handle; its RFC `Message-ID` is the
+    // normalized one the reply letter names.
+    let rfc_id = row
+        .normalized_message_id
+        .clone()
+        .expect("a held Message-ID");
+    let report = |headers: String| {
+        format!(
+            "From: hand@aaaaaaaa.local\r\nTo: mind@aaaaaaaa.local\r\nSubject: Re: x\r\n\
+             Message-ID: <rep-1@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n{headers}\r\n\r\nbody\r\n"
+        )
+        .into_bytes()
+    };
+    let held = verdict_report_item(
+        &storage,
+        &report(format!(
+            "In-Reply-To: <{}>\r\nX-Vivi-Verdict: fixed\r\n",
+            rfc_id
+        )),
+    )
+    .unwrap();
+    assert_eq!(held.as_deref(), Some(row.content_id.as_str()));
+    // Replies to a held row but carries no verdict headers.
+    assert_eq!(
+        verdict_report_item(&storage, &report(format!("In-Reply-To: <{rfc_id}>\r\n"))).unwrap(),
+        None
+    );
+    // Carries verdict headers but replies to a row nothing here holds.
+    assert_eq!(
+        verdict_report_item(
+            &storage,
+            &report("In-Reply-To: <nope@x.test>\r\nX-Vivi-Verdict: fixed\r\n".into()),
+        )
+        .unwrap(),
+        None
+    );
 }
 
 /// The event letters held for `item`, oldest first, as `(kind, prev count)`.

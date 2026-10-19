@@ -230,6 +230,30 @@ pub(super) fn carries_verdict(bytes: &[u8]) -> bool {
     !parse_letter_verdicts(bytes).is_empty()
 }
 
+/// The live row a verdict-carrying report letter replies to: the item the
+/// report settles, whose rows take the report's verdict metadata. `None`
+/// when the letter carries no verdict headers, has no `In-Reply-To`, or
+/// no live row holds the parent.
+pub(super) fn verdict_report_item(
+    storage: &Storage,
+    bytes: &[u8],
+) -> Result<Option<String>, VivariumError> {
+    if !carries_verdict(bytes) {
+        return Ok(None);
+    }
+    let Some(parent) = MessageParser::default().parse(bytes).and_then(|parsed| {
+        parsed
+            .in_reply_to()
+            .as_text()
+            .and_then(normalize_message_id)
+    }) else {
+        return Ok(None);
+    };
+    Ok(storage
+        .live_message_by_rfc_id(&parent)?
+        .map(|item| item.content_id))
+}
+
 /// Store the verdict metadata the letters held for `item` carry: letters
 /// from a sender that speaks for the item count, the newest value per key
 /// by `(instant, Message-ID)` wins, and the winners land — the same keys a
