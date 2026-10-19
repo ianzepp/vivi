@@ -5,7 +5,7 @@ use std::fs;
 use tempfile::tempdir;
 
 use crate::pump::brief::{DEFAULT_HAND_RULES, brief_for, gate_brief, hand_rules};
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{Generated, PumpConfig};
 use crate::pump::host::test_ctx;
 use crate::pump::state::{Attempt, Unit};
 
@@ -128,6 +128,56 @@ fn brief_for_an_empty_proof_says_shared_checks_only() {
     assert!(
         text.contains("PROOF (each must exit 0):\n- (no unit proof; the shared checks only)\n")
     );
+}
+
+/// A [`PumpConfig`] carrying one generated-file declaration.
+fn cfg_with_generated() -> PumpConfig {
+    let mut cfg = PumpConfig::default();
+    cfg.merge.generated.push(Generated {
+        paths: vec!["scripta/e2e-coverage-ledger.toml".to_owned()],
+        regenerate: "./regen-ledger.sh".to_owned(),
+        ..Generated::default()
+    });
+    cfg
+}
+
+/// The WRITE SCOPE section of a brief: from its heading to the PROOF heading.
+fn scope_section(text: &str) -> &str {
+    let start = text.find("WRITE SCOPE:").unwrap();
+    &text[start..text.find("PROOF (each must exit 0):").unwrap()]
+}
+
+#[test]
+fn a_fix_units_brief_lists_generated_paths_as_writable() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), cfg_with_generated());
+    let text = brief_for(&ctx, "pumpfix-q1-abc", &sample_unit());
+    let scope = scope_section(&text);
+    assert!(scope.contains("\n- scripta/e2e-coverage-ledger.toml\n"));
+    assert!(scope.contains("\n- src/a.rs\n- src/b.rs\n"));
+}
+
+#[test]
+fn a_plain_units_brief_does_not_list_generated_paths() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), cfg_with_generated());
+    let text = brief_for(&ctx, "56f1d749-2", &sample_unit());
+    assert!(!scope_section(&text).contains("scripta/e2e-coverage-ledger.toml"));
+    assert!(!text.contains("scripta/e2e-coverage-ledger.toml"));
+}
+
+#[test]
+fn a_repair_units_brief_lists_generated_paths_as_writable() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), cfg_with_generated());
+    let unit = Unit {
+        repairs: Some(String::from("q1")),
+        ..sample_unit()
+    };
+    let text = brief_for(&ctx, "56f1d749-2", &unit);
+    let scope = scope_section(&text);
+    assert!(scope.contains("\n- scripta/e2e-coverage-ledger.toml\n"));
+    assert!(scope.contains("\n- src/a.rs\n- src/b.rs\n"));
 }
 
 /// An attempt record.

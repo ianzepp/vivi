@@ -14,6 +14,7 @@ use crate::pump::board::*;
 use crate::pump::config::{BoardConfig, PlannerConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// A context with an operator sender and the `since` cutoff set; default
 /// mark `pump`, three planners, 1800 s plan timeout.
@@ -739,6 +740,42 @@ fn a_board_stamp_in_the_future_skips_the_pass_and_does_not_underflow() {
     board(&ctx, &mut st);
     assert_eq!(st.board.at, ahead);
     assert!(host.commands().is_empty());
+}
+
+#[test]
+fn a_stop_request_ends_the_board_pass_between_needs() {
+    let (_dir, ctx, host) = setup();
+    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
+    store.initialize_control("running").unwrap();
+    store.set_control_mode("stopped").unwrap();
+    host.reply(
+        "need list",
+        0,
+        &list(&[
+            row("n1", "2026-10-15", "One", &[]),
+            row("n2", "2026-10-15", "Two", &[]),
+        ]),
+    );
+    let mut st = State::default();
+    st.board.at = 0;
+
+    board(&ctx, &mut st);
+
+    let shown = host
+        .commands()
+        .iter()
+        .filter(|cmd| cmd.contains("need show"))
+        .count();
+    assert_eq!(shown, 1, "commands: {:?}", host.commands());
+    assert!(planner_spawns(&host) <= 1, "the second need is skipped");
+    assert!(!st.board.planning.contains_key("n2"));
+    assert!(
+        host.logs().contains(&String::from(
+            "board: control stop requested; finishing the pass early"
+        )),
+        "logs: {:?}",
+        host.logs()
+    );
 }
 
 #[test]
