@@ -14,7 +14,7 @@ use crate::pump::gate::{
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobStatus, dispatch_pending};
 use crate::pump::state::{GateRecord, GateRun, State, Status, Unit};
-use crate::routing::{RoleRouting, RoutedRole};
+use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 /// The fake clock's start.
 const T0: u64 = 1_000_000;
@@ -107,7 +107,17 @@ fn with_release_role(ctx: Ctx) -> Ctx {
             model: None,
             models: Vec::new(),
         }],
-        pools: std::collections::BTreeMap::new(),
+        pools: std::collections::BTreeMap::from([(
+            String::from("flygate"),
+            RoutedPool {
+                slots: 1,
+                provider: String::from("local"),
+                fallback: None,
+                caps: std::collections::BTreeMap::new(),
+                models: Vec::new(),
+                has_bands: false,
+            },
+        )]),
     })
 }
 
