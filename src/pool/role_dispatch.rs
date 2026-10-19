@@ -207,6 +207,91 @@ pub fn standing_prompt(role: &str, charter: &str, pool_rules: &str, bridge: bool
     )
 }
 
+/// The digest seat's window: what one digest run covers and the memo subject
+/// it must file. The window starts at the pump's previous run, or one
+/// `first_run_secs` back on the first run, and always ends at `now`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DigestBrief {
+    /// The memo subject: `digest YYYY-MM-DD (<window>)`, fixed for the day.
+    pub subject: String,
+    /// The window length as a human label, from
+    /// [`crate::mailspace::memos::window_label`].
+    pub window_label: String,
+    /// The earliest moment the digest covers.
+    pub start: chrono::DateTime<chrono::Utc>,
+    /// The moment the run was cut: the latest moment it covers.
+    pub end: chrono::DateTime<chrono::Utc>,
+}
+
+/// Cut one digest window and name its memo. Pure: no I/O. The start is the
+/// previous run, else `first_run_secs` before `now`, clamped to never lie
+/// after `now` (a stale clock must not open a negative window).
+#[must_use]
+pub fn digest_brief(
+    now: chrono::DateTime<chrono::Utc>,
+    last_run: Option<chrono::DateTime<chrono::Utc>>,
+    first_run_secs: u64,
+) -> DigestBrief {
+    let start = last_run
+        .unwrap_or(now - chrono::Duration::seconds(first_run_secs as i64))
+        .min(now);
+    let window_label =
+        crate::mailspace::memos::window_label((now - start).num_seconds().max(0) as u64);
+    let subject = format!("digest {} ({})", now.format("%Y-%m-%d"), window_label);
+    DigestBrief {
+        subject,
+        window_label,
+        start,
+        end: now,
+    }
+}
+
+/// The digest seat's instructions: what to read in the window and the one
+/// memo it files. Pure: no I/O, the seat does the reading.
+#[must_use]
+pub fn digest_run_text(
+    brief: &DigestBrief,
+    project_root: &std::path::Path,
+    role: &str,
+) -> String {
+    let root = project_root.display();
+    format!(
+        "## Digest run\n\
+         \n\
+         Window: {} to {} ({}).\n\
+         \n\
+         Project root: {root}\n\
+         \n\
+         Run every `vivi` command below with `--project {root}`.\n\
+         \n\
+         Cover everything the window holds: every need, task and want \
+         created, replied to or closed in it (`vivi board`, the `vivi need`, \
+         `vivi task` and `vivi want` lists, and the shows of the items those \
+         lists name), plus pump activity -- merges, gate results, \
+         quarantines, exceptions, and failed or timed-out units. Read \
+         `.vivi/pump/status.txt`, `.vivi/pump/exceptions.txt`, and the gate \
+         results under `.vivi/pump/`.\n\
+         \n\
+         When you see a pattern (repeated failures, a cluster of related \
+         bugs, a flaky gate), read the underlying records and add that \
+         context to the digest.\n\
+         \n\
+         File exactly one memo, then stop:\n\
+         \n\
+         ```\n\
+         vivi --project {root} memo save --for {role} --subject \"{}\" \
+         --tag digest --body-file <path>\n\
+         ```\n\
+         \n\
+         Files nothing else: no needs, tasks, wants or mail. The memo save \
+         is your only write.\n",
+        brief.start.to_rfc3339(),
+        brief.end.to_rfc3339(),
+        brief.window_label,
+        brief.subject,
+    )
+}
+
 #[cfg(test)]
 #[path = "role_dispatch_test.rs"]
 mod tests;

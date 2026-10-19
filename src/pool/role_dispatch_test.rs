@@ -1,4 +1,5 @@
 use super::*;
+use chrono::TimeZone;
 
 use crate::pool::slot::PoolId;
 
@@ -377,4 +378,40 @@ fn resolve_leaves_the_pool_config_alone() {
     config
         .validate(&PoolId::new("space", "", "bridge"))
         .unwrap();
+}
+
+#[test]
+fn digest_brief_first_run_uses_the_default_window() {
+    let now = chrono::Utc.with_ymd_and_hms(2026, 10, 19, 12, 0, 0).unwrap();
+    let brief = digest_brief(now, None, 86_400);
+    assert_eq!(brief.subject, "digest 2026-10-19 (1d)");
+    assert_eq!(brief.window_label, "1d");
+    assert_eq!(brief.start, now - chrono::Duration::seconds(86_400));
+    assert_eq!(brief.end, now);
+}
+
+#[test]
+fn digest_brief_subsequent_run_covers_since_last() {
+    let now = chrono::Utc.with_ymd_and_hms(2026, 10, 19, 12, 0, 0).unwrap();
+    let last = now - chrono::Duration::seconds(3 * 86_400);
+    let brief = digest_brief(now, Some(last), 86_400);
+    assert_eq!(brief.window_label, "3d");
+    assert_eq!(brief.start, last);
+}
+
+#[test]
+fn digest_run_text_names_contract() {
+    let now = chrono::Utc.with_ymd_and_hms(2026, 10, 19, 12, 0, 0).unwrap();
+    let brief = digest_brief(now, None, 86_400);
+    let root = std::path::Path::new("/tmp/demo");
+    let text = digest_run_text(&brief, root, "digest");
+    assert!(text.contains("## Digest run"), "got: {text}");
+    assert!(text.contains(&brief.subject), "got: {text}");
+    assert!(text.contains(&brief.start.to_rfc3339()), "got: {text}");
+    assert!(text.contains(&brief.end.to_rfc3339()), "got: {text}");
+    assert!(text.contains("--tag digest"), "got: {text}");
+    assert!(text.contains("--body-file"), "got: {text}");
+    assert!(text.contains("/tmp/demo"), "got: {text}");
+    assert!(text.contains("status.txt"), "got: {text}");
+    assert!(text.contains("only write"), "got: {text}");
 }
