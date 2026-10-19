@@ -25,7 +25,7 @@ pub enum PumpRead {
 /// One read of `pump.db`.
 pub struct Snapshot {
     state: State,
-    exceptions: usize,
+    exceptions: Vec<(u64, String, String, String)>,
 }
 
 /// One need's pump state.
@@ -75,10 +75,7 @@ pub fn read(home: &Path) -> Result<PumpRead, VivariumError> {
         )));
     }
     match (store.load(), store.exceptions()) {
-        (Ok(state), Ok(exceptions)) => Ok(PumpRead::Ready(Snapshot {
-            state,
-            exceptions: exceptions.len(),
-        })),
+        (Ok(state), Ok(exceptions)) => Ok(PumpRead::Ready(Snapshot { state, exceptions })),
         (Err(err), _) | (_, Err(err)) => Ok(PumpRead::Unreadable(err.to_string())),
     }
 }
@@ -88,6 +85,12 @@ impl Snapshot {
     #[must_use]
     pub(crate) fn state(&self) -> &State {
         &self.state
+    }
+
+    /// Exception rows, oldest first: `(at, kind, unit, text)`.
+    #[must_use]
+    pub fn exception_rows(&self) -> &[(u64, String, String, String)] {
+        &self.exceptions
     }
 
     /// The pump state for one need, when the pump has planned it.
@@ -144,7 +147,7 @@ impl Snapshot {
             planner_parked: self.state.board.planner_failed.len(),
             units,
             complete,
-            exceptions: self.exceptions,
+            exceptions: self.exceptions.len(),
         }
     }
 

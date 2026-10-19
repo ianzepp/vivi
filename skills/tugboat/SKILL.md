@@ -159,12 +159,14 @@ infrastructure is still live**, not from “a summary appeared.”
 **Both Mind boot modes start with one command: `vivi boot`.** It prints the
 project frame in a single read — seat bindings against observed process state,
 declared cadences and their silence, unabsorbed mail, open handles with
-verdicts, registered goals with register tallies, memos, charter heads, and the
-undispatched backlog already sliced for dispatch. It is read-only, stateless,
+verdicts, registered goals with register tallies, memos, charter heads, the
+undispatched backlog already sliced for dispatch, and (when present) local
+pump/pool state. Coordinating seats see the full pump snapshot; a Hand sees
+only its own unit. It is read-only, stateless,
 and idempotent, so re-running it is free and two runs are comparable. **Do not
 re-derive its sections by hand.** The individual `vivi board` / `vivi mail
-list` / `vivi memo list` / `vivi role list` reads it replaces appear below only
-to say what the digest covers.
+list` / `vivi memo list` / `vivi role list` / `vivi pump status` reads it
+replaces appear below only to say what the digest covers.
 
 Three parts of the frame are not Vivi's to know, and arrive through project
 probes declared in the mailspace config. Where a project declares none, boot

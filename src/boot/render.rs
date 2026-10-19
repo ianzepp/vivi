@@ -10,7 +10,7 @@
 //! no error-swallowing: appending to a `String` cannot fail.
 
 use super::truncate::{CAP_CHARTER_LINES, CAP_PROBE_LINES};
-use super::{BootReport, GoalRow, goal_line, pump_state_line, seat_line};
+use super::{BootReport, GoalRow, goal_line, seat_line};
 
 /// Render the digest.
 #[must_use]
@@ -28,7 +28,7 @@ pub fn to_text(report: &BootReport) -> String {
     loops(&mut out, report);
     unabsorbed(&mut out, report);
     held_unknown(&mut out, report);
-    pump(&mut out, report);
+    super::pump::text::render(&mut out, report);
     handles(&mut out, report);
     goals(&mut out, report);
     rules(&mut out, report);
@@ -151,40 +151,6 @@ fn held_unknown(out: &mut String, report: &BootReport) {
             ),
         );
     }
-}
-
-fn pump(out: &mut String, report: &BootReport) {
-    let Some(pump) = &report.pump else {
-        return;
-    };
-    heading(out, "pump: local execution state");
-    let units = if pump.units.is_empty() {
-        String::from("none")
-    } else {
-        pump.units
-            .iter()
-            .map(|(status, count)| format!("{status}={count}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    line(out, format!("  units    {units}"));
-    line(
-        out,
-        format!(
-            "  complete {} | complete-but-open {} | amendments {} | stuck {} | exceptions {} | planners {} | parked {}",
-            pump.complete,
-            pump.complete_but_open,
-            pump.amendments,
-            pump.stuck,
-            pump.exceptions,
-            pump.planning,
-            pump.planner_parked
-        ),
-    );
-    line(
-        out,
-        pump_state_line(&pump.control, &pump.writer, pump.status_age),
-    );
 }
 
 fn handles(out: &mut String, report: &BootReport) {
@@ -347,5 +313,12 @@ fn truncations(out: &mut String, report: &BootReport) {
             out,
             format!("  {}: showing {} of {}", row.section, row.shown, row.total),
         );
+    }
+    if report
+        .truncations
+        .iter()
+        .any(|row| row.section.starts_with("pump "))
+    {
+        line(out, "  see `vivi pump status` / `vivi pool status`");
     }
 }

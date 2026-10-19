@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::boot::PumpView;
+
 mod board_command;
 mod config_command;
 mod mailspace_command;
@@ -82,6 +84,15 @@ pub enum Command {
         /// Project root that owns .vivi/ (also accepted globally: vivi --project <ROOT> boot)
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Role to gate the pump snapshot for (otherwise inferred from a local slot)
+        #[arg(long)]
+        role: Option<String>,
+        /// Pump snapshot depth: full, own (this role's units), or none (counts only)
+        #[arg(long, value_enum)]
+        pump: Option<PumpView>,
+        /// Print the boot digest as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Push local letters to a project server, then pull what other members pushed
