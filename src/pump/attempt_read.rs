@@ -144,7 +144,11 @@ pub fn parse_receipt(body: &str) -> Option<AttemptFields> {
     let (_, rest) = result.split_once(POOL_RESULT)?;
     let (job, rest) = rest.split_once(':')?;
     fields.attempt = job.trim().to_owned();
-    fields.outcome = rest.split_whitespace().next().unwrap_or_default().to_owned();
+    fields.outcome = rest
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
     if let Some(line) = body.lines().find(|line| summary_line(line)) {
         read_summary(&mut fields, line);
     }
@@ -238,7 +242,11 @@ pub fn timing_summary(opened: Option<u64>, attempts: &[AttemptFields], now: u64)
         .sum();
     let slowest = attempts
         .iter()
-        .filter_map(|attempt| attempt.agent_seconds.map(|secs| (secs, attempt.attempt.as_str())))
+        .filter_map(|attempt| {
+            attempt
+                .agent_seconds
+                .map(|secs| (secs, attempt.attempt.as_str()))
+        })
         .max_by_key(|(secs, _)| *secs);
     format!(
         "timing: open-to-done {done}; attempts {}; agent time {}; {}",

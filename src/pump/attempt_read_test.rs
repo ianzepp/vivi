@@ -111,7 +111,10 @@ fn a_pool_receipt_parses_to_the_same_fields() {
 #[test]
 fn a_pool_receipt_reads_the_after_form_and_needs_both_markers() {
     let body = RECEIPT.replace(" in 12s", " after 600s");
-    assert_eq!(parse_receipt(&body).map(|f| f.agent_seconds), Some(Some(600)));
+    assert_eq!(
+        parse_receipt(&body).map(|f| f.agent_seconds),
+        Some(Some(600))
+    );
     assert_eq!(parse_receipt("pool result j1: finished\n"), None);
     assert_eq!(parse_receipt("agent exit 0 in 12s\n"), None);
 }
@@ -128,7 +131,10 @@ fn human_secs_keeps_the_two_biggest_units() {
 #[test]
 fn an_rfc3339_date_is_epoch_seconds() {
     assert_eq!(opened_epoch("2023-11-14T22:13:20Z"), Some(1_700_000_000));
-    assert_eq!(opened_epoch("2026-10-19T04:03:09+00:00"), Some(1_792_382_589));
+    assert_eq!(
+        opened_epoch("2026-10-19T04:03:09+00:00"),
+        Some(1_792_382_589)
+    );
     assert_eq!(opened_epoch("not a date"), None);
 }
 
