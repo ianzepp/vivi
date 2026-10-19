@@ -1066,3 +1066,36 @@ fn a_repair_no_changes_dissolves_the_quarantine_at_once() {
         exceptions(&ctx)
     );
 }
+
+#[test]
+fn an_ordinary_or_gate_fix_timeout_still_returns_to_pending() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = State::default();
+    let mut plain = unit(Status::Inflight, Some("t1"), None);
+    plain.attempts = 1;
+    put(&mut st, "u-plain", plain);
+    let mut gate = unit(Status::Inflight, Some("pumpfix-g12345678"), None);
+    gate.need = String::from("pumpfix-g12345678");
+    gate.attempts = 1;
+    put(&mut st, "pumpfix-g12345678", gate);
+
+    fail(&ctx, &mut st, "u-plain", "timeout", "killed by budget");
+    fail(
+        &ctx,
+        &mut st,
+        "pumpfix-g12345678",
+        "finished/no_changes",
+        "nothing pushed",
+    );
+
+    assert_eq!(
+        st.units["u-plain"].status,
+        Status::Pending,
+        "an ordinary unit's timeout must still retry, not dissolve"
+    );
+    assert_eq!(
+        st.units["pumpfix-g12345678"].status,
+        Status::Pending,
+        "a gate-fix unit (repairs = None) must still retry, not dissolve"
+    );
+}
