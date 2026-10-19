@@ -110,7 +110,7 @@ fn open_need_exists(ctx: &Ctx, subject: &str) -> Option<bool> {
     let output = ctx.vivi(
         &format!(
             "need list --status open --json --to {}",
-            shell_quote(ctx.cfg.reply_to())
+            shell_quote(&ctx.cfg.reply_to())
         ),
         60,
     );
@@ -141,7 +141,7 @@ fn send_need(ctx: &Ctx, name: &str, subject: &str, count: usize, command: &str, 
         &format!(
             "need send --from {} --to {} --subject {} --body-file {}",
             shell_quote(&ctx.cfg.reply_from),
-            shell_quote(ctx.cfg.reply_to()),
+            shell_quote(&ctx.cfg.reply_to()),
             shell_quote(subject),
             shell_quote(&path.to_string_lossy()),
         ),

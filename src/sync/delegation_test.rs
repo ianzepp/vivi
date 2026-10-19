@@ -57,7 +57,7 @@ fn send_unit(mailspace: &Mailspace, role: &str, subject: &str) -> String {
 
 #[test]
 fn assigned_foreign_need_binds_local_units_and_join_close_travels_home() {
-    let (server, a, b, need) = pair();
+    let (server, mut a, b, need) = pair();
     a.mailspace
         .add_role(
             "worker",
@@ -193,7 +193,7 @@ fn assigned_foreign_need_binds_local_units_and_join_close_travels_home() {
 
 #[test]
 fn withdraw_and_newer_assignment_remove_old_delegate_authority() {
-    let (server, a, b, need) = pair();
+    let (server, mut a, b, need) = pair();
     a.mailspace
         .add_role(
             "release-ops",

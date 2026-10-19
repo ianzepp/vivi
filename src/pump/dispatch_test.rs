@@ -1097,21 +1097,12 @@ fn a_quarantine_repair_uses_the_separate_merge_repair_budget() {
     cfg.merge.proof_timeout = 900;
     cfg.merge.repair_budget = Some(1800);
     let (_dir, ctx, host) = setup_with(cfg);
-    host.reply(
-        "pool dispatch",
-        0,
-        "dispatched task1 bridge slot-1 m/a pumpfix-q1-a1",
-    );
-    let mut unit = pending_unit("pumpfix-q1");
-    unit.repairs = Some(String::from("q1"));
-    let plan = Plan {
-        pool: String::from("fly4"),
-        model: Some(String::from("m/a")),
-        attempt: 1,
-        branch: String::from("pumpfix-q1-a1"),
-    };
-
-    let _ = dispatch_cmd(&ctx, &unit, &plan, "m/a", "task1");
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["pumpfix-q1"]);
+    st.units.get_mut("pumpfix-q1").unwrap().repairs = Some(String::from("q1"));
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["pumpfix-q1"].status, Status::Inflight);
 
     assert!(
         host.commands().iter().any(|command| {

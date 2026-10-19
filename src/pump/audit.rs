@@ -576,7 +576,7 @@ fn unit_counts(st: &State, need: &str) -> UnitActivity {
             | Status::NoDefect
             | Status::Replaced
             | Status::Withdrawn
-            | Status::Other => {}
+            | Status::Other(_) => {}
         }
     }
     counts
