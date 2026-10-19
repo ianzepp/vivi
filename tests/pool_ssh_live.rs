@@ -43,9 +43,9 @@ fn config() -> PoolConfig {
 /// A slot whose boot script is `boot`, not the real one.
 fn spec(pool: &str, index: u32, boot: &str) -> CreateSpec {
     CreateSpec {
-        name: PoolId::new("livetest", pool).slot_name(index),
+        name: PoolId::new("livetest", "", pool).slot_name(index),
         image: String::new(),
-        metadata: slot::slot_metadata(&PoolId::new("livetest", pool), index, "main"),
+        metadata: slot::slot_metadata(&PoolId::new("livetest", "", pool), index, "main"),
         env: Default::default(),
         once_env: Default::default(),
         passthrough_env: Vec::new(),

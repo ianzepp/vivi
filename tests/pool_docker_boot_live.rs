@@ -53,9 +53,9 @@ fn a_booted_slot_consumes_its_secret_file_and_leaves_the_mount_to_the_provider()
     );
     let once = env.remove("GH_TOKEN").unwrap();
     let spec = CreateSpec {
-        name: PoolId::new("livetest", POOL).slot_name(1),
+        name: PoolId::new("livetest", "", POOL).slot_name(1),
         image: config.image.clone(),
-        metadata: slot::slot_metadata(&PoolId::new("livetest", POOL), 1, "main"),
+        metadata: slot::slot_metadata(&PoolId::new("livetest", "", POOL), 1, "main"),
         env,
         once_env: [("GH_TOKEN".to_string(), once)].into(),
         passthrough_env: vec!["VIVI_LIVE_PROBE".into(), "VIVI_LIVE_UNSET".into()],
