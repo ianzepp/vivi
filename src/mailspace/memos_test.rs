@@ -5,7 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use super::{MemoConfig, MemoFilter, hidden_tags, keep, parse_tags, since_cutoff, window_label};
+use super::{
+    MemoConfig, MemoFilter, expired_handles, hidden_tags, keep, parse_tags, retain_secs,
+    since_cutoff, window_label,
+};
+use crate::storage::StoredMessageView;
 
 fn eml(headers: &[(&str, &str)]) -> Vec<u8> {
     let mut raw = String::from("From: mind@local\r\nTo: memo@local\r\nSubject: t\r\n");
@@ -203,6 +207,70 @@ fn config_without_memo_table_stays_memoless_and_serializes_without_one() {
     assert_eq!(config.memo, None);
     let text = toml::to_string(&config).expect("serialize");
     assert!(!text.contains("memo"), "{text}");
+}
+
+#[test]
+fn retention_expires_only_old_tagged() {
+    let now = date(1_792_425_600);
+    let old = |handle: &str, tag: &str, age_days: i64| {
+        (
+            view(handle, date(now.timestamp() - age_days * 86_400)),
+            vec![tag.to_string()],
+        )
+    };
+    let mut invalid_date = view("invalid-date", now);
+    invalid_date.date = "not RFC3339".into();
+    let memos = vec![
+        old("old-tagged", "Digest", 100),
+        old("fresh-tagged", "digest", 1),
+        old("old-untagged", "other", 200),
+        old("wrong-tag", "digest-old", 200),
+        (invalid_date, vec!["digest".into()]),
+    ];
+
+    assert_eq!(
+        expired_handles(&memos, "digest", 90 * 86_400, now),
+        vec!["old-tagged".to_string()]
+    );
+}
+
+fn view(handle: &str, at: DateTime<Utc>) -> StoredMessageView {
+    StoredMessageView {
+        handle: handle.to_string(),
+        message_id: format!("<{handle}@local>"),
+        account: "digest".to_string(),
+        content_id: format!("content-{handle}"),
+        blob_relpath: format!("memos/{handle}.eml"),
+        byte_size: 0,
+        local_role: "memos".to_string(),
+        read_state: false,
+        starred: false,
+        date: at.to_rfc3339(),
+        from_addr: "digest@local".to_string(),
+        to_addr: "digest@local".to_string(),
+        cc_addr: String::new(),
+        bcc_addr: String::new(),
+        subject: handle.to_string(),
+        normalized_message_id: None,
+        remote: None,
+        absorbed_at: None,
+        absorbed_by: None,
+    }
+}
+
+#[test]
+fn retain_secs_ignores_missing_and_invalid_rules() {
+    let config = Some(MemoConfig {
+        hidden_tags: Vec::new(),
+        retain: BTreeMap::from([
+            ("digest".to_string(), "2160h".to_string()),
+            ("weekly".to_string(), "90d".to_string()),
+        ]),
+    });
+    assert_eq!(retain_secs(&config, "DIGEST"), Some(90 * 86_400));
+    assert_eq!(retain_secs(&config, "weekly"), None);
+    assert_eq!(retain_secs(&config, "other"), None);
+    assert_eq!(retain_secs(&None, "digest"), None);
 }
 
 #[test]

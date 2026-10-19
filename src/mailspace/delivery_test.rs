@@ -1,3 +1,8 @@
+use std::collections::BTreeMap;
+
+use chrono::Utc;
+
+use crate::mailspace::memos::{MemoConfig, expired_handles};
 use crate::mailspace::{Mailspace, SendRequest};
 use crate::storage::StoredMessageView;
 use crate::sync::SyncConfig;
@@ -393,6 +398,53 @@ fn deliver_raw_mints_the_backlog_node_and_its_edges() {
     );
     mailspace.deliver_raw(event.as_bytes(), "tasks").unwrap();
     assert_eq!(nodes(), before, "an event letter mints no node");
+}
+
+#[test]
+fn retention_prunes_on_tagged_save() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mailspace = Mailspace::init(Some(tmp.path())).unwrap();
+    mailspace.add_identity("digest").unwrap();
+    mailspace.config.memo = Some(MemoConfig {
+        hidden_tags: Vec::new(),
+        retain: BTreeMap::from([("digest".to_string(), "2160h".to_string())]),
+    });
+
+    let handle = mailspace
+        .save_memo("digest", "digest run", "body", &["digest".to_string()])
+        .expect("tagged save with a parseable retention rule");
+    let kept = mailspace
+        .list_kind(Some("digest"), "memos", "memo")
+        .unwrap();
+    assert_eq!(kept.len(), 1, "fresh memo must not be pruned");
+    assert_eq!(kept[0].handle, handle);
+
+    let now = Utc::now();
+    let old = StoredMessageView {
+        handle: "old".to_string(),
+        message_id: "<old@local>".to_string(),
+        account: "digest".to_string(),
+        content_id: "old-content".to_string(),
+        blob_relpath: "memos/old.eml".to_string(),
+        byte_size: 0,
+        local_role: "memos".to_string(),
+        read_state: false,
+        starred: false,
+        date: (now - chrono::Duration::days(100)).to_rfc3339(),
+        from_addr: "digest@local".to_string(),
+        to_addr: "digest@local".to_string(),
+        cc_addr: String::new(),
+        bcc_addr: String::new(),
+        subject: "old".to_string(),
+        normalized_message_id: None,
+        remote: None,
+        absorbed_at: None,
+        absorbed_by: None,
+    };
+    assert_eq!(
+        expired_handles(&[(old, vec!["Digest".to_string()])], "digest", 90 * 86_400, now),
+        vec!["old".to_string()]
+    );
 }
 
 #[test]
