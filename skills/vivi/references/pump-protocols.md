@@ -498,8 +498,15 @@ The first readable gate sets `st["baseline"] = names`. Later gates:
   units are settled (`merged`, `stuck`, `no-defect`, `replaced`) raises one
   exception `red-after-fix` per name, once (`st["red_reported"]`).
 
-When `new` is non-empty, each new name is owned by
-`<fix_prefix>-g<tip8>`; suspects are the merged-status units in
+When `new` is non-empty, the pump sends a real need (`need send --from
+<reply_from> --to the board reply_to`, subject `pump: gate fix for <tip8>
+(N new, M residual)`) and each new name is owned by that handle — that
+handle also names the plan file `plans/<handle>.json` and carries the
+attempt records, while unit ids stay on the `<fix_prefix>-g<tip8>` base so
+fix-unit dispatch, merging and alarms are unchanged; when the send fails
+the pump falls back to the synthesized `<fix_prefix>-g<tip8>` id
+(`-r<k>` when that plan already exists) and posts no attempt records for
+it. Suspects are the merged-status units in
 `st["order"][prev_merges:this_gate.merges]`; the gate-fix planner is started;
 and exception `gate-new-failures` is written with
 `<n> new: <names ; joined, 350-char cap> ; suspects: <uids, 200-char cap>`.
@@ -507,7 +514,12 @@ A red gate never stops merging (ruling 1).
 
 ### 7.4 The gate-fix planner
 
-`gatefix(tip, clean, new)` uses need id `<fix_prefix>-g<tip8>`: if
+`gatefix(tip, clean, new)` plans under the real need handle the pump
+sent: that handle owns the failing names and names the plan file
+`plans/<handle>.json`, unit ids stay on the `<fix_prefix>-g<tip8>` base,
+and a failed send falls back to the synthesized `<fix_prefix>-g<tip8>`
+id (`-r<k>` when that plan already exists) with no attempt records posted
+for it. If
 `plans/<need>.json` already exists it does nothing. Otherwise it writes
 `gatefix/<need>.prompt`: the failing
 names, the clean commit, `git log --oneline <clean>..<tip>` as the suspect

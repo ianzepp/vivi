@@ -776,9 +776,16 @@ Behaviours the decisions above do not list:
 - Residual re-plan: after the owned-red release, each owner whose units (ids
   `<owner>-*`) all settled and whose names still fail at this gate has those
   names released, counted in `state.extra["replans"]`, and re-owned by a new
-  gate-fix need planned at this tip together with any new failures. The need
-  is `<fix_prefix>-g<tip8>`, or `<fix_prefix>-g<tip8>-r<k>` (first free `k`)
-  when a plan or planner prompt for the base id exists. The prompt gives
+  gate-fix need planned at this tip together with any new failures. The pump
+  sends a real need for it (`need send --from <reply_from> --to
+  the board reply_to`, subject `pump: gate fix for <tip8> (N new, M
+  residual)`): its handle owns the names, names the plan file
+  `plans/<handle>.json`, and carries the attempt records, while unit ids
+  stay on the `<fix_prefix>-g<tip8>` base so fix-unit dispatch, merging
+  and alarms are unchanged. When the send fails the pump falls back to
+  the synthesized `<fix_prefix>-g<tip8>` id, or `<fix_prefix>-g<tip8>-r<k>`
+  (first free `k`) when a plan or planner prompt for the base id exists,
+  and posts no attempt records for it. The prompt gives
   residual names their own section naming the old owner. One log line per
   owner: `replan: N residual failures of <owner> -> <need>`. A name past
   `max_replans` is not re-planned.

@@ -2521,9 +2521,16 @@ legacy tables, and a writable gate. Rules that are not obvious from the keys:
 - Residual failures are re-planned: when every unit of an owning plan has
   settled and a gate still shows some of its names failing, the names are
   released, counted per name in `state.extra["replans"]`, and handed to a new
-  gate-fix planner at that tip together with any new failures (need
-  `<fix_prefix>-g<tip8>`, or `-r<k>` with the first free `k` when that plan
-  already exists). They stay owned, so promotion stays held. After
+  gate-fix planner at that tip together with any new failures. When a gate
+  goes red the pump sends a real need (`need send --from <reply_from> --to
+  the board reply_to`, subject `pump: gate fix for <tip8> (N new, M
+  residual)`): that handle owns the failing names, names the plan file
+  `plans/<handle>.json`, and carries the attempt records, while unit ids stay
+  on the `<fix_prefix>-g<tip8>` base so fix-unit dispatch, merging and alarms
+  are unchanged. When the send fails the pump falls back to the synthesized
+  `<fix_prefix>-g<tip8>` id (`-r<k>` with the first free `k` when that plan
+  already exists) and posts no attempt records for it. The re-planned names
+  stay owned, so promotion stays held. After
   `max_replans` re-plans a name is left owned and raises `red-after-fix`.
 - Main moves by fast-forward only: a gate with no new failure and no owned
   failure still red pushes the gated tip to main (otherwise it logs `promote
