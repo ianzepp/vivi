@@ -709,6 +709,7 @@ beside its siblings.
 | `batch` | int | `8` | jobs merged together at most |
 | `format` | command | none | run after merging; a change is committed `style: format after <ids>`; empty skips the step |
 | `shared_checks` | list of commands | none; must be non-empty while promotion is enabled | run after every merge, before the units' own proof |
+| `checks_for` | table: write-scope glob → list of commands | none | commands run after the shared checks and before the units' own proof, only for a batch or solo merge whose units' write scopes overlap the glob (same glob semantics as a unit's write scope); each command runs once per merge however many units touch its glob; a failure decides like a shared check (bisect, quarantine, proof-failed) |
 | `proof_timeout` | int seconds | `300` | seconds per check command |
 | `remote_wait` | int seconds | `90` | seconds a remote merger has to claim a batch before this host merges it |
 | `remote_limit` | int seconds | `1800` | seconds a claimed batch may take |
@@ -752,6 +753,8 @@ Validation rules (`vivi pump` refuses to start when one fails):
 - `merge.shared_checks` must not be empty while promotion is enabled
   (`promote = true` and `main` non-empty): with no checks a merge would land
   unchecked.
+- `checks_for` values must be non-empty command lists: a glob whose command
+  list is empty, or holds a blank command, is rejected.
 - `hand_rules`, when set, must be a readable file (relative to the project
   root).
 - `tick`, `max_attempts`, `budget`, `per_tick`, `merge.batch` and

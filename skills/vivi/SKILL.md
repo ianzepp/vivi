@@ -2044,7 +2044,8 @@ is not a million-line build.
 `vivi pump` is a Mind written as a state machine over planned units. It reads
 plan files from `plans/` in its home and dispatches each ready unit as a pool
 task on a model lane. Delivered units merge in batches into an integration
-branch, where the shared checks and each unit's own proof run before the push.
+branch, where the shared checks, any scope-mapped `checks_for` checks for the
+units' write scopes, and each unit's own proof run before the push.
 A periodic gate measures the branch and fast-forwards main when it is clean,
 and everything that needs a person is appended to `exceptions.txt`. The full
 contract is [`references/pump-contract.md`](references/pump-contract.md), its
@@ -2473,6 +2474,7 @@ from          = "<branch>"             # absent: the `branch` value
 batch         = 8                      # jobs merged together at most
 format        = "<command>"            # run after merging; a change becomes a style commit
 shared_checks = ["<command>"]          # after every merge, before each unit's own proof
+# checks_for  = { "<glob>" = ["<command>"] }  # extra checks, only for merges touching the glob
 proof_timeout = 300                    # seconds per check command
 remote_wait   = 90                     # seconds for a remote merger to claim a batch
 remote_limit  = 1800                   # seconds a claimed batch may take
