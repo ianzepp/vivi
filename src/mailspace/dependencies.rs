@@ -4,7 +4,7 @@
 //! headers, so the order of work is a fact of the letters, not of the route
 //! that filed them. Every route that attaches a work letter's node (local
 //! send, pull, fetch, resync, raw delivery `vivi mail deliver`, reference
-//! follow, audit repair, role adoption) goes through
+//! follow, audit repair, role adoption, `mailspace import`) goes through
 //! [`Mailspace::backlog_attach_letter`], which mints the node and
 //! one prerequisite edge for each dependency this mailspace holds as backlog
 //! work.

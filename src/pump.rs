@@ -20,6 +20,7 @@ pub mod merge;
 pub mod plan;
 pub mod priority;
 pub mod progress;
+pub mod proof;
 pub mod quarantine;
 pub mod ready;
 pub mod remote;
@@ -154,3 +155,7 @@ mod attempt_record_test;
 #[cfg(test)]
 #[path = "pump/envfail_test.rs"]
 mod envfail_test;
+
+#[cfg(test)]
+#[path = "pump/proof_test.rs"]
+mod proof_test;
