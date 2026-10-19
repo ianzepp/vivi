@@ -362,7 +362,7 @@ fn sweep_preserves_a_pool_mount_when_its_marker_names_another_device() {
     let text = std::fs::read_to_string(&marker).unwrap();
     std::fs::write(
         &marker,
-        text.replace("device=/dev/disk7", "device=/dev/disk8"),
+        text.replace("device=/dev/disk7\n", "device=/dev/disk8\n"),
     )
     .unwrap();
     let runner = FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]);

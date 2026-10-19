@@ -486,7 +486,7 @@ impl crate::pool::ramdisk::Runner for LocalPoolRamRunner {
                 Ok(String::from("/dev/disk13\n"))
             }
             _ if argv.len() == 5 && argv[0] == "diskutil" && argv[1] == "eraseVolume" => {
-                *self.volume.lock().unwrap() = Some(argv[4].to_string());
+                *self.volume.lock().unwrap() = Some(argv[3].to_string());
                 Ok(String::new())
             }
             _ if argv.len() == 4 && argv[0] == "diskutil" && argv[1] == "info" => {
@@ -877,7 +877,7 @@ fn a_marker_for_another_device_is_not_ejected_or_removed() {
     let marker = std::fs::read_to_string(slot.path().join("ramdisk")).unwrap();
     std::fs::write(
         slot.path().join("ramdisk"),
-        marker.replace("device=/dev/disk7", "device=/dev/disk8"),
+        marker.replace("device=/dev/disk7\n", "device=/dev/disk8\n"),
     )
     .unwrap();
     let runner = RamdiskTestRunner::new(&mount, false);

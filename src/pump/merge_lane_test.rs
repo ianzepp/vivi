@@ -724,6 +724,8 @@ type Attached = Vec<(String, String)>;
 struct LaneFakeRunner {
     attached: Mutex<Attached>,
     calls: Mutex<Vec<String>>,
+    volume: Mutex<Option<String>>,
+    plist_request: Mutex<Option<String>>,
 }
 
 impl LaneFakeRunner {
@@ -736,6 +738,8 @@ impl LaneFakeRunner {
                     .collect(),
             ),
             calls: Mutex::new(Vec::new()),
+            volume: Mutex::new(None),
+            plist_request: Mutex::new(None),
         }
     }
 
@@ -747,7 +751,11 @@ impl LaneFakeRunner {
         self.attached
             .lock()
             .expect("attach list")
-            .retain(|(whole, _)| whole != device && !whole.starts_with(&format!("{device}s")));
+            .retain(|(whole, _)| {
+                whole != device
+                    && !whole.starts_with(&format!("{device}s"))
+                    && !(device == "/dev/disk13" && whole == "/dev/disk14s1")
+            });
     }
 
     fn mount(&self, device: &str, path: &str) {
@@ -770,8 +778,58 @@ impl Runner for LaneFakeRunner {
         if line.starts_with("hdiutil attach -nomount ram://") {
             return Ok(String::from("/dev/disk13\n"));
         }
-        if line.starts_with("diskutil eraseVolume APFS ") || line.starts_with("diskutil unmount ") {
+        if argv.len() == 5 && argv[0] == "diskutil" && argv[1] == "eraseVolume" {
+            *self.volume.lock().expect("APFS volume") = Some(argv[3].to_string());
             return Ok(String::new());
+        }
+        if line.starts_with("diskutil unmount ") {
+            return Ok(String::new());
+        }
+        if argv.len() == 4 && argv[0] == "diskutil" && argv[1] == "info" {
+            *self.plist_request.lock().expect("plist request") = Some(argv[3].to_string());
+            return Ok(String::from("plist"));
+        }
+        if argv.len() == 5 && argv[0] == "diskutil" && argv[1] == "apfs" && argv[2] == "list" {
+            *self.plist_request.lock().expect("plist request") =
+                Some(format!("container:{}", argv[4]));
+            return Ok(String::from("plist"));
+        }
+        if argv.first() == Some(&"/usr/bin/plutil") {
+            let volume = self
+                .volume
+                .lock()
+                .expect("APFS volume")
+                .clone()
+                .unwrap_or_default();
+            let request = self
+                .plist_request
+                .lock()
+                .expect("plist request")
+                .clone()
+                .unwrap_or_default();
+            let json = match request.as_str() {
+                "/dev/disk13" => serde_json::json!({
+                    "DeviceIdentifier": "disk13",
+                    "APFSContainerReference": "disk14",
+                }),
+                "/dev/disk14s1" => serde_json::json!({
+                    "DeviceIdentifier": "disk14s1",
+                    "APFSContainerReference": "disk14",
+                    "MountPoint": format!("/Volumes/{volume}"),
+                }),
+                "container:disk14" => serde_json::json!({
+                    "Containers": [{
+                        "ContainerReference": "disk14",
+                        "PhysicalStores": [{"DeviceIdentifier": "disk13"}],
+                        "Volumes": [{
+                            "Name": volume,
+                            "DeviceIdentifier": "disk14s1",
+                        }],
+                    }],
+                }),
+                _ => return Err(format!("fake: unexpected plist request `{request}`")),
+            };
+            return Ok(json.to_string());
         }
         if let Some(args) = line.strip_prefix("diskutil mount -mountPoint ")
             && let Some((path, device)) = args.split_once(' ')
