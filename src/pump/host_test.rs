@@ -1,12 +1,14 @@
 //! Tests for [`super::host`].
 
+use std::collections::BTreeMap;
 use std::fs;
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{PumpConfig, PumpTarget};
 use crate::pump::host::*;
 
 #[test]
@@ -150,6 +152,35 @@ fn ctx_sh_prepends_the_shell_prefix() {
     let (plain, plain_host) = test_ctx(dir.path(), PumpConfig::default());
     drop(plain.sh("echo bare", None, 5));
     assert_eq!(plain_host.commands(), vec!["echo bare"]);
+}
+
+#[test]
+fn pool_sources_travel_to_derived_contexts() {
+    let dir = tempdir().unwrap();
+    let mut cfg = PumpConfig::default();
+    cfg.targets.insert(
+        String::from("tela"),
+        PumpTarget {
+            path: String::from("tela"),
+            branch: String::from("main"),
+            ..PumpTarget::default()
+        },
+    );
+    let (ctx, _host) = test_ctx(dir.path(), cfg);
+    let ctx = ctx.with_pool_sources(BTreeMap::from([(
+        String::from("glm"),
+        PathBuf::from("/wtree/repo"),
+    )]));
+    let target = ctx.for_target("tela").unwrap();
+    assert_eq!(
+        target.pool_sources.get("glm"),
+        Some(&PathBuf::from("/wtree/repo"))
+    );
+    let other = ctx.with_repo(PathBuf::from("/other"));
+    assert_eq!(
+        other.pool_sources.get("glm"),
+        Some(&PathBuf::from("/wtree/repo"))
+    );
 }
 
 #[test]
