@@ -108,6 +108,8 @@ pub struct Ctx {
     pub lane: Option<Arc<LaneProgress>>,
     /// Role → pool map. Empty means the pump uses only the legacy tables.
     pub routing: Arc<RoleRouting>,
+    /// Who runs this pump: mailspace address prefix plus sync name.
+    pub actor: String,
 }
 
 impl Ctx {
@@ -135,6 +137,7 @@ impl Ctx {
             shell_prefix,
             lane: None,
             routing: Arc::new(RoleRouting::default()),
+            actor: String::new(),
         }
     }
 
@@ -142,6 +145,13 @@ impl Ctx {
     #[must_use]
     pub fn with_routing(mut self, routing: RoleRouting) -> Self {
         self.routing = Arc::new(routing);
+        self
+    }
+
+    /// Set who runs this pump: mailspace address prefix plus sync name.
+    #[must_use]
+    pub fn with_actor(mut self, actor: String) -> Self {
+        self.actor = actor;
         self
     }
 

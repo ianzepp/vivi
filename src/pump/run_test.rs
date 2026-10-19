@@ -9,13 +9,16 @@ use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
+use crate::mailspace::Mailspace;
 use crate::pump::boardpass::BoardPass;
 use crate::pump::config::{
     BoardConfig, DispatchConfig, GateConfig, Kind, Lane, MergeConfig, PumpConfig, PumpTarget,
 };
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::merge::Merger;
-use crate::pump::run::{ensure_repo, run, run_with, status, tick as run_tick, write_status};
+use crate::pump::run::{
+    actor_string, ensure_repo, run, run_with, status, tick as run_tick, write_status,
+};
 use crate::pump::state::{Attempt, GateRun, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
@@ -1012,4 +1015,41 @@ fn stop_takes_effect_within_one_tick_while_a_board_pass_runs() {
     assert!(result.is_ok(), "{:?}", result.err());
     park.release();
     drop(handle.join());
+}
+
+#[test]
+fn actor_string_names_prefix_and_sync_name() {
+    let dir = mailspace_project(
+        "name = \"p\"\n\
+         id = \"aeff60b0-1111-2222-3333-444444444444\"\n\
+         \n[sync]\n\
+         server = \"https://s\"\n\
+         project = \"p\"\n\
+         name = \"burgus\"\n",
+    );
+    let mailspace = Mailspace::discover(Some(dir.path())).unwrap();
+    assert_eq!(actor_string(&mailspace), "aeff60b0/burgus");
+}
+
+#[test]
+fn actor_string_without_sync_names_the_prefix_alone() {
+    let dir = mailspace_project("name = \"p\"\nid = \"aeff60b0-1111-2222-3333-444444444444\"\n");
+    let mailspace = Mailspace::discover(Some(dir.path())).unwrap();
+    assert_eq!(actor_string(&mailspace), "aeff60b0");
+}
+
+#[test]
+fn actor_string_without_a_mailspace_id_is_unknown() {
+    let dir = mailspace_project("name = \"p\"\n");
+    let mut mailspace = Mailspace::discover(Some(dir.path())).unwrap();
+    // `discover` mints an id when the config lacks one; drop it to reach the
+    // id-less case, which a hand-built mailspace would present.
+    mailspace.config.id = None;
+    assert_eq!(actor_string(&mailspace), "unknown");
+}
+
+#[test]
+fn contexts_built_through_with_parts_carry_an_empty_actor() {
+    let (dir, ctx, _host) = setup();
+    assert_eq!(ctx.actor, "", "{dir:?}");
 }

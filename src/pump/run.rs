@@ -218,6 +218,25 @@ pub fn run_service_child(project: &Path) -> Result<(), VivariumError> {
     run_inner(project, false, true)
 }
 
+/// The pump's actor identity: `<address-prefix>/<sync-name>`, the prefix
+/// alone without a sync name, `unknown` without a mailspace id.
+#[must_use]
+pub fn actor_string(mailspace: &Mailspace) -> String {
+    let prefix = mailspace.address_prefix();
+    if prefix.is_empty() {
+        return String::from("unknown");
+    }
+    match mailspace
+        .config
+        .sync
+        .as_ref()
+        .and_then(|s| s.name.as_deref())
+    {
+        Some(name) => format!("{prefix}/{name}"),
+        None => prefix.to_owned(),
+    }
+}
+
 fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
@@ -256,7 +275,8 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let vivi = std::env::current_exe()
         .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
     let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi)
-        .with_routing(crate::routing::from_mailspace(&mailspace.config));
+        .with_routing(crate::routing::from_mailspace(&mailspace.config))
+        .with_actor(actor_string(&mailspace));
     crate::pump::priority::import_legacy(&ctx);
     if announce_ready {
         println!("VIVI_PUMP_SERVICE_READY");
