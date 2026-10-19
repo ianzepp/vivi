@@ -230,6 +230,37 @@ fn a_gate_is_due_after_every_landed_batch() {
     drop(dir);
 }
 
+/// A batch landing while a gate is running must not stack a second gate:
+/// the start is refused until the open gate finishes, and exactly one
+/// follow-up gate then runs, at the newest tip.
+#[test]
+fn a_second_batch_while_a_gate_runs_coalesces_to_one_followup() {
+    let (dir, ctx, host) = setup();
+    let mut st = gate_state(4);
+    st.merges = 5;
+    start_gate(&ctx, &mut st);
+    assert!(host.commands().is_empty(), "refused while the gate is open");
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+
+    st.last_gate.task = None;
+    wire(&host);
+    host.reply(
+        "git ls-remote",
+        0,
+        &format!("{NEW_TIP}\trefs/heads/next\n"),
+    );
+    start_gate(&ctx, &mut st);
+    let dispatched: Vec<String> = host
+        .commands()
+        .into_iter()
+        .filter(|cmd| cmd.contains("pool dispatch"))
+        .collect();
+    assert_eq!(dispatched.len(), 1, "one follow-up gate, not a stack");
+    assert_eq!(st.last_gate.task.as_deref(), Some(TASK));
+    assert_eq!(st.last_gate.tip.as_deref(), Some(NEW_TIP));
+    drop(dir);
+}
+
 #[test]
 fn start_gate_is_due_with_no_baseline_and_dispatches_read_only_to_the_first_pool_with_a_slot() {
     let (dir, ctx, host) = setup();
@@ -353,6 +384,8 @@ fn a_failed_gate_dispatch_marks_the_task_done_and_records_nothing() {
 
 /// A second 40-hex tip: the last clean gate.
 const CLEAN: &str = "fedcba9876543210fedcba9876543210fedcba98";
+/// A newer 40-hex tip that lands while a gate is running.
+const NEW_TIP: &str = "9876543210987654321098765432109876543210";
 
 /// A planner command so gatefix spawns are visible.
 fn planner_cfg() -> PumpConfig {
