@@ -443,7 +443,9 @@ pub(crate) fn arm_fail_next_settle() {
 #[cfg(test)]
 fn fail_next_settle() -> Result<(), VivariumError> {
     if FAIL_NEXT_SETTLE.with(std::cell::Cell::take) {
-        Err(VivariumError::Other("injected settle failure (test)".into()))
+        Err(VivariumError::Other(
+            "injected settle failure (test)".into(),
+        ))
     } else {
         Ok(())
     }

@@ -461,9 +461,7 @@ fn failed_release_keeps_the_deferral_mark() {
         .clone();
     // A mark whose bound the clock has passed: the release is due.
     let bound = clock_micros() - 1;
-    storage
-        .set_event_deferral(&[row_id], Some(bound))
-        .unwrap();
+    storage.set_event_deferral(&[row_id], Some(bound)).unwrap();
 
     arm_fail_next_settle();
     assert!(
