@@ -1007,9 +1007,10 @@ fn a_shared_check_failure_with_several_jobs_quarantines_the_batch_not_one_at_a_t
     );
     let q = for_uid(&results, "u1").quarantine.as_ref().unwrap();
     assert!(q.text.contains("error[E0308]: mismatched types"));
-    // Each unit is merged once; the old fallback merged each a second time.
+    // The batch is rebuilt before the quarantine push: 2 batch merges plus
+    // 2 rebuild merges.
     let cmds = host.commands();
-    assert_eq!(count(&cmds, "merge --no-ff"), 2);
+    assert_eq!(count(&cmds, "merge --no-ff"), 4);
     assert!(
         host.logs()
             .iter()
