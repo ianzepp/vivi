@@ -831,3 +831,131 @@ fn a_landed_plan_resets_planner_bookkeeping() {
     assert!(!st.board.planner_retry_at.contains_key("n1"));
     assert!(!exceptions(&ctx).contains("n1"));
 }
+
+/// How many `planner-run` command lines the fake host has been asked to spawn.
+fn planner_spawns(host: &FakeHost) -> usize {
+    host.spawned()
+        .iter()
+        .filter(|cmd| cmd.contains("planner-run"))
+        .count()
+}
+
+#[test]
+fn a_need_in_backoff_waits_before_relaunch() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.board.planner_fails.insert(String::from("n1"), 1);
+    st.board
+        .planner_retry_at
+        .insert(String::from("n1"), ctx.now() + 60);
+    let rows = vec![need_row("n1", "2026-10-15", "Backing off")];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert_eq!(planner_spawns(&host), 0);
+    assert!(!st.board.planning.contains_key("n1"));
+    host.advance(61);
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert_eq!(planner_spawns(&host), 1);
+    assert!(st.board.planning.contains_key("n1"));
+}
+
+#[test]
+fn a_parked_need_is_never_relaunched() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    st.board.planner_failed.push(String::from("n1"));
+    let rows = vec![need_row("n1", "2026-10-15", "Parked")];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert_eq!(planner_spawns(&host), 0);
+    assert!(!st.board.planning.contains_key("n1"));
+}
+
+#[test]
+fn launch_records_the_planner_pid_and_clears_the_stale_receipt() {
+    let (_dir, ctx, host) = setup();
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    fs::write(ctx.home.join("board/n1.out"), "stale run\n").unwrap();
+    fs::write(ctx.home.join("board/n1.out.rc"), "127").unwrap();
+    let mut st = State::default();
+    let rows = vec![need_row("n1", "2026-10-15", "Relaunch")];
+    let approved = BTreeSet::new();
+    let mut replan = BTreeSet::new();
+    launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
+    assert!(
+        st.board.planner_pids.get("n1").is_some_and(|pid| *pid >= 1000),
+        "pids: {:?}",
+        st.board.planner_pids
+    );
+    assert!(!ctx.home.join("board/n1.out.rc").exists());
+    assert_eq!(
+        fs::read_to_string(ctx.home.join("board/n1.out")).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn a_planner_that_exits_127_is_freed_and_retried_once_then_parked() {
+    let (_dir, ctx, host) = setup_with(BoardConfig {
+        from: vec![String::from("operator@bd371d96.local")],
+        since: String::from("2026-10-14T00:10"),
+        every: 60,
+        pull: false,
+        ..BoardConfig::default()
+    });
+    host.reply(
+        "need list",
+        0,
+        &list(&[row("n1", "2026-10-15", "Crashy", &[])]),
+    );
+    host.reply("--held", 0, "[]");
+    host.reply("--json --to mind", 0, "[]");
+    let mut st = State::default();
+
+    board(&ctx, &mut st);
+    assert!(st.board.planning.contains_key("n1"));
+    assert_eq!(planner_spawns(&host), 1);
+
+    exited_planner(&ctx, "n1");
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert!(!st.board.planning.contains_key("n1"));
+    assert_eq!(planner_spawns(&host), 1);
+    assert!(host.logs().join("\n").contains("rc=127"));
+    assert!(exceptions(&ctx).contains("plan-crashed n1"));
+    assert!(
+        st.board
+            .planner_retry_at
+            .get("n1")
+            .is_some_and(|at| *at > ctx.now())
+    );
+
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), 2);
+    assert!(st.board.planning.contains_key("n1"));
+
+    exited_planner(&ctx, "n1");
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), 2);
+    assert_eq!(st.board.planner_fails.get("n1"), Some(&2));
+
+    host.advance(121);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), 3);
+
+    exited_planner(&ctx, "n1");
+    host.advance(61);
+    board(&ctx, &mut st);
+    assert!(st.board.planner_failed.contains(&String::from("n1")));
+    assert!(exceptions(&ctx).contains("plan-failed n1"));
+    let after_park = planner_spawns(&host);
+
+    host.advance(601);
+    board(&ctx, &mut st);
+    assert_eq!(planner_spawns(&host), after_park);
+    assert!(!st.board.planning.contains_key("n1"));
+}
