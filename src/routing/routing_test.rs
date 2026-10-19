@@ -235,6 +235,64 @@ to = "hand"
 }
 
 #[test]
+fn validate_rejects_missing_merge_role_even_with_legacy_merge_settings() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "here"
+[[identities]]
+name = "planner"
+kind = "planner"
+pool = "here"
+[pools.here]
+provider = "local"
+slots = 1
+[pump]
+branch = "next"
+to = "hand"
+[pump.merge]
+lanes = 2
+"#);
+    let issues = validate(&config);
+    assert!(
+        issues.iter().any(|issue| {
+            issue.severity == Severity::Error
+                && issue
+                    .message
+                    .contains("active merge role assigned to a pool")
+        }),
+        "{issues:?}"
+    );
+}
+
+#[test]
+fn validate_rejects_disabled_and_unassigned_merge_roles() {
+    for (merge, expected) in [
+        (
+            "[[identities]]\nname = \"merge\"\nkind = \"merge\"\nstatus = \"paused\"\npool = \"here\"",
+            "must be active",
+        ),
+        (
+            "[[identities]]\nname = \"merge\"\nkind = \"merge\"\nstatus = \"active\"",
+            "must name a pool",
+        ),
+    ] {
+        let config = cfg(&format!(
+            "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"here\"\n{merge}\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n"
+        ));
+        let issues = validate(&config);
+        assert!(
+            issues.iter().any(|issue| {
+                issue.severity == Severity::Error && issue.message.contains(expected)
+            }),
+            "expected {expected:?} in {issues:?}"
+        );
+    }
+}
+
+#[test]
 fn validate_warns_on_legacy_routing_and_bands_without_a_table() {
     let config = cfg(r#"
 name = "t"
@@ -245,6 +303,7 @@ model = "P2-S0"
 [[identities]]
 name = "merge"
 kind = "merge"
+pool = "glm"
 [[identities]]
 name = "planner"
 kind = "planner"
@@ -338,6 +397,10 @@ name = "t"
 [[identities]]
 name = "hand"
 kind = "hand"
+pool = "glm"
+[[identities]]
+name = "merge"
+kind = "merge"
 pool = "glm"
 [[identities]]
 name = "planner"

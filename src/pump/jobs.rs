@@ -326,10 +326,18 @@ pub fn enqueue_promotion(
     tip: &str,
     failing: &[String],
 ) -> Result<Option<String>, VivariumError> {
+    let can_publish = |role: &&crate::routing::RoutedRole| {
+        role.status == "active" && ctx.routing.pool_of(role).is_some()
+    };
     let role = ctx
         .routing
         .lookup("release")
-        .or_else(|| ctx.routing.merge());
+        .filter(can_publish)
+        .or_else(|| {
+            ctx.routing
+                .merge()
+                .filter(|role| role.status == "active" && ctx.routing.pool_of(role).is_some())
+        });
     let Some(role) = role else {
         ctx.log("promotion queued nowhere: no release or merge role is configured");
         return Ok(None);

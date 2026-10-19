@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     MergeReceipt, SourceResult, parse_receipt, published_integration_tip, valid_sha, valid_sources,
@@ -6,6 +6,9 @@ use super::{
 use crate::pump::config::PumpConfig;
 use crate::pump::host::test_ctx;
 use crate::pump::jobs::{JobOutcome, JobSpec, PoolJob};
+use crate::pump::merge::dispatch_pool;
+use crate::pump::state::State;
+use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[test]
 fn merge_receipt_parses_the_structured_worker_result() {
@@ -14,6 +17,58 @@ fn merge_receipt_parses_the_structured_worker_result() {
     assert_eq!(receipt.version, 1);
     assert_eq!(receipt.target, "default");
     assert_eq!(receipt.sources[0].id, "u1");
+}
+
+#[test]
+fn missing_or_unusable_merge_route_raises_exception_without_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, host) = test_ctx(dir.path(), PumpConfig::default());
+    let unusable = [
+        RoleRouting::default(),
+        RoleRouting {
+            roles: vec![merge_role("paused", Some("local"))],
+            pools: BTreeMap::from([(String::from("local"), local_pool())]),
+        },
+        RoleRouting {
+            roles: vec![merge_role("active", Some("missing"))],
+            pools: BTreeMap::new(),
+        },
+    ];
+    for routing in unusable {
+        let ctx = base.clone().with_routing(routing);
+        let mut state = State::default();
+
+        assert!(dispatch_pool(&ctx, &mut state).unwrap().is_empty());
+        assert!(state.jobs.is_empty());
+        assert!(
+            host.logs()
+                .iter()
+                .any(|line| line.contains("EXCEPTION merge-route-missing"))
+        );
+    }
+}
+
+fn merge_role(status: &str, pool: Option<&str>) -> RoutedRole {
+    RoutedRole {
+        name: String::from("merge"),
+        kind: Some(String::from("merge")),
+        status: status.to_owned(),
+        pool: pool.map(str::to_owned),
+        read_only: Some(false),
+        model: None,
+        models: Vec::new(),
+    }
+}
+
+fn local_pool() -> RoutedPool {
+    RoutedPool {
+        slots: 1,
+        provider: String::from("local"),
+        fallback: None,
+        caps: BTreeMap::new(),
+        models: Vec::new(),
+        has_bands: false,
+    }
 }
 
 #[test]

@@ -294,9 +294,30 @@ fn check_read_only(routing: &RoleRouting, issues: &mut Vec<Issue>) {
 
 fn check_pump(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>) {
     need_role(routing, "hand", &pump.to, legacy_hand(pump), issues);
-    need_role(routing, "merge", "merge", true, issues);
+    check_merge_role(routing, issues);
     need_role(routing, "gate", "gate", true, issues);
     warn_legacy(pump, routing, issues);
+}
+
+fn check_merge_role(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.merge() else {
+        issues.push(Issue::error(
+            "the pump needs an active merge role assigned to a pool for durable merge jobs",
+        ));
+        return;
+    };
+    if role.status != "active" {
+        issues.push(Issue::error(format!(
+            "merge role {} must be active to receive durable merge jobs",
+            role.name
+        )));
+    }
+    if role.pool.is_none() {
+        issues.push(Issue::error(format!(
+            "merge role {} must name a pool for durable merge jobs",
+            role.name
+        )));
+    }
 }
 
 fn legacy_hand(pump: &PumpConfig) -> bool {

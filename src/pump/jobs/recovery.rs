@@ -145,7 +145,11 @@ fn pool_result(latest: &str) -> Option<(JobStatus, String)> {
 fn pool_name(latest: &str) -> Option<String> {
     latest.lines().find_map(|line| {
         let mut words = line.split_whitespace();
-        (words.next() == Some("pool")).then(|| words.next().map(str::to_owned))?
+        if words.next() != Some("pool") {
+            return None;
+        }
+        let name = words.next()?;
+        (!matches!(name, "dispatch" | "result")).then(|| name.to_owned())
     })
 }
 

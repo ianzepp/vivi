@@ -7,7 +7,7 @@ use super::{
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{FakeHost, test_ctx};
-use crate::routing::{RoleRouting, RoutedRole};
+use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
 
 #[derive(Default)]
 struct Store {
@@ -224,7 +224,7 @@ fn pool_command_carries_repository_and_write_context() {
     job.from_ref = Some(String::from("origin/next"));
     job.branch = Some(String::from("next"));
     job.budget = 45;
-    job.read_only = true;
+    job.read_only = false;
     job.with = vec![String::from("unit/u1-a1")];
     job.model = Some(String::from("model/a"));
     job.allow_default_branch = true;
@@ -240,7 +240,7 @@ fn pool_command_carries_repository_and_write_context() {
     assert!(command.contains("--model 'model/a'"));
     assert!(command.contains("--allow-default-branch"));
     assert!(command.contains("--budget 45"));
-    assert!(command.contains("--read-only"));
+    assert!(!command.contains("--read-only"));
     assert!(command.contains("--publish-ref 'refs/heads/next'"));
     assert!(command.contains(&format!("--publish-expect '{}'", "a".repeat(40))));
 }
@@ -262,7 +262,7 @@ fn promotion_job_binds_an_exact_green_candidate_to_main_on_a_scratch_branch() {
             model: None,
             models: Vec::new(),
         }],
-        ..RoleRouting::default()
+        pools: BTreeMap::from([(String::from("local"), routed_pool())]),
     });
     let mut store = Store::default();
     let tip = "0123456789012345678901234567890123456789";
@@ -277,6 +277,59 @@ fn promotion_job_binds_an_exact_green_candidate_to_main_on_a_scratch_branch() {
     assert_ne!(job.branch.as_deref(), Some("main"));
     assert!(!job.allow_default_branch);
     assert!(job.body.contains("Do not push"));
+}
+
+#[test]
+fn promotion_falls_back_to_active_merge_when_release_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(RoleRouting {
+        roles: vec![
+            RoutedRole {
+                name: String::from("release"),
+                kind: Some(String::from("release")),
+                status: String::from("paused"),
+                pool: Some(String::from("local")),
+                read_only: Some(false),
+                model: None,
+                models: Vec::new(),
+            },
+            RoutedRole {
+                name: String::from("merge"),
+                kind: Some(String::from("merge")),
+                status: String::from("active"),
+                pool: Some(String::from("local")),
+                read_only: Some(false),
+                model: None,
+                models: Vec::new(),
+            },
+        ],
+        pools: BTreeMap::from([(String::from("local"), routed_pool())]),
+    });
+    let mut store = Store::default();
+
+    let id = enqueue_promotion(
+        &ctx,
+        &mut store,
+        "default",
+        "0123456789012345678901234567890123456789",
+        &[],
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(store.jobs[&id].role, "merge");
+}
+
+fn routed_pool() -> RoutedPool {
+    RoutedPool {
+        slots: 1,
+        provider: String::from("local"),
+        fallback: None,
+        caps: BTreeMap::new(),
+        models: Vec::new(),
+        has_bands: false,
+    }
 }
 
 #[test]

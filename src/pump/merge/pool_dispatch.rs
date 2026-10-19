@@ -46,7 +46,19 @@ struct SourceResult {
 
 /// Enqueue at most one serialized merge job per repository target.
 pub(crate) fn dispatch_pool(ctx: &Ctx, st: &mut State) -> Result<Vec<String>, VivariumError> {
-    let Some(role) = ctx.routing.merge().cloned() else {
+    let role = ctx.routing.merge().filter(|role| {
+        role.status == "active"
+            && role
+                .pool
+                .as_ref()
+                .is_some_and(|pool| ctx.routing.pools.contains_key(pool))
+    });
+    let Some(role) = role.cloned() else {
+        ctx.exception(
+            "merge-route-missing",
+            &ctx.target_id,
+            "the pump needs an active merge role assigned to a configured pool to queue durable merge jobs",
+        );
         return Ok(Vec::new());
     };
     let targets = ctx.cfg.target_configs();
