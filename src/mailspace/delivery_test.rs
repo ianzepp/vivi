@@ -218,3 +218,79 @@ fn deliver_keeps_an_attachment_letter_byte_for_byte() {
     let stored = mailspace.storage().unwrap().read_message(&id).unwrap();
     assert_eq!(stored, raw.as_bytes());
 }
+
+#[test]
+fn deliver_raw_mints_the_backlog_node_and_its_edges() {
+    let (_tmp, mailspace) = space(false);
+    let domain = mailspace.address_domain();
+    let work = |subject: &str, kind: &str, deps: &[&str]| {
+        let mut headers = format!(
+            "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: {subject}\r\n\
+             Message-ID: <{subject}@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+             X-Vivi-Kind: {kind}\r\n"
+        );
+        for dep in deps {
+            headers.push_str(&format!("X-Vivi-Depends-On: {dep}\r\n"));
+        }
+        format!("{headers}\r\ndone_when: {subject}\r\n")
+    };
+    let node = |item: &str| {
+        mailspace
+            .graph_show("backlog")
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.source_id == item)
+            .unwrap_or_else(|| panic!("no node for {item}"))
+    };
+    let nodes = || mailspace.graph_show("backlog").unwrap().nodes.len();
+
+    let first_bytes = work("first", "need", &[]);
+    mailspace.deliver_raw(first_bytes.as_bytes(), "needs").unwrap();
+    let first = mailspace
+        .list_kind(Some("hand"), "needs", "need")
+        .unwrap()
+        .remove(0)
+        .handle;
+    let minted = node(&first);
+    assert_eq!(minted.state, "open");
+    assert_eq!(minted.readiness, "ready");
+
+    mailspace
+        .deliver_raw(work("second", "task", &[&first]).as_bytes(), "tasks")
+        .unwrap();
+    let second = mailspace
+        .list_kind(Some("hand"), "tasks", "task")
+        .unwrap()
+        .remove(0)
+        .handle;
+    let show = mailspace.graph_show("backlog").unwrap();
+    assert_eq!(
+        show.nodes
+            .iter()
+            .find(|node| node.source_id == second)
+            .expect("the dependent node")
+            .readiness,
+        "blocked"
+    );
+    assert_eq!(show.edges.len(), 1, "{:?}", show.edges);
+    // Ingest minted both nodes and the edge: the audit finds no drift to
+    // repair. (It runs before the no-mint deliveries below because the audit
+    // treats any letter in a work folder as work, and the synthetic event
+    // letter files under `tasks`.)
+    let findings = mailspace.backlog_audit(false).unwrap().findings;
+    assert!(findings.is_empty(), "{findings:?}");
+
+    let before = nodes();
+    mailspace
+        .deliver_raw(letter("mind@local", "hand@local").as_bytes(), "inbox")
+        .unwrap();
+    assert_eq!(nodes(), before, "plain mail mints no node");
+    let event = format!(
+        "From: mind@{domain}\r\nTo: hand@{domain}\r\nSubject: done\r\n\
+         Message-ID: <event@x.test>\r\nDate: Sun, 11 Oct 2026 12:00:00 +0000\r\n\
+         X-Vivi-Event: done\r\nX-Vivi-Kind: task\r\n\r\ndone_when: third\r\n"
+    );
+    mailspace.deliver_raw(event.as_bytes(), "tasks").unwrap();
+    assert_eq!(nodes(), before, "an event letter mints no node");
+}

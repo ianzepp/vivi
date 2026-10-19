@@ -301,6 +301,8 @@ impl Mailspace {
             &role,
             &subject,
         )?;
+        let kind = super::kind::raw_work_kind(data, &role);
+        self.backlog_attach_raw_delivery(&stored, kind, &subject, data)?;
         let mut delivered = stored
             .into_iter()
             .zip(requests.iter())

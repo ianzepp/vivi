@@ -3,8 +3,9 @@
 //! A work letter names its prerequisites in repeated `X-Vivi-Depends-On`
 //! headers, so the order of work is a fact of the letters, not of the route
 //! that filed them. Every route that attaches a work letter's node (local
-//! send, pull, fetch, resync, reference follow, audit repair, role adoption)
-//! goes through [`Mailspace::backlog_attach_letter`], which mints the node and
+//! send, pull, fetch, resync, raw delivery `vivi mail deliver`, reference
+//! follow, audit repair, role adoption) goes through
+//! [`Mailspace::backlog_attach_letter`], which mints the node and
 //! one prerequisite edge for each dependency this mailspace holds as backlog
 //! work.
 //!
@@ -22,8 +23,8 @@ use super::backlog::{BacklogDep, backlog_node_by_token, resolve_backlog_dep};
 use super::holding::is_foreign_account;
 use crate::error::VivariumError;
 use crate::storage::{
-    BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, Storage, WorkGraphEdgeInput,
-    WorkGraphEdgeRow, WorkGraphNodeRow,
+    BACKLOG_GRAPH_CODE, BacklogMintInput, BacklogNodeInput, Storage, StoredMessage,
+    WorkGraphEdgeInput, WorkGraphEdgeRow, WorkGraphNodeRow,
 };
 
 const DEPENDS_ON_HEADER: &str = "X-Vivi-Depends-On";
@@ -141,6 +142,32 @@ impl Mailspace {
             return Ok(());
         }
         self.link_dependencies(message_id, &refs).map(|_| ())
+    }
+
+    /// Attach the backlog nodes of a raw delivery's stored rows. A work
+    /// letter mints its node and prerequisite edges at ingest, exactly as a
+    /// pulled letter does; plain mail and event letters mint none. Edges whose
+    /// dependency names a letter that only now arrived are settled at the same
+    /// time.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] on an invalid handle or storage failure.
+    pub(super) fn backlog_attach_raw_delivery(
+        &self,
+        stored: &[StoredMessage],
+        kind: Option<&str>,
+        subject: &str,
+        letter: &[u8],
+    ) -> Result<(), VivariumError> {
+        let mut arrived: Vec<ArrivedLetter> = Vec::new();
+        for msg in stored {
+            if let Some(kind) = kind {
+                self.backlog_attach_letter(kind, &msg.message_id, subject, letter)?;
+            }
+            arrived.push((msg.message_id.clone(), msg.content_id.clone()));
+        }
+        self.backlog_settle_pending_dependencies(&arrived)?;
+        Ok(())
     }
 
     /// Make the edges that were waiting for letters that just arrived.

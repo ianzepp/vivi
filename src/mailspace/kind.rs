@@ -17,6 +17,45 @@ pub(super) fn message_kind(data: &[u8]) -> Option<String> {
     None
 }
 
+/// The backlog work kind a raw delivery mints, or `None` for plain mail.
+///
+/// An event letter is a record, never work, whatever kind it names. A work
+/// letter says its kind in `X-Vivi-Kind`; one that does not falls back to the
+/// role its folder files under.
+pub(super) fn raw_work_kind(data: &[u8], role: &str) -> Option<&'static str> {
+    let Ok(raw) = std::str::from_utf8(data) else {
+        return None;
+    };
+    let mut declared: Option<&str> = None;
+    for line in raw.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(super::EVENT_HEADER) {
+            return None;
+        }
+        if name.eq_ignore_ascii_case("X-Vivi-Kind") {
+            declared = Some(value.trim());
+        }
+    }
+    let named = declared.and_then(|kind| match kind.to_ascii_lowercase().as_str() {
+        "need" => Some("need"),
+        "task" => Some("task"),
+        "want" => Some("want"),
+        _ => None,
+    });
+    named.or(match role {
+        "tasks" => Some("task"),
+        "needs" => Some("need"),
+        "wants" => Some("want"),
+        _ => None,
+    })
+}
+
 /// The kind derivable without the blob: the role's own kind, or the kind
 /// named by the lifecycle commands on the item's event log. Every filed
 /// work item carries its `need|task|want send` event and every finished one
