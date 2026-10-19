@@ -241,6 +241,20 @@ fn catalog_matches_json_detects_change() {
 }
 
 #[test]
+fn recorded_targets_in_reads_lines_and_missing() {
+    let config = tempdir().unwrap();
+    assert!(skills::recorded_targets_in(config.path()).is_empty());
+
+    let path = config.path().join("vivi").join("skills-targets.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "/tmp/one\n\n  /tmp/two  \n").unwrap();
+    assert_eq!(
+        skills::recorded_targets_in(config.path()),
+        vec![PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
+    );
+}
+
+#[test]
 fn record_target_appends_and_dedups() {
     let config = tempdir().unwrap();
     let first = tempdir().unwrap();

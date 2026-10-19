@@ -240,6 +240,35 @@ pub fn record_target(dir: &Path) -> Result<(), VivariumError> {
     record_target_in(&root, dir)
 }
 
+/// Install target directories recorded by `vivi skills install`, in file
+/// order, one per non-empty line.
+///
+/// A missing or unreadable list reads as empty; this never errors.
+#[must_use]
+pub fn recorded_targets_in(config_root: &Path) -> Vec<PathBuf> {
+    let path = config_root.join(CONFIG_DIRECTORY).join(TARGETS_FILENAME);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Install target directories under the user's config directory.
+///
+/// Empty when the config directory is unknown or nothing was recorded; this
+/// never errors.
+#[must_use]
+pub fn recorded_targets() -> Vec<PathBuf> {
+    match dirs::config_dir() {
+        Some(root) => recorded_targets_in(&root),
+        None => Vec::new(),
+    }
+}
+
 /// Append `dir` to the target list under `config_root`, skipping duplicates.
 fn record_target_in(config_root: &Path, dir: &Path) -> Result<(), VivariumError> {
     let path = config_root.join(CONFIG_DIRECTORY).join(TARGETS_FILENAME);
