@@ -288,13 +288,17 @@ struct Facts {
 /// Post the record of the attempt that just ended on unit `uid`: make sure
 /// its branch is on the remote, read the branch and the task receipt, and
 /// reply on the need thread. Nothing here fails the caller: every error is
-/// logged and dropped, and a repair unit (whose "need" is no mailspace
-/// thread) is skipped.
+/// logged and dropped, and a unit whose "need" is no mailspace thread is
+/// skipped: a repair unit, and a unit of a pump-synthesized fix need
+/// (`<fix_prefix>-g<tip8>`, as gate fixes and their split children carry).
+/// The pump never replies to a handle that is not a real thread: real
+/// mailspace handles are 8 hex characters and never start with the fix
+/// prefix.
 pub fn post(ctx: &Ctx, st: &mut State, uid: &str, ending: &Ending) {
     let Some(unit) = st.units.get(uid) else {
         return;
     };
-    if unit.repairs.is_some() {
+    if unit.repairs.is_some() || unit.need.starts_with(ctx.cfg.fix_prefix.as_str()) {
         return;
     }
     let (need, attempt) = (unit.need.clone(), unit.attempts);
