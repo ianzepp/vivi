@@ -175,6 +175,27 @@ fn id_below(root: &Path, dir: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// True for a slot id of either shape: `<mailspace>/<pool>/slot-<digits>`
+/// ([`is_slot_id`], a remote slot) or `<pool>/slot-<digits>` (a
+/// project-relative local slot, whose pool obeys the same word rules).
+#[must_use]
+pub fn slot_id_ok(id: &str) -> bool {
+    if is_slot_id(id) {
+        return true;
+    }
+    let parts: Vec<&str> = id.split('/').collect();
+    let [pool, slot] = parts.as_slice() else {
+        return false;
+    };
+    let index = slot.strip_prefix("slot-");
+    !pool.starts_with('-')
+        && !pool.is_empty()
+        && pool
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && index.is_some_and(|i| !i.is_empty() && i.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// The plain directories directly inside `dir` (links and dot names are
 /// skipped); none when `dir` is not there.
 fn subdirs(dir: &Path) -> Result<Vec<PathBuf>, VivariumError> {
@@ -478,7 +499,7 @@ fn mark_is(dir: &Path, name: &str, want: &str) -> bool {
 /// Vivi's own marks naming this pool and this mailspace. `Ok(None)` when
 /// there is nothing to delete.
 fn checked_slot(root: &Path, id: &str) -> Result<Option<(PathBuf, PathBuf)>, VivariumError> {
-    if !is_slot_id(id) {
+    if !slot_id_ok(id) {
         return Err(refuse(&format!("not a slot id: {id}")));
     }
     let Ok(real_root) = root.canonicalize() else {
@@ -498,14 +519,16 @@ fn checked_slot(root: &Path, id: &str) -> Result<Option<(PathBuf, PathBuf)>, Viv
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(refuse(&format!("{id} is not a plain directory")));
     }
-    let (space, rest) = id.split_once('/').unwrap_or_default();
-    let pool = rest.split('/').next().unwrap_or_default();
+    let parts: Vec<&str> = id.split('/').collect();
+    let pool = parts[parts.len() - 2];
     if !mark_is(&dir, "vivi_pool", pool) {
         return Err(refuse(&format!(
             "{id} carries no Vivi mark for pool {pool}"
         )));
     }
-    if !mark_is(&dir, "vivi_pool_mailspace", space) {
+    if let [space, _, _] = parts.as_slice()
+        && !mark_is(&dir, "vivi_pool_mailspace", space)
+    {
         return Err(refuse(&format!(
             "{id} carries no Vivi mark for mailspace {space}"
         )));
@@ -575,13 +598,17 @@ fn remove_target_worktrees(slot: &Path) -> Result<(), VivariumError> {
 /// Remove the pool directory, the mailspace directory and, if Vivi made it,
 /// the root, as each becomes empty.
 fn tidy(root: &Path, id: &str) {
-    let mut parts = id.split('/');
-    let (space, pool) = (
-        parts.next().unwrap_or_default(),
-        parts.next().unwrap_or_default(),
-    );
-    for dir in [root.join(space).join(pool), root.join(space)] {
-        std::fs::remove_dir(&dir).map(drop).unwrap_or_default();
+    let parts: Vec<&str> = id.split('/').collect();
+    if let [pool, _] = parts.as_slice() {
+        // A project-relative id has no mailspace segment: only its pool
+        // directory can empty out.
+        std::fs::remove_dir(root.join(pool))
+            .map(drop)
+            .unwrap_or_default();
+    } else {
+        for dir in [root.join(parts[0]).join(parts[1]), root.join(parts[0])] {
+            std::fs::remove_dir(&dir).map(drop).unwrap_or_default();
+        }
     }
     let only_mark = std::fs::read_dir(root).is_ok_and(|entries| {
         let names: Vec<String> = entries

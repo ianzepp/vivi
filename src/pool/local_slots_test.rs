@@ -342,6 +342,33 @@ fn destroy_leaves_a_root_it_did_not_make_and_other_pools_and_files_alone() {
 }
 
 #[test]
+fn slot_id_ok_accepts_both_shapes() {
+    assert!(slot_id_ok("ms/here/slot-1"));
+    assert!(slot_id_ok("here/slot-1"));
+    for id in [
+        "ms/here/slot-1/x",
+        "ms/here/slot",
+        "-p/slot-1",
+        "ms//slot-1",
+        "here/slot-",
+    ] {
+        assert!(!slot_id_ok(id), "{id:?}");
+    }
+}
+
+#[test]
+fn destroy_of_a_two_part_id_checks_the_exact_pool_mark() {
+    let (_tmp, root) = root();
+    create(&root, "here/slot-1", &spec("here", "", "here", 1)).unwrap();
+    destroy(&root, "here/slot-1").unwrap();
+    assert!(!root.exists(), "the root Vivi made goes with its last slot");
+    std::fs::create_dir_all(root.join("here/slot-2/marks")).unwrap();
+    std::fs::write(root.join("here/slot-2/marks/vivi_pool"), "here-fetch\n").unwrap();
+    let said = destroy(&root, "here/slot-2").unwrap_err().to_string();
+    assert!(said.contains("carries no Vivi mark for pool here"), "{said}");
+}
+
+#[test]
 fn destroy_refuses_ids_that_climb_out_of_the_root_or_are_no_slot_ids() {
     let (_tmp, root) = root();
     make(&root, "lanes-a", 1);
