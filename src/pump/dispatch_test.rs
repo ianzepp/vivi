@@ -837,3 +837,33 @@ fn apply_start_on_dispatch_failure_closes_the_task_and_zeroes_the_pool() {
         done
     );
 }
+
+#[test]
+fn dispatch_records_the_slot_on_the_unit() {
+    let (_dir, ctx, host) = setup();
+    wire(&host);
+    let mut st = State::default();
+    ordered(&mut st, &["u1"]);
+    dispatch(&ctx, &mut st);
+    assert_eq!(st.units["u1"].slot.as_deref(), Some("slot-1"));
+}
+
+#[test]
+fn parse_dispatched_slot_reads_the_real_porcelain_line() {
+    let line = "dispatched 1a2b3c4d fly4 slot-2 job001 m/a next unit/u1-a1 1800 write 0 -";
+    assert_eq!(parse_dispatched_slot(line).as_deref(), Some("slot-2"));
+}
+
+#[test]
+fn parse_dispatched_slot_treats_a_dash_as_absent() {
+    assert_eq!(
+        parse_dispatched_slot("dispatched 1a2b3c4d fly4 - job001"),
+        None
+    );
+}
+
+#[test]
+fn parse_dispatched_slot_needs_a_slot_token() {
+    assert_eq!(parse_dispatched_slot("dispatched 1a2b3c4d fly4"), None);
+    assert_eq!(parse_dispatched_slot("nothing to see here"), None);
+}
