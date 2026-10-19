@@ -437,15 +437,16 @@ pub trait PoolProvider {
     /// Returns an error if the machine is not running or the call fails.
     fn exec(&self, id: &str, script: &str, timeout_secs: u32) -> Result<ExecOutput, VivariumError>;
 
-    /// Run `script` while retaining the claim that protects the operation.
-    /// Providers with machine leases can attach the hold to the exec request.
+    /// Run `script` within the durable claim held by the caller.
+    /// A provider may briefly release its API lease if exec requires an
+    /// unleased request, but must restore `hold` before returning.
     ///
     /// # Errors
     /// Returns an error if the machine is not running or the call fails.
     fn exec_claimed(
         &self,
         id: &str,
-        _hold: &Hold,
+        _hold: &mut Hold,
         script: &str,
         timeout_secs: u32,
     ) -> Result<ExecOutput, VivariumError> {

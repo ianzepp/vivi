@@ -416,6 +416,13 @@ fn dispatch_reset_starts_and_stops_the_machine_under_its_claim() {
     assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1", "m1"]);
     assert_eq!(fake.claimed_execs.borrow().as_slice(), ["m1"]);
     assert_eq!(fake.claimed_stops.borrow().as_slice(), ["m1"]);
+    assert_eq!(
+        fake.released_holds.borrow().as_slice(),
+        [
+            ("m1".into(), "nonce-m1".into()),
+            ("m1".into(), "renewed-m1".into())
+        ]
+    );
     assert!(
         fake.leases.borrow().is_empty(),
         "claim released after start"
@@ -450,6 +457,13 @@ fn a_failed_claimed_reset_exec_stops_before_dispatch_releases_the_claim() {
     assert_eq!(fake.claimed_starts.borrow().as_slice(), ["m1"]);
     assert_eq!(fake.claimed_execs.borrow().as_slice(), ["m1"]);
     assert_eq!(fake.claimed_stops.borrow().as_slice(), ["m1"]);
+    assert_eq!(
+        fake.released_holds.borrow().as_slice(),
+        [
+            ("m1".into(), "nonce-m1".into()),
+            ("m1".into(), "renewed-m1".into())
+        ]
+    );
     assert_eq!(fake.state_of("m1"), "stopped");
     assert!(fake.meta("m1", META_TASK).is_none());
     assert!(fake.leases.borrow().is_empty());

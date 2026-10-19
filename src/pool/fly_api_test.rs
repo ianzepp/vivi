@@ -166,7 +166,9 @@ mod refresh {
             let mut requests = Vec::new();
             for body in [
                 r#"{"previous_state":"stopped"}"#,
+                r#"{"status":"success","data":{"ok":true}}"#,
                 r#"{"stdout":"abc1234","stderr":"","exit_code":0}"#,
+                r#"{"status":"success","data":{"nonce":"lease-456"}}"#,
                 r#"{"ok":true}"#,
                 r#"{"config":{"env":{},"files":[]}}"#,
                 r#"{"id":"machine-1","state":"replacing","instance_id":"new-instance","version":"new-version"}"#,
@@ -211,50 +213,59 @@ mod refresh {
             requests
         });
         let api = FlyApi::with_parts("app", &base, fixed_token);
-        let hold = Hold {
+        let mut hold = Hold {
             nonce: "lease-123".into(),
         };
 
         api.start_claimed("machine-1", &hold).unwrap();
-        api.exec_claimed("machine-1", &hold, "reset", 2).unwrap();
+        api.exec_claimed("machine-1", &mut hold, "reset", 2)
+            .unwrap();
+        assert_eq!(hold.nonce, "lease-456");
         api.stop_claimed("machine-1", &hold).unwrap();
         api.put_file("machine-1", &hold, "/work/job.tgz", b"archive")
             .unwrap();
         api.start_claimed("machine-1", &hold).unwrap();
 
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 7);
+        assert_eq!(requests.len(), 9);
         assert!(requests[0].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
-        assert!(requests[1].starts_with("POST /v1/apps/app/machines/machine-1/exec HTTP/1.1"));
-        assert!(requests[2].starts_with("POST /v1/apps/app/machines/machine-1/stop HTTP/1.1"));
-        assert!(requests[3].starts_with("GET /v1/apps/app/machines/machine-1 HTTP/1.1"));
-        assert!(requests[4].starts_with("POST /v1/apps/app/machines/machine-1 HTTP/1.1"));
+        assert!(requests[1].starts_with("DELETE /v1/apps/app/machines/machine-1/lease HTTP/1.1"));
+        assert!(requests[2].starts_with("POST /v1/apps/app/machines/machine-1/exec HTTP/1.1"));
+        assert!(requests[3].starts_with("POST /v1/apps/app/machines/machine-1/lease HTTP/1.1"));
+        assert!(requests[4].starts_with("POST /v1/apps/app/machines/machine-1/stop HTTP/1.1"));
+        assert!(requests[5].starts_with("GET /v1/apps/app/machines/machine-1 HTTP/1.1"));
+        assert!(requests[6].starts_with("POST /v1/apps/app/machines/machine-1 HTTP/1.1"));
         assert!(
-            requests[5].starts_with(
+            requests[7].starts_with(
                 "GET /v1/apps/app/machines/machine-1/wait?state=settled&instance_id=new-instance&timeout=30 HTTP/1.1"
             ),
             "{}",
-            requests[5]
+            requests[7]
         );
-        assert!(requests[6].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
-        for request in [
-            &requests[0],
-            &requests[1],
-            &requests[2],
-            &requests[4],
-            &requests[6],
-        ] {
-            let nonce = request.lines().find_map(|line| {
+        assert!(requests[8].starts_with("POST /v1/apps/app/machines/machine-1/start HTTP/1.1"));
+        let nonce = |request: &str| {
+            request.lines().find_map(|line| {
                 let (name, value) = line.split_once(':')?;
                 name.eq_ignore_ascii_case("fly-machine-lease-nonce")
                     .then_some(value.trim())
-            });
-            assert_eq!(nonce, Some("lease-123"), "{request}");
+            })
+        };
+        assert_eq!(nonce(&requests[0]), Some("lease-123"));
+        assert_eq!(nonce(&requests[1]), Some("lease-123"));
+        assert_eq!(nonce(&requests[2]), None);
+        assert_eq!(nonce(&requests[3]), None);
+        for index in [4, 6, 8] {
+            assert_eq!(nonce(&requests[index]), Some("lease-456"));
         }
-        let exec_body = requests[1].split_once("\r\n\r\n").unwrap().1;
+        let exec_body = requests[2].split_once("\r\n\r\n").unwrap().1;
         let exec_body = serde_json::from_str::<Value>(exec_body).unwrap();
         assert_eq!(exec_body["command"], json!(["bash", "-c", "reset"]));
-        let update_body = requests[4].split_once("\r\n\r\n").unwrap().1;
+        let lease_body = requests[3].split_once("\r\n\r\n").unwrap().1;
+        assert_eq!(
+            serde_json::from_str::<Value>(lease_body).unwrap()["ttl"],
+            CLAIM_TTL_SECS
+        );
+        let update_body = requests[6].split_once("\r\n\r\n").unwrap().1;
         assert_eq!(
             serde_json::from_str::<Value>(update_body).unwrap()["skip_launch"],
             true

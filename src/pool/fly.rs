@@ -289,7 +289,7 @@ impl PoolProvider for FlyctlProvider {
     fn exec_claimed(
         &self,
         id: &str,
-        hold: &Hold,
+        hold: &mut Hold,
         script: &str,
         timeout_secs: u32,
     ) -> Result<ExecOutput, VivariumError> {

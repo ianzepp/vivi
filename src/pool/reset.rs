@@ -271,7 +271,7 @@ pub fn reset_claimed_slot(
     config: &PoolConfig,
     provider: &dyn PoolProvider,
     machine_id: &str,
-    hold: &Hold,
+    hold: &mut Hold,
     base: &str,
     why: &'static str,
 ) -> Result<ResetOutcome, VivariumError> {
@@ -295,18 +295,18 @@ fn reset_remote_with_hold(
     id: &str,
     base: &str,
     why: &'static str,
-    hold: Option<&Hold>,
+    mut hold: Option<&mut Hold>,
 ) -> Result<ResetOutcome, VivariumError> {
     let started = provider.machine(id)?.state == "started";
     if !started {
-        if let Some(hold) = hold {
+        if let Some(hold) = hold.as_deref() {
             provider.start_claimed(id, hold)?;
         } else {
             provider.start(id)?;
         }
     }
     let script = remote_script(base);
-    let execution = if let Some(hold) = hold {
+    let execution = if let Some(hold) = hold.as_deref_mut() {
         provider.exec_claimed(id, hold, &script, 90)
     } else {
         provider.exec(id, &script, 90)
@@ -314,7 +314,7 @@ fn reset_remote_with_hold(
     if started {
         return parse_remote(execution?, base, why);
     }
-    let stopped = if let Some(hold) = hold {
+    let stopped = if let Some(hold) = hold.as_deref() {
         provider.stop_claimed(id, hold)
     } else {
         provider.stop(id)

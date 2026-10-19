@@ -38,6 +38,8 @@ pub struct Fake {
     pub claimed_stops: RefCell<Vec<String>>,
     /// Exec calls that arrived with the active claim hold.
     pub claimed_execs: RefCell<Vec<String>>,
+    /// Hold nonces the fake accepted for release.
+    pub released_holds: RefCell<Vec<(String, String)>>,
     /// Runs right after a lease is granted (race simulation).
     pub after_lease: RefCell<Option<Hook>>,
     /// Starting a machine fails.
@@ -314,7 +316,10 @@ impl PoolProvider for Fake {
         })
     }
 
-    fn release(&self, id: &str, _hold: &Hold) -> Result<(), VivariumError> {
+    fn release(&self, id: &str, hold: &Hold) -> Result<(), VivariumError> {
+        self.released_holds
+            .borrow_mut()
+            .push((id.to_string(), hold.nonce.clone()));
         self.leases.borrow_mut().remove(id);
         Ok(())
     }
@@ -420,14 +425,26 @@ impl PoolProvider for Fake {
     fn exec_claimed(
         &self,
         id: &str,
-        hold: &Hold,
+        hold: &mut Hold,
         script: &str,
         timeout_secs: u32,
     ) -> Result<ExecOutput, VivariumError> {
         if self.leases.borrow().get(id) != Some(&hold.nonce) {
             return Err(VivariumError::Message("not the lease holder".into()));
         }
+        if self.meta(id, META_TASK).is_none() {
+            return Err(VivariumError::Message(
+                "claim owner mark was cleared before exec".into(),
+            ));
+        }
+        self.release(id, hold)?;
         self.claimed_execs.borrow_mut().push(id.to_string());
-        self.exec(id, script, timeout_secs)
+        let execution = self.exec(id, script, timeout_secs);
+        let nonce = format!("renewed-{id}");
+        self.leases
+            .borrow_mut()
+            .insert(id.to_string(), nonce.clone());
+        hold.nonce = nonce;
+        execution
     }
 }

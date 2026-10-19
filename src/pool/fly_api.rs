@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use super::claim::CLAIM_TTL_SECS;
 use super::fly::{RawMachine, record_from_raw};
 use super::fly_token::{TOKEN_MAX_AGE, TokenCache};
 use super::github::Secret;
@@ -322,34 +323,10 @@ impl FlyApi {
         script: &str,
         timeout_secs: u32,
     ) -> Result<ExecOutput, VivariumError> {
-        self.exec_with_nonce(id, None, script, timeout_secs)
-    }
-
-    /// Run a script on a claimed machine using the lease that protects the operation.
-    ///
-    /// # Errors
-    /// Returns an error if the machine is not running or the call fails.
-    pub fn exec_claimed(
-        &self,
-        id: &str,
-        hold: &Hold,
-        script: &str,
-        timeout_secs: u32,
-    ) -> Result<ExecOutput, VivariumError> {
-        self.exec_with_nonce(id, Some(&hold.nonce), script, timeout_secs)
-    }
-
-    fn exec_with_nonce(
-        &self,
-        id: &str,
-        nonce: Option<&str>,
-        script: &str,
-        timeout_secs: u32,
-    ) -> Result<ExecOutput, VivariumError> {
         let body = json!({"command": ["bash", "-c", script], "timeout": timeout_secs});
         let path = format!("/machines/{id}/exec");
         let wait = Duration::from_secs(u64::from(timeout_secs) + 15);
-        let reply = self.call("POST", &path, nonce, Some(&body), wait)?;
+        let reply = self.call("POST", &path, None, Some(&body), wait)?;
         if reply.status != 200 {
             return Err(VivariumError::Message(format!(
                 "Fly POST {path} failed (HTTP {}): {}",
@@ -357,17 +334,70 @@ impl FlyApi {
                 reply_message(&reply.body)
             )));
         }
-        Ok(ExecOutput {
-            stdout: reply.body["stdout"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            stderr: reply.body["stderr"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            exit_code: reply.body["exit_code"].as_i64().unwrap_or(-1),
-        })
+        Ok(exec_output(reply))
+    }
+
+    /// Run exec under the durable claim, handing off the API lease it rejects.
+    ///
+    /// The task and claimed markers remain in place while the API lease is
+    /// released. Reacquisition is attempted even when exec fails. When it
+    /// succeeds, `hold` is refreshed before returning so the caller can stop
+    /// and clean up.
+    ///
+    /// # Errors
+    /// Returns an error if exec fails or the API lease cannot be reacquired.
+    pub fn exec_claimed(
+        &self,
+        id: &str,
+        hold: &mut Hold,
+        script: &str,
+        timeout_secs: u32,
+    ) -> Result<ExecOutput, VivariumError> {
+        self.release(id, hold)?;
+        let execution = self.exec(id, script, timeout_secs);
+        let renewed = self.lease(id, CLAIM_TTL_SECS);
+        match renewed {
+            Ok(Some(new_hold)) => {
+                hold.nonce = new_hold.nonce;
+                execution
+            }
+            Ok(None) => match execution {
+                Ok(_) => Err(VivariumError::Message(format!(
+                    "Fly lease for slot {id} was taken during reset exec"
+                ))),
+                Err(exec_error) => {
+                    eprintln!(
+                        "warning: could not reacquire Fly lease for {id} after exec: another holder owns it"
+                    );
+                    Err(exec_error)
+                }
+            },
+            Err(lease_error) => match execution {
+                Ok(_) => Err(VivariumError::Message(format!(
+                    "could not reacquire Fly lease for {id} after reset exec: {lease_error}"
+                ))),
+                Err(exec_error) => {
+                    eprintln!(
+                        "warning: could not reacquire Fly lease for {id} after exec failure: {lease_error}"
+                    );
+                    Err(exec_error)
+                }
+            },
+        }
+    }
+}
+
+fn exec_output(reply: Reply) -> ExecOutput {
+    ExecOutput {
+        stdout: reply.body["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        stderr: reply.body["stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        exit_code: reply.body["exit_code"].as_i64().unwrap_or(-1),
     }
 }
 
