@@ -54,6 +54,9 @@ pub struct GraphNodeView {
     pub kind: String,
     pub readiness: String,
     pub blocked_by: Vec<String>,
+    /// Dependency references the letter names that this mailspace does not
+    /// hold as done: unresolved, so the node waits.
+    pub awaiting_dependencies: Vec<String>,
     pub successors: Vec<String>,
 }
 
@@ -131,6 +134,9 @@ impl Mailspace {
         if graph.code == BACKLOG_GRAPH_CODE {
             // Foreign and sent-copy nodes are not this mailspace's dispatch.
             self.mark_holdings(&storage, &mut node_views)?;
+            // A dependency the letter names that is not present and done
+            // blocks its node too, edge or no edge.
+            self.mark_awaiting_dependencies(&storage, &nodes, &mut node_views)?;
             ready = with_readiness(&node_views, "ready");
             blocked = with_readiness(&node_views, "blocked");
         }
@@ -821,6 +827,7 @@ fn node_view(
         kind: node.kind.clone(),
         readiness,
         blocked_by: unfinished,
+        awaiting_dependencies: Vec::new(),
         successors: succ,
     }
 }

@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::Mailspace;
 use super::backlog::{BacklogDep, backlog_node_by_token, resolve_backlog_dep};
+use super::graph::GraphNodeView;
 use super::holding::is_foreign_account;
 use crate::error::VivariumError;
 use crate::storage::{
@@ -286,6 +287,52 @@ impl Mailspace {
     pub(super) fn dependency_is_unmet(&self, token: &str) -> Result<bool, VivariumError> {
         let storage = self.storage()?;
         Ok(!dependency_satisfied(&storage, token))
+    }
+
+    /// Mark the nodes whose letter names a dependency this mailspace does not
+    /// hold as done. A reference that does not resolve yet (not synced, or
+    /// never held here) blocks its dependent exactly like a held, open one:
+    /// `blocked_by` carries the raw reference token and `awaiting_dependencies`
+    /// names what is still awaited. Stale map entries whose reference now
+    /// resolves to a done row are dropped rather than marking anything.
+    pub(super) fn mark_awaiting_dependencies(
+        &self,
+        storage: &Storage,
+        nodes: &[WorkGraphNodeRow],
+        views: &mut [GraphNodeView],
+    ) -> Result<(), VivariumError> {
+        for (message_id, refs) in storage.pending_dependencies()? {
+            let handle = storage.display_handle(&message_id)?;
+            let Some(node) = backlog_node_by_token(storage, nodes, &handle)? else {
+                continue;
+            };
+            let awaiting: Vec<String> = refs
+                .into_iter()
+                .filter(|reference| !dependency_satisfied(storage, reference))
+                .collect();
+            if awaiting.is_empty() {
+                continue;
+            }
+            let Some(view) = views.iter_mut().find(|view| view.handle == node.handle) else {
+                continue;
+            };
+            if view.state != "open" {
+                continue;
+            }
+            if view.readiness == "ready" {
+                view.readiness = "blocked".into();
+            }
+            if view.readiness != "blocked" {
+                continue;
+            }
+            for token in &awaiting {
+                if !view.blocked_by.contains(token) {
+                    view.blocked_by.push(token.clone());
+                }
+            }
+            view.awaiting_dependencies = awaiting;
+        }
+        Ok(())
     }
 
     /// The edges the copies of one letter should have and do not: open nodes

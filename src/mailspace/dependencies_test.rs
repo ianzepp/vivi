@@ -142,8 +142,18 @@ fn a_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
 
     assert_eq!(
         readiness(&mailspace, &task),
-        "ready",
-        "nothing to wait for yet"
+        "blocked",
+        "an unresolved reference blocks the dependent"
+    );
+    let blocked = mailspace.graph_blocked("backlog", Some("task")).unwrap();
+    let row = blocked
+        .iter()
+        .find(|node| node.source_id == task)
+        .expect("the dependent task is blocked");
+    assert_eq!(row.blocked_by, vec!["deadbeef".to_string()]);
+    assert_eq!(
+        node_of(&mailspace, &task).unwrap().awaiting_dependencies,
+        ["deadbeef".to_string()]
     );
     assert_eq!(edge_count(&mailspace), 0);
     assert_eq!(
@@ -182,10 +192,29 @@ fn a_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
 
     assert_eq!(made, 1);
     assert_eq!(edge_count(&mailspace), 1);
+    let dep = mailspace
+        .storage()
+        .unwrap()
+        .display_handle(&stored.message_id)
+        .unwrap();
+    let dep = node_of(&mailspace, &dep)
+        .map_or(dep, |node| node.source_id);
     assert_eq!(readiness(&mailspace, &task), "blocked");
+    let row = node_of(&mailspace, &task).unwrap();
+    assert_eq!(row.blocked_by, vec![dep.clone()], "the arrived open item");
+    assert!(
+        row.awaiting_dependencies.is_empty(),
+        "a held, open dependency is an edge, not an unresolved reference: {:?}",
+        row.awaiting_dependencies
+    );
     assert_eq!(blocked_listing(&mailspace), ["second"]);
     let pending = mailspace.storage().unwrap().pending_dependencies().unwrap();
     assert!(pending.is_empty(), "{pending:?}");
+
+    // Once the dependency arrives and is done, the dependent becomes ready.
+    mailspace.backlog_complete_item(&dep).unwrap();
+    assert_eq!(node_of(&mailspace, &dep).unwrap().state, "done");
+    assert_eq!(readiness(&mailspace, &task), "ready");
 }
 
 #[test]
@@ -193,7 +222,18 @@ fn a_reference_that_can_never_resolve_is_remembered_and_unmet() {
     let (_tmp, mailspace) = space();
     let (_, task) = file(&mailspace, "hand", "task", "second", &["T1"]);
 
-    assert_eq!(readiness(&mailspace, &task), "ready");
+    assert_eq!(
+        readiness(&mailspace, &task),
+        "blocked",
+        "a reference that can never resolve still blocks"
+    );
+    let row = node_of(&mailspace, &task).unwrap();
+    assert!(
+        row.blocked_by.iter().any(|token| token == "T1"),
+        "blocked_by names the raw reference: {:?}",
+        row.blocked_by
+    );
+    assert_eq!(row.awaiting_dependencies, ["T1".to_string()]);
     let pending = mailspace.storage().unwrap().pending_dependencies().unwrap();
     assert!(
         pending.iter().flat_map(|(_, refs)| refs).any(|r| r == "T1"),
@@ -239,7 +279,18 @@ fn a_dependency_held_for_another_mailspace_makes_no_edge() {
         node_of(&mailspace, &theirs).is_none(),
         "foreign work mints no node"
     );
-    assert_eq!(readiness(&mailspace, &task), "ready");
+    assert_eq!(
+        readiness(&mailspace, &task),
+        "blocked",
+        "a foreign-held reference blocks until it is present and done"
+    );
+    assert!(
+        node_of(&mailspace, &task)
+            .unwrap()
+            .blocked_by
+            .contains(&theirs),
+        "blocked_by names the foreign-held reference"
+    );
     assert_eq!(edge_count(&mailspace), 0);
     let pending = mailspace.storage().unwrap().pending_dependencies().unwrap();
     assert_eq!(
