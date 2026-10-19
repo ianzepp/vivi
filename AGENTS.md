@@ -176,12 +176,13 @@ to hide a slowdown.
 | `cargo check --quiet` | 17.03s | 60s |
 | `cargo build --bin vivi --quiet` | 20.52s | 75s |
 | `cargo test --lib --quiet` | 78.98s | 180s |
+| `cargo test --quiet` | 190.95s | 270s |
 | `cargo test --test hygiene --quiet` | 20.54s | 60s |
 | `cargo test --test '*' --quiet --no-fail-fast` | 145.66s | 270s |
 
-The integration measurement included one obsolete status-line assertion;
-its runtime is a timing baseline, not a clean-gate receipt. A full delivery
-still requires `cargo test` and the source hygiene check on the delivered tip.
+The full-gate measurement passed 3,203 tests with ten ignored. Timings are
+baselines, not acceptance receipts for later changes. A full delivery still
+requires `cargo test` and the source hygiene check on the delivered tip.
 Keep one Cargo writer per shared target. Run the final gate from the integration
 checkout and refresh generated embedded skills after changing checkout roots.
 
