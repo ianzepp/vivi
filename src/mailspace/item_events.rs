@@ -43,7 +43,7 @@
 //! item arrives and the link is made.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use mail_parser::{HeaderValue, MessageParser};
 use serde::Serialize;
@@ -426,6 +426,26 @@ pub(crate) fn with_clock_skew<T>(micros: i64, body: impl FnOnce() -> T) -> T {
     body()
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_SETTLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm one injected failure in the next [`Mailspace::settle_item`] call on
+/// this thread: the call returns an error before touching any state. The
+/// flag is consumed by the call it fails.
+#[cfg(test)]
+pub(crate) fn fail_next_settle() -> bool {
+    FAIL_NEXT_SETTLE.with(|flag| flag.replace(true))
+}
+
+/// Consume the injected-failure flag, telling whether this settle is the
+/// one the test armed.
+#[cfg(test)]
+fn take_fail_next_settle() -> bool {
+    FAIL_NEXT_SETTLE.with(|flag| flag.replace(false))
+}
+
 /// Mark the unabsorbed rows of `item` with the clock reading at which a
 /// skipped letter begins to count, or clear the mark when none is skipped.
 fn record_deferral(
@@ -670,6 +690,10 @@ impl Mailspace {
         tally: &mut EventTally,
         keep_reports: bool,
     ) -> Result<(), VivariumError> {
+        #[cfg(test)]
+        if take_fail_next_settle() {
+            return Err(VivariumError::Other("injected settle failure (test)".into()));
+        }
         // Most work has no replies at all: skip the parse for it.
         if storage.reply_child_contents(content_id)?.is_empty() {
             return Ok(());
@@ -784,7 +808,9 @@ impl Mailspace {
     /// arrival-driven settle only reaches the items a pull touched. Each
     /// such item is settled as if the letter had just arrived, so its head
     /// moves every row it names. Idempotent: a settled item drops its mark
-    /// and is not visited again. Events ignored here were counted when
+    /// and is not visited again, and the mark is dropped only after a
+    /// successful settle — a failed settle leaves it, so the next release
+    /// pass retries the item. Events ignored here were counted when
     /// they arrived and are not counted twice.
     ///
     /// # Errors
@@ -793,18 +819,23 @@ impl Mailspace {
         let mut tally = EventTally::default();
         let storage = self.storage()?;
         let now = clock_micros();
-        let due: BTreeSet<String> = storage
+        // The earliest bound each due item carried when the pass began.
+        let due: BTreeMap<String, i64> = storage
             .deferred_event_contents()?
             .into_iter()
             .filter(|(_, until)| *until <= now)
-            .map(|(content_id, _)| content_id)
             .collect();
-        for content_id in &due {
-            // Settled again below with the clock's verdict: a letter still
-            // dated past the bound writes its mark anew.
-            storage.clear_event_deferral(content_id)?;
+        for (content_id, before) in &due {
             let mut settled = EventTally::default();
+            // Settle first: on an error the `?` returns before any clear,
+            // so the mark survives and the next pass retries the item. A
+            // letter still dated past the bound writes its mark anew with a
+            // later release, which the clear below must not wipe.
             self.settle_item(&storage, content_id, &mut settled, false)?;
+            let after = storage.event_deferral_until(content_id)?;
+            if !after.is_some_and(|until| until > *before) {
+                storage.clear_event_deferral(content_id)?;
+            }
             tally.applied += settled.applied;
         }
         Ok(tally)
