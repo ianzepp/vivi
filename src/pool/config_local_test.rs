@@ -61,6 +61,27 @@ fn the_root_has_a_default_and_is_a_directory_of_its_own() {
 }
 
 #[test]
+fn default_local_root_is_project_relative() {
+    let mut config = parse(FETCH);
+    config.local.root = None;
+    config.validate(&id()).unwrap();
+    assert_eq!(config.local.root_or_default(), ".vivi/pool");
+    let site = crate::pool::local_site::resolve(
+        config.local.root_or_default(),
+        std::path::Path::new("/proj"),
+        "space",
+        "here",
+    )
+    .unwrap();
+    assert!(site.relative, "the default root resolves against the project");
+    assert_eq!(
+        site.pool_dir,
+        std::path::Path::new("/proj/.vivi/pool/here"),
+        "a slot is <project>/.vivi/pool/<pool>/slot-<n>, with no mailspace segment"
+    );
+}
+
+#[test]
 #[test]
 fn relative_local_root_is_accepted() {
     let config: PoolConfig = toml::from_str(

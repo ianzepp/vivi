@@ -31,8 +31,9 @@ const DEFAULT_DOCKER_MEMORY: &str = "4g";
 const DEFAULT_DOCKER_TMPFS: &str = "2g";
 /// Where an `ssh` pool keeps its slot directories when `root` is not set.
 pub const DEFAULT_SSH_ROOT: &str = "~/vivi-pool";
-/// Where a `local` pool keeps its slot directories when `root` is not set.
-pub const DEFAULT_LOCAL_ROOT: &str = "~/vivi-pool";
+/// Where a `local` pool keeps its slot directories when `root` is not set:
+/// `.vivi/pool` inside the project.
+pub const DEFAULT_LOCAL_ROOT: &str = ".vivi/pool";
 
 /// Remote lane pool settings: one `[pools.<name>]` table. Machine-host
 /// settings live in [`PoolFly`], [`PoolDocker`], [`PoolSsh`] and [`PoolLocal`].
@@ -265,9 +266,10 @@ impl PoolSsh {
 /// current user, with no isolation.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PoolLocal {
-    /// Directory that holds the pools:
-    /// `<root>/<mailspace>/<pool>/slot-<n>/`. `~/` means the home
-    /// directory. Default: `~/vivi-pool`.
+    /// Directory that holds the pools. `~/` means the home directory, a
+    /// relative path resolves against the project root. Default: `.vivi/pool`
+    /// inside the project, where a slot is
+    /// `<project>/.vivi/pool/<pool>/slot-<n>/` (no mailspace segment).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
     /// A Git repository already on this machine. When set, each slot's
