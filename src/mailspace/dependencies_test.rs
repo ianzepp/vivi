@@ -313,7 +313,7 @@ fn audit_reports_header_drift_and_repair_makes_the_edge() {
 }
 
 #[test]
-fn deliver_raw_followed_by_repair_orders_the_work() {
+fn deliver_raw_orders_the_work_without_repair() {
     let (_tmp, mailspace) = space();
     // A graph exists, so the audit has candidates.
     let (_, seed) = file(&mailspace, "hand", "task", "seed", &[]);
@@ -329,12 +329,6 @@ fn deliver_raw_followed_by_repair_orders_the_work() {
         .deliver_raw(&letter(&mailspace, "second", "task", &[&first]), "tasks")
         .unwrap();
 
-    let report = mailspace.backlog_audit(true).unwrap();
-    assert!(
-        report.findings.iter().any(|f| f.class == "missing_node"),
-        "{:?}",
-        report.findings
-    );
     let task = mailspace
         .list_kind(Some("hand"), "tasks", "task")
         .unwrap()
@@ -342,8 +336,8 @@ fn deliver_raw_followed_by_repair_orders_the_work() {
         .find(|view| view.subject == "second")
         .unwrap()
         .handle;
-    assert_eq!(readiness(&mailspace, &task), "blocked");
     assert_eq!(readiness(&mailspace, &first), "ready");
+    assert_eq!(readiness(&mailspace, &task), "blocked");
     assert!(mailspace.backlog_audit(false).unwrap().findings.is_empty());
 }
 
