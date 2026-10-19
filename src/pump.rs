@@ -11,6 +11,7 @@ pub mod collect;
 pub mod config;
 pub mod control;
 pub mod dispatch;
+pub mod envfail;
 pub mod gate;
 pub mod gatefix;
 pub mod host;
@@ -144,3 +145,7 @@ mod quarantine_test;
 #[cfg(test)]
 #[path = "pump/attempt_record_test.rs"]
 mod attempt_record_test;
+
+#[cfg(test)]
+#[path = "pump/envfail_test.rs"]
+mod envfail_test;
