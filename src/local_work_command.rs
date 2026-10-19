@@ -460,11 +460,7 @@ fn move_item(
 /// attempts, summed agent time and the slowest attempt, read from the
 /// closed item's thread. A missing or unreadable thread prints nothing, so
 /// the close itself never fails.
-pub(crate) fn print_close_timing(
-    project: Option<&std::path::Path>,
-    handle: &str,
-    receipts: bool,
-) {
+pub(crate) fn print_close_timing(project: Option<&std::path::Path>, handle: &str, receipts: bool) {
     if let Some((opened, attempts)) = read_close_thread(project, handle, receipts) {
         let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
         println!(

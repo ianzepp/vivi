@@ -113,7 +113,11 @@ fn a_dependency_that_arrives_in_a_later_pull_makes_the_edge_then() {
 
     assert_eq!(node(&w, "second").readiness, "blocked");
     assert_eq!(blocked_subjects(&w, "hand"), ["second"]);
-    assert_eq!(dispatched(&w), ["first"], "the dependency, not the dependent");
+    assert_eq!(
+        dispatched(&w),
+        ["first"],
+        "the dependency, not the dependent"
+    );
 
     // Once the dependency arrives and is done, the dependent becomes ready.
     let first = node(&w, "first").source_id;
