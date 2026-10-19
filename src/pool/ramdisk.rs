@@ -24,6 +24,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+
 /// Every RAM disk volume name starts with this, so orphan sweeps and
 /// parsers can recognize our disks.
 pub const VOLUME_PREFIX: &str = "vivi-";
@@ -88,6 +90,50 @@ pub fn wait_error(want_gib: u64, free_gib: u64, held_gib: u64, margin_gib: u64) 
         "ramdisk-wait: need {want_gib} GiB, {free_gib} GiB free, \
          {held_gib} GiB held, {margin_gib} GiB margin"
     )
+}
+
+/// The memory held by the RAM disks attached now: the sum of the sizes
+/// [`mounted`] reports. A disk missing from the `df` listing counts as zero.
+#[must_use]
+pub fn held_gib(runner: &dyn Runner) -> u64 {
+    mounted(runner).iter().map(|disk| disk.size_gib).sum()
+}
+
+/// Admit a job wanting `want_gib` against `available` bytes of memory, with
+/// `margin_gib` kept free for the compiler and the system. This is the half
+/// tests drive directly, since it never reads real memory.
+///
+/// # Errors
+/// Returns [`wait_error`], whose `ramdisk-wait:` prefix is the cross-unit
+/// contract, when the job does not fit. The job then waits queued: there is no
+/// SSD fallback.
+pub fn admit_with(
+    runner: &dyn Runner,
+    available: u64,
+    want_gib: u64,
+    margin_gib: u64,
+) -> Result<(), String> {
+    let held = held_gib(runner);
+    if admits(available, held, want_gib, margin_gib) {
+        return Ok(());
+    }
+    Err(wait_error(want_gib, available / GIB, held, margin_gib))
+}
+
+/// Admit a job wanting `want_gib` against the memory the OS reports free now.
+///
+/// # Errors
+/// Same as [`admit_with`]: a `ramdisk-wait:` error means the job waits queued.
+pub fn admit(runner: &dyn Runner, want_gib: u64, margin_gib: u64) -> Result<(), String> {
+    admit_with(runner, available_memory(), want_gib, margin_gib)
+}
+
+/// Available memory in bytes, as `sysinfo` reports it right now.
+fn available_memory() -> u64 {
+    let system = System::new_with_specifics(
+        RefreshKind::new().with_memory(MemoryRefreshKind::new().with_ram()),
+    );
+    system.available_memory()
 }
 
 /// Whether `text` reports a full disk (ENOSPC): the kernel phrase or the

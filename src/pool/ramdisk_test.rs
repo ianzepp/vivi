@@ -378,3 +378,56 @@ fn mounted_reports_nothing_when_the_listings_fail() {
 
     assert!(mounted(&runner).is_empty());
 }
+
+/// A runner whose listings report no attached disks, so `held_gib` is zero.
+fn empty_runner() -> FakeRunner {
+    FakeRunner::new(&[("mount", Ok("")), ("df -g", Ok(""))])
+}
+
+/// A runner holding two RAM disks of `first` and `second` GiB.
+fn two_disk_runner(first: u64, second: u64) -> FakeRunner {
+    let mounts = "\
+/dev/disk5s1 on /Volumes/vivi-here-slot3-job1 (apfs, local)
+/dev/disk7s1 on /Volumes/vivi-here-slot4-job2 (apfs, local)
+";
+    let df = format!(
+        "Filesystem     1G-blocks Used Available Capacity Mounted on\n\
+         /dev/disk5s1          {first}    1         0     4%   /Volumes/vivi-here-slot3-job1\n\
+         /dev/disk7s1          {second}    1         0     4%   /Volumes/vivi-here-slot4-job2\n"
+    );
+    FakeRunner::new(&[("mount", Ok(mounts)), ("df -g", Ok(df.as_str()))])
+}
+
+#[test]
+fn held_gib_sums_the_mounted_disks() {
+    assert_eq!(held_gib(&two_disk_runner(30, 8)), 38);
+    assert_eq!(held_gib(&empty_runner()), 0);
+    assert_eq!(held_gib(&two_disk_runner(0, 0)), 0);
+}
+
+#[test]
+fn admit_with_accepts_a_job_that_fits() {
+    // 30 GiB free, 8 + 4 + 6 = 18 GiB needed.
+    assert_eq!(admit_with(&empty_runner(), 30 * GIB, 8, 6), Ok(()));
+    // The exact boundary is admitted.
+    assert_eq!(admit_with(&empty_runner(), 14 * GIB, 8, 6), Ok(()));
+    // Held disks count against the job: 4 GiB held pushes the need to 18.
+    assert_eq!(admit_with(&two_disk_runner(2, 2), 18 * GIB, 8, 6), Ok(()));
+}
+
+#[test]
+fn admit_with_queues_the_job_when_held_disks_push_it_over() {
+    // Without the held disks 16 GiB would fit 8 + 6; with 4 GiB held it does not.
+    let runner = two_disk_runner(2, 2);
+    let error = admit_with(&runner, 16 * GIB, 8, 6).expect_err("held disks overflow");
+    assert!(error.starts_with("ramdisk-wait:"), "{error}");
+    assert!(error.contains("16 GiB free"), "{error}");
+    assert!(error.contains("4 GiB held"), "{error}");
+}
+
+#[test]
+fn admit_with_queues_the_job_when_free_memory_is_short() {
+    let error = admit_with(&empty_runner(), 12 * GIB, 8, 6).expect_err("too little free");
+    assert!(error.starts_with("ramdisk-wait:"), "{error}");
+    assert!(error.contains("12 GiB free"), "{error}");
+}
