@@ -7,6 +7,7 @@ pub mod attempt_record;
 pub mod audit;
 pub mod blockers;
 pub mod board;
+pub mod cadence;
 pub mod boardpass;
 pub mod brief;
 pub mod closeout;
@@ -58,6 +59,10 @@ mod store_test;
 #[cfg(test)]
 #[path = "pump/transient_test.rs"]
 mod transient_test;
+
+#[cfg(test)]
+#[path = "pump/cadence_test.rs"]
+mod cadence_test;
 
 #[cfg(test)]
 #[path = "pump/report_test.rs"]

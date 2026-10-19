@@ -13,6 +13,22 @@ use crate::duration::parse_duration_secs;
 const DUE_GRACE_NUM: u64 = 1;
 const DUE_GRACE_DEN: u64 = 10;
 
+/// Role kinds the pump may auto-run on their own cadence.
+pub const AUTO_RUN_KINDS: [&str; 2] = ["head", "scoper"];
+
+/// True when a role kind may be auto-run by the pump on its cadence.
+/// Matching is case-insensitive and trims surrounding whitespace; a role
+/// with no kind never auto-runs.
+#[must_use]
+pub fn auto_run_kind(kind: Option<&str>) -> bool {
+    let Some(kind) = kind.map(str::trim) else {
+        return false;
+    };
+    AUTO_RUN_KINDS
+        .iter()
+        .any(|candidate| kind.eq_ignore_ascii_case(candidate))
+}
+
 /// Latest durable outbound signal used for schedule math.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastSignal {

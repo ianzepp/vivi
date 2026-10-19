@@ -14,6 +14,18 @@ fn signal(age_from_now: i64, now: DateTime<Utc>) -> LastSignal {
 }
 
 #[test]
+fn auto_run_kind_flags_head_and_scoper_only() {
+    assert!(auto_run_kind(Some("head")));
+    assert!(auto_run_kind(Some("Head")));
+    assert!(auto_run_kind(Some("HEAD")));
+    assert!(auto_run_kind(Some(" scoper ")));
+    assert!(!auto_run_kind(None));
+    assert!(!auto_run_kind(Some("hand")));
+    assert!(!auto_run_kind(Some("auditor")));
+    assert!(!auto_run_kind(Some("mind")));
+}
+
+#[test]
 fn none_without_cadence() {
     let report = evaluate(None, None, Utc::now());
     assert_eq!(report.state, ScheduleState::None);
