@@ -72,6 +72,21 @@ fn feed_moves_delivered_units_to_merging_and_sends_a_job() {
 }
 
 #[test]
+fn feed_sends_a_local_pool_job_with_its_worktree_source() {
+    let (_dir, ctx, _host) = setup("");
+    let ctx = ctx.with_pool_sources(BTreeMap::from([(
+        String::from("glm"),
+        PathBuf::from("/wtree/repo"),
+    )]));
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[("u1", Status::Delivered)]);
+    st.units.get_mut("u1").unwrap().pool = Some(String::from("glm"));
+    merger.feed(&ctx, &mut st);
+    assert_eq!(st.units["u1"].status, Status::Merging);
+    assert_eq!(take(&jobs).remove(0).source, Some(PathBuf::from("/wtree/repo")));
+}
+
+#[test]
 fn feed_under_hold_merge_sends_only_fix_units() {
     let (_dir, ctx, _host) = setup("");
     std::fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
@@ -353,7 +368,7 @@ fn the_thread_merges_a_single_job_with_merge_work_and_reports_one_result() {
 // ------------------------------------------------ unit branches in the base repo
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 

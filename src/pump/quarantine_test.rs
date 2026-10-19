@@ -68,6 +68,7 @@ fn job(uid: &str) -> MergeJob {
         proof: vec![format!("./proof-{uid}.sh")],
         tools: String::from("plain"),
         write_scope: vec![format!("src/{uid}.rs")],
+        source: None,
     }
 }
 
