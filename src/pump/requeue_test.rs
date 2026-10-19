@@ -492,7 +492,10 @@ fn run_requeue_bulk_selects_recent_stuck_units() {
     assert_eq!(rows.len(), 1, "only the fresh stuck unit is selected");
     assert_eq!(rows[0].unit, "u-fresh");
     assert_eq!(rows[0].reason, "bulk host-down");
-    assert_eq!(rows[0].attempts, None, "the bulk form keeps the attempt count");
+    assert_eq!(
+        rows[0].attempts, None,
+        "the bulk form keeps the attempt count"
+    );
     assert!(!rows[0].fresh && !rows[0].refund, "default policy");
 
     // An empty window is a successful no-op once the requests are drained.
@@ -530,7 +533,10 @@ fn run_requeue_bulk_requires_why_and_forbids_uids() {
     let err = run(dir.path(), &with_uids).unwrap_err();
     assert!(err.to_string().contains("no unit uids"), "{err}");
 
-    assert!(pending(&dir).is_empty(), "a refused bulk form writes nothing");
+    assert!(
+        pending(&dir).is_empty(),
+        "a refused bulk form writes nothing"
+    );
 }
 
 #[test]
