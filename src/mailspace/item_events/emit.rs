@@ -31,6 +31,8 @@ pub(super) struct EmitRequest<'a> {
     pub(super) command: &'a str,
     /// Why, when no person acted (`join`): the lifecycle row's note.
     pub(super) via: Option<&'a str>,
+    /// Extra letter headers: the verdict and repo tips a close carries.
+    pub(super) headers: Vec<(String, String)>,
 }
 
 impl EmitRequest<'_> {
@@ -76,6 +78,7 @@ impl Mailspace {
         role: &str,
         note: Option<&str>,
         command: &str,
+        extras: &[(String, String)],
         joined: &mut Vec<String>,
     ) -> Result<Option<String>, VivariumError> {
         let Some(kind) = event_kind_for_move(&before.local_role, role) else {
@@ -113,6 +116,7 @@ impl Mailspace {
             note,
             command,
             via: None,
+            headers: extras.to_vec(),
         };
         self.emit_item_event(storage, &item, &request, joined)
             .map(Some)
@@ -155,6 +159,7 @@ impl Mailspace {
             note: None,
             command,
             via: Some(via),
+            headers: Vec::new(),
         };
         self.emit_item_event(storage, &item, &request, joined)?;
         Ok(true)
@@ -367,6 +372,9 @@ impl Mailspace {
         data = add_header(&data, EVENT_AT_HEADER, at)?;
         for prev in prevs {
             data = add_header(&data, EVENT_PREV_HEADER, &format!("<{prev}>"))?;
+        }
+        for (name, value) in &request.headers {
+            data = add_header(&data, name, value)?;
         }
         data = add_reply_headers(&data, &item.bytes)?;
         Ok(EventLetterDraft {
