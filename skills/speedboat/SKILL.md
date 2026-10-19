@@ -90,7 +90,8 @@ process; an open handle alone is not running work.
 ## Mind loop
 
 1. **Orient once.** If the project is synced, run `vivi sync pull` first so
-   the letters other checkouts pushed are applied. Read `vivi boot`,
+   the letters other checkouts pushed are applied. Read `vivi boot` (the
+   digest now includes role-gated pump/pool state when a pump is local),
    `vivi step --json`, live harness state, and repository status. When
    `step` is empty but open work remains, `vivi graph blocked` names the
    wait. For a long need thread, `vivi need show <handle> --newest N`.

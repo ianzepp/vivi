@@ -95,20 +95,37 @@ shows a `held_for` column).
 `vivi boot` prints the whole project frame in one read: seat bindings against
 observed process state, declared cadences and their silence, unabsorbed mail,
 open handles with verdicts, registered goals with register tallies, active
-project rules, memos, charter heads, and the backlog sliced into
-seat-sized groups. It is read-only,
+project rules, memos, charter heads, the backlog sliced into seat-sized
+groups, and (when a local `pump.db` or configured pools exist) a role-gated
+pump/pool snapshot. It is read-only,
 stateless, and idempotent, so it serves a cold boot and a post-compaction warm
 boot alike, and two runs are comparable.
 
 ```sh
 vivi boot --project <root>
+vivi boot --project <root> --role <name>
+vivi boot --project <root> --pump full
+vivi boot --project <root> --pump own
+vivi boot --project <root> --pump none
+vivi boot --project <root> --json
 ```
 
 Run it first when orienting or re-orienting. Every section is capped, and the
 digest closes with a truncation manifest naming each cap and how much it
-omitted — so the digest is complete in coverage and bounded in length. Boot
-never absorbs, closes, promotes, dispatches, or writes. Act on it with the
-ordinary verbs. The digest has one shape: there is no JSON or sweep variant.
+omitted — so the digest is complete in coverage and bounded in length. Long
+pump lists point at `vivi pump status` / `vivi pool status`. Boot never
+absorbs, closes, promotes, dispatches, or writes. Act on it with the ordinary
+verbs. `--json` prints the same bounded digest as JSON. `--role` names the
+booting seat (otherwise inferred from a local slot / `VIVI_SLOT_ROOT`).
+`--pump full|own|none` overrides the snapshot depth; counts still print.
+
+Coordinating kinds (cadence, merge, CTO/lead, auditor, triage, orchestrator,
+mind, and any role with no pool assignment) get the full pump view: in-flight
+units, the merge queue, held/gate/needs-ready, stuck units, exceptions, merge
+lanes, last next→main promote, and a pool table. A hand/worker with a pool
+sees only its own unit(s): slot, branch, checkout path, `base_ref`/`base_sha`,
+age vs budget. The section is omitted when there is no `pump.db` and no
+pools.
 
 Seats are listed for roles that hold open work or carry a bound process. The
 rest of the roster is counted in the totals line, so a role you expect and do
@@ -2143,8 +2160,10 @@ open `pump.db` read-only and degrade to no block when the file is missing;
 an unreadable or older-schema file is named, never fatal. `need show` appends
 a `pump` block (verdict, unit counts, completion, registry state, last unit
 event). `need list --pump` appends `[pump N/M merged, open|complete]` to each
-row. `boot` adds a `pump: local execution state` section with unit counts,
-complete-but-open, stuck and exception counts. `board --pump` adds the same
+row. `boot` adds a `pump: local execution state` section with those unit
+counts plus a role-gated snapshot of in-flight units, the merge queue, held
+and stuck work, merge lanes, last promote, and local pool occupancy (see
+Boot). `--pump none` keeps the counts only. `board --pump` adds the same
 summary as a `pump (local)` block. `vivi trace` does not show pump state.
 
 The pump never closes a need on its tick. `vivi pump closeout` lists every
