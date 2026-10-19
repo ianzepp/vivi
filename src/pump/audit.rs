@@ -1,8 +1,11 @@
 //! Red-gate auditing state and the auditor's fix-forward brief.
 
+use std::fs;
+
 use serde::{Deserialize, Serialize};
 
-use crate::pump::state::State;
+use crate::pump::host::Ctx;
+use crate::pump::state::{NeedRecord, State, Status, Unit};
 
 /// The `state.extra` key holding the live audit run.
 pub(crate) const AUDIT_KEY: &str = "audit";
@@ -134,4 +137,124 @@ fn append_bullets<'a>(brief: &mut String, names: impl Iterator<Item = &'a str>) 
         brief.push_str(name);
         brief.push('\n');
     }
+}
+
+const REPORT_BEGIN: &str = "AUDIT-BEGIN";
+const REPORT_END: &str = "AUDIT-END";
+
+/// One root cause from the auditor's reply: the seed of one fix unit.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct Cause {
+    /// One line: what is broken and why.
+    pub(crate) root_cause: String,
+    /// The complete fix-unit brief naming the failing tests and concrete fix.
+    pub(crate) brief: String,
+    /// The failing test names this cause covers.
+    #[serde(default)]
+    pub(crate) tests: Vec<String>,
+    /// Files the fix may write.
+    pub(crate) write_scope: Vec<String>,
+    /// Commands that must exit 0, one per failing test when possible.
+    #[serde(default)]
+    pub(crate) proof: Vec<String>,
+}
+
+/// The body of the last complete `AUDIT-BEGIN ... AUDIT-END` block in the
+/// reply, or `None` when no complete block exists. Local port of the gate's
+/// `marker_blocks` scan: a marker followed by no newline starts no block, and
+/// a `BEGIN` with no later `END` ends the scan.
+fn last_report_block(text: &str) -> Option<String> {
+    let mut last = None;
+    let mut rest = text;
+    while let Some(at) = rest.find(REPORT_BEGIN) {
+        let after = &rest[at + REPORT_BEGIN.len()..];
+        let ws = after.len() - after.trim_start().len();
+        if !after[..ws].contains('\n') {
+            rest = after;
+            continue;
+        }
+        let body = &after[ws..];
+        let Some(end) = body.find(REPORT_END) else {
+            break;
+        };
+        last = Some(body[..end].to_owned());
+        rest = &body[end + REPORT_END.len()..];
+    }
+    last
+}
+
+/// Parse the auditor reply's last `AUDIT-BEGIN ... AUDIT-END` block into one
+/// [`Cause`] per root cause.
+///
+/// Returns `None` when the reply carries no complete block, the block body is
+/// not a JSON array of causes, the array is empty, or any cause has an empty
+/// root cause, brief, or write scope.
+pub(crate) fn parse_report(text: &str) -> Option<Vec<Cause>> {
+    let body = last_report_block(text)?;
+    let causes = serde_json::from_str::<Vec<Cause>>(body.trim()).ok()?;
+    if causes.is_empty() {
+        return None;
+    }
+    for cause in &causes {
+        if cause.root_cause.trim().is_empty()
+            || cause.brief.trim().is_empty()
+            || cause.write_scope.is_empty()
+        {
+            return None;
+        }
+    }
+    Some(causes)
+}
+
+/// Store the auditor's raw reply and mint one pending fix unit per cause.
+///
+/// The raw text is written to `<home>/audit/<need>.report`, where later
+/// audits read it as context. Cause *k* becomes unit `<need>-<k+1>` bound to
+/// the need; the need is recorded as `units` with the minted handles. The
+/// record overwrites any earlier one: a need that reaches the audit path
+/// never had a plan file. Returns the number of units minted.
+pub(crate) fn apply_report(
+    ctx: &Ctx,
+    st: &mut State,
+    need: &str,
+    raw: &str,
+    causes: &[Cause],
+) -> usize {
+    let dir = ctx.home.join("audit");
+    drop(fs::create_dir_all(&dir));
+    drop(fs::write(dir.join(format!("{need}.report")), raw));
+
+    let mut uids = Vec::new();
+    for (k, cause) in causes.iter().enumerate() {
+        let uid = format!("{need}-{}", k + 1);
+        let unit = Unit {
+            need: need.to_string(),
+            title: cause.root_cause.chars().take(90).collect(),
+            brief: cause.brief.clone(),
+            write_scope: cause.write_scope.clone(),
+            proof: cause.proof.clone(),
+            tools: String::new(),
+            status: Status::Pending,
+            since: ctx.now(),
+            ..Unit::default()
+        };
+        st.units.insert(uid.clone(), unit);
+        st.order.push(uid.clone());
+        uids.push(uid);
+    }
+    st.needs.insert(
+        need.to_string(),
+        NeedRecord {
+            verdict: String::from("units"),
+            reason: String::from("audit report"),
+            units: uids,
+            revision: 1,
+            ..NeedRecord::default()
+        },
+    );
+    ctx.log(&format!(
+        "audit report for {need}: {} fix units",
+        causes.len()
+    ));
+    causes.len()
 }
