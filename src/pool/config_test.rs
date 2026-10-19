@@ -740,3 +740,28 @@ fn requires_and_facts_reject_empty_and_multi_line_entries_naming_the_field() {
         config.validate(&id()).unwrap();
     }
 }
+
+const BASELINE_POOL: &str = r#"
+provider = "local"
+slots = 1
+build_dir = "target"
+build_baseline_gib = 24
+"#;
+
+#[test]
+fn build_baseline_gib_parses_and_validates() {
+    let config: PoolConfig = toml::from_str(BASELINE_POOL).unwrap();
+    assert_eq!(config.build_baseline_gib, Some(24));
+    assert_eq!(config.build_baseline_bytes(), Some(24 * 1024_u64.pow(3)));
+    config.validate(&id()).unwrap();
+    for bad in ["0", "2000"] {
+        let text = BASELINE_POOL.replace(
+            "build_baseline_gib = 24",
+            &format!("build_baseline_gib = {bad}"),
+        );
+        let config: PoolConfig = toml::from_str(&text).unwrap();
+        let said = err(&config);
+        assert!(said.contains("build_baseline_gib"), "{bad}: {said}");
+        assert!(said.contains("1..=1024"), "{bad}: {said}");
+    }
+}

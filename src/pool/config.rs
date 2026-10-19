@@ -78,6 +78,12 @@ pub struct PoolConfig {
     /// a pool that sets none has no build directory handling at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_dir: Option<String>,
+    /// Baseline size in GiB a slot's build output is held to when it carries
+    /// no `marks/build_baseline` mark, instead of the four-GiB default. A slot
+    /// that predates the mark is then judged against this pool's own fresh
+    /// build, not against a guess. Optional, `1..=1024`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_baseline_gib: Option<u64>,
     /// Git fetch depth for the seed fetch at create and every job's fetch at
     /// dispatch. Optional: the default is [`DEFAULT_FETCH_DEPTH`] recent
     /// commits, never the full history. No effect on a worktree pool, which
@@ -386,6 +392,14 @@ impl PoolConfig {
         }
     }
 
+    /// The configured baseline in bytes, for a slot with no
+    /// `marks/build_baseline` mark. `None` leaves the default in place.
+    #[must_use]
+    pub fn build_baseline_bytes(&self) -> Option<u64> {
+        self.build_baseline_gib
+            .map(|gib| gib.saturating_mul(1024_u64.pow(3)))
+    }
+
     /// The local repository the slots are worktrees of, for a `local` pool in
     /// worktree mode.
     #[must_use]
@@ -557,6 +571,13 @@ impl PoolConfig {
             "local" => self.local.validate()?,
             "runpod" => self.runpod.validate(pool)?,
             _ => self.validate_fly_machine()?,
+        }
+        if let Some(gib) = self.build_baseline_gib
+            && !(1..=1024).contains(&gib)
+        {
+            return Err(bad(format!(
+                "build_baseline_gib must be 1..=1024 (GiB), got {gib}"
+            )));
         }
         self.build_dir.as_deref().map_or(Ok(()), validate_build_dir)
     }
