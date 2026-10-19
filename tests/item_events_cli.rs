@@ -36,12 +36,8 @@ fn fails(project: &Path, args: &[&str]) -> String {
 fn project() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     ok(tmp.path(), &["mailspace", "init"]);
-    for (role, kind) in [
-        ("mind", "mind"),
-        ("hand", "hand"),
-        ("auditor", "auditor"),
-        ("operator", "operator"),
-    ] {
+    // `mailspace init` itself ensures the operator role of kind operator.
+    for (role, kind) in [("mind", "mind"), ("hand", "hand"), ("auditor", "auditor")] {
         ok(tmp.path(), &["role", "add", role, "--kind", kind]);
     }
     tmp

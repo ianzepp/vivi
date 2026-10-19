@@ -834,6 +834,39 @@ fn a_mind_in_the_assignees_mailspace_closes_for_everyone_with_an_event_letter() 
 }
 
 #[test]
+fn a_pulled_close_letter_stores_its_verdict_in_item_metadata() {
+    let p = pair();
+    p.a.mailspace
+        .move_task_outcome(
+            "mind",
+            &p.task,
+            "done",
+            Some("accepted"),
+            Some("clean_pass"),
+            &["vivi".into()],
+            &["deadbeef".into()],
+        )
+        .unwrap();
+    p.sync_a_to_b();
+
+    let metadata = p
+        .b
+        .mailspace
+        .storage()
+        .unwrap()
+        .item_metadata(&p.b.id_of(&p.task))
+        .unwrap();
+    assert_eq!(
+        metadata.get("verdict").map(String::as_str),
+        Some("clean_pass")
+    );
+    assert_eq!(
+        metadata.get("repo:vivi").map(String::as_str),
+        Some("deadbeef")
+    );
+}
+
+#[test]
 fn an_event_letter_is_stamped_never_below_the_newest_held_event() {
     let mut w = World::new();
     minds(&mut w.bob, "lead");
