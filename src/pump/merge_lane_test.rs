@@ -209,6 +209,24 @@ fn feed_under_hold_allows_fix_floor_and_clear_scopes() {
 }
 
 #[test]
+fn feed_under_hold_blocks_unqualified_red_names_from_all_nonfix_scopes() {
+    let (_dir, ctx, _host) = setup("");
+    std::fs::write(ctx.home.join("HOLD-MERGE"), "").unwrap();
+    let (merger, _out, jobs) = Merger::detached();
+    let mut st = state_with(&[("plain", Status::Delivered)]);
+    st.red.insert(
+        String::from("crate::module::test"),
+        String::from("pumpfix-gx"),
+    );
+    st.units.get_mut("plain").unwrap().write_scope = vec![String::from("docs/x.md")];
+
+    merger.feed(&ctx, &mut st);
+
+    assert_eq!(st.units["plain"].status, Status::Delivered);
+    assert!(jobs.try_recv().is_err());
+}
+
+#[test]
 fn feed_holds_a_delivered_unit_until_its_need_dependency_lands() {
     let (_dir, ctx, host) = setup("");
     host.reply(

@@ -30,6 +30,8 @@ const DEADLINE_SECS: u64 = 5;
 const TIP: &str = "0123456789abcdef0123456789abcdef01234567";
 /// The task handle the scripted gate mints.
 const GATE_TASK: &str = "99887766";
+/// A red gate name carries its crate as the first field for hold filtering.
+const RED_NAME: &str = "vivi crate::a::t1";
 
 fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
     let (mut pass, requests, results) = BoardPass::detached();
@@ -45,7 +47,7 @@ fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
 const SECOND_PLAN: &str = concat!(
     "{\"need\": \"ny\", \"verdict\": \"units\", \"reason\": \"a second need\", ",
     "\"units\": [{\"id\": \"y-b1\", \"title\": \"second unit\", ",
-    "\"brief\": \"do b\", \"write_scope\": [\"src/b.rs\"], ",
+    "\"brief\": \"do b\", \"write_scope\": [\"vivi/src/b.rs\"], ",
     "\"proof\": [], \"tools\": \"plain\"}]}"
 );
 
@@ -335,7 +337,7 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     host.reply(
         "task show 99887766",
         0,
-        "agent exit 0 after 1s\nFAILING-BEGIN\ncrate::a::t1\nFAILING-END\n",
+        "agent exit 0 after 1s\nFAILING-BEGIN\nvivi crate::a::t1\nFAILING-END\n",
     );
     fs::write(ctx.home.join("FORCE-GATE"), b"").unwrap();
     tick(&ctx, &mut st, &merger); // the forced gate starts
@@ -349,7 +351,7 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     tick(&ctx, &mut st, &merger); // the forced red gate finishes
     assert_eq!(st.gates.len(), 3);
     let owner = "pumpfix-g01234567";
-    assert_eq!(st.red.get("crate::a::t1").map(String::as_str), Some(owner));
+    assert_eq!(st.red.get(RED_NAME).map(String::as_str), Some(owner));
     let audits: Vec<String> = host
         .commands()
         .into_iter()
@@ -424,7 +426,7 @@ fn a_red_gate_starts_an_auditor_and_holds_non_fix_merges_until_a_clean_gate() {
     assert!(
         host.logs()
             .iter()
-            .any(|line| line.contains("red fixed: crate::a::t1 (owner pumpfix-g01234567)"))
+            .any(|line| line.contains(&format!("red fixed: {RED_NAME} (owner pumpfix-g01234567)")))
     );
     assert!(st.red.is_empty());
     assert!(host.spawned().is_empty());

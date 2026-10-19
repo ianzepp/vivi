@@ -406,21 +406,38 @@ pub(super) fn recheck_held(st: &mut State, targets: &BTreeMap<String, usize>) {
     }
 }
 
-/// The crates named by the current red tests: the first whitespace token of
-/// every key of the state's red map and of every target's red map. A key
-/// reads `<crate> <test>`.
-fn red_crates(st: &State) -> BTreeSet<String> {
-    let mut crates = BTreeSet::new();
+#[derive(Default)]
+struct RedCrates {
+    names: BTreeSet<String>,
+    has_unqualified_name: bool,
+}
+
+/// The crate names known from `<crate> <test>` red-test keys. A single-token
+/// key has no reliable crate boundary, so it conservatively prevents a scope
+/// from being called clear of the red tests.
+fn red_crates(st: &State) -> RedCrates {
+    let mut red = RedCrates::default();
     for name in st
         .red
         .keys()
         .chain(st.target_states.values().flat_map(|t| t.red.keys()))
     {
-        if let Some(krate) = name.split_whitespace().next() {
-            crates.insert(krate.to_string());
+        let mut words = name.split_whitespace();
+        if let Some(krate) = words.next() {
+            if words.next().is_some() {
+                red.names.insert(krate.to_owned());
+            } else {
+                red.has_unqualified_name = true;
+            }
         }
     }
-    crates
+    red
+}
+
+/// True only when every red name has a known crate and no scope segment
+/// names one of those crates.
+fn clear_of_red(write_scope: &[String], red: &RedCrates) -> bool {
+    !red.has_unqualified_name && !red.names.is_empty() && !touches_crate(write_scope, &red.names)
 }
 
 /// True when any `/`-separated segment of any write scope entry names a red
@@ -474,7 +491,7 @@ pub(super) fn eligible(
         };
         if hold && !uid.starts_with(&ctx.cfg.fix_prefix) {
             let level = levels.get(&unit.need).copied().unwrap_or(0);
-            let clear = !red.is_empty() && !touches_crate(&unit.write_scope, &red);
+            let clear = clear_of_red(&unit.write_scope, &red);
             if level < floor && !clear {
                 continue;
             }
