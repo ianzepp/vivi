@@ -196,6 +196,9 @@ const GATEFIX_FAILS_KEY: &str = "gatefix_fails";
 /// the next gatefix expiry retry.
 const GATEFIX_RETRY_KEY: &str = "gatefix_retry_at";
 
+/// How many planner exits without a plan a gate-fix need is retried for.
+const GATEFIX_RETRY_MAX: u64 = 3;
+
 /// The u64 entry `need` holds under extra-map `key`, else 0.
 fn gatefix_count(st: &State, key: &str, need: &str) -> u64 {
     gatefix_at(st, key, need).unwrap_or(0)
@@ -279,10 +282,20 @@ fn expire_one_gatefix(ctx: &Ctx, st: &mut State, need: &str) {
     drop(fs::remove_file(&receipt));
     let fails = gatefix_count(st, GATEFIX_FAILS_KEY, need) + 1;
     gatefix_set(st, GATEFIX_FAILS_KEY, need, fails);
+    if fails >= GATEFIX_RETRY_MAX {
+        gatefix_remove(st, GATEFIX_RETRY_KEY, need);
+        ctx.exception(
+            "gatefix-no-plan",
+            need,
+            "the gate-fix planner exited 3 times without a plan; its names stay owned red",
+        );
+        return;
+    }
     let delay = (60u64 << (fails - 1).min(4)).min(900);
     gatefix_set(st, GATEFIX_RETRY_KEY, need, ctx.now() + delay);
     ctx.log(&format!(
-        "gatefix planner for {need} exited rc={code} without a plan; retry {fails}/3 in {delay}s"
+        "gatefix planner for {need} exited rc={code} without a plan; \
+         retry {fails}/{GATEFIX_RETRY_MAX} in {delay}s"
     ));
 }
 
