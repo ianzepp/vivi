@@ -113,6 +113,44 @@ pub fn space_slug(name: &str) -> String {
     mapped.trim_matches('-').to_string()
 }
 
+/// The pool identity key of a mailspace: its name slug, qualified by the
+/// first 8 characters of its id when it has one.
+///
+/// The id prefix keeps two mailspaces named alike on distinct directories,
+/// marks and names. An empty `id` (a config with no id) yields the bare slug.
+#[must_use]
+pub fn space_key(name: &str, id: &str) -> String {
+    let slug = space_slug(name);
+    if id.is_empty() {
+        return slug;
+    }
+    let prefix = id.get(..8).unwrap_or(id);
+    format!("{slug}-{prefix}")
+}
+
+/// True when the mailspace mark `actual` belongs to the space whose identity
+/// key is `key`.
+///
+/// A slot made by vivi <=15.0.0 carries the bare slug as its mark; an
+/// id-qualified key still matches it so those slots keep working. A bare slug
+/// key never matches an id-qualified mark.
+#[must_use]
+pub fn space_mark_matches(key: &str, actual: &str) -> bool {
+    if actual == key {
+        return true;
+    }
+    if key.len() < 9 || !key.is_char_boundary(key.len() - 9) {
+        return false;
+    }
+    let (slug, tail) = key.split_at(key.len() - 9);
+    let Some(hex) = tail.strip_prefix('-') else {
+        return false;
+    };
+    hex.bytes()
+        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && actual == slug
+}
+
 /// Metadata written onto a new slot.
 #[must_use]
 pub fn slot_metadata(id: &PoolId, index: u32, base: &str) -> BTreeMap<String, String> {

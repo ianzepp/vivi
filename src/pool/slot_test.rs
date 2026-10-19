@@ -168,3 +168,27 @@ fn the_self_test_pool_is_the_doctor_pool_of_the_same_mailspace() {
         ("ms", "lanes-doctor")
     );
 }
+
+#[test]
+fn space_key_and_space_mark_matches_basics() {
+    assert_eq!(space_key("app", ""), "app");
+    assert_eq!(
+        space_key("app", "11111111-1111-1111-1111-111111111111"),
+        "app-11111111"
+    );
+    assert_eq!(
+        space_key("Foo.Bar", "22222222-2222-2222-2222-222222222222"),
+        "foo-bar-22222222"
+    );
+    assert_eq!(space_key("app", "short"), "app-short");
+
+    assert!(space_mark_matches("app", "app"));
+    assert!(space_mark_matches("app-11111111", "app-11111111"));
+    // Legacy mark of a slot made by vivi <=15.0.0.
+    assert!(space_mark_matches("app-11111111", "app"));
+    assert!(!space_mark_matches("app-11111111", "app-22222222"));
+    // A bare slug key never matches an id-qualified mark.
+    assert!(!space_mark_matches("app", "app-11111111"));
+    // The tail is not 8 hex characters.
+    assert!(!space_mark_matches("app-short", "app"));
+}
