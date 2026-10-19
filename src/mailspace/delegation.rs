@@ -350,16 +350,16 @@ impl Mailspace {
         kind: &str,
     ) -> Result<Vec<StoredMessageView>, VivariumError> {
         let storage = self.storage()?;
-        let Some(target) = identity
+        let target = identity
             .map(|identity| self.resolve_identity(identity))
-            .transpose()?
-        else {
-            return Ok(Vec::new());
-        };
-        let accounts = self.identity_names(&target);
+            .transpose()?;
+        let accounts = target.as_deref().map(|target| self.identity_names(target));
         let mut rows = Vec::new();
         for row in storage.list_messages_by_role(role)? {
-            if accounts.contains(&row.account) {
+            if accounts
+                .as_ref()
+                .is_some_and(|accounts| accounts.contains(&row.account))
+            {
                 continue;
             }
             let Some(item) = held_item(&storage, &row.content_id)? else {
@@ -371,7 +371,10 @@ impl Mailspace {
             let Some(delegate) = self.active_delegate_identity(&item) else {
                 continue;
             };
-            if target == delegate {
+            if target.as_deref().is_none_or(|target| target == delegate) {
+                if self.identity_names(&delegate).contains(&row.account) {
+                    continue;
+                }
                 let mut row = row;
                 row.account = delegate;
                 rows.push(row);

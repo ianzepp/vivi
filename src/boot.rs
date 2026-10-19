@@ -488,13 +488,16 @@ fn collect_open(
         include_outbound: false,
         filters: DumpFilters::default(),
     })?;
-    // Work held for another mailspace's role, or for a role name this
-    // mailspace does not have, is nobody's handle here.
-    let local = records
+    // Unassigned work held for another mailspace's role, and work held for
+    // a role name this mailspace does not have, is nobody's handle here.
+    // Active delegated needs are added below as local work.
+    let mut seen = std::collections::HashSet::new();
+    for record in records
         .into_iter()
-        .filter(|record| mailspace.is_local_account(&record.account));
-    rows.extend(local.map(|record| {
-        HandleRow::new(
+        .filter(|record| mailspace.is_local_account(&record.account))
+    {
+        seen.insert(record.handle.clone());
+        let row = HandleRow::new(
             &record.handle,
             kind,
             &record.date,
@@ -502,8 +505,22 @@ fn collect_open(
             &record.to,
             &record.subject,
             now,
-        )
-    }));
+        );
+        rows.push(row);
+    }
+    for assigned in mailspace.assigned_work_for_role(None, role, kind)? {
+        if seen.insert(assigned.handle.clone()) {
+            rows.push(HandleRow::new(
+                &assigned.handle,
+                kind,
+                &assigned.date,
+                &assigned.from_addr,
+                &assigned.to_addr,
+                &assigned.subject,
+                now,
+            ));
+        }
+    }
     Ok(())
 }
 

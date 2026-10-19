@@ -190,7 +190,12 @@ For each unit, in this order:
    open, and it can be repeated to add more, but a need whose bound items are
    all accepted has already completed. A need must have kind `need` as a node;
    a promoted want keeps its `want` node kind and `need bind` refuses it until
-   `graph audit --repair` corrects the kind (section 5).
+   `graph audit --repair` corrects the kind (section 5). For a need assigned
+   from another mailspace, assignment sync makes the foreign need a local
+   backlog node in the receiving mailspace; run the same bind there to lower
+   it onto that member's local tasks. The bound letter and join close sync
+   back to the authoring mailspace, where the need's folder and graph state
+   follow the close event.
 3. **Choose how the unit runs, then prepare it.** There are two forks.
    - **A. A host-spawned seat in a lane.** The coordinator spawns the Hand
      itself, as a sub-agent of its own harness, in a lane the project's lane

@@ -512,14 +512,31 @@ author or sent-copy holder, a mind or operator may assign it. After assignment
 history exists, the author or sent-copy holder, the current assigning role, or
 an operator may change it. A local hand-kind role cannot be the delegate. The
 assigned need appears in the delegate's work list and gets a local backlog
-node, so the delegate can bind local task units to it.
+node, so the delegate can bind local task units to it. `vivi boot` includes an
+actively assigned foreign need in the receiving mailspace's open-handle
+inventory; before assignment, foreign-held work is omitted from that inventory.
 
 Only the authoring mailspace can withdraw an assignment. The author or
 sent-copy holder, the assigning role, or an operator there can withdraw it.
-While an assignment is active, the delegate may close the need; that closes
-the need and lapses the assignment. If the authoring mailspace later reopens a
-need closed by its delegate, assign it again before the former delegate acts.
-Assignment and withdrawal letters travel with sync.
+While an assignment is active, the author, any operator-kind role in the
+authoring mailspace, and the delegate may close or reopen the need. A reopen
+travels as an event and returns the need to open work in the delegate's
+mailspace. A delegate close closes the need and lapses the assignment. If the
+authoring mailspace later reopens a need closed by its delegate, assign it
+again before the former delegate acts. A newer assignment replaces the old
+one; withdrawal and assignment letters travel with sync.
+
+For an unattended Mind, run `vivi sync --drain` on its regular cadence. It
+drains the push pass and then pulls, so assignment, bind, close, and reopen
+letters keep moving in both directions. Run the same command on the authoring
+machine when it wakes; inspect `vivi sync status` if the other side has not
+seen an expected event. A rate limit makes `--drain` wait and continue. A 401,
+network failure, or other server error stops the push, prints the reason and
+the number of unsent letters, and exits non-zero; those letters remain queued.
+Retry a network failure at the next cadence. Do not spin on a 401: record the
+failure for the operator and resume after the member's server admission or
+credentials are repaired. Do not report a close as delivered to the authoring
+mailspace until its pull has applied the event.
 
 ### Close provenance
 
