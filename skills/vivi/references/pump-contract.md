@@ -654,7 +654,10 @@ moved <branch> tip <sha10>`, `publish: push attempt <k>`, `publish: pushed
 lines, `status.txt` carries one line per lane, in lane order:
 `lane <target>/<n> busy <units> units <batch age>: <current step> (<step age>)`,
 `lane <target>/<n> idle`, `lane <target>/<n> backoff <time> left` or
-`lane <target>/<n> gone`; durations read `45s`, `2m10s`, `1h05m00s`.
+`lane <target>/<n> gone`; durations read `45s`, `2m10s`, `1h05m00s`. Every
+line but `gone` ends with `merged <m> conflict <c>`, the lane's merged and
+`merge-conflict` results so far in this pump run, so a lane at 0% stands out
+beside its siblings.
 
 `[pump.merge]`:
 

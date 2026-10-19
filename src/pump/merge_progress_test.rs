@@ -156,15 +156,18 @@ fn lane_lines_show_idle_busy_and_backoff() {
     let mut st = state_with(&[("u1", Status::Delivered)]);
     assert_eq!(
         merger.lane_lines(1_000),
-        ["lane default/0 idle", "lane default/1 idle"]
+        [
+            "lane default/0 idle merged 0 conflict 0",
+            "lane default/1 idle merged 0 conflict 0"
+        ]
     );
     merger.feed(&ctx, &mut st);
     assert_eq!(jobs[0].try_recv().unwrap().len(), 1);
     assert_eq!(
         merger.lane_lines(1_723),
         [
-            "lane default/0 busy 1 units 12m03s: queued (12m03s)",
-            "lane default/1 idle"
+            "lane default/0 busy 1 units 12m03s: queued (12m03s) merged 0 conflict 0",
+            "lane default/1 idle merged 0 conflict 0"
         ]
     );
     out.send(failed_push("u1")).unwrap();
@@ -177,7 +180,11 @@ fn lane_lines_show_idle_busy_and_backoff() {
         merger.apply(&ctx, &mut st);
     }
     let lines = merger.lane_lines(1_180);
-    assert_eq!(lines[0], "lane default/0 backoff 7m00s left", "{lines:?}");
+    assert_eq!(
+        lines[0],
+        "lane default/0 backoff 7m00s left merged 0 conflict 0",
+        "{lines:?}"
+    );
 }
 
 /// A lane-level failure for `uid`.
@@ -209,7 +216,7 @@ fn status_txt_ends_with_one_line_per_lane() {
     let text = std::fs::read_to_string(ctx.home.join("status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 9, "{text}");
-    assert_eq!(lines[7], "lane default/0 idle");
-    assert_eq!(lines[8], "lane default/1 idle");
+    assert_eq!(lines[7], "lane default/0 idle merged 0 conflict 0");
+    assert_eq!(lines[8], "lane default/1 idle merged 0 conflict 0");
     drop(dir);
 }
