@@ -952,6 +952,73 @@ fn providers_row_includes_health() {
     server.stop();
 }
 
+#[test]
+fn check_codex_stream_ok() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{}}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"text\":\"ok\"}]}}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[]}}\n\n".to_vec(),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let result = check_codex(&dir, &creds, addr);
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn check_codex_stream_malformed() {
+    let mock = Mock::new();
+    mock.push(Script {
+        status: 200,
+        headers: vec![],
+        body: b"data: {not json\n\n".to_vec(),
+        sse: true,
+    });
+    let addr = proxy_upstream::serve(mock);
+    let dir = TempDir::new().unwrap();
+    let creds = write_codex_auth(&dir);
+    let result = check_codex(&dir, &creds, addr);
+    assert!(result.is_err(), "malformed stream stayed green: {result:?}");
+}
+
+/// Run `vivi proxy check codex` against a proxy listening on the test port.
+fn check_codex(
+    dir: &TempDir,
+    creds: &std::path::Path,
+    addr: std::net::SocketAddr,
+) -> Result<(), vivi::VivariumError> {
+    let rt = runtime();
+    let (server, _) = wait(&rt, load_codex(dir, creds, addr));
+    let path = dir.path().join("proxy.toml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+            listen = "{}"
+            log_dir = "{}"
+            [providers.codex]
+            kind = "native"
+            adapter = "chatgpt-codex"
+            credentials = "{}"
+            upstream = "http://{addr}/backend-api/codex/responses"
+            "#,
+            server.addr,
+            dir.path().join("logs").display(),
+            creds.display()
+        ),
+    )
+    .unwrap();
+    let result = check::print(&ProxyCheckCommand {
+        provider: Some("codex".into()),
+        config: Some(path),
+    });
+    server.stop();
+    result
+}
+
 fn load_upstream(dir: &TempDir, name: &str, addr: std::net::SocketAddr) -> ProxyConfig {
     load(
         dir,
