@@ -23,6 +23,9 @@ struct FakeRunner {
     attached: Mutex<Attached>,
     keep_attached: bool,
     calls: Mutex<Vec<String>>,
+    plist_request: Mutex<Option<String>>,
+    plist_device: Mutex<Option<String>>,
+    listed_volume: Mutex<Option<String>>,
 }
 
 impl FakeRunner {
@@ -36,6 +39,9 @@ impl FakeRunner {
             ),
             keep_attached: false,
             calls: Mutex::new(Vec::new()),
+            plist_request: Mutex::new(None),
+            plist_device: Mutex::new(None),
+            listed_volume: Mutex::new(None),
         }
     }
 
@@ -76,18 +82,93 @@ impl Runner for FakeRunner {
         let line = argv.join(" ");
         self.calls.lock().expect("call log").push(line.clone());
         match line.as_str() {
-            "mount" => Ok(self
-                .attached()
-                .iter()
-                .map(|(device, mount)| format!("{device} on {mount} (apfs, local, nodev)"))
-                .collect::<Vec<_>>()
-                .join("\n")),
+            "mount" => {
+                let attached = self.attached();
+                let volume = attached.iter().find_map(|(_, mount)| {
+                    let path = PathBuf::from(mount);
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .filter(|name| name.starts_with("vivi-"))
+                        .map(ToString::to_string)
+                        .or_else(|| {
+                            let slot = crate::pool::ramdisk::pool_slot_for_mount(&path)?;
+                            std::fs::read_to_string(slot.join("ramdisk"))
+                                .ok()?
+                                .lines()
+                                .find_map(|line| line.strip_prefix("volume="))
+                                .map(ToString::to_string)
+                        })
+                });
+                *self.listed_volume.lock().expect("listed volume") = volume;
+                Ok(attached
+                    .iter()
+                    .map(|(device, mount)| format!("{device} on {mount} (apfs, local, nodev)"))
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
             "df -g" => Ok(self
                 .attached()
                 .iter()
                 .map(|(_, mount)| format!("map ram 8 8 0 0 100% {mount}"))
                 .collect::<Vec<_>>()
                 .join("\n")),
+            _ if argv.len() == 4 && argv[0] == "diskutil" && argv[1] == "info" => {
+                *self.plist_request.lock().expect("plist request") = Some(argv[3].to_string());
+                *self.plist_device.lock().expect("plist device") = Some(argv[3].to_string());
+                Ok("plist".to_string())
+            }
+            _ if argv.len() == 5
+                && argv[0] == "diskutil"
+                && argv[1] == "apfs"
+                && argv[2] == "list" =>
+            {
+                *self.plist_request.lock().expect("plist request") =
+                    Some(format!("container:{}", argv[4]));
+                Ok("plist".to_string())
+            }
+            _ if argv.first() == Some(&"/usr/bin/plutil") => {
+                let request = self
+                    .plist_request
+                    .lock()
+                    .expect("plist request")
+                    .clone()
+                    .unwrap_or_default();
+                if request.starts_with("/dev/") {
+                    let device = self
+                        .plist_device
+                        .lock()
+                        .expect("plist device")
+                        .clone()
+                        .unwrap_or_default();
+                    Ok(serde_json::json!({
+                        "DeviceIdentifier": device,
+                        "APFSContainerReference": crate::pool::ramdisk::whole_disk(&device).trim_start_matches("/dev/"),
+                    }).to_string())
+                } else {
+                    let Some(container) = request.strip_prefix("container:") else {
+                        return Err(format!("fake: unexpected plist request `{request}`"));
+                    };
+                    let device = self
+                        .plist_device
+                        .lock()
+                        .expect("plist device")
+                        .clone()
+                        .unwrap_or_else(|| format!("/dev/{container}s1"));
+                    let volume = self
+                        .listed_volume
+                        .lock()
+                        .expect("listed volume")
+                        .clone()
+                        .unwrap_or_else(|| "vivi-x".to_string());
+                    Ok(serde_json::json!({
+                        "Containers": [{
+                            "ContainerReference": container,
+                            "PhysicalStores": [{"DeviceIdentifier": crate::pool::ramdisk::whole_disk(&device)}],
+                            "Volumes": [{"Name": volume, "DeviceIdentifier": device}],
+                        }],
+                    }).to_string())
+                }
+            }
             _ => match line.strip_prefix("diskutil eject ") {
                 Some(device) => {
                     self.eject(device);
@@ -132,7 +213,7 @@ impl Scratch {
         std::fs::write(
             mount.parent().unwrap().parent().unwrap().join("ramdisk"),
             format!(
-                "device=/dev/disk7\nvolume={volume}\nsize_gib=8\njob={job}\nmount={}\nsource=/repo\n",
+                "device=/dev/disk7\nvolume_device=/dev/disk7s1\nvolume={volume}\nsize_gib=8\njob={job}\nmount={}\nsource=/repo\n",
                 mount.display()
             ),
         )
@@ -291,9 +372,11 @@ fn sweep_preserves_a_pool_mount_when_its_marker_names_another_device() {
 
     assert!(runner.ejections().is_empty());
     assert!(removals(&host).is_empty());
-    assert!(
-        lines.is_empty(),
-        "a pool mount without a matching device marker is not swept"
+    assert_eq!(
+        lines,
+        vec![
+            "WARNING ramdisk sweep: preserving vivi-here-slot-0-build because its pool ownership marker does not match the attached device"
+        ]
     );
 }
 

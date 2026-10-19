@@ -18,11 +18,14 @@
 //! disks that are attached now. RAM disks exist only on macOS; elsewhere
 //! [`RealRunner`] refuses, since a Linux tmpfs disk is a separate follow-up.
 
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use serde_json::Value;
 
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
@@ -252,11 +255,14 @@ impl Runner for RealRunner {
     }
 }
 
-/// One attached RAM disk: the whole-disk device (`/dev/disk7`), its volume
-/// name, its size, and where it is mounted.
+/// One attached RAM disk: its mounted APFS volume device, optional physical
+/// backing disk, volume name, size, and mount point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disk {
+    /// The logical APFS device that appears in `mount` (for example, disk9s1).
     pub device: String,
+    /// The whole disk hdiutil attached (for example, disk8).
+    pub backing_device: Option<String>,
     pub volume: String,
     pub size_gib: u64,
     pub mount: PathBuf,
@@ -275,12 +281,16 @@ pub fn mount(runner: &dyn Runner, name: &str, gib: u64, at: &Path) -> Result<Dis
         .map_err(|e| format!("ramdisk: cannot create {}: {e}", at.display()))?;
     let raw = attach(runner, gib)?;
     let device = whole_disk(&raw);
-    if let Err(error) = prepare(runner, name, &device, at) {
-        eject(runner, &device);
-        return Err(error);
-    }
+    let volume_device = match prepare(runner, name, &device, at) {
+        Ok(device) => device,
+        Err(error) => {
+            eject(runner, &device);
+            return Err(error);
+        }
+    };
     Ok(Disk {
-        device,
+        device: volume_device,
+        backing_device: Some(device),
         volume: name.to_string(),
         size_gib: gib,
         mount: at.to_path_buf(),
@@ -296,9 +306,18 @@ pub fn mount(runner: &dyn Runner, name: &str, gib: u64, at: &Path) -> Result<Dis
 /// eject failure when the disk is gone but `diskutil eject` refused, and the
 /// runner's error when the verification listing cannot run.
 pub fn teardown(runner: &dyn Runner, disk: &Disk) -> Result<(), String> {
-    let device = whole_disk(&disk.device);
+    let actual_backing = backing_device_for_volume(runner, &disk.device, &disk.volume)?;
+    if let Some(expected) = disk.backing_device.as_deref()
+        && whole_disk(expected) != whole_disk(&actual_backing)
+    {
+        return Err(format!(
+            "ramdisk: volume {} is no longer backed by owned disk {expected}",
+            disk.volume
+        ));
+    }
+    let device = whole_disk(&actual_backing);
     let eject = runner.run(&["diskutil", "eject", &device], DISKUTIL_SECS);
-    if still_attached(runner, &device, &disk.volume)? {
+    if still_attached(runner, disk, &device)? {
         return Err(format!("{} still attached after eject", disk.volume));
     }
     eject.map(drop)
@@ -334,6 +353,7 @@ pub fn mounted_checked(runner: &dyn Runner) -> Result<Vec<Disk>, String> {
                 .unwrap_or_default();
             Some(Disk {
                 device,
+                backing_device: None,
                 volume: volume.0,
                 size_gib,
                 mount: mount_path,
@@ -364,11 +384,13 @@ fn pool_marker(mount: &Path, device: &str) -> Option<(String, Option<u64>)> {
     };
     let volume = field("volume")?;
     let marked_device = field("device")?;
+    let marked_volume_device = field("volume_device")?;
     let marked_mount = field("mount")?;
     let job = field("job")?;
     if !volume.starts_with(VOLUME_PREFIX)
         || job.is_empty()
-        || marked_device != whole_disk(device)
+        || !same_device_id(marked_device, marked_device)
+        || !same_device_id(marked_volume_device, device)
         || marked_mount != mount.to_string_lossy()
     {
         return None;
@@ -380,6 +402,11 @@ fn pool_marker(mount: &Path, device: &str) -> Option<(String, Option<u64>)> {
             Err(_) => None,
         }),
     ))
+}
+
+pub(crate) fn same_device_id(left: &str, right: &str) -> bool {
+    normalized_disk_id(left)
+        .is_some_and(|left| normalized_disk_id(right).is_some_and(|right| left == right))
 }
 
 /// Slot root for a RAM mount at `<slot>/targets/<key>`. Root `repo` is the
@@ -408,20 +435,418 @@ fn attach(runner: &dyn Runner, gib: u64) -> Result<String, String> {
 
 /// Shape an attached disk: erase it as APFS `name`, unmount it, then mount it
 /// at `at`.
-fn prepare(runner: &dyn Runner, name: &str, device: &str, at: &Path) -> Result<(), String> {
-    let slice = format!("{device}s1");
+fn prepare(runner: &dyn Runner, name: &str, device: &str, at: &Path) -> Result<String, String> {
     runner.run(
         &["diskutil", "eraseVolume", "APFS", name, device],
         DISKUTIL_SECS,
     )?;
-    runner.run(&["diskutil", "unmount", &slice], DISKUTIL_SECS)?;
+    let volume = resolve_apfs_volume(runner, name, device)?;
+    if volume.mounted {
+        runner.run(&["diskutil", "unmount", &volume.device], DISKUTIL_SECS)?;
+    }
     let at = at.to_string_lossy().into_owned();
     runner
         .run(
-            &["diskutil", "mount", "-mountPoint", &at, &slice],
+            &["diskutil", "mount", "-mountPoint", &at, &volume.device],
             DISKUTIL_SECS,
         )
-        .map(drop)
+        .map(|_| volume.device)
+}
+
+struct ApfsVolume {
+    device: String,
+    mounted: bool,
+}
+
+/// Resolve the exact APFS volume created on `device`; APFS synthesizes a
+/// logical device identifier that is not necessarily `<physical>s1`.
+fn resolve_apfs_volume(
+    runner: &dyn Runner,
+    name: &str,
+    device: &str,
+) -> Result<ApfsVolume, String> {
+    let physical = normalized_disk_id(device)
+        .ok_or_else(|| format!("ramdisk: invalid attached device `{device}`"))?;
+    if whole_disk(&physical) != physical {
+        return Err(format!(
+            "ramdisk: attached device is not a whole disk: `{device}`"
+        ));
+    }
+    let container = attached_container(runner, device, &physical)?;
+    let volumes = attached_container_volumes(runner, &container, &physical)?;
+    let volume_id = volume_device(&volumes, name, &container)?;
+    let logical_device = format!("/dev/{volume_id}");
+    let mounted = volume_mount_state(runner, name, &logical_device, &volume_id, &container)?;
+    Ok(ApfsVolume {
+        device: logical_device,
+        mounted,
+    })
+}
+
+fn attached_container(runner: &dyn Runner, device: &str, physical: &str) -> Result<String, String> {
+    let info_xml = runner.run(&["diskutil", "info", "-plist", device], DISKUTIL_SECS)?;
+    let info = plist_json(runner, &info_xml, "disk info")?;
+    let reported_physical = plist_string(&info, "DeviceIdentifier")
+        .and_then(normalized_disk_id)
+        .filter(|id| whole_disk(id) == physical);
+    if reported_physical.is_none() {
+        return Err(format!(
+            "ramdisk: disk info does not identify attached disk `{physical}`"
+        ));
+    }
+    let raw_container = plist_string(&info, "APFSContainerReference")
+        .ok_or_else(|| "ramdisk: disk info has no APFS container reference".to_string())?;
+    let container = normalized_disk_id(raw_container)
+        .filter(|id| whole_disk(id) == *id)
+        .ok_or_else(|| "ramdisk: disk info has an invalid APFS container reference".to_string())?;
+    Ok(container)
+}
+
+fn attached_container_volumes(
+    runner: &dyn Runner,
+    container: &str,
+    physical: &str,
+) -> Result<Vec<Value>, String> {
+    let apfs_xml = runner.run(
+        &["diskutil", "apfs", "list", "-plist", &container],
+        DISKUTIL_SECS,
+    )?;
+    let apfs = plist_json(runner, &apfs_xml, "APFS container list")?;
+    let containers = apfs
+        .get("Containers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ramdisk: APFS list has no Containers array".to_string())?;
+    let container_info = matching_container(containers, container)?;
+    if !container_backed_by(container_info, physical) {
+        return Err(format!(
+            "ramdisk: APFS container `{container}` is not backed by attached disk `{physical}`"
+        ));
+    }
+    container_info
+        .get("Volumes")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| format!("ramdisk: APFS container `{container}` has no Volumes"))
+}
+
+fn matching_container<'a>(containers: &'a [Value], container: &str) -> Result<&'a Value, String> {
+    let matching_containers: Vec<&Value> = containers
+        .iter()
+        .filter(|entry| {
+            plist_string(entry, "ContainerReference")
+                .and_then(normalized_disk_id)
+                .is_some_and(|id| whole_disk(&id) == container)
+        })
+        .collect();
+    match matching_containers.as_slice() {
+        [container_info] => Ok(*container_info),
+        _ => Err(format!(
+            "ramdisk: APFS container `{container}` is missing or ambiguous"
+        )),
+    }
+}
+
+fn container_backed_by(container_info: &Value, physical: &str) -> bool {
+    physical_store_ids(container_info).is_some_and(|ids| ids.len() == 1 && ids[0] == physical)
+}
+
+fn volume_device(volumes: &[Value], name: &str, container: &str) -> Result<String, String> {
+    let matching_volumes: Vec<&Value> = volumes
+        .iter()
+        .filter(|volume| plist_string(volume, "Name") == Some(name))
+        .collect();
+    let volume = match matching_volumes.as_slice() {
+        [volume] => *volume,
+        _ => {
+            return Err(format!(
+                "ramdisk: APFS volume `{name}` is missing or ambiguous"
+            ));
+        }
+    };
+    let raw_volume_device = plist_string(volume, "DeviceIdentifier")
+        .ok_or_else(|| format!("ramdisk: APFS volume `{name}` has no device identifier"))?;
+    let volume_id = normalized_disk_id(raw_volume_device)
+        .ok_or_else(|| format!("ramdisk: APFS volume `{name}` has an invalid device identifier"))?;
+    if whole_disk(&volume_id) != container {
+        return Err(format!(
+            "ramdisk: APFS volume `{name}` does not belong to container `{container}`"
+        ));
+    }
+    Ok(volume_id)
+}
+
+fn volume_mount_state(
+    runner: &dyn Runner,
+    name: &str,
+    logical_device: &str,
+    volume_id: &str,
+    container: &str,
+) -> Result<bool, String> {
+    let volume_info_xml = runner.run(
+        &["diskutil", "info", "-plist", &logical_device],
+        DISKUTIL_SECS,
+    )?;
+    let volume_info = plist_json(runner, &volume_info_xml, "APFS volume info")?;
+    let reported_volume =
+        plist_string(&volume_info, "DeviceIdentifier").and_then(normalized_disk_id);
+    let reported_container = plist_string(&volume_info, "APFSContainerReference")
+        .and_then(normalized_disk_id)
+        .filter(|id| whole_disk(id) == container);
+    if reported_volume.as_deref() != Some(volume_id) || reported_container.is_none() {
+        return Err(format!(
+            "ramdisk: volume info does not confirm APFS volume `{name}` on `{container}`"
+        ));
+    }
+    let mounted = match volume_info.get("MountPoint") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(path)) => !path.is_empty(),
+        Some(_) => {
+            return Err(format!(
+                "ramdisk: APFS volume `{name}` has a malformed MountPoint"
+            ));
+        }
+    };
+    Ok(mounted)
+}
+
+/// Resolve a mounted logical APFS volume back to its unique whole-disk store.
+pub(crate) fn backing_device_for_volume(
+    runner: &dyn Runner,
+    logical_device: &str,
+    name: &str,
+) -> Result<String, String> {
+    let info_xml = runner.run(
+        &["diskutil", "info", "-plist", logical_device],
+        DISKUTIL_SECS,
+    )?;
+    let info = plist_json(runner, &info_xml, "attached volume info")?;
+    let actual_id = plist_string(&info, "DeviceIdentifier")
+        .and_then(normalized_disk_id)
+        .ok_or_else(|| format!("ramdisk: attached volume `{name}` has no valid device ID"))?;
+    if !same_device_id(&actual_id, logical_device) {
+        return Err(format!(
+            "ramdisk: attached volume info does not match `{logical_device}`"
+        ));
+    }
+    let raw_container = plist_string(&info, "APFSContainerReference")
+        .ok_or_else(|| format!("ramdisk: attached volume `{name}` has no APFS container"))?;
+    let container = normalized_disk_id(raw_container)
+        .filter(|id| whole_disk(id) == *id)
+        .ok_or_else(|| format!("ramdisk: attached volume `{name}` has an invalid container"))?;
+    let apfs_xml = runner.run(
+        &["diskutil", "apfs", "list", "-plist", &container],
+        DISKUTIL_SECS,
+    )?;
+    let apfs = plist_json(runner, &apfs_xml, "attached APFS container")?;
+    let containers = apfs
+        .get("Containers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ramdisk: APFS list has no Containers array".to_string())?;
+    let container_info = matching_container(containers, &container)?;
+    let volumes = container_info
+        .get("Volumes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("ramdisk: APFS container `{container}` has no Volumes"))?;
+    let listed_volume = volume_device(volumes, name, &container)?;
+    if !same_device_id(&listed_volume, logical_device) {
+        return Err(format!(
+            "ramdisk: volume `{name}` is no longer on `{logical_device}`"
+        ));
+    }
+    unique_physical_store(container_info, &container, name)
+}
+
+fn unique_physical_store(
+    container_info: &Value,
+    container: &str,
+    name: &str,
+) -> Result<String, String> {
+    let physical_ids = physical_store_ids(container_info)
+        .ok_or_else(|| format!("ramdisk: APFS container `{container}` has no PhysicalStores"))?;
+    match physical_ids.as_slice() {
+        [physical] => Ok(format!("/dev/{physical}")),
+        _ => Err(format!(
+            "ramdisk: APFS volume `{name}` has no unique physical store"
+        )),
+    }
+}
+
+fn physical_store_ids(container_info: &Value) -> Option<Vec<String>> {
+    let stores = container_info
+        .get("PhysicalStores")
+        .and_then(Value::as_array)?;
+    let mut physical_ids: Vec<String> = stores
+        .iter()
+        .filter_map(|store| plist_string(store, "DeviceIdentifier"))
+        .filter_map(normalized_disk_id)
+        .map(|store| normalized_disk_id(&whole_disk(&store)))
+        .flatten()
+        .collect();
+    physical_ids.sort();
+    physical_ids.dedup();
+    Some(physical_ids)
+}
+
+/// Convert a diskutil XML plist through macOS `plutil` and parse its JSON.
+fn plist_json(runner: &dyn Runner, xml: &str, description: &str) -> Result<Value, String> {
+    let mut file = tempfile::Builder::new()
+        .prefix("vivi-ramdisk-")
+        .suffix(".plist")
+        .tempfile()
+        .map_err(|error| format!("ramdisk: cannot stage {description} plist: {error}"))?;
+    file.write_all(xml.as_bytes())
+        .map_err(|error| format!("ramdisk: cannot write {description} plist: {error}"))?;
+    let path = file.path().to_string_lossy().into_owned();
+    let json = runner.run(
+        &["/usr/bin/plutil", "-convert", "json", "-o", "-", &path],
+        DISKUTIL_SECS,
+    )?;
+    serde_json::from_str(&json)
+        .map_err(|error| format!("ramdisk: cannot parse {description} plist JSON: {error}"))
+}
+
+fn plist_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
+
+/// Normalize a diskutil device identifier to `diskN[sN...]`, rejecting other
+/// text before it can become a command argument.
+fn normalized_disk_id(device: &str) -> Option<String> {
+    let identifier = device.strip_prefix("/dev/").unwrap_or(device);
+    let suffix = identifier.strip_prefix("disk")?;
+    let mut components = suffix.split('s');
+    let base = components.next()?;
+    if base.is_empty() || !base.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if components.any(|component| {
+        component.is_empty() || !component.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return None;
+    }
+    Some(identifier.to_string())
+}
+
+/// Acquire Vivi's per-user host-wide RAM admission lock. The lock directory
+/// is shared by local projects and private to the owning account.
+pub(crate) fn lock_admission() -> Result<File, String> {
+    let file = open_admission_lock_file()?;
+    file.lock()
+        .map_err(|error| format!("ramdisk: cannot lock host admission: {error}"))?;
+    Ok(file)
+}
+
+#[cfg(test)]
+pub(crate) fn try_lock_admission() -> Result<Option<File>, String> {
+    let file = open_admission_lock_file()?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(format!("ramdisk: cannot try host admission lock: {error}"))
+        }
+    }
+}
+
+fn open_admission_lock_file() -> Result<File, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        let (lock_dir, uid) = admission_lock_directory()?;
+        let path = lock_dir.join("admission.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(nofollow_flag())
+            .open(&path)
+            .map_err(|error| format!("ramdisk: cannot open admission lock: {error}"))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("ramdisk: cannot inspect admission lock: {error}"))?;
+        if !metadata.is_file()
+            || metadata.uid() != uid
+            || metadata.nlink() != 1
+            || metadata.mode() & 0o600 != 0o600
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err("ramdisk: admission lock is not a privately owned file".to_string());
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        Err("ramdisk: host admission lock requires a Unix filesystem".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn admission_lock_directory() -> Result<(PathBuf, u32), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    #[cfg(target_os = "macos")]
+    let temp = PathBuf::from("/private/tmp");
+    #[cfg(target_os = "linux")]
+    let temp = PathBuf::from("/tmp");
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let temp = std::env::temp_dir();
+    let temp = fs::canonicalize(&temp)
+        .map_err(|error| format!("ramdisk: cannot resolve temp directory: {error}"))?;
+    let temp_metadata = fs::symlink_metadata(&temp)
+        .map_err(|error| format!("ramdisk: cannot inspect temp directory: {error}"))?;
+    if !temp_metadata.is_dir()
+        || temp_metadata.file_type().is_symlink()
+        || (temp_metadata.mode() & 0o002 != 0 && temp_metadata.mode() & 0o1000 == 0)
+    {
+        return Err("ramdisk: temp path is not a safe directory".to_string());
+    }
+    create_admission_lock_directory(&temp)
+}
+
+#[cfg(unix)]
+fn create_admission_lock_directory(temp: &Path) -> Result<(PathBuf, u32), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    let home = dirs::home_dir().ok_or_else(|| "ramdisk: home directory is unknown".to_string())?;
+    let uid = fs::metadata(&home)
+        .map_err(|error| format!("ramdisk: cannot inspect home directory: {error}"))?
+        .uid();
+    let lock_dir = temp.join(format!("vivi-ramdisk-{uid}"));
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(&lock_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(format!("ramdisk: cannot create lock directory: {error}")),
+    }
+    let metadata = fs::symlink_metadata(&lock_dir)
+        .map_err(|error| format!("ramdisk: cannot inspect lock directory: {error}"))?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != uid
+        || metadata.mode() & 0o700 != 0o700
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err("ramdisk: lock directory is not privately owned".to_string());
+    }
+    Ok((lock_dir, uid))
+}
+
+#[cfg(target_os = "macos")]
+const fn nofollow_flag() -> i32 {
+    0x100
+}
+
+#[cfg(target_os = "linux")]
+const fn nofollow_flag() -> i32 {
+    0o400000
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+const fn nofollow_flag() -> i32 {
+    0x100
 }
 
 /// Best-effort eject of `device`; a failure is left to the caller's error.
@@ -429,22 +854,27 @@ fn eject(runner: &dyn Runner, device: &str) {
     drop(runner.run(&["diskutil", "eject", device], DISKUTIL_SECS));
 }
 
-/// Whether `mount` still lists `device` (any slice of it) or a mount whose
-/// final component is `volume`.
-fn still_attached(runner: &dyn Runner, device: &str, volume: &str) -> Result<bool, String> {
+/// Whether the exact logical volume remains mounted on its recorded backing.
+fn still_attached(runner: &dyn Runner, disk: &Disk, backing: &str) -> Result<bool, String> {
     let text = runner.run(&["mount"], LIST_SECS)?;
-    Ok(parse_mount_rows(&text)
-        .iter()
-        .any(|(mounted_device, mount)| {
-            if whole_disk(mounted_device) == device {
-                return true;
-            }
-            if last_component(mount) == volume {
-                return true;
-            }
-            pool_marker(Path::new(mount), mounted_device)
-                .is_some_and(|(mounted_volume, _)| mounted_volume == volume)
-        }))
+    let expected_mount = disk.mount.to_string_lossy();
+    for (mounted_device, mount) in parse_mount_rows(&text) {
+        if !same_device_id(&mounted_device, &disk.device) {
+            continue;
+        }
+        let location_matches = mount == expected_mount.as_ref()
+            || last_component(&mount) == disk.volume
+            || pool_marker(Path::new(&mount), &mounted_device)
+                .is_some_and(|(mounted_volume, _)| mounted_volume == disk.volume);
+        if !location_matches {
+            continue;
+        }
+        let actual_backing = backing_device_for_volume(runner, &mounted_device, &disk.volume)?;
+        if whole_disk(&actual_backing) == whole_disk(backing) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// `device` with any `sN` slice suffix stripped (`/dev/disk7s1` ->

@@ -99,6 +99,10 @@ Filesystem     1G-blocks Used Available Capacity iused ifree %iused  Mounted on
 struct FakeRunner {
     calls: Mutex<Vec<Vec<String>>>,
     replies: Vec<(String, Result<String, String>)>,
+    plutil_index: Mutex<usize>,
+    plist_request: Mutex<Option<String>>,
+    plist_device: Mutex<Option<String>>,
+    listed_volume: Mutex<Option<String>>,
 }
 
 impl FakeRunner {
@@ -116,6 +120,10 @@ impl FakeRunner {
         Self {
             calls: Mutex::new(Vec::new()),
             replies,
+            plutil_index: Mutex::new(0),
+            plist_request: Mutex::new(None),
+            plist_device: Mutex::new(None),
+            listed_volume: Mutex::new(None),
         }
     }
 
@@ -129,23 +137,175 @@ impl FakeRunner {
     }
 }
 
+fn disk_info_json(device: &str, container: &str) -> String {
+    serde_json::json!({
+        "DeviceIdentifier": device,
+        "APFSContainerReference": container,
+    })
+    .to_string()
+}
+
+fn apfs_list_json(name: &str, backing: &str, logical: &str) -> String {
+    serde_json::json!({
+        "Containers": [{
+            "ContainerReference": "disk9",
+            "PhysicalStores": [{"DeviceIdentifier": backing}],
+            "Volumes": [{
+                "Name": name,
+                "DeviceIdentifier": logical,
+            }],
+        }],
+    })
+    .to_string()
+}
+
+fn volume_info_json(device: &str, container: &str, mount_point: &str) -> String {
+    serde_json::json!({
+        "DeviceIdentifier": device,
+        "APFSContainerReference": container,
+        "MountPoint": mount_point,
+    })
+    .to_string()
+}
+
 impl Runner for FakeRunner {
     fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
         let line = argv.join(" ");
         self.calls
             .lock()
             .expect("call log")
-            .push(argv.iter().map(|arg| (*arg).to_string()).collect());
-        match self.replies.iter().find(|(key, _)| *key == line) {
+            .push(if argv.first() == Some(&"/usr/bin/plutil") {
+                vec![format!("{} <plist>", argv[..5].join(" "))]
+            } else {
+                argv.iter().map(|arg| (*arg).to_string()).collect()
+            });
+        if argv.len() == 4 && argv[0] == "diskutil" && argv[1] == "info" {
+            *self.plist_request.lock().expect("plist request") = Some(argv[3].to_string());
+            *self.plist_device.lock().expect("plist device") = Some(argv[3].to_string());
+        } else if argv.len() == 5 && argv[0] == "diskutil" && argv[1] == "apfs" && argv[2] == "list"
+        {
+            *self.plist_request.lock().expect("plist request") =
+                Some(format!("container:{}", argv[4]));
+        } else if argv.first() == Some(&"mount") {
+            if let Some((_, Ok(output))) = self.replies.iter().find(|(key, _)| key == "mount") {
+                let volume = parse_mount_rows(output).iter().find_map(|(_, mount)| {
+                    let name = last_component(mount);
+                    name.starts_with(VOLUME_PREFIX).then(|| name.to_string())
+                });
+                *self.listed_volume.lock().expect("listed volume") = volume;
+            }
+        }
+        let reply = if argv.first() == Some(&"/usr/bin/plutil") {
+            let mut index = self.plutil_index.lock().expect("plutil index");
+            let reply = self
+                .replies
+                .iter()
+                .filter(|(key, _)| key == "plutil")
+                .nth(*index);
+            *index += 1;
+            reply
+        } else {
+            self.replies.iter().find(|(key, _)| *key == line)
+        };
+        match reply {
             Some((_, reply)) => reply.clone(),
+            None if argv.first() == Some(&"/usr/bin/plutil") => self.dynamic_plist(),
+            None if argv.len() == 4 && argv[0] == "diskutil" && argv[1] == "info" => {
+                Ok("plist".to_string())
+            }
+            None if argv.len() == 5
+                && argv[0] == "diskutil"
+                && argv[1] == "apfs"
+                && argv[2] == "list" =>
+            {
+                Ok("plist".to_string())
+            }
             None => Err(format!("fake: unexpected `{line}`")),
         }
+    }
+}
+
+impl FakeRunner {
+    fn dynamic_plist(&self) -> Result<String, String> {
+        let request = self
+            .plist_request
+            .lock()
+            .expect("plist request")
+            .clone()
+            .unwrap_or_default();
+        if request.starts_with("/dev/") {
+            let device = self
+                .plist_device
+                .lock()
+                .expect("plist device")
+                .clone()
+                .unwrap_or_default();
+            return Ok(serde_json::json!({
+                "DeviceIdentifier": device,
+                "APFSContainerReference": whole_disk(&device).trim_start_matches("/dev/"),
+            })
+            .to_string());
+        }
+        let Some(container) = request.strip_prefix("container:") else {
+            return Err(format!("fake: unexpected plist request `{request}`"));
+        };
+        let device = self
+            .plist_device
+            .lock()
+            .expect("plist device")
+            .clone()
+            .unwrap_or_else(|| format!("/dev/{container}s1"));
+        let volume = self
+            .listed_volume
+            .lock()
+            .expect("listed volume")
+            .clone()
+            .unwrap_or_else(|| "vivi-x".to_string());
+        Ok(serde_json::json!({
+            "Containers": [{
+                "ContainerReference": container,
+                "PhysicalStores": [{"DeviceIdentifier": whole_disk(&device)}],
+                "Volumes": [{"Name": volume, "DeviceIdentifier": device}],
+            }],
+        })
+        .to_string())
     }
 }
 
 /// A mount point under the system temp directory, removed by its owner.
 fn mount_point(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("vivi-ramdisk-{tag}-{}", std::process::id()))
+}
+
+fn mounted_owned_device(
+    runner: &dyn Runner,
+    disk: &Disk,
+    expected_mount: &Path,
+) -> Result<(String, String), String> {
+    let listing = runner.run(&["mount"], LIST_SECS)?;
+    let expected_mount = expected_mount
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve owned mountpoint: {error}"))?;
+    for (device, mount) in parse_mount_rows(&listing) {
+        if !same_device_id(&device, &disk.device) {
+            continue;
+        }
+        let actual_mount = Path::new(&mount)
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve attached mountpoint: {error}"))?;
+        if actual_mount == expected_mount {
+            let backing = backing_device_for_volume(runner, &device, &disk.volume)?;
+            if disk
+                .backing_device
+                .as_deref()
+                .is_some_and(|expected| !same_device_id(expected, &backing))
+            {
+                return Err("mounted logical volume has a different backing disk".to_string());
+            }
+            return Ok((device, mount));
+        }
+    }
+    Err("owned RAM disk is not mounted at its exact temp path".to_string())
 }
 
 #[test]
@@ -161,18 +321,36 @@ fn whole_disk_strips_every_slice_suffix() {
 #[test]
 fn mount_runs_attach_erase_unmount_mount_in_order() {
     let at = mount_point("mount");
-    let mount_line = format!("diskutil mount -mountPoint {} /dev/disk7s1", at.display());
-    let erased = format!("diskutil eraseVolume APFS vivi-here-slot3-job1 /dev/disk7");
+    let mount_line = format!("diskutil mount -mountPoint {} /dev/disk9s1", at.display());
+    let erased = format!("diskutil eraseVolume APFS vivi-here-slot3-job1 /dev/disk8");
+    let disk_info = disk_info_json("disk8", "disk9");
+    let apfs_list = apfs_list_json("vivi-here-slot3-job1", "disk8", "disk9s1");
+    let volume_info = volume_info_json("disk9s1", "disk9", "/Volumes/vivi-here-slot3-job1");
     let runner = FakeRunner::new(&[
-        ("hdiutil attach -nomount ram://16777216", Ok("/dev/disk7\n")),
-        (erased.as_str(), Ok("Started erase on disk7")),
+        ("hdiutil attach -nomount ram://16777216", Ok("/dev/disk8\n")),
+        (erased.as_str(), Ok("Started erase on disk8")),
         (
-            "diskutil unmount /dev/disk7s1",
-            Ok("Volume vivi-here-slot3-job1 on disk7s1 unmounted"),
+            "diskutil info -plist /dev/disk8",
+            Ok("<?xml version=\"1.0\"?><plist><dict/></plist>"),
+        ),
+        ("plutil", Ok(disk_info.as_str())),
+        (
+            "diskutil apfs list -plist disk9",
+            Ok("<?xml version=\"1.0\"?><plist><dict/></plist>"),
+        ),
+        ("plutil", Ok(apfs_list.as_str())),
+        (
+            "diskutil info -plist /dev/disk9s1",
+            Ok("<?xml version=\"1.0\"?><plist><dict/></plist>"),
+        ),
+        ("plutil", Ok(volume_info.as_str())),
+        (
+            "diskutil unmount /dev/disk9s1",
+            Ok("Volume vivi-here-slot3-job1 on disk9s1 unmounted"),
         ),
         (
             mount_line.as_str(),
-            Ok("/dev/disk7s1 on /Volumes/vivi-here-slot3-job1"),
+            Ok("/dev/disk9s1 on /Volumes/vivi-here-slot3-job1"),
         ),
     ]);
 
@@ -181,7 +359,8 @@ fn mount_runs_attach_erase_unmount_mount_in_order() {
     assert_eq!(
         disk,
         Disk {
-            device: "/dev/disk7".to_string(),
+            device: "/dev/disk9s1".to_string(),
+            backing_device: Some("/dev/disk8".to_string()),
             volume: "vivi-here-slot3-job1".to_string(),
             size_gib: 8,
             mount: at.clone(),
@@ -193,9 +372,60 @@ fn mount_runs_attach_erase_unmount_mount_in_order() {
         vec![
             "hdiutil attach -nomount ram://16777216".to_string(),
             erased,
-            "diskutil unmount /dev/disk7s1".to_string(),
+            "diskutil info -plist /dev/disk8".to_string(),
+            "/usr/bin/plutil -convert json -o - <plist>".to_string(),
+            "diskutil apfs list -plist disk9".to_string(),
+            "/usr/bin/plutil -convert json -o - <plist>".to_string(),
+            "diskutil info -plist /dev/disk9s1".to_string(),
+            "/usr/bin/plutil -convert json -o - <plist>".to_string(),
+            "diskutil unmount /dev/disk9s1".to_string(),
             mount_line,
         ]
+    );
+    let _ = std::fs::remove_dir_all(&at);
+}
+
+#[test]
+fn mount_refuses_a_container_not_backed_by_its_owned_physical_disk() {
+    let at = mount_point("wrong-apfs-store");
+    let disk_info = disk_info_json("disk8", "disk9");
+    let apfs_list = apfs_list_json("vivi-x", "disk10", "disk9s1");
+    let runner = FakeRunner::new(&[
+        ("hdiutil attach -nomount ram://2097152", Ok("/dev/disk8\n")),
+        (
+            "diskutil eraseVolume APFS vivi-x /dev/disk8",
+            Ok("Started erase on disk8"),
+        ),
+        (
+            "diskutil info -plist /dev/disk8",
+            Ok("<?xml version=\"1.0\"?><plist><dict/></plist>"),
+        ),
+        ("plutil", Ok(disk_info.as_str())),
+        (
+            "diskutil apfs list -plist disk9",
+            Ok("<?xml version=\"1.0\"?><plist><dict/></plist>"),
+        ),
+        ("plutil", Ok(apfs_list.as_str())),
+        ("diskutil eject /dev/disk8", Ok("disk8 ejected")),
+    ]);
+
+    let error = mount(&runner, "vivi-x", 1, &at).expect_err("foreign APFS store");
+
+    assert!(
+        error.contains("not backed by attached disk `disk8`"),
+        "{error}"
+    );
+    assert!(
+        runner
+            .calls()
+            .contains(&"diskutil eject /dev/disk8".to_string())
+    );
+    assert!(
+        runner
+            .calls()
+            .iter()
+            .all(|call| !call.starts_with("diskutil mount ")
+                && !call.starts_with("diskutil unmount "))
     );
     let _ = std::fs::remove_dir_all(&at);
 }
@@ -257,6 +487,7 @@ fn teardown_ejects_the_whole_disk_and_verifies_with_mount() {
     ]);
     let disk = Disk {
         device: "/dev/disk7s1".to_string(),
+        backing_device: Some("/dev/disk7".to_string()),
         volume: "vivi-x".to_string(),
         size_gib: 8,
         mount: PathBuf::from("/Volumes/vivi-x"),
@@ -265,7 +496,14 @@ fn teardown_ejects_the_whole_disk_and_verifies_with_mount() {
     assert_eq!(teardown(&runner, &disk), Ok(()));
     assert_eq!(
         runner.calls(),
-        vec!["diskutil eject /dev/disk7".to_string(), "mount".to_string()]
+        vec![
+            "diskutil info -plist /dev/disk7s1".to_string(),
+            "/usr/bin/plutil -convert json -o - <plist>".to_string(),
+            "diskutil apfs list -plist disk7".to_string(),
+            "/usr/bin/plutil -convert json -o - <plist>".to_string(),
+            "diskutil eject /dev/disk7".to_string(),
+            "mount".to_string(),
+        ]
     );
 }
 
@@ -273,6 +511,7 @@ fn teardown_ejects_the_whole_disk_and_verifies_with_mount() {
 fn teardown_reports_a_disk_that_survived_the_eject() {
     let disk = Disk {
         device: "/dev/disk7s1".to_string(),
+        backing_device: Some("/dev/disk7".to_string()),
         volume: "vivi-x".to_string(),
         size_gib: 8,
         mount: PathBuf::from("/Volumes/vivi-x"),
@@ -297,8 +536,9 @@ fn teardown_reports_a_disk_that_survived_the_eject() {
         ),
     ]);
     assert_eq!(
-        teardown(&by_volume, &disk).expect_err("volume still mounted"),
-        "vivi-x still attached after eject"
+        teardown(&by_volume, &disk),
+        Ok(()),
+        "a same-named volume on another logical device is not the owned disk"
     );
 }
 
@@ -309,7 +549,8 @@ fn teardown_surfaces_an_eject_error_when_the_disk_is_gone() {
         ("mount", Ok("")),
     ]);
     let disk = Disk {
-        device: "/dev/disk7".to_string(),
+        device: "/dev/disk7s1".to_string(),
+        backing_device: Some("/dev/disk7".to_string()),
         volume: "vivi-x".to_string(),
         size_gib: 8,
         mount: PathBuf::from("/Volumes/vivi-x"),
@@ -345,18 +586,21 @@ fn mounted_merges_mount_devices_with_df_sizes() {
         vec![
             Disk {
                 device: "/dev/disk5s1".to_string(),
+                backing_device: None,
                 volume: "vivi-here-slot3-job1".to_string(),
                 size_gib: 30,
                 mount: PathBuf::from("/Volumes/vivi-here-slot3-job1"),
             },
             Disk {
                 device: "/dev/disk7s1".to_string(),
+                backing_device: None,
                 volume: "vivi-here-slot4-job2".to_string(),
                 size_gib: 8,
                 mount: PathBuf::from("/Volumes/vivi-here-slot4-job2"),
             },
             Disk {
                 device: "/dev/disk9s1".to_string(),
+                backing_device: None,
                 volume: "vivi-here-slot5-job3".to_string(),
                 size_gib: 0,
                 mount: PathBuf::from("/Volumes/vivi-here-slot5-job3"),
@@ -377,7 +621,7 @@ fn mounted_recognizes_local_pool_mounts_through_the_exact_slot_marker() {
     std::fs::write(
         slot.join("ramdisk"),
         format!(
-            "device=/dev/disk13\nvolume=vivi-here-pool-slot-0-job\nsize_gib=8\njob=job\nmount={}\nsource=/repo\n",
+            "device=/dev/disk13\nvolume_device=/dev/disk13s1\nvolume=vivi-here-pool-slot-0-job\nsize_gib=8\njob=job\nmount={}\nsource=/repo\n",
             mount.display()
         ),
     )
@@ -423,9 +667,23 @@ fn real_runner_mounts_and_releases_one_gib_at_an_owned_temp_path() {
     let runner = RealRunner;
 
     let disk = mount(&runner, &volume, 1, temp.path()).unwrap();
+    let device_proof = mounted_owned_device(&runner, &disk, temp.path());
     let write = std::fs::write(temp.path().join("smoke.txt"), b"RAM disk smoke\n");
     let detach = teardown(&runner, &disk);
 
+    assert!(
+        device_proof.is_ok(),
+        "mount device ownership: {device_proof:?}"
+    );
+    let (logical, mount_path) = device_proof.expect("mount device ownership was checked");
+    let backing = disk
+        .backing_device
+        .as_deref()
+        .expect("real mount records its physical backing disk");
+    eprintln!(
+        "RAM disk smoke mounted physical {} as logical {} on {}",
+        backing, logical, mount_path
+    );
     assert!(
         write.is_ok(),
         "mounted RAM disk was not writable: {write:?}"
@@ -439,6 +697,15 @@ fn real_runner_mounts_and_releases_one_gib_at_an_owned_temp_path() {
             .iter()
             .any(|attached| attached.volume == volume)
     );
+    assert!(
+        runner.run(&["mount"], LIST_SECS).is_ok_and(|text| {
+            parse_mount_rows(&text)
+                .iter()
+                .all(|(device, _)| whole_disk(device) != whole_disk(&disk.device))
+        }),
+        "owned device remained after teardown"
+    );
+    eprintln!("RAM disk smoke teardown verified the owned mountpoint is gone");
 }
 
 /// A runner whose listings report no attached disks, so `held_gib` is zero.

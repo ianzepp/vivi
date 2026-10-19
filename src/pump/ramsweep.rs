@@ -50,7 +50,7 @@ pub(crate) fn sweep_ramdisks_with(
             continue;
         }
         let pool_mount = ramdisk::pool_slot_for_mount(&disk.mount).is_some();
-        let pool_owner = pool_owner_for_disk(&disk);
+        let pool_owner = pool_owner_for_disk(&disk, runner);
         if pool_mount && pool_owner.is_none() {
             lines.push(format!(
                 "WARNING ramdisk sweep: preserving {} because its pool ownership marker does not match the attached device",
@@ -98,7 +98,10 @@ struct PoolRamOwner {
 
 /// The slot and local source recorded for a pool RAM disk, but only when the
 /// marker still names the exact mounted volume and path.
-fn pool_owner_for_disk(disk: &Disk) -> Option<PoolRamOwner> {
+fn pool_owner_for_disk(
+    disk: &Disk,
+    runner: &dyn crate::pool::ramdisk::Runner,
+) -> Option<PoolRamOwner> {
     let slot = ramdisk::pool_slot_for_mount(&disk.mount)?;
     let Ok(marker) = std::fs::read_to_string(slot.join("ramdisk")) else {
         return None;
@@ -108,12 +111,30 @@ fn pool_owner_for_disk(disk: &Disk) -> Option<PoolRamOwner> {
             .lines()
             .find_map(|line| line.strip_prefix(&format!("{name}=")))
     };
-    let device = ramdisk::whole_disk(&disk.device);
-    (field("volume") == Some(disk.volume.as_str())
-        && field("device") == Some(device.as_str())
-        && field("mount") == Some(disk.mount.to_string_lossy().as_ref())
-        && field("job").is_some_and(|job| !job.is_empty()))
-    .then(|| PoolRamOwner {
+    let marked_device = field("device")?;
+    let marked_volume_device = field("volume_device")?;
+    if field("volume") != Some(disk.volume.as_str())
+        || !ramdisk::same_device_id(marked_volume_device, &disk.device)
+        || field("mount") != Some(disk.mount.to_string_lossy().as_ref())
+        || !field("job").is_some_and(|job| !job.is_empty())
+    {
+        return None;
+    }
+    let actual_backing =
+        match ramdisk::backing_device_for_volume(runner, &disk.device, &disk.volume) {
+            Ok(backing) => backing,
+            Err(error) => {
+                eprintln!(
+                    "warning: RAM disk {} backing verification failed: {error}",
+                    disk.volume
+                );
+                return None;
+            }
+        };
+    if !ramdisk::same_device_id(marked_device, &actual_backing) {
+        return None;
+    }
+    Some(PoolRamOwner {
         slot,
         source: field("source").unwrap_or_default().to_string(),
     })

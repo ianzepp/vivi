@@ -23,7 +23,6 @@
 //!   detached HEAD so no branch is held (see [`super::local_branch`]).
 
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -251,23 +250,30 @@ fn find_attached_ramdisk(
     record: &RamDiskRecord,
     runner: &dyn crate::pool::ramdisk::Runner,
 ) -> Result<crate::pool::ramdisk::Disk, VivariumError> {
-    crate::pool::ramdisk::mounted(runner)
-        .into_iter()
-        .find(|disk| {
-            disk.volume == record.volume
-                && disk.mount == record.mount
-                && record.device == crate::pool::ramdisk::whole_disk(&disk.device)
-        })
-        .ok_or_else(|| {
-            let detail = format!(
-                "RAM disk {} for job {} at {} is not the exact attached device; preserving marker",
-                record.volume,
-                record.job,
-                record.mount.display()
-            );
-            eprintln!("warning: {detail}");
-            VivariumError::Message(detail)
-        })
+    for mut disk in crate::pool::ramdisk::mounted_checked(runner).map_err(VivariumError::Message)? {
+        if disk.volume != record.volume
+            || disk.mount != record.mount
+            || !crate::pool::ramdisk::same_device_id(&disk.device, &record.volume_device)
+        {
+            continue;
+        }
+        let backing =
+            crate::pool::ramdisk::backing_device_for_volume(runner, &disk.device, &disk.volume)
+                .map_err(VivariumError::Message)?;
+        if !crate::pool::ramdisk::same_device_id(&backing, &record.device) {
+            continue;
+        }
+        disk.backing_device = Some(record.device.clone());
+        return Ok(disk);
+    }
+    let detail = format!(
+        "RAM disk {} for job {} at {} is not the exact attached device; preserving marker",
+        record.volume,
+        record.job,
+        record.mount.display()
+    );
+    eprintln!("warning: {detail}");
+    Err(VivariumError::Message(detail))
 }
 
 fn teardown_owned_ramdisk(
@@ -309,6 +315,7 @@ fn teardown_owned_ramdisk(
 /// Parsed fields from the local provider's slot RAM-disk marker.
 struct RamDiskRecord {
     device: String,
+    volume_device: String,
     volume: String,
     size_gib: u64,
     job: String,
@@ -327,6 +334,7 @@ fn ramdisk_record(marker: &str, dir: &Path, id: &str) -> Option<RamDiskRecord> {
             .find_map(|line| line.strip_prefix(&format!("{name}=")))
     };
     let device = field("device")?.to_string();
+    let volume_device = field("volume_device")?.to_string();
     let volume = field("volume")?.to_string();
     let job = field("job")?.to_string();
     let expected_volume = match pool_job_volume(id, &job) {
@@ -348,11 +356,17 @@ fn ramdisk_record(marker: &str, dir: &Path, id: &str) -> Option<RamDiskRecord> {
                 .components()
                 .all(|part| matches!(part, std::path::Component::Normal(_)))
     });
-    if volume != expected_volume || device.is_empty() || job.is_empty() || !target_mount {
+    if volume != expected_volume
+        || !crate::pool::ramdisk::same_device_id(&device, &device)
+        || !crate::pool::ramdisk::same_device_id(&volume_device, &volume_device)
+        || job.is_empty()
+        || !target_mount
+    {
         return None;
     }
     Some(RamDiskRecord {
         device,
+        volume_device,
         volume,
         size_gib,
         job,
@@ -427,14 +441,21 @@ fn pool_job_volume(id: &str, job: &str) -> Result<String, VivariumError> {
 
 /// The marker stays on the SSD slot root so unclaim, destroy, and pump restart
 /// can prove ownership after the RAM volume itself is gone.
-fn ramdisk_marker(disk: &crate::pool::ramdisk::Disk, job: &str, source: &str) -> String {
-    format!(
-        "device={}\nvolume={}\nsize_gib={}\njob={job}\nmount={}\nsource={source}\n",
+fn ramdisk_marker(
+    disk: &crate::pool::ramdisk::Disk,
+    job: &str,
+    source: &str,
+) -> Result<String, VivariumError> {
+    let backing = disk.backing_device.as_deref().ok_or_else(|| {
+        VivariumError::Message("new RAM disk has no verified physical backing".into())
+    })?;
+    Ok(format!(
+        "device={backing}\nvolume_device={}\nvolume={}\nsize_gib={}\njob={job}\nmount={}\nsource={source}\n",
         disk.device,
         disk.volume,
         disk.size_gib,
         disk.mount.display()
-    )
+    ))
 }
 
 /// Prepare a default repository workspace for a job without an explicit
@@ -530,14 +551,7 @@ fn mount_ramdisk_at(
     mount: &Path,
     source: &str,
 ) -> Result<(), VivariumError> {
-    let lock_path = provider.root.join(".ramdisk.lock");
-    drop(
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(&lock_path)?,
-    );
-    let _admission_lock = super::local_git::lock_path(&lock_path)?;
+    let _admission_lock = crate::pool::ramdisk::lock_admission().map_err(VivariumError::Message)?;
     let want = provider.ramdisk.size_gib;
     crate::pool::ramdisk::admit_with(
         provider.ramdisk_runner.as_ref(),
@@ -549,7 +563,20 @@ fn mount_ramdisk_at(
     let volume = pool_job_volume(id, job)?;
     let disk = crate::pool::ramdisk::mount(provider.ramdisk_runner.as_ref(), &volume, want, mount)
         .map_err(VivariumError::Message)?;
-    let marker = ramdisk_marker(&disk, job, source);
+    let marker = match ramdisk_marker(&disk, job, source) {
+        Ok(marker) => marker,
+        Err(error) => {
+            if let Err(teardown) =
+                crate::pool::ramdisk::teardown(provider.ramdisk_runner.as_ref(), &disk)
+            {
+                eprintln!(
+                    "warning: RAM disk {} teardown verification failed: {teardown}",
+                    disk.volume
+                );
+            }
+            return Err(error);
+        }
+    };
     if let Err(error) = slots::replace_file(&slot.join("ramdisk"), marker.as_bytes()) {
         if let Err(teardown) =
             crate::pool::ramdisk::teardown(provider.ramdisk_runner.as_ref(), &disk)

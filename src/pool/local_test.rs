@@ -336,6 +336,7 @@ struct RamdiskTestRunner {
     attached: Mutex<bool>,
     keep_attached: bool,
     calls: Mutex<Vec<String>>,
+    plist_request: Mutex<Option<String>>,
 }
 
 impl RamdiskTestRunner {
@@ -345,6 +346,7 @@ impl RamdiskTestRunner {
             attached: Mutex::new(true),
             keep_attached,
             calls: Mutex::new(Vec::new()),
+            plist_request: Mutex::new(None),
         }
     }
 
@@ -379,6 +381,46 @@ impl crate::pool::ramdisk::Runner for RamdiskTestRunner {
                     Ok(String::new())
                 }
             }
+            _ if argv.len() == 4 && argv[0] == "diskutil" && argv[1] == "info" => {
+                *self.plist_request.lock().unwrap() = Some(argv[3].to_string());
+                Ok("plist".to_string())
+            }
+            _ if argv.len() == 5
+                && argv[0] == "diskutil"
+                && argv[1] == "apfs"
+                && argv[2] == "list" =>
+            {
+                *self.plist_request.lock().unwrap() = Some(format!("container:{}", argv[4]));
+                Ok("plist".to_string())
+            }
+            _ if argv.first() == Some(&"/usr/bin/plutil") => {
+                let request = self
+                    .plist_request
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                let json = if request == "/dev/disk7s1" {
+                    serde_json::json!({
+                        "DeviceIdentifier": "disk7s1",
+                        "APFSContainerReference": "disk7",
+                    })
+                } else if request == "container:disk7" {
+                    serde_json::json!({
+                        "Containers": [{
+                            "ContainerReference": "disk7",
+                            "PhysicalStores": [{"DeviceIdentifier": "disk7"}],
+                            "Volumes": [{
+                                "Name": "vivi-ms-pool-slot-0-build",
+                                "DeviceIdentifier": "disk7s1",
+                            }],
+                        }],
+                    })
+                } else {
+                    return Err(format!("unexpected plist request: {request}"));
+                };
+                Ok(json.to_string())
+            }
             "diskutil eject /dev/disk7" => {
                 if !self.keep_attached {
                     *self.attached.lock().unwrap() = false;
@@ -395,6 +437,8 @@ type AttachedDisks = Vec<(String, String, u64)>;
 struct LocalPoolRamRunner {
     attached: Mutex<AttachedDisks>,
     calls: Mutex<Vec<String>>,
+    volume: Mutex<Option<String>>,
+    plist_request: Mutex<Option<String>>,
 }
 
 impl LocalPoolRamRunner {
@@ -407,6 +451,8 @@ impl LocalPoolRamRunner {
                     .collect(),
             ),
             calls: Mutex::new(Vec::new()),
+            volume: Mutex::new(None),
+            plist_request: Mutex::new(None),
         }
     }
 
@@ -439,10 +485,57 @@ impl crate::pool::ramdisk::Runner for LocalPoolRamRunner {
             _ if line.starts_with("hdiutil attach -nomount ram://") => {
                 Ok(String::from("/dev/disk13\n"))
             }
-            _ if line.starts_with("diskutil eraseVolume APFS ")
-                || line.starts_with("diskutil unmount ") =>
-            {
+            _ if argv.len() == 5 && argv[0] == "diskutil" && argv[1] == "eraseVolume" => {
+                *self.volume.lock().unwrap() = Some(argv[4].to_string());
                 Ok(String::new())
+            }
+            _ if argv.len() == 4 && argv[0] == "diskutil" && argv[1] == "info" => {
+                *self.plist_request.lock().unwrap() = Some(argv[3].to_string());
+                Ok("plist".to_string())
+            }
+            _ if argv.len() == 5
+                && argv[0] == "diskutil"
+                && argv[1] == "apfs"
+                && argv[2] == "list" =>
+            {
+                *self.plist_request.lock().unwrap() = Some(format!("container:{}", argv[4]));
+                Ok("plist".to_string())
+            }
+            "diskutil unmount /dev/disk14s1" => Ok(String::new()),
+            _ if argv.first() == Some(&"/usr/bin/plutil") => {
+                let volume = self.volume.lock().unwrap().clone().unwrap_or_default();
+                let request = self
+                    .plist_request
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_default();
+                let json = if request == "/dev/disk13" {
+                    serde_json::json!({
+                        "DeviceIdentifier": "disk13",
+                        "APFSContainerReference": "disk14",
+                    })
+                } else if request == "/dev/disk14s1" {
+                    serde_json::json!({
+                        "DeviceIdentifier": "disk14s1",
+                        "APFSContainerReference": "disk14",
+                        "MountPoint": format!("/Volumes/{volume}"),
+                    })
+                } else if request == "container:disk14" {
+                    serde_json::json!({
+                        "Containers": [{
+                            "ContainerReference": "disk14",
+                            "PhysicalStores": [{"DeviceIdentifier": "disk13"}],
+                            "Volumes": [{
+                                "Name": volume,
+                                "DeviceIdentifier": "disk14s1",
+                            }],
+                        }],
+                    })
+                } else {
+                    return Err(format!("unexpected plist request: {request}"));
+                };
+                Ok(json.to_string())
             }
             _ if argv.len() == 5 && argv[0] == "diskutil" && argv[1] == "mount" => {
                 self.attached
@@ -454,7 +547,9 @@ impl crate::pool::ramdisk::Runner for LocalPoolRamRunner {
             _ if argv.len() == 3 && argv[0] == "diskutil" && argv[1] == "eject" => {
                 let device = argv[2];
                 self.attached.lock().unwrap().retain(|(attached, _, _)| {
-                    attached != device && !attached.starts_with(&format!("{device}s"))
+                    attached != device
+                        && !attached.starts_with(&format!("{device}s"))
+                        && !(device == "/dev/disk13" && attached == "/dev/disk14s1")
                 });
                 Ok(String::new())
             }
@@ -536,6 +631,8 @@ fn local_provider_mounts_the_target_worktree_on_a_fresh_ram_disk() {
     let mount = slot.join("targets").join(&target.cache_key);
     let marker = std::fs::read_to_string(slot.join("ramdisk")).unwrap();
     assert!(marker.contains("volume=vivi-ms-pool-slot-1-job-123456\n"));
+    assert!(marker.contains("device=/dev/disk13\n"));
+    assert!(marker.contains("volume_device=/dev/disk14s1\n"));
     assert!(marker.contains("size_gib=8\n"));
     assert!(marker.contains(&format!("mount={}\n", mount.display())));
     assert!(mount.join("repo/.git").is_file());
@@ -671,10 +768,12 @@ fn local_provider_waits_for_memory_without_ssd_fallback() {
 
     let error = provider
         .prepare_target_checkout(&id, &target, "tip", "job-wait")
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-    assert!(error.starts_with("ramdisk-wait:"), "{error}");
+    assert!(
+        matches!(&error, VivariumError::Message(message) if message.starts_with("ramdisk-wait:")),
+        "{error}"
+    );
     assert!(!root.join(&id).join("ramdisk").exists());
     assert!(
         !runner
@@ -684,12 +783,36 @@ fn local_provider_waits_for_memory_without_ssd_fallback() {
     );
 }
 
+#[test]
+fn ramdisk_admission_lock_is_shared_across_project_roots() {
+    let (_project_a, root_a) = root();
+    let (_project_b, root_b) = root();
+    let provider_a = provider(&root_a);
+    let provider_b = provider(&root_b);
+    assert_ne!(provider_a.root(), provider_b.root());
+
+    let held = crate::pool::ramdisk::lock_admission().expect("host RAM admission lock");
+    assert!(
+        crate::pool::ramdisk::try_lock_admission()
+            .expect("try host RAM admission lock")
+            .is_none(),
+        "a second project must contend on the same host lock"
+    );
+    drop(held);
+    assert!(
+        crate::pool::ramdisk::try_lock_admission()
+            .expect("retry host RAM admission lock")
+            .is_some(),
+        "the lock is released when its owner drops the file"
+    );
+}
+
 fn ramdisk_marker(slot: &Path, mount: &Path, source: &Path) {
     std::fs::create_dir_all(mount).unwrap();
     std::fs::write(
         slot.join("ramdisk"),
         format!(
-            "device=/dev/disk7\nvolume=vivi-ms-pool-slot-0-build\
+            "device=/dev/disk7\nvolume_device=/dev/disk7s1\nvolume=vivi-ms-pool-slot-0-build\
              \nsize_gib=8\njob=build\nmount={}\nsource={}\n",
             mount.display(),
             source.display()
