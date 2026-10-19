@@ -18,8 +18,8 @@ use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
 pub(crate) mod green;
 mod parse;
 
-pub use parse::{parse_failing, target_deaths};
 use parse::{BEGIN, BUILD_FAILED, END, last_usable_block};
+pub use parse::{parse_failing, target_deaths};
 
 /// Flag file that makes the next tick start a gate whatever the due rules;
 /// the default target uses this name, other targets suffix `-<target>`.
