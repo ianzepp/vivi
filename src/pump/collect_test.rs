@@ -817,6 +817,40 @@ fn a_rate_limited_split_planner_keeps_its_retry_budget() {
 }
 
 #[test]
+fn a_rate_limit_burst_raises_one_exception_per_window() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    put(&mut st, "u-2", unit(Status::Splitting, None, None));
+    rate_limited_receipt(&ctx, "u-1");
+    rate_limited_receipt(&ctx, "u-2");
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    let exc = exceptions(&ctx);
+    assert_eq!(exc.matches("provider-rate-limit").count(), 1, "{exc}");
+    assert_eq!(exc.matches("split-planner-failed").count(), 0, "{exc}");
+    assert!(exc.contains("2 planner(s) hit the provider rate limit"), "{exc}");
+    assert_eq!(st.units.get("u-1").unwrap().split_fails, 0);
+    assert_eq!(st.units.get("u-2").unwrap().split_fails, 0);
+
+    host.advance(100);
+    rate_limited_receipt(&ctx, "u-1");
+    rate_limited_receipt(&ctx, "u-2");
+    assert_eq!(collect(&ctx, &mut st), None);
+    let exc = exceptions(&ctx);
+    assert_eq!(exc.matches("provider-rate-limit").count(), 1, "{exc}");
+
+    host.advance(600);
+    rate_limited_receipt(&ctx, "u-1");
+    rate_limited_receipt(&ctx, "u-2");
+    assert_eq!(collect(&ctx, &mut st), None);
+    let exc = exceptions(&ctx);
+    assert_eq!(exc.matches("provider-rate-limit").count(), 2, "{exc}");
+    assert_eq!(exc.matches("split-planner-failed").count(), 0, "{exc}");
+}
+
+#[test]
 fn repeated_rate_limits_back_off_without_parking() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();

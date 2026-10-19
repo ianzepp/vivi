@@ -903,6 +903,32 @@ fn a_rate_limited_board_planner_retries_without_counting_failures() {
 }
 
 #[test]
+fn a_rate_limit_limit_burst_on_board_planners_raises_one_exception() {
+    let (_dir, ctx, _host) = setup();
+    fs::create_dir_all(ctx.home.join("board")).unwrap();
+    let mut st = State::default();
+    for handle in ["n1", "n2"] {
+        fs::write(
+            ctx.home.join(format!("board/{handle}.out")),
+            "429: {\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}\n",
+        )
+        .unwrap();
+        fs::write(ctx.home.join(format!("board/{handle}.out.rc")), "1").unwrap();
+        st.board.planning.insert(String::from(handle), ctx.now());
+    }
+
+    expire_planning(&ctx, &mut st);
+
+    let exc = exceptions(&ctx);
+    assert_eq!(exc.matches("provider-rate-limit").count(), 1, "{exc}");
+    assert_eq!(exc.matches("plan-crashed").count(), 0, "{exc}");
+    assert!(exc.contains("2 planner(s) hit the provider rate limit"), "{exc}");
+    assert!(st.board.planning.is_empty());
+    assert_eq!(st.board.planner_fails.get("n1"), None);
+    assert_eq!(st.board.planner_fails.get("n2"), None);
+}
+
+#[test]
 fn a_third_planner_failure_parks_the_need() {
     let (_dir, ctx, _host) = setup();
     exited_planner(&ctx, "n1");

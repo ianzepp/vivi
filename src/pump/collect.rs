@@ -31,6 +31,8 @@ const GATE_GRACE: u64 = 2400;
 pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
 /// Seconds a deferred split launch waits before it retries.
 const SPLIT_LAUNCH_STAGGER: u64 = 60;
+/// Seconds one provider-rate-limit burst exception covers.
+pub(crate) const RATE_LIMIT_EXCEPTION_WINDOW: u64 = 600;
 
 /// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
@@ -723,11 +725,38 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
         .filter(|(_, unit)| unit.status == Status::Splitting)
         .map(|(id, _)| id.clone())
         .collect();
+    let mut rate_limited: Vec<String> = Vec::new();
     for uid in splitting {
-        if expire_one_split(ctx, st, &uid, now) {
+        if expire_one_split(ctx, st, &uid, now, &mut rate_limited) {
             crate::pump::quarantine::repair_stuck(ctx, st, &uid);
         }
     }
+    if !rate_limited.is_empty() {
+        rate_limit_burst(ctx, st, &rate_limited);
+    }
+}
+
+/// Raise one exception per provider-rate-limit burst instead of one per
+/// planner: every 429 in [`RATE_LIMIT_EXCEPTION_WINDOW`] shares the first
+/// one's line, so a resplit storm does not bury the board in noise.
+pub(crate) fn rate_limit_burst(ctx: &Ctx, st: &mut State, uids: &[String]) {
+    let now = ctx.now();
+    if st
+        .rate_limited_at
+        .is_some_and(|at| now.saturating_sub(at) < RATE_LIMIT_EXCEPTION_WINDOW)
+    {
+        return;
+    }
+    st.rate_limited_at = Some(now);
+    let handle = uids.first().map(String::as_str).unwrap_or("?");
+    ctx.exception(
+        "provider-rate-limit",
+        handle,
+        &format!(
+            "{} planner(s) hit the provider rate limit (429); retried with backoff, retry budgets untouched",
+            uids.len()
+        ),
+    );
 }
 
 /// Decide one splitting unit: a written plan belongs to ingest, an exit
@@ -735,7 +764,13 @@ fn expire_splits(ctx: &Ctx, st: &mut State) {
 /// retry respawns the planner, a planner that died host-class returns its
 /// unit to `pending`, and a silent one past the hard cap is parked. True
 /// when the unit became `Stuck`.
-fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
+fn expire_one_split(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    now: u64,
+    rate_limited: &mut Vec<String>,
+) -> bool {
     if ctx.home.join(format!("plans/{uid}.split.json")).exists() {
         return false;
     }
@@ -751,6 +786,7 @@ fn expire_one_split(ctx: &Ctx, st: &mut State, uid: &str, now: u64) -> bool {
         drop(fs::remove_file(&receipt));
         if let Some(wait) = rate_limited_retry(ctx, unit, uid) {
             unit.split_retry_at = Some(now + wait);
+            rate_limited.push(uid.to_owned());
             ctx.log(&format!(
                 "split-rate-limited {uid} retry in {wait}s; retry budget untouched"
             ));
