@@ -990,3 +990,79 @@ fn two_host_failures_pause_the_pool_with_one_environment_exception() {
     assert_eq!(lines.len(), 1, "exceptions: {recorded}");
     assert!(lines[0].contains("pi"), "exceptions: {recorded}");
 }
+
+/// A state with one quarantined member `u1` and its repair unit, as
+/// [`crate::pump::quarantine::open_repair`] leaves them: the repair is in
+/// flight with one attempt spent, on its quarantine base branch.
+fn quarantine_repair_state() -> State {
+    let mut st = State::default();
+    let mut member = unit(Status::Quarantined, None, None);
+    member.quarantine = Some(String::from("q1-aaaaaa"));
+    put(&mut st, "u1", member);
+    st.order.push(String::from("u1"));
+    let mut repair = unit(Status::Inflight, Some("pumpfix-q1-aaaaaa"), None);
+    repair.need = String::from("pumpfix-q1-aaaaaa");
+    repair.attempts = 1;
+    repair.repairs = Some(String::from("q1-aaaaaa"));
+    repair.base = Some(String::from("origin/pump/quarantine/q1-aaaaaa"));
+    put(&mut st, "pumpfix-q1-aaaaaa", repair);
+    st
+}
+
+#[test]
+fn a_repair_timeout_dissolves_the_quarantine_at_once() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = quarantine_repair_state();
+
+    fail(&ctx, &mut st, "pumpfix-q1-aaaaaa", "timeout", "killed by budget");
+
+    // The ruling: a repair that times out gives up now, not at max_attempts.
+    assert_eq!(st.units["pumpfix-q1-aaaaaa"].status, Status::Stuck);
+    let member = &st.units["u1"];
+    assert_eq!(member.status, Status::Delivered);
+    assert!(member.solo);
+    assert_eq!(member.quarantine, None);
+    let recorded = exceptions(&ctx);
+    assert!(recorded.contains("quarantine-stuck"), "exceptions: {recorded}");
+}
+
+#[test]
+fn a_repair_no_changes_dissolves_the_quarantine_at_once() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = quarantine_repair_state();
+
+    fail(&ctx, &mut st, "pumpfix-q1-aaaaaa", "finished/no_changes", "nothing pushed");
+
+    assert_eq!(st.units["pumpfix-q1-aaaaaa"].status, Status::Stuck);
+    let member = &st.units["u1"];
+    assert_eq!(member.status, Status::Delivered);
+    assert!(member.solo);
+    assert_eq!(member.quarantine, None);
+    let recorded = exceptions(&ctx);
+    assert!(recorded.contains("quarantine-stuck"), "exceptions: {recorded}");
+}
+
+#[test]
+fn an_ordinary_or_gate_fix_timeout_still_returns_to_pending() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = State::default();
+    let mut plain = unit(Status::Inflight, Some("t1"), None);
+    plain.attempts = 1;
+    put(&mut st, "u-plain", plain);
+    let mut gate = unit(Status::Inflight, Some("pumpfix-g12345678"), None);
+    gate.need = String::from("pumpfix-g12345678");
+    gate.attempts = 1;
+    put(&mut st, "pumpfix-g12345678", gate);
+
+    fail(&ctx, &mut st, "u-plain", "timeout", "killed by budget");
+    fail(
+        &ctx,
+        &mut st,
+        "pumpfix-g12345678",
+        "finished/no_changes",
+        "nothing pushed",
+    );
+
+    assert_eq!(st.units["u-plain"].status, Status::Pending);
+    assert_eq!(st.units["pumpfix-g12345678"].status, Status::Pending);
+}

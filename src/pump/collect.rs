@@ -170,7 +170,13 @@ fn fail_with(ctx: &Ctx, st: &mut State, uid: &str, why: &str, detail: &str, rece
         }
     }
     if !transient {
-        let stuck = attempts.saturating_sub(unit.transient_retries) >= max;
+        // Need a9571e50 (operator ruling): a repair unit that ends in a timeout
+        // or a no_changes outcome should dissolve the quarantine at once rather
+        // than burn the remaining attempts. `repairs` is set only on a repair
+        // unit, so gate-fix units and ordinary units keep the attempt budget.
+        let dissolve =
+            unit.repairs.is_some() && (why == "timeout" || why.contains("no_changes"));
+        let stuck = dissolve || attempts.saturating_sub(unit.transient_retries) >= max;
         unit.status = if stuck {
             Status::Stuck
         } else {
