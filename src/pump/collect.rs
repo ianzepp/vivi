@@ -29,6 +29,8 @@ const NO_DEFECT_MARKER: &str = "VERDICT: no-defect";
 const GATE_GRACE: u64 = 2400;
 /// Split-planner exits without a plan before the unit is parked stuck.
 pub(crate) const SPLIT_RETRY_MAX: u32 = 3;
+/// Seconds a deferred split launch waits before it retries.
+const SPLIT_LAUNCH_STAGGER: u64 = 60;
 
 /// `SPLIT_PROMPT`; `{home}` and `{uid}` are substituted.
 const SPLIT_PROMPT: &str = r#"One unit ran out of time on a worker, so it is too big. Split it.
@@ -327,16 +329,36 @@ fn drop_attempt_branch(ctx: &Ctx, st: &State, uid: &str) {
     }
 }
 
+/// Split planners currently launched and not waiting on a retry; an
+/// unprocessed exit receipt still counts, which only defers launches (the
+/// safe side).
+fn live_split_planners(st: &State) -> usize {
+    st.units
+        .values()
+        .filter(|unit| unit.status == Status::Splitting && unit.split_retry_at.is_none())
+        .count()
+}
+
+/// The concurrent split planner cap from config, never below one.
+fn split_planner_cap(ctx: &Ctx) -> usize {
+    usize::try_from(ctx.cfg.planner.planners_max.max(1)).unwrap_or(usize::MAX)
+}
+
 /// Send a unit to the split planner: write the resplit record,
 /// spawn the planner, and move the unit to `splitting` with a fresh clock.
 /// A quarantine repair unit (one with a `base`) is never split: its work is
 /// one branch, so a timeout counts as a failed attempt instead.
+/// When `planners_max` split planners are already live, the launch is
+/// deferred: the unit sits in `splitting` with a retry stamp and respawns
+/// through the due-retry path once a slot frees up.
 pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     if st.units.get(uid).is_some_and(|unit| unit.base.is_some()) {
         fail(ctx, st, uid, "timeout", &tail(text, 3000));
         return;
     }
     let now = ctx.now();
+    let cap = split_planner_cap(ctx);
+    let deferred = live_split_planners(st) >= cap;
     let record = {
         let Some(unit) = st.units.get(uid) else {
             return;
@@ -356,12 +378,21 @@ pub fn split(ctx: &Ctx, st: &mut State, uid: &str, text: &str) {
     let dir = ctx.home.join("resplit");
     drop(fs::create_dir_all(&dir));
     drop(write_json(&dir.join(format!("{uid}.json")), &record));
-    spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    if deferred {
+        ctx.log(&format!(
+            "split-launch-deferred {uid}: {cap} split planners already running"
+        ));
+    } else {
+        spawn_planner(ctx, "resplit", uid, &split_prompt(ctx, uid));
+    }
     let Some(unit) = st.units.get_mut(uid) else {
         return;
     };
     unit.status = Status::Splitting;
     unit.since = now;
+    if deferred {
+        unit.split_retry_at = Some(now + SPLIT_LAUNCH_STAGGER);
+    }
     unit.split_rate_retries = 0;
     unit.history.push(Attempt {
         attempt: unit.attempts,

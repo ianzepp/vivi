@@ -209,6 +209,41 @@ fn a_timeout_state_requests_a_split_and_writes_the_resplit_files() {
     assert_eq!(host.spawned().len(), 1);
 }
 
+/// With `planners_max` split planners already live, a new split still
+/// records and parks the unit in `splitting`, but defers the launch: no
+/// planner spawns now and the unit retries via the due-retry path.
+#[test]
+fn a_new_split_defers_when_the_planner_cap_is_full() {
+    let (_dir, ctx, host) = setup_with(PumpConfig {
+        planner: PlannerConfig {
+            run: String::from("plan-it {charter} --quiet"),
+            charter: String::from("/charter/path.md"),
+            split_hard_cap: 1500,
+            planners_max: 1,
+            ..PlannerConfig::default()
+        },
+        ..PumpConfig::default()
+    });
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    put(&mut st, "u-2", unit(Status::Stuck, None, None));
+
+    split(&ctx, &mut st, "u-2", "worker timed out");
+
+    assert!(host.spawned().is_empty());
+    let u = st.units.get("u-2").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.split_retry_at, Some(T0 + 60));
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l.contains("split-launch-deferred u-2")),
+        "{:?}",
+        host.logs()
+    );
+    assert!(ctx.home.join("resplit/u-2.json").exists());
+}
+
 #[test]
 fn a_finished_unit_whose_branch_is_on_the_remote_is_delivered() {
     let (_dir, ctx, host) = setup();
