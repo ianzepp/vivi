@@ -932,6 +932,9 @@ fn residual_setup(max_replans: u32) -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
 #[test]
 fn residual_failures_of_a_settled_owner_are_replanned_and_stay_owned() {
     let (dir, ctx, host) = residual_setup(2);
+    // A settled plan's file exists in the pump home, as it does in reality.
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    fs::write(ctx.home.join("plans/pumpfix-gold.json"), "{}").unwrap();
     let mut st = residual_state(Status::Merged);
     finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
     assert_eq!(
@@ -1054,5 +1057,25 @@ fn an_unsettled_owner_is_not_replanned() {
     assert!(host.spawned().is_empty());
     assert_eq!(st.red.get(RESIDUAL), Some(&String::from(OLD_OWNER)));
     assert!(!st.extra.contains_key("replans"));
+    drop(dir);
+}
+
+#[test]
+fn residual_failures_replan_orphaned_red_owners() {
+    let (dir, ctx, host) = residual_setup(2);
+    let mut st = gate_state(4);
+    st.red
+        .insert(String::from(RESIDUAL), String::from(OLD_OWNER));
+    finish_gate(&ctx, &mut st, RESIDUAL_REPLY);
+    assert_eq!(host.spawned().len(), 1, "a fresh gate-fix planner starts");
+    assert_eq!(
+        st.red.get(RESIDUAL),
+        Some(&String::from("pumpfix-g01234567")),
+        "the new gate-fix need re-owns the name"
+    );
+    assert_eq!(st.extra["replans"][RESIDUAL], 1);
+    let prompt = fs::read_to_string(ctx.home.join("gatefix/pumpfix-g01234567.prompt")).unwrap();
+    assert!(prompt.contains("- crate::residual"));
+    assert!(prompt.contains("never wrote a plan"));
     drop(dir);
 }
