@@ -584,7 +584,12 @@ fn a_shared_check_that_fails_as_a_usage_error_is_still_proof_failed() {
     let result = merge_work(&ctx, &job());
     assert_eq!(result.ok, Some(false));
     assert_eq!(result.why.as_deref(), Some("proof-failed"));
-    assert!(result.detail.unwrap_or_default().contains("this command failed"));
+    assert!(
+        result
+            .detail
+            .unwrap_or_default()
+            .contains("this command failed")
+    );
 }
 
 #[test]
