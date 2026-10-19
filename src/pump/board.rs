@@ -1,6 +1,6 @@
 //! Need intake: candidate rows, approval marks, planner expiry and launch.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::pump::collect::spawn_planner;
 use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
-use crate::pump::ready::satisfied;
+use crate::pump::ready::{blocked_needs, satisfied};
 use crate::pump::state::State;
 
 /// One row of `vivi need list --json`.
@@ -241,6 +241,12 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
 /// concurrent-planner cap, then write the need file, spawn the planner and
 /// record the planning entry. `replan` bypasses the date cutoff; launched
 /// handles leave it and the mirror `st.board.replan` is re-sorted.
+///
+/// A dependent whose prerequisite has no plan file yet is held back: the
+/// planner would buy nothing, because the dependent's units would sit held at
+/// dispatch until the prerequisite landed. A prerequisite merely being planned
+/// right now still gates, and gates lift as soon as its plan file exists. An
+/// unreadable dependency read gates nothing.
 pub fn launch_planners(
     ctx: &Ctx,
     st: &mut State,
@@ -249,6 +255,7 @@ pub fn launch_planners(
     replan: &mut BTreeSet<String>,
 ) {
     let skip = read_skip(ctx);
+    let gates = planning_gates(ctx, rows);
     for row in rows {
         let handle = row.handle.as_str();
         let old = row.date.as_str() < ctx.cfg.board.since.as_str();
@@ -267,6 +274,12 @@ pub fn launch_planners(
         {
             continue;
         }
+        if let Some(dep) = unplanned_prerequisite(ctx, &gates, handle) {
+            ctx.log(&format!(
+                "board: {handle} waits on unplanned prerequisite {dep}"
+            ));
+            continue;
+        }
         if plan_path(ctx, handle).exists()
             || st.board.planning.len()
                 >= usize::try_from(ctx.cfg.board.planners_max).unwrap_or(usize::MAX)
@@ -279,6 +292,30 @@ pub fn launch_planners(
             return;
         }
     }
+}
+
+/// Prerequisite handles per need, from the backlog graph. Empty rows mean no
+/// read at all; an unreadable graph already logs inside [`blocked_needs`] and
+/// the board degrades to no gating rather than stalling.
+fn planning_gates(ctx: &Ctx, rows: &[NeedRow]) -> BTreeMap<String, Vec<String>> {
+    if rows.is_empty() {
+        return BTreeMap::new();
+    }
+    blocked_needs(ctx).unwrap_or_default()
+}
+
+/// The first prerequisite of `handle` that has no plan file yet, so the
+/// dependent must wait. `None` when every prerequisite is at least planned.
+fn unplanned_prerequisite(
+    ctx: &Ctx,
+    gates: &BTreeMap<String, Vec<String>>,
+    handle: &str,
+) -> Option<String> {
+    gates
+        .get(handle)?
+        .iter()
+        .find(|dep| !plan_path(ctx, dep).exists())
+        .cloned()
 }
 
 /// The log line a pass writes when control stops it between two needs.
