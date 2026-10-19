@@ -71,6 +71,14 @@ pub struct InstallReport {
     pub files: usize,
 }
 
+/// One entry of a `vivi skills list --json` payload, as an updater reads it.
+#[derive(serde::Deserialize)]
+struct JsonSkill {
+    name: String,
+    version: String,
+    files: Vec<String>,
+}
+
 /// Whether an on-disk copy still matches the embedded catalog.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SkillCopyStatus {
@@ -177,6 +185,43 @@ pub fn copy_status(dir: &Path) -> SkillCopyStatus {
     } else {
         SkillCopyStatus::Stale(stale)
     }
+}
+
+/// Compare a `vivi skills list --json` payload against the embedded catalog.
+///
+/// Entries are matched by position after both lists are sorted by name, and
+/// file lists are compared sorted. Returns `None` when `text` is not a JSON
+/// array of skill entries, `Some(false)` when the payload matches this binary's
+/// catalog, and `Some(true)` when any name, version, or file list differs.
+#[must_use]
+pub fn catalog_matches_json(text: &str) -> Option<bool> {
+    let payload: Vec<JsonSkill> = match serde_json::from_str(text) {
+        Ok(payload) => payload,
+        Err(_) => return None,
+    };
+    let mut actual: Vec<(String, String, Vec<String>)> = payload
+        .into_iter()
+        .map(|skill| {
+            let mut files = skill.files;
+            files.sort_unstable();
+            (skill.name, skill.version, files)
+        })
+        .collect();
+    let mut expected: Vec<(String, String, Vec<String>)> = catalog()
+        .iter()
+        .map(|skill| {
+            let mut files = skill.file_names();
+            files.sort_unstable();
+            (
+                skill.name.to_string(),
+                skill.version.to_string(),
+                files.into_iter().map(str::to_string).collect(),
+            )
+        })
+        .collect();
+    actual.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    expected.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Some(actual != expected)
 }
 
 fn differs(root: &Path, file: &SkillFile) -> bool {
