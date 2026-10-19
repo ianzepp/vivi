@@ -117,7 +117,10 @@ fn pool_set_creates_a_missing_nested_provider_table() {
         &std::fs::read_to_string(project.path().join(".vivi/mailspace.toml")).unwrap(),
     )
     .unwrap();
-    assert_eq!(config["pools"]["fly-smoke"]["fly"]["app"], "smoke-app");
+    assert_eq!(
+        config["pools"]["fly-smoke"]["fly"]["app"].as_str(),
+        Some("smoke-app")
+    );
 }
 
 #[test]
