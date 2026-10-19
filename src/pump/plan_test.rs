@@ -482,6 +482,67 @@ fn first_plan() -> Value {
 }
 
 #[test]
+fn ingest_rejects_a_unit_with_an_invalid_proof_command() {
+    let (_dir, ctx, host, mut st) = setup();
+    write_plan(
+        &ctx,
+        "bad.json",
+        &json!({
+            "need": "n1",
+            "revision": 1,
+            "verdict": "units",
+            "units": [{
+                "id": "n1-1",
+                "brief": "first pass",
+                "write_scope": ["src/a.rs"],
+                "proof": ["cargo test --lib a b"]
+            }]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert!(st.units.is_empty());
+    assert!(st.order.is_empty());
+    assert_eq!(st.needs["n1"].verdict, "invalid");
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "EXCEPTION bad-plan bad.json")
+    );
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc.contains("bad-plan bad.json unit n1-1: cargo test takes one TESTNAME filter"),
+        "{exc}"
+    );
+}
+
+#[test]
+fn a_revision_with_an_invalid_proof_command_is_rejected_and_keeps_the_unit() {
+    let (_dir, ctx, host, mut st) = setup();
+    write_plan(&ctx, "n1.json", &first_plan());
+    ingest(&ctx, &mut st);
+    let mut bad = plan_unit("n1-1", "first pass");
+    bad["proof"] = json!(["cargo test --lib a b"]);
+    write_plan(
+        &ctx,
+        "n1.r2.json",
+        &json!({"need": "n1", "revision": 2, "units": [bad]}),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["n1"].revision, 1);
+    assert!(st.units["n1-1"].proof.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|l| l == "EXCEPTION bad-plan n1")
+    );
+    let exc = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        exc.contains("bad-plan n1 unit n1-1: cargo test takes one TESTNAME filter"),
+        "{exc}"
+    );
+}
+
+#[test]
 fn a_revision_amends_pending_and_keeps_merged_units() {
     let (_dir, ctx, _host, mut st) = setup();
     write_plan(&ctx, "n1.json", &first_plan());
