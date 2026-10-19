@@ -216,23 +216,12 @@ fn push_branch(
         }
     }
     let local_ref = format!("refs/heads/{local_branch}");
-    let tip = git(
-        root,
-        ["rev-parse", "--verify", &format!("{local_ref}^{{commit}}")],
-    );
-    let Ok(tip) = tip else {
+    let Some(actual_tip) = local_branch_tip(root, &local_ref) else {
         return failed_push(
             remote_ref,
             "local branch is unavailable in the mailspace checkout",
         );
     };
-    if !tip.status.success() {
-        return failed_push(
-            remote_ref,
-            "local branch is unavailable in the mailspace checkout",
-        );
-    }
-    let actual_tip = String::from_utf8_lossy(&tip.stdout).trim().to_string();
     if !actual_tip.starts_with(declared_tip) {
         return failed_push(
             remote_ref,
@@ -260,6 +249,21 @@ fn push_branch(
         ),
         Err(_) => failed_push(remote_ref, "git push could not be started"),
     }
+}
+
+/// Resolve the checked local branch to its commit, if the ref is available.
+fn local_branch_tip(root: &std::path::Path, local_ref: &str) -> Option<String> {
+    let output = match git(
+        root,
+        ["rev-parse", "--verify", &format!("{local_ref}^{{commit}}")],
+    ) {
+        Ok(output) => output,
+        Err(_) => return None,
+    };
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn git<const N: usize>(

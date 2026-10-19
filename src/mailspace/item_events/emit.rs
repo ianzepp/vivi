@@ -398,14 +398,7 @@ impl Mailspace {
         let item_id = parsed
             .message_id()
             .ok_or_else(|| VivariumError::Message("the item has no Message-ID".into()))?;
-        let from = self.address_for(request.identity);
-        let (mut to, cc) = self.event_addresses(&parsed, request.identity, &from);
-        let local = self.local_event_recipients(&to, &cc, request.identity);
-        if to.is_empty() && cc.is_empty() {
-            // Nobody else is on the item: the letter is the owner's own
-            // record, and a restored checkout of the mailspace reads it back.
-            to.push(from.clone());
-        }
+        let (from, to, cc, local) = self.event_recipients(&parsed, request);
         let body = request
             .note
             .map_or_else(|| request.kind.header().to_string(), str::to_string);
@@ -448,6 +441,22 @@ impl Mailspace {
             data: data.into_bytes(),
             local,
         })
+    }
+
+    /// Resolve the event's From/To/Cc and its local recipient roles.
+    fn event_recipients(
+        &self,
+        parsed: &Message<'_>,
+        request: &EmitRequest<'_>,
+    ) -> (String, Vec<String>, Vec<String>, BTreeSet<String>) {
+        let from = self.address_for(request.identity);
+        let (mut to, cc) = self.event_addresses(parsed, request.identity, &from);
+        let local = self.local_event_recipients(&to, &cc, request.identity);
+        if to.is_empty() && cc.is_empty() {
+            // Nobody else is on the item: the owner's letter is its record.
+            to.push(from.clone());
+        }
+        (from, to, cc, local)
     }
 
     /// The item's own From, To and Cc, minus the sender: the From first in

@@ -781,7 +781,10 @@ fn rank(record: &WantListRecord) -> i64 {
     record
         .metadata
         .get("rank")
-        .and_then(|rank| rank.parse().ok())
+        .and_then(|rank| match rank.parse() {
+            Ok(rank) => Some(rank),
+            Err(_) => None,
+        })
         .unwrap_or(i64::MAX)
 }
 

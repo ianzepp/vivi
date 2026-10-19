@@ -738,23 +738,7 @@ impl Mailspace {
         command: &str,
         metadata: Option<&std::collections::BTreeMap<String, String>>,
     ) -> Result<MoveOutcome, VivariumError> {
-        if metadata.is_some_and(|metadata| {
-            metadata.contains_key("branch") != metadata.contains_key("commit")
-        }) {
-            return Err(VivariumError::Other(
-                "branch and commit close metadata must be provided together".into(),
-            ));
-        }
-        if metadata.is_some_and(|metadata| {
-            [metadata.get("branch"), metadata.get("commit")]
-                .into_iter()
-                .flatten()
-                .any(|value| value.trim().is_empty())
-        }) {
-            return Err(VivariumError::Other(
-                "branch and commit close metadata cannot be empty".into(),
-            ));
-        }
+        Self::validate_move_metadata(metadata)?;
         let identity = self.resolve_identity(identity)?;
         let role = canonical_local_role(role)?;
         let storage = self.storage()?;
@@ -785,9 +769,7 @@ impl Mailspace {
             let note = report_note(note, &extras);
             self.move_row_locally(&storage, &identity, &before, &role, note, command, &extras)?;
         }
-        if let Some(metadata) = metadata {
-            storage.set_item_metadata(&before.message_id, metadata)?;
-        }
+        Self::store_move_metadata(&storage, &before.message_id, metadata)?;
         let shown = storage.display_handle(&before.message_id)?;
         if event.is_none() {
             self.sync_backlog_after_move(
@@ -805,6 +787,42 @@ impl Mailspace {
             event,
             joined_needs,
         })
+    }
+
+    /// Check that close provenance arrives as one nonempty branch/commit pair.
+    fn validate_move_metadata(
+        metadata: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> Result<(), VivariumError> {
+        if metadata
+            .is_some_and(|fields| fields.contains_key("branch") != fields.contains_key("commit"))
+        {
+            return Err(VivariumError::Other(
+                "branch and commit close metadata must be provided together".into(),
+            ));
+        }
+        if metadata.is_some_and(|fields| {
+            [fields.get("branch"), fields.get("commit")]
+                .into_iter()
+                .flatten()
+                .any(|value| value.trim().is_empty())
+        }) {
+            return Err(VivariumError::Other(
+                "branch and commit close metadata cannot be empty".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Persist close provenance after its move succeeds, when supplied.
+    fn store_move_metadata(
+        storage: &Storage,
+        message_id: &str,
+        metadata: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> Result<(), VivariumError> {
+        if let Some(metadata) = metadata {
+            storage.set_item_metadata(message_id, metadata)?;
+        }
+        Ok(())
     }
 
     /// The row a move acts on: the one the identity holds under `handle`, or

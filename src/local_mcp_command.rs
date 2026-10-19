@@ -20,7 +20,10 @@ pub(crate) fn handle_mcp_command(command: &McpCommand) -> Result<(), VivariumErr
         key_file: command.key_file.clone(),
         project: command.project.clone(),
     };
-    let env_lookup = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let env_lookup = |name: &str| match std::env::var(name) {
+        Ok(value) if !value.is_empty() => Some(value),
+        Ok(_) | Err(std::env::VarError::NotPresent | std::env::VarError::NotUnicode(_)) => None,
+    };
     let mailspace_lookup = || mailspace_source(command.project.as_deref());
     let resolved = resolve::resolve(&flags, env_lookup, mailspace_lookup)?;
     let config = BridgeConfig {

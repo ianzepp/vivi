@@ -286,20 +286,7 @@ fn resolve_dispatch(
         )
     });
     let role_line = role_line(command, role.as_ref(), &resolved);
-    let need = command
-        .need
-        .clone()
-        .filter(|need| !need.trim().is_empty())
-        .or(source_need(space, &task.handle)?);
-    let kind = command
-        .kind
-        .clone()
-        .filter(|kind| !kind.trim().is_empty())
-        .or_else(|| {
-            role.as_ref()
-                .and_then(|role| role.kind.clone())
-                .filter(|kind| !kind.trim().is_empty())
-        });
+    let (need, kind) = dispatch_need_kind(command, space, task, role.as_ref())?;
     let flags = DispatchFlags {
         model: resolved.model,
         need,
@@ -315,6 +302,29 @@ fn resolve_dispatch(
         reasoning: resolved.reasoning,
     };
     Ok((flags, rules, role_line))
+}
+
+/// Resolve the need and kind carried by one dispatch command.
+fn dispatch_need_kind(
+    command: &PoolDispatchCommand,
+    space: &Mailspace,
+    task: &PoolTask,
+    role: Option<&RoleFacts>,
+) -> Result<(Option<String>, Option<String>), VivariumError> {
+    let need = command
+        .need
+        .clone()
+        .filter(|need| !need.trim().is_empty())
+        .or(source_need(space, &task.handle)?);
+    let kind = command
+        .kind
+        .clone()
+        .filter(|kind| !kind.trim().is_empty())
+        .or_else(|| {
+            role.and_then(|role| role.kind.clone())
+                .filter(|kind| !kind.trim().is_empty())
+        });
+    Ok((need, kind))
 }
 
 /// Resolve the normal addressee role, or the shipped Auditor charter named

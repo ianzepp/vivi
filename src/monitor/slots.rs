@@ -132,13 +132,15 @@ pub fn local_slot_dir(
     machine: &str,
 ) -> Option<PathBuf> {
     let mailspace = slot::space_key(project, mailspace_id);
-    let site = crate::pool::local_site::resolve(
+    let site = match crate::pool::local_site::resolve(
         config.local.root_or_default(),
         project_root,
         &mailspace,
         pool,
-    )
-    .ok()?;
+    ) {
+        Ok(site) => site,
+        Err(_) => return None,
+    };
     if !crate::pool::local_slots::slot_id_ok(machine) {
         return None;
     }

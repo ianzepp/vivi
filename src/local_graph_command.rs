@@ -162,7 +162,13 @@ fn handle_graph_activate(command: &GraphActivateCommand) -> Result<(), VivariumE
         Some(&source_id),
         Some(&command.task),
     );
-    receipt.content = mailspace.content_hash_of(&command.task).ok();
+    receipt.content = match mailspace.content_hash_of(&command.task) {
+        Ok(content) => Some(content),
+        Err(error) => {
+            eprintln!("warning: action receipt content unavailable: {error}");
+            None
+        }
+    };
     vivi::mailspace::print_action_receipt(&receipt, command.json, command.confirm_large)
 }
 

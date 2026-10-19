@@ -318,7 +318,10 @@ impl Mailspace {
 
     fn participant_filter(&self, participant: Option<&str>) -> Option<ParticipantFilter> {
         let value = participant?;
-        let resolved = self.resolve_identity(value).ok();
+        let resolved = match self.resolve_identity(value) {
+            Ok(identity) => Some(identity),
+            Err(_) => None,
+        };
         let text = resolved
             .as_deref()
             .map_or_else(|| value.to_string(), |identity| self.address_for(identity));
@@ -510,7 +513,8 @@ fn parse_suffix(value: &str, suffix: &str) -> Result<Option<i64>, VivariumError>
 }
 
 fn parse_message_date(raw_date: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw_date)
-        .ok()
-        .map(|date| date.with_timezone(&Utc))
+    match DateTime::parse_from_rfc3339(raw_date) {
+        Ok(date) => Some(date.with_timezone(&Utc)),
+        Err(_) => None,
+    }
 }

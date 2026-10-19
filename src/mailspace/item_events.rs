@@ -48,16 +48,18 @@ use mail_parser::{HeaderValue, MessageParser};
 use serde::Serialize;
 
 use super::holding::{first_bare_address, is_foreign_account};
-use super::kind::{effective_kind, message_kind};
 use super::{Mailspace, prefix_of_domain};
 use crate::error::VivariumError;
 use crate::message::normalize_message_id;
 use crate::storage::{ItemEventWrite, MailspaceEventInput, RoleMove, Storage, StoredMessageView};
 
+mod arrival;
 mod emit;
+mod held;
 mod property;
 mod property_emit;
 
+pub(super) use held::{HeldItem, held_item};
 pub(crate) use property::{PropertyKind, parse_property_event};
 
 pub(crate) const EVENT_HEADER: &str = "X-Vivi-Event";
@@ -208,78 +210,6 @@ pub struct EventTally {
     /// item), dated past the clock, or held by an item sealed by a counted
     /// absorb letter.
     pub ignored: usize,
-}
-
-/// A work item held here: its rows and the facts events are judged by.
-pub(super) struct HeldItem {
-    pub(super) content_id: String,
-    pub(super) rfc_id: String,
-    pub(super) from_addr: String,
-    /// `need`, `task`, or `want`.
-    pub(super) kind: &'static str,
-    pub(super) rows: Vec<StoredMessageView>,
-    pub(super) bytes: Vec<u8>,
-    pub(super) delegation: super::delegation::DelegationState,
-}
-
-/// The held work item behind `content_id`, if it is one.
-pub(super) fn held_item(
-    storage: &Storage,
-    content_id: &str,
-) -> Result<Option<HeldItem>, VivariumError> {
-    let rows = storage.live_messages_for_content(content_id)?;
-    let Some(first) = rows.first() else {
-        return Ok(None);
-    };
-    let Ok(bytes) = storage.read_listed_blob(&first.blob_relpath) else {
-        return Ok(None);
-    };
-    let Some(kind) = work_kind(storage, &bytes, &rows)? else {
-        return Ok(None);
-    };
-    let Some(parsed) = MessageParser::default().parse(&bytes) else {
-        return Ok(None);
-    };
-    let Some(rfc_id) = parsed.message_id().and_then(normalize_message_id) else {
-        return Ok(None);
-    };
-    let from_addr = first_bare_address(&first.from_addr).unwrap_or_default();
-    let delegation = super::delegation::delegation_state(storage, content_id, &rfc_id, &from_addr)?;
-    Ok(Some(HeldItem {
-        content_id: content_id.to_string(),
-        rfc_id,
-        from_addr,
-        kind,
-        rows,
-        bytes,
-        delegation,
-    }))
-}
-
-/// `need`, `task` or `want`: what the letter's kind header says, else what
-/// a row's folder or its close event implies (a letter filed from an
-/// envelope kind alone carries no header).
-fn work_kind(
-    storage: &Storage,
-    bytes: &[u8],
-    rows: &[StoredMessageView],
-) -> Result<Option<&'static str>, VivariumError> {
-    let named = |kind: Option<String>| match kind.as_deref() {
-        Some("need") => Some("need"),
-        Some("task") => Some("task"),
-        Some("want") => Some("want"),
-        _ => None,
-    };
-    if let Some(kind) = named(message_kind(bytes)) {
-        return Ok(Some(kind));
-    }
-    for row in rows {
-        let events = storage.list_mailspace_events(&row.message_id)?;
-        if let Some(kind) = named(effective_kind(&row.local_role, bytes, &events)) {
-            return Ok(Some(kind));
-        }
-    }
-    Ok(None)
 }
 
 /// The events of one item that count here, and how many named it from a
@@ -864,52 +794,7 @@ impl Mailspace {
             return Ok(tally);
         }
         let storage = self.storage()?;
-        // An arriving event letter moves every row its head names; a work
-        // item that arrives is only checked against the events it holds, and
-        // a report made after a reopen stays.
-        let mut by_event: BTreeSet<String> = BTreeSet::new();
-        let mut by_item: BTreeSet<String> = BTreeSet::new();
-        for content_id in content_ids {
-            let Some(view) = storage.message_by_content_id(content_id)? else {
-                continue;
-            };
-            let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
-                continue;
-            };
-            match parse_event(&bytes) {
-                Some(event) => {
-                    if let Some(item) = storage.live_message_by_rfc_id(&event.of)? {
-                        by_event.insert(item.content_id);
-                    }
-                }
-                // A property event settles its item the same way, by the
-                // item it names; when the item is not held yet, the letter
-                // waits for it as a state event does.
-                None => match parse_property_event(&bytes)
-                    .map(|event| event.of)
-                    .or_else(|| {
-                        super::delegation::parse_assignment_event(&bytes).map(|event| event.of)
-                    }) {
-                    Some(of) => {
-                        if let Some(item) = storage.live_message_by_rfc_id(&of)? {
-                            by_event.insert(item.content_id);
-                        }
-                    }
-                    None => match property::verdict_report_item(&storage, &bytes)? {
-                        // A report letter carrying a close's verdict
-                        // headers settles the item it replies to, so the
-                        // verdict metadata lands on that item's rows.
-                        Some(content) => {
-                            by_event.insert(content);
-                        }
-                        None => {
-                            by_item.insert(content_id.clone());
-                        }
-                    },
-                },
-            }
-        }
-        by_item.retain(|content_id| !by_event.contains(content_id));
+        let (by_event, by_item) = arrival::targets(&storage, content_ids)?;
         for content_id in &by_event {
             self.settle_item(&storage, content_id, &mut tally, false)?;
         }

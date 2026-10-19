@@ -55,7 +55,7 @@ fn render_markdown(title: &str, records: &[DumpRecord]) -> String {
     out.push_str("# ");
     out.push_str(title);
     out.push_str("\n\n");
-    let _ = write!(out, "count: {}\n\n", records.len());
+    out.push_str(&format!("count: {}\n\n", records.len()));
     if records.is_empty() {
         out.push_str("No matching messages.\n");
         return out;
@@ -73,7 +73,7 @@ fn push_record(out: &mut String, record: &DumpRecord) {
         .map(|status| format!(" - {status}"))
         .unwrap_or_default();
     let _ = write!(out, "## {} - {}{}\n\n", record.date, record.handle, status);
-    let _ = writeln!(out, "Role: {}", record.role);
+    out.push_str(&format!("Role: {}\n", record.role));
     if let Some(kind) = &record.kind {
         let _ = writeln!(out, "Kind: {kind}");
     }

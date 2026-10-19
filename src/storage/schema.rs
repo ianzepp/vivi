@@ -5,13 +5,14 @@ use crate::error::VivariumError;
 pub(crate) const STORAGE_SCHEMA_VERSION: &str = "9";
 
 pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT value FROM storage_metadata WHERE key = 'schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
+    let existing: Option<String> = match conn.query_row(
+        "SELECT value FROM storage_metadata WHERE key = 'schema_version'",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(version) => Some(version),
+        Err(_) => None,
+    };
     if existing.as_deref() == Some(STORAGE_SCHEMA_VERSION) {
         return Ok(());
     }

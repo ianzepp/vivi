@@ -166,7 +166,10 @@ fn credential_path(provider: &ProviderConfig) -> Result<PathBuf, VivariumError> 
 /// Resolve an existing Kimi credential path without reading its contents.
 #[must_use]
 pub fn credential_path_if_present(provider: &ProviderConfig) -> Option<PathBuf> {
-    credential_path(provider).ok()
+    match credential_path(provider) {
+        Ok(path) => Some(path),
+        Err(_) => None,
+    }
 }
 
 fn upstream_url(provider: &ProviderConfig, action: &Action, query: Option<&str>) -> String {

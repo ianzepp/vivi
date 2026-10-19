@@ -80,7 +80,10 @@ pub fn timeout_seconds(text: &str) -> Option<u64> {
         if seconds.is_empty() || !seconds.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
         }
-        seconds.parse().ok()
+        match seconds.parse() {
+            Ok(seconds) => Some(seconds),
+            Err(_) => None,
+        }
     })
 }
 

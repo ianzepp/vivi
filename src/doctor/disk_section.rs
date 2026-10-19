@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::{Finding, Project};
+use crate::pump::config::PumpConfig;
 
 const SECTION: &str = "disk";
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -20,7 +21,10 @@ pub fn dir_size_bytes(path: &Path) -> Option<u64> {
 }
 
 fn size_entry(path: &Path) -> Option<u64> {
-    let metadata = std::fs::symlink_metadata(path).ok()?;
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return None,
+    };
     let kind = metadata.file_type();
     if kind.is_symlink() {
         Some(0)
@@ -34,9 +38,15 @@ fn size_entry(path: &Path) -> Option<u64> {
 }
 
 fn size_directory(path: &Path) -> Option<u64> {
-    let mut entries = std::fs::read_dir(path).ok()?;
+    let mut entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return None,
+    };
     entries.try_fold(0_u64, |sum, entry| {
-        let entry = entry.ok()?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return None,
+        };
         sum.checked_add(size_entry(&entry.path())?)
     })
 }
@@ -71,12 +81,15 @@ pub fn size_finding(section: &str, name: &str, path: &Path, warn_bytes: u64) -> 
 /// Count local `unit/*` branches without fetching or changing repository state.
 #[must_use]
 pub fn branch_count(repo: &Path) -> Option<usize> {
-    let output = Command::new("git")
+    let output = match Command::new("git")
         .arg("-C")
         .arg(repo)
         .args(["for-each-ref", "--format=%(refname)", "refs/heads/unit/"])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(_) => return None,
+    };
     if !output.status.success() {
         return None;
     }
@@ -94,21 +107,7 @@ pub fn branch_count(repo: &Path) -> Option<usize> {
 pub fn findings(project: &Project) -> Vec<Finding> {
     let mut out = pool_findings(project);
     let Some(config) = project.config.pump.as_ref() else {
-        out.push(Finding::skipped(
-            SECTION,
-            "pump home",
-            "pump not configured",
-        ));
-        out.push(Finding::skipped(
-            SECTION,
-            "integration clone",
-            "pump not configured",
-        ));
-        out.push(Finding::skipped(
-            SECTION,
-            "unit branches",
-            "pump not configured",
-        ));
+        skip_unconfigured_pump(&mut out);
         return out;
     };
     let home = config.home_dir(&project.root);
@@ -118,6 +117,13 @@ pub fn findings(project: &Project) -> Vec<Finding> {
         &home,
         PUMP_HOME_WARN_GIB * GIB,
     ));
+    out.extend(target_findings(project, config, &home));
+    out
+}
+
+/// Add the per-target clone, unit-branch, and merge-lane measurements.
+fn target_findings(project: &Project, config: &PumpConfig, home: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
     let targets = config.target_configs();
     if targets.is_empty() {
         out.push(Finding::skipped(
@@ -160,6 +166,13 @@ pub fn findings(project: &Project) -> Vec<Finding> {
         ));
     }
     out
+}
+
+/// Report unavailable pump measurements when the project has no pump config.
+fn skip_unconfigured_pump(out: &mut Vec<Finding>) {
+    for name in ["pump home", "integration clone", "unit branches"] {
+        out.push(Finding::skipped(SECTION, name, "pump not configured"));
+    }
 }
 
 fn pool_findings(project: &Project) -> Vec<Finding> {

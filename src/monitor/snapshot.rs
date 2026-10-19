@@ -49,10 +49,10 @@ fn project_rows(root: &Path, now: u64) -> Result<(Vec<model::MonitorRow>, Vec<St
     let text = fs::read_to_string(dir.join("mailspace.toml")).map_err(|e| e.to_string())?;
     let config: crate::mailspace::MailspaceConfig =
         toml::from_str(&text).map_err(|e| e.to_string())?;
-    let id = fs::read_to_string(dir.join("mailspace.id"))
-        .ok()
-        .or(config.id.clone())
-        .unwrap_or_default();
+    let id = match fs::read_to_string(dir.join("mailspace.id")) {
+        Ok(id) => id,
+        Err(_) => config.id.clone().unwrap_or_default(),
+    };
     let (events, event_warnings) = match events::read(&dir.join("mail.sqlite"), 20) {
         Ok(events) => (events, Vec::new()),
         Err(error) => (

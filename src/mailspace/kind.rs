@@ -1,7 +1,10 @@
 use crate::storage::MailspaceEvent;
 
 pub(super) fn message_kind(data: &[u8]) -> Option<String> {
-    let raw = std::str::from_utf8(data).ok()?;
+    let raw = match std::str::from_utf8(data) {
+        Ok(raw) => raw,
+        Err(_) => return None,
+    };
     for line in raw.lines() {
         let line = line.trim_end_matches('\r');
         if line.is_empty() {

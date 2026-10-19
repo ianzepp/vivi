@@ -275,7 +275,7 @@ fn quarantine_count(config: &PumpConfig, project: &Path) -> Option<usize> {
 }
 
 fn count_quarantines(repo: &Path) -> Option<usize> {
-    let output = std::process::Command::new("git")
+    let output = match std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
         .args([
@@ -284,7 +284,10 @@ fn count_quarantines(repo: &Path) -> Option<usize> {
             "refs/heads/pump/quarantine/",
         ])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(_) => return None,
+    };
     if !output.status.success() {
         return None;
     }
@@ -327,7 +330,10 @@ fn gather_facts(home: &Path, service_probe: impl FnOnce() -> ServicePresence) ->
         home_exists: true,
         mode,
         shutdown_requested,
-        lock_held: crate::pump::run::lock_is_held(home).ok(),
+        lock_held: match crate::pump::run::lock_is_held(home) {
+            Ok(held) => Some(held),
+            Err(_) => None,
+        },
         tick_age_secs: tick_age_secs(home),
         service: service_probe(),
     }

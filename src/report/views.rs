@@ -486,7 +486,10 @@ fn average(values: &[u64]) -> Option<u64> {
         return None;
     }
     let sum: u128 = values.iter().map(|value| u128::from(*value)).sum();
-    u64::try_from(sum / values.len() as u128).ok()
+    match u64::try_from(sum / values.len() as u128) {
+        Ok(average) => Some(average),
+        Err(_) => None,
+    }
 }
 
 fn checked_sum(values: &[u64]) -> Option<u64> {
@@ -496,12 +499,15 @@ fn checked_sum(values: &[u64]) -> Option<u64> {
 }
 
 fn bucket(time: Option<u64>, format: &str) -> String {
-    time.and_then(|time| i64::try_from(time).ok())
-        .and_then(|time| DateTime::<Utc>::from_timestamp(time, 0))
-        .map_or_else(
-            || "unavailable".into(),
-            |time| time.format(format).to_string(),
-        )
+    time.and_then(|time| match i64::try_from(time) {
+        Ok(time) => Some(time),
+        Err(_) => None,
+    })
+    .and_then(|time| DateTime::<Utc>::from_timestamp(time, 0))
+    .map_or_else(
+        || "unavailable".into(),
+        |time| time.format(format).to_string(),
+    )
 }
 
 fn apply_top(rows: &mut Vec<Value>, view: View, top: Option<usize>) {

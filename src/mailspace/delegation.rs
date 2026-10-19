@@ -52,9 +52,10 @@ pub(super) fn parse_assignment_event(bytes: &[u8]) -> Option<AssignmentEvent> {
         } else if header.name().eq_ignore_ascii_case(EVENT_OF) {
             of = normalize_message_id(text);
         } else if header.name().eq_ignore_ascii_case(EVENT_AT) {
-            at = chrono::DateTime::parse_from_rfc3339(text.trim())
-                .ok()
-                .map(|time| time.timestamp_micros());
+            at = match chrono::DateTime::parse_from_rfc3339(text.trim()) {
+                Ok(time) => Some(time.timestamp_micros()),
+                Err(_) => None,
+            };
         } else if header.name().eq_ignore_ascii_case(DELEGATE) {
             delegate = Some(text.trim().to_ascii_lowercase());
         }

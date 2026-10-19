@@ -184,10 +184,13 @@ fn head_cadence_finding_with_store(
     let mut due = Vec::new();
     let mut overdue = Vec::new();
     for view in heads {
-        let Some(cadence_seconds) = view
-            .cadence
-            .as_deref()
-            .and_then(|cadence| parse_duration_secs(cadence).ok())
+        let Some(cadence_seconds) =
+            view.cadence
+                .as_deref()
+                .and_then(|cadence| match parse_duration_secs(cadence) {
+                    Ok(seconds) => Some(seconds),
+                    Err(_) => None,
+                })
         else {
             continue;
         };
@@ -276,7 +279,10 @@ fn replace_head_cadence(findings: &mut [Finding], replacement: Finding) {
 }
 
 fn role_view(project: &Project, identity: &LocalIdentity) -> RoleView {
-    let sidecar = std::fs::read_to_string(project.dir.join("mailspace.id")).ok();
+    let sidecar = match std::fs::read_to_string(project.dir.join("mailspace.id")) {
+        Ok(sidecar) => Some(sidecar),
+        Err(_) => None,
+    };
     let prefix = project
         .config
         .id
