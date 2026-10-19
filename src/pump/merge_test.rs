@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::{MergeConfig, PumpConfig, PumpTarget};
+use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::{batch_work, failure_text, merge_work};
 use crate::pump::state::{MergeJob, MergeResult};
@@ -291,6 +291,90 @@ fn a_merge_conflict_lists_the_conflicting_files_and_resets_the_repo() {
         Some("git reset -q --hard origin/next")
     );
     assert_eq!(index_of(&host.commands(), "merge --no-ff"), 6);
+}
+
+/// A context whose merge config regenerates the e2e coverage ledger.
+fn setup_generated() -> (TempDir, Ctx, Arc<FakeHost>) {
+    let (_dir, mut ctx, host) = setup("");
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.merge.generated.push(Generated {
+        paths: vec![String::from("scripta/e2e-coverage-ledger.toml")],
+        regenerate: String::from("./regen-ledger.sh"),
+        drift: vec![],
+    });
+    ctx.cfg = Arc::new(cfg);
+    (_dir, ctx, host)
+}
+
+#[test]
+fn a_conflict_only_on_generated_files_is_resolved_and_merged() {
+    let (_dir, ctx, host) = setup_generated();
+    host.reply(
+        "merge --no-ff",
+        1,
+        "Auto-merging scripta/e2e-coverage-ledger.toml\nCONFLICT (content): merge conflict in scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply(
+        "diff --name-only --diff-filter=U",
+        0,
+        "scripta/e2e-coverage-ledger.toml\n",
+    );
+    host.reply("rev-parse HEAD", 0, "tip123\n");
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(true), "{result:?}\n{:?}", host.commands());
+    assert_eq!(result.tip.as_deref(), Some("tip123"));
+    let cmds = host.commands();
+    let merge = index_of(&cmds, "merge --no-ff");
+    let checkout = index_of(
+        &cmds,
+        "git checkout --ours -- scripta/e2e-coverage-ledger.toml",
+    );
+    let regen = index_of(&cmds, "./regen-ledger.sh");
+    let add = index_of(&cmds, "git add -- scripta/e2e-coverage-ledger.toml");
+    let commit = cmds
+        .iter()
+        .position(|c| c.contains("commit --no-edit"))
+        .unwrap();
+    assert!(merge < checkout, "{cmds:?}");
+    assert!(checkout < regen, "{cmds:?}");
+    assert!(regen < add, "{cmds:?}");
+    assert!(add < commit, "{cmds:?}");
+    assert!(
+        !cmds[commit + 1..]
+            .iter()
+            .any(|c| c.contains("reset -q --hard")),
+        "{cmds:?}"
+    );
+    assert!(host
+        .logs()
+        .iter()
+        .any(|l| l.contains("resolved generated conflicts u1: scripta/e2e-coverage-ledger.toml")));
+}
+
+#[test]
+fn a_conflict_on_generated_and_source_files_still_fails() {
+    let (_dir, ctx, host) = setup_generated();
+    host.reply(
+        "merge --no-ff",
+        1,
+        "Auto-merging src/a.rs\nCONFLICT (content): merge conflict in src/a.rs\n",
+    );
+    host.reply(
+        "diff --name-only --diff-filter=U",
+        0,
+        "src/a.rs\nscripta/e2e-coverage-ledger.toml\n",
+    );
+    let result = merge_work(&ctx, &job());
+    assert_eq!(result.ok, Some(false));
+    assert_eq!(result.why.as_deref(), Some("merge-conflict"));
+    assert!(!host
+        .commands()
+        .iter()
+        .any(|c| c.contains("checkout --ours")));
+    assert_eq!(
+        host.commands().last().map(String::as_str),
+        Some("git reset -q --hard origin/next")
+    );
 }
 
 #[test]
