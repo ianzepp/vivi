@@ -685,7 +685,7 @@ fn lane_lines_count_merged_and_conflicted_results_per_lane() {
 // ------------------------------------------------------------- the lane RAM disk
 
 use crate::pool::ramdisk::Runner;
-use crate::pump::merge::{detached_worker, lane_work, LaneRam};
+use crate::pump::merge::{LaneRam, detached_worker, lane_work};
 use std::sync::Mutex;
 
 /// An attached fake RAM disk: whole-disk device and mount point.
@@ -771,7 +771,10 @@ fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
     let tela = ctx.for_target("tela").unwrap();
     // One attached `vivi-` disk holding 9999 GiB, so held plus the 8 GiB disk
     // plus the 6 GiB margin exceeds any machine's free memory.
-    let fake = Arc::new(LaneFakeRunner::new(&[("/dev/disk7s1", "/Volumes/vivi-huge")]));
+    let fake = Arc::new(LaneFakeRunner::new(&[(
+        "/dev/disk7s1",
+        "/Volumes/vivi-huge",
+    )]));
     let worker = detached_worker(
         &tela,
         1,
@@ -790,10 +793,7 @@ fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
     let detail = result.detail.as_deref().unwrap_or_default();
     assert!(detail.starts_with("ramdisk-wait:"), "{detail}");
     assert!(
-        !fake
-            .calls()
-            .iter()
-            .any(|c| c.starts_with("hdiutil attach")),
+        !fake.calls().iter().any(|c| c.starts_with("hdiutil attach")),
         "the job waits queued; no disk is mounted: {:?}",
         fake.calls()
     );

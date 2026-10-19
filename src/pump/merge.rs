@@ -18,7 +18,7 @@ pub use lane::Merger;
 #[cfg(test)]
 pub(crate) use lane::dispatch_results;
 #[cfg(test)]
-pub(crate) use lane::{detached_worker, lane_work, LaneRam};
+pub(crate) use lane::{LaneRam, detached_worker, lane_work};
 
 use std::time::UNIX_EPOCH;
 use std::{fs, io};
