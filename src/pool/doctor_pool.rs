@@ -36,6 +36,9 @@ pub struct RequiresView<'a> {
 pub struct PoolFacts<'a> {
     /// The pool's name, for the commands the fixes name.
     pub pool: &'a str,
+    /// The pool's id-qualified space key: the mark a slot of this mailspace
+    /// carries.
+    pub space: &'a str,
     /// The `[pools.<name>]` validation result.
     pub config: Result<(), String>,
     pub max: u32,
@@ -92,6 +95,7 @@ fn slot_checks(f: &PoolFacts, slots: &[SlotStatus]) -> Vec<Check> {
     let mut out = vec![count_check(f, &slots)];
     for slot in &slots {
         out.push(slot_check(f, slot));
+        out.extend(space_check(f, slot));
         out.extend(requires_check(f, slot));
     }
     out.push(leak_check(f, &slots));
@@ -204,6 +208,25 @@ fn slot_check(f: &PoolFacts, slot: &SlotStatus) -> Check {
         ),
         _ => Check::warn(GROUP, &name, detail, reseed),
     }
+}
+
+/// A slot whose `vivi_pool_mailspace` mark is not this mailspace's key was
+/// made before slots were keyed by mailspace id. It is still ours, but any
+/// mailspace with the same name slug can claim it, so recycling it is the fix.
+fn space_check(f: &PoolFacts, slot: &SlotStatus) -> Option<Check> {
+    let mark = slot.space_mark.as_deref()?;
+    if mark == f.space {
+        return None;
+    }
+    Some(Check::warn(
+        GROUP,
+        "slot-space",
+        format!(
+            "{} was made before pool slots were keyed by mailspace id (mark {mark}); any mailspace with the same name can still use it",
+            slot.name
+        ),
+        format!("vivi pool destroy {} && vivi pool create", slot.name),
+    ))
 }
 
 /// Whether a seeded slot's requirements were checked when it was seeded. Slots

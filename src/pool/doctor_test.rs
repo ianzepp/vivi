@@ -143,6 +143,68 @@ fn too_many_slots_warns() {
     assert!(find(&r, "slot count").detail.contains("2 of 1"));
 }
 
+/// The `slots` the pool checks read are made here rather than by the Fake so a
+/// slot can carry an arbitrary mailspace mark.
+fn status(name: &str, space_mark: Option<&str>) -> SlotStatus {
+    SlotStatus {
+        pool: "p".into(),
+        name: name.into(),
+        id: format!("m-{name}"),
+        state: "free".into(),
+        provider_state: "stopped".into(),
+        index: Some(1),
+        base: None,
+        base_ref: None,
+        task: None,
+        claimed_at: None,
+        running_secs: None,
+        budget_secs: None,
+        read_only: None,
+        created_at: "then".into(),
+        region: "iad".into(),
+        arch: None,
+        space_mark: space_mark.map(str::to_string),
+    }
+}
+
+fn pool_checks(slots: Vec<SlotStatus>) -> Vec<Check> {
+    let view = view_ok();
+    let requires = doctor_pool::RequiresView::default();
+    let facts = doctor_pool::PoolFacts {
+        pool: "p",
+        space: "app-12345678",
+        config: Ok(()),
+        max: 2,
+        slots: Some(Ok(slots)),
+        open: &[],
+        now: NOW,
+        github: &view,
+        requires: &requires,
+        lifetime: SlotLifetime::Resting,
+        grace: STALE_CLAIM_SECS,
+        billing: "billed by the second",
+    };
+    doctor_pool::checks(&facts)
+}
+
+#[test]
+fn doctor_reports_a_slot_with_the_legacy_mailspace_mark() {
+    let legacy = pool_checks(vec![status("p-slot-1", Some("app"))]);
+    let found: Vec<&Check> = legacy
+        .iter()
+        .filter(|c| c.group == doctor_pool::GROUP && c.name == "slot-space")
+        .collect();
+    assert_eq!(found.len(), 1, "one warn per legacy slot: {legacy:#?}");
+    assert_eq!(found[0].status, Status::Warn);
+    assert!(found[0].detail.contains("p-slot-1"));
+    assert!(found[0].detail.contains("mark app"));
+    let current = pool_checks(vec![status("p-slot-1", Some("app-12345678"))]);
+    assert!(
+        !current.iter().any(|c| c.name == "slot-space"),
+        "a current mark is not reported: {current:#?}"
+    );
+}
+
 #[test]
 fn a_failed_provider_check_skips_the_slot_checks_but_not_the_other_sides() {
     let fake = fake_with(vec![slot("m1", "p-slot-1", "stopped", "p", 1)]);
@@ -170,6 +232,7 @@ fn a_listing_failure_is_a_fail_not_a_skip() {
         // The Fake cannot fail a listing, so the pool checks take the `Err`.
         let facts = doctor_pool::PoolFacts {
             pool: "p",
+            space: "app-12345678",
             config: Ok(()),
             max: 1,
             slots: Some(Err("boom".into())),

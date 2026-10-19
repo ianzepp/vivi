@@ -200,6 +200,9 @@ pub struct SlotStatus {
     /// CPU architecture of the slot, when the host reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
+    /// The raw `vivi_pool_mailspace` mark, when the slot carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_mark: Option<String>,
 }
 
 fn slot_index(machine: &MachineRecord) -> Option<u32> {
@@ -264,6 +267,7 @@ pub fn pool_slots(id: &PoolId, machines: &[MachineRecord]) -> Vec<SlotStatus> {
             created_at: m.created_at.clone(),
             region: m.region.clone(),
             arch: m.metadata.get(META_ARCH).cloned(),
+            space_mark: m.metadata.get(META_MAILSPACE).cloned(),
         })
         .collect();
     slots.sort_by(|a, b| {

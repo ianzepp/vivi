@@ -83,6 +83,7 @@ fn claim_marks_show_in_status() {
     assert_eq!(slots[0].state, "finished-uncollected");
     assert_eq!(slots[0].task.as_deref(), Some("abcd1234"));
     assert_eq!(slots[0].claimed_at, Some(1_700_000_000));
+    assert_eq!(slots[0].space_mark.as_deref(), Some("ms"));
 }
 
 fn with(mut m: MachineRecord, key: &str, value: Option<&str>) -> MachineRecord {
