@@ -25,15 +25,18 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::config::PoolConfig;
+use super::config::config_ramdisk::PoolRamDisk;
 use super::docker::{env_is_set, unset_names};
 use super::docker_cli::{RunOutput, finish};
 use super::doctor::Check;
 use super::local_proc as proc;
 use super::local_slots as slots;
 use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider};
+use super::ramdisk::{RealRunner, Runner};
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_state::{self as state, is_slot_id};
 use crate::error::VivariumError;
@@ -48,6 +51,11 @@ pub struct LocalProvider {
     /// The pool's `build_baseline_gib` in bytes, for reclaim of a slot that
     /// carries no recorded baseline.
     build_baseline: Option<u64>,
+    /// The pool's `[ramdisk]` settings; unused until a job mounts one.
+    ramdisk: PoolRamDisk,
+    /// The seam that runs `hdiutil`/`diskutil`; the real binaries in
+    /// production, a fake in tests.
+    runner: Arc<dyn Runner>,
 }
 
 impl LocalProvider {
@@ -58,6 +66,18 @@ impl LocalProvider {
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
             build_baseline: config.build_baseline_bytes(),
+            ramdisk: config.ramdisk.clone(),
+            runner: Arc::new(RealRunner),
+        }
+    }
+
+    /// A provider whose `Runner` seam is `runner`, so tests never shell out.
+    #[cfg(test)]
+    #[must_use]
+    fn with_runner(config: &PoolConfig, runner: Arc<dyn Runner>) -> Self {
+        Self {
+            runner,
+            ..Self::new(config)
         }
     }
 
@@ -110,6 +130,7 @@ impl PoolProvider for LocalProvider {
         id: &str,
         target: &super::dispatch::target::JobTarget,
         start: &str,
+        _job: &str,
     ) -> Result<(), VivariumError> {
         let Some(source) = &target.local_source else {
             return Ok(());

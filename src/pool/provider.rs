@@ -176,6 +176,7 @@ pub trait PoolProvider {
         _id: &str,
         target: &super::dispatch::target::JobTarget,
         _start: &str,
+        _job: &str,
     ) -> Result<(), VivariumError> {
         if target.local_source.is_some() {
             return Err(VivariumError::Config(

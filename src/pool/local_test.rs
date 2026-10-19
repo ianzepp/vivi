@@ -1,6 +1,7 @@
 //! The provider through its trait, against directories and processes on this
 //! machine.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -186,4 +187,69 @@ fn creating_a_slot_whose_boot_cannot_start_removes_it_again() {
             .contains("lacks vivi_pool_slot")
     );
     assert!(p.list().unwrap().is_empty());
+}
+
+/// A `Runner` that records every argv it was given and answers from a canned
+/// table keyed by the exact joined command line. An unlisted command fails,
+/// so a test notices an argv it did not expect.
+struct FakeRunner {
+    calls: Mutex<Vec<Vec<String>>>,
+    replies: Vec<(String, Result<String, String>)>,
+}
+
+impl FakeRunner {
+    fn new(replies: &[(&str, Result<&str, &str>)]) -> Self {
+        let replies = replies
+            .iter()
+            .map(|(line, reply)| {
+                let reply = match *reply {
+                    Ok(out) => Ok(out.to_string()),
+                    Err(err) => Err(err.to_string()),
+                };
+                ((*line).to_string(), reply)
+            })
+            .collect();
+        Self {
+            calls: Mutex::new(Vec::new()),
+            replies,
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls
+            .lock()
+            .expect("call log")
+            .iter()
+            .map(|argv| argv.join(" "))
+            .collect()
+    }
+}
+
+impl Runner for FakeRunner {
+    fn run(&self, argv: &[&str], _timeout_secs: u64) -> Result<String, String> {
+        let line = argv.join(" ");
+        self.calls
+            .lock()
+            .expect("call log")
+            .push(argv.iter().map(|arg| (*arg).to_string()).collect());
+        match self.replies.iter().find(|(key, _)| *key == line) {
+            Some((_, reply)) => reply.clone(),
+            None => Err(format!("fake: unexpected `{line}`")),
+        }
+    }
+}
+
+#[test]
+fn new_stores_the_pool_ramdisk_settings() {
+    let config: PoolConfig = toml::from_str(&format!(
+        "provider = \"local\"\nslots = 2\n[local]\nroot = \"{0}\"\n[ramdisk]\nenabled = true\nsize_gib = 12\n",
+        std::env::temp_dir().display()
+    ))
+    .unwrap();
+    let made = LocalProvider::new(&config);
+    assert!(made.ramdisk.enabled);
+    assert_eq!(made.ramdisk.size_gib, 12);
+    let faked = LocalProvider::with_runner(&config, Arc::new(FakeRunner::new(&[])));
+    assert!(faked.ramdisk.enabled);
+    assert_eq!(faked.ramdisk.size_gib, 12);
 }
