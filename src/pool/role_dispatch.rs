@@ -249,11 +249,7 @@ pub fn digest_brief(
 /// The digest seat's instructions: what to read in the window and the one
 /// memo it files. Pure: no I/O, the seat does the reading.
 #[must_use]
-pub fn digest_run_text(
-    brief: &DigestBrief,
-    project_root: &std::path::Path,
-    role: &str,
-) -> String {
+pub fn digest_run_text(brief: &DigestBrief, project_root: &std::path::Path, role: &str) -> String {
     let root = project_root.display();
     format!(
         "## Digest run\n\
