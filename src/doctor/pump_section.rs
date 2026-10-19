@@ -91,10 +91,7 @@ fn missing_home_facts() -> PumpFacts {
 
 /// Probe the live pump. The service callback is injectable so callers and
 /// tests can gather local facts without invoking a system command.
-fn gather_facts(
-    home: &Path,
-    service_probe: impl FnOnce() -> ServicePresence,
-) -> PumpFacts {
+fn gather_facts(home: &Path, service_probe: impl FnOnce() -> ServicePresence) -> PumpFacts {
     let control = match crate::pump::control::inspect(home) {
         Ok(control) => control,
         Err(_) => PumpControl {
@@ -179,12 +176,11 @@ fn service_finding(facts: &PumpFacts) -> Finding {
 
 /// Return the age of `<home>/status.txt` in whole seconds, if readable.
 fn tick_age_secs(home: &Path) -> Option<u64> {
-    let modified = match std::fs::metadata(home.join("status.txt"))
-        .and_then(|metadata| metadata.modified())
-    {
-        Ok(modified) => modified,
-        Err(_) => return None,
-    };
+    let modified =
+        match std::fs::metadata(home.join("status.txt")).and_then(|metadata| metadata.modified()) {
+            Ok(modified) => modified,
+            Err(_) => return None,
+        };
     Some(
         SystemTime::now()
             .duration_since(modified)

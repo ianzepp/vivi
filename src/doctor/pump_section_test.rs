@@ -34,7 +34,10 @@ fn missing_home_skips() {
 fn paused_and_stopped_warn_with_fix() {
     let paused = finding(&findings_from(&facts(true, PumpMode::Paused)), "control");
     assert_eq!(paused.status, Status::Warn);
-    assert_eq!(paused.fix.as_deref(), Some("vivi pump resume --project <root>"));
+    assert_eq!(
+        paused.fix.as_deref(),
+        Some("vivi pump resume --project <root>")
+    );
 
     let stopped = finding(&findings_from(&facts(true, PumpMode::Stopped)), "control");
     assert_eq!(stopped.status, Status::Warn);
@@ -56,7 +59,10 @@ fn stale_tick_warns_and_fresh_ok() {
     missing.tick_age_secs = None;
     let missing = finding(&findings_from(&missing), "tick");
     assert_eq!(missing.status, Status::Warn);
-    assert_eq!(missing.detail, "status.txt missing: the pump has never ticked");
+    assert_eq!(
+        missing.detail,
+        "status.txt missing: the pump has never ticked"
+    );
 
     let mut stale = facts(true, PumpMode::Running);
     stale.tick_age_secs = Some(TICK_STALE_SECS + 1);
