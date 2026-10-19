@@ -13,7 +13,7 @@
 //! harness — arrive through [probes](probe) the project declares, so the same
 //! command serves every project and Vivi never learns what a repository is.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -166,6 +166,12 @@ pub struct PumpBoot {
     pub planning: usize,
     /// Handles parked after exhausting planner retries.
     pub planner_parked: usize,
+    /// Durable operator control mode for this pump home.
+    pub control: String,
+    /// Whether a writer process currently holds the pump lock.
+    pub writer: String,
+    /// Whole seconds since `status.txt` was last written, when it exists.
+    pub status_age: Option<u64>,
 }
 
 /// The full boot digest.
@@ -294,6 +300,15 @@ fn collect_pump(
     };
     let complete = snapshot.complete_needs();
     let summary = snapshot.summary();
+    let control = crate::pump::control::inspect(&home).map_or_else(
+        |_| String::from("unknown"),
+        |control| control.mode.to_string(),
+    );
+    let writer = match crate::pump::run::lock_is_held(&home) {
+        Ok(true) => String::from("running"),
+        Ok(false) => String::from("not running"),
+        Err(_) => String::from("unknown"),
+    };
     Some(PumpBoot {
         complete_but_open: complete.intersection(open_needs).count(),
         complete: summary.complete,
@@ -303,7 +318,34 @@ fn collect_pump(
         planning: summary.planning,
         planner_parked: summary.planner_parked,
         units: summary.units,
+        control,
+        writer,
+        status_age: status_age_seconds(&home),
     })
+}
+
+/// Whole seconds since `<home>/status.txt` was last written, when the file
+/// exists and its modification time can be read.
+fn status_age_seconds(home: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(home.join("status.txt"))
+        .and_then(|meta| meta.modified())
+        .ok()?;
+    Some(
+        std::time::SystemTime::now()
+            .duration_since(modified)
+            .map_or(0, |elapsed| elapsed.as_secs()),
+    )
+}
+
+/// The pump state line: durable control mode, writer process, and how old the
+/// status snapshot is.
+#[must_use]
+pub fn pump_state_line(control: &str, writer: &str, age: Option<u64>) -> String {
+    let age = match age {
+        Some(seconds) => format!("{seconds}s"),
+        None => String::from("never"),
+    };
+    format!("  state   control {control}, writer {writer}, status age {age}")
 }
 
 fn probe_verdicts(runs: &[ProbeRun]) -> Vec<probe::ProbeVerdict> {
