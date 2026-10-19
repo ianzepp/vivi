@@ -571,13 +571,39 @@ fn fail_from_receipt(
     fail_with(ctx, st, uid, &why, &text, Some(&full));
 }
 
-/// Park units whose split planner never answered.
+/// The dead split planner's raw output (`resplit/<uid>.out`) when the host
+/// or harness killed the planner before it could plan — for example a
+/// 28-byte `bash: pi: command not found`. The output has no receipt sections,
+/// so the whole text is scanned as detail. `None` means the planner is
+/// silent or answered: today's timeout path still decides.
+fn dead_planner_output(ctx: &Ctx, uid: &str) -> Option<String> {
+    let path = ctx.home.join("resplit").join(format!("{uid}.out"));
+    let text = fs::read_to_string(path).ok()?;
+    envfail::classify("planner", &text, "").map(|_| text)
+}
+
+/// Park units whose split planner never answered; a planner that died
+/// host-class returns its unit to `pending` instead of parking it, so the
+/// next feed re-dispatches it.
 fn expire_splits(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.planner.split_hard_cap;
     let now = ctx.now();
     let mut expired = Vec::new();
     for (uid, unit) in &mut st.units {
-        if unit.status == Status::Splitting && now.saturating_sub(unit.since) > timeout {
+        if unit.status != Status::Splitting {
+            continue;
+        }
+        if let Some(text) = dead_planner_output(ctx, uid) {
+            let evidence: String = text.trim().chars().take(200).collect();
+            unit.status = Status::Pending;
+            unit.task = None;
+            unit.since = now;
+            unit.since_dispatch = None;
+            ctx.exception("environment", uid, &format!("split planner died: {evidence}"));
+            ctx.log(&format!("split-planner-dead {uid}"));
+            continue;
+        }
+        if now.saturating_sub(unit.since) > timeout {
             unit.status = Status::Stuck;
             ctx.exception(
                 "split-no-answer",
