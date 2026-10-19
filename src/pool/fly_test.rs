@@ -165,6 +165,25 @@ fn a_taken_app_name_is_said_plainly_with_the_line_to_set() {
 }
 
 #[test]
+fn a_missing_app_listing_names_the_pool_create_command() {
+    let missing = VivariumError::Message(
+        "`fly machine list` failed: Error: failed to list VMs: app not found".into(),
+    );
+    let said = suggest_pool_create("lane-pool", missing).to_string();
+    assert!(
+        said.contains("Fly app `lane-pool` does not exist"),
+        "{said}"
+    );
+    assert!(said.contains("`vivi pool create`"), "{said}");
+
+    let other = VivariumError::Message("`fly machine list` failed: not logged in".into());
+    assert_eq!(
+        suggest_pool_create("lane-pool", other).to_string(),
+        "message error: `fly machine list` failed: not logged in"
+    );
+}
+
+#[test]
 fn a_start_wait_failure_is_recognized() {
     let operator = "Error: machine failed to reach desired start state, and restart policy was set to no restart";
     assert!(is_start_wait_failure(operator));

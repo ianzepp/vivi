@@ -45,6 +45,7 @@ pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     let routing = from_mailspace(config);
     let mut issues = Vec::new();
     check_role_pools(&routing, &mut issues);
+    check_pool_fallbacks(&routing, &mut issues);
     check_bands(config, &routing, &mut issues);
     check_models(config, &routing, &mut issues);
     check_read_only(&routing, &mut issues);
@@ -92,6 +93,47 @@ fn check_role_pools(routing: &RoleRouting, issues: &mut Vec<Issue>) {
                 "role {} names unknown pool `{pool}`",
                 role.name
             )));
+        }
+    }
+}
+
+fn check_pool_fallbacks(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    for (name, pool) in &routing.pools {
+        if let Some(fallback) = pool.fallback.as_deref()
+            && !routing.pools.contains_key(fallback)
+        {
+            issues.push(Issue::error(format!(
+                "pool {name} falls back to unknown pool `{fallback}`"
+            )));
+        }
+    }
+    report_fallback_cycles(routing, issues);
+}
+
+fn report_fallback_cycles(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let mut reported = std::collections::BTreeSet::new();
+    for start in routing.pools.keys() {
+        let mut positions = std::collections::BTreeMap::new();
+        let mut path = Vec::new();
+        let mut next = Some(start.as_str());
+        while let Some(name) = next {
+            if let Some(&index) = positions.get(name) {
+                let mut cycle = path[index..].to_vec();
+                cycle.sort_unstable();
+                if reported.insert(cycle.clone()) {
+                    issues.push(Issue::error(format!(
+                        "pool fallback cycle includes [{}]",
+                        cycle.join(", ")
+                    )));
+                }
+                break;
+            }
+            let Some(pool) = routing.pools.get(name) else {
+                break;
+            };
+            positions.insert(name, path.len());
+            path.push(name);
+            next = pool.fallback.as_deref();
         }
     }
 }

@@ -38,6 +38,7 @@ fn routing() -> RoleRouting {
             RoutedPool {
                 slots: 2,
                 provider: String::from("local"),
+                fallback: None,
                 caps: BTreeMap::new(),
                 models: Vec::new(),
                 has_bands: false,

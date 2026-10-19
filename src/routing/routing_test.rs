@@ -30,10 +30,82 @@ fn pool(slots: u32) -> RoutedPool {
     RoutedPool {
         slots,
         provider: "local".into(),
+        fallback: None,
         caps: BTreeMap::new(),
         models: Vec::new(),
         has_bands: false,
     }
+}
+
+#[test]
+fn fallback_chain_follows_config_in_order() {
+    let config = cfg(r#"
+name = "t"
+[pools.local]
+provider = "local"
+slots = 1
+fallback = "docker"
+[pools.docker]
+provider = "docker"
+slots = 2
+image = "rust:1.97"
+fallback = "fly"
+[pools.fly]
+provider = "fly"
+slots = 3
+image = "rust:1.97"
+[pools.fly.fly]
+app = "t-fly"
+"#);
+    let routing = from_mailspace(&config);
+    assert_eq!(routing.pools["local"].fallback.as_deref(), Some("docker"));
+    assert_eq!(routing.fallback_chain("local"), ["local", "docker", "fly"]);
+    assert!(routing.fallback_chain("missing").is_empty());
+}
+
+#[test]
+fn fallback_chain_stops_at_a_cycle() {
+    let mut a = pool(1);
+    a.fallback = Some("b".into());
+    let mut b = pool(1);
+    b.fallback = Some("a".into());
+    let routing = RoleRouting {
+        roles: Vec::new(),
+        pools: BTreeMap::from([("a".into(), a), ("b".into(), b)]),
+    };
+    assert_eq!(routing.fallback_chain("a"), ["a", "b"]);
+}
+
+#[test]
+fn validate_rejects_unknown_fallbacks_and_cycles() {
+    let config = cfg(r#"
+name = "t"
+[pools.a]
+provider = "local"
+slots = 1
+fallback = "missing"
+[pools.b]
+provider = "local"
+slots = 1
+fallback = "c"
+[pools.c]
+provider = "local"
+slots = 1
+fallback = "b"
+"#);
+    let issues = validate(&config);
+    assert!(
+        issues.iter().any(|issue| issue
+            .message
+            .contains("pool a falls back to unknown pool `missing`")),
+        "{issues:?}"
+    );
+    assert!(
+        issues.iter().any(|issue| issue
+            .message
+            .contains("pool fallback cycle includes [b, c]")),
+        "{issues:?}"
+    );
 }
 
 #[test]

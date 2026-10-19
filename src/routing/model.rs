@@ -32,6 +32,7 @@ pub struct RoutedRole {
 pub struct RoutedPool {
     pub slots: u32,
     pub provider: String,
+    pub fallback: Option<String>,
     pub caps: BTreeMap<String, u32>,
     pub models: Vec<String>,
     pub has_bands: bool,
@@ -95,6 +96,26 @@ impl RoleRouting {
             .as_deref()
             .filter(|name| self.pools.contains_key(*name))
     }
+
+    /// Configured pool order starting at `start`, ending at the first pool
+    /// without a fallback. Unknown pools and cycles stop the walk safely.
+    #[must_use]
+    pub fn fallback_chain(&self, start: &str) -> Vec<String> {
+        let mut chain = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut next = Some(start);
+        while let Some(name) = next {
+            let Some(pool) = self.pools.get(name) else {
+                break;
+            };
+            if !seen.insert(name) {
+                break;
+            }
+            chain.push(name.to_string());
+            next = pool.fallback.as_deref();
+        }
+        chain
+    }
 }
 
 fn kind_is(role: &RoutedRole, kind: &str) -> bool {
@@ -132,6 +153,7 @@ fn pool_from(pool: &PoolConfig) -> RoutedPool {
     RoutedPool {
         slots: pool.slots,
         provider: pool.provider.clone(),
+        fallback: pool.fallback.clone(),
         caps: pool.caps.clone(),
         models: pool
             .harness

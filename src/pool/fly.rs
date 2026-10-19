@@ -158,7 +158,9 @@ impl PoolProvider for FlyctlProvider {
 
     fn list(&self) -> Result<Vec<MachineRecord>, VivariumError> {
         let args = ["machine", "list", "--json", "-a", &self.app].map(str::to_string);
-        let (stdout, _) = self.run(&args, &[])?;
+        let (stdout, _) = self
+            .run(&args, &[])
+            .map_err(|error| suggest_pool_create(&self.app, error))?;
         parse_machine_list(&stdout)
     }
 
@@ -285,6 +287,16 @@ fn name_taken(app: &str, error: VivariumError) -> VivariumError {
     }
     VivariumError::Message(format!(
         "the Fly app name \"{app}\" is already taken (Fly app names are unique across all Fly accounts). Choose another name in .vivi/mailspace.toml: set `app = \"<your-unique-app-name>\"` in the pool's `[pools.<pool>.fly]` table"
+    ))
+}
+
+/// Make Fly's missing-app response point to the command that creates it.
+fn suggest_pool_create(app: &str, error: VivariumError) -> VivariumError {
+    if !error.to_string().to_lowercase().contains("app not found") {
+        return error;
+    }
+    VivariumError::Message(format!(
+        "Fly app `{app}` does not exist; run `vivi pool create` to make the app before scaling"
     ))
 }
 

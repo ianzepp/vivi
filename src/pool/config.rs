@@ -54,6 +54,10 @@ pub struct PoolConfig {
     /// Maximum pool size. On `runpod` there are no resting slots: this is the
     /// most pods that may exist at once.
     pub slots: u32,
+    /// Pool to try when this pool cannot accept a dispatch. The pump follows
+    /// these links in order; an absent fallback means the dispatch waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
     /// Container image the machines run. Required by `fly`, `docker` and `runpod`;
     /// the `ssh` and `local` providers have no image, so it must be left out
     /// there.

@@ -854,6 +854,7 @@ fn routed_pool(slots: u32) -> RoutedPool {
     RoutedPool {
         slots,
         provider: "local".into(),
+        fallback: None,
         caps: BTreeMap::new(),
         models: Vec::new(),
         has_bands: false,
