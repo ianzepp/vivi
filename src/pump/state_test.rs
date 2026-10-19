@@ -583,14 +583,12 @@ fn transient_retry_fields_round_trip_and_default() {
     let mut unit = Unit::default();
     unit.transient_retries = 2;
     unit.retry_not_before = Some(99);
-    let back: Unit = serde_json::from_str(&serde_json::to_string(&unit).unwrap())
-        .unwrap();
+    let back: Unit = serde_json::from_str(&serde_json::to_string(&unit).unwrap()).unwrap();
     assert_eq!(back.transient_retries, 2);
     assert_eq!(back.retry_not_before, Some(99));
 
     // A unit from an older pump has neither key; both load as defaults.
-    let old: Unit =
-        serde_json::from_str(r#"{"need": "n", "status": "pending"}"#).unwrap();
+    let old: Unit = serde_json::from_str(r#"{"need": "n", "status": "pending"}"#).unwrap();
     assert_eq!(old.transient_retries, 0);
     assert_eq!(old.retry_not_before, None);
 }
