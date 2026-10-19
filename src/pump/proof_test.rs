@@ -53,7 +53,11 @@ fn two_testname_filters_are_rejected() {
         "one TESTNAME filter",
     );
     err_containing("cargo test a b", repo.path(), "one TESTNAME filter");
-    err_containing("cargo +nightly test a b", repo.path(), "one TESTNAME filter");
+    err_containing(
+        "cargo +nightly test a b",
+        repo.path(),
+        "one TESTNAME filter",
+    );
     err_containing(
         "cargo test --package vivi --lib pump::plan extra",
         repo.path(),
@@ -88,7 +92,11 @@ fn unknown_binaries_are_rejected() {
 #[test]
 fn wrappers_are_validated_too() {
     let repo = fixture_repo();
-    err_containing("bash -c 'cargo test a b'", repo.path(), "one TESTNAME filter");
+    err_containing(
+        "bash -c 'cargo test a b'",
+        repo.path(),
+        "one TESTNAME filter",
+    );
     err_containing("sh -c 'cargo test a b'", repo.path(), "one TESTNAME filter");
     err_containing("env cargo test a b", repo.path(), "one TESTNAME filter");
     err_containing(
@@ -134,7 +142,11 @@ fn repo_relative_scripts_are_accepted_when_executable() {
 fn repo_relative_paths_missing_or_not_executable_are_rejected() {
     let repo = fixture_repo();
     err_containing("./nope", repo.path(), "missing or not executable");
-    err_containing("scripta/notes.txt", repo.path(), "missing or not executable");
+    err_containing(
+        "scripta/notes.txt",
+        repo.path(),
+        "missing or not executable",
+    );
 }
 
 #[test]
