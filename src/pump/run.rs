@@ -34,23 +34,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
     if !ctx.mailspace.is_empty() {
         crate::pump::replan::apply_pending(ctx, st);
     }
-    let gate_target = st
-        .active_gate_target()
-        .unwrap_or_else(|| String::from("default"));
-    let gate_ctx = ctx.for_target(&gate_target).unwrap_or_else(|| ctx.clone());
-    let t_collect = Instant::now();
-    crate::pump::state::with_target_state(st, &gate_target, |st| {
-        if let Some(text) = collect::collect(&gate_ctx, st) {
-            gate::finish_gate(&gate_ctx, st, &text);
-        }
-    });
-    crate::pump::gate::collect_completed(ctx, st);
-    crate::pump::merge::apply_dispatched(ctx, st);
-    crate::pump::audit::collect_completed(ctx, st);
-    crate::pump::reclaim::collect_completed(ctx, st);
-    ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
-    save(ctx, st)?;
-    write_status(ctx, st, &[]);
+    collect_phase(ctx, st)?;
     let control = match crate::pump::control::read(&ctx.home) {
         Ok(control) => control,
         Err(error) => {
@@ -86,6 +70,27 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
     save(ctx, st)?;
     write_status(ctx, st, &[]);
     periodic(ctx, st, boardpass)?;
+    write_status(ctx, st, &[]);
+    Ok(())
+}
+
+fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
+    let gate_target = st
+        .active_gate_target()
+        .unwrap_or_else(|| String::from("default"));
+    let gate_ctx = ctx.for_target(&gate_target).unwrap_or_else(|| ctx.clone());
+    let t_collect = Instant::now();
+    crate::pump::state::with_target_state(st, &gate_target, |st| {
+        if let Some(text) = collect::collect(&gate_ctx, st) {
+            gate::finish_gate(&gate_ctx, st, &text);
+        }
+    });
+    crate::pump::gate::collect_completed(ctx, st);
+    crate::pump::merge::apply_dispatched(ctx, st);
+    crate::pump::audit::collect_completed(ctx, st);
+    crate::pump::reclaim::collect_completed(ctx, st);
+    ctx.log(&format!("collect took {}s", t_collect.elapsed().as_secs()));
+    save(ctx, st)?;
     write_status(ctx, st, &[]);
     Ok(())
 }

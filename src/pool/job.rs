@@ -515,11 +515,35 @@ fn target_files(target: &super::dispatch::target::JobTarget) -> Vec<BundleFile> 
     ]
 }
 
+type ParamField = (&'static str, String);
+
 /// The `params.env` key/value fields of a job: identity, refs, model, slot,
 /// commit identity, and the flags that switch runner behavior (read-only,
 /// a local checkout, a bridge grant).
-fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
-    let mut fields = vec![
+fn params_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
+    let mut fields = core_fields(spec, slot);
+    append_publish_fields(&mut fields, spec);
+    if spec.read_only {
+        fields.push(("READ_ONLY", "1".to_string()));
+    }
+    append_target_fields(&mut fields, spec);
+    if let Some(checkout) = &spec.checkout {
+        fields.extend([
+            ("LOCAL_ACTION", checkout.action.word().to_string()),
+            ("LOCAL_START", checkout.start.clone()),
+        ]);
+    }
+    if let Some(bridge) = &spec.bridge {
+        fields.extend([
+            ("BRIDGE_SERVER", bridge.server.clone()),
+            ("BRIDGE_PROJECT", bridge.project_id.clone()),
+        ]);
+    }
+    fields
+}
+
+fn core_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
+    vec![
         ("REMOTE", spec.remote.clone()),
         ("JOB", spec.job.clone()),
         ("TASK", spec.task.clone()),
@@ -533,7 +557,10 @@ fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
         ("COMMIT_NAME", spec.committer.name.clone()),
         ("COMMIT_EMAIL", spec.committer.email.clone()),
         ("ENV_NAMES", spec.env_names.join(" ")),
-    ];
+    ]
+}
+
+fn append_publish_fields(fields: &mut Vec<ParamField>, spec: &JobPlan) {
     if let Some(reference) = &spec.publish_ref {
         fields.extend([
             ("PUBLISH_REF", reference.clone()),
@@ -547,9 +574,9 @@ fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
             ),
         ]);
     }
-    if spec.read_only {
-        fields.push(("READ_ONLY", "1".to_string()));
-    }
+}
+
+fn append_target_fields(fields: &mut Vec<ParamField>, spec: &JobPlan) {
     if let Some(target) = &spec.target {
         fields.extend([
             ("TARGET", target.id.clone()),
@@ -571,15 +598,6 @@ fn params_fields(spec: &JobPlan, slot: &str) -> Vec<(&'static str, String)> {
             ),
         ]);
     }
-    if let Some(checkout) = &spec.checkout {
-        fields.push(("LOCAL_ACTION", checkout.action.word().to_string()));
-        fields.push(("LOCAL_START", checkout.start.clone()));
-    }
-    if let Some(bridge) = &spec.bridge {
-        fields.push(("BRIDGE_SERVER", bridge.server.clone()));
-        fields.push(("BRIDGE_PROJECT", bridge.project_id.clone()));
-    }
-    fields
 }
 
 /// The text of `with.list`: one `<ref> <commit>` line per extra ref,

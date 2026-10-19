@@ -15,17 +15,31 @@ pub fn enqueue_merged(ctx: &Ctx, st: &mut State, uid: &str, unit: &Unit) {
     if ctx.mailspace.is_empty() {
         return;
     }
-    let source_project = match ctx.project.canonicalize() {
-        Ok(path) => path,
+    let snapshot = match reclaim_snapshot(ctx, st, uid, unit) {
+        Ok(snapshot) => snapshot,
         Err(error) => {
-            ctx.exception(
-                "reclaim-unavailable",
-                uid,
-                &format!("project root: {error}"),
-            );
+            ctx.exception("reclaim-unavailable", uid, &error);
             return;
         }
     };
+    enqueue_snapshot_job(ctx, st, uid, unit, snapshot);
+}
+
+struct ReclaimSnapshot {
+    request: serde_json::Value,
+    local_pools: Vec<String>,
+}
+
+fn reclaim_snapshot(
+    ctx: &Ctx,
+    st: &State,
+    uid: &str,
+    unit: &Unit,
+) -> Result<ReclaimSnapshot, String> {
+    let source_project = ctx
+        .project
+        .canonicalize()
+        .map_err(|error| format!("project root: {error}"))?;
     let local_pools = local_pool_candidates(ctx, unit);
     let cleanup_pools = cleanup_pools(ctx, unit);
     let merging_targets = st
@@ -44,13 +58,24 @@ pub fn enqueue_merged(ctx: &Ctx, st: &mut State, uid: &str, unit: &Unit) {
         pools: cleanup_pools,
         merging_targets,
     };
-    let request_value = match serde_json::to_value(&request) {
-        Ok(value) => value,
-        Err(error) => {
-            ctx.exception("reclaim-unavailable", uid, &format!("snapshot: {error}"));
-            return;
-        }
-    };
+    let request = serde_json::to_value(&request).map_err(|error| format!("snapshot: {error}"))?;
+    Ok(ReclaimSnapshot {
+        request,
+        local_pools,
+    })
+}
+
+fn enqueue_snapshot_job(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    unit: &Unit,
+    snapshot: ReclaimSnapshot,
+) {
+    let ReclaimSnapshot {
+        request: request_value,
+        local_pools,
+    } = snapshot;
     let role = reclaim_role(ctx);
     let id = format!(
         "reclaim-{}-{}",

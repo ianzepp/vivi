@@ -257,20 +257,7 @@ impl<'a> World<'a> {
         if let Some(harness) = config.harness.as_mut() {
             harness.run = harness_command(sleep);
         }
-        let flags = DispatchFlags {
-            model: source::MODEL.to_string(),
-            need: None,
-            kind: None,
-            from: Some(refs.0.to_string()),
-            branch: Some(refs.1.to_string()),
-            publish_ref: None,
-            publish_expect: None,
-            with: Vec::new(),
-            budget: Some(budget),
-            allow_default_branch: true,
-            read_only: false,
-            reasoning: None,
-        };
+        let flags = Self::dispatch_flags(budget, refs);
         let id = dispatch::new_job_id(&task, u128::from(self.counter), std::process::id());
         let plan = dispatch::plan_job(
             &config,
@@ -306,6 +293,23 @@ impl<'a> World<'a> {
             },
         );
         Ok(record)
+    }
+
+    fn dispatch_flags(budget: u64, refs: (&str, &str)) -> DispatchFlags {
+        DispatchFlags {
+            model: source::MODEL.to_string(),
+            need: None,
+            kind: None,
+            from: Some(refs.0.to_string()),
+            branch: Some(refs.1.to_string()),
+            publish_ref: None,
+            publish_expect: None,
+            with: Vec::new(),
+            budget: Some(budget),
+            allow_default_branch: true,
+            read_only: false,
+            reasoning: None,
+        }
     }
 
     /// The dispatched job `label`.
