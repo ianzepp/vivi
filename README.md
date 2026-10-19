@@ -413,15 +413,17 @@ dispatch and the MCP bridge are in the `vivi` skill (`vivi skills show vivi`).
 ## Role → pool routing
 
 Roles (**[[identities]]**) and pools (**[pools.&lt;name&gt;]**) are configured
-separately. Unit tasks are sent to the role named by **[pump].to**; they still
-need a configured unit kind (**tools** or **default_kind**). When the hand role
-has a pool, that pool and its fallback chain are the unit's primary route. If
-the hand role has no pool, the kind's pool list supplies the route.
+separately. Unit tasks are sent to the role named by **[pump].to**. When
+the hand role has a pool, that pool and its fallback chain are the unit's
+primary route; **tools** may be empty or name an unknown kind. Defined kind
+metadata still applies, but kind pool lists are ignored. If the hand role has
+no pool, configured kinds and **default_kind** route unit tasks.
 
 Durable pool jobs are addressed to their work role: planner jobs use
 **planner**, integration jobs use **merge**, gates use **gate**, audits and
-investigations use **auditor**, promotions use **release** or **merge**, cadence
-jobs use the scheduled role, and reclaim uses **reclaim** or the hand role.
+investigations use **auditor**, promotions use the active **release** role
+with a pool or fall back to an active **merge** role with a pool, cadence jobs
+use the scheduled role, and reclaim uses **reclaim** or the hand role.
 Each role's assigned pool and configured fallback chain provide candidates.
 A job stays pending when none has capacity. A live merge pipeline needs a
 **merge** role with a pool; the old **[pump.merge].lanes** value does not run
@@ -442,10 +444,12 @@ cadence/steward, head, and gate; hand, merge, and lint write. Existing
 A pool's **fallback = "&lt;pool&gt;"** points to the next candidate. The target
 must exist and cycles fail validation. Durable role jobs follow the role pool
 and then its fallback chain; unit tasks use the same fallback chain when the
-hand role has a pool. With no free candidate, the work waits. When the hand
-role has no pool, **[pump.dispatch.kinds]** routes unit tasks; the unit kind
-remains required even when the role has a pool. **[pump.dispatch.lanes]**
-supplies legacy model caps when a pool has no **[pools.&lt;name&gt;.caps]**.
+hand role has a pool. With no free candidate, the work waits. Without a hand
+role pool, **[pump.dispatch.kinds]** and **default_kind** route units. With a
+hand role pool, a unit's **tools** value may be empty or name an unknown kind;
+defined kinds still apply **max** and **skip_proof**, while their pool lists
+are ignored. **[pump.dispatch.lanes]** supplies legacy model caps when a pool
+has no **[pools.&lt;name&gt;.caps]**.
 
 **vivi config migrate** (dry-run by default; **--write** applies and keeps a
 timestamped **.bak**) converts supported legacy dispatch and gate routing into
@@ -476,12 +480,12 @@ pending, and dispatched work remains owned by its pool across pump restarts.
 
 | Work | Role and pool |
 | --- | --- |
-| Unit tasks | The role named by **[pump].to**, using its pool and fallback chain. Unit plans still need a configured **tools** kind or **default_kind**; when the hand role has no pool, the kind's pool list is used. |
+| Unit tasks | The role named by **[pump].to**. Its pool and fallback chain are primary; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but kind pool lists are ignored. Without a hand pool, configured kind pools route the unit. |
 | Whole-need, revision, and split planning | The active **planner** role and its pool. This role with a pool is required when **[pump]** is configured. |
 | Integration merges | The **merge** role and its pool. This role runs the merge checks and returns a candidate commit; the privileged pool runner publishes it. |
-| Gates | The read-only **gate** role and its pool, or legacy **[pump.gate].pools** routing. |
+| Gates | The read-only **gate** role's pool and fallback chain, then configured **[pump.gate].pools** candidates. |
 | Audits and investigations | The **auditor** role and its pool, followed by gate-pool candidates for audits. Without an auditor role, gate audits use a built-in read-only fallback; investigations require an auditor role. |
-| Promotion | The **release** role, or **merge** when no release role exists. |
+| Promotion | The active **release** role with a pool, or an active **merge** role with a pool as fallback. |
 | Cadence and digest | The role whose schedule is due. |
 | Reclaim | The **reclaim** role, or the hand role, using local pools only. |
 

@@ -867,12 +867,13 @@ vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porce
 Each `[[identities]]` row may set `pool`, optional `read_only`, and
 `model` / `models` (a slug, a band, or a list). Pool capacity is `slots`;
 optional `[pools.<name>.caps]` is the per-model cap inside that pool.
-Unit tasks use the hand role's assigned pool and its fallback chain. A unit
-still needs a configured `tools` kind or `default_kind`. Without a hand role pool,
-the configured kind's pool list supplies the route. Durable pump jobs use
-their recipient role's pool and fallback chain, and stay pending when no
-candidate has capacity. The merge role's pool runs durable integration
-jobs; a local provider is one supported pool choice.
+Unit tasks use the hand role's assigned pool and its fallback chain when
+one is configured. In that mode, `tools` may be empty or name an unknown kind.
+A defined kind's `max` and `skip_proof` metadata still applies; its pool list
+is ignored. Without a hand role pool, configured kinds and `default_kind` route
+unit tasks. Durable pump jobs use their recipient role's pool and fallback
+chain, and stay pending when no candidate has capacity. The merge role's pool
+runs durable integration jobs; a local provider is one supported pool choice.
 
 ```toml
 [[identities]]
@@ -2237,19 +2238,21 @@ targets must exist, and cycles are configuration errors.
 
 | Work kind | Recipient role | Pool |
 | --- | --- | --- |
-| Unit task | **[pump].to** | Hand role pool and fallback chain. A unit still needs a configured **tools** kind or **default_kind**. If the hand role has no pool, the kind's pool list routes the unit. |
+| Unit task | **[pump].to** | Hand role pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but its pool list is ignored. If no hand pool is assigned, configured kinds and **default_kind** route the unit. |
 | Board, revision, and split planners | Active **planner** role | Planner role pool and fallback chain. Required with a pool when **[pump]** is configured. |
 | Merge | **merge** role | Merge role pool and fallback chain. The live merge path needs a merge role and pool. |
-| Gate | **gate** role | Gate role pool; legacy **[pump.gate].pools** can provide candidates. Read-only. |
+| Gate | **gate** role | Gate role pool and fallback chain, then **[pump.gate].pools** candidates. Read-only. |
 | Gate audit | **auditor** role | Auditor role pool and fallback chain, followed by gate-pool candidates; without an auditor role, a built-in read-only auditor uses gate pools. |
 | Investigation | Configured **auditor** role | Auditor pool and fallback chain. Read-only. |
-| Promotion | **release**, or **merge** when there is no release role | Selected role pool and fallback chain. |
+| Promotion | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. |
 | Cadence and digest | The scheduled role | That role's pool and fallback chain. |
 | Reclaim | **reclaim**, or the hand role | Local-provider pools only. |
 
 Unit task pool routing and durable-job pool routing are separate. A configured
-hand role pool selects unit destinations, but the unit's kind must still be
-configured. Its pool list routes a unit only when the hand role has no pool.
+hand role pool and its fallback chain select unit destinations; `tools` may
+be empty or name an unknown kind. A defined kind's `max` and `skip_proof` metadata still applies,
+but its pool list is ignored. Without a hand pool, configured kinds and
+`default_kind` route unit tasks.
 
 Whole-need planning, need amendments, and split planning all use durable jobs
 for the active planner role and its charter. The worker returns the complete
@@ -2267,6 +2270,20 @@ ref, and candidate ancestry before marking units merged. Promotion jobs use
 the same privileged runner boundary for the exact gated commit. A worker's
 receipt alone does not prove that a remote branch changed.
 
+Every failed shared check gets exactly one retry on the same tree before
+bisect or quarantine. Exit 124 or the timeout wrapper's kill is infrastructure
+uncertainty. A timed-out check whose retry passes is recovered and recorded as
+such. If a timeout is not followed by a passing retry, all sources remain
+undecided; the pump records the command and timeout and does not bisect,
+quarantine, or create a repair unit. A non-timeout failure still present after
+its retry may be bisected. A solo timeout during bisect stays undecided and
+cannot be marked as a culprit. Merge receipts include `shared_check_timeouts`
+(timed-out check executions), `shared_check_timeout_retries` (additional
+attempts after an initial timeout), and `shared_check_recoveries` (recovered
+failed checks with name, command, and first-failure detail). Pump status totals
+these metrics from terminal merge receipts; missing historical metrics make
+the totals incomplete or unavailable.
+
 A gate runs read-only against one pinned integration tip. It is due when
 there is no baseline, when a merge landed after the previous gate, or when
 **FORCE-GATE** is set. The old **every_merges** and **every_seconds** keys are
@@ -2274,6 +2291,19 @@ ignored. Gate failures go to a durable read-only auditor job; accepted
 root-cause reports create fix units. A configured external runner may provide
 a result while its heartbeat is fresh; otherwise the pump dispatches a gate
 role job.
+
+Audit retries are bounded to three failed jobs for the same red integration
+tip and set of failing names. Retry delays begin at 60 seconds and double
+after each failure. Failures before enqueue and a missing slot for the built-in
+auditor defer for 60 seconds without incrementing the failed-job count. A
+durable role job with no free slot remains pending. Once the failure limit is
+reached, that unchanged red result stays stopped until the failure signature
+changes or **vivi pump replan &lt;fix-need&gt;** explicitly rearms it. Provider or
+harness failures create an **environment** exception with the exit and receipt
+tail; an exhausted audit creates
+**gatefix-planner-failed**. Status shows **gatefix-active** or
+**gatefix-no-live-work**, with audit attempts, failures, fix-unit counts,
+reason, and recovery action.
 
 ### Planning, closeout, and cadence
 
@@ -2283,8 +2313,34 @@ may also name **title**, **target**, **after**, and **tools**. Named repository
 targets require each unit to name a configured target, and an **after** edge
 cannot cross targets. Revision plans include **revision** and may list
 pending units in **withdraw**. Split plans include **replaces** naming the
-superseded unit. A split planner gets one re-ask after an invalid result; a
-second invalid result parks the unit with an exception.
+superseded unit. A split planner gets one re-ask after an invalid result: the rejected file
+moves to **plans/rejected/** and the validation error is added to the next
+planner brief. If that second result is invalid, the unit becomes **stuck**
+with a **split-plan-rejected** exception. Use **vivi pump replan <need>** for
+a fresh plan.
+
+**Proof validation.** The pump validates each proof command when it ingests a
+plan and again before it dispatches the unit. The built-in command basenames
+are **[**, **awk**, **bash**, **cargo**, **cmake**, **diff**, **env**, **find**,
+**git**, **go**, **grep**, **ls**, **make**, **mkdir**, **node**, **npm**,
+**npx**, **pnpm**, **python**, **python3**, **rg**, **sed**, **sh**, **test**,
+**true**, **vivi**, **yarn**, and **zsh**. Add project-specific basenames with
+**[pump.proof].allow**; entries match the executable basename.
+
+Shell chains separated by **;**, **|**, or **&&** are checked command by
+command. Leading **env** or **NAME=value** wrappers and **sh -c**, **bash -c**,
+or **zsh -c** wrappers are inspected too. A repo-relative executable path must
+exist under the unit's target checkout, except generated paths under
+**target/** may be created by the proof. Absolute paths still need an allowed
+basename. A **cargo test** command may have at most one positional TESTNAME
+filter; split multiple filters into separate commands.
+
+An invalid proof in a new plan rejects that plan with **bad-plan**. If proof
+validation fails again just before dispatch, the unit is parked as
+**needs-replan** and the pump requests a planner revision instead of charging
+a hand attempt. Every hand brief ends with a **done_when:** line: all listed
+PROOF commands exit 0 and the configured rules pass, or the reply ends with
+**VERDICT: no-defect** and evidence.
 
 The pump does not close Vivi needs on its own. When every unit is satisfied,
 it writes a **needs-ready.txt** receipt and replies on the need thread.
@@ -2343,22 +2399,20 @@ split_hard_cap = 5400
 planners_max = 3
 
 [pump.dispatch]
-default_kind = "general"
 max_attempts = 3
 budget = 600
 overdue_grace = 900
 per_tick = 6
 
-[pump.dispatch.kinds.general]
-pools = ["workers"]
-max = 2
-skip_proof = false
+[pump.proof]
+allow = ["<project-specific executable>"]
 
 [pump.merge]
 batch = 8
 format = "<formatter command>"
 shared_checks = ["<check command>"]
 proof_timeout = 300
+# repair_budget = 600  # default: proof_timeout + 300 seconds
 remote_limit = 1800
 
 [pump.gate]
@@ -2400,9 +2454,11 @@ pool = "workers"
 read_only = true
 ```
 
-The hand role's pool is the primary unit route. A configured unit kind is still
-required by the current unit dispatcher; its pool list is used when the hand
-role has no pool. Configure **[pools.&lt;name&gt;] fallback = "&lt;pool&gt;"** to add
+The hand role's pool is the primary unit route. In that mode, **tools** may
+be empty or name an unknown kind. A configured kind's **max** and
+**skip_proof** metadata still applies, but its pool list is ignored. When the
+hand role has no pool, configure kinds and **default_kind** to route unit
+tasks. Configure **[pools.&lt;name&gt;] fallback = "&lt;pool&gt;"** to add
 dispatch candidates. **vivi config validate** requires an active planner role
 with a pool and validates role and pool references. Configure a merge role
 with a pool for the live merge pipeline; legacy merge-lane settings do not run
@@ -2410,6 +2466,10 @@ the live merges.
 
 Only current execution settings are shown above. **[pump.dispatch].lanes** is a legacy model-cap route; **[pump.merge].lanes** is not a live merge route;
 **[pump.merge].remote_wait** is unused by the live merge path.
+**[pump.merge].repair_budget** optionally overrides the wall-clock budget
+for quarantine repair units. It defaults to **proof_timeout + 300** seconds;
+an explicit value must be at least **proof_timeout** and at least one second.
+Repair units use this budget instead of **[pump.dispatch].budget**.
 **[pump.merge].remote_limit** still contributes to the merge job budget, which
 is the greater of **remote_limit** and **[pump.dispatch].budget**.
 **[pump.planner].run** and **charter**, **REMOTE-MERGE**, **merge-jobs/**,

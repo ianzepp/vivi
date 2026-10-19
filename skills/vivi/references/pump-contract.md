@@ -18,13 +18,13 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 
 | Work kind | Role addressed | Pool selection |
 | --- | --- | --- |
-| Unit task | **[pump].to** (the hand role) | The hand role's pool and fallback chain. If that role has no pool, legacy **[pump.dispatch.kinds]** pool lists route the unit; **[pump.dispatch.lanes]** supplies model caps. A configured unit kind is still required. |
+| Unit task | **[pump].to** (the hand role) | The hand role's pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but kind pool lists are ignored. Without a hand pool, configured kinds and **default_kind** route the unit. |
 | **planner:board**, **planner:revision**, **planner:split** | Active **planner** role | Planner role pool and fallback chain. An active planner role with a pool is required when **[pump]** is configured. |
 | **merge** | **merge** role | Merge role pool and fallback chain. The live pipeline requires a merge role with a usable pool. |
 | **gate** | **gate** role | Gate role pool and fallback chain, followed by configured **[pump.gate].pools** candidates. The gate job is read-only. |
 | **audit** | **auditor** role | Auditor role pool and fallback chain, followed by configured gate-pool candidates. If no auditor role exists, the built-in read-only audit fallback uses gate pools. |
 | **investigation** | Configured **auditor** role | Auditor role pool and fallback chain. Investigation work is read-only and is not eligible without an auditor role. |
-| **promote** | **release** role, or **merge** when no release role exists | Selected role pool and fallback chain. Publication is restricted to the exact configured main ref and candidate. |
+| **promote** | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. Publication is restricted to the exact configured main ref and candidate. |
 | **cadence**, **digest** | The scheduled role itself | That role's pool and fallback chain. |
 | **reclaim** | **reclaim** role, or the hand role | Local-provider pools only; it never falls back to a remote pool. |
 
@@ -63,7 +63,74 @@ Whole-need planning, thread amendments, and split planning all use durable jobs 
 
 A gate is due when there is no baseline, when a merge has landed since the previous gate, or when **FORCE-GATE** requests one. The legacy **every_merges** and **every_seconds** thresholds are ignored. A gate pins one integration tip, runs the configured command in a read-only job, and returns failing names inside **FAILING-BEGIN** and **FAILING-END**. An optional external result file may finish a gate while a live runner heartbeat is present; otherwise the role job runs.
 
-New or residual failures are owned by durable read-only audit work. A valid audit report creates one fix unit per reported root cause. **HOLD-MERGE** prevents unrelated merges while failures remain owned; fix and qualifying priority work can proceed. A clean gate can queue a promotion job for the release role or merge role. Promotion is recorded only after the configured main ref is independently verified to contain the requested gated tip.
+New or residual failures are owned by durable read-only audit work. A valid audit report creates one fix unit per reported root cause. **HOLD-MERGE** prevents unrelated merges while failures remain owned; fix and qualifying priority work can proceed. A clean gate can queue a promotion job for the active release role with a pool, or fall back to an active merge role with a pool. Promotion is recorded only after the configured main ref is independently verified to contain the requested gated tip.
+
+## Proof validation, split-plan retries, and repair budgets
+
+The optional **[pump.proof].allow** list adds executable basenames to the
+built-in proof command allowlist. The built-in basenames are **[**, **awk**,
+**bash**, **cargo**, **cmake**, **diff**, **env**, **find**, **git**, **go**,
+**grep**, **ls**, **make**, **mkdir**, **node**, **npm**, **npx**, **pnpm**,
+**python**, **python3**, **rg**, **sed**, **sh**, **test**, **true**, **vivi**,
+**yarn**, and **zsh**. Added entries are matched by basename.
+
+The validator splits shell chains using **;**, **|**, and **&&** outside
+quotes. It unwraps leading **env** or **NAME=value** assignments and
+**sh -c**, **bash -c**, and **zsh -c** wrappers up to two levels. A
+repo-relative executable must exist in the unit's target checkout; generated
+paths under **target/** may be created by the proof. Absolute paths are
+validated by executable basename. A **cargo test** command may have at most
+one positional TESTNAME filter; use separate proof commands for separate
+filters.
+
+Proofs are checked at plan ingestion and again before unit dispatch. An
+invalid proof rejects a new plan as **bad-plan**. A proof that has become
+invalid before dispatch parks the unit as **needs-replan** and requests a
+planner revision, without charging a hand attempt. Each hand brief ends with a
+**done_when:** condition: all listed PROOF commands exit successfully and the
+configured rules pass, or the reply ends with **VERDICT: no-defect** and
+evidence.
+
+A split plan rejected by validation gets one re-ask with the validation error
+added to the planner brief. The rejected file moves to **plans/rejected/**.
+The second invalid split plan parks the unit as **stuck** with a
+**split-plan-rejected** exception. Use **vivi pump replan <need>** to start a
+fresh plan.
+
+**[pump.merge].repair_budget** is an optional wall-clock budget for quarantine
+repair units. When omitted it is **proof_timeout + 300 seconds**. An explicit
+value must be at least **proof_timeout** and at least one second. Repair units
+use this budget instead of **[pump.dispatch].budget**.
+
+A failed shared check gets exactly one retry on the same tree before bisect
+or quarantine. A timeout (exit 124 or the timeout wrapper's kill) is
+infrastructure uncertainty. A timed-out check whose retry passes is recovered
+and recorded. If a timeout is not followed by a passing retry, every source is
+**undecided**, with an exception naming the command and timeout; the pump does
+not bisect, quarantine, or create a repair unit. A non-timeout failure still
+present after its retry may proceed to bisect. A solo timeout during bisect
+remains **undecided** and is never counted as clean or as a culprit.
+
+Durable merge receipts include **shared_check_timeouts** (timed-out check
+executions), **shared_check_timeout_retries** (additional attempts after an
+initial timeout), and **shared_check_recoveries** (recovered failed checks with
+name, command, and first-failure detail). Pump status reports these totals
+from terminal merge receipts; totals are marked incomplete or unavailable
+when receipts lack the metrics.
+
+## Gate audit retry limit
+
+The same red integration tip and set of failing names gets at most three
+failed audit jobs. Retry delays begin at 60 seconds and double after each
+failure. Failures before enqueue and a missing slot for the built-in auditor
+defer for 60 seconds without incrementing the failed-job count. A durable role
+job with no free slot remains pending. Once the failure limit is reached, the
+unchanged failure signature stays stopped until it changes or **vivi pump
+replan <fix-need>** explicitly rearms it. Provider or harness failures create
+an **environment** exception with the exit and receipt tail; exhaustion
+creates **gatefix-planner-failed**. Status reports
+**gatefix-active** or **gatefix-no-live-work**, attempt and failure counts,
+queued/active/parked fix-unit counts, the reason, and the recovery action.
 
 Cadence and digest jobs are queued for roles whose configured schedule is due and whose open-work limits allow another run. Head-ceo investigation needs must carry the **investigate** mark and a body line **for: &lt;want-handle&gt;**. The pump sends a read-only job to the configured auditor. The investigation need closes only after a recent auditor reply appears on the want thread addressed to head-ceo. The default investigation cap is two rounds; the head-ceo charter can override it with **investigation-rounds: N**.
 
