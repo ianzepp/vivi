@@ -11,8 +11,10 @@ fn twice_the_baseline_is_the_cap() {
 
 #[test]
 fn a_missing_mark_uses_the_default_fresh_build_hint() {
-    assert_eq!(effective_baseline(None), DEFAULT_BASELINE_BYTES);
-    assert_eq!(effective_baseline(Some(3 * GIB)), 3 * GIB);
+    assert_eq!(effective_baseline(None, None), DEFAULT_BASELINE_BYTES);
+    assert_eq!(effective_baseline(Some(3 * GIB), None), 3 * GIB);
+    assert_eq!(effective_baseline(None, Some(5 * GIB)), 5 * GIB);
+    assert_eq!(effective_baseline(Some(3 * GIB), Some(5 * GIB)), 3 * GIB);
 }
 
 #[test]

@@ -100,7 +100,7 @@ fn reclaim_builds_held(
     }
     let mut actions = Vec::new();
     let mut skips = Vec::new();
-    let baseline = effective_baseline(read_baseline(dir));
+    let baseline = effective_baseline(read_baseline(dir), None);
     for checkout in checkouts(dir) {
         for path in build_paths(&checkout, configured) {
             push_build(
