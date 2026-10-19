@@ -46,9 +46,7 @@ fn save_state(space: &Mailspace, project: &str) {
         since: 7,
         ..SyncState::default()
     };
-    state
-        .save(&sync_dir(&space.dir))
-        .expect("save sync state");
+    state.save(&sync_dir(&space.dir)).expect("save sync state");
 }
 
 fn by_name<'a>(findings: &'a [crate::doctor::Finding], name: &str) -> &'a crate::doctor::Finding {
@@ -88,7 +86,11 @@ fn missing_key_warns_and_never_mints() {
     assert_eq!(finding.status, Status::Warn);
     assert_eq!(finding.detail, "no sync key on disk");
     assert!(
-        finding.fix.as_deref().unwrap_or_default().contains("sync join"),
+        finding
+            .fix
+            .as_deref()
+            .unwrap_or_default()
+            .contains("sync join"),
         "{finding:?}"
     );
     assert!(!key.exists(), "doctor must never mint the sync key");

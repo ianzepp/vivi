@@ -27,7 +27,13 @@ pub fn volume_name(parts: &[&str]) -> String {
     let sanitized: String = parts
         .join("-")
         .chars()
-        .map(|c| if c == '/' || c.is_whitespace() { '-' } else { c })
+        .map(|c| {
+            if c == '/' || c.is_whitespace() {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     format!("{VOLUME_PREFIX}{sanitized}")
 }

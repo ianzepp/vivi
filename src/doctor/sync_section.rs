@@ -14,7 +14,7 @@ use crate::doctor::Finding;
 use crate::mailspace::Mailspace;
 use crate::sync::identity;
 use crate::sync::state::SyncState;
-use crate::sync::{sync_dir, SyncConfig};
+use crate::sync::{SyncConfig, sync_dir};
 
 const SECTION: &str = "sync";
 
