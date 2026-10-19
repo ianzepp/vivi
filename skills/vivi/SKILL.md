@@ -440,6 +440,18 @@ to move anything, and the project server's board follows the same rule only
 once the server folds events the same way — a need for that is filed with
 the operator's Mind.
 
+### Triaging a detected bug
+
+For a bug detected outside the pump, before it becomes a need, read the
+[manual bug-triage playbook](references/bug-triage.md). The flow files a want,
+gets an outside-the-pump audit, and promotes only after the operator reviews
+the finding.
+
+- File the report as a want so the pump ignores it; mark it `bug`.
+- An auditor reproduces the issue and replies with its root cause.
+- Promotion feeds the planner the whole thread, including the report.
+- Use `done` or `drop` for invalid, duplicate, or won't-fix bugs.
+
 ## Rules
 
 A rule is the project's shared rule set. Every seat reads the active set with
