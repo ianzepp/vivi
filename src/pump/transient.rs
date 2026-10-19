@@ -24,6 +24,25 @@ const LOCKFILES: &[&str] = &[
 /// The marker `merge` writes in front of the conflicting file list.
 const CONFLICT_MARKER: &str = "Conflicting files:";
 
+/// Markers of a provider 429 / rate-limit / overload / connection failure in
+/// planner output. Matched against lowercased text.
+const RATE_LIMIT_MARKERS: &[&str] = &["429", "rate limit", "overloaded", "connection error"];
+
+/// Classify a planner (board or split) exit whose output is a provider 429 /
+/// rate-limit / overloaded / Connection error as transient. Pure text match.
+#[must_use]
+pub fn provider_rate_limited(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    RATE_LIMIT_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// A deterministic 0-14 second spread (no rand dependency) so retry storms
+/// from many units do not all land on the same second.
+#[must_use]
+pub fn jitter(seed: &str) -> u64 {
+    seed.bytes().map(u64::from).sum::<u64>() % 15
+}
+
 /// Classify a unit failure. `Some(class)` means the failure is transient and
 /// belongs to that class; `None` means it is a real failure.
 #[must_use]
