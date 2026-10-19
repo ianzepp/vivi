@@ -319,10 +319,10 @@ fn role_line(
         line.push_str(reasoning);
     }
     if resolved.read_only && !command.read_only {
-        let why = role
-            .read_only
-            .map(|_| "role read_only")
-            .unwrap_or_else(|| role.kind.as_deref().unwrap_or("none"));
+        let why = role.read_only.map_or_else(
+            || format!("role kind {}", role.kind.as_deref().unwrap_or("none")),
+            |_| "role read_only".to_string(),
+        );
         line.push_str(&format!(" read-only ({why})"));
     }
     line
