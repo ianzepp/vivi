@@ -288,9 +288,11 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     let host = Arc::new(RealHost::new(&home));
     let vivi = std::env::current_exe()
         .map_or_else(|_| String::from("vivi"), |exe| exe.display().to_string());
+    let sources = cfg.pool_sources(&mailspace.config, project);
     let ctx = Ctx::new(cfg, host, project.to_path_buf(), vivi)
         .with_routing(crate::routing::from_mailspace(&mailspace.config))
-        .with_actor(actor_string(&mailspace));
+        .with_actor(actor_string(&mailspace))
+        .with_pool_sources(sources);
     crate::pump::priority::import_legacy(&ctx);
     if announce_ready {
         println!("VIVI_PUMP_SERVICE_READY");

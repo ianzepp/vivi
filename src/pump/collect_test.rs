@@ -621,6 +621,53 @@ fn a_splitting_unit_with_a_written_plan_is_left_to_ingest() {
 }
 
 #[test]
+fn a_dead_split_planner_is_reported_and_retried() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    put(&mut st, "u-1", unit(Status::Splitting, None, None));
+    fs::create_dir_all(ctx.home.join("resplit")).unwrap();
+    fs::write(ctx.home.join("resplit/u-1.out.rc"), "127\n").unwrap();
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    let u = st.units.get("u-1").unwrap();
+    assert_eq!(u.status, Status::Splitting);
+    assert_eq!(u.split_fails, 1);
+    assert_eq!(u.split_retry_at, Some(T0 + 60));
+    assert!(!ctx.home.join("resplit/u-1.out.rc").exists());
+    assert!(
+        exceptions(&ctx).contains(
+            "split-planner-failed u-1 planner exited 127 without a plan; retry 1/3 in 60s"
+        ),
+        "{:?}",
+        exceptions(&ctx)
+    );
+    assert!(host.spawned().is_empty());
+}
+
+#[test]
+fn the_third_split_planner_failure_makes_the_unit_stuck() {
+    let (_dir, ctx, _host) = setup();
+    let mut st = State::default();
+    let mut splitting = unit(Status::Splitting, None, None);
+    splitting.split_fails = 2;
+    put(&mut st, "u-1", splitting);
+    fs::create_dir_all(ctx.home.join("resplit")).unwrap();
+    fs::write(ctx.home.join("resplit/u-1.out.rc"), "1\n").unwrap();
+
+    assert_eq!(collect(&ctx, &mut st), None);
+
+    assert_eq!(st.units.get("u-1").unwrap().status, Status::Stuck);
+    assert!(
+        exceptions(&ctx).contains(
+            "split-planner-failed u-1 the split planner exited without a plan 3 times (last exit 1)"
+        ),
+        "{:?}",
+        exceptions(&ctx)
+    );
+}
+
+#[test]
 fn spawn_planner_removes_a_stale_exit_receipt() {
     let (_dir, ctx, host) = setup_with(planner_cfg());
     let dir = ctx.home.join("resplit");
