@@ -243,7 +243,11 @@ quiet: its folded state is `done`, and the newest event of any kind held
 for it (a state letter, a mark, a bind, another seal; a `done` move when
 no event letter exists) is at least the quiet period old — 24 hours by
 default, `[absorb] quiet_hours = N` in `mailspace.toml` (`0` turns the
-wait off). An absorb of a not-done item is refused (`close it before
+wait off, and reopens the absorb/reopen race: with no quiet period, a
+reopen letter already in flight when the seal is written is ignored once
+the seal lands, and every member keeps the item sealed in the state the
+seal named — the wait is what lets in-flight letters land before the
+state is frozen). An absorb of a not-done item is refused (`close it before
 absorbing`), and one inside the quiet period is refused with the time
 left. Such an absorb writes an `absorbed` event letter naming the item's
 folded state (`X-Vivi-Event-State: done|open`: what its newest event
