@@ -113,10 +113,14 @@ pub(crate) fn clear_stale_lock(ctx: &Ctx) -> Result<(), String> {
     let modified = meta
         .modified()
         .map_err(|err| format!("index.lock mtime: {err}"))?;
-    let written = modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let written = modified
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let age = ctx.now().saturating_sub(written);
     if age < STALE_LOCK_SECS {
-        return Err(format!("index.lock exists and is only {age}s old; not cleared"));
+        return Err(format!(
+            "index.lock exists and is only {age}s old; not cleared"
+        ));
     }
     fs::remove_file(&path).map_err(|err| format!("remove index.lock: {err}"))?;
     ctx.log(&format!("cleared stale index.lock (age {age}s)"));
