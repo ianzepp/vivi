@@ -214,6 +214,79 @@ impl Mailspace {
         Ok(())
     }
 
+    /// Bind unit tasks to a parent need without writing a `bound` letter: the
+    /// bind is local to this mailspace, so its `unit_bound` events carry the
+    /// local clock and no letter id. A caller that has just sent the units as
+    /// tasks (`task from` on a need) uses this; the lowering still has to reach
+    /// other members, which it does through the unit letters themselves.
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] when the parent is not an open need, when a
+    /// unit has no backlog node, or on storage failure.
+    pub(super) fn bind_units_without_letter(
+        &self,
+        parent: &str,
+        units: &[String],
+    ) -> Result<(), VivariumError> {
+        validate_source_id(parent)?;
+        if units.is_empty() {
+            return Err(VivariumError::Message(
+                "bind needs at least one unit handle".into(),
+            ));
+        }
+        let storage = self.storage()?;
+        let graph = storage
+            .work_graph_by_code(BACKLOG_GRAPH_CODE)?
+            .ok_or_else(|| VivariumError::Message(format!("need not found: {parent}")))?;
+        let nodes = storage.work_graph_nodes(&graph.handle)?;
+        // The node is minted for a delivered copy; the caller may hold its own
+        // sent copy of the same content, so try the other copies too.
+        let mut parent_node = backlog_node_by_token(&storage, &nodes, parent)?;
+        if parent_node.is_none() {
+            for sibling in sibling_display_handles(&storage, parent)? {
+                parent_node = backlog_node_by_token(&storage, &nodes, &sibling)?;
+                if parent_node.is_some() {
+                    break;
+                }
+            }
+        }
+        let parent_node = parent_node
+            .ok_or_else(|| VivariumError::Message(format!("need not found: {parent}")))?;
+        if parent_node.kind != "need" {
+            return Err(VivariumError::Message(format!(
+                "bind lowers unit tasks onto needs; '{parent}' is a {}",
+                parent_node.kind
+            )));
+        }
+        if parent_node.state != "open" {
+            return Err(VivariumError::Message(format!(
+                "cannot bind units to need '{parent}' in state '{}'",
+                parent_node.state
+            )));
+        }
+        let mut unit_handles = Vec::with_capacity(units.len());
+        for unit in units {
+            let unit_node = backlog_node_by_token(&storage, &nodes, unit)?.ok_or_else(|| {
+                VivariumError::Message(format!(
+                    "unit '{unit}' has no graph node; send it before binding (vivi graph \
+                         audit --repair recovers untracked items)"
+                ))
+            })?;
+            unit_handles.push(unit_node.handle.clone());
+        }
+        let stamp = local_bind_stamp();
+        storage.bind_backlog_units(
+            &graph.handle,
+            &parent_node.source_id,
+            &unit_handles,
+            stamp.at,
+            &stamp.letter,
+        )?;
+        drop(storage);
+        self.backlog_complete_if_join_complete(parent, &mut Vec::new())?;
+        Ok(())
+    }
+
     /// The `bound` property letter a successful bind writes on the need: one
     /// letter with one `X-Vivi-Event-Unit` header per unit, so the lowering
     /// travels like any letter and every member that holds the units binds

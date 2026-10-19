@@ -2,6 +2,7 @@
 
 pub mod alarm;
 pub mod amend;
+pub mod attempt_read;
 pub mod attempt_record;
 pub mod blockers;
 pub mod board;
@@ -156,6 +157,10 @@ mod requeue_test;
 #[cfg(test)]
 #[path = "pump/attempt_record_test.rs"]
 mod attempt_record_test;
+
+#[cfg(test)]
+#[path = "pump/attempt_read_test.rs"]
+mod attempt_read_test;
 
 #[cfg(test)]
 #[path = "pump/envfail_test.rs"]
