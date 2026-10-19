@@ -939,6 +939,9 @@ fn validate_target_generated(id: &str, merge: Option<&MergeConfig>, bad: &mut Ve
             ));
         }
     }
+    let scope = format!("[pump.targets.{id}.merge.checks_for]");
+    let empty = BTreeMap::new();
+    validate_checks_for(&scope, merge.map(|merge| &merge.checks_for).unwrap_or(&empty), bad);
 }
 
 fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], bad: &mut Vec<String>) {

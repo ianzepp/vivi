@@ -862,6 +862,37 @@ fn validate_rejects_a_target_level_generated_entry_with_empty_regenerate() {
 }
 
 #[test]
+fn validate_rejects_target_checks_for_with_blank_commands() {
+    let mut cfg = valid();
+    cfg.targets = BTreeMap::from([(
+        String::from("tela"),
+        PumpTarget {
+            path: String::from("tela"),
+            branch: String::from("main"),
+            promote: false,
+            merge: Some(crate::pump::config::MergeConfig {
+                checks_for: BTreeMap::from([("src/**".to_string(), vec![" ".into()])]),
+                ..crate::pump::config::MergeConfig::default()
+            }),
+            gate: Some(crate::pump::config::GateConfig {
+                command: String::from("./gate"),
+                ..crate::pump::config::GateConfig::default()
+            }),
+            ..PumpTarget::default()
+        },
+    )]);
+    let err = cfg
+        .validate(Path::new("."), &pool_names())
+        .expect_err("blank target checks_for command must fail");
+    assert!(
+        err.to_string().contains(
+            "[pump.targets.tela.merge.checks_for] 'src/**' must have non-empty commands"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
 fn pool_sources_map_local_worktree_pools() {
     let config = mailspace(
         "name = \"t\"\n\n[pools.wtree]\nprovider = \"local\"\nslots = 2\n\n\
