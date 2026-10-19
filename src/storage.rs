@@ -408,7 +408,7 @@ pub(crate) fn short_handle(message_id: &str) -> String {
 /// share a handle, and [`Storage::resolve_message_token`] reports the resulting
 /// token as ambiguous rather than guessing; the honest remedy is to address
 /// that message by its full id.
-fn short_handle_map(message_ids: &[String]) -> HashMap<String, String> {
+pub(crate) fn short_handle_map(message_ids: &[String]) -> HashMap<String, String> {
     message_ids
         .iter()
         .map(|message_id| (message_id.clone(), short_handle(message_id)))

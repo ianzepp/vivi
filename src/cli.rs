@@ -11,9 +11,11 @@ mod config_command;
 mod doctor_command;
 mod mailspace_command;
 mod mcp_command;
+mod monitor_command;
 mod pool_command;
 mod proxy_command;
 mod pump_command;
+mod report_command;
 mod role_command;
 mod skills_command;
 mod sync_command;
@@ -36,6 +38,7 @@ pub use mailspace_command::{
     WantStatus, WatchCommon,
 };
 pub use mcp_command::McpCommand;
+pub use monitor_command::MonitorCommand;
 pub use pool_command::{
     PoolAddCommand, PoolBandsCommand, PoolCleanCommand, PoolConfigSetCommand, PoolCreateCommand,
     PoolDestroyCommand, PoolDispatchCommand, PoolDoctorCommand, PoolListCommand,
@@ -50,6 +53,10 @@ pub use pump_command::{
     PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand, PumpReplanCommand,
     PumpRequeueCommand, PumpRunCommand, PumpServiceCommand, PumpServiceProjectCommand,
     PumpStatusCommand, PumpSubcommand,
+};
+pub use report_command::{
+    ReportBy, ReportCommand, ReportCommon, ReportFormat, ReportRecordsCommand, ReportRecordsFormat,
+    ReportSubcommand, ReportViewCommand,
 };
 pub use role_command::{RoleCharterCommand, RoleCommand};
 pub use skills_command::SkillsCommand;
@@ -171,6 +178,12 @@ pub enum Command {
         #[command(subcommand)]
         command: PumpSubcommand,
     },
+
+    /// Watch running lanes across every registered mailspace (read-only)
+    Monitor(MonitorCommand),
+
+    /// Export fixed project timing reports from synced attempt records
+    Report(ReportCommand),
 
     /// Local loopback front door for model providers
     Proxy {

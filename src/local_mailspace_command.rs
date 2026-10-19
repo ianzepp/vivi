@@ -38,6 +38,8 @@ pub(crate) fn run_mailspace_command(command: &Command) -> Result<(), VivariumErr
         Command::Rule { command } => crate::local_rule_command::handle_rule_command(command),
         Command::Goal { command } => crate::local_goal_command::handle_goal_command(command),
         Command::Pool { command } => crate::local_pool_command::handle_pool_command(command),
+        Command::Monitor(command) => crate::local_monitor_command::run(command),
+        Command::Report(command) => crate::local_report_command::run(command),
         Command::Pump { command } => crate::local_pump_command::handle_pump_command(command),
         Command::Proxy { command } => vivi::proxy::handle(command),
         Command::Config { command } => crate::local_config_command::handle_config_command(command),

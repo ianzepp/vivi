@@ -1,0 +1,118 @@
+//! Local slot rows, read from the provider's slot directories and mailspace events.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use crate::pool::config::PoolConfig;
+use crate::pool::slot::{self, PoolId};
+
+use super::events::ProjectEvents;
+use super::model::{MonitorRow, RowKind, RowState};
+
+pub fn rows(
+    project: &str,
+    project_root: &Path,
+    mailspace_id: &str,
+    pools: &BTreeMap<String, PoolConfig>,
+    events: &ProjectEvents,
+    now: u64,
+) -> (Vec<MonitorRow>, Vec<String>) {
+    let mut rows = Vec::new();
+    let mut warnings = Vec::new();
+    for (name, config) in pools.iter().filter(|(_, c)| c.provider == "local") {
+        let root = local_root(project_root, config);
+        match pool_rows(project, mailspace_id, name, &root, config, events, now) {
+            Ok(mut found) => rows.append(&mut found),
+            Err(error) => warnings.push(format!("{} ({name}): {error}", root.display())),
+        }
+    }
+    (rows, warnings)
+}
+
+fn pool_rows(
+    project: &str,
+    mailspace_id: &str,
+    name: &str,
+    root: &Path,
+    config: &PoolConfig,
+    events: &ProjectEvents,
+    now: u64,
+) -> Result<Vec<MonitorRow>, crate::VivariumError> {
+    let machines = crate::pool::local_slots::list(root)?;
+    let id = PoolId::new(project, mailspace_id, name);
+    let mut slots = slot::pool_slots(&id, &machines);
+    crate::pool::run::annotate_running(&mut slots, &events.open, now);
+    Ok(slots
+        .iter()
+        .filter(|item| item.state == "busy" || item.state == "finished-uncollected")
+        .map(|item| row(project, root, item, events, now))
+        .collect())
+}
+
+fn row(
+    project: &str,
+    root: &Path,
+    slot: &slot::SlotStatus,
+    events: &ProjectEvents,
+    now: u64,
+) -> MonitorRow {
+    let dispatch = events
+        .open
+        .iter()
+        .find(|open| open.record.machine == slot.id);
+    let task = dispatch
+        .map(|open| open.task.clone())
+        .or_else(|| slot.task.clone());
+    let info = task
+        .as_ref()
+        .and_then(|handle| events.task_info.get(handle));
+    let started_at = dispatch.map(|open| open.record.at).or(slot.claimed_at);
+    MonitorRow {
+        project: project.to_owned(),
+        kind: RowKind::Slot,
+        pool: slot.pool.clone(),
+        slot: slot.name.clone(),
+        provider: "local".into(),
+        role: info.map_or_else(String::new, |item| item.role.clone()),
+        task,
+        subject: info.map(|item| item.subject.clone()),
+        model: dispatch.map_or_else(String::new, |open| open.record.model.clone()),
+        state: if slot.state == "busy" {
+            RowState::Running
+        } else {
+            RowState::Finished("uncollected".into())
+        },
+        started_at,
+        running_secs: slot
+            .running_secs
+            .or_else(|| started_at.map(|at| now.saturating_sub(at))),
+        budget_secs: slot
+            .budget_secs
+            .or_else(|| dispatch.map(|open| open.record.budget)),
+        read_only: slot
+            .read_only
+            .or_else(|| dispatch.map(|open| open.record.read_only)),
+        remote: false,
+        tail: slot_tail(&root.join(&slot.id)),
+    }
+}
+
+fn local_root(project: &Path, config: &PoolConfig) -> PathBuf {
+    let root = crate::pool::local_slots::expand_root(config.local.root_or_default());
+    if root.is_absolute() {
+        root
+    } else {
+        project.join(root)
+    }
+}
+
+pub fn slot_tail(slot_dir: &Path) -> Option<PathBuf> {
+    ["job/agent.out", "job/run.log", "boot.out", "boot.log"]
+        .into_iter()
+        .map(|file| slot_dir.join(file))
+        .find(|path| path.is_file())
+}
+
+#[cfg(test)]
+#[path = "slots_test.rs"]
+mod tests;
