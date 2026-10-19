@@ -1,6 +1,7 @@
 //! The batch merge path: several unit branches merged together, checked
 //! once, published once. A failing unit proof isolates its unit; a failing
-//! shared check sets the whole batch aside (quarantine).
+//! shared check is bisected: the members that pass alone land in the same
+//! cycle and only the members that fail alone are set aside (quarantine).
 
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::quarantine;
@@ -32,12 +33,29 @@ enum SharedOutcome {
     /// 126/127 or `command not found`): nothing is decided about the batch
     /// and every job goes back to `delivered`.
     Undecided(Vec<MergeResult>),
+    /// A shared check failed, the batch was bisected, and `clean` members
+    /// pass it alone: `decided` holds the results for the culprits, set
+    /// aside, and the clean members go back for a second round.
+    Bisected {
+        decided: Vec<MergeResult>,
+        clean: Vec<MergeJob>,
+    },
+}
+
+/// What bisecting a failed shared check found: the members that fail it
+/// alone, the members that pass it alone, and members whose solo merge
+/// failed (nothing is decided about those).
+struct Bisect {
+    culprits: Vec<MergeJob>,
+    clean: Vec<MergeJob>,
+    undecided: Vec<MergeResult>,
 }
 
 /// Merge a batch of unit branches together, check the result once and push
 /// once. Returns the results for the decided jobs and the jobs a second round
 /// should retry (empty when none remain). A failing shared check decides the
-/// whole batch, so it leaves nothing to retry.
+/// whole batch unless bisecting it finds members that pass alone: those come
+/// back as the retry list.
 #[must_use]
 pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<MergeJob>) {
     let t0 = ctx.now();
@@ -54,6 +72,10 @@ pub fn batch_round(ctx: &Ctx, jobs: &[MergeJob]) -> (Vec<MergeResult>, Vec<Merge
         SharedOutcome::Failed(decided) | SharedOutcome::Undecided(decided) => {
             results.extend(decided);
             return (results, Vec::new());
+        }
+        SharedOutcome::Bisected { decided, clean } => {
+            results.extend(decided);
+            return (results, clean);
         }
     }
     let culprits = run_proofs(ctx, &merged, &mut results);
@@ -237,8 +259,9 @@ fn run_shared(ctx: &Ctx, merged: &[Merged]) -> SharedOutcome {
 }
 
 /// Decide a failed shared check. The failure text is logged first: one
-/// merged job is the culprit and fails with `proof-failed`; several are set
-/// aside together (see [`quarantine_members`]).
+/// merged job is the culprit and fails with `proof-failed`; several are
+/// bisected, so the members that fail alone are set aside together (see
+/// [`quarantine_members`]) and the clean members land right away.
 fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str) -> SharedOutcome {
     log_failure(ctx, text);
     if merged.len() == 1 {
@@ -247,8 +270,71 @@ fn shared_failure(ctx: &Ctx, merged: &[Merged], cmd: &str, code: i32, text: &str
         let result = failed(&merged[0].job.uid, "proof-failed", detail);
         return SharedOutcome::Failed(vec![result]);
     }
-    let jobs: Vec<MergeJob> = merged.iter().map(|m| m.job.clone()).collect();
-    SharedOutcome::Failed(quarantine_members(ctx, &jobs, cmd, code, text))
+    let split = bisect_shared(ctx, merged, cmd);
+    let quarantine_set = if split.culprits.is_empty() {
+        ctx.log("bisect: no member fails alone; whole batch aside");
+        merged.iter().map(|m| m.job.clone()).collect()
+    } else {
+        ctx.log(&format!(
+            "bisect: culprits {}; clean: {}",
+            uids_line(&split.culprits),
+            uids_line(&split.clean)
+        ));
+        split.culprits.clone()
+    };
+    let mut decided = split.undecided;
+    decided.extend(quarantine_members(ctx, &quarantine_set, cmd, code, text));
+    if split.clean.is_empty() {
+        return SharedOutcome::Failed(decided);
+    }
+    SharedOutcome::Bisected {
+        decided,
+        clean: split.clean,
+    }
+}
+
+/// The uids of `jobs`, comma-joined, for one log line.
+fn uids_line(jobs: &[MergeJob]) -> String {
+    let uids: Vec<&str> = jobs.iter().map(|j| j.uid.as_str()).collect();
+    uids.join(",")
+}
+
+/// Merge each member alone from a clean lane and run the failed shared check
+/// on that solo merge: a member that fails alone is a culprit, one that
+/// passes alone is clean. A member that no longer merges decides nothing.
+fn bisect_shared(ctx: &Ctx, merged: &[Merged], cmd: &str) -> Bisect {
+    let mut split = Bisect {
+        culprits: Vec::new(),
+        clean: Vec::new(),
+        undecided: Vec::new(),
+    };
+    for (i, m) in merged.iter().enumerate() {
+        reset_repo(ctx);
+        merge_main_in(ctx);
+        if let Some(result) = merge_one(ctx, &m.job, (i + 1, merged.len())) {
+            let detail = result.detail.as_deref().unwrap_or("");
+            split.undecided.push(undecided_result(
+                &m.job.uid,
+                "bisect-merge-failed",
+                detail,
+            ));
+            continue;
+        }
+        let t1 = ctx.now();
+        let out = check_with_drift_retry(ctx, &m.job.uid, cmd);
+        ctx.log(&format!(
+            "bisect {} rc={} {}s: {cmd}",
+            m.job.uid,
+            out.code,
+            ctx.now().saturating_sub(t1)
+        ));
+        if out.code == 0 {
+            split.clean.push(m.job.clone());
+        } else {
+            split.culprits.push(m.job.clone());
+        }
+    }
+    split
 }
 
 /// Log the last 40 lines of a failed shared check's distilled output, one

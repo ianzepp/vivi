@@ -1007,10 +1007,10 @@ fn a_shared_check_failure_with_several_jobs_quarantines_the_batch_not_one_at_a_t
     );
     let q = for_uid(&results, "u1").quarantine.as_ref().unwrap();
     assert!(q.text.contains("error[E0308]: mismatched types"));
-    // The batch is rebuilt before the quarantine push: 2 batch merges plus
-    // 2 rebuild merges.
+    // The batch is bisected (2 solo merges) and then rebuilt before the
+    // quarantine push: 2 batch merges plus 2 bisect merges plus 2 rebuilds.
     let cmds = host.commands();
-    assert_eq!(count(&cmds, "merge --no-ff"), 4);
+    assert_eq!(count(&cmds, "merge --no-ff"), 6);
     assert!(
         host.logs()
             .iter()
@@ -1088,7 +1088,9 @@ fn a_batch_drift_retry_that_fails_again_still_fails() {
     assert_eq!(results.len(), 2);
     assert!(results.iter().all(|r| r.ok != Some(true)), "{results:?}");
     let cmds = host.commands();
-    assert_eq!(count(&cmds, "./regen-ledger.sh"), 1, "{cmds:?}");
+    // The drift retry runs for the batch check and again for each member's
+    // solo bisect check; all three still fail, so the batch is set aside.
+    assert_eq!(count(&cmds, "./regen-ledger.sh"), 3, "{cmds:?}");
     assert!(
         results
             .iter()
