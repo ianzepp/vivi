@@ -29,6 +29,76 @@ struct PropertyLetterDraft {
 }
 
 impl Mailspace {
+    /// Write one assignment or withdrawal reply addressed to the delegate
+    /// (or former delegate), then return its local handle.
+    pub(in crate::mailspace) fn emit_assignment_event(
+        &self,
+        storage: &Storage,
+        item: &HeldItem,
+        identity: &str,
+        delegate: Option<&str>,
+        route_to: &str,
+    ) -> Result<String, VivariumError> {
+        let parsed = MessageParser::default()
+            .parse(&item.bytes)
+            .ok_or_else(|| VivariumError::Parse("failed to parse the need".into()))?;
+        let item_id = parsed
+            .message_id()
+            .ok_or_else(|| VivariumError::Message("the need has no Message-ID".into()))?;
+        let from = self.address_for(identity);
+        let (mut to, mut cc) = self.event_addresses(&parsed, identity, &from);
+        let route = self.header_address(route_to)?;
+        if !to
+            .iter()
+            .chain(&cc)
+            .any(|address| address.eq_ignore_ascii_case(&route))
+        {
+            to.push(route);
+        }
+        let local = self.local_event_recipients(&to, &cc, identity);
+        if to.is_empty() && cc.is_empty() {
+            to.push(from.clone());
+        }
+        let at = self.property_event_at(storage, item)?;
+        let mut data = build_compose_draft(&ComposeDraft {
+            from,
+            to,
+            cc,
+            bcc: Vec::new(),
+            subject: reply_subject(parsed.subject().unwrap_or("(no subject)")),
+            body: delegate.map_or_else(|| "withdrawn".to_string(), |_| "assigned".to_string()),
+            html_body: None,
+        })?;
+        data = add_header(&data, "X-Vivi-Kind", "mail")?;
+        data = add_header(
+            &data,
+            EVENT_HEADER,
+            if delegate.is_some() {
+                "assigned"
+            } else {
+                "withdrawn"
+            },
+        )?;
+        data = add_header(&data, EVENT_OF_HEADER, &format!("<{item_id}>"))?;
+        data = add_header(&data, EVENT_AT_HEADER, &at)?;
+        if let Some(delegate) = delegate {
+            data = add_header(&data, "X-Vivi-Delegate", delegate)?;
+        }
+        data = add_reply_headers(&data, &item.bytes)?;
+        self.check_letter_size(data.len())?;
+        let rows = emit::event_rows(identity, &local, &item.content_id);
+        let written = storage.apply_item_event(&ItemEventWrite {
+            reply_requests: &rows,
+            reply_data: Some(data.as_bytes()),
+            parent_content_id: &item.content_id,
+            moves: &[],
+        })?;
+        let event = written
+            .last()
+            .ok_or_else(|| VivariumError::Message("the assignment letter was not stored".into()))?;
+        storage.display_handle(&event.message_id)
+    }
+
     /// Compose and store one property-event letter on `item` — the write
     /// side of what `property.rs` reads — addressed like a state event,
     /// with `extras` as payload headers, and return the letter's handle.
@@ -132,8 +202,8 @@ impl Mailspace {
 }
 
 impl Mailspace {
-    /// The instants of the property events held for `item` that a member
-    /// wrote and the clock still counts.
+    /// The instants of property and assignment events held for `item` that a
+    /// member wrote and the clock still counts.
     fn held_property_ats(
         &self,
         storage: &Storage,
@@ -148,15 +218,20 @@ impl Mailspace {
             let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
                 continue;
             };
-            let Some(event) = parse_property_event(&bytes).filter(|event| event.of == item.rfc_id)
-            else {
+            let stamp = parse_property_event(&bytes)
+                .map(|event| (event.of, event.at, event.id))
+                .or_else(|| {
+                    super::super::delegation::parse_assignment_event(&bytes)
+                        .map(|event| (event.of, event.at, event.id))
+                });
+            let Some((of, at, id)) = stamp.filter(|(of, _, _)| of == &item.rfc_id) else {
                 continue;
             };
             if let Some(from) = first_bare_address(&view.from_addr)
-                && self.event_may_speak(item, &from)
-                && dated_within_clock(event.at, now)
+                && self.event_may_speak(item, &from, at, &id)
+                && dated_within_clock(at, now)
             {
-                ats.push(event.at);
+                ats.push(at);
             }
         }
         Ok(ats)

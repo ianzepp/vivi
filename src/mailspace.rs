@@ -24,6 +24,7 @@ mod backlog_audit;
 mod body;
 pub mod config_edit;
 mod config_file;
+mod delegation;
 mod delivery;
 mod dependencies;
 mod dump;

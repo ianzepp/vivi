@@ -209,7 +209,10 @@ impl Mailspace {
         let Some(row) = node_row(storage, source_id)? else {
             return Ok(None);
         };
-        if !matches!(self.holding_of(&row), Holding::Local | Holding::Sent(_)) {
+        if !matches!(
+            self.holding_of(storage, &row)?,
+            Holding::Local | Holding::Sent(_)
+        ) {
             return Ok(None);
         }
         self.report_of(storage, &row)

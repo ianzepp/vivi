@@ -4,7 +4,8 @@ use vivi::cli::{
     WantStatus,
 };
 use vivi::mailspace::{
-    DumpFilters, Mailspace, SendRequest, TaskDumpRequest, WantListOptions, WantMetadataUpdate,
+    DumpFilters, Mailspace, Recipient, SendRequest, TaskDumpRequest, WantListOptions,
+    WantMetadataUpdate,
 };
 
 pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumError> {
@@ -106,6 +107,36 @@ pub(crate) fn handle_need_command(command: &NeedCommand) -> Result<(), VivariumE
             "need reopen",
             "reopened",
         )?,
+        NeedCommand::Assign {
+            handles,
+            to,
+            for_identity,
+            project,
+        } => {
+            let mailspace = Mailspace::discover(project.as_deref())?;
+            let remote = match mailspace.classify_recipient(to)? {
+                Recipient::Remote(address) => Some(address),
+                Recipient::Local(_) => None,
+            };
+            for handle in handles {
+                let event = mailspace.assign_need(for_identity, handle, to)?;
+                println!("assigned {handle} to {to}; event {event}");
+            }
+            if let Some(remote) = remote {
+                mailspace.announce_remote(&[remote]);
+            }
+        }
+        NeedCommand::Withdraw {
+            handles,
+            for_identity,
+            project,
+        } => {
+            let mailspace = Mailspace::discover(project.as_deref())?;
+            for handle in handles {
+                let event = mailspace.withdraw_need(for_identity, handle)?;
+                println!("withdrawn {handle}; event {event}");
+            }
+        }
         NeedCommand::Bind {
             handle,
             units,

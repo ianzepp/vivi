@@ -294,7 +294,11 @@ impl Mailspace {
             .iter()
             .map(|head| head.id.clone())
             .collect();
-        let at = event_at(super::clock_micros(), &chain.events);
+        let at = event_at(
+            super::clock_micros(),
+            &chain.events,
+            self.assignment_event_floor(item),
+        );
         let letter = self.compose_event_letter(item, request, &prevs, &at)?;
         self.check_letter_size(letter.data.len())?;
         let rows = event_rows(request.identity, &letter.local, &item.content_id);
@@ -459,15 +463,17 @@ impl Mailspace {
 
 /// The `X-Vivi-Event-At` value for a new event: the clock, or one
 /// microsecond past the newest counted event this mailspace holds for the
-/// item, whichever is later — a writer never stamps an event older than
-/// one it has seen, and never below an instant a reader will not count.
-fn event_at(now_micros: i64, events: &[EventLetter]) -> String {
-    let floor = events
+/// item or its active assignment, whichever is later — a writer never stamps
+/// an event older than one it has seen, and never below an instant a reader
+/// will not count.
+fn event_at(now_micros: i64, events: &[EventLetter], assignment_floor: Option<i64>) -> String {
+    let state_floor = events
         .iter()
         .filter(|event| dated_within_clock(event.at, now_micros))
         .map(|event| event.at.saturating_add(1))
         .max()
         .unwrap_or(now_micros);
+    let floor = assignment_floor.map_or(state_floor, |assigned| state_floor.max(assigned));
     stamp_micros(now_micros.max(floor))
 }
 

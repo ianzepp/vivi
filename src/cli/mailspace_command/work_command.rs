@@ -343,6 +343,40 @@ pub enum NeedCommand {
         project: Option<PathBuf>,
     },
 
+    /// Assign needs to a local role or another member mailspace's role
+    Assign {
+        /// Need handles to assign (each assignment is its own reply letter)
+        #[arg(required = true)]
+        handles: Vec<String>,
+
+        /// Delegate role, local or `role@<8-hex-prefix>.local`
+        #[arg(long)]
+        to: String,
+
+        /// Identity assigning the needs
+        #[arg(long = "for")]
+        for_identity: String,
+
+        /// Project root to use
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Withdraw needs from their current delegates
+    Withdraw {
+        /// Need handles to withdraw
+        #[arg(required = true)]
+        handles: Vec<String>,
+
+        /// Identity withdrawing the assignment
+        #[arg(long = "for")]
+        for_identity: String,
+
+        /// Project root to use
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
     /// Bind unit tasks to a need; the need completes when all units land
     Bind {
         /// Need handle or unambiguous prefix

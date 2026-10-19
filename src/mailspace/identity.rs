@@ -315,6 +315,18 @@ impl Mailspace {
             .is_some_and(|kind| kind.eq_ignore_ascii_case("mind"))
     }
 
+    pub(super) fn identity_is_operator(&self, identity: &str) -> bool {
+        self.find_role_by_name_or_alias(identity)
+            .and_then(|role| role.kind.as_deref())
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("operator"))
+    }
+
+    pub(super) fn identity_is_hand(&self, identity: &str) -> bool {
+        self.find_role_by_name_or_alias(identity)
+            .and_then(|role| role.kind.as_deref())
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("hand"))
+    }
+
     /// Whether a role may close and reopen work it did not author: kind
     /// `mind` or kind `operator`.
     pub(super) fn identity_may_close_for_all(&self, identity: &str) -> bool {

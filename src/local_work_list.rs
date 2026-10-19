@@ -88,7 +88,9 @@ pub(crate) fn print_work_lists(
         let listed = if *role == "sent" {
             mailspace.list_outbound_work(identity, kind)?
         } else {
-            mailspace.list_kind(identity, role, kind)?
+            let mut listed = mailspace.list_kind(identity, role, kind)?;
+            listed.extend(mailspace.assigned_work_for_role(identity, role, kind)?);
+            listed
         };
         messages.extend(listed.into_iter().filter(|message| {
             (roles.contains(&"done") || message.absorbed_at.is_none())
@@ -128,8 +130,10 @@ pub(crate) fn print_held_work_lists(
     let mut messages = Vec::new();
     for folder in &folders {
         let listed = mailspace.list_kind(None, folder, kind)?;
-        messages.extend(listed.into_iter().filter(|message| {
-            scope.holds(&message.account)
+        let storage = mailspace.storage()?;
+        for message in listed {
+            if scope.holds(&message.account)
+                && !mailspace.is_locally_assigned_row(&storage, &message)?
                 && (folders.contains(&"done") || message.absorbed_at.is_none())
                 && crate::local_mail_list::headers_match(
                     &message.from_addr,
@@ -138,7 +142,10 @@ pub(crate) fn print_held_work_lists(
                     from.as_ref(),
                     to.as_ref(),
                 )
-        }));
+            {
+                messages.push(message);
+            }
+        }
     }
     render_work_list(mailspace, messages, kind, &folders, marks, json, pump)
 }

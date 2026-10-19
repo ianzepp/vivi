@@ -219,6 +219,7 @@ pub(super) struct HeldItem {
     pub(super) kind: &'static str,
     pub(super) rows: Vec<StoredMessageView>,
     pub(super) bytes: Vec<u8>,
+    pub(super) delegation: super::delegation::DelegationState,
 }
 
 /// The held work item behind `content_id`, if it is one.
@@ -243,6 +244,7 @@ pub(super) fn held_item(
         return Ok(None);
     };
     let from_addr = first_bare_address(&first.from_addr).unwrap_or_default();
+    let delegation = super::delegation::delegation_state(storage, content_id, &rfc_id, &from_addr)?;
     Ok(Some(HeldItem {
         content_id: content_id.to_string(),
         rfc_id,
@@ -250,6 +252,7 @@ pub(super) fn held_item(
         kind,
         rows,
         bytes,
+        delegation,
     }))
 }
 
@@ -505,15 +508,52 @@ impl Mailspace {
     /// * Any other domain — a bare `local`, or a legacy name domain that is
     ///   not this mailspace's own — is a claim anyone can make, so it never
     ///   counts.
-    fn event_may_speak(&self, item: &HeldItem, from_addr: &str) -> bool {
+    pub(super) fn event_may_speak(
+        &self,
+        item: &HeldItem,
+        from_addr: &str,
+        at: i64,
+        id: &str,
+    ) -> bool {
         let Some((role, domain)) = from_addr.rsplit_once('@') else {
             return false;
         };
         let domain = domain.trim().to_ascii_lowercase();
         if domain != "local" && domain == self.address_domain().to_ascii_lowercase() {
-            return self.may_close(item, role.trim());
+            return self.may_close(item, role.trim())
+                || self.delegation_speaks(item, from_addr, at, id);
+        }
+        let author_domain = item
+            .from_addr
+            .rsplit_once('@')
+            .map(|(_, domain)| domain.trim().to_ascii_lowercase());
+        if author_domain.as_deref() == Some(domain.as_str()) {
+            return true;
+        }
+        if item.delegation.history {
+            return role.eq_ignore_ascii_case("operator")
+                || self.delegation_speaks(item, from_addr, at, id);
         }
         prefix_of_domain(&domain).is_some()
+    }
+
+    fn delegation_speaks(&self, item: &HeldItem, from_addr: &str, at: i64, id: &str) -> bool {
+        let Some(delegate) = item.delegation.delegate.as_deref() else {
+            return false;
+        };
+        if !delegate.eq_ignore_ascii_case(from_addr) {
+            return false;
+        }
+        if let Some((role, domain)) = from_addr.rsplit_once('@')
+            && self.is_own_domain(domain)
+            && self.identity_is_hand(role)
+        {
+            return false;
+        }
+        item.delegation
+            .lapsed_at
+            .as_ref()
+            .is_none_or(|lapsed| (at, id) <= (lapsed.0, lapsed.1.as_str()))
     }
 
     fn item_chain(&self, storage: &Storage, item: &HeldItem) -> Result<Chain, VivariumError> {
@@ -534,7 +574,7 @@ impl Mailspace {
                 continue;
             };
             let speaks = first_bare_address(&view.from_addr)
-                .is_some_and(|from| self.event_may_speak(item, &from));
+                .is_some_and(|from| self.event_may_speak(item, &from, event.at, &event.id));
             if speaks && dated_within_clock(event.at, now) {
                 chain.events.push(event);
                 continue;
@@ -583,7 +623,40 @@ impl Mailspace {
     /// member owns an item's state.
     pub(super) fn may_close(&self, item: &HeldItem, identity: &str) -> bool {
         self.item_author(item).as_deref() == Some(identity)
-            || self.identity_may_close_for_all(identity)
+            || if item.delegation.history {
+                self.identity_is_operator(identity)
+                    || self.active_delegate_identity(item).as_deref() == Some(identity)
+            } else {
+                self.identity_may_close_for_all(identity)
+            }
+    }
+
+    /// The local role that should author an item event: its author, otherwise
+    /// its active delegate in this mailspace.
+    pub(super) fn item_event_writer_identity(&self, item: &HeldItem) -> Option<String> {
+        self.active_delegate_identity(item)
+            .or_else(|| self.item_author(item))
+    }
+
+    pub(super) fn assignment_event_floor(&self, item: &HeldItem) -> Option<i64> {
+        item.delegation
+            .assigned_at
+            .as_ref()
+            .map(|(at, _)| at.saturating_add(1))
+    }
+
+    pub(super) fn active_delegate_identity(&self, item: &HeldItem) -> Option<String> {
+        if item.delegation.lapsed_at.is_some() {
+            return None;
+        }
+        let (role, domain) = item.delegation.delegate.as_deref()?.rsplit_once('@')?;
+        if !self.is_own_domain(domain) {
+            return None;
+        }
+        if self.identity_is_hand(role) {
+            return None;
+        }
+        self.identity_owning_account(role)
     }
 
     /// The rows the head `kind` moves: open work to `done` on a close, done
@@ -726,6 +799,7 @@ impl Mailspace {
         // state.
         let sealed = property::counted_absorb(self, storage, &item)?.is_some();
         let mut deferred_until = chain.deferred_until;
+        self.apply_assignment_projection(storage, &item, tally)?;
         self.apply_property_events(storage, &item, tally, &mut deferred_until)?;
         record_deferral(storage, &item, deferred_until)?;
         if sealed {
@@ -811,7 +885,11 @@ impl Mailspace {
                 // A property event settles its item the same way, by the
                 // item it names; when the item is not held yet, the letter
                 // waits for it as a state event does.
-                None => match parse_property_event(&bytes).map(|event| event.of) {
+                None => match parse_property_event(&bytes)
+                    .map(|event| event.of)
+                    .or_else(|| {
+                        super::delegation::parse_assignment_event(&bytes).map(|event| event.of)
+                    }) {
                     Some(of) => {
                         if let Some(item) = storage.live_message_by_rfc_id(&of)? {
                             by_event.insert(item.content_id);

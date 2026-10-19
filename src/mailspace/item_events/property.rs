@@ -269,14 +269,20 @@ pub(super) fn store_letter_verdicts(
         let Some(view) = storage.message_by_content_id(&child)? else {
             continue;
         };
-        let speaks = first_bare_address(&view.from_addr)
-            .is_some_and(|from| mailspace.event_may_speak(item, &from));
-        if !speaks {
-            continue;
-        }
         let Ok(bytes) = storage.read_listed_blob(&view.blob_relpath) else {
             continue;
         };
+        let stamp = super::parse_event(&bytes)
+            .map(|event| (event.at, event.id))
+            .or_else(|| parse_property_event(&bytes).map(|event| (event.at, event.id)));
+        let speaks = first_bare_address(&view.from_addr).is_some_and(|from| {
+            stamp
+                .as_ref()
+                .is_some_and(|(at, id)| mailspace.event_may_speak(item, &from, *at, id))
+        });
+        if !speaks {
+            continue;
+        }
         for verdict in parse_letter_verdicts(&bytes) {
             let newer = newest
                 .get(&verdict.key)
@@ -335,7 +341,7 @@ fn property_chain(
             continue;
         };
         let speaks = first_bare_address(&view.from_addr)
-            .is_some_and(|from| mailspace.event_may_speak(item, &from));
+            .is_some_and(|from| mailspace.event_may_speak(item, &from, event.at, &event.id));
         if speaks && super::dated_within_clock(event.at, now) {
             chain.events.push(event);
             continue;

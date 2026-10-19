@@ -308,3 +308,7 @@ mod deferred_events_test;
 #[cfg(test)]
 #[path = "sync/absorb_before_seal_test.rs"]
 mod absorb_before_seal_test;
+
+#[cfg(test)]
+#[path = "sync/delegation_test.rs"]
+mod delegation_test;

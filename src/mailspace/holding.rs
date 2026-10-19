@@ -153,16 +153,23 @@ impl Mailspace {
         (sender_role == holder).then(|| remote[0].clone())
     }
 
-    pub(super) fn holding_of(&self, view: &StoredMessageView) -> Holding {
+    pub(super) fn holding_of(
+        &self,
+        storage: &Storage,
+        view: &StoredMessageView,
+    ) -> Result<Holding, VivariumError> {
+        if let Some(holding) = self.assigned_holding(storage, view)? {
+            return Ok(holding);
+        }
         if is_foreign_account(&view.account) {
-            return Holding::Foreign(view.account.clone());
+            return Ok(Holding::Foreign(view.account.clone()));
         }
         if self.is_unowned_account(&view.account) {
-            return Holding::Unowned(view.account.clone());
+            return Ok(Holding::Unowned(view.account.clone()));
         }
         match self.sent_copy_recipient(view) {
-            Some(address) => Holding::Sent(address),
-            None => Holding::Local,
+            Some(address) => Ok(Holding::Sent(address)),
+            None => Ok(Holding::Local),
         }
     }
 
@@ -173,7 +180,10 @@ impl Mailspace {
         storage: &Storage,
         source_id: &str,
     ) -> Result<Holding, VivariumError> {
-        Ok(node_row(storage, source_id)?.map_or(Holding::Local, |view| self.holding_of(&view)))
+        match node_row(storage, source_id)? {
+            Some(view) => self.holding_of(storage, &view),
+            None => Ok(Holding::Local),
+        }
     }
 
     /// Mark the nodes this mailspace does not dispatch: foreign ones read
@@ -190,9 +200,10 @@ impl Mailspace {
             .filter(|node| matches!(node.state.as_str(), "open" | "active"))
         {
             let row = node_row(storage, &node.source_id)?;
-            let holding = row
-                .as_ref()
-                .map_or(Holding::Local, |view| self.holding_of(view));
+            let holding = match row.as_ref() {
+                Some(view) => self.holding_of(storage, view)?,
+                None => Holding::Local,
+            };
             if let Some(row) = &row
                 && matches!(holding, Holding::Local | Holding::Sent(_))
                 && self.report_of(storage, row)?.is_some()
