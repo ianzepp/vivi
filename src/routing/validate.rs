@@ -265,6 +265,12 @@ fn need_role(
 }
 
 fn warn_legacy(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    if pump.planner.split_timeout_present {
+        issues.push(Issue::warning(
+            "[pump.planner] split_timeout is deprecated and accepted as split_hard_cap; \
+             rename it (split_hard_cap wins when both are set)",
+        ));
+    }
     let hand_assigned = routing
         .hand(&pump.to)
         .and_then(|role| role.pool.as_deref())

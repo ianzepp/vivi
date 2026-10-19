@@ -195,6 +195,39 @@ slots = 1
 }
 
 #[test]
+fn validate_warns_on_legacy_planner_split_timeout() {
+    let config = cfg(r#"
+name = "t"
+[[identities]]
+name = "hand"
+kind = "hand"
+pool = "glm"
+[pools.glm]
+provider = "local"
+slots = 2
+[pump]
+branch = "next"
+to = "hand"
+[pump.planner]
+split_timeout = 1800
+"#);
+    assert_eq!(
+        config.pump.as_ref().expect("pump").planner.split_hard_cap,
+        1800
+    );
+    let issues = validate(&config);
+    assert!(
+        issues.iter().any(|issue| {
+            issue.severity == Severity::Warning
+                && issue.message.contains("split_timeout")
+                && issue.message.contains("split_hard_cap")
+        }),
+        "{issues:?}"
+    );
+    assert!(require_ok(&issues).is_ok(), "{issues:?}");
+}
+
+#[test]
 fn from_mailspace_reads_role_pool_and_models() {
     let config = cfg(r#"
 name = "t"
