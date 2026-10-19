@@ -12,7 +12,7 @@ use crate::pump::brief::brief_for;
 use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::ready::{dependency_holds, is_ready, note_hold, pick_model, ranked};
-use crate::pump::state::{State, Status};
+use crate::pump::state::{State, Status, Unit};
 use crate::routing::{choose_model, lanes_for};
 
 /// The I/O outcome of trying to start one unit: pure command results with no
@@ -50,6 +50,20 @@ pub(crate) struct Plan {
     pub(crate) attempt: u32,
     /// `unit/<uid>-a<attempt>`.
     pub(crate) branch: String,
+}
+
+/// One unit reserved for a start: its id, a snapshot of the unit, the
+/// dispatch plan decided for it, and the model picked for it. Phase one plans
+/// and reserves; phase two starts the reservations one at a time.
+pub(crate) struct Planned {
+    /// The unit's handle.
+    uid: String,
+    /// The unit as it stood when it was planned.
+    unit: Unit,
+    /// The pool, lane, attempt and branch decided for the unit.
+    plan: Plan,
+    /// The model picked for the start.
+    model: String,
 }
 
 /// Free slot counts per pool: run `pool status --porcelain` and count the
@@ -112,18 +126,23 @@ fn tail(s: &str, n: usize) -> String {
 
 /// Offer ready units to the pools: priority units first, then fix units, at most `per_tick` starts
 /// per tick. A unit with no free pool slot waits; a full lane set breaks the
-/// loop for this tick. On success the unit goes inflight with its task,
-/// branch, model, pool and dispatch timestamp; a failed pool dispatch closes
-/// the task as superseded and leaves the unit pending. The per-unit I/O runs
-/// in [`start_unit`]; its result is applied to the state by [`apply_start`].
+/// loop for this tick. Planning and slot reservation happen first and write no
+/// unit state, so the same-tick overlay of earlier starts comes from the
+/// planned slice; the starts themselves then run serially. On success the unit
+/// goes inflight with its task, branch, model, pool and dispatch timestamp; a
+/// failed pool dispatch closes the task as superseded and leaves the unit
+/// pending. The per-unit I/O runs in [`start_unit`]; its result is applied to
+/// the state by [`apply_start`]. The per-tick cap now counts planned starts,
+/// so a failed send no longer falls through to the next unit within the same
+/// tick; the next tick retries it.
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
     let mut free = slots(ctx);
     apply_env_pauses(ctx, st, &mut free);
     let holds = dependency_holds(ctx, st);
-    let mut started: u32 = 0;
     let order = ranked(ctx, st, st.order.clone());
+    let mut planned: Vec<Planned> = Vec::new();
     for uid in order {
-        if started >= ctx.cfg.dispatch.per_tick {
+        if planned.len() as u32 >= ctx.cfg.dispatch.per_tick {
             break;
         }
         let dependency = st
@@ -141,16 +160,11 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         if report_unknown_kind(ctx, st, &uid) {
             continue;
         }
-        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds) else {
+        let Some(plan) = plan_unit(ctx, st, &uid, &free, &holds, &planned) else {
             continue;
         };
         let Some(model) = plan.model.clone() else {
-            if ctx
-                .routing
-                .hand(&ctx.cfg.to)
-                .and_then(|role| role.pool.as_deref())
-                .is_some()
-            {
+            if hand_pool_is_fixed(ctx) {
                 continue;
             }
             break;
@@ -158,10 +172,35 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         let Some(unit) = st.units.get(&uid) else {
             continue;
         };
-        let start = start_unit(ctx, &uid, unit, &plan, &model);
-        if apply_start(ctx, st, &uid, &plan, &model, start, &mut free) {
-            started += 1;
+        if let Some(count) = free.get_mut(&plan.pool) {
+            *count = count.saturating_sub(1);
         }
+        planned.push(Planned {
+            uid: uid.clone(),
+            unit: unit.clone(),
+            plan,
+            model,
+        });
+    }
+    run_starts(ctx, st, &planned, &mut free);
+}
+
+/// `true` when the hand role names a pool, so a unit whose lanes are all full
+/// waits for that pool instead of ending the tick.
+fn hand_pool_is_fixed(ctx: &Ctx) -> bool {
+    ctx.routing
+        .hand(&ctx.cfg.to)
+        .and_then(|role| role.pool.as_deref())
+        .is_some()
+}
+
+/// Phase two of a dispatch tick: start the planned units one at a time and
+/// apply each outcome to the state. Serial by design; [`start_unit`] owns the
+/// I/O and [`apply_start`] owns every state write.
+fn run_starts(ctx: &Ctx, st: &mut State, planned: &[Planned], free: &mut BTreeMap<String, u32>) {
+    for p in planned {
+        let start = start_unit(ctx, &p.uid, &p.unit, &p.plan, &p.model);
+        apply_start(ctx, st, &p.uid, &p.plan, &p.model, start, free);
     }
 }
 
@@ -252,15 +291,23 @@ fn plan_unit(
     uid: &str,
     free: &BTreeMap<String, u32>,
     holds: &BTreeMap<String, Vec<String>>,
+    planned: &[Planned],
 ) -> Option<Plan> {
     let unit = st.units.get(uid)?;
     if !is_ready(ctx, st, uid, holds) {
         return None;
     }
     let kind = ctx.cfg.kind_of(&unit.tools)?;
-    // While `max` units of this kind are inflight, a further one waits.
+    let kind_name = ctx.cfg.kind_name(&unit.tools);
+    // While `max` units of this kind are inflight or planned this tick, a
+    // further one waits.
     if let Some(max) = kind.max
-        && inflight_of_kind(ctx, st, ctx.cfg.kind_name(&unit.tools)) >= max as usize
+        && inflight_of_kind(ctx, st, &kind_name)
+            + planned
+                .iter()
+                .filter(|p| ctx.cfg.kind_name(&p.unit.tools) == kind_name)
+                .count()
+            >= max as usize
     {
         return None;
     }
@@ -268,7 +315,7 @@ fn plan_unit(
     let attempt = unit.attempts + 1;
     Some(Plan {
         pool: pool.clone(),
-        model: pick_unit_model(ctx, st, unit, &pool),
+        model: pick_unit_model(ctx, st, unit, &pool, planned),
         attempt,
         branch: format!("unit/{uid}-a{attempt}"),
     })
@@ -290,16 +337,21 @@ fn assigned_pool(ctx: &Ctx, kind_pools: &[String], free: &BTreeMap<String, u32>)
 fn pick_unit_model(
     ctx: &Ctx,
     st: &State,
-    unit: &crate::pump::state::Unit,
+    unit: &Unit,
     pool: &str,
+    planned: &[Planned],
 ) -> Option<String> {
     let role = ctx.routing.hand(&ctx.cfg.to);
     if role.and_then(|role| role.pool.as_deref()) == Some(pool) {
         let lanes = lanes_for(&ctx.routing, &ctx.cfg, Some(pool));
+        let mut load = inflight_models(st, Some(pool));
+        for p in planned.iter().filter(|p| p.plan.pool == pool) {
+            *load.entry(p.model.clone()).or_insert(0) += 1;
+        }
         return choose_model(
             role,
             &lanes,
-            &inflight_models(st, Some(pool)),
+            &load,
             unit.attempts,
             unit.history.last().and_then(|h| h.model.as_deref()),
             ctx.cfg.dispatch.last_resort.as_str(),
@@ -353,7 +405,7 @@ fn inflight_of_kind(ctx: &Ctx, st: &State, name: &str) -> usize {
 fn start_unit(
     ctx: &Ctx,
     uid: &str,
-    unit: &crate::pump::state::Unit,
+    unit: &Unit,
     plan: &Plan,
     model: &str,
 ) -> UnitStart {
@@ -479,7 +531,7 @@ pub(crate) fn dispatch_base(ctx: &Ctx, st: &State, uid: &str) -> String {
 
 /// The dispatch base for one unit in hand: its own `base` when it has one,
 /// else the target's `dispatch.from`.
-fn unit_base(ctx: &Ctx, unit: &crate::pump::state::Unit) -> String {
+fn unit_base(ctx: &Ctx, unit: &Unit) -> String {
     if let Some(base) = &unit.base {
         return base.clone();
     }
@@ -502,12 +554,12 @@ pub(crate) fn apply_start(
     free: &mut BTreeMap<String, u32>,
 ) -> bool {
     match start {
-        UnitStart::Started { task, slot } => {
-            apply_started(ctx, st, uid, plan, model, &task, slot, free)
-        }
+        UnitStart::Started { task, slot } => apply_started(ctx, st, uid, plan, model, &task, slot),
         UnitStart::SendFailed { text } => {
             ctx.log(&format!("task send failed {uid}: {text}"));
             report_send_failure(ctx, st, uid, &text);
+            // The slot was reserved at plan time and nothing started in it.
+            release_slot(free, &plan.pool);
             false
         }
         UnitStart::DispatchFailed { task, text } => {
@@ -522,8 +574,16 @@ pub(crate) fn apply_start(
     }
 }
 
+/// Give a slot reserved at plan time back to its pool.
+fn release_slot(free: &mut BTreeMap<String, u32>, pool: &str) {
+    *free
+        .entry(pool.to_owned())
+        .and_modify(|c| *c = c.saturating_add(1))
+        .or_insert(1);
+}
+
 /// The `Started` arm: the unit goes inflight with its task, branch, model,
-/// pool and timestamps, and the pool's free count drops by one.
+/// pool and timestamps. The pool's slot was already reserved at plan time.
 fn apply_started(
     ctx: &Ctx,
     st: &mut State,
@@ -532,7 +592,6 @@ fn apply_started(
     model: &str,
     task: &str,
     slot: Option<String>,
-    free: &mut BTreeMap<String, u32>,
 ) -> bool {
     let Some(unit) = st.units.get_mut(uid) else {
         return false;
@@ -548,9 +607,6 @@ fn apply_started(
     unit.pool = Some(plan.pool.clone());
     unit.slot = slot;
     unit.send_reported = false;
-    if let Some(count) = free.get_mut(&plan.pool) {
-        *count = count.saturating_sub(1);
-    }
     ctx.log(&format!(
         "dispatch {uid} a{} {} {model} task={task}",
         plan.attempt, plan.pool
@@ -559,7 +615,8 @@ fn apply_started(
 }
 
 /// Log a failed pool dispatch, close the task as superseded, and zero the
-/// pool's free count when the failure text says `no free slot`.
+/// pool's free count when the failure text says `no free slot`; any other
+/// failure gives the reserved slot back.
 fn dispatch_failed(
     ctx: &Ctx,
     uid: &str,
@@ -578,5 +635,7 @@ fn dispatch_failed(
     drop(ctx.vivi(&cmd, 120));
     if text.contains("no free slot") {
         free.insert(pool.to_owned(), 0);
+    } else {
+        release_slot(free, pool);
     }
 }
