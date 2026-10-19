@@ -575,9 +575,11 @@ pub struct GateConfig {
     /// Gate command run by a read-only gate worker. Required: `validate`
     /// rejects an empty one.
     pub command: String,
-    /// A gate is due after this many merges.
+    /// Retired: accepted and ignored. A gate is due after every merge batch
+    /// that lands (need e90b0221).
     pub every_merges: u32,
-    /// A gate is also due after this many seconds with new merges.
+    /// Retired: accepted and ignored. A gate is due after every merge batch
+    /// that lands (need e90b0221).
     pub every_seconds: u64,
     /// Pools a gate worker may use; each must name a `[pools.*]` table.
     pub pools: Vec<String>,
@@ -865,9 +867,6 @@ impl PumpConfig {
         if self.gate.command.trim().is_empty() {
             bad.push("[pump.gate] command must not be empty".into());
         }
-        if self.gate.every_merges == 0 {
-            bad.push("[pump.gate] every_merges must be >= 1".into());
-        }
         if self.gate.results_dir.is_some() && self.gate.results_wait_seconds == 0 {
             bad.push("[pump.gate] results_dir needs results_wait_seconds >= 1".into());
         }
@@ -952,9 +951,6 @@ fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], bad: &mut
     let prefix = format!("[pump.targets.{id}.gate]");
     if gate.command.trim().is_empty() {
         bad.push(format!("{prefix} command must not be empty"));
-    }
-    if gate.every_merges == 0 {
-        bad.push(format!("{prefix} every_merges must be >= 1"));
     }
     if gate.results_dir.is_some() && gate.results_wait_seconds == 0 {
         bad.push(format!(

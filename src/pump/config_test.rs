@@ -588,6 +588,16 @@ fn validate_rejects_an_empty_gate_command_even_without_promotion() {
 }
 
 #[test]
+fn every_merges_zero_is_accepted() {
+    let mut cfg = valid();
+    cfg.gate.every_merges = 0;
+    assert!(
+        cfg.validate(Path::new("."), &pool_names()).is_ok(),
+        "every_merges is retired and must not gate validation"
+    );
+}
+
+#[test]
 fn validate_rejects_empty_shared_checks_only_while_promotion_is_enabled() {
     let mut cfg = valid();
     cfg.merge.shared_checks = Vec::new();
