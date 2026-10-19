@@ -134,14 +134,41 @@ struct BlockedRow {
     blocked_by: Vec<String>,
 }
 
-/// Needs held by an unlanded dependency, read once from the backlog graph:
-/// `need -> prerequisite handles still unfinished`. A prerequisite the pump
-/// already delivered — every unit of its need is satisfied — counts as
+/// Raw dependency read from the backlog graph: `need -> prerequisite
+/// handles`, exactly as Vivi reports them. Rows with no need handle or no
+/// prerequisites are dropped; nothing is filtered by whether the pump
+/// already delivered a prerequisite.
+///
+/// An unreadable answer logs and gives `None`: callers hold nothing and the
+/// pump keeps dispatching rather than stalling on a broken read.
+#[must_use]
+pub fn blocked_needs(ctx: &Ctx) -> Option<BTreeMap<String, Vec<String>>> {
+    let out = ctx.vivi(
+        "graph blocked backlog --kind need --json --confirm-large",
+        60,
+    );
+    let Some(rows) = parse_blocked(&out.text) else {
+        let detail: String = out.text.trim().chars().take(150).collect();
+        ctx.log(&format!("graph blocked unreadable: {detail}"));
+        return None;
+    };
+    let mut needs = BTreeMap::new();
+    for row in rows {
+        if !row.source_id.is_empty() && !row.blocked_by.is_empty() {
+            needs.insert(row.source_id, row.blocked_by);
+        }
+    }
+    Some(needs)
+}
+
+/// Needs held by an unlanded dependency: `need -> prerequisite handles still
+/// unfinished`, from the raw read in [`blocked_needs`]. A prerequisite the
+/// pump already delivered — every unit of its need is satisfied — counts as
 /// landed even while its Vivi node is still open, so a merged dependency
 /// that nobody has closed does not hold its dependents.
 ///
-/// An unreadable answer logs and holds nothing: the pump keeps dispatching
-/// rather than stalling on a broken read.
+/// An unreadable answer holds nothing: the pump keeps dispatching rather
+/// than stalling on a broken read.
 #[must_use]
 pub fn dependency_holds(ctx: &Ctx, st: &State) -> BTreeMap<String, Vec<String>> {
     let waiting = st
@@ -151,24 +178,17 @@ pub fn dependency_holds(ctx: &Ctx, st: &State) -> BTreeMap<String, Vec<String>> 
     if !waiting {
         return BTreeMap::new();
     }
-    let out = ctx.vivi(
-        "graph blocked backlog --kind need --json --confirm-large",
-        60,
-    );
-    let Some(rows) = parse_blocked(&out.text) else {
-        let detail: String = out.text.trim().chars().take(150).collect();
-        ctx.log(&format!("dependency gate unreadable: {detail}"));
+    let Some(raw) = blocked_needs(ctx) else {
         return BTreeMap::new();
     };
     let mut holds = BTreeMap::new();
-    for row in rows {
-        let unmet: Vec<String> = row
-            .blocked_by
+    for (need, blocked_by) in raw {
+        let unmet: Vec<String> = blocked_by
             .into_iter()
             .filter(|dependency| !need_landed(st, dependency))
             .collect();
-        if !row.source_id.is_empty() && !unmet.is_empty() {
-            holds.insert(row.source_id, unmet);
+        if !unmet.is_empty() {
+            holds.insert(need, unmet);
         }
     }
     holds

@@ -7,7 +7,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::pump::config::{DispatchConfig, Generated, Lane, MergeConfig, PumpConfig};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::ready::{dependency_holds, is_ready, pick_model, ranked, satisfied};
+use crate::pump::ready::{blocked_needs, dependency_holds, is_ready, pick_model, ranked, satisfied};
 use crate::pump::state::{Attempt, NeedRecord, State, Status, Unit};
 
 /// A `Ctx` over a fresh temp home with the given pump config.
@@ -462,7 +462,29 @@ fn an_unreadable_dependency_gate_holds_nothing_and_logs_it() {
     assert!(
         host.logs()
             .iter()
-            .any(|line| line.contains("dependency gate unreadable"))
+            .any(|line| line.contains("graph blocked unreadable"))
+    );
+}
+
+#[test]
+fn blocked_needs_maps_needs_to_raw_prerequisites() {
+    let (_dir, ctx, host, _st) = setup();
+    host.reply(
+        "graph blocked",
+        0,
+        r#"[{"source_id":"n","blocked_by":["a","b"]},{"source_id":"m","blocked_by":[]},{"source_id":"","blocked_by":["x"]}]"#,
+    );
+    let raw = blocked_needs(&ctx).expect("readable graph blocked output");
+    let mut want = BTreeMap::new();
+    want.insert("n".to_string(), vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(raw, want);
+
+    host.reply("graph blocked", 1, "error: locked");
+    assert!(blocked_needs(&ctx).is_none());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("graph blocked unreadable"))
     );
 }
 
