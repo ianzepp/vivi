@@ -80,6 +80,7 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
         Some(_) => true,
     };
     if pending {
+        reopen_closed(ctx, st, handle);
         if let Some(record) = st.needs.get_mut(handle) {
             record.amendment_pending = true;
             record.thread_sha256 = Some(hash);
@@ -87,6 +88,20 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
         }
         launch_revision(ctx, st, handle, None);
     }
+}
+
+/// Reopen `handle` when a thread change arrives after the pump closed it.
+///
+/// The revision's own units re-close the need when they land; until then a
+/// closed need that gained thread activity is open work again.
+fn reopen_closed(ctx: &Ctx, st: &mut State, handle: &str) {
+    if !st.closed_needs.iter().any(|closed| closed == handle) {
+        return;
+    }
+    st.closed_needs.retain(|closed| closed != handle);
+    ctx.log(&format!(
+        "amendment: {handle} reopened: thread changed after close",
+    ));
 }
 
 /// Ask for a revision of `handle`'s plan with a reason for the planner, ahead

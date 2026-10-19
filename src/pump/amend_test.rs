@@ -124,6 +124,32 @@ fn an_unchanged_thread_keeps_the_need_closed() {
 }
 
 #[test]
+fn a_closed_need_with_a_changed_thread_reopens_and_plans_a_revision() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.closed_needs.push(String::from("n1"));
+    script_thread(&host, "add the second half");
+    detect(&ctx, &mut st);
+    assert!(!st.closed_needs.contains(&String::from("n1")));
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
+    assert!(
+        fs::read_to_string(ctx.home.join("needs/n1.json"))
+            .unwrap()
+            .contains("\"revision\": 2")
+    );
+    assert!(
+        host.spawned()
+            .iter()
+            .any(|cmd| cmd.contains("planner-model"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("amendment: n1 reopened"))
+    );
+}
+
+#[test]
 fn a_pump_attempt_record_reply_does_not_amend() {
     for reply_from in ["mind", "mind@12345678.local"] {
         let (_dir, mut ctx, host, mut st) = setup();
