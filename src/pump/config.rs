@@ -315,6 +315,13 @@ pub struct DispatchConfig {
     pub max_attempts: u32,
     /// `--budget` of a unit dispatch, in seconds.
     pub budget: u64,
+    /// Transient-class failures (host/harness, shared-check timeout,
+    /// generated-file conflict) are retried without counting toward
+    /// `max_attempts`, at most this many times; 0 disables.
+    pub transient_max: u32,
+    /// Seconds before the first transient retry; doubles on each further
+    /// transient retry.
+    pub transient_backoff: u64,
     /// Running longer than `budget` plus this means split.
     pub overdue_grace: u64,
     /// Units started per tick at most.
@@ -353,6 +360,8 @@ impl Default for DispatchConfig {
             last_resort: String::new(),
             max_attempts: 3,
             budget: 600,
+            transient_max: 2,
+            transient_backoff: 120,
             overdue_grace: 900,
             per_tick: 6,
             from: None,
