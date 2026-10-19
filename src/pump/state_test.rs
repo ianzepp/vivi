@@ -511,6 +511,10 @@ fn the_live_snapshot_round_trips_through_load_and_save() {
             .unwrap()
             .entry("target")
             .or_insert(json!("default"));
+        unit.as_object_mut()
+            .unwrap()
+            .entry("transient_retries")
+            .or_insert(json!(0));
     }
     let got: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&second).unwrap()).unwrap();
@@ -572,6 +576,21 @@ fn absent_optional_unit_fields_stay_absent_on_save() {
     for key in ["task", "branch", "model"] {
         assert!(unit[key].is_null(), "{key} must stay null");
     }
+}
+
+#[test]
+fn transient_retry_fields_round_trip_and_default() {
+    let mut unit = Unit::default();
+    unit.transient_retries = 2;
+    unit.retry_not_before = Some(99);
+    let back: Unit = serde_json::from_str(&serde_json::to_string(&unit).unwrap()).unwrap();
+    assert_eq!(back.transient_retries, 2);
+    assert_eq!(back.retry_not_before, Some(99));
+
+    // A unit from an older pump has neither key; both load as defaults.
+    let old: Unit = serde_json::from_str(r#"{"need": "n", "status": "pending"}"#).unwrap();
+    assert_eq!(old.transient_retries, 0);
+    assert_eq!(old.retry_not_before, None);
 }
 
 #[test]
