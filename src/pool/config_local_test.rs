@@ -54,7 +54,33 @@ fn the_root_has_a_default_and_is_a_directory_of_its_own() {
     config.local.root = None;
     config.validate(&id()).unwrap();
     assert_eq!(config.local.root_or_default(), DEFAULT_LOCAL_ROOT);
-    for root in ["", "/", "~/", "relative", "~/a/../b", "/a b", "/tmp/$HOME"] {
+    for root in ["", "/", "~/", "~", "~/a/../b", "/a b", "/tmp/$HOME"] {
+        config.local.root = Some(root.to_string());
+        assert!(err(&config).contains("local.root must be"), "{root:?}");
+    }
+}
+
+#[test]
+#[test]
+fn relative_local_root_is_accepted() {
+    let config: PoolConfig = toml::from_str(
+        r#"
+provider = "local"
+slots = 2
+
+[local]
+root = "pool/lanes"
+"#,
+    )
+    .unwrap();
+    assert_eq!(config.local.root_or_default(), "pool/lanes");
+    config.validate(&id()).unwrap();
+}
+
+#[test]
+fn relative_local_root_with_dotdot_is_rejected() {
+    for root in ["../escape", "a/../b"] {
+        let mut config = parse(FETCH);
         config.local.root = Some(root.to_string());
         assert!(err(&config).contains("local.root must be"), "{root:?}");
     }

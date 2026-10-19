@@ -734,36 +734,57 @@ pub fn check_ssh_host(host: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Check the directory that holds an `ssh` pool's slots. See [`check_root`].
+/// Check the directory that holds an `ssh` pool's slots. Unlike a local root it
+/// may not be relative: the path is used on the remote host, so it must say
+/// where it is: `~/<path>` or an absolute path, never the home directory or
+/// `/` itself.
 ///
 /// # Errors
 /// Returns the reason the root cannot be used.
 pub fn check_ssh_root(root: &str) -> Result<(), String> {
-    check_root(root, "ssh.root")
+    let rest = root.strip_prefix("~/").or_else(|| root.strip_prefix('/'));
+    match rest {
+        Some(rest) if root.chars().skip(1).all(plain_path_char) && root_parts_ok(rest) => Ok(()),
+        _ => Err(
+            "ssh.root must be a directory of its own: ~/some/dir or /abs/dir (letters, digits and . _ - / only; no .., not / or the home directory itself, and never a relative path, which would resolve on the remote host)"
+                .to_string(),
+        ),
+    }
 }
 
 /// Check the directory that holds a directory pool's slots (`key` names the
 /// setting in the message). It is deleted from, so it must be an explicit
-/// directory of its own: `~/<path>` or an absolute path, plain characters
-/// only, never the home directory or `/` itself.
+/// directory of its own: `~/<path>`, an absolute path, or a path relative to
+/// the project, plain characters only, never the home directory or `/`
+/// itself.
 ///
 /// # Errors
 /// Returns the reason the root cannot be used.
 pub fn check_root(root: &str, key: &str) -> Result<(), String> {
-    let rest = root.strip_prefix("~/").or_else(|| root.strip_prefix('/'));
-    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
-    let parts_ok = |rest: &str| {
-        !rest.is_empty()
-            && rest
-                .split('/')
-                .all(|part| !part.is_empty() && part != "." && part != "..")
+    let ok = match root.strip_prefix("~/").or_else(|| root.strip_prefix('/')) {
+        Some(rest) => root.chars().skip(1).all(plain_path_char) && root_parts_ok(rest),
+        None => root.chars().all(plain_path_char) && root_parts_ok(root),
     };
-    match rest {
-        Some(rest) if root.chars().skip(1).all(plain) && parts_ok(rest) => Ok(()),
-        _ => Err(format!(
-            "{key} must be a directory of its own: ~/some/dir or /abs/dir (letters, digits and . _ - / only; no .., not / or the home directory itself)"
-        )),
+    if ok {
+        return Ok(());
     }
+    Err(format!(
+        "{key} must be a directory of its own: ~/some/dir, /abs/dir, or a path relative to the project (letters, digits and . _ - / only; no .., not / or the home directory itself)"
+    ))
+}
+
+/// A character allowed in a pool root path.
+fn plain_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/')
+}
+
+/// Whether the part of the root after its prefix is a non-empty relative path
+/// with no empty, `.` or `..` component.
+fn root_parts_ok(rest: &str) -> bool {
+    !rest.is_empty()
+        && rest
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 impl PoolGithub {
