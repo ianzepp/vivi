@@ -127,55 +127,74 @@ fn hygiene_no_file_over_line_limit() {
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn hygiene_no_function_over_line_limit() {
     for file in production_files() {
-        let lines: Vec<&str> = file.content.lines().collect();
-        let mut depth = 0i32;
-        let mut fn_depth = 0i32;
-        let mut fn_lines = 0;
-
-        for line in &lines {
-            let trimmed = line.trim();
-            let is_fn = trimmed.starts_with("fn ")
-                || trimmed.starts_with("pub fn ")
-                || trimmed.starts_with("async fn ")
-                || trimmed.starts_with("pub async fn ");
-
-            if fn_depth == 0 && is_fn {
-                fn_depth = depth + 1;
-                fn_lines = 1;
-            }
-
-            if fn_depth > 0 {
-                for ch in trimmed.chars() {
-                    if ch == '{' {
-                        depth += 1;
-                    } else if ch == '}' {
-                        depth -= 1;
-                        if depth == fn_depth - 1 {
-                            assert!(
-                                fn_lines <= MAX_FN_LINES,
-                                "{}: function has {} lines, budget is {}",
-                                file.path,
-                                fn_lines,
-                                MAX_FN_LINES
-                            );
-                            fn_depth = 0;
-                            fn_lines = 0;
-                            break;
-                        }
-                    }
-                }
-                if fn_depth > 0 {
-                    fn_lines += 1;
-                }
-            } else if !is_fn {
-                depth += trimmed.chars().filter(|&c| c == '{').count() as i32;
-                depth -= trimmed.chars().filter(|&c| c == '}').count() as i32;
-            }
+        for lines in function_lengths(&file.content) {
+            assert!(
+                lines <= MAX_FN_LINES,
+                "{}: function has {} lines, budget is {}",
+                file.path,
+                lines,
+                MAX_FN_LINES
+            );
         }
     }
+}
+
+fn function_lengths(content: &str) -> Vec<usize> {
+    let mut lengths = Vec::new();
+    let mut depth = 0i32;
+    let mut fn_depth = 0i32;
+    let mut fn_lines = 0;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let is_fn = trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub async fn ");
+        if fn_depth == 0 && is_fn {
+            fn_depth = depth + 1;
+            fn_lines = 1;
+        }
+        // A trait declaration has no body. Do not count subsequent methods
+        // as part of its signature while waiting for an opening brace.
+        if fn_depth > 0 && depth < fn_depth && trimmed.ends_with(';') {
+            fn_depth = 0;
+            fn_lines = 0;
+            continue;
+        }
+        if fn_depth > 0 {
+            for ch in trimmed.chars() {
+                if ch == '{' {
+                    depth += 1;
+                } else if ch == '}' {
+                    depth -= 1;
+                    if depth == fn_depth - 1 {
+                        lengths.push(fn_lines);
+                        fn_depth = 0;
+                        fn_lines = 0;
+                        break;
+                    }
+                }
+            }
+            if fn_depth > 0 {
+                fn_lines += 1;
+            }
+        } else if !is_fn {
+            depth += i32::try_from(trimmed.chars().filter(|&c| c == '{').count()).unwrap();
+            depth -= i32::try_from(trimmed.chars().filter(|&c| c == '}').count()).unwrap();
+        }
+    }
+    lengths
+}
+
+#[test]
+fn hygiene_function_scanner_skips_trait_declarations() {
+    let declarations = "    fn declaration(&self);\n".repeat(80);
+    let source = format!(
+        "trait Provider {{\n{declarations}    fn multiline(\n        &self,\n    ) -> bool;\n    fn implemented(&self) {{\n        action();\n    }}\n}}\n"
+    );
+    assert_eq!(function_lengths(&source), vec![3]);
 }
 
 #[test]

@@ -63,11 +63,11 @@ pub(crate) fn offer_with(
     wait_for_open_claims(ctx, &dir, poll);
     let bid = batch_id(ctx, lane);
     let job = dir.join(format!("{bid}.job.json"));
+    let t0 = ctx.now();
     if !write_job_file(ctx, &job, jobs) {
         return None;
     }
     let result = dir.join(format!("{bid}.result.json"));
-    let t0 = ctx.now();
     // The remote merger claims a batch by renaming or removing the job file;
     // whoever makes it disappear first owns it.
     while ctx.now().saturating_sub(t0) < ctx.cfg.merge.remote_wait && job.exists() {

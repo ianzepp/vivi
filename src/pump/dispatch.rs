@@ -193,19 +193,8 @@ fn tail(s: &str, n: usize) -> String {
 /// so a failed send no longer falls through to the next unit within the same
 /// tick; the next tick retries it.
 pub fn dispatch(ctx: &Ctx, st: &mut State) {
-    let done_needs = if st.units.values().any(|unit| {
-        matches!(
-            unit.status,
-            Status::Pending | Status::Held | Status::NeedsReplan
-        )
-    }) {
-        let Some(done_needs) = crate::pump::board::reconcile_done_needs(ctx, st) else {
-            ctx.log("dispatch paused: could not confirm done needs");
-            return;
-        };
-        done_needs
-    } else {
-        BTreeSet::new()
+    let Some(done_needs) = dispatch_done_needs(ctx, st) else {
+        return;
     };
     let mut free = slots(ctx);
     apply_env_pauses(ctx, st, &mut free);
@@ -252,6 +241,23 @@ pub fn dispatch(ctx: &Ctx, st: &mut State) {
         });
     }
     run_starts(ctx, st, &planned, &mut free);
+}
+
+fn dispatch_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
+    if st.units.values().any(|unit| {
+        matches!(
+            unit.status,
+            Status::Pending | Status::Held | Status::NeedsReplan
+        )
+    }) {
+        let Some(done_needs) = crate::pump::board::reconcile_done_needs(ctx, st) else {
+            ctx.log("dispatch paused: could not confirm done needs");
+            return None;
+        };
+        Some(done_needs)
+    } else {
+        Some(BTreeSet::new())
+    }
 }
 
 /// Apply readiness holds and timestamp the unit when every blocker clears.

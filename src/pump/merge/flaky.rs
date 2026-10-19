@@ -95,15 +95,28 @@ fn failed_test_name(output: &str) -> Option<String> {
 }
 
 fn recent_flakes(ctx: &Ctx, name: &str) -> Option<usize> {
-    let store = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME)).ok()??;
+    let store = match PumpStore::open_read_only(&ctx.home.join(DB_FILENAME)) {
+        Ok(store) => store?,
+        Err(error) => {
+            ctx.log(&format!("flaky-check history unavailable: {error}"));
+            return None;
+        }
+    };
+    let rows = match store.exceptions() {
+        Ok(rows) => rows,
+        Err(error) => {
+            ctx.log(&format!("flaky-check history unavailable: {error}"));
+            return None;
+        }
+    };
     let cutoff = ctx.now().saturating_sub(DAY_SECS);
-    store.exceptions().ok().map(|rows| {
+    Some(
         rows.iter()
             .filter(|(at, kind, unit, _)| {
                 *at >= cutoff && *at <= ctx.now() && kind == "flaky-check" && unit == name
             })
-            .count()
-    })
+            .count(),
+    )
 }
 
 fn open_need_exists(ctx: &Ctx, subject: &str) -> Option<bool> {

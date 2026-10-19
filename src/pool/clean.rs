@@ -494,15 +494,7 @@ fn clean_local_pool(
     base: Option<&str>,
     dry_run: bool,
 ) -> Result<(Vec<CleanAction>, Vec<CleanSkip>), VivariumError> {
-    let root = handle.provider.local_root().ok_or_else(|| {
-        VivariumError::Message(format!("pool {} has no local root", handle.id.pool))
-    })?;
-    let pool_dir = handle.provider.local_pool_dir().ok_or_else(|| {
-        VivariumError::Message(format!(
-            "pool {} has no local pool directory",
-            handle.id.pool
-        ))
-    })?;
+    let (root, pool_dir) = local_pool_paths(handle)?;
     let pool = handle.id.pool.as_str();
     let configured = handle.config.build_dir.as_deref();
     let mut actions = Vec::new();
@@ -547,6 +539,21 @@ fn clean_local_pool(
         &mut skips,
     )?;
     Ok((actions, skips))
+}
+
+fn local_pool_paths(
+    handle: &PoolHandle,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), VivariumError> {
+    let root = handle.provider.local_root().ok_or_else(|| {
+        VivariumError::Message(format!("pool {} has no local root", handle.id.pool))
+    })?;
+    let pool_dir = handle.provider.local_pool_dir().ok_or_else(|| {
+        VivariumError::Message(format!(
+            "pool {} has no local pool directory",
+            handle.id.pool
+        ))
+    })?;
+    Ok((root, pool_dir))
 }
 
 fn lane_is_done(st: Option<&State>, hint: Option<&Unit>, dir: &Path) -> bool {

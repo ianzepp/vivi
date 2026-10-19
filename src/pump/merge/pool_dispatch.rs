@@ -344,6 +344,16 @@ fn apply_job(ctx: &Ctx, st: &mut State, job: &PoolJob) {
         );
         return;
     };
+    apply_verified_receipt(ctx, st, job, &receipt, &integration_tip);
+}
+
+fn apply_verified_receipt(
+    ctx: &Ctx,
+    st: &mut State,
+    job: &PoolJob,
+    receipt: &MergeReceipt,
+    integration_tip: &str,
+) {
     let merged_jobs: Vec<String> = receipt
         .sources
         .iter()
@@ -509,7 +519,10 @@ pub(crate) fn timeout_status_line(st: &State) -> String {
 fn timeout_metrics(receipt: &MergeReceipt) -> Option<(u64, u64, u64)> {
     let timeouts = receipt.shared_check_timeouts?;
     let retries = receipt.shared_check_timeout_retries?;
-    let recoveries = u64::try_from(receipt.shared_check_recoveries.as_ref()?.len()).ok()?;
+    let recoveries = match u64::try_from(receipt.shared_check_recoveries.as_ref()?.len()) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
     (retries <= timeouts).then_some((timeouts, retries, recoveries))
 }
 
