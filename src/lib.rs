@@ -9,6 +9,7 @@
 pub mod b64;
 pub mod boot;
 pub mod cli;
+pub mod doctor;
 pub mod duration;
 pub mod error;
 pub mod extract;
