@@ -130,6 +130,28 @@ pub struct PoolDispatchCommand {
     )]
     pub publish_expect: Option<String>,
 
+    /// Require this commit to be included in the candidate and published target.
+    #[arg(
+        long,
+        value_name = "SHA",
+        requires = "publish_ref",
+        conflicts_with = "read_only"
+    )]
+    pub publish_contains: Option<String>,
+
+    /// Delete an owned need branch only if it still matches --delete-expect.
+    #[arg(long, value_name = "REF", requires = "delete_expect", conflicts_with_all = ["read_only", "publish_ref"])]
+    pub delete_ref: Option<String>,
+
+    /// Exact expected tip of the owned need branch to delete.
+    #[arg(
+        long,
+        value_name = "SHA",
+        requires = "delete_ref",
+        conflicts_with = "read_only"
+    )]
+    pub delete_expect: Option<String>,
+
     /// Extra ref the job may read besides where it starts, repeatable, at
     /// most 8 (default: every `with: <ref>` line of the task body, in order;
     /// flags win when both are given). Each is resolved to a commit before a

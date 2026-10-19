@@ -48,6 +48,9 @@ pub struct DispatchFlags {
     pub publish_ref: Option<String>,
     /// Exact commit expected for guarded promotion publication.
     pub publish_expect: Option<String>,
+    pub publish_contains: Option<String>,
+    pub delete_ref: Option<String>,
+    pub delete_expect: Option<String>,
     /// Extra refs the job may read (`--with`); when any are given they beat
     /// `with:` body lines, which [`job::resolve_with`] applies otherwise.
     pub with: Vec<String>,
@@ -168,6 +171,9 @@ fn assemble_job_plan(
         refs,
         publish_ref: flags.publish_ref.clone(),
         publish_expect: flags.publish_expect.clone(),
+        publish_contains: flags.publish_contains.clone(),
+        delete_ref: flags.delete_ref.clone(),
+        delete_expect: flags.delete_expect.clone(),
         publish_remote: None,
         with,
         model: flags.model.clone(),
@@ -212,7 +218,40 @@ fn validate_publish_flags(flags: &DispatchFlags) -> Result<(), VivariumError> {
             "publish expectation must be a full 40- or 64-character commit SHA".into(),
         ));
     }
+    validate_runner_guards(flags)
+}
+
+fn validate_runner_guards(flags: &DispatchFlags) -> Result<(), VivariumError> {
+    if let Some(sha) = &flags.publish_contains {
+        if flags.publish_ref.is_none() || !full_commit_sha(sha) {
+            return Err(VivariumError::Config(
+                "publish-contains requires a publish ref and a full commit SHA".into(),
+            ));
+        }
+    }
+    if flags.delete_ref.is_some() || flags.delete_expect.is_some() {
+        if flags.read_only || flags.publish_ref.is_some() {
+            return Err(VivariumError::Config(
+                "need cleanup cannot be read-only or combined with publication".into(),
+            ));
+        }
+        let valid = flags
+            .delete_ref
+            .as_deref()
+            .and_then(|name| name.strip_prefix("refs/heads/vivi/need/"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/') && valid_publish_ref(id));
+        if !valid || !flags.delete_expect.as_deref().is_some_and(full_commit_sha) {
+            return Err(VivariumError::Config("need cleanup requires one owned refs/heads/vivi/need/<id> ref and a full expected commit SHA".into()));
+        }
+    }
     Ok(())
+}
+
+fn full_commit_sha(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn valid_publish_ref(branch: &str) -> bool {

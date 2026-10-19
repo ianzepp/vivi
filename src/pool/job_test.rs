@@ -55,6 +55,9 @@ fn plan() -> JobPlan {
         },
         publish_ref: None,
         publish_expect: None,
+        publish_contains: None,
+        delete_ref: None,
+        delete_expect: None,
         publish_remote: None,
         with: Vec::new(),
         model: "zai/glm-5.3-flash".into(),
@@ -742,4 +745,30 @@ fn target_jobs_deliver_cache_identity_and_repository_preparation() {
     assert!(text(&bundle, "params.env").contains("TARGET='radix'"));
     assert!(text(&bundle, "target-seed.sh").contains("cargo build"));
     assert_eq!(text(&bundle, "target-requires.txt"), "command -v cargo");
+}
+
+#[test]
+fn ancestry_and_need_cleanup_controls_stay_in_runner_only_parameters() {
+    let mut publication = plan();
+    publication.publish_ref = Some("refs/heads/next".into());
+    publication.publish_contains = Some("a".repeat(40));
+    let bundle = build_bundle(&publication, "s", &Secret::new(SECRET.into()));
+    assert!(
+        text(&bundle, "params.env").contains(&format!("PUBLISH_CONTAINS='{}'", "a".repeat(40)))
+    );
+    let mut cleanup = plan();
+    cleanup.delete_ref = Some("refs/heads/vivi/need/abcd1234".into());
+    cleanup.delete_expect = Some("b".repeat(40));
+    cleanup.publish_remote = Some("file:///tmp/owned.git".into());
+    let bundle = build_bundle(&cleanup, "s", &Secret::new(SECRET.into()));
+    let params = text(&bundle, "params.env");
+    assert!(params.contains("DELETE_REF='refs/heads/vivi/need/abcd1234'"));
+    assert!(params.contains(&format!("DELETE_EXPECT='{}'", "b".repeat(40))));
+    assert!(params.contains("PUBLISH_REMOTE='file:///tmp/owned.git'"));
+    for file in bundle.agent_visible() {
+        let contents = String::from_utf8_lossy(&file.content);
+        assert!(!contents.contains("DELETE_REF"));
+        assert!(!contents.contains("DELETE_EXPECT"));
+        assert!(!contents.contains(SECRET));
+    }
 }

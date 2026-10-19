@@ -205,7 +205,28 @@ impl JobResult {
                 self.get("publish_sha")
             ));
         }
+        append_runner_guards(&mut summary, self);
         summary
+    }
+}
+
+fn append_runner_guards(summary: &mut String, result: &JobResult) {
+    if !result.get("publish_contains").is_empty() {
+        summary.push_str(&format!(
+            "\nrunner contains: {} {}",
+            result.get("publish_contains"),
+            result.get("publish_contains_verified")
+        ));
+    }
+    if !result.get("delete_state").is_empty() {
+        summary.push_str(&format!(
+            "\nrunner delete: {} {} {} {} {}",
+            result.get("delete_state"),
+            result.get("delete_ref"),
+            result.get("delete_expect"),
+            result.get("delete_before"),
+            result.get("delete_after")
+        ));
     }
 }
 

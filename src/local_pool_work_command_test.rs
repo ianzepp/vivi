@@ -58,6 +58,9 @@ fn plan_with(names: &[&str]) -> job::JobPlan {
         },
         publish_ref: None,
         publish_expect: None,
+        publish_contains: None,
+        delete_ref: None,
+        delete_expect: None,
         publish_remote: None,
         with: names
             .iter()

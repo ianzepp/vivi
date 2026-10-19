@@ -16,11 +16,13 @@ use crate::pump::dispatch;
 use crate::pump::host::{Ctx, shell_quote};
 
 mod gate_sources;
+mod receipts;
 mod recovery;
 pub use gate_sources::{
     mark_gate_attempted, mark_gated, mark_integration_failed, mark_merged,
     sources_need_gate_attempt, sources_waiting_for_gate,
 };
+pub use receipts::{JobOutcome, RunnerDeleteReceipt, RunnerPublishReceipt};
 pub use recovery::recover_dispatched;
 
 /// A request to make one durable role-addressed pool task.
@@ -61,6 +63,9 @@ pub struct JobSpec {
     pub publish_ref: Option<String>,
     /// Exact source commit required for guarded promotion.
     pub publish_expect: Option<String>,
+    pub publish_contains: Option<String>,
+    pub delete_ref: Option<String>,
+    pub delete_expect: Option<String>,
     /// Pool execution budget in seconds.
     pub budget: u64,
     /// Explicit read-only request; the role can also require this mode.
@@ -103,6 +108,9 @@ impl JobSpec {
             allow_default_branch: false,
             publish_ref: None,
             publish_expect: None,
+            publish_contains: None,
+            delete_ref: None,
+            delete_expect: None,
             budget: 0,
             read_only: false,
             units: Vec::new(),
@@ -168,6 +176,12 @@ pub struct PoolJob {
     pub publish_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_expect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_expect: Option<String>,
     pub budget: u64,
     pub read_only: bool,
     pub units: Vec<String>,
@@ -222,6 +236,9 @@ impl From<JobSpec> for PoolJob {
             allow_default_branch: spec.allow_default_branch,
             publish_ref: spec.publish_ref,
             publish_expect: spec.publish_expect,
+            publish_contains: spec.publish_contains,
+            delete_ref: spec.delete_ref,
+            delete_expect: spec.delete_expect,
             budget: spec.budget,
             read_only: spec.read_only,
             units: spec.units,
@@ -239,66 +256,6 @@ impl From<JobSpec> for PoolJob {
             gate_attempted_tip: None,
             integration_error: None,
         }
-    }
-}
-
-/// The terminal pool result and the full task-thread receipt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobOutcome {
-    /// `finished`, `timeout` or `lost` from `pool reconcile`.
-    pub state: String,
-    /// Short detail from the reconcile line.
-    pub detail: String,
-    /// Full latest task-thread response, including the worker receipt.
-    pub receipt: String,
-    /// Collection time in epoch seconds.
-    pub at: u64,
-}
-
-/// Verified privileged-runner publication receipt carried in the pool summary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunnerPublishReceipt {
-    pub state: String,
-    pub reference: String,
-    pub candidate: String,
-    pub remote_sha: String,
-}
-
-impl RunnerPublishReceipt {
-    #[must_use]
-    pub fn succeeded(&self) -> bool {
-        matches!(self.state.as_str(), "pushed" | "already-on-remote")
-    }
-}
-
-impl JobOutcome {
-    /// Whether the pool receipt explicitly reports a successful worker exit.
-    #[must_use]
-    pub fn agent_success(&self) -> Option<bool> {
-        crate::pump::attempt_record::agent_exit(&self.receipt).map(|code| code == 0)
-    }
-
-    /// Host/harness classification of a finished or lost pool receipt.
-    #[must_use]
-    pub fn host_failure(&self) -> Option<crate::pump::envfail::HostFailure> {
-        crate::pump::envfail::classify(&self.state, &self.detail, &self.receipt)
-    }
-
-    /// Parse `runner publish: STATE REF CANDIDATE_SHA REMOTE_SHA` from the
-    /// task's collected pool summary.
-    #[must_use]
-    pub fn runner_publish(&self) -> Option<RunnerPublishReceipt> {
-        let line = self
-            .receipt
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("runner publish: "))?;
-        let mut words = line.split_whitespace();
-        Some(RunnerPublishReceipt {
-            state: words.next()?.to_owned(),
-            reference: words.next()?.to_owned(),
-            candidate: words.next()?.to_owned(),
-            remote_sha: words.next()?.to_owned(),
-        })
     }
 }
 
@@ -806,12 +763,7 @@ fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
     if job.allow_default_branch {
         args.push("--allow-default-branch".into());
     }
-    if let Some(reference) = &job.publish_ref {
-        args.push(format!("--publish-ref {}", shell_quote(reference)));
-    }
-    if let Some(expected) = &job.publish_expect {
-        args.push(format!("--publish-expect {}", shell_quote(expected)));
-    }
+    append_runner_arguments(&mut args, job);
     if job.budget > 0 {
         args.push(format!("--budget {}", job.budget));
     }
@@ -820,6 +772,20 @@ fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
     }
     args.push("--porcelain".into());
     args.join(" ")
+}
+
+fn append_runner_arguments(args: &mut Vec<String>, job: &PoolJob) {
+    for (flag, value) in [
+        ("--publish-ref", &job.publish_ref),
+        ("--publish-expect", &job.publish_expect),
+        ("--publish-contains", &job.publish_contains),
+        ("--delete-ref", &job.delete_ref),
+        ("--delete-expect", &job.delete_expect),
+    ] {
+        if let Some(value) = value {
+            args.push(format!("{flag} {}", shell_quote(value)));
+        }
+    }
 }
 
 /// Expand the assigned role pool first, then explicit candidates, including
@@ -894,6 +860,9 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.allow_default_branch == spec.allow_default_branch
         && job.publish_ref == spec.publish_ref
         && job.publish_expect == spec.publish_expect
+        && job.publish_contains == spec.publish_contains
+        && job.delete_ref == spec.delete_ref
+        && job.delete_expect == spec.delete_expect
         && job.budget == spec.budget
         && job.read_only == spec.read_only
         && job.units == spec.units

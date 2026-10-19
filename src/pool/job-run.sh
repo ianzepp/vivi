@@ -97,6 +97,10 @@ AGENT_S=
 PUBLISH_STATE=
 PUBLISH_CANDIDATE=
 PUBLISH_SHA=
+PUBLISH_CONTAINS_VERIFIED=0
+DELETE_STATE=
+DELETE_BEFORE=
+DELETE_AFTER=
 PUBLISH_DIR=
 PUBLISH_REPO=
 PUBLISH_HOME=
@@ -271,6 +275,15 @@ finish() { # finish <push-outcome> [sha]
       echo "publish_ref=$PUBLISH_REF"
       echo "publish_candidate=${PUBLISH_CANDIDATE:--}"
       echo "publish_sha=${PUBLISH_SHA:--}"
+      echo "publish_contains=${PUBLISH_CONTAINS:-}"
+      echo "publish_contains_verified=$PUBLISH_CONTAINS_VERIFIED"
+    fi
+    if [ -n "${DELETE_REF:-}" ]; then
+      echo "delete_state=${DELETE_STATE:-not-attempted}"
+      echo "delete_ref=$DELETE_REF"
+      echo "delete_expect=${DELETE_EXPECT:-}"
+      echo "delete_before=${DELETE_BEFORE:--}"
+      echo "delete_after=${DELETE_AFTER:--}"
     fi
     [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
     [ -z "${RESTORE_EXTRA:-}" ] || printf '%s\n' "$RESTORE_EXTRA"
@@ -297,7 +310,17 @@ publish_candidate_to() {
     PUBLISH_STATE=candidate_missing
     return 1
   }
-  if publisher_git push --no-verify -q "$url" "$candidate:$ref"; then
+  PUBLISH_CONTAINS_VERIFIED=0
+  if [ -n "${PUBLISH_CONTAINS:-}" ]; then
+    valid_git_oid "$PUBLISH_CONTAINS" && publisher_git merge-base --is-ancestor "$PUBLISH_CONTAINS" "$candidate" || {
+      PUBLISH_STATE=required_source_missing
+      return 1
+    }
+  fi
+  if [ -n "${PUBLISH_EXPECT:-}" ] && [[ "$ref" == refs/heads/vivi/need/* ]]; then
+    guarded_need_create "$url" "$ref" "$candidate" || return 1
+    push_state=$GUARDED_PUSH_STATE
+  elif publisher_git push --no-verify -q "$url" "$candidate:$ref"; then
     push_state=pushed
   elif [ "$allow_existing" = yes ]; then
     push_state=already-on-remote
@@ -324,6 +347,13 @@ publish_candidate_to() {
     return 1
   fi
   if publisher_git merge-base --is-ancestor "$candidate" "$PUBLISH_SHA"; then
+    if [ -n "${PUBLISH_CONTAINS:-}" ]; then
+      publisher_git merge-base --is-ancestor "$PUBLISH_CONTAINS" "$PUBLISH_SHA" || {
+        PUBLISH_STATE=required_source_missing
+        return 1
+      }
+      PUBLISH_CONTAINS_VERIFIED=1
+    fi
     PUBLISH_STATE=$push_state
     return 0
   fi
@@ -332,10 +362,42 @@ publish_candidate_to() {
   return 1
 }
 
+# An exact-candidate expectation on an owned need ref is a create-only grant.
+# A same-base replay is safe; no other existing tip is adopted or overwritten.
+guarded_need_create() {
+  local url=$1 ref=$2 candidate=$3 line observed observed_ref
+  PUBLISH_STATE=candidate_mismatch
+  [ "$candidate" = "$PUBLISH_EXPECT" ] || return 1
+  PUBLISH_STATE=verify_failed
+  line=$(publisher_git ls-remote --heads "$url" "$ref") || return 1
+  if [ -n "$line" ]; then
+    read -r observed observed_ref <<< "$line"
+    if [ "$observed" = "$candidate" ] && [ "$observed_ref" = "$ref" ]; then
+      GUARDED_PUSH_STATE=already-on-remote
+      return 0
+    fi
+    PUBLISH_STATE=ref_mismatch
+    return 1
+  fi
+  if publisher_git push --no-verify -q --force-with-lease="$ref:" "$url" "$candidate:$ref"; then
+    GUARDED_PUSH_STATE=pushed
+    return 0
+  fi
+  line=$(publisher_git ls-remote --heads "$url" "$ref") || return 1
+  read -r observed observed_ref <<< "$line"
+  if [ "$observed" = "$candidate" ] && [ "$observed_ref" = "$ref" ]; then
+    GUARDED_PUSH_STATE=already-on-remote
+    return 0
+  fi
+  PUBLISH_STATE=ref_mismatch
+  return 1
+}
+
 # Publish a verified candidate with the runner's credentials, never from the
 # agent environment. A plain push is fast-forward-only; remote ancestry is
 # read back before the result claims publication.
 publish_target() {
+  PUBLISH_CONTAINS_VERIFIED=0
   [ -n "${PUBLISH_REF:-}" ] || return 0
   if [ "${AGENT_RC:-1}" != 0 ]; then
     PUBLISH_STATE=agent_failed
@@ -357,6 +419,49 @@ publish_target() {
     return 0
   fi
   publish_candidate_to "$PUBLISH_URL" "$PUBLISH_REF" "$PUBLISH_CANDIDATE" yes || true
+}
+
+# Delete only this job's owned need ref, guarded by its exact old tip.
+# The lease is a compare-and-delete guard; no nonempty refspec is forced.
+delete_target() {
+  [ -n "${DELETE_REF:-}" ] || return 0
+  DELETE_STATE=agent_failed
+  [ "${AGENT_RC:-1}" = 0 ] || return 0
+  DELETE_STATE=invalid_ref
+  case "$DELETE_REF" in refs/heads/vivi/need/*) ;; *) return 0 ;; esac
+  local need_id=${DELETE_REF#refs/heads/vivi/need/} current candidate url
+  case "$need_id" in ''|*/*) return 0 ;; esac
+  valid_git_oid "${DELETE_EXPECT:-}" || return 0
+  init_publisher || { DELETE_STATE=verify_failed; return 0; }
+  publisher_git check-ref-format "$DELETE_REF" >/dev/null 2>&1 || return 0
+  candidate=$(hand_git rev-parse --verify 'HEAD^{commit}') || { DELETE_STATE=verify_failed; return 0; }
+  valid_git_oid "$candidate" && publisher_git merge-base --is-ancestor "$DELETE_EXPECT" "$candidate" || {
+    DELETE_STATE=verify_failed
+    return 0
+  }
+  url=$(clean_publish_url "${PUBLISH_REMOTE:-$REMOTE}")
+  [ -n "$url" ] || { DELETE_STATE=verify_failed; return 0; }
+  current=$(publisher_git ls-remote --heads "$url" "$DELETE_REF") || { DELETE_STATE=verify_failed; return 0; }
+  if [ -z "$current" ]; then
+    DELETE_BEFORE=absent
+    DELETE_AFTER=absent
+    DELETE_STATE=already-absent
+    return 0
+  fi
+  read -r DELETE_BEFORE current <<< "$current"
+  DELETE_STATE=ref_mismatch
+  [ "$current" = "$DELETE_REF" ] && [ "$DELETE_BEFORE" = "$DELETE_EXPECT" ] || return 0
+  DELETE_STATE=verify_failed
+  publisher_git push -q --force-with-lease="$DELETE_REF:$DELETE_EXPECT" "$url" ":$DELETE_REF" || return 0
+  current=$(publisher_git ls-remote --heads "$url" "$DELETE_REF") || return 0
+  [ -z "$current" ] || return 0
+  DELETE_AFTER=absent
+  DELETE_STATE=deleted
+}
+
+finalize_targets() {
+  publish_target
+  delete_target
 }
 
 # A shared slot keeps repository caches isolated; never recycle another
@@ -674,8 +779,8 @@ CHANGED=$(as_hand git status --porcelain -- "${EXCLUDE[@]}")
 MOVED=
 [ -n "${READ_ONLY:-}" ] || [ "$(as_hand git rev-parse HEAD)" = "$START" ] || MOVED=1
 if [ -z "$CHANGED" ] && [ -z "$MOVED" ]; then
-  [ -z "${PUBLISH_REF:-}" ] && finish no_changes
-  publish_target
+  [ -z "${PUBLISH_REF:-}" ] && [ -z "${DELETE_REF:-}" ] && finish no_changes
+  finalize_targets
   finish no_changes
 fi
 [ "${LOCAL_ACTION:-}" != create ] || as_hand git checkout -q -b "$BRANCH" || finish branch_exists
@@ -706,5 +811,5 @@ elif publish_candidate_to "$(clean_publish_url "$REMOTE")" "refs/heads/$BRANCH" 
 else
   RUNNER_PUSH=push_refused
 fi
-publish_target
+finalize_targets
 finish "$RUNNER_PUSH" "$RUNNER_SHA"

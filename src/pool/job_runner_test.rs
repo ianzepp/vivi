@@ -396,7 +396,7 @@ fn the_runner_has_no_commit_or_push_on_the_read_only_path() {
         "it ends before any push"
     );
     assert!(
-        call < RUNNER.find("\n  publish_target\n").unwrap(),
+        call < RUNNER.find("\n  finalize_targets\n").unwrap(),
         "and before target publication"
     );
     assert!(

@@ -10,10 +10,14 @@ assignment in the task body. Do not list the class board.
 
 - For an integration job, use the assigned target, checkout branch, and source
   branches in the listed order. Merge each requested source exactly once.
-- A need-owned job names the need, plan revision, need branch, frozen base SHA,
-  logical target, ordered unit sources, required checks, and generated-file
-  policy. Merge only those source tips onto that frozen base, in order. Do not
-  substitute current branch tips or infer extra sources.
+- A need-unit job names the need, plan revision, need branch/ref, frozen base
+  SHA, starting tip SHA, ordered unit sources, required checks, and generated
+  file policy. Merge only those unit tips onto the assigned starting tip, in
+  order. The frozen base remains the accepted range boundary; do not substitute
+  current branch tips or infer extra sources.
+- Branch on the exact `pump-job-kind` when it is supplied. The
+  `need-branch-init`, `need-merge`, and `need-cleanup` contracts below are
+  separate from ordinary integration and need-unit work.
 - If the checkout, base, target, source SHA, or plan revision does not match
   the assignment, stop and report an incomplete result. Do not repair stale
   inputs by guessing.
@@ -44,21 +48,65 @@ assignment in the task body. Do not list the class board.
 - Do not push, force-push, expose credentials, or treat a git merge exit code,
   your own report, or a push marker as publication proof. The privileged pool
   runner owns publication and verifies the remote ref after the push.
-- For a durable pump job, finish with one minified JSON line prefixed exactly
+- For ordinary integration and need-unit pump jobs, finish with one minified
+  JSON line prefixed exactly
   `PUMP_MERGE_RESULT=`. It must use version `1`, the assigned logical `target`,
   the full candidate SHA in `tip`, and every requested source exactly once.
   Each source has `kind`, `id`, and a `status` of `merged`, `dropped`, or
   `undecided`. A source not included must carry a reason and detail. Preserve
   any additional fields required by the assignment. Do not claim remote
   publication in this JSON result.
+- For need-unit work, preserve the exact need, plan revision, branch/ref, frozen
+  base, and starting-tip bindings named by the assignment. Include each
+  assigned unit exactly once in `sources`; the candidate must retain the frozen
+  base and every expected unit tip as ancestors.
+- For `pump-job-kind: need-branch-init`, do not create a commit or push. The
+  assignment supplies `target`, `need`, `branch`, and `base_sha`. Verify the
+  local candidate and `tip_sha` equal the reserved base. Finish with one
+  minified line prefixed exactly `PUMP_NEED_BRANCH_RESULT=` and JSON fields
+  `version:1`, `status`, `target`, `need`, `branch`, `base_sha`, and `tip_sha`.
+  `status` is `ready` when the runner may publish the exact base, `exists` only
+  when supplied evidence shows the remote ref already equals that base,
+  `collision` only when supplied evidence shows another SHA, or `blocked` when
+  the assignment does not match. Do not infer remote state from a local ref;
+  the privileged runner performs compare-and-set publication and its receipt
+  decides whether a collision actually occurred.
+- For `pump-job-kind: need-merge`, merge exactly one supplied accepted
+  `vivi/need/<need>` source at the full accepted tip into the current configured
+  integration target. The assignment binds `target`, `need`, `revision`,
+  `base`, `tip`, and `source_job_id`, and supplies the exact
+  `required_checks` list. Keep `PUMP_MERGE_RESULT=` and return one source entry
+  `{kind:"job",id:<source_job_id>,status:"merged|undecided|dropped",why,detail}`.
+  Bind the result to those assignment values: in this need-merge extension,
+  `tip` is the accepted source SHA and `candidate` is the full merge commit
+  SHA. Include top-level `status` (`merged` or `blocked`), `checks`, and
+  `resolutions` (each resolution identifies its path and detail). Each
+  required check appears exactly once in `checks` as
+  `{name,command,status:"passed|failed",detail}`. Verify the accepted `tip` is
+  an ancestor of `candidate`. A conflict or failed required check that remains
+  unresolved requires `status:"blocked"`, a nonzero process exit, and no
+  publication candidate. Exit successfully only when every required check
+  passed, the binding matches, and the accepted tip is included. Report
+  resolved paths and check outcomes visibly and in the commit.
+- For `pump-job-kind: need-cleanup`, make no Git writes and do not delete a
+  ref. Check only the supplied verified landing receipt and assignment fields:
+  `need`, revision, accepted tip, `branch_ref`, and `expected_sha`. The receipt
+  must prove that this exact accepted tip landed at the named target; the ref
+  and expected SHA must identify the accepted need branch. Exit nonzero if any
+  evidence is missing or mismatched. No extra result marker is used. Clean
+  exit only authorizes the privileged runner to attempt compare-and-set
+  deletion. The runner's structured delete receipt and verified remote absence
+  are the completion evidence; your clean exit is not.
 - A merge is complete only after the runner reports the same candidate SHA and
   observed target SHA, and independent remote verification confirms the exact
   assigned ref and expected merged ancestry. If any receipt is missing,
   unavailable, refused, names another SHA/ref, or lacks required ancestry,
   report success as unverified and keep the result incomplete.
-- Report the sources, target, starting and candidate SHAs, checks and their
+- Never exit successfully while a merge, source, or required check is blocked.
+  Report the sources, target, starting and candidate SHAs, checks and their
   outcomes, conflict resolutions, and any remaining uncertainty. Give a
-  structured `undecided` or failed result when success cannot be proved.
+  structured `undecided`, `blocked`, or failed result when success cannot be
+  proved.
 - For an ordinary Vivi handle, report evidence and remaining uncertainty
   through the handle. Do not close it unless the assignment explicitly grants
   that authority.

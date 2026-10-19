@@ -152,7 +152,14 @@ fn job_runner_is_generic_and_keeps_privileged_publish_outside_the_agent() {
     ));
     assert!(job::RUNNER.contains(r#"publisher_git push --no-verify -q "$url" "$candidate:$ref""#));
     assert!(job::RUNNER.contains(r#"as_hand bash < "$J/target-seed.sh""#));
-    assert!(!job::RUNNER.contains("--force"));
+    assert_eq!(job::RUNNER.matches("--force-with-lease=").count(), 2);
+    assert!(
+        job::RUNNER
+            .contains(r#"--force-with-lease="$DELETE_REF:$DELETE_EXPECT" "$url" ":$DELETE_REF""#)
+    );
+    assert!(job::RUNNER.contains(r#"--force-with-lease="$ref:" "$url" "$candidate:$ref""#));
+    assert!(!job::RUNNER.contains("--force "));
+    assert!(!job::RUNNER.contains("--force\n"));
     assert!(!job::RUNNER.contains("push -f"));
     // The Git token is read into the runner only, not into the agent's env.
     assert!(!job::RUNNER.contains("GH_TOKEN"));

@@ -165,6 +165,17 @@ impl Rig {
         reference: &str,
         expected: Option<&str>,
     ) -> JobResult {
+        self.run_with_controls(harness, worktree, reference, expected, "")
+    }
+
+    fn run_with_controls(
+        &self,
+        harness: &str,
+        worktree: bool,
+        reference: &str,
+        expected: Option<&str>,
+        controls: &str,
+    ) -> JobResult {
         let remote = if worktree {
             String::new()
         } else {
@@ -184,6 +195,7 @@ impl Rig {
         if worktree {
             params += &format!("LOCAL_ACTION='create'\nLOCAL_START='{}'\n", self.start);
         }
+        params.push_str(controls);
         self.stage(&params, harness, &[]);
         let home = self.work.path().join("home");
         let shims = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pool/local-bin");
@@ -496,4 +508,157 @@ fn publisher_ignores_hand_hooks_and_url_rewrites() {
             .success(),
         "hand-controlled URL rewrite redirected publication"
     );
+}
+
+#[test]
+fn runner_checks_required_need_tip_before_and_after_publication() {
+    let rig = Rig::new(1).as_worktree();
+    let required = rig.b_sha();
+    let result = rig.run_with_controls(
+        "git merge -q --no-ff --no-edit B",
+        true,
+        "refs/heads/integration",
+        None,
+        &format!("PUBLISH_CONTAINS='{required}'\n"),
+    );
+    assert_eq!(result.get("publish_state"), "pushed", "{:?}", result.fields);
+    assert_eq!(result.get("publish_contains"), required);
+    assert_eq!(result.get("publish_contains_verified"), "1");
+    let outcome = crate::pump::jobs::JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: result.summary(),
+        at: 1,
+    };
+    let proof = outcome.runner_publish().unwrap();
+    assert_eq!(proof.contains.as_deref(), Some(required.as_str()));
+    assert!(proof.contains_verified);
+}
+
+#[test]
+fn missing_need_ancestry_refuses_publication() {
+    let rig = Rig::new(1).as_worktree();
+    let result = rig.run_with_controls(
+        "true",
+        true,
+        "refs/heads/integration",
+        None,
+        &format!("PUBLISH_CONTAINS='{}'\n", rig.b_sha()),
+    );
+    assert_eq!(result.get("publish_state"), "required_source_missing");
+    assert_eq!(result.get("publish_contains_verified"), "0");
+    assert!(!remote_has_ref(&rig.f.repo, "refs/heads/integration"));
+}
+
+#[test]
+fn need_branch_creation_refuses_even_a_fast_forwardable_foreign_ref() {
+    let rig = Rig::new(1).as_worktree();
+    let base = rig.a_sha();
+    let previous = git(&rig.f.repo, &["rev-parse", "A~1"]);
+    git(&rig.f.repo, &["branch", "vivi/need/collision", &previous]);
+    let result = rig.run_published("true", true, "refs/heads/vivi/need/collision", Some(&base));
+    assert_eq!(result.get("publish_state"), "ref_mismatch");
+    assert_eq!(
+        git(&rig.f.repo, &["rev-parse", "vivi/need/collision"]),
+        previous
+    );
+}
+
+#[test]
+fn need_branch_creation_can_be_replayed_at_the_exact_base() {
+    let rig = Rig::new(1).as_worktree();
+    let base = rig.a_sha();
+    let first = rig.run_published("true", true, "refs/heads/vivi/need/replay", Some(&base));
+    assert_eq!(first.get("publish_state"), "pushed", "{:?}", first.fields);
+    let second = rig.run_published("true", true, "refs/heads/vivi/need/replay", Some(&base));
+    assert_eq!(
+        second.get("publish_state"),
+        "already-on-remote",
+        "{:?}",
+        second.fields
+    );
+}
+
+#[test]
+fn need_branch_cleanup_is_expected_tip_guarded_and_replay_safe() {
+    let rig = Rig::new(1).as_worktree();
+    let expected = rig.a_sha();
+    git(&rig.f.repo, &["branch", "vivi/need/cleanup", &expected]);
+    let controls =
+        format!("DELETE_REF='refs/heads/vivi/need/cleanup'\nDELETE_EXPECT='{expected}'\n");
+    let result = rig.run_with_controls("true", true, "", None, &controls);
+    assert_eq!(result.get("delete_state"), "deleted", "{:?}", result.fields);
+    assert_eq!(result.get("delete_before"), expected);
+    assert_eq!(result.get("delete_after"), "absent");
+    assert!(!remote_has_ref(&rig.f.repo, "refs/heads/vivi/need/cleanup"));
+    let outcome = crate::pump::jobs::JobOutcome {
+        state: "finished".into(),
+        detail: String::new(),
+        receipt: result.summary(),
+        at: 1,
+    };
+    assert!(outcome.runner_delete().unwrap().succeeded());
+    let replay = rig.run_with_controls("true", true, "", None, &controls);
+    assert_eq!(replay.get("delete_state"), "already-absent");
+}
+
+#[test]
+fn need_branch_cleanup_preserves_a_changed_ref() {
+    let rig = Rig::new(1).as_worktree();
+    git(&rig.f.repo, &["branch", "vivi/need/changed", &rig.b_sha()]);
+    let result = rig.run_with_controls(
+        "true",
+        true,
+        "",
+        None,
+        &format!(
+            "DELETE_REF='refs/heads/vivi/need/changed'\nDELETE_EXPECT='{}'\n",
+            rig.a_sha()
+        ),
+    );
+    assert_eq!(result.get("delete_state"), "ref_mismatch");
+    assert_eq!(
+        git(&rig.f.repo, &["rev-parse", "vivi/need/changed"]),
+        rig.b_sha()
+    );
+}
+
+#[test]
+fn need_cleanup_refuses_unlanded_work_and_non_need_refs() {
+    let rig = Rig::new(1).as_worktree();
+    git(&rig.f.repo, &["branch", "vivi/need/unlanded", &rig.b_sha()]);
+    let result = rig.run_with_controls(
+        "true",
+        true,
+        "",
+        None,
+        &format!(
+            "DELETE_REF='refs/heads/vivi/need/unlanded'\nDELETE_EXPECT='{}'\n",
+            rig.b_sha()
+        ),
+    );
+    assert_eq!(result.get("delete_state"), "verify_failed");
+    assert!(remote_has_ref(&rig.f.repo, "refs/heads/vivi/need/unlanded"));
+    let main = rig.run_with_controls(
+        "true",
+        true,
+        "",
+        None,
+        &format!(
+            "DELETE_REF='refs/heads/main'\nDELETE_EXPECT='{}'\n",
+            rig.a_sha()
+        ),
+    );
+    assert_eq!(main.get("delete_state"), "invalid_ref");
+    assert!(remote_has_ref(&rig.f.repo, "refs/heads/main"));
+}
+
+fn remote_has_ref(repo: &Path, reference: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show-ref", "--verify", "--quiet", reference])
+        .status()
+        .unwrap()
+        .success()
 }

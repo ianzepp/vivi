@@ -364,6 +364,9 @@ pub struct JobPlan {
     pub publish_ref: Option<String>,
     /// Exact commit the runner must publish (promotion jobs only).
     pub publish_expect: Option<String>,
+    pub publish_contains: Option<String>,
+    pub delete_ref: Option<String>,
+    pub delete_expect: Option<String>,
     /// Remote address for privileged publication when the pool itself has no remote.
     pub publish_remote: Option<String>,
     /// Extra refs the job may read; `commit` is filled before a slot is
@@ -561,18 +564,17 @@ fn core_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
 }
 
 fn append_publish_fields(fields: &mut Vec<ParamField>, spec: &JobPlan) {
-    if let Some(reference) = &spec.publish_ref {
-        fields.extend([
-            ("PUBLISH_REF", reference.clone()),
-            (
-                "PUBLISH_EXPECT",
-                spec.publish_expect.clone().unwrap_or_default(),
-            ),
-            (
-                "PUBLISH_REMOTE",
-                spec.publish_remote.clone().unwrap_or_default(),
-            ),
-        ]);
+    if spec.publish_ref.is_some() || spec.delete_ref.is_some() {
+        for (key, value) in [
+            ("PUBLISH_REF", &spec.publish_ref),
+            ("PUBLISH_EXPECT", &spec.publish_expect),
+            ("PUBLISH_CONTAINS", &spec.publish_contains),
+            ("PUBLISH_REMOTE", &spec.publish_remote),
+            ("DELETE_REF", &spec.delete_ref),
+            ("DELETE_EXPECT", &spec.delete_expect),
+        ] {
+            fields.push((key, value.clone().unwrap_or_default()));
+        }
     }
 }
 

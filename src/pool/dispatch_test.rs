@@ -58,6 +58,9 @@ fn flags(model: &str) -> DispatchFlags {
         branch: Some("factory/a".into()),
         publish_ref: None,
         publish_expect: None,
+        publish_contains: None,
+        delete_ref: None,
+        delete_expect: None,
         with: Vec::new(),
         budget: None,
         allow_default_branch: false,
@@ -830,4 +833,40 @@ github_repo = "faberlang/radix"
         "radix",
     );
     assert!(result.err().unwrap().to_string().contains("does not match"));
+}
+
+#[test]
+fn guarded_need_publication_and_cleanup_flags_are_validated_before_dispatch() {
+    let mut valid = flags("m/ok");
+    valid.publish_ref = Some("refs/heads/next".into());
+    valid.publish_contains = Some("a".repeat(40));
+    assert!(plan(&valid).is_ok());
+    valid.publish_contains = Some("not-a-commit".into());
+    assert!(plan(&valid).is_err());
+    valid.publish_contains = Some("a".repeat(40));
+    valid.publish_ref = None;
+    assert!(plan(&valid).is_err());
+    let mut cleanup = flags("m/ok");
+    cleanup.delete_ref = Some("refs/heads/vivi/need/abcd1234".into());
+    cleanup.delete_expect = Some("b".repeat(40));
+    let resolved = plan(&cleanup).unwrap();
+    assert_eq!(resolved.delete_ref, cleanup.delete_ref);
+    assert_eq!(resolved.delete_expect, cleanup.delete_expect);
+    for invalid in [
+        "refs/heads/main",
+        "refs/heads/vivi/need/",
+        "refs/heads/vivi/need/a/b",
+    ] {
+        cleanup.delete_ref = Some(invalid.into());
+        assert!(plan(&cleanup).is_err(), "{invalid}");
+    }
+    cleanup.delete_ref = Some("refs/heads/vivi/need/abcd1234".into());
+    cleanup.delete_expect = None;
+    assert!(plan(&cleanup).is_err());
+    cleanup.delete_expect = Some("b".repeat(40));
+    cleanup.publish_ref = Some("refs/heads/next".into());
+    assert!(plan(&cleanup).is_err());
+    cleanup.publish_ref = None;
+    cleanup.read_only = true;
+    assert!(plan(&cleanup).is_err());
 }
