@@ -2,6 +2,7 @@
 //! filter, `--since` cutoffs, human window labels, and the `[memo]` config
 //! table (hidden tags and per-tag retention).
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -9,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::duration::parse_duration_secs;
 use crate::error::VivariumError;
+use crate::mailspace::Mailspace;
+use crate::storage::StoredMessageView;
 
 /// Header that stores one memo tag; a memo carries one header per tag.
 const TAG_HEADER: &str = "X-Vivi-Tag";
@@ -174,6 +177,98 @@ pub fn hidden_tags(config: &Option<MemoConfig>) -> BTreeSet<String> {
         }
     }
     hidden
+}
+
+/// Parse a stored message date (RFC3339) into UTC, or `None` when it does
+/// not parse.
+fn memo_date(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|date| date.with_timezone(&Utc))
+}
+
+/// Sort newest-first (undated last, stable) and apply the filter's result cap.
+fn sort_and_limit(mut memos: Vec<(StoredMessageView, Vec<String>)>, filter: &MemoFilter) -> Vec<(StoredMessageView, Vec<String>)> {
+    memos.sort_by(|left, right| {
+        match (memo_date(&left.0.date), memo_date(&right.0.date)) {
+            (Some(left), Some(right)) => right.cmp(&left),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    });
+    if let Some(limit) = filter.limit {
+        memos.truncate(limit);
+    }
+    memos
+}
+
+impl Mailspace {
+    /// List memos for `identity` with `filter` applied, newest first.
+    ///
+    /// Each memo comes back with its parsed `X-Vivi-Tag` tags. Hidden tags
+    /// (the built-in `digest` default plus the configured `hidden_tags`) are
+    /// dropped unless `filter.include_hidden` is set.
+    ///
+    /// # Errors
+    /// Returns an error if the identity cannot be resolved or a storage
+    /// operation fails.
+    pub fn list_memos_filtered(
+        &self,
+        identity: &str,
+        filter: &MemoFilter,
+    ) -> Result<Vec<(StoredMessageView, Vec<String>)>, VivariumError> {
+        let hidden = hidden_tags(&self.config.memo);
+        let storage = self.storage()?;
+        let mut kept = Vec::new();
+        for view in self.list_kind(Some(identity), "memos", "memo")? {
+            let data = storage.read_message(&view.message_id)?;
+            let tags = parse_tags(&data);
+            if keep(memo_date(&view.date), &tags, filter, &hidden) {
+                kept.push((view, tags));
+            }
+        }
+        Ok(sort_and_limit(kept, filter))
+    }
+
+    /// [`Mailspace::search_memos`] with `filter` applied and tags attached.
+    ///
+    /// Matching keeps the same rules as [`Mailspace::search_memos`]: subject
+    /// and body (unless `subject_only`), case-insensitive. Every match is
+    /// then filtered, tagged, sorted newest first, and capped at
+    /// `filter.limit`.
+    ///
+    /// # Errors
+    /// Returns an error if the identity cannot be resolved, a storage
+    /// operation fails, or a memo blob cannot be parsed.
+    pub fn search_memos_filtered(
+        &self,
+        identity: &str,
+        query: &str,
+        subject_only: bool,
+        filter: &MemoFilter,
+    ) -> Result<Vec<(StoredMessageView, Vec<String>)>, VivariumError> {
+        let hidden = hidden_tags(&self.config.memo);
+        let query = query.to_lowercase();
+        let storage = self.storage()?;
+        let mut matched = Vec::new();
+        for memo in self.list_kind(Some(identity), "memos", "memo")? {
+            let data = storage.read_message(&memo.message_id)?;
+            let tags = parse_tags(&data);
+            if !keep(memo_date(&memo.date), &tags, filter, &hidden) {
+                continue;
+            }
+            let hit = memo.subject.to_lowercase().contains(&query)
+                || (!subject_only
+                    && crate::extract::extract_text(&data)?
+                        .to_lowercase()
+                        .contains(&query));
+            if hit {
+                matched.push((memo, tags));
+            }
+        }
+        Ok(sort_and_limit(matched, filter))
+    }
 }
 
 #[cfg(test)]

@@ -2343,6 +2343,146 @@ fn memo_search_filters_by_subject_and_body() {
     assert!(subjects.contains(&"Weekly standup notes"));
 }
 
+#[test]
+fn memo_list_filters_and_hides_digest() {
+    let project = tempfile::tempdir().unwrap();
+    assert_success(&vivi([
+        "mailspace",
+        "init",
+        "--project",
+        project.path().to_str().unwrap(),
+    ]));
+    assert_success(&vivi([
+        "mailspace",
+        "identity",
+        "add",
+        "mind",
+        "--project",
+        project.path().to_str().unwrap(),
+    ]));
+    let p = project.path().to_str().unwrap();
+
+    assert_success(&vivi([
+        "memo", "save", "--for", "mind", "--subject", "plain note", "--body",
+        "no tags here", "--project", p,
+    ]));
+    assert_success(&vivi([
+        "memo", "save", "--for", "mind", "--subject", "Daily digest", "--body",
+        "the digest", "--tag", "digest", "--project", p,
+    ]));
+    assert_success(&vivi([
+        "memo", "save", "--for", "mind", "--subject", "ops runbook", "--body",
+        "restart steps", "--tag", "ops", "--project", p,
+    ]));
+
+    // Default list hides the digest-tagged memo.
+    let out = vivi(["memo", "list", "--for", "mind", "--project", p]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("plain note"), "{text}");
+    assert!(text.contains("ops runbook"), "{text}");
+    assert!(!text.contains("Daily digest"), "{text}");
+
+    // Naming the hidden tag reveals it, and only it.
+    let out = vivi([
+        "memo", "list", "--for", "mind", "--tag", "digest", "--project", p,
+    ]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("Daily digest"), "{text}");
+    assert!(!text.contains("plain note"), "{text}");
+    assert!(!text.contains("ops runbook"), "{text}");
+
+    // --all shows everything.
+    let out = vivi(["memo", "list", "--for", "mind", "--all", "--project", p]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("plain note"), "{text}");
+    assert!(text.contains("ops runbook"), "{text}");
+    assert!(text.contains("Daily digest"), "{text}");
+
+    // --exclude-tag drops that memo.
+    let out = vivi([
+        "memo", "list", "--for", "mind", "--exclude-tag", "ops", "--project", p,
+    ]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("plain note"), "{text}");
+    assert!(!text.contains("ops runbook"), "{text}");
+    assert!(!text.contains("Daily digest"), "{text}");
+
+    // A recent duration keeps the memos; a far-future floor drops them all.
+    let out = vivi([
+        "memo", "list", "--for", "mind", "--since", "1h", "--project", p,
+    ]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("plain note"), "{text}");
+    assert!(text.contains("ops runbook"), "{text}");
+
+    let out = vivi([
+        "memo", "list", "--for", "mind", "--since", "2999-01-01", "--project", p,
+    ]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(!text.contains("plain note"), "{text}");
+    assert!(text.contains("no memos"), "{text}");
+
+    // --limit 1 prints exactly one memo line.
+    let out = vivi([
+        "memo", "list", "--for", "mind", "--all", "--limit", "1", "--project", p,
+    ]);
+    assert_success(&out);
+    let text = stdout(&out);
+    let rows: Vec<&str> = text.lines().skip(1).filter(|line| !line.trim().is_empty()).collect();
+    assert_eq!(rows.len(), 1, "{text}");
+
+    // JSON rows carry the tags array alongside handle/date/subject.
+    let out = vivi([
+        "memo", "list", "--for", "mind", "--json", "--project", p,
+    ]);
+    assert_success(&out);
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let items = v.as_array().unwrap();
+    assert_eq!(items.len(), 2, "{v}");
+    for item in items {
+        assert!(item["handle"].as_str().is_some(), "{v}");
+        assert!(item["date"].as_str().is_some(), "{v}");
+        assert!(item["subject"].as_str().is_some(), "{v}");
+        assert!(item["tags"].as_array().is_some(), "{v}");
+    }
+    let ops = items
+        .iter()
+        .find(|item| item["subject"] == "ops runbook")
+        .unwrap();
+    assert_eq!(ops["tags"], serde_json::json!(["ops"]), "{v}");
+    let plain = items
+        .iter()
+        .find(|item| item["subject"] == "plain note")
+        .unwrap();
+    assert_eq!(plain["tags"], serde_json::json!([]), "{v}");
+
+    // Search applies the same hidden-tag default and the same tag filters.
+    let out = vivi(["memo", "search", "digest", "--for", "mind", "--project", p]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(!text.contains("Daily digest"), "{text}");
+
+    let out = vivi([
+        "memo", "search", "digest", "--for", "mind", "--tag", "digest", "--project", p,
+    ]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("Daily digest"), "{text}");
+
+    let out = vivi([
+        "memo", "search", "restart", "--for", "mind", "--exclude-tag", "ops", "--project", p,
+    ]);
+    assert_success(&out);
+    let text = stdout(&out);
+    assert!(text.contains("no memos"), "{text}");
+}
+
 fn send_mail(project: &str, from: &str, to: &str, subject: &str, body: &str) -> String {
     let output = vivi([
         "mail",
