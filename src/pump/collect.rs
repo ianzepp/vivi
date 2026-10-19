@@ -223,6 +223,11 @@ fn host_fail(ctx: &Ctx, st: &mut State, uid: &str, host: &envfail::HostFailure, 
         unit.branch = None;
         unit.since = now;
         unit.since_dispatch = None;
+        if host.class == "provider" {
+            // A provider outage is transient: hold the restored attempt off
+            // the dispatch frontier until the backoff window passes.
+            unit.retry_not_before = Some(now.saturating_add(ctx.cfg.dispatch.transient_backoff));
+        }
         unit.pool.clone()
     };
     let evidence = format!(
@@ -244,7 +249,15 @@ fn host_fail(ctx: &Ctx, st: &mut State, uid: &str, host: &envfail::HostFailure, 
             .map(|tool| format!("command -v {tool}"));
         if entry.fails.len() >= envfail::HOST_PAUSE_AFTER && entry.paused_at.is_none() {
             entry.paused_at = Some(now);
-            ctx.exception("environment", &pool, &evidence);
+            // One exception per burst, named for the outage class: provider
+            // failures report `provider-outage`, every other class keeps
+            // `environment`.
+            let kind = if host.class == "provider" {
+                "provider-outage"
+            } else {
+                "environment"
+            };
+            ctx.exception(kind, &pool, &evidence);
         }
     }
     ctx.log(&format!("host-fail {uid} {}; attempt restored", host.class));
