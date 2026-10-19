@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::pump::collect::spawn_planner;
-use crate::pump::host::{Ctx, shell_quote};
+use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
 use crate::pump::ready::satisfied;
 use crate::pump::state::State;
 
@@ -150,9 +150,12 @@ pub fn read_skip(ctx: &Ctx) -> BTreeSet<String> {
     }
 }
 
-/// Drop planner entries whose plan file exists (done) or that ran longer
-/// than `plan_timeout`; a timed-out planner without a plan file raises
-/// `plan-no-answer`.
+/// Drop planner entries whose plan file exists (done), whose planner exited
+/// without a plan, or that ran longer than `plan_timeout`. A planner exit
+/// receipt (`.rc`, written by the spawn reaper) frees the slot at once and
+/// schedules a backoff relaunch; a timed-out planner without a receipt still
+/// raises `plan-no-answer`. A landed plan clears the handle's planner
+/// bookkeeping so a later re-plan starts clean.
 pub fn expire_planning(ctx: &Ctx, st: &mut State) {
     let timeout = ctx.cfg.board.plan_timeout;
     let mins = timeout / 60;
@@ -162,12 +165,20 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
         .planning
         .iter()
         .filter(|(handle, at)| {
-            plan_path(ctx, handle).exists() || now.saturating_sub(**at) > timeout
+            plan_path(ctx, handle).exists()
+                || exit_receipt_path(&out_path(ctx, handle)).exists()
+                || now.saturating_sub(**at) > timeout
         })
         .map(|(handle, _)| handle.clone())
         .collect();
     for handle in expired {
-        if !plan_path(ctx, &handle).exists() {
+        if plan_path(ctx, &handle).exists() {
+            st.board.planner_pids.remove(&handle);
+            st.board.planner_fails.remove(&handle);
+            st.board.planner_retry_at.remove(&handle);
+        } else if exit_receipt_path(&out_path(ctx, &handle)).exists() {
+            fail_exited_planner(ctx, st, &handle);
+        } else {
             ctx.exception(
                 "plan-no-answer",
                 &handle,
@@ -176,6 +187,49 @@ pub fn expire_planning(ctx: &Ctx, st: &mut State) {
         }
         st.board.planning.remove(&handle);
     }
+}
+
+/// Consecutive planner crashes tolerated before the need parks, and the base
+/// seconds of the exponential relaunch delay.
+const PLANNER_TRIES: u32 = 3;
+const PLANNER_BACKOFF: u64 = 60;
+
+/// `<home>/board/<handle>.out`, the planner's captured output.
+fn out_path(ctx: &Ctx, handle: &str) -> PathBuf {
+    ctx.home.join("board").join(format!("{handle}.out"))
+}
+
+/// Log, flag and free one planner that exited without writing its plan: the
+/// slot opens this pass, a relaunch waits [`PLANNER_BACKOFF`] doubled per
+/// prior failure, and after [`PLANNER_TRIES`] failures the need parks as
+/// `plan-failed`.
+fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) {
+    let code = match fs::read_to_string(exit_receipt_path(&out_path(ctx, handle))) {
+        Ok(text) => text.trim().parse::<i32>().unwrap_or(-1),
+        Err(_) => -1,
+    };
+    let text = fs::read_to_string(out_path(ctx, handle)).unwrap_or_default();
+    let tail = tail_note(&text, 200);
+    ctx.log(&format!("board: planner {handle} exited rc={code}: {tail}"));
+    ctx.exception(
+        "plan-crashed",
+        handle,
+        &format!("planner exited rc={code} without a plan: {tail}"),
+    );
+    st.board.planner_pids.remove(handle);
+    let fails = st.board.planner_fails.entry(handle.to_owned()).or_insert(0);
+    *fails += 1;
+    let fails = *fails;
+    if fails < PLANNER_TRIES {
+        let delay = PLANNER_BACKOFF.saturating_mul(1u64 << fails.saturating_sub(1).min(63));
+        st.board
+            .planner_retry_at
+            .insert(handle.to_owned(), ctx.now() + delay);
+        return;
+    }
+    st.board.planner_failed.push(handle.to_owned());
+    st.board.planner_retry_at.remove(handle);
+    ctx.exception("plan-failed", handle, "planner exited three times without writing a plan");
 }
 
 /// Plan the new needs among `rows`: skip old, skipped,
