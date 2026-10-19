@@ -760,6 +760,37 @@ fn promote_goes_once_the_owned_failure_is_gone_from_the_gate() {
     drop(dir);
 }
 
+#[test]
+fn a_dead_target_keeps_its_owned_names_red() {
+    let (dir, ctx, host) = setup();
+    let mut st = gate_state(4);
+    st.baseline = Some(vec![String::from("old")]);
+    st.red.insert(
+        String::from("radix-cli a::b"),
+        String::from("pumpfix-g01234567"),
+    );
+    finish_gate(
+        &ctx,
+        &mut st,
+        "FAILING-BEGIN\nvivi pump::x\nTARGET-DIED radix-cli\nFAILING-END\n",
+    );
+    assert_eq!(
+        st.red.get("radix-cli a::b"),
+        Some(&String::from("pumpfix-g01234567"))
+    );
+    assert!(
+        host.logs()
+            .iter()
+            .all(|l| !l.contains("red fixed: radix-cli a::b"))
+    );
+    assert!(host.logs().iter().any(|l| {
+        l.contains("gate-target-died: radix-cli kept 1 owned reds (target died, not fixed)")
+    }));
+    let exceptions = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default();
+    assert!(exceptions.contains("gate-target-died"));
+    drop(dir);
+}
+
 /// A context whose gate takes external results from `dir/results` and waits
 /// 600 s for one before a pool gate.
 fn external_setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>) {
