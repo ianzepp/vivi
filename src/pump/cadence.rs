@@ -101,33 +101,6 @@ pub struct CadenceState {
     pub scanned_at: u64,
 }
 
-/// A marked head-ceo investigation dispatched to the auditor role.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct InvestigationRun {
-    #[serde(default)]
-    pub need: String,
-    #[serde(default)]
-    pub want: String,
-    #[serde(default)]
-    pub auditor: String,
-    #[serde(default)]
-    pub job: String,
-    #[serde(default)]
-    pub task: String,
-    #[serde(default)]
-    pub round: u32,
-    #[serde(default)]
-    pub attempt: u32,
-    #[serde(default)]
-    pub started_at: u64,
-    #[serde(default)]
-    pub ended_at: Option<u64>,
-    #[serde(default)]
-    pub outcome: Option<String>,
-    #[serde(default)]
-    pub retry_at: Option<u64>,
-}
-
 /// Read the cadence state, falling back to defaults for absent or bad payloads.
 pub fn state(st: &State) -> CadenceState {
     let Some(value) = st.extra.get(EXTRA_KEY).cloned() else {
@@ -319,6 +292,7 @@ fn role_scan(
     now: u64,
 ) -> RoleScan {
     let read_only = resolve_read_only(false, role.read_only, role.kind.as_deref());
+    let next_due_at = next_due_at(&schedule, now);
     RoleScan {
         name: role.name,
         kind: role.kind,
@@ -331,7 +305,7 @@ fn role_scan(
         has_charter: role.has_charter,
         schedule_state: String::from(state_label(schedule.state)),
         last_signal_at: schedule.last_signal_at,
-        next_due_at: next_due_at(&schedule, now),
+        next_due_at,
     }
 }
 
@@ -409,30 +383,20 @@ fn job_spec(ctx: &Ctx, role: &RoleView, scan: &RoleScan, attempt: u32, now: u64)
             scan.next_due_at.unwrap_or(now)
         )
     });
-    JobSpec {
-        id,
-        kind,
-        role: role.name.clone(),
-        subject,
-        body,
-        pool_candidates: Vec::new(),
-        target: branch.as_ref().map(|_| ctx.target_id.clone()),
-        from_ref: None,
-        branch,
-        budget: ctx.cfg.dispatch.budget,
-        integration_required: !read_only,
-        model: None,
-        builtin_role: None,
-        read_only,
-        units: Vec::new(),
-        payload: serde_json::json!({
-            "cadence": role.cadence,
-            "scheduled_at": now,
-            "attempt": attempt,
-            "open_wants": scan.open_wants,
-            "open_needs": scan.open_needs,
-        }),
-    }
+    let mut spec = JobSpec::new(id, kind, role.name.clone(), subject, body);
+    spec.target = branch.as_ref().map(|_| ctx.target_id.clone());
+    spec.branch = branch;
+    spec.budget = ctx.cfg.dispatch.budget;
+    spec.integration_required = !read_only;
+    spec.read_only = read_only;
+    spec.payload = serde_json::json!({
+        "cadence": role.cadence,
+        "scheduled_at": now,
+        "attempt": attempt,
+        "open_wants": scan.open_wants,
+        "open_needs": scan.open_needs,
+    });
+    spec
 }
 
 fn digest_job(

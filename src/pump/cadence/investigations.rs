@@ -123,12 +123,11 @@ fn finish_run(
 }
 
 fn failure_label(state: &str, agent_success: Option<bool>) -> &'static str {
-    if state == "timeout" || state == "lost" {
-        state
-    } else if agent_success == Some(false) {
-        "failed"
-    } else {
-        "missing-report"
+    match state {
+        "timeout" => "timeout",
+        "lost" => "lost",
+        _ if agent_success == Some(false) => "failed",
+        _ => "missing-report",
     }
 }
 
@@ -140,7 +139,7 @@ pub(super) fn prepare(
     cadence: &mut CadenceState,
     now: u64,
 ) {
-    let mut needs = match mailspace.list_kind_all(Some("head-ceo"), "sent", "need") {
+    let needs = match mailspace.list_kind_all(Some("head-ceo"), "sent", "need") {
         Ok(needs) => needs,
         Err(error) => {
             ctx.log(&format!("investigation scan failed: {error}"));
@@ -484,30 +483,23 @@ fn investigation_spec(
     attempt: u32,
     job: &str,
 ) -> JobSpec {
-    JobSpec {
-        id: job.to_string(),
-        kind: String::from("investigation"),
-        role: auditor.name.clone(),
-        subject: format!("investigate {want}: {subject}"),
-        body: investigation_text(ctx, need, want, source_body, &auditor.name),
-        pool_candidates: Vec::new(),
-        target: None,
-        from_ref: None,
-        branch: None,
-        budget: ctx.cfg.dispatch.budget,
-        integration_required: false,
-        model: None,
-        builtin_role: None,
-        read_only: true,
-        units: Vec::new(),
-        payload: serde_json::json!({
-            "investigation": true,
-            "need": need,
-            "want": want,
-            "round": round,
-            "attempt": attempt,
-        }),
-    }
+    let mut spec = JobSpec::new(
+        job,
+        "investigation",
+        auditor.name.clone(),
+        format!("investigate {want}: {subject}"),
+        investigation_text(ctx, need, want, source_body, &auditor.name),
+    );
+    spec.budget = ctx.cfg.dispatch.budget;
+    spec.read_only = true;
+    spec.payload = serde_json::json!({
+        "investigation": true,
+        "need": need,
+        "want": want,
+        "round": round,
+        "attempt": attempt,
+    });
+    spec
 }
 
 fn investigation_text(
