@@ -111,8 +111,7 @@ fn reclaim_builds_uses_the_pool_default_for_unmarked_slots() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = slot(tmp.path(), "pool-default");
     fat_target(&dir, 80);
-    let (acts, skips) =
-        reclaim_builds("p", "s", &dir, Some("target"), Some(10), false).unwrap();
+    let (acts, skips) = reclaim_builds("p", "s", &dir, Some("target"), Some(10), false).unwrap();
     assert!(skips.is_empty(), "{skips:?}");
     assert_eq!(acts.len(), 1);
     assert!(!dir.join("repo/target/blob").exists());
