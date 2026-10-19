@@ -4,6 +4,7 @@ pub mod alarm;
 pub mod amend;
 pub mod attempt_record;
 pub mod board;
+pub mod blockers;
 pub mod brief;
 pub mod closeout;
 pub mod collect;
@@ -122,6 +123,10 @@ mod run_test;
 #[cfg(test)]
 #[path = "pump/lifecycle_test.rs"]
 mod lifecycle_test;
+
+#[cfg(test)]
+#[path = "pump/blockers_test.rs"]
+mod blockers_test;
 
 #[cfg(test)]
 #[path = "pump/alarm_test.rs"]
