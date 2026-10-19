@@ -283,7 +283,11 @@ fn codex_responses_stream_parses_with_temperature() {
     let text = response.text().unwrap();
     let mut buffer = text.clone().into_bytes();
     let events = vivi::proxy::sse::take_events(&mut buffer);
-    assert!(events.len() >= 3, "only {} event(s): {text:?}", events.len());
+    assert!(
+        events.len() >= 3,
+        "only {} event(s): {text:?}",
+        events.len()
+    );
     for event in &events {
         let data = event
             .data()
