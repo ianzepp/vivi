@@ -29,7 +29,7 @@ struct MergeReceipt {
     sources: Vec<SourceResult>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct SourceResult {
     kind: String,
     id: String,
@@ -55,7 +55,7 @@ pub(crate) fn dispatch_pool(ctx: &Ctx, st: &mut State) -> Result<Vec<String>, Vi
         .map(|(id, target)| {
             (
                 id.clone(),
-                target.merge.map_or(1, |merge| merge.batch as usize),
+                target.merge.as_ref().map_or(1, |merge| merge.batch as usize),
             )
         })
         .collect();
@@ -174,7 +174,7 @@ fn merge_spec(
         .merge
         .remote_limit
         .max(target.cfg.dispatch.budget);
-    spec.units = units;
+    spec.units = units.clone();
     spec.source_jobs = branches
         .iter()
         .map(|source| source.job_id.clone())

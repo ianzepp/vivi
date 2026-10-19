@@ -703,7 +703,7 @@ fn dispatch_one(
             free.insert(pool.to_owned(), 0);
         }
         let latest = crate::pump::collect::receipt_full(ctx, &task);
-        recover_task(ctx, st, &snapshot.id, &task, &latest);
+        recovery::recover_task(ctx, st, &snapshot.id, &task, &latest);
         if st
             .jobs()
             .get(&snapshot.id)
@@ -833,7 +833,7 @@ pub fn candidate_pools(
     let mut pools = Vec::new();
     for candidate in starts {
         let mut chain = if local_only {
-            vec![candidate]
+            vec![candidate.clone()]
         } else {
             ctx.routing.fallback_chain(&candidate)
         };

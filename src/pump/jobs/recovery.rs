@@ -92,7 +92,7 @@ fn all_recovered(jobs: &BTreeMap<String, PoolJob>, ids: &[String]) -> bool {
     })
 }
 
-fn recover_task(ctx: &Ctx, st: &mut impl JobStore, id: &str, task: &str, latest: &str) {
+pub(super) fn recover_task(ctx: &Ctx, st: &mut impl JobStore, id: &str, task: &str, latest: &str) {
     let Some(job) = st.jobs_mut().get_mut(id) else {
         return;
     };
