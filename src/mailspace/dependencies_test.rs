@@ -197,8 +197,7 @@ fn a_dependency_not_held_yet_waits_and_the_edge_is_made_on_arrival() {
         .unwrap()
         .display_handle(&stored.message_id)
         .unwrap();
-    let dep = node_of(&mailspace, &dep)
-        .map_or(dep, |node| node.source_id);
+    let dep = node_of(&mailspace, &dep).map_or(dep, |node| node.source_id);
     assert_eq!(readiness(&mailspace, &task), "blocked");
     let row = node_of(&mailspace, &task).unwrap();
     assert_eq!(row.blocked_by, vec![dep.clone()], "the arrived open item");

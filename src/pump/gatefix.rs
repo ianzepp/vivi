@@ -6,7 +6,7 @@ use std::fs;
 
 use crate::pump::collect::spawn_planner;
 use crate::pump::gate::is_settled;
-use crate::pump::host::{shell_quote, Ctx};
+use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::{State, Status};
 
 /// The `state.json` key holding how many times each failing name has been

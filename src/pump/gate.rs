@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::pump::brief::gate_brief;
 use crate::pump::dispatch::{parse_created_handle, slots};
-use crate::pump::gatefix::{gatefix, plan_need, replans_left, residual_failures, send_fix_need, take_residuals};
+use crate::pump::gatefix::{
+    gatefix, plan_need, replans_left, residual_failures, send_fix_need, take_residuals,
+};
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::state::{GateRecord, GateRun, Promotion, State, Status, Unit};
 
