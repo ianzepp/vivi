@@ -44,28 +44,45 @@ impl FlyctlProvider {
         parse_secret_names(&stdout)
     }
 
-    pub(super) fn run(
+    /// Run one `fly` call and report stdout, stderr and whether it succeeded,
+    /// so a caller can recover from a partial success without losing the text.
+    pub(super) fn spawn(
         &self,
         args: &[String],
-        secrets: &[&str],
-    ) -> Result<(String, String), VivariumError> {
+    ) -> Result<(String, String, bool), VivariumError> {
         let output = Command::new(&self.bin).args(args).output().map_err(|e| {
             VivariumError::Message(format!(
                 "failed to run `{}` (is flyctl installed and on PATH?): {e}",
                 self.bin
             ))
         })?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        if !output.status.success() {
-            let verb = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
-            return Err(VivariumError::Message(format!(
-                "`{} {verb}` failed: {}",
-                self.bin,
-                scrub(stderr.trim(), secrets)
-            )));
+        Ok((
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            output.status.success(),
+        ))
+    }
+
+    pub(super) fn run(
+        &self,
+        args: &[String],
+        secrets: &[&str],
+    ) -> Result<(String, String), VivariumError> {
+        let (stdout, stderr, ok) = self.spawn(args)?;
+        if !ok {
+            return Err(self.failure(args, &stderr, secrets));
         }
         Ok((stdout, stderr))
+    }
+
+    /// The error one failed `fly` call says: the verb, then scrubbed stderr.
+    fn failure(&self, args: &[String], stderr: &str, secrets: &[&str]) -> VivariumError {
+        let verb = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+        VivariumError::Message(format!(
+            "`{} {verb}` failed: {}",
+            self.bin,
+            scrub(stderr.trim(), secrets)
+        ))
     }
 }
 
@@ -148,16 +165,36 @@ impl PoolProvider for FlyctlProvider {
         parse_machine_list(&stdout)
     }
 
+    /// `fly machine run --detach` can fail *after* the machine exists: with a
+    /// large image flyctl gives up waiting around 60s though the machine keeps
+    /// unpacking and starts on its own. `machine run` has no wait-timeout flag,
+    /// so a start-wait failure is read as "still starting": the machine id is
+    /// recovered and the existing slot wait loop watches it to a clean stop.
     fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
         let secrets: Vec<&str> = spec.once_env.values().map(String::as_str).collect();
         let args = run_args(&self.app, &self.host, spec);
-        let (stdout, stderr) = self.run(&args, &secrets)?;
-        parse_run_output(&format!("{stdout}\n{stderr}")).ok_or_else(|| {
+        let (stdout, stderr, ok) = self.spawn(&args)?;
+        let output = format!("{stdout}\n{stderr}");
+        let missing = || {
             VivariumError::Message(format!(
                 "could not find the machine id in flyctl output for {}",
                 spec.name
             ))
-        })
+        };
+        if ok {
+            return parse_run_output(&output).ok_or_else(missing);
+        }
+        if is_start_wait_failure(&output) {
+            let machines = self.list().unwrap_or_default();
+            if let Some(id) = salvaged_id(&spec.name, &output, &machines) {
+                eprintln!(
+                    "warning: flyctl gave up waiting for {} to start; watching machine {id} (a large image takes minutes to unpack)",
+                    spec.name
+                );
+                return Ok(id);
+            }
+        }
+        Err(self.failure(&args, &stderr, &secrets))
     }
 
     fn destroy(&self, id: &str) -> Result<(), VivariumError> {
@@ -315,6 +352,30 @@ pub fn parse_run_output(output: &str) -> Option<String> {
         let rest = line.trim().strip_prefix("Machine ID:")?;
         let id = rest.trim();
         (!id.is_empty()).then(|| id.to_string())
+    })
+}
+
+/// True when `flyctl` text says it stopped waiting for the machine to start,
+/// rather than that the machine could not be made.
+#[must_use]
+pub fn is_start_wait_failure(text: &str) -> bool {
+    text.contains("failed to reach desired start state")
+}
+
+/// The id of a machine `fly machine run` made but gave up waiting on: from the
+/// run output when it got that far, else from the listing by name (`--name`
+/// makes that deterministic).
+#[must_use]
+pub fn salvaged_id(
+    spec_name: &str,
+    output: &str,
+    machines: &[MachineRecord],
+) -> Option<String> {
+    parse_run_output(output).or_else(|| {
+        machines
+            .iter()
+            .find(|m| m.name == spec_name)
+            .map(|m| m.id.clone())
     })
 }
 
