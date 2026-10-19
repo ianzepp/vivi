@@ -182,6 +182,48 @@ fn a_fix_unit_is_still_blocked_by_an_inflight_fix_unit_that_overlaps() {
 }
 
 #[test]
+fn a_quarantine_repair_is_ready_despite_an_inflight_ordinary_unit_sharing_its_scope() {
+    let (_dir, ctx, _host, mut st) = setup();
+    // An ordinary unit inflight on `src/runner.rs`.
+    let (bid, busy_u) = mk("corpus-9", Status::Inflight, &["src/runner.rs"]);
+    // A quarantine repair unit whose write scope covers `src/runner.rs` too.
+    let (rid, mut ru) = mk(
+        "pumpfix-q1-aaaaaa",
+        Status::Pending,
+        &["src/runner.rs", "outcomes.json"],
+    );
+    ru.repairs = Some(String::from("q1-aaaaaa"));
+    ru.base = Some(String::from("origin/pump/quarantine/q1-aaaaaa"));
+    st.units.insert(bid, busy_u);
+    st.units.insert(rid, ru);
+
+    // The repair is the path back to green: it ignores the ordinary
+    // inflight overlap and outranks the ordinary units for dispatch.
+    assert!(is_ready(&ctx, &st, "pumpfix-q1-aaaaaa", &BTreeMap::new()));
+    assert_eq!(
+        ranked(
+            &ctx,
+            &st,
+            vec![String::from("corpus-9"), String::from("pumpfix-q1-aaaaaa")]
+        ),
+        ["pumpfix-q1-aaaaaa", "corpus-9"]
+    );
+
+    // The serialization still runs the other way: an ordinary unit waits
+    // behind the ordinary inflight overlap ...
+    let (oid, ou) = mk("corpus-10", Status::Pending, &["src/runner.rs"]);
+    st.units.insert(oid, ou);
+    assert!(!is_ready(&ctx, &st, "corpus-10", &BTreeMap::new()));
+    // ... and an ordinary unit waits for a busy repair too.
+    st.units
+        .get_mut("pumpfix-q1-aaaaaa")
+        .unwrap()
+        .status = Status::Inflight;
+    st.units.remove("corpus-9");
+    assert!(!is_ready(&ctx, &st, "corpus-10", &BTreeMap::new()));
+}
+
+#[test]
 fn equal_relative_scopes_in_different_targets_do_not_serialize() {
     let (_dir, ctx, _host, mut st) = setup();
     let (aid, mut au) = mk("a", Status::Inflight, &["src/lib.rs"]);
