@@ -1,5 +1,8 @@
 use super::*;
 use crate::doctor::Status;
+use crate::pump::state::GateRecord;
+use crate::pump::store::append_exception;
+use std::fs;
 
 fn facts(home_exists: bool, mode: PumpMode) -> PumpFacts {
     PumpFacts {
@@ -18,6 +21,14 @@ fn finding(findings: &[Finding], name: &str) -> Finding {
         .find(|finding| finding.name == name)
         .cloned()
         .unwrap_or_else(|| panic!("no {name} finding in {findings:#?}"))
+}
+
+fn pump_state_facts(last_gate: Option<String>) -> PumpStateFacts {
+    PumpStateFacts {
+        open_exceptions: Vec::new(),
+        quarantines: 0,
+        last_gate,
+    }
 }
 
 #[test]
@@ -123,4 +134,149 @@ fn service_probe_uses_injected_runner() {
     assert_eq!(presence, ServicePresence::Missing);
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     assert_eq!(presence, ServicePresence::Unavailable);
+}
+
+#[test]
+fn exceptions_warn_with_log_fix() {
+    let mut facts = pump_state_facts(None);
+    facts.open_exceptions = vec!["gate-environment: check failed".to_string()];
+    let warn = finding(&state_findings_from(&facts, 0), EXCEPTIONS);
+    assert_eq!(warn.status, Status::Warn);
+    assert_eq!(warn.name, EXCEPTIONS);
+    assert_eq!(warn.detail, "1 exception(s): gate-environment: check failed");
+    assert_eq!(warn.fix.as_deref(), Some(EXCEPTIONS_FIX));
+
+    facts.open_exceptions = vec![format!("kind: {}", "x".repeat(200))];
+    let long = finding(&state_findings_from(&facts, 0), EXCEPTIONS);
+    let prefix = "1 exception(s): ";
+    assert!(long.detail.starts_with(prefix), "{}", long.detail);
+    assert!(long.detail.ends_with("..."), "{}", long.detail);
+    assert_eq!(
+        long.detail.chars().count(),
+        prefix.len() + MAX_SUMMARY_CHARS + 3
+    );
+
+    let ok = finding(&state_findings_from(&pump_state_facts(None), 0), EXCEPTIONS);
+    assert_eq!(ok.status, Status::Ok);
+    assert_eq!(ok.detail, "no open exceptions");
+}
+
+#[test]
+fn quarantines_warn() {
+    let mut facts = pump_state_facts(None);
+    facts.quarantines = 2;
+    let warn = finding(&state_findings_from(&facts, 0), QUARANTINE);
+    assert_eq!(warn.status, Status::Warn);
+    assert_eq!(warn.name, QUARANTINE);
+    assert_eq!(warn.detail, "2 quarantine branch(es) pending repair");
+    assert_eq!(warn.fix.as_deref(), Some(QUARANTINE_FIX));
+
+    let ok = finding(
+        &state_findings_from(&pump_state_facts(None), 0),
+        QUARANTINE,
+    );
+    assert_eq!(ok.status, Status::Ok);
+    assert_eq!(ok.detail, "no quarantines");
+}
+
+#[test]
+fn stale_running_gate_warns() {
+    let facts = pump_state_facts(Some("running since 1000".to_string()));
+    let stuck = finding(
+        &state_findings_from(&facts, 1000 + GATE_STALE_SECS + 1),
+        GATE,
+    );
+    assert_eq!(stuck.status, Status::Warn);
+    assert_eq!(stuck.name, GATE);
+    assert_eq!(stuck.detail, "gate stuck");
+    assert_eq!(stuck.fix.as_deref(), Some(GATE_STUCK_FIX));
+
+    let fresh = finding(&state_findings_from(&facts, 1000 + 60), GATE);
+    assert_eq!(fresh.status, Status::Ok);
+    assert_eq!(fresh.detail, "running since 1000");
+}
+
+#[test]
+fn no_gate_skips() {
+    let no_gate = finding(&state_findings_from(&pump_state_facts(None), 0), GATE);
+    assert_eq!(no_gate.status, Status::Skipped);
+    assert_eq!(no_gate.name, GATE);
+    assert_eq!(no_gate.detail, "no gate has run");
+}
+
+#[test]
+fn failed_gate_warns_passed_ok() {
+    let mut state = State::default();
+    state.last_gate = GateRun {
+        at: 1_000,
+        ..GateRun::default()
+    };
+    state.gates.push(GateRecord {
+        at: 2_000,
+        names: Some(vec!["doctor::a".to_string(), "doctor::b".to_string()]),
+        ..GateRecord::default()
+    });
+    let failing = finding(
+        &state_findings_from(&pump_state_facts(last_gate_label(&state)), 2_100),
+        GATE,
+    );
+    assert_eq!(failing.status, Status::Warn);
+    assert_eq!(failing.name, GATE);
+    assert_eq!(
+        failing.detail,
+        "last gate failed at 2000: doctor::a, doctor::b"
+    );
+    assert_eq!(failing.fix.as_deref(), Some(GATE_FAILED_FIX));
+
+    state.gates[0].names = Some(Vec::new());
+    let passed = finding(
+        &state_findings_from(&pump_state_facts(last_gate_label(&state)), 2_100),
+        GATE,
+    );
+    assert_eq!(passed.status, Status::Ok);
+    assert_eq!(passed.detail, "last gate passed at 2000");
+
+    state.gates[0].names = None;
+    let unreadable = finding(
+        &state_findings_from(&pump_state_facts(last_gate_label(&state)), 2_100),
+        GATE,
+    );
+    assert_eq!(unreadable.status, Status::Warn);
+    assert_eq!(unreadable.detail, "last gate failed at 2000");
+}
+
+#[test]
+fn gather_reads_real_store() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let _space = Mailspace::init(Some(tmp.path())).expect("init");
+    let home = tmp.path().join(".vivi").join("pump");
+    fs::create_dir_all(&home).expect("pump home");
+    let mut store = PumpStore::open(&home.join(DB_FILENAME)).expect("open store");
+    let state = State {
+        last_gate: GateRun {
+            at: 1_000,
+            task: Some("task-1".to_string()),
+            ..GateRun::default()
+        },
+        ..State::default()
+    };
+    store.save(&state).expect("save state");
+    drop(store);
+    append_exception(&home, 10, "gate-environment", "u1", "check failed");
+
+    let facts = state_facts(tmp.path(), &PumpConfig::default()).expect("facts");
+    assert_eq!(
+        facts.open_exceptions,
+        vec!["gate-environment: check failed".to_string()]
+    );
+    assert_eq!(facts.quarantines, 0);
+    assert_eq!(facts.last_gate.as_deref(), Some("running since 1000"));
+
+    let warn = finding(
+        &store_findings(tmp.path(), &PumpConfig::default()),
+        EXCEPTIONS,
+    );
+    assert_eq!(warn.status, Status::Warn);
+    assert_eq!(warn.detail, "1 exception(s): gate-environment: check failed");
+    assert_eq!(warn.fix.as_deref(), Some(EXCEPTIONS_FIX));
 }
