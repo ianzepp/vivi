@@ -198,10 +198,14 @@ fn an_unknown_pool_lists_the_known_ones() {
 fn pool_identity_uses_the_mailspace_id() {
     let (_tmp, mut space) = space_with(&two());
     space.config.id = Some("aeff60b0-a1c4-4eaa-b688-7afcff51c659".into());
+    let key = format!(
+        "{}-aeff60b0",
+        crate::pool::slot::space_slug(&space.config.name)
+    );
     for handle in open_unvalidated(&space, None, Need::Any).unwrap() {
         assert_eq!(
-            handle.id.mailspace, "aeff60b0-a1c4-4eaa-b688-7afcff51c659",
-            "the pool of mailspace id is keyed by the id, not the name slug"
+            handle.id.mailspace, key,
+            "the pool of a mailspace is keyed by its name slug plus the id prefix"
         );
     }
 }
@@ -231,10 +235,48 @@ fn open_one_and_open_apply_the_same_rules_to_a_real_mailspace() {
     assert_eq!(open_one(&space, Some("local")).unwrap().id.pool, "local");
     assert_eq!(open(&space, Some("local"), Need::Any).unwrap().len(), 1);
     assert_eq!(open(&space, None, Need::Any).unwrap().len(), 2);
-    // Identity: the mailspace id (not the name slug) is part of every
-    // pool's id.
+    // Identity: the mailspace's name slug plus its id prefix is part of
+    // every pool's id.
     let id = open_one(&space, Some("local")).unwrap().id;
-    assert_eq!(id.mailspace, space.config.id.as_deref().unwrap());
+    assert_eq!(
+        id.mailspace,
+        crate::pool::slot::space_key(&space.config.name, space.mailspace_id())
+    );
+}
+
+#[test]
+fn same_name_mailspaces_open_distinct_pool_ids() {
+    // Two independent projects whose directories are both named `app`, so
+    // both mailspaces carry the same name. Each has a `here` pool with one
+    // slot under one shared local root.
+    let (one, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let tables = "\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pools.here.local]\nroot = \"/tmp/vivi-same-name-pools\"\n";
+    let mut spaces: Vec<Mailspace> = Vec::new();
+    for base in [one.path(), other.path()] {
+        let root = base.join("app");
+        std::fs::create_dir_all(&root).unwrap();
+        Mailspace::init(Some(&root)).unwrap();
+        let path = root.join(".vivi/mailspace.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(tables);
+        std::fs::write(&path, text).unwrap();
+        spaces.push(Mailspace::open_root(root).unwrap());
+    }
+    assert_eq!(spaces[0].config.name, spaces[1].config.name);
+    let handles: Vec<PoolHandle> = spaces
+        .iter()
+        .map(|space| open(space, None, Need::One).unwrap().remove(0))
+        .collect();
+    assert_ne!(
+        handles[0].id.mailspace, handles[1].id.mailspace,
+        "two mailspaces named alike must not open the same pool"
+    );
+    for (space, handle) in spaces.iter().zip(&handles) {
+        let key = &handle.id.mailspace;
+        assert!(key.starts_with("app-"), "{key}");
+        let prefix = &space.mailspace_id()[..8];
+        assert!(key.ends_with(prefix), "{key} does not end with {prefix}");
+    }
 }
 
 #[test]

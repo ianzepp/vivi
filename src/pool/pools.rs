@@ -97,11 +97,7 @@ pub fn open_unvalidated(
     let chosen = select(&names, flag, need)?;
     // The mailspace is identified by its id, so two mailspaces sharing a name
     // never collide; the name slug is the fallback when the config has no id.
-    let key = space
-        .config
-        .id
-        .clone()
-        .unwrap_or_else(|| super::slot::space_slug(&space.config.name));
+    let key = super::slot::space_key(&space.config.name, space.mailspace_id());
     let host = |pool: &str| HostContext {
         dir: space.dir.clone(),
         mailspace: key.clone(),
@@ -114,7 +110,7 @@ pub fn open_unvalidated(
             let config = all.get(&name)?.clone();
             let ctx = host(&name);
             Some(PoolHandle {
-                id: PoolId::keyed(&key, &name),
+                id: PoolId::new(&space.config.name, space.mailspace_id(), &name),
                 provider: open_provider(&config, &ctx),
                 config,
             })
