@@ -1,10 +1,10 @@
 //! The unit fields `pump.db` keeps inside the `units.extra_json` column.
 //!
-//! The quarantine id, the dispatch base and the solo flag are real fields on
-//! [`Unit`], but they are rare, so they ride in the same JSON object that
-//! holds a unit's unknown keys instead of getting columns (and a schema
-//! bump). [`pack`] writes them next to the unknown keys; [`lift`] takes them
-//! back out, so `Unit::extra` never carries them.
+//! The quarantine id, the dispatch base, the solo flag and the requeue
+//! flag are real fields on [`Unit`], but they are rare, so they ride in the
+//! same JSON object that holds a unit's unknown keys instead of getting
+//! columns (and a schema bump). [`pack`] writes them next to the unknown
+//! keys; [`lift`] takes them back out, so `Unit::extra` never carries them.
 
 use serde_json::Value;
 
@@ -19,6 +19,8 @@ const REPAIRS_KEY: &str = "repairs";
 const BASE_KEY: &str = "base";
 /// The `extra_json` key of [`Unit::solo`].
 const SOLO_KEY: &str = "solo";
+/// The `extra_json` key of [`Unit::requeued`].
+const REQUEUED_KEY: &str = "requeued";
 
 /// The `extra_json` text for `unit`: its unknown keys plus the set fields.
 pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
@@ -34,6 +36,9 @@ pub(super) fn pack(unit: &Unit) -> Result<String, VivariumError> {
     }
     if unit.solo {
         extra.insert(SOLO_KEY.to_string(), Value::Bool(true));
+    }
+    if unit.requeued {
+        extra.insert(REQUEUED_KEY.to_string(), Value::Bool(true));
     }
     serde_json::to_string(&extra)
         .map_err(|err| VivariumError::Other(format!("pump.db encode unit extra: {err}")))
@@ -52,5 +57,8 @@ pub(super) fn lift(unit: &mut Unit) {
     }
     if let Some(Value::Bool(solo)) = unit.extra.remove(SOLO_KEY) {
         unit.solo = solo;
+    }
+    if let Some(Value::Bool(requeued)) = unit.extra.remove(REQUEUED_KEY) {
+        unit.requeued = requeued;
     }
 }

@@ -53,6 +53,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
         board::board(ctx, st);
         plan::ingest(ctx, st);
         crate::pump::alarm::check(ctx, st);
+        crate::pump::blockers::check(ctx, st);
         save(ctx, st)?;
         write_status(ctx, st, &merger.lane_lines(ctx.now()));
         return Ok(());
@@ -79,6 +80,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) -> Result<(), VivariumEr
     board::board(ctx, st);
     plan::ingest(ctx, st);
     crate::pump::alarm::check(ctx, st);
+    crate::pump::blockers::check(ctx, st);
     save(ctx, st)?;
     write_status(ctx, st, &merger.lane_lines(ctx.now()));
     Ok(())
