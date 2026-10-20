@@ -859,3 +859,27 @@ fn run_git_status(cwd: &Path, args: &[&str]) -> i32 {
         .code()
         .unwrap_or(128)
 }
+
+#[test]
+fn a_need_without_done_when_is_audited_against_its_own_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _dir, _host) = routed_context(dir.path());
+    let thread = serde_json::json!([{
+        "handle": "need-1",
+        "message_id": "mind-root",
+        "from": "operator@local",
+        "subject": "Need",
+        "body": "Rename the en pack rows and every en source together."
+    }, {
+        "handle": "need-1-reply",
+        "message_id": "pump-reply",
+        "from": "mind@local",
+        "subject": "Pump plan",
+        "body": "pump: planned at revision 1"
+    }]);
+    let messages = thread.as_array().unwrap().clone();
+    let requirements = whole_message_requirements(&ctx, "need-1", &messages);
+    assert_eq!(requirements.len(), 1, "{requirements:?}");
+    assert_eq!(requirements[0].id, "need-1-r0");
+    assert!(requirements[0].text.contains("Rename the en pack rows"));
+}

@@ -457,8 +457,43 @@ fn thread_requirements(
             });
         }
     }
+    if requirements.is_empty() {
+        requirements = whole_message_requirements(ctx, need, messages);
+    }
     validate_requirement_specs(&requirements).map_err(VivariumError::Config)?;
     Ok(requirements)
+}
+
+/// The longest message text one fallback requirement carries.
+const FALLBACK_REQUIREMENT_CHARS: usize = 4000;
+
+/// Requirements for a need that declares no `done_when:` lines: each source
+/// message's own text is one requirement, so the audit checks the delivered
+/// work against what the need actually asked for.
+pub fn whole_message_requirements(
+    ctx: &Ctx,
+    need: &str,
+    messages: &[Value],
+) -> Vec<NeedAuditRequirement> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| {
+            !crate::pump::amend::is_generated_pump_reply(ctx, need, *index, message)
+        })
+        .filter_map(|(_, message)| {
+            let handle = message["handle"].as_str().filter(|h| !h.is_empty())?;
+            let body = message["body"].as_str().unwrap_or("").trim();
+            if body.is_empty() {
+                return None;
+            }
+            let text: String = body.chars().take(FALLBACK_REQUIREMENT_CHARS).collect();
+            Some(NeedAuditRequirement {
+                id: format!("{handle}-r0"),
+                text: format!("Deliver what this message asks for:\n{text}"),
+            })
+        })
+        .collect()
 }
 
 fn source_messages(ctx: &Ctx, root: &str, messages: &[Value]) -> Vec<Value> {
