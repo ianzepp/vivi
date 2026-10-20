@@ -78,6 +78,54 @@ fn a_letter_under_the_cap_is_stored_and_so_is_any_size_without_sync() {
 }
 
 #[test]
+fn a_reply_records_a_replied_event_on_the_parent_need() {
+    let (_tmp, mailspace) = space(false);
+    let sent = mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "need a thing".into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+    let handle = sent.delivered[0].handle.clone();
+    let parent_id = {
+        let storage = mailspace.storage().unwrap();
+        storage.resolve_message_token(&handle).unwrap()
+    };
+
+    mailspace
+        .reply(
+            &handle,
+            "hand",
+            Vec::new(),
+            Vec::new(),
+            None,
+            "please add tests".into(),
+        )
+        .unwrap();
+
+    let storage = mailspace.storage().unwrap();
+    let events = storage
+        .list_mailspace_events_for_messages(&[parent_id.clone()])
+        .unwrap()
+        .remove(&parent_id)
+        .unwrap_or_default();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "replied" && event.command == "mail reply"),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn a_reply_over_the_cap_is_refused_too() {
     let (_tmp, mailspace) = space(true);
     let sent = mailspace.send(request("hand", "hi".into())).unwrap();

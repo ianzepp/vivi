@@ -98,10 +98,17 @@ impl Mailspace {
         let seed = Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let delivered_ids = ingest_for_recipients(&storage, recipients, &request.role, &eml, seed)?;
         let sent = ingest_sent_copy(&storage, &from, &eml, seed)?;
-        if let Some((parent, _)) = reply_parent {
+        if let Some((parent, _)) = &reply_parent {
             storage.link_mailspace_content(&sent.content_id, &parent.content_id, "captured")?;
         }
-        log_send_events(&storage, &from, &request, &delivered_ids, &sent)?;
+        log_send_events(
+            &storage,
+            &from,
+            &request,
+            &delivered_ids,
+            &sent,
+            reply_parent.as_ref().map(|(parent, _)| parent),
+        )?;
         let delivered = delivered_with_handles(&storage, delivered_ids)?;
         let sent_handle = storage.display_handle(&sent.message_id)?;
         if let Some(kind) = work_kind {

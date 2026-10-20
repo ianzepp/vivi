@@ -1,18 +1,16 @@
 //! Amendment detection: a planned need whose thread moved after the plan.
 //!
-//! The board pass compares the newest event timestamp with the need's
-//! `thread_seen_at`, hashes the thread only when it moved, and asks the
+//! The board pass hashes each planned need's source thread and asks the
 //! planner for a revision when the hash differs. The plan itself stays
 //! immutable on disk; the revision lands in `plans/<need>.r<N>.json`.
 
-use std::collections::BTreeMap;
 use std::fs;
 
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::pump::host::Ctx;
+use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::planner_jobs;
 use crate::pump::state::State;
 
@@ -21,26 +19,26 @@ pub fn detect(ctx: &Ctx, st: &mut State) {
     if st.needs.is_empty() {
         return;
     }
-    let events = last_events(ctx);
     expire_revisions(ctx, st);
-    if events.is_empty() {
-        return;
-    }
     let handles: Vec<String> = st.needs.keys().cloned().collect();
     for handle in handles {
-        consider(ctx, st, &handle, &events);
+        consider(ctx, st, &handle);
     }
 }
 
-/// Check one planned need and start a revision when its thread moved.
-fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u64>) {
+/// Check one planned need and start a revision when its thread hash moved.
+///
+/// The thread itself is the source of truth. Board `last_event` is an operator
+/// signal, not the trigger: replies used to leave it unchanged, and even when
+/// it moves the stamp is often truncated to the same second as the original.
+fn consider(ctx: &Ctx, st: &mut State, handle: &str) {
     if st.board.revision_planning.contains_key(handle) {
         return;
     }
-    let Some((seen, old_hash)) = st
+    let Some(old_hash) = st
         .needs
         .get(handle)
-        .map(|record| (record.thread_seen_at, record.thread_sha256.clone()))
+        .map(|record| record.thread_sha256.clone())
     else {
         return;
     };
@@ -50,18 +48,13 @@ fn consider(ctx: &Ctx, st: &mut State, handle: &str, events: &BTreeMap<String, u
     if record.amendment_pending || record.verdict != "units" {
         return;
     }
-    let Some(last) = events.get(handle).copied() else {
-        return;
-    };
-    if seen.is_some_and(|seen| last <= seen) {
-        return;
-    }
     let Some(messages) = thread_messages(ctx, handle) else {
         return;
     };
     let Some(hash) = source_thread_hash(ctx, handle, &messages) else {
         return;
     };
+    let last = thread_newest_epoch(&messages).unwrap_or_else(|| ctx.now());
     let pending = match old_hash.as_deref() {
         Some(old) if is_versioned_hash(old, HASH_SCHEME) => old != hash,
         Some(old) if is_versioned_hash(old, LEGACY_HASH_SCHEME) => {
@@ -96,6 +89,14 @@ fn reopen_closed(ctx: &Ctx, st: &mut State, handle: &str) {
         return;
     }
     st.closed_needs.retain(|closed| closed != handle);
+    let from = shell_quote(&ctx.cfg.reply_from);
+    let out = ctx.vivi(&format!("need reopen {handle} --for {from}"), 60);
+    if out.code != 0 {
+        ctx.log(&format!(
+            "amendment: {handle} mailbox reopen failed: {}",
+            out.text.trim()
+        ));
+    }
     ctx.log(&format!(
         "amendment: {handle} reopened: thread changed after close",
     ));
@@ -114,33 +115,11 @@ pub fn request(ctx: &Ctx, st: &mut State, handle: &str, note: &str) {
     launch_revision(ctx, st, handle, Some(note));
 }
 
-/// Epoch seconds of every open need's newest event, from one `board --json`.
-fn last_events(ctx: &Ctx) -> BTreeMap<String, u64> {
-    let out = ctx.vivi("board --json", 60);
-    let Some(start) = out.text.find('{') else {
-        return BTreeMap::new();
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&out.text[start..]) else {
-        ctx.log("amendment: board json unreadable");
-        return BTreeMap::new();
-    };
-    let mut events = BTreeMap::new();
-    for identity in value["identities"].as_array().into_iter().flatten() {
-        for need in identity["needs"].as_array().into_iter().flatten() {
-            let Some(handle) = need["handle"].as_str() else {
-                continue;
-            };
-            let stamp = need["last_event"]["occurred_at"]
-                .as_str()
-                .or_else(|| need["date"].as_str());
-            if let Some(stamp) = stamp
-                && let Some(epoch) = epoch(stamp)
-            {
-                events.insert(handle.to_owned(), epoch);
-            }
-        }
-    }
-    events
+fn thread_newest_epoch(messages: &[Value]) -> Option<u64> {
+    messages
+        .iter()
+        .filter_map(|message| message["date"].as_str().and_then(epoch))
+        .max()
 }
 
 /// Prefix for the source-aware thread hash.

@@ -140,6 +140,30 @@ fn a_changed_thread_starts_a_revision() {
 }
 
 #[test]
+fn a_reply_starts_a_revision_even_when_board_last_event_does_not_move() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
+    st.needs.get_mut("n1").unwrap().thread_seen_at = Some(1_000);
+    host.reply(
+        "board --json",
+        0,
+        r#"{"identities":[{"needs":[{"handle":"n1","last_event":{"occurred_at":"1970-01-01T00:16:40+00:00"}}]}]}"#,
+    );
+    host.reply("need show n1", 0, "## thread\n");
+    host.reply(
+        "need show n1 --json",
+        0,
+        r#"[
+            {"handle":"n1","message_id":"m1","from":"operator@12345678.local","body":"original need","date":"1970-01-01T00:16:40+00:00"},
+            {"handle":"r1","message_id":"m2","from":"operator@12345678.local","body":"add the second half","date":"2026-10-17T13:00:00+00:00"}
+        ]"#,
+    );
+    detect(&ctx, &mut st);
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.contains_key("n1"));
+}
+
+#[test]
 fn a_requested_revision_names_the_reason_in_the_prompt() {
     let (_dir, ctx, _host, mut st) = setup();
     request(&ctx, &mut st, "n1", "unit n1-1 failed its proof");
@@ -299,15 +323,15 @@ fn an_operator_reply_quoting_the_pump_marker_still_amends() {
 }
 
 #[test]
-fn a_thread_seen_after_the_event_is_not_fetched() {
+fn a_changed_thread_is_hashed_even_when_thread_seen_at_is_already_ahead() {
     let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
     st.needs.get_mut("n1").unwrap().thread_seen_at = Some(u64::MAX);
     script_thread(&host, "add the second half");
     detect(&ctx, &mut st);
-    assert!(!st.needs["n1"].amendment_pending);
+    assert!(st.needs["n1"].amendment_pending);
     assert!(
-        !host
-            .commands()
+        host.commands()
             .iter()
             .any(|cmd| cmd.contains("need show n1 --json"))
     );

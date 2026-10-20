@@ -9,6 +9,7 @@ pub(super) fn log_send_events(
     request: &SendRequest,
     delivered: &[DeliveredMessageId],
     sent: &StoredMessage,
+    parent: Option<&StoredMessageView>,
 ) -> Result<(), VivariumError> {
     let command = send_command(&request.role);
     append_event(
@@ -44,6 +45,46 @@ pub(super) fn log_send_events(
                 to_identity: Some(&delivered.identity),
                 subject: &request.subject,
                 note: None,
+            },
+        )?;
+    }
+    if let Some(parent) = parent {
+        log_reply_on_parent(storage, from, request, parent)?;
+    }
+    Ok(())
+}
+
+/// Attach a `replied` event to every work-item copy of the parent so board
+/// `last_event` moves when a thread reply lands.
+fn log_reply_on_parent(
+    storage: &Storage,
+    from: &str,
+    request: &SendRequest,
+    parent: &StoredMessageView,
+) -> Result<(), VivariumError> {
+    let command = reply_command(&request.role);
+    let mut ids = storage.message_ids_by_content(&parent.content_id)?;
+    if !ids.iter().any(|id| id == &parent.message_id) {
+        ids.push(parent.message_id.clone());
+    }
+    ids.sort();
+    ids.dedup();
+    for message_id in ids {
+        append_event(
+            storage,
+            &EventDetails {
+                command,
+                event_type: "replied",
+                actor: Some(from),
+                account: &parent.account,
+                message_id: &message_id,
+                content_id: &parent.content_id,
+                from_role: None,
+                to_role: Some(&parent.local_role),
+                from_identity: Some(from),
+                to_identity: Some(&parent.account),
+                subject: &parent.subject,
+                note: Some(&request.subject),
             },
         )?;
     }
@@ -83,6 +124,15 @@ fn send_command(role: &str) -> &'static str {
         "needs" => "need send",
         "wants" => "want send",
         _ => "mail send",
+    }
+}
+
+fn reply_command(role: &str) -> &'static str {
+    match role {
+        "tasks" => "task send",
+        "needs" => "need send",
+        "wants" => "want send",
+        _ => "mail reply",
     }
 }
 
