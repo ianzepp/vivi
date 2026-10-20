@@ -26,7 +26,7 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 | **need-audit** | Active **auditor** role | Auditor role pool and fallback chain. Managed need acceptance requires this role to have a configured pool. |
 | **investigation** | Configured **auditor** role | Auditor role pool and fallback chain. Investigation work is read-only and is not eligible without an auditor role. |
 | **promote** | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. Publication is restricted to the exact configured main ref and candidate. |
-| **cadence**, **digest** | The scheduled role itself | That role's pool and fallback chain. |
+| **cadence**, **digest** | The scheduled role itself | That role's pool and fallback chain. A **mind**-kind cadence run is a read-only oversight wake: the brief is a compact pump-state snapshot, and the worker returns **PUMP_OVERSIGHT_RESULT=** JSON. Allowlisted actions are **hold-merge**, **clear-hold-merge**, **skip-unit**, **unskip-unit**, **replan-need**, and **note**. Anything else is refused and recorded; applying the receipt never blocks the tick. |
 | **reclaim** | **reclaim** role, or the hand role | Local-provider pools only; it never falls back to a remote pool. |
 | **ref-delete** | Active **merge** role | Merge role pool and fallback chain. Used to delete a failed attempt branch; the privileged runner deletes the ref. |
 
