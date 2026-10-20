@@ -105,9 +105,12 @@ pub struct NeedVerdictState {
     /// Residual need handle by deterministic receipt/finding key.
     #[serde(default)]
     pub residual_needs: BTreeMap<String, String>,
-    /// Repair unit by revision and finding ID; a second block on the same finding escalates.
+    /// Latest repair unit by revision and finding ID.
     #[serde(default)]
     pub repair_units: BTreeMap<String, String>,
+    /// Repair units minted per finding key; escalation uses `[pump.need].repair_rounds`.
+    #[serde(default)]
+    pub repair_counts: BTreeMap<String, u32>,
     /// Current repair-only review start and its next durable round.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recheck_base: Option<String>,
@@ -389,18 +392,8 @@ fn route_block_range(
     binding: &NeedAuditBinding,
 ) -> Result<(), VivariumError> {
     route_requirement_gaps(ctx, state, &receipt.job_id, receipt)?;
-    let mut created = Vec::new();
-    let mut exhausted = Vec::new();
-    for finding in &receipt.findings {
-        let finding_key = repair_finding_key(binding.revision, &finding.id);
-        if let Some(unit) = state.repair_units.get(&finding_key) {
-            exhausted.push((finding.id.clone(), unit.clone(), finding.paths.clone()));
-            continue;
-        }
-        let uid = repair_unit_id(binding, &receipt.receipt_key, &finding.id);
-        state.repair_units.insert(finding_key, uid.clone());
-        created.push((finding, uid));
-    }
+    let cap = ctx.cfg.need.repair_rounds;
+    let (created, exhausted) = schedule_block_range_repairs(state, binding, receipt, cap);
     if !created.is_empty() {
         need::begin_repair(st, target, &binding.need, binding.revision)?;
         for (finding, uid) in created {
@@ -408,7 +401,7 @@ fn route_block_range(
         }
     }
     if !exhausted.is_empty() {
-        hold_repeated_block(ctx, state, receipt, &exhausted[0].0)?;
+        hold_repeated_block(ctx, state, receipt, &exhausted[0].0, cap)?;
         state.recheck_base = None;
         state.recheck_context = None;
         state.recheck_job_id = None;
@@ -421,15 +414,51 @@ fn route_block_range(
     Ok(())
 }
 
-/// Escalate a finding that remains blocked after its one repair re-review.
+fn schedule_block_range_repairs<'a>(
+    state: &mut NeedVerdictState,
+    binding: &NeedAuditBinding,
+    receipt: &'a NeedAuditReceipt,
+    cap: u32,
+) -> (
+    Vec<(&'a crate::pump::need_audit::NeedAuditFinding, String)>,
+    Vec<(String, String, Vec<String>)>,
+) {
+    let mut created = Vec::new();
+    let mut exhausted = Vec::new();
+    for finding in &receipt.findings {
+        let finding_key = repair_finding_key(binding.revision, &finding.id);
+        let used = state.repair_counts.get(&finding_key).copied().unwrap_or(0);
+        if used >= cap {
+            exhausted.push((
+                finding.id.clone(),
+                state
+                    .repair_units
+                    .get(&finding_key)
+                    .cloned()
+                    .unwrap_or_default(),
+                finding.paths.clone(),
+            ));
+            continue;
+        }
+        let uid = repair_unit_id(binding, &receipt.receipt_key, &finding.id);
+        state.repair_units.insert(finding_key.clone(), uid.clone());
+        *state.repair_counts.entry(finding_key).or_default() += 1;
+        created.push((finding, uid));
+    }
+    (created, exhausted)
+}
+
+/// Escalate a finding that remains blocked after its configured repair rounds.
 fn hold_repeated_block(
     ctx: &Ctx,
     state: &mut NeedVerdictState,
     receipt: &NeedAuditReceipt,
     finding_id: &str,
+    rounds: u32,
 ) -> Result<(), VivariumError> {
-    let reason =
-        format!("the same blocked finding remains after its two charter rounds: {finding_id}");
+    let reason = format!(
+        "the same blocked finding remains after {rounds} configured repair round(s): {finding_id}"
+    );
     let mut boundary: Vec<String> = receipt
         .findings
         .iter()

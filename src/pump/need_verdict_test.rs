@@ -147,6 +147,74 @@ fn block_range_starts_same_branch_repair_and_reaudits_only_the_repair_diff() {
 }
 
 #[test]
+fn block_range_honors_configured_repair_rounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut ctx, host) = test_context(dir.path());
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.need.repair_rounds = 2;
+    ctx.cfg = std::sync::Arc::new(cfg);
+    let mut state = frozen_state();
+    let binding = need::binding_for(&state, "default", NEED).unwrap().unwrap();
+    let first_job = audit_job(&mut state, &binding, BASE, 1);
+    let first = receipt(
+        &mut state,
+        &first_job,
+        NeedAuditVerdict::BlockRange,
+        true,
+        true,
+    );
+    need_verdict::route_receipt(&ctx, &mut state, "default", &first_job, &first).unwrap();
+    assert!(
+        need_verdict::state(&state, "default", NEED)
+            .unwrap()
+            .hold
+            .is_none()
+    );
+
+    let repair_id = need_verdict::state(&state, "default", NEED)
+        .unwrap()
+        .repair_units["r1:finding-a"]
+        .clone();
+    state.units.get_mut(&repair_id).unwrap().status = Status::Merged;
+    state.units.get_mut(&repair_id).unwrap().commit = Some(REPAIRED_TIP.to_owned());
+    need::record_tip(&mut state, "default", NEED, 1, BASE, REPAIRED_TIP).unwrap();
+    let binding = need::freeze(&mut state, "default", NEED, 1, REPAIRED_TIP).unwrap();
+    advertise_need_tip(&host, REPAIRED_TIP);
+    let second_job = audit_job(&mut state, &binding, TIP, 2);
+    let second = receipt(
+        &mut state,
+        &second_job,
+        NeedAuditVerdict::BlockRange,
+        true,
+        true,
+    );
+    need_verdict::route_receipt(&ctx, &mut state, "default", &second_job, &second).unwrap();
+    let routed = need_verdict::state(&state, "default", NEED).unwrap();
+    assert!(routed.hold.is_none(), "round 2 should still repair");
+    assert_eq!(routed.repair_counts["r1:finding-a"], 2);
+
+    let third_tip = "dddddddddddddddddddddddddddddddddddddddd";
+    let second_repair = routed.repair_units["r1:finding-a"].clone();
+    state.units.get_mut(&second_repair).unwrap().status = Status::Merged;
+    state.units.get_mut(&second_repair).unwrap().commit = Some(third_tip.to_owned());
+    need::record_tip(&mut state, "default", NEED, 1, BASE, third_tip).unwrap();
+    let binding = need::freeze(&mut state, "default", NEED, 1, third_tip).unwrap();
+    advertise_need_tip(&host, third_tip);
+    let third_job = audit_job(&mut state, &binding, REPAIRED_TIP, 3);
+    let third = receipt(
+        &mut state,
+        &third_job,
+        NeedAuditVerdict::BlockRange,
+        true,
+        true,
+    );
+    need_verdict::route_receipt(&ctx, &mut state, "default", &third_job, &third).unwrap();
+    let routed = need_verdict::state(&state, "default", NEED).unwrap();
+    assert!(routed.hold.is_some());
+    assert_eq!(routed.repair_counts["r1:finding-a"], 2);
+}
+
+#[test]
 fn block_range_caps_repeat_finding_after_one_repair_recheck_and_escalates() {
     let dir = tempfile::tempdir().unwrap();
     let (ctx, host) = test_context(dir.path());

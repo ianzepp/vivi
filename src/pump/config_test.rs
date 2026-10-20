@@ -122,6 +122,15 @@ fn a_kind_parses_with_optional_max_and_skip_proof() {
 }
 
 #[test]
+fn need_repair_rounds_default_to_one_and_can_be_overridden() {
+    let defaulted = pump("name = \"t\"\n[pump]\nbranch = \"next\"\n");
+    assert_eq!(defaulted.need.repair_rounds, 1);
+    let configured =
+        pump("name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.need]\nrepair_rounds = 3\n");
+    assert_eq!(configured.need.repair_rounds, 3);
+}
+
+#[test]
 fn quarantine_repair_budget_defaults_above_proof_timeout_and_can_be_overridden() {
     let defaulted =
         pump("name = \"t\"\n[pump]\nbranch = \"next\"\n[pump.merge]\nproof_timeout = 900\n");

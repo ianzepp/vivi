@@ -92,6 +92,8 @@ The audit receipt supports four verdicts:
   path, and recheck-trigger provenance.
 - **block_range** keeps acceptance pending, creates repair units on the same
   need branch, then reviews only the repair diff under the Auditor policy.
+  **[pump.need].repair_rounds** (default 1) is the cap: a finding that remains
+  blocked after that many repairs is held and escalated.
 - **block_ship** keeps a persistent hold on the need branch and records an
   operator and CTO escalation. It does not authorize landing.
 

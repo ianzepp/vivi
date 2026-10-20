@@ -64,6 +64,8 @@ The supported verdicts are **clean_pass**, **residual**, **block_range**, and
 range. Residual findings become deduplicated ordinary needs with their report,
 path, and recheck-trigger provenance. A block-range receipt creates repair
 units on the same need branch and queues a new audit over only the repair diff.
+**[pump.need].repair_rounds** (default 1) caps how many repairs a finding may
+receive before the branch is held.
 A block-ship receipt records a persistent hold and escalation. The Auditor
 charter remains the authority for verification width and repair-round policy.
 Receipt replay is a no-op; changed revision, branch tip, or frozen membership

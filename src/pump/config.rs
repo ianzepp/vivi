@@ -87,6 +87,8 @@ pub struct PumpConfig {
     pub gate: GateConfig,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
     pub alarm: AlarmConfig,
+    /// Need-acceptance settings (the `[pump.need]` table).
+    pub need: NeedConfig,
 }
 
 impl Default for PumpConfig {
@@ -119,6 +121,7 @@ impl Default for PumpConfig {
             ramdisk: PumpRamDisk::default(),
             gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
+            need: NeedConfig::default(),
         }
     }
 }
@@ -420,6 +423,22 @@ impl Default for DispatchConfig {
             kinds: BTreeMap::new(),
             default_kind: String::new(),
         }
+    }
+}
+
+/// Need-acceptance settings (the `[pump.need]` table).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct NeedConfig {
+    /// How many `block_range` repair units a finding may receive before the
+    /// pump holds the branch and escalates. Default 1 preserves the previous
+    /// one-repair-then-hold behavior.
+    pub repair_rounds: u32,
+}
+
+impl Default for NeedConfig {
+    fn default() -> Self {
+        Self { repair_rounds: 1 }
     }
 }
 
