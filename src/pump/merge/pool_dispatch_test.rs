@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    MERGE_TIMEOUT_RULES, MergeReceipt, SourceResult, apply_source, parse_receipt,
+    MERGE_BRIEF, MERGE_TIMEOUT_RULES, MergeReceipt, SourceResult, apply_source, parse_receipt,
     published_integration_tip, record_shared_timeout_exception, timeout_status_line, valid_sha,
     valid_sources,
 };
@@ -340,6 +340,32 @@ fn worker_recovery_receipt_preserves_check_identity_and_first_failure() {
     assert_eq!(recovery.name, "stage-4b");
     assert_eq!(recovery.command, "cargo test --workspace");
     assert_eq!(recovery.detail, "first run was transiently locked");
+}
+
+#[test]
+fn merge_brief_leads_with_diagnosis_not_quarantine() {
+    let lead: String = MERGE_BRIEF.lines().take(6).collect::<Vec<_>>().join("\n");
+    assert!(
+        MERGE_BRIEF.to_ascii_lowercase().contains("diagnos"),
+        "merge brief should tell the model to diagnose first: {MERGE_BRIEF}"
+    );
+    assert!(
+        !lead.to_ascii_lowercase().contains("quarantine"),
+        "merge brief still leads with quarantine: {lead}"
+    );
+    assert!(
+        !lead.to_ascii_lowercase().contains("bisect"),
+        "merge brief still leads with bisect: {lead}"
+    );
+    let timeout_lead = MERGE_TIMEOUT_RULES
+        .split(". ")
+        .next()
+        .unwrap_or(MERGE_TIMEOUT_RULES);
+    assert!(
+        !timeout_lead.to_ascii_lowercase().contains("quarantine")
+            && !timeout_lead.to_ascii_lowercase().contains("bisect"),
+        "timeout rules still lead with quarantine or bisect: {timeout_lead}"
+    );
 }
 
 #[test]

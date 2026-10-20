@@ -20,6 +20,7 @@ const BINDING_FIX: &str =
     "refresh the role binding with vivi role set <name> --pid <pid> --project <root>";
 const CADENCE_FIX: &str =
     "set a cadence for head roles with vivi role set <name> --cadence <duration> --project <root>";
+const MERGE_POOL_FIX: &str = "vivi role pool merge <pool> --project <root>";
 
 /// Report roster, bound-process, and cadence findings for this project.
 #[must_use]
@@ -31,6 +32,10 @@ pub fn findings(project: &Project) -> Vec<Finding> {
         .map(|identity| role_view(project, identity))
         .collect::<Vec<_>>();
     let mut findings = findings_from(&views);
+    if project.config.pump.is_some() {
+        let pools: Vec<&str> = project.config.pools.keys().map(String::as_str).collect();
+        findings.push(merge_pool_finding(&views, &pools));
+    }
     if views
         .iter()
         .any(|view| kind_is(view, "head") && view.cadence.is_some())
@@ -352,6 +357,44 @@ fn kind_is(view: &RoleView, expected: &str) -> bool {
     view.kind
         .as_deref()
         .is_some_and(|kind| kind.trim().eq_ignore_ascii_case(expected))
+}
+
+/// Pump-configured mailspaces need an active merge role bound to a real pool.
+pub(super) fn merge_pool_finding(views: &[RoleView], pool_names: &[&str]) -> Finding {
+    const NAME: &str = "merge pool";
+    let Some(merge) = views
+        .iter()
+        .find(|view| view.name.eq_ignore_ascii_case("merge") || kind_is(view, "merge"))
+    else {
+        return Finding::fail(
+            SECTION,
+            NAME,
+            "no merge role is configured for durable merge jobs",
+            MERGE_POOL_FIX,
+        );
+    };
+    match merge.pool.as_deref() {
+        Some(pool) if pool_names.iter().any(|name| *name == pool) => Finding::ok(
+            SECTION,
+            NAME,
+            &format!("merge role {} uses pool {pool}", merge.name),
+        ),
+        Some(pool) => Finding::fail(
+            SECTION,
+            NAME,
+            &format!("merge role {} names unknown pool {pool}", merge.name),
+            MERGE_POOL_FIX,
+        ),
+        None => Finding::fail(
+            SECTION,
+            NAME,
+            &format!(
+                "merge role {} has no pool; durable merge jobs cannot dispatch",
+                merge.name
+            ),
+            MERGE_POOL_FIX,
+        ),
+    }
 }
 
 #[cfg(test)]

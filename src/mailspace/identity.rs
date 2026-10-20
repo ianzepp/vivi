@@ -226,9 +226,10 @@ impl Mailspace {
 
     /// Ensure the predefined `merge` role and its shipped charter exist.
     ///
-    /// New roles use the standard active status, but this helper does not
-    /// choose a pool, model, or other routing field. Existing role metadata and
-    /// charter files are preserved; a missing kind or charter receives the
+    /// New roles use the standard active status. When the role has no pool
+    /// and this mailspace has a local pool, that pool is assigned so a fresh
+    /// project can dispatch merge jobs. Existing pool, model, and other
+    /// routing fields are preserved. A missing kind or charter receives the
     /// shipped default.
     ///
     /// # Errors
@@ -237,43 +238,53 @@ impl Mailspace {
     /// fails.
     pub fn ensure_merge_role(&mut self) -> Result<(), VivariumError> {
         const MERGE: &str = "merge";
-        let index = self.find_role_index(MERGE);
-        let role_name = if let Some(index) = index {
+        let role_name = self.provision_merge_role(MERGE, self.find_role_index(MERGE))?;
+        self.ensure_merge_charter(&role_name)
+    }
+
+    fn provision_merge_role(
+        &mut self,
+        merge: &str,
+        index: Option<usize>,
+    ) -> Result<String, VivariumError> {
+        if let Some(index) = index {
             let role_name = self.config.identities[index].name.clone();
-            if role_name != MERGE {
+            if role_name != merge {
                 return Err(VivariumError::Message(format!(
-                    "cannot provision predefined role '{MERGE}': that name is an alias for '{role_name}'"
+                    "cannot provision predefined role '{merge}': that name is an alias for '{role_name}'"
                 )));
             }
-            if self.config.identities[index].kind.is_none() {
-                self.set_role(
-                    MERGE,
-                    RoleUpdate {
-                        kind: Some(Some(MERGE.into())),
-                        ..RoleUpdate::default()
-                    },
-                )?;
+            let update = self.merge_role_update(Some(index));
+            if update.kind.is_some() || update.pool.is_some() {
+                self.set_role(merge, update)?;
             }
-            role_name
-        } else {
-            self.add_role(
-                MERGE,
-                RoleUpdate {
-                    kind: Some(Some(MERGE.into())),
-                    ..RoleUpdate::default()
-                },
-            )?;
-            MERGE.to_string()
-        };
-
-        let charter = self.charter_path(&role_name);
-        if !charter.exists() {
-            self.set_charter(
-                &role_name,
-                include_str!("../../skills/tugboat/references/charters/merge.md"),
-            )?;
+            return Ok(role_name);
         }
-        Ok(())
+        self.add_role(merge, self.merge_role_update(None))?;
+        Ok(merge.to_string())
+    }
+
+    fn merge_role_update(&self, existing: Option<usize>) -> RoleUpdate {
+        let needs_kind = existing.is_none_or(|index| self.config.identities[index].kind.is_none());
+        let needs_pool = existing.is_none_or(|index| self.config.identities[index].pool.is_none());
+        RoleUpdate {
+            kind: needs_kind.then(|| Some(String::from("merge"))),
+            pool: needs_pool
+                .then(|| first_local_pool(&self.config))
+                .flatten()
+                .map(Some),
+            ..RoleUpdate::default()
+        }
+    }
+
+    fn ensure_merge_charter(&mut self, role_name: &str) -> Result<(), VivariumError> {
+        if self.charter_path(role_name).exists() {
+            return Ok(());
+        }
+        self.set_charter(
+            role_name,
+            include_str!("../../skills/tugboat/references/charters/merge.md"),
+        )
     }
 
     /// Rename an identity. The old name is preserved as an alias.
@@ -763,6 +774,14 @@ fn sanitize_label(value: &str) -> Result<String, VivariumError> {
     })
 }
 
+fn first_local_pool(config: &super::MailspaceConfig) -> Option<String> {
+    config
+        .pools
+        .iter()
+        .find(|(_, pool)| pool.provider.eq_ignore_ascii_case("local"))
+        .map(|(name, _)| name.clone())
+}
+
 fn sanitize_freeform_field(field: &str, value: &str) -> Result<String, VivariumError> {
     let value = value.trim();
     if value.is_empty() {
@@ -780,3 +799,7 @@ fn sanitize_freeform_field(field: &str, value: &str) -> Result<String, VivariumE
     }
     Ok(value.to_string())
 }
+
+#[cfg(test)]
+#[path = "identity_test.rs"]
+mod tests;

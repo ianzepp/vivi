@@ -69,6 +69,35 @@ fn cadence_boundaries_match_due_and_overdue_thresholds() {
 }
 
 #[test]
+fn a_pump_merge_role_without_a_pool_fails_doctor() {
+    let views = [role("merge", Some("merge"), None, None)];
+    let finding = merge_pool_finding(&views, &[]);
+    assert_eq!(finding.status, Status::Fail, "{finding:#?}");
+    assert!(finding.detail.contains("no pool"), "{finding:#?}");
+    assert_eq!(
+        finding.fix.as_deref(),
+        Some("vivi role pool merge <pool> --project <root>")
+    );
+}
+
+#[test]
+fn a_bound_merge_pool_is_ok() {
+    let mut views = [role("merge", Some("merge"), None, None)];
+    views[0].pool = Some(String::from("workers"));
+    let finding = merge_pool_finding(&views, &["workers"]);
+    assert_eq!(finding.status, Status::Ok, "{finding:#?}");
+    assert!(finding.detail.contains("workers"), "{finding:#?}");
+}
+
+#[test]
+fn a_missing_merge_role_fails_when_the_pump_is_configured() {
+    let views = [role("hand", Some("hand"), None, None)];
+    let finding = merge_pool_finding(&views, &["workers"]);
+    assert_eq!(finding.status, Status::Fail, "{finding:#?}");
+    assert!(finding.detail.contains("no merge role"), "{finding:#?}");
+}
+
+#[test]
 fn a_bound_dead_pid_warns_without_disclosing_process_details() {
     let views = [role("worker", Some("hand"), Some(u32::MAX), None)];
     let bindings = finding(&findings_from(&views), "bindings").clone();
