@@ -240,63 +240,9 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
     let previous_revision = record.revision;
     let thread = ctx.vivi(&format!("need show {handle}"), 60).text;
     let thread: String = thread.chars().take(40_000).collect();
-    let units: Vec<Value> = record
-        .units
-        .iter()
-        .filter_map(|uid| {
-            st.units.get(uid).map(|unit| {
-                serde_json::json!({
-                    "id": uid,
-                    "status": unit.status.as_str(),
-                    "target": unit.target_id(),
-                    "title": unit.title,
-                    "brief": unit.brief,
-                    "write_scope": unit.write_scope,
-                    "after": unit.after,
-                    "proof": unit.proof,
-                    "tools": unit.tools,
-                })
-            })
-        })
-        .collect();
-    let needs = ctx.home.join("needs");
-    drop(fs::create_dir_all(&needs));
-    let input = RevisionFile {
-        need: handle,
-        revision,
-        thread: &thread,
-        units: &units,
-    };
-    if let Err(error) = write_json(&needs.join(format!("{handle}.json")), &input) {
-        ctx.exception(
-            "revision-input",
-            handle,
-            &format!("could not save revision input: {error}"),
-        );
+    let units = revision_units(st, record);
+    let Some(prompt) = revision_prompt(ctx, handle, revision, &thread, &units, note) else {
         return;
-    }
-    let input_json = match serde_json::to_string(&input) {
-        Ok(text) => text,
-        Err(error) => {
-            ctx.exception(
-                "revision-input",
-                handle,
-                &format!("could not encode revision input: {error}"),
-            );
-            return;
-        }
-    };
-    let prompt = format!(
-        "Revise one plan, as your system prompt describes. The complete input JSON is between \
-         REVISION-INPUT-BEGIN and REVISION-INPUT-END. Return the full plan with revision {revision} \
-         and the complete unit set. Keep every existing unit id. Never change a merged, no-defect, \
-         inflight or delivered unit; amend only pending units; add new units for the addendum; list \
-         withdrawn pending unit ids in \"withdraw\".\n\nREVISION-INPUT-BEGIN\n{input_json}\n\
-         REVISION-INPUT-END"
-    );
-    let prompt = match note {
-        Some(note) => format!("{prompt} Reason for this revision: {note}."),
-        None => prompt,
     };
     let owner = format!("{handle}.revision");
     let queued_at = ctx.now();
@@ -322,6 +268,77 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
         "amendment: {handle} changed after r{}; revision planner started",
         previous_revision
     ));
+}
+
+fn revision_units(st: &State, record: &crate::pump::state::NeedRecord) -> Vec<Value> {
+    record
+        .units
+        .iter()
+        .filter_map(|uid| {
+            st.units.get(uid).map(|unit| {
+                serde_json::json!({
+                    "id": uid,
+                    "status": unit.status.as_str(),
+                    "target": unit.target_id(),
+                    "title": unit.title,
+                    "brief": unit.brief,
+                    "write_scope": unit.write_scope,
+                    "after": unit.after,
+                    "proof": unit.proof,
+                    "tools": unit.tools,
+                })
+            })
+        })
+        .collect()
+}
+
+fn revision_prompt(
+    ctx: &Ctx,
+    handle: &str,
+    revision: u64,
+    thread: &str,
+    units: &[Value],
+    note: Option<&str>,
+) -> Option<String> {
+    let needs = ctx.home.join("needs");
+    drop(fs::create_dir_all(&needs));
+    let input = RevisionFile {
+        need: handle,
+        revision,
+        thread,
+        units,
+    };
+    if let Err(error) = write_json(&needs.join(format!("{handle}.json")), &input) {
+        ctx.exception(
+            "revision-input",
+            handle,
+            &format!("could not save revision input: {error}"),
+        );
+        return None;
+    }
+    let input_json = match serde_json::to_string(&input) {
+        Ok(text) => text,
+        Err(error) => {
+            ctx.exception(
+                "revision-input",
+                handle,
+                &format!("could not encode revision input: {error}"),
+            );
+            return None;
+        }
+    };
+    let prompt = format!(
+        "Revise one plan, as your system prompt describes. The complete input JSON is between \
+         REVISION-INPUT-BEGIN and REVISION-INPUT-END. Return the full plan with revision {revision} \
+         and the complete unit set. Keep every existing unit id. Never change a merged, no-defect, \
+         inflight or delivered unit; amend only pending units; add new units for the addendum; list \
+         withdrawn pending unit ids in \"withdraw\".\n\nREVISION-INPUT-BEGIN\n{input_json}\n\
+         REVISION-INPUT-END"
+    );
+    Some(match note {
+        Some(note) => format!("{prompt} Reason for this revision: {note}."),
+        None => prompt,
+    })
 }
 
 /// Drop revision planners whose plan file landed, or whose timeout expired.
