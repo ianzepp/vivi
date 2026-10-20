@@ -11,7 +11,7 @@ use crate::pump::jobs::{self, BranchSource, JobSpec, JobStatus, JobStore, PoolJo
 use crate::pump::state::{MergeResult, State, Status};
 
 use super::apply::{apply_failure, apply_undecided};
-use super::lane::{eligible, recheck_held, take_batch};
+use super::select::{eligible, recheck_held, take_batch};
 
 pub(super) const MERGE_BRIEF: &str = r#"You are the configured Vivi merge role. The pump selected these source branches and this target. Integrate the sources in the listed order in this checkout. Start at the exact assigned base or current tip. Keep the scratch branch; do not switch branches.
 

@@ -57,6 +57,38 @@ fn put(st: &mut State, uid: &str, unit: Unit) {
     st.units.insert(uid.to_owned(), unit);
 }
 
+const DELETE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+fn with_merge_route(ctx: Ctx) -> Ctx {
+    let mut routing = (*ctx.routing).clone();
+    routing.roles.push(RoutedRole {
+        name: String::from("merge"),
+        kind: Some(String::from("merge")),
+        status: String::from("active"),
+        pool: Some(String::from("test-planner-pool")),
+        read_only: Some(false),
+        model: None,
+        models: Vec::new(),
+    });
+    ctx.with_routing(routing)
+}
+
+fn ls_remote_line(branch: &str) -> String {
+    format!("{DELETE_SHA}\trefs/heads/{branch}\n")
+}
+
+fn assert_ref_delete_queued(st: &State, uid: &str, branch: &str) {
+    let id = format!("ref-delete-{uid}");
+    let job = st
+        .jobs
+        .get(&id)
+        .unwrap_or_else(|| panic!("missing {id}; jobs {:?}", st.jobs.keys()));
+    assert_eq!(job.kind, "ref-delete");
+    let expected = format!("refs/heads/{branch}");
+    assert_eq!(job.delete_ref.as_deref(), Some(expected.as_str()));
+    assert_eq!(job.delete_expect.as_deref(), Some(DELETE_SHA));
+}
+
 /// The recorded exception lines (`<home>/exceptions.txt`).
 fn exceptions(ctx: &Ctx) -> String {
     fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap_or_default()
@@ -1178,12 +1210,13 @@ fn a_finished_gate_task_returns_its_receipt_text() {
 #[test]
 fn an_agent_exit_127_with_a_branch_is_a_host_failure_not_an_attempt() {
     let (_dir, ctx, host) = setup();
+    let ctx = with_merge_route(ctx);
     host.reply(
         "pool reconcile",
         0,
         "collected 1a2b3c4d here slot-1 finished \"pushed unit/x-a1 abc\"",
     );
-    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/x-a1\n");
+    host.reply("ls-remote", 0, &ls_remote_line("unit/x-a1"));
     host.reply(
         "task show",
         0,
@@ -1207,11 +1240,12 @@ fn an_agent_exit_127_with_a_branch_is_a_host_failure_not_an_attempt() {
     assert_eq!(u.task, None);
     assert_eq!(u.branch, None);
     assert_eq!(u.since_dispatch, None);
+    assert_ref_delete_queued(&st, "u-1", "unit/x-a1");
     assert!(
-        host.commands().iter().any(
-            |command| command.contains("push origin --delete") || command.contains("branch -D")
-        ),
-        "commands: {:?}",
+        host.commands()
+            .iter()
+            .all(|command| !command.contains("push origin")),
+        "pump pushed: {:?}",
         host.commands()
     );
     let pause = &st.env_pauses["here"];
@@ -1486,7 +1520,8 @@ fn proof_timeout_detail(command: &str) -> String {
 #[test]
 fn a_build_only_proof_timeout_refunds_the_attempt() {
     let (_dir, ctx, host) = setup();
-    host.reply("ls-remote", 0, "abc123\trefs/heads/unit/u-1-a1\n");
+    let ctx = with_merge_route(ctx);
+    host.reply("ls-remote", 0, &ls_remote_line("unit/u-1-a1"));
     let mut st = State::default();
     let mut u = unit(Status::Inflight, Some("task-1"), Some("unit/u-1-a1"));
     u.attempts = 1;
@@ -1507,11 +1542,12 @@ fn a_build_only_proof_timeout_refunds_the_attempt() {
     assert_eq!(u.retry_not_before, Some(T0 + 120));
     assert_eq!(u.branch, None, "the attempt branch is dropped");
     assert_eq!(u.history.len(), 1, "the incident stays in history");
+    assert_ref_delete_queued(&st, "u-1", "unit/u-1-a1");
     assert!(
-        host.commands().iter().any(
-            |command| command.contains("push origin --delete") || command.contains("branch -D")
-        ),
-        "commands: {:?}",
+        host.commands()
+            .iter()
+            .all(|command| !command.contains("push origin")),
+        "pump pushed: {:?}",
         host.commands()
     );
 }

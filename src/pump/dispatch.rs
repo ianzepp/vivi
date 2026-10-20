@@ -782,7 +782,7 @@ fn dispatch_cmd(
         }
     });
     let cmd = format!(
-        "pool dispatch --pool {} {} --need {} --kind {} --target {} --model {} --from {} --branch {} --budget {} --porcelain",
+        "pool dispatch --pool {} {} --need {} --kind {} --target {} --model {} --from {} --branch {} --publish-ref {} --budget {} --porcelain",
         shell_quote(&plan.pool),
         shell_quote(task),
         shell_quote(&unit.need),
@@ -791,6 +791,7 @@ fn dispatch_cmd(
         shell_quote(model),
         shell_quote(&plan.from_ref),
         shell_quote(&plan.branch),
+        shell_quote(&format!("refs/heads/{}", plan.branch)),
         budget,
     );
     let out = ctx.vivi(&cmd, 180);

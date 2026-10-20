@@ -10,7 +10,7 @@ For worker receipt formats, see [pump protocols](pump-protocols.md). For the rea
 
 A normal tick applies completed results, ingests plans, collects unit and job receipts, starts due gates, queues merge and cadence work, dispatches pending role jobs, dispatches ready unit tasks, requests a board pass, and saves. A paused tick still collects completed work and runs board bookkeeping, but does not start new dispatch, merge, or gate work. A stop request lets the current tick finish before the process exits. Stop does not cancel or drain pool jobs.
 
-The controller reloads mailspace configuration between ticks. Valid pool, routing, dispatch, merge, gate, budget, and check changes take effect on the next tick. The pump home and repository target checkout paths stay fixed while the lock is held; changing either requires a restart. Invalid configuration is reported and the last valid runtime snapshot remains in use.
+The controller reloads mailspace configuration between ticks. Valid pool, routing, dispatch, merge, gate, budget, and check changes take effect on the next tick, including the next board pass: that worker receives the live context with each request rather than keeping the startup snapshot. The pump home and repository target checkout paths stay fixed while the lock is held; changing either requires a restart. Invalid configuration is reported and the last valid runtime snapshot remains in use.
 
 ## Routing: kind to role to pool
 
@@ -28,10 +28,11 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 | **promote** | Active **release** role with a pool, or active **merge** role with a pool as fallback | Selected role pool and fallback chain. Publication is restricted to the exact configured main ref and candidate. |
 | **cadence**, **digest** | The scheduled role itself | That role's pool and fallback chain. |
 | **reclaim** | **reclaim** role, or the hand role | Local-provider pools only; it never falls back to a remote pool. |
+| **ref-delete** | Active **merge** role | Merge role pool and fallback chain. Used to delete a failed attempt branch; the privileged runner deletes the ref. |
 
 Pool fallback is configured in the pool's table. For example, **[pools.workers]** can set **fallback = "backup"**. For unit work, the hand role pool is preferred; when no hand pool is assigned, legacy kind pool lists remain the compatibility route. A configured role pool takes precedence over legacy dispatch kind routing.
 
-Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **[pump.merge].lanes**, **remote_wait**, **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. The old **[pump.ramdisk].lane_gib** setting applies only to uncalled local merge helpers. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.ramdisk]** when needed.
+Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **[pump.merge].lanes**, **remote_wait**, **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.ramdisk]** when needed. A source contract test fails if production `src/pump` grows an in-process merger, planner, or git push of refs.
 
 ## Durable pool jobs
 

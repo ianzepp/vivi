@@ -259,8 +259,8 @@ enum Branch {
     /// what the listing or fetch said.
     Unreadable(String),
     /// Commits (`git log --oneline`) and files (`git diff --stat`) on it,
-    /// plus how the branch reached the remote (`pushed to the target
-    /// remote, kept` or `push rejected: <tail>`).
+    /// plus how the branch is published (`kept locally; pool runner
+    /// publishes` or `pushed to the target remote, kept`).
     Found {
         commits: Vec<String>,
         files: Vec<String>,
@@ -416,23 +416,18 @@ fn gather(ctx: &Ctx, tctx: &Ctx, st: &State, uid: &str, base: &str, ending: &End
 }
 
 /// Read the branch's commits and files against `base`. A local branch is
-/// read straight from `refs/heads` and pushed (the only write); otherwise
+/// read straight from `refs/heads` (the pool runner publishes it); otherwise
 /// the remote listing decides, and a listed branch is fetched into the
 /// pump-owned `refs/pump-records/<branch>` without writing `FETCH_HEAD` or
 /// any `refs/remotes/*` — the merge lanes share this checkout and those
 /// refs.
 fn read_branch(tctx: &Ctx, branch: &str, base: &str) -> Branch {
     let (reference, note) = if local_branch_exists(tctx, branch) {
-        match publish_local(tctx, branch) {
-            Ok(()) => (
-                format!("refs/heads/{branch}"),
-                String::from("pushed to the target remote, kept"),
-            ),
-            Err(failed) => (
-                format!("refs/heads/{branch}"),
-                format!("push rejected: {failed}"),
-            ),
-        }
+        publish_local(tctx, branch);
+        (
+            format!("refs/heads/{branch}"),
+            String::from("kept locally; pool runner publishes"),
+        )
     } else {
         match remote_branch(tctx, branch) {
             Err(why) => return Branch::Unreadable(why),
@@ -494,26 +489,16 @@ fn remote_branch(tctx: &Ctx, branch: &str) -> Result<bool, String> {
     Ok(!out.text.trim().is_empty())
 }
 
-/// Push a branch that lives only in the target's integration repository (a
-/// local worktree pool) to the target remote: a plain push of a new ref,
-/// never forced. `Err` carries the tail of a refused or failed push, which
-/// is also logged.
-fn publish_local(tctx: &Ctx, branch: &str) -> Result<(), String> {
+/// A local worktree pool already committed the attempt branch in the target
+/// checkout. The privileged pool runner publishes that ref; the pump only
+/// reads it for the attempt record.
+fn publish_local(tctx: &Ctx, branch: &str) {
     if tctx.cfg.targets.is_empty() {
-        return Ok(());
+        return;
     }
-    let b = shell_quote(branch);
-    let out = tctx.git(
-        &format!("push {} refs/heads/{b}:refs/heads/{b}", tctx.cfg.remote),
-        RECORD_TIMEOUT,
-    );
-    if out.code == 0 {
-        tctx.log(&format!("attempt branch {branch} pushed"));
-        return Ok(());
-    }
-    let why = tail(out.text.trim(), NOTE_TAIL_CHARS);
-    tctx.log(&format!("attempt branch {branch} push failed: {why}"));
-    Err(why)
+    tctx.log(&format!(
+        "attempt branch {branch} kept locally; pool runner publishes"
+    ));
 }
 
 /// The non-empty lines of `text`.

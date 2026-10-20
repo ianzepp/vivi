@@ -440,7 +440,8 @@ fn cadence_run_text(role: &RoleView, now: u64) -> String {
     )
 }
 
-fn complete_runs(st: &State, cadence: &mut CadenceState, now: u64) {
+fn complete_runs(st: &mut State, cadence: &mut CadenceState, now: u64) {
+    let mut apply = Vec::new();
     for run in cadence.runs.values_mut() {
         if run.job.is_empty() {
             continue;
@@ -458,6 +459,7 @@ fn complete_runs(st: &State, cadence: &mut CadenceState, now: u64) {
         if success && run.branch.is_some() {
             if let Some(error) = jobs::integration_error(st, &run.job) {
                 finish_failed_run(run, now, &format!("integration-failed: {error}"));
+                apply.push(run.job.clone());
                 continue;
             }
             if !jobs::branch_landed(st, &run.job) {
@@ -486,6 +488,10 @@ fn complete_runs(st: &State, cadence: &mut CadenceState, now: u64) {
         } else {
             run.retry_at = Some(ended_at.saturating_add(backoff_secs(run.attempt)));
         }
+        apply.push(run.job.clone());
+    }
+    for id in apply {
+        jobs::mark_applied(st, &id, now);
     }
 }
 

@@ -20,10 +20,13 @@ use crate::pump::board;
 use crate::pump::host::Ctx;
 use crate::pump::state::State;
 
+/// One board-pass request: the live context at request time, plus a state clone.
+type BoardRequest = (Ctx, State);
+
 /// The board pass worker thread and the tick thread's view of it.
 pub struct BoardPass {
-    /// States go to the worker thread through this channel.
-    send: Sender<State>,
+    /// Live context plus a state clone go to the worker through this channel.
+    send: Sender<BoardRequest>,
     /// Finished passes come back through this channel.
     results: Receiver<State>,
     /// A pass is in flight; no second one is requested until it lands.
@@ -35,14 +38,15 @@ pub struct BoardPass {
 impl BoardPass {
     /// Start the `pump-board` thread. It runs until this `BoardPass` is
     /// dropped: dropping closes the request channel, which ends the loop.
+    /// Each request carries the live [`Ctx`] so a config reload applies to
+    /// the next pass without restarting the pump.
     #[must_use]
     pub fn start(ctx: &Ctx) -> BoardPass {
-        let (send, requests) = channel::<State>();
+        let (send, requests) = channel::<BoardRequest>();
         let (out, results) = channel::<State>();
-        let worker = ctx.clone();
         let spawned = thread::Builder::new()
             .name(String::from("pump-board"))
-            .spawn(move || board_loop(&worker, &requests, &out));
+            .spawn(move || board_loop(&requests, &out));
         if let Err(error) = spawned {
             ctx.log(&format!("board worker did not start: {error}"));
         }
@@ -57,7 +61,7 @@ impl BoardPass {
     /// One detached pass: the channel ends a test drives itself, no thread
     /// started.
     #[cfg(test)]
-    pub(crate) fn detached() -> (BoardPass, Receiver<State>, Sender<State>) {
+    pub(crate) fn detached() -> (BoardPass, Receiver<BoardRequest>, Sender<State>) {
         let (send, requests) = channel();
         let (out, results) = channel();
         let pass = BoardPass {
@@ -70,21 +74,20 @@ impl BoardPass {
     }
 
     /// Test seam: serve one requested pass on the calling thread, exactly as
-    /// the worker would, so a test tick stays deterministic. When a state
-    /// clone arrived on `requests`, run the board pass on it, hand it back
-    /// through `out`, and fold the result into the live state.
+    /// the worker would, so a test tick stays deterministic. When a request
+    /// arrived, run the board pass with the context sent on that request.
     #[cfg(test)]
     pub(crate) fn serve(
         &mut self,
         ctx: &Ctx,
         st: &mut State,
-        requests: &Receiver<State>,
+        requests: &Receiver<BoardRequest>,
         out: &Sender<State>,
     ) {
-        let Ok(mut clone) = requests.try_recv() else {
+        let Ok((worker_ctx, mut clone)) = requests.try_recv() else {
             return;
         };
-        board::board(ctx, &mut clone);
+        board::board(&worker_ctx, &mut clone);
         if out.send(clone).is_err() {
             return;
         }
@@ -105,7 +108,7 @@ impl BoardPass {
         // The tick thread owns due-ness; a zero stamp makes the worker's own
         // interval check in `board` pass.
         clone.board.at = 0;
-        if self.send.send(clone.clone()).is_err() {
+        if self.send.send((ctx.clone(), clone.clone())).is_err() {
             return;
         }
         std::mem::take(&mut st.board.sync_pending);
@@ -138,12 +141,13 @@ impl BoardPass {
     }
 }
 
-/// The worker loop: block on one state clone, run the board pass on it, hand
-/// it back. The loop ends when the tick thread drops its sender.
-fn board_loop(ctx: &Ctx, requests: &Receiver<State>, out: &Sender<State>) {
-    while let Ok(mut clone) = requests.recv() {
+/// The worker loop: block on one request, run the board pass with the live
+/// context from that request, hand the state back. The loop ends when the
+/// tick thread drops its sender.
+fn board_loop(requests: &Receiver<BoardRequest>, out: &Sender<State>) {
+    while let Ok((ctx, mut clone)) = requests.recv() {
         clone.board.at = 0;
-        board::board(ctx, &mut clone);
+        board::board(&ctx, &mut clone);
         if out.send(clone).is_err() {
             break;
         }

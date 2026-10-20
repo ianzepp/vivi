@@ -13,8 +13,8 @@ use crate::pump::jobs::{self, JobSpec, PoolJob};
 use crate::pump::need::{self, NeedBranch, NeedBranchStatus};
 use crate::pump::state::{State, Status};
 
-use super::lane::take_batch;
 use super::pool_dispatch::{MERGE_BRIEF, MERGE_TIMEOUT_RULES};
+use super::select::take_batch;
 
 pub(super) use super::need_branch_init::apply_branch_init;
 pub(super) use super::need_receipts::apply_need_merge;

@@ -37,7 +37,6 @@ pub mod quarantine;
 pub mod ramsweep;
 pub mod ready;
 pub mod reclaim;
-pub mod remote;
 pub mod replan;
 pub mod report;
 pub mod requeue;
@@ -116,26 +115,6 @@ mod collect_test;
 mod dispatch_test;
 
 #[cfg(test)]
-#[path = "pump/merge_test.rs"]
-mod merge_test;
-
-#[cfg(test)]
-#[path = "pump/merge_lane_test.rs"]
-mod merge_lane_test;
-
-#[cfg(test)]
-#[path = "pump/merge_pull_test.rs"]
-mod merge_pull_test;
-
-#[cfg(test)]
-#[path = "pump/merge_progress_test.rs"]
-mod merge_progress_test;
-
-#[cfg(test)]
-#[path = "pump/remote_test.rs"]
-mod remote_test;
-
-#[cfg(test)]
 #[path = "pump/gate_test.rs"]
 mod gate_test;
 
@@ -158,10 +137,6 @@ mod boardpass_test;
 #[cfg(test)]
 #[path = "pump/run_test.rs"]
 mod run_test;
-
-#[cfg(test)]
-#[path = "pump/lifecycle_test.rs"]
-mod lifecycle_test;
 
 #[cfg(test)]
 #[path = "pump/blockers_test.rs"]

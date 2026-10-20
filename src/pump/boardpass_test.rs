@@ -238,9 +238,10 @@ fn request_respects_the_interval_and_consumes_sync_pending() {
 
     st.board.at = ctx.now().saturating_sub(ctx.cfg.board.every + 1);
     pass.request(&ctx, &mut st);
-    let sent = requests.try_recv().unwrap();
+    let (sent_ctx, sent) = requests.try_recv().unwrap();
     assert_eq!(sent.board.at, 0);
     assert!(sent.board.sync_pending, "the clone carries the push");
+    assert_eq!(sent_ctx.cfg.board.from, ctx.cfg.board.from);
     assert!(!st.board.sync_pending, "the live flag is consumed");
 
     // A pass is in flight: a second request is dropped.
@@ -295,4 +296,56 @@ fn a_full_pass_round_trips_through_the_worker_thread() {
     assert!(job.body.contains("PUMP-NEED-INPUT-BEGIN"));
     assert!(job.body.contains("PUMP-PLAN-BEGIN"));
     assert!(host.spawned().is_empty(), "pool owns planner execution");
+}
+
+#[test]
+fn a_board_pass_uses_the_config_sent_on_the_request() {
+    let (_dir, mut ctx, host) = setup();
+    let mut pass = BoardPass::start(&ctx);
+    let mut cfg = (*ctx.cfg).clone();
+    cfg.board.from = vec![String::from("reloaded@example.local")];
+    ctx.cfg = Arc::new(cfg);
+    host.reply("sync pull", 0, "pulled 1 message");
+    host.reply(
+        "need list --from reloaded@example.local",
+        0,
+        &list(&[row("n1", "2026-10-15T00:00", "Plan me", &["pump"])]),
+    );
+    host.reply("--held", 0, "[]");
+    host.reply("--json --to mind", 0, "[]");
+    host.reply(
+        "need show n1",
+        0,
+        &thread(
+            "2026-10-15T00:00:00Z",
+            "f00d01",
+            "reloaded@example.local",
+            "the need",
+        ),
+    );
+    let mut st = State::default();
+    st.board.at = 0;
+    pass.request(&ctx, &mut st);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while st.board.at == 0 && Instant::now() < deadline {
+        pass.apply(&ctx, &mut st);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert!(
+        host.commands()
+            .iter()
+            .any(|cmd| cmd.contains("need list --from reloaded@example.local")),
+        "reloaded from unused; commands: {:?}",
+        host.commands()
+    );
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|cmd| cmd.contains("need list --from operator@bd371d96.local")),
+        "startup from leaked; commands: {:?}",
+        host.commands()
+    );
 }

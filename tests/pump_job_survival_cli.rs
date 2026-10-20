@@ -19,6 +19,11 @@ const WORKERS: &[(&str, &str, &str)] = &[
     ("gate-survival", "gate", "gate"),
     ("audit-survival", "audit", "auditor"),
     ("promote-survival", "promote", "release"),
+    ("cadence-survival", "cadence", "mind"),
+    ("digest-survival", "digest", "digest"),
+    ("reclaim-survival", "reclaim", "hand"),
+    ("need-audit-survival", "need-audit", "auditor"),
+    ("need-merge-survival", "need-merge", "merge"),
 ];
 const UNIT: &str = "hand-survival";
 const TEST_HARNESS: &str = r#"#!/bin/sh
@@ -51,6 +56,25 @@ case "$kind" in
     ;;
   promote)
     printf '%s\n' "PUMP_PROMOTE_RESULT={\"status\":\"ready\",\"tip\":\"$VIVI_TEST_TIP\"}"
+    ;;
+  cadence)
+    printf 'cadence survived\n'
+    ;;
+  digest)
+    printf 'digest survived\n'
+    ;;
+  reclaim)
+    printf 'reclaim survived\n'
+    ;;
+  need-audit)
+    printf '%s\n' 'PUMP_NEED_AUDIT_RESULT={"version":1,"verdict":"clean_pass"}'
+    ;;
+  need-merge)
+    printf 'survived need landing\n' > .survival-landing.txt
+    git add .survival-landing.txt
+    git -c user.name='Survival Test' -c user.email=survival@localhost commit -q -m 'survival need landing'
+    candidate=$(git rev-parse HEAD)
+    printf '%s\n' "PUMP_MERGE_RESULT={\"version\":1,\"target\":\"default\",\"tip\":\"$candidate\",\"sources\":[]}"
     ;;
   hand)
     printf '%s\n' 'VERDICT: no-defect'
@@ -197,20 +221,26 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
     for (id, _, _) in WORKERS {
         let job = &final_state.jobs[*id];
         assert_eq!(job.status, JobStatus::Finished, "{id}");
-        assert!(job.applied_at.is_some(), "{id} receipt was not applied");
         let receipt = &job.outcome.as_ref().unwrap().receipt;
         let marker = match job.kind.as_str() {
             "planner:board" => "PUMP-PLAN-BEGIN",
-            "merge" => "PUMP_MERGE_RESULT=",
+            "merge" | "need-merge" => "PUMP_MERGE_RESULT=",
             "gate" => "FAILING-BEGIN",
             "audit" => "AUDIT-BEGIN",
             "promote" => "PUMP_PROMOTE_RESULT=",
+            "cadence" => "cadence survived",
+            "digest" => "digest survived",
+            "reclaim" => "reclaim survived",
+            "need-audit" => "PUMP_NEED_AUDIT_RESULT=",
             other => panic!("unexpected seeded job kind {other}"),
         };
         assert!(
             receipt.contains(marker),
             "{id} has the wrong saved receipt: {receipt}"
         );
+        if job.kind != "need-audit" {
+            assert!(job.applied_at.is_some(), "{id} receipt was not applied");
+        }
         if matches!(job.kind.as_str(), "merge" | "promote") {
             let publication = job.outcome.as_ref().unwrap().runner_publish().unwrap();
             assert!(publication.succeeded(), "{id}: {publication:?}");
@@ -270,7 +300,7 @@ fn scaffold() -> Rig {
     let old = fs::read_to_string(&config_path).unwrap();
     let mut parsed: toml::Value = toml::from_str(&old).unwrap();
     let additions = format!(
-        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 6\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_UNIT_ID\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
+        "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 16\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_UNIT_ID\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
         toml_string(&project.join(".vivi/pump-home")),
         toml_string(&repo),
         toml_string(&bare),
@@ -286,6 +316,7 @@ fn scaffold() -> Rig {
         ("gate", "auditor"),
         ("auditor", "auditor"),
         ("release", "merge"),
+        ("digest", "digest"),
     ] {
         ensure_role(&mut parsed, role, kind, "p", "P2");
     }
@@ -375,7 +406,10 @@ fn seed_state(rig: &Rig) {
         });
         spec.model = Some(String::from("standin"));
         spec.budget = 60;
-        spec.read_only = matches!(*kind, "planner:board" | "gate" | "audit");
+        spec.read_only = matches!(
+            *kind,
+            "planner:board" | "gate" | "audit" | "cadence" | "digest" | "reclaim" | "need-audit"
+        );
         if *kind == "merge" {
             spec.branch = Some(String::from("pump/merge/default/survival"));
             spec.publish_ref = Some(String::from("refs/heads/next"));
@@ -407,8 +441,29 @@ fn seed_state(rig: &Rig) {
                 }
             });
         }
+        if *kind == "need-merge" {
+            spec.branch = Some(String::from("pump/need-merge/default/survival"));
+            spec.publish_ref = Some(String::from("refs/heads/next"));
+        }
         jobs::enqueue(&mut st, spec).unwrap();
     }
+    st.extra.insert(
+        String::from("cadence"),
+        serde_json::json!({
+            "runs": {
+                "mind": {
+                    "job": "cadence-survival",
+                    "started_at": 1,
+                    "read_only": true
+                },
+                "digest": {
+                    "job": "digest-survival",
+                    "started_at": 1,
+                    "read_only": true
+                }
+            }
+        }),
+    );
     let store = PumpStore::open(&rig.home.join(DB_FILENAME)).unwrap();
     let mut store = store;
     store.save(&st).unwrap();
@@ -466,11 +521,10 @@ fn dispatched(rig: &Rig) -> bool {
 
 fn applied(rig: &Rig) -> bool {
     let state = load_state(rig);
-    WORKERS.iter().all(|(id, _, _)| {
-        state
-            .jobs
-            .get(*id)
-            .is_some_and(|job| job.status == JobStatus::Finished && job.applied_at.is_some())
+    WORKERS.iter().all(|(id, kind, _)| {
+        state.jobs.get(*id).is_some_and(|job| {
+            job.status == JobStatus::Finished && (*kind == "need-audit" || job.applied_at.is_some())
+        })
     }) && state
         .units
         .get(UNIT)
@@ -507,7 +561,9 @@ fn startup_diagnostics(rig: &Rig) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     let mut tasks = Vec::new();
-    for role in ["hand", "planner", "merge", "gate", "auditor", "release"] {
+    for role in [
+        "hand", "planner", "merge", "gate", "auditor", "release", "mind", "digest",
+    ] {
         tasks.push(command_report([
             "task",
             "list",

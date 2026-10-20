@@ -16,6 +16,7 @@ use crate::VivariumError;
 use crate::pump::attempt_record::{self, Ending};
 use crate::pump::envfail;
 use crate::pump::host::{Ctx, shell_quote, shell_split};
+use crate::pump::jobs::{self, JobSpec};
 use crate::pump::state::{Attempt, State, Status, Unit};
 
 #[path = "collect_replan.rs"]
@@ -345,11 +346,11 @@ fn host_fail(ctx: &Ctx, st: &mut State, uid: &str, host: &envfail::HostFailure, 
     ctx.log(&format!("host-fail {uid} {}; attempt restored", host.class));
 }
 
-/// Delete the unit's attempt branch, locally and on the remote, when either
-/// has it: the branch only holds a `WIP (attempt failed)` marker, and the
-/// restored attempt must not be mistaken for a delivered one. Failures are
-/// logged and never fatal.
-fn drop_attempt_branch(ctx: &Ctx, st: &State, uid: &str) {
+/// Delete the unit's attempt branch locally, and queue a runner job for the
+/// remote ref: the branch only holds a `WIP (attempt failed)` marker, and
+/// the restored attempt must not be mistaken for a delivered one. Failures
+/// are logged and never fatal.
+fn drop_attempt_branch(ctx: &Ctx, st: &mut State, uid: &str) {
     let Some(unit) = st.units.get(uid) else {
         return;
     };
@@ -366,21 +367,84 @@ fn drop_attempt_branch(ctx: &Ctx, st: &State, uid: &str) {
             out.text.trim()
         ));
     }
-    if remote_has(&tctx, &branch) {
-        let out = tctx.git(
-            &format!(
-                "push {} --delete {}",
-                shell_quote(&tctx.cfg.remote),
-                shell_quote(&branch)
-            ),
-            60,
-        );
-        ctx.log(&format!(
-            "host-fail {uid} drop remote branch {}: {}",
-            branch,
-            out.text.trim()
-        ));
+    queue_remote_branch_delete(ctx, st, uid, &tctx, &branch, &target);
+}
+
+/// Queue a privileged runner delete for `branch` when it still exists remotely.
+fn queue_remote_branch_delete(
+    ctx: &Ctx,
+    st: &mut State,
+    uid: &str,
+    tctx: &Ctx,
+    branch: &str,
+    target: &str,
+) {
+    if !remote_has(tctx, branch) {
+        return;
     }
+    let Some(sha) = branch_tip(tctx, branch) else {
+        ctx.log(&format!(
+            "host-fail {uid} remote branch {branch} has no SHA; skip delete job"
+        ));
+        return;
+    };
+    let Some(role) = ctx
+        .routing
+        .merge()
+        .filter(|role| role.status == "active" && ctx.routing.pool_of(role).is_some())
+    else {
+        ctx.log(&format!(
+            "host-fail {uid} remote branch {branch} not deleted: merge role has no pool"
+        ));
+        return;
+    };
+    let id = format!("ref-delete-{uid}");
+    let mut spec = JobSpec::new(
+        id.clone(),
+        "ref-delete",
+        role.name.clone(),
+        format!("delete attempt branch {branch}"),
+        format!(
+            "Do not change the checkout. After your clean exit, the privileged pool runner deletes `{branch}` only if it still matches `{sha}`."
+        ),
+    );
+    spec.target = Some(target.to_owned());
+    spec.builtin_role = Some(String::from("merge"));
+    spec.from_ref = Some(sha.clone());
+    spec.branch = Some(format!("vivi/ref-delete/{uid}"));
+    spec.delete_ref = Some(format!("refs/heads/{branch}"));
+    spec.delete_expect = Some(sha);
+    if let Err(error) = jobs::enqueue(st, spec) {
+        ctx.log(&format!(
+            "host-fail {uid} remote branch {branch} delete job failed: {error}"
+        ));
+        return;
+    }
+    ctx.log(&format!("host-fail {uid} queued remote delete {id}"));
+}
+
+/// Full SHA of `branch` from the local checkout or the remote listing.
+fn branch_tip(ctx: &Ctx, branch: &str) -> Option<String> {
+    let quoted = shell_quote(branch);
+    let local = ctx.git(&format!("rev-parse --verify refs/heads/{quoted}"), 30);
+    if let Some(sha) = full_sha(local.text.trim()) {
+        return Some(sha);
+    }
+    let out = ctx.git(
+        &format!(
+            "ls-remote {} refs/heads/{quoted}",
+            shell_quote(&ctx.cfg.remote)
+        ),
+        60,
+    );
+    if out.code != 0 {
+        return None;
+    }
+    full_sha(out.text.split_whitespace().next().unwrap_or_default())
+}
+
+fn full_sha(value: &str) -> Option<String> {
+    (value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())).then(|| value.to_owned())
 }
 
 /// Split planners currently launched and not waiting on a retry; an

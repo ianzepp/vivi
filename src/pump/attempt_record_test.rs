@@ -568,7 +568,7 @@ fn local_unit() -> Unit {
 }
 
 #[test]
-fn a_failed_local_worktree_attempt_branch_is_pushed_without_force() {
+fn a_failed_local_worktree_attempt_branch_is_read_without_a_pump_push() {
     let (_dir, ctx, host) = setup_with(local_target_config());
     host.reply(
         "pool reconcile",
@@ -580,23 +580,21 @@ fn a_failed_local_worktree_attempt_branch_is_pushed_without_force() {
     let mut st = state_with(local_unit());
     collect(&ctx, &mut st);
     assert_eq!(st.units["u-1"].status, Status::Pending);
-    let pushes: Vec<String> = host
-        .commands()
-        .into_iter()
-        .filter(|cmd| cmd.contains("push origin"))
-        .collect();
-    assert_eq!(pushes.len(), 1, "{pushes:?}");
-    assert!(pushes[0].ends_with("push origin refs/heads/unit/u-1-a1:refs/heads/unit/u-1-a1"));
-    assert!(!pushes[0].contains("--force") && !pushes[0].contains(" +"));
     assert!(
-        host.logs()
-            .contains(&String::from("attempt branch unit/u-1-a1 pushed"))
+        host.commands()
+            .iter()
+            .all(|cmd| !cmd.contains("push origin")),
+        "pump pushed: {:?}",
+        host.commands()
     );
+    assert!(host.logs().iter().any(|line| {
+        line.contains("attempt branch unit/u-1-a1 kept locally; pool runner publishes")
+    }));
     assert!(the_record(&ctx).contains("outcome: agent failed: finished/agent exit 2\n"));
 }
 
 #[test]
-fn a_delivered_local_worktree_attempt_branch_is_pushed_too_and_a_refused_push_is_logged() {
+fn a_delivered_local_worktree_attempt_branch_is_read_without_a_pump_push() {
     let (_dir, ctx, host) = setup_with(local_target_config());
     host.reply(
         "pool reconcile",
@@ -605,14 +603,15 @@ fn a_delivered_local_worktree_attempt_branch_is_pushed_too_and_a_refused_push_is
     );
     host.reply("show-ref --verify --quiet refs/heads/unit/u-1-a1", 0, "");
     host.reply("task show", 0, &receipt(0, "done", ""));
-    host.reply("push origin", 1, "rejected: non-fast-forward");
     let mut st = state_with(local_unit());
     collect(&ctx, &mut st);
     assert_eq!(st.units["u-1"].status, Status::Delivered);
     assert!(
-        host.logs()
+        host.commands()
             .iter()
-            .any(|line| { line.starts_with("attempt branch unit/u-1-a1 push failed: rejected") })
+            .all(|cmd| !cmd.contains("push origin")),
+        "pump pushed: {:?}",
+        host.commands()
     );
     assert_eq!(mails(&host).len(), 1);
 }
@@ -679,7 +678,7 @@ fn the_record_fetch_writes_no_shared_refs() {
 }
 
 #[test]
-fn a_local_record_reads_refs_heads_directly_and_pushes() {
+fn a_local_record_reads_refs_heads_directly_without_a_pump_push() {
     let (_dir, ctx, host) = setup_with(local_target_config());
     host.reply(
         "pool reconcile",
@@ -702,33 +701,11 @@ fn a_local_record_reads_refs_heads_directly_and_pushes() {
         .find(|cmd| cmd.contains("log --oneline"))
         .unwrap_or_else(|| panic!("{cmds:?}"));
     assert!(log.contains("refs/heads/unit/u-1-a1"), "{log}");
-    let pushes: Vec<&String> = cmds.iter().filter(|cmd| cmd.contains("push")).collect();
-    assert_eq!(pushes.len(), 1, "the push is the only write: {cmds:?}");
-    assert!(the_record(&ctx).contains("(pushed to the target remote, kept)"));
-}
-
-#[test]
-fn a_rejected_push_is_recorded_as_rejected_not_pushed() {
-    let (_dir, ctx, host) = setup_with(local_target_config());
-    host.reply(
-        "pool reconcile",
-        0,
-        "collected 1a2b3c4d bridge slot-1 finished \"committed unit/u-1-a1 abc\"",
-    );
-    host.reply("show-ref --verify --quiet refs/heads/unit/u-1-a1", 0, "");
-    host.reply("task show", 0, &receipt(0, "done", ""));
-    host.reply("push origin", 1, "! [rejected] non-fast-forward");
-    let mut st = state_with(local_unit());
-    collect(&ctx, &mut st);
-    let text = the_record(&ctx);
     assert!(
-        text.contains("branch: unit/u-1-a1 (push rejected: ! [rejected] non-fast-forward)\n"),
-        "{text}"
+        cmds.iter().all(|cmd| !cmd.contains("push origin")),
+        "pump pushed: {cmds:?}"
     );
-    assert!(
-        !text.contains("(pushed to the target remote, kept)"),
-        "{text}"
-    );
+    assert!(the_record(&ctx).contains("(kept locally; pool runner publishes)"));
 }
 
 #[test]
@@ -769,21 +746,6 @@ fn the_record_path_gives_every_git_call_30_seconds() {
         ls_remotes.contains(&30),
         "record ls-remote at 30: {ls_remotes:?}"
     );
-}
-
-#[test]
-fn the_record_push_also_runs_within_30_seconds() {
-    let (_dir, ctx, host) = setup_with(local_target_config());
-    host.reply(
-        "pool reconcile",
-        0,
-        "collected 1a2b3c4d bridge slot-1 finished \"committed unit/u-1-a1 abc\"",
-    );
-    host.reply("show-ref --verify --quiet refs/heads/unit/u-1-a1", 0, "");
-    host.reply("task show", 0, &receipt(0, "done", ""));
-    let mut st = state_with(local_unit());
-    collect(&ctx, &mut st);
-    assert_eq!(timeout_of(&host, "push origin"), 30);
 }
 
 #[test]

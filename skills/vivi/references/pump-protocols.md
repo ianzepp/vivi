@@ -109,4 +109,4 @@ An optional external gate runner can provide a result file for a pinned tip unde
 
 ## Retired tooling
 
-The old deterministic in-process merge helpers remain useful to focused tests and tooling, but **vivi pump run** does not call them. The old **REMOTE-MERGE** flag and **merge-jobs/** file-claim protocol are not a supported live merge route. Detached planner **.out.rc** reaper files and detached **sync push --drain** launches are not part of the active planner or job execution path.
+The old deterministic in-process merger, **REMOTE-MERGE** flag, and **merge-jobs/** file-claim protocol have been removed. A source contract test fails if they return. Detached planner **.out.rc** reaper files are not part of the active planner path. Detached **sync push --drain** is mail transport, not job execution. Unit attempt branches are published by the privileged pool runner (`--publish-ref`); the pump does not `git push` those refs.

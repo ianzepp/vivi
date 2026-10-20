@@ -1,12 +1,9 @@
-//! Quarantine: a merge batch whose shared check failed, set aside.
+//! Quarantine: leftover state for a merge batch whose shared check failed.
 //!
-//! When a shared check fails on a batch of several units, nobody knows which
-//! unit broke it, and finding out costs a full check run per unit. The lane
-//! instead pushes the merged batch to `vivi/quarantine/<id>` and reports every
-//! merged unit as quarantined (`merge::batch`). This module is the state side:
-//! [`set_aside`] parks each unit and opens ONE repair unit that starts from the
-//! quarantine branch; [`repair_of`], [`members`] and [`repair_stuck`] close the
-//! loop when the repair unit merges or goes stuck.
+//! The live merge worker no longer creates quarantine records; these helpers
+//! still close the loop for units already parked that way. [`set_aside`] parks
+//! each unit and opens ONE repair unit from the quarantine branch;
+//! [`repair_of`], [`members`] and [`repair_stuck`] finish that repair.
 //!
 //! A repair unit carries the id it repairs in `Unit::repairs`, never in
 //! `quarantine` (membership), and is `solo`: it merges alone, so it cannot be

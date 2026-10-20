@@ -1,5 +1,4 @@
-//! Applying merge results to the pump state: the only writer of unit state
-//! that merge lanes feed. [`Merger::apply`](super::Merger::apply) calls these.
+//! Applying merge results to the pump state from dispatched job receipts.
 
 use std::fs;
 use std::io::Write;

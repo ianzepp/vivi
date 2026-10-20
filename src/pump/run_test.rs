@@ -16,7 +16,6 @@ use crate::pump::config::{
 };
 use crate::pump::host::{CmdOutput, Ctx, FakeHost, Host, test_ctx};
 use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
-use crate::pump::merge::Merger;
 use crate::pump::run::{
     actor_string, ensure_repo, refresh_config, run, run_with, status, tick as run_tick,
     write_status,
@@ -27,12 +26,9 @@ use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 /// The fake clock's start (1970-01-12T13:46:40Z).
 const T0: u64 = 1_000_000;
 
-fn tick(ctx: &Ctx, st: &mut State, merger: &Merger) {
+fn tick(ctx: &Ctx, st: &mut State) {
     let (mut pass, requests, results) = BoardPass::detached();
-    merger.apply(ctx, st);
     run_tick(ctx, st, &mut pass).unwrap();
-    merger.apply(ctx, st);
-    merger.feed(ctx, st);
     pass.serve(ctx, st, &requests, &results);
 }
 
@@ -156,11 +152,10 @@ fn write_status_writes_counts_then_stall_lines() {
     st.merges = 3;
     st.closed_needs = vec![String::from("n1"), String::from("n2")];
     st.gates.push(crate::pump::state::GateRecord::default());
-    let (merger, _results, _jobs) = Merger::detached();
-    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 10);
+    assert_eq!(lines.len(), 9, "{text}");
     assert_eq!(lines[0], "1970-01-12T13:46:40Z");
     assert_eq!(lines[1], "units merged=1 pending=2");
     assert_eq!(lines[2], "plans closed=2 units=1");
@@ -173,7 +168,6 @@ fn write_status_writes_counts_then_stall_lines() {
         lines[8],
         "shared-check timeout counts unavailable (no terminal merge worker receipts)"
     );
-    assert_eq!(lines[9], "lane default/0 idle merged 0 conflict 0");
 }
 
 #[test]
@@ -249,8 +243,7 @@ fn write_status_lists_top_blockers_after_the_stall_lines() {
         &serde_json::Value::Array(pairs).to_string(),
     );
     host.set_now(T0);
-    let (merger, _results, _jobs) = Merger::detached();
-    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(
         text.contains("blocker r stuck age 30m held 13"),
@@ -290,8 +283,7 @@ fn write_status_lists_durable_planner_jobs_with_pool_and_age() {
     );
     st.board.planner_fails.insert(String::from("n7"), 2);
     st.board.planner_failed.push(String::from("n8"));
-    let (merger, _results, _jobs) = Merger::detached();
-    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     assert!(
         text.contains("planner-job plan1 in-flight pool=here task=task-plan1 age=310s"),
@@ -334,8 +326,7 @@ fn planner_job(id: &str, status: JobStatus, queued: u64, dispatched: Option<u64>
 fn write_status_adds_no_planner_lines_when_idle() {
     let (dir, ctx, _host) = setup();
     let st = State::default();
-    let (merger, _results, _jobs) = Merger::detached();
-    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert!(
@@ -357,9 +348,8 @@ fn write_status_lists_red_owners_without_a_plan() {
         .insert(String::from("crate::alpha"), String::from("pumpfix-gdead"));
     st.red
         .insert(String::from("crate::beta"), String::from("pumpfix-gdead"));
-    let (merger, _results, _jobs) = Merger::detached();
     let path = dir.path().join("home/status.txt");
-    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(&path).unwrap();
     assert!(
         text.contains("red owned by pumpfix-gdead: 2 names, plan none"),
@@ -367,7 +357,7 @@ fn write_status_lists_red_owners_without_a_plan() {
     );
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans/pumpfix-gdead.json"), "{}").unwrap();
-    write_status(&ctx, &st, &merger.lane_lines(ctx.now()));
+    write_status(&ctx, &st, &[]);
     let text = fs::read_to_string(&path).unwrap();
     assert!(
         !text.contains("red owned by pumpfix-gdead"),
@@ -408,8 +398,7 @@ fn a_tick_runs_the_steps_in_pump_py_order() {
     );
     let mut st = State::default();
     put(&mut st, "a-1", unit(Status::Inflight, Some("1a2b3c4d")));
-    let (merger, _results, _jobs) = Merger::detached();
-    tick(&ctx, &mut st, &merger);
+    tick(&ctx, &mut st);
     let commands = host.commands();
     let sync = first_at(&commands, "sync pull");
     let reconcile = first_at(&commands, "pool reconcile --porcelain");
@@ -432,8 +421,7 @@ fn a_tick_logs_dispatch_and_collect_durations() {
     );
     let mut st = State::default();
     put(&mut st, "a-1", unit(Status::Inflight, Some("1a2b3c4d")));
-    let (merger, _results, _jobs) = Merger::detached();
-    tick(&ctx, &mut st, &merger);
+    tick(&ctx, &mut st);
     assert!(
         host.logs().iter().any(|l| l.starts_with("collect took ")),
         "no collect duration in {:?}",
@@ -523,8 +511,7 @@ fn a_stuck_root_with_twenty_dependents_alarms_bumps_and_requeues_in_one_tick() {
     host.set_now(T0);
     host.reply("graph blocked", 0, &twenty_dependents_on_r());
     let mut st = stuck_root_with_twenty_dependents();
-    let (merger, _results, _jobs) = Merger::detached();
-    tick(&ctx, &mut st, &merger);
+    tick(&ctx, &mut st);
 
     let exceptions = fs::read_to_string(dir.path().join("home/exceptions.txt")).unwrap();
     assert!(
@@ -573,8 +560,7 @@ fn a_paused_tick_dispatches_nothing_and_still_writes_status() {
     let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
     store.initialize_control("paused").unwrap();
     let mut st = State::default();
-    let (merger, _results, _jobs) = Merger::detached();
-    tick(&ctx, &mut st, &merger);
+    tick(&ctx, &mut st);
     let commands = host.commands();
     assert!(!commands.iter().any(|c| c.contains("pool status")));
     assert!(!commands.iter().any(|c| c.contains("task send")));
@@ -599,7 +585,6 @@ fn a_tick_stops_when_its_state_cannot_be_saved() {
     conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
         .unwrap();
     drop(conn);
-    let (merger, _results, _jobs) = Merger::detached();
 
     let (mut pass, _requests, _results) = BoardPass::detached();
     let err = run_tick(&ctx, &mut State::default(), &mut pass).unwrap_err();
@@ -624,7 +609,6 @@ fn a_tick_writes_status_before_its_first_save() {
     conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
         .unwrap();
     drop(conn);
-    let (merger, _results, _jobs) = Merger::detached();
     let (mut pass, _requests, _results) = BoardPass::detached();
 
     let err = run_tick(&ctx, &mut State::default(), &mut pass).unwrap_err();
@@ -663,8 +647,7 @@ fn a_finished_gate_task_reaches_finish_gate_through_collect() {
         },
         ..State::default()
     };
-    let (merger, _results, _jobs) = Merger::detached();
-    tick(&ctx, &mut st, &merger);
+    tick(&ctx, &mut st);
     assert_eq!(st.baseline, Some(vec![String::from("crate::a::t")]));
     assert_eq!(st.gates.len(), 1);
     assert_eq!(st.last_gate.task, None);
@@ -834,14 +817,6 @@ fn sqlite_startup_requeues_abandoned_merges_without_changing_store_reads() {
     );
 
     fs::remove_file(ctx.home.join("HOLD-MERGE")).unwrap();
-    let (merger, _results, jobs) = Merger::detached();
-    merger.feed(&ctx, &mut recovered);
-    assert_eq!(jobs.try_recv().unwrap()[0].uid, "recover-1");
-    merger.feed(&ctx, &mut recovered);
-    assert!(
-        jobs.try_recv().is_err(),
-        "each recovered unit is queued once"
-    );
 }
 
 #[test]
@@ -1184,7 +1159,6 @@ fn a_blocked_board_pass_does_not_block_dispatch_or_the_tick() {
     let mut pass = BoardPass::start(&ctx);
     pass.request(&ctx, &mut st);
     wait_until_arrived(&park);
-    let (merger, _results, _jobs) = Merger::detached();
 
     run_tick(&ctx, &mut st, &mut pass).unwrap();
 
