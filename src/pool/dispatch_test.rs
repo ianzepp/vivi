@@ -852,10 +852,18 @@ fn guarded_need_publication_and_cleanup_flags_are_validated_before_dispatch() {
     let resolved = plan(&cleanup).unwrap();
     assert_eq!(resolved.delete_ref, cleanup.delete_ref);
     assert_eq!(resolved.delete_expect, cleanup.delete_expect);
+    cleanup.delete_ref = Some("refs/heads/vivi/unit/abcd1234-2.1-a3".into());
+    assert!(
+        plan(&cleanup).is_ok(),
+        "unit attempt branches are owned cleanup refs"
+    );
     for invalid in [
         "refs/heads/main",
         "refs/heads/vivi/need/",
         "refs/heads/vivi/need/a/b",
+        "refs/heads/vivi/unit/",
+        "refs/heads/vivi/unit/a/b",
+        "refs/heads/vivi/quarantine/abcd1234",
     ] {
         cleanup.delete_ref = Some(invalid.into());
         assert!(plan(&cleanup).is_err(), "{invalid}");

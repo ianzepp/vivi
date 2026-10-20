@@ -444,16 +444,20 @@ publish_target() {
   publish_candidate_to "$PUBLISH_URL" "$PUBLISH_REF" "$PUBLISH_CANDIDATE" yes || true
 }
 
-# Delete only this job's owned need ref, guarded by its exact old tip.
-# The lease is a compare-and-delete guard; no nonempty refspec is forced.
+# Delete only this job's owned need or unit attempt ref, guarded by its exact
+# old tip. The lease is a compare-and-delete guard; no nonempty refspec is forced.
 delete_target() {
   [ -n "${DELETE_REF:-}" ] || return 0
   DELETE_STATE=agent_failed
   [ "${AGENT_RC:-1}" = 0 ] || return 0
   DELETE_STATE=invalid_ref
-  case "$DELETE_REF" in refs/heads/vivi/need/*) ;; *) return 0 ;; esac
-  local need_id=${DELETE_REF#refs/heads/vivi/need/} current candidate url
-  case "$need_id" in ''|*/*) return 0 ;; esac
+  local owned_id current candidate url
+  case "$DELETE_REF" in
+    refs/heads/vivi/need/*) owned_id=${DELETE_REF#refs/heads/vivi/need/} ;;
+    refs/heads/vivi/unit/*) owned_id=${DELETE_REF#refs/heads/vivi/unit/} ;;
+    *) return 0 ;;
+  esac
+  case "$owned_id" in ''|*/*) return 0 ;; esac
   valid_git_oid "${DELETE_EXPECT:-}" || return 0
   init_publisher || { DELETE_STATE=verify_failed; return 0; }
   publisher_git check-ref-format "$DELETE_REF" >/dev/null 2>&1 || return 0

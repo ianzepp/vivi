@@ -603,6 +603,24 @@ fn need_branch_cleanup_is_expected_tip_guarded_and_replay_safe() {
 }
 
 #[test]
+fn unit_attempt_branch_cleanup_deletes_the_expected_tip() {
+    let rig = Rig::new(1).as_worktree();
+    let expected = rig.a_sha();
+    git(
+        &rig.f.repo,
+        &["branch", "vivi/unit/abcd1234-1-a1", &expected],
+    );
+    let controls =
+        format!("DELETE_REF='refs/heads/vivi/unit/abcd1234-1-a1'\nDELETE_EXPECT='{expected}'\n");
+    let result = rig.run_with_controls("true", true, "", None, &controls);
+    assert_eq!(result.get("delete_state"), "deleted", "{:?}", result.fields);
+    assert!(!remote_has_ref(
+        &rig.f.repo,
+        "refs/heads/vivi/unit/abcd1234-1-a1"
+    ));
+}
+
+#[test]
 fn need_branch_cleanup_preserves_a_changed_ref() {
     let rig = Rig::new(1).as_worktree();
     git(&rig.f.repo, &["branch", "vivi/need/changed", &rig.b_sha()]);

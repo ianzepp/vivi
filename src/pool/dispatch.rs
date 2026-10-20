@@ -238,13 +238,20 @@ fn validate_runner_guards(flags: &DispatchFlags) -> Result<(), VivariumError> {
         let valid = flags
             .delete_ref
             .as_deref()
-            .and_then(|name| name.strip_prefix("refs/heads/vivi/need/"))
+            .and_then(owned_cleanup_segment)
             .is_some_and(|id| !id.is_empty() && !id.contains('/') && valid_publish_ref(id));
         if !valid || !flags.delete_expect.as_deref().is_some_and(full_commit_sha) {
-            return Err(VivariumError::Config("need cleanup requires one owned refs/heads/vivi/need/<id> ref and a full expected commit SHA".into()));
+            return Err(VivariumError::Config("branch cleanup requires one owned refs/heads/vivi/need/<id> or refs/heads/vivi/unit/<attempt> ref and a full expected commit SHA".into()));
         }
     }
     Ok(())
+}
+
+/// The single segment after an owned cleanup namespace: need branches and
+/// unit attempt branches are the only refs a pool job may delete.
+fn owned_cleanup_segment(name: &str) -> Option<&str> {
+    name.strip_prefix("refs/heads/vivi/need/")
+        .or_else(|| name.strip_prefix("refs/heads/vivi/unit/"))
 }
 
 fn full_commit_sha(value: &str) -> bool {
