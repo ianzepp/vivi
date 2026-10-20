@@ -2241,9 +2241,23 @@ vivi pump priority list
 vivi pump requeue <uid>... [--attempts N | --refund-host-failures | --fresh] [--reason TEXT] [--dry-run]
 vivi pump requeue --stuck-since <time> --why <class> [--dry-run]
 vivi pump replan <need> [--force]
+vivi pump withdraw <need>... --reason TEXT
 ```
 
-Control, priority, requeue, replan, and closeout commands accept
+**withdraw** closes a pump need without the mail board, for needs that have no
+mail thread (the synthetic **pumpfix-g&lt;tip&gt;** and **pumpfix-q&lt;id&gt;**
+repair needs of Vivi 15). It records a request, like **requeue**; the pump
+applies it at its next tick. Every unfinished unit of the need, **stuck** ones
+included, becomes **withdrawn**; merged, no-defect and replaced units stay.
+The need joins the closed set, so it is never re-planned or dispatched and its
+need-audit, need-merge and landing steps are skipped. Its need-branch record is
+dropped: branch cleanup needs a verified landing, so the remote
+**vivi/need/&lt;id&gt;** branch is left for manual deletion and the log names it.
+An unknown need id is dropped with a log line. The pump records a
+**need-withdrawn** exception for each applied request. It works for any need,
+but a real need's mail item stays open: close it on the board too.
+
+Control, priority, requeue, replan, withdraw, and closeout commands accept
 **--project &lt;root&gt;** outside the project. The pump stores live state and
 control mode in **&lt;project&gt;/.vivi/pump/pump.db**. A second writer for the same
 home is refused. **status** reads without the pump lock.

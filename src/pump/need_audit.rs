@@ -464,12 +464,12 @@ fn thread_requirements(
     Ok(requirements)
 }
 
-/// The longest message text one fallback requirement carries.
-const FALLBACK_REQUIREMENT_CHARS: usize = 4000;
-
 /// Requirements for a need that declares no `done_when:` lines: each source
-/// message's own text is one requirement, so the audit checks the delivered
-/// work against what the need actually asked for.
+/// message is one requirement, so the audit checks the delivered work against
+/// what the need actually asked for. The requirement text is one short line
+/// that names the message and points at the thread the auditor already
+/// receives as `original_need_thread`: a receipt must repeat each requirement
+/// text byte for byte, and a model auditor cannot reliably echo a long body.
 pub fn whole_message_requirements(
     ctx: &Ctx,
     need: &str,
@@ -487,10 +487,11 @@ pub fn whole_message_requirements(
             if body.is_empty() {
                 return None;
             }
-            let text: String = body.chars().take(FALLBACK_REQUIREMENT_CHARS).collect();
             Some(NeedAuditRequirement {
                 id: format!("{handle}-r0"),
-                text: format!("Deliver what this message asks for:\n{text}"),
+                text: format!(
+                    "Deliver what need message {handle} asks for (full text in the original need thread)."
+                ),
             })
         })
         .collect()

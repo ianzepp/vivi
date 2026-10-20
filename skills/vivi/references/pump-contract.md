@@ -40,7 +40,7 @@ A role job is saved in the pump state before pool capacity is selected. Its stab
 
 On startup, the pump lists tasks for each role and matches the stable job marker in the task subject and body. It restores missing handles, reads terminal receipts, and applies completed results through the regular tick path. A dispatched merge job continues to own its units across a restart. A unit left in **merging** without an owning durable merge job returns to **delivered** so it can be retried. After that recovery, units whose needs were closed on the board outside the pump are withdrawn: pending, delivered, merging, and in-flight rows are skipped and never merged. Already merged or no-defect units stay as they are.
 
-The SQLite store is **pump.db**, schema version 6. Its state includes units, plans, gates, promotions, control, requeue/replan requests, and the durable **jobs** map. **state.json** is an import/export format, not the live store. The first migration from an old state file imports it and archives it as **state.json.imported**.
+The SQLite store is **pump.db**, schema version 6. Its state includes units, plans, gates, promotions, control, requeue/replan/withdraw requests, and the durable **jobs** map. **state.json** is an import/export format, not the live store. The first migration from an old state file imports it and archives it as **state.json.imported**.
 
 ## Unit lifecycle and merge ownership
 
@@ -162,6 +162,20 @@ added to the planner brief. The rejected file moves to **plans/rejected/**.
 The second invalid split plan parks the unit as **stuck** with a
 **split-plan-rejected** exception. Use **vivi pump replan <need>** to start a
 fresh plan.
+
+A need that cannot be closed on the mail board (it has no mail thread, like
+the **pumpfix-** repair needs of Vivi 15) is closed with
+**vivi pump withdraw <need>... --reason <text>**: the pump withdraws its
+unfinished units, stuck ones included, adds it to the closed set, drops its
+need-branch record (the remote **vivi/need/&lt;id&gt;** branch is left for manual
+deletion) and records a **need-withdrawn** exception.
+
+A job brief over the project server's 64 KiB letter cap is never sent whole.
+Revision planner input is cut to fit (the thread, then long unit briefs), with
+a marker naming where the full text is. Any other job brief loses its middle,
+keeps its head and tail, and is saved in full as
+**job-briefs/&lt;job&gt;.full.txt**. Either cut records a
+**job-brief-truncated** exception.
 
 **[pump.merge].repair_budget** is an optional wall-clock budget for quarantine
 repair units. When omitted it is **proof_timeout + 300 seconds**. An explicit

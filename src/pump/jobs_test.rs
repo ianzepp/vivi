@@ -4,7 +4,7 @@ use super::{
     JobOutcome, JobSpec, JobStatus, JobStore, PoolJob, apply_reconcile, branch_landed,
     branch_sources_pending, candidate_pools, dispatch_order, dispatch_pending, enqueue,
     enqueue_promotion, integration_error, mark_applied, mark_gated, mark_merged, pool_command,
-    recover_dispatched,
+    recover_dispatched, send_task,
 };
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{FakeHost, test_ctx};
@@ -497,4 +497,59 @@ fn outcome_reports_success_only_when_agent_exit_is_explicit() {
         ..outcome
     };
     assert_eq!(unknown.agent_success(), None);
+}
+
+#[test]
+fn an_oversized_brief_is_cut_to_fit_the_letter_cap_and_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    let body = format!(
+        "head of the brief\n{}\nPool result contract: return the plan between the markers.",
+        "thread line\n".repeat(20_000)
+    );
+    let job = queued("planner-big", &body);
+
+    let task = send_task(&ctx, &job).unwrap();
+
+    assert_eq!(task.as_deref(), Some("a1b2c3d4"));
+    let sent = std::fs::read_to_string(ctx.home.join("job-briefs/planner-big.txt")).unwrap();
+    assert!(sent.len() < 64 * 1024, "{} bytes", sent.len());
+    assert!(sent.contains("head of the brief"));
+    assert!(sent.contains("brief truncated from"));
+    assert!(sent.ends_with("return the plan between the markers."));
+    let full = std::fs::read_to_string(ctx.home.join("job-briefs/planner-big.full.txt")).unwrap();
+    assert!(full.ends_with(&body));
+    let exceptions = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert_eq!(
+        exceptions
+            .matches("job-brief-truncated planner-big")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_brief_under_the_cap_is_sent_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    host.reply("task send", 0, "created hand a1b2c3d4\n");
+    let job = queued("planner-small", "a short brief");
+
+    send_task(&ctx, &job).unwrap();
+
+    let sent = std::fs::read_to_string(ctx.home.join("job-briefs/planner-small.txt")).unwrap();
+    assert!(sent.ends_with("a short brief"));
+    assert!(!ctx.home.join("job-briefs/planner-small.full.txt").exists());
+    assert!(!ctx.home.join("exceptions.txt").exists());
+}
+
+fn queued(id: &str, body: &str) -> PoolJob {
+    let mut store = Store::default();
+    enqueue(
+        &mut store,
+        JobSpec::new(id, "planner:revision", "planner", "revise", body),
+    )
+    .unwrap();
+    store.jobs[id].clone()
 }

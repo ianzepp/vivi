@@ -7,6 +7,7 @@
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ use crate::error::VivariumError;
 use crate::pump::dispatch;
 use crate::pump::host::{Ctx, shell_quote};
 
+mod brief;
 mod gate_sources;
 mod receipts;
 mod recovery;
@@ -719,6 +721,7 @@ fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, VivariumError> 
         "",
         job.body,
     );
+    let body = fit_brief(ctx, job, &dir, body)?;
     fs::write(&path, body)?;
     let subject = format!("[pump-job:{}] {}", job.id, job.subject);
     let command = format!(
@@ -737,6 +740,28 @@ fn send_task(ctx: &Ctx, job: &PoolJob) -> Result<Option<String>, VivariumError> 
         ));
     }
     Ok(dispatch::parse_created_handle(&output.text))
+}
+
+/// Keep the brief under the letter cap: the full text is saved beside it, the
+/// sent copy loses its middle, and one `job-brief-truncated` exception records
+/// the cut so it is never silent.
+fn fit_brief(ctx: &Ctx, job: &PoolJob, dir: &Path, body: String) -> Result<String, VivariumError> {
+    let full = dir.join(format!("{}.full.txt", job.id));
+    let Some(cut) = brief::fit(&body, &full.to_string_lossy()) else {
+        return Ok(body);
+    };
+    fs::write(&full, &body)?;
+    ctx.exception(
+        "job-brief-truncated",
+        &job.id,
+        &format!(
+            "brief was {} bytes, over the letter cap; sent {} bytes, full text at {}",
+            body.len(),
+            cut.len(),
+            full.display()
+        ),
+    );
+    Ok(cut)
 }
 
 fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {

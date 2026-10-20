@@ -33,6 +33,8 @@ pub enum PumpSubcommand {
     },
     /// Queue a requeue for one or more units; the pump applies it at its next tick
     Requeue(PumpRequeueCommand),
+    /// Withdraw every unfinished unit of one or more needs and stop their pipeline; the pump applies it at its next tick
+    Withdraw(PumpWithdrawCommand),
     /// Supersede a need's plan and queue a fresh planner run
     Replan(PumpReplanCommand),
     /// Supervise the pumps registered in the user's Vivi service config
@@ -223,6 +225,25 @@ pub struct PumpExportCommand {
     /// Output path for the state.json-shaped export
     #[arg(long, value_name = "PATH")]
     pub json: PathBuf,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+/// Close needs inside the pump without touching the mail board. The running
+/// pump applies the request at its next tick: every unfinished unit of the
+/// need (stuck ones included) is withdrawn, the need joins the closed set so
+/// nothing re-plans or dispatches it, and its need-audit, need-merge and
+/// landing steps skip it. Meant for needs that have no mail thread (the
+/// synthetic `pumpfix-*` repair needs of Vivi 15), but it works for any need.
+#[derive(Debug, Args)]
+pub struct PumpWithdrawCommand {
+    /// Need handles to withdraw
+    #[arg(value_name = "NEED", required = true)]
+    pub needs: Vec<String>,
+    /// Why the need is withdrawn; recorded in the pump log and exceptions
+    #[arg(long, value_name = "TEXT")]
+    pub reason: String,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

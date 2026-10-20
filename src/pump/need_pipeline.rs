@@ -33,6 +33,14 @@ fn collect_audit(ctx: &Ctx, st: &mut State, job: &PoolJob) -> Result<(), Vivariu
         }
     };
     let binding = &expected.binding;
+    if st.closed_needs.contains(&binding.need) {
+        jobs::mark_applied(st, &job.id, ctx.now());
+        ctx.log(&format!(
+            "need audit {} retired: need was withdrawn",
+            job.id
+        ));
+        return Ok(());
+    }
     if need::binding_for(st, &binding.target, &binding.need)?.as_ref() != Some(binding) {
         jobs::mark_applied(st, &job.id, ctx.now());
         ctx.log(&format!("obsolete need audit retired {}", job.id));
@@ -59,6 +67,9 @@ fn collect_audit(ctx: &Ctx, st: &mut State, job: &PoolJob) -> Result<(), Vivariu
 pub(crate) fn dispatch_audits(ctx: &Ctx, st: &mut State) -> Result<Vec<String>, VivariumError> {
     let mut queued = Vec::new();
     for record in need::frozen(st)? {
+        if st.closed_needs.contains(&record.need) {
+            continue;
+        }
         let Some(binding) = need::binding_for(st, &record.target, &record.need)? else {
             continue;
         };

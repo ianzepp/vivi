@@ -52,7 +52,7 @@ pub use pump_command::{
     PumpCloseoutCommand, PumpControlCommand, PumpExportCommand, PumpLogCommand, PumpOnceCommand,
     PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand, PumpReplanCommand,
     PumpRequeueCommand, PumpRunCommand, PumpServiceCommand, PumpServiceProjectCommand,
-    PumpStatusCommand, PumpSubcommand,
+    PumpStatusCommand, PumpSubcommand, PumpWithdrawCommand,
 };
 pub use report_command::{
     ReportBy, ReportCommand, ReportCommon, ReportFormat, ReportRecordsCommand, ReportRecordsFormat,

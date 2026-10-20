@@ -881,5 +881,60 @@ fn a_need_without_done_when_is_audited_against_its_own_messages() {
     let requirements = whole_message_requirements(&ctx, "need-1", &messages);
     assert_eq!(requirements.len(), 1, "{requirements:?}");
     assert_eq!(requirements[0].id, "need-1-r0");
-    assert!(requirements[0].text.contains("Rename the en pack rows"));
+    assert_eq!(
+        requirements[0].text,
+        "Deliver what need message need-1 asks for (full text in the original need thread)."
+    );
+    assert!(!requirements[0].text.contains("Rename the en pack rows"));
+}
+
+#[test]
+fn a_long_multi_line_message_still_yields_one_short_single_line_requirement() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _dir, _host) = routed_context(dir.path());
+    let body = format!("first line\n{}", "long detail\n".repeat(1000));
+    let messages = vec![serde_json::json!({
+        "handle": "need-9",
+        "message_id": "mind-root",
+        "from": "operator@local",
+        "subject": "Need",
+        "body": body,
+    })];
+
+    let requirements = whole_message_requirements(&ctx, "need-9", &messages);
+
+    assert_eq!(requirements.len(), 1);
+    assert!(!requirements[0].text.contains('\n'));
+    assert!(requirements[0].text.len() < 200);
+}
+
+#[test]
+fn a_fallback_requirement_round_trips_through_receipt_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _dir, _host) = routed_context(dir.path());
+    let messages = vec![serde_json::json!({
+        "handle": "need-1",
+        "message_id": "mind-root",
+        "from": "operator@local",
+        "subject": "Need",
+        "body": "Rename the rows.\nThen update every source.\n".repeat(200),
+    })];
+    let fallback = whole_message_requirements(&ctx, "need-1", &messages);
+    let mut expected = expectation(binding(TIP), BASE, 1);
+    expected.requirements = fallback.clone();
+    let mut report = result(
+        &expected,
+        NeedAuditVerdict::CleanPass,
+        NeedRequirementStatus::Satisfied,
+    );
+    report.requirements[0].id.clone_from(&fallback[0].id);
+    report.requirements[0].text.clone_from(&fallback[0].text);
+
+    let echoed: NeedAuditReceipt =
+        serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+    validate_receipt(&echoed, &expected).unwrap();
+
+    report.requirements[0].text.push_str(" (reworded)");
+    let error = validate_receipt(&report, &expected).unwrap_err();
+    assert!(error.contains("changed the text of requirement"), "{error}");
 }

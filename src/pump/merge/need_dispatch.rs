@@ -269,6 +269,9 @@ fn enqueue_need_batch(
 pub(crate) fn refresh_freezes(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
     let records = need::all(st)?;
     for branch in records {
+        if st.closed_needs.contains(&branch.need) {
+            continue;
+        }
         let Some((revision, amendment_pending)) = st
             .needs
             .get(&branch.need)

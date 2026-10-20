@@ -48,6 +48,9 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             PumpPriorityCommand::List(cmd) => priority::run_list(&project_root(&cmd.project)),
         },
         PumpSubcommand::Requeue(cmd) => vivi::pump::requeue::run(&project_root(&cmd.project), cmd),
+        PumpSubcommand::Withdraw(cmd) => {
+            vivi::pump::withdraw::run(&project_root(&cmd.project), cmd)
+        }
         PumpSubcommand::Replan(cmd) => vivi::pump::replan::run(&project_root(&cmd.project), cmd),
         PumpSubcommand::Service { command } => match command {
             PumpServiceCommand::Add(cmd) => vivi::pump::service::add(&cmd.project),

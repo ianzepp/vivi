@@ -55,6 +55,29 @@ pub fn all(st: &State) -> Result<Vec<NeedBranch>, VivariumError> {
     Ok(records)
 }
 
+/// Drop every lifecycle record of `need` and return what was dropped. The
+/// remote `vivi/need/<id>` branches are not touched: cleanup jobs need a
+/// verified landing, which a withdrawn need never has.
+pub fn forget(st: &mut State, need: &str) -> Result<Vec<NeedBranch>, VivariumError> {
+    let removed: Vec<NeedBranch> = all(st)?
+        .into_iter()
+        .filter(|record| record.need == need)
+        .collect();
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+    let root = branch_root(st)?;
+    for record in &removed {
+        if let Some(targets) = root
+            .get_mut(&record.target)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            targets.remove(need);
+        }
+    }
+    Ok(removed)
+}
+
 /// Read records whose frozen identity still matches the plan and unit state.
 pub fn frozen(st: &State) -> Result<Vec<NeedBranch>, VivariumError> {
     let mut result = Vec::new();

@@ -47,6 +47,7 @@ pub mod state;
 pub mod store;
 pub mod tick_steps;
 pub mod transient;
+pub mod withdraw;
 
 #[cfg(test)]
 #[path = "pump/logview_test.rs"]
@@ -83,6 +84,10 @@ mod report_test;
 #[cfg(test)]
 #[path = "pump/replan_test.rs"]
 mod replan_test;
+
+#[cfg(test)]
+#[path = "pump/withdraw_test.rs"]
+mod withdraw_test;
 
 #[cfg(test)]
 #[path = "pump/amend_test.rs"]

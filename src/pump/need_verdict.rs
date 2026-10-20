@@ -606,6 +606,9 @@ pub fn dispatch_pending_reaudits(ctx: &Ctx, st: &mut State) -> Result<Vec<String
     let pending = pending_keys(st)?;
     let mut queued = Vec::new();
     for (target, need_handle) in pending {
+        if st.closed_needs.contains(&need_handle) {
+            continue;
+        }
         let Some(request) = pending_reaudit(st, &target, &need_handle)? else {
             continue;
         };

@@ -239,7 +239,6 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
     let revision = record.revision.saturating_add(1);
     let previous_revision = record.revision;
     let thread = ctx.vivi(&format!("need show {handle}"), 60).text;
-    let thread: String = thread.chars().take(40_000).collect();
     let units = revision_units(st, record);
     let Some(prompt) = revision_prompt(ctx, handle, revision, &thread, &units, note) else {
         return;
@@ -308,7 +307,8 @@ fn revision_prompt(
         thread,
         units,
     };
-    if let Err(error) = write_json(&needs.join(format!("{handle}.json")), &input) {
+    let saved = needs.join(format!("{handle}.json"));
+    if let Err(error) = write_json(&saved, &input) {
         ctx.exception(
             "revision-input",
             handle,
@@ -316,7 +316,7 @@ fn revision_prompt(
         );
         return None;
     }
-    let input_json = match serde_json::to_string(&input) {
+    let input_json = match fitted_input_json(handle, revision, thread, units, &saved) {
         Ok(text) => text,
         Err(error) => {
             ctx.exception(
@@ -339,6 +339,76 @@ fn revision_prompt(
         Some(note) => format!("{prompt} Reason for this revision: {note}."),
         None => prompt,
     })
+}
+
+/// The most bytes of revision input JSON that go into the planner prompt. The
+/// task letter is capped at 64 KiB, so the prompt carries what fits and the
+/// full input stays in `<home>/needs/<handle>.json`.
+const REVISION_INPUT_BUDGET: usize = 44_000;
+
+/// The longest unit brief kept when the units alone would crowd the thread out.
+const UNIT_BRIEF_CHARS: usize = 600;
+
+/// Encode the revision input, cutting the need thread (and, when the units
+/// alone are over half the budget, each unit brief) until it fits
+/// [`REVISION_INPUT_BUDGET`]. A cut thread ends with a marker naming where the
+/// full text is.
+fn fitted_input_json(
+    handle: &str,
+    revision: u64,
+    thread: &str,
+    units: &[Value],
+    saved: &std::path::Path,
+) -> Result<String, serde_json::Error> {
+    let encode = |thread: &str, units: &[Value]| {
+        serde_json::to_string(&RevisionFile {
+            need: handle,
+            revision,
+            thread,
+            units,
+        })
+    };
+    let whole = encode(thread, units)?;
+    if whole.len() <= REVISION_INPUT_BUDGET {
+        return Ok(whole);
+    }
+    let mut units = units.to_vec();
+    if serde_json::to_string(&units)?.len() > REVISION_INPUT_BUDGET / 2 {
+        for unit in &mut units {
+            shorten_brief(unit);
+        }
+    }
+    let marker = format!(
+        "\n[truncated; full thread via `vivi need show {handle}` or in {}]",
+        saved.display()
+    );
+    let spare = REVISION_INPUT_BUDGET
+        .saturating_sub(serde_json::to_string(&units)?.len())
+        .max(4_000);
+    let mut cut = thread.len().min(spare.saturating_sub(marker.len()));
+    loop {
+        while !thread.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let encoded = encode(&format!("{}{marker}", &thread[..cut]), &units)?;
+        // JSON escaping makes the encoded size differ from the raw size, so
+        // shrink by the overshoot (at least an eighth) until it fits.
+        if encoded.len() <= REVISION_INPUT_BUDGET || cut == 0 {
+            return Ok(encoded);
+        }
+        let overshoot = encoded.len() - REVISION_INPUT_BUDGET;
+        cut -= overshoot.max(cut / 8).min(cut);
+    }
+}
+
+fn shorten_brief(unit: &mut Value) {
+    let Some(brief) = unit.get("brief").and_then(Value::as_str) else {
+        return;
+    };
+    if brief.chars().count() > UNIT_BRIEF_CHARS {
+        let cut: String = brief.chars().take(UNIT_BRIEF_CHARS).collect();
+        unit["brief"] = Value::String(format!("{cut} [truncated]"));
+    }
 }
 
 /// Drop revision planners whose plan file landed, or whose timeout expired.

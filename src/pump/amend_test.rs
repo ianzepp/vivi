@@ -484,3 +484,28 @@ fn mind_authored_need_root_is_hashed_and_a_mind_amendment_reopens_the_plan() {
     assert!(st.needs["n1"].amendment_pending);
     assert!(st.board.revision_planning.contains_key("n1"));
 }
+
+#[test]
+fn an_oversized_thread_and_plan_keep_the_revision_prompt_under_the_letter_cap() {
+    let (_dir, ctx, host, mut st) = setup();
+    let thread = format!(
+        "## thread\n{}",
+        "operator said \"more\" here\n".repeat(10_000)
+    );
+    host.reply("need show n1", 0, &thread);
+    st.units.get_mut("n1-1").unwrap().brief = "x".repeat(60_000);
+
+    request(&ctx, &mut st, "n1", "thread grew");
+
+    let body = &revision_job(&st).body;
+    assert!(body.len() < 56 * 1024, "{} bytes", body.len());
+    assert!(body.contains("REVISION-INPUT-BEGIN"));
+    assert!(body.contains("REVISION-INPUT-END"));
+    assert!(body.contains("Pool result contract"));
+    assert!(body.contains("[truncated; full thread via `vivi need show n1`"));
+    assert!(body.contains("Reason for this revision: thread grew"));
+    // The full input stays on the pump host for the marker to point at.
+    let saved = fs::read_to_string(ctx.home.join("needs/n1.json")).unwrap();
+    assert!(saved.len() > 250_000);
+    assert!(st.board.revision_planning.contains_key("n1"));
+}

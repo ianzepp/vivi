@@ -18,6 +18,9 @@ pub(crate) fn dispatch(ctx: &Ctx, st: &mut State) -> Result<Vec<String>, Vivariu
     let mut started = Vec::new();
     let mut target_started = BTreeSet::new();
     for branch in branches {
+        if st.closed_needs.contains(&branch.need) {
+            continue;
+        }
         if let Some(id) = dispatch_branch(ctx, st, &branch, &mut target_started)? {
             started.push(id);
         }

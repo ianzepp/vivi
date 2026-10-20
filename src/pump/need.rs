@@ -20,8 +20,8 @@ use state::{
     new_record, require, set_branch_tip, state_error, unit_fingerprint, write,
 };
 pub use state::{
-    all, binding_for, external_prerequisites, frozen, fully_landed, get, managed, managed_unlanded,
-    units_for,
+    all, binding_for, external_prerequisites, forget, frozen, fully_landed, get, managed,
+    managed_unlanded, units_for,
 };
 
 mod init;

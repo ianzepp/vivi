@@ -24,10 +24,12 @@ mod replan;
 mod requeue;
 mod schema;
 mod unit_extra;
+mod withdraw;
 pub(super) use codec::{db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null};
 pub use replan::ReplanRequest;
 pub use requeue::RequeueRequest;
 use schema::{newer_schema, schema_version, take_migration_lock};
+pub use withdraw::WithdrawRequest;
 
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
 
@@ -486,9 +488,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
         return Err(newer_schema(version));
     }
     conn.execute_batch(&format!(
-        "{SCHEMA_DDL}\n{}\n{}",
+        "{SCHEMA_DDL}\n{}\n{}\n{}",
         requeue::SCHEMA_DDL,
-        replan::SCHEMA_DDL
+        replan::SCHEMA_DDL,
+        withdraw::SCHEMA_DDL
     ))
     .map_err(db_err("create schema"))?;
     promotions::ensure_failing_column(conn)?;

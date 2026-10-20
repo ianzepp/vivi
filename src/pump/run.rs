@@ -32,6 +32,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
     boardpass.apply(ctx, st);
     plan::ingest(ctx, st);
     crate::pump::requeue::apply_pending(ctx, st);
+    crate::pump::withdraw::apply_pending(ctx, st);
     if !ctx.mailspace.is_empty() {
         crate::pump::replan::apply_pending(ctx, st);
     }

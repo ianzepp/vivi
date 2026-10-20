@@ -200,7 +200,7 @@ fn withdraw_closed_need_units(
     withdrawn
 }
 
-fn unfinished_closed_need_unit(unit: &Unit) -> bool {
+pub(crate) fn unfinished_closed_need_unit(unit: &Unit) -> bool {
     matches!(
         unit.status,
         Status::Pending
