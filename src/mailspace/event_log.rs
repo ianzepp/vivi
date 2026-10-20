@@ -62,7 +62,9 @@ fn log_reply_on_parent(
     request: &SendRequest,
     parent: &StoredMessageView,
 ) -> Result<(), VivariumError> {
-    let command = reply_command(&request.role);
+    // Always `mail reply`: a lifecycle command such as `task send` would
+    // rekind the parent in dump/kind inference and hide it from mail dump.
+    let command = "mail reply";
     let mut ids = storage.message_ids_by_content(&parent.content_id)?;
     if !ids.iter().any(|id| id == &parent.message_id) {
         ids.push(parent.message_id.clone());
@@ -124,15 +126,6 @@ fn send_command(role: &str) -> &'static str {
         "needs" => "need send",
         "wants" => "want send",
         _ => "mail send",
-    }
-}
-
-fn reply_command(role: &str) -> &'static str {
-    match role {
-        "tasks" => "task send",
-        "needs" => "need send",
-        "wants" => "want send",
-        _ => "mail reply",
     }
 }
 

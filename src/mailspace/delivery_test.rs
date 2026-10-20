@@ -126,6 +126,54 @@ fn a_reply_records_a_replied_event_on_the_parent_need() {
 }
 
 #[test]
+fn a_task_reply_does_not_rekind_its_mail_parent() {
+    let (_tmp, mailspace) = space(false);
+    let sent = mailspace
+        .send(request("hand", "please look".into()))
+        .unwrap();
+    let handle = sent.delivered[0].handle.clone();
+    let parent_id = {
+        let storage = mailspace.storage().unwrap();
+        storage.resolve_message_token(&handle).unwrap()
+    };
+
+    mailspace
+        .send(SendRequest {
+            from: "mind".into(),
+            to: vec!["hand".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Implement follow-up".into(),
+            body: "Follow up on the review.".into(),
+            role: "tasks".into(),
+            kind: Some("task".into()),
+            reply_to: Some(handle),
+            depends_on: Vec::new(),
+        })
+        .unwrap();
+
+    let storage = mailspace.storage().unwrap();
+    let events = storage
+        .list_mailspace_events_for_messages(&[parent_id.clone()])
+        .unwrap()
+        .remove(&parent_id)
+        .unwrap_or_default();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "replied" && event.command == "mail reply"),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "replied")
+            .all(|event| event.command != "task send"),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn a_reply_over_the_cap_is_refused_too() {
     let (_tmp, mailspace) = space(true);
     let sent = mailspace.send(request("hand", "hi".into())).unwrap();
