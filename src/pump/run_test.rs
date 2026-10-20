@@ -20,7 +20,7 @@ use crate::pump::run::{
     actor_string, ensure_repo, refresh_config, run, run_with, status, tick as run_tick,
     write_status,
 };
-use crate::pump::state::{Attempt, GateRun, NeedRecord, State, Status, Unit};
+use crate::pump::state::{Attempt, GateRecord, GateRun, NeedRecord, State, Status, Unit};
 use crate::pump::store::{DB_FILENAME, PumpStore, SCHEMA_VERSION};
 
 /// The fake clock's start (1970-01-12T13:46:40Z).
@@ -167,6 +167,32 @@ fn write_status_writes_counts_then_stall_lines() {
     assert_eq!(
         lines[8],
         "shared-check timeout counts unavailable (no terminal merge worker receipts)"
+    );
+}
+
+#[test]
+fn write_status_shows_the_last_green_gate_commit() {
+    let (dir, ctx, _host) = setup();
+    let mut st = State::default();
+    st.baseline = Some(vec![String::from("a")]);
+    st.gates.push(GateRecord {
+        tip: "abcdef0123456789abcdef0123456789abcdef01".to_string(),
+        names: Some(Vec::new()),
+        at: T0 - 3600,
+        ..GateRecord::default()
+    });
+    st.gates.push(GateRecord {
+        tip: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        names: Some(vec![String::from("x")]),
+        at: T0 - 600,
+        ..GateRecord::default()
+    });
+    write_status(&ctx, &st, &[]);
+    let text = fs::read_to_string(dir.path().join("home/status.txt")).unwrap();
+    assert!(
+        text.lines()
+            .any(|line| line == "last green 1h00m ago (abcdef0123)"),
+        "status.txt missing last green commit:\n{text}"
     );
 }
 
