@@ -304,6 +304,7 @@ fn join(project: Option<&Path>) -> Result<(), VivariumError> {
     // place.
     mailspace.ensure_operator_role()?;
     mailspace.ensure_merge_role()?;
+    mailspace.ensure_pump_planner_role()?;
     let settings = SyncSettings::resolve(&mailspace)?;
     let identity = SyncIdentity::ensure(&mailspace.dir)?;
     let receipt = http::join(&settings, &identity)?;

@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::VivariumError;
+use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::pump::host::{Ctx, exit_receipt_path};
 use crate::pump::jobs::{self, JobOutcome, JobSpec, JobStatus, JobStore, PoolJob};
 use crate::pump::state::State;
@@ -137,14 +138,16 @@ pub fn apply_completions(ctx: &Ctx, st: &mut State) {
 fn planner_role(ctx: &Ctx) -> Result<(String, String), VivariumError> {
     let role = ctx
         .routing
-        .lookup("planner")
+        .pump_planner()
         .filter(|role| role.status == "active")
         .ok_or_else(|| {
-            VivariumError::Config("durable planner jobs need an active planner role".into())
+            VivariumError::Config(format!(
+                "durable planner jobs need an active {PUMP_PLANNER_ROLE} role; run `vivi config migrate`"
+            ))
         })?;
     let pool = role.pool.clone().ok_or_else(|| {
         VivariumError::Config(format!(
-            "planner role {} needs a pool for durable planner jobs",
+            "role {} needs a pool for durable planner jobs",
             role.name
         ))
     })?;

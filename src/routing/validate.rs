@@ -4,10 +4,11 @@ use crate::error::VivariumError;
 use crate::mailspace::MailspaceConfig;
 use crate::pool::bands::parse_band;
 use crate::pool::config::PoolConfig;
-use crate::pump::config::PumpConfig;
+use crate::pump::config::{MergeConfig, PumpConfig};
 
 use super::defaults::is_band_model;
 use super::model::{RoleRouting, RoutedRole, from_mailspace};
+use super::pump_roles::pump_role_checks_of;
 
 /// How serious a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,14 +25,14 @@ pub struct Issue {
 }
 
 impl Issue {
-    fn error(message: impl Into<String>) -> Self {
+    pub(super) fn error(message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
             message: message.into(),
         }
     }
 
-    fn warning(message: impl Into<String>) -> Self {
+    pub(super) fn warning(message: impl Into<String>) -> Self {
         Self {
             severity: Severity::Warning,
             message: message.into(),
@@ -51,30 +52,8 @@ pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     check_read_only(&routing, &mut issues);
     if let Some(pump) = &config.pump {
         check_pump(pump, &routing, &mut issues);
-        check_planner_role(&routing, &mut issues);
     }
     issues
-}
-
-fn check_planner_role(routing: &RoleRouting, issues: &mut Vec<Issue>) {
-    let Some(role) = routing.lookup("planner") else {
-        issues.push(Issue::error(
-            "the pump needs an active planner role assigned to a pool for durable planning jobs",
-        ));
-        return;
-    };
-    if role.status != "active" {
-        issues.push(Issue::error(format!(
-            "planner role {} must be active to receive durable planning jobs",
-            role.name
-        )));
-    }
-    if role.pool.is_none() {
-        issues.push(Issue::error(format!(
-            "planner role {} must name a pool for durable planning jobs",
-            role.name
-        )));
-    }
 }
 
 /// Format findings for humans. Errors first.
@@ -294,30 +273,13 @@ fn check_read_only(routing: &RoleRouting, issues: &mut Vec<Issue>) {
 
 fn check_pump(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>) {
     need_role(routing, "hand", &pump.to, legacy_hand(pump), issues);
-    check_merge_role(routing, issues);
+    issues.extend(
+        pump_role_checks_of(pump, routing)
+            .into_iter()
+            .flat_map(|check| check.issues),
+    );
     need_role(routing, "gate", "gate", true, issues);
     warn_legacy(pump, routing, issues);
-}
-
-fn check_merge_role(routing: &RoleRouting, issues: &mut Vec<Issue>) {
-    let Some(role) = routing.merge() else {
-        issues.push(Issue::error(
-            "the pump needs an active merge role assigned to a pool for durable merge jobs",
-        ));
-        return;
-    };
-    if role.status != "active" {
-        issues.push(Issue::error(format!(
-            "merge role {} must be active to receive durable merge jobs",
-            role.name
-        )));
-    }
-    if role.pool.is_none() {
-        issues.push(Issue::error(format!(
-            "merge role {} must name a pool for durable merge jobs",
-            role.name
-        )));
-    }
 }
 
 fn legacy_hand(pump: &PumpConfig) -> bool {
@@ -383,10 +345,11 @@ fn warn_legacy(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>
             ));
         }
     }
-    if routing
-        .merge()
-        .and_then(|role| role.pool.as_ref())
-        .is_some()
+    if pump.merge.lanes != MergeConfig::default().lanes
+        && routing
+            .merge()
+            .and_then(|role| role.pool.as_ref())
+            .is_some()
     {
         issues.push(Issue::warning(
             "[pump.merge] lanes is unused; merge lanes follow the merge role's pool slots",

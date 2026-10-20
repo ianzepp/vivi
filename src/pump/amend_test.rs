@@ -46,7 +46,7 @@ fn setup() -> (tempfile::TempDir, Ctx, Arc<FakeHost>, State) {
 fn planner_routing() -> RoleRouting {
     RoleRouting {
         roles: vec![RoutedRole {
-            name: "planner".into(),
+            name: "pump-planner".into(),
             kind: Some("planner".into()),
             status: "active".into(),
             pool: Some("here".into()),

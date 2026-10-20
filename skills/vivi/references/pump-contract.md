@@ -19,7 +19,7 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 | Work kind | Role addressed | Pool selection |
 | --- | --- | --- |
 | Unit task | **[pump].to** (the hand role) | The hand role's pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but kind pool lists are ignored. Without a hand pool, configured kinds and **default_kind** route the unit. |
-| **planner:board**, **planner:revision**, **planner:split** | Active **planner** role | Planner role pool and fallback chain. An active planner role with a pool is required when **[pump]** is configured. |
+| **planner:board**, **planner:revision**, **planner:split** | Active **pump-planner** role | Its pool and fallback chain. An active pump-planner role with a pool is required when **[pump]** is configured; a role named **planner** is not used. |
 | **merge** | **merge** role | Merge role pool and fallback chain. The live pipeline requires a merge role with a usable pool. |
 | **gate** | **gate** role | Gate role pool and fallback chain, followed by configured **[pump.gate].pools** candidates. The gate job is read-only. |
 | **audit** | **auditor** role | Auditor role pool and fallback chain, followed by configured gate-pool candidates. If no auditor role exists, the built-in read-only audit fallback uses gate pools. |
@@ -123,7 +123,7 @@ that exact tip eligible for the configured release or promotion path.
 
 ## Planning and gate behavior
 
-Whole-need planning, thread amendments, and split planning all use durable jobs for the active planner role. The worker returns complete plan JSON inside the **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** markers; the pump materializes the plan under **plans/** and passes it through normal validation and ingestion. Planner command execution and detached planner reapers are not used.
+Whole-need planning, thread amendments, and split planning all use durable jobs for the active pump-planner role, whose charter is the planner's system prompt. The worker returns complete plan JSON inside the **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** markers; the pump materializes the plan under **plans/** and passes it through normal validation and ingestion. Planner command execution and detached planner reapers are not used.
 
 A planned need is rehashed from its source thread on every board pass. Board **last_event** is not the trigger: a reply records a **replied** event on the parent need so operators can see the thread moved, and the hash comparison asks the planner for a revision even when that stamp is unchanged or truncated to the same second. A reply on a closed need reopens it and starts the same revision path.
 

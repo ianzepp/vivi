@@ -425,7 +425,7 @@ metadata still applies, but kind pool lists are ignored. If the hand role has
 no pool, configured kinds and **default_kind** route unit tasks.
 
 Durable pool jobs are addressed to their work role: planner jobs use
-**planner**, integration jobs use **merge**, gates use **gate**, audits and
+**pump-planner**, integration jobs use **merge**, gates use **gate**, audits and
 investigations use **auditor**, promotions use the active **release** role
 with a pool or fall back to an active **merge** role with a pool, cadence jobs
 use the scheduled role, and reclaim uses **reclaim** or the hand role.
@@ -464,13 +464,58 @@ are ignored. **[pump.dispatch.lanes]** supplies legacy model caps when a pool
 has no **[pools.&lt;name&gt;.caps]**.
 
 **vivi config migrate** (dry-run by default; **--write** applies and keeps a
-timestamped **.bak**) converts supported legacy dispatch and gate routing into
-role pool assignments. **[pump.merge].lanes** is not a live merge route.
+timestamped **.bak**) brings a 15.0.0 **mailspace.toml** to the current shape:
+upgrade with **vivi update**, run **vivi config migrate**, review the plan, then
+run it again with **--write**. It keeps comments and does the following.
+
+- Assigns the hand, merge and gate roles a pool from the legacy
+  **[pump.dispatch]**, **[pump.merge]** and **[pump.gate]** tables, and folds
+  **[pump.dispatch.lanes]** into **[pools.&lt;name&gt;.caps]**.
+- Adds the pump's own planner role, **pump-planner** (kind **planner**, active),
+  on the hand role's pool, unless it exists; with no hand pool to copy it says
+  so instead. A role named **planner** (a Tugboat seat) is left alone. A
+  **pump-planner** with a blank charter gets the text of the file
+  **[pump.planner] charter** names, when readable (so the project's planning
+  rules carry over), else the shipped pump-planner charter. Charters are
+  written only under **--write**, an existing charter file is copied to a
+  **.bak** first, and a charter that has text is never replaced.
+- Gives the auditor role the hand role's pool, adding an active read-only
+  **auditor** role when there is none, because need acceptance audits have no
+  fallback. A blank auditor charter gets the shipped one; one that has text is
+  kept and reported, since it is now the system prompt of those audits.
+- Sets **kind = "hand"** on the **[pump].to** role when it has no kind: only a
+  hand-kind role may publish unit branches. Another kind is reported, not
+  changed.
+- Adds an active **merge** role on the pump-host pool when there is none, and
+  sets **kind = "merge"** on a merge role of another kind: only a merge-kind
+  role may publish to the integration branch, and **vivi config validate**
+  reports a merge role of any other kind as an error. A merge role whose
+  charter is not the shipped one is reported: 16 merge jobs use it as the
+  system prompt.
+- Renames **[pump.planner] split_timeout** to **split_hard_cap**.
+- Removes the keys the current release ignores, each with its reason in the
+  plan: **[pump.planner] run** and **charter** (planning runs as durable planner
+  jobs on the pump-planner role's pool), **[pump] priority_file** (priority lives in
+  **pump.db**), **[pump.merge] lanes** (merge concurrency follows the merge
+  role's pool slots), and **[pump.gate] every_merges** and **every_seconds**.
+  The last two are a behaviour change: the gate runs after every merge batch
+  that lands, not on a merge count or a timer. The plan marks those lines.
+- Sets **root = "~/vivi-pool"** on local pools without a **root** when the
+  mailspace has no **mailspace.id**, so existing slots keep being used. With an
+  id, 16 keys slot directories on the id and defaults to
+  **&lt;project&gt;/.vivi/pool**, so 15.0.0 slots are not reused; the plan
+  names the pools and the old directory to remove.
+
+The plan ends with **review:** lines for what it cannot settle, such as a new
+merge pool that needs a source and warm slots, or roles that need a charter.
+A second run on a migrated file reports no changes.
 
 When **[pump]** is configured, **vivi config validate** requires an active
-planner role with a pool. It validates roles and pool references, fallback
-targets and cycles, model bands, read-only settings, and configured pump
-requirements. Run it before starting the pump; it also runs at **vivi pump
+**pump-planner** role, a merge role of kind **merge**, an active auditor role
+and the **[pump].to** role of kind **hand**, each with a pool where one is
+needed; **vivi doctor** reports the same requirements. It validates roles and
+pool references, fallback targets and cycles, model bands, read-only settings,
+and configured pump requirements. Run it before starting the pump; it also runs at **vivi pump
 run|once** startup.
 
 **vivi config show**, **vivi config validate**, and **vivi config migrate**
@@ -494,7 +539,7 @@ pump restarts.
 | Work | Role and pool |
 | --- | --- |
 | Unit tasks | The role named by **[pump].to**. Its pool and fallback chain are primary; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but kind pool lists are ignored. Without a hand pool, configured kind pools route the unit. |
-| Whole-need, revision, and split planning | The active **planner** role and its pool. This role with a pool is required when **[pump]** is configured. |
+| Whole-need, revision, and split planning | The active **pump-planner** role and its pool; its charter is the planner's system prompt. This role with a pool is required when **[pump]** is configured. |
 | Integration merges and need branches | The **merge** role and its pool. This role integrates sources, runs the assigned checks, and returns a candidate commit; the privileged pool runner publishes it. |
 | Gates | The read-only **gate** role's pool and fallback chain, then configured **[pump.gate].pools** candidates. |
 | Audits and investigations | The **auditor** role and its pool, followed by gate-pool candidates for audits. Without an auditor role, gate audits use a built-in read-only fallback; investigations require an auditor role. |

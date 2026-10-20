@@ -11,8 +11,8 @@ use vivi::cli::ConfigCommand;
 use vivi::mailspace::Mailspace;
 use vivi::mailspace::config_edit;
 use vivi::routing::{
-    apply_plan_to_document, format_report, overview, plan_migrate, render_plan, render_text,
-    require_ok, unified_diff, validate,
+    LegacyCharter, MigrateInputs, MigratePlan, apply_plan_to_document, format_report, overview,
+    plan_migrate, render_plan, render_text, require_ok, unified_diff, validate,
 };
 
 pub(crate) fn handle_config_command(command: &ConfigCommand) -> Result<(), VivariumError> {
@@ -114,9 +114,10 @@ fn migrate(write: bool, project: Option<&Path>) -> Result<(), VivariumError> {
     let mailspace = Mailspace::discover(project)?;
     let path = mailspace.config_path();
     let before = fs::read_to_string(&path)?;
-    let plan = plan_migrate(&mailspace.config);
-    println!("{}", render_plan(&plan));
     let mut doc = config_edit::load(&path)?;
+    let inputs = migrate_inputs(&mailspace);
+    let plan = plan_migrate(&mailspace.config, &doc, &inputs);
+    println!("{}", render_plan(&plan));
     apply_plan_to_document(&mut doc, &plan)?;
     let after = doc.to_string();
     print!("{}", unified_diff(&before, &after, "mailspace.toml"));
@@ -127,6 +128,68 @@ fn migrate(write: bool, project: Option<&Path>) -> Result<(), VivariumError> {
     write_backup(&path, &before)?;
     config_edit::write_text(&path, &after)?;
     println!("wrote {} (backup beside it)", path.display());
+    write_charters(&plan, project)
+}
+
+/// What migrate reads besides the document: every role's charter, and the
+/// file `[pump.planner] charter` names.
+fn migrate_inputs(mailspace: &Mailspace) -> MigrateInputs {
+    let mut charters = BTreeMap::new();
+    for role in &mailspace.config.identities {
+        if let Ok(text) = mailspace.read_charter(&role.name) {
+            charters.insert(role.name.clone(), text);
+        }
+    }
+    MigrateInputs {
+        charters,
+        legacy_planner_charter: legacy_planner_charter(mailspace),
+    }
+}
+
+fn legacy_planner_charter(mailspace: &Mailspace) -> Option<LegacyCharter> {
+    let written = mailspace.config.pump.as_ref()?.planner.charter.clone();
+    if written.trim().is_empty() {
+        return None;
+    }
+    let path = match written.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir()?.join(rest),
+        None => mailspace.root.join(&written),
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return None;
+    };
+    (!text.trim().is_empty()).then_some(LegacyCharter {
+        path: written,
+        text,
+    })
+}
+
+/// Write the charters the plan sets, keeping a copy of any charter file that
+/// is already there. The role exists by now: the config was written first.
+fn write_charters(plan: &MigratePlan, project: Option<&Path>) -> Result<(), VivariumError> {
+    if plan.charters.is_empty() {
+        return Ok(());
+    }
+    let mut mailspace = Mailspace::discover(project)?;
+    for write in &plan.charters {
+        let file = mailspace
+            .dir
+            .join("charters")
+            .join(format!("{}.md", write.role));
+        if file.is_file() {
+            let stamp = Utc::now().format("%Y%m%dT%H%M%S");
+            let backup = file.with_file_name(format!("{}.md.bak.{stamp}", write.role));
+            fs::copy(&file, &backup)?;
+            println!("backup {}", backup.display());
+        }
+        mailspace.set_charter(&write.role, &write.text)?;
+        println!(
+            "charter set for {} from {} ({} bytes)",
+            write.role,
+            write.origin,
+            write.text.len()
+        );
+    }
     Ok(())
 }
 

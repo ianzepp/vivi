@@ -414,8 +414,9 @@ fn temp_mailspace() -> tempfile::TempDir {
     for (name, kind) in [
         ("hand", "hand"),
         ("mind", "mind"),
-        ("planner", "planner"),
+        ("pump-planner", "planner"),
         ("merge", "merge"),
+        ("auditor", "auditor"),
     ] {
         ensure_role(&mut parsed, name, kind, "test", "P2");
     }

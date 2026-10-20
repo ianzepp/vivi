@@ -450,7 +450,7 @@ fn a_launched_planner_queues_the_need_file_and_prompt_for_the_routed_role() {
     assert_eq!(parsed["triage"], "");
     assert_eq!(parsed["thread"].as_str().unwrap().chars().count(), 40_000);
     let job = board_planner_job(&st, "n1").expect("planner job is durably queued");
-    assert_eq!(job.role, "planner");
+    assert_eq!(job.role, "pump-planner");
     assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
     assert_eq!(job.status, JobStatus::Pending);
     assert_eq!(job.payload["planner_output"]["out"], "board/n1.out");
@@ -1234,7 +1234,7 @@ fn launch_records_a_durable_planner_job_and_clears_the_stale_receipt() {
     let mut replan = BTreeSet::new();
     launch_planners(&ctx, &mut st, &rows, &approved, &mut replan);
     let job = board_planner_job(&st, "n1").expect("planner job is durable");
-    assert_eq!(job.role, "planner");
+    assert_eq!(job.role, "pump-planner");
     assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
     assert_eq!(job.status, JobStatus::Pending);
     assert!(job.task.is_none());

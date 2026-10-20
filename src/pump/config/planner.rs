@@ -3,7 +3,7 @@
 /// Planner settings (the `[pump.planner]` table).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlannerConfig {
-    /// Retired local command setting; durable planner jobs use the planner role.
+    /// Retired local command setting; durable planner jobs use the pump-planner role.
     pub run: String,
     /// Retired local charter path; durable planner jobs use the role charter.
     pub charter: String,

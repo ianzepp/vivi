@@ -1060,7 +1060,7 @@ fn split_planner_uses_durable_job_and_clears_stale_receipt() {
     });
     let ctx = ctx.with_routing(RoleRouting {
         roles: vec![RoutedRole {
-            name: String::from("planner"),
+            name: String::from("pump-planner"),
             kind: Some(String::from("planner")),
             status: String::from("active"),
             pool: Some(String::from("planner-pool")),

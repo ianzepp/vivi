@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pool::PoolConfig;
 use crate::pump::config::{Lane, PumpConfig};
@@ -58,6 +59,15 @@ impl RoleRouting {
     #[must_use]
     pub fn merge(&self) -> Option<&RoutedRole> {
         self.lookup("merge")
+    }
+
+    /// The pump's planner role: the role named `pump-planner`. A role of kind
+    /// `planner` under another name (a Tugboat planner seat) is not it.
+    #[must_use]
+    pub fn pump_planner(&self) -> Option<&RoutedRole> {
+        self.roles
+            .iter()
+            .find(|role| role.name.eq_ignore_ascii_case(PUMP_PLANNER_ROLE))
     }
 
     /// The gate role: named `gate`, or kind `gate`.

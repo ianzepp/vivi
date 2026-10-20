@@ -289,7 +289,7 @@ fn a_full_pass_round_trips_through_the_worker_thread() {
         .values()
         .find(|job| job.kind == "planner:board")
         .expect("worker planner outbox entry was merged into the live state");
-    assert_eq!(job.role, "planner");
+    assert_eq!(job.role, "pump-planner");
     assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
     assert_eq!(job.status, JobStatus::Pending);
     assert_eq!(job.payload["planner_output"]["out"], "board/n1.out");

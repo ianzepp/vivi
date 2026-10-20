@@ -5,10 +5,14 @@ use std::collections::BTreeMap;
 use toml_edit::{DocumentMut, Item, Table};
 
 use crate::mailspace::config_edit::{IdentityPatch, insert_identity, patch_identity};
+use crate::mailspace::shipped::{
+    AUDITOR_CHARTER, MERGE_CHARTER, PUMP_PLANNER_CHARTER, PUMP_PLANNER_ROLE,
+};
 use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pump::config::PumpConfig;
 
 use super::defaults::is_band_model;
+use super::migrate_keys::{apply_removals, apply_roots, plan_pool_roots, plan_removals};
 
 /// One planned file change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +22,76 @@ pub struct MigratePlan {
     pub new_pools: Vec<NewPool>,
     pub caps: Vec<CapWrite>,
     pub renames: Vec<KeyRename>,
+    /// Roles whose `kind` changes.
+    pub kind_changes: Vec<KindChange>,
+    /// Keys the plan deletes because the current release ignores them.
+    pub removals: Vec<KeyRemoval>,
+    /// Local pools that get an explicit `root`.
+    pub roots: Vec<RootSet>,
+    /// Role charters the plan writes (only under `--write`).
+    pub charters: Vec<CharterWrite>,
     pub notes: Vec<String>,
+    /// Items the plan cannot settle: a human has to look at them.
+    pub review: Vec<String>,
+}
+
+/// What migrate reads from outside the document.
+#[derive(Debug, Clone, Default)]
+pub struct MigrateInputs {
+    /// Each role's current charter text, by role name. A role absent here
+    /// has no charter.
+    pub charters: BTreeMap<String, String>,
+    /// The file `[pump.planner] charter` names, when it is readable and not
+    /// blank.
+    pub legacy_planner_charter: Option<LegacyCharter>,
+}
+
+/// A readable `[pump.planner] charter` file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyCharter {
+    /// The path as written in the file.
+    pub path: String,
+    pub text: String,
+}
+
+/// One role charter the plan writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharterWrite {
+    pub role: String,
+    /// Where the text comes from, for the plan.
+    pub origin: String,
+    pub text: String,
+}
+
+/// One role whose `kind` the plan sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KindChange {
+    pub role: String,
+    /// The kind now in the file, if any.
+    pub from: Option<String>,
+    pub to: String,
+    pub reason: String,
+}
+
+/// One config key the plan deletes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRemoval {
+    /// The dotted table that holds the key (`pump.gate`).
+    pub table: String,
+    pub key: String,
+    /// The key's current value, as written in the file.
+    pub value: String,
+    pub reason: String,
+    /// The removal changes how the pump behaves, not just the file.
+    pub behaviour_change: bool,
+}
+
+/// `[pools.<pool>.local] root = ...`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootSet {
+    pub pool: String,
+    pub root: String,
+    pub reason: String,
 }
 
 /// One renamed config key.
@@ -48,7 +121,8 @@ pub struct NewRole {
     pub name: String,
     pub kind: String,
     pub pool: String,
-    pub read_only: bool,
+    /// Written only when set; absent leaves the kind default.
+    pub read_only: Option<bool>,
 }
 
 /// A pool the plan will add.
@@ -76,22 +150,54 @@ pub struct MigrateOutcome {
     pub after: String,
 }
 
-/// Build a plan from a loaded config. Does not write.
+/// Build a plan from a loaded config and the document it came from. Does not
+/// write. The document tells which keys are present: the config structs fill
+/// in defaults for absent ones.
 #[must_use]
-pub fn plan_migrate(config: &MailspaceConfig) -> MigratePlan {
-    let Some(pump) = &config.pump else {
-        return MigratePlan {
-            notes: vec!["no [pump] table; nothing to migrate".into()],
-            ..empty_plan()
-        };
-    };
+pub fn plan_migrate(
+    config: &MailspaceConfig,
+    doc: &DocumentMut,
+    inputs: &MigrateInputs,
+) -> MigratePlan {
     let mut plan = empty_plan();
+    if let Some(pump) = &config.pump {
+        plan_pump(config, pump, doc, inputs, &mut plan);
+    }
+    plan_pool_roots(config, &mut plan);
+    if config.pump.is_none() && plan_is_empty(&plan) {
+        plan.notes
+            .push("no [pump] table; nothing to migrate".into());
+    } else if plan_is_empty(&plan) {
+        plan.notes
+            .push("already using role.pool assignments".into());
+    } else {
+        // Advice about the file as it stands: given only while this run
+        // changes something, so a migrated file stays quiet.
+        super::migrate_keys::review_slot_dirs(config, &mut plan);
+        if let Some(pump) = &config.pump {
+            review_own_charters(config, inputs, &mut plan);
+            review_hand_kind(config, pump, &mut plan);
+        }
+    }
+    plan
+}
+
+fn plan_pump(
+    config: &MailspaceConfig,
+    pump: &PumpConfig,
+    doc: &DocumentMut,
+    inputs: &MigrateInputs,
+    plan: &mut MigratePlan,
+) {
     let dispatch = dispatch_pool(pump);
-    assign_hand(config, pump, dispatch.as_deref(), &mut plan);
-    assign_merge(config, pump, &mut plan);
-    assign_gate(config, pump, dispatch.as_deref(), &mut plan);
-    assign_slug_roles(config, &mut plan);
-    fold_caps(config, pump, dispatch.as_deref(), &mut plan);
+    assign_hand(config, pump, dispatch.as_deref(), plan);
+    let merge_pool = assign_merge(config, pump, plan);
+    plan_pump_planner(config, pump, inputs, plan);
+    plan_auditor(config, pump, inputs, plan);
+    plan_hand_kind(config, pump, plan);
+    assign_gate(config, pump, dispatch.as_deref(), plan);
+    assign_slug_roles(config, plan);
+    fold_caps(config, pump, dispatch.as_deref(), plan);
     if pump.planner.split_timeout_present {
         plan.renames.push(KeyRename {
             table: "pump.planner".into(),
@@ -100,11 +206,8 @@ pub fn plan_migrate(config: &MailspaceConfig) -> MigratePlan {
             note: "split_timeout is deprecated; split_hard_cap wins when both are set".into(),
         });
     }
-    if plan_is_empty(&plan) {
-        plan.notes
-            .push("already using role.pool assignments".into());
-    }
-    plan
+    plan_removals(doc, &merge_pool, plan);
+    review_new_roles(plan);
 }
 
 fn empty_plan() -> MigratePlan {
@@ -114,7 +217,12 @@ fn empty_plan() -> MigratePlan {
         new_pools: Vec::new(),
         caps: Vec::new(),
         renames: Vec::new(),
+        kind_changes: Vec::new(),
+        removals: Vec::new(),
+        roots: Vec::new(),
+        charters: Vec::new(),
         notes: Vec::new(),
+        review: Vec::new(),
     }
 }
 
@@ -124,6 +232,29 @@ fn plan_is_empty(plan: &MigratePlan) -> bool {
         && plan.new_pools.is_empty()
         && plan.caps.is_empty()
         && plan.renames.is_empty()
+        && plan.kind_changes.is_empty()
+        && plan.removals.is_empty()
+        && plan.roots.is_empty()
+        && plan.charters.is_empty()
+        && plan.review.is_empty()
+}
+
+/// A role the plan adds has no charter file yet.
+fn review_new_roles(plan: &mut MigratePlan) {
+    let names: Vec<&str> = plan
+        .new_roles
+        .iter()
+        .filter(|role| !matches!(role.name.as_str(), "gate" | "auditor" | PUMP_PLANNER_ROLE))
+        .map(|role| role.name.as_str())
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let text = format!(
+        "new role(s) {} have no charter: add one with `vivi role charter set <role> --file <path>`",
+        names.join(", ")
+    );
+    plan.review.push(text);
 }
 
 fn dispatch_pool(pump: &PumpConfig) -> Option<String> {
@@ -163,13 +294,52 @@ fn assign_hand(
     });
 }
 
-fn assign_merge(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigratePlan) {
+/// Give the merge role a pool and the `merge` kind, adding the role when the
+/// mailspace has none. Returns the pool the merge role ends up with.
+fn assign_merge(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigratePlan) -> String {
     let Some(role) = find_role(config, "merge") else {
-        return;
+        let pool = choose_merge_pool(config, pump, plan);
+        plan.new_roles.push(NewRole {
+            name: "merge".into(),
+            kind: "merge".into(),
+            pool: pool.clone(),
+            read_only: None,
+        });
+        return pool;
     };
-    if role.pool.is_some() {
-        return;
+    if !has_kind(role, "merge") {
+        plan.kind_changes.push(KindChange {
+            role: role.name.clone(),
+            from: role.kind.clone(),
+            to: "merge".into(),
+            reason: "only a merge-kind role may publish to the integration branch".into(),
+        });
     }
+    if let Some(pool) = &role.pool {
+        return pool.clone();
+    }
+    let pool = choose_merge_pool(config, pump, plan);
+    plan.assignments.push(Assignment {
+        role: role.name.clone(),
+        pool: pool.clone(),
+        reason: "[pump.merge] lanes".into(),
+    });
+    pool
+}
+
+fn has_kind(role: &LocalIdentity, kind: &str) -> bool {
+    role.kind
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(kind))
+}
+
+/// The pool a merge role without one gets: the pump-host pool, added when the
+/// mailspace lacks it.
+fn choose_merge_pool(
+    config: &MailspaceConfig,
+    pump: &PumpConfig,
+    plan: &mut MigratePlan,
+) -> String {
     let name = host_pool_name(config);
     if !config.pools.contains_key(&name) && !plan.new_pools.iter().any(|pool| pool.name == name) {
         plan.new_pools.push(NewPool {
@@ -178,12 +348,216 @@ fn assign_merge(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigrateP
             slots: pump.merge.lanes.max(1),
             reason: "[pump.merge] lanes (pump-host merge)".into(),
         });
+        plan.review.push(format!(
+            "pool {name}: merge lanes want persistent warm slots; the new pool starts cold, \
+             so give it a source (`[pools.{name}.local] worktree_of` or `repo`) and seed it"
+        ));
     }
-    plan.assignments.push(Assignment {
-        role: role.name.clone(),
-        pool: name,
-        reason: "[pump.merge] lanes".into(),
+    name
+}
+
+/// Make sure the pump has its own planner role, `pump-planner`, with a pool
+/// and a charter. A role named `planner` (a Tugboat seat) is left alone.
+fn plan_pump_planner(
+    config: &MailspaceConfig,
+    pump: &PumpConfig,
+    inputs: &MigrateInputs,
+    plan: &mut MigratePlan,
+) {
+    let existing = config
+        .identities
+        .iter()
+        .find(|role| role.name.eq_ignore_ascii_case(PUMP_PLANNER_ROLE));
+    if existing.is_some_and(|role| role.status != "active") {
+        return;
+    }
+    let pool = hand_pool(config, pump, plan);
+    match (existing, pool) {
+        (Some(role), _) if role.pool.is_some() => {}
+        (Some(role), Some(pool)) => plan.assignments.push(Assignment {
+            role: role.name.clone(),
+            pool,
+            reason: "the pool of the hand role".into(),
+        }),
+        (None, Some(pool)) => plan.new_roles.push(NewRole {
+            name: PUMP_PLANNER_ROLE.into(),
+            kind: "planner".into(),
+            pool,
+            read_only: None,
+        }),
+        (_, None) => {
+            plan.review.push(format!(
+                "{PUMP_PLANNER_ROLE} needs a pool: run vivi role pool {PUMP_PLANNER_ROLE} <pool> \
+                 (add the role first with `vivi role add {PUMP_PLANNER_ROLE} --kind planner` if it is missing)"
+            ));
+            return;
+        }
+    }
+    let legacy = pump.planner.charter.trim();
+    if !legacy.is_empty() && inputs.legacy_planner_charter.is_none() {
+        plan.review.push(format!(
+            "[pump.planner] charter {legacy} is not a readable, non-blank file; {PUMP_PLANNER_ROLE} \
+             gets the shipped default charter"
+        ));
+    }
+    plan_pump_planner_charter(existing.map(|role| role.name.as_str()), inputs, plan);
+}
+
+/// Give a `pump-planner` with a blank charter the charter of the old
+/// `[pump.planner] charter` file, else the shipped default.
+fn plan_pump_planner_charter(
+    existing: Option<&str>,
+    inputs: &MigrateInputs,
+    plan: &mut MigratePlan,
+) {
+    let current = existing.and_then(|name| inputs.charters.get(name));
+    if current.is_some_and(|text| !text.trim().is_empty()) {
+        return;
+    }
+    let (origin, text) = match &inputs.legacy_planner_charter {
+        Some(legacy) => {
+            plan.review.push(format!(
+                "{PUMP_PLANNER_ROLE} charter was copied from {}, which was written for 15: 16 planner \
+                 jobs return the plan between PUMP-PLAN-BEGIN and PUMP-PLAN-END (the pool contract \
+                 is added to every prompt), so remove any instruction to write plan files, or use \
+                 the shipped charter (`vivi skills show vivi --file references/charters/pump-planner.md`)",
+                legacy.path
+            ));
+            (legacy.path.clone(), legacy.text.clone())
+        }
+        None => (
+            "the shipped default".to_string(),
+            PUMP_PLANNER_CHARTER.to_string(),
+        ),
+    };
+    plan.charters.push(CharterWrite {
+        role: PUMP_PLANNER_ROLE.into(),
+        origin,
+        text,
     });
+}
+
+/// The auditor role: need acceptance audits go to it and have no fallback, so
+/// it needs a pool and a charter. A missing one is added read-only.
+fn plan_auditor(
+    config: &MailspaceConfig,
+    pump: &PumpConfig,
+    inputs: &MigrateInputs,
+    plan: &mut MigratePlan,
+) {
+    let existing = find_role(config, "auditor");
+    if existing.is_some_and(|role| role.status != "active") {
+        return;
+    }
+    let Some(pool) = hand_pool(config, pump, plan) else {
+        plan.review.push(
+            "auditor needs a pool: run vivi role pool auditor <pool> (add the role first with \
+             `vivi role add auditor --kind auditor --read-only true` if it is missing)"
+                .into(),
+        );
+        return;
+    };
+    match existing {
+        Some(role) if role.pool.is_some() => {}
+        Some(role) => plan.assignments.push(Assignment {
+            role: role.name.clone(),
+            pool,
+            reason: "need acceptance audits need an auditor with a pool; the pool of the hand role"
+                .into(),
+        }),
+        None => plan.new_roles.push(NewRole {
+            name: "auditor".into(),
+            kind: "auditor".into(),
+            pool,
+            read_only: Some(true),
+        }),
+    }
+    let name = existing.map_or("auditor", |role| role.name.as_str());
+    let blank = inputs
+        .charters
+        .get(name)
+        .is_none_or(|text| text.trim().is_empty());
+    if blank {
+        plan.charters.push(CharterWrite {
+            role: name.into(),
+            origin: "the shipped auditor charter".into(),
+            text: AUDITOR_CHARTER.into(),
+        });
+    }
+}
+
+/// The pump's `to` role must be a hand to publish unit branches. A missing
+/// kind is set; another kind is the operator's call.
+fn plan_hand_kind(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigratePlan) {
+    let Some(role) = find_role(config, &pump.to) else {
+        return;
+    };
+    match role.kind.as_deref() {
+        Some(kind) if kind.trim().eq_ignore_ascii_case("hand") => {}
+        None => plan.kind_changes.push(KindChange {
+            role: role.name.clone(),
+            from: None,
+            to: "hand".into(),
+            reason: "only a hand-kind role may publish unit branches".into(),
+        }),
+        Some(_) => {}
+    }
+}
+
+/// The pump's `to` role has a kind other than `hand`: report, never change.
+fn review_hand_kind(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigratePlan) {
+    let Some(role) = find_role(config, &pump.to) else {
+        return;
+    };
+    let Some(kind) = role.kind.as_deref() else {
+        return;
+    };
+    if !kind.trim().eq_ignore_ascii_case("hand") {
+        plan.review.push(format!(
+            "pump role {} has kind {kind}; only a hand-kind role may publish unit branches, so \
+             every unit fails with \"not authorized to publish\". It is not changed here: if it \
+             should be a hand, run `vivi role set {} --kind hand`",
+            role.name, role.name
+        ));
+    }
+}
+
+/// Roles that keep a charter of their own, whose text is now a system prompt.
+fn review_own_charters(config: &MailspaceConfig, inputs: &MigrateInputs, plan: &mut MigratePlan) {
+    for (selector, shipped, use_) in [
+        ("merge", MERGE_CHARTER, "16 merge jobs"),
+        ("auditor", AUDITOR_CHARTER, "16 need acceptance audits"),
+    ] {
+        let Some(role) = find_role(config, selector) else {
+            continue;
+        };
+        let text = inputs
+            .charters
+            .get(&role.name)
+            .map_or("", |text| text.trim());
+        if text.is_empty() || text == shipped.trim() {
+            continue;
+        }
+        let first = text.lines().next().unwrap_or_default();
+        plan.review.push(format!(
+            "{selector} role {} has its own charter (first line: {first:?}); {use_} use it as \
+             the system prompt. It is not changed here. To use the shipped one, save \
+             `vivi skills show tugboat --file references/charters/{selector}.md` and run \
+             `vivi role charter set {} --file <path>`",
+            role.name, role.name
+        ));
+    }
+}
+
+/// The pool the hand role has, or is given by this plan.
+fn hand_pool(config: &MailspaceConfig, pump: &PumpConfig, plan: &MigratePlan) -> Option<String> {
+    let role = find_role(config, &pump.to)?;
+    role.pool.clone().or_else(|| {
+        plan.assignments
+            .iter()
+            .find(|row| row.role == role.name)
+            .map(|row| row.pool.clone())
+    })
 }
 
 fn host_pool_name(config: &MailspaceConfig) -> String {
@@ -224,7 +598,7 @@ fn assign_gate(
         name: "gate".into(),
         kind: "gate".into(),
         pool: pool.to_string(),
-        read_only: true,
+        read_only: Some(true),
     });
 }
 
@@ -314,6 +688,18 @@ fn find_role<'a>(config: &'a MailspaceConfig, name: &str) -> Option<&'a LocalIde
 #[must_use]
 pub fn render_plan(plan: &MigratePlan) -> String {
     let mut lines = Vec::new();
+    render_additions(plan, &mut lines);
+    render_changes(plan, &mut lines);
+    render_removals(plan, &mut lines);
+    lines.extend(plan.notes.iter().cloned());
+    lines.extend(plan.review.iter().map(|item| format!("review: {item}")));
+    if lines.is_empty() {
+        lines.push("no changes".into());
+    }
+    lines.join("\n")
+}
+
+fn render_additions(plan: &MigratePlan, lines: &mut Vec<String>) {
     for pool in &plan.new_pools {
         lines.push(format!(
             "add [pools.{}] provider={} slots={}  ({})",
@@ -321,15 +707,44 @@ pub fn render_plan(plan: &MigratePlan) -> String {
         ));
     }
     for role in &plan.new_roles {
+        let read_only = role
+            .read_only
+            .map_or_else(String::new, |flag| format!(" read_only={flag}"));
         lines.push(format!(
-            "add role {} kind={} pool={} read_only={}",
-            role.name, role.kind, role.pool, role.read_only
+            "add role {} kind={} pool={}{read_only}",
+            role.name, role.kind, role.pool
         ));
     }
+}
+
+fn render_changes(plan: &MigratePlan, lines: &mut Vec<String>) {
     for row in &plan.assignments {
         lines.push(format!(
             "set role {} pool={}  ({})",
             row.role, row.pool, row.reason
+        ));
+    }
+    for change in &plan.kind_changes {
+        lines.push(format!(
+            "set role {} kind={} (was {})  ({})",
+            change.role,
+            change.to,
+            change.from.as_deref().unwrap_or("none"),
+            change.reason
+        ));
+    }
+    for root in &plan.roots {
+        lines.push(format!(
+            "set [pools.{}.local] root = {:?}  ({})",
+            root.pool, root.root, root.reason
+        ));
+    }
+    for write in &plan.charters {
+        lines.push(format!(
+            "set role {} charter from {} ({} lines)",
+            write.role,
+            write.origin,
+            write.text.lines().count()
         ));
     }
     for cap in &plan.caps {
@@ -344,11 +759,20 @@ pub fn render_plan(plan: &MigratePlan) -> String {
             rename.table, rename.from, rename.to, rename.note
         ));
     }
-    lines.extend(plan.notes.iter().cloned());
-    if lines.is_empty() {
-        lines.push("no changes".into());
+}
+
+fn render_removals(plan: &MigratePlan, lines: &mut Vec<String>) {
+    for removal in &plan.removals {
+        let tag = if removal.behaviour_change {
+            "!! BEHAVIOUR CHANGE: "
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "{tag}remove [{}] {} = {}  ({})",
+            removal.table, removal.key, removal.value, removal.reason
+        ));
     }
-    lines.join("\n")
 }
 
 /// Apply `plan` to `doc`.
@@ -359,8 +783,25 @@ pub fn apply_plan_to_document(
     add_pools(doc, plan)?;
     add_roles(doc, plan)?;
     assign_roles(doc, plan)?;
+    set_kinds(doc, plan)?;
+    apply_roots(doc, plan);
     write_caps(doc, plan);
     rename_keys(doc, plan);
+    apply_removals(doc, plan);
+    Ok(())
+}
+
+fn set_kinds(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::error::VivariumError> {
+    for change in &plan.kind_changes {
+        patch_identity(
+            doc,
+            &change.role,
+            &IdentityPatch {
+                kind: Some(Some(change.to.clone())),
+                ..IdentityPatch::default()
+            },
+        )?;
+    }
     Ok(())
 }
 
@@ -409,7 +850,7 @@ fn add_roles(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::err
             &IdentityPatch {
                 kind: Some(Some(role.kind.clone())),
                 pool: Some(Some(role.pool.clone())),
-                read_only: Some(Some(role.read_only)),
+                read_only: role.read_only.map(Some),
                 status: Some("active".into()),
                 ..IdentityPatch::default()
             },

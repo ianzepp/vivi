@@ -61,8 +61,13 @@ kind = "merge"
 pool = "glm"
 
 [[identities]]
-name = "planner"
+name = "pump-planner"
 kind = "planner"
+pool = "glm"
+
+[[identities]]
+name = "auditor"
+kind = "auditor"
 pool = "glm"
 
 [pools.glm]

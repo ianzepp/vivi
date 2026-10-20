@@ -327,7 +327,7 @@ fn a_persistent_old_blocking_root_goes_to_the_resplit_planner() {
     assert!(ctx.home.join("resplit/r-1.json").exists());
     let jobs = split_planner_jobs(&st);
     assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].role, "planner");
+    assert_eq!(jobs[0].role, "pump-planner");
     assert_eq!(
         jobs[0].pool_candidates,
         vec![String::from("test-planner-pool")]

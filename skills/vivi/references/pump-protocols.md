@@ -12,7 +12,7 @@ The pump dispatches pending jobs using the current role routing and pool fallbac
 
 ## Planner receipts
 
-Board planning, need revisions, and unit splits use the active planner role and its pool. The pool worker cannot write files in the pump home. It returns the full plan JSON in the task receipt between these exact marker lines:
+Board planning, need revisions, and unit splits use the active pump-planner role and its pool; its charter is the planner's system prompt. The pool worker cannot write files in the pump home. It returns the full plan JSON in the task receipt between these exact marker lines:
 
 **PUMP-PLAN-BEGIN**
 **&lt;complete plan JSON&gt;**

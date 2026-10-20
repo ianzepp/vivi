@@ -242,7 +242,29 @@ vivi config migrate [--write]
 `vivi config show` is the role -> kind -> pool -> slots -> models ->
 read_only table plus the merge/gate flow. `validate` checks those together
 and also runs at `vivi pump run|once` start. `migrate` is a dry-run diff
-unless `--write` (a timestamped `.bak` is kept).
+unless `--write` (a timestamped `.bak` is kept; comments survive). To upgrade a
+15.0.0 mailspace: `vivi update`, `vivi config migrate`, read the plan, then
+`vivi config migrate --write` and `vivi config validate`. It assigns the hand,
+merge and gate roles a pool, adds the pump's own `pump-planner` role (kind
+planner, hand pool) with the old `[pump.planner] charter` file's text as its
+charter when readable, else the shipped one, leaves a role named `planner`
+alone, gives the auditor role the hand pool (adding it read-only when absent,
+with the shipped charter when blank; need acceptance audits have no fallback),
+sets `kind = "hand"` on a `[pump] to` role with no kind (another kind is
+reported), adds a `merge` role when absent and sets `kind = "merge"` on a merge
+role of another kind (validate errors on both: only merge- and hand-kind roles
+may publish), reports a merge or auditor charter that is not the shipped one
+(16 jobs use it as the system prompt), renames `split_timeout`, and removes
+the keys 16 ignores with a reason each: `[pump.planner] run` and `charter`,
+`[pump] priority_file`, `[pump.merge] lanes`, and `[pump.gate] every_merges` and
+`every_seconds` (a behaviour change: the gate runs after every merge batch). For
+local pools it sets the 15.0.0 shared slot root only when the mailspace has no
+id; with an id 15.0.0 slots are not reused and the plan says which pools. Charters
+are written only under `--write`, after a `.bak` of any existing file, and a
+charter that has text is never replaced. `vivi doctor` reports the same pump
+role requirements as `validate`. The plan
+ends with `review:` lines for what a human has to settle. A second run on a
+migrated file reports no changes.
 
 Capacity and model fields are preferences. Use `role status` or
 `board --process` when process state matters. A host starting a role should
@@ -2248,7 +2270,7 @@ targets must exist, and cycles are configuration errors.
 | Work kind | Recipient role | Pool |
 | --- | --- | --- |
 | Unit task | **[pump].to** | Hand role pool and fallback chain; **tools** may be empty or name an unknown kind. Defined kind limits and proof-skip metadata still apply, but its pool list is ignored. If no hand pool is assigned, configured kinds and **default_kind** route the unit. |
-| Board, revision, and split planners | Active **planner** role | Planner role pool and fallback chain. Required with a pool when **[pump]** is configured. |
+| Board, revision, and split planners | Active **pump-planner** role | Its pool and fallback chain; its charter is the planner's system prompt (shipped default: `references/charters/pump-planner.md`). `mailspace init` and `sync join` provision it. Required with a pool when **[pump]** is configured. |
 | Merge | **merge** role | Merge role pool and fallback chain. `mailspace init` and `sync join` provision the role and shipped charter when absent; pool and model remain operator-configured. |
 | Gate | **gate** role | Gate role pool and fallback chain, then **[pump.gate].pools** candidates. Read-only. |
 | Gate audit | **auditor** role | Auditor role pool and fallback chain, followed by gate-pool candidates; without an auditor role, a built-in read-only auditor uses gate pools. |
@@ -2265,7 +2287,7 @@ but its pool list is ignored. Without a hand pool, configured kinds and
 `default_kind` route unit tasks.
 
 Whole-need planning, need amendments, and split planning all use durable jobs
-for the active planner role and its charter. The worker returns the complete
+for the active pump-planner role and its charter. The worker returns the complete
 plan JSON between **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** in its receipt.
 The pump writes it under **plans/** and applies the existing validator. The
 old **[pump.planner].run** and **charter** keys are not executed. Keep
@@ -2483,8 +2505,8 @@ be empty or name an unknown kind. A configured kind's **max** and
 **skip_proof** metadata still applies, but its pool list is ignored. When the
 hand role has no pool, configure kinds and **default_kind** to route unit
 tasks. Configure **[pools.&lt;name&gt;] fallback = "&lt;pool&gt;"** to add
-dispatch candidates. **vivi config validate** requires an active planner role
-with a pool and validates role and pool references. Configure a merge role
+dispatch candidates. **vivi config validate** requires an active pump-planner role
+with a pool, an active auditor role with a pool, a merge role of kind merge and a hand role of kind hand, and validates role and pool references. Configure a merge role
 with a pool for the live merge pipeline; legacy merge-lane settings do not run
 the live merges.
 

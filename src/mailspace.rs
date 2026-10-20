@@ -49,6 +49,7 @@ mod pool_record;
 mod reply;
 mod report;
 mod rules;
+pub mod shipped;
 mod step;
 #[cfg(test)]
 mod tests;

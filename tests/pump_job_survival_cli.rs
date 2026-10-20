@@ -14,7 +14,7 @@ use vivi::pump::state::{GateRun, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
 const WORKERS: &[(&str, &str, &str)] = &[
-    ("planner-board", "planner:board", "planner"),
+    ("planner-board", "planner:board", "pump-planner"),
     ("merge-default-1", "merge", "merge"),
     ("gate-survival", "gate", "gate"),
     ("audit-survival", "audit", "auditor"),
@@ -311,7 +311,7 @@ fn scaffold() -> Rig {
     for (role, kind) in [
         ("mind", "mind"),
         ("hand", "hand"),
-        ("planner", "planner"),
+        ("pump-planner", "planner"),
         ("merge", "merge"),
         ("gate", "auditor"),
         ("auditor", "auditor"),
@@ -562,7 +562,14 @@ fn startup_diagnostics(rig: &Rig) -> String {
         .join("\n");
     let mut tasks = Vec::new();
     for role in [
-        "hand", "planner", "merge", "gate", "auditor", "release", "mind", "digest",
+        "hand",
+        "pump-planner",
+        "merge",
+        "gate",
+        "auditor",
+        "release",
+        "mind",
+        "digest",
     ] {
         tasks.push(command_report([
             "task",

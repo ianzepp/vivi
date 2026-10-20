@@ -53,8 +53,7 @@ impl RoleFacts {
             name: String::from("auditor"),
             kind: Some(String::from("auditor")),
             band: None,
-            charter: include_str!("../../skills/tugboat/references/charters/auditor.md")
-                .to_string(),
+            charter: crate::mailspace::shipped::AUDITOR_CHARTER.to_string(),
             read_only: Some(true),
         }
     }

@@ -281,10 +281,54 @@ impl Mailspace {
         if self.charter_path(role_name).exists() {
             return Ok(());
         }
-        self.set_charter(
-            role_name,
-            include_str!("../../skills/tugboat/references/charters/merge.md"),
-        )
+        self.set_charter(role_name, super::shipped::MERGE_CHARTER)
+    }
+
+    /// Ensure the `pump-planner` role and its shipped charter exist.
+    ///
+    /// A new role is an active planner. A missing kind is set to `planner`.
+    /// When the role has no pool it gets the pool of the pump's hand role,
+    /// else the first local pool. The shipped charter is written only when the
+    /// role has no charter text: a charter that has any is never replaced.
+    ///
+    /// # Errors
+    /// Returns an error if the `pump-planner` name is already another role's
+    /// alias, a role field is invalid, or config/charter persistence fails.
+    pub fn ensure_pump_planner_role(&mut self) -> Result<(), VivariumError> {
+        const NAME: &str = super::shipped::PUMP_PLANNER_ROLE;
+        let index = self.find_role_index(NAME);
+        if let Some(index) = index
+            && self.config.identities[index].name != NAME
+        {
+            return Err(VivariumError::Message(format!(
+                "cannot provision predefined role '{NAME}': that name is an alias for '{}'",
+                self.config.identities[index].name
+            )));
+        }
+        let update = self.pump_planner_update(index);
+        match index {
+            Some(_) if update.kind.is_none() && update.pool.is_none() => {}
+            Some(_) => drop(self.set_role(NAME, update)?),
+            None => drop(self.add_role(NAME, update)?),
+        }
+        if self.read_charter(NAME)?.trim().is_empty() {
+            self.set_charter(NAME, super::shipped::PUMP_PLANNER_CHARTER)?;
+        }
+        Ok(())
+    }
+
+    fn pump_planner_update(&self, existing: Option<usize>) -> RoleUpdate {
+        let role = existing.map(|index| &self.config.identities[index]);
+        let needs_kind = role.is_none_or(|role| role.kind.is_none());
+        let needs_pool = role.is_none_or(|role| role.pool.is_none());
+        RoleUpdate {
+            kind: needs_kind.then(|| Some(String::from("planner"))),
+            pool: needs_pool
+                .then(|| hand_pool(&self.config).or_else(|| first_local_pool(&self.config)))
+                .flatten()
+                .map(Some),
+            ..RoleUpdate::default()
+        }
     }
 
     /// Rename an identity. The old name is preserved as an alias.
@@ -772,6 +816,16 @@ fn sanitize_label(value: &str) -> Result<String, VivariumError> {
             "invalid role label '{value}'; use letters, numbers, dot, dash, or underscore"
         ))
     })
+}
+
+/// The pool of the pump's hand role, when there is a pump and the role has one.
+fn hand_pool(config: &super::MailspaceConfig) -> Option<String> {
+    let hand = &config.pump.as_ref()?.to;
+    config
+        .identities
+        .iter()
+        .find(|role| role.name.eq_ignore_ascii_case(hand))
+        .and_then(|role| role.pool.clone())
 }
 
 fn first_local_pool(config: &super::MailspaceConfig) -> Option<String> {

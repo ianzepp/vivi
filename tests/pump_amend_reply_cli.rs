@@ -183,7 +183,7 @@ fn planned_ctx(project: &tempfile::TempDir, handle: &str) -> (Ctx, State) {
 fn planner_routing() -> RoleRouting {
     RoleRouting {
         roles: vec![RoutedRole {
-            name: "planner".into(),
+            name: "pump-planner".into(),
             kind: Some("planner".into()),
             status: "active".into(),
             pool: Some("here".into()),

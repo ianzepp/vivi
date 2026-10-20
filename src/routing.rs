@@ -10,7 +10,9 @@
 mod defaults;
 mod diff;
 mod migrate;
+mod migrate_keys;
 mod model;
+mod pump_roles;
 mod show;
 mod validate;
 
@@ -18,11 +20,19 @@ mod validate;
 #[path = "routing/routing_test.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "routing/migrate_test.rs"]
+mod migrate_tests;
+
 pub use defaults::{WRITE_KINDS, default_read_only, is_band_model, resolve_read_only};
 pub use diff::unified_diff;
-pub use migrate::{MigrateOutcome, MigratePlan, apply_plan_to_document, plan_migrate, render_plan};
+pub use migrate::{
+    CharterWrite, LegacyCharter, MigrateInputs, MigrateOutcome, MigratePlan,
+    apply_plan_to_document, plan_migrate, render_plan,
+};
 pub use model::{
     RoleRouting, RoutedPool, RoutedRole, choose_model, from_mailspace, lanes_for, merge_lane_count,
 };
+pub use pump_roles::{PumpRoleCheck, pump_role_checks};
 pub use show::{ConfigOverview, FlowOverview, RoleRow, overview, render_text};
 pub use validate::{Issue, Severity, format_report, require_ok, validate};

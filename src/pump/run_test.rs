@@ -36,8 +36,9 @@ fn tick(ctx: &Ctx, st: &mut State) {
 /// planner role.
 const PUMP_TOML: &str = concat!(
     "name = \"pump\"\n\n",
-    "[[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"here\"\n\n",
+    "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n\n",
     "[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n\n",
+    "[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n\n",
     "[pools.here]\nprovider = \"local\"\nslots = 1\n\n",
     "[pump]\nbranch = \"next\"\ntick = 1\n",
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
@@ -49,7 +50,7 @@ const PUMP_TOML: &str = concat!(
 /// carrying them starts cleanly.
 const PUMP_TOML_IDENTITIES: &str = concat!(
     "[[identities]]\nname = \"operator\"\n\n",
-    "[[identities]]\nname = \"hand\"\n\n",
+    "[[identities]]\nname = \"hand\"\nkind = \"hand\"\n\n",
     "[[identities]]\nname = \"mind\"\n",
 );
 
@@ -697,7 +698,8 @@ fn a_second_instance_is_refused_by_the_lock() {
 
 #[test]
 fn a_missing_roster_role_refuses_to_start_with_the_fix_command() {
-    let missing_hand = PUMP_TOML_IDENTITIES.replace("[[identities]]\nname = \"hand\"\n\n", "");
+    let missing_hand =
+        PUMP_TOML_IDENTITIES.replace("[[identities]]\nname = \"hand\"\nkind = \"hand\"\n\n", "");
     let dir = mailspace_project(&format!("{PUMP_TOML}{missing_hand}"));
     let err = run(dir.path(), true).unwrap_err();
     let text = err.to_string();

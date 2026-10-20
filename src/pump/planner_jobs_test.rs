@@ -82,3 +82,74 @@ fn an_immediate_worker_exit_writes_the_failure_receipt_on_the_same_tick() {
             .contains("bash: pi: command not found")
     );
 }
+
+fn planner_routing(roles: &[(&str, &str)]) -> crate::routing::RoleRouting {
+    use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
+    RoleRouting {
+        roles: roles
+            .iter()
+            .map(|(name, pool)| RoutedRole {
+                name: (*name).into(),
+                kind: Some("planner".into()),
+                status: "active".into(),
+                pool: Some((*pool).into()),
+                read_only: None,
+                model: None,
+                models: Vec::new(),
+            })
+            .collect(),
+        pools: roles
+            .iter()
+            .map(|(_, pool)| {
+                (
+                    (*pool).to_string(),
+                    RoutedPool {
+                        slots: 1,
+                        provider: "local".into(),
+                        fallback: None,
+                        caps: std::collections::BTreeMap::new(),
+                        models: Vec::new(),
+                        has_bands: false,
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+fn enqueue_one(ctx: &Ctx, st: &mut State) -> Result<String, VivariumError> {
+    enqueue(
+        ctx,
+        st,
+        "board",
+        "n1",
+        100,
+        "plan",
+        60,
+        "board/n1.out",
+        "plans/n1.json",
+        None,
+    )
+}
+
+#[test]
+fn planner_jobs_go_to_pump_planner_and_a_role_named_planner_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(planner_routing(&[
+        ("planner", "seat-pool"),
+        ("pump-planner", "pump-pool"),
+    ]));
+    let mut st = State::default();
+    let id = enqueue_one(&ctx, &mut st).unwrap();
+    let job = &st.jobs()[&id];
+    assert_eq!(job.role, "pump-planner");
+    assert_eq!(job.pool_candidates, ["pump-pool"]);
+
+    let ctx = ctx.with_routing(planner_routing(&[("planner", "seat-pool")]));
+    let mut st = State::default();
+    let error = enqueue_one(&ctx, &mut st).unwrap_err().to_string();
+    assert!(error.contains("pump-planner"), "{error}");
+    assert!(error.contains("vivi config migrate"), "{error}");
+    assert!(st.jobs().is_empty());
+}

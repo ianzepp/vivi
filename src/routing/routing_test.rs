@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use crate::mailspace::MailspaceConfig;
 use crate::pump::config::{Lane, PumpConfig};
 use crate::routing::{
-    Issue, RoleRouting, RoutedPool, RoutedRole, Severity, apply_plan_to_document, choose_model,
-    default_read_only, from_mailspace, merge_lane_count, plan_migrate, require_ok, unified_diff,
-    validate,
+    Issue, MigrateInputs, RoleRouting, RoutedPool, RoutedRole, Severity, apply_plan_to_document,
+    choose_model, default_read_only, from_mailspace, merge_lane_count, plan_migrate, require_ok,
+    unified_diff, validate,
 };
 
 fn cfg(text: &str) -> MailspaceConfig {
@@ -228,7 +228,7 @@ to = "hand"
             issue.severity == Severity::Error
                 && issue
                     .message
-                    .contains("active planner role assigned to a pool")
+                    .contains("active pump-planner role assigned to a pool")
         }),
         "{issues:?}"
     );
@@ -243,7 +243,7 @@ name = "hand"
 kind = "hand"
 pool = "here"
 [[identities]]
-name = "planner"
+name = "pump-planner"
 kind = "planner"
 pool = "here"
 [pools.here]
@@ -280,7 +280,7 @@ fn validate_rejects_disabled_and_unassigned_merge_roles() {
         ),
     ] {
         let config = cfg(&format!(
-            "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"here\"\n{merge}\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n"
+            "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n{merge}\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n"
         ));
         let issues = validate(&config);
         assert!(
@@ -305,8 +305,12 @@ name = "merge"
 kind = "merge"
 pool = "glm"
 [[identities]]
-name = "planner"
+name = "pump-planner"
 kind = "planner"
+pool = "glm"
+[[identities]]
+name = "auditor"
+kind = "auditor"
 pool = "glm"
 [pools.glm]
 provider = "local"
@@ -403,8 +407,12 @@ name = "merge"
 kind = "merge"
 pool = "glm"
 [[identities]]
-name = "planner"
+name = "pump-planner"
 kind = "planner"
+pool = "glm"
+[[identities]]
+name = "auditor"
+kind = "auditor"
 pool = "glm"
 [pools.glm]
 provider = "local"
@@ -456,7 +464,7 @@ slots = 10
 
 #[test]
 fn migrate_assigns_hand_merge_gate_and_folds_caps() {
-    let config = cfg(r#"
+    let raw = r#"
 name = "t"
 [[identities]]
 name = "hand"
@@ -482,8 +490,9 @@ pools = ["glm"]
 lanes = 4
 [pump.gate]
 pools = ["glm"]
-"#);
-    let plan = plan_migrate(&config);
+"#;
+    let config = cfg(raw);
+    let plan = plan_migrate(&config, &raw.parse().unwrap(), &MigrateInputs::default());
     assert!(
         plan.assignments
             .iter()
@@ -545,7 +554,7 @@ pools = ["glm"]
 lanes = 2
 "#;
     let config: MailspaceConfig = toml::from_str(raw).unwrap();
-    let plan = plan_migrate(&config);
+    let plan = plan_migrate(&config, &raw.parse().unwrap(), &MigrateInputs::default());
     let mut doc = raw.parse().unwrap();
     apply_plan_to_document(&mut doc, &plan).unwrap();
     let after = doc.to_string();
@@ -568,7 +577,7 @@ run = "planner-run"
 split_timeout = 1800
 "#;
     let config: MailspaceConfig = toml::from_str(raw).expect("mailspace toml");
-    let plan = plan_migrate(&config);
+    let plan = plan_migrate(&config, &raw.parse().unwrap(), &MigrateInputs::default());
     assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
     assert_eq!(plan.renames[0].from, "split_timeout");
     assert_eq!(plan.renames[0].to, "split_hard_cap");
@@ -591,7 +600,7 @@ split_hard_cap = 2700
 split_timeout = 1800
 "#;
     let config: MailspaceConfig = toml::from_str(both).expect("mailspace toml");
-    let plan = plan_migrate(&config);
+    let plan = plan_migrate(&config, &both.parse().unwrap(), &MigrateInputs::default());
     assert_eq!(plan.renames.len(), 1, "{:?}", plan.renames);
     let mut doc = both.parse::<toml_edit::DocumentMut>().unwrap();
     apply_plan_to_document(&mut doc, &plan).unwrap();
@@ -625,7 +634,7 @@ fn issues_distinguish_error_and_warning() {
 fn faber_fixture_migrates_hand_to_glm_and_merge_to_host() {
     let raw = include_str!("../../tests/fixtures/faber-mailspace.toml");
     let config: MailspaceConfig = toml::from_str(raw).expect("faber fixture parses");
-    let plan = plan_migrate(&config);
+    let plan = plan_migrate(&config, &raw.parse().unwrap(), &MigrateInputs::default());
     assert!(
         plan.assignments
             .iter()

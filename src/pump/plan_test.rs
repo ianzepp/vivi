@@ -921,7 +921,7 @@ fn a_bad_split_plan_is_re_asked_once() {
     write_plan(&ctx, "u1.split.json", &bad_plan());
     ingest(&ctx, &mut st);
     let job = split_planner_job(&st, "u1").expect("re-ask is durably queued");
-    assert_eq!(job.role, "planner");
+    assert_eq!(job.role, "pump-planner");
     assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
     assert_eq!(job.status, JobStatus::Pending);
     assert!(job.body.contains("unit missing id, brief or write_scope"));

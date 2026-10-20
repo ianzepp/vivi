@@ -1,0 +1,142 @@
+//! The roles a configured pump needs, checked once for `vivi config validate`
+//! and `vivi doctor`.
+
+use crate::mailspace::MailspaceConfig;
+use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
+use crate::pump::config::PumpConfig;
+
+use super::model::{RoleRouting, from_mailspace};
+use super::validate::Issue;
+
+/// The findings for one requirement of the pump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PumpRoleCheck {
+    /// What the requirement is about: `pump-planner`, `merge`, `merge kind`,
+    /// `auditor` or `hand kind`.
+    pub name: &'static str,
+    /// Empty when the requirement is met. Every issue is an error.
+    pub issues: Vec<Issue>,
+}
+
+/// Check the roles a configured pump needs. Empty when there is no `[pump]`.
+#[must_use]
+pub fn pump_role_checks(config: &MailspaceConfig) -> Vec<PumpRoleCheck> {
+    config
+        .pump
+        .as_ref()
+        .map(|pump| pump_role_checks_of(pump, &from_mailspace(config)))
+        .unwrap_or_default()
+}
+
+pub(super) fn pump_role_checks_of(pump: &PumpConfig, routing: &RoleRouting) -> Vec<PumpRoleCheck> {
+    vec![
+        collect("pump-planner", |issues| check_planner(routing, issues)),
+        collect("merge", |issues| check_merge(routing, issues)),
+        collect("merge kind", |issues| check_merge_kind(routing, issues)),
+        collect("auditor", |issues| check_auditor(routing, issues)),
+        collect("hand kind", |issues| check_hand_kind(pump, routing, issues)),
+    ]
+}
+
+fn collect(name: &'static str, check: impl FnOnce(&mut Vec<Issue>)) -> PumpRoleCheck {
+    let mut issues = Vec::new();
+    check(&mut issues);
+    PumpRoleCheck { name, issues }
+}
+
+fn check_planner(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.pump_planner() else {
+        issues.push(Issue::error(format!(
+            "the pump needs an active {PUMP_PLANNER_ROLE} role assigned to a pool for durable \
+             planning jobs: run `vivi config migrate`"
+        )));
+        return;
+    };
+    if role.status != "active" {
+        issues.push(Issue::error(format!(
+            "role {} must be active to receive durable planning jobs",
+            role.name
+        )));
+    }
+    if role.pool.is_none() {
+        issues.push(Issue::error(format!(
+            "role {} must name a pool for durable planning jobs: run `vivi config migrate` \
+             or `vivi role pool {} <pool>`",
+            role.name, role.name
+        )));
+    }
+}
+
+fn check_merge(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.merge() else {
+        issues.push(Issue::error(
+            "the pump needs an active merge role assigned to a pool for durable merge jobs",
+        ));
+        return;
+    };
+    if role.status != "active" {
+        issues.push(Issue::error(format!(
+            "merge role {} must be active to receive durable merge jobs",
+            role.name
+        )));
+    }
+    if role.pool.is_none() {
+        issues.push(Issue::error(format!(
+            "merge role {} must name a pool for durable merge jobs",
+            role.name
+        )));
+    }
+}
+
+fn check_merge_kind(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.merge() else {
+        return;
+    };
+    if !has_kind(role.kind.as_deref(), "merge") {
+        issues.push(Issue::error(format!(
+            "merge role {} has kind {}; only a merge-kind role may publish to the integration \
+             branch, so its merge jobs would be refused: run `vivi config migrate` or set \
+             kind = \"merge\"",
+            role.name,
+            role.kind.as_deref().unwrap_or("none")
+        )));
+    }
+}
+
+/// Need acceptance audits have no fallback: they need an auditor with a pool.
+fn check_auditor(routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.auditor().filter(|role| role.status == "active") else {
+        issues.push(Issue::error(
+            "the pump needs an active auditor role assigned to a pool for need acceptance \
+             audits, or every need stops before landing: run `vivi config migrate`",
+        ));
+        return;
+    };
+    if role.pool.is_none() {
+        issues.push(Issue::error(format!(
+            "auditor role {} must name a pool for need acceptance audits, or every need stops \
+             before landing: run `vivi config migrate` or `vivi role pool {} <pool>`",
+            role.name, role.name
+        )));
+    }
+}
+
+/// Only a hand-kind role may publish a unit branch.
+fn check_hand_kind(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>) {
+    let Some(role) = routing.hand(&pump.to) else {
+        return;
+    };
+    if !has_kind(role.kind.as_deref(), "hand") {
+        issues.push(Issue::error(format!(
+            "pump role {} has kind {}; only a hand-kind role may publish unit branches, so \
+             every unit would fail with \"not authorized to publish\": run `vivi config \
+             migrate` or set kind = \"hand\"",
+            role.name,
+            role.kind.as_deref().unwrap_or("none")
+        )));
+    }
+}
+
+fn has_kind(kind: Option<&str>, expected: &str) -> bool {
+    kind.is_some_and(|kind| kind.trim().eq_ignore_ascii_case(expected))
+}

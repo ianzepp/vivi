@@ -606,7 +606,7 @@ pub fn test_ctx(dir: &Path, cfg: PumpConfig) -> (Ctx, Arc<FakeHost>) {
     let host = FakeHost::new();
     let routing = RoleRouting {
         roles: vec![RoutedRole {
-            name: String::from("planner"),
+            name: String::from("pump-planner"),
             kind: Some(String::from("planner")),
             status: String::from("active"),
             pool: Some(String::from("test-planner-pool")),

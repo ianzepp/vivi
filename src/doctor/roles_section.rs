@@ -20,6 +20,7 @@ const BINDING_FIX: &str =
     "refresh the role binding with vivi role set <name> --pid <pid> --project <root>";
 const CADENCE_FIX: &str =
     "set a cadence for head roles with vivi role set <name> --cadence <duration> --project <root>";
+const PUMP_ROLES_FIX: &str = "vivi config migrate --project <root>";
 const MERGE_POOL_FIX: &str = "vivi role pool merge <pool> --project <root>";
 
 /// Report roster, bound-process, and cadence findings for this project.
@@ -35,6 +36,7 @@ pub fn findings(project: &Project) -> Vec<Finding> {
     if project.config.pump.is_some() {
         let pools: Vec<&str> = project.config.pools.keys().map(String::as_str).collect();
         findings.push(merge_pool_finding(&views, &pools));
+        findings.extend(pump_role_findings(&project.config));
     }
     if views
         .iter()
@@ -357,6 +359,28 @@ fn kind_is(view: &RoleView, expected: &str) -> bool {
     view.kind
         .as_deref()
         .is_some_and(|kind| kind.trim().eq_ignore_ascii_case(expected))
+}
+
+/// The pump's other role requirements, from the same checks as
+/// `vivi config validate`. The merge pool has its own finding above.
+pub(super) fn pump_role_findings(config: &crate::mailspace::MailspaceConfig) -> Vec<Finding> {
+    crate::routing::pump_role_checks(config)
+        .into_iter()
+        .filter(|check| check.name != "merge")
+        .map(|check| {
+            let name = format!("pump role {}", check.name);
+            if check.issues.is_empty() {
+                return Finding::ok(SECTION, &name, "meets the pump requirement");
+            }
+            let message = check
+                .issues
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            Finding::fail(SECTION, &name, &message, PUMP_ROLES_FIX)
+        })
+        .collect()
 }
 
 /// Pump-configured mailspaces need an active merge role bound to a real pool.

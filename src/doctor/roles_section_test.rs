@@ -105,3 +105,52 @@ fn a_bound_dead_pid_warns_without_disclosing_process_details() {
     assert!(bindings.detail.contains("worker"));
     assert!(!bindings.detail.contains("command"));
 }
+
+fn pump_config(roles: &str) -> crate::mailspace::MailspaceConfig {
+    toml::from_str(&format!(
+        "name = \"t\"\n{roles}[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
+    let config = pump_config(
+        "[[identities]]\nname = \"hand\"\nkind = \"mind\"\n[[identities]]\nname = \"merge\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\n",
+    );
+    let findings = pump_role_findings(&config);
+    let names: Vec<&str> = findings.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "pump role pump-planner",
+            "pump role merge kind",
+            "pump role auditor",
+            "pump role hand kind"
+        ]
+    );
+    for finding in &findings {
+        assert_eq!(finding.status, Status::Fail, "{finding:#?}");
+        assert_eq!(
+            finding.fix.as_deref(),
+            Some("vivi config migrate --project <root>")
+        );
+    }
+    assert!(findings[0].detail.contains("pump-planner"));
+    assert!(findings[2].detail.contains("must name a pool"));
+    assert!(findings[3].detail.contains("not authorized to publish"));
+}
+
+#[test]
+fn doctor_passes_a_pump_with_every_required_role() {
+    let config = pump_config(
+        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n",
+    );
+    assert!(
+        pump_role_findings(&config)
+            .iter()
+            .all(|f| f.status == Status::Ok)
+    );
+    let no_pump: crate::mailspace::MailspaceConfig = toml::from_str("name = \"t\"\n").unwrap();
+    assert!(pump_role_findings(&no_pump).is_empty());
+}

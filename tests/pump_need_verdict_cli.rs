@@ -268,7 +268,6 @@ fn scaffold() -> Rig {
     for (name, kind) in [
         ("mind", "mind"),
         ("hand", "hand"),
-        ("planner", "planner"),
         ("auditor", "auditor"),
         ("gate", "gate"),
         ("release", "release"),
@@ -300,6 +299,24 @@ fn scaffold() -> Rig {
         "role",
         "set",
         "merge",
+        "--model",
+        "P2",
+        "--project",
+        path(&project),
+    ]));
+    // `mailspace init` provisioned the pump planner; it only needs a pool.
+    assert_success(&vivi([
+        "role",
+        "pool",
+        "pump-planner",
+        "p",
+        "--project",
+        path(&project),
+    ]));
+    assert_success(&vivi([
+        "role",
+        "set",
+        "pump-planner",
         "--model",
         "P2",
         "--project",
