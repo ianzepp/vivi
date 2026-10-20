@@ -275,20 +275,11 @@ fn ensure_need_branch(ctx: &Ctx, st: &mut State, uid: &str) -> bool {
 }
 
 fn dispatch_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
-    if st.units.values().any(|unit| {
-        matches!(
-            unit.status,
-            Status::Pending | Status::Held | Status::NeedsReplan
-        )
-    }) {
-        let Some(done_needs) = crate::pump::board::reconcile_done_needs(ctx, st) else {
-            ctx.log("dispatch paused: could not confirm done needs");
-            return None;
-        };
-        Some(done_needs)
-    } else {
-        Some(BTreeSet::new())
-    }
+    let Some(done_needs) = crate::pump::board::reconcile_done_needs(ctx, st) else {
+        ctx.log("dispatch paused: could not confirm done needs");
+        return None;
+    };
+    Some(done_needs)
 }
 
 /// Apply readiness holds and timestamp the unit when every blocker clears.

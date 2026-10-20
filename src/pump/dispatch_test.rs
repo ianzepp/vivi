@@ -246,7 +246,47 @@ fn deleted_proof_scripts_are_parked_before_dispatch_without_charging_attempts() 
 }
 
 #[test]
-fn manually_done_needs_withdraw_only_queued_units_and_preserve_live_receipts() {
+fn closed_needs_withdraw_pending_delivered_merging_and_inflight_units() {
+    let (_dir, ctx, host) = setup();
+    let mut st = State::default();
+    ordered(
+        &mut st,
+        &[
+            "n1-pending",
+            "n1-delivered",
+            "n1-merging",
+            "n1-inflight",
+            "n1-merged",
+        ],
+    );
+    st.units.get_mut("n1-delivered").unwrap().status = Status::Delivered;
+    st.units.get_mut("n1-delivered").unwrap().branch = Some(String::from("unit/n1-delivered"));
+    st.units.get_mut("n1-merging").unwrap().status = Status::Merging;
+    st.units.get_mut("n1-merging").unwrap().branch = Some(String::from("unit/n1-merging"));
+    let inflight = st.units.get_mut("n1-inflight").unwrap();
+    inflight.status = Status::Inflight;
+    inflight.task = Some(String::from("live-task"));
+    inflight.branch = Some(String::from("unit/n1-inflight-a1"));
+    st.units.get_mut("n1-merged").unwrap().status = Status::Merged;
+    host.reply(
+        "need list --status done",
+        0,
+        r#"[{"handle":"n1","date":"2026-10-19","subject":"Done","marks":[]}]"#,
+    );
+    host.reply("pool status", 0, "slot fly4 bridge slot-1 free\n");
+
+    dispatch(&ctx, &mut st);
+
+    assert_eq!(st.units["n1-pending"].status, Status::Withdrawn);
+    assert_eq!(st.units["n1-delivered"].status, Status::Withdrawn);
+    assert_eq!(st.units["n1-merging"].status, Status::Withdrawn);
+    assert_eq!(st.units["n1-inflight"].status, Status::Withdrawn);
+    assert_eq!(st.units["n1-merged"].status, Status::Merged);
+    assert!(commands_with(&host, "task send").is_empty());
+}
+
+#[test]
+fn manually_done_needs_withdraw_unfinished_units_and_preserve_merged() {
     let (_dir, ctx, host) = setup();
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(
@@ -278,9 +318,8 @@ fn manually_done_needs_withdraw_only_queued_units_and_preserve_live_receipts() {
 
     assert_eq!(st.units["n1-1"].status, Status::Withdrawn);
     assert_eq!(st.units["n1-2"].status, Status::Merged);
-    assert_eq!(st.units["n1-3"].status, Status::Inflight);
-    assert_eq!(st.units["n1-3"].task.as_deref(), Some("live-task"));
-    assert_eq!(st.units["n1-4"].status, Status::Pending);
+    assert_eq!(st.units["n1-3"].status, Status::Withdrawn);
+    assert_eq!(st.units["n1-4"].status, Status::Withdrawn);
     assert!(
         st.closed_needs.is_empty(),
         "manual completion is not a merge receipt"

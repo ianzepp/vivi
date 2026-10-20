@@ -93,6 +93,9 @@ fn repeated_proof_failure(st: &State, uid: &str, detail: &str) -> bool {
 /// `ok=true`: the unit becomes `merged` with its tip and outside files, the
 /// merge counter ticks, and the `scope-warn` and `merged` lines are logged.
 pub(super) fn apply_merged(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    if skip_withdrawn_merge(ctx, st, &result.uid) {
+        return;
+    }
     let now = ctx.now();
     let landed = if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Merged;
@@ -143,6 +146,9 @@ pub(super) fn apply_merged_dispatched(ctx: &Ctx, st: &mut State, result: &MergeR
 /// Record a unit merged into its owning need branch without treating it as
 /// landed on the shared integration target or closing the need.
 pub(super) fn apply_merged_need(ctx: &Ctx, st: &mut State, result: &MergeResult) {
+    if skip_withdrawn_merge(ctx, st, &result.uid) {
+        return;
+    }
     let now = ctx.now();
     let landed = if let Some(unit) = st.units.get_mut(&result.uid) {
         unit.status = Status::Merged;
@@ -238,6 +244,17 @@ fn close_need(ctx: &Ctx, st: &mut State, uid: &str, tip: &str) {
     if append_needs_ready(ctx, &line).is_err() {
         ctx.log(&format!("needs-ready: cannot append {need_id}"));
     }
+}
+
+fn skip_withdrawn_merge(ctx: &Ctx, st: &State, uid: &str) -> bool {
+    let skip = st
+        .units
+        .get(uid)
+        .is_some_and(|unit| unit.status == Status::Withdrawn);
+    if skip {
+        ctx.log(&format!("merge skipped {uid}: its need was closed"));
+    }
+    skip
 }
 
 #[cfg(test)]

@@ -77,6 +77,7 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
 }
 
 fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
+    reconcile_closed_board_needs(ctx, st);
     let gate_target = st
         .active_gate_target()
         .unwrap_or_else(|| String::from("default"));
@@ -101,6 +102,16 @@ fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
     save(ctx, st)?;
     write_status(ctx, st, &[]);
     Ok(())
+}
+
+/// Withdraw unfinished units of needs closed on the board outside the pump.
+fn reconcile_closed_board_needs(ctx: &Ctx, st: &mut State) {
+    if ctx.mailspace.is_empty() {
+        return;
+    }
+    if crate::pump::board::reconcile_done_needs(ctx, st).is_none() {
+        ctx.log("closed-need reconcile skipped: done-need list unreadable");
+    }
 }
 
 /// Run the per-target gate passes: hold cycle, external gates, then start
@@ -437,6 +448,7 @@ fn run_with_lock_policy(
         crate::pump::jobs::recover_dispatched(ctx, &mut st)?;
     }
     st.recover_after_restart();
+    reconcile_closed_board_needs(ctx, &mut st);
     plan::ingest(ctx, &mut st);
     collect::recover_pushed_pending(ctx, &mut st)?;
     store.save(&st)?;

@@ -735,6 +735,9 @@ fn collect_one(
         let Some(unit) = st.units.get(uid) else {
             return;
         };
+        if unit.status == Status::Withdrawn {
+            return;
+        }
         (
             unit.since,
             unit.branch.clone().unwrap_or_default(),

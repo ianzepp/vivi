@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::pump::host::{Ctx, exit_receipt_path, shell_quote};
 use crate::pump::planner_jobs;
 use crate::pump::ready::{blocked_needs, satisfied};
-use crate::pump::state::{State, Status};
+use crate::pump::state::{State, Status, Unit};
 
 /// One row of `vivi need list --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,8 +149,8 @@ fn is_investigation_need(row: &NeedRow) -> bool {
         .any(|mark| mark.eq_ignore_ascii_case("investigate"))
 }
 
-/// Reconcile manually completed needs before dispatch. Withdraw only units
-/// that have never started; keep their status distinct from merged.
+/// Reconcile needs closed on the board outside the pump. Unfinished units
+/// of those needs are withdrawn so they are never dispatched or merged.
 pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
     let out = ctx.vivi(
         &format!(
@@ -174,32 +174,42 @@ pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String
         .map(|row| row.handle)
         .filter(|handle| !handle.is_empty())
         .collect();
+    let withdrawn = withdraw_closed_need_units(st, &done, ctx.now());
+    for (need, count) in withdrawn {
+        ctx.log(&format!(
+            "closed need {need}: withdrew {count} unfinished unit(s)"
+        ));
+    }
+    Some(done)
+}
+
+fn withdraw_closed_need_units(
+    st: &mut State,
+    done: &BTreeSet<String>,
+    now: u64,
+) -> BTreeMap<String, usize> {
     let mut withdrawn = BTreeMap::<String, usize>::new();
-    let now = ctx.now();
     for unit in st.units.values_mut() {
-        if done.contains(&unit.need)
-            && unit.task.is_none()
-            && unit.branch.is_none()
-            && unit.attempts == 0
-            && unit.since_dispatch.is_none()
-            && unit.history.is_empty()
-            && matches!(
-                unit.status,
-                Status::Pending | Status::Held | Status::NeedsReplan
-            )
-        {
+        if done.contains(&unit.need) && unfinished_closed_need_unit(unit) {
             unit.status = Status::Withdrawn;
             unit.since = now;
             unit.ready_at = None;
             *withdrawn.entry(unit.need.clone()).or_default() += 1;
         }
     }
-    for (need, count) in withdrawn {
-        ctx.log(&format!(
-            "closed need {need}: withdrew {count} queued unit(s)"
-        ));
-    }
-    Some(done)
+    withdrawn
+}
+
+fn unfinished_closed_need_unit(unit: &Unit) -> bool {
+    matches!(
+        unit.status,
+        Status::Pending
+            | Status::Held
+            | Status::NeedsReplan
+            | Status::Inflight
+            | Status::Delivered
+            | Status::Merging
+    )
 }
 
 /// Whitespace-separated handles of `<home>/skip.txt`; missing file means
