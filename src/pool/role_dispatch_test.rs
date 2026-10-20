@@ -112,6 +112,8 @@ fn privileged_publication_is_limited_to_merge_and_guarded_release_roles() {
     assert!(validate_publish(Some(&release), Some("refs/heads/main"), Some(&sha)).is_ok());
     assert!(validate_publish(Some(&release), Some("refs/heads/main"), None).is_err());
     assert!(validate_publish(Some(&hand), Some("refs/heads/main"), None).is_err());
+    assert!(validate_publish(Some(&hand), Some("refs/heads/vivi/unit/u1-a1"), None).is_ok());
+    assert!(validate_publish(Some(&hand), Some("refs/heads/vivi/need/n1"), None).is_err());
     assert!(validate_publish(None, Some("refs/heads/main"), None).is_err());
 }
 

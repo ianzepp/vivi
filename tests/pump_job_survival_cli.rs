@@ -256,7 +256,7 @@ fn local_pool_jobs_and_a_hand_unit_survive_sigkill_and_apply_once() {
             assert_eq!(publication.candidate, publication.remote_sha);
         }
         assert_eq!(
-            task_occurrences(&rig.project, id, role_for(id)),
+            task_occurrences(&rig.project, &format!("[pump-job:{id}]"), role_for(id)),
             1,
             "restart sent a duplicate task for {id}"
         );
@@ -443,7 +443,7 @@ fn seed_state(rig: &Rig) {
         }
         if *kind == "need-merge" {
             spec.branch = Some(String::from("pump/need-merge/default/survival"));
-            spec.publish_ref = Some(String::from("refs/heads/next"));
+            spec.publish_ref = Some(String::from("refs/heads/vivi/need/survival"));
         }
         jobs::enqueue(&mut st, spec).unwrap();
     }

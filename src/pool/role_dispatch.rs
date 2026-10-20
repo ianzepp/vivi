@@ -120,7 +120,8 @@ pub fn resolve(config: &PoolConfig, pool: &str, input: &Input) -> Result<Resolve
     })
 }
 
-/// Require privileged publication to be explicitly addressed to merge/release roles.
+/// Require privileged publication to be explicitly addressed to merge/release
+/// roles, or to a hand job publishing only its unit-namespace branch.
 /// Promotion schedulers bind publication to one expected full commit SHA.
 pub fn validate_publish(
     role: Option<&RoleFacts>,
@@ -143,11 +144,18 @@ pub fn validate_publish(
         Some(kind) if kind.eq_ignore_ascii_case("release") => Err(VivariumError::Config(
             "release publication requires an exact expected commit SHA".into(),
         )),
+        Some(kind) if kind.eq_ignore_ascii_case("hand") && unit_publish_ref(reference) => Ok(()),
         _ => Err(VivariumError::Config(format!(
             "role {} is not authorized to publish {reference}",
             role.map_or("(none)", |role| role.name.as_str())
         ))),
     }
+}
+
+fn unit_publish_ref(reference: &str) -> bool {
+    reference
+        .strip_prefix("refs/heads/vivi/unit/")
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
 }
 
 /// The `--read-only` flag, the role's `read_only`, or the kind default.
