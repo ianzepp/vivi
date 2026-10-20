@@ -82,7 +82,11 @@ async fn run(cli: Cli) -> Result<(), VivariumError> {
         return vivi::proxy::run(cmd).await;
     }
     if let Command::Doctor(command) = &cli.command {
-        return local_doctor_command::run(command, cli.project.as_deref());
+        // Doctor probes use reqwest's blocking client, which builds and drops
+        // its own runtime; that panics on an async worker thread.
+        return tokio::task::block_in_place(|| {
+            local_doctor_command::run(command, cli.project.as_deref())
+        });
     }
     if let Some(result) = dispatch_self_update(&cli.command) {
         return result;

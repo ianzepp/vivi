@@ -70,3 +70,15 @@ fn git(repo: &Path, args: &[&str]) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn size_finding_stops_counting_once_over_the_threshold() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    for index in 0..50 {
+        std::fs::write(temp.path().join(format!("f{index}")), [0_u8; 10]).expect("file");
+    }
+    let finding = size_finding("disk", "test", temp.path(), 25);
+    assert_eq!(finding.status, Status::Warn);
+    assert!(finding.detail.contains("is over"), "{}", finding.detail);
+    assert_eq!(dir_size_bytes(temp.path()), Some(500));
+}

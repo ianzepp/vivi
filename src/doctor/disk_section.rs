@@ -17,65 +17,85 @@ const BRANCHES_WARN: usize = 400;
 /// makes the measurement unavailable rather than looking like zero bytes.
 #[must_use]
 pub fn dir_size_bytes(path: &Path) -> Option<u64> {
-    size_entry(path)
-}
-
-fn size_entry(path: &Path) -> Option<u64> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(_) => return None,
-    };
-    let kind = metadata.file_type();
-    if kind.is_symlink() {
-        Some(0)
-    } else if kind.is_file() {
-        Some(metadata.len())
-    } else if kind.is_dir() {
-        size_directory(path)
-    } else {
-        Some(0)
+    match size_entry(path, u64::MAX) {
+        Ok(bytes) => Some(bytes),
+        Err(Stop::Unreadable) => None,
+        Err(Stop::Over(bytes)) => Some(bytes),
     }
 }
 
-fn size_directory(path: &Path) -> Option<u64> {
-    let mut entries = match std::fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(_) => return None,
-    };
-    entries.try_fold(0_u64, |sum, entry| {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => return None,
+/// Why a measurement stopped early.
+enum Stop {
+    Unreadable,
+    /// The walk passed the cap; the bytes counted so far.
+    Over(u64),
+}
+
+/// Size `path`, stopping as soon as the total passes `cap`. A pump workspace
+/// can hold hundreds of GiB of build trees; a threshold check never needs the
+/// exact figure once the threshold is crossed.
+fn size_entry(path: &Path, cap: u64) -> Result<u64, Stop> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| Stop::Unreadable)?;
+    let kind = metadata.file_type();
+    if kind.is_file() {
+        Ok(metadata.len())
+    } else if kind.is_dir() && !kind.is_symlink() {
+        size_directory(path, cap)
+    } else {
+        Ok(0)
+    }
+}
+
+fn size_directory(path: &Path, cap: u64) -> Result<u64, Stop> {
+    let entries = std::fs::read_dir(path).map_err(|_| Stop::Unreadable)?;
+    let mut sum = 0_u64;
+    for entry in entries {
+        let entry = entry.map_err(|_| Stop::Unreadable)?;
+        let remaining = cap.saturating_sub(sum);
+        let bytes = match size_entry(&entry.path(), remaining) {
+            Ok(bytes) => bytes,
+            Err(Stop::Over(bytes)) => return Err(Stop::Over(sum.saturating_add(bytes))),
+            Err(stop) => return Err(stop),
         };
-        sum.checked_add(size_entry(&entry.path())?)
-    })
+        sum = sum.saturating_add(bytes);
+        if sum > cap {
+            return Err(Stop::Over(sum));
+        }
+    }
+    Ok(sum)
 }
 
 /// Report one directory's measured size, or skip when it cannot be measured.
 #[must_use]
 pub fn size_finding(section: &str, name: &str, path: &Path, warn_bytes: u64) -> Finding {
-    let Some(bytes) = dir_size_bytes(path) else {
-        return Finding::skipped(
-            section,
-            name,
-            &format!("{} absent or unreadable", path.display()),
-        );
+    let bytes = match size_entry(path, warn_bytes) {
+        Ok(bytes) => bytes,
+        Err(Stop::Over(_)) => {
+            return Finding::warn(
+                section,
+                name,
+                &format!(
+                    "{} is over {} GiB (warns above {} GiB)",
+                    path.display(),
+                    gib(warn_bytes),
+                    gib(warn_bytes)
+                ),
+                "reclaim space (vivi pool clean; prune old merge lanes and unit branches)",
+            );
+        }
+        Err(Stop::Unreadable) => {
+            return Finding::skipped(
+                section,
+                name,
+                &format!("{} absent or unreadable", path.display()),
+            );
+        }
     };
-    let shown = gib(bytes);
-    if bytes > warn_bytes {
-        Finding::warn(
-            section,
-            name,
-            &format!(
-                "{} is {shown} GiB (warns above {} GiB)",
-                path.display(),
-                gib(warn_bytes)
-            ),
-            "reclaim space (vivi pool clean; prune old merge lanes and unit branches)",
-        )
-    } else {
-        Finding::ok(section, name, &format!("{} is {shown} GiB", path.display()))
-    }
+    Finding::ok(
+        section,
+        name,
+        &format!("{} is {} GiB", path.display(), gib(bytes)),
+    )
 }
 
 /// Count local `vivi/unit/*` branches without fetching or changing repository state.
