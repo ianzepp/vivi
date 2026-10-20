@@ -1,5 +1,7 @@
 //! Combined roles + pools + pump validation.
 
+use std::collections::BTreeMap;
+
 use crate::error::VivariumError;
 use crate::mailspace::MailspaceConfig;
 use crate::pool::bands::parse_band;
@@ -51,7 +53,7 @@ pub fn validate(config: &MailspaceConfig) -> Vec<Issue> {
     check_models(config, &routing, &mut issues);
     check_read_only(&routing, &mut issues);
     if let Some(pump) = &config.pump {
-        check_pump(pump, &routing, &mut issues);
+        check_pump(pump, &routing, &config.pools, &mut issues);
     }
     issues
 }
@@ -271,10 +273,15 @@ fn check_read_only(routing: &RoleRouting, issues: &mut Vec<Issue>) {
     }
 }
 
-fn check_pump(pump: &PumpConfig, routing: &RoleRouting, issues: &mut Vec<Issue>) {
+fn check_pump(
+    pump: &PumpConfig,
+    routing: &RoleRouting,
+    pools: &BTreeMap<String, PoolConfig>,
+    issues: &mut Vec<Issue>,
+) {
     need_role(routing, "hand", &pump.to, legacy_hand(pump), issues);
     issues.extend(
-        pump_role_checks_of(pump, routing)
+        pump_role_checks_of(pump, routing, pools)
             .into_iter()
             .flat_map(|check| check.issues),
     );

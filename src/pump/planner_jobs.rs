@@ -48,12 +48,22 @@ pub fn enqueue(
     );
     spec.pool_candidates = vec![pool];
     spec.target = target.map(str::to_owned);
+    spec.from_ref = Some(start_ref(ctx, target));
     spec.budget = budget;
     spec.read_only = true;
     spec.payload = payload;
     jobs::enqueue(st, spec)?;
     ctx.log(&format!("planner job queued {id}"));
     Ok(id)
+}
+
+/// The ref a planner checks out: the target's dispatch start, else the
+/// pump's own. `pool dispatch` refuses a job with no `--from`.
+fn start_ref(ctx: &Ctx, target: Option<&str>) -> String {
+    target.and_then(|id| ctx.cfg.for_target(id)).map_or_else(
+        || ctx.cfg.dispatch_from().to_owned(),
+        |cfg| cfg.dispatch_from().to_owned(),
+    )
 }
 
 /// Stable job ID for one owner and enqueue time.

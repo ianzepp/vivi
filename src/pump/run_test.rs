@@ -36,10 +36,12 @@ fn tick(ctx: &Ctx, st: &mut State) {
 /// planner role.
 const PUMP_TOML: &str = concat!(
     "name = \"pump\"\n\n",
-    "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n\n",
-    "[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n\n",
-    "[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n\n",
+    "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\nmodel = \"P2\"\n\n",
+    "[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\nmodel = \"P2\"\n\n",
+    "[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\nmodel = \"P2\"\n\n",
     "[pools.here]\nprovider = \"local\"\nslots = 1\n\n",
+    "[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n\n",
+    "[pools.here.bands]\nP2 = [{ model = \"m/ok\", reasoning = \"high\" }]\n\n",
     "[pump]\nbranch = \"next\"\ntick = 1\n",
     "committer_name = \"Pump\"\ncommitter_email = \"pump@example.com\"\n\n",
     "[pump.merge]\nshared_checks = [\"true\"]\n\n[pump.gate]\ncommand = \"true\"\n\n",

@@ -1,18 +1,23 @@
 //! The roles a configured pump needs, checked once for `vivi config validate`
 //! and `vivi doctor`.
 
+use std::collections::BTreeMap;
+
 use crate::mailspace::MailspaceConfig;
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
+use crate::pool::config::PoolConfig;
 use crate::pump::config::PumpConfig;
 
 use super::model::{RoleRouting, from_mailspace};
+use super::pump_models::check_role_runs;
 use super::validate::Issue;
 
 /// The findings for one requirement of the pump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PumpRoleCheck {
     /// What the requirement is about: `pump-planner`, `merge`, `merge kind`,
-    /// `auditor` or `hand kind`.
+    /// `auditor`, `hand kind`, or a role's `<role> model` (the role's pool
+    /// can run its jobs).
     pub name: &'static str,
     /// Empty when the requirement is met. Every issue is an error.
     pub issues: Vec<Issue>,
@@ -24,17 +29,35 @@ pub fn pump_role_checks(config: &MailspaceConfig) -> Vec<PumpRoleCheck> {
     config
         .pump
         .as_ref()
-        .map(|pump| pump_role_checks_of(pump, &from_mailspace(config)))
+        .map(|pump| pump_role_checks_of(pump, &from_mailspace(config), &config.pools))
         .unwrap_or_default()
 }
 
-pub(super) fn pump_role_checks_of(pump: &PumpConfig, routing: &RoleRouting) -> Vec<PumpRoleCheck> {
+pub(super) fn pump_role_checks_of(
+    pump: &PumpConfig,
+    routing: &RoleRouting,
+    pools: &BTreeMap<String, PoolConfig>,
+) -> Vec<PumpRoleCheck> {
     vec![
         collect("pump-planner", |issues| check_planner(routing, issues)),
         collect("merge", |issues| check_merge(routing, issues)),
         collect("merge kind", |issues| check_merge_kind(routing, issues)),
         collect("auditor", |issues| check_auditor(routing, issues)),
         collect("hand kind", |issues| check_hand_kind(pump, routing, issues)),
+        // The hand role is left out: the pump names each unit's model itself,
+        // from the pool's caps, so a hand needs no band.
+        collect("pump-planner model", |issues| {
+            check_role_runs(routing.pump_planner(), pools, issues);
+        }),
+        collect("merge model", |issues| {
+            check_role_runs(routing.merge(), pools, issues);
+        }),
+        collect("auditor model", |issues| {
+            check_role_runs(routing.auditor(), pools, issues);
+        }),
+        collect("gate model", |issues| {
+            check_role_runs(routing.gate(), pools, issues);
+        }),
     ]
 }
 

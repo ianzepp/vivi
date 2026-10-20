@@ -301,20 +301,37 @@ name = "hand"
 kind = "hand"
 model = "P2-S0"
 [[identities]]
+name = "canary"
+kind = "hand"
+pool = "glm"
+model = "P2-S0"
+[[identities]]
 name = "merge"
 kind = "merge"
-pool = "glm"
+pool = "pumps"
+model = "P2-S0"
 [[identities]]
 name = "pump-planner"
 kind = "planner"
-pool = "glm"
+pool = "pumps"
+model = "P2-S0"
 [[identities]]
 name = "auditor"
 kind = "auditor"
-pool = "glm"
+pool = "pumps"
+model = "P2-S0"
 [pools.glm]
 provider = "local"
 slots = 2
+[pools.pumps]
+provider = "local"
+slots = 2
+[pools.pumps.harness]
+name = "fake"
+run = "fake --model {model} @{brief}"
+models = ["m/ok"]
+[pools.pumps.bands]
+P2 = [{ model = "m/ok", reasoning = "high" }]
 [pump]
 branch = "next"
 to = "hand"
@@ -341,7 +358,7 @@ pools = ["glm"]
     assert!(
         issues
             .iter()
-            .any(|issue| issue.message.contains("[pools.*.bands] table")),
+            .any(|issue| issue.message.contains("[pools.glm] has no bands table")),
         "{issues:?}"
     );
     assert!(require_ok(&issues).is_ok());
@@ -402,21 +419,31 @@ name = "t"
 name = "hand"
 kind = "hand"
 pool = "glm"
+model = "P2-S0"
 [[identities]]
 name = "merge"
 kind = "merge"
 pool = "glm"
+model = "P2-S0"
 [[identities]]
 name = "pump-planner"
 kind = "planner"
 pool = "glm"
+model = "P2-S0"
 [[identities]]
 name = "auditor"
 kind = "auditor"
 pool = "glm"
+model = "P2-S0"
 [pools.glm]
 provider = "local"
 slots = 2
+[pools.glm.harness]
+name = "fake"
+run = "fake --model {model} @{brief}"
+models = ["m/ok"]
+[pools.glm.bands]
+P2 = [{ model = "m/ok", reasoning = "high" }]
 [pump]
 branch = "next"
 to = "hand"

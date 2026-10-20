@@ -123,6 +123,9 @@ pub struct NewRole {
     pub pool: String,
     /// Written only when set; absent leaves the kind default.
     pub read_only: Option<bool>,
+    /// The hand role's band, when it has one: pump jobs are sent without a
+    /// model, so a role with no band cannot be dispatched.
+    pub model: Option<String>,
 }
 
 /// A pool the plan will add.
@@ -132,6 +135,9 @@ pub struct NewPool {
     pub provider: String,
     pub slots: u32,
     pub reason: String,
+    /// The pool whose provider, source, harness, committer, build directory
+    /// and bands the new pool copies: the hand role's pool.
+    pub copy_from: Option<String>,
 }
 
 /// One `[pools.X.caps]` entry.
@@ -207,7 +213,19 @@ fn plan_pump(
         });
     }
     plan_removals(doc, &merge_pool, plan);
+    inherit_hand_band(config, pump, plan);
     review_new_roles(plan);
+}
+
+/// New pump roles start at the hand role's band, so the pool serves them as
+/// it serves the hand. A hand with no band leaves them without one.
+fn inherit_hand_band(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigratePlan) {
+    let band = find_role(config, &pump.to)
+        .and_then(|role| role.model.clone())
+        .filter(|model| is_band_model(model));
+    for role in &mut plan.new_roles {
+        role.model.clone_from(&band);
+    }
 }
 
 fn empty_plan() -> MigratePlan {
@@ -304,6 +322,7 @@ fn assign_merge(config: &MailspaceConfig, pump: &PumpConfig, plan: &mut MigrateP
             kind: "merge".into(),
             pool: pool.clone(),
             read_only: None,
+            model: None,
         });
         return pool;
     };
@@ -342,15 +361,24 @@ fn choose_merge_pool(
 ) -> String {
     let name = host_pool_name(config);
     if !config.pools.contains_key(&name) && !plan.new_pools.iter().any(|pool| pool.name == name) {
+        let copy_from = super::migrate_pool::settings_source(config, pump, plan);
+        let start = match &copy_from {
+            Some(from) => format!("its source and harness are copied from pool {from}; seed it"),
+            None => format!(
+                "give it a source (`[pools.{name}.local] worktree_of` or `repo`) and a \
+                 harness, and seed it"
+            ),
+        };
         plan.new_pools.push(NewPool {
             name: name.clone(),
             provider: "local".into(),
             slots: pump.merge.lanes.max(1),
             reason: "[pump.merge] lanes (pump-host merge)".into(),
+            copy_from,
         });
         plan.review.push(format!(
             "pool {name}: merge lanes want persistent warm slots; the new pool starts cold, \
-             so give it a source (`[pools.{name}.local] worktree_of` or `repo`) and seed it"
+             {start}"
         ));
     }
     name
@@ -384,6 +412,7 @@ fn plan_pump_planner(
             kind: "planner".into(),
             pool,
             read_only: None,
+            model: None,
         }),
         (_, None) => {
             plan.review.push(format!(
@@ -470,6 +499,7 @@ fn plan_auditor(
             kind: "auditor".into(),
             pool,
             read_only: Some(true),
+            model: None,
         }),
     }
     let name = existing.map_or("auditor", |role| role.name.as_str());
@@ -550,7 +580,11 @@ fn review_own_charters(config: &MailspaceConfig, inputs: &MigrateInputs, plan: &
 }
 
 /// The pool the hand role has, or is given by this plan.
-fn hand_pool(config: &MailspaceConfig, pump: &PumpConfig, plan: &MigratePlan) -> Option<String> {
+pub(super) fn hand_pool(
+    config: &MailspaceConfig,
+    pump: &PumpConfig,
+    plan: &MigratePlan,
+) -> Option<String> {
     let role = find_role(config, &pump.to)?;
     role.pool.clone().or_else(|| {
         plan.assignments
@@ -599,6 +633,7 @@ fn assign_gate(
         kind: "gate".into(),
         pool: pool.to_string(),
         read_only: Some(true),
+        model: None,
     });
 }
 
@@ -701,8 +736,12 @@ pub fn render_plan(plan: &MigratePlan) -> String {
 
 fn render_additions(plan: &MigratePlan, lines: &mut Vec<String>) {
     for pool in &plan.new_pools {
+        let copied = pool
+            .copy_from
+            .as_ref()
+            .map_or_else(String::new, |from| format!(" settings copied from {from}"));
         lines.push(format!(
-            "add [pools.{}] provider={} slots={}  ({})",
+            "add [pools.{}] provider={} slots={}{copied}  ({})",
             pool.name, pool.provider, pool.slots, pool.reason
         ));
     }
@@ -710,8 +749,12 @@ fn render_additions(plan: &MigratePlan, lines: &mut Vec<String>) {
         let read_only = role
             .read_only
             .map_or_else(String::new, |flag| format!(" read_only={flag}"));
+        let model = role
+            .model
+            .as_ref()
+            .map_or_else(String::new, |band| format!(" model={band}"));
         lines.push(format!(
-            "add role {} kind={} pool={}{read_only}",
+            "add role {} kind={} pool={}{model}{read_only}",
             role.name, role.kind, role.pool
         ));
     }
@@ -826,18 +869,7 @@ fn rename_keys(doc: &mut DocumentMut, plan: &MigratePlan) {
 
 fn add_pools(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::error::VivariumError> {
     for pool in &plan.new_pools {
-        crate::mailspace::config_edit::upsert_pool(
-            doc,
-            &crate::mailspace::config_edit::PoolAdd {
-                name: pool.name.clone(),
-                provider: pool.provider.clone(),
-                slots: pool.slots,
-                worktree_of: None,
-                repo: None,
-                image: None,
-                root: None,
-            },
-        )?;
+        super::migrate_pool::add_pool(doc, pool)?;
     }
     Ok(())
 }
@@ -851,6 +883,7 @@ fn add_roles(doc: &mut DocumentMut, plan: &MigratePlan) -> Result<(), crate::err
                 kind: Some(Some(role.kind.clone())),
                 pool: Some(Some(role.pool.clone())),
                 read_only: role.read_only.map(Some),
+                model: role.model.clone().map(Some),
                 status: Some("active".into()),
                 ..IdentityPatch::default()
             },

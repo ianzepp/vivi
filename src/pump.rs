@@ -45,6 +45,7 @@ pub mod run;
 pub mod service;
 pub mod state;
 pub mod store;
+pub mod tick_steps;
 pub mod transient;
 
 #[cfg(test)]
@@ -138,6 +139,10 @@ mod boardpass_test;
 #[cfg(test)]
 #[path = "pump/run_test.rs"]
 mod run_test;
+
+#[cfg(test)]
+#[path = "pump/tick_steps_test.rs"]
+mod tick_steps_test;
 
 #[cfg(test)]
 #[path = "pump/blockers_test.rs"]

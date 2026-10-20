@@ -23,12 +23,14 @@ id = "11111111-2222-3333-4444-555555555555"
 name = "hand"
 kind = "hand"
 status = "active"
+model = "P2-S0"
 
 [[identities]]
 name = "merge"
 kind = "hand"
 labels = ["merge"]
 status = "active"
+model = "P2-S0"
 
 [[identities]]
 name = "planner"
@@ -39,13 +41,28 @@ status = "active"
 name = "auditor"
 kind = "auditor"
 status = "active"
+model = "P2-S0"
 
 [pools.glm]
 provider = "local"
 slots = 10
+build_dir = "target"
 
 [pools.glm.local]
 worktree_of = "~/work/t"
+
+[pools.glm.harness]
+name = "fake"
+run = "fake --model {model} @{brief}"
+models = ["m/ok"]
+env = ["SOME_KEY"]
+
+[pools.glm.committer]
+name = "bot"
+email = "bot@example.com"
+
+[pools.glm.bands]
+P2 = [{ model = "m/ok", reasoning = "high" }]
 
 [pump]
 branch = "next"
@@ -73,6 +90,15 @@ every_merges = 8
 every_seconds = 3600
 pools = ["glm"]
 "#;
+
+/// A mini config's pool `here` made runnable: a harness and a
+/// P2 band, with every role pointed at it given that band.
+fn runnable(text: &str) -> String {
+    text.replace("pool = \"here\"\n", "pool = \"here\"\nmodel = \"P2\"\n")
+        + "[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\n\
+           models = [\"m/ok\"]\n\
+           [pools.here.bands]\nP2 = [{ model = \"m/ok\", reasoning = \"high\" }]\n"
+}
 
 fn plan_with(raw: &str, inputs: &MigrateInputs) -> MigratePlan {
     let config: MailspaceConfig = toml::from_str(raw).expect("mailspace toml");
@@ -280,7 +306,7 @@ fn pump_planner_falls_back_to_the_shipped_charter() {
 fn a_pump_planner_charter_that_has_text_is_never_replaced() {
     let raw = V15.replace(
         "[pools.glm]",
-        "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\nstatus = \"active\"\npool = \"glm\"\n\n[pools.glm]",
+        "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\nstatus = \"active\"\npool = \"glm\"\nmodel = \"P2-S0\"\n\n[pools.glm]",
     );
     let mut inputs = legacy("legacy text\n");
     inputs
@@ -347,7 +373,7 @@ fn a_merge_charter_that_is_not_the_shipped_one_gets_a_review_line() {
 #[test]
 fn a_missing_merge_role_is_added_on_the_host_pool() {
     let raw = V15.replace(
-        "[[identities]]\nname = \"merge\"\nkind = \"hand\"\nlabels = [\"merge\"]\nstatus = \"active\"\n\n",
+        "[[identities]]\nname = \"merge\"\nkind = \"hand\"\nlabels = [\"merge\"]\nstatus = \"active\"\nmodel = \"P2-S0\"\n\n",
         "",
     );
     let (plan, after) = migrate(&raw);
@@ -402,7 +428,7 @@ fn a_merge_role_of_the_wrong_kind_is_changed_and_keeps_its_other_fields() {
 fn validate_requires_pump_planner_and_ignores_a_role_named_planner() {
     let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
     let errors = |text: &str| -> Vec<String> {
-        let config: MailspaceConfig = toml::from_str(text).unwrap();
+        let config: MailspaceConfig = toml::from_str(&runnable(text)).unwrap();
         validate(&config)
             .into_iter()
             .filter(|issue| issue.severity == Severity::Error)
@@ -459,7 +485,7 @@ fn validate_rejects_a_merge_role_whose_kind_is_not_merge() {
         )
         .replace(
             "[pools.glm]",
-            "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\nstatus = \"active\"\npool = \"glm\"\n\n[pools.glm]",
+            "[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\nstatus = \"active\"\npool = \"glm\"\nmodel = \"P2-S0\"\n\n[pools.glm]",
         )
         .replace(
             "name = \"auditor\"\nkind = \"auditor\"",
@@ -511,7 +537,7 @@ fn retired_keys_are_removed_with_their_reasons_and_comments_survive() {
         assert_eq!(row.behaviour_change, row.table == "pump.gate", "{row:?}");
     }
     for gone in [
-        "run =",
+        "run = \"pi -p\"",
         "charter =",
         "every_merges",
         "every_seconds",
@@ -698,7 +724,7 @@ fn an_auditor_without_a_pool_gets_the_hand_pool_and_the_shipped_charter() {
 #[test]
 fn a_missing_auditor_is_added_read_only_on_the_hand_pool() {
     let raw = V15.replace(
-        "[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\nstatus = \"active\"\n\n",
+        "[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\nstatus = \"active\"\nmodel = \"P2-S0\"\n\n",
         "",
     );
     let (plan, after) = migrate(&raw);
@@ -749,7 +775,7 @@ fn an_auditor_with_a_pool_is_left_alone() {
 fn validate_requires_an_active_auditor_with_a_pool() {
     let base = "name = \"t\"\n[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n";
     let errors = |text: &str| -> Vec<String> {
-        let config: MailspaceConfig = toml::from_str(text).unwrap();
+        let config: MailspaceConfig = toml::from_str(&runnable(text)).unwrap();
         validate(&config)
             .into_iter()
             .filter(|issue| issue.severity == Severity::Error)
@@ -825,7 +851,7 @@ fn validate_requires_the_pump_hand_to_be_kind_hand() {
         )
     };
     let errors = |text: &str| -> Vec<String> {
-        let config: MailspaceConfig = toml::from_str(text).unwrap();
+        let config: MailspaceConfig = toml::from_str(&runnable(text)).unwrap();
         validate(&config)
             .into_iter()
             .filter(|issue| issue.severity == Severity::Error)
@@ -853,4 +879,78 @@ fn the_pump_role_checks_name_each_requirement_for_doctor() {
     assert_eq!(failing, ["pump-planner", "merge", "merge kind", "auditor"]);
     let none: MailspaceConfig = toml::from_str("name = \"t\"\n").unwrap();
     assert!(crate::routing::pump_role_checks(&none).is_empty());
+}
+
+#[test]
+fn the_new_host_pool_copies_the_hand_pool_so_it_can_run_jobs() {
+    let (plan, after) = migrate(V15);
+    let host = plan.new_pools.iter().find(|pool| pool.name == "host");
+    let host = host.unwrap_or_else(|| panic!("{plan:?}"));
+    assert_eq!(host.copy_from.as_deref(), Some("glm"));
+    assert_eq!(host.slots, 3, "slots come from [pump.merge] lanes");
+    let text = render_plan(&plan);
+    assert!(text.contains("settings copied from glm"), "{text}");
+
+    let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
+    let (glm, host) = (&migrated.pools["glm"], &migrated.pools["host"]);
+    assert_eq!(host.slots, 3);
+    assert_eq!(host.provider, "local");
+    assert_eq!(host.build_dir, glm.build_dir);
+    assert_eq!(host.worktree_source(), glm.worktree_source());
+    assert!(host.worktree_source().is_some(), "{after}");
+    let (host_run, glm_run) = (
+        host.harness.as_ref().unwrap(),
+        glm.harness.as_ref().unwrap(),
+    );
+    assert_eq!(host_run.run, glm_run.run);
+    assert_eq!(host_run.models, glm_run.models);
+    assert_eq!(host_run.env, glm_run.env);
+    assert_eq!(host.committer.as_ref().unwrap().email, "bot@example.com");
+    assert_eq!(host.bands.entries.len(), glm.bands.entries.len());
+    assert!(!host.bands.is_empty());
+    assert_eq!(glm.slots, 10, "the hand pool is left alone");
+    assert!(
+        plan.review
+            .iter()
+            .any(|item| item.contains("pool host: merge lanes want persistent warm slots")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn a_hand_pool_on_another_provider_is_not_copied() {
+    let raw = V15.replace(
+        "[pools.glm]\nprovider = \"local\"",
+        "[pools.glm]\nprovider = \"fly\"",
+    );
+    let plan = plan_of(&raw);
+    let host = plan.new_pools.iter().find(|pool| pool.name == "host");
+    assert_eq!(host.expect("host pool").copy_from, None, "{plan:?}");
+    assert!(
+        plan.review
+            .iter()
+            .any(|item| item.contains("give it a source")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn new_pump_roles_start_at_the_hand_band() {
+    let (plan, after) = migrate(V15);
+    let planner = plan
+        .new_roles
+        .iter()
+        .find(|role| role.name == "pump-planner")
+        .expect("pump-planner added");
+    assert_eq!(planner.model.as_deref(), Some("P2-S0"));
+    let migrated: MailspaceConfig = toml::from_str(&after).unwrap();
+    assert_eq!(
+        role_of(&migrated, "pump-planner").model.as_deref(),
+        Some("P2-S0")
+    );
+    let errors: Vec<_> = validate(&migrated)
+        .into_iter()
+        .filter(|issue| issue.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
 }

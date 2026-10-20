@@ -59,20 +59,31 @@ model = "P2-S0"
 name = "merge"
 kind = "merge"
 pool = "glm"
+model = "P2-S0"
 
 [[identities]]
 name = "pump-planner"
 kind = "planner"
 pool = "glm"
+model = "P2-S0"
 
 [[identities]]
 name = "auditor"
 kind = "auditor"
 pool = "glm"
+model = "P2-S0"
 
 [pools.glm]
 provider = "local"
 slots = 2
+
+[pools.glm.harness]
+name = "fake"
+run = "fake --model {model} @{brief}"
+models = ["m/ok"]
+
+[pools.glm.bands]
+P2 = [{ model = "m/ok", reasoning = "high" }]
 
 [pump]
 branch = "next"

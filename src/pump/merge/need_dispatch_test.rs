@@ -286,6 +286,48 @@ fn all_no_defect_need_initializes_and_freezes_an_empty_branch_range() {
 }
 
 #[test]
+fn a_failed_ls_remote_for_one_need_does_not_stop_the_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.branch = String::from("next");
+    let (base, host) = test_ctx(dir.path(), config);
+    let ctx = base.with_routing(routing());
+    let targets = ctx.cfg.target_configs();
+    let batches = BTreeMap::from([(String::from("default"), 1)]);
+    let mut state = State::default();
+    add_need(&mut state, "a-settled", &["a-settled-u1"]);
+    state.units.get_mut("a-settled-u1").unwrap().status = Status::NoDefect;
+    add_need(&mut state, "b-active", &["b-active-u1"]);
+    active_branch(&mut state, "b-active", BASE, BASE);
+    reply_unit_source(&host, "b-active-u1");
+    host.reply(
+        "ls-remote origin refs/heads/next",
+        128,
+        "fatal: unable to access the remote",
+    );
+    let mut waiting = BTreeMap::from([(
+        String::from("default"),
+        VecDeque::from([String::from("b-active-u1")]),
+    )]);
+
+    let started =
+        dispatch_units(&ctx, &mut state, "merge", &targets, &batches, &mut waiting).unwrap();
+
+    assert_eq!(started.len(), 1, "the healthy need still queues its merge");
+    assert_eq!(state.jobs[&started[0]].payload["need"], "b-active");
+    assert!(need::get(&state, "default", "a-settled").unwrap().is_none());
+    let raised = std::fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
+    assert!(
+        raised.contains("tick-step-failed seed-need default/a-settled"),
+        "{raised}"
+    );
+    assert!(
+        raised.contains("cannot observe target integration tip"),
+        "{raised}"
+    );
+}
+
+#[test]
 fn merged_need_units_freeze_exactly_without_counting_as_next_merges() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = PumpConfig::default();

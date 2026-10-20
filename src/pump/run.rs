@@ -20,6 +20,7 @@ use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::plan;
 use crate::pump::state::State;
 use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::tick_steps;
 
 /// One pump tick: fold board results, ingest and collect, apply job receipts,
 /// dispatch ready work, run gates, request the periodic board pass, and write
@@ -52,15 +53,15 @@ pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), 
     }
     gates_pass(ctx, st);
     if !ctx.mailspace.is_empty() {
-        crate::pump::need_pipeline::dispatch_audits(ctx, st)?;
-        crate::pump::need_landing::dispatch(ctx, st)?;
-        crate::pump::merge::dispatch_pool(ctx, st)?;
-    }
-    if !ctx.mailspace.is_empty() {
+        tick_steps::need_dispatch_phase(ctx, st);
         crate::pump::cadence::prepare_due(ctx, st);
         crate::pump::reclaim::refresh_pending(ctx, st);
         save(ctx, st)?;
-        crate::pump::jobs::dispatch_pending(ctx, st)?;
+        tick_steps::soft_step(
+            ctx,
+            "dispatch-jobs",
+            crate::pump::jobs::dispatch_pending(ctx, st),
+        );
         save(ctx, st)?;
     }
     let t_dispatch = Instant::now();
@@ -91,10 +92,7 @@ fn collect_phase(ctx: &Ctx, st: &mut State) -> Result<(), VivariumError> {
     crate::pump::gate::collect_completed(ctx, st);
     crate::pump::merge::apply_dispatched(ctx, st);
     if !ctx.mailspace.is_empty() {
-        crate::pump::merge::refresh_need_freezes(ctx, st)?;
-        crate::pump::need_pipeline::collect_audits(ctx, st)?;
-        crate::pump::need_landing::collect_completed(ctx, st)?;
-        crate::pump::need_pipeline::refresh_default_merges(st)?;
+        tick_steps::need_collect_phase(ctx, st);
     }
     crate::pump::audit::collect_completed(ctx, st);
     crate::pump::reclaim::collect_completed(ctx, st);

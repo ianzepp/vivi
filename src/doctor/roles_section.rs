@@ -21,6 +21,7 @@ const BINDING_FIX: &str =
 const CADENCE_FIX: &str =
     "set a cadence for head roles with vivi role set <name> --cadence <duration> --project <root>";
 const PUMP_ROLES_FIX: &str = "vivi config migrate --project <root>";
+const MODEL_FIX: &str = "vivi pool bands set <pool> <band> <model> <reasoning> --project <root>";
 const MERGE_POOL_FIX: &str = "vivi role pool merge <pool> --project <root>";
 
 /// Report roster, bound-process, and cadence findings for this project.
@@ -378,7 +379,12 @@ pub(super) fn pump_role_findings(config: &crate::mailspace::MailspaceConfig) -> 
                 .map(|issue| issue.message.as_str())
                 .collect::<Vec<_>>()
                 .join("; ");
-            Finding::fail(SECTION, &name, &message, PUMP_ROLES_FIX)
+            let fix = if check.name.ends_with(" model") {
+                MODEL_FIX
+            } else {
+                PUMP_ROLES_FIX
+            };
+            Finding::fail(SECTION, &name, &message, fix)
         })
         .collect()
 }

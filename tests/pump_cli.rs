@@ -408,6 +408,8 @@ fn temp_mailspace() -> tempfile::TempDir {
          [pump.merge]\nshared_checks = [\"true\"]\n\n\
          [pump.gate]\ncommand = \"true\"\n\n\
          [pools.test]\nprovider = \"local\"\nslots = 1\n\n\
+         [pools.test.harness]\nname = \"test\"\nrun = \"test --model {{model}} @{{brief}}\"\n\
+         models = [\"test/model\"]\n\n\
          [pools.test.bands]\nP2 = [{{ model = \"test/model\", reasoning = \"low\" }}]\n"
     );
     let mut parsed: toml::Value = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();

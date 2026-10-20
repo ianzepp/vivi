@@ -2066,6 +2066,10 @@ env = [
     "DEEPSEEK_API_KEY",
 ]
 
+[pools.glm.bands]
+P1 = [{ model = "zai/glm-5.3", reasoning = "high" }]
+P2 = [{ model = "zai/glm-5.3-flash", reasoning = "high" }]
+
 [pools.glm.committer]
 name = "Ian Zepp"
 email = "ian.zepp@protonmail.com"

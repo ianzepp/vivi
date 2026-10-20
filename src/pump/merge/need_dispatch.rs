@@ -33,21 +33,22 @@ pub(super) fn dispatch_units(
     waiting: &mut BTreeMap<String, VecDeque<String>>,
 ) -> Result<Vec<String>, VivariumError> {
     let mut started = Vec::new();
-    seed_completed_no_defect_needs(ctx, st, targets, &mut started)?;
+    seed_completed_no_defect_needs(ctx, st, targets, &mut started);
     let grouped = take_managed_waiting(ctx, st, waiting);
     for ((target, need_id), units) in grouped {
-        if targets.contains_key(&target) {
-            dispatch_need_group(
-                ctx,
-                st,
-                role,
-                &target,
-                &need_id,
-                units,
-                batches.get(&target).copied().unwrap_or(1).max(1),
-                &mut started,
-            )?;
+        if !targets.contains_key(&target) {
+            continue;
         }
+        let size = batches.get(&target).copied().unwrap_or(1).max(1);
+        let result =
+            dispatch_need_group(ctx, st, role, &target, &need_id, units, size, &mut started);
+        // One need that cannot dispatch (its remote cannot be read, its row
+        // is bad) must not stop the others, or the pump.
+        crate::pump::tick_steps::soft_step(
+            ctx,
+            &format!("dispatch-need {target}/{need_id}"),
+            result,
+        );
     }
     refresh_freezes(ctx, st)?;
     Ok(started)
@@ -393,7 +394,7 @@ fn seed_completed_no_defect_needs(
     st: &mut State,
     targets: &BTreeMap<String, PumpTarget>,
     started: &mut Vec<String>,
-) -> Result<(), VivariumError> {
+) {
     let mut candidates = Vec::new();
     for (need_id, plan) in &st.needs {
         if plan.units.is_empty()
@@ -419,23 +420,34 @@ fn seed_completed_no_defect_needs(
         }
     }
     for (target, need_id, revision) in candidates {
-        let branch = need::get(st, &target, &need_id)?;
-        if branch.as_ref().is_some_and(|record| {
-            (record.status != NeedBranchStatus::Landed && record.landing_job_id.is_some())
-                || matches!(
-                    record.status,
-                    NeedBranchStatus::Collision | NeedBranchStatus::Unverified
-                )
-        }) {
-            continue;
-        }
-        if !check_external_prerequisites(ctx, st, &target, &need_id, revision, branch.as_ref())? {
-            continue;
-        }
-        let before: BTreeSet<String> = st.jobs.keys().cloned().collect();
-        need::ensure_creation(ctx, st, &target, &need_id, revision)?;
-        add_new_jobs(st, &before, started);
+        let result = seed_need(ctx, st, (&target, &need_id, revision), started);
+        crate::pump::tick_steps::soft_step(ctx, &format!("seed-need {target}/{need_id}"), result);
     }
+}
+
+/// Seed the branch of one settled need, unless it is held or waiting.
+fn seed_need(
+    ctx: &Ctx,
+    st: &mut State,
+    (target, need_id, revision): (&str, &str, u64),
+    started: &mut Vec<String>,
+) -> Result<(), VivariumError> {
+    let branch = need::get(st, target, need_id)?;
+    if branch.as_ref().is_some_and(|record| {
+        (record.status != NeedBranchStatus::Landed && record.landing_job_id.is_some())
+            || matches!(
+                record.status,
+                NeedBranchStatus::Collision | NeedBranchStatus::Unverified
+            )
+    }) {
+        return Ok(());
+    }
+    if !check_external_prerequisites(ctx, st, target, need_id, revision, branch.as_ref())? {
+        return Ok(());
+    }
+    let before: BTreeSet<String> = st.jobs.keys().cloned().collect();
+    need::ensure_creation(ctx, st, target, need_id, revision)?;
+    add_new_jobs(st, &before, started);
     Ok(())
 }
 

@@ -108,7 +108,7 @@ fn a_bound_dead_pid_warns_without_disclosing_process_details() {
 
 fn pump_config(roles: &str) -> crate::mailspace::MailspaceConfig {
     toml::from_str(&format!(
-        "name = \"t\"\n{roles}[pools.here]\nprovider = \"local\"\nslots = 1\n[pump]\nbranch = \"next\"\nto = \"hand\"\n"
+        "name = \"t\"\n{roles}[pools.here]\nprovider = \"local\"\nslots = 1\n[pools.here.bands]\nP2 = [{{ model = \"m/ok\", reasoning = \"high\" }}]\n[pump]\nbranch = \"next\"\nto = \"hand\"\n"
     ))
     .unwrap()
 }
@@ -118,7 +118,9 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
     let config = pump_config(
         "[[identities]]\nname = \"hand\"\nkind = \"mind\"\n[[identities]]\nname = \"merge\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"planner\"\nkind = \"planner\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\n",
     );
-    let findings = pump_role_findings(&config);
+    let all = pump_role_findings(&config);
+    let (models, findings): (Vec<_>, Vec<_>) =
+        all.into_iter().partition(|f| f.name.ends_with(" model"));
     let names: Vec<&str> = findings.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(
         names,
@@ -128,6 +130,21 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
             "pump role auditor",
             "pump role hand kind"
         ]
+    );
+    // Only the merge role has a pool here, and that pool has no harness.
+    let failing: Vec<&str> = models
+        .iter()
+        .filter(|f| f.status == Status::Fail)
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(failing, ["pump role merge model"]);
+    assert!(
+        models[1].detail.contains("[pools.here.harness]"),
+        "{models:#?}"
+    );
+    assert_eq!(
+        models[1].fix.as_deref(),
+        Some("vivi pool bands set <pool> <band> <model> <reasoning> --project <root>")
     );
     for finding in &findings {
         assert_eq!(finding.status, Status::Fail, "{finding:#?}");
@@ -144,7 +161,7 @@ fn doctor_reports_the_pump_role_requirements_that_validate_enforces() {
 #[test]
 fn doctor_passes_a_pump_with_every_required_role() {
     let config = pump_config(
-        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\n",
+        "[[identities]]\nname = \"hand\"\nkind = \"hand\"\npool = \"here\"\n[[identities]]\nname = \"merge\"\nkind = \"merge\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"pump-planner\"\nkind = \"planner\"\npool = \"here\"\nmodel = \"P2\"\n[[identities]]\nname = \"auditor\"\nkind = \"auditor\"\npool = \"here\"\nmodel = \"P2\"\n[pools.here.harness]\nname = \"fake\"\nrun = \"fake --model {model} @{brief}\"\nmodels = [\"m/ok\"]\n",
     );
     assert!(
         pump_role_findings(&config)

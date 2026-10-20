@@ -49,7 +49,8 @@ const FORBIDDEN_EXECUTION: &[(&str, &str)] = &[
 fn production_run_uses_pool_dispatch_and_restarts_through_receipt_collectors() {
     let run = include_str!("../src/pump/run.rs");
     let collect = include_str!("../src/pump/collect.rs");
-    assert!(run.contains("merge::dispatch_pool(ctx, st)"), "{run}");
+    let steps = include_str!("../src/pump/tick_steps.rs");
+    assert!(steps.contains("merge::dispatch_pool(ctx, st)"), "{steps}");
     assert!(run.contains("jobs::dispatch_pending(ctx, st)"), "{run}");
     assert!(run.contains("collect::collect("), "{run}");
     assert!(

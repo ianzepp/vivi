@@ -153,3 +153,84 @@ fn planner_jobs_go_to_pump_planner_and_a_role_named_planner_is_ignored() {
     assert!(error.contains("vivi config migrate"), "{error}");
     assert!(st.jobs().is_empty());
 }
+
+/// A pool config the real `plan_job` accepts for a read-only planner run.
+fn dispatchable_pool() -> crate::pool::config::PoolConfig {
+    toml::from_str(
+        r#"
+repo = "o/r"
+slots = 1
+image = "debian:12"
+build_dir = "target"
+[fly]
+app = "a"
+[github]
+app_id = 1
+private_key = "k.pem"
+[harness]
+name = "fake"
+run = "fake --model {model} @{brief}"
+models = ["m/ok"]
+[committer]
+name = "bot"
+email = "bot@example.com"
+"#,
+    )
+    .unwrap()
+}
+
+/// The value after `--from` in a `pool dispatch` command line.
+fn from_flag(command: &str) -> Option<String> {
+    let mut words = command.split_whitespace();
+    words.find(|word| *word == "--from")?;
+    words.next().map(str::to_owned)
+}
+
+#[test]
+fn a_planner_job_carries_a_start_ref_that_pool_dispatch_planning_accepts() {
+    use crate::pool::dispatch::{DispatchFlags, plan_job};
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = PumpConfig {
+        branch: "next".into(),
+        ..PumpConfig::default()
+    };
+    let (ctx, host) = test_ctx(dir.path(), cfg);
+    let ctx = ctx.with_routing(planner_routing(&[("pump-planner", "apool")]));
+    host.reply(
+        "pool status --porcelain",
+        0,
+        "slot apool bridge slot-1 free",
+    );
+    host.reply("task send", 0, "created 1234abcd");
+    host.reply("pool dispatch", 0, "dispatched 1234abcd to apool");
+    let mut st = State::default();
+    let id = enqueue_one(&ctx, &mut st).unwrap();
+    assert_eq!(st.jobs()[&id].from_ref.as_deref(), Some("next"));
+
+    jobs::dispatch_pending(&ctx, &mut st).unwrap();
+    let command = host
+        .commands()
+        .into_iter()
+        .find(|cmd| cmd.contains("pool dispatch"))
+        .expect("no pool dispatch command ran");
+    let from = from_flag(&command).expect("the planner dispatch names no --from");
+
+    // The same refusal `vivi pool dispatch` gives a job with no start ref.
+    let flags = DispatchFlags {
+        model: "m/ok".into(),
+        from: Some(from.clone()),
+        read_only: true,
+        ..DispatchFlags::default()
+    };
+    let plan = plan_job(
+        &dispatchable_pool(),
+        "apool",
+        ("1234abcd", "subject", "plan the need"),
+        &flags,
+        String::new(),
+        String::from("job"),
+    )
+    .unwrap();
+    assert_eq!(plan.refs.from, from);
+}
