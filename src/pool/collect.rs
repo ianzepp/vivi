@@ -689,6 +689,15 @@ pub fn run_round(
         };
         let provider = member.provider;
         match poll(provider, dispatch, now, pacing) {
+            Err(e) if foreign_slot(&e) => {
+                // Claimed under another slot identity (an older vivi keyed
+                // slots on the mailspace name): no provider here can ever
+                // settle it, so close it as lost instead of failing every
+                // round.
+                if record(dispatch, &Outcome::Lost)? {
+                    lines.push(line("lost", format!("slot not in this pool: {e}")));
+                }
+            }
             Err(e) => lines.push(line("error", e.to_string())),
             Ok(None) => {
                 let age = now.saturating_sub(dispatch.record.at);
@@ -704,6 +713,11 @@ pub fn run_round(
         }
     }
     Ok(lines)
+}
+
+/// A poll error saying the dispatch's slot does not belong to this pool.
+pub(crate) fn foreign_slot(error: &VivariumError) -> bool {
+    error.to_string().contains("not a slot of this pool")
 }
 
 /// Record a settled dispatch, then free its slot: the state word and detail

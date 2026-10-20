@@ -618,9 +618,12 @@ pub fn collect(ctx: &Ctx, st: &mut State) -> Option<String> {
         (output.text, output.code == 0)
     };
     let seen = parse_reconcile(&out);
-    if reconcile_ok {
-        let _terminal_jobs = crate::pump::jobs::apply_reconcile(ctx, st, &seen);
+    if !reconcile_ok {
+        // A failed round still reports what it collected; a collected result
+        // is reported only once, so drop nothing that the round did report.
+        ctx.log(&format!("pool reconcile failed: {}", tail(&out, 300)));
     }
+    let _terminal_jobs = crate::pump::jobs::apply_reconcile(ctx, st, &seen);
     for (task, uid) in &inflight {
         collect_one(ctx, st, &seen, task, uid);
     }

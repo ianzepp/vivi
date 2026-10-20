@@ -867,3 +867,12 @@ fn target_result_must_match_the_dispatched_repository() {
         JobResult::parse("target=radix\nrepository=https://github.com/faberlang/radix.git\n");
     validate_target(&record, &matched).unwrap();
 }
+
+#[test]
+fn a_slot_claimed_under_another_identity_is_foreign() {
+    let err = VivariumError::Message("not a slot of this pool: faberlang/glm/slot-1".into());
+    assert!(super::foreign_slot(&err));
+    assert!(!super::foreign_slot(&VivariumError::Message(
+        "Fly unreachable".into()
+    )));
+}
