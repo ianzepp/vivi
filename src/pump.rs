@@ -2,6 +2,7 @@
 
 pub mod alarm;
 pub mod amend;
+pub mod apfssweep;
 pub mod attempt_read;
 pub mod attempt_record;
 pub mod audit;
@@ -58,8 +59,8 @@ mod logview_test;
 mod config_test;
 
 #[cfg(test)]
-#[path = "pump/config_ramdisk_test.rs"]
-mod config_ramdisk_test;
+#[path = "pump/config_workspace_test.rs"]
+mod config_workspace_test;
 
 #[cfg(test)]
 #[path = "pump/control_test.rs"]

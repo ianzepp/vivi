@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::config::PoolConfig;
-use super::config::config_ramdisk::PoolRamDisk;
+use super::config::config_workspace::{PoolWorkspace, WorkspaceKind};
 use super::docker::{env_is_set, unset_names};
 use super::docker_cli::{RunOutput, finish};
 use super::doctor::Check;
@@ -40,6 +40,9 @@ use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_state as state;
 use crate::error::VivariumError;
 use sha2::{Digest, Sha256};
+
+#[path = "local_apfs.rs"]
+mod apfs_job;
 
 /// Pool provider for this machine.
 pub struct LocalProvider {
@@ -52,7 +55,7 @@ pub struct LocalProvider {
     /// The pool's `build_baseline_gib` in bytes, for reclaim of a slot that
     /// carries no recorded baseline.
     build_baseline: Option<u64>,
-    ramdisk: PoolRamDisk,
+    workspace: PoolWorkspace,
     ramdisk_runner: Arc<dyn crate::pool::ramdisk::Runner>,
     #[cfg(test)]
     available_memory: Option<u64>,
@@ -77,7 +80,7 @@ impl LocalProvider {
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
             build_baseline: config.build_baseline_bytes(),
-            ramdisk: config.ramdisk.clone(),
+            workspace: config.workspace.clone(),
             ramdisk_runner: Arc::new(crate::pool::ramdisk::RealRunner),
             #[cfg(test)]
             available_memory: None,
@@ -282,7 +285,7 @@ fn teardown_owned_ramdisk(
     record: &RamDiskRecord,
     disk: &crate::pool::ramdisk::Disk,
 ) -> Result<(), VivariumError> {
-    if let Some(error) = remove_ramdisk_worktree(record) {
+    if let Some(error) = remove_mount_worktree(record.source.as_deref(), &record.mount) {
         eprintln!(
             "warning: RAM disk {} worktree removal failed: {error}",
             record.volume
@@ -375,12 +378,12 @@ fn ramdisk_record(marker: &str, dir: &Path, id: &str) -> Option<RamDiskRecord> {
     })
 }
 
-/// Remove only the `repo` worktree under a RAM mount when its source repo is
-/// recorded and its Git marker is still present. Fetch-mode pools own a clone
-/// on the RAM disk and need no external worktree removal.
-fn remove_ramdisk_worktree(record: &RamDiskRecord) -> Option<String> {
-    let source = record.source.as_deref()?;
-    let worktree = record.mount.join("repo");
+/// Remove only the `repo` worktree under a job disk mount when its source repo
+/// is recorded and its Git marker is still present. Fetch-mode pools own a
+/// clone on the disk and need no external worktree removal.
+fn remove_mount_worktree(source: Option<&Path>, mount: &Path) -> Option<String> {
+    let source = source?;
+    let worktree = mount.join("repo");
     if !worktree.join(".git").exists() {
         return None;
     }
@@ -395,7 +398,7 @@ fn remove_ramdisk_worktree(record: &RamDiskRecord) -> Option<String> {
     };
     if actual != expected {
         return Some(format!(
-            "RAM worktree {} belongs to another repository; preserving it",
+            "job disk worktree {} belongs to another repository; preserving it",
             worktree.display()
         ));
     }
@@ -506,8 +509,10 @@ fn reject_target_symlinks(targets: &Path, cache: &Path) -> Result<(), VivariumEr
     Ok(())
 }
 
-/// Mount a fresh volume after memory admission, then atomically record its
-/// owner on the slot root for teardown and pump-start recovery.
+/// Mount a fresh job disk (a RAM disk or an APFS volume, by the workspace
+/// kind) after admission, then atomically record its owner on the slot root
+/// for teardown and pump-start recovery. Whatever disk the slot still holds
+/// from an earlier job, of either kind, is torn down first.
 fn mount_job_ramdisk(
     provider: &LocalProvider,
     id: &str,
@@ -521,10 +526,15 @@ fn mount_job_ramdisk(
         super::ssh::one_line(source)?;
     }
     teardown_marked_ramdisk(slot, id, provider.ramdisk_runner.as_ref())?;
+    apfs_job::teardown(slot, id, provider.ramdisk_runner.as_ref())?;
     if let Some(source) = source {
         remove_cached_worktree(source, &cache.join(slots::CHECKOUT))?;
     }
-    mount_ramdisk_at(provider, id, job, slot, cache, source.unwrap_or_default())
+    let source = source.unwrap_or_default();
+    match provider.workspace.kind {
+        WorkspaceKind::Ram => mount_ramdisk_at(provider, id, job, slot, cache, source),
+        WorkspaceKind::Apfs => apfs_job::mount_at(provider, id, job, slot, cache, source),
+    }
 }
 
 fn teardown_marked_ramdisk(
@@ -552,12 +562,12 @@ fn mount_ramdisk_at(
     source: &str,
 ) -> Result<(), VivariumError> {
     let _admission_lock = crate::pool::ramdisk::lock_admission().map_err(VivariumError::Message)?;
-    let want = provider.ramdisk.size_gib;
+    let want = provider.workspace.size_gib;
     crate::pool::ramdisk::admit_with(
         provider.ramdisk_runner.as_ref(),
         available_memory(provider),
         want,
-        provider.ramdisk.margin_gib,
+        provider.workspace.margin_gib,
     )
     .map_err(VivariumError::Message)?;
     let volume = pool_job_volume(id, job)?;
@@ -613,9 +623,9 @@ impl PoolProvider for LocalProvider {
     }
 
     fn ramdisk_job_settings(&self) -> Option<(u64, Vec<(String, String)>)> {
-        self.ramdisk
+        self.workspace
             .enabled
-            .then(|| (self.ramdisk.size_gib, self.ramdisk.job_env()))
+            .then(|| (self.workspace.size_gib, self.workspace.job_env()))
     }
 
     fn prepare_job(
@@ -629,7 +639,7 @@ impl PoolProvider for LocalProvider {
             Some(target) => self
                 .prepare_target_checkout(id, target, start, job)
                 .map(|()| None),
-            None if self.ramdisk.enabled => {
+            None if self.workspace.enabled => {
                 prepare_default_job_ramdisk(self, id, job, start).map(Some)
             }
             None => Ok(None),
@@ -644,7 +654,7 @@ impl PoolProvider for LocalProvider {
         job: &str,
     ) -> Result<(), VivariumError> {
         let source = target.local_source.as_deref();
-        if source.is_none() && !self.ramdisk.enabled {
+        if source.is_none() && !self.workspace.enabled {
             return Ok(());
         }
         if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
@@ -665,7 +675,7 @@ impl PoolProvider for LocalProvider {
             }
         }
         std::fs::create_dir_all(&cache)?;
-        if self.ramdisk.enabled {
+        if self.workspace.enabled {
             mount_job_ramdisk(self, id, job, &slot, &cache, source)?;
         }
         let Some(source) = source else {
@@ -764,6 +774,7 @@ impl PoolProvider for LocalProvider {
             refuse_foreign_worktree(id, &dir, configured)?;
         }
         teardown_ramdisk(&dir, id, self.ramdisk_runner.as_ref())?;
+        apfs_job::teardown(&dir, id, self.ramdisk_runner.as_ref())?;
         slots::destroy(&self.site()?.root, id)
     }
 
@@ -797,6 +808,7 @@ impl PoolProvider for LocalProvider {
     fn unclaim(&self, id: &str) -> Result<(), VivariumError> {
         let dir = self.dir(id)?;
         teardown_ramdisk(&dir, id, self.ramdisk_runner.as_ref())?;
+        apfs_job::teardown(&dir, id, self.ramdisk_runner.as_ref())?;
         slots::unclaim(&dir)?;
         slots::detach_if_idle(&dir);
         let _ignored =

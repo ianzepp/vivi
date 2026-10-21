@@ -782,7 +782,7 @@ provider = "local"
 slots = 1
 build_dir = "target"
 
-[ramdisk]
+[workspace]
 enabled = true
 "#;
 
@@ -790,10 +790,10 @@ enabled = true
 fn a_ramdisk_table_defaults_to_a_small_disk_with_the_cargo_settings() {
     let config: PoolConfig = toml::from_str(RAMDISK_POOL).unwrap();
     config.validate(&id()).unwrap();
-    assert!(config.ramdisk.enabled);
-    assert_eq!(config.ramdisk.size_gib, 8);
-    assert_eq!(config.ramdisk.margin_gib, 6);
-    let env = config.ramdisk.job_env();
+    assert!(config.workspace.enabled);
+    assert_eq!(config.workspace.size_gib, 8);
+    assert_eq!(config.workspace.margin_gib, 6);
+    let env = config.workspace.job_env();
     assert_eq!(
         env,
         vec![
@@ -816,32 +816,32 @@ fn a_ramdisk_table_defaults_to_a_small_disk_with_the_cargo_settings() {
 fn an_absent_or_disabled_ramdisk_table_has_no_job_env() {
     let plain: PoolConfig = toml::from_str(&RAMDISK_POOL.replace("enabled = true", "")).unwrap();
     plain.validate(&id()).unwrap();
-    assert!(!plain.ramdisk.enabled);
-    assert!(plain.ramdisk.job_env().is_empty());
+    assert!(!plain.workspace.enabled);
+    assert!(plain.workspace.job_env().is_empty());
     let disabled: PoolConfig =
         toml::from_str(&RAMDISK_POOL.replace("enabled = true", "enabled = false")).unwrap();
     disabled.validate(&id()).unwrap();
-    assert!(disabled.ramdisk.job_env().is_empty());
+    assert!(disabled.workspace.job_env().is_empty());
 }
 
 #[test]
 fn a_ramdisk_table_sets_its_own_size_margin_and_env() {
     let text = RAMDISK_POOL.replace(
         "enabled = true",
-        "enabled = true\nsize_gib = 32\nmargin_gib = 0\n[ramdisk.env]\nRUST_BACKTRACE = \"1\"",
+        "enabled = true\nsize_gib = 32\nmargin_gib = 0\n[workspace.env]\nRUST_BACKTRACE = \"1\"",
     );
     let config: PoolConfig = toml::from_str(&text).unwrap();
     config.validate(&id()).unwrap();
-    assert_eq!(config.ramdisk.size_gib, 32);
-    assert_eq!(config.ramdisk.margin_gib, 0);
+    assert_eq!(config.workspace.size_gib, 32);
+    assert_eq!(config.workspace.margin_gib, 0);
     assert_eq!(
-        config.ramdisk.job_env(),
+        config.workspace.job_env(),
         vec![("RUST_BACKTRACE".to_string(), "1".to_string())]
     );
 }
 
 #[test]
-fn a_ramdisk_needs_the_local_provider_and_named_sizes() {
+fn a_workspace_needs_the_local_provider_and_named_sizes() {
     let fly = r#"
 provider = "fly"
 slots = 1
@@ -851,13 +851,13 @@ build_dir = "target"
 [fly]
 app = "lane-pool"
 
-[ramdisk]
+[workspace]
 enabled = true
 "#;
     let config: PoolConfig = toml::from_str(fly).unwrap();
     let said = err(&config);
     assert!(said.contains("[pools.main]"), "{said}");
-    assert!(said.contains("ramdisk"), "{said}");
+    assert!(said.contains("workspace"), "{said}");
     assert!(said.contains("local"), "{said}");
     for (setting, value) in [
         ("size_gib", "0"),
@@ -876,5 +876,40 @@ enabled = true
     let config: PoolConfig = toml::from_str(&text).unwrap();
     let said = err(&config);
     assert!(said.contains("size_gip"), "{said}");
-    assert!(said.contains(".ramdisk"), "{said}");
+    assert!(said.contains(".workspace"), "{said}");
+}
+
+#[test]
+fn a_workspace_defaults_to_ram_and_accepts_apfs_with_a_container() {
+    use crate::pool::config::config_workspace::WorkspaceKind;
+    let config: PoolConfig = toml::from_str(RAMDISK_POOL).unwrap();
+    assert_eq!(config.workspace.kind, WorkspaceKind::Ram);
+    assert_eq!(config.workspace.container, None);
+    let text = RAMDISK_POOL.replace(
+        "enabled = true",
+        "enabled = true\nkind = \"apfs\"\nsize_gib = 12\ncontainer = \"disk5\"",
+    );
+    let config: PoolConfig = toml::from_str(&text).unwrap();
+    config.validate(&id()).unwrap();
+    assert_eq!(config.workspace.kind, WorkspaceKind::Apfs);
+    assert_eq!(config.workspace.size_gib, 12);
+    assert_eq!(config.workspace.container.as_deref(), Some("disk5"));
+}
+
+#[test]
+fn a_workspace_container_needs_apfs_and_a_disk_name() {
+    for (extra, why) in [
+        ("container = \"disk3\"", "kind = \"apfs\""),
+        ("kind = \"apfs\"\ncontainer = \"/Volumes/lanes\"", "disk3"),
+        ("kind = \"apfs\"\ncontainer = \"disk\"", "disk3"),
+        ("kind = \"apfs\"\ncontainer = \"disk3s1x\"", "disk3"),
+    ] {
+        let text = RAMDISK_POOL.replace("enabled = true", &format!("enabled = true\n{extra}"));
+        let config: PoolConfig = toml::from_str(&text).unwrap();
+        let said = err(&config);
+        assert!(said.contains("workspace.container"), "{extra}: {said}");
+        assert!(said.contains(why), "{extra}: {said}");
+    }
+    let text = RAMDISK_POOL.replace("enabled = true", "enabled = true\nkind = \"zfs\"");
+    assert!(toml::from_str::<PoolConfig>(&text).is_err());
 }

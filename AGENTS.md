@@ -160,6 +160,16 @@ as risk increases:
   and on `#[test]` attributes in production files
 - `cargo test`
 
+Measured on burgus (M5 Max, 18 cores) on 2026-10-20, with a faberlang pump
+compiling alongside, so treat these as upper bounds:
+
+- `cargo test --lib --no-run` from a fresh worktree: 37 s
+- `cargo test --lib` (2,907 tests): 46 s run, 68 s with a rebuild
+- `cargo test --test hygiene`: 16 s with a rebuild
+- `cargo test --test skills_cli`: 16 s with a rebuild
+- `cargo test` (full, 3,189 tests): 351 s. Over the five-minute line; it
+  needs splitting or a faster harness, and it belongs out of lane.
+
 For documentation-only edits, at least inspect links or run a small local
 Markdown link scan when the touched file contains links.
 

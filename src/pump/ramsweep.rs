@@ -45,8 +45,31 @@ pub(crate) fn sweep_ramdisks_with(
 ) -> Vec<String> {
     let scope = scope_prefix(ctx);
     let mut lines = Vec::new();
-    for disk in ramdisk::mounted(runner) {
-        if !disk.volume.starts_with(&scope) {
+    let disks: Vec<Disk> = ramdisk::mounted(runner)
+        .into_iter()
+        .filter(|disk| disk.volume.starts_with(&scope))
+        .collect();
+    if disks.is_empty() {
+        return lines;
+    }
+    let apfs_devices = match apfs_workspace_devices(runner) {
+        Ok(devices) => devices,
+        Err(error) => {
+            lines.push(format!(
+                "WARNING ramdisk sweep: cannot list APFS volumes ({error}); skipping so no APFS workspace volume is ejected"
+            ));
+            return lines;
+        }
+    };
+    for disk in disks {
+        if apfs_devices
+            .iter()
+            .any(|device| ramdisk::same_device_id(device, &disk.device))
+        {
+            lines.push(format!(
+                "ramdisk sweep: skipping {}: an APFS workspace volume, not a RAM disk",
+                disk.volume
+            ));
             continue;
         }
         let pool_mount = ramdisk::pool_slot_for_mount(&disk.mount).is_some();
@@ -86,6 +109,18 @@ pub(crate) fn sweep_ramdisks_with(
         lines.push(teardown_line(runner, &disk));
     }
     lines
+}
+
+/// The devices of every Vivi APFS workspace volume. A RAM teardown ejects the
+/// whole backing disk, which for an APFS volume would be the machine's own
+/// disk, so the RAM sweep never touches a device this names.
+fn apfs_workspace_devices(runner: &dyn Runner) -> Result<Vec<String>, String> {
+    let (_, volumes) = crate::pool::apfs::list(runner)?;
+    Ok(volumes
+        .into_iter()
+        .filter(crate::pool::apfs::Volume::is_ours)
+        .map(|volume| volume.device)
+        .collect())
 }
 
 /// The local slot holding `disk`, but only when its marker still names this
@@ -142,7 +177,7 @@ fn pool_owner_for_disk(
 
 /// The volume prefix this sweep claims: `vivi-<mailspace>-`, or the bare
 /// `vivi-` prefix when the context names no mailspace.
-fn scope_prefix(ctx: &Ctx) -> String {
+pub(crate) fn scope_prefix(ctx: &Ctx) -> String {
     if ctx.mailspace.is_empty() {
         ramdisk::VOLUME_PREFIX.to_string()
     } else {
@@ -153,7 +188,7 @@ fn scope_prefix(ctx: &Ctx) -> String {
 /// Detach `dir` through the repository that owns it, when `dir` is a
 /// worktree at all. A missing `.git`, an unreadable owner, or a refused
 /// removal leaves the caller to tear the disk down anyway.
-fn remove_worktree(ctx: &Ctx, dir: &Path) {
+pub(crate) fn remove_worktree(ctx: &Ctx, dir: &Path) {
     if !dir.join(".git").exists() {
         return;
     }

@@ -5,10 +5,10 @@ use crate::pump::alarm::AlarmConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use self::config_ramdisk::PumpRamDisk;
+use self::config_workspace::PumpWorkspace;
 
-#[path = "config_ramdisk.rs"]
-pub mod config_ramdisk;
+#[path = "config_workspace.rs"]
+pub mod config_workspace;
 mod planner;
 
 pub use planner::PlannerConfig;
@@ -81,8 +81,8 @@ pub struct PumpConfig {
     pub dispatch: DispatchConfig,
     /// Merge settings (the `[pump.merge]` table).
     pub merge: MergeConfig,
-    /// Lane RAM disk settings (the `[pump.ramdisk]` table).
-    pub ramdisk: PumpRamDisk,
+    /// Lane RAM disk settings (the `[pump.workspace]` table).
+    pub workspace: PumpWorkspace,
     /// Gate settings (the `[pump.gate]` table).
     pub gate: GateConfig,
     /// Stall alarm thresholds (the `[pump.alarm]` table).
@@ -118,7 +118,7 @@ impl Default for PumpConfig {
             proof: ProofConfig::default(),
             dispatch: DispatchConfig::default(),
             merge: MergeConfig::default(),
-            ramdisk: PumpRamDisk::default(),
+            workspace: PumpWorkspace::default(),
             gate: GateConfig::default(),
             alarm: AlarmConfig::default(),
             need: NeedConfig::default(),
@@ -644,7 +644,7 @@ impl PumpConfig {
         if self.tick == 0 {
             bad.push("[pump] tick must be >= 1".into());
         }
-        self.validate_ramdisk(&mut bad);
+        self.validate_workspace(&mut bad);
         self.validate_dispatch(pools, hand_role_pool, &mut bad);
         if self.targets.is_empty() {
             if self.branch.is_empty() {
@@ -817,13 +817,13 @@ impl PumpConfig {
         self.dispatch.kinds.get(self.kind_name(tools))
     }
 
-    /// `[pump.ramdisk] lane_gib`, when set, must be a plausible lane disk.
-    fn validate_ramdisk(&self, bad: &mut Vec<String>) {
-        if let Some(gib) = self.ramdisk.lane_gib
+    /// `[pump.workspace] lane_gib`, when set, must be a plausible lane disk.
+    fn validate_workspace(&self, bad: &mut Vec<String>) {
+        if let Some(gib) = self.workspace.lane_gib
             && !(1..=1024).contains(&gib)
         {
             bad.push(format!(
-                "[pump.ramdisk] lane_gib must be between 1 and 1024, got {gib}"
+                "[pump.workspace] lane_gib must be between 1 and 1024, got {gib}"
             ));
         }
     }

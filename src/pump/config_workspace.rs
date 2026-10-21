@@ -1,4 +1,4 @@
-//! The `[pump.ramdisk]` table: the RAM disk a merge lane runs its checks on.
+//! The `[pump.workspace]` table: the RAM disk a merge lane runs its checks on.
 //!
 //! A session with no lane RAM disk (the default) leaves the repository's own
 //! build dirs in place: lanes build where they always did, and what they
@@ -25,7 +25,7 @@ const CARGO_ENV: [(&str, &str); 5] = [
 /// Lane RAM disk settings.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-pub struct PumpRamDisk {
+pub struct PumpWorkspace {
     /// Size in GiB of the fresh RAM disk a merge lane runs its checks on.
     /// `None` leaves lanes on disk, with the repository's own build dirs in
     /// place. Set to a value in `1..=1024`.
@@ -41,7 +41,7 @@ pub struct PumpRamDisk {
     pub env: BTreeMap<String, String>,
 }
 
-impl Default for PumpRamDisk {
+impl Default for PumpWorkspace {
     fn default() -> Self {
         Self {
             lane_gib: None,

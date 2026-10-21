@@ -22,6 +22,7 @@
 //! [`provider::SlotLifetime`]). `vivi pool doctor --test`
 //! runs a live exercise of all of this (see [`selftest`]).
 
+pub mod apfs;
 pub mod bands;
 pub mod bootscript;
 pub mod bridge;

@@ -345,7 +345,7 @@ A pool table is complete on its own: nothing is inherited. Keys: `provider`
 `restore`, and the sub-tables `bands` (`P0` to `P5`, each a list of
 `{ model, reasoning }`), `github` (`app_id`, `private_key`), `harness` (`name`,
 `run`, `models`, `env`, `rules`), `committer` (`name`, `email`), `bridge`
-(`enabled`), `ramdisk` (local provider only), and one table per provider (`fly`, `docker`, `ssh`, `local`,
+(`enabled`), `workspace` (local provider only), and one table per provider (`fly`, `docker`, `ssh`, `local`,
 `runpod`). A `local` pool with `[pools.<name>.local] worktree_of = "<repo>"`
 makes each slot a Git worktree of a repository already on the machine, with no
 network. With a single-target pump, the pump reads a local worktree pool's
@@ -366,29 +366,44 @@ scoped by the project path. Slots made under older slug or short-prefix keys
 are not migrated or adopted under the UUID key; check provider inventory if
 old resources need cleanup.
 
-Only a `local` pool can enable a per-job RAM disk, and it requires macOS.
-`[pools.<name>.ramdisk] enabled = true` gives each job a fresh disk for its
-temporary checkout and build output. The default size is 8 GiB, with 6 GiB
-reserved for the host; a gate pool may need 32 GiB. The default environment
-turns off Cargo incremental output and debug symbols for those jobs. A custom
-`env` table replaces those defaults. Before mounting, Vivi checks free memory,
-already-held RAM disks and the configured margin. If a manual dispatch does
-not fit, it returns `ramdisk-wait`; a durable pump job remains pending if no
-configured fallback pool can accept it. There is no SSD fallback on that
-local slot. The disk is removed when the job finishes or is stopped.
-Teardown verifies that the attached device matches the job's ownership record;
-unknown or mismatched records are preserved with a warning. On pump startup,
-orphaned disks for that mailspace are swept while disks owned by live jobs are
-left attached.
+Only a `local` pool can enable a per-job workspace disk, and it requires macOS.
+`[pools.<name>.workspace] enabled = true` gives each job a fresh disk for its
+temporary checkout and build output. `kind` picks what backs it:
+
+- `ram` (the default): a RAM disk. Before mounting, Vivi checks free memory,
+  already-held RAM disks and the configured margin; a job that does not fit
+  is refused with `ramdisk-wait`.
+- `apfs`: an APFS volume with a quota of `size_gib`, in the APFS container
+  that holds the slot (or `container = "diskN"`). It costs no memory for the
+  disk itself, so it suits machines whose memory is small next to their
+  storage. Vivi checks free memory against the margin (for the compilers) and
+  the container's free space, less what other Vivi volumes may still grow
+  into, against the quota plus the margin; a job that does not fit is refused
+  with `apfs-wait`. Volumes use a quota and never a reserve, so an idle volume
+  claims no space.
+
+The default size is 8 GiB, with 6 GiB kept for the host; a gate pool may need
+32 GiB, and a full Rust workspace test build can need 12. The default
+environment turns off Cargo incremental output and debug symbols for those
+jobs. A custom `env` table replaces those defaults. A refused manual dispatch
+returns the wait message; a durable pump job remains pending if no configured
+fallback pool can accept it. There is no SSD fallback on that local slot. The
+disk is removed when the job finishes or is stopped. Teardown verifies that
+the device matches the job's ownership record; unknown or mismatched records
+are preserved with a warning. On pump startup, orphaned APFS volumes and then
+RAM disks for that mailspace are swept, while disks owned by live jobs are
+left in place. APFS volumes survive a reboot, so the sweep is what removes
+them after one; the RAM sweep never ejects a device that is an APFS volume.
 
 ```toml
 [pools.workers]
 provider = "local"
 slots = 2
 
-[pools.workers.ramdisk]
+[pools.workers.workspace]
 enabled = true
-size_gib = 8
+kind = "apfs"     # or "ram"
+size_gib = 12
 margin_gib = 6
 ```
 

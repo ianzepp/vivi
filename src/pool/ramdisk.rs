@@ -182,7 +182,7 @@ pub fn parse_df_gib(text: &str) -> Vec<(String, u64)> {
 }
 
 /// Every well-shaped `(device, mount point)` row from `mount` output.
-fn parse_mount_rows(text: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_mount_rows(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
             let (device, rest) = line.split_once(" on ")?;
@@ -688,7 +688,11 @@ fn physical_store_ids(container_info: &Value) -> Option<Vec<String>> {
 }
 
 /// Convert a diskutil XML plist through macOS `plutil` and parse its JSON.
-fn plist_json(runner: &dyn Runner, xml: &str, description: &str) -> Result<Value, String> {
+pub(crate) fn plist_json(
+    runner: &dyn Runner,
+    xml: &str,
+    description: &str,
+) -> Result<Value, String> {
     let mut file = tempfile::Builder::new()
         .prefix("vivi-ramdisk-")
         .suffix(".plist")
@@ -705,13 +709,13 @@ fn plist_json(runner: &dyn Runner, xml: &str, description: &str) -> Result<Value
         .map_err(|error| format!("ramdisk: cannot parse {description} plist JSON: {error}"))
 }
 
-fn plist_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn plist_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
 
 /// Normalize a diskutil device identifier to `diskN[sN...]`, rejecting other
 /// text before it can become a command argument.
-fn normalized_disk_id(device: &str) -> Option<String> {
+pub(crate) fn normalized_disk_id(device: &str) -> Option<String> {
     let identifier = device.strip_prefix("/dev/").unwrap_or(device);
     let suffix = identifier.strip_prefix("disk")?;
     let mut components = suffix.split('s');
