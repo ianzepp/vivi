@@ -53,7 +53,13 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
         }
         PumpSubcommand::Replan(cmd) => vivi::pump::replan::run(&project_root(&cmd.project), cmd),
         PumpSubcommand::Service { command } => match command {
-            PumpServiceCommand::Add(cmd) => vivi::pump::service::add(&cmd.project),
+            PumpServiceCommand::Add(cmd) => {
+                let (pump, serve) = cmd.flag_change();
+                vivi::pump::service::add(
+                    &cmd.project,
+                    vivi::pump::service::FlagChange { pump, serve },
+                )
+            }
             PumpServiceCommand::Remove(cmd) => vivi::pump::service::remove(&cmd.project),
             PumpServiceCommand::List => vivi::pump::service::list(),
             PumpServiceCommand::Install => vivi::pump::service::install(),

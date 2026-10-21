@@ -133,11 +133,11 @@ pub struct PumpReplanCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum PumpServiceCommand {
-    /// Add a project to the user-level service registry
-    Add(PumpServiceProjectCommand),
-    /// Remove a project from the user-level service registry
+    /// Add a project to the host registry, or change its pump/serve flags
+    Add(PumpServiceAddCommand),
+    /// Remove a project from the host registry
     Remove(PumpServiceProjectCommand),
-    /// List registered projects
+    /// List registered projects with their pump/serve flags
     List,
     /// Install and start the current Vivi binary as a user OS service
     Install,
@@ -147,6 +147,45 @@ pub enum PumpServiceCommand {
     Status,
     /// Run the foreground supervisor (for an OS service manager)
     Run,
+}
+
+/// A new registration defaults to pump on, serve off; on an existing entry
+/// only the flags given here change.
+#[derive(Debug, Args)]
+pub struct PumpServiceAddCommand {
+    /// Project root that owns .vivi/
+    pub project: PathBuf,
+    /// Run a pump for this project under the service supervisor
+    #[arg(long, conflicts_with = "no_pump")]
+    pub pump: bool,
+    /// Do not run a pump for this project (for example, serve-only)
+    #[arg(long)]
+    pub no_pump: bool,
+    /// Let a server host this project
+    #[arg(long, conflicts_with = "no_serve")]
+    pub serve: bool,
+    /// Stop a server hosting this project
+    #[arg(long)]
+    pub no_serve: bool,
+}
+
+impl PumpServiceAddCommand {
+    /// The requested flag changes; an absent flag pair means no change.
+    #[must_use]
+    pub fn flag_change(&self) -> (Option<bool>, Option<bool>) {
+        (
+            tri_state(self.pump, self.no_pump),
+            tri_state(self.serve, self.no_serve),
+        )
+    }
+}
+
+fn tri_state(on: bool, off: bool) -> Option<bool> {
+    match (on, off) {
+        (true, _) => Some(true),
+        (false, true) => Some(false),
+        (false, false) => None,
+    }
 }
 
 #[derive(Debug, Args)]

@@ -9,8 +9,8 @@ pub(crate) fn run(command: &MonitorCommand) -> Result<(), VivariumError> {
     if command.json && !command.once {
         return Err(VivariumError::Message(String::from("--json needs --once")));
     }
-    let (registered, mut warnings) = match vivi::pump::service::registered_projects() {
-        Ok(projects) => (projects, Vec::new()),
+    let (registered, mut warnings) = match vivi::registry::load() {
+        Ok(registry) => (registry.roots(), Vec::new()),
         Err(error) => (
             Default::default(),
             vec![format!("pump service registry: {error}")],

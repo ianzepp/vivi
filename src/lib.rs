@@ -21,6 +21,7 @@ pub mod monitor;
 pub mod pool;
 pub mod proxy;
 pub mod pump;
+pub mod registry;
 pub mod report;
 pub mod role_schedule;
 pub mod role_status;

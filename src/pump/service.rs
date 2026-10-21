@@ -1,35 +1,61 @@
 //! User-level supervisor for independent project pump processes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command as StdCommand;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 use crate::VivariumError;
+use crate::registry::{self, Flags};
 
-const CONFIG_DIRECTORY: &str = "vivi";
-const CONFIG_FILENAME: &str = "pump-service.toml";
-const ENV_CONFIG_DIR: &str = "VIVI_CONFIG_DIR";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const RESTART_DELAY: Duration = Duration::from_secs(15);
+#[cfg(target_os = "macos")]
+const CONFIG_DIRECTORY: &str = "vivi";
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ServiceConfig {
-    #[serde(default)]
-    projects: BTreeSet<PathBuf>,
+/// Requested flag changes for `pump service add`; `None` keeps the current
+/// value (or the default for a new registration: pump on, serve off).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FlagChange {
+    pub pump: Option<bool>,
+    pub serve: Option<bool>,
 }
 
-/// Add a validated project to the user's service registry.
-pub fn add(project: &Path) -> Result<(), VivariumError> {
+impl FlagChange {
+    fn apply(self, current: Flags) -> Flags {
+        Flags {
+            pump: self.pump.unwrap_or(current.pump),
+            serve: self.serve.unwrap_or(current.serve),
+        }
+    }
+}
+
+/// Add a validated project to the host registry, or change its flags.
+pub fn add(project: &Path, change: FlagChange) -> Result<(), VivariumError> {
     let mailspace = crate::mailspace::Mailspace::discover(Some(project))?;
+    let root = mailspace.root.canonicalize()?;
+    let current = registry::load()?.get(&root);
+    let wanted = change.apply(current.unwrap_or_default());
+    if wanted.pump {
+        validate_for_pump(&mailspace)?;
+    }
+    let changed = registry::update(|registry| Ok(registry.set(root.clone(), wanted)))?;
+    let verb = match (current, changed) {
+        (None, _) => "registered",
+        (Some(_), true) => "updated",
+        (Some(_), false) => "already registered",
+    };
+    println!("{verb} {} {}", root.display(), describe(wanted));
+    Ok(())
+}
+
+fn validate_for_pump(mailspace: &crate::mailspace::Mailspace) -> Result<(), VivariumError> {
     let pump = mailspace.config.pump.as_ref().ok_or_else(|| {
         VivariumError::Config(format!(
             "{} has no [pump] configuration",
@@ -37,67 +63,56 @@ pub fn add(project: &Path) -> Result<(), VivariumError> {
         ))
     })?;
     let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let role_pool = crate::pump::run::hand_role_pool(&mailspace, pump);
+    let role_pool = crate::pump::run::hand_role_pool(mailspace, pump);
     pump.validate_for(&mailspace.root, &pools, role_pool)?;
-    let roster = crate::pump::run::identity_issues(&mailspace, pump);
+    let roster = crate::pump::run::identity_issues(mailspace, pump);
     if !roster.is_empty() {
         return Err(VivariumError::Config(roster.join("; ")));
     }
-    crate::routing::require_ok(&crate::routing::validate(&mailspace.config))?;
-    let _lock = take_registry_lock()?;
-    let mut config = load_config()?;
-    let root = mailspace.root.canonicalize()?;
-    if !config.projects.insert(root.clone()) {
-        println!("already registered {}", root.display());
-        return Ok(());
-    }
-    save_config(&config)?;
-    println!("registered {}", root.display());
-    Ok(())
+    crate::routing::require_ok(&crate::routing::validate(&mailspace.config))
 }
 
-/// Remove a project from the user's service registry.
+fn describe(flags: Flags) -> String {
+    format!("pump={} serve={}", flags.pump, flags.serve)
+}
+
+/// Remove a project from the host registry.
 pub fn remove(project: &Path) -> Result<(), VivariumError> {
     let root = match project.canonicalize() {
         Ok(root) => root,
         Err(_) if project.is_absolute() => project.to_path_buf(),
         Err(_) => std::env::current_dir()?.join(project),
     };
-    let _lock = take_registry_lock()?;
-    let mut config = load_config()?;
-    if !config.projects.remove(&root) {
-        return Err(VivariumError::Config(format!(
-            "{} is not registered with the pump service",
-            root.display()
-        )));
-    }
-    save_config(&config)?;
+    registry::update(|registry| {
+        if registry.remove(&root) {
+            Ok(())
+        } else {
+            Err(VivariumError::Config(format!(
+                "{} is not registered with the pump service",
+                root.display()
+            )))
+        }
+    })?;
     println!("removed {}", root.display());
     Ok(())
 }
 
-/// Print registered project roots.
+/// Print registered project roots with their flags.
 pub fn list() -> Result<(), VivariumError> {
-    let config = load_config()?;
-    if config.projects.is_empty() {
+    let entries = registry::load()?.entries();
+    if entries.is_empty() {
         println!("no projects registered");
-    } else {
-        for project in config.projects {
-            println!("{}", project.display());
-        }
+    }
+    for entry in entries {
+        println!("{}  {}", entry.root.display(), describe(entry.flags));
     }
     Ok(())
-}
-
-/// Read the machine-wide project registry without touching the supervisor.
-pub fn registered_projects() -> Result<BTreeSet<PathBuf>, VivariumError> {
-    Ok(load_config()?.projects)
 }
 
 /// Install and start the current binary as a macOS user LaunchAgent.
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<(), VivariumError> {
-    drop(load_config()?);
+    drop(registry::load()?);
     let path = launch_agent_path()?;
     let parent = path
         .parent()
@@ -265,7 +280,10 @@ impl ServiceRuntime {
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-        tracing::info!("pump service started; config {}", config_path()?.display());
+        tracing::info!(
+            "pump service started; config {}",
+            registry::path()?.display()
+        );
         loop {
             #[cfg(unix)]
             let shutdown = self.poll(&mut interval, &mut terminate).await;
@@ -340,7 +358,7 @@ async fn reconcile(
     observed_modes: &mut BTreeMap<PathBuf, super::control::PumpMode>,
     stopping: &mut BTreeMap<PathBuf, tokio::task::JoinHandle<()>>,
 ) -> Result<(), VivariumError> {
-    let desired = load_config()?.projects;
+    let desired = registry::load()?.pumped();
     reap_stopping(stopping).await;
     stop_removed(&desired, children, retry_after, stopping);
     reap_exited(children, retry_after);
@@ -565,76 +583,9 @@ async fn force_stop(child: &mut Child, project: &Path) {
     drop(child.wait().await);
 }
 
-fn load_config() -> Result<ServiceConfig, VivariumError> {
-    load_config_at(&config_path()?)
-}
-
-fn load_config_at(path: &Path) -> Result<ServiceConfig, VivariumError> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ServiceConfig::default());
-        }
-        Err(error) => return Err(error.into()),
-    };
-    toml::from_str(&content)
-        .map_err(|error| VivariumError::Config(format!("invalid {}: {error}", path.display())))
-}
-
-fn save_config(config: &ServiceConfig) -> Result<(), VivariumError> {
-    let path = config_path()?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| VivariumError::Config("service config has no parent directory".into()))?;
-    fs::create_dir_all(parent)?;
-    let temporary = path.with_extension("toml.tmp");
-    let content = toml::to_string_pretty(config).map_err(|error| {
-        VivariumError::Config(format!("could not encode service config: {error}"))
-    })?;
-    fs::write(&temporary, content)?;
-    fs::rename(temporary, path)?;
-    Ok(())
-}
-
-fn config_path() -> Result<PathBuf, VivariumError> {
-    let root = match std::env::var(ENV_CONFIG_DIR) {
-        Ok(value) if !value.is_empty() => PathBuf::from(value),
-        Ok(_) | Err(_) => dirs::config_dir().ok_or_else(|| {
-            VivariumError::Config("could not find the user's config directory".into())
-        })?,
-    };
-    Ok(root.join(CONFIG_DIRECTORY).join(CONFIG_FILENAME))
-}
-
 fn take_service_lock() -> Result<fs::File, VivariumError> {
-    take_file_lock(
-        config_path()?.with_extension("lock"),
+    registry::lock_file(
+        registry::path()?.with_extension("lock"),
         "another Vivi pump service is running",
     )
 }
-
-fn take_registry_lock() -> Result<fs::File, VivariumError> {
-    take_file_lock(
-        config_path()?.with_extension("config.lock"),
-        "another Vivi pump service registration is updating",
-    )
-}
-
-fn take_file_lock(path: PathBuf, message: &str) -> Result<fs::File, VivariumError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| VivariumError::Config("service lock has no parent directory".into()))?;
-    fs::create_dir_all(parent)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)?;
-    file.try_lock()
-        .map_err(|_| VivariumError::Message(message.to_string()))?;
-    Ok(file)
-}
-
-#[cfg(test)]
-#[path = "service_test.rs"]
-mod tests;

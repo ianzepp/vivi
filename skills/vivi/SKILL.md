@@ -2638,6 +2638,8 @@ A pump service can supervise registered mailspaces:
 
 ```sh
 vivi pump service add <project-root>
+vivi pump service add <project-root> --serve
+vivi pump service add <project-root> --no-pump --serve
 vivi pump service remove <project-root>
 vivi pump service list
 vivi pump service install
@@ -2649,6 +2651,18 @@ vivi pump service run
 The service starts registered projects in running or paused mode, restarts
 exited children after a delay, and stops a project's child when it is removed.
 A project lock arbitrates against a manually started pump.
+
+The service registry is the host's project registry,
+`<config_dir>/vivi/pump-service.toml` (`VIVI_CONFIG_DIR` overrides
+`<config_dir>`), shared with servers that link the library (`vivi::registry`).
+Each `[[project]]` entry has `root`, `pump` (default true: the supervisor runs
+a pump) and `serve` (default false: a server hosts it). `add` registers with
+`pump=true serve=false`; on an existing entry it changes only the flags given,
+so `add <root> --serve` serves a pumped project and `add <root> --no-pump
+--serve` registers a serve-only one (no `[pump]` config needed); `--pump` and
+`--no-serve` reverse them. `list` shows
+the flags. The older `projects = [...]` list still loads as `pump=true
+serve=false` and is rewritten as `[[project]]` tables on the next change.
 
 ## Delivery
 
