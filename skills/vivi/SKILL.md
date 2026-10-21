@@ -986,21 +986,27 @@ vivi pool unset glm image
   clean additionally names it (`-e /$BUILD_DIR`), so it survives even when not
   gitignored; on fly and docker it is a memory disk packed at seed and
   restored before every job instead. Fly and Docker work with or without it.
-- **A `local` pool can give each job its own RAM disk.** A
+- **A `local` pool can give each job its own workspace disk.** A
   `[pools.<name>.workspace]` table with `enabled = true` makes a fresh disk for
   the job's temporary checkout and build output; it is removed when the job
   finishes or is stopped. It requires macOS and only works on a `local` pool.
+  `kind` is `ram` (default, a RAM disk) or `apfs` (an APFS volume with a quota,
+  in the container holding the slot or the one `container = "diskN"` names).
   `size_gib` defaults to 8 GiB (a gate pool may need 32), `margin_gib` (6) is
-  memory kept free for the host, and `env` defaults to settings that disable
-  Cargo incremental output and debug symbols. A custom `env` table replaces
-  those defaults and is given to that job only. Before mounting, Vivi admits
-  the job only if available memory covers its disk size, disks already held,
-  and the margin. A manual dispatch then returns `ramdisk-wait`; a durable
-  pump job remains pending unless an eligible configured fallback accepts it.
-  There is no SSD fallback on that slot. Teardown verifies the attached device
-  against the job marker and preserves unknown or mismatched disks with a
-  warning. Pump startup sweeps orphaned mailspace disks and preserves disks
-  owned by live pool jobs.
+  memory kept free for the host (and, for `apfs`, container space too), and
+  `env` defaults to settings that disable Cargo incremental output and debug
+  symbols. A custom `env` table replaces those defaults and is given to that
+  job only. Admission: `ram` needs available memory to cover its disk size,
+  disks already held, and the margin (else `ramdisk-wait`); `apfs` needs the
+  margin in memory and the quota plus margin in container space, less what
+  other Vivi volumes may still grow into (else `apfs-wait`). APFS volumes use a
+  quota, never a reserve. A durable pump job remains pending unless an
+  eligible configured fallback accepts it. There is no SSD fallback on that
+  slot. Teardown verifies the device against the job marker (`ramdisk` or
+  `apfs` on the slot root) and preserves unknown or mismatched disks with a
+  warning. Pump startup sweeps orphaned mailspace APFS volumes (which survive
+  a reboot) and then RAM disks, preserves disks owned by live pool jobs, and
+  never ejects an APFS volume.
 - **A pool with only provider settings.** `repo`, `github`, `harness` and
   `committer` are optional in a pool table (`github` goes with `repo`). Such a
   pool is for testing the provider: `status`, `destroy`, `reconcile`, `wait`,
