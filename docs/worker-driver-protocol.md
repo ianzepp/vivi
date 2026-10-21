@@ -1,7 +1,8 @@
 # Worker driver protocol
 
-Status: design, 2026-10-21. Nothing here is implemented yet except where it
-says so. The repo wins wherever it disagrees with this document.
+Status: design, 2026-10-21. The `macos` driver (`src/pool/worker-macos.sh`)
+exists and passed live tests on a Mac Studio over SSH, but no provider calls
+it yet. The repo wins wherever it disagrees with this document.
 
 ## Roles
 
@@ -51,13 +52,15 @@ A worker's **offer** (the `offer` verb) reports what it has now:
 system=Darwin arm64
 kinds=ram apfs dir
 ram_budget_gib=64 ram_reserved_gib=32 mem_free_gib=40
-apfs_container=disk5 apfs_budget_gib=500 apfs_reserved_gib=2 apfs_free_gib=780
+apfs_container=disk7 apfs_budget_gib=500 apfs_reserved_gib=2 apfs_free_gib=480
 docker=0
 gpu=metal
 tools=git cargo node
 ```
 
-`*_budget_gib` is what the operator allows the driver to use on that machine.
+`*_budget_gib` is what the operator allows the driver to use on that machine,
+set in `<root>/worker.conf` (`ram_budget_gib`, `ram_margin_gib`, `apfs_image`
+or `apfs_container`, `apfs_budget_gib`).
 `*_reserved_gib` is what live boundaries already hold. Budgets are the only
 worker-side settings: they limit how much, never which jobs.
 
@@ -72,7 +75,7 @@ worker-side settings: they limit how much, never which jobs.
 | `status` | job id | Reports the job | `state=running`, or `state=exited exit=<n>`, or `state=gone` |
 | `read` | job id, files | Returns result files as a tar stream | the stream |
 | `release` | job id | Stops everything using the boundary, tears it down, drops the reservation | `result=released`, or `result=gone` |
-| `sweep` | none | Tears down boundaries and reservations whose job no longer runs (after a crash or reboot) | one line per boundary removed |
+| `sweep` | the live job ids | Tears down every boundary whose job the orchestrator did not name: the orchestrator owns job state, so the worker never guesses which are dead | one line per boundary removed |
 
 `undeliverable` means "not now, not here": the orchestrator re-queues the job
 or places it on another worker. `failed` means the worker could not do what it
@@ -100,9 +103,23 @@ These are the steps the `local` provider already runs from Rust
   -nomount`, then `diskutil mount -mountOptions noowners -mountPoint <path>
   <device>`. Creating and mounting in one step needs root; creating unmounted
   and then mounting does not. Use a quota, never a reserve. Teardown:
-  `diskutil apfs deleteVolume <device>`, only after the live listing proves
-  the device still holds that `vivi-*` volume.
+  `diskutil apfs deleteVolume <device>`, only while the device still holds
+  that `vivi-*` volume.
+- **The apfs container is a sparse disk image.** Measured on the Studio
+  (macOS 27, over SSH): in the system container (`disk3`) a new volume will
+  not mount at a custom path, and refuses `noowners`; its default mount is
+  owned by root and not writable. In the container of a sparse image the
+  login user attached (`hdiutil create -type SPARSE -fs APFS`, then
+  `hdiutil attach -nomount`), both work. The driver creates the image at the
+  apfs budget when it is missing and attaches it on demand (attaching twice is
+  harmless). The image's size is then the hard ceiling of all apfs
+  boundaries. It grows as volumes are written, reuses freed space, and does
+  not shrink while attached.
 - **dir.** A plain directory with no hard limit, for jobs that need none.
+- **Running.** The boot wrapper's pid plus its start time (`ps -o lstart`), so
+  a reused pid is not mistaken for it. A boot that ends before its start time
+  is read leaves it empty, and an empty time never counts as running; a
+  written exit code always means the job ended.
 - **Stopping.** Every process with a file or working directory on the mount
   (`lsof +f -- <mount>`) gets TERM, then KILL. The volume is then torn down.
   A process cannot keep running in a volume that no longer exists.
