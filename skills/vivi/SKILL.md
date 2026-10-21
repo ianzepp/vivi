@@ -1931,6 +1931,47 @@ remote_url = "git@gitbox:lanes/owner/repo.git"   # SSH (user@host:path or ssh://
   checkout's remote) is not a GitHub address, and that names no
   `github_repo`, dispatches as a plain Git source to that address.
 
+### Worker provider
+
+`provider = "worker"` runs each job in a **bounded workspace built for that job
+alone** on a machine reached over SSH (a Mac today). The worker offers
+capacity; the pool names the boundary its jobs need:
+
+```toml
+[pools.lanes]
+provider = "worker"
+slots = 4                     # most jobs at once on this pool; NO `image`
+
+[pools.lanes.worker]
+host = "builder"              # required; anything `ssh` accepts
+kind = "apfs"                 # apfs | ram | dir
+size_gib = 12                 # required for apfs and ram
+# root = "~/vivi-worker"      # default; keep it on the internal disk
+```
+
+- **Per dispatch.** A dispatch builds the slot (the driver checks the request
+  against the worker's budgets, builds the boundary, unpacks and seeds the
+  slot), and collecting the result destroys it, boundary and all. Nothing
+  rests between jobs and nothing is cached: every job starts cold and clean.
+- **Boundaries.** `apfs`: a sparse APFS disk image of `size_gib` (a hard
+  limit; it takes disk only as written), made by the login user so its volume
+  is writable without root. `ram`: a RAM disk. `dir`: a plain directory, no
+  limit. All three work over SSH with nobody logged in at the console.
+- **Stopping** a slot ends every process with a file or working directory in
+  its boundary, plus the boot wrapper's process group and descendants.
+- **Worker budgets** live on the worker, in `<root>/worker.conf`:
+  `ram_budget_gib`, `ram_margin_gib` (memory kept free, default 8),
+  `apfs_dir` (where images go, for example on an external drive),
+  `apfs_budget_gib`, `dir_root`. They limit how much, never which jobs. A
+  request over a budget, or over free memory or disk, fails as
+  `no free slot: ...`, so the pump tries the next pool.
+- **The driver** (`worker-macos.sh`) is embedded in `vivi` and sent with every
+  call, like the `ssh` provider's script; nothing is installed on the worker.
+  It needs git, tar, perl, lsof, diskutil, hdiutil and plutil.
+- **macOS privacy:** on an external drive, every file and image operation over
+  SSH needs Remote Login's "Allow full disk access for remote users".
+- Design and measurements: `docs/worker-driver-protocol.md`.
+
 ### SSH provider
 
 `provider = "ssh"` is the minimal form: a host reachable by SSH where each slot
@@ -2022,7 +2063,7 @@ Everything below is per pool and nothing is inherited:
 
 ```toml
 [pools.lanes]
-# provider = "fly"            # default; or "docker", "ssh", "local" or "runpod"
+# provider = "fly"            # default; or "docker", "ssh", "local", "runpod" or "worker"
 repo = "owner/name"           # optional for a provider-only test pool; needed by create/scale-up/dispatch (with [github])
 # remote_url = "git@gitbox:owner/repo.git"   # instead of repo + [github]: a plain Git source (see Plain Git source)
 slots = 4                     # required; maximum pool size

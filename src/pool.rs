@@ -38,6 +38,7 @@ pub mod config_bands;
 pub mod config_bridge;
 pub mod config_depth;
 pub mod config_restore;
+pub mod config_worker;
 pub mod dispatch;
 pub mod docker;
 pub mod docker_cli;
@@ -104,6 +105,7 @@ pub mod ssh_doctor;
 pub mod ssh_script;
 pub mod ssh_state;
 pub mod work;
+pub mod worker;
 
 pub use config::{PoolCommitter, PoolConfig, PoolGithub, PoolHarness};
 pub use provider::PoolProvider;
@@ -118,6 +120,7 @@ pub fn open_provider(config: &PoolConfig, ctx: &runpod::HostContext) -> Box<dyn 
         "runpod" => Box::new(runpod::RunpodProvider::new(config, ctx)),
         "docker" => Box::new(docker::DockerProvider::new(config)),
         "ssh" => Box::new(ssh::SshProvider::new(config, ctx)),
+        "worker" => Box::new(worker::WorkerProvider::new(config, ctx)),
         "local" => Box::new(local::LocalProvider::new(config, ctx)),
         _ => Box::new(fly::FlyctlProvider::new(
             config.fly.app.as_deref().unwrap_or_default(),

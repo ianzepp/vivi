@@ -11,6 +11,10 @@ use super::job::sh_quote;
 /// The remote half of the provider, embedded in the binary.
 pub const SLOT_SCRIPT: &str = include_str!("ssh-slot.sh");
 
+/// The remote half of the `worker` provider on macOS: the same verbs, over
+/// slots that are per-job bounded workspaces (see `worker-macos.sh`).
+pub const WORKER_MACOS_SCRIPT: &str = include_str!("worker-macos.sh");
+
 /// The umask of a slot that only its login user may enter.
 pub const PRIVATE_UMASK: &str = "077";
 
@@ -29,6 +33,17 @@ pub fn command_line(root: &str, verb: &str, args: &[&str], login: bool) -> Strin
 /// Like [`command_line`], with the umask the script writes under.
 #[must_use]
 pub fn command_line_as(root: &str, verb: &str, args: &[&str], login: bool, umask: &str) -> String {
+    command_line_of(SLOT_SCRIPT, root, verb, (args, login, umask))
+}
+
+/// Like [`command_line_as`], for the remote script `slot_script`.
+#[must_use]
+pub fn command_line_of(
+    slot_script: &str,
+    root: &str,
+    verb: &str,
+    (args, login, umask): (&[&str], bool, &str),
+) -> String {
     let mut script = format!(
         "ROOT={}\nVERB={}\nUMASK={}\n",
         sh_quote(root),
@@ -39,7 +54,7 @@ pub fn command_line_as(root: &str, verb: &str, args: &[&str], login: bool, umask
         let arg = args.get(i).copied().unwrap_or_default();
         script.push_str(&["A", &(i + 1).to_string(), "=", &sh_quote(arg), "\n"].concat());
     }
-    script.push_str(SLOT_SCRIPT);
+    script.push_str(slot_script);
     let shell = if login { "bash -l -c" } else { "bash -c" };
     format!("{shell} {}", sh_quote(&script))
 }

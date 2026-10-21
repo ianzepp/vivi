@@ -43,7 +43,7 @@ pub const CHECKOUT: &str = "repo";
 /// The file that holds the slot while a build-tree reclaim empties it.
 pub const RECLAIM_FILE: &str = "reclaim";
 /// Stand-ins for GNU tools a host may lack, put in the slot's `bin`.
-const TOOLS: [(&str, &str); 3] = [
+pub(crate) const TOOLS: [(&str, &str); 3] = [
     ("timeout", include_str!("local-bin/timeout")),
     ("sha256sum", include_str!("local-bin/sha256sum")),
     ("nproc", include_str!("local-bin/nproc")),

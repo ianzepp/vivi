@@ -24,7 +24,7 @@ use crate::error::VivariumError;
 pub mod config_workspace;
 
 /// Machine hosts the pool can run on.
-pub const PROVIDERS: [&str; 5] = ["fly", "docker", "ssh", "local", "runpod"];
+pub const PROVIDERS: [&str; 6] = ["fly", "docker", "ssh", "local", "runpod", "worker"];
 const DEFAULT_PROVIDER: &str = "fly";
 const DEFAULT_REGION: &str = "iad";
 const DEFAULT_ORGANIZATION: &str = "personal";
@@ -142,6 +142,9 @@ pub struct PoolConfig {
     /// Identity the remote runner commits as; `dispatch` needs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committer: Option<PoolCommitter>,
+    /// Settings that belong to the `worker` machine host.
+    #[serde(default)]
+    pub worker: super::config_worker::PoolWorker,
     /// MCP bridge settings (`[pools.<name>.bridge]`); off when absent. A
     /// dispatch on the pool then mints one project API key for the job.
     #[serde(default)]
@@ -405,7 +408,7 @@ impl PoolConfig {
         match self.provider.as_str() {
             "docker" => &self.docker.tmpfs,
             // A directory on a host has no memory disk.
-            "ssh" | "local" | "runpod" => "",
+            "ssh" | "local" | "runpod" | "worker" => "",
             _ => &self.fly.tmpfs,
         }
     }
@@ -589,6 +592,7 @@ impl PoolConfig {
         match self.provider.as_str() {
             "docker" => self.docker.validate()?,
             "ssh" => self.ssh.validate()?,
+            "worker" => self.worker.validate(pool)?,
             "local" => self.local.validate()?,
             "runpod" => self.runpod.validate(pool)?,
             _ => self.validate_fly_machine()?,
@@ -604,7 +608,7 @@ impl PoolConfig {
     }
 
     fn validate_image(&self) -> Result<(), VivariumError> {
-        if matches!(self.provider.as_str(), "ssh" | "local") {
+        if matches!(self.provider.as_str(), "ssh" | "local" | "worker") {
             return if self.image.is_empty() {
                 Ok(())
             } else {

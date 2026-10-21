@@ -33,7 +33,7 @@ use super::provider::{CreateSpec, ExecOutput, Hold, MachineRecord, PoolProvider}
 use super::slot::{META_MAILSPACE, META_POOL, META_SLOT};
 use super::ssh_cli::SshCli;
 use super::ssh_doctor::Probe;
-use super::ssh_script::{PRIVATE_UMASK, command_line_as};
+use super::ssh_script::{PRIVATE_UMASK, SLOT_SCRIPT, command_line_of};
 use super::ssh_state::{self as state, is_slot_id, parse_listing};
 use crate::error::VivariumError;
 
@@ -52,6 +52,10 @@ pub struct SshProvider {
     pool: String,
     /// The umask the remote script writes under.
     umask: &'static str,
+    /// The remote script: `ssh-slot.sh`, or a worker driver.
+    script: &'static str,
+    /// An extra argument of every `create` (a worker's boundary request).
+    create_extra: Option<String>,
 }
 
 /// The version line of the local `ssh` client.
@@ -99,7 +103,23 @@ impl SshProvider {
             mailspace: mailspace.to_string(),
             pool: pool.to_string(),
             umask: PRIVATE_UMASK,
+            script: SLOT_SCRIPT,
+            create_extra: None,
         }
+    }
+
+    /// This provider speaking through the remote script `script` instead of
+    /// `ssh-slot.sh`, with `create_extra` as an extra argument of every
+    /// `create` (a worker driver and its boundary request).
+    #[must_use]
+    pub(super) fn with_script(
+        mut self,
+        script: &'static str,
+        create_extra: Option<String>,
+    ) -> Self {
+        self.script = script;
+        self.create_extra = create_extra;
+        self
     }
 
     /// A provider for the slot root `root` of a machine the caller made and
@@ -121,6 +141,8 @@ impl SshProvider {
             mailspace: mailspace.to_string(),
             pool: pool.to_string(),
             umask: "022",
+            script: SLOT_SCRIPT,
+            create_extra: None,
         }
     }
 
@@ -140,7 +162,7 @@ impl SshProvider {
         stdin: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<RunOutput, VivariumError> {
-        let line = command_line_as(&self.root, verb, args, login, self.umask);
+        let line = command_line_of(self.script, &self.root, verb, (args, login, self.umask));
         self.runner.run(&[line], stdin, timeout)
     }
 
@@ -219,7 +241,7 @@ impl SshProvider {
 
     /// The new slot as a tar stream: marks, the environment file, the files
     /// of the spec and the one-time secrets, all below the slot directory.
-    fn new_slot_archive(spec: &CreateSpec) -> Result<Vec<u8>, VivariumError> {
+    fn new_slot_archive(&self, spec: &CreateSpec) -> Result<Vec<u8>, VivariumError> {
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
         for (key, value) in &spec.metadata {
             one_line(value)?;
@@ -235,6 +257,13 @@ impl SshProvider {
         files.push(("slot.env".to_string(), env.into_bytes()));
         for (path, content) in slot_files(spec) {
             files.push((relative(&path)?, content));
+        }
+        // A worker driver's slot gets stand-ins for GNU tools the host may
+        // lack (macOS); the driver makes them executable, last on PATH.
+        if self.script != SLOT_SCRIPT {
+            for (name, text) in super::local_slots::TOOLS {
+                files.push((format!("bin/{name}"), text.as_bytes().to_vec()));
+            }
         }
         tar::build(&files)
     }
@@ -337,8 +366,10 @@ impl PoolProvider for SshProvider {
     fn create(&self, spec: &CreateSpec) -> Result<String, VivariumError> {
         let id = new_slot_id(spec)?;
         self.slot_id(&id)?;
-        let archive = Self::new_slot_archive(spec)?;
-        self.require("create", &[&id], Some(&archive))?;
+        let archive = self.new_slot_archive(spec)?;
+        let mut args = vec![id.as_str()];
+        args.extend(self.create_extra.as_deref());
+        self.require("create", &args, Some(&archive))?;
         if let Err(e) = self.start(&id) {
             if let Err(undo) = self.destroy(&id) {
                 eprintln!("warning: could not remove {}: {undo}", spec.name);

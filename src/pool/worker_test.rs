@@ -1,0 +1,239 @@
+//! The provider against the real worker driver, run on this machine instead
+//! of over SSH, with `dir` boundaries in a temporary root (no disk images or
+//! RAM disks are made here; those are covered live on a Mac worker).
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use super::*;
+use crate::pool::docker_cli::{RunOutput, finish};
+use crate::pool::progress::Progress;
+use crate::pool::slot::{META_MAILSPACE, PoolId};
+
+/// Runs a remote command line locally, with `home` as the login home.
+struct Shell {
+    home: PathBuf,
+}
+
+impl Runner for Shell {
+    fn run(
+        &self,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<RunOutput, VivariumError> {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(&args[0])
+            .env("HOME", &self.home)
+            .env("COPYFILE_DISABLE", "1")
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| VivariumError::Message(e.to_string()))?;
+        finish(child, stdin, timeout, "sh")
+    }
+}
+
+/// A worker home with its root and `worker.conf`.
+fn home(conf: &str) -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("vivi-worker");
+    std::fs::create_dir_all(&root).unwrap();
+    let dirs = home.path().join("dirs");
+    std::fs::write(
+        root.join("worker.conf"),
+        format!("dir_root={}\n{conf}", dirs.display()),
+    )
+    .unwrap();
+    home
+}
+
+fn config(slots: u32, kind: &str, size: u32) -> PoolConfig {
+    toml::from_str(&format!(
+        "slots = {slots}\nprovider = \"worker\"\n[worker]\nhost = \"studio\"\nkind = \"{kind}\"\nsize_gib = {size}\n"
+    ))
+    .unwrap()
+}
+
+fn provider(home: &Path, slots: u32, kind: &str, size: u32) -> WorkerProvider {
+    WorkerProvider::with_runner(
+        &config(slots, kind, size),
+        "ms",
+        "lanes",
+        Box::new(Shell {
+            home: home.to_path_buf(),
+        }),
+    )
+    .with_seed_pacing(Duration::from_secs(20), Duration::from_millis(50))
+}
+
+fn spec(boot: &str) -> CreateSpec {
+    let metadata = [
+        (META_MAILSPACE.to_string(), "ms".to_string()),
+        (META_POOL.to_string(), "lanes".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    CreateSpec {
+        name: String::new(),
+        image: String::new(),
+        metadata,
+        env: BTreeMap::new(),
+        once_env: BTreeMap::new(),
+        passthrough_env: Vec::new(),
+        files: vec![("/work/boot.sh".to_string(), boot.to_string())],
+        command: Vec::new(),
+        build_dir: None,
+        tmpfs: String::new(),
+    }
+}
+
+fn open(p: &WorkerProvider, boot: &str) -> Result<OpenedSlot, VivariumError> {
+    let id = PoolId {
+        mailspace: "ms".to_string(),
+        pool: "lanes".to_string(),
+    };
+    let progress = Progress::silent();
+    p.open_for_dispatch(&OpenRequest {
+        pool: &id,
+        task: "t1",
+        now: 1,
+        budget_secs: 60,
+        spec: spec(boot),
+        progress: &progress,
+        ready_timeout_secs: None,
+    })
+}
+
+fn empty(dir: &Path) -> bool {
+    std::fs::read_dir(dir).map_or(true, |mut d| d.next().is_none())
+}
+
+#[test]
+fn a_dispatch_builds_seeds_and_claims_a_slot_and_destroy_removes_it() {
+    let home = home("");
+    let p = provider(home.path(), 2, "dir", 0);
+    let slot = open(&p, "echo seeded > seed.txt\n").unwrap();
+    assert_eq!(slot.id, "ms/lanes/slot-1");
+    assert_eq!(slot.index, 1);
+    assert!(!slot.hold.nonce.is_empty());
+    let seen = p.machine(&slot.id).unwrap();
+    assert_eq!(seen.state, "stopped");
+    assert_eq!(seen.exit_code, Some(0));
+    assert_eq!(
+        seen.metadata.get(META_STATE).map(String::as_str),
+        Some(STATE_READY)
+    );
+    let files = p
+        .read_stopped(&slot.id, &["/work/seed.txt"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(files["/work/seed.txt"], b"seeded\n");
+    assert!(
+        home.path()
+            .join("dirs/ms-lanes-slot-1/bin/timeout")
+            .exists(),
+        "a worker slot carries the GNU stand-ins"
+    );
+    p.destroy(&slot.id).unwrap();
+    assert!(p.list().unwrap().is_empty());
+    assert!(empty(&home.path().join("dirs")), "the dir boundary is gone");
+    assert!(
+        empty(&home.path().join("vivi-worker/.ledger")),
+        "the ledger is empty"
+    );
+}
+
+#[test]
+fn a_full_pool_is_no_free_slot_and_the_next_index_is_used() {
+    let home = home("");
+    let p = provider(home.path(), 2, "dir", 0);
+    let first = open(&p, "true\n").unwrap();
+    let second = open(&p, "true\n").unwrap();
+    assert_eq!(second.index, 2);
+    let said = open(&p, "true\n").unwrap_err().to_string();
+    assert!(said.contains("no free slot in pool lanes"), "{said}");
+    p.destroy(&first.id).unwrap();
+    assert_eq!(
+        open(&p, "true\n").unwrap().index,
+        1,
+        "a freed index is reused"
+    );
+}
+
+#[test]
+fn a_request_over_the_worker_budget_is_no_free_slot_and_leaves_nothing() {
+    let home = home("ram_budget_gib=0\n");
+    let p = provider(home.path(), 2, "ram", 4);
+    let said = open(&p, "true\n").unwrap_err().to_string();
+    assert!(
+        said.contains("no free slot") && said.contains("exceeds the budget"),
+        "{said}"
+    );
+    assert!(p.list().unwrap().is_empty());
+    assert!(empty(&home.path().join("vivi-worker/.ledger")));
+}
+
+#[test]
+fn a_failed_seed_is_reported_and_its_slot_removed() {
+    let home = home("");
+    let p = provider(home.path(), 1, "dir", 0);
+    let said = open(&p, "echo nope >&2\nexit 5\n").unwrap_err().to_string();
+    assert!(said.contains("failed (exit 5)"), "{said}");
+    assert!(p.list().unwrap().is_empty());
+    assert!(empty(&home.path().join("dirs")));
+}
+
+#[test]
+fn a_worker_pool_makes_slots_only_per_dispatch() {
+    let home = home("");
+    let p = provider(home.path(), 1, "dir", 0);
+    assert_eq!(p.slot_lifetime(), SlotLifetime::PerDispatch);
+    assert!(p.create(&spec("true\n")).is_err());
+}
+
+#[test]
+fn one_provider_serves_its_pool_and_the_doctor_test_pool() {
+    let home = home("");
+    let p = provider(home.path(), 1, "dir", 0);
+    let mine = open(&p, "true\n").unwrap();
+    let progress = Progress::silent();
+    let doctor = PoolId {
+        mailspace: "ms".to_string(),
+        pool: "lanes-doctor".to_string(),
+    };
+    let mut doctor_spec = spec("true\n");
+    doctor_spec
+        .metadata
+        .insert(META_POOL.to_string(), "lanes-doctor".to_string());
+    let test = p
+        .open_for_dispatch(&OpenRequest {
+            pool: &doctor,
+            task: "t2",
+            now: 1,
+            budget_secs: 60,
+            spec: doctor_spec,
+            progress: &progress,
+            ready_timeout_secs: None,
+        })
+        .unwrap();
+    assert_eq!(
+        test.id, "ms/lanes-doctor/slot-1",
+        "each pool counts its own slots"
+    );
+    assert_eq!(
+        p.list().unwrap().len(),
+        2,
+        "the listing covers the mailspace"
+    );
+    p.destroy(&test.id).unwrap();
+    p.destroy(&mine.id).unwrap();
+    assert!(p.list().unwrap().is_empty());
+}

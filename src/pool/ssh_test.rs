@@ -86,7 +86,7 @@ fn spec(pool: &str, index: u32) -> CreateSpec {
 fn make(p: &SshProvider, pool: &str, index: u32) -> String {
     let spec = spec(pool, index);
     let id = new_slot_id(&spec).unwrap();
-    let archive = SshProvider::new_slot_archive(&spec).unwrap();
+    let archive = p.new_slot_archive(&spec).unwrap();
     p.require("create", &[&id], Some(&archive)).unwrap();
     id
 }
@@ -162,7 +162,7 @@ fn listing_is_scoped_to_the_pools_own_directory() {
     let mut foreign = spec("lanes-a", 2);
     foreign.metadata = slot_metadata(&PoolId::new("other", "", "lanes-a"), 2, "main");
     let foreign_id = new_slot_id(&foreign).unwrap();
-    let archive = SshProvider::new_slot_archive(&foreign).unwrap();
+    let archive = p.new_slot_archive(&foreign).unwrap();
     p.require("create", &[&foreign_id], Some(&archive)).unwrap();
     let found = p.list().unwrap();
     assert_eq!(
@@ -381,7 +381,7 @@ fn creating_over_an_existing_slot_is_refused_and_leaves_it_alone() {
     let p = provider(home.path());
     let id = make(&p, "lanes-a", 1);
     ready(&p, &id);
-    let archive = SshProvider::new_slot_archive(&spec("lanes-a", 1)).unwrap();
+    let archive = p.new_slot_archive(&spec("lanes-a", 1)).unwrap();
     let err = p.require("create", &[&id], Some(&archive)).unwrap_err();
     assert!(err.to_string().contains("exists"), "{err}");
     assert_eq!(slot_state(&p.machine(&id).unwrap()), "free");
@@ -646,7 +646,7 @@ fn make_in(p: &SshProvider, space: &str, pool: &str, index: u32) -> String {
     spec.name = format!("{space}-{pool}-slot-{index}");
     spec.metadata = slot_metadata(&PoolId::new(space, "", pool), index, "main");
     let id = new_slot_id(&spec).unwrap();
-    let archive = SshProvider::new_slot_archive(&spec).unwrap();
+    let archive = p.new_slot_archive(&spec).unwrap();
     p.require("create", &[&id], Some(&archive)).unwrap();
     id
 }
