@@ -279,18 +279,78 @@ fn ours_filters_by_prefix_and_quota() {
 }
 
 #[test]
-fn container_of_reads_the_container_of_a_path() {
-    let fake = Fake::new(&[(
-        "diskutil info -plist /Users/me/vivi-pool",
-        Ok(r#"{"APFSContainerReference":"disk3","DeviceIdentifier":"disk3s5"}"#),
-    )]);
+fn container_of_resolves_the_device_of_a_path_then_its_container() {
+    let df = "Filesystem 512-blocks Used Available Capacity Mounted on\n/dev/disk3s5 1 1 1 1% /System/Volumes/Data\n";
+    let fake = Fake::new(&[
+        ("df -P /Users/me/vivi-pool", Ok(df)),
+        (
+            "diskutil info -plist disk3s5",
+            Ok(r#"{"APFSContainerReference":"disk3","DeviceIdentifier":"disk3s5"}"#),
+        ),
+    ]);
     assert_eq!(
         container_of(&fake, Path::new("/Users/me/vivi-pool")).as_deref(),
         Ok("disk3")
     );
+    let fake = Fake::new(&[
+        (
+            "df -P /mnt/x",
+            Ok("Filesystem\n/dev/disk2s1 1 1 1 1% /mnt\n"),
+        ),
+        (
+            "diskutil info -plist disk2s1",
+            Ok(r#"{"DeviceIdentifier":"disk2s1"}"#),
+        ),
+    ]);
+    assert!(
+        container_of(&fake, Path::new("/mnt/x")).is_err(),
+        "not APFS"
+    );
     let fake = Fake::new(&[(
-        "diskutil info -plist /mnt/x",
-        Ok(r#"{"DeviceIdentifier":"disk2s1"}"#),
+        "df -P /net/x",
+        Ok("Filesystem\nmap auto_home 0 0 0 100% /net\n"),
     )]);
-    assert!(container_of(&fake, Path::new("/mnt/x")).is_err());
+    assert!(
+        container_of(&fake, Path::new("/net/x")).is_err(),
+        "no disk device"
+    );
+}
+
+#[test]
+#[ignore = "manual 1 GiB macOS APFS quota volume create/fill/delete smoke"]
+fn real_runner_makes_fills_and_deletes_a_one_gib_quota_volume() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    use std::io::Write;
+    let runner = crate::pool::ramdisk::RealRunner;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let base = dir.path().canonicalize().expect("canonical");
+    let container = container_of(&runner, &base).expect("container of the temp dir");
+    let mount = base.join("targets").join("k");
+    let name = format!("vivi-smoke-{}", std::process::id());
+    let disk = create(&runner, &container, &name, 1, &mount).expect("create");
+    let listed = ours(&runner, &name).expect("list");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(
+        listed[0].quota_bytes,
+        1_000_001_536.max(listed[0].quota_bytes)
+    );
+    let mut file = std::fs::File::create(mount.join("fill")).expect("writable as this user");
+    let chunk = vec![7_u8; 1 << 20];
+    let mut written = 0_u64;
+    let refused = loop {
+        if let Err(error) = file.write_all(&chunk) {
+            break error;
+        }
+        written += chunk.len() as u64;
+        assert!(written < 2 * GIB, "the quota never stopped the writes");
+    };
+    assert!(written < GIB, "stopped at {written} bytes: {refused}");
+    drop(file);
+    delete(&runner, &disk).expect("delete");
+    assert!(
+        ours(&runner, &name).expect("list").is_empty(),
+        "volume gone"
+    );
 }

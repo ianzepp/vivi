@@ -123,13 +123,22 @@ pub fn list(runner: &dyn Runner) -> Result<(Vec<Container>, Vec<Volume>), String
     Ok(parse_list(&plist_json(runner, &xml, "APFS list")?))
 }
 
-/// The APFS container that holds `path`.
+/// The APFS container that holds `path`: `df -P` names the device of the
+/// volume holding it (`diskutil info` takes a device or a mount point, not an
+/// arbitrary path), and that device's info names its container.
 ///
 /// # Errors
-/// Returns an error when `path` is not on an APFS volume or `diskutil` fails.
+/// Returns an error when `path` is not on an APFS volume or a command fails.
 pub fn container_of(runner: &dyn Runner, path: &Path) -> Result<String, String> {
     let at = path.to_string_lossy();
-    let xml = runner.run(&["diskutil", "info", "-plist", &at], DISKUTIL_SECS)?;
+    let df = runner.run(&["df", "-P", &at], DISKUTIL_SECS)?;
+    let device = df
+        .lines()
+        .nth(1)
+        .and_then(|row| row.split_whitespace().next())
+        .and_then(normalized_disk_id)
+        .ok_or_else(|| format!("apfs: df names no disk device for {at}"))?;
+    let xml = runner.run(&["diskutil", "info", "-plist", &device], DISKUTIL_SECS)?;
     let info = plist_json(runner, &xml, "path disk info")?;
     plist_string(&info, "APFSContainerReference")
         .and_then(normalized_disk_id)

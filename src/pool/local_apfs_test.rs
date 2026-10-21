@@ -92,7 +92,12 @@ impl Runner for ApfsRunner {
         match argv {
             ["mount"] | ["df", "-g"] => Ok(String::new()),
             ["diskutil", "apfs", "list", "-plist"] => Ok(self.listing()),
-            ["diskutil", "info", "-plist", _] => Ok(r#"{"APFSContainerReference":"disk3"}"#.into()),
+            ["df", "-P", _] => {
+                Ok("Filesystem\n/dev/disk3s5 1 1 1 1% /System/Volumes/Data\n".into())
+            }
+            ["diskutil", "info", "-plist", "disk3s5"] => {
+                Ok(r#"{"APFSContainerReference":"disk3"}"#.into())
+            }
             [
                 "diskutil",
                 "apfs",
