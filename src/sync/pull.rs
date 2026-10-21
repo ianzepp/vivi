@@ -340,18 +340,9 @@ fn handle_page(
     unsaved: &mut bool,
     progress: &mut dyn FnMut(&PageProgress),
 ) -> Result<bool, VivariumError> {
-    // Letters bind under the epoch their page was read under.
-    filer.set_validity(state.epoch.unwrap_or(UIDVALIDITY));
-    report.fetched += page.records.len();
     let before = state.clone();
     refine_floor(state, page.records.first());
-    let mut pending = Vec::new();
-    for record in &page.records {
-        filer.file_record(storage, record, report, &mut pending)?;
-    }
-    report.linked += settle_links(storage, pending.clone(), state)?;
-    report.unlinked += unresolved(&pending, &state.dangling);
-    settle_events(mailspace, report)?;
+    file_batch(mailspace, storage, filer, state, report, &page.records)?;
     let advanced = advance(state, page, report);
     if *unsaved || *state != before {
         state.save(dir)?;
@@ -365,6 +356,65 @@ fn handle_page(
         more,
     });
     Ok(more)
+}
+
+/// File already-fetched records into a mailspace exactly as a pull files a
+/// page, with no network and no cursor: verify each record, file it by
+/// address under its role folders, record the project binding, make reply
+/// links, and fold item events (moves, marks, closes) onto their items.
+///
+/// This is the entry point for a host that receives letters directly (a
+/// server filing a member's push). The records are the wire [`Record`]s a
+/// pull would read: `sequence` is the server position bindings are recorded
+/// under, `raw_eml` the base64 of the exact bytes, `content_sha256` their
+/// hash, `to` the envelope recipients, `from_prefix` the sender's stamped
+/// prefix. A record that fails verification is reported in
+/// [`PullReport::refused`], not an error. Filing is idempotent: a record
+/// already held counts as `existing` and changes nothing twice.
+///
+/// `state` supplies the binding epoch (`state.epoch`, else the default
+/// validity) and carries replies whose parent is not held yet in
+/// `state.dangling`; the caller owns persisting it (see
+/// [`SyncState::save`]) if those retries should survive a restart. The
+/// cursor and floor are not touched.
+///
+/// # Errors
+/// Returns an error when storage cannot be read or written.
+pub fn file_records(
+    mailspace: &Mailspace,
+    settings: &SyncSettings,
+    state: &mut SyncState,
+    records: &[Record],
+) -> Result<PullReport, VivariumError> {
+    let storage = mailspace.storage()?;
+    let mut filer = Filer::new(mailspace, settings);
+    let mut report = PullReport::default();
+    file_batch(mailspace, &storage, &mut filer, state, &mut report, records)?;
+    report.cursor = state.since;
+    report.cursor_before = state.since;
+    Ok(report)
+}
+
+/// The one filing path of a pull page and [`file_records`]: the records,
+/// their reply links, then the item-state events they brought.
+fn file_batch(
+    mailspace: &Mailspace,
+    storage: &Storage,
+    filer: &mut Filer<'_>,
+    state: &mut SyncState,
+    report: &mut PullReport,
+    records: &[Record],
+) -> Result<(), VivariumError> {
+    // Letters bind under the epoch their page was read under.
+    filer.set_validity(state.epoch.unwrap_or(UIDVALIDITY));
+    report.fetched += records.len();
+    let mut pending = Vec::new();
+    for record in records {
+        filer.file_record(storage, record, report, &mut pending)?;
+    }
+    report.linked += settle_links(storage, pending.clone(), state)?;
+    report.unlinked += unresolved(&pending, &state.dangling);
+    settle_events(mailspace, report)
 }
 
 /// Move the cursor past the page when it advanced, and count the sequence
