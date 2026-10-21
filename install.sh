@@ -7,7 +7,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/ianzepp/vivi/main/install.sh | sh
-#   curl -fsSL .../install.sh | sh -s -- --version 17.0.1 --prefix "$HOME/.local"
+#   curl -fsSL .../install.sh | sh -s -- --version 17.0.2 --prefix "$HOME/.local"
 #
 # The default version is the release this script was exported from. Pass
 # --version to install another published release. A plain-file
@@ -17,7 +17,7 @@
 set -eu
 
 PREFIX="${VIVI_PREFIX:-${HOME:?HOME is not set}/.local}"
-VERSION="${VIVI_VERSION:-17.0.1}"
+VERSION="${VIVI_VERSION:-17.0.2}"
 BASE_URL="${VIVI_BASE_URL:-https://github.com/ianzepp/vivi/releases/download}"
 ADOPT=0
 
