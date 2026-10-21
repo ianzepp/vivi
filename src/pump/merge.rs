@@ -355,17 +355,17 @@ pub(crate) fn regenerate_generated(ctx: &Ctx, entries: &[&Generated]) -> Result<
 }
 
 /// The shell prefix a merge lane puts in front of one check or proof command:
-/// `env K=V K=V ... ` when `[pump.ramdisk] lane_gib` is set, else empty.
+/// `env K=V K=V ... ` when `[pump.workspace] lane_gib` is set, else empty.
 ///
 /// It wraps that one command line and nothing else, so no pump command, no
 /// git command, and no file in the repository (in particular `Cargo.toml`)
 /// is affected.
 pub(crate) fn ramdisk_env_prefix(cfg: &crate::pump::config::PumpConfig) -> String {
-    if cfg.ramdisk.lane_gib.is_none() {
+    if cfg.workspace.lane_gib.is_none() {
         return String::new();
     }
     let mut prefix = String::from("env");
-    for (key, value) in &cfg.ramdisk.env {
+    for (key, value) in &cfg.workspace.env {
         prefix.push(' ');
         prefix.push_str(&shell_quote(&format!("{key}={value}")));
     }

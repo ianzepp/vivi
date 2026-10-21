@@ -566,7 +566,7 @@ fn local_ramdisk_provider(
 ) -> LocalProvider {
     let config: PoolConfig = toml::from_str(&format!(
         "provider = \"local\"\nslots = 2\n[local]\nroot = \"{}\"\n\
-         [ramdisk]\nenabled = true\nsize_gib = {size_gib}\nmargin_gib = 6\n",
+         [workspace]\nenabled = true\nsize_gib = {size_gib}\nmargin_gib = 6\n",
         root.display()
     ))
     .unwrap();
@@ -581,7 +581,7 @@ fn local_worktree_ramdisk_provider(
 ) -> LocalProvider {
     let config: PoolConfig = toml::from_str(&format!(
         "provider = \"local\"\nslots = 2\n[local]\nroot = {:?}\nworktree_of = {:?}\n\
-         [ramdisk]\nenabled = true\nsize_gib = 8\nmargin_gib = 6\n",
+         [workspace]\nenabled = true\nsize_gib = 8\nmargin_gib = 6\n",
         root.to_string_lossy(),
         source.to_string_lossy()
     ))
@@ -689,7 +689,7 @@ fn a_project_relative_pool_two_part_slot_id_mounts_and_tears_down_ram() {
     let id = "pool/slot-1";
     let config: PoolConfig = toml::from_str(
         "provider = \"local\"\nslots = 2\n[local]\nroot = \"poolroot\"\n\
-         [ramdisk]\nenabled = true\nsize_gib = 1\nmargin_gib = 0\n",
+         [workspace]\nenabled = true\nsize_gib = 1\nmargin_gib = 0\n",
     )
     .unwrap();
     let runner = Arc::new(LocalPoolRamRunner::new(&[]));

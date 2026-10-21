@@ -31,7 +31,7 @@ A role's assigned pool is the primary route. The pool's **fallback** chain adds 
 
 Pool fallback is configured in the pool's table. For example, **[pools.workers]** can set **fallback = "backup"**. For unit work, the hand role pool is preferred; when no hand pool is assigned, legacy kind pool lists remain the compatibility route. A configured role pool takes precedence over legacy dispatch kind routing.
 
-Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **[pump.merge].lanes**, **remote_wait**, **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. The old **[pump.ramdisk].lane_gib** setting applies only to uncalled local merge helpers. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.ramdisk]** when needed.
+Some old settings remain accepted to read existing configurations. They are not the live execution path: **[pump.planner].run** and **charter** are not executed; **[pump.merge].lanes**, **remote_wait**, **REMOTE-MERGE**, and the **merge-jobs/** file protocol do not select or run live merges. **[pump.merge].remote_limit** still supplies the minimum pool merge-job budget, as max(remote_limit, dispatch.budget); it is no longer a remote-claim timeout. The old **[pump.workspace].lane_gib** setting applies only to uncalled local merge helpers. Configure per-job RAM disks on supported local pools under **[pools.&lt;name&gt;.workspace]** when needed.
 
 ## Durable pool jobs
 

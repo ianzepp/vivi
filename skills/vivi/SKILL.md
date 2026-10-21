@@ -987,7 +987,7 @@ vivi pool unset glm image
   gitignored; on fly and docker it is a memory disk packed at seed and
   restored before every job instead. Fly and Docker work with or without it.
 - **A `local` pool can give each job its own RAM disk.** A
-  `[pools.<name>.ramdisk]` table with `enabled = true` makes a fresh disk for
+  `[pools.<name>.workspace]` table with `enabled = true` makes a fresh disk for
   the job's temporary checkout and build output; it is removed when the job
   finishes or is stopped. It requires macOS and only works on a `local` pool.
   `size_gib` defaults to 8 GiB (a gate pool may need 32), `margin_gib` (6) is
@@ -2498,8 +2498,8 @@ Repair units use this budget instead of **[pump.dispatch].budget**.
 is the greater of **remote_limit** and **[pump.dispatch].budget**.
 **[pump.planner].run** and **charter**, **REMOTE-MERGE**, **merge-jobs/**,
 detached planner reaper files, and STOP/PAUSE marker files are retired from
-the live path. On supported local pools, per-job RAM disks use **[pools.&lt;name&gt;.ramdisk]**;
-**[pump.ramdisk].lane_gib** only applies to old uncalled local merge helpers.
+the live path. On supported local pools, per-job RAM disks use **[pools.&lt;name&gt;.workspace]**;
+**[pump.workspace].lane_gib** only applies to old uncalled local merge helpers.
 
 **vivi monitor** shows persisted local/remote task rows and pump job/tick
 metadata. Its row snapshot is bounded to saved task and pool information;

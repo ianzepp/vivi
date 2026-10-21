@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::config::PoolConfig;
-use super::config::config_ramdisk::PoolRamDisk;
+use super::config::config_workspace::PoolWorkspace;
 use super::docker::{env_is_set, unset_names};
 use super::docker_cli::{RunOutput, finish};
 use super::doctor::Check;
@@ -52,7 +52,7 @@ pub struct LocalProvider {
     /// The pool's `build_baseline_gib` in bytes, for reclaim of a slot that
     /// carries no recorded baseline.
     build_baseline: Option<u64>,
-    ramdisk: PoolRamDisk,
+    workspace: PoolWorkspace,
     ramdisk_runner: Arc<dyn crate::pool::ramdisk::Runner>,
     #[cfg(test)]
     available_memory: Option<u64>,
@@ -77,7 +77,7 @@ impl LocalProvider {
             source: config.local.worktree_path(),
             build_dir: config.build_dir.clone(),
             build_baseline: config.build_baseline_bytes(),
-            ramdisk: config.ramdisk.clone(),
+            workspace: config.workspace.clone(),
             ramdisk_runner: Arc::new(crate::pool::ramdisk::RealRunner),
             #[cfg(test)]
             available_memory: None,
@@ -552,12 +552,12 @@ fn mount_ramdisk_at(
     source: &str,
 ) -> Result<(), VivariumError> {
     let _admission_lock = crate::pool::ramdisk::lock_admission().map_err(VivariumError::Message)?;
-    let want = provider.ramdisk.size_gib;
+    let want = provider.workspace.size_gib;
     crate::pool::ramdisk::admit_with(
         provider.ramdisk_runner.as_ref(),
         available_memory(provider),
         want,
-        provider.ramdisk.margin_gib,
+        provider.workspace.margin_gib,
     )
     .map_err(VivariumError::Message)?;
     let volume = pool_job_volume(id, job)?;
@@ -613,9 +613,9 @@ impl PoolProvider for LocalProvider {
     }
 
     fn ramdisk_job_settings(&self) -> Option<(u64, Vec<(String, String)>)> {
-        self.ramdisk
+        self.workspace
             .enabled
-            .then(|| (self.ramdisk.size_gib, self.ramdisk.job_env()))
+            .then(|| (self.workspace.size_gib, self.workspace.job_env()))
     }
 
     fn prepare_job(
@@ -629,7 +629,7 @@ impl PoolProvider for LocalProvider {
             Some(target) => self
                 .prepare_target_checkout(id, target, start, job)
                 .map(|()| None),
-            None if self.ramdisk.enabled => {
+            None if self.workspace.enabled => {
                 prepare_default_job_ramdisk(self, id, job, start).map(Some)
             }
             None => Ok(None),
@@ -644,7 +644,7 @@ impl PoolProvider for LocalProvider {
         job: &str,
     ) -> Result<(), VivariumError> {
         let source = target.local_source.as_deref();
-        if source.is_none() && !self.ramdisk.enabled {
+        if source.is_none() && !self.workspace.enabled {
             return Ok(());
         }
         if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
@@ -665,7 +665,7 @@ impl PoolProvider for LocalProvider {
             }
         }
         std::fs::create_dir_all(&cache)?;
-        if self.ramdisk.enabled {
+        if self.workspace.enabled {
             mount_job_ramdisk(self, id, job, &slot, &cache, source)?;
         }
         let Some(source) = source else {

@@ -907,7 +907,7 @@ fn initialize_git_repo(repo: &std::path::Path) {
 fn merge_lane_queues_a_batch_when_the_ram_disk_does_not_fit_in_memory() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = tela_config();
-    cfg.ramdisk = crate::pump::config::config_ramdisk::PumpRamDisk {
+    cfg.workspace = crate::pump::config::config_workspace::PumpWorkspace {
         lane_gib: Some(8),
         margin_gib: 6,
         ..Default::default()

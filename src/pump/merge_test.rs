@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tempfile::{TempDir, tempdir};
 
-use crate::pump::config::config_ramdisk::PumpRamDisk;
+use crate::pump::config::config_workspace::PumpWorkspace;
 use crate::pump::config::{Generated, MergeConfig, PumpConfig, PumpTarget};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::merge::{
@@ -1553,9 +1553,9 @@ fn setup_ramdisk(lane_gib: u64) -> (TempDir, Ctx, Arc<FakeHost>) {
             shared_checks: vec![String::from("cargo test --lib")],
             ..MergeConfig::default()
         },
-        ramdisk: PumpRamDisk {
+        workspace: PumpWorkspace {
             lane_gib: Some(lane_gib),
-            ..PumpRamDisk::default()
+            ..PumpWorkspace::default()
         },
         ..PumpConfig::default()
     };

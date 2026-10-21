@@ -188,7 +188,7 @@ pub(crate) struct LaneWorker {
     base: Ctx,
     /// This lane's context: its repository is the lane checkout.
     ctx: Ctx,
-    /// The target's `[pump.ramdisk]` request, when a lane disk is configured.
+    /// The target's `[pump.workspace]` request, when a lane disk is configured.
     ram: Option<LaneRam>,
 }
 
@@ -575,7 +575,7 @@ fn start_lane(target: &Ctx, n: u32, out: &Sender<MergeResult>) -> Lane {
         n,
         base: target.clone(),
         ctx,
-        ram: target.cfg.ramdisk.lane_gib.map(|gib| LaneRam {
+        ram: target.cfg.workspace.lane_gib.map(|gib| LaneRam {
             gib,
             runner: std::sync::Arc::new(crate::pool::ramdisk::RealRunner),
             available: None,
@@ -644,7 +644,7 @@ fn ramdisk_batch(lane: &LaneWorker, ram: &LaneRam, jobs: &[MergeJob]) -> Vec<Mer
         &*ram.runner,
         available,
         ram.gib,
-        lane.ctx.cfg.ramdisk.margin_gib,
+        lane.ctx.cfg.workspace.margin_gib,
     ) {
         return undecided_all(jobs, "ramdisk-wait", &err);
     }

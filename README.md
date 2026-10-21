@@ -345,7 +345,7 @@ A pool table is complete on its own: nothing is inherited. Keys: `provider`
 `restore`, and the sub-tables `bands` (`P0` to `P5`, each a list of
 `{ model, reasoning }`), `github` (`app_id`, `private_key`), `harness` (`name`,
 `run`, `models`, `env`, `rules`), `committer` (`name`, `email`), `bridge`
-(`enabled`), `ramdisk` (local provider only), and one table per provider (`fly`, `docker`, `ssh`, `local`,
+(`enabled`), `workspace` (local provider only), and one table per provider (`fly`, `docker`, `ssh`, `local`,
 `runpod`). A `local` pool with `[pools.<name>.local] worktree_of = "<repo>"`
 makes each slot a Git worktree of a repository already on the machine, with no
 network. With a single-target pump, the pump reads a local worktree pool's
@@ -367,7 +367,7 @@ are not migrated or adopted under the UUID key; check provider inventory if
 old resources need cleanup.
 
 Only a `local` pool can enable a per-job RAM disk, and it requires macOS.
-`[pools.<name>.ramdisk] enabled = true` gives each job a fresh disk for its
+`[pools.<name>.workspace] enabled = true` gives each job a fresh disk for its
 temporary checkout and build output. The default size is 8 GiB, with 6 GiB
 reserved for the host; a gate pool may need 32 GiB. The default environment
 turns off Cargo incremental output and debug symbols for those jobs. A custom
@@ -386,7 +386,7 @@ left attached.
 provider = "local"
 slots = 2
 
-[pools.workers.ramdisk]
+[pools.workers.workspace]
 enabled = true
 size_gib = 8
 margin_gib = 6
