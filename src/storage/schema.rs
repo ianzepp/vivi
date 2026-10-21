@@ -16,6 +16,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     if existing.as_deref() == Some(STORAGE_SCHEMA_VERSION) {
         return Ok(());
     }
+    refuse_newer_store(existing.as_deref())?;
     // The DDL is fully idempotent (CREATE TABLE/INDEX IF NOT EXISTS), so it
     // runs for upgrades too: tables added to an existing schema version must
     // still reach databases created before those tables existed. Bumping the
@@ -36,6 +37,28 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     )
     .map(|_| ())
     .map_err(|e| VivariumError::Other(format!("failed to write storage schema version: {e}")))
+}
+
+/// Refuse a store whose schema version is newer than this library's, before
+/// anything is written: an older library would otherwise downgrade the marker
+/// and run its own migrations over a layout it does not understand. A marker
+/// that is not a number is left to the usual repair pass.
+fn refuse_newer_store(existing: Option<&str>) -> Result<(), VivariumError> {
+    let Some(stored) = existing else {
+        return Ok(());
+    };
+    let (Ok(stored_number), Ok(own_number)) = (
+        stored.trim().parse::<u64>(),
+        STORAGE_SCHEMA_VERSION.parse::<u64>(),
+    ) else {
+        return Ok(());
+    };
+    if stored_number > own_number {
+        return Err(VivariumError::Other(format!(
+            "mailspace store schema version {stored} is newer than this vivi supports (schema version {STORAGE_SCHEMA_VERSION}); upgrade vivi to open it"
+        )));
+    }
+    Ok(())
 }
 
 const SCHEMA_DDL: &str = "BEGIN;
@@ -335,3 +358,7 @@ pub(super) fn message_query(where_clause: &str) -> String {
     ]
     .concat()
 }
+
+#[cfg(test)]
+#[path = "schema_test.rs"]
+mod tests;

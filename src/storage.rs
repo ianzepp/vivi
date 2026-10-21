@@ -34,6 +34,7 @@ pub(crate) mod schema;
 mod sync;
 #[cfg(test)]
 mod tests;
+mod watermark;
 
 pub use goals::{GoalRow, goal_handle_for_path};
 pub use graph::{
@@ -48,6 +49,7 @@ pub use mutate::{ItemEventWrite, MailspaceMoveWithReply, MailspaceNoteWithReply,
 pub use pending_deps::PendingDependencies;
 use schema::{ensure_schema, message_query};
 pub use sync::{IngestEvent, IngestOutcome};
+pub use watermark::ChangeWatermark;
 
 const MAILSPACE_DB_FILENAME: &str = "mail.sqlite";
 const BLOBS_DIR: &str = "blobs";
