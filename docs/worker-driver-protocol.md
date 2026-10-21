@@ -115,6 +115,19 @@ These are the steps the `local` provider already runs from Rust
   harmless). The image's size is then the hard ceiling of all apfs
   boundaries. It grows as volumes are written, reuses freed space, and does
   not shrink while attached.
+- **An external drive can hold the volumes directly.** Measured on the Studio
+  with a 2 TB NVMe drive formatted APFS as `Lanes`: once Remote Login has
+  "Allow full disk access for remote users", the login user can create quota
+  volumes in the drive's own container and mount them with `noowners`. Name
+  it by path (`apfs_volume=/Volumes/Lanes`), because device names change
+  across reboots. Without that grant, every file and volume operation on an
+  external drive over SSH fails with "restricted by Sandbox".
+- **Mount points stay on the internal disk.** macOS will not mount a volume
+  at a path inside another external volume (the same mount works under the
+  home folder or `/tmp`). So the driver root, which holds the ledger, run
+  state and mount points, lives on the internal disk (`~/vivi-worker`). Only
+  the data lives on the drive: apfs volumes in its container, and `dir`
+  boundaries under `dir_root`.
 - **dir.** A plain directory with no hard limit, for jobs that need none.
 - **Running.** The boot wrapper's pid plus its start time (`ps -o lstart`), so
   a reused pid is not mistaken for it. A boot that ends before its start time

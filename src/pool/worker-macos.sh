@@ -13,14 +13,20 @@
 #         disk image the driver creates and attaches itself (apfs_image),
 #         because the system container refuses noowners mounts over SSH; the
 #         image's size is the hard ceiling of all apfs boundaries together.
-#         An operator may name a container directly instead (apfs_container).
-#   dir   a plain directory, no limit
+#         On a volume where the login user may create volumes and mount them
+#         with noowners (an external drive, once SSH has full disk access),
+#         apfs_volume names a mounted path and its own container is used.
+#         An operator may also name a container directly (apfs_container).
+#   dir   a plain directory, no limit, under dir_root (default $R/jobs)
 #
 # Layout under $R (ROOT, `~/` expanded):
 #   worker.conf       operator budgets, key=value lines (see conf below)
 #   .lock/            held by admit, release and sweep (mkdir is atomic)
 #   ledger/<job>      one reservation per job: kind, size, device, mount, state
-#   jobs/<job>/       the boundary's mount point (the job's workspace)
+#   jobs/<job>/       the boundary's mount point (the job's workspace). macOS
+#                     will not mount a volume inside another external volume,
+#                     so $R belongs on the internal disk even when the
+#                     volumes live on an external drive.
 #   run/<job>/        pid, start, exit_code, boot.out of the job's boot
 #
 # Verbs:
@@ -52,6 +58,14 @@ conf() {
 }
 # One field of a ledger entry.
 field() { sed -n "s/^$2=//p" "$R/ledger/$1" 2>/dev/null | tail -n1; }
+
+# Where dir boundaries live: dir_root, else under the root.
+dir_root() {
+  local d
+  d=$(conf dir_root "$R/jobs")
+  case "$d" in "~/"*) d="$HOME/${d#\~/}" ;; esac
+  printf '%s' "$d"
+}
 
 # The worker lock. A lock older than ten minutes was left by a dead call.
 lock() {
@@ -87,11 +101,18 @@ mem_free_gib() {
     /^Pages (free|inactive|speculative):/ { gsub(/\./, "", $NF); n += $NF }
     END { printf "%d\n", n * ps / 1073741824 }'
 }
-# The APFS container that holds apfs boundaries: apfs_container as given, or
-# the container of apfs_image, which is created at the apfs budget when it is
-# missing and attached when it is not (attaching twice is harmless).
+# The APFS container that holds apfs boundaries: the container of the
+# mounted path apfs_volume (device names change across reboots, paths do
+# not), or apfs_container as given, or the container of apfs_image, which is
+# created at the apfs budget when it is missing and attached when it is not
+# (attaching twice is harmless).
 apfs_container() {
-  local img part
+  local img part vol
+  vol=$(conf apfs_volume '')
+  if [ -n "$vol" ]; then
+    diskutil info -plist "$vol" 2> /dev/null | plutil -extract APFSContainerReference raw -o - - 2> /dev/null
+    return 0
+  fi
   img=$(conf apfs_image '')
   if [ -z "$img" ]; then
     conf apfs_container ''
@@ -173,7 +194,8 @@ build_ram() {
   [ -n "$volume" ] || return 1
   echo "volume=$volume"
   diskutil unmount "$volume" > /dev/null || return 1
-  diskutil mount -mountPoint "$at" "$volume" > /dev/null
+  diskutil mount -mountPoint "$at" "$volume" > /dev/null || return 1
+  : > "$at/.metadata_never_index"
 }
 build_apfs() {
   local job=$1 at=$2 size=$3 container volume
@@ -183,7 +205,9 @@ build_apfs() {
     | sed -n 's/.*Created new APFS Volume \(disk[0-9]*s[0-9]*\).*/\1/p' | head -n1)
   [ -n "$volume" ] || return 1
   echo "volume=$volume"
-  diskutil mount -mountOptions noowners -mountPoint "$at" "$volume" > /dev/null
+  diskutil mount -mountOptions noowners -mountPoint "$at" "$volume" > /dev/null || return 1
+  # A throwaway build volume is not worth indexing.
+  : > "$at/.metadata_never_index"
 }
 
 admit() {
@@ -197,6 +221,7 @@ admit() {
   [ ! -e "$R/ledger/$job" ] || admit_failed "job $job already has a boundary"
   admit_check "$kind" "$size"
   at="$R/jobs/$job"
+  [ "$kind" != dir ] || at="$(dir_root)/$job"
   mkdir -p "$R/ledger" "$R/run/$job" "$at" || admit_failed "cannot make $at"
   # The reservation is written before anything is built, so a crash part way
   # leaves a ledger entry that release and sweep can clean up after.
@@ -260,7 +285,7 @@ teardown() {
       fi
       ;;
   esac
-  case "$at" in "$R"/jobs/*) rm -rf -- "$at" ;; esac
+  case "$at" in "$R"/jobs/*|"$(dir_root)"/*) rm -rf -- "$at" ;; esac
   rm -rf -- "$R/run/$job"
   rm -f -- "$R/ledger/$job"
 }
