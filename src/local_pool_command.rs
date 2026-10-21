@@ -12,6 +12,7 @@ use vivi::pool::bridge;
 use vivi::pool::github::{self, Secret};
 use vivi::pool::local_branch;
 use vivi::pool::local_git::Repo;
+use vivi::pool::plain_git::{self, RepoSource};
 use vivi::pool::pools::{self, Need, PoolHandle, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::Progress;
@@ -81,9 +82,9 @@ pub(crate) fn create_into(
         return Err(no_resting_slots(&id.pool, &config.provider));
     }
     let worktree = config.worktree_source();
-    let access = match &worktree {
+    let source = match &worktree {
         Some(_) => None,
-        None if config.repo.is_some() => Some(config.require_repo(&id.pool, "create slots")?),
+        None if config.has_source() => Some(config.require_source(&id.pool, "create slots")?),
         None => None,
     };
     progress.say(&format!("{}: preparing the pool's home", id.pool));
@@ -102,35 +103,7 @@ pub(crate) fn create_into(
         eprintln!("{warning}");
     }
     let report = run::create_slots(provider, config, id, options, progress, || {
-        let (token, base) = match (&worktree, &access) {
-            (Some(path), _) => {
-                let repo = Repo::new(path);
-                progress.say(&format!(
-                    "{}: resolving the base commit in {}",
-                    id.pool,
-                    path.display()
-                ));
-                let base = local_branch::base_commit(&repo, seed.base)?;
-                (Secret::new(String::new()), base)
-            }
-            (None, Some(access)) => {
-                progress.say(&format!(
-                    "{}: getting a GitHub token and the base commit",
-                    id.pool
-                ));
-                let token = github::mint_token(access)?;
-                let base = github::resolve_base(&token, access.repo, seed.base)?;
-                (token, base)
-            }
-            (None, None) => {
-                if seed.base.is_some() {
-                    return Err(VivariumError::Config(
-                        "--base requires a repository source".into(),
-                    ));
-                }
-                (Secret::new(String::new()), String::new())
-            }
-        };
+        let (token, base) = seed_start(worktree.as_deref(), source, seed, &id.pool, progress)?;
         progress.say(&format!("seeding at {}", &base[..12.min(base.len())]));
         Ok((token, base))
     })?;
@@ -145,6 +118,49 @@ pub(crate) fn create_into(
         )));
     }
     Ok(report)
+}
+
+/// The fetch token and base commit new slots seed at: from the worktree
+/// pool's source repository, the GitHub repository, or the plain Git remote.
+fn seed_start(
+    worktree: Option<&std::path::Path>,
+    source: Option<RepoSource<'_>>,
+    seed: &SeedAt,
+    pool: &str,
+    progress: &Progress,
+) -> Result<(Secret, String), VivariumError> {
+    match (worktree, source) {
+        (Some(path), _) => {
+            let repo = Repo::new(path);
+            progress.say(&format!(
+                "{pool}: resolving the base commit in {}",
+                path.display()
+            ));
+            let base = local_branch::base_commit(&repo, seed.base)?;
+            Ok((Secret::new(String::new()), base))
+        }
+        (None, Some(RepoSource::Github(access))) => {
+            progress.say(&format!(
+                "{pool}: getting a GitHub token and the base commit"
+            ));
+            let token = github::mint_token(&access)?;
+            let base = github::resolve_base(&token, access.repo, seed.base)?;
+            Ok((token, base))
+        }
+        (None, Some(RepoSource::Git(remote))) => {
+            progress.say(&format!("{pool}: resolving the base commit at {remote}"));
+            let base = plain_git::resolve_base(remote, seed.base)?;
+            Ok((Secret::new(String::new()), base))
+        }
+        (None, None) => {
+            if seed.base.is_some() {
+                return Err(VivariumError::Config(
+                    "--base requires a repository source".into(),
+                ));
+            }
+            Ok((Secret::new(String::new()), String::new()))
+        }
+    }
 }
 
 /// The results of `create`: one line per new slot (and per problem met while

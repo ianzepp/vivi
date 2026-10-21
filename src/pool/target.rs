@@ -48,6 +48,7 @@ pub fn resolve(
     let mut config = pool.clone();
     config.embedded = None;
     config.repo = None;
+    config.remote_url = None;
     config.local.worktree_of = None;
     let local =
         pool.provider == "local" && (pool.worktree_source().is_some() || pool.github.is_none());
@@ -92,8 +93,21 @@ fn resolve_remote(
     let remote = target
         .remote_url
         .clone()
-        .or_else(|| super::super::local_git::Repo::new(path).remote_url(&target.remote));
+        .or_else(|| super::super::local_git::Repo::new(path).remote_url(&target.remote))
+        .or_else(|| {
+            pump.targets
+                .is_empty()
+                .then(|| pool.remote_url.clone())
+                .flatten()
+        });
     let inferred = remote.as_deref().and_then(github_repository);
+    // A remote that is not on GitHub, with no GitHub repository named, is a
+    // plain Git source: the slots fetch and push it with their own keys.
+    if let (Some(remote), None, None) = (&remote, &inferred, &target.github_repo) {
+        config.remote_url = Some(remote.clone());
+        config.require_source("workspace", "dispatch target")?;
+        return Ok(config.remote_address());
+    }
     let github = target
         .github_repo
         .clone()

@@ -10,10 +10,12 @@ use vivi::mailspace::Mailspace;
 use vivi::mailspace::PoolTask;
 use vivi::pool::bridge;
 use vivi::pool::collect::{ErrorWatch, Pacing};
+use vivi::pool::config::RepoAccess;
 use vivi::pool::dispatch::{self, DispatchFlags};
 use vivi::pool::github::Secret;
 use vivi::pool::local_branch;
 use vivi::pool::local_git::Repo;
+use vivi::pool::plain_git::{self, RepoSource};
 use vivi::pool::pools::{self, PoolSet};
 use vivi::pool::porcelain;
 use vivi::pool::progress::{HEARTBEAT, Progress};
@@ -529,10 +531,8 @@ fn read_only_notes(read_only: bool, config: &PoolConfig, body: &str, progress: &
     }
 }
 
-/// Where a job on a remote pool starts: a GitHub token, the push target
-/// checked against the default branch, and `from` resolved to a commit, which
-/// replaces an abbreviated `from` in the plan (a Git server cannot fetch one).
-/// A read-only job gets a token that cannot push and has no push target.
+/// Where a job on a remote pool starts, from its GitHub repository or its
+/// plain Git remote.
 fn remote_start(
     config: &PoolConfig,
     pool: &str,
@@ -540,7 +540,53 @@ fn remote_start(
     flags: &dispatch::DispatchFlags,
     progress: &Progress,
 ) -> Result<(Secret, String), VivariumError> {
-    let access = config.require_repo(pool, "dispatch")?;
+    match config.require_source(pool, "dispatch")? {
+        RepoSource::Github(access) => github_start(access, pool, plan, flags, progress),
+        RepoSource::Git(remote) => git_start(remote, plan, flags, progress),
+    }
+}
+
+/// A plain Git remote: no token (the slot fetches and pushes with its own SSH
+/// key), the push target checked against the remote's `HEAD`, and `from` and
+/// every extra ref resolved with `git ls-remote`.
+fn git_start(
+    remote: &str,
+    plan: &mut job::JobPlan,
+    flags: &dispatch::DispatchFlags,
+    progress: &Progress,
+) -> Result<(Secret, String), VivariumError> {
+    if !plan.read_only {
+        progress.say("checking the push target");
+        let default = plain_git::default_branch(remote)?;
+        dispatch::check_push_target(&plan.refs.branch, &default, flags.allow_default_branch)?;
+    }
+    progress.say(&format!("resolving {} at {remote}", plan.refs.from));
+    let start = plain_git::resolve_base(remote, Some(&plan.refs.from))?;
+    plan.refs.from = if plan.target.is_some() {
+        start.clone()
+    } else {
+        dispatch::full_from(&plan.refs.from, &start)
+    };
+    for with in &mut plan.with {
+        progress.say(&format!("resolving {}", with.name));
+        let commit = plain_git::resolve_base(remote, Some(&with.name))?;
+        with.name = dispatch::full_from(&with.name, &commit);
+        with.commit = commit;
+    }
+    Ok((Secret::new(String::new()), start))
+}
+
+/// A GitHub repository: a GitHub token, the push target checked against the
+/// default branch, and `from` resolved to a commit, which replaces an
+/// abbreviated `from` in the plan (a Git server cannot fetch one). A
+/// read-only job gets a token that cannot push and has no push target.
+fn github_start(
+    access: RepoAccess<'_>,
+    pool: &str,
+    plan: &mut job::JobPlan,
+    flags: &dispatch::DispatchFlags,
+    progress: &Progress,
+) -> Result<(Secret, String), VivariumError> {
     progress.say(&format!("{pool}: getting a GitHub token"));
     let contents = if plan.read_only {
         github::Contents::Read

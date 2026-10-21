@@ -51,6 +51,10 @@ pub struct PoolConfig {
     /// a legacy GitHub source requires `github`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// Plain Git source instead of `repo`: an SSH or `file://` address the
+    /// slots fetch and push with their own keys. See [`super::plain_git`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_url: Option<String>,
     /// Maximum pool size. On `runpod` there are no resting slots: this is the
     /// most pods that may exist at once.
     pub slots: u32,
@@ -426,16 +430,18 @@ impl PoolConfig {
     }
 
     /// The full Git address jobs and the seed fetch from and push to:
-    /// GitHub for `repo = "owner/name"`, or the embedded source's own remote.
+    /// `remote_url` as given, GitHub for `repo = "owner/name"`, or the
+    /// embedded source's own remote.
     /// Empty for a pool with neither (commands that need one check first with
     /// [`PoolConfig::require_repo`]) and for a worktree pool, which has no
     /// remote.
     #[must_use]
     pub fn remote_address(&self) -> String {
-        match (&self.embedded, &self.repo) {
-            (Some(source), _) => source.remote.clone(),
-            (None, Some(repo)) => format!("https://github.com/{repo}.git"),
-            (None, None) => String::new(),
+        match (&self.embedded, &self.remote_url, &self.repo) {
+            (Some(source), _, _) => source.remote.clone(),
+            (None, Some(url), _) => url.clone(),
+            (None, None, Some(repo)) => format!("https://github.com/{repo}.git"),
+            (None, None, None) => String::new(),
         }
     }
 

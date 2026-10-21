@@ -272,7 +272,7 @@ fn valid_publish_ref(branch: &str) -> bool {
 
 fn validate_source(config: &PoolConfig, pool: &str) -> Result<(), VivariumError> {
     if config.embedded.is_none() && config.worktree_source().is_none() {
-        config.require_repo(pool, "dispatch")?;
+        config.require_source(pool, "dispatch")?;
     }
     Ok(())
 }

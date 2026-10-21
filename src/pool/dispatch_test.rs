@@ -816,6 +816,32 @@ branch = "next"
 }
 
 #[test]
+fn a_target_off_github_is_a_plain_git_source() {
+    let pump: crate::pump::config::PumpConfig = toml::from_str(
+        r#"
+[targets.radix]
+path = "radix"
+remote_url = "git@hub:lanes/faberlang/radix.git"
+branch = "next"
+"#,
+    )
+    .unwrap();
+    let resolved = target::resolve(
+        &config(),
+        &pump,
+        std::path::Path::new("/workspace"),
+        "radix",
+    )
+    .unwrap();
+    assert_eq!(resolved.config.repo, None);
+    assert_eq!(
+        resolved.config.remote_url.as_deref(),
+        Some("git@hub:lanes/faberlang/radix.git")
+    );
+    assert_eq!(resolved.target.source, "git@hub:lanes/faberlang/radix.git");
+}
+
+#[test]
 fn a_target_with_mismatched_github_identity_is_refused() {
     let pump: crate::pump::config::PumpConfig = toml::from_str(
         r#"

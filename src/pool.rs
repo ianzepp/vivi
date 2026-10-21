@@ -66,6 +66,7 @@ pub mod local_git;
 pub mod local_proc;
 pub mod local_site;
 pub mod local_slots;
+pub mod plain_git;
 pub mod pools;
 pub mod porcelain;
 pub mod progress;

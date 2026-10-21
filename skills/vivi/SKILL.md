@@ -1901,6 +1901,30 @@ minutes so `wait` can collect without a restart; a boot with nothing to run
 stops itself after 60 seconds; the job directory survives a
 stop and start until the next dispatch replaces it.
 
+### Plain Git source
+
+A pool can fetch from and push to any Git server instead of GitHub: set
+`remote_url` instead of `repo` and `[pools.<name>.github]`.
+
+```toml
+[pools.box]
+remote_url = "git@gitbox:lanes/owner/repo.git"   # SSH (user@host:path or ssh://) or file://
+```
+
+- **No token and no GitHub API.** Refs (`from`, `--with`, `--base`, the push
+  target check) resolve with `git ls-remote` on the dispatching machine, which
+  needs non-interactive access to the address (it runs with
+  `BatchMode=yes` unless `GIT_SSH_COMMAND` is set). The slots fetch and push
+  the address with the login user's own key; the job carries an empty token.
+- **Refs.** A branch or tag name, or a full 40- or 64-character commit hash. An
+  abbreviated hash is refused (it cannot be resolved without a fetch). An
+  annotated tag resolves to its commit.
+- **Exclusive with `repo`.** Setting both is a configuration error, and so is
+  an `http(s)` address (use `repo` and `[github]` for GitHub).
+- **Pump targets.** A `[pump.targets.<id>]` whose `remote_url` (or whose
+  checkout's remote) is not a GitHub address, and that names no
+  `github_repo`, dispatches as a plain Git source to that address.
+
 ### SSH provider
 
 `provider = "ssh"` is the minimal form: a host reachable by SSH where each slot
@@ -1994,6 +2018,7 @@ Everything below is per pool and nothing is inherited:
 [pools.lanes]
 # provider = "fly"            # default; or "docker", "ssh", "local" or "runpod"
 repo = "owner/name"           # optional for a provider-only test pool; needed by create/scale-up/dispatch (with [github])
+# remote_url = "git@gitbox:owner/repo.git"   # instead of repo + [github]: a plain Git source (see Plain Git source)
 slots = 4                     # required; maximum pool size
 image = "rust:1.97-bookworm"  # required on fly, docker and runpod (Debian-based: needs apt for zstd/git); an error on ssh and local
 setup = ["npm install -g some-harness"]   # root, once, before the checkout (login user on ssh)
