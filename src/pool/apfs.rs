@@ -33,6 +33,9 @@ use super::ramdisk::{Disk, Runner, VOLUME_PREFIX, normalized_disk_id, plist_json
 const DISKUTIL_SECS: u64 = 60;
 /// One gibibyte, in bytes.
 const GIB: u64 = 1024 * 1024 * 1024;
+/// The slot-root file in which the local provider records a job.s APFS volume;
+/// the pump-start sweep reads it to find the owning slot.
+pub const SLOT_MARKER: &str = "apfs";
 /// The line `diskutil apfs addVolume` prints with the new volume's device.
 const CREATED: &str = "Disk from APFS operation:";
 

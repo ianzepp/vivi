@@ -2,6 +2,7 @@
 
 pub mod alarm;
 pub mod amend;
+pub mod apfssweep;
 pub mod attempt_read;
 pub mod attempt_record;
 pub mod audit;

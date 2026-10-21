@@ -26,6 +26,8 @@ struct FakeRunner {
     plist_request: Mutex<Option<String>>,
     plist_device: Mutex<Option<String>>,
     listed_volume: Mutex<Option<String>>,
+    /// What `diskutil apfs list -plist` reports: `Ok` JSON, or an error.
+    apfs: Result<String, String>,
 }
 
 impl FakeRunner {
@@ -42,7 +44,13 @@ impl FakeRunner {
             plist_request: Mutex::new(None),
             plist_device: Mutex::new(None),
             listed_volume: Mutex::new(None),
+            apfs: Ok(r#"{"Containers": []}"#.to_string()),
         }
+    }
+
+    /// Serve `apfs` for the whole-machine APFS listing.
+    fn with_apfs(self, apfs: Result<String, String>) -> Self {
+        Self { apfs, ..self }
     }
 
     fn keep_attached(self) -> Self {
@@ -117,6 +125,10 @@ impl Runner for FakeRunner {
                 *self.plist_device.lock().expect("plist device") = Some(argv[3].to_string());
                 Ok("plist".to_string())
             }
+            "diskutil apfs list -plist" => {
+                *self.plist_request.lock().expect("plist request") = Some("apfs:all".into());
+                self.apfs.clone().map(|_| "plist".to_string())
+            }
             _ if argv.len() == 5
                 && argv[0] == "diskutil"
                 && argv[1] == "apfs"
@@ -133,6 +145,9 @@ impl Runner for FakeRunner {
                     .expect("plist request")
                     .clone()
                     .unwrap_or_default();
+                if request == "apfs:all" {
+                    return self.apfs.clone();
+                }
                 if request.starts_with("/dev/") {
                     let device = self
                         .plist_device
@@ -429,4 +444,57 @@ fn sweep_without_a_mailspace_sweeps_every_vivi_disk_and_says_so() {
             "detach line for {volume}: {lines:?}"
         );
     }
+}
+
+/// An APFS listing in which `device` is a Vivi quota volume named `volume`.
+fn apfs_listing(device: &str, volume: &str) -> String {
+    serde_json::json!({"Containers": [{
+        "ContainerReference": "disk3",
+        "CapacityFree": 1_u64 << 40,
+        "Volumes": [{"DeviceIdentifier": device, "Name": volume,
+            "CapacityQuota": 12_u64 << 30, "CapacityInUse": 0}],
+    }]})
+    .to_string()
+}
+
+#[test]
+fn sweep_never_ejects_a_vivi_named_mount_that_is_an_apfs_workspace_volume() {
+    let scratch = Scratch::new("apfs-guard");
+    let mount = scratch.mount_point("vivi-here-pool-slot-1-job1", &["repo"]);
+    let runner = FakeRunner::new(&[("/dev/disk3s7", mount.as_str())])
+        .with_apfs(Ok(apfs_listing("disk3s7", "vivi-here-pool-slot-1-job1")));
+    let (ctx, host) = ctx_with("here", &scratch);
+
+    let lines = sweep_ramdisks(&ctx, &runner);
+
+    assert!(runner.ejections().is_empty(), "never eject: {lines:?}");
+    assert!(
+        removals(&host).is_empty(),
+        "the APFS sweep owns its worktree"
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("an APFS workspace volume"),
+        "{}",
+        lines[0]
+    );
+}
+
+#[test]
+fn sweep_skips_everything_when_the_apfs_listing_fails() {
+    let scratch = Scratch::new("apfs-unknown");
+    let mount = scratch.mount_point("vivi-here-slot1-job1", &[]);
+    let runner =
+        FakeRunner::new(&[("/dev/disk7s1", mount.as_str())]).with_apfs(Err("diskutil busy".into()));
+    let (ctx, _host) = ctx_with("here", &scratch);
+
+    let lines = sweep_ramdisks(&ctx, &runner);
+
+    assert!(runner.ejections().is_empty(), "fail closed: {lines:?}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("WARNING") && lines[0].contains("cannot list APFS"),
+        "{}",
+        lines[0]
+    );
 }

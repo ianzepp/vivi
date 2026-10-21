@@ -182,7 +182,7 @@ pub fn parse_df_gib(text: &str) -> Vec<(String, u64)> {
 }
 
 /// Every well-shaped `(device, mount point)` row from `mount` output.
-fn parse_mount_rows(text: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_mount_rows(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
             let (device, rest) = line.split_once(" on ")?;

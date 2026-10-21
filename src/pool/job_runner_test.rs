@@ -211,8 +211,12 @@ fn ramdisk_full_agent_failure_is_reported_with_configured_size() {
 
     assert_eq!(result.push(), "ramdisk_full", "{:?}", result.fields);
     assert_eq!(result.get("ramdisk_size_gib"), "8");
-    assert_eq!(result.push_line(), "RAM disk full (size 8 GiB)");
-    assert!(result.summary().contains("RAM disk full (size 8 GiB)"));
+    assert_eq!(result.push_line(), "workspace disk full (size 8 GiB)");
+    assert!(
+        result
+            .summary()
+            .contains("workspace disk full (size 8 GiB)")
+    );
 }
 
 #[test]
