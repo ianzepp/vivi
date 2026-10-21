@@ -2,6 +2,7 @@
 //! Phase 01: env config, axum router, health + room endpoints. Wire contract
 //! in docs/contract.md.
 
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -14,6 +15,9 @@ use serde_json::json;
 /// verifier); for now the values are read and surfaced to the health report.
 #[derive(Debug, Clone)]
 struct ServerConfig {
+    /// Listen address (`BIND`, default `0.0.0.0`). A host that must not be
+    /// reachable on every interface (a tailnet-only server) sets its own.
+    bind: IpAddr,
     port: u16,
     data_dir: PathBuf,
     store_encryption_key: Option<String>,
@@ -26,8 +30,15 @@ impl ServerConfig {
             Ok(v) => v.parse::<u16>().map_err(|_| format!("invalid PORT: {v}"))?,
             Err(_) => 8080,
         };
+        let bind = match std::env::var("BIND") {
+            Ok(v) => v
+                .parse::<IpAddr>()
+                .map_err(|_| format!("invalid BIND: {v}"))?,
+            Err(_) => IpAddr::from([0, 0, 0, 0]),
+        };
         let data_dir = PathBuf::from(std::env::var("DATA_DIR").unwrap_or_else(|_| "data".into()));
         Ok(Self {
+            bind,
             port,
             data_dir,
             store_encryption_key: std::env::var("STORE_ENCRYPTION_KEY").ok(),
@@ -87,7 +98,7 @@ async fn main() {
     )
     .route("/healthz", get(healthz));
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
+    let addr = std::net::SocketAddr::from((config.bind, config.port));
     tracing::info!(
         "vivi-server listening on {addr} (data dir {})",
         config.data_dir.display()

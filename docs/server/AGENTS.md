@@ -67,6 +67,25 @@ below and the staging smoke, then run the smoke against production:
 git push origin <main-sha>:release
 ```
 
+### Binary releases (self-hosted servers)
+
+Self-hosted servers, such as the operator's hub on the tailnet, install a
+published binary rather than building one. A `v*` tag runs
+`.github/workflows/release.yml`, which checks that the tag matches the
+`[package] version` in `Cargo.toml`, builds `x86_64-unknown-linux-gnu` and
+`aarch64-apple-darwin`, and publishes `vivi-server-<target>.tar.gz` with a
+`.sha256` beside each to a GitHub Release. Hosts verify the checksum before
+installing.
+
+- A release is a version bump on `main` (Cargo.toml and Cargo.lock), then
+  `git tag -a vX.Y.Z` on that commit and push the tag. Ask the repo owner
+  before bumping a version or pushing a tag.
+- Tags and the Railway `release` branch are independent: a tag publishes
+  binaries and deploys nothing on Railway; advancing `release` deploys
+  production and publishes no binaries.
+- `BIND` sets the listen address (default `0.0.0.0`). A tailnet-only host sets
+  its tailnet IP so the server never listens on the LAN.
+
 ## Railway
 
 Project `vivi-server` (`e58a80d2-1354-47d7-89eb-e60ac7a51834`) has one
