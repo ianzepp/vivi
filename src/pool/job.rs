@@ -556,7 +556,14 @@ fn core_fields(spec: &JobPlan, slot: &str) -> Vec<ParamField> {
         ("BUDGET", spec.budget.to_string()),
         ("MODEL", spec.model.clone()),
         ("SLOT", slot.to_string()),
-        ("SUBJECT", first_line(&spec.subject)),
+        (
+            "SUBJECT",
+            super::commit_hygiene::commit_subject(&spec.subject),
+        ),
+        (
+            "FORBID",
+            super::commit_hygiene::forbidden_tokens(spec).join(" "),
+        ),
         ("COMMIT_NAME", spec.committer.name.clone()),
         ("COMMIT_EMAIL", spec.committer.email.clone()),
         ("ENV_NAMES", spec.env_names.join(" ")),
@@ -626,10 +633,6 @@ pub fn lf(text: &str) -> String {
         .map(|line| line.trim_end_matches('\r'))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or_default().trim().to_string()
 }
 
 /// The two files a job with a bridge grant carries beyond the standard set:

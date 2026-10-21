@@ -87,7 +87,7 @@ fn enqueue_snapshot_job(
         id,
         "reclaim",
         role,
-        format!("Reclaim merged work for {uid}"),
+        String::from("Reclaim merged work"),
         body,
     );
     spec.pool_candidates.clone_from(&local_pools);

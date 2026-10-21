@@ -171,7 +171,9 @@ fn job_runner_is_generic_and_keeps_privileged_publish_outside_the_agent() {
     assert!(!harness_env.contains("PUBLISH_EXPECT"));
     assert!(!harness_env.contains("PUBLISH_REMOTE"));
     assert!(!harness_env.contains("TOKEN"));
-    assert!(job::RUNNER.contains("Pool-Run: slot=$SLOT model=$MODEL"));
+    assert!(!job::RUNNER.contains("Pool-Run:"));
+    assert!(job::RUNNER.contains(r#"history_clean "$candidate""#));
+    assert!(job::RUNNER.contains(r#"history_clean "$RUNNER_SHA""#));
 }
 
 #[test]

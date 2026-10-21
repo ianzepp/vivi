@@ -275,7 +275,7 @@ fn make_init_spec(
         fields.id,
         "need-branch-init",
         &role.name,
-        &format!("initialize need branch {}", fields.branch),
+        "initialize a need branch",
         init_brief(&fields.payload),
     );
     spec.builtin_role = Some(String::from("merge"));

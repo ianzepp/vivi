@@ -209,7 +209,7 @@ fn merge_spec(
         id,
         "need-merge",
         role,
-        &format!("land accepted need {} on {}", binding.need, binding.target),
+        &format!("land an accepted need on {}", binding.target),
         body,
     );
     spec.target = Some(binding.target.clone());
@@ -236,7 +236,7 @@ fn merge_brief(payload: &serde_json::Value) -> Result<String, VivariumError> {
         VivariumError::Message(format!("cannot encode need landing input: {error}"))
     })?;
     Ok(format!(
-        "You are the predefined Vivi Merge role handling a `need-merge` job. Start from the supplied integration target. Fetch the exact target_ref from the assigned remote and fast-forward your scratch checkout to its current published tip before merging; retain all already-integrated work. Then merge exactly the supplied frozen need branch, and do not substitute a newer source tip. Run the exact required checks, resolve conflicts when within scope, and commit the candidate. Do not push; the privileged pool runner publishes after your successful exit. Preserve the accepted need tip as an ancestor of the candidate. Report every required check exactly once with its exact name, command, and `passed` or `failed` status. End with one minified JSON line prefixed `PUMP_MERGE_RESULT=` containing version 1, target, need, revision, base, tip (the accepted frozen need tip), candidate (your full commit SHA), status (`merged` only when all checks pass), checks, and exactly one source object {{\"kind\":\"job\",\"id\":\"<source_job_id>\",\"status\":\"merged|undecided|dropped\",\"why\":\"...\",\"detail\":\"...\"}}. If any conflict or required check remains unresolved, use `undecided` or `dropped`, explain it, and exit unsuccessfully so the runner publishes nothing. Keep conflict resolutions and the final commit visible in your human-readable report.\n\nInput JSON:\n{encoded}\n"
+        "You are the predefined Vivi Merge role handling a `need-merge` job. Start from the supplied integration target. Fetch the exact target_ref from the assigned remote and fast-forward your scratch checkout to its current published tip before merging; retain all already-integrated work. Then merge exactly the supplied frozen need branch with `git merge --no-ff --no-edit -m \"<plain summary of what is being integrated>\"` (never the default merge message, which names branches), and do not substitute a newer source tip. Run the exact required checks, resolve conflicts when within scope, and commit the candidate with a plain message describing the change (no task, need, unit, attempt or job identifiers and no branch or ref names; the runner refuses to publish commits whose messages contain them). Do not push; the privileged pool runner publishes after your successful exit. Preserve the accepted need tip as an ancestor of the candidate. Report every required check exactly once with its exact name, command, and `passed` or `failed` status. End with one minified JSON line prefixed `PUMP_MERGE_RESULT=` containing version 1, target, need, revision, base, tip (the accepted frozen need tip), candidate (your full commit SHA), status (`merged` only when all checks pass), checks, and exactly one source object {{\"kind\":\"job\",\"id\":\"<source_job_id>\",\"status\":\"merged|undecided|dropped\",\"why\":\"...\",\"detail\":\"...\"}}. If any conflict or required check remains unresolved, use `undecided` or `dropped`, explain it, and exit unsuccessfully so the runner publishes nothing. Keep conflict resolutions and the final commit visible in your human-readable report.\n\nInput JSON:\n{encoded}\n"
     ))
 }
 
@@ -380,7 +380,7 @@ fn cleanup_spec(
         id,
         "need-cleanup",
         role.name,
-        &format!("clean landed need branch {}", branch.need),
+        "clean a landed need branch",
         body,
     );
     spec.target = Some(branch.target.clone());

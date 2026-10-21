@@ -531,12 +531,7 @@ fn need_merge_spec(
         &runner_branch,
         unit_sources,
     );
-    let subject = format!(
-        "merge {} units for need {} r{}",
-        units.len(),
-        branch.need,
-        revision
-    );
+    let subject = format!("merge {} units into their need branch", units.len());
     let body = need_merge_body(&payload);
     let mut spec = JobSpec::new(id.clone(), "merge", role, subject, body);
     spec.builtin_role = Some(String::from("merge"));
@@ -561,7 +556,7 @@ fn need_merge_spec(
 
 fn need_merge_body(payload: &Value) -> String {
     format!(
-        "{MERGE_BRIEF}\n\n{MERGE_TIMEOUT_RULES}\n\nThis is an isolated need-branch merge. Merge only the listed unit sources onto `starting_tip_sha`, publish only to `need_ref`, and never publish these units to the shared integration ref. The immutable acceptance base is `frozen_base_sha`. The controller checks runner ancestry evidence for the starting tip and every merged source SHA captured in `unit_sources`.\n\nInput JSON:\n{payload}"
+        "{MERGE_BRIEF}\n\n{MERGE_TIMEOUT_RULES}\n\nThis is an isolated need-branch merge. Merge only the listed unit sources onto `starting_tip_sha`, publish only to `need_ref`, and never publish these units to the shared integration ref. Merge each unit source with `git merge --no-ff --no-edit -m \"<plain summary of what is being integrated>\"` and commit the final tree with a plain message; the runner refuses to publish commits whose messages contain task, need, unit, attempt or job identifiers or branch or ref names. The immutable acceptance base is `frozen_base_sha`. The controller checks runner ancestry evidence for the starting tip and every merged source SHA captured in `unit_sources`.\n\nInput JSON:\n{payload}"
     )
 }
 

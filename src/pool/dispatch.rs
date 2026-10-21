@@ -310,13 +310,18 @@ fn plan_reasoning(
 
 /// The brief the worker reads: with the bridge on, a pointer at the task on
 /// the server (the worker reads it with the vivi tools); without it, the
-/// task body itself.
+/// task body itself. Either way ends with the commit message rule.
 fn brief_for(config: &PoolConfig, handle: &str, subject: &str, body: &str) -> String {
-    if config.bridge.enabled {
+    let brief = if config.bridge.enabled {
         bridge_brief(handle, subject)
     } else {
         body.to_string()
-    }
+    };
+    format!(
+        "{}\n\n{}\n",
+        brief.trim_end(),
+        super::commit_hygiene::COMMIT_MESSAGE_RULE
+    )
 }
 
 /// `from` and `branch` for the flags. A read-only job names no branch.

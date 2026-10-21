@@ -93,6 +93,65 @@ fn text(bundle: &Bundle, name: &str) -> String {
 }
 
 #[test]
+fn the_commit_subject_has_no_tracker_tags() {
+    let mut p = plan();
+    p.subject = "[3ea8dee9-1 a1] Retire X\nsecond line".into();
+    let params = text(
+        &build_bundle(&p, "p-slot-2", &Secret::new(SECRET.into())),
+        "params.env",
+    );
+    assert!(params.contains("SUBJECT='Retire X'\n"), "{params}");
+}
+
+#[test]
+fn the_bundle_lists_the_tokens_a_commit_message_must_not_carry() {
+    let mut p = plan();
+    p.subject = "[3ea8dee9-1 a1] Retire X".into();
+    p.need = Some("9f8e7d6c".into());
+    p.refs.branch = "vivi/unit/3ea8dee9-1-a1".into();
+    p.with = vec![
+        WithRef {
+            name: "vivi/unit/aa11bb22-3-a2".into(),
+            commit: "c".repeat(40),
+        },
+        WithRef {
+            name: "d".repeat(40),
+            commit: "d".repeat(40),
+        },
+    ];
+    let params = text(
+        &build_bundle(&p, "p-slot-2", &Secret::new(SECRET.into())),
+        "params.env",
+    );
+    let line = params
+        .lines()
+        .find_map(|l| l.strip_prefix("FORBID='"))
+        .expect("FORBID is in params.env")
+        .trim_end_matches('\'');
+    let tokens: Vec<&str> = line.split(' ').collect();
+    for want in [
+        "abcd1234",
+        "9f8e7d6c",
+        "0123456789ab",
+        "3ea8dee9-1",
+        "vivi/unit/3ea8dee9-1-a1",
+        "vivi/unit/aa11bb22-3-a2",
+        "aa11bb22-3",
+        "refs/vivi/with/",
+    ] {
+        assert!(tokens.contains(&want), "{want} missing from {tokens:?}");
+    }
+    assert!(
+        !tokens.contains(&"a1"),
+        "short tokens are skipped: {tokens:?}"
+    );
+    assert!(
+        !tokens.contains(&"d".repeat(40).as_str()),
+        "a bare commit id is not a handle: {tokens:?}"
+    );
+}
+
+#[test]
 fn the_bundle_carries_the_pool_fetch_depth() {
     let mut p = plan();
     p.depth = 50;

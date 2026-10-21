@@ -12,6 +12,9 @@
 #                REMOTE and also gets LOCAL_ACTION (create | continue) and
 #                LOCAL_START (the commit FROM resolved to). With a bridge
 #                grant also BRIDGE_SERVER and BRIDGE_PROJECT (not secret).
+#                FORBID is a space-separated list of tokens (tracker handles,
+#                branch and ref names) that no commit about to be published
+#                may carry in its message; see history_clean below.
 #                PUBLISH_REF, PUBLISH_EXPECT and PUBLISH_REMOTE are runner-only:
 #                after agent exit 0, the runner may publish HEAD to the exact
 #                heads ref and optionally require HEAD to equal the expected SHA.
@@ -297,6 +300,42 @@ finish() { # finish <push-outcome> [sha]
   exit 0
 }
 
+# The history guard: no commit about to be published (those on the candidate
+# that are not on START) may carry a FORBID token -- a tracker handle or a
+# branch or ref name -- anywhere in its message. Sets HISTORY_STATE to
+# handles_in_history (a token matched; the token and the commit go to the run
+# log) or history_check_failed (the commits could not be listed; refusing is the
+# safe answer). Every publication and every local commit result goes through it.
+HISTORY_STATE=
+history_clean() { # history_clean <candidate>
+  local candidate=$1 commits commit message token
+  local -a tokens
+  HISTORY_STATE=
+  read -r -a tokens <<< "${FORBID:-}"
+  [ "${#tokens[@]}" -gt 0 ] || return 0
+  init_publisher && commits=$(publisher_git rev-list "$START..$candidate") || {
+    HISTORY_STATE=history_check_failed
+    return 1
+  }
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    message=$(publisher_git log -1 --format=%B "$commit") || {
+      HISTORY_STATE=history_check_failed
+      return 1
+    }
+    for token in "${tokens[@]}"; do
+      case "$message" in
+        *"$token"*)
+          HISTORY_STATE=handles_in_history
+          echo "handles_in_history token=$token commit=$commit"
+          return 1
+          ;;
+      esac
+    done
+  done <<< "$commits"
+  return 0
+}
+
 # Import a hand-verified object into the isolated runner repo, then push its
 # exact id. Git never reads the hand checkout's config or hooks here.
 publish_candidate_to() {
@@ -320,6 +359,7 @@ publish_candidate_to() {
       return 1
     }
   fi
+  history_clean "$candidate" || { PUBLISH_STATE=$HISTORY_STATE; return 1; }
   if [ -n "${PUBLISH_EXPECT:-}" ] && [[ "$ref" == refs/heads/vivi/need/* ]]; then
     guarded_need_create "$url" "$ref" "$candidate" || return 1
     push_state=$GUARDED_PUSH_STATE
@@ -827,19 +867,20 @@ if [ "${AGENT_RC:-0}" != 0 ]; then
   COMMIT_ALLOW=(--allow-empty)
 fi
 if [ -n "$CHANGED" ] || [ "${AGENT_RC:-0}" != 0 ]; then
-  TRAILER="Pool-Run: slot=$SLOT model=$MODEL from=${START:0:10} exit=$AGENT_RC duration=${AGENT_S}s"
   as_hand git add -A && { [ -z "${BUILD_DIR:-}" ] || as_hand git reset -q -- "$BUILD_DIR"; } \
     && as_hand git -c user.name="$COMMIT_NAME" -c user.email="$COMMIT_EMAIL" \
-         commit -q -m "$COMMIT_SUBJECT" -m "$TRAILER" "${COMMIT_ALLOW[@]}" || finish commit_failed
+         commit -q -m "$COMMIT_SUBJECT" "${COMMIT_ALLOW[@]}" || finish commit_failed
 fi
 RUNNER_SHA=$(hand_git rev-parse --verify 'HEAD^{commit}') || finish commit_failed
 valid_git_oid "$RUNNER_SHA" || finish commit_failed
+# A refusal for a tracker handle in a commit message has its own outcome word.
 if [ -n "${LOCAL_ACTION:-}" ]; then
-  RUNNER_PUSH=committed
+  if history_clean "$RUNNER_SHA"; then RUNNER_PUSH=committed; else RUNNER_PUSH=push_refused; fi
 elif publish_candidate_to "$(clean_publish_url "$REMOTE")" "refs/heads/$BRANCH" "$RUNNER_SHA" no; then
   RUNNER_PUSH=pushed
 else
   RUNNER_PUSH=push_refused
 fi
+[ "$HISTORY_STATE" != handles_in_history ] || RUNNER_PUSH=handles_in_history
 finalize_targets
 finish "$RUNNER_PUSH" "$RUNNER_SHA"

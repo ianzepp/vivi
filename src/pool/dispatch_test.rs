@@ -109,7 +109,13 @@ fn a_valid_request_plans_a_job() {
     assert_eq!(p.harness_cmd, "fake --model m/ok @/home/hand/brief.md");
     assert_eq!(p.env_names, ["SOME_KEY"]);
     assert_eq!(p.refs.branch, "factory/a");
-    assert_eq!(p.brief, "body text");
+    assert_eq!(
+        p.brief,
+        format!(
+            "body text\n\n{}\n",
+            crate::pool::commit_hygiene::COMMIT_MESSAGE_RULE
+        )
+    );
 }
 
 #[test]
@@ -136,7 +142,12 @@ fn the_pool_depth_setting_reaches_the_plan() {
 #[test]
 fn the_brief_is_a_pointer_with_the_bridge_and_the_body_without_it() {
     let without = plan(&flags("m/ok")).unwrap();
-    assert_eq!(without.brief, "body text");
+    assert!(without.brief.starts_with("body text\n\n"));
+    assert!(
+        without
+            .brief
+            .contains(crate::pool::commit_hygiene::COMMIT_MESSAGE_RULE)
+    );
     let mut config = config();
     config.bridge.enabled = true;
     let with = plan_job(
@@ -151,6 +162,10 @@ fn the_brief_is_a_pointer_with_the_bridge_and_the_body_without_it() {
     assert!(with.brief.contains("abcd1234"), "{}", with.brief);
     assert!(with.brief.contains("Subject line"), "{}", with.brief);
     assert!(!with.brief.contains("body text"), "{}", with.brief);
+    assert!(
+        with.brief
+            .contains(crate::pool::commit_hygiene::COMMIT_MESSAGE_RULE)
+    );
     for tool in ["show", "thread", "reply", "done"] {
         assert!(with.brief.contains(tool), "{tool}: {}", with.brief);
     }

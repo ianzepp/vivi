@@ -62,6 +62,18 @@ impl Rig {
     /// Run the runner as a written job with `harness` and a budget of
     /// `budget` seconds.
     fn run(&self, harness: &str, budget: u32, worktree: bool) -> JobResult {
+        self.run_with(harness, budget, worktree, "").0
+    }
+
+    /// Like [`Rig::run`], with extra `params.env` lines and the runner's own
+    /// stdout as well.
+    fn run_with(
+        &self,
+        harness: &str,
+        budget: u32,
+        worktree: bool,
+        extra_params: &str,
+    ) -> (JobResult, String) {
         let remote = if worktree {
             String::new()
         } else {
@@ -73,6 +85,7 @@ impl Rig {
         if worktree {
             params += &format!("LOCAL_ACTION='create'\nLOCAL_START='{}'\n", self.start);
         }
+        params += extra_params;
         let job = self.work.path().join("job");
         std::fs::create_dir_all(&job).unwrap();
         for (name, content) in [
@@ -102,7 +115,7 @@ impl Rig {
         let log = String::from_utf8_lossy(&out.stdout).into_owned();
         let text = std::fs::read_to_string(job.join("result"))
             .unwrap_or_else(|e| panic!("no result ({e}): {log}"));
-        JobResult::parse(&text)
+        (JobResult::parse(&text), log)
     }
 }
 
@@ -115,10 +128,7 @@ fn a_failed_agents_leftover_work_is_pushed_with_the_failure_subject() {
     assert_eq!(Rig::subject(&rig.f.repo), FAILED_SUBJECT);
     assert!(git(&rig.f.repo, &["show", "pool/w:a.txt"]).contains("partial"));
     let body = git(&rig.f.repo, &["log", "-1", "--format=%b", "pool/w"]);
-    assert!(
-        body.contains("exit=3"),
-        "the trailer names the exit: {body}"
-    );
+    assert!(body.is_empty(), "the commit has only a subject: {body}");
 }
 
 #[test]
@@ -174,4 +184,47 @@ fn in_worktree_mode_a_failed_agents_work_is_committed_with_the_failure_subject()
         "HEAD",
         "the worktree goes back to a detached HEAD"
     );
+}
+
+const FORBID: &str = "FORBID='3ea8dee9-1 vivi/unit/3ea8dee9-1-a1 refs/vivi/with/'\n";
+
+#[test]
+fn a_commit_message_with_a_handle_is_not_published() {
+    let rig = Rig::new();
+    let harness = "echo x > own.txt; git add own.txt; \
+        git commit -q -m \"Merge remote-tracking branch 'origin/vivi/unit/3ea8dee9-1-a1'\"";
+    let (result, log) = rig.run_with(harness, 60, false, FORBID);
+    assert_eq!(result.push(), "handles_in_history", "{:?}", result.fields);
+    assert_eq!(git(&rig.f.repo, &["branch", "--list", "pool/w"]), "");
+    assert!(
+        log.contains("handles_in_history token=3ea8dee9-1"),
+        "the log names the token: {log}"
+    );
+}
+
+#[test]
+fn a_handle_in_the_runners_own_subject_is_not_published() {
+    let rig = Rig::new();
+    let extra = format!("{FORBID}SUBJECT='Retire 3ea8dee9-1'\n");
+    let (result, _) = rig.run_with("echo x >> a.txt", 60, false, &extra);
+    assert_eq!(result.push(), "handles_in_history", "{:?}", result.fields);
+    assert_eq!(git(&rig.f.repo, &["branch", "--list", "pool/w"]), "");
+}
+
+#[test]
+fn clean_commit_messages_are_published_with_a_forbid_list() {
+    let rig = Rig::new();
+    let harness = "echo x > own.txt; git add own.txt; git commit -q -m 'Add the own file'; \
+        echo y >> a.txt";
+    let (result, log) = rig.run_with(harness, 60, false, FORBID);
+    assert_eq!(result.push(), "pushed", "{:?} {log}", result.fields);
+    assert_eq!(Rig::subject(&rig.f.repo), "review");
+}
+
+#[test]
+fn a_handle_in_a_worktree_commit_is_not_reported_committed() {
+    let rig = Rig::new().as_worktree();
+    let harness = "echo x >> a.txt; git commit -qam 'refs/vivi/with/abc'";
+    let (result, _) = rig.run_with(harness, 60, true, FORBID);
+    assert_eq!(result.push(), "handles_in_history", "{:?}", result.fields);
 }

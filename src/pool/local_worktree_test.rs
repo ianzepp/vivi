@@ -380,7 +380,7 @@ fn a_new_branch_gets_a_commit_in_the_local_repository_and_the_slot_is_detached_a
         git(&rig.f.repo, &["log", "-1", "--format=%an <%ae>", "topic"]),
         "Pool Test <pool-test@localhost>"
     );
-    assert!(git(&rig.f.repo, &["log", "-1", "--format=%B", "topic"]).contains("Pool-Run: slot="));
+    assert!(!git(&rig.f.repo, &["log", "-1", "--format=%B", "topic"]).contains("Pool-Run"));
     assert_eq!(
         git(&rig.f.repo, &["show", "--stat", "--format=", "topic"])
             .matches("standin.txt")

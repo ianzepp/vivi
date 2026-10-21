@@ -403,7 +403,7 @@ fn queue_remote_branch_delete(
         id.clone(),
         "ref-delete",
         role.name.clone(),
-        format!("delete attempt branch {branch}"),
+        String::from("delete a merged attempt branch"),
         format!(
             "Do not change the checkout. After your clean exit, the privileged pool runner deletes `{branch}` only if it still matches `{sha}`."
         ),

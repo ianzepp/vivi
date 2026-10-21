@@ -178,7 +178,7 @@ fn open_repair(ctx: &Ctx, st: &mut State, q: &Quarantine, repair: &str, kind: &s
             |(_, u)| u.target_id().to_string(),
         ),
         revision: 1,
-        title: format!("Repair quarantined batch {} ({} units)", q.id, parked.len()),
+        title: format!("Repair a quarantined batch ({} units)", parked.len()),
         brief: repair_brief(q, &parked),
         write_scope: scope,
         proof: vec![q.cmd.clone()],

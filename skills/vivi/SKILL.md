@@ -1891,7 +1891,8 @@ Also not built: `vivi step` does not yet offer tasks addressed to `auditor` or
 - Push outcomes: `pushed <branch> <sha>` (a worktree pool says
   `committed <branch> <sha>`: a commit on the local branch, nothing pushed),
   `push_refused`, `no_changes`,
-  `fetch_failed`, `checkout_failed`, `commit_failed`. A result with
+  `fetch_failed`, `checkout_failed`, `commit_failed`, `handles_in_history`
+  (see "On the slot"). A result with
   `state=killed` means the slot's hard limit stopped the runner.
 
 ### On the slot
@@ -1900,9 +1901,21 @@ A generic runner, embedded in the binary and delivered with each job, returns
 the checkout to a clean tree at `from`, runs the harness as the unprivileged
 user `hand` with a clean environment (only `HOME`, `PATH`, and the names in
 the pool's `harness.env`; the Git token is never among them and is readable only by
-root), then commits what changed as the configured bot identity, with a
-`Pool-Run:` trailer recording slot, model, start ref, exit code, and duration,
-and pushes without force. The harness's standard output is the receipt;
+root), then commits what changed as the configured bot identity and pushes
+without force. The commit message is the task subject with any leading
+`[...]` tags removed (a failed attempt is prefixed `WIP (attempt failed): `),
+with no body or trailer: a commit a pool job writes into the repository never
+carries a task, need, unit, attempt or job identifier or a branch or ref name.
+The runner enforces this. Before any publication (and before reporting
+`committed` in a worktree pool) it reads the messages of the commits it would
+publish that are not already on the start commit, and if any holds one of the
+job's identifiers or ref names (the `FORBID` list in `params.env`: the task
+handle, need id, job id, tags of the subject, the job's own branch, every
+`--with` ref and the unit ids inside their names, and `refs/vivi/with/`) it
+publishes nothing and ends `handles_in_history`, naming the token and the
+commit in the run log. Every pool brief tells the agent to write plain commit
+messages; merge briefs tell it to merge with `git merge --no-ff --no-edit -m
+"<plain summary>"`. The harness's standard output is the receipt;
 standard output and error are kept as files. A finished job lingers for two
 minutes so `wait` can collect without a restart; a boot with nothing to run
 stops itself after 60 seconds; the job directory survives a
