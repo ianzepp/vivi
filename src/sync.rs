@@ -214,6 +214,10 @@ pub fn sync_dir(vivi_dir: &Path) -> PathBuf {
 mod fake_server;
 
 #[cfg(test)]
+#[path = "sync/file_records_test.rs"]
+mod file_records_test;
+
+#[cfg(test)]
 #[path = "sync/send_filter_test.rs"]
 mod send_filter_test;
 
