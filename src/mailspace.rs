@@ -21,6 +21,7 @@ mod adoption;
 mod archive;
 mod backlog;
 mod backlog_audit;
+pub mod board;
 mod body;
 pub mod config_edit;
 mod config_file;
