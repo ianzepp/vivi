@@ -100,16 +100,22 @@ pub struct ProjectMeta {
     pub ttl_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closed: bool,
+    /// The log epoch the vivi client binds pulled letters under: 1 to
+    /// `u32::MAX`, minted once, never changed by the server. Absent in a
+    /// `project.json` written before epochs; minted on first use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u32>,
 }
 
 impl ProjectMeta {
-    fn durable(project_id: String) -> Self {
+    fn durable(project_id: String, epoch: u32) -> Self {
         Self {
             project_id,
             mode: None,
             expires_at: None,
             ttl_seconds: None,
             closed: false,
+            epoch: Some(epoch),
         }
     }
 
@@ -338,6 +344,8 @@ pub struct ReadAfter {
     pub next_cursor: u64,
     /// True when more records match after `next_cursor`.
     pub has_more: bool,
+    /// The project's log epoch, sent on every list response.
+    pub epoch: u32,
 }
 
 /// Result of a handle lookup: the visible letters, ordered by sequence, and
@@ -880,6 +888,26 @@ impl std::fmt::Debug for Clock {
     }
 }
 
+/// A fresh epoch: random, 1 to `u32::MAX` (0 means "no epoch" to a client).
+fn mint_epoch() -> Result<u32, ProjectError> {
+    loop {
+        let mut raw = [0u8; 4];
+        getrandom::fill(&mut raw)
+            .map_err(|_| ProjectError::Storage("entropy source unavailable".into()))?;
+        let epoch = u32::from_be_bytes(raw);
+        if epoch != 0 {
+            return Ok(epoch);
+        }
+    }
+}
+
+fn meta_lock() -> MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 fn append_lock() -> MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -1010,7 +1038,8 @@ impl ProjectStore {
             }
             Mailspace::init(Some(&dir))
                 .map_err(storage_err("failed to create the project mailspace"))?;
-            let meta = ProjectMeta::durable(project_id);
+            let epoch = mint_epoch()?;
+            let meta = ProjectMeta::durable(project_id, epoch);
             let bytes = serde_json::to_vec(&meta).map_err(|e| {
                 ProjectError::Storage(format!("failed to encode project.json: {e}"))
             })?;
@@ -1067,6 +1096,24 @@ impl ProjectStore {
         serde_json::from_slice(&bytes).map_err(|e| ProjectError::Storage(e.to_string()))
     }
 
+    /// The project's log epoch. A project without one (created before
+    /// epochs) gets one minted and persisted here, once; every later call
+    /// and every restart returns the same value.
+    pub fn epoch(&self, raw_id: &str) -> Result<u32, ProjectError> {
+        if let Some(epoch) = self.load_meta(raw_id)?.epoch {
+            return Ok(epoch);
+        }
+        let _guard = meta_lock();
+        let mut meta = self.load_meta(raw_id)?;
+        if let Some(epoch) = meta.epoch {
+            return Ok(epoch);
+        }
+        let epoch = mint_epoch()?;
+        meta.epoch = Some(epoch);
+        self.write_meta(&meta)?;
+        Ok(epoch)
+    }
+
     fn write_meta(&self, meta: &ProjectMeta) -> Result<(), ProjectError> {
         let dir = self.existing_project_dir(&meta.project_id)?;
         let bytes = serde_json::to_vec(meta)
@@ -1086,6 +1133,7 @@ impl ProjectStore {
             expires_at: Some(expires_at.to_rfc3339_opts(SecondsFormat::Secs, true)),
             ttl_seconds: Some(ttl_seconds),
             closed: false,
+            epoch: meta.epoch,
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -1246,6 +1294,7 @@ impl ProjectStore {
         viewer: &Viewer<'_>,
     ) -> Result<ReadAfter, ProjectError> {
         let dir = self.existing_project_dir(raw_id)?;
+        let epoch = self.epoch(raw_id)?;
         let project = Project::open(&dir)?;
         let mut params = vec![Value::Integer(
             i64::try_from(query.since).unwrap_or(i64::MAX),
@@ -1277,6 +1326,7 @@ impl ProjectStore {
             records,
             next_cursor,
             has_more,
+            epoch,
         })
     }
 

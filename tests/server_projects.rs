@@ -1466,3 +1466,48 @@ fn lookup_by_handle_hits_misses_multiples_and_hidden() {
     assert!(found.records.is_empty());
     assert_eq!(found.missing.len(), 100);
 }
+
+#[test]
+fn the_epoch_is_minted_once_stable_across_reopen_and_distinct_per_project() {
+    let data_dir = scratch_data_dir("epoch");
+    let store = ProjectStore::new(&data_dir);
+    let a = store.create_project().unwrap();
+    let b = store.create_project().unwrap();
+    let epoch = store.epoch(&a.project_id).unwrap();
+    assert!(epoch >= 1);
+    assert_eq!(a.epoch, Some(epoch));
+    assert_eq!(store.epoch(&a.project_id).unwrap(), epoch);
+    assert_ne!(store.epoch(&b.project_id).unwrap(), epoch);
+    let reopened = ProjectStore::new(&data_dir);
+    assert_eq!(reopened.epoch(&a.project_id).unwrap(), epoch);
+    let page = reopened
+        .read_page(&a.project_id, &ListQuery::since(0), &viewer("creator"))
+        .unwrap();
+    assert_eq!(page.epoch, epoch);
+}
+
+#[test]
+fn a_project_from_before_epochs_gets_one_on_first_use_and_keeps_it() {
+    let data_dir = scratch_data_dir("epoch-legacy");
+    let store = ProjectStore::new(&data_dir);
+    let meta = store.create_project().unwrap();
+    let json_path = project_dir(&data_dir, &meta.project_id).join("project.json");
+    std::fs::write(
+        &json_path,
+        format!(r#"{{"project_id":"{}"}}"#, meta.project_id),
+    )
+    .unwrap();
+    let minted = store.epoch(&meta.project_id).unwrap();
+    assert!(minted >= 1);
+    assert!(
+        std::fs::read_to_string(&json_path)
+            .unwrap()
+            .contains("epoch")
+    );
+    assert_eq!(
+        ProjectStore::new(&data_dir)
+            .epoch(&meta.project_id)
+            .unwrap(),
+        minted
+    );
+}

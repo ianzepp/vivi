@@ -18,8 +18,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::identities::IdentityRecord;
-use crate::projects_api::{authenticate, project_error, require_existing_project};
+use crate::keys::Caller;
+use crate::projects_api::{authenticate_caller, project_error, require_existing_project};
 use crate::rooms::error_response;
 
 const PROTOCOL_LATEST: &str = "2025-03-26";
@@ -47,8 +47,8 @@ pub async fn mcp_handler(
     if let Err(response) = crate::projects_api::require_live_chat(&state, &id).await {
         return response;
     }
-    let identity = match authenticate(&state, &id, &headers).await {
-        Ok(identity) => identity,
+    let caller = match authenticate_caller(&state, &id, &headers).await {
+        Ok(caller) => caller,
         Err(response) => return response,
     };
     let bytes = match body {
@@ -75,7 +75,7 @@ pub async fn mcp_handler(
     if let Some(items) = parsed.as_array() {
         let mut responses = Vec::new();
         for item in items {
-            match handle_one(&state, &id, &identity, item).await {
+            match handle_one(&state, &id, &caller, item).await {
                 Ok(Some(response)) => responses.push(response),
                 Ok(None) => {}
                 Err(response) => return response,
@@ -83,7 +83,7 @@ pub async fn mcp_handler(
         }
         return rpc_http(StatusCode::OK, Value::Array(responses), sse);
     }
-    match handle_one(&state, &id, &identity, &parsed).await {
+    match handle_one(&state, &id, &caller, &parsed).await {
         Ok(Some(value)) => rpc_http(StatusCode::OK, value, sse),
         Ok(None) => StatusCode::ACCEPTED.into_response(),
         Err(response) => response,
@@ -93,7 +93,7 @@ pub async fn mcp_handler(
 async fn handle_one(
     state: &AppState,
     project_id: &str,
-    identity: &IdentityRecord,
+    caller: &Caller,
     value: &Value,
 ) -> Result<Option<Value>, Response> {
     let req: JsonRpcRequest = match serde_json::from_value(value.clone()) {
@@ -127,7 +127,7 @@ async fn handle_one(
         "tools/call" => {
             let name = req.params.get("name").and_then(Value::as_str).unwrap_or("");
             let arguments = req.params.get("arguments").cloned().unwrap_or(json!({}));
-            call_tool(state, project_id, identity, name, arguments).await?
+            call_tool(state, project_id, caller, name, arguments).await?
         }
         _ => return Ok(Some(jsonrpc_error(id, -32601, "method not found"))),
     };
@@ -141,17 +141,26 @@ async fn handle_one(
 async fn call_tool(
     state: &AppState,
     project_id: &str,
-    identity: &IdentityRecord,
+    caller: &Caller,
     name: &str,
     arguments: Value,
 ) -> Result<Value, Response> {
     let store = state.projects.clone();
     let limiter = state.limiter.clone();
     let project_id = project_id.to_owned();
-    let identity = identity.clone();
+    let identity = caller.identity.clone();
+    let acting_as = caller.acting_as.clone();
     let name = name.to_owned();
     match tokio::task::spawn_blocking(move || {
-        tools::dispatch(&store, &limiter, &project_id, &identity, &name, &arguments)
+        tools::dispatch(
+            &store,
+            &limiter,
+            &project_id,
+            &identity,
+            acting_as.as_deref(),
+            &name,
+            &arguments,
+        )
     })
     .await
     {

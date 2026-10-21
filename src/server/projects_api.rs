@@ -16,7 +16,7 @@ use vivi::storage::is_traveling_id;
 use crate::AppState;
 use crate::auth::{self, AuthError, canonical_spki_hex, parse_verifying_key};
 use crate::identities::{IdentityRecord, RefreshError, RegisterError, valid_mailspace_id};
-use crate::keys::resolve_project_identity;
+use crate::keys::{Caller, resolve_project_caller};
 use crate::projects::{AppendItem, ListQuery, ProjectError, ProjectRecord, Viewer};
 use crate::rooms::error_response;
 
@@ -221,6 +221,17 @@ pub(crate) async fn authenticate(
     project_id: &str,
     headers: &HeaderMap,
 ) -> Result<IdentityRecord, Response> {
+    authenticate_caller(state, project_id, headers)
+        .await
+        .map(|caller| caller.identity)
+}
+
+/// As [`authenticate`], keeping the vivi identity an API key acts as.
+pub(crate) async fn authenticate_caller(
+    state: &AppState,
+    project_id: &str,
+    headers: &HeaderMap,
+) -> Result<Caller, Response> {
     let Some(token) = presented_bearer(headers) else {
         return Err(missing_bearer());
     };
@@ -229,11 +240,11 @@ pub(crate) async fn authenticate(
     let project_id = project_id.to_owned();
     let token = token.to_owned();
     match tokio::task::spawn_blocking(move || {
-        resolve_project_identity(&identities, &keys, &project_id, &token)
+        resolve_project_caller(&identities, &keys, &project_id, &token)
     })
     .await
     {
-        Ok(Some(identity)) => Ok(identity),
+        Ok(Some(caller)) => Ok(caller),
         Ok(None) => Err(invalid_bearer()),
         Err(_) => Err(identity_lookup_failed()),
     }
@@ -553,6 +564,7 @@ pub async fn items_handler(
                 "records": records,
                 "next_cursor": page.next_cursor,
                 "has_more": page.has_more,
+                "epoch": page.epoch,
                 "item_events": ITEM_EVENTS,
             }))
             .into_response()

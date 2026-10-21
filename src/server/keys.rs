@@ -35,6 +35,11 @@ struct KeyRecord {
     digest: String,
     created_by: String,
     created_at: String,
+    /// The vivi identity (such as `operator`) this key acts as, when the
+    /// minter named one. Absent on keys minted without one and on key files
+    /// written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     revoked_at: Option<String>,
 }
@@ -51,7 +56,18 @@ pub struct KeySummary {
     pub created_by: String,
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<String>,
+}
+
+/// What a live API key resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedKey {
+    /// The registered identity that minted the key; the key authenticates as it.
+    pub created_by: String,
+    /// The vivi identity the key acts as, when one was set at mint time.
+    pub identity: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,11 +77,13 @@ pub struct MintedKey {
     pub label: String,
     pub created_by: String,
     pub created_at: String,
+    pub identity: Option<String>,
 }
 
 #[derive(Debug)]
 pub enum KeyError {
     InvalidLabel,
+    InvalidIdentity,
     LimitReached,
     NotFound,
     Storage(String),
@@ -113,15 +131,18 @@ impl ApiKeyRegistry {
         self.lock.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Mint a project-scoped key bound to `created_by`. The raw secret is
-    /// returned once; only its digest is persisted.
+    /// Mint a project-scoped key bound to `created_by`, optionally acting as
+    /// the vivi `identity`. The raw secret is returned once; only its digest
+    /// is persisted.
     pub fn mint(
         &self,
         project_id: &str,
         created_by: &str,
         label: &str,
+        identity: Option<&str>,
     ) -> Result<MintedKey, KeyError> {
         let label = validate_label(label)?;
+        let identity = identity.map(validate_identity).transpose()?;
         let _guard = self.lock();
         let mut file = self.load(project_id);
         let live = file
@@ -149,6 +170,7 @@ impl ApiKeyRegistry {
             digest,
             created_by: created_by.to_owned(),
             created_at: created_at.clone(),
+            identity: identity.clone(),
             revoked_at: None,
         });
         self.save(project_id, &file).map_err(KeyError::Storage)?;
@@ -158,6 +180,7 @@ impl ApiKeyRegistry {
             label,
             created_by: created_by.to_owned(),
             created_at,
+            identity,
         })
     }
 
@@ -171,6 +194,7 @@ impl ApiKeyRegistry {
                 label: key.label,
                 created_by: key.created_by,
                 created_at: key.created_at,
+                identity: key.identity,
                 revoked_at: key.revoked_at,
             })
             .collect()
@@ -195,13 +219,18 @@ impl ApiKeyRegistry {
         Ok(())
     }
 
-    /// The minting identity name for a live key, if `presented` matches.
-    pub fn verify(&self, project_id: &str, presented: &str) -> Option<String> {
+    /// The minting identity name (and the identity it acts as, if set) for a
+    /// live key, if `presented` matches.
+    pub fn verify(&self, project_id: &str, presented: &str) -> Option<VerifiedKey> {
         let _guard = self.lock();
         let digest = sha256_hex(presented.as_bytes());
         self.load(project_id).keys.into_iter().find_map(|key| {
-            (key.revoked_at.is_none() && constant_time_eq(&digest, &key.digest))
-                .then_some(key.created_by)
+            (key.revoked_at.is_none() && constant_time_eq(&digest, &key.digest)).then_some(
+                VerifiedKey {
+                    created_by: key.created_by,
+                    identity: key.identity,
+                },
+            )
         })
     }
 }
@@ -214,11 +243,35 @@ pub fn resolve_project_identity(
     project_id: &str,
     presented: &str,
 ) -> Option<IdentityRecord> {
+    resolve_project_caller(identities, keys, project_id, presented).map(|caller| caller.identity)
+}
+
+/// A resolved Bearer: the registered identity that authenticates, and the
+/// vivi identity an API key acts as (always `None` for an identity token).
+#[derive(Debug, Clone)]
+pub struct Caller {
+    pub identity: IdentityRecord,
+    pub acting_as: Option<String>,
+}
+
+/// As [`resolve_project_identity`], keeping the key's `identity`.
+pub fn resolve_project_caller(
+    identities: &IdentityRegistry,
+    keys: &ApiKeyRegistry,
+    project_id: &str,
+    presented: &str,
+) -> Option<Caller> {
     if let Some(identity) = identities.verify_bearer(project_id, presented) {
-        return Some(identity);
+        return Some(Caller {
+            identity,
+            acting_as: None,
+        });
     }
-    let name = keys.verify(project_id, presented)?;
-    identities.by_name(project_id, &name)
+    let verified = keys.verify(project_id, presented)?;
+    Some(Caller {
+        identity: identities.by_name(project_id, &verified.created_by)?,
+        acting_as: verified.identity,
+    })
 }
 
 fn validate_label(label: &str) -> Result<String, KeyError> {
@@ -230,6 +283,21 @@ fn validate_label(label: &str) -> Result<String, KeyError> {
         return Err(KeyError::InvalidLabel);
     }
     Ok(trimmed.to_owned())
+}
+
+/// A vivi identity name: the mail local-part charset, 1-64 characters.
+fn validate_identity(identity: &str) -> Result<String, KeyError> {
+    let trimmed = identity.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= MAX_LABEL
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    if valid {
+        Ok(trimmed.to_owned())
+    } else {
+        Err(KeyError::InvalidIdentity)
+    }
 }
 
 fn mint_key_id() -> Result<String, AuthError> {
@@ -259,6 +327,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[derive(Debug, Deserialize)]
 pub struct MintKeyRequest {
     label: String,
+    /// Optional vivi identity the key acts as; absent means none.
+    #[serde(default)]
+    identity: Option<String>,
 }
 
 fn key_error(err: KeyError) -> Response {
@@ -267,6 +338,11 @@ fn key_error(err: KeyError) -> Response {
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "label must be 1-64 characters with no control characters",
+        ),
+        KeyError::InvalidIdentity => error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "identity must be 1-64 characters of letters, digits, '.', '-' or '_'",
         ),
         KeyError::LimitReached => error_response(
             StatusCode::BAD_REQUEST,
@@ -334,18 +410,24 @@ pub async fn mint_handler(
         );
     }
     let keys = state.keys.clone();
-    match tokio::task::spawn_blocking(move || keys.mint(&id, &identity.name, &req.label)).await {
-        Ok(Ok(minted)) => (
-            StatusCode::CREATED,
-            Json(json!({
+    match tokio::task::spawn_blocking(move || {
+        keys.mint(&id, &identity.name, &req.label, req.identity.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(minted)) => {
+            let mut body = json!({
                 "key_id": minted.key_id,
                 "key": minted.key,
                 "label": minted.label,
                 "created_by": minted.created_by,
                 "created_at": minted.created_at,
-            })),
-        )
-            .into_response(),
+            });
+            if let Some(identity) = minted.identity {
+                body["identity"] = json!(identity);
+            }
+            (StatusCode::CREATED, Json(body)).into_response()
+        }
         Ok(Err(err)) => key_error(err),
         Err(err) => key_error(KeyError::Storage(format!("key task failed: {err}"))),
     }

@@ -42,6 +42,11 @@ pub fn dispatch(
     limiter: &RateLimiter,
     project_id: &str,
     identity: &IdentityRecord,
+    // HOOK: the vivi identity (such as `operator`) the caller's API key was
+    // minted to act as, `None` for an identity token or a key minted without
+    // one. Plumbed only; no tool reads it yet, and every tool still acts as
+    // `identity`.
+    _acting_as: Option<&str>,
     name: &str,
     arguments: &Value,
 ) -> Result<Value, ToolError> {

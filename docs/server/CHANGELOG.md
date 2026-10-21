@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — epoch and key identity
+
+- **Per-project log epoch.** Every list response (`GET .../items`, and the
+  chat poll) carries a top-level `epoch`: a random u32 (1 to 4294967295)
+  minted once per project and stored in `project.json`. A project that
+  predates epochs gets one on first read. The vivi client binds pulled
+  letters under it and treats a change as a server reset.
+- **Identity on API keys.** `POST .../keys` takes an optional `identity` (a
+  vivi identity name, `[A-Za-z0-9._-]`, 1-64). It is stored with the key,
+  listed, and returned at verify beside `created_by`; the MCP dispatcher
+  receives it as `acting_as` but no tool uses it yet. Key files without the
+  field still load.
+
 ## Unreleased — item events
 
 The server folds item-state events by the client's rule and stops showing

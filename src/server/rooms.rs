@@ -523,6 +523,7 @@ async fn read_chat(
         Ok::<_, ProjectError>(json!({
             "messages": messages,
             "next_cursor": page.next_cursor,
+            "epoch": page.epoch,
         }))
     })
     .await

@@ -1649,3 +1649,78 @@ async fn an_event_past_the_record_capped_first_page_is_folded_in_a_long_project(
     let long = long_project("long-records", (letters - 2) / 2, 1, 1024).await;
     assert_every_tool_folds_the_late_event(&long).await;
 }
+
+#[tokio::test]
+async fn list_responses_carry_a_stable_epoch_across_calls_and_restarts() {
+    let fx = fixture("epoch").await;
+    let url = format!("/v1/projects/{}/items?since=0", fx.project);
+    let (status, first) = send_json(&fx.app, "GET", &url, None, Some(&fx.token)).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let epoch = first["epoch"].as_u64().expect("list carries an epoch");
+    assert!((1..=u64::from(u32::MAX)).contains(&epoch), "{epoch}");
+
+    let (_, again) = send_json(&fx.app, "GET", &url, None, Some(&fx.token)).await;
+    assert_eq!(again["epoch"].as_u64(), Some(epoch));
+    // Past the head the page is empty and still carries the epoch.
+    let past = format!("/v1/projects/{}/items?since=999999", fx.project);
+    let (_, empty) = send_json(&fx.app, "GET", &past, None, Some(&fx.token)).await;
+    assert_eq!(empty["epoch"].as_u64(), Some(epoch));
+
+    // A restart: a new router over the same data directory.
+    let restarted = api_router(fx.dir.clone(), Some(store_key()), None);
+    let (status, after) = send_json(&restarted, "GET", &url, None, Some(&fx.token)).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(after["epoch"].as_u64(), Some(epoch));
+
+    // A fresh project mints its own.
+    let other = fixture("epoch-other").await;
+    let url = format!("/v1/projects/{}/items?since=0", other.project);
+    let (_, theirs) = send_json(&other.app, "GET", &url, None, Some(&other.token)).await;
+    assert_ne!(theirs["epoch"].as_u64(), Some(epoch));
+}
+
+#[tokio::test]
+async fn api_key_identity_is_optional_stored_and_validated() {
+    let fx = fixture("key-identity").await;
+    let path = format!("/v1/projects/{}/keys", fx.project);
+    let (status, plain) = send_json(
+        &fx.app,
+        "POST",
+        &path,
+        Some(json!({"label": "plain"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{plain}");
+    assert!(plain.get("identity").is_none(), "{plain}");
+
+    let (status, acting) = send_json(
+        &fx.app,
+        "POST",
+        &path,
+        Some(json!({"label": "ops", "identity": "operator"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{acting}");
+    assert_eq!(acting["identity"], "operator");
+    // The key still authenticates as its minter.
+    let key = acting["key"].as_str().unwrap();
+    let overview = fx.call(key, "overview", json!({})).await;
+    assert_eq!(overview["you"]["name"], "creator");
+
+    let (_, listed) = send_json(&fx.app, "GET", &path, None, Some(&fx.token)).await;
+    let keys = listed["keys"].as_array().unwrap();
+    assert!(keys[0].get("identity").is_none(), "{listed}");
+    assert_eq!(keys[1]["identity"], "operator");
+
+    let (status, bad) = send_json(
+        &fx.app,
+        "POST",
+        &path,
+        Some(json!({"label": "bad", "identity": "has space"})),
+        Some(&fx.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+}
