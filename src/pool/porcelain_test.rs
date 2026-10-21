@@ -191,6 +191,12 @@ fn status_lines() {
 }
 
 #[test]
+fn capacity_line() {
+    assert_eq!(capacity("studio", 2), "capacity studio 2");
+    assert_eq!(capacity("studio", 0), "capacity studio 0");
+}
+
+#[test]
 fn wait_and_reconcile_lines() {
     let done = round_line("3f2a", "finished", "pushed work/x 0123456789");
     assert_eq!(

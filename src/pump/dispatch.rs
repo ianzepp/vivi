@@ -127,7 +127,8 @@ pub(crate) struct Planned {
 
 /// Free slot counts per pool: run `pool status --porcelain` and count the
 /// lines with at least five whitespace tokens whose first is `slot` and fifth
-/// is `free`, keyed by the pool named in the second token.
+/// is `free`, keyed by the pool named in the second token, plus the number on
+/// each `capacity POOL FREE` line (pools whose slots exist only per dispatch).
 #[must_use]
 pub fn slots(ctx: &Ctx) -> BTreeMap<String, u32> {
     let out = ctx.vivi("pool status --porcelain", 120);
@@ -136,6 +137,14 @@ pub fn slots(ctx: &Ctx) -> BTreeMap<String, u32> {
         let tokens: Vec<&str> = line.split_whitespace().collect();
         if tokens.len() >= 5 && tokens[0] == "slot" && tokens[4] == "free" {
             *free.entry(tokens[1].to_owned()).or_insert(0) += 1;
+        }
+        // A per-dispatch pool (worker, RunPod) holds no resting slot; its
+        // `capacity` line says how many jobs it may start. A zero is not
+        // recorded, so such a pool counts as full like any other.
+        if tokens.len() >= 3 && tokens[0] == "capacity" {
+            if let Ok(more @ 1..) = tokens[2].parse::<u32>() {
+                *free.entry(tokens[1].to_owned()).or_insert(0) += more;
+            }
         }
     }
     free

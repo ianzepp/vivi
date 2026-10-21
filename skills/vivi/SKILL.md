@@ -1174,6 +1174,7 @@ scale      created ... | home ... | exists ... | issue ...         as create
            skipped POOL NAME ID STATE TASK                         not free, so kept
            scaled POOL TARGET COUNT                                COUNT: slots the pool holds now
 status     slot POOL NAME ID STATE TASK RUNNING BUDGET BASE ARCH CREATED MODE   MODE write|read-only, - with no open dispatch
+           capacity POOL FREE                                      per-dispatch pools (worker, runpod): jobs it may start now
 dispatch   dispatched TASK POOL SLOT JOB MODEL FROM START BRANCH BUDGET MODE ABANDONED COST   BRANCH - when read-only; MODE write|read-only; ABANDONED COST: see below
 wait       collected TASK POOL SLOT STATE DETAIL                   STATE: finished|timeout|lost
            nothing-open                                            already collected

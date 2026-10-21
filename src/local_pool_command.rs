@@ -232,10 +232,7 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
                 .map_err(|e| VivariumError::Other(format!("failed to encode JSON: {e}")))?
         );
     } else if command.porcelain {
-        report
-            .slots
-            .iter()
-            .for_each(|s| println!("{}", porcelain::slot(s)));
+        print_porcelain(&handles, &report);
     } else {
         for handle in &handles {
             if !report.pools.iter().any(|(pool, _)| *pool == handle.id.pool) {
@@ -262,6 +259,32 @@ fn status(command: &PoolStatusCommand) -> Result<(), VivariumError> {
                 said.join("; ")
             )))
         }
+    }
+}
+
+/// One `slot` line per slot, then one `capacity` line per listed pool whose
+/// slots exist only per dispatch: those pools show no free slot at rest, so
+/// a reader (the pump) learns from `capacity` how many jobs each may start.
+fn print_porcelain(handles: &[PoolHandle], report: &run::StatusReport) {
+    report
+        .slots
+        .iter()
+        .for_each(|s| println!("{}", porcelain::slot(s)));
+    for handle in handles {
+        let listed = report.pools.iter().any(|(pool, _)| *pool == handle.id.pool);
+        if !listed || handle.provider.slot_lifetime() != SlotLifetime::PerDispatch {
+            continue;
+        }
+        let live = report
+            .slots
+            .iter()
+            .filter(|s| s.pool == handle.id.pool)
+            .count();
+        let free = handle
+            .config
+            .slots
+            .saturating_sub(u32::try_from(live).unwrap_or(u32::MAX));
+        println!("{}", porcelain::capacity(&handle.id.pool, free));
     }
 }
 

@@ -224,6 +224,14 @@ pub fn slot(slot: &SlotStatus) -> String {
     line("slot", &fields)
 }
 
+/// `capacity POOL FREE`: a pool whose slots exist only while a job runs
+/// (worker, RunPod) lists no resting slots, so this says how many more jobs
+/// it may start now: its `slots` less the pods it holds.
+#[must_use]
+pub fn capacity(pool: &str, free: u32) -> String {
+    line("capacity", &[quote(pool), free.to_string()])
+}
+
 fn round(kind: &str, l: &RoundLine) -> String {
     let task = if l.task == "-" {
         "-".to_string()

@@ -174,6 +174,36 @@ fn slots_counts_free_slots_per_pool() {
 }
 
 #[test]
+fn slots_counts_the_capacity_of_per_dispatch_pools() {
+    let (_dir, ctx, host) = setup();
+    host.reply(
+        "pool status",
+        0,
+        "slot studio ms-studio-slot-1 ms/studio/slot-1 busy t1 - - - - 2026-10-21T20:00:00Z write\n\
+         capacity studio 1\ncapacity gpu 0\ncapacity runpod 3\n\
+         slot fly4 bridge slot-1 free\ncapacity broken x",
+    );
+    let free = slots(&ctx);
+    assert_eq!(
+        free.get("studio"),
+        Some(&1),
+        "a worker pool with one live pod of two"
+    );
+    assert_eq!(free.get("runpod"), Some(&3));
+    assert_eq!(
+        free.get("fly4"),
+        Some(&1),
+        "resting pools still count free slots"
+    );
+    assert_eq!(
+        free.get("gpu"),
+        None,
+        "a pool with no capacity left is full"
+    );
+    assert_eq!(free.get("broken"), None, "an unreadable count is ignored");
+}
+
+#[test]
 fn a_ready_unit_becomes_inflight_with_task_branch_model_and_pool() {
     let (dir, ctx, host) = setup();
     wire(&host);
