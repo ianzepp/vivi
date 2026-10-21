@@ -757,7 +757,7 @@ fn save_memo(
     )
     .map_err(ToolError::new)?;
     let traveling_id = composed.traveling_id.clone();
-    let mut storage = open_mailspace(store, project_id)?;
+    let storage = open_mailspace(store, project_id)?;
     storage
         .ingest_message(
             &MessageIngestRequest {
