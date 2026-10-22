@@ -388,6 +388,7 @@ pub fn reconcile(
             Ok(slots) => {
                 free_stale_claims(member.provider, &slots, &here, now, pacing, &mut report);
                 stop_orphans(member.provider, &slots, &here, pacing, &mut report);
+                destroy_dead_slots(member.provider, &slots, &here, now, &mut report);
             }
             Err(e) => {
                 report.failures += 1;
@@ -457,6 +458,37 @@ fn stop_orphans(
                 report
                     .warnings
                     .push(format!("warning: could not stop {}: {e}", slot.name));
+                report.failures += 1;
+            }
+        }
+    }
+}
+
+/// Destroy the slots a failed build left on a per-dispatch host: no task, no
+/// open dispatch, boot not running. They still count against the pool.
+fn destroy_dead_slots(
+    provider: &dyn PoolProvider,
+    slots: &[SlotStatus],
+    open: &[OpenDispatch],
+    now: u64,
+    report: &mut ReconcileReport,
+) {
+    if !provider.reclaims_dead_slots() {
+        return;
+    }
+    for slot in collect::dead_slots(slots, open, now, provider.setup_grace_secs()) {
+        match provider.destroy(&slot.id) {
+            Ok(()) => report.add(RoundLine {
+                task: "-".to_string(),
+                pool: slot.pool.clone(),
+                slot: slot.name.clone(),
+                state: "orphan-stopped",
+                detail: "destroyed (no open dispatch, boot not running)".to_string(),
+            }),
+            Err(e) => {
+                report
+                    .warnings
+                    .push(format!("warning: could not destroy {}: {e}", slot.name));
                 report.failures += 1;
             }
         }

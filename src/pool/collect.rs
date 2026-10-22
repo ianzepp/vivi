@@ -554,6 +554,31 @@ pub fn orphan_runners<'a>(slots: &'a [SlotStatus], open: &[OpenDispatch]) -> Vec
         .collect()
 }
 
+/// Slots that no task holds, no open dispatch explains and whose boot is not
+/// running, created more than `grace` seconds ago so that no dispatch is
+/// still seeding or claiming them: what a failed build leaves on a
+/// per-dispatch host. A creation time that cannot be read counts as old.
+#[must_use]
+pub fn dead_slots<'a>(
+    slots: &'a [SlotStatus],
+    open: &[OpenDispatch],
+    now: u64,
+    grace: u64,
+) -> Vec<&'a SlotStatus> {
+    slots
+        .iter()
+        .filter(|s| s.task.is_none())
+        .filter(|s| matches!(s.provider_state.as_str(), "stopped" | "failed"))
+        .filter(|s| !open.iter().any(|d| d.record.machine == s.id))
+        .filter(|s| {
+            chrono::NaiveDateTime::parse_from_str(&s.created_at, "%Y-%m-%dT%H:%M:%SZ")
+                .ok()
+                .and_then(|t| u64::try_from(t.and_utc().timestamp()).ok())
+                .is_none_or(|created| now.saturating_sub(created) > grace)
+        })
+        .collect()
+}
+
 /// Remembers which poll errors were already shown, so a long `wait` shows
 /// each new problem once and says when it clears. An error and "still
 /// running" must never look alike. It also keeps every problem it saw, with

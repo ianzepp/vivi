@@ -314,8 +314,12 @@ list_slots() {
 
 create_slot() {
   slot_ok "$A1" || fail "not a slot id: $A1"
-  [ -e "$R/$A1" ] && fail "slot exists: $A1"
   lock
+  # The index is reserved here, under the lock: a slot that exists (or whose
+  # build left a ledger entry) is never built over, so two dispatches that
+  # chose the same index cannot both build it. The dispatcher moves on to the
+  # next index and must not tear this one down: it belongs to someone else.
+  if [ -e "$R/$A1" ] || [ -f "$R/.ledger/$(flat "$A1")" ]; then fail "slot exists: $A1"; fi
   make_boundary "$A1" "$A2"
   need_slot "$A1"
   tar -xf - -C "$D" || { teardown "$A1"; fail "could not unpack the new slot"; }

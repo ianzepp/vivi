@@ -25,7 +25,8 @@ use super::provider::{
     SlotLifetime,
 };
 use super::run::ONCE_ENV;
-use super::slot::{META_POOL, META_SLOT, META_STATE, STATE_READY};
+use super::slot::{META_MAILSPACE, META_POOL, META_SLOT, META_STATE, STATE_READY};
+use super::ssh_state;
 use super::ssh::SshProvider;
 use super::ssh_cli::SshCli;
 use super::ssh_script::WORKER_MACOS_SCRIPT;
@@ -93,9 +94,10 @@ impl WorkerProvider {
         self
     }
 
-    /// The lowest slot index of `pool` that holds no slot, or why the pool
-    /// is full.
-    fn next_index(&self, pool: &str) -> Result<u32, VivariumError> {
+    /// The slot indices of `pool` that hold no listed slot, lowest first, or
+    /// why the pool is full. A slot being built is not listed yet, so the
+    /// driver's `create` is what reserves an index; this only proposes them.
+    fn free_indices(&self, pool: &str) -> Result<Vec<u32>, VivariumError> {
         let held: Vec<MachineRecord> = self
             .ssh
             .list()?
@@ -117,48 +119,67 @@ impl WorkerProvider {
                 mark.parse::<u32>().map_err(|_| unreadable())
             })
             .collect::<Result<Vec<u32>, _>>()?;
-        (1..=self.slots).find(|i| !used.contains(i)).ok_or_else(|| {
-            VivariumError::Message(format!(
-                "no free slot in pool {pool}: it allows {} slot(s) at once on {} and holds {}",
-                self.slots,
-                self.host,
-                held.len()
-            ))
-        })
+        let free: Vec<u32> = (1..=self.slots).filter(|i| !used.contains(i)).collect();
+        if free.is_empty() {
+            return Err(self.pool_full(pool, held.len()));
+        }
+        Ok(free)
     }
 
-    /// Make, seed and claim the slot of one job.
+    fn pool_full(&self, pool: &str, held: usize) -> VivariumError {
+        VivariumError::Message(format!(
+            "no free slot in pool {pool}: it allows {} slot(s) at once on {} and holds {held}",
+            self.slots, self.host
+        ))
+    }
+
+    /// Make, seed and claim the slot of one job. The driver reserves the
+    /// index atomically under its lock: a `create` that finds the index
+    /// taken (another dispatch, or a leftover) fails as "slot exists" and the
+    /// next free index is tried. A dispatch that fails after its index was
+    /// reserved destroys that slot, so a failed dispatch never keeps capacity.
     fn open(&self, request: &OpenRequest) -> Result<OpenedSlot, VivariumError> {
         let pool = &request.pool.pool;
-        let index = self.next_index(pool)?;
-        let mut spec = request.spec.clone();
-        spec.metadata
-            .insert(META_SLOT.to_string(), index.to_string());
-        spec.name = format!("{}-{pool}-slot-{index}", request.pool.mailspace);
-        request.progress.say(&format!(
-            "{pool}: building slot {index} on {} ({})",
-            self.host, self.request
-        ));
-        let id = self.ssh.create(&spec)?;
-        match self.ready(&id, request) {
-            Ok(hold) => Ok(OpenedSlot {
-                id,
-                name: spec.name,
-                index,
-                hold,
-                hardware: format!("{} {}", self.host, self.request),
-                created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                abandoned: Vec::new(),
-            }),
-            Err(e) => {
-                if let Err(undo) = self.ssh.destroy(&id) {
-                    eprintln!(
-                        "warning: could not remove slot {id} on {}: {undo}",
-                        self.host
-                    );
-                }
-                Err(e)
-            }
+        for index in self.free_indices(pool)? {
+            let mut spec = request.spec.clone();
+            spec.metadata
+                .insert(META_SLOT.to_string(), index.to_string());
+            spec.name = format!("{}-{pool}-slot-{index}", request.pool.mailspace);
+            request.progress.say(&format!(
+                "{pool}: building slot {index} on {} ({})",
+                self.host, self.request
+            ));
+            let id = match self.ssh.create(&spec) {
+                Ok(id) => id,
+                Err(e) if slot_taken(&e) => continue,
+                Err(e) if refused_before_building(&e) => return Err(e),
+                Err(e) => return Err(self.torn_down(&slot_id_of_spec(&spec, index), e)),
+            };
+            return match self.ready(&id, request) {
+                Ok(hold) => Ok(OpenedSlot {
+                    id,
+                    name: spec.name,
+                    index,
+                    hold,
+                    hardware: format!("{} {}", self.host, self.request),
+                    created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                    abandoned: Vec::new(),
+                }),
+                Err(e) => Err(self.torn_down(&id, e)),
+            };
+        }
+        Err(self.pool_full(pool, self.slots as usize))
+    }
+
+    /// `error` with slot `id` torn down after it. A teardown that fails is
+    /// part of the error: the slot may still hold capacity on the worker.
+    fn torn_down(&self, id: &str, error: VivariumError) -> VivariumError {
+        match self.ssh.destroy(id) {
+            Ok(()) => error,
+            Err(undo) => VivariumError::Message(format!(
+                "{error}; AND the teardown of slot {id} on {} failed: {undo}; it may still hold capacity, remove it with `vivi pool destroy {id}`",
+                self.host
+            )),
         }
     }
 
@@ -203,6 +224,24 @@ impl WorkerProvider {
             self.host
         ))
     }
+}
+
+/// The driver's id of the slot `spec` builds at `index`.
+fn slot_id_of_spec(spec: &CreateSpec, index: u32) -> String {
+    let field = |key: &str| spec.metadata.get(key).map_or("", String::as_str);
+    ssh_state::slot_id(field(META_MAILSPACE), field(META_POOL), &index.to_string())
+}
+
+/// The driver refused to build because the index is already held. The slot
+/// is someone else's, so it must not be torn down.
+fn slot_taken(error: &VivariumError) -> bool {
+    error.to_string().contains("slot exists: ")
+}
+
+/// The driver refused before it built anything (a budget), so there is
+/// nothing to tear down.
+fn refused_before_building(error: &VivariumError) -> bool {
+    error.to_string().contains("no free slot: ")
 }
 
 impl PoolProvider for WorkerProvider {
@@ -277,6 +316,10 @@ impl PoolProvider for WorkerProvider {
     }
 
     fn runs_unprivileged(&self) -> bool {
+        true
+    }
+
+    fn reclaims_dead_slots(&self) -> bool {
         true
     }
 

@@ -286,3 +286,198 @@ fn a_boot_keeps_the_session_path_order_through_a_login_shell_that_reorders_it() 
         "no repeats: {path}"
     );
 }
+
+/// A runner that can lose a call after it ran (a dropped connection) or
+/// refuse one before it runs.
+struct Flaky {
+    inner: Shell,
+    /// This verb runs on the worker, then reports a failure.
+    lose_after: Option<&'static str>,
+    /// This verb never runs.
+    refuse: Option<&'static str>,
+}
+
+impl Runner for Flaky {
+    fn run(
+        &self,
+        args: &[String],
+        stdin: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<RunOutput, VivariumError> {
+        let is = |verb: Option<&str>| {
+            // The script is shell-quoted whole, so the verb's own quotes are
+            // escaped; the verb is the word on the `VERB=` line.
+            verb.is_some_and(|v| {
+                let line = args[0].split("VERB=").nth(1).and_then(|r| r.lines().next());
+                line.is_some_and(|l| l.replace(['\'', '\\'], "") == v)
+            })
+        };
+        if is(self.refuse) {
+            return Err(VivariumError::Message("ssh: connection refused".into()));
+        }
+        let out = self.inner.run(args, stdin, timeout)?;
+        if is(self.lose_after) {
+            return Err(VivariumError::Message("ssh: connection dropped".into()));
+        }
+        Ok(out)
+    }
+}
+
+fn flaky_provider(
+    home: &Path,
+    slots: u32,
+    lose_after: Option<&'static str>,
+    refuse: Option<&'static str>,
+) -> WorkerProvider {
+    WorkerProvider::with_runner(
+        &config(slots, "dir", 0),
+        "ms",
+        "lanes",
+        Box::new(Flaky {
+            inner: Shell {
+                home: home.to_path_buf(),
+                path_first: None,
+            },
+            lose_after,
+            refuse,
+        }),
+    )
+    .with_seed_pacing(Duration::from_secs(20), Duration::from_millis(50))
+}
+
+#[test]
+fn two_dispatches_at_once_never_share_a_slot_index() {
+    for _ in 0..3 {
+        let home = home("");
+        let p = provider(home.path(), 2, "dir", 0);
+        let start = std::sync::Barrier::new(2);
+        let opened: Vec<OpenedSlot> = std::thread::scope(|s| {
+            let jobs: Vec<_> = (0..2)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        open(&p, "true\n").unwrap()
+                    })
+                })
+                .collect();
+            jobs.into_iter().map(|j| j.join().unwrap()).collect()
+        });
+        let mut indices: Vec<u32> = opened.iter().map(|o| o.index).collect();
+        indices.sort_unstable();
+        assert_eq!(indices, [1, 2], "each dispatch holds its own slot");
+        assert_eq!(p.list().unwrap().len(), 2, "both slots stand");
+        for slot in &opened {
+            p.destroy(&slot.id).unwrap();
+        }
+        assert!(empty(&home.path().join("vivi-worker/.ledger")));
+    }
+}
+
+#[test]
+fn an_index_the_driver_holds_is_skipped_and_never_torn_down() {
+    let home = home("");
+    // A slot mid-build (or left by a failed build) has a ledger entry but no
+    // marks, so the listing does not show it; the driver still holds the index.
+    let ledger = home.path().join("vivi-worker/.ledger");
+    std::fs::create_dir_all(&ledger).unwrap();
+    let held = ledger.join("ms-lanes-slot-1");
+    std::fs::write(&held, "kind=dir\nsize_gib=0\n").unwrap();
+    let p = provider(home.path(), 2, "dir", 0);
+    let slot = open(&p, "true\n").unwrap();
+    assert_eq!(slot.index, 2, "the held index is skipped");
+    assert!(held.exists(), "the other dispatch's slot is left alone");
+    p.destroy(&slot.id).unwrap();
+
+    let full = provider(home.path(), 1, "dir", 0);
+    let said = open(&full, "true\n").unwrap_err().to_string();
+    assert!(said.contains("no free slot in pool lanes"), "{said}");
+    assert!(held.exists(), "a refused dispatch still leaves it alone");
+}
+
+#[test]
+fn a_create_that_fails_after_it_ran_tears_its_slot_down() {
+    let home = home("");
+    let p = flaky_provider(home.path(), 2, Some("create"), None);
+    let said = open(&p, "true\n").unwrap_err().to_string();
+    assert!(said.contains("connection dropped"), "{said}");
+    assert!(!said.contains("teardown"), "{said}");
+    assert!(p.list().unwrap().is_empty(), "the slot is gone");
+    assert!(empty(&home.path().join("dirs")), "its boundary is gone");
+    assert!(empty(&home.path().join("vivi-worker/.ledger")));
+}
+
+#[test]
+fn a_teardown_that_fails_is_part_of_the_error() {
+    let home = home("");
+    let p = flaky_provider(home.path(), 2, Some("create"), Some("destroy"));
+    let said = open(&p, "true\n").unwrap_err().to_string();
+    assert!(said.contains("connection dropped"), "{said}");
+    assert!(
+        said.contains("teardown of slot ms/lanes/slot-1")
+            && said.contains("vivi pool destroy ms/lanes/slot-1"),
+        "{said}"
+    );
+    assert!(
+        !empty(&home.path().join("vivi-worker/.ledger")),
+        "the slot is still there, and the error says so"
+    );
+}
+
+#[test]
+fn reconcile_destroys_a_dead_slot_that_no_dispatch_explains() {
+    use crate::mailspace::Mailspace;
+    use crate::pool::collect::Pacing;
+    use crate::pool::pools::PoolSet;
+    use crate::pool::slot::SlotStatus;
+
+    let home = home("");
+    let p = provider(home.path(), 2, "dir", 0);
+    // What the failed dispatch left: made and seeded, never sealed ready,
+    // boot ended, no claim.
+    let mut made = spec("true\n");
+    made.metadata.insert(META_SLOT.to_string(), "1".to_string());
+    made.name = "ms-lanes-slot-1".to_string();
+    let id = p.ssh.create(&made).unwrap();
+    let started = Instant::now();
+    while p.machine(&id).unwrap().state != "stopped" {
+        assert!(started.elapsed() < Duration::from_secs(20), "seed did not end");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let pool = PoolId {
+        mailspace: "ms".to_string(),
+        pool: "lanes".to_string(),
+    };
+    let slots = |p: &WorkerProvider| -> Vec<SlotStatus> {
+        crate::pool::run::pool_status(p, &pool).unwrap()
+    };
+    assert_eq!(slots(&p)[0].state, "unseeded");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let space = Mailspace::init(Some(tmp.path())).unwrap();
+    let set = PoolSet::single(&pool, &p);
+    let pacing = Pacing::default();
+
+    let young = crate::pool::work::reconcile(&space, &set, &pacing).unwrap();
+    assert_eq!(
+        slots(&p).len(),
+        1,
+        "a young slot may still be seeding: {:?}",
+        young.out
+    );
+
+    let created = home.path().join("vivi-worker").join(&id).join("created");
+    std::fs::write(&created, "2020-01-01T00:00:00Z\n").unwrap();
+    let report = crate::pool::work::reconcile(&space, &set, &pacing).unwrap();
+    assert!(
+        report
+            .out
+            .iter()
+            .any(|l| l.contains("orphan-stopped") && l.contains("ms-lanes-slot-1")),
+        "{:?}",
+        report.out
+    );
+    assert!(report.error().is_none(), "{:?}", report.error());
+    assert!(p.list().unwrap().is_empty(), "the slot is destroyed");
+    assert!(empty(&home.path().join("dirs")));
+    assert!(empty(&home.path().join("vivi-worker/.ledger")));
+}

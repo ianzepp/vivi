@@ -48,8 +48,15 @@ differences:
   `sha256sum` and `nproc`.
 - `destroy` stops everything on the boundary and tears it down.
 - The provider is `SlotLifetime::PerDispatch`, like RunPod:
-  `open_for_dispatch` picks a free slot index, creates, waits for the seed
-  boot to stop cleanly, marks the slot ready and claims it.
+  `open_for_dispatch` proposes the free slot indices, creates, waits for the
+  seed boot to stop cleanly, marks the slot ready and claims it. `create`
+  reserves its index under the driver's lock and fails as `slot exists: <id>`
+  when the index (or a leftover ledger entry) is held; the dispatcher then
+  tries the next index and never tears down the slot it did not make. Any
+  other failure after the reservation destroys the slot, and a failed
+  teardown is reported in the error. `reconcile` destroys a slot with no
+  task, no open dispatch and no running boot once it is older than the setup
+  grace (`orphan-stopped`).
 - The provider is bound to its mailspace, not to one pool, so it serves its
   pool and that pool's `-doctor` self-test pool alike. Callers tell slots
   apart by their pool mark.

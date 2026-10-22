@@ -2021,6 +2021,12 @@ size_gib = 12                 # required for apfs and ram
   against the worker's budgets, builds the boundary, unpacks and seeds the
   slot), and collecting the result destroys it, boundary and all. Nothing
   rests between jobs and nothing is cached: every job starts cold and clean.
+- **Slot indices are reserved on the worker**, under its lock: two dispatches
+  never build the same index, and one that finds its index taken moves to the
+  next. A dispatch that fails while building or seeding tears its slot down
+  (a failed teardown is named in the error), and `vivi pool reconcile`
+  destroys a slot with no open dispatch whose boot is not running
+  (`orphan-stopped`), once it is older than the setup grace.
 - **Boundaries.** `apfs`: a sparse APFS disk image of `size_gib` (a hard
   limit; it takes disk only as written), made by the login user so its volume
   is writable without root. `ram`: a RAM disk. `dir`: a plain directory, no

@@ -314,6 +314,14 @@ pub trait PoolProvider {
     /// the build output: a seeded slot simply keeps its warm build.
     fn build_persists(&self) -> bool;
 
+    /// True when `reconcile` destroys a slot that no task holds, no open
+    /// dispatch explains and whose boot is not running: on a per-dispatch
+    /// host that is the leftover of a failed build, and it still counts
+    /// against the pool's slots. Off unless the host says otherwise.
+    fn reclaims_dead_slots(&self) -> bool {
+        false
+    }
+
     /// True when the slot's scripts run as an ordinary user on a host they do
     /// not own. They then create no user, install nothing, mount nothing and
     /// change no ownership; a missing tool is a failure to report.
