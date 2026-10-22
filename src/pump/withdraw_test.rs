@@ -1,19 +1,20 @@
-//! Tests for operator withdraws, from queued request through the pump tick.
+//! Tests for operator withdraws: the state change the pump applies, and the
+//! CLI half that posts the action on the need's open pump record.
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tempfile::{TempDir, tempdir};
 
 use crate::cli::PumpWithdrawCommand;
 use crate::pump::config::PumpConfig;
-use crate::pump::control::project_home as resolve_project_home;
+use crate::pump::fixture::project;
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
 use crate::pump::need;
 use crate::pump::state::{NeedRecord, State, Status, Unit};
-use crate::pump::store::{DB_FILENAME, PumpStore, WithdrawRequest};
-use crate::pump::withdraw::{apply_pending, run};
+use crate::pump::store::{DB_FILENAME, PumpStore};
+use crate::pump::withdraw::{apply_one, run};
 
 const T0: u64 = 1_000_000;
 const BASE: &str = "1111111111111111111111111111111111111111";
@@ -24,19 +25,6 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     host.set_now(T0);
     (dir, ctx, host)
-}
-
-fn request(ctx: &Ctx, need: &str, reason: &str) {
-    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
-    store.add_withdraw_request(need, reason, T0).unwrap();
-}
-
-fn pending(ctx: &Ctx) -> Vec<WithdrawRequest> {
-    PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
-        .unwrap()
-        .unwrap()
-        .pending_withdraw_requests()
-        .unwrap()
 }
 
 fn add_need(st: &mut State, handle: &str, units: &[(&str, Status)]) {
@@ -103,9 +91,13 @@ fn applying_a_request_withdraws_unfinished_units_and_closes_the_need() {
         ],
     );
     add_need(&mut st, "other", &[("o1", Status::Pending)]);
-    request(&ctx, "pumpfix-g1", "15-era repair need");
 
-    apply_pending(&ctx, &mut st);
+    let text = apply_one(&ctx, &mut st, "pumpfix-g1", "15-era repair need");
+
+    assert_eq!(
+        text,
+        "withdrew need pumpfix-g1: 3 unit(s) (15-era repair need)"
+    );
 
     assert_eq!(status(&st, "pending"), Status::Withdrawn);
     assert_eq!(status(&st, "stuck"), Status::Withdrawn);
@@ -115,25 +107,26 @@ fn applying_a_request_withdraws_unfinished_units_and_closes_the_need() {
     assert_eq!(status(&st, "replaced"), Status::Replaced);
     assert_eq!(status(&st, "o1"), Status::Pending);
     assert_eq!(st.closed_needs, vec![String::from("pumpfix-g1")]);
-    assert!(pending(&ctx).is_empty());
     assert!(log(&host).contains("withdrew need pumpfix-g1: 3 unit(s) (15-era repair need)"));
     assert!(log(&host).contains("mail need is not closed"));
     assert!(exceptions(&ctx).contains("need-withdrawn pumpfix-g1"));
 }
 
 #[test]
-fn an_unknown_need_is_dropped_with_a_log_line() {
+fn a_need_the_pump_holds_nothing_for_changes_no_state_but_still_ends_its_dispatch() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
     add_need(&mut st, "n1", &[("u1", Status::Pending)]);
-    request(&ctx, "nope", "typo");
 
-    apply_pending(&ctx, &mut st);
+    let text = apply_one(&ctx, &mut st, "nope", "typo");
 
     assert_eq!(status(&st, "u1"), Status::Pending);
     assert!(st.closed_needs.is_empty());
-    assert!(pending(&ctx).is_empty());
-    assert!(log(&host).contains("withdraw nope dropped: unknown need"));
+    assert!(
+        text.contains("the pump held no plan for it (typo)"),
+        "{text}"
+    );
+    assert!(log(&host).contains("withdraw nope: unknown need; closing its record"));
     assert!(!exceptions(&ctx).contains("need-withdrawn"));
 }
 
@@ -154,8 +147,7 @@ fn a_withdrawn_need_gets_no_audit_and_no_dispatch_exception() {
     assert!(exceptions(&ctx).contains("need-audit-dispatch"));
     fs::remove_file(ctx.home.join("exceptions.txt")).unwrap();
 
-    request(&ctx, "pumpfix-q1", "no mail thread");
-    apply_pending(&ctx, &mut st);
+    apply_one(&ctx, &mut st, "pumpfix-q1", "no mail thread");
     let queued = crate::pump::need_pipeline::dispatch_audits(&ctx, &mut st).unwrap();
 
     assert!(queued.is_empty());
@@ -172,29 +164,11 @@ fn applying_the_same_need_twice_closes_it_once() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
     add_need(&mut st, "n1", &[("u1", Status::Stuck)]);
-    request(&ctx, "n1", "first");
-    request(&ctx, "n1", "second");
 
-    apply_pending(&ctx, &mut st);
+    apply_one(&ctx, &mut st, "n1", "first");
+    apply_one(&ctx, &mut st, "n1", "second");
 
     assert_eq!(st.closed_needs, vec![String::from("n1")]);
-    assert!(pending(&ctx).is_empty());
-}
-
-fn mailspace_project() -> TempDir {
-    let dir = tempdir().unwrap();
-    let vivi = dir.path().join(".vivi");
-    fs::create_dir_all(&vivi).unwrap();
-    fs::write(
-        vivi.join("mailspace.toml"),
-        "name = \"withdraw\"\n\n[pump]\nbranch = \"next\"\n",
-    )
-    .unwrap();
-    dir
-}
-
-fn project_home(dir: &TempDir) -> PathBuf {
-    resolve_project_home(dir.path()).unwrap()
 }
 
 fn command(needs: &[&str], reason: &str) -> PumpWithdrawCommand {
@@ -206,32 +180,62 @@ fn command(needs: &[&str], reason: &str) -> PumpWithdrawCommand {
 }
 
 #[test]
-fn run_withdraw_records_one_request_per_need() {
-    let dir = mailspace_project();
-    let mut store = PumpStore::open(&project_home(&dir).join(DB_FILENAME)).unwrap();
+fn run_withdraw_posts_one_action_per_need_on_its_open_record() {
+    let project = project();
+    let first = project.need("fix auth");
+    let second = project.need("fix billing");
+    let record = project.mailspace.pump_send(None, &first, None).unwrap();
+    project.mailspace.pump_send(None, &second, None).unwrap();
+    let mut store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
     store.save(&State::default()).unwrap();
 
-    run(dir.path(), &command(&["pumpfix-g1", "pumpfix-q2"], "stale")).unwrap();
+    run(project.root(), &command(&[&first, &second], "stale")).unwrap();
 
-    let rows = PumpStore::open_read_only(&project_home(&dir).join(DB_FILENAME))
-        .unwrap()
-        .unwrap()
-        .pending_withdraw_requests()
+    let actions = project
+        .mailspace
+        .pump_pending_actions(&BTreeSet::new())
         .unwrap();
-    let recorded: Vec<(&str, &str)> = rows
+    let posted: Vec<(&str, &str)> = actions
         .iter()
-        .map(|row| (row.need.as_str(), row.reason.as_str()))
+        .map(|action| (action.need.as_str(), action.request.reason.as_str()))
         .collect();
     assert_eq!(
-        recorded,
-        vec![("pumpfix-g1", "stale"), ("pumpfix-q2", "stale")]
+        posted,
+        vec![(first.as_str(), "stale"), (second.as_str(), "stale")]
+    );
+    assert_eq!(actions[0].record, record.handle);
+}
+
+#[test]
+fn run_withdraw_refuses_a_need_without_an_open_record_and_posts_nothing() {
+    let project = project();
+    let first = project.need("fix auth");
+    let second = project.need("fix billing");
+    project.mailspace.pump_send(None, &first, None).unwrap();
+    let mut store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
+    store.save(&State::default()).unwrap();
+
+    let error = run(project.root(), &command(&[&first, &second], "stale")).unwrap_err();
+
+    let text = error.to_string();
+    assert!(
+        text.contains(&format!("need {second} has no open pump record")),
+        "{text}"
+    );
+    assert!(text.contains("vivi pump send"), "{text}");
+    assert!(
+        project
+            .mailspace
+            .pump_pending_actions(&BTreeSet::new())
+            .unwrap()
+            .is_empty()
     );
 }
 
 #[test]
 fn run_withdraw_refuses_a_blank_reason_and_a_missing_database() {
-    let dir = mailspace_project();
-    assert!(run(dir.path(), &command(&["n1"], "  ")).is_err());
-    let error = run(dir.path(), &command(&["n1"], "why")).unwrap_err();
+    let project = project();
+    assert!(run(project.root(), &command(&["n1"], "  ")).is_err());
+    let error = run(project.root(), &command(&["n1"], "why")).unwrap_err();
     assert!(error.to_string().contains("no pump.db"));
 }

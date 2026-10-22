@@ -408,21 +408,18 @@ fn expire_planning_drops_entries_with_a_plan_and_raises_plan_no_answer_for_stale
 }
 
 #[test]
-fn a_need_with_a_record_is_planned_whatever_its_date_and_leaves_the_replan_set() {
+fn a_need_with_a_record_is_planned_whatever_its_date() {
     let (_dir, ctx, _host) = setup();
     let mut st = State::default();
-    let mut replan: BTreeSet<String> = ["queued"].iter().map(|h| (*h).to_owned()).collect();
     let rows = vec![
         need_row("ancient", "2020-01-01T00:00", "Ancient"),
         need_row("queued", "2020-01-01T00:00", "Queued replan"),
         need_row("newer", "2026-10-15T00:00", "Newer"),
     ];
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert!(st.board.planning.contains_key("ancient"));
     assert!(st.board.planning.contains_key("queued"));
     assert!(st.board.planning.contains_key("newer"));
-    assert!(!replan.contains("queued"));
-    assert!(st.board.replan.is_empty());
 }
 
 #[test]
@@ -441,8 +438,7 @@ fn a_known_or_skipped_or_already_planning_need_is_not_planned() {
         need_row("inflight", "2026-10-15", "Inflight"),
         need_row("fresh", "2026-10-15", "Fresh"),
     ];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert_eq!(st.board.planning.len(), 2);
     assert!(st.board.planning.contains_key("inflight"));
     assert!(st.board.planning.contains_key("fresh"));
@@ -461,8 +457,7 @@ fn planners_max_caps_concurrent_planners() {
         need_row("p3", "2026-10-15", "Third"),
         need_row("p4", "2026-10-15", "Fourth"),
     ];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert_eq!(st.board.planning.len(), 2);
     assert!(!st.board.planning.contains_key("p3"));
     assert!(!st.board.planning.contains_key("p4"));
@@ -475,8 +470,7 @@ fn a_launched_planner_queues_the_need_file_and_prompt_for_the_routed_role() {
     let mut st = State::default();
     let subject = "S".repeat(80);
     let rows = vec![need_row("n1", "2026-10-15", &subject)];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     let file = fs::read_to_string(ctx.home.join("needs/n1.json")).unwrap();
     let parsed: Value = serde_json::from_str(&file).unwrap();
     assert_eq!(parsed["need"], "n1");
@@ -514,7 +508,7 @@ fn a_missing_planner_route_does_not_create_a_phantom_outbox_job() {
     let mut st = State::default();
     let rows = vec![need_row("n1", "2026-10-15", "Needs a planner")];
 
-    launch_planners(&ctx, &mut st, &rows, &mut BTreeSet::new());
+    launch_planners(&ctx, &mut st, &rows);
 
     assert!(st.board.planning.is_empty());
     assert!(st.jobs.is_empty());
@@ -599,9 +593,7 @@ fn replan_answered_supersedes_the_plan_and_reopens_the_need_for_planning() {
     st.plans_seen = vec![String::from("park1.json"), String::from("other.json")];
     st.board.replied = vec![String::from("park1:planned")];
     let rows = vec![need_row("park1", "2020-01-01", "Old but answered")];
-    let mut replan = replan_answered(&ctx, &mut st, &rows);
-    assert_eq!(replan, BTreeSet::from([String::from("park1")]));
-    assert_eq!(st.board.replan, vec![String::from("park1")]);
+    replan_answered(&ctx, &mut st, &rows);
     assert_eq!(st.plans_seen, vec![String::from("other.json")]);
     assert!(!st.needs.contains_key("park1"));
     assert!(st.board.replied.is_empty());
@@ -621,9 +613,8 @@ fn replan_answered_supersedes_the_plan_and_reopens_the_need_for_planning() {
     assert!(host.logs().contains(
         &"board: operator replied on parked need park1 (was hold); re-planning".to_string()
     ));
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert!(st.board.planning.contains_key("park1"));
-    assert!(replan.is_empty() && st.board.replan.is_empty());
 }
 
 #[test]
@@ -647,11 +638,8 @@ fn a_parked_need_without_a_reply_is_left_alone() {
     let mut st = State::default();
     st.needs
         .insert(String::from("park2"), parked("operator", "held"));
-    st.board.replan = vec![String::from("elsewhere")];
     let rows = vec![need_row("park2", "2026-10-15", "Parked")];
-    let replan = replan_answered(&ctx, &mut st, &rows);
-    assert!(!replan.contains("park2"));
-    assert_eq!(st.board.replan, vec![String::from("elsewhere")]);
+    replan_answered(&ctx, &mut st, &rows);
     assert!(st.needs.contains_key("park2"));
     assert!(st.plans_seen.is_empty());
     assert!(ctx.home.join("plans/park2.json").exists());
@@ -1294,12 +1282,11 @@ fn a_need_in_backoff_waits_before_relaunch() {
         .planner_retry_at
         .insert(String::from("n1"), ctx.now() + 60);
     let rows = vec![need_row("n1", "2026-10-15", "Backing off")];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert_eq!(planner_job_count(&st), 0);
     assert!(!st.board.planning.contains_key("n1"));
     host.advance(61);
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert_eq!(planner_job_count(&st), 1);
     assert!(st.board.planning.contains_key("n1"));
 }
@@ -1310,8 +1297,7 @@ fn a_parked_need_is_never_relaunched() {
     let mut st = State::default();
     st.board.planner_failed.push(String::from("n1"));
     let rows = vec![need_row("n1", "2026-10-15", "Parked")];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert_eq!(planner_job_count(&st), 0);
     assert!(!st.board.planning.contains_key("n1"));
 }
@@ -1324,8 +1310,7 @@ fn launch_records_a_durable_planner_job_and_clears_the_stale_receipt() {
     fs::write(ctx.home.join("board/n1.out.rc"), "127").unwrap();
     let mut st = State::default();
     let rows = vec![need_row("n1", "2026-10-15", "Relaunch")];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     let job = board_planner_job(&st, "n1").expect("planner job is durable");
     assert_eq!(job.role, "pump-planner");
     assert_eq!(job.pool_candidates, vec![String::from("test-planner-pool")]);
@@ -1417,8 +1402,7 @@ fn a_dependent_is_not_planned_before_its_prerequisite() {
         need_row("b", "2026-10-15", "Dependent"),
         need_row("a", "2026-10-15", "Root"),
     ];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert!(st.board.planning.contains_key("a"));
     assert!(!st.board.planning.contains_key("b"));
     assert_eq!(planner_job_count(&st), 1);
@@ -1447,8 +1431,7 @@ fn a_dependent_is_planned_once_its_prerequisite_has_a_plan() {
         need_row("b", "2026-10-15", "Dependent"),
         need_row("a", "2026-10-15", "Root"),
     ];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert!(st.board.planning.contains_key("b"));
     assert!(!st.board.planning.contains_key("a"));
     assert_eq!(planner_job_count(&st), 1);
@@ -1463,8 +1446,7 @@ fn an_unreadable_dependency_read_does_not_gate_planning() {
         need_row("b", "2026-10-15", "Dependent"),
         need_row("a", "2026-10-15", "Root"),
     ];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert!(st.board.planning.contains_key("a"));
     assert!(st.board.planning.contains_key("b"));
     assert_eq!(planner_job_count(&st), 2);
@@ -1487,8 +1469,7 @@ fn a_need_depended_on_by_others_is_planned_before_an_independent_same_date_need(
         need_row("indep", "2026-10-15", "Independent"),
         need_row("root", "2026-10-15", "Root"),
     ];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert!(st.board.planning.contains_key("root"));
     assert!(!st.board.planning.contains_key("indep"));
     assert_eq!(planner_job_count(&st), 1);
@@ -1505,8 +1486,7 @@ fn the_need_list_order_is_kept_among_needs_nobody_depends_on() {
         need_row("x", "2026-10-15", "X"),
         need_row("y", "2026-10-15", "Y"),
     ];
-    let mut replan = BTreeSet::new();
-    launch_planners(&ctx, &mut st, &rows, &mut replan);
+    launch_planners(&ctx, &mut st, &rows);
     assert!(st.board.planning.contains_key("x"));
     assert!(!st.board.planning.contains_key("y"));
     assert_eq!(planner_job_count(&st), 1);

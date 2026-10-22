@@ -1,13 +1,15 @@
 //! Operator requeue: `vivi pump requeue`, both halves.
 //!
-//! The CLI validates the uids against the loaded state and queues a request in
-//! `pump.db` (`store::requeue`); the pump applies it once per tick before the
-//! board pass. A request names a unit and how its attempt counter should
-//! move, and the pump decides the rest:
+//! The CLI validates the uids against the loaded state and posts one
+//! requeue action per unit on the need's open pump record
+//! ([`crate::mailspace::PumpActionRequest`]); the pump applies each exactly
+//! once per tick ([`crate::pump::action`]). A request names a unit and how
+//! its attempt counter should move, and the pump decides the rest:
 //!
 //! - Only a unit nobody owns is requeueable: `stuck`, `quarantined`,
-//!   `splitting` or `withdrawn`. Anything else is refused and the request is
-//!   consumed, so a stale request cannot fire hours later.
+//!   `splitting` or `withdrawn`, and only one of the record's own need.
+//!   Anything else is refused and the action is consumed, so a stale request
+//!   cannot fire hours later.
 //! - The attempt counter never collides with a branch that already exists:
 //!   every attempt branch (`vivi/unit/<uid>-a<n>`) is listed on the target's
 //!   remote first, and the next attempt is the highest suffix + 1.
@@ -23,11 +25,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::VivariumError;
 use crate::cli::PumpRequeueCommand;
-use crate::mailspace::Mailspace;
+use crate::mailspace::{Mailspace, PumpActionRequest, PumpState};
 use crate::pump::control::project_home;
 use crate::pump::host::{Ctx, RealHost, shell_quote};
 use crate::pump::state::{State, Status, Unit};
-use crate::pump::store::{DB_FILENAME, PumpStore, RequeueRequest};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 use crate::pump::transient;
 
 /// Timeout for one `ls-remote` of a target's unit branches.
@@ -35,6 +37,20 @@ const SCAN_TIMEOUT_SECS: u64 = 60;
 
 /// The reason a request carries when the operator gave none.
 const DEFAULT_REASON: &str = "operator requeue";
+
+/// One requeue to apply: a unit and how its attempt counter moves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequeueRequest {
+    pub unit: String,
+    /// Set the attempt counter to this value.
+    pub attempts: Option<u32>,
+    /// Reset the attempt counter to zero.
+    pub fresh: bool,
+    /// Refund the attempts that failed for a transient reason.
+    pub refund: bool,
+    /// Why, for the pump log.
+    pub reason: String,
+}
 
 /// How a requeue moves a unit's attempt counter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -51,7 +67,7 @@ impl AttemptPolicy {
     /// The policy one queued request carries.
     fn from_request(request: &RequeueRequest) -> Self {
         AttemptPolicy {
-            attempts: request.attempts.and_then(attempt_count),
+            attempts: request.attempts,
             refund: request.refund,
             fresh: request.fresh,
         }
@@ -76,36 +92,12 @@ impl AttemptPolicy {
     }
 }
 
-/// The `u32` form of a stored attempt count, `None` when it does not fit.
-fn attempt_count(value: i64) -> Option<u32> {
-    match u32::try_from(value) {
-        Ok(count) => Some(count),
-        Err(_) => None,
-    }
-}
-
 /// Highest attempt suffix per uid, for one target: `uid -> max n`.
 type TargetBranches = BTreeMap<String, u32>;
 
-/// Apply every pending requeue request. A missing pump database means the
-/// pump has no local state to requeue, so this is a no-op; an unreadable one
-/// is logged once and also skipped.
-pub fn apply_pending(ctx: &Ctx, st: &mut State) {
-    let path = ctx.home.join(DB_FILENAME);
-    let requests = match PumpStore::open_read_only(&path) {
-        Ok(Some(store)) => match store.pending_requeue_requests() {
-            Ok(requests) => requests,
-            Err(err) => {
-                ctx.log(&format!("requeue: cannot read requests: {err}"));
-                return;
-            }
-        },
-        Ok(None) => return,
-        Err(err) => {
-            ctx.log(&format!("requeue: cannot read {}: {err}", path.display()));
-            return;
-        }
-    };
+/// Apply requeue requests to `st`. One branch scan per distinct target
+/// covers the whole batch.
+pub fn apply_batch(ctx: &Ctx, st: &mut State, requests: &[RequeueRequest]) {
     if requests.is_empty() {
         return;
     }
@@ -117,12 +109,9 @@ pub fn apply_pending(ctx: &Ctx, st: &mut State) {
             .map(|request| request.unit.clone())
             .collect::<Vec<String>>(),
     );
-    let mut processed: Vec<i64> = Vec::new();
-    for request in &requests {
+    for request in requests {
         apply_one(ctx, st, request, &branches);
-        processed.push(request.request_id);
     }
-    mark_applied(ctx, &path, &processed);
 }
 
 /// One branch scan per distinct target of `uids`, keyed by target id. A
@@ -286,40 +275,20 @@ fn highest_branch(branches: &BTreeMap<String, TargetBranches>, st: &State, uid: 
         .unwrap_or(0)
 }
 
-/// Mark every processed request applied, in one read-write open at the end so
-/// a tick that dies mid-way re-applies rather than loses a request.
-fn mark_applied(ctx: &Ctx, path: &std::path::Path, processed: &[i64]) {
-    if processed.is_empty() {
-        return;
-    }
-    let mut store = match PumpStore::open(path) {
-        Ok(store) => store,
-        Err(err) => {
-            ctx.log(&format!("requeue: cannot open {}: {err}", path.display()));
-            return;
-        }
-    };
-    let now = ctx.now();
-    for request_id in processed {
-        if let Err(err) = store.mark_requeue_applied(*request_id, now) {
-            ctx.log(&format!("requeue: cannot mark request applied: {err}"));
-        }
-    }
-}
-
-/// `vivi pump requeue <uid>...`: queue one request per named unit for the
-/// running pump to apply at its next tick. `--dry-run` prints what each uid
-/// would become and writes nothing.
+/// `vivi pump requeue <uid>...`: post one requeue action per named unit on
+/// its need's open pump record, for the running pump to apply at its next
+/// tick. `--dry-run` prints what each uid would become and posts nothing.
 ///
 /// `vivi pump requeue --stuck-since <time> --why <class>` is the bulk form:
-/// every unit still stuck inside that window is queued with a default-policy
-/// request whose reason records the incident class.
+/// every unit still stuck inside that window gets a default-policy action
+/// whose reason records the incident class.
 ///
 /// # Errors
 /// Returns [`VivariumError::Message`] for conflicting attempt flags, no uid,
-/// an unknown uid, or a mailspace without a pump database; a config error for
-/// an unparsable `--stuck-since` window; and whatever opening or writing the
-/// database fails with.
+/// an unknown uid, a mailspace without a pump database, or a unit whose need
+/// has no open pump record (nothing is posted then); a config error for an
+/// unparsable `--stuck-since` window; and whatever reading the database or
+/// posting an action fails with.
 pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError> {
     let home = project_home(project)?;
     let policy = AttemptPolicy::from_command(cmd)?;
@@ -346,16 +315,47 @@ pub fn run(project: &Path, cmd: &PumpRequeueCommand) -> Result<(), VivariumError
         return Ok(());
     }
     let reason = cmd.reason.as_deref().unwrap_or(DEFAULT_REASON);
-    let mut store = PumpStore::open(&path)?;
-    for (uid, ..) in &planned {
-        store.add_requeue_request(
-            uid,
-            policy.attempts.map(i64::from),
-            policy.fresh,
-            policy.refund,
-            reason,
-            now(),
-        )?;
+    post_all(project, &st, &planned, policy, reason, false)
+}
+
+/// Post one requeue action per planned unit on its need's open pump record.
+/// Every need is checked first, so a unit whose need has no open record
+/// refuses the whole command before anything is posted; the bulk form
+/// (`skip_closed`) skips such a unit with a printed line instead.
+fn post_all(
+    project: &Path,
+    st: &State,
+    planned: &[Planned],
+    policy: AttemptPolicy,
+    reason: &str,
+    skip_closed: bool,
+) -> Result<(), VivariumError> {
+    let mailspace = Mailspace::discover(Some(project))?;
+    let open: BTreeSet<String> = mailspace
+        .pump_list(None, Some(PumpState::Open))?
+        .into_iter()
+        .map(|record| record.need)
+        .collect();
+    let mut targets: Vec<(&str, &str)> = Vec::new();
+    for (uid, ..) in planned {
+        let need = st
+            .units
+            .get(uid.as_str())
+            .map_or("", |unit| unit.need.as_str());
+        if open.contains(need) {
+            targets.push((uid.as_str(), need));
+        } else if skip_closed {
+            println!("requeue {uid} skipped: need {need} has no open pump record");
+        } else {
+            return Err(VivariumError::Message(format!(
+                "unit {uid} belongs to need {need}, which has no open pump record, so there is no dispatch to requeue it in; open one with `vivi pump send --need {need}`"
+            )));
+        }
+    }
+    for (uid, need) in targets {
+        let request =
+            PumpActionRequest::requeue(uid, policy.attempts, policy.fresh, policy.refund, reason);
+        mailspace.pump_post_action(None, need, &request)?;
         println!("{}", requested_line(uid));
     }
     Ok(())
@@ -399,12 +399,14 @@ fn run_bulk(project: &Path, cmd: &PumpRequeueCommand, home: &Path) -> Result<(),
         return Ok(());
     }
     let reason = format!("bulk {class}");
-    let mut store = PumpStore::open(&path)?;
-    for (uid, ..) in &planned {
-        store.add_requeue_request(uid, None, false, false, &reason, now())?;
-        println!("{}", requested_line(uid));
-    }
-    Ok(())
+    post_all(
+        project,
+        &st,
+        &planned,
+        AttemptPolicy::default(),
+        &reason,
+        true,
+    )
 }
 
 /// Load the pump state at `path`, refusing a mailspace with no database.

@@ -11,6 +11,10 @@
 //! - `superseded`: an operator replan threw the plan away (a fresh record is
 //!   opened so the replanned need is planned again).
 //!
+//! An operator's `withdraw` or `replan` closes its record through
+//! [`settle_action`], after the pump has saved the state change
+//! ([`crate::pump::action`] owns the exactly-once rules).
+//!
 //! Reads (which records are open) go through the `vivi` command seam like
 //! every other board read. Closing and opening call the mailspace library
 //! directly. Nothing here fails the tick: a lookup or a close that cannot run
@@ -23,7 +27,7 @@ use serde_json::Value;
 
 use crate::mailspace::{Mailspace, PumpState};
 use crate::pump::host::{Ctx, shell_quote};
-use crate::pump::state::{State, Status};
+use crate::pump::state::{ActionMark, State, Status};
 
 /// The dispatch ended with the need closed and all its work merged.
 pub const LANDED: &str = "landed";
@@ -93,7 +97,7 @@ pub fn finish(ctx: &Ctx, need: &str, outcome: &str, detail: &str) -> Option<Stri
 }
 
 /// Close one record, replying `detail` first when there is some.
-fn close_record(
+pub(crate) fn close_record(
     ctx: &Ctx,
     mailspace: &Mailspace,
     handle: &str,
@@ -121,7 +125,7 @@ fn close_record(
     }
 }
 
-fn open_mailspace(ctx: &Ctx) -> Option<Mailspace> {
+pub(crate) fn open_mailspace(ctx: &Ctx) -> Option<Mailspace> {
     match Mailspace::discover(Some(&ctx.project)) {
         Ok(mailspace) => Some(mailspace),
         Err(error) => {
@@ -191,20 +195,38 @@ pub fn reply_on(ctx: &Ctx, target: &str, need: &str, stage: &str, body: &str) ->
     out.code == 0
 }
 
-/// An operator replan threw `need`'s plan away: close its open record as
-/// `superseded` and open a fresh one, so each record carries exactly one plan
-/// and the board plans the need again. A failed send is raised as an
-/// operator exception, because the need would otherwise never be replanned.
-pub fn supersede(ctx: &Ctx, need: &str) {
-    finish(
-        ctx,
-        need,
-        SUPERSEDED,
-        "operator replan: this plan was superseded; a fresh record carries the new plan",
-    );
-    let Some(mailspace) = open_mailspace(ctx) else {
-        return;
+/// Settle the record effect an applied operator action still owes: close the
+/// record it was posted on with `mark.owes` (`withdrawn` or `superseded`),
+/// and for `superseded` open a fresh record so the board plans the need
+/// again and each record carries exactly one plan.
+///
+/// Every step checks before it acts, so replaying it after a tick that died
+/// part-way is safe: the record is closed only while it is still open, and a
+/// fresh one is opened only while the need has none. Returns whether the debt
+/// is settled; `false` means try again next tick. A failed send of the fresh
+/// record is raised as an operator exception and the debt is dropped, because
+/// the need would otherwise never be replanned and the operator must
+/// `vivi pump send` it.
+pub fn settle_action(ctx: &Ctx, mailspace: &Mailspace, mark: &ActionMark) -> bool {
+    let need = mark.need.as_str();
+    let open = match mailspace.pump_list(Some(need), Some(PumpState::Open)) {
+        Ok(open) => open,
+        Err(error) => {
+            ctx.log(&format!("pump record lookup for {need} failed: {error}"));
+            return false;
+        }
     };
+    if open.iter().any(|record| record.handle == mark.record)
+        && close_record(ctx, mailspace, &mark.record, need, &mark.owes, &mark.detail).is_none()
+    {
+        return false;
+    }
+    if mark.owes != SUPERSEDED {
+        return true;
+    }
+    if open.iter().any(|record| record.handle != mark.record) {
+        return true;
+    }
     let body = format!("Replan of need {need}: the previous plan was superseded.");
     match mailspace.pump_send(None, need, Some(&body)) {
         Ok(record) => ctx.log(&format!(
@@ -220,6 +242,7 @@ pub fn supersede(ctx: &Ctx, need: &str) {
             ),
         ),
     }
+    true
 }
 
 /// A revision of `need` is starting (its thread moved after the plan): make
@@ -302,13 +325,49 @@ pub fn closed_need_outcome(st: &State, need: &str) -> (&'static str, String) {
     (WITHDRAWN, detail)
 }
 
-/// Close the open record of every listed need that the pump has given up on. Idempotent: a closed record leaves the intake, so it is not seen
-/// again.
+/// Close the open record of every listed need that the pump has given up on.
+/// Idempotent: a closed record leaves the intake, so it is not seen again.
+///
+/// A record the tick thread has not adopted yet is left alone: when the pump
+/// last ran the need under another record, the newer one is a fresh dispatch
+/// (an operator retry), and this pass's state still carries the old
+/// dispatch's parked planner and stuck units. The tick adopts it, clears
+/// that state and requeues the stuck units first; a later pass judges it.
 pub fn settle_gave_up(ctx: &Ctx, st: &State, needs: &[String]) {
-    for need in needs {
-        if let Some(reason) = gave_up_reason(ctx, st, need) {
-            finish(ctx, need, GAVE_UP, &reason);
+    let reasons: Vec<(&String, String)> = needs
+        .iter()
+        .filter_map(|need| Some((need, gave_up_reason(ctx, st, need)?)))
+        .collect();
+    if reasons.is_empty() {
+        return;
+    }
+    let Some(mailspace) = open_mailspace(ctx) else {
+        return;
+    };
+    for (need, reason) in reasons {
+        let open = match mailspace.pump_list(Some(need), Some(PumpState::Open)) {
+            Ok(open) => open,
+            Err(error) => {
+                ctx.log(&format!("pump record lookup for {need} failed: {error}"));
+                continue;
+            }
+        };
+        let Some(record) = open.into_iter().next() else {
+            continue;
+        };
+        if st
+            .board
+            .records
+            .get(need)
+            .is_some_and(|seen| seen != &record.handle)
+        {
+            ctx.log(&format!(
+                "pump record {} for need {need} is a new dispatch; not judged until the pump adopts it",
+                record.handle
+            ));
+            continue;
         }
+        close_record(ctx, &mailspace, &record.handle, need, GAVE_UP, &reason);
     }
 }
 

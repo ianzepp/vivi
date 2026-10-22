@@ -320,8 +320,7 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) -> bool {
 /// Plan the new needs among `rows` (the needs with an open pump record): skip
 /// skipped, known, already-planning or already-planned handles, respect the
 /// concurrent-planner cap, then write the need file, spawn the planner and
-/// record the planning entry. Launched handles leave `replan` and the mirror
-/// `st.board.replan` is re-sorted.
+/// record the planning entry.
 ///
 /// A dependent whose prerequisite has no plan file yet is held back: the
 /// planner would buy nothing, because the dependent's units would sit held at
@@ -332,7 +331,7 @@ fn fail_exited_planner(ctx: &Ctx, st: &mut State, handle: &str) -> bool {
 /// Within one pass, needs other open needs depend on are planned before their
 /// dependents and before independent needs, so an arrival batch cannot spend
 /// every planner slot on independent work while a shared prerequisite waits.
-pub fn launch_planners(ctx: &Ctx, st: &mut State, rows: &[NeedRow], replan: &mut BTreeSet<String>) {
+pub fn launch_planners(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
     let skip = read_skip(ctx);
     let gates = planning_gates(ctx, rows);
     for row in plan_order(rows, &gates) {
@@ -363,7 +362,7 @@ pub fn launch_planners(ctx: &Ctx, st: &mut State, rows: &[NeedRow], replan: &mut
         {
             continue;
         }
-        launch_one(ctx, st, &row, replan);
+        launch_one(ctx, st, &row);
         if stop_requested(ctx) {
             ctx.log(STOP_NOTE);
             return;
@@ -426,7 +425,7 @@ fn stop_requested(ctx: &Ctx) -> bool {
 }
 
 /// Write the need file, spawn the planner for one row, and record it.
-fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<String>) {
+fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow) {
     let handle = row.handle.as_str();
     let thread = ctx.vivi(&format!("need show {handle}"), 60).text;
     let thread: String = thread.chars().take(40_000).collect();
@@ -472,9 +471,6 @@ fn launch_one(ctx: &Ctx, st: &mut State, row: &NeedRow, replan: &mut BTreeSet<St
     }
     st.board.planner_pids.remove(handle);
     st.board.planning.insert(handle.to_owned(), queued_at);
-    if replan.remove(handle) {
-        st.board.replan = replan.iter().cloned().collect();
-    }
     let subject: String = row.subject.chars().take(70).collect();
     ctx.log(&format!("board: planning new need {handle} {subject}"));
 }
@@ -578,11 +574,8 @@ fn mtime_secs(meta: &fs::Metadata) -> u64 {
 /// thread gained an operator reply after its plan was written is planned
 /// again: the plan moves to `plans/superseded/`, the basename leaves
 /// `plans_seen`, the need record and its `planned` reply key are dropped, and
-/// the handle joins the replan set, which bypasses the since cutoff.
-/// Returns the replan set, mirrored sorted in
-/// `st.board.replan`.
-pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> BTreeSet<String> {
-    let mut replan: BTreeSet<String> = st.board.replan.iter().cloned().collect();
+/// the board plans the need again on its open pump record.
+pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
     for row in rows {
         let Some(verdict) = parked_with_reply(ctx, st, &row.handle) else {
             continue;
@@ -598,14 +591,11 @@ pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) -> BTreeSet<
         st.needs.remove(&row.handle);
         let key = format!("{}:planned", row.handle);
         st.board.replied.retain(|sent| sent != &key);
-        replan.insert(row.handle.clone());
         ctx.log(&format!(
             "board: operator replied on parked need {} (was {verdict}); re-planning",
             row.handle
         ));
     }
-    st.board.replan = replan.iter().cloned().collect();
-    replan
 }
 
 /// The need's verdict when `handle` is parked, unit-less, has a plan file,
@@ -909,8 +899,8 @@ pub fn board(ctx: &Ctx, st: &mut State) {
     }
     let rows = candidate_rows(ctx);
     expire_planning(ctx, st);
-    let mut replan = replan_answered(ctx, st, &rows);
-    launch_planners(ctx, st, &rows, &mut replan);
+    replan_answered(ctx, st, &rows);
+    launch_planners(ctx, st, &rows);
     let said = post_replies(ctx, st, &rows);
     let handles: Vec<String> = rows.iter().map(|row| row.handle.clone()).collect();
     crate::pump::record::settle_gave_up(ctx, st, &handles);

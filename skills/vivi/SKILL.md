@@ -2336,6 +2336,7 @@ vivi pump requeue --stuck-since <time> --why <class> [--dry-run]
 vivi pump replan <need> [--force]
 vivi pump withdraw <need>... --reason TEXT
 vivi pump send --need <need> [--from <id>] [--body TEXT]
+vivi pump adopt [--dry-run]
 vivi pump list [--need <need>] [--status open|done|all] [--json]
 vivi pump show <record> [--json]
 vivi pump done <record> [--note TEXT]
@@ -2385,18 +2386,41 @@ merges, blocked units and parked needs with reasons, complete-but-open needs
 and recent exceptions; pass a previous **as_of** as **--since** to get
 **changed_since** (units whose status began, merges and exceptions after it).
 
-**withdraw** closes a pump need without the mail board, for needs that have no
-mail thread (the synthetic **pumpfix-g&lt;tip&gt;** and **pumpfix-q&lt;id&gt;**
-repair needs of Vivi 15). It records a request, like **requeue**; the pump
-applies it at its next tick. Every unfinished unit of the need, **stuck** ones
-included, becomes **withdrawn**; merged, no-defect and replaced units stay.
-The need joins the closed set, so it is never re-planned or dispatched and its
-need-audit, need-merge and landing steps are skipped. Its need-branch record is
-dropped: branch cleanup needs a verified landing, so the remote
-**vivi/need/&lt;id&gt;** branch is left for manual deletion and the log names it.
-An unknown need id is dropped with a log line. The pump records a
-**need-withdrawn** exception for each applied request. It works for any need,
-but a real need's mail item stays open: close it on the board too.
+**requeue**, **withdraw** and **replan** are actions on the need's open pump
+record. Each posts one reply on the record (headers **X-Vivi-Pump-Action:
+requeue|withdraw|replan**, **X-Vivi-Pump-Record**, **X-Vivi-Need**, and for a
+requeue **X-Vivi-Pump-Unit**, **-Attempts**, **-Fresh**, **-Refund**; for a
+replan **X-Vivi-Pump-Force**; the body is the reason) and the pump applies it
+at its next tick, exactly once: the applied letter ids are saved with the state
+in one transaction. A need with no open record is refused and nothing is
+posted, so send a record first (**vivi pump send --need**). An action on a
+closed record is never applied. The library call is
+**Mailspace::pump_post_action**; it prints nothing.
+
+**withdraw** stops a pump need without the mail board. Every unfinished unit
+of the need, **stuck** ones included, becomes **withdrawn**; merged, no-defect
+and replaced units stay. The need joins the closed set, so it is never
+re-planned or dispatched and its need-audit, need-merge and landing steps are
+skipped. Its need-branch record is dropped: branch cleanup needs a verified
+landing, so the remote **vivi/need/&lt;id&gt;** branch is left for manual
+deletion and the log names it. The pump records a **need-withdrawn** exception
+for each applied action and closes the record **withdrawn**. A real need's mail
+item stays open: close it on the board too. The synthetic **pumpfix-** needs of
+Vivi 15 have no mail need to hold a record and cannot be withdrawn this way.
+
+**Retry a given-up need** by sending a new record (**vivi pump send --need**).
+The pump starts that dispatch clean: it clears the planner state that parked
+the need and requeues its **stuck** units with a fresh attempt budget, so the
+need is planned or resumed instead of closing **gave-up** at once. A need-audit
+hold is not cleared; it waits for an operator ruling. **pump send** refuses a
+need that is not addressed to **[pump] reply_from** (or held under another
+mailspace's address).
+
+**adopt** is the vivi 19 upgrade step: it opens a record for every need the
+pump has planned or is planning and has not finished, unless it already has
+one, so in-flight work keeps its replies. It is idempotent; **--dry-run** lists
+what it would open; a handle that is not a mailspace need is reported as
+skipped.
 
 Control, priority, requeue, replan, withdraw, and closeout commands accept
 **--project &lt;root&gt;** outside the project. The pump stores live state and
@@ -2497,7 +2521,7 @@ after each failure. Failures before enqueue and a missing slot for the built-in
 auditor defer for 60 seconds without incrementing the failed-job count. A
 durable role job with no free slot remains pending. Once the failure limit is
 reached, that unchanged red result stays stopped until the failure signature
-changes or **vivi pump replan &lt;fix-need&gt;** explicitly rearms it. Provider or
+changes or **vivi pump replan &lt;fix-need&gt;** (on an open pump record) explicitly rearms it. Provider or
 harness failures create an **environment** exception with the exit and receipt
 tail; an exhausted audit creates
 **gatefix-planner-failed**. Status shows **gatefix-active** or
@@ -2549,11 +2573,13 @@ lifecycle close as holder and accepts it as author. Needs with a pending
 amendment remain open until the revision is planned and accepted. Legacy needs
 without managed branches retain their existing closeout behavior.
 
-**vivi pump replan &lt;need&gt;** queues planning for the next tick, moves the
-existing plan into **plans/superseded/**, withdraws pending, held, stuck, and
-**needs-replan** units, and plans from the current thread. Merged units stay
-merged. It refuses while a planner or live unit work is active unless
-**--force** is used; forced replan leaves live work running.
+**vivi pump replan &lt;need&gt;** posts a replan action on the need's open pump
+record; at the next tick the pump moves the existing plan into
+**plans/superseded/**, withdraws pending, held, stuck, and **needs-replan**
+units, clears the need's parked planner state, closes the record
+**superseded**, opens a fresh one, and plans from the current thread. Merged
+units stay merged. It refuses while a planner or live unit work is active
+unless **--force** is used; forced replan leaves live work running.
 
 A role's **cadence** is its maximum silence interval from the latest durable
 outbound signal. A due role with a charter and room under the open-work caps

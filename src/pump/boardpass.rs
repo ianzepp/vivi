@@ -162,11 +162,56 @@ pub(crate) fn merge_back(st: &mut State, snap: &State, done: &State) {
     merge_planning(st, snap, done);
     merge_jobs(st, snap, done);
     merge_replied(st, snap, done);
-    // Only the board pass writes `replan`.
-    st.board.replan.clone_from(&done.board.replan);
+    merge_planner_bookkeeping(st, snap, done);
     merge_revision_planning(st, snap, done);
     // The interval restarts at completion.
     st.board.at = done.board.at;
+}
+
+/// (h) What the pass changed in the planner bookkeeping it owns: the exit
+/// counts, relaunch times, running pids and the parked list. Only entries the
+/// pass added, changed or dropped move, so a clearing the tick thread made
+/// during the pass (a new pump record, a replan) is not undone by the stale
+/// snapshot the pass worked from.
+fn merge_planner_bookkeeping(st: &mut State, snap: &State, done: &State) {
+    merge_map(
+        &mut st.board.planner_pids,
+        &snap.board.planner_pids,
+        &done.board.planner_pids,
+    );
+    merge_map(
+        &mut st.board.planner_fails,
+        &snap.board.planner_fails,
+        &done.board.planner_fails,
+    );
+    merge_map(
+        &mut st.board.planner_retry_at,
+        &snap.board.planner_retry_at,
+        &done.board.planner_retry_at,
+    );
+    st.board.planner_failed.retain(|need| {
+        !(snap.board.planner_failed.contains(need) && !done.board.planner_failed.contains(need))
+    });
+    for need in &done.board.planner_failed {
+        if !snap.board.planner_failed.contains(need) && !st.board.planner_failed.contains(need) {
+            st.board.planner_failed.push(need.clone());
+        }
+    }
+}
+
+/// Apply to `live` the entries `done` added or changed against `snap`, and
+/// drop the ones `done` removed.
+fn merge_map<V: Clone + PartialEq>(
+    live: &mut std::collections::BTreeMap<String, V>,
+    snap: &std::collections::BTreeMap<String, V>,
+    done: &std::collections::BTreeMap<String, V>,
+) {
+    for (key, value) in done {
+        if snap.get(key) != Some(value) {
+            live.insert(key.clone(), value.clone());
+        }
+    }
+    live.retain(|key, _| !(snap.contains_key(key) && !done.contains_key(key)));
 }
 
 /// Fold worker-created jobs into the live outbox without rewinding jobs that

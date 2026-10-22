@@ -3,11 +3,13 @@
 //! tick writes, the `PAUSE` flag, the missing `[pump]` table error, and the
 //! single-instance lock.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use vivi::mailspace::{Mailspace, PumpAction, PumpActionKind};
 use vivi::pump::state::{NeedRecord, State, Status, Unit};
 use vivi::pump::store::{DB_FILENAME, PumpStore};
 
@@ -71,24 +73,36 @@ fn export_writes_the_state_json_shape() {
 }
 
 #[test]
-fn replan_queues_a_request_and_refuses_live_work() {
+fn replan_posts_an_action_on_the_open_record_and_refuses_live_work() {
     let help = stdout(&vivi(["pump", "--help"]));
     assert!(help.contains("replan"), "{help}");
 
     let project = temp_mailspace();
     let handle = send_need(&project);
     write_pump_status(&project, &handle, Status::Pending);
+
+    // A replan acts on a dispatch: with no open pump record it is refused.
+    let no_record = vivi(["pump", "replan", &handle, "--project", root(&project)]);
+    assert!(!no_record.status.success(), "{}", stdout(&no_record));
+    let error = stderr(&no_record);
+    assert!(error.contains("no open pump record"), "{error}");
+    assert!(error.contains("vivi pump send"), "{error}");
+
+    assert_success(&vivi([
+        "pump",
+        "send",
+        "--need",
+        &handle,
+        "--project",
+        root(&project),
+    ]));
     let queued = vivi(["pump", "replan", &handle, "--project", root(&project)]);
     assert_success(&queued);
-    let path = pump_home(&project).join(DB_FILENAME);
-    let rows = PumpStore::open_read_only(&path)
-        .unwrap()
-        .unwrap()
-        .pending_replan_requests()
-        .unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].need, handle);
-    assert!(!rows[0].force);
+    let actions = posted_actions(&project);
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].need, handle);
+    assert_eq!(actions[0].request.kind, PumpActionKind::Replan);
+    assert!(!actions[0].request.force);
 
     write_pump_status(&project, &handle, Status::Inflight);
     let refused = vivi(["pump", "replan", &handle, "--project", root(&project)]);
@@ -100,15 +114,144 @@ fn replan_queues_a_request_and_refuses_live_work() {
     );
     assert!(stderr(&refused).contains("--force"), "{}", stderr(&refused));
     assert_eq!(
-        PumpStore::open_read_only(&path)
-            .unwrap()
-            .unwrap()
-            .pending_replan_requests()
-            .unwrap()
-            .len(),
+        posted_actions(&project).len(),
         1,
-        "refusal must not queue another request"
+        "refusal must not post another action"
     );
+}
+
+#[test]
+fn requeue_and_withdraw_post_actions_on_the_open_record() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump_status(&project, &handle, Status::Stuck);
+    let unit = format!("{handle}-1");
+
+    let refused = vivi(["pump", "requeue", &unit, "--project", root(&project)]);
+    assert!(!refused.status.success(), "{}", stdout(&refused));
+    assert!(
+        stderr(&refused).contains("no open pump record"),
+        "{}",
+        stderr(&refused)
+    );
+    let refused = vivi([
+        "pump",
+        "withdraw",
+        &handle,
+        "--reason",
+        "stop",
+        "--project",
+        root(&project),
+    ]);
+    assert!(!refused.status.success(), "{}", stdout(&refused));
+    assert!(posted_actions(&project).is_empty());
+
+    assert_success(&vivi([
+        "pump",
+        "send",
+        "--need",
+        &handle,
+        "--project",
+        root(&project),
+    ]));
+    assert_success(&vivi([
+        "pump",
+        "requeue",
+        &unit,
+        "--project",
+        root(&project),
+    ]));
+    assert_success(&vivi([
+        "pump",
+        "withdraw",
+        &handle,
+        "--reason",
+        "stop",
+        "--project",
+        root(&project),
+    ]));
+
+    let actions = posted_actions(&project);
+    let kinds: Vec<_> = actions.iter().map(|action| action.request.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![PumpActionKind::Requeue, PumpActionKind::Withdraw]
+    );
+    assert_eq!(actions[0].request.unit.as_deref(), Some(unit.as_str()));
+    assert_eq!(actions[1].request.reason, "stop");
+}
+
+#[test]
+fn pump_send_refuses_a_need_not_addressed_to_the_pump() {
+    let project = temp_mailspace();
+    let _ = send_need(&project);
+    let out = vivi([
+        "need",
+        "send",
+        "--from",
+        "mind",
+        "--to",
+        "operator",
+        "--subject",
+        "not for the pump",
+        "--body",
+        "done_when: never.",
+        "--project",
+        root(&project),
+    ]);
+    assert_success(&out);
+    let stray = stdout(&out)
+        .split_whitespace()
+        .find(|word| word.len() == 8 && word.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap()
+        .to_owned();
+
+    let refused = vivi([
+        "pump",
+        "send",
+        "--need",
+        &stray,
+        "--project",
+        root(&project),
+    ]);
+
+    assert!(!refused.status.success(), "{}", stdout(&refused));
+    let error = stderr(&refused);
+    assert!(
+        error.contains("not addressed to the pump identity 'mind'"),
+        "{error}"
+    );
+}
+
+#[test]
+fn pump_adopt_opens_records_for_in_flight_needs_and_is_idempotent() {
+    let project = temp_mailspace();
+    let handle = send_need(&project);
+    write_pump_status(&project, &handle, Status::Pending);
+
+    let first = vivi(["pump", "adopt", "--project", root(&project)]);
+    assert_success(&first);
+    let text = stdout(&first);
+    assert!(
+        text.contains(&format!("adopted need {handle}: pump record")),
+        "{text}"
+    );
+    let listed = vivi(["pump", "list", "--json", "--project", root(&project)]);
+    assert!(stdout(&listed).contains(&handle), "{}", stdout(&listed));
+
+    let second = vivi(["pump", "adopt", "--project", root(&project)]);
+    assert_success(&second);
+    let text = stdout(&second);
+    assert!(text.contains("already has open pump record"), "{text}");
+    assert!(text.contains("adopted 0 need(s)"), "{text}");
+}
+
+/// The pump actions posted in the project and not yet applied.
+fn posted_actions(project: &tempfile::TempDir) -> Vec<PumpAction> {
+    Mailspace::discover(Some(project.path()))
+        .unwrap()
+        .pump_pending_actions(&BTreeSet::new())
+        .unwrap()
 }
 
 #[test]

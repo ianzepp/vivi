@@ -1,5 +1,7 @@
 //! `vivi pump`: the pump as a state machine; see skills/vivi/references/pump-contract.md.
 
+pub mod action;
+pub mod adopt;
 pub mod alarm;
 pub mod amend;
 pub mod apfssweep;
@@ -54,6 +56,10 @@ pub mod store;
 pub mod tick_steps;
 pub mod transient;
 pub mod withdraw;
+
+#[cfg(test)]
+#[path = "pump/fixture_test.rs"]
+pub(crate) mod fixture;
 
 #[cfg(test)]
 #[path = "pump/logview_test.rs"]

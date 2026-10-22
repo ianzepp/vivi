@@ -1,10 +1,11 @@
 //! Operator withdraw: `vivi pump withdraw`, both halves.
 //!
 //! A pump need normally closes through the mail board
-//! (`board::reconcile_done_needs`). A need with no mail thread (the synthetic
-//! `pumpfix-*` repair needs of Vivi 15 exist only in `pump.db` and plan files)
-//! cannot be closed there, so the operator closes it here. The CLI queues a
-//! request in `pump.db`; the pump applies it once per tick:
+//! (`board::reconcile_done_needs`). The operator closes one here when it
+//! should stop without closing the need on the board. The CLI posts a
+//! withdraw action on the need's open pump record
+//! ([`crate::mailspace::PumpActionRequest`]); the pump applies it once
+//! ([`crate::pump::action`]):
 //!
 //! - every unfinished unit of the need is withdrawn, stuck ones included;
 //! - the need joins `closed_needs`, so nothing re-plans or dispatches it and
@@ -15,46 +16,20 @@
 //!   verified landing, which a withdrawn need never has, so the remote
 //!   `vivi/need/<id>` branch is left for manual deletion and the log says so;
 //! - an exception of kind `need-withdrawn` records the act;
-//! - the need's open pump record, if it has one, is closed `withdrawn`.
+//! - afterwards the pump closes the need's pump record `withdrawn`.
 //!
-//! An unknown need id drops the request with a log line.
+//! A need the pump holds no state for (its planner has not run) still has its
+//! record closed: there is nothing to withdraw but the dispatch.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::VivariumError;
 use crate::cli::PumpWithdrawCommand;
+use crate::mailspace::{Mailspace, PumpActionRequest};
 use crate::pump::control::project_home;
 use crate::pump::host::Ctx;
 use crate::pump::state::{State, Status};
-use crate::pump::store::{DB_FILENAME, PumpStore, WithdrawRequest};
-
-/// Apply every pending withdraw request. A missing pump database means there
-/// is no state to withdraw from; an unreadable one is logged once and skipped.
-pub fn apply_pending(ctx: &Ctx, st: &mut State) {
-    let path = ctx.home.join(DB_FILENAME);
-    let requests = match PumpStore::open_read_only(&path) {
-        Ok(Some(store)) => match store.pending_withdraw_requests() {
-            Ok(requests) => requests,
-            Err(err) => {
-                ctx.log(&format!("withdraw: cannot read requests: {err}"));
-                return;
-            }
-        },
-        Ok(None) => return,
-        Err(err) => {
-            ctx.log(&format!("withdraw: cannot read {}: {err}", path.display()));
-            return;
-        }
-    };
-    if requests.is_empty() {
-        return;
-    }
-    for request in &requests {
-        apply_one(ctx, st, request);
-    }
-    mark_applied(ctx, &path, &requests);
-}
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 /// Whether the state has anything for `need`: a plan record, a unit or a
 /// need-branch record.
@@ -64,12 +39,16 @@ fn known(st: &State, need: &str) -> bool {
         || crate::pump::need::all(st).map_or(true, |records| records.iter().any(|r| r.need == need))
 }
 
-/// Withdraw one need, or drop the request when the need is unknown.
-fn apply_one(ctx: &Ctx, st: &mut State, request: &WithdrawRequest) {
-    let need = request.need.as_str();
+/// Withdraw one need in `st` and return the text the pump replies on its
+/// record when it closes it `withdrawn`. A need the state holds nothing for
+/// is only logged: its dispatch still ends.
+pub fn apply_one(ctx: &Ctx, st: &mut State, need: &str, reason: &str) -> String {
     if !known(st, need) {
-        ctx.log(&format!("withdraw {need} dropped: unknown need"));
-        return;
+        let text = format!("withdrew need {need}: the pump held no plan for it ({reason})");
+        ctx.log(&format!(
+            "withdraw {need}: unknown need; closing its record"
+        ));
+        return text;
     }
     let now = ctx.now();
     let mut count = 0usize;
@@ -88,13 +67,13 @@ fn apply_one(ctx: &Ctx, st: &mut State, request: &WithdrawRequest) {
         record.withdrawn = true;
     }
     forget_branches(ctx, st, need);
-    let text = format!("withdrew need {need}: {count} unit(s) ({})", request.reason);
+    let text = format!("withdrew need {need}: {count} unit(s) ({reason})");
     ctx.log(&text);
     ctx.log(&format!(
         "withdraw {need}: the mail need is not closed; close it on the board if it has one"
     ));
     ctx.exception("need-withdrawn", need, &text);
-    crate::pump::record::finish(ctx, need, crate::pump::record::WITHDRAWN, &text);
+    text
 }
 
 /// Drop the need's branch records and say which remote branches stay behind.
@@ -114,31 +93,15 @@ fn forget_branches(ctx: &Ctx, st: &mut State, need: &str) {
     }
 }
 
-/// Mark every processed request applied, in one read-write open at the end so
-/// a tick that dies mid-way re-applies rather than loses a request.
-fn mark_applied(ctx: &Ctx, path: &Path, requests: &[WithdrawRequest]) {
-    let mut store = match PumpStore::open(path) {
-        Ok(store) => store,
-        Err(err) => {
-            ctx.log(&format!("withdraw: cannot open {}: {err}", path.display()));
-            return;
-        }
-    };
-    let at = ctx.now();
-    for request in requests {
-        if let Err(err) = store.mark_withdraw_applied(request.request_id, at) {
-            ctx.log(&format!("withdraw: cannot mark request applied: {err}"));
-        }
-    }
-}
-
-/// `vivi pump withdraw <NEED>... --reason <TEXT>`: queue one request per need
-/// for the running pump to apply at its next tick.
+/// `vivi pump withdraw <NEED>... --reason <TEXT>`: post one withdraw action
+/// per need on its open pump record, for the running pump to apply at its
+/// next tick. Every need is checked first, so a need with no open record
+/// refuses the whole command before anything is posted.
 ///
 /// # Errors
-/// Returns [`VivariumError::Message`] for an empty reason or a mailspace
-/// without a pump database, and whatever opening or writing the database
-/// fails with.
+/// Returns [`VivariumError::Message`] for an empty reason, a mailspace
+/// without a pump database, or a need with no open pump record, and whatever
+/// posting an action fails with.
 pub fn run(project: &Path, cmd: &PumpWithdrawCommand) -> Result<(), VivariumError> {
     if cmd.reason.trim().is_empty() {
         return Err(VivariumError::Message(String::from(
@@ -153,16 +116,17 @@ pub fn run(project: &Path, cmd: &PumpWithdrawCommand) -> Result<(), VivariumErro
             path.display()
         )));
     }
-    let mut store = PumpStore::open(&path)?;
+    let mailspace = Mailspace::discover(Some(project))?;
     for need in &cmd.needs {
-        store.add_withdraw_request(need, cmd.reason.trim(), now())?;
+        if mailspace.pump_open_record(need)?.is_none() {
+            return Err(VivariumError::Message(format!(
+                "need {need} has no open pump record, so there is no dispatch to withdraw; close the need on the board, or open a record with `vivi pump send --need {need}` first"
+            )));
+        }
+    }
+    for need in &cmd.needs {
+        mailspace.pump_post_action(None, need, &PumpActionRequest::withdraw(cmd.reason.trim()))?;
         println!("withdraw {need} requested; the pump applies it at its next tick");
     }
     Ok(())
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }

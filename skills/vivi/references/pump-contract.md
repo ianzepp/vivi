@@ -40,7 +40,7 @@ A role job is saved in the pump state before pool capacity is selected. Its stab
 
 On startup, the pump lists tasks for each role and matches the stable job marker in the task subject and body. It restores missing handles, reads terminal receipts, and applies completed results through the regular tick path. A dispatched merge job continues to own its units across a restart. A unit left in **merging** without an owning durable merge job returns to **delivered** so it can be retried. After that recovery, units whose needs were closed on the board outside the pump are withdrawn: pending, delivered, merging, and in-flight rows are skipped and never merged. Already merged or no-defect units stay as they are.
 
-The SQLite store is **pump.db**, schema version 6. Its state includes units, plans, gates, promotions, control, requeue/replan/withdraw requests, and the durable **jobs** map. **state.json** is an import/export format, not the live store. The first migration from an old state file imports it and archives it as **state.json.imported**.
+The SQLite store is **pump.db**, schema version 8. Its state includes units, plans, gates, promotions, control, the operator actions already applied (**board.actions**), the pump record each need last ran under (**board.records**), and the durable **jobs** map. Schema 8 drops the **requeue_requests**, **withdraw_requests** and **replan_requests** tables: operator requests are actions on pump records now, and a request the old pump had not applied is discarded when the store opens (logged); re-issue it against the need's open record. **state.json** is an import/export format, not the live store. The first migration from an old state file imports it and archives it as **state.json.imported**.
 
 ## Unit lifecycle and merge ownership
 
@@ -123,7 +123,7 @@ that exact tip eligible for the configured release or promotion path.
 
 ## Planning and gate behavior
 
-**Intake.** The board plans exactly the open needs that have an open pump record (**vivi pump send --need &lt;need&gt;**), read from the needs held under any address and the needs addressed to **[pump].reply_from**. A mark, a configured sender, or a date never makes a need plannable. **[pump.board] mark** and **since** are retired: **vivi config validate** rejects them and **vivi config migrate** removes them. **[pump.board] from** only names the default reply address. A record whose need is not addressed to the pump is logged and not planned. **skip.txt** still excludes handles.
+**Intake.** The board plans exactly the open needs that have an open pump record (**vivi pump send --need &lt;need&gt;**), read from the needs held under any address and the needs addressed to **[pump].reply_from**. A mark, a configured sender, or a date never makes a need plannable. **[pump.board] mark** and **since** are retired: **vivi config validate** rejects them and **vivi config migrate** removes them. **[pump.board] from** only names the default reply address (the first entry is the default **reply_to**). **vivi pump send** refuses a need that is not addressed to the pump; a record whose need still is not (it was re-addressed later) is logged and not planned. **skip.txt** still excludes handles.
 
 **Pump records and replies.** The pump posts its progress as replies on the need's open pump record, not on the need thread: the plan (**planned**, **revised-N**), every attempt record and attempt status event, and the **implemented**, **merged** and **unverified** stages. A plan verdict that waits for an operator ruling (**operator**, **design**, **hold**) stays on the need thread, where the operator answers it. A need with no open record gets no reply. Per-unit dispatch and collection stay events on tasks. **vivi need attempts** and the close timing line read the attempt records from the need thread and from the need's pump records. The pump closes the record with one outcome note:
 
@@ -132,7 +132,33 @@ that exact tip eligible for the configured release or promotion path.
 - **withdrawn**: **vivi pump withdraw** applied, or the need was closed with units unfinished or before it was planned.
 - **superseded**: **vivi pump replan** applied. The pump opens a fresh record, so the board plans the need again and each record carries one plan.
 
-A thread amendment (a revision of an already planned need) opens a new record when the need has none open, so an amended need that had landed or given up is a second dispatch. **requeue** and a resolved hold are not record actions yet: after **gave-up** the record stays closed and later replies for the need are dropped until a record is open again (**vivi pump reopen**, or **pump send**).
+A thread amendment (a revision of an already planned need) opens a new record when the need has none open, so an amended need that had landed or given up is a second dispatch.
+
+**Operator actions.** **vivi pump requeue**, **withdraw** and **replan** act on the need's open pump record, so each is refused (and posts nothing) when the need has none; the error says to send one. Each posts one reply on the record whose headers carry the action, and the pump applies it at its next tick, once. The library call is **Mailspace::pump_post_action**; it prints nothing, so a hosted server can post the same letters. The letter's headers:
+
+| Header | Value |
+| --- | --- |
+| **X-Vivi-Pump-Action** | **requeue**, **withdraw** or **replan** |
+| **X-Vivi-Pump-Record** | the record the action was posted on |
+| **X-Vivi-Need** | the need that record covers |
+| **X-Vivi-Pump-Unit** | requeue: the unit |
+| **X-Vivi-Pump-Attempts** | requeue: set the attempt counter to N |
+| **X-Vivi-Pump-Fresh**, **X-Vivi-Pump-Refund** | requeue: **1** resets the counter, or refunds transient failures |
+| **X-Vivi-Pump-Force** | replan: **1** replans past live work or a running planner |
+
+The body is the reason. Posting also logs one **pump action** / **posted** event, which is how the pump finds unapplied actions without reading threads. An action on a record that is closed is never applied. The tick applies requeues, then withdraws, then replans.
+
+*Exactly once.* The pump saves the applied letter ids (**board.actions**) in the same transaction as the state change they caused, so a tick that dies before saving replays the action against the unchanged state, and one that saved never sees it again. A withdraw or replan also owes its record a close; the debt is part of the saved mark and is paid after the save with checks at every step (close the record only if still open; open the fresh record only if the need has none), so a tick that dies between the save and the close resumes the debt instead of losing it or paying it twice. If the state cannot be saved, record changes wait.
+
+- **requeue**: puts the named unit back in line under the unit's attempt policy (refused, and consumed, for a unit the pump owns or one of another need). The record stays open.
+- **withdraw**: withdraws the need's unfinished units, then closes the record **withdrawn**. A need the pump holds no plan for still has its record closed.
+- **replan**: moves the plan aside, withdraws unstarted units, clears the need's parked planner state, then closes the record **superseded** and opens a fresh one. Refused (once, with an exception) while live work or a planner runs, unless forced. An exhausted audit is rearmed instead and the record stands.
+
+**Retrying a given-up need.** Sending a new record (**vivi pump send --need**) for a need whose last record closed **gave-up** is the retry. The pump notices a record it has not run the need under before and starts that dispatch clean: the planner state that parked the need (**planner_failed**, the failure count and retry time) is cleared, and the need's **stuck** units are requeued with a fresh attempt budget, so the need is planned again or resumed rather than closing **gave-up** at once. A board pass that began before the pump adopted the new record does not judge it. A need-audit hold is not cleared: it waits for an operator ruling. A need the pump sees for the first time (for instance after **vivi pump adopt**) is only noted, never revived.
+
+**vivi pump send** refuses a need that is not addressed to **[pump].reply_from** (or held under another mailspace's address), so a record cannot sit open where the board would never plan it.
+
+**Upgrading from before 19.** Run **vivi pump adopt** once. It opens a record for every need the pump has planned or is planning and has not finished (not complete, withdrawn or closed) that has no open record, so in-flight work keeps its replies. It is idempotent, **--dry-run** lists what it would open, and a need that is not a mailspace need (the **pumpfix-** repair needs of Vivi 15) is reported as skipped.
 
 Whole-need planning, thread amendments, and split planning all use durable jobs for the active pump-planner role, whose charter is the planner's system prompt. The worker returns complete plan JSON inside the **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** markers; the pump materializes the plan under **plans/** and passes it through normal validation and ingestion. Planner command execution and detached planner reapers are not used.
 
@@ -174,12 +200,7 @@ The second invalid split plan parks the unit as **stuck** with a
 **split-plan-rejected** exception. Use **vivi pump replan <need>** to start a
 fresh plan.
 
-A need that cannot be closed on the mail board (it has no mail thread, like
-the **pumpfix-** repair needs of Vivi 15) is closed with
-**vivi pump withdraw <need>... --reason <text>**: the pump withdraws its
-unfinished units, stuck ones included, adds it to the closed set, drops its
-need-branch record (the remote **vivi/need/&lt;id&gt;** branch is left for manual
-deletion) and records a **need-withdrawn** exception.
+**vivi pump withdraw <need>... --reason <text>** stops a need inside the pump without touching the mail board: it posts a withdraw action on the need's open pump record; the pump withdraws the need's unfinished units, stuck ones included, adds it to the closed set, drops its need-branch record (the remote **vivi/need/&lt;id&gt;** branch is left for manual deletion), records a **need-withdrawn** exception and closes the record **withdrawn**. A need with no open record is refused; the synthetic **pumpfix-** repair needs of Vivi 15 have no mail need to hold a record and can no longer be withdrawn this way.
 
 A job brief over the project server's 64 KiB letter cap is never sent whole.
 Revision planner input is cut to fit (the thread, then long unit briefs), with
@@ -217,7 +238,7 @@ failure. Failures before enqueue and a missing slot for the built-in auditor
 defer for 60 seconds without incrementing the failed-job count. A durable role
 job with no free slot remains pending. Once the failure limit is reached, the
 unchanged failure signature stays stopped until it changes or **vivi pump
-replan <fix-need>** explicitly rearms it. Provider or harness failures create
+replan <fix-need>** (on an open pump record) explicitly rearms it. Provider or harness failures create
 an **environment** exception with the exit and receipt tail; exhaustion
 creates **gatefix-planner-failed**. Status reports
 **gatefix-active** or **gatefix-no-live-work**, attempt and failure counts,

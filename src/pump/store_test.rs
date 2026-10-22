@@ -506,42 +506,98 @@ fn save_replaces_rows_rather_than_accumulating_them() {
     assert_eq!(back.merges, 0);
 }
 
-#[test]
-fn requeue_requests_survive_a_state_save() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join(DB_FILENAME);
-    let mut store = PumpStore::open(&path).unwrap();
-    store
-        .add_requeue_request("u1", Some(0), true, true, "operator asked", 5)
+/// The tables of the retired operator request queues (schema 7).
+const RETIRED_QUEUES: [&str; 3] = ["requeue_requests", "withdraw_requests", "replan_requests"];
+
+fn table_exists(conn: &rusqlite::Connection, table: &str) -> bool {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
         .unwrap();
-    store.save(&State::default()).unwrap();
-    let pending = store.pending_requeue_requests().unwrap();
-    assert_eq!(pending.len(), 1);
-    let request = &pending[0];
-    assert_eq!(request.unit, "u1");
-    assert_eq!(request.attempts, Some(0));
-    assert!(request.fresh);
-    assert!(request.refund);
-    assert_eq!(request.reason, "operator asked");
-    store.mark_requeue_applied(request.request_id, 6).unwrap();
-    assert!(store.pending_requeue_requests().unwrap().is_empty());
+    count > 0
 }
 
 #[test]
-fn replan_requests_survive_a_state_save() {
+fn a_fresh_store_has_no_operator_request_tables() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for table in RETIRED_QUEUES {
+        assert!(!table_exists(&conn, table), "{table}");
+    }
+}
+
+/// A schema 7 store, as vivi 18 wrote it, holds the three request queues,
+/// each with an unapplied request. Opening it under schema 8 drops them (the
+/// operator re-issues the action on the need's pump record), keeps the state,
+/// and bumps the version.
+#[test]
+fn migrating_a_schema_7_store_drops_the_three_request_tables_and_keeps_the_state() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(DB_FILENAME);
     let mut store = PumpStore::open(&path).unwrap();
-    store.add_replan_request("n1", false, 5).unwrap();
-    store.save(&State::default()).unwrap();
+    store.save(&sample()).unwrap();
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE requeue_requests (request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+           unit TEXT NOT NULL, attempts INTEGER, fresh INTEGER NOT NULL DEFAULT 0,
+           refund INTEGER NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+           requested_at INTEGER NOT NULL, applied_at INTEGER);
+         CREATE TABLE withdraw_requests (request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+           need TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+           requested_at INTEGER NOT NULL, applied_at INTEGER);
+         CREATE TABLE replan_requests (request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+           need TEXT NOT NULL, force INTEGER NOT NULL DEFAULT 0,
+           requested_at INTEGER NOT NULL, applied_at INTEGER);
+         INSERT INTO requeue_requests (unit, requested_at) VALUES ('u1', 5);
+         INSERT INTO withdraw_requests (need, requested_at) VALUES ('n1', 5);
+         INSERT INTO replan_requests (need, requested_at) VALUES ('n1', 5);
+         PRAGMA user_version = 7;",
+    )
+    .unwrap();
+    drop(conn);
 
-    let pending = store.pending_replan_requests().unwrap();
-    assert_eq!(pending.len(), 1);
-    let request = &pending[0];
-    assert_eq!(request.need, "n1");
-    assert!(!request.force);
-    store.mark_replan_applied(request.request_id, 6).unwrap();
-    assert!(store.pending_replan_requests().unwrap().is_empty());
+    let store = PumpStore::open(&path).unwrap();
+
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    assert_eq!(store.load().unwrap().units.len(), sample().units.len());
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for table in RETIRED_QUEUES {
+        assert!(!table_exists(&conn, table), "{table} was not dropped");
+    }
+}
+
+#[test]
+fn applied_actions_and_the_records_a_need_ran_under_survive_a_state_save() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    let mut store = PumpStore::open(&path).unwrap();
+    let mut st = State::default();
+    st.board.actions.insert(
+        String::from("letter-1"),
+        crate::pump::state::ActionMark {
+            record: String::from("r1"),
+            need: String::from("n1"),
+            kind: String::from("replan"),
+            owes: String::from("superseded"),
+            detail: String::from("operator replan"),
+        },
+    );
+    st.board
+        .records
+        .insert(String::from("n1"), String::from("r1"));
+    store.save(&st).unwrap();
+
+    let back = store.load().unwrap();
+
+    assert_eq!(back.board.actions, st.board.actions);
+    assert_eq!(back.board.records, st.board.records);
 }
 
 #[test]

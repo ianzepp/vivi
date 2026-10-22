@@ -29,6 +29,33 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
 }
 
 #[test]
+fn merge_back_carries_the_planner_bookkeeping_the_pass_changed_and_not_a_stale_snapshot() {
+    let mut snap = State::default();
+    snap.board.planner_fails.insert(String::from("a"), 1);
+    snap.board.planner_failed.push(String::from("old"));
+    snap.board.planner_retry_at.insert(String::from("c"), 50);
+
+    // During the pass the tick thread cleared "old" (a new pump record).
+    let mut live = snap.clone();
+    live.board.planner_failed.clear();
+
+    // The pass counted another failure for "a", parked "new", scheduled a
+    // retry for "b" and freed "c".
+    let mut done = snap.clone();
+    done.board.planner_fails.insert(String::from("a"), 2);
+    done.board.planner_failed.push(String::from("new"));
+    done.board.planner_retry_at.insert(String::from("b"), 99);
+    done.board.planner_retry_at.remove("c");
+
+    merge_back(&mut live, &snap, &done);
+
+    assert_eq!(live.board.planner_fails["a"], 2);
+    assert_eq!(live.board.planner_failed, vec![String::from("new")]);
+    assert_eq!(live.board.planner_retry_at["b"], 99);
+    assert!(!live.board.planner_retry_at.contains_key("c"));
+}
+
+#[test]
 fn merge_back_keeps_new_outbox_jobs_and_preserves_live_dispatch_progress() {
     let pending = |id: &str| {
         PoolJob::from(JobSpec::new(

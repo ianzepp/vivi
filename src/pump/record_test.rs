@@ -13,7 +13,6 @@ use crate::mailspace::{Mailspace, PumpRecord, SendRequest};
 use crate::pump::config::PumpConfig;
 use crate::pump::host::{FakeHost, test_ctx};
 use crate::pump::state::{NeedRecord, Unit};
-use crate::pump::store::{DB_FILENAME, PumpStore};
 
 const T0: u64 = 1_000_000;
 
@@ -208,79 +207,6 @@ fn finish_replies_the_detail_on_the_record_before_closing_it() {
     );
 }
 
-fn withdraw_request(world: &World, reason: &str) {
-    let mut store = PumpStore::open(&world.ctx.home.join(DB_FILENAME)).unwrap();
-    store.add_withdraw_request(&world.need, reason, T0).unwrap();
-}
-
-#[test]
-fn an_applied_withdraw_closes_the_record_withdrawn() {
-    let world = world();
-    world.mailspace.pump_send(None, &world.need, None).unwrap();
-    let mut st = planned(&world.need, &[("u1", Status::Pending)]);
-    withdraw_request(&world, "operator changed their mind");
-
-    crate::pump::withdraw::apply_pending(&world.ctx, &mut st);
-
-    assert_eq!(st.units["u1"].status, Status::Withdrawn);
-    let done = only_record(&world);
-    assert_eq!(done.status, PumpState::Done);
-    assert_eq!(done.outcome.as_deref(), Some("withdrawn"));
-}
-
-fn replan_request(world: &World) {
-    let mut store = PumpStore::open(&world.ctx.home.join(DB_FILENAME)).unwrap();
-    store.add_replan_request(&world.need, false, T0).unwrap();
-}
-
-#[test]
-fn an_applied_replan_closes_the_record_superseded_and_opens_a_fresh_one() {
-    let world = world();
-    let first = world.mailspace.pump_send(None, &world.need, None).unwrap();
-    let mut st = planned(&world.need, &[("u1", Status::Pending)]);
-    replan_request(&world);
-
-    crate::pump::replan::apply_pending(&world.ctx, &mut st);
-
-    let records = history(&world);
-    assert_eq!(records.len(), 2, "{records:?}");
-    assert_eq!(records[0].handle, first.handle);
-    assert_eq!(records[0].status, PumpState::Done);
-    assert_eq!(records[0].outcome.as_deref(), Some("superseded"));
-    assert_eq!(records[1].status, PumpState::Open, "the replan is intake");
-    assert!(
-        !st.needs.contains_key(&world.need),
-        "the plan is thrown away"
-    );
-}
-
-#[test]
-fn an_applied_replan_of_a_need_with_no_record_still_opens_one() {
-    let world = world();
-    let mut st = planned(&world.need, &[("u1", Status::Pending)]);
-    replan_request(&world);
-
-    crate::pump::replan::apply_pending(&world.ctx, &mut st);
-
-    let record = only_record(&world);
-    assert_eq!(record.status, PumpState::Open);
-}
-
-#[test]
-fn a_refused_replan_leaves_the_record_alone() {
-    let world = world();
-    world.mailspace.pump_send(None, &world.need, None).unwrap();
-    let mut st = planned(&world.need, &[("u1", Status::Inflight)]);
-    replan_request(&world);
-
-    crate::pump::replan::apply_pending(&world.ctx, &mut st);
-
-    assert!(st.needs.contains_key(&world.need), "live work refuses");
-    let record = only_record(&world);
-    assert_eq!(record.status, PumpState::Open);
-    assert_eq!(record.outcome, None);
-}
-
 /// The reason, if any, the pump has given up on `need`.
 fn reason(world: &World, st: &State) -> Option<String> {
     gave_up_reason(&world.ctx, st, &world.need)
@@ -415,7 +341,7 @@ fn a_context_without_a_mailspace_closes_nothing_and_does_not_fail() {
     let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
     assert!(!Path::new(&ctx.project).exists());
     assert_eq!(finish(&ctx, "n1", WITHDRAWN, "x"), None);
-    supersede(&ctx, "n1");
+    crate::pump::action::apply_pending(&ctx, &mut State::default());
     settle_closed_needs(&ctx, &State::default(), &closed("n1"));
     assert!(
         host.logs()

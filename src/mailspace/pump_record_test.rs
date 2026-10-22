@@ -179,7 +179,24 @@ fn pump_config_names_the_sender_and_the_pump_identity() {
     let mut pump = crate::pump::config::PumpConfig::default();
     pump.reply_from = "pumper".into();
     mailspace.config.pump = Some(pump);
-    let need = send_need(&mailspace, "fix auth");
+    // The need must reach the pump identity, or the board could never plan it.
+    let need = mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["pumper".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "fix auth".into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
     let record = mailspace.pump_send(None, &need, None).unwrap();
     assert!(record.to.contains("pumper"), "{record:?}");
 }
@@ -269,4 +286,65 @@ fn a_refused_send_leaves_the_mailspace_unchanged() {
     // The connection is usable again: the failed batches were rolled back.
     mailspace.pump_done(&first.handle, None).unwrap();
     mailspace.pump_send(None, &need, None).unwrap();
+}
+
+#[test]
+fn send_is_refused_for_a_need_the_pump_could_never_plan() {
+    let (mut mailspace, _tmp) = roster();
+    mailspace.add_identity("elsewhere").unwrap();
+    let stray = mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["elsewhere".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "not for the pump".into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+
+    let error = mailspace
+        .pump_send(None, &stray, None)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("not addressed to the pump identity 'mind'"),
+        "{error}"
+    );
+    assert!(mailspace.pump_list(None, None).unwrap().is_empty());
+    let routed = send_need(&mailspace, "for the pump");
+    mailspace.pump_send(None, &routed, None).unwrap();
+}
+
+#[test]
+fn a_need_copied_to_the_pump_identity_is_plannable() {
+    let (mut mailspace, _tmp) = roster();
+    mailspace.add_identity("elsewhere").unwrap();
+    let copied = mailspace
+        .send(SendRequest {
+            from: "operator".into(),
+            to: vec!["elsewhere".into()],
+            cc: vec!["mind".into()],
+            bcc: Vec::new(),
+            subject: "cc the pump".into(),
+            body: "done_when: it works".into(),
+            role: "needs".into(),
+            kind: Some("need".into()),
+            reply_to: None,
+            depends_on: Vec::new(),
+        })
+        .unwrap()
+        .delivered
+        .remove(0)
+        .handle;
+
+    mailspace.pump_send(None, &copied, None).unwrap();
 }

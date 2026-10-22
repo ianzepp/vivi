@@ -1,89 +1,65 @@
 //! Operator replan: `vivi pump replan`, both halves.
 //!
-//! The CLI queues a request in `pump.db`; the pump applies it once per tick.
-//! A replan supersedes the current plan, withdraws units that have not started
-//! live work, and asks the board to run a fresh planner over the whole need
-//! thread. Merged units remain merged. The need's open pump record is closed
-//! `superseded` and a fresh one is opened, so the board plans the need again
-//! and each record carries exactly one plan.
+//! The CLI posts a replan action on the need's open pump record
+//! ([`crate::mailspace::PumpActionRequest`]); the pump applies it once
+//! ([`crate::pump::action`]). A replan supersedes the current plan, withdraws
+//! units that have not started live work, and clears the need's parked
+//! planner state, so the board runs a fresh planner over the whole need
+//! thread. Merged units remain merged. Afterwards the pump closes the need's
+//! open record `superseded` and opens a fresh one, so each record carries
+//! exactly one plan.
 
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::VivariumError;
 use crate::cli::PumpReplanCommand;
+use crate::mailspace::{Mailspace, PumpActionRequest};
 use crate::pump::control::project_home;
 use crate::pump::host::Ctx;
 use crate::pump::state::{State, Status};
-use crate::pump::store::{DB_FILENAME, PumpStore, ReplanRequest};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
-/// Apply every pending replan request. A missing pump database means there is
-/// no state to replan; read failures are logged once and skipped.
-pub fn apply_pending(ctx: &Ctx, st: &mut State) {
-    let path = ctx.home.join(DB_FILENAME);
-    let requests = match PumpStore::open_read_only(&path) {
-        Ok(Some(store)) => match store.pending_replan_requests() {
-            Ok(requests) => requests,
-            Err(err) => {
-                ctx.log(&format!("replan: cannot read requests: {err}"));
-                return;
-            }
-        },
-        Ok(None) => return,
-        Err(err) => {
-            ctx.log(&format!("replan: cannot read {}: {err}", path.display()));
-            return;
-        }
-    };
-    if requests.is_empty() {
-        return;
-    }
-    let mut processed = Vec::with_capacity(requests.len());
-    let mut changed = false;
-    for request in &requests {
-        match apply_one(ctx, st, request) {
-            Ok(request_changed) => {
-                processed.push(request.request_id);
-                changed |= request_changed;
-            }
-            Err(err) => ctx.log(&format!(
-                "replan: {} not applied; request remains pending: {err}",
-                request.need
-            )),
-        }
-    }
-    persist_and_mark(ctx, &path, st, &processed, changed);
+/// What applying one replan did to the state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Live work, or a running planner, refused it without `--force`.
+    Refused,
+    /// An exhausted audit was rearmed; the plan and the record stand.
+    Rearmed,
+    /// The plan is thrown away; the record is owed a `superseded` close.
+    Superseded,
 }
 
-/// Apply one request unless live work requires an explicit force.
-fn apply_one(ctx: &Ctx, st: &mut State, request: &ReplanRequest) -> Result<bool, VivariumError> {
-    let need = request.need.as_str();
+/// Apply one replan of `need` to `st`, unless live work requires an explicit
+/// force.
+///
+/// A need the state holds no plan for (its planner failed, or has not run
+/// yet) has nothing to throw away, but its parked planner state is still
+/// cleared, so replanning is also how an operator revives it. Replaying this
+/// after the plan is already gone is harmless: every step is idempotent.
+///
+/// # Errors
+/// Returns an error when the old plan file cannot be moved aside; the state
+/// is untouched then, and the action stays unapplied for the next tick.
+pub fn apply_one(
+    ctx: &Ctx,
+    st: &mut State,
+    need: &str,
+    force: bool,
+) -> Result<Outcome, VivariumError> {
     if crate::pump::audit::rearm_operator_replan(ctx, st, need) {
-        return Ok(true);
+        return Ok(Outcome::Rearmed);
     }
-    let Some(units) = st.needs.get(need).map(|record| record.units.clone()) else {
-        ctx.log(&format!("replan: {need} unknown; nothing to supersede"));
-        return Ok(false);
-    };
-    if !request.force {
-        if let Some((uid, status)) = live_unit(st, &units) {
-            let text = format!(
-                "unit {uid} is {}; replan refused: use vivi pump replan {need} --force",
-                status.as_str()
-            );
-            ctx.exception("replan-refused", need, &text);
-            ctx.log(&text);
-            return Ok(false);
-        }
-        if st.board.planning.contains_key(need) {
-            let text = format!(
-                "a planner is already running for this need; replan refused: use vivi pump replan {need} --force"
-            );
-            ctx.exception("replan-refused", need, &text);
-            ctx.log(&text);
-            return Ok(false);
-        }
+    let units = st
+        .needs
+        .get(need)
+        .map(|record| record.units.clone())
+        .unwrap_or_default();
+    if !force && let Some(text) = refusal(st, need, &units) {
+        ctx.exception("replan-refused", need, &text);
+        ctx.log(&text);
+        return Ok(Outcome::Refused);
     }
     supersede_plan(ctx, need)?;
     let plan_name = format!("{need}.json");
@@ -94,10 +70,23 @@ fn apply_one(ctx: &Ctx, st: &mut State, request: &ReplanRequest) -> Result<bool,
         .retain(|key| !key.starts_with(&format!("{need}:")));
     withdraw_unstarted(st, &units);
     clear_planner_state(st, need);
-    queue_board_replan(st, need);
     ctx.log(&format!("replan: {need} superseded by operator request"));
-    crate::pump::record::supersede(ctx, need);
-    Ok(true)
+    Ok(Outcome::Superseded)
+}
+
+/// Why an ordinary (unforced) replan of `need` is refused, if it is.
+fn refusal(st: &State, need: &str, units: &[String]) -> Option<String> {
+    if let Some((uid, status)) = live_unit(st, units) {
+        return Some(format!(
+            "unit {uid} is {}; replan refused: use vivi pump replan {need} --force",
+            status.as_str()
+        ));
+    }
+    st.board.planning.contains_key(need).then(|| {
+        format!(
+            "a planner is already running for this need; replan refused: use vivi pump replan {need} --force"
+        )
+    })
 }
 
 /// Find the first referenced unit that still has live or unmerged work.
@@ -168,87 +157,55 @@ fn clear_planner_state(st: &mut State, need: &str) {
     st.board.revision_planning.remove(need);
 }
 
-/// Add the handle to the board's cutoff-bypass set.
-fn queue_board_replan(st: &mut State, need: &str) {
-    if !st.board.replan.iter().any(|queued| queued == need) {
-        st.board.replan.push(need.to_owned());
-        st.board.replan.sort();
-    }
-}
-
-/// Persist changed state before consuming requests, so a crash can safely
-/// replay an unmarked request against the durable state.
-fn persist_and_mark(ctx: &Ctx, path: &Path, st: &State, processed: &[i64], changed: bool) {
-    if processed.is_empty() {
-        return;
-    }
-    let mut store = match PumpStore::open(path) {
-        Ok(store) => store,
-        Err(err) => {
-            ctx.log(&format!("replan: cannot open {}: {err}", path.display()));
-            return;
-        }
-    };
-    if changed && let Err(err) = store.save(st) {
-        ctx.log(&format!(
-            "replan: cannot persist state before marking requests: {err}"
-        ));
-        return;
-    }
-    let at = ctx.now();
-    for request_id in processed {
-        if let Err(err) = store.mark_replan_applied(*request_id, at) {
-            ctx.log(&format!("replan: cannot mark request applied: {err}"));
-        }
-    }
-}
-
-/// Queue a replan for the next pump tick. An exhausted audit may be retried
-/// even when it has no board `NeedRecord`.
+/// `vivi pump replan <NEED> [--force]`: post a replan action on the need's
+/// open pump record, for the running pump to apply at its next tick. An
+/// exhausted audit may be retried even when the need has no board
+/// `NeedRecord`.
 ///
 /// # Errors
 /// Returns an error for an unknown need, live work without `--force`, a
-/// running planner without `--force`, or a mailspace without `pump.db`.
+/// running planner without `--force`, a mailspace without `pump.db`, or a
+/// need with no open pump record.
 pub fn run(project: &Path, cmd: &PumpReplanCommand) -> Result<(), VivariumError> {
     let home = project_home(project)?;
     let path = home.join(DB_FILENAME);
     let st = load_state(&path)?;
-    let audit_retry = crate::pump::audit::operator_replan_allowed(&st, &cmd.need);
-    let record = match st.needs.get(&cmd.need) {
-        Some(record) => record,
-        None if audit_retry => return queue_request(&path, &cmd.need, cmd.force),
-        None => {
-            return Err(VivariumError::Message(format!(
-                "unknown need: {}",
-                cmd.need
-            )));
-        }
-    };
-    if audit_retry {
-        return queue_request(&path, &cmd.need, cmd.force);
-    }
-    if !cmd.force {
-        if let Some((uid, status)) = live_unit(&st, &record.units) {
-            return Err(VivariumError::Message(format!(
-                "refused: unit {uid} is {}; use vivi pump replan {} --force to replan anyway",
-                status.as_str(),
-                cmd.need
-            )));
-        }
-        if st.board.planning.contains_key(&cmd.need) {
-            return Err(VivariumError::Message(String::from(
-                "refused: a planner is already running for this need; use --force to replan anyway",
-            )));
-        }
-    }
-    queue_request(&path, &cmd.need, cmd.force)
+    check_command(&st, cmd)?;
+    let mailspace = Mailspace::discover(Some(project))?;
+    mailspace.pump_post_action(None, &cmd.need, &PumpActionRequest::replan(cmd.force))?;
+    println!(
+        "replan {} requested; the pump applies it at its next tick",
+        cmd.need
+    );
+    Ok(())
 }
 
-/// Save one operator replan request for the next pump tick.
-fn queue_request(path: &Path, need: &str, force: bool) -> Result<(), VivariumError> {
-    let mut store = PumpStore::open(path)?;
-    store.add_replan_request(need, force, now())?;
-    println!("replan {need} requested; the pump applies it at its next tick");
+/// The refusals the CLI can make from the pump's saved state. A need the
+/// pump has no plan for is known when its planner is running or parked.
+fn check_command(st: &State, cmd: &PumpReplanCommand) -> Result<(), VivariumError> {
+    let need = cmd.need.as_str();
+    if crate::pump::audit::operator_replan_allowed(st, need) {
+        return Ok(());
+    }
+    let planned = st.needs.get(need);
+    let parked = st.board.planner_failed.iter().any(|failed| failed == need);
+    if planned.is_none() && !parked && !st.board.planning.contains_key(need) {
+        return Err(VivariumError::Message(format!("unknown need: {need}")));
+    }
+    if cmd.force {
+        return Ok(());
+    }
+    if let Some((uid, status)) = planned.and_then(|record| live_unit(st, &record.units)) {
+        return Err(VivariumError::Message(format!(
+            "refused: unit {uid} is {}; use vivi pump replan {need} --force to replan anyway",
+            status.as_str()
+        )));
+    }
+    if st.board.planning.contains_key(need) {
+        return Err(VivariumError::Message(String::from(
+            "refused: a planner is already running for this need; use --force to replan anyway",
+        )));
+    }
     Ok(())
 }
 
@@ -261,11 +218,4 @@ fn load_state(path: &Path) -> Result<State, VivariumError> {
         )));
     };
     store.load()
-}
-
-/// Current epoch second for the durable request row.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }

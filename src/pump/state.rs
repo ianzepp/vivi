@@ -442,9 +442,6 @@ pub struct Board {
     /// `"<need>:<verdict>"` replies already recorded.
     #[serde(default)]
     pub replied: Vec<String>,
-    /// Needs asked to replan.
-    #[serde(default)]
-    pub replan: Vec<String>,
     /// Need handle -> epoch seconds a revision planner started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub revision_planning: BTreeMap<String, u64>,
@@ -464,6 +461,36 @@ pub struct Board {
     /// pass ships it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sync_pending: bool,
+    /// Operator actions already taken from pump records, by the action
+    /// letter's content id. Saved with the state in one transaction, so an
+    /// action is applied exactly once.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub actions: BTreeMap<String, ActionMark>,
+    /// Need handle -> the pump record the pump last ran that need under. A
+    /// record that differs is a new dispatch of the need.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub records: BTreeMap<String, String>,
+}
+
+/// One operator action the pump has applied to its state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionMark {
+    /// The pump record the action was posted on.
+    #[serde(default)]
+    pub record: String,
+    /// The need that record covers.
+    #[serde(default)]
+    pub need: String,
+    /// `requeue`, `withdraw` or `replan`.
+    #[serde(default)]
+    pub kind: String,
+    /// The outcome word the pump still owes `record` (`withdrawn` or
+    /// `superseded`); empty once the record has been closed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owes: String,
+    /// The reply posted on the record when it is closed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
 }
 
 /// One promoted integration tip (`promotions` entry).

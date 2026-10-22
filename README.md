@@ -245,7 +245,7 @@ The `vivi` skill (see [Agent skills](#agent-skills)) documents usage patterns.
 | `mcp` | Needs a server: a stdio bridge to the project server's MCP endpoint |
 | `pool` | `list`, `show`, `add`, `set`, `unset`, `remove`, `bands`, `create`, `status`, `destroy`, `scale`, `dispatch`, `wait`, `reconcile`, `clean`, `reset`, `doctor` |
 | `config` | `show [--resolved]`, `validate`, `migrate [--write]` |
-| `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`), `replan <need> [--force]`, `send --need <need>` and the pump record verbs `list`, `show`, `done`, `reopen`, `history` |
+| `pump` | `run`, `once`, `status`, `log` (`-n`, `-f`, `--lane`, `--unit`, `--grep`, `--exceptions`), `replan <need> [--force]`, `requeue <unit>...`, `withdraw <need>...` (each an action on the need's open pump record), `send --need <need>`, `adopt` and the pump record verbs `list`, `show`, `done`, `reopen`, `history` |
 | `delivery` | `send` a structured branch handoff to a merge role; `close` after merge |
 | `monitor` | Read-only live pump and pool-slot view; `--project` adds roots, `--once [--json]` prints a snapshot |
 | `report` | Read-only attempt and need summaries: `records`, `throughput`, `durations`, `needs`, `failures` |
@@ -629,12 +629,21 @@ the need thread, and closes it with an outcome (**landed**, **gave-up**,
 makes a need plannable: **[pump.board] mark** and **since** are retired, and
 **vivi config validate** rejects them.
 
-**vivi pump replan &lt;need&gt;** queues a fresh plan for the next tick. It supersedes
-the existing plan file, withdraws pending, held, stuck, and **needs-replan**
-units, keeps merged units, and plans from the current thread. It closes the
-need's pump record as **superseded** and opens a fresh one. It refuses
-while live unit work or a planner is running for that need unless **--force**
-is supplied; forced replanning leaves live work running.
+**vivi pump requeue**, **withdraw** and **replan** act on the need's open pump
+record: each posts a structured reply on it (header **X-Vivi-Pump-Action**) and
+the pump applies it at its next tick, exactly once. A need with no open record
+is refused. **vivi pump replan &lt;need&gt;** supersedes the existing plan file,
+withdraws pending, held, stuck, and **needs-replan** units, keeps merged units,
+clears the need's parked planner state and plans from the current thread. It
+closes the need's pump record as **superseded** and opens a fresh one. It
+refuses while live unit work or a planner is running for that need unless
+**--force** is supplied; forced replanning leaves live work running.
+**vivi pump withdraw** closes the record **withdrawn** after withdrawing the
+units. Sending a new record for a need whose last record closed **gave-up** is
+the retry: the pump clears what parked it and requeues its stuck units.
+**vivi pump send** refuses a need that is not addressed to the pump. After
+upgrading to vivi 19, run **vivi pump adopt** once so the needs already in
+flight get a record; see [the 19.0.0 notes](docs/release-v19.0.0.md).
 
 Role cadence uses each role's latest durable outbound signal. Due runs appear
 in the board and pump status. Head-ceo investigations use a need marked

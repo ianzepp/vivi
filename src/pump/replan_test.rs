@@ -1,20 +1,21 @@
-//! Tests for operator replans, from queued request through board re-planning.
+//! Tests for operator replans: the state change the pump applies, and the CLI
+//! half that posts the action on the need's open pump record.
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rusqlite::Connection;
 use tempfile::{TempDir, tempdir};
 
 use crate::cli::PumpReplanCommand;
+use crate::mailspace::PumpAction;
 use crate::pump::audit::{AuditRun, current as current_audit, store as store_audit};
 use crate::pump::config::PumpConfig;
-use crate::pump::control::project_home as resolve_project_home;
+use crate::pump::fixture::{Project, project};
 use crate::pump::host::{Ctx, FakeHost, test_ctx};
-use crate::pump::replan::{apply_pending, run};
+use crate::pump::replan::{Outcome, apply_one, run};
 use crate::pump::state::{NeedRecord, State, Status, Unit};
-use crate::pump::store::{DB_FILENAME, PumpStore, ReplanRequest};
+use crate::pump::store::{DB_FILENAME, PumpStore};
 
 const T0: u64 = 1_000_000;
 
@@ -25,9 +26,9 @@ fn setup() -> (TempDir, Ctx, Arc<FakeHost>) {
     (dir, ctx, host)
 }
 
-fn request(ctx: &Ctx, need: &str, force: bool) {
-    let mut store = PumpStore::open(&ctx.home.join(DB_FILENAME)).unwrap();
-    store.add_replan_request(need, force, T0).unwrap();
+/// Apply a replan of `need` the way the pump's tick would.
+fn replan(ctx: &Ctx, st: &mut State, need: &str, force: bool) -> Outcome {
+    apply_one(ctx, st, need, force).unwrap()
 }
 
 fn need(st: &mut State, handle: &str, verdict: &str, units: &[(&str, Status)]) {
@@ -68,9 +69,8 @@ fn replan_apply_supersedes_the_plan_and_forgets_the_need() {
     st.board.revision_planning.insert(String::from("n1"), T0);
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans/n1.json"), "old plan").unwrap();
-    request(&ctx, "n1", false);
 
-    apply_pending(&ctx, &mut st);
+    assert_eq!(replan(&ctx, &mut st, "n1", false), Outcome::Superseded);
 
     assert!(!ctx.home.join("plans/n1.json").exists());
     assert!(
@@ -86,7 +86,6 @@ fn replan_apply_supersedes_the_plan_and_forgets_the_need() {
     assert!(!st.board.planner_retry_at.contains_key("n1"));
     assert!(!st.board.planner_pids.contains_key("n1"));
     assert!(!st.board.revision_planning.contains_key("n1"));
-    assert_eq!(st.board.replan, vec![String::from("n1")]);
 }
 
 #[test]
@@ -105,9 +104,8 @@ fn replan_apply_withdraws_pending_and_leaves_merged() {
             ("u5", Status::Merged),
         ],
     );
-    request(&ctx, "n1", false);
 
-    apply_pending(&ctx, &mut st);
+    replan(&ctx, &mut st, "n1", false);
 
     assert_eq!(st.units["u1"].status, Status::Withdrawn);
     assert_eq!(st.units["u2"].status, Status::Withdrawn);
@@ -117,35 +115,33 @@ fn replan_apply_withdraws_pending_and_leaves_merged() {
 }
 
 #[test]
-fn replan_apply_consumes_the_request() {
-    let (_dir, ctx, host) = setup();
+fn replaying_an_applied_replan_is_harmless() {
+    let (_dir, ctx, _host) = setup();
     let mut st = State::default();
     need(&mut st, "n1", "invalid", &[]);
-    request(&ctx, "n1", false);
-    apply_pending(&ctx, &mut st);
-    let logs = host.logs().len();
+    assert_eq!(replan(&ctx, &mut st, "n1", false), Outcome::Superseded);
 
-    apply_pending(&ctx, &mut st);
+    assert_eq!(replan(&ctx, &mut st, "n1", false), Outcome::Superseded);
 
-    assert_eq!(host.logs().len(), logs);
     assert!(!st.needs.contains_key("n1"));
-    assert!(pending_in(&ctx.home).is_empty());
 }
 
 #[test]
-fn replan_apply_skips_unknown_need() {
+fn a_need_with_no_plan_still_has_its_parked_planner_cleared() {
     let (_dir, ctx, host) = setup();
     let mut st = State::default();
-    request(&ctx, "missing", false);
+    st.board.planner_failed.push(String::from("n2"));
+    st.board.planner_fails.insert(String::from("n2"), 3);
 
-    apply_pending(&ctx, &mut st);
+    assert_eq!(replan(&ctx, &mut st, "n2", false), Outcome::Superseded);
 
+    assert!(st.board.planner_failed.is_empty());
+    assert!(st.board.planner_fails.is_empty());
     assert!(
         host.logs()
             .iter()
-            .any(|line| { line == "replan: missing unknown; nothing to supersede" })
+            .any(|line| line == "replan: n2 superseded by operator request")
     );
-    assert!(pending_in(&ctx.home).is_empty());
 }
 
 #[test]
@@ -153,18 +149,15 @@ fn replan_apply_tolerates_an_absent_plan_file() {
     let (_dir, ctx, _host) = setup();
     let mut st = State::default();
     need(&mut st, "n1", "invalid", &[]);
-    request(&ctx, "n1", false);
 
-    apply_pending(&ctx, &mut st);
+    replan(&ctx, &mut st, "n1", false);
 
     assert!(!st.needs.contains_key("n1"));
-    assert_eq!(st.board.replan, vec![String::from("n1")]);
-    assert!(pending_in(&ctx.home).is_empty());
 }
 
 #[test]
-fn replan_apply_keeps_state_and_request_when_plan_cannot_move() {
-    let (_dir, ctx, host) = setup();
+fn replan_apply_keeps_the_state_when_the_plan_cannot_move() {
+    let (_dir, ctx, _host) = setup();
     let mut st = State::default();
     need(&mut st, "n1", "invalid", &[]);
     st.plans_seen.push(String::from("n1.json"));
@@ -175,70 +168,21 @@ fn replan_apply_keeps_state_and_request_when_plan_cannot_move() {
         "blocks directory creation",
     )
     .unwrap();
-    request(&ctx, "n1", false);
 
-    apply_pending(&ctx, &mut st);
+    assert!(apply_one(&ctx, &mut st, "n1", false).is_err());
 
     assert!(st.needs.contains_key("n1"));
     assert_eq!(st.plans_seen, vec![String::from("n1.json")]);
     assert!(ctx.home.join("plans/n1.json").is_file());
-    assert_eq!(pending_in(&ctx.home).len(), 1);
-    assert!(
-        host.logs()
-            .iter()
-            .any(|line| line.contains("request remains pending"))
-    );
 
     fs::remove_file(ctx.home.join("plans/superseded")).unwrap();
-    apply_pending(&ctx, &mut st);
+    assert_eq!(replan(&ctx, &mut st, "n1", false), Outcome::Superseded);
     assert!(!st.needs.contains_key("n1"));
     assert!(
         ctx.home
             .join(format!("plans/superseded/n1.{T0}.json"))
             .exists()
     );
-    assert!(pending_in(&ctx.home).is_empty());
-}
-
-#[test]
-fn replan_apply_persists_state_before_request_marker() {
-    let (_dir, ctx, _host) = setup();
-    let mut st = State::default();
-    need(&mut st, "n1", "invalid", &[]);
-    fs::create_dir_all(ctx.home.join("plans")).unwrap();
-    fs::write(ctx.home.join("plans/n1.json"), "old plan").unwrap();
-    request(&ctx, "n1", false);
-    let path = ctx.home.join(DB_FILENAME);
-    let connection = Connection::open(&path).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TRIGGER fail_replan_mark BEFORE UPDATE OF applied_at ON replan_requests
-             BEGIN SELECT RAISE(ABORT, 'simulated request marker failure'); END;",
-        )
-        .unwrap();
-
-    apply_pending(&ctx, &mut st);
-
-    let mut durable = PumpStore::open_read_only(&path).unwrap().unwrap();
-    let saved = durable.load().unwrap();
-    assert!(!saved.needs.contains_key("n1"));
-    assert!(saved.board.replan.contains(&String::from("n1")));
-    assert_eq!(durable.pending_replan_requests().unwrap().len(), 1);
-    drop(durable);
-    connection
-        .execute_batch("DROP TRIGGER fail_replan_mark;")
-        .unwrap();
-
-    let mut reloaded = PumpStore::open_read_only(&path)
-        .unwrap()
-        .unwrap()
-        .load()
-        .unwrap();
-    apply_pending(&ctx, &mut reloaded);
-
-    assert!(!reloaded.needs.contains_key("n1"));
-    assert!(reloaded.board.replan.contains(&String::from("n1")));
-    assert!(pending_in(&ctx.home).is_empty());
 }
 
 #[test]
@@ -248,9 +192,8 @@ fn replan_refus_live_unit_without_force_changes_nothing() {
     need(&mut st, "n1", "units", &[("u1", Status::Inflight)]);
     fs::create_dir_all(ctx.home.join("plans")).unwrap();
     fs::write(ctx.home.join("plans/n1.json"), "old plan").unwrap();
-    request(&ctx, "n1", false);
 
-    apply_pending(&ctx, &mut st);
+    assert_eq!(replan(&ctx, &mut st, "n1", false), Outcome::Refused);
 
     assert!(st.needs.contains_key("n1"));
     assert_eq!(st.units["u1"].status, Status::Inflight);
@@ -261,7 +204,6 @@ fn replan_refus_live_unit_without_force_changes_nothing() {
         exception.contains("use vivi pump replan n1 --force"),
         "{exception}"
     );
-    assert!(pending_in(&ctx.home).is_empty());
 }
 
 #[test]
@@ -270,15 +212,13 @@ fn replan_refus_while_planner_runs() {
     let mut st = State::default();
     need(&mut st, "n1", "invalid", &[]);
     st.board.planning.insert(String::from("n1"), T0);
-    request(&ctx, "n1", false);
 
-    apply_pending(&ctx, &mut st);
+    assert_eq!(replan(&ctx, &mut st, "n1", false), Outcome::Refused);
 
     assert!(st.needs.contains_key("n1"));
     assert!(st.board.planning.contains_key("n1"));
     let exception = fs::read_to_string(ctx.home.join("exceptions.txt")).unwrap();
     assert!(exception.contains("a planner is already running for this need"));
-    assert!(pending_in(&ctx.home).is_empty());
 }
 
 #[test]
@@ -286,33 +226,15 @@ fn replan_force_applies_over_live_work() {
     let (_dir, ctx, _host) = setup();
     let mut st = State::default();
     need(&mut st, "n1", "units", &[("u1", Status::Inflight)]);
-    request(&ctx, "n1", true);
 
-    apply_pending(&ctx, &mut st);
+    assert_eq!(replan(&ctx, &mut st, "n1", true), Outcome::Superseded);
 
     assert!(!st.needs.contains_key("n1"));
     assert_eq!(st.units["u1"].status, Status::Inflight);
-    assert_eq!(st.board.replan, vec![String::from("n1")]);
-    assert!(pending_in(&ctx.home).is_empty());
 }
 
-fn mailspace_project() -> TempDir {
-    let dir = tempdir().unwrap();
-    let vivi = dir.path().join(".vivi");
-    fs::create_dir_all(&vivi).unwrap();
-    fs::write(
-        vivi.join("mailspace.toml"),
-        "name = \"replan\"\n\n[pump]\nbranch = \"next\"\n",
-    )
-    .unwrap();
-    dir
-}
-
-fn project_home(dir: &TempDir) -> PathBuf {
-    resolve_project_home(dir.path()).unwrap()
-}
-
-fn seed_need(dir: &TempDir, handle: &str, verdict: &str, status: Option<Status>) {
+/// Seed the pump's saved state with `handle` planned into one unit.
+fn seed_need(project: &Project, handle: &str, verdict: &str, status: Option<Status>) {
     let units = status
         .map(|_| vec![format!("{handle}-1")])
         .unwrap_or_default();
@@ -335,7 +257,7 @@ fn seed_need(dir: &TempDir, handle: &str, verdict: &str, status: Option<Status>)
             },
         );
     }
-    let mut store = PumpStore::open(&project_home(dir).join(DB_FILENAME)).unwrap();
+    let mut store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
     store.save(&st).unwrap();
 }
 
@@ -347,50 +269,53 @@ fn command(need: &str, force: bool) -> PumpReplanCommand {
     }
 }
 
-fn pending_in(home: &Path) -> Vec<ReplanRequest> {
-    PumpStore::open_read_only(&home.join(DB_FILENAME))
-        .unwrap()
-        .unwrap()
-        .pending_replan_requests()
+/// The actions posted and not yet applied.
+fn posted(project: &Project) -> Vec<PumpAction> {
+    project
+        .mailspace
+        .pump_pending_actions(&BTreeSet::new())
         .unwrap()
 }
 
-fn apply_ctx(dir: &TempDir) -> (Ctx, Arc<FakeHost>) {
-    let (_temp, mut ctx, host) = setup();
-    ctx.home = project_home(dir);
-    (ctx, host)
-}
-
-#[test]
-fn run_replan_writes_a_request_row() {
-    let dir = mailspace_project();
-    seed_need(&dir, "n1", "units", Some(Status::Pending));
-
-    run(dir.path(), &command("n1", false)).unwrap();
-
-    let rows = pending_in(&project_home(&dir));
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].need, "n1");
-    assert!(!rows[0].force);
-    let (ctx, _host) = apply_ctx(&dir);
-    let mut st = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
+/// The pump's saved state.
+fn saved(project: &Project) -> State {
+    PumpStore::open_read_only(&project.home().join(DB_FILENAME))
         .unwrap()
         .unwrap()
         .load()
-        .unwrap();
-    apply_pending(&ctx, &mut st);
-    assert!(!st.needs.contains_key("n1"));
+        .unwrap()
 }
 
 #[test]
-fn explicit_replan_rearms_an_exhausted_gatefix_audit_without_a_need_record() {
-    let dir = mailspace_project();
-    let need = "pumpfix-g01234567";
+fn run_replan_posts_an_action_on_the_open_record_and_the_tick_applies_it() {
+    let project = project();
+    let need = project.need("fix auth");
+    let record = project.mailspace.pump_send(None, &need, None).unwrap();
+    seed_need(&project, &need, "units", Some(Status::Pending));
+
+    run(project.root(), &command(&need, false)).unwrap();
+
+    let actions = posted(&project);
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].record, record.handle);
+    assert!(!actions[0].request.force);
+    let ctx = project.pump_ctx();
+    let mut st = saved(&project);
+    crate::pump::action::apply_pending(&ctx, &mut st);
+    assert!(!st.needs.contains_key(&need));
+    assert_eq!(project.mailspace.pump_history(&need).unwrap().len(), 2);
+}
+
+#[test]
+fn explicit_replan_rearms_an_exhausted_audit_and_keeps_the_record() {
+    let project = project();
+    let need = project.need("fix auth");
+    let record = project.mailspace.pump_send(None, &need, None).unwrap();
     let mut st = State::default();
     store_audit(
         &mut st,
         Some(AuditRun {
-            need: need.to_owned(),
+            need: need.clone(),
             tip: String::from("0123456789abcdef0123456789abcdef01234567"),
             fails: 3,
             attempts: 3,
@@ -399,17 +324,13 @@ fn explicit_replan_rearms_an_exhausted_gatefix_audit_without_a_need_record() {
             ..AuditRun::default()
         }),
     );
-    let mut store = PumpStore::open(&project_home(&dir).join(DB_FILENAME)).unwrap();
+    let mut store = PumpStore::open(&project.home().join(DB_FILENAME)).unwrap();
     store.save(&st).unwrap();
 
-    run(dir.path(), &command(need, false)).unwrap();
-    let (ctx, _host) = apply_ctx(&dir);
-    let mut st = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
-        .unwrap()
-        .unwrap()
-        .load()
-        .unwrap();
-    apply_pending(&ctx, &mut st);
+    run(project.root(), &command(&need, false)).unwrap();
+    let ctx = project.pump_ctx();
+    let mut st = saved(&project);
+    crate::pump::action::apply_pending(&ctx, &mut st);
 
     let audit = current_audit(&st).unwrap();
     assert!(!audit.exhausted);
@@ -422,70 +343,112 @@ fn explicit_replan_rearms_an_exhausted_gatefix_audit_without_a_need_record() {
             .unwrap()
             .contains("operator replan requested")
     );
-    assert!(pending_in(&ctx.home).is_empty());
-    let durable = PumpStore::open_read_only(&ctx.home.join(DB_FILENAME))
-        .unwrap()
-        .unwrap()
-        .load()
-        .unwrap();
-    assert!(!current_audit(&durable).unwrap().exhausted);
+    let open = project.mailspace.pump_open_record(&need).unwrap();
+    assert_eq!(open.map(|open| open.handle), Some(record.handle));
 }
 
 #[test]
-fn run_replan_accepts_an_invalid_verdict() {
-    let dir = mailspace_project();
-    seed_need(&dir, "n1", "invalid", None);
+fn run_replan_without_an_open_record_is_refused_and_says_how_to_open_one() {
+    let project = project();
+    let need = project.need("fix auth");
+    seed_need(&project, &need, "units", Some(Status::Pending));
 
-    run(dir.path(), &command("n1", false)).unwrap();
+    let error = run(project.root(), &command(&need, false)).unwrap_err();
 
-    assert_eq!(pending_in(&project_home(&dir))[0].need, "n1");
+    let text = error.to_string();
+    assert!(text.contains("no open pump record"), "{text}");
+    assert!(
+        text.contains(&format!("vivi pump send --need {need}")),
+        "{text}"
+    );
+    assert!(posted(&project).is_empty());
+}
+
+#[test]
+fn run_replan_accepts_an_invalid_verdict_and_a_parked_planner() {
+    let project = project();
+    let need = project.need("fix auth");
+    let parked = project.need("fix billing");
+    project.mailspace.pump_send(None, &need, None).unwrap();
+    project.mailspace.pump_send(None, &parked, None).unwrap();
+    seed_need(&project, &need, "invalid", None);
+    let mut st = saved(&project);
+    st.board.planner_failed.push(parked.clone());
+    PumpStore::open(&project.home().join(DB_FILENAME))
+        .unwrap()
+        .save(&st)
+        .unwrap();
+
+    run(project.root(), &command(&need, false)).unwrap();
+    run(project.root(), &command(&parked, false)).unwrap();
+
+    assert_eq!(posted(&project).len(), 2);
 }
 
 #[test]
 fn run_replan_rejects_unknown_need() {
-    let dir = mailspace_project();
-    seed_need(&dir, "known", "invalid", None);
+    let project = project();
+    let known = project.need("fix auth");
+    let other = project.need("fix billing");
+    project.mailspace.pump_send(None, &other, None).unwrap();
+    seed_need(&project, &known, "invalid", None);
 
-    let error = run(dir.path(), &command("missing", false)).unwrap_err();
+    let error = run(project.root(), &command(&other, false)).unwrap_err();
 
-    assert!(error.to_string().contains("unknown need: missing"));
-    assert!(pending_in(&project_home(&dir)).is_empty());
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("unknown need: {other}"))
+    );
+    assert!(posted(&project).is_empty());
 }
 
 #[test]
 fn run_replan_refuses_live_work_and_honors_force() {
-    let dir = mailspace_project();
-    seed_need(&dir, "n1", "units", Some(Status::Inflight));
+    let project = project();
+    let need = project.need("fix auth");
+    project.mailspace.pump_send(None, &need, None).unwrap();
+    seed_need(&project, &need, "units", Some(Status::Inflight));
 
-    let error = run(dir.path(), &command("n1", false)).unwrap_err();
-    assert!(error.to_string().contains("unit n1-1 is inflight"));
+    let error = run(project.root(), &command(&need, false)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("unit {need}-1 is inflight"))
+    );
     assert!(error.to_string().contains("--force"));
-    assert!(pending_in(&project_home(&dir)).is_empty());
+    assert!(posted(&project).is_empty());
 
-    run(dir.path(), &command("n1", true)).unwrap();
+    run(project.root(), &command(&need, true)).unwrap();
 
-    let rows = pending_in(&project_home(&dir));
-    assert_eq!(rows.len(), 1);
-    assert!(rows[0].force);
+    let actions = posted(&project);
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].request.force);
 }
 
 #[test]
 fn run_replan_refuses_merging_work() {
-    let dir = mailspace_project();
-    seed_need(&dir, "n1", "units", Some(Status::Merging));
+    let project = project();
+    let need = project.need("fix auth");
+    project.mailspace.pump_send(None, &need, None).unwrap();
+    seed_need(&project, &need, "units", Some(Status::Merging));
 
-    let error = run(dir.path(), &command("n1", false)).unwrap_err();
+    let error = run(project.root(), &command(&need, false)).unwrap_err();
 
-    assert!(error.to_string().contains("unit n1-1 is merging"));
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("unit {need}-1 is merging"))
+    );
     assert!(error.to_string().contains("--force"));
-    assert!(pending_in(&project_home(&dir)).is_empty());
+    assert!(posted(&project).is_empty());
 }
 
 #[test]
 fn run_replan_without_a_pump_database_is_refused() {
-    let dir = mailspace_project();
+    let project = project();
 
-    let error = run(dir.path(), &command("n1", false)).unwrap_err();
+    let error = run(project.root(), &command("n1", false)).unwrap_err();
 
     assert!(error.to_string().contains("no pump.db at"));
 }

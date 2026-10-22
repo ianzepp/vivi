@@ -965,8 +965,7 @@
    "c7818fe4:merged",
    "25d5c642:merged",
    "70491599:merged"
-  ],
-  "replan": []
+  ]
  },
  "red": {
   "faber commands::convert::tests::convert_keeps_hints_in_the_via_clause": "pumpfix-ga5562f55",

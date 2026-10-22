@@ -48,6 +48,7 @@ mod mermaid;
 #[path = "mailspace/message_id_test.rs"]
 mod message_id_test;
 mod pool_record;
+mod pump_action;
 mod pump_record;
 mod reply;
 mod report;
@@ -97,6 +98,9 @@ pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
 pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask};
+pub use pump_action::{
+    PUMP_ACTION_HEADER, PUMP_RECORD_HEADER, PumpAction, PumpActionKind, PumpActionRequest,
+};
 pub use pump_record::{PUMP_NEED_HEADER, PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};

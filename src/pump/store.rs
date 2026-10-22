@@ -20,22 +20,16 @@ use crate::error::VivariumError;
 mod codec;
 mod priority;
 mod promotions;
-mod replan;
-mod requeue;
 mod schema;
 mod snapshot;
 mod unit_extra;
-mod withdraw;
 pub(super) use codec::{db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null};
-pub use replan::ReplanRequest;
-pub use requeue::RequeueRequest;
-use schema::{newer_schema, schema_version, take_migration_lock};
-pub use withdraw::WithdrawRequest;
+use schema::{drop_request_queues, newer_schema, schema_version, take_migration_lock};
 
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The database filename inside the pump home.
 pub const DB_FILENAME: &str = "pump.db";
@@ -489,13 +483,9 @@ fn ensure_schema(conn: &Connection) -> Result<(), VivariumError> {
     if version > SCHEMA_VERSION {
         return Err(newer_schema(version));
     }
-    conn.execute_batch(&format!(
-        "{SCHEMA_DDL}\n{}\n{}\n{}",
-        requeue::SCHEMA_DDL,
-        replan::SCHEMA_DDL,
-        withdraw::SCHEMA_DDL
-    ))
-    .map_err(db_err("create schema"))?;
+    conn.execute_batch(SCHEMA_DDL)
+        .map_err(db_err("create schema"))?;
+    drop_request_queues(conn)?;
     promotions::ensure_failing_column(conn)?;
     if version > 0 && version < SCHEMA_VERSION {
         migrate_older_schema(conn)?;

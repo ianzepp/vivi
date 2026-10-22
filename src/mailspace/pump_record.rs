@@ -65,7 +65,7 @@ pub struct PumpRecord {
 impl Mailspace {
     /// The sender a pump record defaults to (`[pump] from`) and the pump's own
     /// identity it is addressed to (`[pump] reply_from`).
-    fn pump_names(&self) -> (String, String) {
+    pub(super) fn pump_names(&self) -> (String, String) {
         match &self.config.pump {
             Some(pump) => (pump.from.clone(), pump.reply_from.clone()),
             None => {
@@ -106,6 +106,7 @@ impl Mailspace {
     ) -> Result<PumpRecord, VivariumError> {
         let (default_from, to) = self.pump_names();
         let (need_handle, need_subject) = self.resolve_need(storage, need)?;
+        self.ensure_reaches_pump(storage, &need_handle, &to)?;
         if let Some(open) = self.open_record_of(storage, &need_handle)? {
             return Err(VivariumError::Message(format!(
                 "need {need_handle} already has an open pump record {}; close it with `vivi pump done {}` first",
@@ -143,8 +144,49 @@ impl Mailspace {
         self.record_of(storage, &row)
     }
 
+    /// Refuse a need the pump could never plan, so a record cannot sit open
+    /// and unplannable. The board reads the open needs addressed to the pump's
+    /// identity (`to`, as `[pump] reply_from` names it) and the needs this
+    /// mailspace holds for another mailspace's address; a need that is neither
+    /// is invisible to it.
+    fn ensure_reaches_pump(
+        &self,
+        storage: &Storage,
+        need: &str,
+        to: &str,
+    ) -> Result<(), VivariumError> {
+        let message_id = storage.resolve_message_token(need)?;
+        let view = storage
+            .message_by_id(&message_id)?
+            .ok_or_else(|| VivariumError::Message(format!("unknown need '{need}'")))?;
+        let name = self.resolve_identity(to).unwrap_or_else(|_| to.to_string());
+        let needles = [
+            self.address_for(&name).to_ascii_lowercase(),
+            format!("{name}@{}", self.legacy_domain()).to_ascii_lowercase(),
+            to.trim().to_ascii_lowercase(),
+        ];
+        let addressed = [&view.to_addr, &view.cc_addr].iter().any(|header| {
+            let header = header.to_ascii_lowercase();
+            needles
+                .iter()
+                .any(|needle| header.contains(needle.as_str()))
+        });
+        let held = storage
+            .live_messages_for_content(&view.content_id)?
+            .iter()
+            .any(|row| super::is_foreign_account(&row.account));
+        if addressed || held {
+            return Ok(());
+        }
+        Err(VivariumError::Message(format!(
+            "need {need} is not addressed to the pump identity '{to}' (it goes to {}), so the board would never plan it; \
+             address the need to {to}, or set `[pump] reply_from` to the identity it is addressed to",
+            view.to_addr
+        )))
+    }
+
     /// The open pump record of `need`, when it has one.
-    fn open_record_of(
+    pub(super) fn open_record_of(
         &self,
         storage: &Storage,
         need: &str,
@@ -173,6 +215,17 @@ impl Mailspace {
             .into_iter()
             .filter(|record| need.as_ref().is_none_or(|need| &record.need == need))
             .collect())
+    }
+
+    /// The open pump record of `need`, if it has one.
+    ///
+    /// # Errors
+    /// Same as [`Mailspace::pump_list`].
+    pub fn pump_open_record(&self, need: &str) -> Result<Option<PumpRecord>, VivariumError> {
+        Ok(self
+            .pump_list(Some(need), Some(PumpState::Open))?
+            .into_iter()
+            .next())
     }
 
     /// A need's pump history: all its records, oldest first, with state.
@@ -267,7 +320,7 @@ impl Mailspace {
 
     /// A need's canonical handle and subject. Refuses an unknown token and
     /// anything that is not a need.
-    fn resolve_need(
+    pub(super) fn resolve_need(
         &self,
         storage: &Storage,
         token: &str,
@@ -321,7 +374,7 @@ impl Mailspace {
     /// holder rows of every `pump send` delivery, in `pumps` (open) or `done`.
     /// Rows outside `state` are skipped before their letters are read, so
     /// listing the open records stays cheap as closed history grows.
-    fn pump_records(
+    pub(super) fn pump_records(
         &self,
         storage: &Storage,
         state: Option<PumpState>,
@@ -374,7 +427,7 @@ impl Mailspace {
 /// Run `work` inside one store write transaction: committed when it
 /// succeeds, rolled back when it fails, so a refused or failed step leaves
 /// the mailspace as it was and concurrent writers are serialized.
-fn in_write_batch<T>(
+pub(super) fn in_write_batch<T>(
     storage: &Storage,
     work: impl FnOnce() -> Result<T, VivariumError>,
 ) -> Result<T, VivariumError> {
@@ -409,7 +462,7 @@ fn outcome_of(events: &[MailspaceEvent]) -> Option<String> {
 }
 
 /// One header's value from a letter's header block, if present.
-fn header_value(data: &[u8], name: &str) -> Option<String> {
+pub(super) fn header_value(data: &[u8], name: &str) -> Option<String> {
     let Ok(raw) = std::str::from_utf8(data) else {
         return None;
     };

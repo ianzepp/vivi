@@ -38,14 +38,16 @@ pub enum PumpSubcommand {
         #[command(subcommand)]
         command: PumpGateCommand,
     },
-    /// Queue a requeue for one or more units; the pump applies it at its next tick
+    /// Requeue one or more units: posts an action on the need's open pump record, applied at the pump's next tick
     Requeue(PumpRequeueCommand),
-    /// Withdraw every unfinished unit of one or more needs and stop their pipeline; the pump applies it at its next tick
+    /// Withdraw every unfinished unit of one or more needs and close their pump record `withdrawn`; applied at the pump's next tick
     Withdraw(PumpWithdrawCommand),
-    /// Supersede a need's plan and queue a fresh planner run
+    /// Supersede a need's plan: closes its pump record `superseded`, opens a fresh one and plans it again
     Replan(PumpReplanCommand),
     /// File a pump record: one dispatch of one need, addressed to the pump
     Send(PumpSendCommand),
+    /// Open a pump record for every need the pump has in flight and no record for (the vivi 19 upgrade step)
+    Adopt(PumpAdoptCommand),
     /// List pump records (default: open ones)
     List(PumpListCommand),
     /// Show one pump record
@@ -131,10 +133,10 @@ pub struct PumpRequeueCommand {
     /// Reset the attempt counter to zero
     #[arg(long)]
     pub fresh: bool,
-    /// Reason recorded in the pump log (default `operator requeue`)
+    /// Reason posted with the action and recorded in the pump log (default `operator requeue`)
     #[arg(long, value_name = "TEXT")]
     pub reason: Option<String>,
-    /// Print what would change without writing a request
+    /// Print what would change without posting an action
     #[arg(long)]
     pub dry_run: bool,
     /// Requeue every unit stuck since this time (bulk form)
@@ -148,13 +150,15 @@ pub struct PumpRequeueCommand {
     pub project: Option<PathBuf>,
 }
 
-/// Supersede a need's plan and queue a fresh planner run that reads the whole
-/// thread. The running pump applies it at its next tick: the plan moves to
-/// `plans/superseded/`, the need record and its replies are forgotten, pending,
-/// held, stuck and needs-replan units are withdrawn and never dispatched,
-/// while merged units stay merged and live work finishes on its own. Refuses
-/// while any unit is inflight, delivered, merging, quarantined or splitting,
-/// or while a planner runs for the need, unless `--force`.
+/// Supersede a need's plan and plan it again from the whole thread. Posts a
+/// replan action on the need's open pump record; the running pump applies it
+/// at its next tick: the plan moves to `plans/superseded/`, the need record
+/// and its replies are forgotten, pending, held, stuck and needs-replan units
+/// are withdrawn and never dispatched, while merged units stay merged and live
+/// work finishes on its own. The open record is closed `superseded` and a
+/// fresh one opened. Refuses while any unit is inflight, delivered, merging,
+/// quarantined or splitting, or while a planner runs for the need, unless
+/// `--force`, and when the need has no open pump record.
 #[derive(Debug, Args)]
 pub struct PumpReplanCommand {
     /// Need handle to replan
@@ -321,12 +325,13 @@ pub struct PumpExportCommand {
     pub project: Option<PathBuf>,
 }
 
-/// Close needs inside the pump without touching the mail board. The running
-/// pump applies the request at its next tick: every unfinished unit of the
-/// need (stuck ones included) is withdrawn, the need joins the closed set so
-/// nothing re-plans or dispatches it, and its need-audit, need-merge and
-/// landing steps skip it. Meant for needs that have no mail thread (the
-/// synthetic `pumpfix-*` repair needs of Vivi 15), but it works for any need.
+/// Close needs inside the pump without touching the mail board. Posts a
+/// withdraw action on each need's open pump record; the running pump applies
+/// it at its next tick: every unfinished unit of the need (stuck ones
+/// included) is withdrawn, the need joins the closed set so nothing re-plans
+/// or dispatches it, its need-audit, need-merge and landing steps skip it, and
+/// its pump record is closed `withdrawn`. Refused for a need with no open pump
+/// record.
 #[derive(Debug, Args)]
 pub struct PumpWithdrawCommand {
     /// Need handles to withdraw
@@ -335,6 +340,19 @@ pub struct PumpWithdrawCommand {
     /// Why the need is withdrawn; recorded in the pump log and exceptions
     #[arg(long, value_name = "TEXT")]
     pub reason: String,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+/// Open a pump record for every need the pump has planned (or is planning)
+/// and not finished, unless it already has an open record. Idempotent. Run it
+/// once after upgrading to vivi 19, so work that was in flight keeps replying.
+#[derive(Debug, Args)]
+pub struct PumpAdoptCommand {
+    /// Print the needs that would be adopted and open nothing
+    #[arg(long)]
+    pub dry_run: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

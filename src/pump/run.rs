@@ -24,17 +24,15 @@ use crate::pump::tick_steps;
 
 /// One pump tick: fold board results, ingest and collect, apply job receipts,
 /// dispatch ready work, run gates, request the periodic board pass, and write
-/// status. Pending operator requeue requests apply after the first ingest, so
-/// a requeued unit can dispatch in the same tick. The board pass is
+/// status. Operator actions on pump records (requeue, withdraw, replan) apply
+/// after the first ingest, so a requeued unit can dispatch in the same tick. The board pass is
 /// bookkeeping; durable execution runs through dispatched pool jobs.
 pub fn tick(ctx: &Ctx, st: &mut State, boardpass: &mut BoardPass) -> Result<(), VivariumError> {
     write_status(ctx, st, &[]);
     boardpass.apply(ctx, st);
     plan::ingest(ctx, st);
-    crate::pump::requeue::apply_pending(ctx, st);
-    crate::pump::withdraw::apply_pending(ctx, st);
     if !ctx.mailspace.is_empty() {
-        crate::pump::replan::apply_pending(ctx, st);
+        crate::pump::action::apply_pending(ctx, st);
     }
     collect_phase(ctx, st)?;
     let control = match crate::pump::control::read(&ctx.home) {
