@@ -372,7 +372,7 @@ fn validate_thread_revision(
 ) -> Result<String, VivariumError> {
     let current = source_thread_hash(ctx, need, messages)?;
     let matches_plan = match expected {
-        Some(hash) if hash.starts_with("v3:") => hash == current,
+        Some(hash) if hash.starts_with(crate::pump::amend::HASH_SCHEME) => hash == current,
         Some(hash) if hash.starts_with("v2:") => {
             legacy_operator_thread_hash(ctx, messages)? == hash
         }
@@ -401,7 +401,7 @@ fn source_thread_hash(ctx: &Ctx, root: &str, messages: &[Value]) -> Result<Strin
     })
 }
 
-/// Exact v2 plan-hash compatibility; new audit jobs always bind the v3 hash.
+/// Exact v2 plan-hash compatibility; new audit jobs always bind the current source hash.
 fn legacy_operator_thread_hash(ctx: &Ctx, messages: &[Value]) -> Result<String, VivariumError> {
     let mut hasher = Sha256::new();
     for message in messages {
@@ -429,7 +429,9 @@ fn thread_requirements(
 ) -> Result<Vec<NeedAuditRequirement>, VivariumError> {
     let mut requirements = Vec::new();
     for (index, message) in messages.iter().enumerate() {
-        if crate::pump::amend::is_generated_pump_reply(ctx, need, index, message) {
+        if crate::pump::amend::is_event_letter(message)
+            || crate::pump::amend::is_generated_pump_reply(ctx, need, index, message)
+        {
             continue;
         }
         let handle = message["handle"].as_str().unwrap_or("");

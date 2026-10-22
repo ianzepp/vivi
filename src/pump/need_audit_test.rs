@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
 const TIP: &str = "1123456789abcdef0123456789abcdef01234567";
 const REPAIR_TIP: &str = "2123456789abcdef0123456789abcdef01234567";
-const SOURCE_HASH: &str = "v3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SOURCE_HASH: &str = "v4:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const RESULT_PREFIX: &str = "PUMP_NEED_AUDIT_RESULT=";
 
 fn binding(tip: &str) -> NeedAuditBinding {
@@ -474,7 +474,7 @@ fn stale_binding_range_round_and_requirement_reports_are_rejected() {
         NeedAuditVerdict::CleanPass,
         NeedRequirementStatus::Satisfied,
     );
-    wrong_source.source_hash = format!("v3:{}", "b".repeat(64));
+    wrong_source.source_hash = format!("v4:{}", "b".repeat(64));
     assert!(validate_receipt(&wrong_source, &expected).is_err());
 
     let mut omitted = result(

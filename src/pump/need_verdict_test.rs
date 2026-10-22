@@ -514,5 +514,5 @@ fn fixture_source_hash() -> String {
             digest.update(field.as_bytes());
         }
     }
-    format!("v3:{}", hex::encode(digest.finalize()))
+    format!("v4:{}", hex::encode(digest.finalize()))
 }

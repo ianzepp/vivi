@@ -377,6 +377,9 @@ fn source_hash_for(rig: &Rig, need: &str) -> String {
     let messages: Vec<serde_json::Value> = serde_json::from_str(&text[start..]).unwrap();
     let mut hasher = Sha256::new();
     for message in &messages {
+        if message["event"].as_str().is_some() {
+            continue;
+        }
         let message_id = message["message_id"].as_str().unwrap_or("");
         for field in [
             message["handle"].as_str().unwrap_or(""),
@@ -389,7 +392,7 @@ fn source_hash_for(rig: &Rig, need: &str) -> String {
             hasher.update(field.as_bytes());
         }
     }
-    format!("v3:{}", hex::encode(hasher.finalize()))
+    format!("v4:{}", hex::encode(hasher.finalize()))
 }
 
 fn send_need(rig: &Rig, subject: &str) -> String {

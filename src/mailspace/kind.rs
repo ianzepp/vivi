@@ -20,6 +20,29 @@ pub(super) fn message_kind(data: &[u8]) -> Option<String> {
     None
 }
 
+/// The `X-Vivi-Event` value of a lifecycle event letter (`done`, `reopened`,
+/// `marked`, `unmarked`, ...), lowercased, or `None` for an ordinary letter.
+/// Read from the header block only.
+pub(super) fn message_event(data: &[u8]) -> Option<String> {
+    let Ok(raw) = std::str::from_utf8(data) else {
+        return None;
+    };
+    for line in raw.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            return None;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(super::EVENT_HEADER) {
+            let value = value.trim().to_ascii_lowercase();
+            return (!value.is_empty()).then_some(value);
+        }
+    }
+    None
+}
+
 /// The backlog work kind a raw delivery mints, or `None` for plain mail.
 ///
 /// An event letter is a record, never work, whatever kind it names. A work

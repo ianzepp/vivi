@@ -15,6 +15,10 @@ pub struct MailspaceThreadMessage {
     pub account: String,
     pub role: String,
     pub kind: Option<String>,
+    /// The `X-Vivi-Event` value when this letter is a lifecycle event
+    /// (`done`, `reopened`, `marked`, `unmarked`, ...); null for ordinary
+    /// letters. Event letters record state changes, never new thread content.
+    pub event: Option<String>,
     pub date: String,
     pub from: String,
     pub to: String,
@@ -38,6 +42,7 @@ struct ThreadCandidate {
     view: StoredMessageView,
     body: String,
     kind: Option<String>,
+    event: Option<String>,
     marks: Vec<String>,
     close_branch: Option<String>,
     close_commit: Option<String>,
@@ -285,12 +290,14 @@ fn load_candidate(
     let events = storage.list_mailspace_events(&view.message_id)?;
     let body = text_body(&data);
     let kind = effective_kind(&view.local_role, &data, &events);
+    let event = super::kind::message_event(&data);
     let marks = super::marks::folded_marks(&events);
     let metadata = storage.item_metadata(&view.message_id)?;
     Ok(ThreadCandidate {
         view,
         body,
         kind,
+        event,
         marks,
         close_branch: metadata
             .get("branch")
@@ -412,6 +419,7 @@ fn thread_message(
         account: candidate.view.account.clone(),
         role: candidate.view.local_role.clone(),
         kind: candidate.kind.clone(),
+        event: candidate.event.clone(),
         date: candidate.view.date.clone(),
         from: candidate.view.from_addr.clone(),
         to: candidate.view.to_addr.clone(),

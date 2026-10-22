@@ -359,7 +359,7 @@ fn an_unknown_hash_is_used_as_a_new_baseline_not_read_as_an_amendment() {
     assert!(!st.needs["n1"].amendment_pending);
     assert!(!st.board.revision_planning.contains_key("n1"));
     let adopted = st.needs["n1"].thread_sha256.clone().unwrap();
-    assert!(adopted.starts_with("v3:"), "{adopted}");
+    assert!(adopted.starts_with("v4:"), "{adopted}");
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn a_changed_operator_thread_with_a_valid_v2_hash_starts_a_revision() {
             .thread_sha256
             .as_deref()
             .unwrap()
-            .starts_with("v3:")
+            .starts_with("v4:")
     );
 }
 
@@ -406,7 +406,7 @@ fn a_matching_v2_thread_hash_upgrades_to_v3_without_replanning() {
             .thread_sha256
             .as_deref()
             .unwrap()
-            .starts_with("v3:")
+            .starts_with("v4:")
     );
 }
 
@@ -461,7 +461,7 @@ fn mind_authored_need_root_is_hashed_and_a_mind_amendment_reopens_the_plan() {
             .thread_sha256
             .as_deref()
             .unwrap()
-            .starts_with("v3:")
+            .starts_with("v4:")
     );
     assert!(!st.needs["n1"].amendment_pending);
 
@@ -508,4 +508,104 @@ fn an_oversized_thread_and_plan_keep_the_revision_prompt_under_the_letter_cap() 
     let saved = fs::read_to_string(ctx.home.join("needs/n1.json")).unwrap();
     assert!(saved.len() > 250_000);
     assert!(st.board.revision_planning.contains_key("n1"));
+}
+
+fn script_thread_json(host: &FakeHost, thread: &str) {
+    host.reply("need show n1", 0, "## thread\n");
+    host.reply("need show n1 --json", 0, thread);
+}
+
+const EVENT_THREAD: &str = r#"[
+    {"message_id":"m1","from":"operator@12345678.local","body":"original need","event":null},
+    {"handle":"e1","message_id":"m2","from":"mind@12345678.local","body":"unmarked","event":"unmarked"},
+    {"handle":"e2","message_id":"m3","from":"operator@12345678.local","body":"Superseded: done","event":"done"}
+]"#;
+
+#[test]
+fn event_letters_never_enter_the_source_hash() {
+    let (_dir, ctx, _host, _st) = setup();
+    let plain = [serde_json::json!({"handle":"n1","message_id":"m1","from":"o","body":"x"})];
+    let with_event = [
+        plain[0].clone(),
+        serde_json::json!({"handle":"e","message_id":"m2","from":"o","body":"y","event":"done"}),
+    ];
+    assert_eq!(
+        super::amend::source_thread_hash(&ctx, "n1", &plain),
+        super::amend::source_thread_hash(&ctx, "n1", &with_event)
+    );
+}
+
+#[test]
+fn event_letters_do_not_start_a_revision() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
+    script_thread_json(&host, EVENT_THREAD);
+    detect(&ctx, &mut st);
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(st.board.revision_planning.is_empty());
+}
+
+#[test]
+fn a_stored_v3_hash_is_re_baselined_without_a_revision() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(format!("v3:{}", "b".repeat(64)));
+    script_thread_json(&host, EVENT_THREAD);
+    detect(&ctx, &mut st);
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(st.jobs.is_empty());
+    assert_eq!(
+        st.needs["n1"].thread_sha256,
+        Some(source_hash(&ctx, "original need"))
+    );
+}
+
+#[test]
+fn a_withdrawn_need_is_neither_reopened_nor_revised() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
+    st.needs.get_mut("n1").unwrap().withdrawn = true;
+    st.closed_needs.push(String::from("n1"));
+    script_thread(&host, "add the second half");
+    detect(&ctx, &mut st);
+    assert!(st.closed_needs.contains(&String::from("n1")));
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(st.jobs.is_empty());
+    assert!(
+        host.logs()
+            .iter()
+            .any(|line| line.contains("thread changed while withdrawn; not reopened"))
+    );
+    assert!(
+        !host
+            .commands()
+            .iter()
+            .any(|cmd| cmd.contains("need reopen"))
+    );
+}
+
+#[test]
+fn a_need_closed_in_the_mailspace_is_re_baselined_not_revised() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
+    host.reply("need list --status done", 0, r#"[{"handle":"n1"}]"#);
+    script_thread(&host, "add the second half");
+    detect(&ctx, &mut st);
+    assert!(!st.needs["n1"].amendment_pending);
+    assert!(st.jobs.is_empty());
+    assert_eq!(
+        st.needs["n1"].thread_sha256,
+        Some(source_hash(&ctx, "add the second half"))
+    );
+}
+
+#[test]
+fn a_pump_closed_need_done_in_the_mailspace_still_reopens_for_an_operator_reply() {
+    let (_dir, ctx, host, mut st) = setup();
+    st.needs.get_mut("n1").unwrap().thread_sha256 = Some(source_hash(&ctx, "original need"));
+    st.closed_needs.push(String::from("n1"));
+    host.reply("need list --status done", 0, r#"[{"handle":"n1"}]"#);
+    script_thread(&host, "add the second half");
+    detect(&ctx, &mut st);
+    assert!(st.needs["n1"].amendment_pending);
+    assert!(!st.closed_needs.contains(&String::from("n1")));
 }

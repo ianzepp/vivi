@@ -362,6 +362,10 @@ pub struct NeedRecord {
     /// A post-plan thread change is waiting for a revision.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub amendment_pending: bool,
+    /// The operator withdrew the need (`vivi pump withdraw`). A withdrawn
+    /// need is never reopened or revised by the amendment scan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withdrawn: bool,
 }
 
 /// The gate currently or last running (`last_gate`).

@@ -9,6 +9,8 @@
 //! - every unfinished unit of the need is withdrawn, stuck ones included;
 //! - the need joins `closed_needs`, so nothing re-plans or dispatches it and
 //!   the need-audit, need-merge and landing steps skip it;
+//! - the need record is flagged `withdrawn`, so the amendment scan never
+//!   reopens or revises it on a later thread change;
 //! - its need-branch records are dropped. Branch cleanup jobs require a
 //!   verified landing, which a withdrawn need never has, so the remote
 //!   `vivi/need/<id>` branch is left for manual deletion and the log says so;
@@ -80,6 +82,9 @@ fn apply_one(ctx: &Ctx, st: &mut State, request: &WithdrawRequest) {
     }
     if !st.closed_needs.iter().any(|closed| closed == need) {
         st.closed_needs.push(need.to_owned());
+    }
+    if let Some(record) = st.needs.get_mut(need) {
+        record.withdrawn = true;
     }
     forget_branches(ctx, st, need);
     let text = format!("withdrew need {need}: {count} unit(s) ({})", request.reason);

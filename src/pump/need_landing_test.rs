@@ -605,5 +605,5 @@ fn thread_hash(body: &str) -> String {
         digest.update((field.len() as u64).to_be_bytes());
         digest.update(field.as_bytes());
     }
-    format!("v3:{}", hex::encode(digest.finalize()))
+    format!("v4:{}", hex::encode(digest.finalize()))
 }

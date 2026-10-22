@@ -278,8 +278,13 @@ fn validate_expectation(expected: &NeedAuditExpectation) -> Result<(), String> {
     validate_requirement_specs(&expected.requirements)
 }
 
+/// A source hash has the shape of the current scheme or of v3, which a
+/// receipt written before v4 may still carry; freshness is judged elsewhere.
 fn is_source_hash(value: &str) -> bool {
-    value.strip_prefix("v3:").is_some_and(|digest| {
+    let digest = value
+        .strip_prefix(crate::pump::amend::HASH_SCHEME)
+        .or_else(|| value.strip_prefix("v3:"));
+    digest.is_some_and(|digest| {
         digest.len() == 64
             && digest
                 .bytes()

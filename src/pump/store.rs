@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS needs (
   thread_sha256 TEXT,
   thread_seen_at INTEGER,
   amendment_pending INTEGER NOT NULL DEFAULT 0,
+  withdrawn INTEGER NOT NULL DEFAULT 0,
   extra_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS plan_revisions (
@@ -513,6 +514,7 @@ fn migrate_older_schema(conn: &Connection) -> Result<(), VivariumError> {
         ("needs", "thread_sha256", "TEXT"),
         ("needs", "thread_seen_at", "INTEGER"),
         ("needs", "amendment_pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("needs", "withdrawn", "INTEGER NOT NULL DEFAULT 0"),
         ("units", "revision", "INTEGER NOT NULL DEFAULT 1"),
         ("units", "target", "TEXT NOT NULL DEFAULT 'default'"),
         ("unit_events", "branch", "TEXT"),
@@ -678,8 +680,8 @@ fn write_needs(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
     for (handle, need) in &st.needs {
         tx.execute(
             "INSERT INTO needs (handle, verdict, reason, units_json, revision,
-                thread_sha256, thread_seen_at, amendment_pending, extra_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                thread_sha256, thread_seen_at, amendment_pending, withdrawn, extra_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 handle,
                 &need.verdict,
@@ -689,6 +691,7 @@ fn write_needs(tx: &Transaction<'_>, st: &State) -> Result<(), VivariumError> {
                 &need.thread_sha256,
                 need.thread_seen_at.map(|at| i64::try_from(at).unwrap_or(0)),
                 i64::from(need.amendment_pending),
+                i64::from(need.withdrawn),
                 "{}",
             ],
         )
@@ -864,7 +867,7 @@ fn load_needs(conn: &Connection) -> Result<BTreeMap<String, NeedRecord>, Vivariu
     let mut stmt = conn
         .prepare(
             "SELECT handle, verdict, reason, units_json, revision,
-                thread_sha256, thread_seen_at, amendment_pending
+                thread_sha256, thread_seen_at, amendment_pending, withdrawn
              FROM needs",
         )
         .map_err(db_err("read needs"))?;
@@ -880,6 +883,7 @@ fn load_needs(conn: &Connection) -> Result<BTreeMap<String, NeedRecord>, Vivariu
                     thread_sha256: row.get(5)?,
                     thread_seen_at: row.get::<_, Option<i64>>(6)?.map(from_u64),
                     amendment_pending: row.get::<_, i64>(7)? != 0,
+                    withdrawn: row.get::<_, i64>(8)? != 0,
                 },
             ))
         })

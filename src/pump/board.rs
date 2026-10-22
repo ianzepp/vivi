@@ -149,9 +149,9 @@ fn is_investigation_need(row: &NeedRow) -> bool {
         .any(|mark| mark.eq_ignore_ascii_case("investigate"))
 }
 
-/// Reconcile needs closed on the board outside the pump. Unfinished units
-/// of those needs are withdrawn so they are never dispatched or merged.
-pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
+/// Handles of the needs addressed to the pump identity that are closed in
+/// the mailspace, or `None` when the list is unreadable.
+pub fn done_need_handles(ctx: &Ctx) -> Option<BTreeSet<String>> {
     let out = ctx.vivi(
         &format!(
             "need list --status done --to {} --json",
@@ -169,11 +169,18 @@ pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String
             return None;
         }
     };
-    let done: BTreeSet<String> = rows
-        .into_iter()
-        .map(|row| row.handle)
-        .filter(|handle| !handle.is_empty())
-        .collect();
+    Some(
+        rows.into_iter()
+            .map(|row| row.handle)
+            .filter(|handle| !handle.is_empty())
+            .collect(),
+    )
+}
+
+/// Reconcile needs closed on the board outside the pump. Unfinished units
+/// of those needs are withdrawn so they are never dispatched or merged.
+pub fn reconcile_done_needs(ctx: &Ctx, st: &mut State) -> Option<BTreeSet<String>> {
+    let done = done_need_handles(ctx)?;
     let withdrawn = withdraw_closed_need_units(st, &done, ctx.now());
     for (need, count) in withdrawn {
         ctx.log(&format!(

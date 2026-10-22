@@ -103,8 +103,8 @@ elif kind == "need-audit":
     job, key, need, target, revision, base, tip, audit_base, _, round_no = identity.groups()
     packet = read_json_after("Audit packet JSON:\n")
     source_hash = packet["source_hash"]
-    if not source_hash.startswith("v3:"):
-        raise RuntimeError("need audit job did not carry a source-aware v3 hash")
+    if not source_hash.startswith("v4:"):
+        raise RuntimeError("need audit job did not carry a source-aware v4 hash")
     if not packet["requirements"]:
         raise RuntimeError("acceptance audit packet omitted the need's done_when requirement")
     mark(f"audit-{need}.started")
@@ -453,7 +453,7 @@ fn independent_multi_unit_needs_survive_restart_and_land_only_after_acceptance()
     let source_hash_a = state_a.jobs[&audit_a].payload["source_hash"]
         .as_str()
         .expect("audit job omitted source_hash");
-    assert!(source_hash_a.starts_with("v3:"));
+    assert!(source_hash_a.starts_with("v4:"));
     assert_eq!(
         verdict_a["accepted"]["receipt"]["source_hash"],
         source_hash_a

@@ -26,7 +26,7 @@ fn a_real_reply_moves_board_last_event_and_starts_a_revision() {
         state.needs[&handle]
             .thread_sha256
             .as_deref()
-            .is_some_and(|hash| hash.starts_with("v3:")),
+            .is_some_and(|hash| hash.starts_with("v4:")),
         "baseline hash missing: {:?}",
         state.needs[&handle].thread_sha256
     );
