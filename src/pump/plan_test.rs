@@ -1124,3 +1124,33 @@ fn a_stale_answer_to_a_requested_revision_raises_an_exception() {
             .any(|l| l.contains("plan file n1.r1b.json is stale"))
     );
 }
+
+#[test]
+fn a_parked_verdict_keeps_its_whole_reason_and_a_units_plan_keeps_a_short_one() {
+    let dir = tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    fs::create_dir_all(ctx.home.join("plans")).unwrap();
+    let mut st = State::default();
+    let long = "analysis ".repeat(300);
+    write_plan(
+        &ctx,
+        "scoped.json",
+        &json!({"need": "scoped", "verdict": "design", "reason": long, "units": []}),
+    );
+    write_plan(
+        &ctx,
+        "planned.json",
+        &json!({
+            "need": "planned",
+            "reason": long,
+            "units": [{"id": "planned-1", "brief": "first pass: add the test y", "write_scope": ["src/lib.rs"], "proof": ["cargo test y"]}]
+        }),
+    );
+    ingest(&ctx, &mut st);
+    assert_eq!(st.needs["scoped"].verdict, "design");
+    assert_eq!(
+        st.needs["scoped"].reason.chars().count(),
+        long.chars().count()
+    );
+    assert_eq!(st.needs["planned"].reason.chars().count(), 400);
+}

@@ -470,11 +470,7 @@ fn record_revision(
     removed: &[String],
 ) {
     let verdict = str_field(plan, "verdict").unwrap_or("units").to_string();
-    let reason: String = str_field(plan, "reason")
-        .unwrap_or("")
-        .chars()
-        .take(400)
-        .collect();
+    let reason = recorded_reason(plan, &verdict);
     let record = st
         .needs
         .entry(need.to_string())
@@ -765,11 +761,7 @@ fn record(
         return;
     }
     let verdict = str_field(plan, "verdict").unwrap_or("units").to_string();
-    let reason: String = str_field(plan, "reason")
-        .unwrap_or("")
-        .chars()
-        .take(400)
-        .collect();
+    let reason = recorded_reason(plan, &verdict);
     st.needs.insert(
         need.to_string(),
         NeedRecord {
@@ -853,4 +845,24 @@ pub(super) fn str_list(v: Option<&Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Characters of a plan's reason kept on the need record. A parked verdict
+/// (`operator`, `design`, `hold`) carries its whole answer in the reason and
+/// is posted on the need thread, so it keeps far more than a units plan's
+/// one-line note; both stay well inside the 64 KiB letter cap.
+const UNITS_REASON_CHARS: usize = 400;
+const PARKED_REASON_CHARS: usize = 16_000;
+
+fn recorded_reason(plan: &Value, verdict: &str) -> String {
+    let cap = if crate::pump::board::PARKED.contains(&verdict) {
+        PARKED_REASON_CHARS
+    } else {
+        UNITS_REASON_CHARS
+    };
+    str_field(plan, "reason")
+        .unwrap_or("")
+        .chars()
+        .take(cap)
+        .collect()
 }
