@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Debug, Subcommand)]
 pub enum PumpSubcommand {
@@ -44,6 +44,18 @@ pub enum PumpSubcommand {
     Withdraw(PumpWithdrawCommand),
     /// Supersede a need's plan and queue a fresh planner run
     Replan(PumpReplanCommand),
+    /// File a pump record: one dispatch of one need, addressed to the pump
+    Send(PumpSendCommand),
+    /// List pump records (default: open ones)
+    List(PumpListCommand),
+    /// Show one pump record
+    Show(PumpShowCommand),
+    /// Close a pump record, with an optional outcome note
+    Done(PumpDoneCommand),
+    /// Reopen a closed pump record, unless its need has another open record
+    Reopen(PumpReopenCommand),
+    /// All pump records of one need, oldest first, with state
+    History(PumpHistoryCommand),
     /// Supervise the pumps registered in the user's Vivi service config
     Service {
         #[command(subcommand)]
@@ -323,6 +335,93 @@ pub struct PumpWithdrawCommand {
     /// Why the need is withdrawn; recorded in the pump log and exceptions
     #[arg(long, value_name = "TEXT")]
     pub reason: String,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+/// File one open pump record for one need. Refused while the need already has
+/// an open record (the error names it).
+#[derive(Debug, Args)]
+pub struct PumpSendCommand {
+    /// Need handle this dispatch covers
+    #[arg(long, value_name = "HANDLE")]
+    pub need: String,
+    /// Sender identity (default `[pump] from`)
+    #[arg(long, value_name = "ID")]
+    pub from: Option<String>,
+    /// Record body, `-` for stdin, or @path to read it from a file
+    #[arg(long, value_name = "TEXT")]
+    pub body: Option<String>,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+/// Which pump records `pump list` shows.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum PumpListStatus {
+    Open,
+    Done,
+    All,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpListCommand {
+    /// Only records of this need
+    #[arg(long, value_name = "HANDLE")]
+    pub need: Option<String>,
+    /// Which records to show
+    #[arg(long, value_enum, default_value = "open")]
+    pub status: PumpListStatus,
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpShowCommand {
+    /// Pump record handle
+    pub handle: String,
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpDoneCommand {
+    /// Pump record handle
+    pub handle: String,
+    /// Outcome, such as landed, gave-up, withdrawn or superseded
+    #[arg(long, value_name = "TEXT")]
+    pub note: Option<String>,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpReopenCommand {
+    /// Pump record handle
+    pub handle: String,
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpHistoryCommand {
+    /// Need handle
+    pub need: String,
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

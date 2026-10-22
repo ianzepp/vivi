@@ -848,7 +848,10 @@ fn sent_work_kind(
 /// delivers per-identity copies of one item, so dependency edges cite one
 /// deterministic copy (lowest message id) rather than whichever copy the
 /// sender happened to reference.
-fn canonical_content_handle(storage: &Storage, message_id: &str) -> Result<String, VivariumError> {
+pub(super) fn canonical_content_handle(
+    storage: &Storage,
+    message_id: &str,
+) -> Result<String, VivariumError> {
     let Some(view) = storage.message_by_id(message_id)? else {
         return Err(VivariumError::Message(format!(
             "message not found: {message_id}"

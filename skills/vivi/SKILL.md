@@ -2335,7 +2335,24 @@ vivi pump requeue <uid>... [--attempts N | --refund-host-failures | --fresh] [--
 vivi pump requeue --stuck-since <time> --why <class> [--dry-run]
 vivi pump replan <need> [--force]
 vivi pump withdraw <need>... --reason TEXT
+vivi pump send --need <need> [--from <id>] [--body TEXT]
+vivi pump list [--need <need>] [--status open|done|all] [--json]
+vivi pump show <record> [--json]
+vivi pump done <record> [--note TEXT]
+vivi pump reopen <record>
+vivi pump history <need> [--json]
 ```
+
+A **pump record** is one dispatch of one need: **pump send** files it open,
+addressed to the pump's own identity (**[pump] reply_from**, default
+**mind**), from **--from** (default **[pump] from**). A need holds at most one
+open record; a second send is refused and names it. **pump done --note** closes
+it with an outcome (**landed**, **gave-up**, **withdrawn**, **superseded**, or
+any text); a later dispatch of the same need is a new record, and **pump
+history** lists them oldest first. **pump reopen** is refused while another
+record of the need is open. A record is the pump's own, local to its
+mailspace: it is not backlog work (no graph node, never dispatched by **vivi
+step**) and **vivi sync** does not carry it.
 
 **health** judges the pump without writing anything: **ok**, **degraded**,
 **stalled** or **unknown**, with one reason line per finding. It reads

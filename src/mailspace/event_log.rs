@@ -125,6 +125,7 @@ fn send_command(role: &str) -> &'static str {
         "tasks" => "task send",
         "needs" => "need send",
         "wants" => "want send",
+        "pumps" => "pump send",
         _ => "mail send",
     }
 }

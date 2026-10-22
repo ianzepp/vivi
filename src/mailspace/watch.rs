@@ -191,7 +191,7 @@ fn prepare_filters(
         kinds: parse_filter_set(
             &request.kinds,
             "kind",
-            &["mail", "task", "need", "want", "graph"],
+            &["mail", "task", "need", "want", "pump", "graph"],
         )?,
         events: parse_filter_set(
             &request.events,
@@ -214,7 +214,9 @@ fn prepare_filters(
                 parse_filter_set(
                     value,
                     "status",
-                    &["tasks", "needs", "wants", "done", "inbox", "sent", "open"],
+                    &[
+                        "tasks", "needs", "wants", "pumps", "done", "inbox", "sent", "open",
+                    ],
                 )
             })
             .transpose()?,

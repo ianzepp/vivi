@@ -254,6 +254,36 @@ impl Storage {
         .collect()
     }
 
+    /// List the events one lifecycle command wrote of one event type, oldest
+    /// first (`pump send` + `delivered` names every pump record's holder row).
+    ///
+    /// # Errors
+    /// Returns a [`VivariumError`] if the database query fails.
+    pub fn list_mailspace_events_for_command(
+        &self,
+        command: &str,
+        event_type: &str,
+    ) -> Result<Vec<MailspaceEvent>, VivariumError> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_id, occurred_at, command, event_type, actor_identity,
+                        account, message_id, content_id, from_role, to_role,
+                        from_identity, to_identity, subject, note
+                 FROM mailspace_events
+                 WHERE command = ?1 AND event_type = ?2
+                 ORDER BY event_id",
+            )
+            .map_err(|e| VivariumError::Other(format!("failed to prepare command events: {e}")))?;
+        let rows = stmt
+            .query_map(params![command, event_type], mailspace_event_from_row)
+            .map_err(|e| VivariumError::Other(format!("failed to query command events: {e}")))?;
+        rows.map(|row| {
+            row.map_err(|e| VivariumError::Other(format!("failed to read event row: {e}")))
+        })
+        .collect()
+    }
+
     /// List events that occurred after a given event ID.
     ///
     /// # Errors

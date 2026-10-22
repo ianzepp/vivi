@@ -925,6 +925,7 @@ fn role_implies_kind(role: &str, kind: &str) -> bool {
         ("tasks", "task")
             | ("needs", "need")
             | ("wants", "want")
+            | ("pumps", "pump")
             | ("memos", "memo")
             | ("rules", "rule")
     )
