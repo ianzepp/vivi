@@ -2009,6 +2009,10 @@ size_gib = 12                 # required for apfs and ram
 - **The driver** (`worker-macos.sh`) is embedded in `vivi` and sent with every
   call, like the `ssh` provider's script; nothing is installed on the worker.
   It needs git, tar, perl, lsof, diskutil, hdiutil and plutil.
+- **PATH.** A slot's boot runs under a login shell, for the variables its
+  profile exports, but jobs keep the SSH session's `PATH` order: macOS's login
+  profile reorders `PATH` (system directories first), so the boot puts the
+  session's order back in front and drops repeated entries.
 - **macOS privacy:** on an external drive, every file and image operation over
   SSH needs Remote Login's "Allow full disk access for remote users".
 - Design and measurements: `docs/worker-driver-protocol.md`.
@@ -2083,6 +2087,9 @@ host = "user@server"          # required; anything `ssh` accepts, including a Ho
   login shell, so it proves whichever file you chose). Values never pass
   through Vivi or the mailspace. `doctor`, `create` and `dispatch` name the
   ones unset on the host.
+- **PATH.** The boot runs under a login shell for its exported variables, but
+  keeps the SSH session's `PATH` order (a login profile that reorders `PATH`
+  does not win); repeated entries are dropped.
 - **Destroy** removes the slot directory and is guarded on the host: only
   `<space-key>/<pool>/slot-<n>`, only a plain directory inside the root, only
   with Vivi's own marks naming the pool **and** the mailspace, never with an empty or `/` root; anything else is

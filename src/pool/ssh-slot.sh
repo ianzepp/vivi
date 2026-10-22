@@ -134,9 +134,10 @@ start_slot() {
   rm -f "$D/exit_code" "$D/boot.pid"
   (
     set -a; . "$D/slot.env"; set +a
-    export WORK="$D" VIVI_SLOT_ROOT="$D"
+    # A login shell may reorder PATH; the boot command puts this order back.
+    export WORK="$D" VIVI_SLOT_ROOT="$D" VIVI_SESSION_PATH="$PATH"
     cd "$D" || exit 1
-    nohup setsid bash -l -c 'echo $$ > "$WORK/boot.pid"; bash "$WORK/boot.sh"; rc=$?; echo "$rc" > "$WORK/exit_code"; exit "$rc"' \
+    nohup setsid bash -l -c 'PATH="$VIVI_SESSION_PATH:$PATH"; set -f; q=; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; case ":$q:" in *":$d:"*) ;; *) q="${q:+$q:}$d" ;; esac; done; unset IFS; set +f; PATH=$q; unset VIVI_SESSION_PATH d q; echo $$ > "$WORK/boot.pid"; bash "$WORK/boot.sh"; rc=$?; echo "$rc" > "$WORK/exit_code"; exit "$rc"' \
       > "$D/boot.out" 2>&1 < /dev/null &
   )
   for _ in $(seq 100); do [ -s "$D/boot.pid" ] && return 0; sleep 0.05; done

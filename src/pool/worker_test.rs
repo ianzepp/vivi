@@ -14,6 +14,8 @@ use crate::pool::slot::{META_MAILSPACE, PoolId};
 /// Runs a remote command line locally, with `home` as the login home.
 struct Shell {
     home: PathBuf,
+    /// A directory put first on the PATH of the session, if any.
+    path_first: Option<PathBuf>,
 }
 
 impl Runner for Shell {
@@ -23,7 +25,12 @@ impl Runner for Shell {
         stdin: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<RunOutput, VivariumError> {
-        let child = Command::new("sh")
+        let mut command = Command::new("sh");
+        if let Some(first) = &self.path_first {
+            let path = std::env::var("PATH").unwrap_or_default();
+            command.env("PATH", format!("{}:{path}", first.display()));
+        }
+        let child = command
             .arg("-c")
             .arg(&args[0])
             .env("HOME", &self.home)
@@ -63,12 +70,23 @@ fn config(slots: u32, kind: &str, size: u32) -> PoolConfig {
 }
 
 fn provider(home: &Path, slots: u32, kind: &str, size: u32) -> WorkerProvider {
+    provider_with_path(home, slots, kind, size, None)
+}
+
+fn provider_with_path(
+    home: &Path,
+    slots: u32,
+    kind: &str,
+    size: u32,
+    path_first: Option<PathBuf>,
+) -> WorkerProvider {
     WorkerProvider::with_runner(
         &config(slots, kind, size),
         "ms",
         "lanes",
         Box::new(Shell {
             home: home.to_path_buf(),
+            path_first,
         }),
     )
     .with_seed_pacing(Duration::from_secs(20), Duration::from_millis(50))
@@ -236,4 +254,35 @@ fn one_provider_serves_its_pool_and_the_doctor_test_pool() {
     p.destroy(&test.id).unwrap();
     p.destroy(&mine.id).unwrap();
     assert!(p.list().unwrap().is_empty());
+}
+
+#[test]
+fn a_boot_keeps_the_session_path_order_through_a_login_shell_that_reorders_it() {
+    let home = home("");
+    // The login shell reads this after /etc/profile and puts system
+    // directories first, as macOS path_helper does.
+    std::fs::write(
+        home.path().join(".bash_profile"),
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH; export PATH\n",
+    )
+    .unwrap();
+    let first = home.path().join("session-first");
+    let p = provider_with_path(home.path(), 1, "dir", 0, Some(first.clone()));
+    let slot = open(&p, "echo \"$PATH\" > path.txt\n").unwrap();
+    let files = p
+        .read_stopped(&slot.id, &["/work/path.txt"])
+        .unwrap()
+        .unwrap();
+    let path = String::from_utf8(files["/work/path.txt"].clone()).unwrap();
+    let entries: Vec<&str> = path.trim_end().split(':').collect();
+    assert_eq!(
+        entries[0],
+        first.to_str().unwrap(),
+        "the session's first entry stays first: {path}"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    assert!(
+        entries.iter().all(|e| seen.insert(*e)),
+        "no repeats: {path}"
+    );
 }

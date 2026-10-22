@@ -94,6 +94,12 @@ measured on a Mac Studio, macOS 27.
 - **Stopping.** Every process with a file or working directory on the
   boundary (`lsof +f --` for a mount, `lsof +D` for a directory), plus the
   boot wrapper's process group and every descendant, gets TERM, then KILL.
+- **PATH.** The boot wrapper is a login shell (for the variables its profile
+  exports). On macOS its profile runs `path_helper`, which moves the system
+  directories in front of the SSH session's `PATH`; the wrapper puts the
+  session's `PATH` (passed in `VIVI_SESSION_PATH`) back in front and drops
+  repeated entries before `boot.sh` runs, so a job resolves tools in the same
+  order an SSH login does.
 
 ### What did not work, and why
 

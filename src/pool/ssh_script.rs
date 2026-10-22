@@ -58,3 +58,7 @@ pub fn command_line_of(
     let shell = if login { "bash -l -c" } else { "bash -c" };
     format!("{shell} {}", sh_quote(&script))
 }
+
+#[cfg(test)]
+#[path = "ssh_script_test.rs"]
+mod tests;
