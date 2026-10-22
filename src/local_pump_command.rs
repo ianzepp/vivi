@@ -3,8 +3,11 @@
 use std::path::PathBuf;
 
 use vivi::VivariumError;
-use vivi::cli::{PumpLogCommand, PumpPriorityCommand, PumpServiceCommand, PumpSubcommand};
+use vivi::cli::{
+    PumpHealthCommand, PumpLogCommand, PumpPriorityCommand, PumpServiceCommand, PumpSubcommand,
+};
 use vivi::pump::control::PumpMode;
+use vivi::pump::health::{self, HealthOptions};
 use vivi::pump::logview::{self, LogFile, LogFilter, ShowOptions};
 use vivi::pump::priority;
 use vivi::pump::run as pump_run;
@@ -21,6 +24,7 @@ pub(crate) fn handle_pump_command(command: &PumpSubcommand) -> Result<(), Vivari
             print!("{text}");
             Ok(())
         }
+        PumpSubcommand::Health(cmd) => pump_health(cmd),
         PumpSubcommand::Log(cmd) => pump_log(cmd),
         PumpSubcommand::Export(cmd) => pump_run::export(&project_root(&cmd.project), &cmd.json),
         PumpSubcommand::Closeout(cmd) => pump_run::closeout(
@@ -92,6 +96,23 @@ fn pump_log(cmd: &PumpLogCommand) -> Result<(), VivariumError> {
 
 /// The project root: the subcommand's `--project`, else the current
 /// directory (whose ancestors `Mailspace::discover` walks).
+fn pump_health(cmd: &PumpHealthCommand) -> Result<(), VivariumError> {
+    let opts = HealthOptions {
+        since: cmd.since,
+        stale_after: cmd.stale_after,
+        now: None,
+    };
+    let report = health::health(&project_root(&cmd.project), &opts)?;
+    if cmd.json {
+        let text = serde_json::to_string_pretty(&report)
+            .map_err(|error| VivariumError::Message(format!("cannot encode health: {error}")))?;
+        println!("{text}");
+    } else {
+        print!("{}", health::render(&report));
+    }
+    Ok(())
+}
+
 fn project_root(project: &Option<PathBuf>) -> PathBuf {
     project
         .clone()

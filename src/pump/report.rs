@@ -82,9 +82,9 @@ pub fn read(home: &Path) -> Result<PumpRead, VivariumError> {
             "schema {version}, expected {SCHEMA_VERSION}"
         )));
     }
-    match (store.load(), store.exceptions()) {
-        (Ok(state), Ok(exceptions)) => Ok(PumpRead::Ready(Snapshot { state, exceptions })),
-        (Err(err), _) | (_, Err(err)) => Ok(PumpRead::Unreadable(err.to_string())),
+    match store.load_snapshot() {
+        Ok((state, exceptions)) => Ok(PumpRead::Ready(Snapshot { state, exceptions })),
+        Err(err) => Ok(PumpRead::Unreadable(err.to_string())),
     }
 }
 

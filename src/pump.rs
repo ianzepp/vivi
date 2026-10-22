@@ -20,6 +20,7 @@ pub mod dispatch;
 pub mod envfail;
 pub mod gate;
 pub mod gatefix;
+pub mod health;
 pub mod host;
 pub mod jobs;
 pub mod logview;

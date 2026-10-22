@@ -559,7 +559,7 @@ fn tail_note(text: &str, max: usize) -> String {
 }
 
 /// Verdicts that wait for an operator ruling before anything moves.
-pub(crate) const PARKED: [&str; 3] = ["operator", "design", "hold"];
+pub const PARKED: [&str; 3] = ["operator", "design", "hold"];
 
 /// True when the need's thread holds an operator message newer than `since`
 /// (epoch seconds): `## <rfc3339> - <hex> [` header lines set the current

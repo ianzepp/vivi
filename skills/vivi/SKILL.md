@@ -2314,6 +2314,7 @@ receipt contracts.
 vivi pump run      # loop until stopped
 vivi pump once     # one tick, then exit
 vivi pump status   # saved status and control state; no pump lock
+vivi pump health [--json] [--since <epoch>] [--stale-after <secs>]
 vivi pump log [-n N] [-f] [--lane L] [--unit U] [--grep TEXT] [--exceptions]
 vivi pump pause
 vivi pump resume
@@ -2329,6 +2330,22 @@ vivi pump requeue --stuck-since <time> --why <class> [--dry-run]
 vivi pump replan <need> [--force]
 vivi pump withdraw <need>... --reason TEXT
 ```
+
+**health** judges the pump without writing anything: **ok**, **degraded**,
+**stalled** or **unknown**, with one reason line per finding. It reads
+**pump.db** read-only inside one read transaction, never migrates it, and
+finds the writer from **/proc/locks** without touching the pump lock (off
+Linux it infers the writer from tick freshness and says so). **stalled** means
+control is running but either the writer is alive with no tick inside
+**--stale-after** (default thirty ticks, at least 600 s), or the writer is gone
+and **status.txt** is older than that. **degraded** covers a paused or stopped
+control, a missing writer with a fresh status, stuck, quarantined or
+needs-replan units, planner-parked needs, a red baseline, and **stall-***
+exceptions in the window. **unknown** means no **[pump]** table, no database,
+or a schema this binary does not read. **--json** adds unit counts, recent
+merges, blocked units and parked needs with reasons, complete-but-open needs
+and recent exceptions; pass a previous **as_of** as **--since** to get
+**changed_since** (units whose status began, merges and exceptions after it).
 
 **withdraw** closes a pump need without the mail board, for needs that have no
 mail thread (the synthetic **pumpfix-g&lt;tip&gt;** and **pumpfix-q&lt;id&gt;**

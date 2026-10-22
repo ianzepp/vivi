@@ -10,6 +10,8 @@ pub enum PumpSubcommand {
     Run(PumpRunCommand),
     /// Print the pump's status file
     Status(PumpStatusCommand),
+    /// Judge the pump read-only: ok, degraded, stalled or unknown, with reasons
+    Health(PumpHealthCommand),
     /// Print the pump's log (last lines; filter by lane, unit or text; follow)
     Log(PumpLogCommand),
     /// Run one pump tick and exit
@@ -206,6 +208,22 @@ pub struct PumpRunCommand {
 
 #[derive(Debug, Args)]
 pub struct PumpStatusCommand {
+    /// Project root that owns .vivi/ (also accepted globally)
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PumpHealthCommand {
+    /// Output the full answer as JSON
+    #[arg(long)]
+    pub json: bool,
+    /// Report what changed after this epoch second (a previous `as_of`)
+    #[arg(long, value_name = "EPOCH")]
+    pub since: Option<u64>,
+    /// Seconds without a tick before a running pump counts as stalled
+    #[arg(long, value_name = "SECS")]
+    pub stale_after: Option<u64>,
     /// Project root that owns .vivi/ (also accepted globally)
     #[arg(long)]
     pub project: Option<PathBuf>,

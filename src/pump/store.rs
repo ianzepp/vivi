@@ -23,6 +23,7 @@ mod promotions;
 mod replan;
 mod requeue;
 mod schema;
+mod snapshot;
 mod unit_extra;
 mod withdraw;
 pub(super) use codec::{db_err, from_json, from_opt_json, from_u32, from_u64, json, json_or_null};
