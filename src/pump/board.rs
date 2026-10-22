@@ -540,22 +540,29 @@ fn tail_note(text: &str, max: usize) -> String {
 /// Verdicts that wait for an operator ruling before anything moves.
 pub const PARKED: [&str; 3] = ["operator", "design", "hold"];
 
-/// True when the need's thread holds an operator message newer than `since`
-/// (epoch seconds): `## <rfc3339> - <hex> [` header lines set the current
-/// message time, and a following `From: <cfg.from>@` line decides it.
+/// True when the need's thread holds a message newer than `since` (epoch
+/// seconds) from anyone but the pump itself: `## <rfc3339> - <hex> [` header
+/// lines set the current message time, and the following `From:` line
+/// decides it. The pump's own replies, and the event letters it holds as the
+/// item's holder, come from `reply_from` and never count. Any other role
+/// (the operator, a CTO, a head) answering a parked verdict re-plans it.
 /// A nonzero exit, or an unparseable stamp, means false.
 #[must_use]
-pub fn operator_replied_after(ctx: &Ctx, handle: &str, since: u64) -> bool {
+pub fn replied_after(ctx: &Ctx, handle: &str, since: u64) -> bool {
     let out = ctx.vivi(&format!("need show {handle}"), 60);
     if out.code != 0 {
         return false;
     }
-    let sender = format!("From: {}@", ctx.cfg.from);
+    let pump = format!("From: {}@", ctx.cfg.reply_from);
     let mut when = String::new();
     for line in out.text.lines() {
         if let Some(stamp) = header_time(line) {
             stamp.clone_into(&mut when);
-        } else if !when.is_empty() && line.starts_with(&sender) && newer_than(&when, since) {
+        } else if !when.is_empty()
+            && line.starts_with("From: ")
+            && !line.starts_with(&pump)
+            && newer_than(&when, since)
+        {
             return true;
         }
     }
@@ -590,7 +597,7 @@ fn mtime_secs(meta: &fs::Metadata) -> u64 {
 }
 
 /// A parked need (verdict `operator`, `design` or `hold`, no units) whose
-/// thread gained an operator reply after its plan was written is planned
+/// thread gained a reply from anyone but the pump after its plan was written is planned
 /// again: the plan moves to `plans/superseded/`, the basename leaves
 /// `plans_seen`, the need record and its `planned` reply key are dropped, and
 /// the board plans the need again on its open pump record.
@@ -608,7 +615,7 @@ pub fn replan_answered(ctx: &Ctx, st: &mut State, rows: &[NeedRow]) {
 }
 
 /// The need's verdict when `handle` is parked, unit-less, has a plan file,
-/// and its thread holds an operator reply newer than that plan's mtime.
+/// and its thread holds a non-pump reply newer than that plan's mtime.
 fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
     let record = st.needs.get(handle)?;
     if !PARKED.contains(&record.verdict.as_str()) || !record.units.is_empty() {
@@ -617,7 +624,7 @@ fn parked_with_reply(ctx: &Ctx, st: &State, handle: &str) -> Option<String> {
     let Ok(meta) = fs::metadata(plan_path(ctx, handle)) else {
         return None;
     };
-    operator_replied_after(ctx, handle, mtime_secs(&meta)).then(|| record.verdict.clone())
+    replied_after(ctx, handle, mtime_secs(&meta)).then(|| record.verdict.clone())
 }
 
 /// Reply once on every candidate need's open pump record that has a verdict:

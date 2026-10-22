@@ -516,7 +516,7 @@ fn a_missing_planner_route_does_not_create_a_phantom_outbox_job() {
 }
 
 #[test]
-fn operator_replied_after_sees_a_newer_operator_message_only() {
+fn replied_after_sees_a_newer_message_from_anyone_but_the_pump() {
     let (_dir, ctx, host) = setup();
     let older = thread(
         "2026-10-14T09:00:00Z",
@@ -531,35 +531,31 @@ fn operator_replied_after_sees_a_newer_operator_message_only() {
         "re-plan please",
     );
     host.reply("need show op1", 0, &format!("{older}\n{newer}"));
-    assert!(operator_replied_after(
-        &ctx,
-        "op1",
-        epoch("2026-10-15T00:00:00Z")
-    ));
-    assert!(!operator_replied_after(
-        &ctx,
-        "op1",
-        epoch("2026-10-16T09:00:00Z")
-    ));
-    assert!(!operator_replied_after(
-        &ctx,
-        "op1",
-        epoch("2027-01-01T00:00:00Z")
-    ));
+    assert!(replied_after(&ctx, "op1", epoch("2026-10-15T00:00:00Z")));
+    assert!(!replied_after(&ctx, "op1", epoch("2026-10-16T09:00:00Z")));
+    assert!(!replied_after(&ctx, "op1", epoch("2027-01-01T00:00:00Z")));
     let other = thread(
         "2030-01-01T00:00:00Z",
         "ccc333",
         "mind@bd371d96.local",
-        "not the operator",
+        "the pump's own reply",
     );
     host.reply("need show op2", 0, &other);
-    assert!(!operator_replied_after(&ctx, "op2", 0));
+    assert!(!replied_after(&ctx, "op2", 0));
+    let cto = thread(
+        "2030-01-01T00:00:00Z",
+        "eee555",
+        "cto@bd371d96.local",
+        "approved: plan units",
+    );
+    host.reply("need show op6", 0, &cto);
+    assert!(replied_after(&ctx, "op6", 0));
     host.reply(
         "need show op5",
         0,
         "From: operator@bd371d96.local\nno header first\n",
     );
-    assert!(!operator_replied_after(&ctx, "op5", 0));
+    assert!(!replied_after(&ctx, "op5", 0));
     let unparseable = thread(
         "2026-13-99T99:99:99Z",
         "ddd444",
@@ -567,9 +563,9 @@ fn operator_replied_after_sees_a_newer_operator_message_only() {
         "bad time",
     );
     host.reply("need show op3", 0, &unparseable);
-    assert!(!operator_replied_after(&ctx, "op3", 0));
+    assert!(!replied_after(&ctx, "op3", 0));
     host.reply("need show op4", 1, "the mailspace is locked");
-    assert!(!operator_replied_after(&ctx, "op4", 0));
+    assert!(!replied_after(&ctx, "op4", 0));
 }
 
 #[test]
