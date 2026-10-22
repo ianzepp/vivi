@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use axum::http::{HeaderMap, HeaderValue, Method};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use bytes::Bytes;
 use serde_json::{Value, json};
 
@@ -13,6 +13,7 @@ use super::credentials;
 use super::dead::{self, RefreshClass};
 use super::forward;
 use super::http_error;
+use super::oauth;
 use super::paths::expand_user_str;
 use super::route::Action;
 use super::usage::Usage;
@@ -45,7 +46,7 @@ pub async fn handle(
     }
     if matches!(action, Action::Models) && !provider.models.is_empty() {
         return Ok((
-            forward::json_ok(models_body(&provider.models)),
+            forward::json_ok(forward::models_body(&provider.models)),
             Usage::default(),
         ));
     }
@@ -174,24 +175,21 @@ pub fn credential_path_if_present(provider: &ProviderConfig) -> Option<PathBuf> 
 
 fn upstream_url(provider: &ProviderConfig, action: &Action, query: Option<&str>) -> String {
     let base = provider.upstream.as_deref().unwrap_or(DEFAULT_UPSTREAM);
-    let path = match action {
-        Action::Responses => "/responses",
-        Action::Messages => "/messages",
-        Action::Models => "/models",
-        Action::Usage => "/usage",
-        Action::Other(path) if !path.is_empty() => path.as_str(),
-        Action::ChatCompletions | Action::Health | Action::Other(_) => "/chat/completions",
-    };
-    forward::join_url(base, path, query)
+    forward::upstream_url(base, action, query)
 }
 
-fn identity_headers(provider: &ProviderConfig, token: &str) -> HeaderMap {
+pub(crate) fn identity_headers(provider: &ProviderConfig, token: &str) -> HeaderMap {
     let version = provider
         .client_version
         .as_deref()
         .unwrap_or(DEFAULT_CLIENT_VERSION);
     let mut headers = HeaderMap::new();
     insert(&mut headers, "authorization", &format!("Bearer {token}"));
+    // Kimi's client identity (user agent, device id) goes to Kimi only, never
+    // to an `openai-passthrough` upstream such as DeepSeek or OpenCode.
+    if provider.adapter.as_deref() != Some("kimi-coding") {
+        return headers;
+    }
     insert(&mut headers, "user-agent", &format!("KimiCLI/{version}"));
     for (name, value) in msh_headers(version, provider) {
         insert(&mut headers, name, &value);
@@ -297,17 +295,7 @@ fn refuse_if_dead(provider: &ProviderConfig, request_id: &str) -> Option<Respons
 }
 
 fn health_response(provider: &ProviderConfig) -> Response {
-    let status = health_status(provider);
-    let body = json!({ "ok": status == "ok", "provider": "kimi", "status": status });
-    if status == "ok" || status == "missing" {
-        forward::json_ok(body)
-    } else {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(body),
-        )
-            .into_response()
-    }
+    forward::provider_health("kimi", health_status(provider))
 }
 
 /// Health label for `/health` and `vivi proxy providers`.
@@ -321,14 +309,6 @@ pub fn health_status(provider: &ProviderConfig) -> &'static str {
         Ok(_) => "ok",
         Err(_) => "missing",
     }
-}
-
-fn models_body(models: &[String]) -> Value {
-    let data: Vec<Value> = models
-        .iter()
-        .map(|model| json!({ "id": model, "object": "model" }))
-        .collect();
-    json!({ "object": "list", "data": data })
 }
 
 async fn refresh(
@@ -368,26 +348,13 @@ async fn refresh_on_wire(
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
     ];
-    let response = match client.post(token_url).form(&form).send().await {
-        Ok(response) => response,
-        Err(error) => {
-            tracing::warn!(%error, "kimi token endpoint unreachable");
-            return Ok(RefreshClass::Transient);
+    match oauth::post_refresh(client, token_url, &form, "kimi").await {
+        Ok(payload) => {
+            apply_refresh(store, &payload)?;
+            Ok(RefreshClass::Ok)
         }
-    };
-    let class = dead::classify_status(response.status());
-    if class != RefreshClass::Ok {
-        if class == RefreshClass::Transient {
-            tracing::warn!(status = %response.status(), "kimi token refresh transient");
-        }
-        return Ok(class);
+        Err(class) => Ok(class),
     }
-    let payload: Value = match response.json().await {
-        Ok(payload) => payload,
-        Err(_) => return Ok(RefreshClass::Transient),
-    };
-    apply_refresh(store, &payload)?;
-    Ok(RefreshClass::Ok)
 }
 
 fn apply_refresh(store: &mut Value, payload: &Value) -> Result<(), VivariumError> {
@@ -399,7 +366,7 @@ fn apply_refresh(store: &mut Value, payload: &Value) -> Result<(), VivariumError
     if let Some(refresh) = payload.get("refresh_token").and_then(Value::as_str) {
         store["refresh_token"] = json!(refresh);
     }
-    if let Some(expires_in) = expires_in_secs(payload) {
+    if let Some(expires_in) = oauth::expires_in_secs(payload) {
         store["expires_at"] = json!(chrono::Utc::now().timestamp().saturating_add(expires_in));
         store["expires_in"] = json!(expires_in);
     }
@@ -410,24 +377,6 @@ fn apply_refresh(store: &mut Value, payload: &Value) -> Result<(), VivariumError
         store["token_type"] = json!(token_type);
     }
     Ok(())
-}
-
-fn expires_in_secs(payload: &Value) -> Option<i64> {
-    payload
-        .get("expires_in")
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            payload
-                .get("expires_in")
-                .and_then(Value::as_u64)
-                .and_then(|secs| {
-                    #[allow(clippy::manual_ok_err)]
-                    match i64::try_from(secs) {
-                        Ok(value) => Some(value),
-                        Err(_) => None,
-                    }
-                })
-        })
 }
 
 /// Expiry label for `vivi proxy providers` (never the token).

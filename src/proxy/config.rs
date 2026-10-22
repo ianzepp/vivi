@@ -237,7 +237,7 @@ fn validate_native(name: &str, provider: &ProviderConfig) -> Result<(), Vivarium
         VivariumError::Config(format!("providers.{name} kind=native requires adapter"))
     })?;
     match adapter {
-        "chatgpt-codex" | "kimi-coding" | "openai-passthrough" => {}
+        "chatgpt-codex" | "kimi-coding" | "openai-passthrough" | "xai-grok" => {}
         other => {
             return Err(VivariumError::Config(format!(
                 "providers.{name} unknown adapter {other:?}"

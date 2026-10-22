@@ -7,6 +7,7 @@ use bytes::Bytes;
 use futures_util::TryStreamExt;
 
 use super::http_error;
+use super::route::Action;
 use super::sse;
 use super::usage::Usage;
 use crate::VivariumError;
@@ -172,4 +173,39 @@ pub async fn probe(client: &reqwest::Client, url: &str) -> Result<(), String> {
 #[must_use]
 pub fn json_ok(value: serde_json::Value) -> Response {
     (StatusCode::OK, axum::Json(value)).into_response()
+}
+
+/// Upstream URL for a routed action under `base`.
+#[must_use]
+pub fn upstream_url(base: &str, action: &Action, query: Option<&str>) -> String {
+    let path = match action {
+        Action::Responses => "/responses",
+        Action::Messages => "/messages",
+        Action::Models => "/models",
+        Action::Usage => "/usage",
+        Action::Other(path) if !path.is_empty() => path.as_str(),
+        Action::ChatCompletions | Action::Health | Action::Other(_) => "/chat/completions",
+    };
+    join_url(base, path, query)
+}
+
+/// OpenAI-style model list for a configured `models` array.
+#[must_use]
+pub fn models_body(models: &[String]) -> serde_json::Value {
+    let data: Vec<serde_json::Value> = models
+        .iter()
+        .map(|model| serde_json::json!({ "id": model, "object": "model" }))
+        .collect();
+    serde_json::json!({ "object": "list", "data": data })
+}
+
+/// Native-adapter `/health` response: 200 for `ok` or `missing`, else 503.
+#[must_use]
+pub fn provider_health(label: &str, status: &str) -> Response {
+    let body = serde_json::json!({ "ok": status == "ok", "provider": label, "status": status });
+    if status == "ok" || status == "missing" {
+        json_ok(body)
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, axum::Json(body)).into_response()
+    }
 }

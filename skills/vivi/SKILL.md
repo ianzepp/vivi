@@ -2751,7 +2751,16 @@ status plus the JSON `status` field (`ok`, `down`, `credential_dead`).
 
 Provider `kind` is `native`, `child`, or `upstream`. Native adapters shipped
 in this binary: `chatgpt-codex` (Responses plus the existing chat shim) and
-`kimi-coding` / `openai-passthrough` (header injection and byte passthrough).
+`kimi-coding` / `openai-passthrough` (header injection and byte passthrough),
+and `xai-grok` (the Grok CLI OIDC login file, refreshed under a lock; byte
+passthrough to `https://api.x.ai/v1`). Example `grok` block:
+`kind = "native"`, `adapter = "xai-grok"`, `credentials = "~/.grok/auth.json"`
+(optional `upstream`, `token_url`, `client_id`, `models`; or `key_cmd` for a
+static bearer with no refresh). `openai-passthrough` also serves non-Kimi
+OpenAI-style upstreams with a `key_cmd`, for example an `opencode-go` block:
+`upstream = "https://opencode.ai/zen/go/v1"` and a `key_cmd` that prints the
+key (it forwards every path, including `/messages`, but still sends Kimi
+identity headers).
 Non-loopback `listen` requires `allow_remote = true` and `auth_token_cmd`.
 POST needs `Content-Type: application/json`. Requests with an `Origin`
 header, or a `Host` that is not loopback / the bind address, are refused.

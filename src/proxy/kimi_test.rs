@@ -34,3 +34,21 @@ fn msh_headers_use_kimi_cli_names() {
         .map(|(_, value)| value.as_str());
     assert_eq!(version, Some("1.15.0"));
 }
+
+#[test]
+fn passthrough_sends_only_the_bearer() {
+    let mut passthrough = provider();
+    passthrough.adapter = Some("openai-passthrough".into());
+    let headers = kimi::identity_headers(&passthrough, "t");
+    assert_eq!(headers.len(), 1);
+    assert!(headers.contains_key("authorization"));
+}
+
+#[test]
+fn kimi_coding_sends_its_client_identity() {
+    let mut coding = provider();
+    coding.adapter = Some("kimi-coding".into());
+    let headers = kimi::identity_headers(&coding, "t");
+    assert!(headers.contains_key("user-agent"));
+    assert!(headers.contains_key("x-msh-platform"));
+}

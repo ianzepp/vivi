@@ -208,6 +208,7 @@ fn native_credential_path(provider: &ProviderConfig) -> Option<std::path::PathBu
     }
     match provider.adapter.as_deref() {
         Some("chatgpt-codex") => crate::proxy::codex_auth::path_if_present(provider),
+        Some("xai-grok") => crate::proxy::grok::credential_path_if_present(provider),
         Some("kimi-coding" | "openai-passthrough") => {
             crate::proxy::kimi::credential_path_if_present(provider)
         }

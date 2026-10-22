@@ -75,3 +75,50 @@ fn expands_tilde_in_credential_path() {
     assert!(!path.starts_with('~'));
     assert!(path.ends_with("creds.json"));
 }
+
+#[test]
+fn xai_grok_requires_credentials_or_key_cmd() {
+    let error = config::parse_at(
+        std::path::PathBuf::from("/tmp/proxy.toml"),
+        r#"
+        [providers.grok]
+        kind = "native"
+        adapter = "xai-grok"
+        "#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("credentials or key_cmd"));
+    let config = parse(
+        r#"
+        [providers.grok]
+        kind = "native"
+        adapter = "xai-grok"
+        credentials = "~/.grok/auth.json"
+        "#,
+    );
+    assert_eq!(config.providers["grok"].native_adapter(), Some("xai-grok"));
+    let config = parse(
+        r#"
+        [providers.grok]
+        kind = "native"
+        adapter = "xai-grok"
+        key_cmd = "printf x"
+        "#,
+    );
+    assert!(config.providers["grok"].key_cmd.is_some());
+}
+
+#[test]
+fn documented_opencode_go_block_parses_and_prints_its_key() {
+    let config = parse(
+        r##"
+        [providers.opencode-go]
+        kind = "native"
+        adapter = "openai-passthrough"
+        upstream = "https://opencode.ai/zen/go/v1"
+        key_cmd = "python3 -c 'import json,os;print(json.load(open(os.path.expanduser(\"~/.local/share/opencode/auth.json\")))[\"opencode-go\"][\"key\"])'"
+        "##,
+    );
+    let command = config.providers["opencode-go"].key_cmd.as_deref().unwrap();
+    assert!(command.contains(r#"expanduser("~/.local/share/opencode/auth.json")"#));
+}

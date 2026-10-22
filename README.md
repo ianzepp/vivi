@@ -700,7 +700,7 @@ Backends:
 
 | `kind` | Meaning |
 | --- | --- |
-| `native` | In-process adapter (`chatgpt-codex` or `kimi-coding` / `openai-passthrough`) |
+| `native` | In-process adapter (`chatgpt-codex`, `kimi-coding` / `openai-passthrough`, or `xai-grok`) |
 | `child` | Vivi spawns the command, health-checks it, restarts with backoff |
 | `upstream` | Reverse-proxy to a server that is already listening |
 
@@ -710,7 +710,15 @@ atomically at mode `0600`, filters SSE to an allowlist and rebuilds an empty
 `response.completed.output`, and keeps the existing non-streaming, tool-less,
 usage-0 chat shim. Native Kimi re-reads its credential file on every request,
 injects `X-Msh-*` identity headers, passes bytes through, and retries once
-after a 401 refresh. Cursor stays a `child` (Bun/protobuf engine). Local
+after a 401 refresh. Native Grok (`xai-grok`) reads the Grok CLI login file
+(`~/.grok/auth.json`, entries keyed `<issuer>::<oidc_client_id>`), picks the
+entry for the origin of `token_url` (`client_id` disambiguates several), and
+sends its `key` as the bearer to `https://api.x.ai/v1`. It refreshes 30s
+before expiry (`expires_at`, else the JWT `exp`) and once after a 401, with a
+public-client `refresh_token` form post to `https://auth.x.ai/oauth2/token`.
+Under the advisory lock it re-reads the file first (a newer token already on
+disk wins), then writes back `key`, a rotated `refresh_token`, and
+`expires_at` into that entry only, atomically at mode `0600`. Cursor stays a `child` (Bun/protobuf engine). Local
 llama-server is an `upstream`.
 
 The listener refuses a non-loopback bind unless `allow_remote = true` and
@@ -763,6 +771,24 @@ kind = "native"
 adapter = "kimi-coding"
 credentials = "~/.kimi-code/credentials/kimi-code.json"
 
+[providers.grok]
+kind = "native"
+adapter = "xai-grok"
+credentials = "~/.grok/auth.json"
+# Optional: upstream = "https://api.x.ai/v1"
+# Optional: token_url = "https://auth.x.ai/oauth2/token"
+# Optional: client_id = "<oidc client id>"   # picks one of several entries
+# Optional: models = ["grok-code-fast-1"]    # else /grok/v1/models passes through
+# Alternative to credentials (static bearer, no refresh):
+# key_cmd = "..."
+
+# OpenCode Go: the existing passthrough adapter with a static key.
+[providers.opencode-go]
+kind = "native"
+adapter = "openai-passthrough"
+upstream = "https://opencode.ai/zen/go/v1"
+key_cmd = "python3 -c 'import json,os;print(json.load(open(os.path.expanduser(\"~/.local/share/opencode/auth.json\")))[\"opencode-go\"][\"key\"])'"
+
 [providers.llama]
 kind = "upstream"
 backend = "http://127.0.0.1:18173"
@@ -776,7 +802,11 @@ backend = "http://127.0.0.1:18183"
 Adjust the Cursor `command` to the Bun entrypoint you already run. Credential
 paths may be omitted when the adapter defaults are enough (`~/.codex/auth.json`
 then `~/.pi/agent/auth.json` for Codex; `~/.kimi-code/credentials/kimi-code.json`
-then `~/.kimi/credentials/kimi-code.json` for Kimi).
+then `~/.kimi/credentials/kimi-code.json` for Kimi; `~/.grok/auth.json` for
+Grok). `openai-passthrough` forwards any path under the route to `upstream`
+(`/messages`, `/responses`, `/chat/completions`, anything else as given), but
+it shares the Kimi code path and still adds the `KimiCLI` user agent and
+`X-Msh-*` identity headers to every request.
 
 ## Sync, the server and MCP
 
