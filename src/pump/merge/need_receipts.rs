@@ -47,15 +47,19 @@ pub(super) fn apply_need_merge(ctx: &Ctx, st: &mut State, job: &PoolJob) {
         );
         return;
     };
-    let Some(receipt) = valid_need_receipt(st, job, outcome, &identity) else {
-        settle_unverified_need_merge(
-            ctx,
-            st,
-            job,
-            &identity,
-            "receipt did not match its unit assignment",
-        );
-        return;
+    let receipt = match checked_need_receipt(st, job, outcome, &identity) {
+        Ok(receipt) => receipt,
+        Err(reason) => {
+            settle_need_merge(
+                ctx,
+                st,
+                job,
+                &identity,
+                &format!("receipt did not match its unit assignment: {reason}"),
+                true,
+            );
+            return;
+        }
     };
     let Some(tip) = verified_need_tip(ctx, st, job, outcome, &receipt, &identity) else {
         return;
@@ -70,27 +74,50 @@ pub(super) fn apply_need_merge(ctx: &Ctx, st: &mut State, job: &PoolJob) {
     finish_need_merge(ctx, st, job, &identity, &receipt, &tip, current);
 }
 
-fn valid_need_receipt(
+/// Parse the worker receipt and check it against the durable assignment,
+/// naming the first mismatch. A `job` entry naming this very job is not a
+/// requested source and is dropped before checking.
+fn checked_need_receipt(
     st: &State,
     job: &PoolJob,
     outcome: &jobs::JobOutcome,
     identity: &NeedMergeIdentity,
-) -> Option<pool_dispatch::MergeReceipt> {
-    let receipt = pool_dispatch::parse_receipt(&outcome.receipt)?;
+) -> Result<pool_dispatch::MergeReceipt, String> {
+    let mut receipt = pool_dispatch::parse_receipt(&outcome.receipt).ok_or_else(|| {
+        String::from("no PUMP_MERGE_RESULT line holding a parsable merge receipt")
+    })?;
+    receipt
+        .sources
+        .retain(|source| !(source.kind == "job" && source.id == job.id));
     let units: BTreeSet<String> = job.units.iter().cloned().collect();
-    let Some(assigned_sources) = assigned_unit_sources(job, st, identity) else {
-        return None;
-    };
-    (pool_dispatch::valid_result(&receipt, job, outcome, &units, &BTreeSet::new())
-        && receipt_sources_belong_to_need(
+    let assigned_sources = assigned_unit_sources(job, st, identity).ok_or_else(|| {
+        String::from("the durable unit_sources no longer match the job or its units")
+    })?;
+    if let Some(reason) =
+        pool_dispatch::result_failure(&receipt, job, outcome, &units, &BTreeSet::new())
+    {
+        return Err(reason);
+    }
+    if let Some(source) = receipt.sources.iter().find(|source| {
+        !source_belongs_to_need(
             st,
-            &receipt.sources,
+            source,
             &identity.need,
             &identity.target,
             &assigned_sources,
         )
-        && merged_sources_proven(outcome, &receipt, &assigned_sources))
-    .then_some(receipt)
+    }) {
+        return Err(format!(
+            "{} source `{}` does not belong to this need, target and assignment",
+            source.kind, source.id
+        ));
+    }
+    if let Some(id) = unproven_merged_source(outcome, &receipt, &assigned_sources) {
+        return Err(format!(
+            "merged unit `{id}` has no single runner ancestry proof of its assigned SHA"
+        ));
+    }
+    Ok(receipt)
 }
 
 /// Capture the unit branch and SHA assigned when this durable job was queued.
@@ -139,26 +166,29 @@ fn assigned_unit_sources(
     (sources.len() == job.units.len()).then_some(sources)
 }
 
-/// Require an exact private-runner ancestry proof for every merged unit.
-fn merged_sources_proven(
+/// Require an exact private-runner ancestry proof for every merged unit;
+/// returns the first merged unit without one.
+fn unproven_merged_source(
     outcome: &jobs::JobOutcome,
     receipt: &pool_dispatch::MergeReceipt,
     assigned: &BTreeMap<String, (String, String)>,
-) -> bool {
+) -> Option<String> {
     let proofs = outcome.runner_sources();
-    receipt.sources.iter().all(|source| {
-        if source.status != "merged" {
-            return true;
-        }
-        let Some((reference, sha)) = assigned.get(&source.id) else {
-            return false;
-        };
-        let matching: Vec<_> = proofs
-            .iter()
-            .filter(|proof| proof.reference == *reference)
-            .collect();
-        matching.len() == 1 && matching[0].sha == *sha && matching[0].contained
-    })
+    receipt
+        .sources
+        .iter()
+        .filter(|source| source.status == "merged")
+        .find(|source| {
+            let Some((reference, sha)) = assigned.get(&source.id) else {
+                return true;
+            };
+            let matching: Vec<_> = proofs
+                .iter()
+                .filter(|proof| proof.reference == *reference)
+                .collect();
+            !(matching.len() == 1 && matching[0].sha == *sha && matching[0].contained)
+        })
+        .map(|source| source.id.clone())
 }
 
 fn verified_need_tip(
@@ -216,6 +246,19 @@ fn settle_unverified_need_merge(
     identity: &NeedMergeIdentity,
     detail: &str,
 ) {
+    settle_need_merge(ctx, st, job, identity, detail, false);
+}
+
+/// Settle a need merge whose result cannot be accepted. `invalid_receipt`
+/// counts it toward the consecutive-invalid-receipt hold.
+fn settle_need_merge(
+    ctx: &Ctx,
+    st: &mut State,
+    job: &PoolJob,
+    identity: &NeedMergeIdentity,
+    detail: &str,
+    invalid_receipt: bool,
+) {
     let Some(observed) =
         super::need_dispatch::observed_ref_sha(ctx, &identity.target, &identity.refname)
     else {
@@ -245,14 +288,49 @@ fn settle_unverified_need_merge(
         }
     }
     reset_need_units(st, job);
-    if jobs::mark_applied(st, &job.id, ctx.now()) {
-        let why = if observed == identity.starting_tip {
-            "need-merge-unverified"
-        } else {
-            "need-branch-unverified-tip"
-        };
+    if !jobs::mark_applied(st, &job.id, ctx.now()) {
+        return;
+    }
+    let streak = invalid_receipt
+        .then(|| {
+            need::record_invalid_receipt(
+                st,
+                &identity.target,
+                &identity.need,
+                identity.revision,
+                &format!("{}: {detail}", job.id),
+            )
+            .ok()
+        })
+        .flatten();
+    if observed == identity.starting_tip {
+        if let Some(entries) = streak.filter(|entries| entries.len() == need::INVALID_RECEIPT_LIMIT)
+        {
+            let ids: Vec<&str> = entries
+                .iter()
+                .map(|entry| entry.split(": ").next().unwrap_or(entry))
+                .collect();
+            ctx.exception(
+                "need-merge-receipt-invalid",
+                &identity.need,
+                &format!(
+                    "{} consecutive invalid merge receipts (jobs {}); unit merges for revision {} are held until the plan is revised. First failure, job {}",
+                    entries.len(),
+                    ids.join(", "),
+                    identity.revision,
+                    entries[0]
+                ),
+            );
+            return;
+        }
         ctx.exception(
-            why,
+            "need-merge-unverified",
+            &identity.need,
+            &format!("job {}: {detail}; observed tip {}", job.id, observed),
+        );
+    } else {
+        ctx.exception(
+            "need-branch-unverified-tip",
             &identity.need,
             &format!("job {}: {detail}; observed tip {}", job.id, observed),
         );
@@ -320,6 +398,12 @@ fn finish_need_merge(
     if !jobs::mark_applied(st, &job.id, ctx.now()) {
         return;
     }
+    if need::clear_invalid_receipts(st, &identity.target, &identity.need).is_err() {
+        ctx.log(&format!(
+            "need invalid-receipt streak could not be cleared {}/{}",
+            identity.target, identity.need
+        ));
+    }
     if !current {
         ctx.exception(
             "need-merge-stale-revision",
@@ -369,22 +453,20 @@ fn merge_identity(job: &PoolJob) -> Option<NeedMergeIdentity> {
     })
 }
 
-/// Verify that every source still names the captured need, target and revision.
-fn receipt_sources_belong_to_need(
+/// Whether one source still names the captured need, target and assignment.
+fn source_belongs_to_need(
     st: &State,
-    sources: &[pool_dispatch::SourceResult],
+    source: &pool_dispatch::SourceResult,
     need_id: &str,
     target: &str,
     assigned: &BTreeMap<String, (String, String)>,
 ) -> bool {
-    sources.iter().all(|source| {
-        source.kind == "unit"
-            && assigned.contains_key(&source.id)
-            && st
-                .units
-                .get(&source.id)
-                .is_some_and(|unit| unit.need == need_id && unit.target_id() == target)
-    })
+    source.kind == "unit"
+        && assigned.contains_key(&source.id)
+        && st
+            .units
+            .get(&source.id)
+            .is_some_and(|unit| unit.need == need_id && unit.target_id() == target)
 }
 
 /// Apply one source only while its unit still belongs to the captured plan revision.

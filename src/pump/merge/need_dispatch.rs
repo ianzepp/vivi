@@ -109,6 +109,9 @@ fn dispatch_need_group(
     if branch.status != NeedBranchStatus::Active || branch.revision != revision {
         return Ok(());
     }
+    if branch.receipts_held(revision) {
+        return Ok(());
+    }
     enqueue_need_batch(
         ctx, st, role, target, need_id, revision, &branch, &mut units, size, started,
     )
@@ -483,6 +486,12 @@ fn record_terminal_dispositions(
             Status::Replaced => ("replaced", unit.replaced_by.join(",")),
             _ => continue,
         };
+        let unchanged = branch.unit_dispositions.get(&uid).is_some_and(|known| {
+            known.revision == branch.revision && known.kind == kind && known.detail == detail
+        });
+        if unchanged {
+            continue;
+        }
         need::record_disposition(
             st,
             &branch.target,
@@ -556,7 +565,7 @@ fn need_merge_spec(
 
 fn need_merge_body(payload: &Value) -> String {
     format!(
-        "{MERGE_BRIEF}\n\n{MERGE_TIMEOUT_RULES}\n\nThis is an isolated need-branch merge. Merge only the listed unit sources onto `starting_tip_sha`, publish only to `need_ref`, and never publish these units to the shared integration ref. Merge each unit source with `git merge --no-ff --no-edit -m \"<plain summary of what is being integrated>\"` and commit the final tree with a plain message; the runner refuses to publish commits whose messages contain task, need, unit, attempt or job identifiers or branch or ref names. The immutable acceptance base is `frozen_base_sha`. The controller checks runner ancestry evidence for the starting tip and every merged source SHA captured in `unit_sources`.\n\nInput JSON:\n{payload}"
+        "{MERGE_BRIEF}\n\n{MERGE_TIMEOUT_RULES}\n\nThis is an isolated need-branch merge. Merge only the listed unit sources onto `starting_tip_sha`, publish only to `need_ref`, and never publish these units to the shared integration ref. Merge each unit source with `git merge --no-ff --no-edit -m \"<plain summary of what is being integrated>\"` and commit the final tree with a plain message; the runner refuses to publish commits whose messages contain task, need, unit, attempt or job identifiers or branch or ref names. The immutable acceptance base is `frozen_base_sha`. The controller checks runner ancestry evidence for the starting tip and every merged source SHA captured in `unit_sources`. This job has no role sources: `sources` holds exactly one `unit` entry per unit in `unit_sources` and no `job` entry, and never name this job's own id.\n\nInput JSON:\n{payload}"
     )
 }
 

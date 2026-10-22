@@ -710,3 +710,209 @@ fn routing() -> RoleRouting {
         )]),
     }
 }
+
+/// Cut a one-unit need merge job for `n1` and return its id, if any queued.
+fn queue_need_merge(ctx: &crate::pump::host::Ctx, state: &mut State) -> Option<String> {
+    let targets = ctx.cfg.target_configs();
+    let batches = BTreeMap::from([(String::from("default"), 1)]);
+    let mut waiting =
+        BTreeMap::from([("default".to_owned(), VecDeque::from(["n1-u1".to_owned()]))]);
+    let started = dispatch_units(ctx, state, "merge", &targets, &batches, &mut waiting).unwrap();
+    started
+        .into_iter()
+        .find(|id| state.jobs[id].kind == "merge")
+}
+
+struct NeedMergeFixture {
+    _dir: tempfile::TempDir,
+    host: std::sync::Arc<crate::pump::host::FakeHost>,
+    ctx: crate::pump::host::Ctx,
+    state: State,
+}
+
+fn need_merge_fixture() -> NeedMergeFixture {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = PumpConfig::default();
+    config.branch = String::from("next");
+    let (base, host) = test_ctx(dir.path(), config);
+    let ctx = base.with_routing(routing());
+    let mut state = State::default();
+    add_need(&mut state, "n1", &["n1-u1"]);
+    active_branch(&mut state, "n1", BASE, BASE);
+    reply_unit_source(&host, "n1-u1");
+    let branch_ref = "refs/heads/vivi/need/n1";
+    host.reply(
+        &branch_ref_command(branch_ref),
+        0,
+        &format!("{BASE}\t{branch_ref}\n"),
+    );
+    NeedMergeFixture {
+        _dir: dir,
+        host,
+        ctx,
+        state,
+    }
+}
+
+impl NeedMergeFixture {
+    fn exceptions(&self) -> String {
+        std::fs::read_to_string(self.ctx.home.join("exceptions.txt")).unwrap_or_default()
+    }
+
+    /// Queue a merge, finish it with `sources_json` and apply it. The remote
+    /// need ref still reads as the starting tip unless `published` is set.
+    fn run_merge(&mut self, sources_json: &str, published: bool) -> String {
+        let id = queue_need_merge(&self.ctx, &mut self.state).expect("a merge job queues");
+        let branch_ref = "refs/heads/vivi/need/n1";
+        let sources = sources_json.replace("{JOB}", &id);
+        let proof = format!(
+            "runner source: refs/heads/vivi/unit/n1-u1-a1 {UNIT_SHA} 1\nrunner publish: pushed {branch_ref} {TIP} {TIP}\nrunner contains: {BASE} 1\n"
+        );
+        if published {
+            self.host.reply(
+                &branch_ref_command(branch_ref),
+                0,
+                &format!("{TIP}\t{branch_ref}\n"),
+            );
+        }
+        let receipt = format!(
+            "agent exit 0 in 2s\n{proof}PUMP_MERGE_RESULT={{\"version\":1,\"target\":\"default\",\"tip\":\"{TIP}\",\"shared_check_timeouts\":0,\"shared_check_timeout_retries\":0,\"shared_check_recoveries\":[],\"sources\":{sources}}}"
+        );
+        finish_job(&mut self.state, &id, receipt);
+        super::super::pool_dispatch::apply_dispatched(&self.ctx, &mut self.state);
+        id
+    }
+}
+
+const OWN_JOB_SOURCES: &str = r#"[{"kind":"unit","id":"n1-u1","status":"merged","why":"","detail":"merged","outside":[],"secs":0},{"kind":"job","id":"{JOB}","status":"merged","why":"","detail":"merged","outside":[],"secs":0}]"#;
+const STAGE_SOURCES: &str = r#"[{"kind":"unit","id":"n1-u1","status":"undecided","why":"shared-check-environment","detail":"stage 1 failed: env: python3.11 not found","outside":[],"secs":45}]"#;
+const BAD_SOURCES: &str = r#"[{"kind":"unit","id":"n1-u1","status":"merged","why":"","detail":"","outside":[],"secs":0},{"kind":"job","id":"some-other-job","status":"merged","why":"","detail":"","outside":[],"secs":0}]"#;
+
+#[test]
+fn a_job_entry_naming_the_running_job_itself_is_ignored() {
+    let mut fx = need_merge_fixture();
+    let id = fx.run_merge(OWN_JOB_SOURCES, true);
+
+    assert!(fx.state.jobs[&id].applied_at.is_some());
+    assert_eq!(fx.state.units["n1-u1"].status, Status::Merged);
+    assert_eq!(
+        need::get(&fx.state, "default", "n1")
+            .unwrap()
+            .unwrap()
+            .branch_tip_sha
+            .as_deref(),
+        Some(TIP)
+    );
+    assert!(!fx.exceptions().contains("need-merge-unverified"));
+}
+
+#[test]
+fn a_job_entry_naming_any_other_job_still_fails_validation_with_its_reason() {
+    let mut fx = need_merge_fixture();
+    let id = fx.run_merge(BAD_SOURCES, false);
+
+    assert!(fx.state.jobs[&id].applied_at.is_some());
+    assert_eq!(fx.state.units["n1-u1"].status, Status::Delivered);
+    let exceptions = fx.exceptions();
+    assert!(exceptions.contains("need-merge-unverified"), "{exceptions}");
+    assert!(
+        exceptions.contains("job source `some-other-job` was not requested"),
+        "{exceptions}"
+    );
+}
+
+#[test]
+fn an_undecided_unit_with_a_why_code_is_a_valid_receipt_and_returns_the_unit() {
+    let mut fx = need_merge_fixture();
+    let id = fx.run_merge(STAGE_SOURCES, true);
+
+    assert!(fx.state.jobs[&id].applied_at.is_some());
+    assert_eq!(fx.state.units["n1-u1"].status, Status::Delivered);
+    let exceptions = fx.exceptions();
+    assert!(!exceptions.contains("need-merge"), "{exceptions}");
+    assert!(
+        fx.host
+            .logs()
+            .iter()
+            .any(|line| line.starts_with("shared-check-environment n1-u1")),
+        "undecided path should log the why code"
+    );
+}
+
+#[test]
+fn the_third_consecutive_invalid_receipt_raises_one_exception_and_stops_requeuing() {
+    let mut fx = need_merge_fixture();
+    let first = fx.run_merge(BAD_SOURCES, false);
+    let second = fx.run_merge(BAD_SOURCES, false);
+    assert!(!fx.exceptions().contains("need-merge-receipt-invalid"));
+    let third = fx.run_merge(BAD_SOURCES, false);
+
+    let exceptions = fx.exceptions();
+    assert_eq!(exceptions.matches("need-merge-receipt-invalid").count(), 1);
+    for id in [&first, &second, &third] {
+        assert!(exceptions.contains(id.as_str()), "{exceptions}");
+    }
+    assert!(exceptions.contains("was not requested"), "{exceptions}");
+    assert_eq!(fx.state.units["n1-u1"].status, Status::Delivered);
+
+    assert!(queue_need_merge(&fx.ctx, &mut fx.state).is_none());
+
+    fx.state.needs.get_mut("n1").unwrap().revision = 2;
+    fx.state.units.get_mut("n1-u1").unwrap().revision = 2;
+    assert!(queue_need_merge(&fx.ctx, &mut fx.state).is_some());
+}
+
+#[test]
+fn a_valid_receipt_ends_the_invalid_receipt_streak() {
+    let mut fx = need_merge_fixture();
+    fx.run_merge(BAD_SOURCES, false);
+    fx.run_merge(BAD_SOURCES, false);
+    fx.run_merge(STAGE_SOURCES, true);
+    let branch = need::get(&fx.state, "default", "n1").unwrap().unwrap();
+    assert!(branch.invalid_receipts.is_empty());
+}
+
+#[test]
+fn the_need_merge_brief_names_no_job_entry_for_its_own_job() {
+    let mut fx = need_merge_fixture();
+    let id = queue_need_merge(&fx.ctx, &mut fx.state).unwrap();
+    let body = &fx.state.jobs[&id].body;
+    assert!(body.contains("This job has no role sources"));
+    assert!(body.contains("never name this job's own id"));
+    assert!(!body.contains("\"secs\":0},{\"kind\":\"job\""));
+}
+
+#[test]
+fn an_unchanged_stuck_disposition_is_logged_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), PumpConfig::default());
+    let mut state = State::default();
+    add_need(&mut state, "n1", &["n1-stuck"]);
+    active_branch(&mut state, "n1", BASE, BASE);
+    state.units.insert(
+        String::from("n1-stuck"),
+        unit("n1", Status::Stuck, 1, Some("unit/n1-stuck-a1")),
+    );
+
+    refresh_freezes(&ctx, &mut state).unwrap();
+    refresh_freezes(&ctx, &mut state).unwrap();
+    let recorded = |host: &crate::pump::host::FakeHost| {
+        host.logs()
+            .iter()
+            .filter(|line| line.starts_with("need unit disposition recorded"))
+            .count()
+    };
+    assert_eq!(recorded(&host), 1);
+
+    state
+        .units
+        .get_mut("n1-stuck")
+        .unwrap()
+        .history
+        .push(crate::pump::state::Attempt {
+            detail: String::from("proof failed again"),
+            ..Default::default()
+        });
+    refresh_freezes(&ctx, &mut state).unwrap();
+    assert_eq!(recorded(&host), 2);
+}

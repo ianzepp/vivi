@@ -160,6 +160,11 @@ pub struct NeedBranch {
     pub create_attempt: u32,
     /// Last initialization/collision explanation.
     pub error: Option<String>,
+    /// Plan revision to which `invalid_receipts` applies.
+    pub invalid_receipt_revision: u64,
+    /// One `job: reason` entry per consecutive unit merge job whose receipt
+    /// failed validation; cleared by the next valid receipt.
+    pub invalid_receipts: Vec<String>,
     /// Explicit, revision-bound evidence for stuck or replaced units.
     pub unit_dispositions: BTreeMap<String, NeedUnitDisposition>,
     /// External prerequisites already present in the plan when this base was frozen.
@@ -591,6 +596,56 @@ pub fn record_disposition(
     );
     write(st, record)?;
     Ok(())
+}
+
+/// Consecutive invalid unit merge receipts after which dispatch stops.
+pub const INVALID_RECEIPT_LIMIT: usize = 3;
+
+/// Record one more invalid unit merge receipt for this plan revision and return
+/// the consecutive entries so far, oldest first.
+pub fn record_invalid_receipt(
+    st: &mut State,
+    target: &str,
+    need: &str,
+    revision: u64,
+    entry: &str,
+) -> Result<Vec<String>, VivariumError> {
+    let mut record = require(st, target, need)?;
+    if record.invalid_receipt_revision != revision {
+        record.invalid_receipt_revision = revision;
+        record.invalid_receipts.clear();
+    }
+    record.invalid_receipts.push(entry.to_owned());
+    let entries = record.invalid_receipts.clone();
+    write(st, record)?;
+    Ok(entries)
+}
+
+/// End the invalid-receipt streak after a valid receipt.
+pub fn clear_invalid_receipts(
+    st: &mut State,
+    target: &str,
+    need: &str,
+) -> Result<(), VivariumError> {
+    let Some(mut record) = get(st, target, need)? else {
+        return Ok(());
+    };
+    if record.invalid_receipts.is_empty() {
+        return Ok(());
+    }
+    record.invalid_receipts.clear();
+    write(st, record)?;
+    Ok(())
+}
+
+impl NeedBranch {
+    /// Whether unit merges for this plan revision are held after repeated
+    /// invalid receipts; a new plan revision releases the hold.
+    #[must_use]
+    pub fn receipts_held(&self, revision: u64) -> bool {
+        self.invalid_receipt_revision == revision
+            && self.invalid_receipts.len() >= INVALID_RECEIPT_LIMIT
+    }
 }
 
 /// Whether every unit in this plan is terminally merged or explicitly no-defect.

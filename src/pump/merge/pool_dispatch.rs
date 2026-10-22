@@ -21,7 +21,7 @@ Run the configured formatter, every shared check, and each unit proof. When a ch
 
 Classify the result honestly. If the source branch merges cleanly against the refreshed target but conflicts only because another integration job moved the target, return `undecided` with `why=lane-race`. A timeout, index lock, provider problem, or conflict during runner publication is also `undecided`; it is not a unit defect and must not consume a hand attempt. A conflict or failing proof that is isolated to a source is `dropped` only after you have diagnosed it. If a publish or re-merge conflict is only in a configured generated/counter path after green checks, refresh the target, regenerate or re-ask, and retry without charging the source. After all checks pass, commit the final assigned tree yourself with a plain message describing the change (no task, need, unit, attempt or job identifiers and no branch or ref names; the runner refuses to publish commits whose messages contain them) and record its full candidate SHA. Do not push. After your clean exit, the privileged pool runner publishes the exact candidate only to the assigned `publish_ref`. A need-owned job must publish only to its assigned need branch; it must never publish its units to the shared integration ref. The controller accepts `merged` only when the runner receipt names this candidate and the host independently verifies the assigned remote ref. Never force, reset, or claim remote publication. The JSON `tip` is the candidate commit, not a claim about the later runner result.
 
-End your receipt with one minified JSON line prefixed exactly `PUMP_MERGE_RESULT=`. Use this shape: `{"version":1,"target":"<target>","tip":"<full candidate SHA>","sources":[{"kind":"unit","id":"<unit id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0},{"kind":"job","id":"<origin job id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0}]}`. Include every requested source exactly once. `outside` is the repository paths changed outside a unit's write scope; use an empty list for role branches. The result tip is the full SHA you committed for runner publication."#;
+End your receipt with one minified JSON line prefixed exactly `PUMP_MERGE_RESULT=`. Use this shape: `{"version":1,"target":"<target>","tip":"<full candidate SHA>","sources":[{"kind":"unit","id":"<unit id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0}]}`. Include every requested unit source exactly once. When `role_sources` is not empty, also add one `{"kind":"job","id":"<origin job id>","status":"merged|dropped|undecided","why":"<code or empty>","detail":"<diagnosis>","outside":[],"secs":0}` entry per listed role source, using that role source's `job_id`; never add a `job` entry for any other id, and never for this job itself. `outside` is the repository paths changed outside a unit's write scope; use an empty list for role branches. The result tip is the full SHA you committed for runner publication."#;
 
 pub(super) const MERGE_TIMEOUT_RULES: &str = r#"These retry rules refine the timeout sentence above. Diagnose every failing shared/scoped check and retry it exactly once on the same tree after that diagnosis. If one run fails and its immediate retry passes, continue as passing and include one `shared_check_recoveries` record with the check's stable name (or an empty name when none exists), command and first failure detail. A timeout (rc=124 or the timeout wrapper's kill) is infrastructure, not a source defect. If either attempt timed out and the retry did not pass, report every source as undecided with `why=shared-check-timeout` and a `detail` naming the command and timeout; do not treat a timeout as a source defect and do not open a repair unit. Only after a non-timeout check failure remains after its one retry, and you cannot repair it within write scope, isolate the defective source. Isolation among several sources is a last-resort diagnosis tool, not the default action. A solo check timeout during isolation is undecided (`why=bisect-check-timeout`), never clean or a culprit. Never open a quarantine repair for a timeout.
 
@@ -414,11 +414,34 @@ pub(super) fn valid_result(
     expected_units: &BTreeSet<String>,
     expected_jobs: &BTreeSet<String>,
 ) -> bool {
-    receipt.version == 1
-        && receipt.target == job.target.as_deref().unwrap_or_default()
-        && valid_sha(&receipt.tip)
-        && valid_sources(&receipt.sources, expected_units, expected_jobs)
-        && outcome.agent_success() == Some(true)
+    result_failure(receipt, job, outcome, expected_units, expected_jobs).is_none()
+}
+
+/// The first reason a parsed receipt does not describe this job, if any.
+pub(super) fn result_failure(
+    receipt: &MergeReceipt,
+    job: &PoolJob,
+    outcome: &jobs::JobOutcome,
+    expected_units: &BTreeSet<String>,
+    expected_jobs: &BTreeSet<String>,
+) -> Option<String> {
+    if receipt.version != 1 {
+        return Some(format!("receipt version {} is not 1", receipt.version));
+    }
+    let target = job.target.as_deref().unwrap_or_default();
+    if receipt.target != target {
+        return Some(format!(
+            "receipt target `{}` is not the job target `{target}`",
+            receipt.target
+        ));
+    }
+    if !valid_sha(&receipt.tip) {
+        return Some(format!("receipt tip `{}` is not a full SHA", receipt.tip));
+    }
+    if let Some(reason) = sources_failure(&receipt.sources, expected_units, expected_jobs) {
+        return Some(reason);
+    }
+    (outcome.agent_success() != Some(true)).then(|| String::from("agent did not exit cleanly"))
 }
 
 fn reject_job(ctx: &Ctx, st: &mut State, job: &PoolJob, why: &str, detail: &str) {
@@ -563,11 +586,12 @@ fn timeout_metrics(receipt: &MergeReceipt) -> Option<(u64, u64, u64)> {
     (retries <= timeouts).then_some((timeouts, retries, recoveries))
 }
 
-pub(super) fn valid_sources(
+/// The first reason the reported sources are not exactly the requested ones.
+pub(super) fn sources_failure(
     sources: &[SourceResult],
     units: &BTreeSet<String>,
     jobs: &BTreeSet<String>,
-) -> bool {
+) -> Option<String> {
     let retry_timed_out = sources
         .iter()
         .any(|source| source.why == "shared-check-timeout");
@@ -576,32 +600,50 @@ pub(super) fn valid_sources(
             .iter()
             .any(|source| source.status != "undecided" || source.why != "shared-check-timeout")
     {
-        return false;
+        return Some(String::from(
+            "a shared-check-timeout receipt must report every source undecided with that why",
+        ));
     }
     let mut seen_units = BTreeSet::new();
     let mut seen_jobs = BTreeSet::new();
     for source in sources {
+        let label = format!("{} source `{}`", source.kind, source.id);
         if !matches!(source.status.as_str(), "merged" | "dropped" | "undecided") {
-            return false;
+            return Some(format!("{label} has unknown status `{}`", source.status));
         }
         if source.status != "merged" && (source.why.is_empty() || source.detail.is_empty()) {
-            return false;
+            return Some(format!(
+                "{label} is {} without both a why code and a detail",
+                source.status
+            ));
         }
-        match source.kind.as_str() {
-            "unit" if units.contains(&source.id) => {
-                if !seen_units.insert(source.id.clone()) {
-                    return false;
-                }
-            }
-            "job" if jobs.contains(&source.id) => {
-                if !seen_jobs.insert(source.id.clone()) {
-                    return false;
-                }
-            }
-            _ => return false,
+        let (known, seen) = match source.kind.as_str() {
+            "unit" => (units, &mut seen_units),
+            "job" => (jobs, &mut seen_jobs),
+            kind => return Some(format!("{label} has unknown kind `{kind}`")),
+        };
+        if !known.contains(&source.id) {
+            return Some(format!("{label} was not requested"));
+        }
+        if !seen.insert(source.id.clone()) {
+            return Some(format!("{label} is reported more than once"));
         }
     }
-    &seen_units == units && &seen_jobs == jobs
+    if &seen_units != units {
+        return Some(missing_sources("unit", units, &seen_units));
+    }
+    if &seen_jobs != jobs {
+        return Some(missing_sources("job", jobs, &seen_jobs));
+    }
+    None
+}
+
+fn missing_sources(kind: &str, expected: &BTreeSet<String>, seen: &BTreeSet<String>) -> String {
+    let missing: Vec<&str> = expected.difference(seen).map(String::as_str).collect();
+    format!(
+        "requested {kind} sources not reported: {}",
+        missing.join(",")
+    )
 }
 
 pub(super) fn published_integration_tip(

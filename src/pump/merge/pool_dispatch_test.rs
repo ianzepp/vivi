@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     MERGE_BRIEF, MERGE_TIMEOUT_RULES, MergeReceipt, SourceResult, apply_source, parse_receipt,
-    published_integration_tip, record_shared_timeout_exception, timeout_status_line, valid_sha,
-    valid_sources,
+    published_integration_tip, record_shared_timeout_exception, sources_failure,
+    timeout_status_line, valid_sha,
 };
 use crate::pump::config::{Generated, PumpConfig};
 use crate::pump::host::test_ctx;
@@ -11,6 +11,14 @@ use crate::pump::jobs::{JobOutcome, JobSpec, JobStatus, PoolJob};
 use crate::pump::merge::{dispatch_pool, target_write_blocked};
 use crate::pump::state::{GateRecord, State, Status, Unit};
 use crate::routing::{RoleRouting, RoutedPool, RoutedRole};
+
+fn valid_sources(
+    sources: &[SourceResult],
+    units: &BTreeSet<String>,
+    jobs: &BTreeSet<String>,
+) -> bool {
+    sources_failure(sources, units, jobs).is_none()
+}
 
 #[test]
 fn merge_receipt_parses_the_structured_worker_result() {
@@ -515,4 +523,11 @@ fn accepted_shared_timeout_result_requeues_without_opening_a_repair() {
     assert_eq!(state.units["u1"].status, Status::Delivered);
     assert_eq!(state.units["u1"].repairs, None);
     assert_eq!(state.units["u1"].quarantine, None);
+}
+
+#[test]
+fn merge_brief_shows_a_job_entry_only_for_listed_role_sources() {
+    assert!(!MERGE_BRIEF.contains("\"secs\":0},{\"kind\":\"job\""));
+    assert!(MERGE_BRIEF.contains("When `role_sources` is not empty"));
+    assert!(MERGE_BRIEF.contains("never for this job itself"));
 }
