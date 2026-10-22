@@ -93,7 +93,10 @@ re-issue it against the need's open pump record. The saved state gains
 `board.actions` (applied operator actions) and `board.records` (the record each
 need last ran under) and loses `board.replan`; an older state.json still loads.
 A pump on 18.x cannot open a schema 8 store ("newer than this binary"), so
-upgrade the pump and its CLI together.
+upgrade the pump and its CLI together. The same holds for vivi-server: a
+server built on vivi 18.x reads `pump.db` for its pump health, pump control
+and gate tools, so move to vivi-server 1.8.0 (built on 19.0.0) at the same
+time.
 
 ## Removed
 
