@@ -163,6 +163,21 @@ async fn call_tool(
         if name == "pump" {
             return pump_tool(&store, &project_id, &arguments);
         }
+        if name == "pump_control" {
+            let Some(root) = live::hosted_root(&store, &project_id) else {
+                return Err(tools::ToolError::new(
+                    "pump_control is only available on a hosted project".to_owned(),
+                ));
+            };
+            return live::pump_control(
+                &limiter,
+                &project_id,
+                &root,
+                &identity,
+                hosted_as.as_deref(),
+                &arguments,
+            );
+        }
         if let Some(requested) = &hosted_as {
             if let Some(root) = live::hosted_root(&store, &project_id) {
                 if live::handles(&name) {
@@ -404,6 +419,14 @@ fn tools_list() -> Value {
                     "since": { "type": "integer", "minimum": 0, "description": "Epoch seconds, a previous answer's as_of" },
                     "stale_after": { "type": "integer", "minimum": 1, "description": "Seconds without a tick before a running pump is stalled (default 30 ticks, at least 600)" }
                 },
+                "additionalProperties": false
+            })),
+            tool("pump_control", "Hosted projects only, operator only. Pause, resume, stop, or start the project's pump, as `vivi pump pause|resume|stop|start` do (`start` is `resume`: both set the mode to running). Needs the operator's API key: minted by the host's own member and acting as a role of kind operator; a member token or any other key is refused. Returns the resulting control state.", json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["pause", "resume", "stop", "start"] }
+                },
+                "required": ["action"],
                 "additionalProperties": false
             })),
             tool("board", "Hosted projects only (API key). The project board as `vivi board --json`: open tasks, needs and wants per role, totals, and registered goals. Optional graph and pump views.", json!({

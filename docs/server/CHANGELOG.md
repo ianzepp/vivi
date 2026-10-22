@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **MCP `pump_control`.** Operator-only pump control on a hosted project:
+  `action` is `pause`, `resume`, `stop`, or `start` (`start` is `resume`, as
+  in the CLI), through `vivi::pump::control::set_project_mode`. The answer is
+  the resulting control state. A member token, a key another member minted, and
+  a key acting as a role that is not of kind `operator` are refused.
+
 ## 1.6.0 — 2026-10-21
 
 Pump health: a read-only health verdict over a hosted project's pump, so a

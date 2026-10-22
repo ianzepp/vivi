@@ -342,8 +342,21 @@ async fn initialize_and_tools_list() {
     assert_eq!(
         names,
         vec![
-            "overview", "list", "show", "thread", "send", "reply", "done", "reopen", "memo",
-            "graph", "mark", "unmark", "pump", "board"
+            "overview",
+            "list",
+            "show",
+            "thread",
+            "send",
+            "reply",
+            "done",
+            "reopen",
+            "memo",
+            "graph",
+            "mark",
+            "unmark",
+            "pump",
+            "pump_control",
+            "board"
         ]
     );
 }

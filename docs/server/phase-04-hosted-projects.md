@@ -125,6 +125,12 @@ mailspace).
 - **`for`.** `list` reads the acting identity's folders, as
   `vivi need list --for <identity>` does; its `for` argument names another
   role or `all`. `board` takes `for` the same way.
+- **`pump_control`.** Operator-only: `action` is `pause`, `resume`, `stop`, or
+  `start` (the CLI's `start` is `resume`), through
+  `vivi::pump::control::set_project_mode`; the answer is the control state
+  (`mode`, `shutdown_requested`). The key must be minted by the host's own
+  member (the creator whose mailspace id is the hosted mailspace's) and act as
+  a role of kind `operator`; a member token or any other key is refused.
 - **Live reads.** `overview`, `list` (kind, status, `to`, `from`, `marks`,
   `for`; default 50, at most 100), `show`, `thread`, `graph` (the backlog
   graph) and `board` (`Mailspace::board` as JSON, host root omitted) query the

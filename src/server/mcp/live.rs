@@ -15,6 +15,7 @@
 //! Each call opens the mailspace afresh (a tool call is short-lived and the
 //! pump is another process on the same files).
 
+mod pump;
 mod read;
 mod write;
 
@@ -28,6 +29,8 @@ use crate::projects::ProjectStore;
 use crate::safety::RateLimiter;
 
 use super::tools::ToolError;
+
+pub(super) use pump::pump_control;
 
 /// The tools a hosted project answers through the library.
 pub(super) fn handles(name: &str) -> bool {
