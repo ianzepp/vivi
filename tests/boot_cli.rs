@@ -383,7 +383,10 @@ fn boot_reports_the_path_of_an_unreadable_goal() {
 
 fn append_pump_and_pool(root: &Path, pool_root: &Path) {
     let config = root.join(".vivi/mailspace.toml");
-    let mut text = fs::read_to_string(&config).unwrap();
+    // `mailspace init` writes a starter [pump]; this test supplies its own.
+    let mut text = fs::read_to_string(&config)
+        .unwrap()
+        .replace(vivi::mailspace::STARTER_PUMP, "");
     text.push_str(&format!(
         "\n[pump]\nbranch = \"next\"\ncommitter_name = \"Test\"\ncommitter_email = \"test@example.com\"\n\
          [pump.dispatch]\nlanes = [{{ model = \"test/model\", cap = 1 }}]\n\

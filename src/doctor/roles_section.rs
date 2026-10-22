@@ -377,14 +377,29 @@ pub(super) fn pump_role_findings(config: &crate::mailspace::MailspaceConfig) -> 
                 .map(|issue| issue.message.as_str())
                 .collect::<Vec<_>>()
                 .join("; ");
+            let wrong = check
+                .issues
+                .iter()
+                .any(|issue| issue.severity == crate::routing::Severity::Error);
             let fix = if check.name.ends_with(" model") {
                 MODEL_FIX
             } else {
                 PUMP_ROLES_FIX
             };
-            Finding::fail(SECTION, &name, &message, fix)
+            if wrong {
+                Finding::fail(SECTION, &name, &message, fix)
+            } else {
+                not_ready_finding(&name, &message, fix)
+            }
         })
         .collect()
+}
+
+/// A requirement the project has not set up yet. Doctor reports it without
+/// failing: a freshly initialised project is not ready, not broken. A
+/// skipped finding carries no fix field, so the fix goes in the detail.
+fn not_ready_finding(name: &str, message: &str, fix: &str) -> Finding {
+    Finding::skipped(SECTION, name, &format!("not ready: {message} (fix: {fix})"))
 }
 
 /// Pump-configured mailspaces need an active merge role bound to a real pool.
@@ -394,8 +409,7 @@ pub(super) fn merge_pool_finding(views: &[RoleView], pool_names: &[&str]) -> Fin
         .iter()
         .find(|view| view.name.eq_ignore_ascii_case("merge") || kind_is(view, "merge"))
     else {
-        return Finding::fail(
-            SECTION,
+        return not_ready_finding(
             NAME,
             "no merge role is configured for durable merge jobs",
             MERGE_POOL_FIX,
@@ -413,8 +427,7 @@ pub(super) fn merge_pool_finding(views: &[RoleView], pool_names: &[&str]) -> Fin
             &format!("merge role {} names unknown pool {pool}", merge.name),
             MERGE_POOL_FIX,
         ),
-        None => Finding::fail(
-            SECTION,
+        None => not_ready_finding(
             NAME,
             &format!(
                 "merge role {} has no pool; durable merge jobs cannot dispatch",

@@ -1,8 +1,7 @@
 //! Pump configuration (the `[pump]` table of `mailspace.toml`).
 
-use crate::VivariumError;
 use crate::pump::alarm::AlarmConfig;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use self::config_workspace::PumpWorkspace;
@@ -10,8 +9,10 @@ use self::config_workspace::PumpWorkspace;
 #[path = "config_workspace.rs"]
 pub mod config_workspace;
 mod planner;
+mod validate;
 
 pub use planner::PlannerConfig;
+pub use validate::{Findings, Missing};
 
 /// Pump settings (the `[pump]` table in `mailspace.toml`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -600,76 +601,6 @@ impl Default for GateConfig {
 }
 
 impl PumpConfig {
-    /// Check the config against itself and the known pool names.
-    ///
-    /// `pools` holds the names of the mailspace's `[pools.<name>]` tables.
-    ///
-    /// `project` is the base a relative `hand_rules` path resolves against.
-    /// Empty `[pump.dispatch] lanes` is an error: pass [`Self::validate_for`]
-    /// when a role assigns a pool so capacity can come from that pool.
-    ///
-    /// # Errors
-    /// [`VivariumError::Config`] naming every violated key when a rule fails.
-    pub fn validate(&self, project: &Path, pools: &[String]) -> Result<(), VivariumError> {
-        self.validate_for(project, pools, false)
-    }
-
-    /// Like [`Self::validate`], but empty `[pump.dispatch] lanes` is allowed
-    /// when the hand role has a pool; capacity comes from its pool's slots and
-    /// optional caps, while kind-pool routing and `default_kind` are optional.
-    ///
-    /// # Errors
-    /// [`VivariumError::Config`] naming every violated key when a rule fails.
-    pub fn validate_for(
-        &self,
-        project: &Path,
-        pools: &[String],
-        hand_role_pool: bool,
-    ) -> Result<(), VivariumError> {
-        let mut bad: Vec<String> = Vec::new();
-        if self.committer_name.trim().is_empty() {
-            bad.push("[pump] committer_name must not be empty".into());
-        }
-        if self.committer_email.trim().is_empty() {
-            bad.push("[pump] committer_email must not be empty".into());
-        }
-        if let Some(path) = self.hand_rules_path(project)
-            && let Err(err) = std::fs::read_to_string(&path)
-        {
-            bad.push(format!(
-                "[pump] hand_rules `{}` cannot be read: {err}",
-                path.display()
-            ));
-        }
-        if self.tick == 0 {
-            bad.push("[pump] tick must be >= 1".into());
-        }
-        self.validate_workspace(&mut bad);
-        self.validate_dispatch(pools, hand_role_pool, &mut bad);
-        if self.targets.is_empty() {
-            if self.branch.is_empty() {
-                bad.push("[pump] branch must not be empty".into());
-            }
-            self.validate_merge_and_gate(pools, &mut bad);
-        } else {
-            let mut target_paths = BTreeSet::new();
-            for (id, target) in self.target_configs() {
-                let normalized: PathBuf = Path::new(&target.path).components().collect();
-                if !target_paths.insert(normalized) {
-                    bad.push(format!(
-                        "[pump.targets.{id}] path duplicates another configured repository target"
-                    ));
-                }
-                validate_target(&id, &target, pools, &mut bad);
-            }
-        }
-        if bad.is_empty() {
-            Ok(())
-        } else {
-            Err(VivariumError::Config(bad.join("; ")))
-        }
-    }
-
     /// The pump home: `home` (relative paths join `project`) or
     /// `<project>/.vivi/pump`.
     #[must_use]
@@ -741,65 +672,6 @@ impl PumpConfig {
             .unwrap_or_default()
     }
 
-    fn validate_dispatch(&self, pools: &[String], hand_role_pool: bool, bad: &mut Vec<String>) {
-        if self.dispatch.lanes.is_empty() && !hand_role_pool {
-            bad.push("[pump.dispatch] lanes must not be empty".into());
-        }
-        for lane in &self.dispatch.lanes {
-            if lane.cap == 0 {
-                bad.push(format!(
-                    "[pump.dispatch] lanes: lane `{}` needs cap >= 1",
-                    lane.model
-                ));
-            }
-            if lane.model.is_empty() {
-                bad.push("[pump.dispatch] lanes: lane model must not be empty".into());
-            }
-        }
-        if self.dispatch.max_attempts == 0 {
-            bad.push("[pump.dispatch] max_attempts must be >= 1".into());
-        }
-        if self.dispatch.budget == 0 {
-            bad.push("[pump.dispatch] budget must be >= 1".into());
-        }
-        if self.dispatch.per_tick == 0 {
-            bad.push("[pump.dispatch] per_tick must be >= 1".into());
-        }
-        self.validate_kinds(pools, hand_role_pool, bad);
-    }
-
-    fn validate_kinds(&self, pools: &[String], hand_role_pool: bool, bad: &mut Vec<String>) {
-        for (name, kind) in &self.dispatch.kinds {
-            if !hand_role_pool {
-                if kind.pools.is_empty() {
-                    bad.push(format!(
-                        "[pump.dispatch.kinds.{name}] pools must not be empty"
-                    ));
-                }
-                for pool in &kind.pools {
-                    if !known(pools, pool) {
-                        bad.push(format!(
-                            "[pump.dispatch.kinds.{name}] pools names unknown pool `{pool}`"
-                        ));
-                    }
-                }
-            }
-            if kind.max == Some(0) {
-                bad.push(format!("[pump.dispatch.kinds.{name}] max must be >= 1"));
-            }
-        }
-        if !hand_role_pool && !self.dispatch.kinds.is_empty() {
-            let default = &self.dispatch.default_kind;
-            if default.is_empty() {
-                bad.push("[pump.dispatch] default_kind must be set when kinds is non-empty".into());
-            } else if !self.dispatch.kinds.contains_key(default) {
-                bad.push(format!(
-                    "[pump.dispatch] default_kind names undefined kind `{default}`"
-                ));
-            }
-        }
-    }
-
     /// The name of the kind a unit's `tools` value selects: `tools`, or
     /// `default_kind` when `tools` is empty.
     #[must_use]
@@ -816,170 +688,6 @@ impl PumpConfig {
     pub fn kind_of(&self, tools: &str) -> Option<&Kind> {
         self.dispatch.kinds.get(self.kind_name(tools))
     }
-
-    /// `[pump.workspace] lane_gib`, when set, must be a plausible lane disk.
-    fn validate_workspace(&self, bad: &mut Vec<String>) {
-        if let Some(gib) = self.workspace.lane_gib
-            && !(1..=1024).contains(&gib)
-        {
-            bad.push(format!(
-                "[pump.workspace] lane_gib must be between 1 and 1024, got {gib}"
-            ));
-        }
-    }
-
-    fn validate_merge_and_gate(&self, pools: &[String], bad: &mut Vec<String>) {
-        if self.merge.batch == 0 {
-            bad.push("[pump.merge] batch must be >= 1".into());
-        }
-        if self.merge.lanes == 0 {
-            bad.push("[pump.merge] lanes must be >= 1".into());
-        }
-        if self
-            .merge
-            .repair_budget
-            .is_some_and(|budget| budget == 0 || budget < self.merge.proof_timeout)
-        {
-            bad.push("[pump.merge] repair_budget must be >= proof_timeout and >= 1".into());
-        }
-        for entry in &self.merge.generated {
-            if entry.paths.is_empty() {
-                bad.push("[[pump.merge.generated]] paths must not be empty".into());
-            }
-            if entry.regenerate.trim().is_empty() {
-                bad.push("[[pump.merge.generated]] regenerate must not be empty".into());
-            }
-        }
-        validate_checks_for("[pump.merge.checks_for]", &self.merge.checks_for, bad);
-        if self.promote && !self.main.is_empty() && self.merge.shared_checks.is_empty() {
-            bad.push(
-                "[pump.merge] shared_checks must not be empty while promotion is enabled \
-                 (promote = true and main set)"
-                    .into(),
-            );
-        }
-        if self.gate.command.trim().is_empty() {
-            bad.push("[pump.gate] command must not be empty".into());
-        }
-        if self.gate.results_dir.is_some() && self.gate.results_wait_seconds == 0 {
-            bad.push("[pump.gate] results_dir needs results_wait_seconds >= 1".into());
-        }
-        for name in &self.gate.pools {
-            if !known(pools, name) {
-                bad.push(format!("[pump.gate] pools names unknown pool `{name}`"));
-            }
-        }
-    }
-}
-
-fn validate_target(id: &str, target: &PumpTarget, pools: &[String], bad: &mut Vec<String>) {
-    let prefix = format!("[pump.targets.{id}]");
-    if !valid_target_id(id) {
-        bad.push(format!(
-            "{prefix} id must use lowercase letters, digits and hyphens"
-        ));
-    }
-    let path = Path::new(&target.path);
-    if target.path.is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|part| part == std::path::Component::ParentDir)
-    {
-        bad.push(format!(
-            "{prefix} path must be a workspace-relative path without `..`"
-        ));
-    }
-    if target.branch.trim().is_empty() {
-        bad.push(format!("{prefix} branch must not be empty"));
-    }
-    if target.github_repo.as_deref().is_some_and(str::is_empty) {
-        bad.push(format!("{prefix} github_repo must not be empty when set"));
-    }
-    let merge = target.merge.as_ref();
-    if merge.is_some_and(|merge| merge.batch == 0) {
-        bad.push(format!("{prefix}.merge batch must be >= 1"));
-    }
-    if merge.is_some_and(|merge| merge.lanes == 0) {
-        bad.push(format!("{prefix}.merge lanes must be >= 1"));
-    }
-    if merge.is_some_and(|merge| {
-        merge
-            .repair_budget
-            .is_some_and(|budget| budget == 0 || budget < merge.proof_timeout)
-    }) {
-        bad.push(format!(
-            "{prefix}.merge repair_budget must be >= proof_timeout and >= 1"
-        ));
-    }
-    validate_target_generated(id, merge, bad);
-    if target.promote
-        && !target.main.is_empty()
-        && merge.is_some_and(|merge| merge.shared_checks.is_empty())
-    {
-        bad.push(format!(
-            "{prefix}.merge shared_checks must not be empty while promotion is enabled"
-        ));
-    }
-    if let Some(gate) = &target.gate {
-        validate_target_gate(id, gate, pools, bad);
-    } else {
-        bad.push(format!("{prefix}.gate command must not be empty"));
-    }
-}
-
-fn validate_target_generated(id: &str, merge: Option<&MergeConfig>, bad: &mut Vec<String>) {
-    for entry in merge.map(|merge| merge.generated.as_slice()).unwrap_or(&[]) {
-        if entry.paths.is_empty() {
-            bad.push(format!(
-                "[pump.targets.{id}.merge] generated paths must not be empty"
-            ));
-        }
-        if entry.regenerate.trim().is_empty() {
-            bad.push(format!(
-                "[pump.targets.{id}.merge] generated regenerate must not be empty"
-            ));
-        }
-    }
-    let scope = format!("[pump.targets.{id}.merge.checks_for]");
-    let empty = BTreeMap::new();
-    validate_checks_for(
-        &scope,
-        merge.map(|merge| &merge.checks_for).unwrap_or(&empty),
-        bad,
-    );
-}
-
-fn validate_target_gate(id: &str, gate: &GateConfig, pools: &[String], bad: &mut Vec<String>) {
-    let prefix = format!("[pump.targets.{id}.gate]");
-    if gate.command.trim().is_empty() {
-        bad.push(format!("{prefix} command must not be empty"));
-    }
-    if gate.results_dir.is_some() && gate.results_wait_seconds == 0 {
-        bad.push(format!(
-            "{prefix} results_dir needs results_wait_seconds >= 1"
-        ));
-    }
-    for name in &gate.pools {
-        if !known(pools, name) {
-            bad.push(format!("{prefix} pools names unknown pool `{name}`"));
-        }
-    }
-}
-
-fn validate_checks_for(scope: &str, table: &BTreeMap<String, Vec<String>>, bad: &mut Vec<String>) {
-    for (glob, cmds) in table {
-        if cmds.is_empty() || cmds.iter().any(|cmd| cmd.trim().is_empty()) {
-            bad.push(format!("{scope} '{glob}' must have non-empty commands"));
-        }
-    }
-}
-
-fn valid_target_id(id: &str) -> bool {
-    !id.is_empty()
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// An absolute path stands alone; a relative one joins `project`. `~` is not

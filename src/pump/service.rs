@@ -43,9 +43,11 @@ pub fn add(project: &Path, change: FlagChange) -> Result<(), VivariumError> {
     let root = mailspace.root.canonicalize()?;
     let current = registry::load()?.get(&root);
     let wanted = change.apply(current.unwrap_or_default());
-    if wanted.pump {
-        validate_for_pump(&mailspace)?;
-    }
+    let not_ready = if wanted.pump {
+        validate_for_pump(&mailspace)?
+    } else {
+        None
+    };
     let changed = registry::update(|registry| Ok(registry.set(root.clone(), wanted)))?;
     let verb = match (current, changed) {
         (None, _) => "registered",
@@ -53,24 +55,28 @@ pub fn add(project: &Path, change: FlagChange) -> Result<(), VivariumError> {
         (Some(_), false) => "already registered",
     };
     println!("{verb} {} {}", root.display(), describe(wanted));
+    if let Some(summary) = not_ready {
+        println!("{summary} (the pump holds until these are supplied)");
+    }
     Ok(())
 }
 
-fn validate_for_pump(mailspace: &crate::mailspace::Mailspace) -> Result<(), VivariumError> {
-    let pump = mailspace.config.pump.as_ref().ok_or_else(|| {
-        VivariumError::Config(format!(
+/// Refuse a project whose pump config is wrong. A project that is only
+/// missing items is not refused: its pump holds until they are supplied, so
+/// registering a freshly initialised project is fine. Returns the not-ready
+/// summary for the caller to show.
+fn validate_for_pump(
+    mailspace: &crate::mailspace::Mailspace,
+) -> Result<Option<String>, VivariumError> {
+    if mailspace.config.pump.is_none() {
+        return Err(VivariumError::Config(format!(
             "{} has no [pump] configuration",
             mailspace.root.display()
-        ))
-    })?;
-    let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let role_pool = crate::pump::run::hand_role_pool(mailspace, pump);
-    pump.validate_for(&mailspace.root, &pools, role_pool)?;
-    let roster = crate::pump::run::identity_issues(mailspace, pump);
-    if !roster.is_empty() {
-        return Err(VivariumError::Config(roster.join("; ")));
+        )));
     }
-    crate::routing::require_ok(&crate::routing::validate(&mailspace.config))
+    let issues = super::readiness::assess(mailspace);
+    crate::routing::require_ok(&issues)?;
+    Ok(crate::routing::not_ready_summary(&issues))
 }
 
 fn describe(flags: Flags) -> String {

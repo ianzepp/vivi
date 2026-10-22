@@ -299,6 +299,8 @@ fn scaffold() -> Rig {
     let config_path = project.join(".vivi/mailspace.toml");
     let old = fs::read_to_string(&config_path).unwrap();
     let mut parsed: toml::Value = toml::from_str(&old).unwrap();
+    // `mailspace init` writes a starter [pump]; this test supplies its own.
+    parsed.as_table_mut().unwrap().remove("pump");
     let additions = format!(
         "\n[pump]\nhome = {}\nrepo = {}\nremote = \"origin\"\nremote_url = {}\nbranch = \"next\"\nmain = \"main\"\npromote = false\ntick = 1\ncommitter_name = \"Survival Test\"\ncommitter_email = \"survival@localhost\"\nfrom = \"mind\"\nto = \"hand\"\nreply_from = \"mind\"\n\n[pump.board]\nmark = \"\"\nfrom = []\npull = false\n\n[pump.dispatch]\ndefault_kind = \"unit\"\nper_tick = 1\nlanes = [{{ model = \"standin\", cap = 1 }}]\n\n[pump.dispatch.kinds.unit]\npools = [\"p\"]\n\n[pump.gate]\ncommand = \"true\"\npools = [\"p\"]\n\n[pump.merge]\nshared_checks = [\"true\"]\n\n[pools.p]\nprovider = \"local\"\nslots = 16\n\n[pools.p.bands]\nP2 = [{{ model = \"standin\", reasoning = \"low\" }}]\n\n[pools.p.local]\nroot = {}\nworktree_of = {}\n\n[pools.p.harness]\nname = \"standin\"\nrun = \"bash '{}' {{brief}}\"\nmodels = [\"standin\"]\nenv = [\"VIVI_TEST_MARKERS\", \"VIVI_TEST_UNIT_ID\", \"VIVI_TEST_TIP\"]\n\n[pools.p.committer]\nname = \"Survival Test\"\nemail = \"survival@localhost\"\n",
         toml_string(&project.join(".vivi/pump-home")),

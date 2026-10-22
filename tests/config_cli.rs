@@ -62,6 +62,14 @@ pool = "glm"
 model = "P2-S0"
 
 [[identities]]
+name = "operator"
+kind = "operator"
+
+[[identities]]
+name = "mind"
+kind = "mind"
+
+[[identities]]
 name = "pump-planner"
 kind = "planner"
 pool = "glm"
@@ -99,6 +107,7 @@ cap = 1
 pools = ["glm"]
 [pump.merge]
 lanes = 2
+shared_checks = ["true"]
 [pump.gate]
 command = "true"
 pools = ["glm"]
@@ -301,4 +310,84 @@ promote = true
     assert_eq!(json["roles"][0]["role"], "hand");
     assert_eq!(json["roles"][0]["pool"], "glm");
     assert_eq!(json["roles"][0]["source"], "role.pool");
+}
+
+fn init_project() -> tempfile::TempDir {
+    let dir = tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&["mailspace", "init", "--project", root]));
+    dir
+}
+
+#[test]
+fn mailspace_init_writes_a_starter_pump_table() {
+    let dir = init_project();
+    let text = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    assert!(text.contains("\n[pump]\n"), "{text}");
+    assert!(text.contains("[pump.gate]"), "{text}");
+    assert!(text.contains("# Starter pump configuration."), "{text}");
+}
+
+#[test]
+fn a_second_init_does_not_add_a_pump_table_to_an_existing_mailspace() {
+    let dir = project_with("name = \"legacy\"\n");
+    let root = dir.path().to_str().unwrap();
+    assert_success(&vivi(&["mailspace", "init", "--project", root]));
+    let text = fs::read_to_string(dir.path().join(".vivi/mailspace.toml")).unwrap();
+    assert!(!text.contains("[pump]"), "{text}");
+}
+
+#[test]
+fn config_validate_says_not_ready_and_exits_3_on_a_fresh_project() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert_eq!(out.status.code(), Some(3), "{}", stdout(&out));
+    let text = stdout(&out);
+    assert!(text.contains("not ready: "), "{text}");
+    assert!(text.contains("item(s) missing"), "{text}");
+    assert!(text.contains("- pump.gate.command:"), "{text}");
+    assert!(text.contains("- hand pool:"), "{text}");
+    assert!(!text.contains("error:"), "{text}");
+}
+
+#[test]
+fn config_validate_json_marks_missing_items_not_ready() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--json", "--project", root]);
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let gate = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["item"] == "pump.gate.command")
+        .unwrap_or_else(|| panic!("{rows}"));
+    assert_eq!(gate["severity"], "not_ready");
+}
+
+#[test]
+fn config_validate_still_fails_with_exit_1_on_a_wrong_value() {
+    let dir = init_project();
+    let root = dir.path().to_str().unwrap();
+    let path = dir.path().join(".vivi/mailspace.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, text.replace("[pump]\n", "[pump]\ntick = 0\n")).unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("tick must be >= 1"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).contains("not ready: "), "{}", stdout(&out));
+}
+
+#[test]
+fn config_validate_exits_0_for_a_project_without_a_pump() {
+    let dir = project_with("name = \"legacy\"\n");
+    let root = dir.path().to_str().unwrap();
+    let out = vivi(&["config", "validate", "--project", root]);
+    assert_success(&out);
 }

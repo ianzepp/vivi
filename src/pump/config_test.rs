@@ -1067,3 +1067,75 @@ fn validate_rejects_checks_for_with_blank_commands() {
         );
     }
 }
+
+#[test]
+fn findings_report_absent_items_apart_from_wrong_values() {
+    let found = PumpConfig::default().findings_for(Path::new("."), &[], false);
+    assert!(found.errors.is_empty(), "{:?}", found.errors);
+    let names: Vec<&str> = found
+        .missing
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect();
+    for expected in [
+        "pump.committer_name",
+        "pump.committer_email",
+        "pump.branch",
+        "hand pool",
+        "pump.merge.shared_checks",
+        "pump.gate.command",
+    ] {
+        assert!(names.contains(&expected), "{expected} not in {names:?}");
+    }
+}
+
+#[test]
+fn findings_keep_wrong_values_as_errors_and_report_nothing_missing() {
+    let mut cfg = valid();
+    cfg.tick = 0;
+    cfg.gate.pools = vec![String::from("nowhere")];
+    let found = cfg.findings_for(Path::new("."), &pool_names(), false);
+    assert!(found.missing.is_empty(), "{:?}", found.missing);
+    assert_eq!(found.errors.len(), 2, "{:?}", found.errors);
+    assert!(found.errors.iter().any(|e| e.contains("tick")));
+    assert!(found.errors.iter().any(|e| e.contains("unknown pool")));
+}
+
+#[test]
+fn findings_for_a_complete_config_are_clean() {
+    let found = valid().findings_for(Path::new("."), &pool_names(), false);
+    assert!(found.is_clean(), "{found:?}");
+}
+
+#[test]
+fn a_hand_role_pool_makes_the_dispatch_lanes_optional() {
+    let mut cfg = valid();
+    cfg.dispatch.lanes.clear();
+    let without = cfg.findings_for(Path::new("."), &pool_names(), false);
+    assert!(without.missing.iter().any(|item| item.name == "hand pool"));
+    let with = cfg.findings_for(Path::new("."), &pool_names(), true);
+    assert!(with.is_clean(), "{with:?}");
+}
+
+#[test]
+fn target_level_gaps_are_missing_items_not_errors() {
+    let mut cfg = valid();
+    cfg.gate.command = String::new();
+    cfg.targets.insert(
+        String::from("app"),
+        PumpTarget {
+            path: String::from("app"),
+            ..PumpTarget::default()
+        },
+    );
+    let found = cfg.findings_for(Path::new("."), &pool_names(), false);
+    assert!(found.errors.is_empty(), "{:?}", found.errors);
+    let names: Vec<&str> = found
+        .missing
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect();
+    for expected in ["pump.targets.app.branch", "pump.targets.app.gate.command"] {
+        assert!(names.contains(&expected), "{expected} not in {names:?}");
+    }
+}

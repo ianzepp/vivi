@@ -101,7 +101,8 @@ pub fn default_stale_after(tick_secs: u64) -> u64 {
 /// # Errors
 /// Returns [`VivariumError`] when no mailspace is found at `project`. Every
 /// pump-side problem (no `[pump]` table, no database, a schema this binary
-/// does not read) is an `unknown` verdict, not an error.
+/// does not read, a project that is not ready) is an `unknown` verdict, not
+/// an error.
 pub fn health(project: &Path, opts: &HealthOptions) -> Result<PumpHealth, VivariumError> {
     let mailspace = Mailspace::discover(Some(project))?;
     let now = opts.now.unwrap_or_else(epoch_now);
@@ -123,7 +124,34 @@ pub fn health(project: &Path, opts: &HealthOptions) -> Result<PumpHealth, Vivari
         PumpRead::Unreadable(why) => out.reasons.push(format!("pump.db unreadable: {why}")),
         PumpRead::Ready(snapshot) => fill(&mut out, &home, &mailspace, &snapshot, opts)?,
     }
+    if let Some(summary) = not_ready_reason(&mailspace) {
+        add_not_ready(&mut out, summary);
+    }
     Ok(out)
+}
+
+/// Fold the not-ready summary into the answer. A pump holding on missing
+/// config has never ticked, which would read as stalled; it is `unknown`
+/// instead, with the summary as the reason. One that did tick earlier keeps
+/// its verdict, with the summary first and `ok` lowered to `degraded`.
+fn add_not_ready(out: &mut PumpHealth, summary: String) {
+    if out.last_tick.is_none() {
+        if out.verdict != Verdict::Unknown {
+            out.verdict = Verdict::Unknown;
+            out.reasons.clear();
+        }
+        out.reasons.push(summary);
+        return;
+    }
+    out.reasons.insert(0, summary);
+    if out.verdict == Verdict::Ok {
+        out.verdict = Verdict::Degraded;
+    }
+}
+
+/// `not ready: <items>` when the project is missing config the pump needs.
+fn not_ready_reason(mailspace: &Mailspace) -> Option<String> {
+    crate::routing::not_ready_summary(&super::readiness::assess(mailspace))
 }
 
 /// An `unknown` answer with no reasons yet and no pump state.

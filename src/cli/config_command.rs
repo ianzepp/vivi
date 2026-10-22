@@ -26,7 +26,8 @@ pub enum ConfigCommand {
         project: Option<PathBuf>,
     },
 
-    /// Check roles, pools and pump together
+    /// Check roles, pools and pump together. Exit 0 when ready, 1 when
+    /// invalid, 3 when valid but not ready (items the pump needs are missing)
     Validate {
         /// Output as JSON
         #[arg(long)]

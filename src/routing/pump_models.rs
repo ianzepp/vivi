@@ -33,11 +33,14 @@ pub(super) fn check_role_runs(
         return;
     };
     if pool.harness.is_none() {
-        issues.push(Issue::error(format!(
-            "role {} dispatches to pool {pool_name}, which has no [pools.{pool_name}.harness] \
-             run command, so its pump jobs can never run: add the harness (name, run, models)",
-            role.name
-        )));
+        issues.push(Issue::not_ready(
+            format!("pool {pool_name} harness"),
+            format!(
+                "role {} dispatches to pool {pool_name}, which has no [pools.{pool_name}.harness] \
+                 run command, so its pump jobs can never run: add the harness (name, run, models)",
+                role.name
+            ),
+        ));
         return;
     }
     if let Err(error) = resolve_like_dispatch(role, pool_name, pool) {

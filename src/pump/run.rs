@@ -302,27 +302,19 @@ pub fn actor_string(mailspace: &Mailspace) -> String {
     }
 }
 
-fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), VivariumError> {
+pub(crate) fn run_inner(
+    project: &Path,
+    once: bool,
+    announce_ready: bool,
+) -> Result<(), VivariumError> {
     crate::mailspace::inherit::refuse_base(project)?;
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
-    let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let role_pool = hand_role_pool(&mailspace, &cfg);
-    cfg.validate_for(project, &pools, role_pool)?;
-    let roster = identity_issues(&mailspace, &cfg);
-    if !roster.is_empty() {
-        return Err(VivariumError::Config(roster.join("; ")));
-    }
-    let issues = crate::routing::validate(&mailspace.config);
+    let issues = crate::pump::readiness::assess(&mailspace);
     for issue in &issues {
-        eprintln!(
-            "vivi: {}: {}",
-            match issue.severity {
-                crate::routing::Severity::Warning => "warning",
-                crate::routing::Severity::Error => "error",
-            },
-            issue.message
-        );
+        if issue.severity == crate::routing::Severity::Warning {
+            eprintln!("vivi: warning: {}", issue.message);
+        }
     }
     crate::routing::require_ok(&issues)?;
     let home = cfg.home_dir(project);
@@ -332,6 +324,13 @@ fn run_inner(project: &Path, once: bool, announce_ready: bool) -> Result<(), Viv
     if control.shutdown_requested {
         crate::pump::control::request_shutdown(&home, false)?;
         control.shutdown_requested = false;
+    }
+    if !crate::pump::readiness::is_ready(&issues) {
+        let mode = crate::pump::hold::HoldMode {
+            once,
+            announce_ready,
+        };
+        return crate::pump::hold::hold(project, &home, cfg.tick, issues, control, mode, lock);
     }
     let host = Arc::new(RealHost::new(&home));
     let vivi = std::env::current_exe()
@@ -710,15 +709,11 @@ pub(super) fn refresh_config(
 fn load_runtime_config(project: &Path) -> Result<LoadedRuntimeConfig, VivariumError> {
     let mailspace = Mailspace::discover(Some(project))?;
     let cfg = pump_config(&mailspace)?;
-    let pools: Vec<String> = mailspace.config.pools.keys().cloned().collect();
-    let role_pool = hand_role_pool(&mailspace, &cfg);
-    cfg.validate_for(project, &pools, role_pool)?;
-    let roster = identity_issues(&mailspace, &cfg);
-    if !roster.is_empty() {
-        return Err(VivariumError::Config(roster.join("; ")));
-    }
-    let issues = crate::routing::validate(&mailspace.config);
+    let issues = crate::pump::readiness::assess(&mailspace);
     crate::routing::require_ok(&issues)?;
+    if let Some(summary) = crate::routing::not_ready_summary(&issues) {
+        return Err(VivariumError::Config(summary));
+    }
     let fingerprint = serde_json::to_vec(&mailspace.config)
         .map_err(|error| VivariumError::Message(error.to_string()))?;
     Ok(LoadedRuntimeConfig {
@@ -805,39 +800,6 @@ fn pump_config(mailspace: &Mailspace) -> Result<PumpConfig, VivariumError> {
     mailspace.config.pump.clone().ok_or_else(|| {
         VivariumError::Config(String::from("no [pump] table in .vivi/mailspace.toml"))
     })
-}
-
-/// Whether `[pump.to]` resolves to a hand role with a configured pool.
-pub(crate) fn hand_role_pool(mailspace: &Mailspace, cfg: &PumpConfig) -> bool {
-    let routing = crate::routing::from_mailspace(&mailspace.config);
-    routing
-        .hand(&cfg.to)
-        .and_then(|role| routing.pool_of(role))
-        .is_some()
-}
-
-/// Roster complaints for the identities the pump speaks as: `[pump] from`,
-/// `to` and `reply_from`, plus `[pump.board] reply_to` when set. Each value
-/// must resolve to a role or alias this mailspace knows, or the pump would
-/// start and then fail every send it makes.
-pub fn identity_issues(mailspace: &Mailspace, cfg: &PumpConfig) -> Vec<String> {
-    let mut pairs: Vec<(&str, &str)> = vec![
-        ("[pump] from", cfg.from.as_str()),
-        ("[pump] to", cfg.to.as_str()),
-        ("[pump] reply_from", cfg.reply_from.as_str()),
-    ];
-    if let Some(reply_to) = cfg.board.reply_to.as_deref() {
-        pairs.push(("[pump.board] reply_to", reply_to));
-    }
-    pairs
-        .into_iter()
-        .filter_map(|(key, value)| {
-            mailspace
-                .resolve_identity(value)
-                .err()
-                .map(|err| format!("{key} = \"{value}\": {err}"))
-        })
-        .collect()
 }
 
 /// Create `<home>/lock` and take the exclusive non-blocking flock.
@@ -969,7 +931,7 @@ fn counts_line(label: &str, counts: &std::collections::BTreeMap<String, usize>) 
 }
 
 /// `%Y-%m-%dT%H:%M:%SZ` in UTC for epoch seconds.
-fn utc_stamp(secs: u64) -> String {
+pub(crate) fn utc_stamp(secs: u64) -> String {
     let stamp = i64::try_from(secs).unwrap_or(0);
     chrono::DateTime::<chrono::Utc>::from_timestamp(stamp, 0).map_or_else(String::new, |time| {
         time.format("%Y-%m-%dT%H:%M:%SZ").to_string()

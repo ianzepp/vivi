@@ -699,15 +699,28 @@ fn a_second_instance_is_refused_by_the_lock() {
 }
 
 #[test]
-fn a_missing_roster_role_refuses_to_start_with_the_fix_command() {
+fn a_missing_default_roster_role_holds_the_pump_and_names_the_fix_command() {
+    // `to` is the default `hand`: a role a fresh project does not have yet.
     let missing_hand =
         PUMP_TOML_IDENTITIES.replace("[[identities]]\nname = \"hand\"\nkind = \"hand\"\n\n", "");
     let dir = mailspace_project(&format!("{PUMP_TOML}{missing_hand}"));
+    run(dir.path(), true).expect("a missing role is not ready, not an error");
+    let status = fs::read_to_string(dir.path().join(".vivi/pump/status.txt")).unwrap();
+    assert!(status.contains("not ready:"), "{status}");
+    assert!(status.contains("[pump] to"), "{status}");
+    assert!(status.contains("vivi role add hand"), "{status}");
+}
+
+#[test]
+fn a_named_roster_role_that_does_not_exist_refuses_to_start() {
+    let named = PUMP_TOML.replace("[pump]\n", "[pump]\nto = \"hnad\"\n");
+    assert_ne!(named, PUMP_TOML, "the fixture must name `to`");
+    let dir = mailspace_project(&format!("{named}{PUMP_TOML_IDENTITIES}"));
     let err = run(dir.path(), true).unwrap_err();
     let text = err.to_string();
     assert!(text.contains("[pump] to"), "{text}");
-    assert!(text.contains("unknown local role 'hand'"), "{text}");
-    assert!(text.contains("vivi role add hand"), "{text}");
+    assert!(text.contains("unknown local role 'hnad'"), "{text}");
+    assert!(text.contains("vivi role add hnad"), "{text}");
 }
 
 #[test]
