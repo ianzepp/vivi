@@ -357,6 +357,9 @@ async fn initialize_and_tools_list() {
             "pump",
             "pump_control",
             "pump_gate",
+            "pump_send",
+            "pump_list",
+            "pump_show",
             "board"
         ]
     );

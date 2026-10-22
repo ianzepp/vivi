@@ -16,6 +16,7 @@
 //! pump is another process on the same files).
 
 mod pump;
+mod pump_record;
 mod read;
 mod write;
 
@@ -30,7 +31,31 @@ use crate::safety::RateLimiter;
 
 use super::tools::ToolError;
 
-pub(super) use pump::{pump_control, pump_gate};
+use pump::{pump_control, pump_gate};
+use pump_record::{pump_list, pump_send, pump_show};
+
+/// An operator-only tool: it takes the key's minting member and the identity
+/// the key acts as (`None` for a member token) and authorizes them itself.
+pub(super) type OperatorTool = fn(
+    &RateLimiter,
+    &str,
+    &Path,
+    &crate::identities::IdentityRecord,
+    Option<&str>,
+    &Value,
+) -> Result<Value, ToolError>;
+
+/// The operator-only pump tool `name` names, if it is one.
+pub(super) fn operator_tool(name: &str) -> Option<OperatorTool> {
+    match name {
+        "pump_control" => Some(pump_control),
+        "pump_gate" => Some(pump_gate),
+        "pump_send" => Some(pump_send),
+        "pump_list" => Some(pump_list),
+        "pump_show" => Some(pump_show),
+        _ => None,
+    }
+}
 
 /// The tools a hosted project answers through the library.
 pub(super) fn handles(name: &str) -> bool {

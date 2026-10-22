@@ -140,6 +140,19 @@ mailspace).
   write. This is the only config the server edits: pools, roles and free-form
   config are deliberately not exposed, because a member who could repoint a
   pool's `remote_url` could send code elsewhere.
+- **`pump_send`, `pump_list`, `pump_show`.** Operator-only, with
+  `pump_control`'s authorization (one shared check): the pump record verbs
+  `vivi pump send|list|show`, through `Mailspace::pump_send`, `pump_list` and
+  `pump_show`. `pump_send` takes `need` (required) and optional `body` and
+  `from`, files one open record the pump reads on its next tick, answers the
+  record, and is rate limited as a write; the library refuses an unknown or
+  non-need handle, a need not addressed to the pump identity, and a need that
+  already has an open record. The body is literal text: the CLI's `-` and
+  `@path` forms are not accepted, since they would read the server's files.
+  `pump_list` takes `need`, `status` (`open` by default, `done`, `all`) and
+  `limit` (default 50, at most 100) and answers `{records, total, truncated}`,
+  oldest first, the newest `limit` when more match. `pump_show` takes `handle`
+  and answers the record with its `body`.
 - **Live reads.** `overview`, `list` (kind, status, `to`, `from`, `marks`,
   `for`; default 50, at most 100), `show`, `thread`, `graph` (the backlog
   graph) and `board` (`Mailspace::board` as JSON, host root omitted) query the

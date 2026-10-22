@@ -1,4 +1,5 @@
-//! `pump_control` and `pump_gate`: operator-only pump tools for a hosted
+//! `pump_control` and `pump_gate` (and the authorization the pump record tools
+//! in `pump_record.rs` share): operator-only pump tools for a hosted
 //! project.
 //!
 //! The same library call the CLI's `vivi pump pause|resume|stop|start`
@@ -103,7 +104,7 @@ pub(in crate::mcp) fn pump_gate(
 
 /// The identity an operator tool acts as: a member token has none and is
 /// refused.
-fn acting_key<'a>(
+pub(super) fn acting_key<'a>(
     tool: &str,
     purpose: &str,
     acting: Option<&'a str>,
@@ -116,7 +117,7 @@ fn acting_key<'a>(
 }
 
 /// Open the hosted mailspace and require the operator for `tool`.
-fn authorize(
+pub(super) fn authorize(
     tool: &str,
     root: &Path,
     caller: &IdentityRecord,

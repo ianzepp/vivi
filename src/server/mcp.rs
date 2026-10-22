@@ -200,16 +200,11 @@ async fn call_tool(
         if name == "pump" {
             return pump_tool(&store, &project_id, &arguments);
         }
-        if name == "pump_control" || name == "pump_gate" {
+        if let Some(run) = live::operator_tool(&name) {
             let Some(root) = live::hosted_root(&store, &project_id) else {
                 return Err(tools::ToolError::new(format!(
                     "{name} is only available on a hosted project"
                 )));
-            };
-            let run = if name == "pump_control" {
-                live::pump_control
-            } else {
-                live::pump_gate
             };
             return run(
                 &limiter,
@@ -484,6 +479,33 @@ fn tools_list() -> Value {
                     "command": { "type": "string", "description": "The gate command; required for set, ignored by show" }
                 },
                 "required": ["action"],
+                "additionalProperties": false
+            })),
+            tool("pump_send", "Hosted projects only, operator only. Hand a need to the pump: file one open pump record for it, as `vivi pump send --need <handle>` does; the pump reads the record on its next tick. Same authorization as pump_control: the operator's API key, minted by the host's own member and acting as a role of kind operator. Refused for an unknown handle, anything that is not a need, a need not addressed to the pump identity, or a need that already has an open record (the error names it). Rate limited as a write. Returns the record.", json!({
+                "type": "object",
+                "properties": {
+                    "need": { "type": "string", "description": "The need handle the dispatch covers" },
+                    "body": { "type": "string", "description": "Record body, literal text (the CLI's - and @path forms are not accepted). Defaults to a dispatch line." },
+                    "from": { "type": "string", "description": "Sender identity (the CLI's --from); defaults to the project's [pump] from" }
+                },
+                "required": ["need"],
+                "additionalProperties": false
+            })),
+            tool("pump_list", "Hosted projects only, operator only. List pump records, oldest first, as `vivi pump list` does. Same authorization as pump_control. At most `limit` records are returned (the newest when more match); `total` counts every match. Returns {records, total, truncated}.", json!({
+                "type": "object",
+                "properties": {
+                    "need": { "type": "string", "description": "Only records of this need" },
+                    "status": { "type": "string", "enum": ["open", "done", "all"], "default": "open" },
+                    "limit": { "type": "integer", "minimum": 1, "default": 50, "description": "Records returned; at most 100" }
+                },
+                "additionalProperties": false
+            })),
+            tool("pump_show", "Hosted projects only, operator only. Show one pump record and its body, as `vivi pump show` does. Same authorization as pump_control. Returns the record (handle, need, status, from, to, date, subject, outcome when done) and its body.", json!({
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string", "description": "Pump record handle" }
+                },
+                "required": ["handle"],
                 "additionalProperties": false
             })),
             tool("board", "Hosted projects only (API key). The project board as `vivi board --json`: open tasks, needs and wants per role, totals, and registered goals. Optional graph and pump views.", json!({

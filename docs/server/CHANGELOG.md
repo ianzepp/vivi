@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **MCP `pump_send`, `pump_list`, `pump_show`.** Pump records through the
+  project endpoint, so a need can be handed to the hosted pump without a shell
+  on the host. Operator-only, with `pump_control`'s authorization (one shared
+  check). `pump_send` files one open record for a need (`Mailspace::pump_send`;
+  optional literal `body` and `from`; rate limited as a write; the CLI's `-`
+  and `@path` body forms are not accepted); `pump_list` takes `need`, `status`
+  (`open` default, `done`, `all`) and `limit` (default 50, at most 100) and
+  answers `{records, total, truncated}`; `pump_show` answers one record with
+  its `body`.
+
 ## 1.8.0 — 2026-10-22
 
 Built on vivi 19.0.0, and the write rate limit becomes a deployment setting.
