@@ -1815,6 +1815,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2681,8 +2693,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vivi"
-version = "19.0.0"
-source = "git+https://github.com/ianzepp/vivi?tag=v19.0.0#9fdc24db3e8f2a6bbe0a1715f349bb9da864c919"
+version = "19.2.0"
+source = "git+https://github.com/ianzepp/vivi?tag=v19.2.0#8e1efee0bd9ee1a0b697337fa4d50abcac75177e"
 dependencies = [
  "axum",
  "bytes",
@@ -2699,6 +2711,7 @@ dependencies = [
  "mail-parser",
  "rand_core 0.6.4",
  "ratatui",
+ "regex",
  "reqwest",
  "rusqlite",
  "semver",
@@ -2719,7 +2732,7 @@ dependencies = [
 
 [[package]]
 name = "vivi-server"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "aes-gcm",
  "axum",

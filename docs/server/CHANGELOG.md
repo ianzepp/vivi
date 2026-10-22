@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.11.0
 
 Dependency edges after the send, over MCP.
 
@@ -17,7 +17,7 @@ Dependency edges after the send, over MCP.
   Rate limited as a write. The answer is `{handle, changes, dependencies}`,
   the prerequisites as they stand afterwards. A server-owned project refuses it
   like `mark`. **Needs vivi with `set_dependencies`**: the `vivi` dependency
-  moves to the release that carries it.
+  is vivi 19.2.0.
 
 ## 1.10.0 — 2026-10-22
 
