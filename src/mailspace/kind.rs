@@ -84,14 +84,15 @@ pub(super) fn raw_work_kind(data: &[u8], role: &str) -> Option<&'static str> {
 
 /// The kind derivable without the blob: the role's own kind, or the kind
 /// named by the lifecycle commands on the item's event log. Every filed
-/// work item carries its `need|task|want send` event and every finished one
-/// its `... done` event, so `done` and `sent` rows are decided here without
+/// work item carries its `need|task|want|pump send` event and every finished
+/// one its `... done` event, so `done` and `sent` rows are decided here without
 /// reading the message body.
 pub(crate) fn events_kind(role: &str, events: &[MailspaceEvent]) -> Option<String> {
     match role {
         "tasks" => return Some("task".into()),
         "needs" => return Some("need".into()),
         "wants" => return Some("want".into()),
+        "pumps" => return Some("pump".into()),
         "memos" => return Some("memo".into()),
         "rules" => return Some("rule".into()),
         _ => {}
@@ -103,6 +104,7 @@ pub(crate) fn events_kind(role: &str, events: &[MailspaceEvent]) -> Option<Strin
             "need send" | "need done" => "need",
             "task send" | "task done" => "task",
             "want send" | "want done" | "want drop" => "want",
+            "pump send" | "pump done" => "pump",
             _ => continue,
         };
         return Some(kind.into());

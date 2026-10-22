@@ -234,6 +234,10 @@ fn canonical_item(
     };
     let handle = storage.display_handle(&message_id)?;
     let header_kind = mailspace.source_kind(storage, &view).unwrap_or_default();
+    if header_kind == "pump" {
+        // A pump record is the pump's own, not backlog work: it has no node.
+        return Ok(None);
+    }
     let kind = if matches!(header_kind.as_str(), "task" | "need" | "want") {
         header_kind
     } else {

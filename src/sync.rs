@@ -218,6 +218,10 @@ mod fake_server;
 mod file_records_test;
 
 #[cfg(test)]
+#[path = "sync/pump_record_sync_test.rs"]
+mod pump_record_sync_test;
+
+#[cfg(test)]
 #[path = "sync/send_filter_test.rs"]
 mod send_filter_test;
 

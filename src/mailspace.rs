@@ -48,6 +48,7 @@ mod mermaid;
 #[path = "mailspace/message_id_test.rs"]
 mod message_id_test;
 mod pool_record;
+mod pump_record;
 mod reply;
 mod report;
 mod rules;
@@ -94,6 +95,7 @@ pub use marks::{MarkWrite, folded_marks, marks_include, validate_marks, validate
 pub use merge::{MailspaceImportOptions, MailspaceImportReport, import_mailspace};
 pub use mermaid::is_gate_kind;
 pub use pool_record::{POOL_EVENT_TYPES, PoolEventRow, PoolTask};
+pub use pump_record::{PUMP_NEED_HEADER, PumpRecord, PumpState};
 pub use report::MoveOutcome;
 pub use rules::{RuleChange, RuleDetail, RuleRecord, RuleSupersession};
 pub use step::{StepDispatch, StepException, StepManifest, body_has_labeled_clause};
@@ -590,11 +592,12 @@ pub fn canonical_local_role(role: &str) -> Result<String, VivariumError> {
         "task" | "tasks" | "open" => Ok("tasks".into()),
         "need" | "needs" => Ok("needs".into()),
         "want" | "wants" => Ok("wants".into()),
+        "pump" | "pumps" => Ok("pumps".into()),
         "memo" | "memos" => Ok("memos".into()),
         "rule" | "rules" => Ok("rules".into()),
         "done" | "closed" => Ok("done".into()),
         _ => Err(VivariumError::Message(format!(
-            "unsupported local folder '{role}'; expected inbox, archive, trash, sent, drafts, tasks, needs, wants, memos, rules, or done"
+            "unsupported local folder '{role}'; expected inbox, archive, trash, sent, drafts, tasks, needs, wants, pumps, memos, rules, or done"
         ))),
     }
 }
