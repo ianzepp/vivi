@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::mailspace::MailspaceConfig;
 use crate::pump::config::{Lane, PumpConfig};
+use crate::routing::model::pick_lane_with;
 use crate::routing::{
     Issue, MigrateInputs, RoleRouting, RoutedPool, RoutedRole, Severity, apply_plan_to_document,
     choose_model, default_read_only, from_mailspace, merge_lane_count, plan_migrate, require_ok,
@@ -183,6 +184,105 @@ fn choose_model_waits_when_every_cap_is_full() {
     }];
     let inflight = BTreeMap::from([("m/a".into(), 1)]);
     assert_eq!(choose_model(None, &lanes, &inflight, 0, None, "", 3), None);
+}
+
+fn lane(model: &str, cap: u32) -> Lane {
+    Lane {
+        model: model.into(),
+        cap,
+    }
+}
+
+fn pick_first(
+    lanes: &[Lane],
+    inflight: &BTreeMap<String, u32>,
+    last: Option<&str>,
+) -> Option<String> {
+    pick_lane_with(lanes, inflight, last, |_| 0)
+}
+
+#[test]
+fn pick_lane_spreads_across_equal_caps() {
+    let lanes = vec![lane("m/a", 8), lane("m/b", 8), lane("m/c", 8)];
+    let mut inflight = BTreeMap::new();
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let model = pick_first(&lanes, &inflight, None).expect("a lane is free");
+        *inflight.entry(model.clone()).or_insert(0) += 1;
+        seen.push(model);
+    }
+    seen.sort();
+    assert_eq!(seen, vec!["m/a", "m/b", "m/c"]);
+}
+
+#[test]
+fn pick_lane_compares_load_ratio_not_count() {
+    let lanes = vec![lane("m/luna", 2), lane("m/deepseek", 8)];
+    let inflight = BTreeMap::from([("m/luna".into(), 1), ("m/deepseek".into(), 1)]);
+    assert_eq!(
+        pick_first(&lanes, &inflight, None).as_deref(),
+        Some("m/deepseek")
+    );
+}
+
+#[test]
+fn pick_lane_equal_ratio_prefers_more_free_slots() {
+    let lanes = vec![lane("m/small", 2), lane("m/big", 8)];
+    let inflight = BTreeMap::from([("m/small".into(), 1), ("m/big".into(), 4)]);
+    assert_eq!(
+        pick_first(&lanes, &inflight, None).as_deref(),
+        Some("m/big")
+    );
+}
+
+#[test]
+fn pick_lane_skips_last_model_unless_it_is_the_only_free_lane() {
+    let lanes = vec![lane("m/a", 8), lane("m/b", 1)];
+    let idle = BTreeMap::new();
+    assert_eq!(
+        pick_first(&lanes, &idle, Some("m/a")).as_deref(),
+        Some("m/b")
+    );
+    let b_full = BTreeMap::from([("m/b".into(), 1)]);
+    assert_eq!(
+        pick_first(&lanes, &b_full, Some("m/a")).as_deref(),
+        Some("m/a")
+    );
+}
+
+#[test]
+fn pick_lane_none_when_every_cap_is_full() {
+    let lanes = vec![lane("m/a", 1), lane("m/b", 2)];
+    let inflight = BTreeMap::from([("m/a".into(), 1), ("m/b".into(), 2)]);
+    assert_eq!(pick_first(&lanes, &inflight, Some("m/a")), None);
+}
+
+#[test]
+fn pick_lane_tie_break_uses_the_injected_picker() {
+    let lanes = vec![lane("m/a", 8), lane("m/b", 8), lane("m/c", 8)];
+    let idle = BTreeMap::new();
+    let mut asked = Vec::new();
+    let got = pick_lane_with(&lanes, &idle, None, |n| {
+        asked.push(n);
+        2
+    });
+    assert_eq!(got.as_deref(), Some("m/c"));
+    assert_eq!(asked, vec![3]);
+    // An out-of-range pick is clamped to the last tied lane.
+    assert_eq!(
+        pick_lane_with(&lanes, &idle, None, |_| 99).as_deref(),
+        Some("m/c")
+    );
+}
+
+#[test]
+fn choose_model_spreads_a_pool_instead_of_taking_the_first_alphabetical_lane() {
+    let lanes = vec![lane("m/a", 8), lane("m/b", 8)];
+    let inflight = BTreeMap::from([("m/a".into(), 3)]);
+    assert_eq!(
+        choose_model(None, &lanes, &inflight, 0, None, "", 3).as_deref(),
+        Some("m/b")
+    );
 }
 
 #[test]

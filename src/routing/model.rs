@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use rand_core::{OsRng, RngCore};
+
 use crate::mailspace::shipped::PUMP_PLANNER_ROLE;
 use crate::mailspace::{LocalIdentity, MailspaceConfig};
 use crate::pool::PoolConfig;
@@ -225,7 +227,7 @@ pub fn choose_model(
     if let Some(model) = role.and_then(preferred_slug) {
         return under_cap(lanes, inflight, &model).then_some(model);
     }
-    pick_lane(lanes, inflight, attempts, last_model)
+    pick_lane(lanes, inflight, last_model)
 }
 
 fn preferred_slug(role: &RoutedRole) -> Option<String> {
@@ -248,25 +250,65 @@ fn under_cap(lanes: &[Lane], inflight: &BTreeMap<String, u32>, model: &str) -> b
         .is_none_or(|lane| inflight.get(model).copied().unwrap_or(0) < lane.cap)
 }
 
+/// Least-loaded lane under its cap. A lane other than `last_model` wins when
+/// one is free (retry diversity); the lowest `used/cap` ratio wins, then the
+/// most free slots, then a random pick among what remains.
 fn pick_lane(
     lanes: &[Lane],
     inflight: &BTreeMap<String, u32>,
-    attempts: u32,
     last_model: Option<&str>,
 ) -> Option<String> {
-    let mut order: Vec<&Lane> = lanes.iter().collect();
-    if attempts % 2 == 1 {
-        order.reverse();
-    }
-    for skip_last in [true, false] {
-        for lane in &order {
-            let used = inflight.get(lane.model.as_str()).copied().unwrap_or(0);
-            if used < lane.cap && (!skip_last || Some(lane.model.as_str()) != last_model) {
-                return Some(lane.model.clone());
-            }
+    pick_lane_with(lanes, inflight, last_model, |n| {
+        (OsRng.next_u32() as usize) % n
+    })
+}
+
+/// `pick(n)` returns an index in `0..n` to break a full tie.
+pub(super) fn pick_lane_with(
+    lanes: &[Lane],
+    inflight: &BTreeMap<String, u32>,
+    last_model: Option<&str>,
+    mut pick: impl FnMut(usize) -> usize,
+) -> Option<String> {
+    let open: Vec<(&Lane, u32)> = lanes
+        .iter()
+        .map(|lane| {
+            (
+                lane,
+                inflight.get(lane.model.as_str()).copied().unwrap_or(0),
+            )
+        })
+        .filter(|(lane, used)| *used < lane.cap)
+        .collect();
+    let fresh: Vec<(&Lane, u32)> = open
+        .iter()
+        .copied()
+        .filter(|(lane, _)| Some(lane.model.as_str()) != last_model)
+        .collect();
+    let candidates = if fresh.is_empty() { open } else { fresh };
+    let key = |(lane, used): &(&Lane, u32)| (u64::from(*used), u64::from(lane.cap));
+    let best = candidates.iter().copied().reduce(|best, next| {
+        let (bu, bc) = key(&best);
+        let (nu, nc) = key(&next);
+        // next is better when nu/nc < bu/bc, or equal ratio with more free slots.
+        let (lhs, rhs) = (nu * bc, bu * nc);
+        if lhs < rhs || (lhs == rhs && nc - nu > bc - bu) {
+            next
+        } else {
+            best
         }
-    }
-    None
+    })?;
+    let (bu, bc) = key(&best);
+    let tied: Vec<&Lane> = candidates
+        .iter()
+        .filter(|c| {
+            let (u, cap) = key(c);
+            u * bc == bu * cap && cap - u == bc - bu
+        })
+        .map(|(lane, _)| *lane)
+        .collect();
+    tied.get(pick(tied.len()).min(tied.len().saturating_sub(1)))
+        .map(|lane| lane.model.clone())
 }
 
 impl RoutedRole {

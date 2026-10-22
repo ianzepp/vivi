@@ -945,6 +945,12 @@ vivi pool doctor --pool <name> --test [--long] [--allow-spend] [--json | --porce
 Each `[[identities]]` row may set `pool`, optional `read_only`, and
 `model` / `models` (a slug, a band, or a list). Pool capacity is `slots`;
 optional `[pools.<name>.caps]` is the per-model cap inside that pool.
+A hand picks among the pool's caps by least load: the model with the lowest
+in-flight/cap ratio under its cap wins (more free slots breaks a tie of ratio,
+then a random pick). A retry avoids the previous attempt's model while another
+one has room, so load spreads across providers and failures change model.
+Order in `caps` carries no preference. A role that names a concrete model slug
+still uses that slug.
 Unit tasks use the hand role's assigned pool and its fallback chain when
 one is configured. In that mode, `tools` may be empty or name an unknown kind.
 A defined kind's `max` and `skip_proof` metadata still applies; its pool list
