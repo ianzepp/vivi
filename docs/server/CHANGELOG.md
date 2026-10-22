@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 — 2026-10-22
+
+Operator band tables over MCP.
 
 - **MCP `pool_bands`.** Operator-only show, set and unset of one pool's band
   table (`[pools.<pool>.bands]` in the hosted project's mailspace config), as
