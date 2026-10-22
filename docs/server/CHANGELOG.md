@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 — 2026-10-22
+
+Operator control over MCP: create a hosted project from nothing, and pause,
+resume or re-gate its pump, without shell access to the host. Built on vivi
+18.4.0.
 
 - **Host MCP endpoint and `create_project`.** `POST /v1/host/mcp` is a
   Streamable HTTP MCP endpoint for the host, outside any one project. Its
@@ -29,9 +33,11 @@
   `set` is rate limited as a write. Pools, roles and other config are not
   exposed: a member who could repoint a pool's `remote_url` could send code
   elsewhere.
-- **vivi 18.3.0.** The `vivi` dependency moves from v18.2.0 to v18.3.0. No
-  source change was needed. The pump health verdict now includes the library's
-  `not ready: ...` reasons for a project missing required pump settings.
+- **vivi 18.4.0.** The `vivi` dependency moves from v18.2.0 to v18.4.0
+  (config inheritance, not-ready pumps, the gate setter, `project create`).
+  No source change was needed for 18.3.0. The pump health verdict now
+  includes the library's `not ready: ...` reasons for a project missing
+  required pump settings.
 
 ## 1.6.0 — 2026-10-21
 
