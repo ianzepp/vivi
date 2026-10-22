@@ -48,6 +48,11 @@ pub struct AppState {
     /// The vivi identity an API key without its own `identity` acts as on a
     /// hosted project (`HOSTED_DEFAULT_IDENTITY`, default `operator`).
     pub hosted_default_identity: Arc<str>,
+    /// `HOST_OPERATOR_TOKEN`: the Bearer for `POST /v1/host/mcp`. Unset
+    /// disables that endpoint (it answers 404).
+    pub host_operator_token: Option<Arc<str>>,
+    /// Where `create_project` puts repositories and projects.
+    pub host: mcp::host::HostConfig,
 }
 
 /// The identity an unmapped API key acts as on a hosted project.
@@ -96,6 +101,8 @@ pub fn app_state(
             .filter(|t| !t.trim().is_empty())
             .map(Arc::from),
         hosted_default_identity: Arc::from(DEFAULT_HOSTED_IDENTITY),
+        host_operator_token: None,
+        host: mcp::host::HostConfig::default(),
     }
 }
 
@@ -133,6 +140,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/projects/{id}/mcp", post(mcp::mcp_handler))
         .route("/v1/rooms/{id}/mcp", post(mcp::mcp_handler))
+        // Host operator endpoint; answers 404 when HOST_OPERATOR_TOKEN is unset.
+        .route("/v1/host/mcp", post(mcp::host::host_mcp_handler))
         // List and lookup responses are large JSON; gzip them when the
         // client asks for it.
         .route(

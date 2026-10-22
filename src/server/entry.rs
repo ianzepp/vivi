@@ -25,6 +25,8 @@ struct ServerConfig {
     /// `HOSTED_DEFAULT_IDENTITY`: the vivi identity an API key without its
     /// own identity acts as on a hosted project.
     hosted_default_identity: Option<String>,
+    /// `HOST_OPERATOR_TOKEN`: the Bearer for `POST /v1/host/mcp`.
+    host_operator_token: Option<String>,
 }
 
 impl ServerConfig {
@@ -46,6 +48,9 @@ impl ServerConfig {
             data_dir,
             store_encryption_key: std::env::var("STORE_ENCRYPTION_KEY").ok(),
             moderation_token: std::env::var("MODERATION_TOKEN").ok(),
+            host_operator_token: std::env::var("HOST_OPERATOR_TOKEN")
+                .ok()
+                .filter(|t| !t.trim().is_empty()),
             hosted_default_identity: match std::env::var("HOSTED_DEFAULT_IDENTITY") {
                 Ok(v) if !v.trim().is_empty() => {
                     let v = v.trim().to_owned();
@@ -108,6 +113,10 @@ async fn main() {
         tracing::warn!("MODERATION_TOKEN not set; /v1/_health disabled (U3)");
     }
 
+    if config.host_operator_token.is_none() {
+        tracing::warn!("HOST_OPERATOR_TOKEN not set; /v1/host/mcp disabled");
+    }
+
     let mut state = vivi_server::app_state(
         config.data_dir.clone(),
         config.store_encryption_key.clone(),
@@ -116,6 +125,8 @@ async fn main() {
     if let Some(identity) = &config.hosted_default_identity {
         state.hosted_default_identity = identity.as_str().into();
     }
+    state.host_operator_token = config.host_operator_token.as_deref().map(Into::into);
+    state.host = vivi_server::mcp::host::HostConfig::from_env();
     // Serve the projects the host registry lists, now and whenever it
     // changes. The first pass finishes before the listener binds.
     let _hosted = vivi_server::hosted::start(state.projects.clone(), state.identities.clone());

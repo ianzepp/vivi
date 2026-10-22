@@ -42,6 +42,11 @@ curl http://localhost:8080/healthz   # -> ok
 | `DATA_DIR` | Storage root: durable and chat projects at `DATA_DIR/projects/<id>/.vivi/` |
 | `STORE_ENCRYPTION_KEY` | AES-256-GCM key for bodies; a boot-time verifier exits the process on mismatch instead of serving an unreadable or empty store |
 | `MODERATION_TOKEN` | Gates `GET /v1/_health` (room count, storage state) |
+| `HOST_OPERATOR_TOKEN` | Bearer for the host endpoint `POST /v1/host/mcp` (tool `create_project`). Unset disables the endpoint (404). A project token or API key is never accepted there |
+| `HOST_PROJECTS_ROOT` | `create_project`: existing directory that holds project roots (`<root>/<name>`) |
+| `HOST_LANES_ROOT` | `create_project`: existing directory that holds bare repositories (`<root>/<name>.git`) |
+| `HOST_GIT_URL_PREFIX` | `create_project`: the git URL is `<prefix><name>.git` (for example `git@hub:`) |
+| `HOST_DEFAULT_POOL` | `create_project`: optional pool whose `remote_url` is set to the git URL; the tool's `pool` overrides it |
 | `HOSTED_DEFAULT_IDENTITY` | The vivi identity an API key without its own `identity` acts as on a hosted project (default `operator`) |
 
 ## Acceptance

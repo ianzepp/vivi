@@ -5,6 +5,7 @@
 //! Bearer (identity token or API key) is always the caller. Tools are a
 //! curated, parameterized subset of the vivi command tree.
 
+pub mod host;
 pub mod letters;
 mod live;
 mod tools;
@@ -52,6 +53,37 @@ pub async fn mcp_handler(
         Ok(caller) => caller,
         Err(response) => return response,
     };
+    respond(
+        &Surface::Project {
+            state: &state,
+            project_id: &id,
+            caller: &caller,
+        },
+        &headers,
+        body,
+    )
+    .await
+}
+
+/// Which endpoint a JSON-RPC body is for: one project's tools (the caller
+/// already authenticated) or the host's.
+enum Surface<'a> {
+    Project {
+        state: &'a AppState,
+        project_id: &'a str,
+        caller: &'a Caller,
+    },
+    Host {
+        state: &'a AppState,
+    },
+}
+
+/// Parse a JSON-RPC body (single or batch) and answer it for `surface`.
+async fn respond(
+    surface: &Surface<'_>,
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
     let bytes = match body {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -62,21 +94,21 @@ pub async fn mcp_handler(
             );
         }
     };
+    let sse = prefers_sse(headers);
     let parsed: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(_) => {
             return rpc_http(
                 StatusCode::BAD_REQUEST,
                 jsonrpc_error(Value::Null, -32700, "parse error"),
-                prefers_sse(&headers),
+                sse,
             );
         }
     };
-    let sse = prefers_sse(&headers);
     if let Some(items) = parsed.as_array() {
         let mut responses = Vec::new();
         for item in items {
-            match handle_one(&state, &id, &caller, item).await {
+            match handle_one(surface, item).await {
                 Ok(Some(response)) => responses.push(response),
                 Ok(None) => {}
                 Err(response) => return response,
@@ -84,19 +116,14 @@ pub async fn mcp_handler(
         }
         return rpc_http(StatusCode::OK, Value::Array(responses), sse);
     }
-    match handle_one(&state, &id, &caller, &parsed).await {
+    match handle_one(surface, &parsed).await {
         Ok(Some(value)) => rpc_http(StatusCode::OK, value, sse),
         Ok(None) => StatusCode::ACCEPTED.into_response(),
         Err(response) => response,
     }
 }
 
-async fn handle_one(
-    state: &AppState,
-    project_id: &str,
-    caller: &Caller,
-    value: &Value,
-) -> Result<Option<Value>, Response> {
+async fn handle_one(surface: &Surface<'_>, value: &Value) -> Result<Option<Value>, Response> {
     let req: JsonRpcRequest = match serde_json::from_value(value.clone()) {
         Ok(req) => req,
         Err(_) => {
@@ -122,13 +149,23 @@ async fn handle_one(
     }
     let id = req.id.clone().unwrap_or(Value::Null);
     let result = match method {
-        "initialize" => initialize(&req.params),
+        "initialize" => initialize(&req.params, surface),
         "ping" => json!({}),
-        "tools/list" => tools_list(),
+        "tools/list" => match surface {
+            Surface::Project { .. } => tools_list(),
+            Surface::Host { .. } => host::tools_list(),
+        },
         "tools/call" => {
             let name = req.params.get("name").and_then(Value::as_str).unwrap_or("");
             let arguments = req.params.get("arguments").cloned().unwrap_or(json!({}));
-            call_tool(state, project_id, caller, name, arguments).await?
+            match surface {
+                Surface::Project {
+                    state,
+                    project_id,
+                    caller,
+                } => call_tool(state, project_id, caller, name, arguments).await?,
+                Surface::Host { state } => host::call_tool(state, name, arguments).await,
+            }
         }
         _ => return Ok(Some(jsonrpc_error(id, -32601, "method not found"))),
     };
@@ -257,7 +294,7 @@ fn tool_result(value: Value, is_error: bool) -> Value {
     })
 }
 
-fn initialize(params: &Value) -> Value {
+fn initialize(params: &Value, surface: &Surface<'_>) -> Value {
     let requested = params
         .get("protocolVersion")
         .and_then(Value::as_str)
@@ -267,6 +304,10 @@ fn initialize(params: &Value) -> Value {
     } else {
         PROTOCOL_LATEST
     };
+    let instructions = match surface {
+        Surface::Project { .. } => PROJECT_INSTRUCTIONS,
+        Surface::Host { .. } => host::INSTRUCTIONS,
+    };
     json!({
         "protocolVersion": protocol,
         "capabilities": { "tools": { "listChanged": false } },
@@ -274,9 +315,11 @@ fn initialize(params: &Value) -> Value {
             "name": "vivi-server",
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On a hosted project, mark/unmark label a need or want, and board returns the project board.",
+        "instructions": instructions,
     })
 }
+
+const PROJECT_INSTRUCTIONS: &str = "This is a vivi project mailspace. You are the authenticated member; never pass a from address. Start with overview, then list/show/thread to read, send/reply for new work, done/reopen for lifecycle, memo for durable notes, and graph for ready/blocked. On a hosted project, mark/unmark label a need or want, and board returns the project board.";
 
 fn tools_list() -> Value {
     json!({

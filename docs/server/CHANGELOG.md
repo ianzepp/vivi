@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Host MCP endpoint and `create_project`.** `POST /v1/host/mcp` is a
+  Streamable HTTP MCP endpoint for the host, outside any one project. Its
+  Bearer is the new `HOST_OPERATOR_TOKEN` (constant-time compare); with the
+  variable unset the endpoint answers 404, and a project identity token or API
+  key is refused (403). The one tool, `create_project`, calls
+  `vivi::project_create::create` with the roots from `HOST_PROJECTS_ROOT`,
+  `HOST_LANES_ROOT`, `HOST_GIT_URL_PREFIX` and `HOST_DEFAULT_POOL` (a missing
+  one is a configuration error naming the variable). Arguments: `name`, and
+  optionally `gate`, `branch`, `pool`, `initial_commit`, `pump`, `serve`. The
+  server reconciles the host registry at once, so the new project is served
+  at `/v1/projects/{id}/mcp` without a restart or waiting for the watcher, and
+  mints an operator API key (identity `operator`, minted by the host's own
+  member) returned once in the answer. Creations run one at a time, and
+  `hosted::reconcile` passes are now serialized.
 - **MCP `pump_control`.** Operator-only pump control on a hosted project:
   `action` is `pause`, `resume`, `stop`, or `start` (`start` is `resume`, as
   in the CLI), through `vivi::pump::control::set_project_mode`. The answer is

@@ -82,6 +82,10 @@ pub fn reconcile(
     identities: &IdentityRegistry,
     roots: &BTreeSet<PathBuf>,
 ) -> Report {
+    // One pass at a time: the watcher and `create_project` both reconcile,
+    // and two passes admitting the same creator would race.
+    static PASS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _pass = PASS.lock().unwrap_or_else(|e| e.into_inner());
     let mut report = Report::default();
     let mut claimed: HashMap<String, PathBuf> = HashMap::new();
     for root in roots {

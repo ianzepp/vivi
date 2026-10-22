@@ -185,3 +185,32 @@ Built as above and deliberately small. Known limits:
 - **One host, one writer.** Several processes share the host's files (the CLI,
   the pump, the server); the indexer yields to the sync lock, and MCP writes
   use the library's own locking. Nothing else coordinates them.
+
+## Creating a project over MCP
+
+`POST /v1/host/mcp` is the host's own MCP endpoint (Streamable HTTP, the same
+JSON-RPC plumbing as the project endpoint). It has one tool, `create_project`.
+
+- **Auth.** The Bearer must equal `HOST_OPERATOR_TOKEN` (constant-time
+  compare). There is no host identity beyond that token. With the variable
+  unset the route answers 404 and does nothing; a missing Bearer is 401; any
+  other Bearer, including a project member token or a project API key, is 403.
+- **Config.** `HOST_PROJECTS_ROOT`, `HOST_LANES_ROOT`, `HOST_GIT_URL_PREFIX`,
+  and optionally `HOST_DEFAULT_POOL`. A missing required one makes the tool
+  answer with an error naming the variable.
+- **Call.** `create_project {name, gate?, branch?, pool?, initial_commit?,
+  pump?, serve?}` runs `vivi::project_create::create` on a blocking thread
+  (git repository, mailspace with the starter pump config, host registry
+  entry). It rolls back on failure and refuses a name that exists.
+- **Served at once.** The registry watcher polls every 3 s, so a project
+  registered with `serve = true` is served within a few seconds even without
+  this tool. `create_project` does not wait: it runs `hosted::reconcile_registry`
+  itself, so the project answers at `/v1/projects/{id}/mcp` before the tool
+  returns. `serve = false` registers the project but leaves it unserved.
+- **Answer.** The `ProjectCreated` fields (`project_root`, `git_url`,
+  `repo_path`, `mailspace_id`, `initial_commit`, `readiness`) plus `served`,
+  `project_id`, `mcp_path`, `member`, and `operator_key`. The key is minted
+  in-process for the host's own member with identity `operator`, the shape
+  `pump_control` and `pump_gate` require. It is shown once; the server keeps
+  only a digest, and never logs it. If serving failed, `served` is false and
+  `serve_error` says why.
