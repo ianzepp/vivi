@@ -48,6 +48,7 @@ pub mod readiness;
 pub mod ready;
 pub mod reclaim;
 pub mod recover;
+pub(crate) mod revision_input;
 pub mod record;
 pub mod replan;
 pub mod report;

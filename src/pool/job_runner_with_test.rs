@@ -15,6 +15,8 @@ struct Rig {
     f: Fixture,
     work: tempfile::TempDir,
     start: String,
+    /// The text of `extra-targets.env`, when the job carries extra checkouts.
+    extras: Option<String>,
 }
 
 impl Rig {
@@ -42,7 +44,18 @@ impl Rig {
             ],
         );
         let start = git(&work.path().join("repo"), &["rev-parse", "A"]);
-        Self { f, work, start }
+        Self {
+            f,
+            work,
+            start,
+            extras: None,
+        }
+    }
+
+    /// Deliver `text` as the job's `extra-targets.env`.
+    fn with_extras(mut self, text: String) -> Self {
+        self.extras = Some(text);
+        self
     }
 
     /// Point the checkout at a Git worktree of the fixture repository, the
@@ -118,6 +131,9 @@ impl Rig {
         if !with.is_empty() {
             let list: String = with.iter().map(|e| format!("{e}\n")).collect();
             std::fs::write(job.join("with.list"), list).unwrap();
+        }
+        if let Some(extras) = &self.extras {
+            std::fs::write(job.join("extra-targets.env"), extras).unwrap();
         }
     }
 
@@ -275,4 +291,120 @@ fn in_worktree_mode_a_named_branch_is_reported_without_a_fetch() {
     assert_eq!(result.get("with_1_ref"), "B");
     assert_eq!(result.get("with_1_local"), "B", "the ref as named");
     assert_eq!(result.get("with_1_sha"), b_sha);
+}
+
+/// One extra checkout entry of `extra-targets.env`.
+fn extra_entry(index: usize, id: &str, key: &str, repo: &Path, from: &str, local: &str) -> String {
+    format!(
+        "EXTRA_{index}_ID='{id}'\nEXTRA_{index}_KEY='{key}'\nEXTRA_{index}_REPOSITORY='file://{}'\n\
+         EXTRA_{index}_FROM='{from}'\nEXTRA_{index}_LOCAL_SOURCE='{local}'\nEXTRA_{index}_TOKEN='sekrit-extra'\n",
+        repo.display()
+    )
+}
+
+const KEY_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const KEY_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+#[test]
+fn extra_targets_are_fetched_read_only_beside_the_job_and_named_in_the_brief() {
+    let other = fixture();
+    let other_sha = git(&other.repo, &["rev-parse", "main"]);
+    let env = format!(
+        "EXTRA_COUNT='1'\n{}",
+        extra_entry(0, "gradus", KEY_A, &other.repo, &other_sha, "")
+    );
+    let rig = Rig::new().with_extras(env);
+
+    let result = rig.run_read_only("cat a.txt", &[]);
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    let checkout = rig.work.path().join("targets").join(KEY_A).join("repo");
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), other_sha);
+    assert!(checkout.join("a.txt").exists());
+    assert_eq!(result.get("extra_count"), "1");
+    assert_eq!(result.get("extra_0_target"), "gradus");
+    assert_eq!(result.get("extra_0_path"), checkout.to_string_lossy());
+    let brief = std::fs::read_to_string(rig.work.path().join("home/brief.md")).unwrap();
+    assert!(brief.contains("the brief"), "{brief}");
+    assert!(brief.contains("read-only"), "{brief}");
+    assert!(
+        brief.contains(&format!(
+            "- gradus: {} (at {})",
+            checkout.display(),
+            &other_sha[..12]
+        )),
+        "{brief}"
+    );
+    // The token file is gone and no credential is left in the extra checkout.
+    assert!(!rig.work.path().join("job/extra-targets.env").exists());
+    assert!(!checkout.join(".git/FETCH_HEAD").exists());
+    let config = std::fs::read_to_string(checkout.join(".git/config")).unwrap();
+    assert!(!config.contains("sekrit-extra"), "{config}");
+    assert!(
+        !tree_mentions_token(&rig.work.path().join("home")),
+        "token under the agent's home"
+    );
+    let brief_only = std::fs::read_to_string(rig.work.path().join("home/brief.md")).unwrap();
+    assert!(!brief_only.contains("sekrit-extra"));
+}
+
+#[test]
+fn extra_targets_in_a_worktree_slot_are_the_providers_checkouts_moved_to_their_commit() {
+    let other = fixture();
+    let first = git(&other.repo, &["rev-parse", "main~1"]);
+    let rig = Rig::new().as_worktree();
+    let checkout = rig.work.path().join("targets").join(KEY_B).join("repo");
+    std::fs::create_dir_all(checkout.parent().unwrap()).unwrap();
+    git(
+        &other.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let source = other.repo.display().to_string();
+    let env = format!(
+        "EXTRA_COUNT='1'\n{}",
+        extra_entry(0, "inferentia", KEY_B, &other.repo, &first, &source)
+    );
+    let rig = rig.with_extras(env);
+
+    let result = rig.run_as("cat a.txt", &[], true, true);
+
+    assert_eq!(result.push(), "read_only_unchanged", "{:?}", result.fields);
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), first);
+    assert_eq!(result.get("extra_0_target"), "inferentia");
+}
+
+#[test]
+fn a_bad_extra_target_ends_the_job_before_the_agent_runs() {
+    let other = fixture();
+    let sha = git(&other.repo, &["rev-parse", "main"]);
+    // A key that is not 64 hex digits never names a path.
+    let env = format!(
+        "EXTRA_COUNT='1'\n{}",
+        extra_entry(0, "gradus", "../../etc", &other.repo, &sha, "")
+    );
+    let rig = Rig::new().with_extras(env);
+    let marker = rig.work.path().join("agent-ran");
+    let result = rig.run_read_only(&format!("touch {}", marker.display()), &[]);
+    assert_eq!(result.push(), "target_key_invalid", "{:?}", result.fields);
+    assert!(!marker.exists());
+
+    // A worktree entry whose checkout the provider never made is refused too.
+    let env = format!(
+        "EXTRA_COUNT='1'\n{}",
+        extra_entry(0, "gradus", KEY_A, &other.repo, &sha, "/not/prepared")
+    );
+    let rig = Rig::new().with_extras(env);
+    let result = rig.run_read_only("true", &[]);
+    assert_eq!(
+        result.push(),
+        "target_worktree_missing",
+        "{:?}",
+        result.fields
+    );
 }

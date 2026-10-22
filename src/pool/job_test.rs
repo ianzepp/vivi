@@ -36,6 +36,7 @@ fn privileged_publish_controls_are_runner_only_job_parameters() {
 fn plan() -> JobPlan {
     JobPlan {
         target: None,
+        extras: Vec::new(),
         prepared_cache_key: None,
         prepared_local_source: None,
         ramdisk_size_gib: None,
@@ -745,6 +746,73 @@ fn the_extra_refs_travel_as_with_list_and_only_when_there_are_some() {
     assert!(
         !visible,
         "the refs are the runner's to fetch, not the brief"
+    );
+}
+
+#[test]
+fn extra_checkouts_travel_in_a_root_only_file_that_holds_their_tokens() {
+    use crate::pool::dispatch::target::JobTarget;
+    let extra = |id: &str, key: char, token: &str, local: Option<&str>| ExtraCheckout {
+        target: JobTarget {
+            id: id.into(),
+            source: format!("https://github.com/acme/{id}.git"),
+            publish_remote: None,
+            cache_key: key.to_string().repeat(64),
+            local_source: local.map(str::to_owned),
+            seed: Vec::new(),
+            requires: Vec::new(),
+            build_dir: None,
+        },
+        from: "c".repeat(40),
+        token: Secret::new(token.into()),
+    };
+    assert!(
+        !build_bundle(&plan(), "s", &Secret::new("t".into()))
+            .files
+            .iter()
+            .any(|f| f.name == "extra-targets.env"),
+        "no extras, no file"
+    );
+    let p = JobPlan {
+        extras: vec![
+            extra("gradus", 'a', "ghs_GRADUS", None),
+            extra("tela", 'b', "", Some("/src/tela")),
+        ],
+        ..plan()
+    };
+    let bundle = build_bundle(&p, "s", &Secret::new("t".into()));
+    let file = bundle
+        .files
+        .iter()
+        .find(|f| f.name == "extra-targets.env")
+        .unwrap();
+    assert_eq!(file.mode, 0o600);
+    let body = text(&bundle, "extra-targets.env");
+    assert!(body.starts_with("EXTRA_COUNT='2'\n"), "{body}");
+    assert!(body.contains("EXTRA_0_ID='gradus'\n"), "{body}");
+    assert!(
+        body.contains(&format!("EXTRA_0_KEY='{}'\n", "a".repeat(64))),
+        "{body}"
+    );
+    assert!(
+        body.contains("EXTRA_0_REPOSITORY='https://github.com/acme/gradus.git'\n"),
+        "{body}"
+    );
+    assert!(body.contains("EXTRA_0_TOKEN='ghs_GRADUS'\n"), "{body}");
+    assert!(
+        body.contains("EXTRA_1_LOCAL_SOURCE='/src/tela'\n"),
+        "{body}"
+    );
+    // Only the runner reads it; no file the agent can see carries a token.
+    for visible in bundle.agent_visible() {
+        let content = String::from_utf8_lossy(&visible.content);
+        assert!(!content.contains("ghs_GRADUS"), "{}", visible.name);
+    }
+    assert!(
+        !bundle
+            .agent_visible()
+            .iter()
+            .any(|f| f.name == "extra-targets.env")
     );
 }
 

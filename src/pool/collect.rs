@@ -40,7 +40,7 @@ const SECTION_LOG: &str = "@@vivi-pool log";
 pub const COLLECT_SCRIPT: &str = r#"J="${WORK:-/work}/job"
 [ -f "$J/result" ] || exit 0
 echo '@@vivi-pool result'; cat "$J/result"
-echo '@@vivi-pool receipt'; head -c 65536 "$J/agent.out" 2>/dev/null; echo
+echo '@@vivi-pool receipt'; head -c 262144 "$J/agent.out" 2>/dev/null; echo
 echo '@@vivi-pool stderr'; tail -c 4096 "$J/agent.err" 2>/dev/null; echo
 echo '@@vivi-pool log'; tail -c 4096 "$J/run.log" 2>/dev/null; echo
 "#;
@@ -62,7 +62,9 @@ pub const RESTORED_PATH_PREFIX: &str = "restored_path_";
 /// Outcome words of a read-only job (the `push` key of the result).
 pub const READ_ONLY_UNCHANGED: &str = "read_only_unchanged";
 pub const READ_ONLY_DISCARDED: &str = "read_only_discarded";
-const RECEIPT_BYTES: usize = 65_536;
+/// Large enough for a revision plan that carries every prior unit brief back
+/// (the revision input budget is 50 KB), with room for the receipt around it.
+const RECEIPT_BYTES: usize = 262_144;
 const TAIL_BYTES: usize = 4096;
 
 /// How the engine paces its polling.

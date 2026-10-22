@@ -229,6 +229,23 @@ pub trait PoolProvider {
         Ok(())
     }
 
+    /// Prepare a read-only extra checkout (`--also-target`) beside the job's
+    /// own. A fetching slot needs nothing: the runner fetches it. A worktree
+    /// slot overrides this to add the worktree.
+    fn prepare_extra_checkout(
+        &self,
+        _id: &str,
+        target: &super::dispatch::target::JobTarget,
+        _start: &str,
+    ) -> Result<(), VivariumError> {
+        if target.local_source.is_some() {
+            return Err(VivariumError::Config(
+                "local repository targets require a local provider".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// How this host's slots live. Resting unless the host says otherwise.
     fn slot_lifetime(&self) -> SlotLifetime {
         SlotLifetime::Resting

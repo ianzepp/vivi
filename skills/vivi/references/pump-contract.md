@@ -160,7 +160,7 @@ The body is the reason. Posting also logs one **pump action** / **posted** event
 
 **Upgrading from before 19.** Run **vivi pump adopt** once. It opens a record for every need the pump has planned or is planning and has not finished (not complete, withdrawn or closed) that has no open record, so in-flight work keeps its replies. It is idempotent, **--dry-run** lists what it would open, a gate fix need the pump created without a record is adopted too, and a need that is not a mailspace need (the **pumpfix-** repair needs of Vivi 15) is reported as skipped.
 
-Whole-need planning, thread amendments, and split planning all use durable jobs for the active pump-planner role, whose charter is the planner's system prompt. The worker returns complete plan JSON inside the **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** markers; the pump materializes the plan under **plans/** and passes it through normal validation and ingestion. Planner command execution and detached planner reapers are not used.
+Whole-need planning, thread amendments, and split planning all use durable jobs for the active pump-planner role, whose charter is the planner's system prompt. The worker returns complete plan JSON inside the **PUMP-PLAN-BEGIN** and **PUMP-PLAN-END** markers; the pump materializes the plan under **plans/** and passes it through normal validation and ingestion. Planner command execution and detached planner reapers are not used. A pump with named **[pump.targets]** gives every planner job one read-only checkout of each configured target beside its own (**vivi pool dispatch --also-target &lt;id&gt;**, read-only jobs only; a target whose source is the job's own is skipped), laid out under the slot's **targets/&lt;key&gt;/repo** and named in the planner's brief, so a plan can place a unit in any target after reading it.
 
 A planned need is rehashed from its source thread on every board pass. Board **last_event** is not the trigger: a reply records a **replied** event on the parent need so operators can see the thread moved, and the hash comparison asks the planner for a revision even when that stamp is unchanged or truncated to the same second. A reply on a closed need reopens it and starts the same revision path.
 
@@ -205,11 +205,18 @@ fresh plan.
 **vivi pump recover <need>... [--target <id>] [--reason <text>] [--dry-run]** releases a need branch held **unverified** (a need-merge job published a tip the pump did not accept; the log says `need branch held for explicit recovery` once). It posts a recover action on the need's open pump record. The pump reads the remote **vivi/need/&lt;id&gt;** ref again: when it still sits at the recorded unverified tip, that tip becomes the trusted tip, the hold and error clear, the branch is **active** and the need's **delivered** units merge onto it on the next dispatch; a moved or unreadable ref is refused with a **need-recover-refused** exception, and any other branch status is skipped with a **need-recover-skipped** log line. Applied recovers record **need-recovered**.
 
 A job brief over the project server's 64 KiB letter cap is never sent whole.
-Revision planner input is cut to fit (the thread, then long unit briefs), with
-a marker naming where the full text is. Any other job brief loses its middle,
-keeps its head and tail, and is saved in full as
-**job-briefs/&lt;job&gt;.full.txt**. Either cut records a
-**job-brief-truncated** exception.
+Revision planner input carries the whole prior plan: every unit of the need
+with its full brief and a **state** (**merged**, **in-flight**, **pending**,
+**withdrawn**, **replaced**) and an **amendable** flag that is true only for
+**pending**. Only the thread gives way to the cap: the need and the messages
+new since the last plan (**since_last_plan**) are kept first, the oldest
+replies go first, and **thread_elided** counts what was left out. If the
+prior plan alone does not fit, the revision is refused with a
+**revision-input** exception instead of being sent with cut briefs. The full
+input is always saved in **needs/&lt;need&gt;.json**. Any other job brief loses
+its middle, keeps its head and tail, and is saved in full as
+**job-briefs/&lt;job&gt;.full.txt**, and records a **job-brief-truncated**
+exception.
 
 **[pump.merge].repair_budget** is an optional wall-clock budget for quarantine
 repair units. When omitted it is **proof_timeout + 300 seconds**. An explicit

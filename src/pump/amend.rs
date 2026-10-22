@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::pump::host::{Ctx, shell_quote};
 use crate::pump::planner_jobs;
+use crate::pump::revision_input::{self, Inputs, Thread};
 use crate::pump::state::State;
 
 /// Detect post-plan thread changes on every planned need.
@@ -166,7 +167,7 @@ fn thread_newest_epoch(messages: &[Value]) -> Option<u64> {
 pub(super) const HASH_SCHEME: &str = "v4:";
 const LEGACY_HASH_SCHEME: &str = "v2:";
 
-fn thread_messages(ctx: &Ctx, handle: &str) -> Option<Vec<Value>> {
+pub(super) fn thread_messages(ctx: &Ctx, handle: &str) -> Option<Vec<Value>> {
     let text = ctx.vivi(&format!("need show {handle} --json"), 60).text;
     let start = text.find('[')?;
     match serde_json::from_str::<Vec<Value>>(&text[start..]) {
@@ -266,7 +267,7 @@ fn configured_pump_sender(ctx: &Ctx, message: &Value) -> bool {
     sender.eq_ignore_ascii_case(&ctx.cfg.reply_from)
 }
 
-fn is_root_message(root: &str, index: usize, message: &Value) -> bool {
+pub(super) fn is_root_message(root: &str, index: usize, message: &Value) -> bool {
     let handle = message["handle"].as_str().unwrap_or("");
     handle == root || (handle.is_empty() && index == 0)
 }
@@ -288,9 +289,19 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
     };
     let revision = record.revision.saturating_add(1);
     let previous_revision = record.revision;
-    let thread = ctx.vivi(&format!("need show {handle}"), 60).text;
-    let units = revision_units(st, record);
-    let Some(prompt) = revision_prompt(ctx, handle, revision, &thread, &units, note) else {
+    let thread = Thread::fetch(ctx, handle);
+    let seen = revision_input::load_seen(ctx, handle, previous_revision);
+    let Some(prompt) = revision_prompt(
+        ctx,
+        st,
+        &Inputs {
+            need: handle,
+            revision,
+            thread: &thread,
+            seen: seen.as_ref(),
+        },
+        note,
+    ) else {
         return;
     };
     let owner = format!("{handle}.revision");
@@ -311,6 +322,7 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
         ctx.exception("planner-dispatch-failed", handle, &error.to_string());
         return;
     }
+    revision_input::save_seen(ctx, handle, revision, &thread);
     st.board
         .revision_planning
         .insert(handle.to_owned(), queued_at);
@@ -320,46 +332,28 @@ fn launch_revision(ctx: &Ctx, st: &mut State, handle: &str, note: Option<&str>) 
     ));
 }
 
-fn revision_units(st: &State, record: &crate::pump::state::NeedRecord) -> Vec<Value> {
-    record
-        .units
-        .iter()
-        .filter_map(|uid| {
-            st.units.get(uid).map(|unit| {
-                serde_json::json!({
-                    "id": uid,
-                    "status": unit.status.as_str(),
-                    "target": unit.target_id(),
-                    "title": unit.title,
-                    "brief": unit.brief,
-                    "write_scope": unit.write_scope,
-                    "after": unit.after,
-                    "proof": unit.proof,
-                    "tools": unit.tools,
-                })
-            })
-        })
-        .collect()
-}
-
+/// The planner prompt for one revision. The full input is saved on the pump
+/// host; the prompt carries the whole prior plan and as much of the thread as
+/// the task letter holds, and says what it left out. `None` when the input
+/// cannot be saved or the prior plan alone does not fit the letter.
 fn revision_prompt(
     ctx: &Ctx,
-    handle: &str,
-    revision: u64,
-    thread: &str,
-    units: &[Value],
+    st: &State,
+    inputs: &Inputs<'_>,
     note: Option<&str>,
 ) -> Option<String> {
+    let (handle, revision) = (inputs.need, inputs.revision);
     let needs = ctx.home.join("needs");
     drop(fs::create_dir_all(&needs));
-    let input = RevisionFile {
-        need: handle,
-        revision,
-        thread,
-        units,
-    };
     let saved = needs.join(format!("{handle}.json"));
-    if let Err(error) = write_json(&saved, &input) {
+    let full = match revision_input::build(ctx, st, inputs, None) {
+        Ok(value) => value,
+        Err(error) => {
+            ctx.exception("revision-input", handle, &error);
+            return None;
+        }
+    };
+    if let Err(error) = write_json(&saved, &full) {
         ctx.exception(
             "revision-input",
             handle,
@@ -367,99 +361,30 @@ fn revision_prompt(
         );
         return None;
     }
-    let input_json = match fitted_input_json(handle, revision, thread, units, &saved) {
-        Ok(text) => text,
+    let input_json = match revision_input::build(ctx, st, inputs, Some(revision_input::BUDGET)) {
+        Ok(value) => value.to_string(),
         Err(error) => {
-            ctx.exception(
-                "revision-input",
-                handle,
-                &format!("could not encode revision input: {error}"),
-            );
+            ctx.exception("revision-input", handle, &error);
             return None;
         }
     };
     let prompt = format!(
         "Revise one plan, as your system prompt describes. The complete input JSON is between \
-         REVISION-INPUT-BEGIN and REVISION-INPUT-END. Return the full plan with revision {revision} \
-         and the complete unit set. Keep every existing unit id. Never change a merged, no-defect, \
-         inflight or delivered unit; amend only pending units; add new units for the addendum; list \
-         withdrawn pending unit ids in \"withdraw\".\n\nREVISION-INPUT-BEGIN\n{input_json}\n\
+         REVISION-INPUT-BEGIN and REVISION-INPUT-END. `units` is the whole prior plan: every unit \
+         with its full brief, write scope and proof, and a `state` that says what you may do with \
+         it. Return the full plan with revision {revision} and the complete unit set. Keep every \
+         existing unit id. Copy every unit whose `amendable` is false exactly as given (merged, \
+         no-defect, in-flight, delivered and the like); never change a withdrawn or replaced unit \
+         or reuse its id; amend only units whose state is `pending`; add new units for the \
+         addendum; list withdrawn pending unit ids in \"withdraw\". `thread` holds the need \
+         thread; read `thread_note` for which messages are new since the last plan and \
+         `thread_elided` for anything left out.\n\nREVISION-INPUT-BEGIN\n{input_json}\n\
          REVISION-INPUT-END"
     );
     Some(match note {
         Some(note) => format!("{prompt} Reason for this revision: {note}."),
         None => prompt,
     })
-}
-
-/// The most bytes of revision input JSON that go into the planner prompt. The
-/// task letter is capped at 64 KiB, so the prompt carries what fits and the
-/// full input stays in `<home>/needs/<handle>.json`.
-const REVISION_INPUT_BUDGET: usize = 44_000;
-
-/// The longest unit brief kept when the units alone would crowd the thread out.
-const UNIT_BRIEF_CHARS: usize = 600;
-
-/// Encode the revision input, cutting the need thread (and, when the units
-/// alone are over half the budget, each unit brief) until it fits
-/// [`REVISION_INPUT_BUDGET`]. A cut thread ends with a marker naming where the
-/// full text is.
-fn fitted_input_json(
-    handle: &str,
-    revision: u64,
-    thread: &str,
-    units: &[Value],
-    saved: &std::path::Path,
-) -> Result<String, serde_json::Error> {
-    let encode = |thread: &str, units: &[Value]| {
-        serde_json::to_string(&RevisionFile {
-            need: handle,
-            revision,
-            thread,
-            units,
-        })
-    };
-    let whole = encode(thread, units)?;
-    if whole.len() <= REVISION_INPUT_BUDGET {
-        return Ok(whole);
-    }
-    let mut units = units.to_vec();
-    if serde_json::to_string(&units)?.len() > REVISION_INPUT_BUDGET / 2 {
-        for unit in &mut units {
-            shorten_brief(unit);
-        }
-    }
-    let marker = format!(
-        "\n[truncated; full thread via `vivi need show {handle}` or in {}]",
-        saved.display()
-    );
-    let spare = REVISION_INPUT_BUDGET
-        .saturating_sub(serde_json::to_string(&units)?.len())
-        .max(4_000);
-    let mut cut = thread.len().min(spare.saturating_sub(marker.len()));
-    loop {
-        while !thread.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        let encoded = encode(&format!("{}{marker}", &thread[..cut]), &units)?;
-        // JSON escaping makes the encoded size differ from the raw size, so
-        // shrink by the overshoot (at least an eighth) until it fits.
-        if encoded.len() <= REVISION_INPUT_BUDGET || cut == 0 {
-            return Ok(encoded);
-        }
-        let overshoot = encoded.len() - REVISION_INPUT_BUDGET;
-        cut -= overshoot.max(cut / 8).min(cut);
-    }
-}
-
-fn shorten_brief(unit: &mut Value) {
-    let Some(brief) = unit.get("brief").and_then(Value::as_str) else {
-        return;
-    };
-    if brief.chars().count() > UNIT_BRIEF_CHARS {
-        let cut: String = brief.chars().take(UNIT_BRIEF_CHARS).collect();
-        unit["brief"] = Value::String(format!("{cut} [truncated]"));
-    }
 }
 
 /// Drop revision planners whose plan file landed, or whose timeout expired.
@@ -661,14 +586,6 @@ fn epoch(stamp: &str) -> Option<u64> {
         Ok(time) => Some(u64::try_from(time.timestamp()).unwrap_or(0)),
         Err(_) => None,
     }
-}
-
-#[derive(Serialize)]
-struct RevisionFile<'a> {
-    need: &'a str,
-    revision: u64,
-    thread: &'a str,
-    units: &'a [Value],
 }
 
 fn write_json(path: &std::path::Path, value: &impl Serialize) -> std::io::Result<()> {

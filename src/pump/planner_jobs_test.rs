@@ -250,3 +250,90 @@ fn a_planner_job_carries_a_start_ref_that_pool_dispatch_planning_accepts() {
     .unwrap();
     assert_eq!(plan.refs.from, from);
 }
+
+fn three_targets() -> PumpConfig {
+    use crate::pump::config::PumpTarget;
+    let target = |branch: &str| PumpTarget {
+        branch: branch.into(),
+        ..PumpTarget::default()
+    };
+    PumpConfig {
+        targets: std::collections::BTreeMap::from([
+            ("radix".to_owned(), target("next")),
+            ("gradus".to_owned(), target("main")),
+            ("inferentia".to_owned(), target("main")),
+        ]),
+        ..PumpConfig::default()
+    }
+}
+
+#[test]
+fn a_planner_reads_every_configured_target_and_not_only_the_default_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, host) = test_ctx(dir.path(), three_targets());
+    let ctx = ctx.with_routing(planner_routing(&[("pump-planner", "apool")]));
+    host.reply(
+        "pool status --porcelain",
+        0,
+        "slot apool bridge slot-1 free\nslot apool bridge slot-2 free",
+    );
+    host.reply("task send", 0, "created 1234abcd");
+    host.reply("pool dispatch", 0, "dispatched 1234abcd to apool");
+    let mut st = State::default();
+
+    // A board planner has no target of its own: it reads all three.
+    let board = enqueue_one(&ctx, &mut st).unwrap();
+    assert_eq!(
+        st.jobs()[&board].extra_targets,
+        ["gradus", "inferentia", "radix"]
+    );
+    assert!(st.jobs()[&board].read_only);
+
+    // A split planner starts in its unit's target and reads the others.
+    let split = enqueue(
+        &ctx,
+        &mut st,
+        "split",
+        "n1-1",
+        100,
+        "plan",
+        60,
+        "board/n1-1.out",
+        "plans/n1-1.split.json",
+        Some("gradus"),
+    )
+    .unwrap();
+    assert_eq!(st.jobs()[&split].target.as_deref(), Some("gradus"));
+    assert_eq!(st.jobs()[&split].extra_targets, ["inferentia", "radix"]);
+
+    // The dispatch asks for each extra checkout, read-only.
+    jobs::dispatch_pending(&ctx, &mut st).unwrap();
+    let commands = host.commands();
+    let board_cmd = commands
+        .iter()
+        .find(|cmd| cmd.contains("pool dispatch") && !cmd.contains("--target"))
+        .expect("no board planner dispatch");
+    for id in ["gradus", "inferentia", "radix"] {
+        assert!(
+            board_cmd.contains(&format!("--also-target {id}")),
+            "{board_cmd}"
+        );
+    }
+    assert!(board_cmd.contains("--read-only"), "{board_cmd}");
+    let split_cmd = commands
+        .iter()
+        .find(|cmd| cmd.contains("--target gradus"))
+        .expect("no split planner dispatch");
+    assert!(!split_cmd.contains("--also-target gradus"), "{split_cmd}");
+    assert!(split_cmd.contains("--also-target radix"), "{split_cmd}");
+}
+
+#[test]
+fn a_single_repository_pump_gives_a_planner_no_extra_checkouts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _host) = test_ctx(dir.path(), PumpConfig::default());
+    let ctx = ctx.with_routing(planner_routing(&[("pump-planner", "apool")]));
+    let mut st = State::default();
+    let id = enqueue_one(&ctx, &mut st).unwrap();
+    assert!(st.jobs()[&id].extra_targets.is_empty());
+}

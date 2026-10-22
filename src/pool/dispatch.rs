@@ -155,6 +155,7 @@ fn assemble_job_plan(
     } = resolved;
     JobPlan {
         target: None,
+        extras: Vec::new(),
         prepared_cache_key: None,
         prepared_local_source: None,
         ramdisk_size_gib: None,
@@ -541,6 +542,9 @@ fn deliver(
         .as_ref()
         .map_or(plan.refs.from.as_str(), |c| c.start.as_str());
     let prepared_workspace = provider.prepare_job(id, plan.target.as_ref(), start, &plan.job)?;
+    for extra in &plan.extras {
+        provider.prepare_extra_checkout(id, &extra.target, &extra.from)?;
+    }
     let mut bundle_plan = plan.clone();
     bundle_plan.prepared_cache_key = prepared_workspace
         .as_ref()

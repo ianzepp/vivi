@@ -50,6 +50,9 @@ pub struct JobSpec {
     pub pool_exclude: Vec<String>,
     /// Optional repository target passed to pool dispatch.
     pub target: Option<String>,
+    /// Other repository targets checked out read-only beside the job's own
+    /// (`--also-target`). Only a read-only job may name any.
+    pub extra_targets: Vec<String>,
     /// Optional source ref or commit passed with `--from`.
     pub from_ref: Option<String>,
     /// Additional branches/refs the pool must fetch for this task.
@@ -103,6 +106,7 @@ impl JobSpec {
             local_only: false,
             pool_exclude: Vec::new(),
             target: None,
+            extra_targets: Vec::new(),
             from_ref: None,
             with: Vec::new(),
             model: None,
@@ -165,6 +169,8 @@ pub struct PoolJob {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pool_exclude: Vec<String>,
     pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_targets: Vec<String>,
     pub from_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub with: Vec<String>,
@@ -231,6 +237,7 @@ impl From<JobSpec> for PoolJob {
             local_only: spec.local_only,
             pool_exclude: spec.pool_exclude,
             target: spec.target,
+            extra_targets: spec.extra_targets,
             from_ref: spec.from_ref,
             with: spec.with,
             model: spec.model,
@@ -895,6 +902,9 @@ fn pool_command(job: &PoolJob, pool: &str, task: &str) -> String {
     if let Some(target) = &job.target {
         args.push(format!("--target {}", shell_quote(target)));
     }
+    for extra in &job.extra_targets {
+        args.push(format!("--also-target {}", shell_quote(extra)));
+    }
     if let Some(from) = &job.from_ref {
         args.push(format!("--from {}", shell_quote(from)));
     }
@@ -999,6 +1009,7 @@ fn same_spec(job: &PoolJob, spec: &JobSpec) -> bool {
         && job.local_only == spec.local_only
         && job.pool_exclude == spec.pool_exclude
         && job.target == spec.target
+        && job.extra_targets == spec.extra_targets
         && job.from_ref == spec.from_ref
         && job.with == spec.with
         && job.model == spec.model

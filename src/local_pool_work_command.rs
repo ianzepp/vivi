@@ -83,6 +83,15 @@ pub(crate) fn dispatch(command: &PoolDispatchCommand) -> Result<(), VivariumErro
             .as_ref()
             .and_then(|selected| selected.target.publish_remote.clone());
     }
+    plan.extras = resolve_extras(
+        &space,
+        &handle.config,
+        &id.pool,
+        command,
+        &flags,
+        &plan,
+        &progress,
+    )?;
     read_only_notes(flags.read_only, config, &task.body, &progress);
     let (token, start) = match (config.worktree_source(), flags.read_only) {
         (Some(path), true) => worktree_read_only_start(&path, &mut plan, &progress)?,
@@ -134,6 +143,40 @@ fn resolve_target_config(
         VivariumError::Config("--target requires [pump] repository targets".into())
     })?;
     dispatch::target::resolve(config, pump, &space.root, target).map(Some)
+}
+
+/// The other targets checked out read-only beside the job's own
+/// (`--also-target`), resolved before any slot is claimed. Only a read-only
+/// job may carry them: the checkouts are scratch space nothing publishes.
+fn resolve_extras(
+    space: &Mailspace,
+    config: &PoolConfig,
+    pool: &str,
+    command: &PoolDispatchCommand,
+    flags: &DispatchFlags,
+    plan: &job::JobPlan,
+    progress: &Progress,
+) -> Result<Vec<job::ExtraCheckout>, VivariumError> {
+    if command.also_target.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !flags.read_only {
+        return Err(VivariumError::Message(
+            "--also-target needs a read-only job: the extra checkouts are never published".into(),
+        ));
+    }
+    let pump = space.config.pump.as_ref().ok_or_else(|| {
+        VivariumError::Config("--also-target requires [pump] repository targets".into())
+    })?;
+    vivi::pool::extras::resolve(
+        pool,
+        config,
+        pump,
+        &space.root,
+        plan.target.as_ref(),
+        &command.also_target,
+        progress,
+    )
 }
 
 /// A fresh job id for this dispatch: the task handle, the wall clock and the

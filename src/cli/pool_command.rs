@@ -91,6 +91,12 @@ pub struct PoolDispatchCommand {
     #[arg(long)]
     pub target: Option<String>,
 
+    /// Another repository target to check out read-only beside the job's own,
+    /// repeatable (a planner reads every target). Read-only jobs only; each
+    /// is placed at `<slot>/targets/<key>/repo` and named in the brief
+    #[arg(long, value_name = "TARGET", requires = "read_only")]
+    pub also_target: Vec<String>,
+
     /// Task handle; its body is the brief
     pub task: String,
 

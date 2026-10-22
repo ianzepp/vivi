@@ -331,11 +331,25 @@ pub struct Checkout {
     pub start: String,
 }
 
+/// Another repository target checked out read-only beside a job's own, with
+/// the commit dispatch resolved for it and the token its fetch needs (empty
+/// for a plain Git remote or a worktree slot). See [`super::extras`].
+#[derive(Debug, Clone)]
+pub struct ExtraCheckout {
+    pub target: super::dispatch::target::JobTarget,
+    /// The full commit the checkout is detached at.
+    pub from: String,
+    /// A read-only token for this repository only; never given to the agent.
+    pub token: Secret,
+}
+
 /// Everything about a job that is known before a slot is chosen.
 #[derive(Debug, Clone)]
 pub struct JobPlan {
     /// Explicit workspace repository selection; absent retains legacy slots.
     pub target: Option<super::dispatch::target::JobTarget>,
+    /// Other targets checked out read-only beside the job's own.
+    pub extras: Vec<ExtraCheckout>,
     /// Provider-prepared checkout cache for a no-target job, used for
     /// per-job RAM disks such as read-only gate runs.
     pub prepared_cache_key: Option<String>,
@@ -466,6 +480,9 @@ pub fn build_bundle(spec: &JobPlan, slot: &str, token: &Secret) -> Bundle {
     }
     if let Some(list) = with_list(&spec.with) {
         files.push(file("with.list", &list, 0o600));
+    }
+    if !spec.extras.is_empty() {
+        files.push(file("extra-targets.env", &extras_env(&spec.extras), 0o600));
     }
     if !spec.restore.is_empty() {
         let list = spec.restore.join("\n") + "\n";
@@ -607,6 +624,27 @@ fn append_target_fields(fields: &mut Vec<ParamField>, spec: &JobPlan) {
             ),
         ]);
     }
+}
+
+/// The text of `extra-targets.env`: shell-quoted `EXTRA_<n>_*` fields, one set
+/// per extra checkout. Root-only like `params.env`; the tokens in it are read
+/// by the runner and never reach the agent.
+fn extras_env(extras: &[ExtraCheckout]) -> String {
+    let mut text = format!("EXTRA_COUNT={}\n", sh_quote(&extras.len().to_string()));
+    for (index, extra) in extras.iter().enumerate() {
+        let target = &extra.target;
+        for (name, value) in [
+            ("ID", target.id.as_str()),
+            ("KEY", target.cache_key.as_str()),
+            ("REPOSITORY", target.source.as_str()),
+            ("FROM", extra.from.as_str()),
+            ("LOCAL_SOURCE", target.local_source.as_deref().unwrap_or("")),
+            ("TOKEN", extra.token.expose()),
+        ] {
+            text.push_str(&format!("EXTRA_{index}_{name}={}\n", sh_quote(value)));
+        }
+    }
+    text
 }
 
 /// The text of `with.list`: one `<ref> <commit>` line per extra ref,

@@ -49,6 +49,7 @@ pub mod docker_tar;
 pub mod doctor;
 pub mod doctor_pool;
 pub mod doctor_repo;
+pub mod extras;
 pub mod facts;
 #[cfg(test)]
 #[path = "pool/fake_provider_test.rs"]

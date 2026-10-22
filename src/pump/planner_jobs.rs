@@ -48,6 +48,7 @@ pub fn enqueue(
     );
     spec.pool_candidates = vec![pool];
     spec.target = target.map(str::to_owned);
+    spec.extra_targets = other_targets(ctx, target);
     spec.from_ref = Some(start_ref(ctx, target));
     spec.budget = budget;
     spec.read_only = true;
@@ -55,6 +56,22 @@ pub fn enqueue(
     jobs::enqueue(st, spec)?;
     ctx.log(&format!("planner job queued {id}"));
     Ok(id)
+}
+
+/// Every configured repository target other than `own`, for a planner to read
+/// beside its own checkout: a plan may give a unit to any target, so the
+/// planner must be able to look at all of them. A single-repository pump has
+/// no named targets and nothing to add. The dispatch skips a target whose
+/// source is the job's own, so passing all of them is safe.
+fn other_targets(ctx: &Ctx, own: Option<&str>) -> Vec<String> {
+    if ctx.cfg.targets.is_empty() {
+        return Vec::new();
+    }
+    ctx.cfg
+        .target_configs()
+        .into_keys()
+        .filter(|id| Some(id.as_str()) != own)
+        .collect()
 }
 
 /// The ref a planner checks out: the target's dispatch start, else the

@@ -788,3 +788,69 @@ fn a_shared_slot_keeps_dynamic_target_worktrees_and_removes_them_on_destroy() {
     assert_eq!(Repo::new(&second.repo).worktrees().unwrap().len(), 1);
     assert!(!caches.exists());
 }
+
+#[test]
+fn an_extra_checkout_is_a_plain_worktree_beside_the_jobs_own_and_goes_with_the_slot() {
+    let rig = Rig::new();
+    let other = fixture();
+    let slot = rig.provider.list().unwrap().remove(0);
+    let extra = dispatch::target::JobTarget {
+        id: "gradus".into(),
+        source: other.repo.to_string_lossy().into_owned(),
+        publish_remote: None,
+        cache_key: "c".repeat(64),
+        local_source: Some(other.repo.to_string_lossy().into_owned()),
+        seed: Vec::new(),
+        requires: Vec::new(),
+        build_dir: None,
+    };
+    let start = git(&other.repo, &["rev-parse", "HEAD"]);
+
+    rig.provider
+        .prepare_extra_checkout(&slot.id, &extra, &start)
+        .unwrap();
+    // Preparing it again for the next job reuses the worktree.
+    rig.provider
+        .prepare_extra_checkout(&slot.id, &extra, &start)
+        .unwrap();
+
+    let checkout = rig
+        .root
+        .join(&slot.id)
+        .join("targets")
+        .join(&extra.cache_key)
+        .join("repo");
+    assert_eq!(
+        Repo::new(&checkout).common_dir().unwrap(),
+        Repo::new(&other.repo).common_dir().unwrap()
+    );
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), start);
+    // A target the runner fetches needs nothing from the provider.
+    let fetched = dispatch::target::JobTarget {
+        local_source: None,
+        cache_key: "d".repeat(64),
+        ..extra.clone()
+    };
+    rig.provider
+        .prepare_extra_checkout(&slot.id, &fetched, &start)
+        .unwrap();
+    assert!(
+        !rig.root
+            .join(&slot.id)
+            .join("targets")
+            .join(&fetched.cache_key)
+            .exists()
+    );
+    // A bad key never names a path.
+    let bad = dispatch::target::JobTarget {
+        cache_key: "../x".into(),
+        ..extra
+    };
+    assert!(
+        rig.provider
+            .prepare_extra_checkout(&slot.id, &bad, &start)
+            .is_err()
+    );
+    rig.provider.destroy(&slot.id).unwrap();
+    assert_eq!(Repo::new(&other.repo).worktrees().unwrap().len(), 1);
+}

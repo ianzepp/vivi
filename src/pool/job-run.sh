@@ -43,6 +43,17 @@
 #                commit dispatch resolved it to (or `-`); fetch mode deepens
 #                until each has a merge base with FROM (see the with loop
 #                below)
+#   extra-targets.env
+#                optional: other repositories to check out read-only beside
+#                this job's own (a planner reads every target). EXTRA_COUNT and,
+#                per index n, EXTRA_n_ID EXTRA_n_KEY (the 64-hex cache key)
+#                EXTRA_n_REPOSITORY EXTRA_n_FROM (the commit dispatch resolved)
+#                EXTRA_n_LOCAL_SOURCE (set for a worktree slot, whose checkout
+#                the provider already prepared) and EXTRA_n_TOKEN (read-only,
+#                root-only, never given to the agent; removed as soon as read
+#                where UNPRIVILEGED). Each lands at $WORK/targets/<key>/repo,
+#                detached at its commit, and is named in the agent's brief
+#                (see the extra-targets block below).
 # Environment from the machine: BUILD_DIR, and any variable named in
 # ENV_NAMES (their values come from the machine's own environment).
 # UNPRIVILEGED, BUILD_PERSISTS and WORK are the ones of the boot script.
@@ -292,6 +303,7 @@ finish() { # finish <push-outcome> [sha]
     fi
     [ -z "$SOURCE_PROOFS" ] || printf '%s\n' "$SOURCE_PROOFS"
     [ -z "${RESULT_EXTRA:-}" ] || printf '%s\n' "$RESULT_EXTRA"
+    [ -z "${EXTRA_TARGETS_EXTRA:-}" ] || printf '%s\n' "$EXTRA_TARGETS_EXTRA"
     [ -z "${RESTORE_EXTRA:-}" ] || printf '%s\n' "$RESTORE_EXTRA"
     [ -z "${FACTS_EXTRA:-}" ] || printf '%s\n' "$FACTS_EXTRA"
   } > "$J/result.partial"
@@ -704,7 +716,62 @@ if [ -f "$J/with.list" ]; then
 fi
 echo "from $FROM at ${START:0:12} prepared_s $(( $(now) - T0 ))"
 
+# Extra repositories: read-only checkouts of the other targets, one per entry
+# of extra-targets.env, beside the job's own at $W/targets/<key>/repo. A fetch
+# slot fetches each entry's commit with that entry's own token and leaves no
+# FETCH_HEAD (it holds the URL, and so the token); a worktree slot finds the
+# checkout the provider already made and moves it to the commit. Nothing here
+# is pushed or kept, and the agent only ever sees the paths, named in its brief.
+EXTRA_NOTE=
+EXTRA_TARGETS_EXTRA=
+if [ -f "$J/extra-targets.env" ]; then
+  . "$J/extra-targets.env"
+  [ -z "${UNPRIVILEGED:-}" ] || rm -f "$J/extra-targets.env"
+  [[ "${EXTRA_COUNT:-0}" =~ ^[0-9]+$ ]] || finish target_key_invalid
+  for ((xi = 0; xi < EXTRA_COUNT; xi++)); do
+    x_name=EXTRA_${xi}_ID; x_id=${!x_name}
+    x_name=EXTRA_${xi}_KEY; x_key=${!x_name}
+    x_name=EXTRA_${xi}_REPOSITORY; x_repo=${!x_name}
+    x_name=EXTRA_${xi}_FROM; x_from=${!x_name}
+    x_name=EXTRA_${xi}_LOCAL_SOURCE; x_local=${!x_name}
+    x_name=EXTRA_${xi}_TOKEN; x_token=${!x_name}
+    [[ "$x_key" =~ ^[0-9a-f]{64}$ ]] || finish target_key_invalid
+    XD=$W/targets/$x_key
+    XR=$XD/repo
+    if [ -L "$W/targets" ] || [ -L "$XD" ] || [ -L "$XR" ]; then
+      finish target_cache_invalid
+    fi
+    if [ -n "$x_local" ]; then
+      [ -e "$XR/.git" ] || finish target_worktree_missing
+      as_hand git -C "$XR" checkout -q -f --detach "$x_from" || finish checkout_failed
+    else
+      mkdir -p "$XR" || finish target_prepare_failed
+      [ -n "${UNPRIVILEGED:-}" ] || chown -R hand:hand "$XD"
+      [ -d "$XR/.git" ] || as_hand git -C "$XR" init -q . || finish target_prepare_failed
+      x_url=$x_repo
+      case "$x_repo" in
+        https://*) [ -z "$x_token" ] || x_url="https://x-access-token:${x_token}@${x_repo#https://}" ;;
+      esac
+      as_hand git -C "$XR" fetch -q --depth "${DEPTH:-50}" "$x_url" "$x_from" || finish fetch_failed
+      rm -f "$XR/.git/FETCH_HEAD"
+      as_hand git -C "$XR" checkout -q -f --detach "$x_from" || finish checkout_failed
+    fi
+    as_hand git -C "$XR" clean -fdq || finish checkout_failed
+    EXTRA_NOTE+="- $x_id: $XR (at ${x_from:0:12})"$'\n'
+    EXTRA_TARGETS_EXTRA+="extra_${xi}_target=$x_id"$'\n'"extra_${xi}_path=$XR"$'\n'
+  done
+  EXTRA_TARGETS_EXTRA="extra_count=$EXTRA_COUNT"$'\n'"${EXTRA_TARGETS_EXTRA%$'\n'}"
+fi
+
 mkdir -p "$AGENT_HOME" && cp "$J/brief.md" "$J/rules.md" "$AGENT_HOME/" || finish workdir_missing
+if [ -n "$EXTRA_NOTE" ]; then
+  {
+    printf '\n\n## Repositories\n\n'
+    printf 'Your working directory is %s. The other configured repositories are checked out\n' "${TARGET:-the default repository}"
+    printf 'beside it, read-only: read them freely; never edit them, nothing in them is kept.\n\n'
+    printf -- '- %s: %s (your working directory)\n%s' "${TARGET:-default}" "$RD" "$EXTRA_NOTE"
+  } >> "$AGENT_HOME/brief.md" || finish workdir_missing
+fi
 [ ! -f "$J/mcp.json" ] || cp "$J/mcp.json" "$AGENT_HOME/" || finish workdir_missing
 HAND_FILES="$AGENT_HOME/brief.md $AGENT_HOME/rules.md"
 [ ! -f "$AGENT_HOME/mcp.json" ] || HAND_FILES="$HAND_FILES $AGENT_HOME/mcp.json"

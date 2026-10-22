@@ -509,6 +509,45 @@ fn reject_target_symlinks(targets: &Path, cache: &Path) -> Result<(), VivariumEr
     Ok(())
 }
 
+/// Add (or recognize) the worktree of `source` at `<cache>/repo`, started at
+/// `start`, and record which repository it belongs to.
+fn add_target_worktree(cache: &Path, source: &str, start: &str) -> Result<(), VivariumError> {
+    let checkout = cache.join(slots::CHECKOUT);
+    let repo = super::local_git::Repo::new(Path::new(source));
+    if checkout.exists() {
+        let actual = super::local_git::Repo::new(&checkout).common_dir()?;
+        if actual != repo.common_dir()? {
+            return Err(VivariumError::Config(
+                "target cache belongs to another repository".into(),
+            ));
+        }
+    } else {
+        repo.add_worktree(&checkout, start)?;
+    }
+    std::fs::write(cache.join(slots::WORKTREE_OF_FILE), source)?;
+    Ok(())
+}
+
+impl LocalProvider {
+    /// The slot directory and the target's `<slot>/targets/<key>` cache path,
+    /// after the key is checked and no path on the way is a symlink.
+    fn target_cache(
+        &self,
+        id: &str,
+        target: &super::dispatch::target::JobTarget,
+    ) -> Result<(PathBuf, PathBuf), VivariumError> {
+        if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(VivariumError::Config("invalid target checkout key".into()));
+        }
+        let slot = self.known(id)?;
+        let targets = slot.join("targets");
+        let cache = targets.join(&target.cache_key);
+        reject_target_symlinks(&targets, &cache)?;
+        Ok((slot, cache))
+    }
+}
+
 /// Mount a fresh job disk (a RAM disk or an APFS volume, by the workspace
 /// kind) after admission, then atomically record its owner on the slot root
 /// for teardown and pump-start recovery. Whatever disk the slot still holds
@@ -657,23 +696,7 @@ impl PoolProvider for LocalProvider {
         if source.is_none() && !self.workspace.enabled {
             return Ok(());
         }
-        if target.cache_key.len() != 64 || !target.cache_key.bytes().all(|b| b.is_ascii_hexdigit())
-        {
-            return Err(VivariumError::Config("invalid target checkout key".into()));
-        }
-        let slot = self.known(id)?;
-        let targets = slot.join("targets");
-        let cache = targets.join(&target.cache_key);
-        for path in [&targets, &cache, &cache.join(slots::CHECKOUT)] {
-            if path
-                .symlink_metadata()
-                .is_ok_and(|m| m.file_type().is_symlink())
-            {
-                return Err(VivariumError::Config(
-                    "target checkout cannot be a symlink".into(),
-                ));
-            }
-        }
+        let (slot, cache) = self.target_cache(id, target)?;
         std::fs::create_dir_all(&cache)?;
         if self.workspace.enabled {
             mount_job_ramdisk(self, id, job, &slot, &cache, source)?;
@@ -681,20 +704,25 @@ impl PoolProvider for LocalProvider {
         let Some(source) = source else {
             return Ok(());
         };
-        let checkout = cache.join(slots::CHECKOUT);
-        let repo = super::local_git::Repo::new(Path::new(source));
-        if checkout.exists() {
-            let actual = super::local_git::Repo::new(&checkout).common_dir()?;
-            if actual != repo.common_dir()? {
-                return Err(VivariumError::Config(
-                    "target cache belongs to another repository".into(),
-                ));
-            }
-        } else {
-            repo.add_worktree(&checkout, start)?;
-        }
-        std::fs::write(cache.join(slots::WORKTREE_OF_FILE), source)?;
-        Ok(())
+        add_target_worktree(&cache, source, start)
+    }
+
+    /// An extra read-only checkout is a plain worktree of the target's
+    /// repository: no job disk is mounted for it (that disk belongs to the
+    /// job's own repository), and a target with no local source is fetched by
+    /// the runner instead.
+    fn prepare_extra_checkout(
+        &self,
+        id: &str,
+        target: &super::dispatch::target::JobTarget,
+        start: &str,
+    ) -> Result<(), VivariumError> {
+        let Some(source) = target.local_source.as_deref() else {
+            return Ok(());
+        };
+        let (_slot, cache) = self.target_cache(id, target)?;
+        std::fs::create_dir_all(&cache)?;
+        add_target_worktree(&cache, source, start)
     }
 
     /// The root is made by the first `create`; nothing to make beforehand.
