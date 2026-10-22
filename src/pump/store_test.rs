@@ -582,3 +582,23 @@ fn env_pauses_round_trip_through_pump_db() {
     assert_eq!(back.env_pauses["glm"].probe, None);
     assert_eq!(back.env_pauses["glm"].paused_at, None);
 }
+
+/// A store written by a pump before `needs.withdrawn` existed (schema 6, as
+/// on hub before 18.1.2) must gain the column on open, not fail every read.
+#[test]
+fn a_schema_6_store_without_withdrawn_gains_the_column_on_open() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(DB_FILENAME);
+    drop(PumpStore::open(&path).unwrap());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("ALTER TABLE needs DROP COLUMN withdrawn")
+        .unwrap();
+    conn.pragma_update(None, "user_version", 6).unwrap();
+    drop(conn);
+
+    let lock = File::create(dir.path().join("lock")).unwrap();
+    lock.try_lock().unwrap();
+    let store = PumpStore::open_for_run(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    store.load().expect("needs read after migration");
+}

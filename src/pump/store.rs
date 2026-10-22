@@ -34,7 +34,7 @@ pub use withdraw::WithdrawRequest;
 use super::state::{Attempt, GateRecord, NeedRecord, State, Status, Unit};
 
 /// The schema version written to `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The database filename inside the pump home.
 pub const DB_FILENAME: &str = "pump.db";
