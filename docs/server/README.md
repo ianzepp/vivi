@@ -14,6 +14,12 @@ at `/v1/rooms/{id}/mcp` (same tools as the project endpoint). See
 [`docs/phase-03-project-mailspace-hub.md`](docs/phase-03-project-mailspace-hub.md)
 item 17 and [`docs/contract.md`](docs/contract.md).
 
+**Hosted projects** are the other kind: an existing vivi mailspace on the
+server's machine, listed in the host registry with `serve = true`, is served
+directly from its own `.vivi/` (no copy), with MCP acting on it live through
+the `vivi` library. See
+[`docs/phase-04-hosted-projects.md`](docs/phase-04-hosted-projects.md).
+
 ## Quickstart
 
 Requires Rust 1.93+ (toolchain pinned in `rust-toolchain.toml`).
@@ -46,6 +52,11 @@ addressing, visibility, windows, handles, prune and resync). Run it for any
 change to the project wire or store; `SERVER_URL` points it at a deployed
 server.
 
+`scripts/hosted-smoke.sh` is the hosted-project gate: a host mailspace made
+with the CLI, registered with `vivi pump service add --serve`, served by a
+local server, and driven over MCP and the CLI against the same files. It
+boots its own server; there is no deployed mode.
+
 `scripts/chat-room-smoke.sh` is the rooms gate: create → join → send →
 poll → MCP `kind=chat` against a local or deployed server. Each run leaves
 one throwaway chat project behind.
@@ -60,29 +71,23 @@ over HTTP, then two vivi checkouts and a third member syncing through a
 durable project (`vivi sync`), item events, MCP, and prune/resync. It needs
 a vivi 11 binary (`VIVI=...`).
 
-## Railway deploy
+## Deploy
 
-- Two Railway services, one per branch:
-  - **Production** deploys the `release` branch at
-    <https://vivi.fleeting.chat>. A push to `main` does
-    not redeploy it. To release, fast-forward `release` to a `main` commit
-    that has passed `cargo test` and the smoke
-    (`git push origin <main-sha>:release`), then run the smoke against
-    production.
-  - **Staging** (`vivi-server-main`) deploys `main` at
-    <https://vivi-server-main-production.up.railway.app>, so every merge
-    to `main` is built and can be smoked before a release.
-- Each service needs its own `/data` volume, `STORE_ENCRYPTION_KEY` and
-  `MODERATION_TOKEN`. Never share a volume or reuse the production key: the
-  boot verifier exits on a key mismatch with an existing sealed store.
-- A volume mounted at `/data` is required — rooms are persistent and
-  `DATA_DIR` must survive restarts.
+Self-hosted only. Railway was retired on 2026-10-21 (its project is being
+deleted; the secrets it held were exposed in a Railway breach and are not
+reused anywhere). A `v*` tag publishes checksummed binaries (see
+`.github/workflows/release.yml`); a host verifies and installs one and runs
+it under its own service manager. The operator's hub runs it tailnet-only
+(`BIND` = its tailnet address) as the `vivi` user, serving the projects its
+host registry marks `serve = true` (see
+[docs/phase-04-hosted-projects.md](docs/phase-04-hosted-projects.md)).
+
+- Each server needs its own `DATA_DIR`, `STORE_ENCRYPTION_KEY` and
+  `MODERATION_TOKEN`; the boot verifier exits on a key mismatch with an
+  existing sealed store, so back the key up.
+- The Dockerfile and `railway.toml` are unused leftovers.
 - The lockfile must keep the `vivi` git source
-  (`https://github.com/ianzepp/vivi`). The `.cargo` path patch used for
-  local development is local-only and uncommitted; a build whose lockfile
-  resolved to the path patch will fail on Railway.
-- Deployed at <https://vivi.fleeting.chat>. The Railway default domain,
-  `https://vivi-server-production.up.railway.app`, still answers.
+  (`https://github.com/ianzepp/vivi`), so tagged builds resolve it.
 
 ## Contract
 

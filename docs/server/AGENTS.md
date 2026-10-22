@@ -13,6 +13,10 @@ mailspace on the server (`DATA_DIR/projects/<id>/.vivi/`) with a
 Do not revive the seat/challenge rooms API or store chat under
 `DATA_DIR/rooms/`.
 
+Hosted projects (a mailspace already on the machine, served from its own
+`.vivi/` through the host registry) are built, recorded in
+[`docs/phase-04-hosted-projects.md`](docs/phase-04-hosted-projects.md).
+
 ## Vivi Mailspace
 
 Development coordination runs through a project mailspace at `.vivi/`:
@@ -40,113 +44,68 @@ Standing authorization from the repo owner for agent development:
 
 ## Deploy
 
-Two Railway services, one per branch:
+The only deploy path is a tagged binary release installed on a self-hosted
+server. Railway is retired (owner decision 2026-10-21; its project is
+scheduled for deletion and its secrets were exposed in a Railway breach):
+there is no staging service, no production service, and no deploy on a merge
+to `main`. A merge to `main` deploys nothing.
 
-- **Staging** (`vivi-server-main`) deploys `main` at
-  `https://vivi-server-main-production.up.railway.app`. Every fast-forward of
-  `main` redeploys it. After merging, confirm the deploy succeeded on the
-  merged commit (see Railway below). For changes to code, the wire, or the
-  `vivi` dependency, then run the smoke against it and report the result; a
-  docs-only merge needs only the deploy check, since every smoke run leaves a
-  throwaway room behind:
-
-  ```sh
-  SERVER_URL=https://vivi-server-main-production.up.railway.app scripts/two-checkout-smoke.sh
-  ```
-
-- **Production** deploys `release` at `https://vivi.fleeting.chat` (the
-  Railway default, `https://vivi-server-production.up.railway.app`, still
-  answers). A push to `main` does not redeploy it.
-
-Advancing `release` is a production deploy and is **not** covered by the
-standing authorization above: do it only when the repo owner asks. When
-asked, fast-forward only, from a `main` commit that has passed the checks
-below and the staging smoke, then run the smoke against production:
-
-```sh
-git push origin <main-sha>:release
-```
-
-### Binary releases (self-hosted servers)
-
-Self-hosted servers, such as the operator's hub on the tailnet, install a
-published binary rather than building one. A `v*` tag runs
-`.github/workflows/release.yml`, which checks that the tag matches the
-`[package] version` in `Cargo.toml`, builds `x86_64-unknown-linux-gnu` and
-`aarch64-apple-darwin`, and publishes `vivi-server-<target>.tar.gz` with a
-`.sha256` beside each to a GitHub Release. Hosts verify the checksum before
-installing.
+A `v*` tag runs `.github/workflows/release.yml`, which checks that the tag
+matches the `[package] version` in `Cargo.toml`, builds
+`x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`, and publishes
+`vivi-server-<target>.tar.gz` with a `.sha256` beside each to a GitHub
+Release. Hosts verify the checksum before installing.
 
 - A release is a version bump on `main` (Cargo.toml and Cargo.lock), then
-  `git tag -a vX.Y.Z` on that commit and push the tag. Ask the repo owner
-  before bumping a version or pushing a tag.
-- Tags and the Railway `release` branch are independent: a tag publishes
-  binaries and deploys nothing on Railway; advancing `release` deploys
-  production and publishes no binaries.
+  `git tag -a vX.Y.Z` on that commit and push the tag. **Ask the repo owner
+  before bumping a version or pushing a tag.**
+- The hub (the operator's server) is tailnet-only and runs the installed
+  binary as the `vivi` user under systemd. Installing or restarting it is the
+  owner's call (see the `hub` skill for the host).
 - `BIND` sets the listen address (default `0.0.0.0`). A tailnet-only host sets
   its tailnet IP so the server never listens on the LAN.
-
-## Railway
-
-Project `vivi-server` (`e58a80d2-1354-47d7-89eb-e60ac7a51834`) has one
-environment, `production` (`2812c193-7363-43cb-b5de-b6cdc4588ad4`), which holds
-both services:
-
-| Service | ID | Deploys | URL |
-| --- | --- | --- | --- |
-| `vivi-server-main` (staging) | `0a95c904-f75c-475c-b9ab-564277307bce` | `main` | `https://vivi-server-main-production.up.railway.app` |
-| `vivi-server` (production) | `1a754647-ef11-42a7-a5ef-7ec0b7ba3ed6` | `release` | `https://vivi.fleeting.chat` |
-
-The Railway connector's grant is account-wide: it sees every project in every
-workspace the owner has, and both services share one environment, so nothing in
-Railway separates staging from production. These rules are the only separation:
-
-- Touch only the `vivi-server` project. Never act on the owner's other projects.
-- Staging only, unless the owner asks. Any change to the production service
-  (redeploy, variables, source) needs an explicit ask, like advancing `release`.
-- Always pass `serviceId` and `environmentId` to `set-variables`. Omitting
-  `serviceId` writes environment-wide shared variables, which production
-  inherits.
-- Never read or echo production's variable values. `describe-service` lists
-  variable names only; do not call `list-variables` on production.
-- Never generate or set production's `STORE_ENCRYPTION_KEY`. The boot verifier
-  exits the process when the key does not match an existing sealed store, so a
-  rotation needs the owner and a plan for the data. Staging is the same: changing
-  its key means clearing its volume first.
-- Never put secret values in commits or docs.
-
-To see what is live, use `list-deployments`: it reports each deployment's status
-and exact commit hash. `/healthz` is identical across builds and cannot tell
-them apart. `railway.toml` overrides the dashboard: the dashboard shows the
-`RAILPACK` builder, but builds use the Dockerfile.
+- `STORE_ENCRYPTION_KEY` must not change for an existing data directory: the
+  boot verifier exits the process when the key does not match a sealed store.
+  Never put secret values in commits or docs.
+- `Dockerfile` and `railway.toml` remain in the tree but are unused. Deleting
+  them is the owner's call.
 
 ## Checks
 
-Run before merging:
+The merge gate, run before fast-forwarding `main`:
 
 ```sh
 cargo fmt --check
 cargo test
+VIVI=~/.local/bin/vivi scripts/project-sync-smoke.sh
+VIVI=~/.local/bin/vivi scripts/two-checkout-smoke.sh
+scripts/hosted-smoke.sh
 ```
+
+All three smokes run against a LOCAL server that the script boots from
+`target/debug/vivi-server`; do not point them at a deployed server (there is
+none to point at). Use a `vivi` binary at the version `Cargo.toml` pins.
 
 Measured baselines (burgus, 18-core Mac, 2026-10-10, warm target):
 `cargo fmt --check` under 1 s, `cargo test` about 8 s. Cold builds are
-unmeasured; the smoke script takes about two minutes (the prune leg waits
-for a 1 m cutoff).
+unmeasured; `scripts/hosted-smoke.sh` takes a few seconds; the two-checkout
+smoke takes about two minutes (the prune leg waits for a 1 m cutoff).
 
 `scripts/two-checkout-smoke.sh` is the release acceptance: the 1.3.0 rooms
-wire over HTTP, then two checkouts and a third member syncing through a durable
-project with `vivi sync`, item events, MCP, and prune/resync. It skips the
-outage leg against a deployed server and needs a vivi 11 binary (`VIVI=...`).
-Narrower scripts: `scripts/chat-room-smoke.sh` (rooms),
-`scripts/project-sync-smoke.sh` and `scripts/mcp-smoke.sh` (durable projects
-and MCP).
+wire over HTTP, then two checkouts and a third member syncing through a
+durable project with `vivi sync`, item events, MCP, and prune/resync.
+`scripts/project-sync-smoke.sh` is the project wire and store gate.
+`scripts/hosted-smoke.sh` checks that a hosted project is the host's own
+mailspace: a CLI-made host registered with `vivi pump service add --serve`,
+served by the local server, and driven over MCP and the CLI against the same
+files. Narrower scripts: `scripts/chat-room-smoke.sh` (rooms) and
+`scripts/mcp-smoke.sh` (MCP).
 
 ## Dependency on `vivi`
 
-`Cargo.toml` pins `vivi` to a release tag (`tag = "v11.0.0"`) and `Cargo.lock`
+`Cargo.toml` pins `vivi` to a release tag (`tag = "v18.1.0"`) and `Cargo.lock`
 pins the exact commit. Move it by changing the tag, running
-`cargo update -p vivi`, and running both smokes. Keep the lockfile on the
+`cargo update -p vivi`, and running the three smokes. Keep the lockfile on the
 `vivi` git source: the `.cargo` path
 patch used for local development is git-ignored and must never be committed
-(a lockfile that resolved to the path patch fails on Railway).
+(a lockfile that resolved to the path patch fails the release build).
