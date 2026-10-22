@@ -481,3 +481,50 @@ fn reconcile_destroys_a_dead_slot_that_no_dispatch_explains() {
     assert!(empty(&home.path().join("dirs")));
     assert!(empty(&home.path().join("vivi-worker/.ledger")));
 }
+
+#[test]
+fn a_slot_whose_ledger_entry_is_gone_is_still_destroyed() {
+    let home = home("");
+    let p = provider(home.path(), 2, "dir", 0);
+    let slot = open(&p, "true\n").unwrap();
+    // A racing create's failing teardown took the entry and left the slot.
+    let entry = home.path().join("vivi-worker/.ledger/ms-lanes-slot-1");
+    std::fs::remove_file(&entry).unwrap();
+    assert_eq!(p.list().unwrap().len(), 1, "the slot still stands");
+    p.destroy(&slot.id).unwrap();
+    assert!(p.list().unwrap().is_empty(), "the slot is destroyed");
+    assert!(
+        !home.path().join("vivi-worker/ms/lanes/slot-1").exists(),
+        "the slot path is gone"
+    );
+    assert!(empty(&home.path().join("dirs")), "its boundary is gone");
+}
+
+#[test]
+fn a_destroy_that_cannot_remove_the_slot_is_an_error_not_destroyed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = home("");
+    let p = provider(home.path(), 2, "dir", 0);
+    let slot = open(&p, "true\n").unwrap();
+    let pool_dir = home.path().join("vivi-worker/ms/lanes");
+    // The slot's link cannot be unlinked from a read-only parent.
+    std::fs::set_permissions(&pool_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let is_root = std::fs::write(pool_dir.join("probe"), "").is_ok();
+    let result = if is_root { Ok(()) } else { p.destroy(&slot.id) };
+    std::fs::set_permissions(&pool_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if is_root {
+        return;
+    }
+    let said = result.unwrap_err().to_string();
+    assert!(
+        said.contains("was not removed") && said.contains("slot-1"),
+        "{said}"
+    );
+    assert!(
+        pool_dir.join("slot-1").is_symlink(),
+        "the slot remains, and the error says so"
+    );
+    p.destroy(&slot.id).unwrap();
+    assert!(p.list().unwrap().is_empty());
+}

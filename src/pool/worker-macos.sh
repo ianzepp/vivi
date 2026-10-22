@@ -209,10 +209,14 @@ users_of() {
   local id=$1 kind at p
   kind=$(field "$id" kind); at=$(field "$id" mount)
   [ "$kind" != dir ] || at=$(field "$id" dir)
+  # No ledger entry: the slot path and the dir this slot would have are all
+  # there is to look at.
+  [ -n "$at" ] || at="$R/$id"
   {
     if [ -n "$at" ] && [ -d "$at" ]; then
-      if [ "$kind" = dir ]; then lsof -t +D "$at" 2>/dev/null; else lsof -t +f -- "$at" 2>/dev/null; fi
+      if [ "$kind" != dir ] && mounted_at "$at"; then lsof -t +f -- "$at" 2>/dev/null; else lsof -t +D "$at" 2>/dev/null; fi
     fi
+    if [ -z "$kind" ] && [ -d "$(dir_root)/$(flat "$id")" ]; then lsof -t +D "$(dir_root)/$(flat "$id")" 2>/dev/null; fi
     p=$(cat "$R/$id/boot.pid" 2>/dev/null)
     if [[ $p =~ ^[0-9]+$ ]] && alive "$R/$id"; then
       ps -axo pid=,ppid=,pgid= 2>/dev/null | awk -v b="$p" '
@@ -244,26 +248,43 @@ kill_users() {
   [ -z "$(users_of "$id")" ]
 }
 
+# Path $1 is exactly a mount point; and the detaching of what is mounted there.
+mounted_at() { mount | grep -q " on $1 ("; }
+detach_at() {
+  local dev
+  dev=$(mount | awk -v p="$1" 'index($0, " on " p " (") { print $1; exit }')
+  [ -n "$dev" ] || return 0
+  hdiutil detach "$dev" -force -quiet > /dev/null 2>&1 || diskutil eject force "$dev" > /dev/null 2>&1
+  return 0
+}
+
 # Stop everything on slot $1's boundary, then remove the boundary and its
-# ledger entry. Only what the ledger recorded is touched.
+# ledger entry. With no ledger entry (a racing teardown took it) the slot's
+# own names stand in for what it recorded: the slot path, its image
+# vivi-<flat id>.sparseimage and its dir. Fails, leaving the ledger entry, when
+# the slot path is still mounted or still there.
 teardown() {
   local id=$1 kind at device image dir
-  [ -f "$R/.ledger/$(flat "$id")" ] || return 0
   kind=$(field "$id" kind); at=$(field "$id" mount)
   device=$(field "$id" device); image=$(field "$id" image); dir=$(field "$id" dir)
+  [ -n "$at" ] || at="$R/$id"
+  [ -n "$image" ] || image="$(apfs_dir)/vivi-$(flat "$id").sparseimage"
+  [ -n "$dir" ] || dir="$(dir_root)/$(flat "$id")"
   kill_users "$id" || fail "could not stop the processes of $id"
-  case "$kind" in
-    ram) [ -z "$device" ] || diskutil eject "$device" > /dev/null 2>&1 ;;
-    apfs)
-      [ -z "$device" ] || hdiutil detach "$device" -force -quiet 2>/dev/null
-      case "$image" in "$(apfs_dir)"/vivi-*.sparseimage) rm -f -- "$image" ;; esac
-      ;;
-    dir) case "$dir" in "$(dir_root)"/*) rm -rf -- "$dir" ;; esac ;;
-  esac
-  # A path still mounted is never removed (its contents are not ours).
-  if ! mount | grep -q " on $at ("; then
-    case "$at" in "$R"/*/*/slot-*) rm -rf -- "$at" ;; esac
+  if [ -n "$device" ]; then
+    case "$kind" in
+      ram) diskutil eject "$device" > /dev/null 2>&1 ;;
+      apfs) hdiutil detach "$device" -force -quiet 2>/dev/null ;;
+    esac
   fi
+  # Whatever is still mounted exactly at the slot path goes too.
+  ! mounted_at "$at" || detach_at "$at"
+  # A path still mounted is never removed (its contents are not ours).
+  ! mounted_at "$at" || fail "slot $id is still mounted at $at"
+  case "$image" in "$(apfs_dir)"/vivi-*.sparseimage) rm -f -- "$image" ;; esac
+  case "$dir" in "$(dir_root)"/*) rm -rf -- "$dir" ;; esac
+  case "$at" in "$R"/*/*/slot-*) rm -rf -- "$at" ;; esac
+  if [ -e "$at" ] || [ -L "$at" ]; then fail "slot $id was not removed: $at remains"; fi
   rm -f -- "$R/.ledger/$(flat "$id")"
   rmdir "$(dirname "$at")" "$(dirname "$(dirname "$at")")" 2>/dev/null
   return 0
@@ -410,7 +431,8 @@ read_files() {
 # Deleting is the one dangerous act: the id is a slot id, the root is a real
 # directory other than / and the home, and the slot holds Vivi's own marks
 # naming this pool and this mailspace (or is only a ledger entry left by a
-# create that failed part way).
+# create that failed part way). It says `destroyed` only when the slot path is
+# gone; a slot with no ledger entry is torn down by its own names.
 destroy_slot() {
   local pool space root
   slot_ok "$A1" || refuse "not a slot id: $A1"
@@ -418,7 +440,7 @@ destroy_slot() {
   root=$(cd "$R" 2>/dev/null && pwd -P) || { echo gone; return 0; }
   case "$root" in /|"$(cd "$HOME" 2>/dev/null && pwd -P)") refuse "the root is / or the home directory: $root" ;; esac
   lock
-  if [ ! -e "$R/$A1" ] && [ ! -f "$R/.ledger/$(flat "$A1")" ]; then echo gone; return 0; fi
+  if [ ! -e "$R/$A1" ] && [ ! -L "$R/$A1" ] && [ ! -f "$R/.ledger/$(flat "$A1")" ]; then echo gone; return 0; fi
   if [ -e "$R/$A1/marks" ]; then
     space=${A1%%/*}; pool=${A1#*/}; pool=${pool%/*}
     [ "$(head -n1 "$R/$A1/marks/vivi_pool" 2>/dev/null)" = "$pool" ] || refuse "$A1 carries no Vivi mark for pool $pool"
