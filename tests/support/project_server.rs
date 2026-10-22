@@ -699,6 +699,14 @@ fn dispatch_one(state: &Mutex<State>, caller: &str, parsed: &Value) -> Option<Va
         return None;
     }
     let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+    let called = parsed.pointer("/params/name").and_then(Value::as_str);
+    if method == "tools/call" && called == Some("rpc_error") {
+        return Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32602, "message": "invalid params from the fake" },
+        }));
+    }
     let result = match method {
         "initialize" => initialize_result(parsed),
         "ping" => json!({}),

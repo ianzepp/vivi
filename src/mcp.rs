@@ -23,6 +23,7 @@ use crate::sync::SyncSettings;
 use crate::sync::http::{MintedToken, RawResponse, mint_token, project_base_url, send_raw};
 use crate::sync::identity::SyncIdentity;
 
+pub mod client;
 pub mod resolve;
 
 /// A member token is renewed when it is within this window of expiry.

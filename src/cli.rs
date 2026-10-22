@@ -38,7 +38,7 @@ pub use mailspace_command::{
     TaskFromCommand, TaskSendCommand, TaskStatus, TraceCommand, WantCommand, WantSendCommand,
     WantStatus, WatchCommon,
 };
-pub use mcp_command::McpCommand;
+pub use mcp_command::{McpCommand, McpSubcommand};
 pub use monitor_command::MonitorCommand;
 pub use pool_command::{
     PoolAddCommand, PoolBandsCommand, PoolCleanCommand, PoolConfigSetCommand, PoolCreateCommand,
@@ -115,7 +115,7 @@ pub enum Command {
     /// Push local letters to a project server, then pull what other members pushed
     Sync(SyncCommand),
 
-    /// Bridge MCP over stdio to a project server's MCP endpoint (a pass-through; needs no mailspace)
+    /// Bridge MCP over stdio to a project server's MCP endpoint (a pass-through; needs no mailspace); `tools` and `call` are one-shot clients
     Mcp(McpCommand),
 
     /// Manage a project-local Vivi mailspace

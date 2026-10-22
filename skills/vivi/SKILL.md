@@ -2981,6 +2981,8 @@ vivi sync api-key mint --label <LABEL> [--out <FILE>]  # project API key (label 
 vivi sync api-key list   # live project API keys: key_id, label, created_by, created_at; never the secret
 vivi sync api-key revoke <KEY_ID>  # retire a live key
 vivi mcp                 # stdio MCP bridge to the project server's tools (see MCP bridge below)
+vivi mcp tools [--json]  # one-shot: list the server's live MCP tools
+vivi mcp call <TOOL> [ARGS_JSON] [--args-file PATH|-] [--json]  # one-shot: call one tool
 ```
 
 **Draining.** The server allows 30 letters a minute per member, so a large
@@ -3259,6 +3261,30 @@ The server's Project MCP tools: `overview`, `list`, `show`, `thread`, `send`,
 `reply`, `done`, `reopen`, `memo`, `graph`. Writes share the server's
 30-per-minute-per-identity send budget; a tool failure is a result with
 `isError: true`.
+
+**One-shot calls: `vivi mcp tools` and `vivi mcp call`.** An MCP client such
+as Claude Code caches the tool list when its session starts, so a tool a server
+upgrade adds stays invisible until the client restarts. These two subcommands
+need no MCP client: each runs the `initialize` handshake, sends one request,
+prints the answer, and exits. They take the same flags, variables, and
+credentials as the bridge (the flags may come before or after the subcommand);
+bare `vivi mcp` is still the stdio bridge.
+
+```sh
+vivi mcp tools                              # one line per tool: name, first description line
+vivi mcp tools --json                       # the raw tools array
+vivi mcp call overview                      # ARGS_JSON defaults to {}
+vivi mcp call show '{"handle":"abc123"}'    # ARGS_JSON must be a JSON object
+echo '{"handle":"abc123"}' | vivi mcp call thread --args-file -   # or --args-file PATH
+vivi mcp call show '{"handle":"abc123"}' --json   # the full result object
+```
+
+`call` prints the result's text (`content[].text`, newline-joined); `--json`
+prints the full JSON-RPC `result` object instead. Exit status: `0` success;
+`1` the tool reported `isError: true` (its text goes to stderr); `2` a
+transport, authentication, HTTP, or JSON-RPC error (the message names the HTTP
+status or the JSON-RPC code and message), or `ARGS_JSON` that is not a JSON
+object, which is refused before any request. Credentials are never printed.
 
 **Flags and environment.** `--server <URL>`, `--project-id <ID>`,
 `--name <NAME>`, and `--key-file <PATH>`, each with a variable:

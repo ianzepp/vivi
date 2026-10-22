@@ -2,32 +2,66 @@
 
 use std::path::PathBuf;
 
-use clap::Args;
+use clap::{Args, Subcommand};
 
+/// With no subcommand `vivi mcp` is the stdio bridge; the credential flags
+/// are global so they also follow `tools` and `call`.
 #[derive(Debug, Args)]
 pub struct McpCommand {
+    #[command(subcommand)]
+    pub command: Option<McpSubcommand>,
+
     /// Base URL of the project server (default: VIVI_MCP_SERVER, then
     /// [sync] server in mailspace.toml)
-    #[arg(long, value_name = "URL")]
+    #[arg(long, global = true, value_name = "URL")]
     pub server: Option<String>,
 
     /// The project's id ON THE SERVER (default: VIVI_MCP_PROJECT_ID, then
     /// [sync] project) — not the mailspace root that --project names
-    #[arg(long, value_name = "ID")]
+    #[arg(long, global = true, value_name = "ID")]
     pub project_id: Option<String>,
 
     /// Registered member name for an identity credential (default:
     /// VIVI_MCP_NAME, then [sync] name); not needed with an API key
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, global = true, value_name = "NAME")]
     pub name: Option<String>,
 
     /// 32-byte member seed file (default: VIVI_MCP_KEY_FILE); needs --name
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH")]
     pub key_file: Option<PathBuf>,
 
     /// Project root that owns .vivi/, used only to find a [sync] table and
     /// the mailspace's own key (also accepted globally: vivi --project
     /// <ROOT> mcp); never created
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub project: Option<PathBuf>,
+}
+
+/// One-shot MCP client commands: no stdio session, one request, one answer.
+#[derive(Debug, Subcommand)]
+pub enum McpSubcommand {
+    /// List the server's MCP tools (name and first description line)
+    Tools {
+        /// Print the raw tools array as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Call one MCP tool and print its result (exit 1 when the tool reports
+    /// an error, 2 on a transport, auth, or JSON-RPC error)
+    Call {
+        /// The tool's name
+        tool: String,
+
+        /// The tool's arguments as a JSON object (default: {})
+        #[arg(value_name = "ARGS_JSON", conflicts_with = "args_file")]
+        args_json: Option<String>,
+
+        /// Read the arguments object from a file; `-` reads stdin
+        #[arg(long, value_name = "PATH|-")]
+        args_file: Option<String>,
+
+        /// Print the full JSON-RPC result object instead of the text
+        #[arg(long)]
+        json: bool,
+    },
 }

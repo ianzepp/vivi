@@ -865,6 +865,20 @@ with `vivi sync api-key mint --label <text> --out <file>`; `--out` writes it to 
 new mode-0600 file instead of printing it. `api-key list` and
 `api-key revoke <key-id>` manage keys.
 
+Two one-shot subcommands call the same endpoint without an MCP client, with the
+same flags and variables. An MCP client caches the tool list when its session
+starts, so a tool a server upgrade adds stays invisible until a restart; these
+commands read the live list and call any tool now:
+
+```sh
+vivi mcp tools [--json]                      # name and first description line
+vivi mcp call overview '{}' [--json]         # ARGS_JSON, or --args-file PATH|-
+```
+
+`call` prints the result text (`--json`: the full result object). It exits 0 on
+success, 1 when the tool reports `isError` (its text goes to stderr), and 2 on a
+transport, auth, or JSON-RPC error or arguments that are not a JSON object.
+
 ## Agent skills
 
 Three skills ship in [`skills/`](skills/) and are embedded in the binary, so
