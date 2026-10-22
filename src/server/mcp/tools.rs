@@ -699,10 +699,8 @@ fn stamped(micros: i64) -> String {
 }
 
 fn open_mailspace(store: &ProjectStore, project_id: &str) -> Result<Storage, ToolError> {
-    let dir = store
-        .existing_project_dir(project_id)
-        .map_err(map_project)?;
-    Storage::open_mailspace(&dir.join(".vivi")).map_err(|e| ToolError::new(e.to_string()))
+    let dir = store.mailspace_dir(project_id).map_err(map_project)?;
+    Storage::open_mailspace(&dir).map_err(|e| ToolError::new(e.to_string()))
 }
 
 fn list_memos(
@@ -913,6 +911,7 @@ fn map_project(err: ProjectError) -> ToolError {
             tracing::error!("mcp project storage failure: {message}");
             ToolError::new("storage failure")
         }
+        ProjectError::ReadOnly(message) => ToolError::new(message),
         ProjectError::Gone { closed: true } => ToolError::new("this chat is closed"),
         ProjectError::Gone { closed: false } => ToolError::new("this chat has expired"),
     }

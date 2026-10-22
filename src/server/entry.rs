@@ -91,12 +91,15 @@ async fn main() {
         tracing::warn!("MODERATION_TOKEN not set; /v1/_health disabled (U3)");
     }
 
-    let app = vivi_server::api_router(
+    let state = vivi_server::app_state(
         config.data_dir.clone(),
         config.store_encryption_key.clone(),
         config.moderation_token.clone(),
-    )
-    .route("/healthz", get(healthz));
+    );
+    // Serve the projects the host registry lists, now and whenever it
+    // changes. The first pass finishes before the listener binds.
+    let _hosted = vivi_server::hosted::start(state.projects.clone(), state.identities.clone());
+    let app = vivi_server::router(state).route("/healthz", get(healthz));
 
     let addr = std::net::SocketAddr::from((config.bind, config.port));
     tracing::info!(

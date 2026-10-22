@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — hosted projects
+
+- **Serve the host registry.** At boot and whenever the registry file
+  (`vivi::registry`, `serve = true` roots) changes, the server hosts each
+  served root directly from that project's own `.vivi/`: no second mailspace,
+  no seeding. The project id is `[sync] project`, else the id derived from the
+  mailspace UUID; the mailspace's own sync key is registered as the creator
+  member. Server data stays under `DATA_DIR/projects/<id>/`; `project.json`
+  gains `mailspace_root`. A root that leaves the registry stops being served
+  and loses nothing. Appends to a hosted project answer 403
+  `project_read_only` until member-append filing lands. vivi pin `v18.1.0`.
+
 ## Unreleased — epoch and key identity
 
 - **Per-project log epoch.** Every list response (`GET .../items`, and the

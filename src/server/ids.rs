@@ -28,6 +28,26 @@ pub fn mint_room_id() -> Result<String, RoomIdError> {
     Ok(group(&encode_body(&bytes)))
 }
 
+/// The project id of a mailspace known only by its id: a canonical
+/// hyphenated UUID is 128 bits, and the first 125 of them are the 25
+/// Crockford digits of a project id, the same encoding a minted id uses.
+/// `None` when `uuid` is not 32 hex digits in 8-4-4-4-12 form.
+pub fn room_id_from_uuid(uuid: &str) -> Option<String> {
+    let hex: String = uuid.chars().filter(|c| *c != '-').collect();
+    let dashes_ok = uuid.len() == 36
+        && [8, 13, 18, 23]
+            .iter()
+            .all(|i| uuid.as_bytes().get(*i) == Some(&b'-'));
+    if hex.len() != 32 || !dashes_ok || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(group(&encode_body(&bytes)))
+}
+
 /// Canonicalize a raw id: case-fold, map `i`/`l`→`1` and `o`→`0`, reject
 /// `u`, validate length and charset, and regroup in fives. Accepts grouped
 /// (5x5, four dashes) or ungrouped 25-char input.
@@ -104,6 +124,17 @@ mod tests {
                 assert!(CANONICAL_ALPHABET.contains(&(c as u8)), "id {id} char {c}");
             }
         }
+    }
+
+    #[test]
+    fn uuid_maps_to_a_canonical_room_id() {
+        let id = room_id_from_uuid("3f9a1c7e-0b2d-4c5e-8a1f-123456789abc").unwrap();
+        assert_eq!(normalize_room_id(&id).unwrap(), id);
+        assert_eq!(
+            room_id_from_uuid("3f9a1c7e-0b2d-4c5e-8a1f-123456789abc").unwrap(),
+            id
+        );
+        assert_eq!(room_id_from_uuid("not-a-uuid"), None);
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod admin;
 pub mod admissions;
 pub mod auth;
 pub mod crypto;
+pub mod hosted;
 pub mod identities;
 pub mod ids;
 pub mod keys;
@@ -57,13 +58,27 @@ pub fn api_router(
     store_key: Option<String>,
     moderation_token: Option<String>,
 ) -> Router {
+    router(app_state(data_dir, store_key, moderation_token))
+}
+
+/// Router state over `data_dir`. Split from [`router`] so the process can
+/// start the hosted-project watcher (`hosted::start`) over the same store
+/// the routes serve; `api_router` never reads the host registry.
+///
+/// # Panics
+/// Panics on an undecodable `store_key`, as [`api_router`] does.
+pub fn app_state(
+    data_dir: PathBuf,
+    store_key: Option<String>,
+    moderation_token: Option<String>,
+) -> AppState {
     let store_cipher = store_key
         .as_deref()
         .map(StoreCipher::from_base64)
         .transpose()
         .expect("valid STORE_ENCRYPTION_KEY")
         .map(Arc::new);
-    let state = AppState {
+    AppState {
         projects: ProjectStore::new(&data_dir),
         identities: IdentityRegistry::new(&data_dir),
         keys: ApiKeyRegistry::new(&data_dir),
@@ -73,7 +88,11 @@ pub fn api_router(
         moderation_token: moderation_token
             .filter(|t| !t.trim().is_empty())
             .map(Arc::from),
-    };
+    }
+}
+
+/// The v1 routes over `state`.
+pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/v1/projects", post(projects_api::create_project_handler))
         .route(

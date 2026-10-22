@@ -96,6 +96,9 @@ pub(crate) fn project_error(err: ProjectError) -> Response {
                 "storage failure",
             )
         }
+        ProjectError::ReadOnly(message) => {
+            error_response(StatusCode::FORBIDDEN, "project_read_only", &message)
+        }
         ProjectError::Gone { closed: true } => {
             error_response(StatusCode::GONE, "room_closed", "this chat is closed")
         }
@@ -310,14 +313,8 @@ pub async fn challenge_handler(
     };
     let projects = state.projects.clone();
     let check_id = id.clone();
-    match tokio::task::spawn_blocking(move || {
-        let dir = projects.project_dir(&check_id)?;
-        if !dir.join("project.json").is_file() {
-            return Err(ProjectError::ProjectNotFound);
-        }
-        Ok(())
-    })
-    .await
+    match tokio::task::spawn_blocking(move || projects.existing_project_dir(&check_id).map(|_| ()))
+        .await
     {
         Ok(Ok(())) => (),
         Ok(Err(err)) => return project_error(err),
@@ -487,12 +484,7 @@ pub async fn directory_handler(
     let projects = state.projects.clone();
     let project_id = id.clone();
     match tokio::task::spawn_blocking(move || {
-        let dir = projects.project_dir(&project_id)?;
-        if dir.join("project.json").is_file() {
-            Ok(())
-        } else {
-            Err(ProjectError::ProjectNotFound)
-        }
+        projects.existing_project_dir(&project_id).map(|_| ())
     })
     .await
     {

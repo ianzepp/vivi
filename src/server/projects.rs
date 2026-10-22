@@ -16,7 +16,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Timelike, Utc};
@@ -86,6 +86,8 @@ pub enum ProjectError {
     Storage(String),
     /// A chat project is closed or past its TTL (item 17).
     Gone { closed: bool },
+    /// The project is hosted from a host mailspace and refuses this write.
+    ReadOnly(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +107,13 @@ pub struct ProjectMeta {
     /// `project.json` written before epochs; minted on first use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<u32>,
+    /// Set on a hosted project (see `hosted`): the host project root whose
+    /// own `.vivi/` is this project's mailspace. The server's per-project
+    /// data (transport index, identities, keys, this file) stays under
+    /// `DATA_DIR/projects/<id>/`; the mailspace does not. Absent on a
+    /// project the server owns end to end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailspace_root: Option<PathBuf>,
 }
 
 impl ProjectMeta {
@@ -116,6 +125,29 @@ impl ProjectMeta {
             ttl_seconds: None,
             closed: false,
             epoch: Some(epoch),
+            mailspace_root: None,
+        }
+    }
+
+    /// A project mailspace hosted from `root`, with a fresh epoch.
+    pub(crate) fn hosted(project_id: String, root: PathBuf) -> Result<Self, ProjectError> {
+        Ok(Self {
+            mailspace_root: Some(root),
+            ..Self::durable(project_id, mint_epoch()?)
+        })
+    }
+
+    /// True for a project served from a host mailspace.
+    pub fn is_hosted(&self) -> bool {
+        self.mailspace_root.is_some()
+    }
+
+    /// The mailspace directory: the host root's `.vivi` for a hosted
+    /// project, else `.vivi` inside the server's own project directory.
+    fn mailspace_dir(&self, project_dir: &Path) -> PathBuf {
+        match &self.mailspace_root {
+            Some(root) => root.join(MAILSPACE_DIR),
+            None => project_dir.join(MAILSPACE_DIR),
         }
     }
 
@@ -667,7 +699,9 @@ struct Project {
 }
 
 impl Project {
-    fn open(dir: &Path) -> Result<Self, ProjectError> {
+    /// Open the transport index in `dir` and the mailspace at `mailspace_dir`
+    /// (inside `dir` unless the project is hosted).
+    fn open(dir: &Path, mailspace_dir: &Path) -> Result<Self, ProjectError> {
         let transport = Connection::open(dir.join(TRANSPORT_FILE))
             .map_err(storage_err("failed to open the transport index"))?;
         transport
@@ -679,7 +713,7 @@ impl Project {
         transport
             .execute_batch(TRANSPORT_SCHEMA)
             .map_err(storage_err("failed to prepare the transport index"))?;
-        let storage = Storage::open_mailspace(&dir.join(MAILSPACE_DIR))
+        let storage = Storage::open_mailspace(mailspace_dir)
             .map_err(storage_err("failed to open the project mailspace"))?;
         ensure_event_column(&transport, &storage)?;
         Ok(Self { transport, storage })
@@ -876,6 +910,9 @@ pub struct ProjectStore {
     admissions: AdmissionRegistry,
     wake: Arc<ProjectWake>,
     clock: Clock,
+    /// Ids of hosted projects whose root the registry no longer serves: the
+    /// data stays on disk, the project answers as unknown.
+    retired: Arc<RwLock<HashSet<String>>>,
 }
 
 /// The server clock the append stamp reads; injectable so tests can step it.
@@ -1013,6 +1050,7 @@ impl ProjectStore {
             admissions: AdmissionRegistry::new(data_dir),
             wake: Arc::new(ProjectWake::default()),
             clock: Clock(Arc::new(clock)),
+            retired: Arc::default(),
         }
     }
 
@@ -1047,7 +1085,7 @@ impl ProjectStore {
                 .map_err(|e| ProjectError::Storage(format!("failed to write project.json: {e}")))?;
             // Prepare the transport index now so a project is fully formed
             // before its first append.
-            Project::open(&dir)?;
+            Project::open(&dir, &dir.join(MAILSPACE_DIR))?;
             // Project files (project.json, the mailspace, the transport
             // index) stay owner-only, like the room tree (VC-5).
             harden_tree(&dir);
@@ -1081,11 +1119,57 @@ impl ProjectStore {
     /// Canonical project directory, required to hold an existing project.
     pub fn existing_project_dir(&self, raw_id: &str) -> Result<PathBuf, ProjectError> {
         let dir = self.project_dir(raw_id)?;
-        if dir.join("project.json").is_file() {
-            Ok(dir)
-        } else {
-            Err(ProjectError::ProjectNotFound)
+        if !dir.join("project.json").is_file() {
+            return Err(ProjectError::ProjectNotFound);
         }
+        if let Some(id) = dir.file_name().and_then(|n| n.to_str())
+            && self
+                .retired
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(id)
+        {
+            return Err(ProjectError::ProjectNotFound);
+        }
+        Ok(dir)
+    }
+
+    /// Open an existing project: its transport index and its mailspace,
+    /// wherever `project.json` says the mailspace lives.
+    fn open_project(&self, raw_id: &str) -> Result<Project, ProjectError> {
+        let dir = self.existing_project_dir(raw_id)?;
+        let meta = self.load_meta(raw_id)?;
+        let mailspace_dir = meta.mailspace_dir(&dir);
+        if meta.is_hosted() && !mailspace_dir.join("mailspace.toml").is_file() {
+            return Err(ProjectError::Storage(format!(
+                "hosted mailspace {} is missing",
+                mailspace_dir.display()
+            )));
+        }
+        Project::open(&dir, &mailspace_dir)
+    }
+
+    /// The mailspace directory of an existing project.
+    pub fn mailspace_dir(&self, raw_id: &str) -> Result<PathBuf, ProjectError> {
+        let dir = self.existing_project_dir(raw_id)?;
+        Ok(self.load_meta(raw_id)?.mailspace_dir(&dir))
+    }
+
+    /// Prepare a hosted project's transport index in `dir` and prove its
+    /// host mailspace opens. Independent of whether the id is retired, so it
+    /// can run while a project is being (re)served.
+    pub(crate) fn prepare_hosted(&self, dir: &Path, root: &Path) -> Result<(), ProjectError> {
+        Project::open(dir, &root.join(MAILSPACE_DIR)).map(|_| ())
+    }
+
+    /// Replace the set of retired hosted ids (see `hosted`).
+    pub(crate) fn set_retired(&self, retired: HashSet<String>) {
+        *self.retired.write().unwrap_or_else(|e| e.into_inner()) = retired;
+    }
+
+    /// The directory holding every project's data.
+    pub(crate) fn projects_root(&self) -> &Path {
+        &self.projects_root
     }
 
     /// Load `project.json` for an existing project.
@@ -1134,6 +1218,7 @@ impl ProjectStore {
             ttl_seconds: Some(ttl_seconds),
             closed: false,
             epoch: meta.epoch,
+            mailspace_root: None,
         };
         self.write_meta(&meta)?;
         Ok(meta)
@@ -1232,7 +1317,17 @@ impl ProjectStore {
     /// project mailspace first, then recorded as the next transport row.
     pub fn append(&self, raw_id: &str, item: &AppendItem) -> Result<AppendOutcome, ProjectError> {
         let _guard = append_lock();
-        self.refuse_if_chat_over(raw_id)?;
+        let meta = self.refuse_if_chat_over(raw_id)?;
+        if meta.is_hosted() {
+            // TODO(hosted member-append filing): a hosted project files a
+            // member's letter into the host mailspace and records it in the
+            // transport index. Until that lands the server writes nothing
+            // into a host mailspace, so an append is refused.
+            return Err(ProjectError::ReadOnly(
+                "this project is hosted from a host mailspace and does not accept appends yet"
+                    .to_owned(),
+            ));
+        }
         let dir = self.existing_project_dir(raw_id)?;
         let project_id = dir
             .file_name()
@@ -1240,7 +1335,7 @@ impl ProjectStore {
             .unwrap_or_default()
             .to_owned();
         let content_sha256 = sha256_hex(&item.raw_eml);
-        let mut project = Project::open(&dir)?;
+        let mut project = self.open_project(raw_id)?;
         if let Some(outcome) = project.find_replay(&item.id, &item.from, &content_sha256)? {
             return Ok(outcome);
         }
@@ -1293,9 +1388,8 @@ impl ProjectStore {
         query: &ListQuery,
         viewer: &Viewer<'_>,
     ) -> Result<ReadAfter, ProjectError> {
-        let dir = self.existing_project_dir(raw_id)?;
         let epoch = self.epoch(raw_id)?;
-        let project = Project::open(&dir)?;
+        let project = self.open_project(raw_id)?;
         let mut params = vec![Value::Integer(
             i64::try_from(query.since).unwrap_or(i64::MAX),
         )];
@@ -1367,8 +1461,7 @@ impl ProjectStore {
         F: FnMut(ProjectRecord),
     {
         let chunk = chunk.max(1);
-        let dir = self.existing_project_dir(raw_id)?;
-        let project = Project::open(&dir)?;
+        let project = self.open_project(raw_id)?;
         let mut cursor = 0i64;
         loop {
             let mut params = vec![Value::Integer(cursor)];
@@ -1407,8 +1500,7 @@ impl ProjectStore {
         viewer: &Viewer<'_>,
     ) -> Result<Lookup, ProjectError> {
         let wanted = parse_handles(handles)?;
-        let dir = self.existing_project_dir(raw_id)?;
-        let project = Project::open(&dir)?;
+        let project = self.open_project(raw_id)?;
         let mut params: Vec<Value> = wanted.iter().map(|h| Value::Text(h.clone())).collect();
         let marks = vec!["?"; wanted.len()].join(", ");
         let visible = visible_clause(viewer, &mut params);
@@ -1446,8 +1538,7 @@ impl ProjectStore {
         message_id: &str,
         viewer: &Viewer<'_>,
     ) -> Result<Option<ProjectRecord>, ProjectError> {
-        let dir = self.existing_project_dir(raw_id)?;
-        let project = Project::open(&dir)?;
+        let project = self.open_project(raw_id)?;
         let mut params = vec![Value::Text(message_id.to_owned())];
         let visible = visible_clause(viewer, &mut params);
         let sql = format!("SELECT {COLUMNS} FROM items i WHERE i.message_id = ? AND {visible}");
