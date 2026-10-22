@@ -263,14 +263,24 @@ pub fn save_at(path: &Path, registry: &Registry) -> Result<(), VivariumError> {
 pub fn update<T>(
     change: impl FnOnce(&mut Registry) -> Result<T, VivariumError>,
 ) -> Result<T, VivariumError> {
-    let file = path()?;
+    update_at(&path()?, change)
+}
+
+/// [`update`] on an explicit registry path.
+///
+/// # Errors
+/// As [`update`].
+pub fn update_at<T>(
+    file: &Path,
+    change: impl FnOnce(&mut Registry) -> Result<T, VivariumError>,
+) -> Result<T, VivariumError> {
     let _lock = lock_file(
         file.with_extension("config.lock"),
         "another Vivi registry update is running",
     )?;
-    let mut registry = load_at(&file)?;
+    let mut registry = load_at(file)?;
     let value = change(&mut registry)?;
-    save_at(&file, &registry)?;
+    save_at(file, &registry)?;
     Ok(value)
 }
 
