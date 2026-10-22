@@ -104,7 +104,7 @@ pub use thread::{
 pub use trace::{print_trace, print_trace_json};
 pub use watch::{MailspaceWatchRequest, run_watch};
 
-const MAILSPACE_DIR: &str = ".vivi";
+pub(crate) const MAILSPACE_DIR: &str = ".vivi";
 pub(crate) const MAILSPACE_CONFIG: &str = "mailspace.toml";
 
 pub struct Mailspace {

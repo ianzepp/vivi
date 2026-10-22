@@ -49,11 +49,11 @@ pub use proxy_command::{
     ProxyCheckCommand, ProxyConfigArg, ProxyLogCommand, ProxyRunCommand, ProxySubcommand,
 };
 pub use pump_command::{
-    PumpCloseoutCommand, PumpControlCommand, PumpExportCommand, PumpHealthCommand, PumpLogCommand,
-    PumpOnceCommand, PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand,
-    PumpReplanCommand, PumpRequeueCommand, PumpRunCommand, PumpServiceAddCommand,
-    PumpServiceCommand, PumpServiceProjectCommand, PumpStatusCommand, PumpSubcommand,
-    PumpWithdrawCommand,
+    PumpCloseoutCommand, PumpControlCommand, PumpExportCommand, PumpGateCommand,
+    PumpGateSetCommand, PumpHealthCommand, PumpLogCommand, PumpOnceCommand,
+    PumpPriorityClearCommand, PumpPriorityCommand, PumpPrioritySetCommand, PumpReplanCommand,
+    PumpRequeueCommand, PumpRunCommand, PumpServiceAddCommand, PumpServiceCommand,
+    PumpServiceProjectCommand, PumpStatusCommand, PumpSubcommand, PumpWithdrawCommand,
 };
 pub use report_command::{
     ReportBy, ReportCommand, ReportCommon, ReportFormat, ReportRecordsCommand, ReportRecordsFormat,
